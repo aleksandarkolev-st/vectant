@@ -15,6 +15,8 @@ import {
   discoverArbitraryColdProjectDescriptors,
   selectArbitraryColdProjectDescriptors,
   verifyArbitraryColdBatchSelection,
+  verifyRetainedArbitraryColdBatchSelection,
+  verifyRetainedArbitraryColdBatchSummary,
 } from './lib/gpu-hmr-arbitrary-cold-project-batch.mjs';
 import {
   createArbitraryColdCliResultEnvelope,
@@ -211,6 +213,8 @@ export function verifyArbitraryColdProjectBatchReport(report) {
   delete projection.evidenceHash;
   const attempts = report?.summary?.attempts;
   try {
+    verifyRetainedArbitraryColdBatchSelection(report?.selection);
+    verifyRetainedArbitraryColdBatchSummary(report?.summary, report?.selection);
     for (const entry of report?.reports ?? []) {
       if (entry?.outcome === 'cold_run_completed') {
         verifyArbitraryColdRetainedExecutionChain(entry.retainedExecutionChain);
@@ -222,6 +226,8 @@ export function verifyArbitraryColdProjectBatchReport(report) {
             outputs: entry.outputs,
           },
         });
+      } else if (entry?.outcome === 'cold_run_refused') {
+        verifyArbitraryColdProjectRunFailure(entry.failureEvidence);
       }
     }
   } catch {

@@ -33,6 +33,53 @@ const DEFAULT_LIMITS = Object.freeze({
 const PINNED_SELECTIONS = new WeakMap();
 const PINNED_ATTEMPTS = new WeakSet();
 const PINNED_RECORDS = new WeakSet();
+const SELECTION_KEYS = Object.freeze([
+  'schemaVersion',
+  'proofAuthority',
+  'descriptorSetHash',
+  'seedHash',
+  'availableDescriptorCount',
+  'requestedSampleCount',
+  'selected',
+  'acceptedAsColdBuildEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+]);
+const SELECTED_ENTRY_KEYS = Object.freeze(['descriptorHash', 'selectionScore']);
+const ATTEMPT_KEYS = Object.freeze([
+  'descriptorHash',
+  'selectionScore',
+  'selectionEvidenceHash',
+  'descriptorSetHash',
+  'outcome',
+  'runEvidenceHash',
+  'retainedExecutionChainHash',
+  'failureEvidenceHash',
+  'artifactCount',
+  'artifactLocatorSetHash',
+  'evidenceHash',
+]);
+const SUMMARY_KEYS = Object.freeze([
+  'schemaVersion',
+  'proofAuthority',
+  'selectionEvidenceHash',
+  'descriptorSetHash',
+  'seedHash',
+  'attemptedCount',
+  'completedColdRunCount',
+  'refusedColdRunCount',
+  'attempts',
+  'batchExecutionCompleted',
+  'acceptedAsColdBuildEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+]);
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -53,6 +100,21 @@ function recomputeEvidenceHash(value) {
   const projection = { ...value };
   delete projection.evidenceHash;
   return contentHash(stableJson(projection));
+}
+
+function exactKeys(value, keys) {
+  return value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && stableJson(Object.keys(value).sort()) === stableJson([...keys].sort());
+}
+
+function supportFlagsAreFalse(value) {
+  return value?.acceptedAsColdBuildEvidence === false
+    && value?.acceptedForGpuHmr === false
+    && value?.gpuHmrSuccess === false
+    && value?.canSatisfyRuntimeProof === false
+    && value?.canSatisfyDispatchProof === false;
 }
 
 function comparablePath(value) {
@@ -363,10 +425,13 @@ export function selectArbitraryColdProjectDescriptors(records, {
 export function verifyArbitraryColdBatchSelection(selection, records) {
   const pinned = PINNED_SELECTIONS.get(selection);
   records.forEach(verifyDescriptorRecord);
+  try {
+    verifyRetainedArbitraryColdBatchSelection(selection);
+  } catch {
+    throw new Error('arbitrary_cold_batch_selection_invalid');
+  }
   if (
     !pinned
-    || selection.schemaVersion !== ARBITRARY_COLD_BATCH_SELECTION_SCHEMA
-    || selection.proofAuthority !== ARBITRARY_COLD_BATCH_SELECTION_AUTHORITY
     || pinned.descriptorSetHash !== selection.descriptorSetHash
     || pinned.seedHash !== selection.seedHash
     || pinned.selected !== stableJson(selection.selected)
@@ -377,16 +442,106 @@ export function verifyArbitraryColdBatchSelection(selection, records) {
       || !HASH_PATTERN.test(entry.selectionScore ?? '')
       || !records.some((record) => record.descriptorHash === entry.descriptorHash)
     ))
-    || selection.acceptedAsColdBuildEvidence !== false
-    || selection.acceptedForGpuHmr !== false
-    || selection.gpuHmrSuccess !== false
-    || selection.canSatisfyRuntimeProof !== false
-    || selection.canSatisfyDispatchProof !== false
-    || recomputeEvidenceHash(selection) !== selection.evidenceHash
   ) {
     throw new Error('arbitrary_cold_batch_selection_invalid');
   }
   return selection;
+}
+
+export function verifyRetainedArbitraryColdBatchSelection(selection) {
+  const selected = selection?.selected;
+  if (
+    !exactKeys(selection, SELECTION_KEYS)
+    || selection.schemaVersion !== ARBITRARY_COLD_BATCH_SELECTION_SCHEMA
+    || selection.proofAuthority !== ARBITRARY_COLD_BATCH_SELECTION_AUTHORITY
+    || !HASH_PATTERN.test(selection.descriptorSetHash ?? '')
+    || !HASH_PATTERN.test(selection.seedHash ?? '')
+    || !Number.isSafeInteger(selection.availableDescriptorCount)
+    || selection.availableDescriptorCount < 1
+    || !Number.isSafeInteger(selection.requestedSampleCount)
+    || selection.requestedSampleCount < 1
+    || selection.requestedSampleCount > selection.availableDescriptorCount
+    || !Array.isArray(selected)
+    || selected.length !== selection.requestedSampleCount
+    || new Set(selected.map((entry) => entry?.descriptorHash)).size !== selected.length
+    || selected.some((entry, index) => (
+      !exactKeys(entry, SELECTED_ENTRY_KEYS)
+      || !HASH_PATTERN.test(entry.descriptorHash ?? '')
+      || !HASH_PATTERN.test(entry.selectionScore ?? '')
+      || entry.selectionScore !== contentHash(
+        `synthi-arbitrary-cold-batch-rank-v1:${selection.seedHash}:${entry.descriptorHash}`,
+      )
+      || (index > 0 && (
+        byteOrder(selected[index - 1].selectionScore, entry.selectionScore) > 0
+        || (
+          selected[index - 1].selectionScore === entry.selectionScore
+          && byteOrder(selected[index - 1].descriptorHash, entry.descriptorHash) >= 0
+        )
+      ))
+    ))
+    || !supportFlagsAreFalse(selection)
+    || !HASH_PATTERN.test(selection.evidenceHash ?? '')
+    || recomputeEvidenceHash(selection) !== selection.evidenceHash
+  ) {
+    throw new Error('arbitrary_cold_batch_retained_selection_invalid');
+  }
+  return selection;
+}
+
+function retainedAttemptAccepted(attempt, selected, selection) {
+  const completed = attempt?.outcome === 'cold_run_completed';
+  const refused = attempt?.outcome === 'cold_run_refused';
+  return exactKeys(attempt, ATTEMPT_KEYS)
+    && attempt.descriptorHash === selected?.descriptorHash
+    && attempt.selectionScore === selected?.selectionScore
+    && attempt.selectionEvidenceHash === selection.evidenceHash
+    && attempt.descriptorSetHash === selection.descriptorSetHash
+    && (completed || refused)
+    && (completed
+      ? HASH_PATTERN.test(attempt.runEvidenceHash ?? '')
+        && HASH_PATTERN.test(attempt.retainedExecutionChainHash ?? '')
+        && attempt.failureEvidenceHash === null
+        && Number.isSafeInteger(attempt.artifactCount)
+        && attempt.artifactCount >= 1
+        && HASH_PATTERN.test(attempt.artifactLocatorSetHash ?? '')
+      : attempt.runEvidenceHash === null
+        && attempt.retainedExecutionChainHash === null
+        && HASH_PATTERN.test(attempt.failureEvidenceHash ?? '')
+        && attempt.artifactCount === 0
+        && attempt.artifactLocatorSetHash === null)
+    && HASH_PATTERN.test(attempt.evidenceHash ?? '')
+    && recomputeEvidenceHash(attempt) === attempt.evidenceHash;
+}
+
+export function verifyRetainedArbitraryColdBatchSummary(summary, selection) {
+  verifyRetainedArbitraryColdBatchSelection(selection);
+  const attempts = summary?.attempts;
+  const completedCount = Array.isArray(attempts)
+    ? attempts.filter((attempt) => attempt?.outcome === 'cold_run_completed').length
+    : -1;
+  if (
+    !exactKeys(summary, SUMMARY_KEYS)
+    || summary.schemaVersion !== ARBITRARY_COLD_BATCH_SUMMARY_SCHEMA
+    || summary.proofAuthority !== ARBITRARY_COLD_BATCH_SUMMARY_AUTHORITY
+    || summary.selectionEvidenceHash !== selection.evidenceHash
+    || summary.descriptorSetHash !== selection.descriptorSetHash
+    || summary.seedHash !== selection.seedHash
+    || !Array.isArray(attempts)
+    || attempts.length !== selection.selected.length
+    || attempts.some((attempt, index) => (
+      !retainedAttemptAccepted(attempt, selection.selected[index], selection)
+    ))
+    || summary.attemptedCount !== attempts.length
+    || summary.completedColdRunCount !== completedCount
+    || summary.refusedColdRunCount !== attempts.length - completedCount
+    || summary.batchExecutionCompleted !== true
+    || !supportFlagsAreFalse(summary)
+    || !HASH_PATTERN.test(summary.evidenceHash ?? '')
+    || recomputeEvidenceHash(summary) !== summary.evidenceHash
+  ) {
+    throw new Error('arbitrary_cold_batch_retained_summary_invalid');
+  }
+  return summary;
 }
 
 function selectedEntry(selection, descriptorHash) {
@@ -495,5 +650,6 @@ export function createArbitraryColdBatchSummary(selection, records, attempts) {
     canSatisfyDispatchProof: false,
   };
   summary.evidenceHash = contentHash(stableJson(summary));
+  verifyRetainedArbitraryColdBatchSummary(summary, selection);
   return summary;
 }

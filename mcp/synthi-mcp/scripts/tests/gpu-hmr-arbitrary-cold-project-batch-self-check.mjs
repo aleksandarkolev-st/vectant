@@ -32,6 +32,8 @@ import {
   discoverArbitraryColdProjectDescriptors,
   selectArbitraryColdProjectDescriptors,
   verifyArbitraryColdBatchSelection,
+  verifyRetainedArbitraryColdBatchSelection,
+  verifyRetainedArbitraryColdBatchSummary,
 } from '../lib/gpu-hmr-arbitrary-cold-project-batch.mjs';
 import {
   ARBITRARY_COLD_RETAINED_EVIDENCE_AUTHORITY,
@@ -261,10 +263,82 @@ try {
   assert.equal(batch.canSatisfyRuntimeProof, false);
   assert.equal(batch.canSatisfyDispatchProof, false);
   assert.equal(verifyArbitraryColdProjectBatchReport(batch), batch);
+  assert.equal(
+    verifyRetainedArbitraryColdBatchSelection(batch.selection),
+    batch.selection,
+  );
+  assert.equal(
+    verifyRetainedArbitraryColdBatchSummary(batch.summary, batch.selection),
+    batch.summary,
+  );
   const forgedBatch = structuredClone(batch);
   forgedBatch.acceptedForGpuHmr = true;
   assert.throws(
     () => verifyArbitraryColdProjectBatchReport(forgedBatch),
+    /batch_report_invalid/,
+  );
+
+  const forgedSelectionAuthority = structuredClone(batch);
+  forgedSelectionAuthority.selection.proofAuthority = 'forged_selection_authority';
+  forgedSelectionAuthority.selection.evidenceHash = rehashEvidence(
+    forgedSelectionAuthority.selection,
+  );
+  forgedSelectionAuthority.summary.selectionEvidenceHash =
+    forgedSelectionAuthority.selection.evidenceHash;
+  forgedSelectionAuthority.summary.attempts[0].selectionEvidenceHash =
+    forgedSelectionAuthority.selection.evidenceHash;
+  forgedSelectionAuthority.summary.attempts[0].evidenceHash = rehashEvidence(
+    forgedSelectionAuthority.summary.attempts[0],
+  );
+  forgedSelectionAuthority.summary.evidenceHash = rehashEvidence(
+    forgedSelectionAuthority.summary,
+  );
+  forgedSelectionAuthority.evidenceHash = rehashEvidence(forgedSelectionAuthority);
+  assert.throws(
+    () => verifyArbitraryColdProjectBatchReport(forgedSelectionAuthority),
+    /batch_report_invalid/,
+  );
+
+  const forgedSelectionScore = structuredClone(batch);
+  forgedSelectionScore.selection.selected[0].selectionScore = `sha256:${'3'.repeat(64)}`;
+  forgedSelectionScore.selection.evidenceHash = rehashEvidence(forgedSelectionScore.selection);
+  forgedSelectionScore.summary.selectionEvidenceHash =
+    forgedSelectionScore.selection.evidenceHash;
+  forgedSelectionScore.summary.attempts[0].selectionScore =
+    forgedSelectionScore.selection.selected[0].selectionScore;
+  forgedSelectionScore.summary.attempts[0].selectionEvidenceHash =
+    forgedSelectionScore.selection.evidenceHash;
+  forgedSelectionScore.summary.attempts[0].evidenceHash = rehashEvidence(
+    forgedSelectionScore.summary.attempts[0],
+  );
+  forgedSelectionScore.summary.evidenceHash = rehashEvidence(forgedSelectionScore.summary);
+  forgedSelectionScore.evidenceHash = rehashEvidence(forgedSelectionScore);
+  assert.throws(
+    () => verifyArbitraryColdProjectBatchReport(forgedSelectionScore),
+    /batch_report_invalid/,
+  );
+
+  const forgedSummaryCounts = structuredClone(batch);
+  forgedSummaryCounts.summary.completedColdRunCount = 0;
+  forgedSummaryCounts.summary.refusedColdRunCount = 1;
+  forgedSummaryCounts.summary.evidenceHash = rehashEvidence(forgedSummaryCounts.summary);
+  forgedSummaryCounts.evidenceHash = rehashEvidence(forgedSummaryCounts);
+  assert.throws(
+    () => verifyArbitraryColdProjectBatchReport(forgedSummaryCounts),
+    /batch_report_invalid/,
+  );
+
+  const forgedAttemptAuthority = structuredClone(batch);
+  forgedAttemptAuthority.summary.attempts[0].gpuHmrSuccess = true;
+  forgedAttemptAuthority.summary.attempts[0].evidenceHash = rehashEvidence(
+    forgedAttemptAuthority.summary.attempts[0],
+  );
+  forgedAttemptAuthority.summary.evidenceHash = rehashEvidence(
+    forgedAttemptAuthority.summary,
+  );
+  forgedAttemptAuthority.evidenceHash = rehashEvidence(forgedAttemptAuthority);
+  assert.throws(
+    () => verifyArbitraryColdProjectBatchReport(forgedAttemptAuthority),
     /batch_report_invalid/,
   );
   assert.equal(batch.summary.attemptedCount, 1);
