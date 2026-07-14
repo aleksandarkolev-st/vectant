@@ -2,18 +2,24 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import {
+  access,
+  chown,
   chmod,
+  lstat,
+  lutimes,
   mkdtemp,
   mkdir,
   open,
   readFile,
   rename,
   rm,
+  symlink,
   utimes,
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   COLD_BUILD_CONTAINER_CAPABILITIES,
@@ -26,6 +32,8 @@ import {
   COLD_BUILD_LAUNCHER_RELEASE_ROOT,
   COLD_BUILD_LAUNCHER_SOURCE_ROOT,
   COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH,
+  COLD_BUILD_LAUNCHER_CLEANUP_MAX_MATCHED_ENTRIES,
+  COLD_BUILD_LAUNCHER_STALE_STATE_MS,
   COLD_BUILD_OUTPUT_MANIFEST_CONTAINER_PATH,
   COLD_BUILD_COLLECTOR_COMPLETION_SCHEMA,
   COLD_BUILD_COLLECTOR_FRAME_MAGIC,
@@ -33,9 +41,9 @@ import {
   coldBuildControlTmpfsOptions,
   coldBuildLauncherCommand,
   coldBuildLauncherEntrypoint,
+  coldBuildLauncherPublicationDescriptor,
   coldBuildLauncherSpec,
   coldBuildLauncherSpecHash,
-  coldBuildLauncherSourceIdentity,
   coldBuildOutputTmpfsOptions,
   coldBuildTmpfsOptions,
   encodeColdBuildLauncherSpec,
@@ -61,6 +69,39 @@ function stableJson(value) {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
     .join(',')}}`;
+}
+
+async function waitForPaths(paths, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const observations = await Promise.all(paths.map(async (filePath) => {
+      try {
+        await access(filePath);
+        return true;
+      } catch {
+        return false;
+      }
+    }));
+    if (observations.every(Boolean)) return;
+    await sleep(25);
+  }
+  throw new Error(`paths_not_observed:${paths.join(',')}`);
+}
+
+async function createPrivateDirectoryChain(root, segments) {
+  let current = root;
+  await mkdir(current, { recursive: true, mode: 0o700 });
+  await chmod(current, 0o700);
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    try {
+      await mkdir(current, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+    await chmod(current, 0o700);
+  }
+  return current;
 }
 
 function rewriteCollectorHeader(frameBytes, mutate) {
@@ -731,8 +772,80 @@ async function pollControl(containerId, name, timeoutMs = 20_000) {
   throw new Error(`control receipt ${name} not observed: ${lastResult?.stderr || 'timeout'}`);
 }
 
+async function assertLinuxCacheRootTrustRefusals() {
+  assert.notEqual(process.platform, 'win32');
+  const worldWritableRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-launcher-linux-world-writable-'),
+  );
+  try {
+    await chmod(worldWritableRoot, 0o777);
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        architecture: 'amd64',
+        cacheRoot: worldWritableRoot,
+        dockerExecutable: 'must-not-run',
+      }),
+      /cold_build_launcher_cache_root_untrusted/,
+    );
+  } finally {
+    await chmod(worldWritableRoot, 0o700).catch(() => {});
+    await rm(worldWritableRoot, { recursive: true, force: true });
+  }
+
+  const writableAncestorRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-launcher-linux-writable-ancestor-'),
+  );
+  try {
+    const unsafeParent = path.join(writableAncestorRoot, 'unsafe-parent');
+    const privateChild = path.join(unsafeParent, 'private-child');
+    await mkdir(unsafeParent, { mode: 0o700 });
+    await chmod(unsafeParent, 0o777);
+    await mkdir(privateChild, { mode: 0o700 });
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        architecture: 'amd64',
+        cacheRoot: privateChild,
+        dockerExecutable: 'must-not-run',
+      }),
+      /ancestor_write_isolation_failed/,
+    );
+  } finally {
+    await chmod(path.join(writableAncestorRoot, 'unsafe-parent'), 0o700).catch(() => {});
+    await rm(writableAncestorRoot, { recursive: true, force: true });
+  }
+
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    const foreignAncestorRoot = await mkdtemp(
+      path.join(os.tmpdir(), 'synthi-launcher-linux-foreign-ancestor-'),
+    );
+    const foreignParent = path.join(foreignAncestorRoot, 'foreign-parent');
+    const privateChild = path.join(foreignParent, 'private-child');
+    try {
+      await mkdir(foreignParent, { mode: 0o700 });
+      await mkdir(privateChild, { mode: 0o700 });
+      await chown(foreignParent, 12345, 12345);
+      await assert.rejects(
+        materializeColdBuildLauncher({
+          architecture: 'amd64',
+          cacheRoot: privateChild,
+          dockerExecutable: 'must-not-run',
+        }),
+        /ancestor_write_isolation_failed/,
+      );
+    } finally {
+      await chown(foreignParent, 0, 0).catch(() => {});
+      await rm(foreignAncestorRoot, { recursive: true, force: true });
+    }
+  }
+}
+
 async function main() {
   await assertCapturedTimeoutIsBounded();
+  if (process.argv.includes('--linux-cache-root-only')) {
+    await assertLinuxCacheRootTrustRefusals();
+    process.stdout.write('gpu-hmr Linux cache-root trust self-check passed\n');
+    return;
+  }
   if (process.argv.includes('--host-process-only')) {
     process.stdout.write('gpu-hmr cold-build host process self-check passed\n');
     return;
@@ -764,6 +877,68 @@ async function main() {
   assert.ok(['amd64', 'arm64'].includes(launcher.architecture));
   assert.equal(launcher.buildEvidence.staticExecutable, true);
   assert.equal(launcher.buildEvidence.builderCleanupAccepted, true);
+  assert.match(launcher.buildEvidence.sourceManifestHash, /^sha256:[a-f0-9]{64}$/);
+  assert.match(launcher.buildEvidence.builderRecipeHash, /^sha256:[a-f0-9]{64}$/);
+  assert.match(launcher.buildEvidence.publicationKeyHash, /^sha256:[a-f0-9]{64}$/);
+  assert.match(launcher.buildEvidence.publicationManifestHash, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(launcher.buildEvidence.sourceManifestRevalidated, true);
+  assert.equal(launcher.buildEvidence.publicationPrimitive, 'hard_link_no_replace');
+  assert.equal(launcher.buildEvidence.publicationSameDevice, true);
+  assert.equal(launcher.buildEvidence.publicationIntegrityAccepted, true);
+  assert.equal(launcher.buildEvidence.executionTimePathBindingRequired, true);
+  assert.equal(launcher.buildEvidence.canAuthorizeLauncherExecution, false);
+  assert.equal(launcher.buildEvidence.directoryLeaseStatBindingAccepted, true);
+  assert.ok([
+    'durable',
+    'directory_sync_unsupported',
+    'cache_verified_durability_not_reproven',
+  ].includes(launcher.buildEvidence.publicationDurabilityStatus));
+  assert.equal(launcher.buildEvidence.publicationDirectoryHierarchySyncAttempted, true);
+  assert.equal(launcher.buildEvidence.publicationFileSyncIdentityVerified, true);
+  assert.ok(launcher.buildEvidence.publicationDirectoryHierarchySyncCount >= 1);
+  assert.match(
+    launcher.buildEvidence.publicationDirectoryHierarchySyncEvidenceHash,
+    /^sha256:[0-9a-f]{64}$/,
+  );
+  if (launcher.buildEvidence.publicationDurabilityStatus === 'durable') {
+    assert.equal(launcher.buildEvidence.publicationDurabilityProven, true);
+    assert.equal(launcher.buildEvidence.publicationFileSyncStatus, 'synced');
+    assert.equal(
+      launcher.buildEvidence.publicationDirectoryHierarchySyncAccepted,
+      true,
+    );
+  } else {
+    assert.equal(launcher.buildEvidence.publicationDurabilityProven, false);
+  }
+  assert.equal(launcher.buildEvidence.finalBinaryVerified, true);
+  assert.equal(
+    launcher.buildEvidence.finalBinaryVerifiedAfterDirectoryRevalidation,
+    true,
+  );
+  assert.equal(launcher.buildEvidence.finalBinaryRegularFile, true);
+  assert.equal(launcher.buildEvidence.finalBinarySymbolicLink, false);
+  assert.equal(launcher.buildEvidence.finalBinaryStableIdentity, true);
+  assert.equal(launcher.buildEvidence.finalBinaryStableMetadata, true);
+  assert.equal(launcher.buildEvidence.finalBinarySecondHandleIdentityVerified, true);
+  assert.equal(launcher.buildEvidence.finalBinaryCanonicalPathStable, true);
+  assert.equal(launcher.buildEvidence.finalBinaryImmutableMode, true);
+  assert.equal(launcher.buildEvidence.finalBinaryExecutableModeAccepted, true);
+  assert.equal(
+    launcher.buildEvidence.trustedCacheRootPermissionOwnershipRecomputed,
+    process.platform !== 'win32',
+  );
+  assert.ok(['publication_created', 'verified_existing_after_race', 'cache_hit'].includes(
+    launcher.buildEvidence.publicationOutcome,
+  ));
+  assert.ok([
+    'synced',
+    'unsupported',
+    'not_required_cache_hit',
+  ].includes(launcher.buildEvidence.publicationDirectorySyncAfterCleanupStatus));
+  assert.equal(
+    launcher.buildEvidence.finalBinaryExecutableModeApplicable,
+    process.platform !== 'win32',
+  );
   const forgedLauncherIdentity = JSON.parse(JSON.stringify(launcher));
   assert.throws(
     () => coldBuildLauncherSpec({ launcherIdentity: forgedLauncherIdentity }),
@@ -800,46 +975,491 @@ async function main() {
       concurrentLaunchers.filter((item) => item.buildEvidence.buildExecuted).length,
       1,
     );
+    assert.equal(
+      concurrentLaunchers.filter(
+        (item) => item.buildEvidence.publicationOutcome === 'publication_created',
+      ).length,
+      1,
+    );
+    assert.equal(
+      concurrentLaunchers.filter(
+        (item) => item.buildEvidence.coalescedPublicationWait,
+      ).length,
+      3,
+    );
     assert.ok(concurrentLaunchers.every(
-      (item) => item.buildEvidence.builderCleanupAccepted === true,
+      (item) => item.buildEvidence.builderCleanupAccepted === true
+        && item.buildEvidence.immutableContentAddressedPublication === true
+        && item.buildEvidence.mutableBuildLockUsed === false,
+    ));
+    assert.ok(concurrentLaunchers.every(
+      (item) => item.buildEvidence.publicationPrimitive === 'hard_link_no_replace'
+        && item.buildEvidence.publicationSameDevice === true
+        && item.buildEvidence.publicationIntegrityAccepted === true
+        && item.buildEvidence.finalBinaryVerified === true
+        && item.buildEvidence.finalBinaryImmutableMode === true
+        && item.buildEvidence.finalBinaryExecutableModeAccepted === true
+        && item.buildEvidence.finalBinarySymbolicLink === false
+        && item.buildEvidence.trustedCacheRootAccepted === true
+        && item.buildEvidence.trustedCacheRootRevalidated === true,
     ));
   } finally {
     await rm(concurrentCacheRoot, { recursive: true, force: true });
   }
-  const staleLockCacheRoot = await mkdtemp(
-    path.join(os.tmpdir(), 'synthi-cold-launcher-stale-lock-cache-'),
+
+  const crossProcessCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-cross-process-cache-'),
   );
   try {
-    const sourceIdentity = await coldBuildLauncherSourceIdentity();
-    const staleCacheDirectory = path.join(
-      staleLockCacheRoot,
-      'cold-build-launcher',
-      sourceIdentity.sourceHash.slice('sha256:'.length),
-      launcher.architecture,
+    const barrierPath = path.join(crossProcessCacheRoot, 'start-barrier');
+    const linkBarrierPath = path.join(crossProcessCacheRoot, 'link-barrier');
+    const readyPaths = [0, 1].map(
+      (index) => path.join(crossProcessCacheRoot, `child-${index}.ready`),
     );
-    await mkdir(staleCacheDirectory, { recursive: true });
-    const staleLockPath = path.join(staleCacheDirectory, 'build.lock');
-    await writeFile(staleLockPath, stableJson({
-      schemaVersion: 'synthi.gpu_hmr.cold_build_launcher_lock.v1',
-      ownerToken: 'f'.repeat(32),
-      processId: 2_147_483_647,
-      hostName: os.hostname(),
-      platform: process.platform,
-      createdAtMs: Date.now() - 60_000,
-    }), { encoding: 'utf8', mode: 0o600 });
-    const staleTimestamp = new Date(Date.now() - 60_000);
-    await utimes(staleLockPath, staleTimestamp, staleTimestamp);
+    const linkReadyPaths = [0, 1].map(
+      (index) => path.join(crossProcessCacheRoot, `child-${index}.link-ready`),
+    );
+    const contractModuleUrl = new URL(
+      '../lib/gpu-hmr-cold-build-container-contract.mjs',
+      import.meta.url,
+    ).href;
+    const childPromises = readyPaths.map((readyPath, index) => {
+      const childProgram = [
+        "import { access, writeFile } from 'node:fs/promises';",
+        "import { setTimeout as sleep } from 'node:timers/promises';",
+        `import { materializeColdBuildLauncher } from ${JSON.stringify(contractModuleUrl)};`,
+        `await writeFile(${JSON.stringify(readyPath)}, 'ready', { flag: 'wx' });`,
+        'for (;;) {',
+        `  try { await access(${JSON.stringify(barrierPath)}); break; } catch { await sleep(10); }`,
+        '}',
+        'const result = await materializeColdBuildLauncher({',
+        `  dockerExecutable: ${JSON.stringify(dockerExecutable)},`,
+        `  architecture: ${JSON.stringify(launcher.architecture)},`,
+        `  cacheRoot: ${JSON.stringify(crossProcessCacheRoot)},`,
+        '  beforePublicationLink: async () => {',
+        `    await writeFile(${JSON.stringify(linkReadyPaths[index])}, 'ready', { flag: 'wx' });`,
+        '    for (;;) {',
+        `      try { await access(${JSON.stringify(linkBarrierPath)}); break; } catch { await sleep(10); }`,
+        '    }',
+        '  },',
+        '});',
+        'process.stdout.write(JSON.stringify({',
+        '  binaryHash: result.binaryHash,',
+        '  executablePath: result.executablePath,',
+        '  buildEvidence: result.buildEvidence,',
+        '}));',
+      ].join('\n');
+      return spawnCaptured(
+        process.execPath,
+        ['--input-type=module', '-e', childProgram],
+        {
+          timeoutMs: 240_000,
+          maxStdoutBytes: 1024 * 1024,
+          maxStderrBytes: 1024 * 1024,
+          encoding: 'utf8',
+        },
+      );
+    });
+    await waitForPaths(readyPaths);
+    await writeFile(barrierPath, 'start', { flag: 'wx' });
+    await waitForPaths(linkReadyPaths, 240_000);
+    await writeFile(linkBarrierPath, 'link', { flag: 'wx' });
+    const childResults = await Promise.all(childPromises);
+    assert.ok(childResults.every(
+      (result) => result.exitCode === 0
+        && result.signal === null
+        && result.timedOut === false
+        && result.error === null,
+    ), stableJson(childResults));
+    const childLaunchers = childResults.map((result) => JSON.parse(result.stdout));
+    assert.ok(childLaunchers.every(
+      (item) => item.binaryHash === launcher.binaryHash
+        && item.executablePath === childLaunchers[0].executablePath
+        && item.buildEvidence.immutableContentAddressedPublication === true
+        && item.buildEvidence.mutableBuildLockUsed === false
+        && item.buildEvidence.publicationPrimitive === 'hard_link_no_replace'
+        && item.buildEvidence.publicationSameDevice === true
+        && item.buildEvidence.publicationFileSyncIdentityVerified === true
+        && ['synced', 'unsupported'].includes(
+          item.buildEvidence.publicationFileSyncStatus,
+        )
+        && item.buildEvidence.finalBinaryVerified === true,
+    ));
+    assert.equal(
+      childLaunchers.filter(
+        (item) => item.buildEvidence.publicationOutcome === 'publication_created',
+      ).length,
+      1,
+    );
+    assert.equal(
+      childLaunchers.filter(
+        (item) => item.buildEvidence.publicationOutcome
+          === 'verified_existing_after_race',
+      ).length,
+      1,
+    );
+    assert.equal(
+      childLaunchers.filter(
+        (item) => item.buildEvidence.publicationRaceObserved === true,
+      ).length,
+      1,
+    );
+    assert.ok(childLaunchers.every(
+      (item) => item.buildEvidence.publicationPreLinkCoordinationUsed === true,
+    ));
+  } finally {
+    await rm(crossProcessCacheRoot, { recursive: true, force: true });
+  }
+
+  const sameInodeMutationCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-same-inode-mutation-'),
+  );
+  try {
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: sameInodeMutationCacheRoot,
+        beforePublicationLink: async ({ candidateBinaryPath }) => {
+          const bytes = await readFile(candidateBinaryPath);
+          bytes[0] ^= 0xff;
+          await chmod(candidateBinaryPath, 0o700);
+          const handle = await open(candidateBinaryPath, 'r+');
+          try {
+            await handle.writeFile(bytes);
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          await chmod(candidateBinaryPath, 0o555);
+        },
+      }),
+      /cold_build_launcher_publication_candidate_changed_during_coordination/,
+    );
+  } finally {
+    await rm(sameInodeMutationCacheRoot, { recursive: true, force: true });
+  }
+
+  const abandonedStateCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-abandoned-state-cache-'),
+  );
+  try {
+    const descriptor = await coldBuildLauncherPublicationDescriptor({
+      architecture: launcher.architecture,
+      cacheRoot: abandonedStateCacheRoot,
+    });
+    await createPrivateDirectoryChain(
+      abandonedStateCacheRoot,
+      descriptor.relativeDirectorySegments,
+    );
+    const abandonedLockPath = path.join(
+      abandonedStateCacheRoot,
+      'cold-build-launcher',
+      'build.lock',
+    );
+    const abandonedCandidatePath = path.join(
+      descriptor.publicationDirectory,
+      '.candidate-abandoned',
+    );
+    const futureCandidatePath = path.join(
+      descriptor.publicationDirectory,
+      '.candidate-future',
+    );
+    const abandonedBuildDirectory = await createPrivateDirectoryChain(
+      abandonedStateCacheRoot,
+      ['cold-build-launcher', 'builds', 'build-abandoned'],
+    );
+    const emptyAbandonedBuildDirectory = await createPrivateDirectoryChain(
+      abandonedStateCacheRoot,
+      ['cold-build-launcher', 'builds', 'build-empty-abandoned'],
+    );
+    const outsideCleanupTarget = path.join(
+      abandonedStateCacheRoot,
+      'outside-cleanup-target',
+    );
+    await mkdir(outsideCleanupTarget, { mode: 0o700 });
+    const outsideCleanupSentinel = path.join(outsideCleanupTarget, 'sentinel.txt');
+    await writeFile(outsideCleanupSentinel, 'must survive stale cleanup', { mode: 0o600 });
+    const abandonedBuildSymlink = path.join(
+      abandonedStateCacheRoot,
+      'cold-build-launcher',
+      'builds',
+      'build-symlink-abandoned',
+    );
+    await symlink(
+      outsideCleanupTarget,
+      abandonedBuildSymlink,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await writeFile(abandonedLockPath, 'untrusted legacy lock bytes', { mode: 0o600 });
+    await writeFile(
+      abandonedCandidatePath,
+      'partial publication bytes',
+      { mode: 0o500 },
+    );
+    await writeFile(futureCandidatePath, 'future candidate bytes', { mode: 0o500 });
+    await writeFile(
+      path.join(abandonedBuildDirectory, 'partial-output'),
+      'partial build bytes',
+      { mode: 0o600 },
+    );
+    const staleTimestamp = new Date(
+      Date.now() - COLD_BUILD_LAUNCHER_STALE_STATE_MS - 60_000,
+    );
+    await utimes(abandonedCandidatePath, staleTimestamp, staleTimestamp);
+    const futureTimestamp = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await utimes(futureCandidatePath, futureTimestamp, futureTimestamp);
+    await utimes(abandonedBuildDirectory, staleTimestamp, staleTimestamp);
+    await utimes(emptyAbandonedBuildDirectory, staleTimestamp, staleTimestamp);
+    await lutimes(abandonedBuildSymlink, staleTimestamp, staleTimestamp);
     const recovered = await materializeColdBuildLauncher({
       dockerExecutable,
       architecture: launcher.architecture,
-      cacheRoot: staleLockCacheRoot,
+      cacheRoot: abandonedStateCacheRoot,
     });
     assert.equal(recovered.buildEvidence.buildExecuted, true);
-    assert.equal(recovered.buildEvidence.buildLockAcquired, true);
+    assert.equal(recovered.buildEvidence.publicationOutcome, 'publication_created');
+    assert.equal(recovered.buildEvidence.mutableBuildLockUsed, false);
     assert.equal(recovered.buildEvidence.builderCleanupAccepted, true);
-    await assert.rejects(readFile(staleLockPath), /ENOENT/);
+    assert.ok(recovered.buildEvidence.staleCandidateCleanupRemovedCount >= 1);
+    assert.ok(recovered.buildEvidence.staleCandidateCleanupFutureTimestampCount >= 1);
+    assert.ok(recovered.buildEvidence.staleBuildCleanupRemovedCount >= 1);
+    assert.ok(recovered.buildEvidence.staleBuildCleanupNonEmptyRetainedCount >= 1);
+    assert.equal(recovered.buildEvidence.staleCandidateCleanupRecursiveTraversalUsed, false);
+    assert.equal(recovered.buildEvidence.staleBuildCleanupRecursiveTraversalUsed, false);
+    assert.equal(await readFile(abandonedLockPath, 'utf8'), 'untrusted legacy lock bytes');
+    await assert.rejects(access(abandonedCandidatePath), { code: 'ENOENT' });
+    await assert.rejects(access(futureCandidatePath), { code: 'ENOENT' });
+    assert.equal(
+      await readFile(path.join(abandonedBuildDirectory, 'partial-output'), 'utf8'),
+      'partial build bytes',
+    );
+    await assert.rejects(access(emptyAbandonedBuildDirectory), { code: 'ENOENT' });
+    await assert.rejects(access(abandonedBuildSymlink), { code: 'ENOENT' });
+    assert.equal(await readFile(outsideCleanupSentinel, 'utf8'), 'must survive stale cleanup');
   } finally {
-    await rm(staleLockCacheRoot, { recursive: true, force: true });
+    await rm(abandonedStateCacheRoot, { recursive: true, force: true });
+  }
+
+  const boundedCleanupCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-bounded-cleanup-'),
+  );
+  try {
+    const descriptor = await coldBuildLauncherPublicationDescriptor({
+      architecture: launcher.architecture,
+      cacheRoot: boundedCleanupCacheRoot,
+    });
+    await createPrivateDirectoryChain(
+      boundedCleanupCacheRoot,
+      descriptor.relativeDirectorySegments,
+    );
+    await Promise.all(Array.from(
+      { length: COLD_BUILD_LAUNCHER_CLEANUP_MAX_MATCHED_ENTRIES + 1 },
+      (_, index) => writeFile(
+        path.join(descriptor.publicationDirectory, `.candidate-bounded-${index}`),
+        'recent candidate',
+        { mode: 0o500 },
+      ),
+    ));
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: boundedCleanupCacheRoot,
+      }),
+      /cold_build_launcher_stale_state_cleanup_failed/,
+    );
+  } finally {
+    await rm(boundedCleanupCacheRoot, { recursive: true, force: true });
+  }
+
+  const poisonedPublicationCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-poisoned-publication-cache-'),
+  );
+  try {
+    const descriptor = await coldBuildLauncherPublicationDescriptor({
+      architecture: launcher.architecture,
+      cacheRoot: poisonedPublicationCacheRoot,
+    });
+    await createPrivateDirectoryChain(
+      poisonedPublicationCacheRoot,
+      descriptor.relativeDirectorySegments,
+    );
+    const poisonedBinaryPath = descriptor.cachedBinaryPath;
+    await writeFile(poisonedBinaryPath, 'forged launcher bytes', { mode: 0o700 });
+    await chmod(poisonedBinaryPath, 0o555);
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: poisonedPublicationCacheRoot,
+      }),
+      /cold_build_launcher_publication_conflict_invalid/,
+    );
+    assert.equal(await readFile(poisonedBinaryPath, 'utf8'), 'forged launcher bytes');
+  } finally {
+    await rm(poisonedPublicationCacheRoot, { recursive: true, force: true });
+  }
+
+  const mutablePublicationCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-mutable-publication-cache-'),
+  );
+  try {
+    const descriptor = await coldBuildLauncherPublicationDescriptor({
+      architecture: launcher.architecture,
+      cacheRoot: mutablePublicationCacheRoot,
+    });
+    await createPrivateDirectoryChain(
+      mutablePublicationCacheRoot,
+      descriptor.relativeDirectorySegments,
+    );
+    const exactLauncherBytes = await readFile(launcher.executablePath);
+    await writeFile(descriptor.cachedBinaryPath, exactLauncherBytes, { mode: 0o700 });
+    await chmod(descriptor.cachedBinaryPath, 0o755);
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: mutablePublicationCacheRoot,
+      }),
+      /cold_build_launcher_publication_conflict_invalid:.*mutable_mode/,
+    );
+    assert.equal(contentHash(await readFile(descriptor.cachedBinaryPath)), launcher.binaryHash);
+  } finally {
+    await rm(mutablePublicationCacheRoot, { recursive: true, force: true });
+  }
+
+  const symlinkPublicationCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-symlink-publication-cache-'),
+  );
+  try {
+    const descriptor = await coldBuildLauncherPublicationDescriptor({
+      architecture: launcher.architecture,
+      cacheRoot: symlinkPublicationCacheRoot,
+    });
+    await createPrivateDirectoryChain(
+      symlinkPublicationCacheRoot,
+      descriptor.relativeDirectorySegments,
+    );
+    const targetDirectory = path.join(symlinkPublicationCacheRoot, 'symlink-target');
+    await mkdir(targetDirectory, { mode: 0o700 });
+    await symlink(
+      targetDirectory,
+      descriptor.cachedBinaryPath,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: symlinkPublicationCacheRoot,
+      }),
+      /cold_build_launcher_publication_conflict_invalid:symbolic_link/,
+    );
+    assert.equal((await lstat(descriptor.cachedBinaryPath)).isSymbolicLink(), true);
+  } finally {
+    await rm(symlinkPublicationCacheRoot, { recursive: true, force: true });
+  }
+
+  const symlinkRootParent = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-symlink-root-'),
+  );
+  try {
+    const targetRoot = path.join(symlinkRootParent, 'target');
+    const linkedRoot = path.join(symlinkRootParent, 'linked');
+    await mkdir(targetRoot, { mode: 0o700 });
+    await symlink(
+      targetRoot,
+      linkedRoot,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: linkedRoot,
+      }),
+      /cold_build_launcher_cache_root_untrusted/,
+    );
+  } finally {
+    await rm(symlinkRootParent, { recursive: true, force: true });
+  }
+
+  const symlinkInternalCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-symlink-internal-'),
+  );
+  try {
+    const coldBuildDirectory = await createPrivateDirectoryChain(
+      symlinkInternalCacheRoot,
+      ['cold-build-launcher'],
+    );
+    const targetDirectory = path.join(symlinkInternalCacheRoot, 'target');
+    await mkdir(targetDirectory, { mode: 0o700 });
+    await symlink(
+      targetDirectory,
+      path.join(coldBuildDirectory, 'publications'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: symlinkInternalCacheRoot,
+      }),
+      /cold_build_launcher_publication_directory_untrusted/,
+    );
+  } finally {
+    await rm(symlinkInternalCacheRoot, { recursive: true, force: true });
+  }
+
+  if (process.platform === 'win32') {
+    const outsideUserCacheRoot = path.join(
+      os.homedir(),
+      `synthi-cold-launcher-outside-user-cache-${randomBytes(8).toString('hex')}`,
+    );
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: outsideUserCacheRoot,
+      }),
+      /cold_build_launcher_cache_root_untrusted:outside_user_cache_base/,
+    );
+    await assert.rejects(access(outsideUserCacheRoot), { code: 'ENOENT' });
+  }
+
+  if (process.platform !== 'win32') {
+    await assertLinuxCacheRootTrustRefusals();
+  }
+
+  const failedCoalescingParent = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-failed-coalescing-'),
+  );
+  try {
+    const failedCacheRoot = path.join(failedCoalescingParent, 'cache-root');
+    await writeFile(failedCacheRoot, 'not a directory', { mode: 0o600 });
+    const failedResults = await Promise.allSettled(
+      Array.from({ length: 2 }, () => materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: failedCacheRoot,
+      })),
+    );
+    assert.ok(failedResults.every(
+      (result) => result.status === 'rejected'
+        && /cold_build_launcher_cache_root_untrusted/.test(String(result.reason)),
+    ));
+    await rm(failedCacheRoot, { force: true });
+    await mkdir(failedCacheRoot, { mode: 0o700 });
+    const retry = await materializeColdBuildLauncher({
+      dockerExecutable,
+      architecture: launcher.architecture,
+      cacheRoot: failedCacheRoot,
+    });
+    assert.equal(retry.buildEvidence.publicationOutcome, 'publication_created');
+    assert.equal(retry.buildEvidence.buildExecuted, true);
+  } finally {
+    await rm(failedCoalescingParent, { recursive: true, force: true });
   }
   const leftoverBuilders = await requireDocker([
     'ps',
