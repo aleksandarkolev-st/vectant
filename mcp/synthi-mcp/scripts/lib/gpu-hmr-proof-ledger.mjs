@@ -901,12 +901,58 @@ function visualCaptureFrameGateObject(captureManifest) {
 }
 
 function visualCaptureFrameGateRuntimeBindingObject(frameGate) {
-  return nonEmptyObject(objectFieldValue(frameGate, [
+  const source = asObject(frameGate);
+  return hasOwn(source, 'evidence_binding')
+    ? nonEmptyObject(source.evidence_binding)
+    : null;
+}
+
+function visualCaptureFrameGateRuntimeBindingTransport(captureManifest, frameGate) {
+  const manifest = asObject(captureManifest);
+  const gate = asObject(frameGate);
+  const runtimeBinding = visualCaptureFrameGateRuntimeBindingObject(gate);
+  const bindingPresent = hasOwn(gate, 'evidence_binding');
+  const bindingHashPresent = hasOwn(gate, 'evidence_binding_hash');
+  const suppliedBindingHash = bindingHashPresent
+    ? canonicalSha256(firstText(gate.evidence_binding_hash))
+    : null;
+  const recomputedBindingHash = runtimeBinding
+    ? `sha256:${sha256Hex(stableJson(runtimeBinding))}`
+    : null;
+  const manifestBindingPresent = hasOwn(manifest, 'evidence_binding');
+  const manifestBinding = manifestBindingPresent
+    ? nonEmptyObject(manifest.evidence_binding)
+    : null;
+  const manifestBindingHashPresent = hasOwn(manifest, 'evidence_binding_hash');
+  const manifestBindingHash = manifestBindingHashPresent
+    ? canonicalSha256(firstText(manifest.evidence_binding_hash))
+    : null;
+  const forbiddenAliases = [];
+  const aliasFields = [
+    'evidenceBinding',
+    'evidenceBindingHash',
     'gpu_hmr_runtime_binding',
     'gpuHmrRuntimeBinding',
     'runtime_binding',
     'runtimeBinding',
-  ]));
+  ];
+  for (const [container, source] of [['frame_gate', gate], ['capture_manifest', manifest]]) {
+    for (const field of aliasFields) {
+      if (hasOwn(source, field)) forbiddenAliases.push(`${container}.${field}`);
+    }
+  }
+  return {
+    runtimeBinding,
+    bindingPresent,
+    bindingHashPresent,
+    suppliedBindingHash,
+    recomputedBindingHash,
+    manifestBindingPresent,
+    manifestBinding,
+    manifestBindingHashPresent,
+    manifestBindingHash,
+    forbiddenAliases,
+  };
 }
 
 function timestampBindingProjection(value) {
@@ -1060,7 +1106,11 @@ function visualCaptureManifestEvaluation(record, artifacts) {
   const failures = [];
   const captureManifest = visualCaptureManifestObject(artifacts);
   const frameGate = visualCaptureFrameGateObject(captureManifest);
-  const suppliedRuntimeBinding = visualCaptureFrameGateRuntimeBindingObject(frameGate);
+  const runtimeBindingTransport = visualCaptureFrameGateRuntimeBindingTransport(
+    captureManifest,
+    frameGate,
+  );
+  const suppliedRuntimeBinding = runtimeBindingTransport.runtimeBinding;
   const expectedRuntimeBinding = visualFrameGateRuntimeBindingProjection(record);
   const canonicalRuntimeBinding = suppliedRuntimeBinding
     ? canonicalVisualFrameGateRuntimeBinding(suppliedRuntimeBinding)
@@ -1148,6 +1198,42 @@ function visualCaptureManifestEvaluation(record, artifacts) {
   }
   if (!manifestSession || manifestSession !== frameGateSession) {
     failures.push({ code: 'visual_capture_manifest_session_mismatch' });
+  }
+
+  if (runtimeBindingTransport.forbiddenAliases.length > 0) {
+    failures.push({
+      code: 'visual_capture_manifest_runtime_binding_alias_forbidden',
+      fields: runtimeBindingTransport.forbiddenAliases,
+    });
+  }
+  if (!runtimeBindingTransport.bindingPresent || !suppliedRuntimeBinding) {
+    failures.push({ code: 'visual_capture_manifest_evidence_binding_missing' });
+  }
+  if (!runtimeBindingTransport.bindingHashPresent) {
+    failures.push({ code: 'visual_capture_manifest_evidence_binding_hash_missing' });
+  } else if (!runtimeBindingTransport.suppliedBindingHash) {
+    failures.push({ code: 'visual_capture_manifest_evidence_binding_hash_invalid' });
+  } else if (
+    runtimeBindingTransport.suppliedBindingHash
+      !== runtimeBindingTransport.recomputedBindingHash
+  ) {
+    failures.push({ code: 'visual_capture_manifest_evidence_binding_hash_mismatch' });
+  }
+  if (
+    runtimeBindingTransport.manifestBindingPresent
+    || runtimeBindingTransport.manifestBindingHashPresent
+  ) {
+    if (
+      !runtimeBindingTransport.manifestBinding
+      || !runtimeBindingTransport.manifestBindingHashPresent
+      || !runtimeBindingTransport.manifestBindingHash
+      || stableJson(runtimeBindingTransport.manifestBinding)
+        !== stableJson(suppliedRuntimeBinding)
+      || runtimeBindingTransport.manifestBindingHash
+        !== runtimeBindingTransport.suppliedBindingHash
+    ) {
+      failures.push({ code: 'visual_capture_manifest_evidence_binding_transport_mismatch' });
+    }
   }
 
   const frameSeq = finiteNumber(captureManifest?.frame_seq ?? captureManifest?.frameSeq);
@@ -1256,6 +1342,8 @@ function visualCaptureManifestEvaluation(record, artifacts) {
     frameGate,
     expectedRuntimeBinding,
     suppliedRuntimeBinding: canonicalRuntimeBinding,
+    suppliedRuntimeBindingHash: runtimeBindingTransport.suppliedBindingHash,
+    recomputedRuntimeBindingHash: runtimeBindingTransport.recomputedBindingHash,
     afterImageHash,
     swapchainSize,
     manifestImageHash,
