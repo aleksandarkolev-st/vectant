@@ -5,6 +5,7 @@ const cloudMocks = vi.hoisted(() => ({
   cloudState: vi.fn(),
   enqueue: vi.fn(),
   findSession: vi.fn(),
+  revoke: vi.fn(),
 }));
 
 vi.mock("next-auth", () => ({ getServerSession: cloudMocks.session }));
@@ -22,6 +23,9 @@ vi.mock("@/lib/local-support/relayStore", async () => {
 vi.mock("@/lib/local-support/sessionStore", () => ({
   findActiveBrowserControlSession: cloudMocks.findSession,
 }));
+vi.mock("@/lib/local-support/adminStore", () => ({
+  recordDurableAdminRevocation: cloudMocks.revoke,
+}));
 
 vi.mock("@/lib/local-support/policyStore", async () => {
   const controlPlane = await import("@/lib/local-support/controlPlane");
@@ -37,6 +41,7 @@ beforeEach(() => {
   cloudMocks.cloudState.mockResolvedValue(null);
   cloudMocks.enqueue.mockResolvedValue({ commandId: "cmd_12345678" });
   cloudMocks.findSession.mockResolvedValue(null);
+  cloudMocks.revoke.mockResolvedValue({ decision: "revocation_required", revocation_recorded: true });
 });
 
 afterEach(() => {
@@ -46,10 +51,12 @@ afterEach(() => {
   cloudMocks.cloudState.mockReset();
   cloudMocks.enqueue.mockReset();
   cloudMocks.findSession.mockReset();
+  cloudMocks.revoke.mockReset();
   cloudMocks.session.mockResolvedValue(null);
   cloudMocks.cloudState.mockResolvedValue(null);
   cloudMocks.enqueue.mockResolvedValue({ commandId: "cmd_12345678" });
   cloudMocks.findSession.mockResolvedValue(null);
+  cloudMocks.revoke.mockResolvedValue({ decision: "revocation_required", revocation_recorded: true });
 });
 
 function request(body, headers = {}) {
@@ -279,6 +286,54 @@ describe("local support transparency action route", () => {
       reason: "local_control_context_mismatch",
       bytes_sent: 0,
     });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("records cloud revocation before forwarding direct local disconnect", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET = "desktop_control_secret_123456789012345";
+    cloudMocks.session.mockResolvedValue({ user: { id: "acct_live" } });
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).includes("/v1/status/")) {
+        return new Response(JSON.stringify({
+          session: { session_id: "sess_live", account_id: "acct_live" },
+          workspace: { workspace_id: "wk_live" },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ decision: "session_disconnected", bytes_sent: 0 }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request({ action: "disconnect_session" }));
+
+    expect(response.status).toBe(200);
+    expect(cloudMocks.revoke).toHaveBeenCalledWith(
+      { target_type: "session", target_id: "sess_live" },
+      expect.any(Object),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed when direct local disconnect cannot record cloud revocation", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET = "desktop_control_secret_123456789012345";
+    cloudMocks.session.mockResolvedValue({ user: { id: "acct_live" } });
+    cloudMocks.revoke.mockRejectedValue(new Error("database unavailable"));
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      session: { session_id: "sess_live", account_id: "acct_live" },
+      workspace: { workspace_id: "wk_live" },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request({ action: "disconnect_session" }));
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json).toMatchObject({ decision: "denied", reason: "cloud_control_unavailable", bytes_sent: 0 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

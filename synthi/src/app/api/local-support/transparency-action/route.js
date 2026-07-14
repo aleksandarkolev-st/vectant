@@ -8,6 +8,7 @@ import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/loca
 import {
   buildTransparencyActionDecision,
 } from "@/lib/local-support/controlPlane";
+import { recordDurableAdminRevocation } from "@/lib/local-support/adminStore";
 import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 import {
   enqueueLocalControlCommand,
@@ -97,6 +98,20 @@ export async function POST(req) {
   );
   if (decision.decision === "denied") {
     return jsonNoStore(decision, 403);
+  }
+
+  if (decision.action === "disconnect_session" && localStatus) {
+    try {
+      const revocation = await recordDurableAdminRevocation({
+        target_type: "session",
+        target_id: decision.session_id,
+      }, policy);
+      if (revocation?.decision !== "revocation_required" || revocation.revocation_recorded !== true) {
+        return jsonNoStore(deniedBody("cloud_control_unavailable", "Cloud session revocation was not recorded."), 503);
+      }
+    } catch {
+      return jsonNoStore(deniedBody("cloud_control_unavailable", "Cloud session revocation could not be recorded."), 503);
+    }
   }
 
   const forwarded = await forwardLocalDaemonAction(bodyResult.value, decision, localStatus);
