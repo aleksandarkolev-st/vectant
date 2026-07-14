@@ -8,6 +8,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::full_access::FullAccessConsentReceipt;
 use crate::policy::Classification;
 use crate::scanner::SecretScanner;
 
@@ -69,6 +70,8 @@ pub struct AuditExport {
     pub retention_days: u16,
     pub events: Vec<AuditEvent>,
     pub consent_receipts: Vec<ConsentReceipt>,
+    #[serde(default)]
+    pub full_access_consent_receipts: Vec<FullAccessConsentReceipt>,
     pub root_hash: String,
 }
 
@@ -76,6 +79,7 @@ pub struct AuditExport {
 pub struct AuditLog {
     events: Vec<AuditEvent>,
     consent_receipts: Vec<ConsentReceipt>,
+    full_access_consent_receipts: Vec<FullAccessConsentReceipt>,
     scanner: SecretScanner,
 }
 
@@ -84,6 +88,7 @@ impl AuditLog {
         Self {
             events: Vec::new(),
             consent_receipts: Vec::new(),
+            full_access_consent_receipts: Vec::new(),
             scanner,
         }
     }
@@ -160,9 +165,24 @@ impl AuditLog {
         &self.consent_receipts
     }
 
+    pub fn record_full_access_consent(&mut self, receipt: FullAccessConsentReceipt) {
+        self.append(
+            AuditClass::Control,
+            Some(receipt.consent_id.clone()),
+            format!("Full Access consent receipt recorded for actor {} with {} capabilities. Workspace path and process fields were excluded.", receipt.support_actor, receipt.capabilities.len()),
+            true,
+        );
+        self.full_access_consent_receipts.push(receipt);
+    }
+
+    pub fn full_access_consent_receipts(&self) -> &[FullAccessConsentReceipt] {
+        &self.full_access_consent_receipts
+    }
+
     pub fn clear(&mut self) {
         self.events.clear();
         self.consent_receipts.clear();
+        self.full_access_consent_receipts.clear();
     }
 
     pub fn apply_retention(&mut self, retention_days: u16) {
@@ -171,6 +191,9 @@ impl AuditLog {
         self.events = events;
         self.consent_receipts =
             retained_consent_receipts(&self.consent_receipts, retention_days, now);
+        self.full_access_consent_receipts.retain(|receipt| {
+            receipt.created_at >= now - Duration::days(i64::from(retention_days))
+        });
     }
 
     pub fn export_incident_bundle(&self, retention_days: u16) -> AuditExport {
@@ -185,6 +208,15 @@ impl AuditLog {
             retention_days,
             events,
             consent_receipts,
+            full_access_consent_receipts: self
+                .full_access_consent_receipts
+                .iter()
+                .filter(|receipt| {
+                    retention_days > 0
+                        && receipt.created_at >= now - Duration::days(i64::from(retention_days))
+                })
+                .cloned()
+                .collect(),
             root_hash,
         }
     }
@@ -199,6 +231,7 @@ impl AuditLog {
         Ok(Self {
             events: export.events,
             consent_receipts: export.consent_receipts,
+            full_access_consent_receipts: export.full_access_consent_receipts,
             scanner,
         })
     }
