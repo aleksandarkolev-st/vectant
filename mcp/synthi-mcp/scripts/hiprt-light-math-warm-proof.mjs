@@ -28,7 +28,12 @@ import {
   evaluateGpuHmrAcceptanceContract,
   evaluateGpuHmrAcceptanceContractConsistency,
 } from './lib/gpu-hmr-acceptance-contract.mjs';
-import { evaluateGpuHmrDeterministicVisualMode } from './lib/gpu-hmr-visual-evidence.mjs';
+import {
+  evaluateGpuHmrDeterministicVisualMode,
+  evaluateRuntimeVisualControlObservationPair,
+  materializeRuntimeVisualControlObservation,
+  parseRuntimeVisualControlStateLine,
+} from './lib/gpu-hmr-visual-evidence.mjs';
 import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
 import {
   visualEvidenceArtifactsFromVisualOracleArtifacts,
@@ -1388,7 +1393,10 @@ function parseLaunchDim(value) {
 function parseNativeRuntimeLine(line, lineIndex) {
   const values = parseKeyValuePairs(line);
   const runtimeSession = values.runtime_session ?? '';
-  const processId = /^native-launch-observer:(\d+)$/.exec(runtimeSession)?.[1] ?? values.pid ?? null;
+  const sessionPid = /^native-launch-observer:(\d+)$/.exec(runtimeSession)?.[1] ?? null;
+  const processId = values.process_id ?? (values.pid || sessionPid
+    ? `pid:${values.pid ?? sessionPid}`
+    : null);
   return {
     lineIndex,
     raw: line,
@@ -1409,6 +1417,18 @@ function parseNativeRuntimeLine(line, lineIndex) {
     module: values.module ?? null,
     resolution: values.resolution ?? null,
   };
+}
+
+function parseRuntimeVisualControlStateRecords(log) {
+  return String(log ?? '')
+    .split(/\r?\n/)
+    .map((line, lineIndex) => ({ line, lineIndex }))
+    .filter(({ line }) => line.includes('[gpu-runtime-boundary] visual_control_observation '))
+    .map(({ line, lineIndex }) => ({
+      line,
+      lineIndex,
+      parsed: parseRuntimeVisualControlStateLine(line),
+    }));
 }
 
 function parseSameProcessRecompileLine(line, lineIndex) {
@@ -2652,6 +2672,13 @@ exit "$status"
     const shaderCacheAfter = await snapshotWorkerShaderCache('after-same-process-recompile');
     const shaderCacheArtifact = shaderCacheDelta(shaderCacheBefore, shaderCacheAfter);
     const postRecompileEvidence = parsePostRecompileRuntimeEvidence(result.output, CFG.reloadKernelSymbol);
+    const visualControlStateRecords = parseRuntimeVisualControlStateRecords(result.output);
+    const baselineVisualControlState = visualControlStateRecords.find(
+      (record) => record.parsed.state.phase === 'before',
+    ) ?? null;
+    const changedVisualControlState = visualControlStateRecords.findLast(
+      (record) => record.parsed.state.phase === 'after',
+    ) ?? null;
     await fs.mkdir(CFG.outputDir, { recursive: true });
     await fs.writeFile(localLogPath, result.output);
     await dockerShell(`test -s ${shQuote(workerChangedPath)}`, { timeout: 30000 });
@@ -2673,6 +2700,8 @@ exit "$status"
       logSha256: `sha256:${sha256Hex(result.output)}`,
       sameProcess: true,
       shaderCacheSnapshot: shaderCacheBefore,
+      runtimeVisualControlState: baselineVisualControlState,
+      runtime_visual_control_state: baselineVisualControlState,
     };
     const changedRun = {
       variant: 'same-process-changed',
@@ -2700,6 +2729,8 @@ exit "$status"
       shaderCacheSnapshot: shaderCacheAfter,
       shaderCacheArtifact,
       postRecompileEvidence,
+      runtimeVisualControlState: changedVisualControlState,
+      runtime_visual_control_state: changedVisualControlState,
     };
     return {
       baselineRun,
@@ -2980,7 +3011,7 @@ function captureObservation(line) {
   };
 }
 
-function deterministicVisualModeForLedger({ proof, dispatchId }) {
+function fallbackDeterministicVisualModeForLedger({ proof, dispatchId }) {
   const baselineCapture = captureObservation(proof.runtime?.baseline?.captureLine);
   const changedCapture = captureObservation(proof.runtime?.changed?.captureLine);
   const postRecompileEvidence = proof.runtime?.changed?.postRecompileEvidence ?? {};
@@ -3041,7 +3072,77 @@ function deterministicVisualModeForLedger({ proof, dispatchId }) {
   };
 }
 
-function visualOracleArtifactsForLedger({ proof, artifactHashAfter, dispatchId, epoch, outputTimestampNs }) {
+function runtimeVisualControlProofForLedger({ proof, dispatchId }) {
+  const postRecompileEvidence = proof.runtime?.changed?.postRecompileEvidence ?? {};
+  const dispatch = postRecompileEvidence.dispatch ?? {};
+  const width = Number(proof.dimensions?.width);
+  const height = Number(proof.dimensions?.height);
+  const beforeState = proof.runtime?.baseline?.runtimeVisualControlState
+    ?? proof.runtime?.baseline?.runtime_visual_control_state
+    ?? null;
+  const afterState = proof.runtime?.changed?.runtimeVisualControlState
+    ?? proof.runtime?.changed?.runtime_visual_control_state
+    ?? null;
+  const runtimeDeviceContextIdentity = dispatch.runtimeSession
+    && dispatch.processId
+    && dispatch.stream
+    ? sha256Json({
+        authority: 'native_runtime_dispatch_context_identity',
+        runtimeSession: dispatch.runtimeSession,
+        processId: dispatch.processId,
+        stream: dispatch.stream,
+      })
+    : null;
+  const before = materializeRuntimeVisualControlObservation({
+    sourceLine: beforeState?.line ?? null,
+    sourceLineIndex: beforeState?.lineIndex ?? null,
+    frameHash: proof.baseline?.contentHash ?? null,
+    width,
+    height,
+    deviceIdentity: runtimeDeviceContextIdentity,
+    dispatchId: null,
+  });
+  const after = materializeRuntimeVisualControlObservation({
+    sourceLine: afterState?.line ?? null,
+    sourceLineIndex: afterState?.lineIndex ?? null,
+    frameHash: proof.changed?.contentHash ?? null,
+    width,
+    height,
+    deviceIdentity: runtimeDeviceContextIdentity,
+    dispatchId,
+  });
+  const pair = evaluateRuntimeVisualControlObservationPair({
+    before,
+    after,
+    expected: {
+      beforeFrameHash: proof.baseline?.contentHash ?? null,
+      afterFrameHash: proof.changed?.contentHash ?? null,
+      width,
+      height,
+      processId: dispatch.processId ?? null,
+      deviceIdentity: runtimeDeviceContextIdentity,
+      runtimeSession: dispatch.runtimeSession ?? null,
+      dispatchId,
+      dispatchLineIndex: postRecompileEvidence.dispatch?.lineIndex ?? null,
+    },
+  });
+  const deterministicVisualMode = pair.accepted === true
+    ? pair.deterministicVisualMode
+    : fallbackDeterministicVisualModeForLedger({ proof, dispatchId });
+  return {
+    pair,
+    deterministicVisualMode,
+  };
+}
+
+function visualOracleArtifactsForLedger({
+  proof,
+  artifactHashAfter,
+  dispatchId,
+  epoch,
+  outputTimestampNs,
+  cameraStateHash,
+}) {
   const width = Number(proof.dimensions?.width ?? CFG.width);
   const height = Number(proof.dimensions?.height ?? CFG.height);
   return {
@@ -3065,8 +3166,8 @@ function visualOracleArtifactsForLedger({ proof, artifactHashAfter, dispatchId, 
       `hiprt_same_process_native_launch_observer epoch=${epoch} artifact=${artifactHashAfter} dispatch=${dispatchId}`,
     newEpochWatermarkOrTrace:
       `hiprt_same_process_native_launch_observer epoch=${epoch} artifact=${artifactHashAfter} dispatch=${dispatchId}`,
-    camera_state_hash: null,
-    cameraStateHash: null,
+    camera_state_hash: cameraStateHash ?? null,
+    cameraStateHash: cameraStateHash ?? null,
     swapchain_size: [width, height],
     swapchainSize: [width, height],
     capture_backend: 'hiprt_same_process_framebuffer_readback',
@@ -3165,6 +3266,14 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     ? changedRun.runCompletedMonotonicNs
     : addNs(dispatchTs, 1);
   const retirementTs = addNs(outputTs, 1);
+  const runtimeVisualControlProof = artifactHashAfter
+    ? runtimeVisualControlProofForLedger({ proof, dispatchId })
+    : null;
+  const runtimeVisualControlPair = runtimeVisualControlProof?.pair ?? null;
+  const deterministicVisualMode = runtimeVisualControlProof?.deterministicVisualMode ?? null;
+  const deterministicVisualModeEvaluation = deterministicVisualMode
+    ? evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode)
+    : null;
   const visualArtifacts = artifactHashAfter
     ? visualOracleArtifactsForLedger({
         proof,
@@ -3172,15 +3281,17 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
         dispatchId,
         epoch,
         outputTimestampNs: outputTs,
+        cameraStateHash: deterministicVisualMode?.camera_state_hash ?? null,
       })
     : null;
-  const deterministicVisualMode = artifactHashAfter
-    ? deterministicVisualModeForLedger({ proof, dispatchId, epoch })
-    : null;
-  const deterministicVisualModeEvaluation = deterministicVisualMode
-    ? evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode)
-    : null;
   const declaredDeterministicVisualMode = declaredDeterministicVisualModeEvidence();
+  if (runtimeVisualControlPair?.accepted !== true) {
+    limitations.push({
+      code: 'hiprt_runtime_visual_control_pair_unproven',
+      failedGates: runtimeVisualControlPair?.failedGates ?? [],
+      failed_gates: runtimeVisualControlPair?.failedGates ?? [],
+    });
+  }
   if (deterministicVisualModeEvaluation?.accepted !== true) {
     limitations.push({
       code: 'hiprt_deterministic_visual_control_provenance_missing',
@@ -3586,6 +3697,7 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       visual_oracle_artifacts: visualArtifacts,
     },
     deterministic_visual_mode: deterministicVisualMode,
+    runtime_visual_control_pair: runtimeVisualControlPair,
     declared_deterministic_visual_mode: declaredDeterministicVisualMode,
     declaredDeterministicVisualMode,
     output_oracle_target: contractInput.outputProof.outputOracleTarget,
@@ -3784,6 +3896,8 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     acceptance_contract_consistency: acceptanceContractConsistency,
     deterministicVisualMode,
     deterministic_visual_mode: deterministicVisualMode,
+    runtimeVisualControlPair,
+    runtime_visual_control_pair: runtimeVisualControlPair,
     deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     declaredDeterministicVisualMode,
@@ -3827,6 +3941,7 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     acceptanceContractConsistency,
     deterministicVisualMode,
     deterministicVisualModeEvaluation,
+    runtimeVisualControlPair,
     declaredDeterministicVisualMode,
     strictGate,
   };
@@ -4609,6 +4724,8 @@ async function buildHiprtBoundarySelfCheckProof(tmpDir, overrides = {}) {
   proof.acceptance_contract_evaluation = strictRuntimeProof.acceptanceContractEvaluation;
   proof.deterministicVisualMode = strictRuntimeProof.deterministicVisualMode;
   proof.deterministic_visual_mode = strictRuntimeProof.deterministicVisualMode;
+  proof.runtimeVisualControlPair = strictRuntimeProof.runtimeVisualControlPair;
+  proof.runtime_visual_control_pair = strictRuntimeProof.runtimeVisualControlPair;
   proof.declaredDeterministicVisualMode = strictRuntimeProof.declaredDeterministicVisualMode;
   proof.declared_deterministic_visual_mode = strictRuntimeProof.declaredDeterministicVisualMode;
   proof.runtimeBoundaryAppHook = strictRuntimeProof.runtimeProofArtifact.runtimeBoundaryAppHook;
@@ -5076,6 +5193,8 @@ async function main() {
   proof.acceptance_contract_evaluation = strictRuntimeProof.acceptanceContractEvaluation;
   proof.deterministicVisualMode = strictRuntimeProof.deterministicVisualMode;
   proof.deterministic_visual_mode = strictRuntimeProof.deterministicVisualMode;
+  proof.runtimeVisualControlPair = strictRuntimeProof.runtimeVisualControlPair;
+  proof.runtime_visual_control_pair = strictRuntimeProof.runtimeVisualControlPair;
   proof.declaredDeterministicVisualMode = strictRuntimeProof.declaredDeterministicVisualMode;
   proof.declared_deterministic_visual_mode = strictRuntimeProof.declaredDeterministicVisualMode;
   proof.runtimeBoundaryAppHook = strictRuntimeProof.runtimeProofArtifact.runtimeBoundaryAppHook;
