@@ -119,6 +119,7 @@
     "proof:random-large-project:cold:dry-run": "node scripts/gpu-hmr-random-large-project-cold-path.mjs --dry-run --sample-pool",
     "proof:random-large-project:cold:self-check": "node scripts/gpu-hmr-random-large-project-cold-path.mjs --self-check",
     "proof:random-large-project:cold:launcher:self-check": "node scripts/tests/gpu-hmr-cold-build-launcher-self-check.mjs",
+    "proof:random-large-project:cold:source-binding:self-check": "node scripts/tests/gpu-hmr-cold-build-source-tree-binding-self-check.mjs",
     "proof:runtime-profile": "node scripts/gpu-hmr-runtime-profile-proof.mjs",
     "proof:runtime-profile:self-check": "node scripts/gpu-hmr-runtime-profile-proof.mjs --self-check",
     "proof:runtime-boundary-adapter:self-check": "node scripts/tests/gpu-hmr-runtime-boundary-proof-adapter-smoke.mjs",
