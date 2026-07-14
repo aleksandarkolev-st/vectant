@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -6,6 +7,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::full_access::{GraphNode, GraphNodeState, RiskClass, MAX_GRAPH_NODES};
 use crate::policy::{Classification, DecisionKind, PolicyDecision};
 use crate::scanner::{ScanReport, SecretScanner};
 
@@ -111,6 +113,94 @@ impl WorkspacePolicy {
 
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
+    }
+
+    /// Builds a bounded capability map, never a workspace upload. Paths that
+    /// are sensitive are represented only as blocked categories and every node
+    /// is tied to a current content hash for TOCTOU revalidation.
+    pub fn build_capability_graph(&self) -> Result<HashMap<String, GraphNode>> {
+        let mut graph = HashMap::new();
+        self.build_graph_directory(&self.root, &mut graph)?;
+        Ok(graph)
+    }
+
+    fn build_graph_directory(
+        &self,
+        directory: &Path,
+        graph: &mut HashMap<String, GraphNode>,
+    ) -> Result<()> {
+        for entry in fs::read_dir(directory).context("workspace graph enumeration failed")? {
+            if graph.len() >= MAX_GRAPH_NODES {
+                return Err(anyhow!("workspace graph node cap exceeded"));
+            }
+            let entry = entry.context("workspace graph entry failed")?;
+            let path = entry.path();
+            let metadata =
+                fs::symlink_metadata(&path).context("workspace graph metadata failed")?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                self.build_graph_directory(&path, graph)?;
+                continue;
+            }
+            if !metadata.is_file() {
+                continue;
+            }
+            let canonical = path
+                .canonicalize()
+                .context("workspace graph canonicalization failed")?;
+            if !is_within(&self.root, &canonical) {
+                continue;
+            }
+            let relative = canonical
+                .strip_prefix(&self.root)
+                .map_err(|_| anyhow!("workspace graph path escaped root"))?;
+            let display = relative.to_string_lossy().replace('\\', "/");
+            let classification = if is_sensitive_path(&display)
+                || is_archive_path(&display)
+                || metadata.len() > MAX_FILE_BYTES
+                || is_sparse_metadata(&metadata)
+            {
+                RiskClass::E
+            } else {
+                RiskClass::B
+            };
+            let state = if classification == RiskClass::E {
+                GraphNodeState::Blocked
+            } else {
+                GraphNodeState::AutoRequestable
+            };
+            let mut hasher = Sha256::new();
+            hasher.update(b"vectant-full-access-node-v1\0");
+            hasher.update(self.workspace_id.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(display.as_bytes());
+            let node_id = format!("node_{}", hex::encode(&hasher.finalize()[..16]));
+            let content_hash = if matches!(state, GraphNodeState::Blocked) {
+                "sha256:blocked".to_string()
+            } else {
+                self.safe_read_text(&display, MAX_FILE_BYTES)
+                    .map(|(_, hash)| hash)
+                    .unwrap_or_else(|_| "sha256:unavailable".to_string())
+            };
+            graph.insert(
+                node_id.clone(),
+                GraphNode {
+                    node_id,
+                    relative_path: if matches!(state, GraphNodeState::Blocked) {
+                        "blocked_sensitive_category".to_string()
+                    } else {
+                        self.scrub_display(&display)
+                    },
+                    content_hash,
+                    size: metadata.len(),
+                    classification,
+                    state,
+                },
+            );
+        }
+        Ok(())
     }
 
     pub fn decide_file(&self, request: &FileReadRequest) -> PolicyDecision {

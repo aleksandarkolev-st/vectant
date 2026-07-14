@@ -49,6 +49,26 @@ use vectant_local_support_app::update::{
 };
 use vectant_local_support_app::workspace::{resolve_relative, FileReadRequest, WorkspacePolicy};
 
+#[test]
+fn capability_graph_has_no_raw_secret_paths_or_bodies() {
+    let root = tempdir().unwrap();
+    fs::create_dir_all(root.path().join("src")).unwrap();
+    fs::write(root.path().join("src/lib.rs"), "pub fn safe() {}\n").unwrap();
+    fs::write(root.path().join(".env"), "API_TOKEN=must-not-leak\n").unwrap();
+    let workspace =
+        WorkspacePolicy::new(root.path(), "wk_graph", SecretScanner::default()).unwrap();
+
+    let graph = workspace.build_capability_graph().unwrap();
+    let serialized = serde_json::to_string(&graph).unwrap();
+    assert!(serialized.contains("src/lib.rs"));
+    assert!(serialized.contains("blocked_sensitive_category"));
+    assert!(!serialized.contains(".env"));
+    assert!(!serialized.contains("must-not-leak"));
+    assert!(graph
+        .values()
+        .all(|node| !node.content_hash.contains("must-not-leak")));
+}
+
 fn request(path: &str) -> FileReadRequest {
     FileReadRequest {
         request_id: format!("req_{path}"),
