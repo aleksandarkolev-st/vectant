@@ -76,11 +76,16 @@ function installFakeFrameSequence(frames: Array<{
   };
 }
 
-function fakeFrameGate(frameSeq: number, tsMs: number): Record<string, unknown> {
+function fakeFrameGate(
+  frameSeq: number,
+  tsMs: number,
+  evidenceBinding?: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
   const token = session.issueFrameGateToken({
     session_id: "fake-session",
     frame_seq: frameSeq,
     ts_ms: tsMs,
+    ...(evidenceBinding !== undefined ? { evidence_binding: evidenceBinding } : {}),
   });
   return {
     status: "satisfied",
@@ -318,6 +323,84 @@ describe("synthi_screenshot", () => {
       image_sha256: meta.image_sha256,
       source_frame_hash: meta.source_frame_hash,
     });
+  });
+
+  it("copies token-owned evidence binding and ignores caller-injected binding", async () => {
+    const png = await solidPng(100, 100, { r: 30, g: 60, b: 90 });
+    installFakeSession({ data: png, width: 100, height: 100, ts: 1_300, seq: 3 });
+    const issuerBinding = {
+      schema_version: "test.evidence_binding.v1",
+      observation: { event_id: "issuer-event", sequence: 3 },
+    };
+    const gate = fakeFrameGate(3, 1_300, issuerBinding);
+    issuerBinding.observation.event_id = "mutated-after-issue";
+    const injectedHash = `sha256:${"0".repeat(64)}`;
+
+    const res = await screenshotTool({
+      after_frame_gate: {
+        ...gate,
+        evidence_binding: {
+          schema_version: "caller.forged.v1",
+          observation: { event_id: "caller-event", sequence: 999 },
+        },
+        evidence_binding_hash: injectedHash,
+      },
+    });
+
+    expect(res.isError).toBeUndefined();
+    const meta = res.structuredContent as {
+      frame_gate?: {
+        evidence_binding?: Record<string, unknown>;
+        evidence_binding_hash?: string;
+      };
+      capture_manifest?: {
+        evidence_binding?: Record<string, unknown>;
+        evidence_binding_hash?: string;
+        frame_gate?: {
+          evidence_binding?: Record<string, unknown>;
+          evidence_binding_hash?: string;
+        };
+      };
+    };
+    const expectedBinding = {
+      schema_version: "test.evidence_binding.v1",
+      observation: { event_id: "issuer-event", sequence: 3 },
+    };
+    expect(meta.frame_gate?.evidence_binding).toEqual(expectedBinding);
+    expect(meta.capture_manifest?.evidence_binding).toEqual(expectedBinding);
+    expect(meta.capture_manifest?.frame_gate?.evidence_binding).toEqual(expectedBinding);
+    expect(meta.frame_gate?.evidence_binding_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(meta.frame_gate?.evidence_binding_hash).not.toBe(injectedHash);
+    expect(meta.capture_manifest?.evidence_binding_hash).toBe(
+      meta.frame_gate?.evidence_binding_hash,
+    );
+    expect(meta.capture_manifest?.frame_gate?.evidence_binding_hash).toBe(
+      meta.frame_gate?.evidence_binding_hash,
+    );
+  });
+
+  it("does not copy caller-injected evidence into a legacy gate token", async () => {
+    const png = await solidPng(100, 100, { r: 30, g: 60, b: 90 });
+    installFakeSession({ data: png, width: 100, height: 100, ts: 1_400, seq: 4 });
+    const gate = fakeFrameGate(4, 1_400);
+
+    const res = await screenshotTool({
+      after_frame_gate: {
+        ...gate,
+        evidence_binding: { source: "caller" },
+        evidence_binding_hash: `sha256:${"f".repeat(64)}`,
+      },
+    });
+
+    expect(res.isError).toBeUndefined();
+    const meta = res.structuredContent as {
+      frame_gate?: Record<string, unknown>;
+      capture_manifest?: Record<string, unknown>;
+    };
+    expect(meta.frame_gate).not.toHaveProperty("evidence_binding");
+    expect(meta.frame_gate).not.toHaveProperty("evidence_binding_hash");
+    expect(meta.capture_manifest).not.toHaveProperty("evidence_binding");
+    expect(meta.capture_manifest).not.toHaveProperty("evidence_binding_hash");
   });
 
   it("returns frame_gate_timeout instead of capturing a stale pre-gate frame", async () => {

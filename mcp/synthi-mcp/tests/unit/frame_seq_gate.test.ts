@@ -92,6 +92,165 @@ describe("session frame-advance tracker", () => {
   });
 });
 
+describe("session frame gate tokens", () => {
+  beforeEach(() => {
+    session._resetForTests();
+  });
+
+  it("stores an immutable issuer-owned evidence binding and returns it on consume", () => {
+    const sourceBinding: Record<string, unknown> = {
+      schema_version: "test.evidence_binding.v1",
+      observation: {
+        event_id: "event-1",
+        labels: ["initial"],
+      },
+    };
+    const issued = session.issueFrameGateToken({
+      session_id: "fixture",
+      frame_seq: 7,
+      ts_ms: 1_500,
+      evidence_binding: sourceBinding,
+      now: 1_000,
+      ttl_ms: 1_000,
+    });
+
+    const sourceObservation = sourceBinding["observation"] as {
+      event_id: string;
+      labels: string[];
+    };
+    sourceObservation.event_id = "source-mutated";
+    sourceObservation.labels.push("source-mutated");
+
+    const issuedObservation = issued.evidence_binding?.["observation"] as Record<string, unknown>;
+    expect(Object.isFrozen(issued.evidence_binding)).toBe(true);
+    expect(Object.isFrozen(issuedObservation)).toBe(true);
+    expect(Reflect.set(issuedObservation, "event_id", "issued-token-mutated")).toBe(false);
+
+    const validation = session.consumeFrameGateToken({
+      token: issued.token,
+      session_id: "fixture",
+      frame_seq: 7,
+      ts_ms: 1_500,
+      now: 1_001,
+    });
+    const expectedBinding = {
+      schema_version: "test.evidence_binding.v1",
+      observation: {
+        event_id: "event-1",
+        labels: ["initial"],
+      },
+    };
+    expect(validation.accepted).toBe(true);
+    expect(validation.evidence_binding).toEqual(expectedBinding);
+    expect(validation.token?.evidence_binding).toEqual(expectedBinding);
+    expect(validation.evidence_binding_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(validation.token?.evidence_binding_hash).toBe(validation.evidence_binding_hash);
+  });
+
+  it("hashes evidence bindings canonically regardless of object key order", () => {
+    const first = session.issueFrameGateToken({
+      session_id: "fixture",
+      evidence_binding: { outer: { z: 2, a: 1 }, enabled: true },
+    });
+    const second = session.issueFrameGateToken({
+      session_id: "fixture",
+      evidence_binding: { enabled: true, outer: { a: 1, z: 2 } },
+    });
+
+    expect(first.evidence_binding_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(second.evidence_binding_hash).toBe(first.evidence_binding_hash);
+  });
+
+  it("rejects lossy, non-plain, unsafe, and cyclic evidence bindings", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic["self"] = cyclic;
+    const sparseArray: unknown[] = [];
+    sparseArray.length = 1;
+    const extraPropertyArray = ["entry"] as unknown[] & { extra?: string };
+    extraPropertyArray.extra = "not-json";
+    const accessorArray: unknown[] = [];
+    Object.defineProperty(accessorArray, 0, {
+      enumerable: true,
+      get: () => {
+        throw new Error("array accessor must not execute");
+      },
+    });
+    const nonEnumerable: Record<string, unknown> = {};
+    Object.defineProperty(nonEnumerable, "hidden", { value: "not-json" });
+    const invalidBindings: Array<Record<string, unknown>> = [
+      { omitted: undefined },
+      { non_finite: Number.NaN },
+      { callable: (() => true) as unknown },
+      { date: new Date(0) },
+      { constructor: "unsafe" },
+      { sparse: sparseArray },
+      { extra_array_property: extraPropertyArray },
+      { accessor_array: accessorArray },
+      { non_enumerable: nonEnumerable },
+      cyclic,
+    ];
+
+    for (const evidenceBinding of invalidBindings) {
+      expect(() => session.issueFrameGateToken({
+        session_id: "fixture",
+        evidence_binding: evidenceBinding,
+      })).toThrow(TypeError);
+    }
+  });
+
+  it("preserves legacy tokens and enforces session, frame, timestamp, and one-time use", () => {
+    const issued = session.issueFrameGateToken({
+      session_id: "fixture",
+      frame_seq: 9,
+      ts_ms: 2_000,
+      now: 1_000,
+      ttl_ms: 1_000,
+    });
+    expect(issued.evidence_binding).toBeUndefined();
+    expect(issued.evidence_binding_hash).toBeUndefined();
+
+    expect(session.consumeFrameGateToken({
+      token: issued.token,
+      session_id: "other-session",
+      frame_seq: 9,
+      ts_ms: 2_000,
+      now: 1_001,
+    })).toEqual({ accepted: false, reason: "frame_gate_token_session_mismatch" });
+    expect(session.consumeFrameGateToken({
+      token: issued.token,
+      session_id: "fixture",
+      frame_seq: 8,
+      ts_ms: 2_000,
+      now: 1_002,
+    })).toEqual({ accepted: false, reason: "frame_gate_token_frame_seq_mismatch" });
+    expect(session.consumeFrameGateToken({
+      token: issued.token,
+      session_id: "fixture",
+      frame_seq: 9,
+      ts_ms: 1_999,
+      now: 1_003,
+    })).toEqual({ accepted: false, reason: "frame_gate_token_timestamp_mismatch" });
+
+    const accepted = session.consumeFrameGateToken({
+      token: issued.token,
+      session_id: "fixture",
+      frame_seq: 9,
+      ts_ms: 2_000,
+      now: 1_004,
+    });
+    expect(accepted.accepted).toBe(true);
+    expect(accepted.token?.evidence_binding).toBeUndefined();
+    expect(accepted.evidence_binding).toBeUndefined();
+    expect(session.consumeFrameGateToken({
+      token: issued.token,
+      session_id: "fixture",
+      frame_seq: 9,
+      ts_ms: 2_000,
+      now: 1_005,
+    })).toEqual({ accepted: false, reason: "frame_gate_token_unknown" });
+  });
+});
+
 describe("wait({condition:\"hmr\"}) frame_gate evidence", () => {
   beforeEach(() => {
     session._resetForTests();

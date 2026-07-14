@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { RTCDataChannel } from "werift";
 import { SignalingClient } from "./signaling.js";
 import { Peer } from "./peer.js";
@@ -72,6 +72,8 @@ export interface FrameAdvance {
   observed_at: number;
 }
 
+export type FrameGateEvidenceBinding = Readonly<Record<string, unknown>>;
+
 export interface FrameGateToken {
   token: string;
   session_id: string;
@@ -79,12 +81,16 @@ export interface FrameGateToken {
   ts_ms?: number;
   issued_at_ms: number;
   expires_at_ms: number;
+  readonly evidence_binding?: FrameGateEvidenceBinding;
+  readonly evidence_binding_hash?: string;
 }
 
 export interface FrameGateTokenValidation {
   accepted: boolean;
   reason?: string;
   token?: FrameGateToken;
+  evidence_binding?: FrameGateEvidenceBinding;
+  evidence_binding_hash?: string;
 }
 
 /** Watch window beyond which a stale frame_advance no longer counts as "live".
@@ -94,6 +100,109 @@ export const FRAME_ADVANCE_FRESHNESS_WINDOW_MS = 10_000;
 export const FRAME_GATE_TOKEN_TTL_MS = 20 * 60_000;
 
 type FrameAdvanceListener = (fa: FrameAdvance) => void;
+
+function cloneJsonEvidenceValue(value: unknown, ancestors: Set<object>): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new TypeError("evidence_binding numbers must be finite");
+    }
+    return value;
+  }
+  if (typeof value !== "object") {
+    throw new TypeError("evidence_binding must contain only JSON values");
+  }
+  if (ancestors.has(value)) {
+    throw new TypeError("evidence_binding must not contain cycles");
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const clone: unknown[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, index);
+        if (!descriptor) {
+          throw new TypeError("evidence_binding arrays must not be sparse");
+        }
+        if (!("value" in descriptor) || descriptor.enumerable !== true) {
+          throw new TypeError("evidence_binding arrays require enumerable data entries");
+        }
+        clone.push(cloneJsonEvidenceValue(descriptor.value, ancestors));
+      }
+      const allowedArrayKeys = new Set([
+        "length",
+        ...Array.from({ length: value.length }, (_, index) => String(index)),
+      ]);
+      if (Reflect.ownKeys(value).some(
+        (key) => typeof key !== "string" || !allowedArrayKeys.has(key),
+      )) {
+        throw new TypeError("evidence_binding arrays must not contain extra properties");
+      }
+      return Object.freeze(clone);
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new TypeError("evidence_binding objects must be plain JSON objects");
+    }
+    const clone: Record<string, unknown> = {};
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string") {
+        throw new TypeError("evidence_binding must not contain symbol keys");
+      }
+      if (key === "__proto__" || key === "prototype" || key === "constructor") {
+        throw new TypeError("evidence_binding contains an unsafe object key");
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true) {
+        throw new TypeError("evidence_binding objects require enumerable data properties");
+      }
+      Object.defineProperty(clone, key, {
+        value: cloneJsonEvidenceValue(descriptor.value, ancestors),
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
+    }
+    return Object.freeze(clone);
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function cloneEvidenceBinding(
+  binding: Readonly<Record<string, unknown>>
+): FrameGateEvidenceBinding {
+  const cloned = cloneJsonEvidenceValue(binding, new Set());
+  if (cloned === null || typeof cloned !== "object" || Array.isArray(cloned)) {
+    throw new TypeError("evidence_binding must be a structured object");
+  }
+  return cloned as FrameGateEvidenceBinding;
+}
+
+function canonicalStructuredJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) {
+      throw new TypeError("evidence_binding must contain JSON-serializable values");
+    }
+    return serialized;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => canonicalStructuredJson(entry)).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalStructuredJson(record[key])}`)
+    .join(",")}}`;
+}
+
+function evidenceBindingHash(binding: FrameGateEvidenceBinding): string {
+  const digest = createHash("sha256")
+    .update(canonicalStructuredJson(binding))
+    .digest("hex");
+  return `sha256:${digest}`;
+}
 
 export interface WarmingProgress {
   stage: string;
@@ -366,12 +475,16 @@ class SessionManager {
     session_id: string;
     frame_seq?: number;
     ts_ms?: number;
+    evidence_binding?: Readonly<Record<string, unknown>>;
     ttl_ms?: number;
     now?: number;
   }): FrameGateToken {
     const now = input.now ?? Date.now();
     const ttlMs = Math.max(1, input.ttl_ms ?? FRAME_GATE_TOKEN_TTL_MS);
     this.pruneFrameGateTokens(now);
+    const evidenceBinding = input.evidence_binding === undefined
+      ? undefined
+      : cloneEvidenceBinding(input.evidence_binding);
     const token: FrameGateToken = {
       token: `frame-gate:${randomUUID()}`,
       session_id: input.session_id,
@@ -379,6 +492,12 @@ class SessionManager {
       ...(input.ts_ms !== undefined ? { ts_ms: input.ts_ms } : {}),
       issued_at_ms: now,
       expires_at_ms: now + ttlMs,
+      ...(evidenceBinding !== undefined
+        ? {
+            evidence_binding: evidenceBinding,
+            evidence_binding_hash: evidenceBindingHash(evidenceBinding),
+          }
+        : {}),
     };
     this.frameGateTokens.set(token.token, token);
     return { ...token };
@@ -409,7 +528,17 @@ class SessionManager {
       return { accepted: false, reason: "frame_gate_token_timestamp_mismatch" };
     }
     this.frameGateTokens.delete(input.token);
-    return { accepted: true, token: { ...token } };
+    const consumedToken = { ...token };
+    return {
+      accepted: true,
+      token: consumedToken,
+      ...(consumedToken.evidence_binding !== undefined
+        ? { evidence_binding: consumedToken.evidence_binding }
+        : {}),
+      ...(consumedToken.evidence_binding_hash !== undefined
+        ? { evidence_binding_hash: consumedToken.evidence_binding_hash }
+        : {}),
+    };
   }
 
   private pruneFrameGateTokens(now: number = Date.now()): void {
