@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 
 import {
   CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION,
+  GPU_HMR_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION,
+  casUriForHash,
+  validateSharedArtifactAddressing,
 } from './gpu-hmr-artifact-cas.mjs';
 import {
   verifyArbitraryColdRetainedExecutionChain,
@@ -99,6 +102,81 @@ function locatorManifestHash(locator) {
   return contentHash(stableJson({ ...locator, manifestHash: undefined }));
 }
 
+function transportEvidenceBindingAccepted(locator, evidence) {
+  const transport = locator?.transport;
+  const expectedGaps = transport?.kind === 'serialized_fallback'
+    ? ['serialized_artifact_transport_fallback']
+    : [];
+  const sharedInput = locator?.sharedStorage ?? locator?.shared_storage ?? null;
+  if (sharedInput !== null) {
+    const shared = validateSharedArtifactAddressing(sharedInput, {
+      expectedContentHash: locator.contentHash,
+      expectedRelativePath: locator.storage?.relativePath,
+      transportKind: transport?.kind,
+    });
+    if (
+      shared.accepted !== true
+      || stableJson(locator.sharedStorage) !== stableJson(locator.shared_storage)
+      || stableJson(evidence?.sharedStorage) !== stableJson(shared)
+      || stableJson(evidence?.shared_storage) !== stableJson(shared)
+      || evidence.sharedMountCount !== shared.mountCount
+      || evidence.shared_mount_count !== shared.mountCount
+      || stableJson(evidence.sharedMountRoles) !== stableJson(shared.mountRoles)
+      || stableJson(evidence.shared_mount_roles) !== stableJson(shared.mountRoles)
+    ) {
+      return false;
+    }
+    expectedGaps.push(...shared.gaps);
+  } else if ([
+    'sharedStorage',
+    'shared_storage',
+    'sharedMountCount',
+    'shared_mount_count',
+    'sharedMountRoles',
+    'shared_mount_roles',
+  ].some((name) => Object.hasOwn(evidence ?? {}, name))) {
+    return false;
+  }
+  const localPath = locator?.storage?.localPath;
+  if (localPath) {
+    if (evidence?.localPath !== localPath || evidence?.local_path !== localPath) {
+      return false;
+    }
+  } else if (
+    Object.hasOwn(evidence ?? {}, 'localPath')
+    || Object.hasOwn(evidence ?? {}, 'local_path')
+  ) {
+    return false;
+  }
+  return evidence?.schemaVersion === GPU_HMR_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION
+    && evidence.accepted === true
+    && evidence.acceptedAsTransportEvidence === true
+    && evidence.acceptedForGpuHmr === false
+    && evidence.gpuHmrSuccess === false
+    && evidence.proofAuthority === 'transport_integrity_only'
+    && evidence.contentHash === locator.contentHash
+    && evidence.artifactId === locator.artifactId
+    && evidence.artifactUri === locator.artifactUri
+    && evidence.manifestHash === locator.manifestHash
+    && evidence.transportKind === transport.kind
+    && evidence.byteLength === locator.byteLength
+    && evidence.mediaType === locator.mediaType
+    && Array.isArray(evidence.reasons)
+    && evidence.reasons.length === 0
+    && Array.isArray(evidence.gaps)
+    && stableJson(evidence.gaps) === stableJson(expectedGaps);
+}
+
+function canonicalLocatorUriAccepted(locator) {
+  try {
+    return locator?.artifactUri === casUriForHash(locator.contentHash, {
+      sessionNamespace: locator.sessionNamespace,
+    });
+  } catch {
+    return false;
+  }
+}
+
 function retainedOutputAccepted(output, expectedMetadata, expectedBinding) {
   const locator = output?.artifactLocator;
   const transport = locator?.transport;
@@ -116,6 +194,10 @@ function retainedOutputAccepted(output, expectedMetadata, expectedBinding) {
     && SHA256_PATTERN.test(locator.manifestHash ?? '')
     && locator.manifestHash === expectedBinding.manifestHash
     && locator.manifestHash === locatorManifestHash(locator)
+    && locator.artifactKind === 'cold_build_artifact'
+    && locator.mediaType === expectedMetadata.declaredMediaType
+    && locator.role === 'cold_build_output'
+    && canonicalLocatorUriAccepted(locator)
     && transport?.kind === expectedBinding.transportKind
     && TRANSPORT_KIND_PATTERN.test(transport?.kind ?? '')
     && transport.contentAddressed === true
@@ -124,15 +206,7 @@ function retainedOutputAccepted(output, expectedMetadata, expectedBinding) {
     && locator.proofAuthority === 'transport_integrity_only'
     && locator.acceptedForGpuHmr === false
     && locator.gpuHmrSuccess === false
-    && transportEvidence?.accepted === true
-    && transportEvidence?.acceptedAsTransportEvidence === true
-    && transportEvidence?.acceptedForGpuHmr === false
-    && transportEvidence?.gpuHmrSuccess === false
-    && transportEvidence?.proofAuthority === 'transport_integrity_only'
-    && transportEvidence?.contentHash === locator.contentHash
-    && transportEvidence?.artifactId === locator.artifactId
-    && transportEvidence?.manifestHash === locator.manifestHash
-    && transportEvidence?.transportKind === transport.kind
+    && transportEvidenceBindingAccepted(locator, transportEvidence)
     && !containsForbiddenAuthorityClaim(output);
 }
 

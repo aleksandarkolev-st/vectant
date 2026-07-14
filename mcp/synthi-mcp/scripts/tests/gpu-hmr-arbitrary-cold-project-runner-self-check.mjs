@@ -63,6 +63,28 @@ function resealEvidence(value) {
     .digest('hex')}`;
 }
 
+function resealCliLocatorBinding(envelope, outputIndex) {
+  const output = envelope.outputs[outputIndex];
+  const locator = output.artifactLocator;
+  const locatorProjection = { ...locator, manifestHash: undefined };
+  locator.manifestHash = `sha256:${createHash('sha256')
+    .update(stableJson(locatorProjection))
+    .digest('hex')}`;
+  output.transportEvidence.manifestHash = locator.manifestHash;
+  const chain = envelope.retainedExecutionChain;
+  const binding = chain.artifactLocatorBindings.find(
+    (candidate) => candidate.path === output.metadata.path,
+  );
+  binding.manifestHash = locator.manifestHash;
+  chain.runEvidence.artifactLocatorSetHash = `sha256:${createHash('sha256')
+    .update(stableJson(chain.artifactLocatorBindings))
+    .digest('hex')}`;
+  resealEvidence(chain.runEvidence);
+  resealEvidence(chain);
+  envelope.evidence = structuredClone(chain.runEvidence);
+  resealEvidence(envelope);
+}
+
 async function runningColdContainers() {
   const { stdout } = await execFileAsync('docker', ['ps', '--format', '{{.Names}}']);
   return new Set(stdout.split(/\r?\n/).filter((name) => (
@@ -523,6 +545,42 @@ try {
   resealEvidence(forgedCliOutputAuthority);
   assert.throws(
     () => verifyArbitraryColdCliResultEnvelope(forgedCliOutputAuthority),
+    /cli_result_envelope_invalid/,
+  );
+  for (const mutateTransport of [
+    (transport) => { transport.schemaVersion = 'forged.transport.v1'; },
+    (transport) => { transport.artifactUri = 'synthi-cas://forged/sha256/deadbeef'; },
+    (transport) => { transport.byteLength += 1; },
+    (transport) => { transport.mediaType = 'text/plain'; },
+    (transport) => { transport.reasons = ['forged_transport_reason']; },
+    (transport) => { transport.gaps = ['forged_transport_gap']; },
+  ]) {
+    const forgedCliTransport = structuredClone(cliResult);
+    mutateTransport(forgedCliTransport.outputs[0].transportEvidence);
+    resealEvidence(forgedCliTransport);
+    assert.throws(
+      () => verifyArbitraryColdCliResultEnvelope(forgedCliTransport),
+      /cli_result_envelope_invalid/,
+    );
+  }
+  const forgedCliCanonicalUri = structuredClone(cliResult);
+  const canonicalLocator = forgedCliCanonicalUri.outputs[0].artifactLocator;
+  canonicalLocator.artifactUri = [
+    'synthi-cas://forged-namespace/sha256/',
+    canonicalLocator.contentHash.slice('sha256:'.length),
+  ].join('');
+  forgedCliCanonicalUri.outputs[0].transportEvidence.artifactUri =
+    canonicalLocator.artifactUri;
+  resealCliLocatorBinding(forgedCliCanonicalUri, 0);
+  assert.throws(
+    () => verifyArbitraryColdCliResultEnvelope(forgedCliCanonicalUri),
+    /cli_result_envelope_invalid/,
+  );
+  const forgedCliOutputRole = structuredClone(cliResult);
+  forgedCliOutputRole.outputs[0].artifactLocator.role = 'forged_output_role';
+  resealCliLocatorBinding(forgedCliOutputRole, 0);
+  assert.throws(
+    () => verifyArbitraryColdCliResultEnvelope(forgedCliOutputRole),
     /cli_result_envelope_invalid/,
   );
   assert.ok(!JSON.stringify(cliResult.evidence).match(
