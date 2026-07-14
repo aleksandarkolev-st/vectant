@@ -75,7 +75,8 @@ use crate::hmr::gpu_module_manager::{
     GpuModuleManager, KernelResolution, KernelTable, ModuleManagerError,
 };
 use crate::hmr::gpu_proof::{
-    sha256_hex_bytes, GpuHmrAcceptanceLedger, GpuHmrAcceptanceLedgerInput, GpuHmrDegradedState,
+    normalized_gpu_hardware_uuid, sha256_hex_bytes, GpuHmrAcceptanceLedger,
+    GpuHmrAcceptanceLedgerInput, GpuHmrDegradedState,
 };
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
@@ -1679,6 +1680,7 @@ fn runtime_full_proof_line(
     loader_timestamp_monotonic_ns: u128,
     publish_timestamp_monotonic_ns: u128,
     retirement_timestamp_monotonic_ns: u128,
+    device_identity_key: &str,
     expected_symbols: &[String],
     loader_transport: ArtifactLoaderTransport,
     reload_elapsed_ms: u64,
@@ -1858,11 +1860,14 @@ fn runtime_full_proof_line(
         "runtime_session_id": runtime_session_id(),
         "role": "worker-gpu-runtime",
     });
-    let device_uuid = format!("{}:{}", vendor.as_str(), vendor.driver_library());
+    let device_uuid = normalized_gpu_hardware_uuid(device_identity_key)?;
     let device_identity = json!({
         "vendor": vendor.as_str(),
         "backend": vendor.proof_backend(),
         "device_uuid": device_uuid,
+        "device_identity_key": device_identity_key,
+        "device_identity_kind": "hardware_uuid",
+        "device_identity_authority": "runtime_driver_active_device_uuid",
         "driver_library": vendor.driver_library(),
     });
     let timings = json!({
@@ -2188,7 +2193,7 @@ fn runtime_full_proof_line(
         &evidence_refs,
         &abi_hash,
         &process_id,
-        &device_uuid,
+        device_uuid,
         &dispatch_record,
         &oracle_artifacts,
         &output_oracle_target,
@@ -3642,17 +3647,16 @@ impl Adapter for GpuModuleAdapter {
                 firewall_process_id_before: req.firewall_evidence.process_id_before,
                 firewall_process_id_after: req.firewall_evidence.process_id_after,
                 process_id: Some(format!("pid:{}", std::process::id())),
-                device_identity: Some(format!(
-                    "{}:{}",
-                    self.config.vendor.as_str(),
-                    self.config.vendor.driver_library()
-                )),
+                device_identity: None,
             });
             let acceptance_line = acceptance_ledger.to_log_line();
             eprintln!("{acceptance_line}");
             runtime_log_lines.push(acceptance_line);
             if !first_device_load && acceptance_ledger.gpu_hmr_success && output_oracle_passed {
-                if let Some(after_dispatch_id) = output_oracle_after_dispatch_id.as_deref() {
+                if let (Some(after_dispatch_id), Some(device_identity_key)) = (
+                    output_oracle_after_dispatch_id.as_deref(),
+                    acceptance_ledger.device_identity.as_deref(),
+                ) {
                     if let Some(proof_line) = runtime_full_proof_line(
                         req,
                         self.config.vendor,
@@ -3664,6 +3668,7 @@ impl Adapter for GpuModuleAdapter {
                         loader_timestamp_monotonic_ns,
                         publish_timestamp_monotonic_ns,
                         retirement_timestamp_monotonic_ns,
+                        device_identity_key,
                         &expected_symbols,
                         loader_transport,
                         started.elapsed().as_millis() as u64,
@@ -4785,7 +4790,7 @@ mod tests {
     }
 
     #[test]
-    fn full_runtime_proof_retains_worker_runtime_trace() {
+    fn full_runtime_proof_refuses_unattested_device_identity() {
         let _guard = runtime_boundary_test_guard();
         reset_for_test();
         let mut first = tempfile::NamedTempFile::new().unwrap();
@@ -4805,68 +4810,33 @@ mod tests {
             AdapterReloadResult::Success { .. }
         ));
         launch_vec_add_on_stream(0x77);
-        assert!(matches!(
-            a.reload(&request_with_artifact_and_abi(
-                &second_path,
-                vec!["device.cu".into()],
-                "sig-v1"
-            )),
-            AdapterReloadResult::Success { .. }
-        ));
+        match a.reload(&request_with_artifact_and_abi(
+            &second_path,
+            vec!["device.cu".into()],
+            "sig-v1",
+        )) {
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(!recoverable);
+                assert!(error.contains("device_identity_missing"));
+            }
+            other => panic!("expected device-identity refusal, got {other:?}"),
+        }
 
-        let proof_line = a
+        let acceptance_line = a
             .last_reload_log()
             .iter()
-            .find(|line| line.contains("\"type\":\"gpu_hmr_proof\""))
-            .expect("full runtime proof JSON");
-        let proof = proof_json_from_line(proof_line);
-        let runtime_trace = &proof["runtimeProofArtifact"]["runtimeTrace"];
-        let ledger_record = &proof["proofLedger"]["records"][0];
-        assert_eq!(
-            runtime_trace["schemaVersion"],
-            json!("synthi.gpu_hmr.worker_runtime_trace.v1")
-        );
-        assert_eq!(
-            runtime_trace["proofAuthority"],
-            json!("worker_observed_runtime_boundaries_not_gpu_hmr_acceptance")
-        );
-        assert_eq!(runtime_trace["acceptedForGpuHmr"], json!(false));
-        assert_eq!(runtime_trace["gpuHmrSuccess"], json!(false));
-        assert!(runtime_trace["loaderEvents"]
+            .find(|line| line.contains("\"type\":\"gpu_hmr_acceptance_ledger\""))
+            .expect("GPU HMR acceptance ledger JSON");
+        let acceptance: Value = serde_json::from_str(acceptance_line).expect("acceptance ledger");
+        assert_eq!(acceptance["gpuHmrSuccess"], json!(false));
+        assert_eq!(acceptance["deviceIdentity"], Value::Null);
+        assert!(acceptance["failedInvariants"]
             .as_array()
-            .map(|events| !events.is_empty())
-            .unwrap_or(false));
-        assert_eq!(
-            runtime_trace["loaderEvents"][0]["artifactHash"],
-            ledger_record["loader_event"]["artifact_hash"]
-        );
-        assert_eq!(
-            runtime_trace["dispatchEvents"][0]["dispatchId"],
-            ledger_record["dispatch_event"]["dispatch_id"]
-        );
-        assert_eq!(
-            runtime_trace["outputEvents"][0]["afterDispatchId"],
-            ledger_record["output_event"]["after_dispatch_id"]
-        );
-        let loader_timestamp = ledger_record["loader_event"]["timestamp_monotonic_ns"]
-            .as_u64()
-            .expect("loader monotonic timestamp");
-        let publish_timestamp = ledger_record["epoch_publish_event"]["timestamp_monotonic_ns"]
-            .as_u64()
-            .expect("publish monotonic timestamp");
-        let dispatch_timestamp = ledger_record["dispatch_event"]["timestamp_monotonic_ns"]
-            .as_u64()
-            .expect("dispatch monotonic timestamp");
-        let output_timestamp = ledger_record["output_event"]["timestamp_monotonic_ns"]
-            .as_u64()
-            .expect("output monotonic timestamp");
-        let retirement_timestamp = ledger_record["retirement_event"]["timestamp_monotonic_ns"]
-            .as_u64()
-            .expect("retirement monotonic timestamp");
-        assert!(loader_timestamp <= publish_timestamp);
-        assert!(publish_timestamp <= dispatch_timestamp);
-        assert!(dispatch_timestamp <= output_timestamp);
-        assert!(output_timestamp <= retirement_timestamp);
+            .is_some_and(|failures| failures.contains(&json!("device_identity_missing"))));
+        assert!(!a
+            .last_reload_log()
+            .iter()
+            .any(|line| line.contains("\"type\":\"gpu_hmr_proof\"")));
         reset_for_test();
     }
 

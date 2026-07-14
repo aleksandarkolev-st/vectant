@@ -8,6 +8,23 @@ use std::path::{Path, PathBuf};
 pub const GPU_HMR_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof.v1";
 pub const GPU_HMR_ACCEPTANCE_LEDGER_SCHEMA_VERSION: &str =
     "synthi.gpu_hmr.acceptance_ledger.v1";
+pub const GPU_HMR_HARDWARE_UUID_PREFIX: &str = "gpu-hardware-uuid:";
+
+pub fn normalized_gpu_hardware_uuid(value: &str) -> Option<&str> {
+    if value != value.trim() {
+        return None;
+    }
+    let uuid = value.strip_prefix(GPU_HMR_HARDWARE_UUID_PREFIX)?;
+    if uuid.len() != 32
+        || !uuid
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || uuid.bytes().all(|byte| byte == b'0')
+    {
+        return None;
+    }
+    Some(uuid)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GpuHmrProofState {
@@ -399,14 +416,12 @@ impl GpuHmrAcceptanceLedger {
             if input.process_id.as_deref().unwrap_or_default().trim().is_empty() {
                 failed.push("process_identity_missing".to_string());
             }
-            if input
-                .device_identity
-                .as_deref()
-                .unwrap_or_default()
-                .trim()
-                .is_empty()
-            {
-                failed.push("device_identity_missing".to_string());
+            match input.device_identity.as_deref() {
+                None | Some("") => failed.push("device_identity_missing".to_string()),
+                Some(value) if normalized_gpu_hardware_uuid(value).is_none() => {
+                    failed.push("device_identity_not_runtime_hardware_uuid".to_string())
+                }
+                Some(_) => {}
             }
         }
         let gpu_hmr_success = input.hot_reload && failed.is_empty();
@@ -856,7 +871,9 @@ mod tests {
             firewall_process_id_before: Some(42),
             firewall_process_id_after: Some(42),
             process_id: Some("pid:1".to_string()),
-            device_identity: Some("device:test".to_string()),
+            device_identity: Some(
+                "gpu-hardware-uuid:00112233445566778899aabbccddeeff".to_string(),
+            ),
         }
     }
 
@@ -929,6 +946,26 @@ mod tests {
         assert!(ledger
             .failed_invariants
             .contains(&"process_restarted".to_string()));
+    }
+
+    #[test]
+    fn acceptance_ledger_rejects_synthetic_or_zero_device_identity() {
+        for device_identity in [
+            "rocm:libamdhip64.so",
+            "rocm:gfx1201",
+            "gpu-hardware-uuid:00000000000000000000000000000000",
+            "gpu-hardware-uuid:00112233445566778899AABBCCDDEEFF",
+            "gpu-hardware-uuid:00112233",
+            " gpu-hardware-uuid:00112233445566778899aabbccddeeff",
+        ] {
+            let mut input = accepted_ledger_input();
+            input.device_identity = Some(device_identity.to_string());
+            let ledger = GpuHmrAcceptanceLedger::new(input);
+            assert!(!ledger.gpu_hmr_success, "accepted {device_identity}");
+            assert!(ledger
+                .failed_invariants
+                .contains(&"device_identity_not_runtime_hardware_uuid".to_string()));
+        }
     }
 
     #[test]
