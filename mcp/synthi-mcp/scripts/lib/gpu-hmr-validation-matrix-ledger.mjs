@@ -22,6 +22,33 @@ import {
 import {
   runtimeHostIdentityEvidence,
 } from './gpu-hmr-runtime-evidence.mjs';
+import {
+  COLD_BUILD_CONTAINER_COMMAND_GID,
+  COLD_BUILD_CONTAINER_COMMAND_UID,
+  COLD_BUILD_CONTAINER_CONTROL_TMPFS_BYTES,
+  COLD_BUILD_CONTAINER_PROTOCOL_AUTHORITY,
+  COLD_BUILD_CONTAINER_PROTOCOL_SCHEMA,
+  COLD_BUILD_CONTAINER_TMP_BYTES,
+  coldBuildLauncherCommand,
+  coldBuildLauncherEntrypoint,
+  coldBuildControlTmpfsOptions,
+  coldBuildOutputTmpfsOptions,
+  coldBuildTmpfsOptions,
+} from './gpu-hmr-cold-build-container-contract.mjs';
+
+const REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE = Object.freeze({
+  removed: 'unsafe_legacy_cold_container_wrapper',
+});
+const COLD_BUILD_CONTAINER_PRIVILEGE_DROP_EXECUTABLE =
+  REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE;
+const COLD_BUILD_CONTAINER_SLEEP_EXECUTABLE =
+  REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE;
+const COLD_BUILD_CONTAINER_WRAPPER_EXECUTABLE =
+  REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE;
+const COLD_BUILD_CONTAINER_WRAPPER_SCRIPT =
+  REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE;
+const coldBuildContainerCommand = coldBuildLauncherCommand;
+const coldBuildContainerEntrypoint = coldBuildLauncherEntrypoint;
 
 import {
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
