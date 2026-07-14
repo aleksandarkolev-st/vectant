@@ -21,7 +21,7 @@ use tokio::sync::Mutex;
 
 use crate::approval::{denied_approval_response, is_safe_approval_id, ApprovalQueue};
 use crate::audit::{AuditClass, AuditExport, AuditLog, AuditStoreError, LocalAuditStore};
-use crate::command_broker::{execute_command, CommandRequest};
+use crate::command_broker::{execute_command_cancellable, CommandRequest};
 use crate::full_access::{
     authorize as authorize_full_access, validate_graph_request, FullAccessConsentReceipt,
     FullAccessDenied, FullAccessPolicy, FullAccessState, GraphRequest, ReceiptBinding,
@@ -615,6 +615,9 @@ async fn enroll_full_access(
     full_access.graph = graph;
     full_access.budget = Default::default();
     full_access.process_visibility_paused = false;
+    full_access
+        .command_cancel
+        .store(false, std::sync::atomic::Ordering::Release);
     drop(full_access);
     let mut audit = state.audit.lock().await;
     audit.record_full_access_consent(recorded_receipt);
@@ -1037,19 +1040,25 @@ async fn full_access_command(
         return Err(denied(StatusCode::FORBIDDEN, "auto_approval_not_enabled"));
     }
     let policy = full_access.policy.clone();
+    let command_cancel = full_access.command_cancel.clone();
     full_access
         .budget
         .reserve(&policy, request.max_output_bytes as u64)
         .map_err(full_access_denied)?;
     drop(full_access);
-    let context = execute_command(state.workspace.root(), &policy, request.clone())
-        .await
-        .map_err(|error| {
-            denied(
-                StatusCode::FORBIDDEN,
-                format!("full_access_command_{error:?}").to_ascii_lowercase(),
-            )
-        })?;
+    let context = execute_command_cancellable(
+        state.workspace.root(),
+        &policy,
+        request.clone(),
+        command_cancel,
+    )
+    .await
+    .map_err(|error| {
+        denied(
+            StatusCode::FORBIDDEN,
+            format!("full_access_command_{error:?}").to_ascii_lowercase(),
+        )
+    })?;
     let mut audit = state.audit.lock().await;
     audit.append(AuditClass::Data, Some(request.request_id.clone()), format!("Automatically ran {} under Full Access policy. Argument hash {}; exit {:?}; {} bytes captured; {} redactions.", context.executable, context.argument_hash, context.exit_code, context.bytes_captured, context.redaction_count), true);
     persist_audit(&state, &audit)?;

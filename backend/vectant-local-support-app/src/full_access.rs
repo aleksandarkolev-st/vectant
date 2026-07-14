@@ -7,6 +7,10 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Component, Path};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -186,10 +190,12 @@ pub struct FullAccessState {
     pub graph: HashMap<String, GraphNode>,
     pub budget: FullAccessBudget,
     pub process_visibility_paused: bool,
+    pub command_cancel: Arc<AtomicBool>,
 }
 
 impl FullAccessState {
     pub fn revoke(&mut self) {
+        self.command_cancel.store(true, Ordering::Release);
         if let Some(receipt) = &mut self.receipt {
             receipt.revoked_at = Some(Utc::now());
         }
@@ -199,6 +205,7 @@ impl FullAccessState {
     }
 
     pub fn pause(&mut self) {
+        self.command_cancel.store(true, Ordering::Release);
         if let Some(receipt) = &mut self.receipt {
             receipt.paused_at = Some(Utc::now());
         }

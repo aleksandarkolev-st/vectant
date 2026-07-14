@@ -2,6 +2,10 @@
 
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -40,6 +44,7 @@ pub enum CommandError {
     ExecutableDenied,
     OutputLimit,
     TimedOut,
+    Cancelled,
     SpawnFailed,
     Io,
 }
@@ -48,6 +53,15 @@ pub async fn execute_command(
     workspace: &Path,
     policy: &FullAccessPolicy,
     request: CommandRequest,
+) -> Result<CommandContext, CommandError> {
+    execute_command_cancellable(workspace, policy, request, Arc::new(AtomicBool::new(false))).await
+}
+
+pub async fn execute_command_cancellable(
+    workspace: &Path,
+    policy: &FullAccessPolicy,
+    request: CommandRequest,
+    cancelled: Arc<AtomicBool>,
 ) -> Result<CommandContext, CommandError> {
     validate_request(workspace, policy, &request)?;
     let output_cap = request
@@ -75,12 +89,25 @@ pub async fn execute_command(
     let stderr = child.stderr.take().ok_or(CommandError::Io)?;
     let stdout_task = tokio::spawn(read_capped(stdout, output_cap));
     let stderr_task = tokio::spawn(read_capped(stderr, output_cap));
-    let status = match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(_)) => return Err(CommandError::Io),
-        Err(_) => {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let status = loop {
+        if cancelled.load(Ordering::Acquire) {
+            let _ = child.kill().await;
+            return Err(CommandError::Cancelled);
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
             let _ = child.kill().await;
             return Err(CommandError::TimedOut);
+        }
+        let wait = child.wait();
+        tokio::pin!(wait);
+        tokio::select! {
+            result = &mut wait => match result {
+                Ok(status) => break status,
+                Err(_) => return Err(CommandError::Io),
+            },
+            _ = tokio::time::sleep_until((now + Duration::from_millis(50)).min(deadline)) => {}
         }
     };
     let (stdout, stdout_truncated) = stdout_task.await.map_err(|_| CommandError::Io)??;
@@ -243,7 +270,12 @@ fn hash_arguments(arguments: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_terminal_controls;
+    use super::{
+        execute_command_cancellable, strip_terminal_controls, CommandError, CommandRequest,
+    };
+    use crate::full_access::FullAccessPolicy;
+    use std::collections::BTreeSet;
+    use std::sync::{atomic::AtomicBool, Arc};
 
     #[test]
     fn terminal_controls_do_not_reach_command_context() {
@@ -251,5 +283,30 @@ mod tests {
             strip_terminal_controls("\u{1b}[31mred\u{1b}[0m\n\u{1b}]0;title\u{7}ok"),
             "red\nok"
         );
+    }
+
+    #[tokio::test]
+    async fn cancellation_stops_a_brokered_command_before_output_is_released() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut policy = FullAccessPolicy {
+            organization_enabled: true,
+            ..Default::default()
+        };
+        policy.allowed_command_executables = BTreeSet::from(["rustc".to_string()]);
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let result = execute_command_cancellable(
+            directory.path(),
+            &policy,
+            CommandRequest {
+                request_id: "req_cancel_123".to_string(),
+                executable: "rustc".to_string(),
+                arguments: vec!["--version".to_string()],
+                timeout_seconds: 5,
+                max_output_bytes: 1024,
+            },
+            cancelled,
+        )
+        .await;
+        assert!(matches!(result, Err(CommandError::Cancelled)));
     }
 }
