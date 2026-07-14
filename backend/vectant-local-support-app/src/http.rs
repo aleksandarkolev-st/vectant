@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 
 use crate::approval::{denied_approval_response, is_safe_approval_id, ApprovalQueue};
 use crate::audit::{AuditClass, AuditExport, AuditLog, AuditStoreError, LocalAuditStore};
+use crate::command_broker::{execute_command, CommandRequest};
 use crate::full_access::{
     authorize as authorize_full_access, validate_graph_request, FullAccessConsentReceipt,
     FullAccessDenied, FullAccessPolicy, FullAccessState, GraphRequest, ReceiptBinding,
@@ -283,6 +284,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/full-access/graph/:request_id", get(full_access_graph))
         .route("/v1/full-access/graph/node", post(full_access_graph_node))
         .route("/v1/full-access/mutation", post(full_access_mutation))
+        .route("/v1/full-access/command", post(full_access_command))
         .route("/v1/full-access/mutation/revert", post(full_access_revert))
         .route(
             "/v1/full-access/processes/:request_id",
@@ -873,6 +875,72 @@ async fn full_access_revert(
         "raw_bodies_included": false,
         "bytes_sent": 0
     })))
+}
+
+async fn full_access_command(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CommandRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    let token = bearer(&headers)?;
+    let (session_id, account_id, org_id, device_fingerprint) = {
+        let mut session = state.session.lock().await;
+        session
+            .validate(token, &request.request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+        (
+            session.session_id().to_string(),
+            session.account_id().to_string(),
+            session.org_id().to_string(),
+            session.device_fingerprint().to_string(),
+        )
+    };
+    let workspace_hash = state.workspace.summary().root_hash;
+    let mut full_access = state.full_access.lock().await;
+    let receipt = full_access
+        .receipt
+        .clone()
+        .ok_or_else(|| denied(StatusCode::FORBIDDEN, "full_access_not_enrolled"))?;
+    let binding = ReceiptBinding {
+        session_id: &session_id,
+        account_id: &account_id,
+        organization_id: &org_id,
+        actor: &receipt.support_actor,
+        device_fingerprint: &device_fingerprint,
+        workspace_hash: &workspace_hash,
+        policy_version: crate::POLICY_VERSION,
+        scanner_version: crate::SCANNER_VERSION,
+        app_version: &receipt.app_version,
+        policy_major: full_access.policy.policy_major,
+        capability: crate::full_access::FullAccessCapability::CommandExecute,
+    };
+    authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
+        .map_err(full_access_denied)?;
+    if !receipt.auto_approval_enabled {
+        return Err(denied(StatusCode::FORBIDDEN, "auto_approval_not_enabled"));
+    }
+    let policy = full_access.policy.clone();
+    full_access
+        .budget
+        .reserve(&policy, request.max_output_bytes as u64)
+        .map_err(full_access_denied)?;
+    drop(full_access);
+    let context = execute_command(state.workspace.root(), &policy, request.clone())
+        .await
+        .map_err(|error| {
+            denied(
+                StatusCode::FORBIDDEN,
+                format!("full_access_command_{error:?}").to_ascii_lowercase(),
+            )
+        })?;
+    let mut audit = state.audit.lock().await;
+    audit.append(AuditClass::Data, Some(request.request_id.clone()), format!("Automatically ran {} under Full Access policy. Argument hash {}; exit {:?}; {} bytes captured; {} redactions.", context.executable, context.argument_hash, context.exit_code, context.bytes_captured, context.redaction_count), true);
+    persist_audit(&state, &audit)?;
+    Ok(Json(
+        serde_json::json!({"decision":"auto_executed","request_id":request.request_id,"executable":context.executable,"argument_hash":context.argument_hash,"exit_code":context.exit_code,"stdout":context.stdout,"stderr":context.stderr,"bytes_captured":context.bytes_captured,"redaction_count":context.redaction_count,"raw_command_line_included":false}),
+    ))
 }
 
 async fn full_access_processes(
