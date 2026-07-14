@@ -127,6 +127,10 @@ describe("durable local support pairing", () => {
       ...base, app_version: "0.1.0", protocol_version: policy.protocol_version,
     }, { ...policy, vulnerable_versions: ["0.1.0"] }, client, NOW))
       .resolves.toMatchObject({ reason: "app_version_blocked" });
+    await expect(claimPairingChallengeDurably({
+      ...base, app_version: "0.1.0+build", protocol_version: policy.protocol_version,
+    }, { ...policy, vulnerable_versions: ["0.1.0"] }, client, NOW))
+      .resolves.toMatchObject({ reason: "app_version_blocked" });
   });
 
   it("consumes the challenge and creates the device-bound session in one transaction", async () => {
@@ -152,6 +156,20 @@ describe("durable local support pairing", () => {
       sessionId: expect.stringMatching(/^sess_/),
       devicePublicKey: proof.device_public_key,
     }) });
+  });
+
+  it("rechecks semantic vulnerable-version policy before completing a claim", async () => {
+    const claimed = challenge({ appVersion: "0.1.0+build", status: "claimed" });
+    const { client } = fakeClient(claimed);
+    const proof = signProof(claimed);
+
+    await expect(completePairingChallengeDurably({
+      pairing_id: claimed.pairingId,
+      code: CODE,
+      fingerprint: claimed.fingerprint,
+      proof,
+    }, { ...policy, vulnerable_versions: ["0.1.0"] }, client, NOW))
+      .resolves.toMatchObject({ reason: "app_version_blocked" });
   });
 });
 

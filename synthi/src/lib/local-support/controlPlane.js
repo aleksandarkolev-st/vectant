@@ -379,7 +379,7 @@ export function validateRequestEnvelope(input, policy = readLocalSupportPolicy()
   if (compareSemverLike(request.app_version, policy.min_app_version) < 0) {
     return deny("app_version_too_old", "Update required before pairing or requests can continue.");
   }
-  if (policy.vulnerable_versions?.includes(request.app_version)) {
+  if (policy.vulnerable_versions?.some((version) => compareSemverLike(version, request.app_version) === 0)) {
     return deny("app_version_blocked", "This local app version was revoked for security reasons.");
   }
   const expiresAt = Date.parse(request.expires_at);

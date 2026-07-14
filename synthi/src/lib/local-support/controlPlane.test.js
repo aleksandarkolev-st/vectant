@@ -183,6 +183,13 @@ describe("local support control plane policy", () => {
       decision: "denied",
       reason: "app_version_blocked",
     });
+    expect(validateRequestEnvelope(
+      envelope({ app_version: "0.1.2.0" }),
+      { ...requestsEnabled, vulnerable_versions: ["0.1.2"] },
+    )).toMatchObject({
+      decision: "denied",
+      reason: "app_version_blocked",
+    });
   });
 
   it("denies revoked sessions and devices from env or admin state", () => {

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import prisma from "@/lib/prisma";
-import { verifyDevicePairingProof } from "@/lib/local-support/controlPlane";
+import { compareSemverLike, verifyDevicePairingProof } from "@/lib/local-support/controlPlane";
 import { persistPairedSession } from "@/lib/local-support/sessionStore";
 
 const CLAIM_WINDOW_MS = 60_000;
@@ -58,8 +58,10 @@ export async function claimPairingChallengeDurably(input, policy, client = prism
     || protocolVersion !== policy.protocol_version) {
     return denied("invalid_pairing_schema");
   }
-  if (compareVersions(appVersion, policy.min_app_version) < 0) return denied("app_version_too_old");
-  if (policy.vulnerable_versions.includes(appVersion)) return denied("app_version_blocked");
+  if (compareSemverLike(appVersion, policy.min_app_version) < 0) return denied("app_version_too_old");
+  if (policy.vulnerable_versions.some((version) => compareSemverLike(version, appVersion) === 0)) {
+    return denied("app_version_blocked");
+  }
 
   return client.$transaction(async (tx) => {
     await tx.localSupportPairingRateLimit.deleteMany({ where: { expiresAt: { lte: now } } });
@@ -129,8 +131,10 @@ export async function completePairingChallengeDurably(input, policy, client = pr
       return denied("pairing_code_mismatch");
     }
     if (challenge.protocolVersion !== policy.protocol_version) return denied("protocol_version_mismatch");
-    if (compareVersions(challenge.appVersion, policy.min_app_version) < 0) return denied("app_version_too_old");
-    if (policy.vulnerable_versions.includes(challenge.appVersion)) return denied("app_version_blocked");
+    if (compareSemverLike(challenge.appVersion, policy.min_app_version) < 0) return denied("app_version_too_old");
+    if (policy.vulnerable_versions.some((version) => compareSemverLike(version, challenge.appVersion) === 0)) {
+      return denied("app_version_blocked");
+    }
 
     const pairing = pairingProofContext(challenge);
     const proofDecision = verifyDevicePairingProof(proof, pairing);
@@ -220,15 +224,6 @@ function pairingCodeHash(code) {
 
 function safeId(value) {
   return typeof value === "string" && /^[A-Za-z0-9_.-]{3,128}$/.test(value);
-}
-
-function compareVersions(left, right) {
-  const a = String(left).split(/[+-]/)[0].split(".").map(Number);
-  const b = String(right).split(/[+-]/)[0].split(".").map(Number);
-  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
-    if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) < (b[index] || 0) ? -1 : 1;
-  }
-  return 0;
 }
 
 function denied(reason) {

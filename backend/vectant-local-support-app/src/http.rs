@@ -1449,7 +1449,7 @@ pub fn validate_file_request_authorization(
     }
     if VULNERABLE_APP_VERSIONS
         .iter()
-        .any(|version| *version == auth.app_version)
+        .any(|version| versions_equal(version, &auth.app_version))
     {
         return Err(LocalAuthorizationError::AppVersionBlocked);
     }
@@ -1554,6 +1554,10 @@ fn compare_versions(left: &str, right: &str) -> i8 {
         }
     }
     0
+}
+
+fn versions_equal(left: &str, right: &str) -> bool {
+    compare_versions(left, right) == 0
 }
 
 fn parse_version(value: &str) -> Vec<u32> {

@@ -2195,6 +2195,19 @@ fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proo
         Err(LocalAuthorizationError::AppVersionBlocked)
     );
 
+    let mut semantically_blocked_app = auth.clone();
+    semantically_blocked_app.app_version = "0.1.1.0".to_string();
+    assert_eq!(
+        validate_file_request_authorization(
+            &session,
+            &policy,
+            &req,
+            &semantically_blocked_app,
+            now
+        ),
+        Err(LocalAuthorizationError::AppVersionBlocked)
+    );
+
     let mut stale_protocol = auth.clone();
     stale_protocol.protocol_version = "local-support-old".to_string();
     assert_eq!(
