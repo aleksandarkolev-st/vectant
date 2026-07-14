@@ -2,6 +2,19 @@
 
 Status baseline: current implementation is approximately 44% complete. Treat the existing Rust helpers, static transparency UI, acceptance tables, and CI mapping as partial evidence only. A goal is complete only when the feature works end-to-end through the desktop app, local daemon, cloud control plane, browser UI, audit storage, and tests that exercise the real path.
 
+## Evidence update - 2026-07-14
+
+Verified in the current worktree after the 2026-07-13 evidence update:
+
+- Durable browser control commands now carry scrubbed audit records with authenticated actors, lease-bound outcomes, zero-byte accounting, and explicit queued/applied/denied decisions. The live relay probe and gated Playwright scenario cover command polling and outcome reporting (`b7667812a`, `7879ea01d`).
+- Local Support policy state now supports organization-scoped rows with global fallback. Relay, request-envelope, preview, transparency, admin-state, policy, and pairing create/claim/complete paths resolve the organization policy before authorization decisions (`58ff26e44`, `59d2abc0c`, `4ddaf6f69`).
+- The current focused policy/pairing/control route suite passes 73/73 tests. The production Next build passes, Prisma schema validation passes, and the rebuilt standalone Chromium transparency suite passes 7/7.
+
+Still unverified or blocked after this update:
+
+- The live organization-scoped policy path has not been exercised against a running PostgreSQL/relay environment in this workstation because the external live E2E gate is not enabled here.
+- The local release build cannot produce a signed updater artifact without `TAURI_SIGNING_PRIVATE_KEY`; production certificate signing, updater tamper/downgrade/revocation verification, and release-branch controls require configured CI secrets/infrastructure.
+
 ## Evidence update — 2026-07-13
 
 Verified in the current worktree:
