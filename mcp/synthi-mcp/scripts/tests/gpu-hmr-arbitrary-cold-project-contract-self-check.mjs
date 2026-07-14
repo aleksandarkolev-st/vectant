@@ -5,6 +5,7 @@ import {
   ARBITRARY_COLD_PROJECT_CONTRACT_SCHEMA,
   createArbitraryColdProjectContract,
   verifyArbitraryColdProjectContract,
+  verifyRetainedArbitraryColdProjectContract,
 } from '../lib/gpu-hmr-arbitrary-cold-project-contract.mjs';
 
 const base = {
@@ -62,6 +63,29 @@ assert.deepEqual(first.readOnlyInputs.map((entry) => entry.mountPath), [
   'vendor/source',
 ]);
 assert.equal(verifyArbitraryColdProjectContract(first), first);
+const retainedContract = JSON.parse(JSON.stringify(first));
+assert.equal(
+  verifyRetainedArbitraryColdProjectContract(retainedContract),
+  retainedContract,
+);
+const retainedContractWithUnknownField = structuredClone(retainedContract);
+retainedContractWithUnknownField.fixtureName = 'must-not-be-accepted';
+assert.throws(
+  () => verifyRetainedArbitraryColdProjectContract(retainedContractWithUnknownField),
+  /retained_contract_invalid/,
+);
+const retainedContractWithForgedInput = structuredClone(retainedContract);
+retainedContractWithForgedInput.inputSetHash = `sha256:${'0'.repeat(64)}`;
+assert.throws(
+  () => verifyRetainedArbitraryColdProjectContract(retainedContractWithForgedInput),
+  /retained_contract_invalid/,
+);
+const retainedContractWithAuthorityClaim = structuredClone(retainedContract);
+retainedContractWithAuthorityClaim.gpuHmrSuccess = true;
+assert.throws(
+  () => verifyRetainedArbitraryColdProjectContract(retainedContractWithAuthorityClaim),
+  /retained_contract_invalid/,
+);
 
 const reorderedInputs = createArbitraryColdProjectContract({
   ...structuredClone(base),

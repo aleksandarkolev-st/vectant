@@ -387,3 +387,66 @@ export function verifyArbitraryColdProjectContract(contract) {
   }
   return contract;
 }
+
+export function verifyRetainedArbitraryColdProjectContract(contract) {
+  if (!exactKeys(contract, [
+    'schemaVersion',
+    'proofAuthority',
+    'sourceBindingHash',
+    'readOnlyInputs',
+    'inputSetBindings',
+    'inputSetHash',
+    'workerImageId',
+    'workerImageOperatingSystem',
+    'workerImageArchitecture',
+    'containerRuntime',
+    'command',
+    'args',
+    'environment',
+    'workingDirectory',
+    'outputManifestMode',
+    'outputs',
+    'resources',
+    'acceptedForGpuHmr',
+    'gpuHmrSuccess',
+    'canSatisfyRuntimeProof',
+    'canSatisfyDispatchProof',
+    'commandSpecHash',
+    'contractHash',
+  ])) {
+    throw new Error('arbitrary_cold_project_retained_contract_invalid');
+  }
+  let recomputed;
+  try {
+    recomputed = createArbitraryColdProjectContract({
+      sourceBindingHash: contract.sourceBindingHash,
+      readOnlyInputs: contract.readOnlyInputs,
+      workerImageId: contract.workerImageId,
+      workerImageOperatingSystem: contract.workerImageOperatingSystem,
+      workerImageArchitecture: contract.workerImageArchitecture,
+      containerRuntime: contract.containerRuntime,
+      command: contract.command,
+      args: contract.args,
+      environment: contract.environment,
+      workingDirectory: contract.workingDirectory,
+      outputs: contract.outputs.map(({
+        path: outputPath,
+        role,
+        artifactKind,
+        mediaType,
+      }) => ({
+        path: outputPath,
+        role,
+        artifactKind,
+        mediaType,
+      })),
+      resources: contract.resources,
+    });
+  } catch {
+    throw new Error('arbitrary_cold_project_retained_contract_invalid');
+  }
+  if (stableJson(contract) !== stableJson(recomputed)) {
+    throw new Error('arbitrary_cold_project_retained_contract_invalid');
+  }
+  return contract;
+}
