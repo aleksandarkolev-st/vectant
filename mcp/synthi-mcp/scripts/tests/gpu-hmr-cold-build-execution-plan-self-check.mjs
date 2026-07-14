@@ -293,6 +293,8 @@ async function main() {
     assert.equal(plan.canSatisfyDispatchProof, false);
     assert.equal(plan.readyReceiptRequired, true);
     assert.equal(plan.canAuthorizeLauncherExecution, false);
+    assert.equal(plan.inputSetBindings.length, 2);
+    assert.match(plan.inputSetHash, /^sha256:[0-9a-f]{64}$/);
     assert.equal(plan.launcherExecutableHash, launcherIdentity.binaryHash);
     assert.equal(plan.releaseBindingHash, releaseTreeBindingEvidence.sourceBindingHash);
     assert.equal(plan.readOnlyInputTrees.length, 1);
@@ -353,12 +355,20 @@ async function main() {
     assert.equal(evidence.acceptedAsContainerInspectionEvidence, true);
     assert.deepEqual(evidence.blockingGaps, []);
     assert.equal(evidence.planHash, plan.planHash);
+    assert.equal(evidence.inputSetHash, plan.inputSetHash);
     assert.equal(evidence.acceptedForGpuHmr, false);
     assert.equal(evidence.gpuHmrSuccess, false);
     assert.equal(evidence.canSatisfyRuntimeProof, false);
     assert.equal(evidence.canSatisfyDispatchProof, false);
     assert.equal(evidence.readyReceiptRequired, true);
     assert.equal(evidence.canAuthorizeLauncherExecution, false);
+    const inputSetHash = plan.inputSetHash;
+    plan.inputSetHash = `sha256:${'0'.repeat(64)}`;
+    await assert.rejects(
+      () => verifyColdBuildLauncherExecutionInputs(plan, { phase: 'before_create' }),
+      /execution_plan_identity_invalid/,
+    );
+    plan.inputSetHash = inputSetHash;
     assert.throws(
       () => verifyColdBuildLauncherContainerInspection(
         [syntheticInspect(plan)],
@@ -729,6 +739,9 @@ async function main() {
     assert.equal(changedReadOnlyInputs.acceptedAsExecutionInputEvidence, false);
     assert.ok(changedReadOnlyInputs.blockingGaps.includes(
       'cold_build_execution_input_read_only_0_binding_mismatch',
+    ));
+    assert.ok(changedReadOnlyInputs.blockingGaps.includes(
+      'cold_build_execution_input_set_binding_mismatch',
     ));
     assert.notEqual(changedReadOnlyInputs.inputsHash, restoredInputs.inputsHash);
     await writeFile(readOnlyInputFilePath, 'initial dependency bytes\n', 'utf8');

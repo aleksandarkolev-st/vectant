@@ -52,6 +52,10 @@ assert.equal(first.acceptedForGpuHmr, false);
 assert.equal(first.gpuHmrSuccess, false);
 assert.equal(first.canSatisfyRuntimeProof, false);
 assert.equal(first.canSatisfyDispatchProof, false);
+assert.equal(first.inputSetBindings.length, 3);
+assert.equal(first.inputSetBindings[0].containerPath, '/workspace/inputs/toolchain headers');
+assert.equal(first.inputSetBindings[2].containerPath, '/workspace/source');
+assert.match(first.inputSetHash, /^sha256:[0-9a-f]{64}$/);
 assert.equal(first.outputs[0].metadataAuthority, 'advisory_only_not_output_acceptance');
 assert.deepEqual(first.readOnlyInputs.map((entry) => entry.mountPath), [
   'toolchain headers',
@@ -75,6 +79,7 @@ const changedInput = createArbitraryColdProjectContract({
 });
 assert.notEqual(changedInput.commandSpecHash, first.commandSpecHash);
 assert.notEqual(changedInput.contractHash, first.contractHash);
+assert.notEqual(changedInput.inputSetHash, first.inputSetHash);
 
 const changedOutput = createArbitraryColdProjectContract({
   ...structuredClone(base),
@@ -88,6 +93,11 @@ assert.throws(() => verifyArbitraryColdProjectContract(clone), /contract_invalid
 first.acceptedForGpuHmr = true;
 assert.throws(() => verifyArbitraryColdProjectContract(first), /contract_invalid/);
 first.acceptedForGpuHmr = false;
+assert.equal(verifyArbitraryColdProjectContract(first), first);
+const inputSetHash = first.inputSetHash;
+first.inputSetHash = `sha256:${'0'.repeat(64)}`;
+assert.throws(() => verifyArbitraryColdProjectContract(first), /contract_invalid/);
+first.inputSetHash = inputSetHash;
 assert.equal(verifyArbitraryColdProjectContract(first), first);
 
 assert.throws(

@@ -13,6 +13,10 @@ import {
   verifyColdBuildSourceTreeBindingEvidence,
 } from './gpu-hmr-cold-build-source-tree-binding.mjs';
 import {
+  createColdBuildInputSet,
+  verifyColdBuildInputSet,
+} from './gpu-hmr-cold-build-input-set.mjs';
+import {
   COLD_BUILD_CONTAINER_CAPABILITIES,
   COLD_BUILD_CONTAINER_COMMAND_GID,
   COLD_BUILD_CONTAINER_COMMAND_UID,
@@ -203,6 +207,23 @@ function readOnlyInputTreeMaterialAccepted(input) {
     && input.containerPath === path.posix.join(COLD_BUILD_LAUNCHER_INPUT_ROOT, input.mountPath);
 }
 
+function executionPlanInputSetAccepted(plan) {
+  try {
+    return verifyColdBuildInputSet({
+      entries: plan?.inputSetBindings,
+      inputSetHash: plan?.inputSetHash,
+    }, {
+      sourceBindingHash: plan?.sourceBindingHash,
+      readOnlyInputs: (plan?.readOnlyInputTrees ?? []).map((input) => ({
+        mountPath: input.mountPath,
+        sourceBindingHash: input.sourceBindingHash,
+      })),
+    }) != null;
+  } catch {
+    return false;
+  }
+}
+
 function normalizeStringArray(value) {
   if (Array.isArray(value)) return value.map(String);
   if (typeof value === 'string' && value.length > 0) return [value];
@@ -263,6 +284,8 @@ function executionPlanProjection(plan) {
     commandSpecHash: plan.commandSpecHash,
     sourceBindingHash: plan.sourceBindingHash,
     sourceTreeBindingEvidenceHash: plan.sourceTreeBindingEvidenceHash,
+    inputSetBindings: plan.inputSetBindings,
+    inputSetHash: plan.inputSetHash,
     readOnlyInputTreesHash: plan.readOnlyInputTreesHash,
     releaseBindingHash: plan.releaseBindingHash,
     releaseTreeBindingEvidenceHash: plan.releaseTreeBindingEvidenceHash,
@@ -317,6 +340,7 @@ function executionPlanMaterialAccepted(plan) {
     && recomputeEvidenceHash(plan.sourceTreeBindingEvidence)
       === plan.sourceTreeBindingEvidenceHash
     && plan.sourceTreeBindingEvidence?.sourceBindingHash === plan.sourceBindingHash
+    && executionPlanInputSetAccepted(plan)
     && contentHash(stableJson(plan.readOnlyInputTrees.map(readOnlyInputTreeProjection)))
       === plan.readOnlyInputTreesHash
     && plan.readOnlyInputTrees.every(readOnlyInputTreeMaterialAccepted)
@@ -573,6 +597,13 @@ export function createColdBuildLauncherExecutionPlan({
   ))) {
     throw new Error('cold_build_execution_plan_read_only_input_mount_overlap');
   }
+  const inputSet = createColdBuildInputSet({
+    sourceBindingHash,
+    readOnlyInputs: normalizedReadOnlyInputTrees.map((input) => ({
+      mountPath: input.mountPath,
+      sourceBindingHash: input.sourceBindingHash,
+    })),
+  });
   const releasePath = requireHostPath(releaseHostPath, 'release_path');
   const verifiedReleaseTreeBinding = verifyColdBuildSourceTreeBindingEvidence(
     releaseTreeBindingEvidence,
@@ -659,6 +690,7 @@ export function createColdBuildLauncherExecutionPlan({
     'synthi.cold_build.command_spec_hash': commandSpecHash,
     'synthi.cold_build.execution_nonce': executionNonce,
     'synthi.cold_build.launcher_executable_hash': launcherIdentity.binaryHash,
+    'synthi.cold_build.input_set_hash': inputSet.inputSetHash,
     'synthi.cold_build.release_binding_hash': releaseBindingHash,
     'synthi.cold_build.source_binding_hash': sourceBindingHash,
     'synthi.cold_build.spec_hash': specHash,
@@ -792,6 +824,8 @@ export function createColdBuildLauncherExecutionPlan({
     sourceBindingHash,
     sourceTreeBindingEvidence: verifiedSourceTreeBinding,
     sourceTreeBindingEvidenceHash: verifiedSourceTreeBinding.evidenceHash,
+    inputSetBindings: inputSet.entries,
+    inputSetHash: inputSet.inputSetHash,
     readOnlyInputTrees: normalizedReadOnlyInputTrees,
     readOnlyInputTreesHash: contentHash(stableJson(
       normalizedReadOnlyInputTrees.map(readOnlyInputTreeProjection),
@@ -1061,6 +1095,16 @@ export async function verifyColdBuildLauncherExecutionInputs(plan, {
   if (sourceTreeBinding.sourceBindingHash !== plan.sourceBindingHash) {
     blockingGaps.push('cold_build_execution_input_source_binding_mismatch');
   }
+  const observedInputSet = createColdBuildInputSet({
+    sourceBindingHash: sourceTreeBinding.sourceBindingHash,
+    readOnlyInputs: readOnlyInputs.map((input) => ({
+      mountPath: input.mountPath,
+      sourceBindingHash: input.sourceTreeBinding.sourceBindingHash,
+    })),
+  });
+  if (observedInputSet.inputSetHash !== plan.inputSetHash) {
+    blockingGaps.push('cold_build_execution_input_set_binding_mismatch');
+  }
   if (releaseTreeBinding.sourceBindingHash !== plan.releaseBindingHash) {
     blockingGaps.push('cold_build_execution_input_release_binding_mismatch');
   }
@@ -1072,6 +1116,7 @@ export async function verifyColdBuildLauncherExecutionInputs(plan, {
     specParent,
     sourceTreeBinding,
     readOnlyInputs,
+    inputSetBindings: observedInputSet.entries,
     releaseTreeBinding,
   };
   const observationSequence = (INPUT_OBSERVATION_SEQUENCE.get(plan) ?? 0) + 1;
@@ -1084,6 +1129,8 @@ export async function verifyColdBuildLauncherExecutionInputs(plan, {
     specHash: plan.specHash,
     launcherExecutableHash: plan.launcherExecutableHash,
     sourceBindingHash: plan.sourceBindingHash,
+    inputSetHash: plan.inputSetHash,
+    observedInputSetHash: observedInputSet.inputSetHash,
     readOnlyInputTreesHash: plan.readOnlyInputTreesHash,
     releaseBindingHash: plan.releaseBindingHash,
     phase,
@@ -1136,6 +1183,8 @@ function requireExecutionInputEvidence(evidence, plan, {
     || evidence?.schemaVersion !== COLD_BUILD_EXECUTION_INPUTS_SCHEMA
     || evidence?.proofAuthority !== COLD_BUILD_EXECUTION_INPUTS_AUTHORITY
     || evidence?.planHash !== plan.planHash
+    || evidence?.inputSetHash !== plan.inputSetHash
+    || evidence?.observedInputSetHash !== plan.inputSetHash
     || evidence?.phase !== phase
     || evidence?.expectedContainerId !== expectedContainerId
     || evidence?.acceptedAsExecutionInputEvidence !== true
@@ -1371,6 +1420,7 @@ export function verifyColdBuildLauncherContainerInspection(inspectInput, plan, {
     executionNonce: plan.executionNonce,
     commandSpecHash: plan.commandSpecHash,
     sourceBindingHash: plan.sourceBindingHash,
+    inputSetHash: plan.inputSetHash,
     releaseBindingHash: plan.releaseBindingHash,
     specHash: plan.specHash,
     launcherExecutableHash: plan.launcherExecutableHash,

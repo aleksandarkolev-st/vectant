@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import { COLD_BUILD_OUTPUT_LABEL_MAX_BYTES } from './gpu-hmr-cold-build-container-contract.mjs';
+import {
+  createColdBuildInputSet,
+  verifyColdBuildInputSet,
+} from './gpu-hmr-cold-build-input-set.mjs';
 
 export const ARBITRARY_COLD_PROJECT_CONTRACT_SCHEMA =
   'synthi.gpu_hmr.arbitrary_cold_project_contract.v1';
@@ -145,6 +149,8 @@ function contractProjection(contract) {
     proofAuthority: contract.proofAuthority,
     sourceBindingHash: contract.sourceBindingHash,
     readOnlyInputs: contract.readOnlyInputs,
+    inputSetBindings: contract.inputSetBindings,
+    inputSetHash: contract.inputSetHash,
     workerImageId: contract.workerImageId,
     workerImageOperatingSystem: contract.workerImageOperatingSystem,
     workerImageArchitecture: contract.workerImageArchitecture,
@@ -200,6 +206,10 @@ export function createArbitraryColdProjectContract(input) {
   ))) {
     throw new Error('arbitrary_cold_project_contract_read_only_input_overlap');
   }
+  const inputSet = createColdBuildInputSet({
+    sourceBindingHash: input.sourceBindingHash,
+    readOnlyInputs,
+  });
   if (!HASH_PATTERN.test(input.workerImageId ?? '')) {
     throw new Error('arbitrary_cold_project_contract_worker_image_id_invalid');
   }
@@ -275,6 +285,8 @@ export function createArbitraryColdProjectContract(input) {
     proofAuthority: ARBITRARY_COLD_PROJECT_CONTRACT_AUTHORITY,
     sourceBindingHash: input.sourceBindingHash,
     readOnlyInputs,
+    inputSetBindings: inputSet.entries,
+    inputSetHash: inputSet.inputSetHash,
     workerImageId: input.workerImageId,
     workerImageOperatingSystem: input.workerImageOperatingSystem,
     workerImageArchitecture: input.workerImageArchitecture,
@@ -294,6 +306,7 @@ export function createArbitraryColdProjectContract(input) {
   contract.commandSpecHash = contentHash(stableJson({
     sourceBindingHash: contract.sourceBindingHash,
     readOnlyInputs: contract.readOnlyInputs,
+    inputSetHash: contract.inputSetHash,
     workerImageId: contract.workerImageId,
     workerImageOperatingSystem: contract.workerImageOperatingSystem,
     workerImageArchitecture: contract.workerImageArchitecture,
@@ -319,9 +332,26 @@ export function createArbitraryColdProjectContract(input) {
 
 export function verifyArbitraryColdProjectContract(contract) {
   const pinned = PINNED_CONTRACTS.get(contract);
+  let inputSet;
+  try {
+    inputSet = createColdBuildInputSet({
+      sourceBindingHash: contract?.sourceBindingHash,
+      readOnlyInputs: contract?.readOnlyInputs,
+    });
+    verifyColdBuildInputSet({
+      entries: contract?.inputSetBindings,
+      inputSetHash: contract?.inputSetHash,
+    }, {
+      sourceBindingHash: contract?.sourceBindingHash,
+      readOnlyInputs: contract?.readOnlyInputs,
+    });
+  } catch {
+    throw new Error('arbitrary_cold_project_contract_invalid');
+  }
   const commandSpecHash = contentHash(stableJson({
     sourceBindingHash: contract?.sourceBindingHash,
     readOnlyInputs: contract?.readOnlyInputs,
+    inputSetHash: contract?.inputSetHash,
     workerImageId: contract?.workerImageId,
     workerImageOperatingSystem: contract?.workerImageOperatingSystem,
     workerImageArchitecture: contract?.workerImageArchitecture,
@@ -344,6 +374,7 @@ export function verifyArbitraryColdProjectContract(contract) {
     || pinned.contractHash !== contract?.contractHash
     || contract?.schemaVersion !== ARBITRARY_COLD_PROJECT_CONTRACT_SCHEMA
     || contract?.proofAuthority !== ARBITRARY_COLD_PROJECT_CONTRACT_AUTHORITY
+    || contract?.inputSetHash !== inputSet.inputSetHash
     || contract?.commandSpecHash !== commandSpecHash
     || contract?.contractHash !== contractHash
     || contract?.outputManifestMode !== 'launcher_generated'

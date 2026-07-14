@@ -224,6 +224,8 @@ try {
   assert.equal(result.evidence.gpuHmrSuccess, false);
   assert.equal(result.evidence.canSatisfyRuntimeProof, false);
   assert.equal(result.evidence.canSatisfyDispatchProof, false);
+  assert.equal(result.evidence.inputSetBindings.length, 2);
+  assert.match(result.evidence.inputSetHash, /^sha256:[0-9a-f]{64}$/);
   assert.match(result.evidence.sourceSnapshotEvidenceHash, /^sha256:[0-9a-f]{64}$/);
   assert.equal(result.evidence.readOnlyInputSnapshotBindings.length, 1);
   assert.match(
@@ -233,10 +235,18 @@ try {
   assert.equal(result.evidence.readOnlyInputBindings.length, 1);
   assert.deepEqual(
     Object.keys(result.evidence.readOnlyInputBindings[0]).sort(),
-    ['mountPath', 'sourceBindingHash', 'sourceTreeBindingEvidenceHash'].sort(),
+    [
+      'entryCount',
+      'mountPath',
+      'sourceBindingHash',
+      'sourceTreeBindingEvidenceHash',
+      'totalByteLength',
+    ].sort(),
   );
   assert.equal(result.evidence.readOnlyInputBindings[0].mountPath, 'opaque dependency');
   assert.match(result.evidence.readOnlyInputBindings[0].sourceBindingHash, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(result.evidence.readOnlyInputBindings[0].entryCount, 1);
+  assert.ok(result.evidence.readOnlyInputBindings[0].totalByteLength > 0);
   assert.equal('hostPath' in result.evidence.readOnlyInputBindings[0], false);
   assert.equal('sourceRoot' in result.evidence.readOnlyInputBindings[0], false);
   assert.equal(result.evidence.readOnlyInputCount, 1);

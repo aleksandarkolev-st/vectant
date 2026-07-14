@@ -360,6 +360,8 @@ function readOnlyInputBindingProjection(inputs) {
     mountPath: input.mountPath,
     sourceBindingHash: input.sourceTreeBindingEvidence.sourceBindingHash,
     sourceTreeBindingEvidenceHash: input.sourceTreeBindingEvidence.evidenceHash,
+    entryCount: input.sourceTreeBindingEvidence.entryCount,
+    totalByteLength: input.sourceTreeBindingEvidence.totalByteLength,
   })).sort((left, right) => left.mountPath.localeCompare(right.mountPath));
 }
 
@@ -716,6 +718,12 @@ export async function runArbitraryColdProject(descriptorInput, {
       pidsLimit: contract.resources.pidsLimit,
       nofileLimit: contract.resources.nofileLimit,
     });
+    if (
+      plan.inputSetHash !== contract.inputSetHash
+      || stableJson(plan.inputSetBindings) !== stableJson(contract.inputSetBindings)
+    ) {
+      throw new Error('arbitrary_cold_runner_input_set_mismatch');
+    }
     const executionStarted = process.hrtime.bigint();
     const driverResult = await executeColdBuildLauncherPlan(plan, { dockerExecutable });
     verifyColdBuildExecutionDriverResult(driverResult, plan);
@@ -747,6 +755,8 @@ export async function runArbitraryColdProject(descriptorInput, {
       sourceBindingHash: sourceTreeBindingEvidence.sourceBindingHash,
       sourceTreeBindingEvidenceHash: sourceTreeBindingEvidence.evidenceHash,
       sourceSnapshotEvidenceHash: sourceSnapshot.evidence.evidenceHash,
+      inputSetBindings: contract.inputSetBindings,
+      inputSetHash: contract.inputSetHash,
       readOnlyInputBindings: readOnlyInputBindingSet,
       readOnlyInputBindingSetHash,
       readOnlyInputSnapshotBindings,
@@ -929,6 +939,10 @@ export async function verifyArbitraryColdProjectRun(result) {
     || evidence?.sourceBindingHash !== pinned.sourceTreeBindingEvidence.sourceBindingHash
     || evidence?.sourceTreeBindingEvidenceHash !== pinned.sourceTreeBindingEvidence.evidenceHash
     || evidence?.sourceSnapshotEvidenceHash !== pinned.sourceSnapshot.evidence.evidenceHash
+    || stableJson(evidence?.inputSetBindings) !== stableJson(pinned.contract.inputSetBindings)
+    || evidence?.inputSetHash !== pinned.contract.inputSetHash
+    || pinned.plan.inputSetHash !== pinned.contract.inputSetHash
+    || pinned.driverResult.evidence.inputSetHash !== pinned.contract.inputSetHash
     || stableJson(evidence?.readOnlyInputBindings) !== stableJson(readOnlyInputBindingSet)
     || pinned.readOnlyInputBindingSetHash !== contentHash(stableJson(readOnlyInputBindingSet))
     || evidence?.readOnlyInputBindingSetHash !== pinned.readOnlyInputBindingSetHash

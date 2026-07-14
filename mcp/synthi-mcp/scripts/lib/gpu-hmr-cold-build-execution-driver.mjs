@@ -88,6 +88,7 @@ function createReadyRefusalEvidence(ready, plan) {
     specHash: plan.specHash,
     commandSpecHash: plan.commandSpecHash,
     sourceBindingHash: plan.sourceBindingHash,
+    inputSetHash: plan.inputSetHash,
     launcherExecutableHash: plan.launcherExecutableHash,
     readyReceiptHash: ready.receiptHash,
     readyFrameHash: ready.frameHash,
@@ -129,6 +130,7 @@ export function verifyColdBuildReadyRefusalEvidence(evidence, plan) {
       'specHash',
       'commandSpecHash',
       'sourceBindingHash',
+      'inputSetHash',
       'launcherExecutableHash',
       'readyReceiptHash',
       'readyFrameHash',
@@ -161,6 +163,7 @@ export function verifyColdBuildReadyRefusalEvidence(evidence, plan) {
     || evidence.specHash !== plan?.specHash
     || evidence.commandSpecHash !== plan?.commandSpecHash
     || evidence.sourceBindingHash !== plan?.sourceBindingHash
+    || evidence.inputSetHash !== plan?.inputSetHash
     || evidence.launcherExecutableHash !== plan?.launcherExecutableHash
     || !HASH_PATTERN.test(evidence.readyReceiptHash ?? '')
     || !HASH_PATTERN.test(evidence.readyFrameHash ?? '')
@@ -887,6 +890,7 @@ export async function executeColdBuildLauncherPlan(plan, {
       executionNonce: plan.executionNonce,
       commandSpecHash: plan.commandSpecHash,
       sourceBindingHash: plan.sourceBindingHash,
+      inputSetHash: plan.inputSetHash,
       specHash: plan.specHash,
       launcherExecutableHash: plan.launcherExecutableHash,
       containerIdHash: contentHash(containerId),
@@ -977,6 +981,7 @@ export function verifyColdBuildExecutionDriverResult(result, plan) {
     || evidence?.executionNonce !== plan?.executionNonce
     || evidence?.commandSpecHash !== plan?.commandSpecHash
     || evidence?.sourceBindingHash !== plan?.sourceBindingHash
+    || evidence?.inputSetHash !== plan?.inputSetHash
     || evidence?.specHash !== plan?.specHash
     || evidence?.launcherExecutableHash !== plan?.launcherExecutableHash
     || evidence?.protocolAccepted !== true
