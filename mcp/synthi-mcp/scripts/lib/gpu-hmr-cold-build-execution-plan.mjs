@@ -214,7 +214,7 @@ function normalizeWorkingDirectory(value) {
 
 function normalizedHostPathIdentity(value) {
   const normalized = path.resolve(value).replaceAll('\\', '/').replace(/\/+$/, '');
-  return normalized;
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 function pathIdentityHash(value) {

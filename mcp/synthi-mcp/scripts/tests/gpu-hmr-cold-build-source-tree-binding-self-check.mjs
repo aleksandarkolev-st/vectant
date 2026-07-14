@@ -108,6 +108,12 @@ async function main() {
     assert.notEqual(first.sourcePathIdentityHash, second.sourcePathIdentityHash);
     assert.equal(verifyColdBuildSourceTreeBindingEvidence(first, firstRoot), first);
     assert.equal(verifyColdBuildSourceTreeBindingEvidence(second, secondRoot), second);
+    if (process.platform === 'win32') {
+      assert.equal(
+        verifyColdBuildSourceTreeBindingEvidence(first, firstRoot.toUpperCase()),
+        first,
+      );
+    }
 
     const nestedPath = path.join(firstRoot, 'opaque-a', 'opaque-b', 'payload.two');
     await writeFile(nestedPath, 'mutated nested payload\n', 'utf8');
@@ -131,6 +137,16 @@ async function main() {
       verifyColdBuildSourceTreeSnapshot(snapshot, firstRoot, snapshot.snapshotHostPath),
       snapshot,
     );
+    if (process.platform === 'win32') {
+      assert.equal(
+        verifyColdBuildSourceTreeSnapshot(
+          snapshot,
+          firstRoot.toUpperCase(),
+          snapshot.snapshotHostPath.toUpperCase(),
+        ),
+        snapshot,
+      );
+    }
     const snapshotReceipt = createColdBuildSourceTreeSnapshotReceipt(snapshot);
     const retainedSnapshotReceipt = JSON.parse(JSON.stringify(snapshotReceipt));
     assert.equal(

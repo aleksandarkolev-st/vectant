@@ -254,6 +254,22 @@ async function main() {
       nofileLimit: 8192,
     };
     const plan = createColdBuildLauncherExecutionPlan(common);
+    if (process.platform === 'win32') {
+      const caseAliasedPlan = createColdBuildLauncherExecutionPlan({
+        ...common,
+        sourceHostPath: common.sourceHostPath.toUpperCase(),
+        releaseHostPath: common.releaseHostPath.toUpperCase(),
+        specHostDirectory: common.specHostDirectory.toUpperCase(),
+        readOnlyInputTrees: common.readOnlyInputTrees.map((input) => ({
+          ...input,
+          hostPath: input.hostPath.toUpperCase(),
+        })),
+      });
+      assert.equal(caseAliasedPlan.sourcePathIdentityHash, plan.sourcePathIdentityHash);
+      assert.equal(caseAliasedPlan.releasePathIdentityHash, plan.releasePathIdentityHash);
+      assert.equal(caseAliasedPlan.specPathIdentityHash, plan.specPathIdentityHash);
+      assert.equal(caseAliasedPlan.readOnlyInputTreesHash, plan.readOnlyInputTreesHash);
+    }
     const specHostPath = plan.specHostPath;
     const specPublication = await publishColdBuildLauncherSpec(plan);
     assert.equal(specPublication.published, true);

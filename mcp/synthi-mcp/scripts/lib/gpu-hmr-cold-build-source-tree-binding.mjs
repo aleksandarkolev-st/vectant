@@ -127,7 +127,8 @@ function requireHostPath(value) {
 }
 
 function normalizedPathIdentity(value) {
-  return path.resolve(value).replaceAll('\\', '/').replace(/\/+$/, '');
+  const normalized = path.resolve(value).replaceAll('\\', '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 function pathIdentityHash(value) {
@@ -671,7 +672,8 @@ export function verifyColdBuildSourceTreeSnapshot(
   const evidence = snapshot?.evidence;
   if (
     !exactKeys(snapshot, SOURCE_TREE_SNAPSHOT_KEYS)
-    || snapshot.snapshotHostPath !== path.resolve(snapshotHostPath)
+    || normalizedPathIdentity(snapshot.snapshotHostPath)
+      !== normalizedPathIdentity(snapshotHostPath)
     || !sourceTreeSnapshotMaterialAccepted({
       sourceTreeBindingEvidence,
       sourceTreePostBindingEvidence,
