@@ -200,8 +200,12 @@ try {
     mkdir(cliArtifactRoot, { recursive: true }),
   ]);
   const runnerPath = fileURLToPath(new URL('../gpu-hmr-arbitrary-cold-project-runner.mjs', import.meta.url));
+  const parsedRunnerPath = path.parse(runnerPath);
+  const cliRunnerPath = process.platform === 'win32'
+    ? path.join(parsedRunnerPath.dir.toUpperCase(), parsedRunnerPath.base)
+    : runnerPath;
   const { stdout, stderr } = await execFileAsync(process.execPath, [
-    runnerPath,
+    cliRunnerPath,
     '--descriptor', descriptorPath,
     '--artifact-root', cliArtifactRoot,
   ], {

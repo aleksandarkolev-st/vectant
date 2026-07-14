@@ -814,7 +814,18 @@ async function main() {
   }, null, 2));
 }
 
-const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-if (invokedPath === fileURLToPath(import.meta.url)) {
+async function canonicalInvocationPath(value) {
+  const resolved = path.resolve(value);
+  try {
+    return comparablePath(await realpath(resolved));
+  } catch {
+    return comparablePath(resolved);
+  }
+}
+
+const directInvocation = process.argv[1]
+  && await canonicalInvocationPath(process.argv[1])
+    === await canonicalInvocationPath(fileURLToPath(import.meta.url));
+if (directInvocation) {
   await main();
 }
