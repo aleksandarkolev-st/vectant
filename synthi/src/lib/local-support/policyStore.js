@@ -23,7 +23,10 @@ export async function readDurableLocalSupportPolicy(env = process.env, client = 
     ...storedVulnerableVersions,
   ]);
   const globalStoredPolicy = globalStored || stored;
-  const globalEnabled = globalStoredPolicy.globalEnabled && env.VECTANT_LOCAL_SUPPORT_ENABLED !== "false";
+  const scopedEnabled = scopedStored ? scopedStored.globalEnabled : true;
+  const globalEnabled = globalStoredPolicy.globalEnabled
+    && scopedEnabled
+    && env.VECTANT_LOCAL_SUPPORT_ENABLED !== "false";
   const orgDisabled = storedPolicies.some((item) => item.orgDisabled)
     || env.VECTANT_LOCAL_SUPPORT_ORG_DISABLED === "true";
   const pairingDisabled = storedPolicies.some((item) => item.pairingDisabled)

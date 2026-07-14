@@ -205,6 +205,34 @@ describe("durable local support policy", () => {
     });
   });
 
+  it("allows an organization to disable itself without overriding global enablement", async () => {
+    const global = {
+      id: "global",
+      orgId: null,
+      globalEnabled: true,
+      orgDisabled: false,
+      pairingDisabled: false,
+      previewDisabled: false,
+      agentAccessDisabled: true,
+      minAppVersion: "0.1.0",
+      vulnerableVersionsJson: "[]",
+      retentionDays: 30,
+      updatedAt: new Date("2030-01-01T00:00:00.000Z"),
+    };
+    const scoped = { ...global, id: "org_org_acme", orgId: "org_acme", globalEnabled: false };
+    const findUnique = vi.fn(async ({ where }) => {
+      if (where.id === "global") return global;
+      if (where.orgId === "org_acme") return scoped;
+      return null;
+    });
+
+    const policy = await readDurableLocalSupportPolicy({}, {
+      localSupportPolicyState: { findUnique },
+    }, "org_acme");
+
+    expect(policy).toMatchObject({ enabled: false, global_enabled: false, org_id: "org_acme" });
+  });
+
   it("rejects malformed organization policy scopes", async () => {
     const result = await updateDurableLocalSupportPolicy({
       action: "update_policy",
