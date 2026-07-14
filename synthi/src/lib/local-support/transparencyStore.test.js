@@ -36,6 +36,23 @@ describe("cloud-backed transparency state", () => {
         { ...common, decision: "sent", reason: "approved_payload_encrypted" },
         { ...common, requestId: "req_denied", decision: "denied", bytesSent: 0, reason: "local_user_denied" },
       ]) },
+      localSupportControlAudit: { findMany: vi.fn(async () => [{
+        commandId: "cmd_12345678",
+        accountId: "acct_1",
+        actor: "browser_user",
+        capability: "local_support.pause_session",
+        targetDisplay: "workspace:wk_1",
+        targetHash: "sha256:control",
+        targetClassification: "control",
+        decision: "applied",
+        bytesSent: 0,
+        redactionCount: 0,
+        policyVersion: "policy-1",
+        scannerVersion: "not_applicable",
+        logClass: "local_support.control",
+        reason: "local_session_paused",
+        createdAt: new Date("2030-01-01T00:00:01.000Z"),
+      }]) },
       localSupportRelayRequest: { findMany: vi.fn(async () => [
         { ...common, status: "sent" },
         { ...common, requestId: "req_review", status: "review_pending" },
@@ -64,6 +81,10 @@ describe("cloud-backed transparency state", () => {
       persistent: false,
       methods: "GET, HEAD",
     })]);
+    expect(state.activity).toContainEqual(expect.objectContaining({
+      class: "Control",
+      summary: expect.stringContaining("local_support.pause_session"),
+    }));
     expect(JSON.stringify(state)).not.toContain("content");
   });
 

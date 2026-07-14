@@ -124,6 +124,8 @@ export async function POST(req) {
       action: decision.action,
       port,
       expiresAt: new Date(Date.now() + 60_000),
+      policyVersion: decision.policy_version || policy.policy_version,
+      scannerVersion: "not_applicable",
     });
     return jsonNoStore({
       ...decision,

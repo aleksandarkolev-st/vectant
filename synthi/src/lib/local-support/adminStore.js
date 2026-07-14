@@ -2,6 +2,7 @@ import prisma from "@/lib/prisma";
 import { buildAdminRevokeDecision } from "@/lib/local-support/controlPlane";
 
 const REVOCABLE_RELAY_STATUSES = ["queued", "leased", "review_pending"];
+const REVOCABLE_CONTROL_STATUSES = ["queued", "leased"];
 
 export async function readDurableAdminState(client = prisma) {
   const now = new Date();
@@ -114,6 +115,16 @@ export async function recordDurableAdminRevocation(input, policy, client = prism
     await tx.localSupportRelayRequest.updateMany({
       where: { sessionId: { in: sessionIds }, status: { in: REVOCABLE_RELAY_STATUSES } },
       data: { status: "revoked", completedAt: now, leaseId: null, leaseExpiresAt: null },
+    });
+    await tx.localSupportControlCommand.updateMany({
+      where: { sessionId: { in: sessionIds }, status: { in: REVOCABLE_CONTROL_STATUSES } },
+      data: {
+        status: "revoked",
+        completedAt: now,
+        leaseId: null,
+        leaseExpiresAt: null,
+        resultReason: "admin_session_or_device_revoked",
+      },
     });
     const [revokedSessionsCount, revokedDevices] = await Promise.all([
       tx.localSupportSession.count({ where: { status: "revoked" } }),

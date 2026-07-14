@@ -2,12 +2,17 @@ import prisma from "@/lib/prisma";
 
 export async function readCloudTransparencyState(accountId, client = prisma, now = new Date()) {
   if (!accountId) return emptyState();
-  const [session, audits, requests] = await Promise.all([
+  const [session, audits, controlAudits, requests] = await Promise.all([
     client.localSupportSession.findFirst({
       where: { accountId, status: "active", revokedAt: null, expiresAt: { gt: now } },
       orderBy: { createdAt: "desc" },
     }),
     client.localSupportCloudAudit.findMany({
+      where: { accountId },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    }),
+    client.localSupportControlAudit.findMany({
       where: { accountId },
       orderBy: { createdAt: "desc" },
       take: 200,
@@ -21,6 +26,8 @@ export async function readCloudTransparencyState(accountId, client = prisma, now
 
   const sent = latestAuditByRequest(audits.filter((item) => item.decision === "sent"));
   const blocked = latestAuditByRequest(audits.filter((item) => item.decision === "denied"));
+  const activityAudits = [...audits, ...controlAudits.map(normalizeControlAudit)]
+    .sort((left, right) => right.createdAt - left.createdAt);
   return {
     scanner_version: audits[0]?.scannerVersion || "scanner-2026.07.05",
     session: session ? {
@@ -67,7 +74,7 @@ export async function readCloudTransparencyState(accountId, client = prisma, now
       bytes_sent: 0,
       at: item.createdAt.toISOString(),
     })),
-    activity: audits.map((item) => ({
+    activity: activityAudits.map((item) => ({
       at: item.createdAt.toISOString(),
       class: item.logClass === "local_support.control" ? "Control" : activityClass(item.decision),
       summary: `${item.decision}: ${item.capability} for ${item.targetDisplay}; ${item.bytesSent} bytes sent.`,
@@ -79,6 +86,14 @@ export async function readCloudTransparencyState(accountId, client = prisma, now
       session_id: session?.sessionId,
       workspace_display: session?.workspaceId,
     },
+  };
+}
+
+function normalizeControlAudit(item) {
+  return {
+    ...item,
+    requestId: item.commandId,
+    bytesSent: 0,
   };
 }
 

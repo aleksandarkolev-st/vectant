@@ -46,6 +46,10 @@ function fakeClient(overrides = {}) {
       findFirst: vi.fn(async () => controlRecord()),
       findUnique: vi.fn(async () => controlRecord()),
     },
+    localSupportControlAudit: {
+      create: vi.fn(async ({ data }) => ({ id: "control-audit-1", ...data })),
+      update: vi.fn(async ({ data }) => ({ id: "control-audit-1", ...data })),
+    },
     localSupportRelayRequest: {
       create: vi.fn(async ({ data }) => requestRecord(data)),
       updateMany: vi.fn(async () => ({ count: 1 })),
@@ -103,6 +107,14 @@ describe("durable local support relay store", () => {
         port: 5173,
       }),
     });
+    expect(client.localSupportControlAudit.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        commandId: "cmd_12345678",
+        decision: "queued",
+        capability: "local_support.revoke_port",
+        bytesSent: 0,
+      }),
+    });
   });
 
   it("leases the oldest control command only for its exact paired device", async () => {
@@ -136,6 +148,10 @@ describe("durable local support relay store", () => {
     expect(client.localSupportControlCommand.updateMany).toHaveBeenCalledWith({
       where: expect.objectContaining({ commandId: "cmd_12345678", leaseId: "lease-control-1" }),
       data: expect.objectContaining({ status: "applied", leaseId: null, leaseExpiresAt: null }),
+    });
+    expect(client.localSupportControlAudit.update).toHaveBeenCalledWith({
+      where: { commandId: "cmd_12345678" },
+      data: expect.objectContaining({ decision: "applied" }),
     });
   });
 

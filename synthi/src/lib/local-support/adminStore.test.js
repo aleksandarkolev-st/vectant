@@ -71,6 +71,7 @@ describe("durable local support admin state", () => {
       },
       localSupportRelayPayload: { deleteMany: vi.fn(async () => ({ count: 1 })) },
       localSupportRelayRequest: { updateMany: vi.fn(async () => ({ count: 1 })) },
+      localSupportControlCommand: { updateMany: vi.fn(async () => ({ count: 1 })) },
     };
     tx.localSupportSession.findMany
       .mockResolvedValueOnce([session])
@@ -91,5 +92,8 @@ describe("durable local support admin state", () => {
       data: expect.objectContaining({ status: "revoked", leaseId: null }),
     }));
     expect(tx.localSupportRelayPayload.deleteMany).toHaveBeenCalled();
+    expect(tx.localSupportControlCommand.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "revoked", leaseId: null }),
+    }));
   });
 });

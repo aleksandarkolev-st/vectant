@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import prisma from "@/lib/prisma";
 
 const DEFAULT_LEASE_MS = 15_000;
@@ -16,7 +16,10 @@ export const LOCAL_CONTROL_COMMAND_ACTIONS = new Set([
 ]);
 
 export async function enqueueLocalControlCommand(
-  { commandId, sessionId, accountId, orgId, workspaceId, deviceFingerprint, action, port, expiresAt },
+  {
+    commandId, sessionId, accountId, orgId, workspaceId, deviceFingerprint, action, port,
+    expiresAt, policyVersion = "unknown", scannerVersion = "not_applicable",
+  },
   client = prisma,
 ) {
   if (!LOCAL_CONTROL_COMMAND_ACTIONS.has(action)) {
@@ -25,18 +28,26 @@ export async function enqueueLocalControlCommand(
   if (action === "revoke_port" && (!Number.isInteger(port) || port < 1 || port > 65_535)) {
     throw new Error("Invalid local control port.");
   }
-  return client.localSupportControlCommand.create({
-    data: {
-      commandId,
-      sessionId,
-      accountId,
-      orgId,
-      workspaceId,
-      deviceFingerprint,
-      action,
-      port: action === "revoke_port" ? port : null,
-      expiresAt: new Date(expiresAt),
-    },
+  const data = {
+    commandId,
+    sessionId,
+    accountId,
+    orgId,
+    workspaceId,
+    deviceFingerprint,
+    action,
+    port: action === "revoke_port" ? port : null,
+    expiresAt: new Date(expiresAt),
+  };
+  return client.$transaction(async (tx) => {
+    const command = await tx.localSupportControlCommand.create({ data });
+    await tx.localSupportControlAudit.create({
+      data: controlAuditData({
+        commandId, sessionId, accountId, orgId, workspaceId, deviceFingerprint, action,
+        decision: "queued", policyVersion, scannerVersion,
+      }),
+    });
+    return command;
   });
 }
 
@@ -102,28 +113,32 @@ export async function recordLocalControlOutcome(
 ) {
   const safeDecision = decision === "applied" ? "applied" : "denied";
   const safeReason = scrubControlReason(reason);
-  return client.localSupportControlCommand.updateMany({
-    where: {
-      commandId,
-      leaseId,
-      sessionId,
-      deviceFingerprint,
-      status: "leased",
-      leaseExpiresAt: { gt: now },
-      expiresAt: { gt: now },
-    },
-    data: {
-      status: safeDecision,
-      completedAt: now,
-      leaseId: null,
-      leaseExpiresAt: null,
-      resultReason: safeReason,
-    },
-  }).then((updated) => updated.count === 1 ? {
-    decision: safeDecision,
-    reason: safeReason,
-    command_id: commandId,
-  } : null);
+  return client.$transaction(async (tx) => {
+    const updated = await tx.localSupportControlCommand.updateMany({
+      where: {
+        commandId,
+        leaseId,
+        sessionId,
+        deviceFingerprint,
+        status: "leased",
+        leaseExpiresAt: { gt: now },
+        expiresAt: { gt: now },
+      },
+      data: {
+        status: safeDecision,
+        completedAt: now,
+        leaseId: null,
+        leaseExpiresAt: null,
+        resultReason: safeReason,
+      },
+    });
+    if (updated.count !== 1) return null;
+    await tx.localSupportControlAudit.update({
+      where: { commandId },
+      data: { decision: safeDecision, reason: safeReason },
+    });
+    return { decision: safeDecision, reason: safeReason, command_id: commandId };
+  });
 }
 
 function scrubControlReason(value) {
@@ -149,6 +164,32 @@ function controlCommandEnvelope(command) {
     expires_at: command.expiresAt.toISOString(),
     lease_id: command.leaseId,
     lease_expires_at: command.leaseExpiresAt.toISOString(),
+  };
+}
+
+function controlAuditData({
+  commandId, sessionId, accountId, orgId, workspaceId, deviceFingerprint, action,
+  decision, policyVersion, scannerVersion, reason = null,
+}) {
+  return {
+    commandId,
+    sessionId,
+    accountId,
+    orgId,
+    workspaceId,
+    deviceFingerprint,
+    actor: "browser_user",
+    capability: `local_support.${action}`,
+    targetDisplay: `workspace:${workspaceId}`,
+    targetHash: `sha256:${createHash("sha256").update(workspaceId).digest("hex")}`,
+    targetClassification: "control",
+    decision,
+    bytesSent: 0,
+    redactionCount: 0,
+    policyVersion: String(policyVersion || "unknown").slice(0, 128),
+    scannerVersion: String(scannerVersion || "not_applicable").slice(0, 128),
+    logClass: "local_support.control",
+    reason: reason ? scrubControlReason(reason) : null,
   };
 }
 

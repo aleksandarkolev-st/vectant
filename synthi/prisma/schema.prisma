@@ -786,6 +786,34 @@ model LocalSupportControlCommand {
   @@index([accountId, createdAt])
 }
 
+model LocalSupportControlAudit {
+  id                  String   @id @default(cuid())
+  commandId           String   @unique
+  sessionId           String
+  accountId           String
+  orgId               String
+  workspaceId         String
+  deviceFingerprint   String
+  actor               String
+  capability          String
+  targetDisplay       String
+  targetHash          String
+  targetClassification String
+  decision            String
+  bytesSent           Int      @default(0)
+  redactionCount      Int      @default(0)
+  policyVersion       String
+  scannerVersion      String
+  logClass            String
+  reason              String?
+  createdAt           DateTime @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([sessionId, createdAt])
+  @@index([decision, createdAt])
+  @@index([logClass, createdAt])
+}
+
 // Product/security audit summaries are deliberately separate from relay
 // delivery state so retention and access policy can differ. There is no raw
 // request or response body column in this model.
