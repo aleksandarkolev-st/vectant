@@ -62,4 +62,50 @@ describe.skipIf(!run)("Local Support durable policy on PostgreSQL", () => {
       await prisma.$disconnect();
     }
   });
+
+  it("keeps global restrictions authoritative over an organization row", async () => {
+    const updatedBy = `postgres-org-e2e-${Date.now()}`;
+    const orgId = `org_postgres_${Date.now()}`;
+    try {
+      await prisma.localSupportPolicyState.deleteMany({
+        where: { id: { in: ["global", `org_${orgId}`] } },
+      });
+      await updateDurableLocalSupportPolicy({
+        action: "update_policy",
+        global_enabled: false,
+        pairing_disabled: true,
+        preview_disabled: true,
+        min_app_version: "0.4.0",
+        vulnerable_versions: ["0.2.0"],
+        retention_days: 7,
+      }, updatedBy);
+      await updateDurableLocalSupportPolicy({
+        action: "update_policy",
+        org_id: orgId,
+        global_enabled: true,
+        pairing_disabled: false,
+        preview_disabled: false,
+        min_app_version: "0.1.0",
+        vulnerable_versions: ["0.3.0"],
+        retention_days: 30,
+      }, updatedBy);
+
+      const policy = await readDurableLocalSupportPolicy({}, prisma, orgId);
+
+      expect(policy).toMatchObject({
+        enabled: false,
+        global_enabled: false,
+        pairing_disabled: true,
+        min_app_version: "0.4.0",
+        vulnerable_versions: expect.arrayContaining(["0.2.0", "0.3.0"]),
+        retention: { local_activity_days: 7, cloud_security_event_days: 7 },
+        emergency_controls: { preview_gateway_disabled: true },
+      });
+    } finally {
+      await prisma.localSupportPolicyState.deleteMany({
+        where: { id: { in: ["global", `org_${orgId}`] } },
+      });
+      await prisma.$disconnect();
+    }
+  });
 });
