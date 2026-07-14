@@ -1,6 +1,6 @@
 //! Bounded, shell-free command execution for Full Access diagnostics.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -65,6 +65,7 @@ pub async fn execute_command_cancellable(
     cancelled: Arc<AtomicBool>,
 ) -> Result<CommandContext, CommandError> {
     validate_request(workspace, policy, &request)?;
+    let executable_path = resolve_executable_outside_workspace(workspace, &request.executable)?;
     let output_cap = request
         .max_output_bytes
         .min(policy.max_command_output_bytes);
@@ -73,7 +74,7 @@ pub async fn execute_command_cancellable(
             .timeout_seconds
             .min(policy.max_command_timeout_seconds),
     );
-    let mut command = Command::new(&request.executable);
+    let mut command = Command::new(executable_path);
     command
         .current_dir(workspace)
         .args(&request.arguments)
@@ -225,6 +226,40 @@ fn safe_executable(value: &str) -> bool {
         && value
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+fn resolve_executable_outside_workspace(
+    workspace: &Path,
+    executable: &str,
+) -> Result<PathBuf, CommandError> {
+    let canonical_workspace = workspace
+        .canonicalize()
+        .map_err(|_| CommandError::InvalidRequest)?;
+    let mut names = vec![executable.to_string()];
+    #[cfg(windows)]
+    if !executable.to_ascii_lowercase().ends_with(".exe") {
+        names.push(format!("{executable}.exe"));
+    }
+    let path = std::env::var_os("PATH").ok_or(CommandError::ExecutableDenied)?;
+    for directory in std::env::split_paths(&path) {
+        for executable_name in &names {
+            let candidate = directory.join(executable_name);
+            let Ok(canonical) = candidate.canonicalize() else {
+                continue;
+            };
+            if canonical.starts_with(&canonical_workspace) || !canonical.is_file() {
+                continue;
+            }
+            let filename_matches = canonical
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case(executable_name));
+            if filename_matches {
+                return Ok(canonical);
+            }
+        }
+    }
+    Err(CommandError::ExecutableDenied)
 }
 fn dangerous_argument(value: &str) -> bool {
     value.contains(['|', '&', ';', '>', '<', '`', '$', '\n', '\r'])
@@ -487,5 +522,14 @@ mod tests {
         let debug = format!("{command:?}");
         assert!(!debug.contains("AWS_SECRET_ACCESS_KEY"));
         assert!(!debug.contains("DATABASE_URL"));
+    }
+
+    #[test]
+    fn resolves_allowlisted_tool_outside_the_selected_workspace() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable =
+            super::resolve_executable_outside_workspace(directory.path(), "rustc").unwrap();
+        assert!(!executable.starts_with(directory.path()));
+        assert!(executable.is_file());
     }
 }
