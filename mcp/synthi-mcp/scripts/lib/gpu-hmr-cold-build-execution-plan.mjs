@@ -842,12 +842,12 @@ export async function verifyColdBuildLauncherExecutionInputs(plan, {
   ) {
     throw new Error('cold_build_execution_plan_identity_invalid');
   }
-  if (!['before_create', 'after_create'].includes(phase)) {
+  if (!['before_create', 'after_create', 'after_collection'].includes(phase)) {
     throw new Error('cold_build_execution_input_phase_invalid');
   }
-  const boundContainerId = phase === 'after_create'
-    ? requireContainerId(expectedContainerId)
-    : null;
+  const boundContainerId = phase === 'before_create'
+    ? null
+    : requireContainerId(expectedContainerId);
   if (phase === 'before_create' && expectedContainerId != null) {
     throw new Error('cold_build_execution_input_container_id_unexpected');
   }
