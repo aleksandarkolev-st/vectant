@@ -123,6 +123,7 @@
     "proof:random-large-project:cold:execution-driver:self-check": "node scripts/tests/gpu-hmr-cold-build-execution-driver-self-check.mjs",
     "proof:random-large-project:cold:contract:self-check": "node scripts/tests/gpu-hmr-arbitrary-cold-project-contract-self-check.mjs",
     "proof:random-large-project:cold:source-binding:self-check": "node scripts/tests/gpu-hmr-cold-build-source-tree-binding-self-check.mjs",
+    "proof:arbitrary-project:cold:image:self-check": "node scripts/tests/gpu-hmr-cold-build-worker-image-self-check.mjs",
     "proof:runtime-profile": "node scripts/gpu-hmr-runtime-profile-proof.mjs",
     "proof:runtime-profile:self-check": "node scripts/gpu-hmr-runtime-profile-proof.mjs --self-check",
     "proof:runtime-boundary-adapter:self-check": "node scripts/tests/gpu-hmr-runtime-boundary-proof-adapter-smoke.mjs",

@@ -1,0 +1,252 @@
+import { createHash } from 'node:crypto';
+
+import { runColdBuildHostProcess } from './gpu-hmr-cold-build-container-contract.mjs';
+
+export const COLD_BUILD_WORKER_IMAGE_EVIDENCE_SCHEMA =
+  'synthi.gpu_hmr.cold_build_worker_image_evidence.v1';
+export const COLD_BUILD_WORKER_IMAGE_EVIDENCE_AUTHORITY =
+  'immutable_local_image_inspection_only_not_gpu_hmr_success';
+
+const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const DIGEST_REFERENCE_PATTERN = /^[^\s@\0\r\n]+@sha256:[a-f0-9]{64}$/;
+const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const PINNED_RESULTS = new WeakMap();
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${stableJson(value[key])}`
+    )).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function contentHash(value) {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(String(value), 'utf8');
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function recomputeEvidenceHash(evidence) {
+  const projection = { ...evidence };
+  delete projection.evidenceHash;
+  return contentHash(stableJson(projection));
+}
+
+function normalizeImageReference(value) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 2048) {
+    throw new Error('cold_build_worker_image_reference_invalid');
+  }
+  if (SHA256_PATTERN.test(value)) {
+    return { value, kind: 'image_id' };
+  }
+  if (DIGEST_REFERENCE_PATTERN.test(value)) {
+    return { value, kind: 'repo_digest' };
+  }
+  throw new Error('cold_build_worker_image_reference_not_immutable');
+}
+
+function normalizeEnvironment(value) {
+  if (value !== null && value !== undefined && !Array.isArray(value)) {
+    throw new Error('cold_build_worker_image_environment_invalid');
+  }
+  const byName = new Map();
+  for (const entry of value ?? []) {
+    if (
+      typeof entry !== 'string'
+      || Buffer.byteLength(entry, 'utf8') > 64 * 1024
+      || /[\0\r\n]/.test(entry)
+    ) {
+      throw new Error('cold_build_worker_image_environment_invalid');
+    }
+    const separator = entry.indexOf('=');
+    const name = separator > 0 ? entry.slice(0, separator) : '';
+    if (!ENVIRONMENT_NAME_PATTERN.test(name) || byName.has(name)) {
+      throw new Error('cold_build_worker_image_environment_invalid');
+    }
+    byName.set(name, entry);
+  }
+  if (byName.size > 256) {
+    throw new Error('cold_build_worker_image_environment_invalid');
+  }
+  return [...byName.values()].sort();
+}
+
+function normalizeRepoDigests(value) {
+  if (value !== null && value !== undefined && !Array.isArray(value)) {
+    throw new Error('cold_build_worker_image_repo_digests_invalid');
+  }
+  const digests = (value ?? []).map((entry) => {
+    if (typeof entry !== 'string' || !DIGEST_REFERENCE_PATTERN.test(entry)) {
+      throw new Error('cold_build_worker_image_repo_digests_invalid');
+    }
+    return entry;
+  }).sort();
+  if (new Set(digests).size !== digests.length || digests.length > 256) {
+    throw new Error('cold_build_worker_image_repo_digests_invalid');
+  }
+  return digests;
+}
+
+function descriptorProjection(descriptor) {
+  return {
+    imageId: descriptor.imageId,
+    operatingSystem: descriptor.operatingSystem,
+    architecture: descriptor.architecture,
+    environment: descriptor.environment,
+    repoDigests: descriptor.repoDigests,
+  };
+}
+
+function buildProjection(rawDescriptor, reference) {
+  const imageId = rawDescriptor?.Id;
+  const operatingSystem = rawDescriptor?.Os;
+  const architecture = rawDescriptor?.Architecture;
+  if (
+    !SHA256_PATTERN.test(imageId ?? '')
+    || operatingSystem !== 'linux'
+    || !['amd64', 'arm64'].includes(architecture)
+  ) {
+    throw new Error('cold_build_worker_image_descriptor_invalid');
+  }
+  const environment = normalizeEnvironment(rawDescriptor?.Config?.Env);
+  const repoDigests = normalizeRepoDigests(rawDescriptor?.RepoDigests);
+  const referenceMatches = reference.kind === 'image_id'
+    ? reference.value === imageId
+    : repoDigests.includes(reference.value);
+  if (!referenceMatches) {
+    throw new Error('cold_build_worker_image_reference_mismatch');
+  }
+  return {
+    imageId,
+    operatingSystem,
+    architecture,
+    environment,
+    repoDigests,
+  };
+}
+
+function verifyProjection(result, reference) {
+  const descriptor = result?.descriptor;
+  const evidence = result?.evidence;
+  const normalized = {
+    imageId: descriptor?.imageId,
+    operatingSystem: descriptor?.operatingSystem,
+    architecture: descriptor?.architecture,
+    environment: normalizeEnvironment(descriptor?.environment),
+    repoDigests: normalizeRepoDigests(descriptor?.repoDigests),
+  };
+  if (
+    !SHA256_PATTERN.test(normalized.imageId ?? '')
+    || normalized.operatingSystem !== 'linux'
+    || !['amd64', 'arm64'].includes(normalized.architecture)
+    || (reference.kind === 'image_id'
+      ? reference.value !== normalized.imageId
+      : !normalized.repoDigests.includes(reference.value))
+  ) {
+    throw new Error('cold_build_worker_image_evidence_invalid');
+  }
+  const descriptorHash = contentHash(stableJson(descriptorProjection(normalized)));
+  const environmentHash = contentHash(stableJson(normalized.environment));
+  const repoDigestSetHash = contentHash(stableJson(normalized.repoDigests));
+  if (
+    evidence?.schemaVersion !== COLD_BUILD_WORKER_IMAGE_EVIDENCE_SCHEMA
+    || evidence?.proofAuthority !== COLD_BUILD_WORKER_IMAGE_EVIDENCE_AUTHORITY
+    || evidence?.requestedImageReferenceHash !== contentHash(reference.value)
+    || evidence?.requestedImageReferenceKind !== reference.kind
+    || evidence?.imageId !== normalized.imageId
+    || evidence?.operatingSystem !== normalized.operatingSystem
+    || evidence?.architecture !== normalized.architecture
+    || evidence?.descriptorHash !== descriptorHash
+    || evidence?.environmentHash !== environmentHash
+    || evidence?.repoDigestSetHash !== repoDigestSetHash
+    || evidence?.acceptedAsWorkerImageEvidence !== true
+    || evidence?.acceptedForGpuHmr !== false
+    || evidence?.gpuHmrSuccess !== false
+    || evidence?.canSatisfyRuntimeProof !== false
+    || evidence?.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(evidence) !== evidence?.evidenceHash
+  ) {
+    throw new Error('cold_build_worker_image_evidence_invalid');
+  }
+  return normalized;
+}
+
+export async function inspectImmutableColdBuildWorkerImage(imageReference, {
+  dockerExecutable = 'docker',
+  timeoutMs = 30_000,
+} = {}) {
+  const reference = normalizeImageReference(imageReference);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 120_000) {
+    throw new Error('cold_build_worker_image_timeout_invalid');
+  }
+  const inspection = await runColdBuildHostProcess(
+    dockerExecutable,
+    ['image', 'inspect', reference.value],
+    {
+      timeoutMs,
+      maxStdoutBytes: 4 * 1024 * 1024,
+      maxStderrBytes: 256 * 1024,
+      encoding: 'utf8',
+    },
+  );
+  if (inspection.exitCode !== 0 || inspection.timedOut === true) {
+    throw new Error('cold_build_worker_image_inspection_failed');
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(inspection.stdout);
+  } catch {
+    throw new Error('cold_build_worker_image_inspection_json_invalid');
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 1) {
+    throw new Error('cold_build_worker_image_inspection_cardinality_invalid');
+  }
+  const descriptor = buildProjection(parsed[0], reference);
+  const evidence = {
+    schemaVersion: COLD_BUILD_WORKER_IMAGE_EVIDENCE_SCHEMA,
+    proofAuthority: COLD_BUILD_WORKER_IMAGE_EVIDENCE_AUTHORITY,
+    requestedImageReferenceHash: contentHash(reference.value),
+    requestedImageReferenceKind: reference.kind,
+    imageId: descriptor.imageId,
+    operatingSystem: descriptor.operatingSystem,
+    architecture: descriptor.architecture,
+    descriptorHash: contentHash(stableJson(descriptorProjection(descriptor))),
+    environmentHash: contentHash(stableJson(descriptor.environment)),
+    repoDigestSetHash: contentHash(stableJson(descriptor.repoDigests)),
+    acceptedAsWorkerImageEvidence: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  evidence.evidenceHash = recomputeEvidenceHash(evidence);
+  const result = { descriptor, evidence };
+  PINNED_RESULTS.set(result, Object.freeze({
+    reference: reference.value,
+    kind: reference.kind,
+    evidenceHash: evidence.evidenceHash,
+  }));
+  return result;
+}
+
+export function verifyImmutableColdBuildWorkerImage(result, imageReference) {
+  const reference = normalizeImageReference(imageReference);
+  const pinned = PINNED_RESULTS.get(result);
+  let normalized;
+  try {
+    normalized = verifyProjection(result, reference);
+  } catch {
+    throw new Error('cold_build_worker_image_evidence_invalid');
+  }
+  if (
+    !pinned
+    || pinned.reference !== reference.value
+    || pinned.kind !== reference.kind
+    || pinned.evidenceHash !== result?.evidence?.evidenceHash
+    || stableJson(result?.descriptor) !== stableJson(normalized)
+  ) {
+    throw new Error('cold_build_worker_image_evidence_invalid');
+  }
+  return result;
+}
