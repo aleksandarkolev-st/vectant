@@ -21,12 +21,14 @@ export default function LocalSupportAdmin() {
   const [token, setToken] = useState("");
   const [state, setState] = useState(null);
   const [policy, setPolicy] = useState(EMPTY_POLICY);
+  const [orgId, setOrgId] = useState("");
   const [status, setStatus] = useState("Enter the operations token to load live controls.");
   const [busy, setBusy] = useState(false);
 
   async function request(body) {
     if (token.length < 8) throw new Error("Enter a valid operations token.");
-    const response = await fetch("/api/local-support/admin/state", {
+    const scope = !body && orgId.trim() ? `?org_id=${encodeURIComponent(orgId.trim())}` : "";
+    const response = await fetch(`/api/local-support/admin/state${scope}`, {
       method: body ? "POST" : "GET",
       cache: "no-store",
       headers: {
@@ -48,6 +50,7 @@ export default function LocalSupportAdmin() {
       const result = await request();
       setState(result);
       setPolicy({ ...EMPTY_POLICY, ...result.policy });
+      setOrgId(result.policy?.org_id || orgId.trim());
       setStatus("Live policy and operations state loaded.");
     } catch (error) {
       setStatus(error.message);
@@ -59,7 +62,7 @@ export default function LocalSupportAdmin() {
   async function savePolicy() {
     setBusy(true);
     try {
-      await request({ action: "update_policy", ...policy });
+      await request({ action: "update_policy", ...(orgId.trim() ? { org_id: orgId.trim() } : {}), ...policy });
       setStatus("Policy updated. New requests use it immediately.");
       await load();
     } catch (error) {
@@ -123,6 +126,9 @@ export default function LocalSupportAdmin() {
                   <span><span className="block text-sm font-medium">{label}</span><span className="mt-1 block text-xs leading-5 text-zinc-500">{help}</span></span>
                 </label>
               ))}
+            </div>
+            <div className="mt-4 max-w-md">
+              <Field label="Organization scope (blank = global)" value={orgId} onChange={setOrgId} />
             </div>
             <div className="mt-4 grid gap-4 sm:grid-cols-3">
               <Field label="Minimum app version" value={policy.min_app_version} onChange={(value) => setPolicy((item) => ({ ...item, min_app_version: value }))} />
