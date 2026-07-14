@@ -3348,6 +3348,18 @@ fn update_manifest_supports_emergency_version_revocation() {
         Err(UpdateError::VersionRevoked)
     );
 
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", vec!["0.2".to_string()]);
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::VersionRevoked)
+    );
+
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", vec!["0.1".to_string()]);
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::VersionRevoked)
+    );
+
     let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.2.0", Vec::new());
     assert_eq!(
         verify_update_manifest(&trusted_key, "0.1.0", &manifest),

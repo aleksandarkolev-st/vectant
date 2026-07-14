@@ -66,14 +66,14 @@ pub fn verify_update_manifest(
     if manifest
         .emergency_revoked_versions
         .iter()
-        .any(|version| version == current_version)
+        .any(|version| versions_equal(version, current_version))
     {
         return Err(UpdateError::VersionRevoked);
     }
     if manifest
         .emergency_revoked_versions
         .iter()
-        .any(|version| version == &manifest.app_version)
+        .any(|version| versions_equal(version, &manifest.app_version))
     {
         return Err(UpdateError::VersionRevoked);
     }
@@ -204,6 +204,10 @@ fn compare_versions(left: &str, right: &str) -> i8 {
         }
     }
     0
+}
+
+fn versions_equal(left: &str, right: &str) -> bool {
+    compare_versions(left, right) == 0
 }
 
 fn parse_version(value: &str) -> Vec<u32> {
