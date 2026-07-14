@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -106,6 +107,16 @@ try {
     }),
     /source_limits_exceed_policy/,
   );
+  const missingArtifactRoot = path.join(sourceRoot, 'must-not-be-created');
+  await assert.rejects(
+    () => runArbitraryColdProject(descriptor, { artifactRoot: missingArtifactRoot }),
+    /artifact_root_invalid/,
+  );
+  await assert.rejects(() => readFile(missingArtifactRoot), /ENOENT/);
+  await assert.rejects(
+    () => runArbitraryColdProject(descriptor, { artifactRoot: sourceRoot }),
+    /artifact_source_overlap/,
+  );
 
   const runDescriptor = structuredClone(descriptor);
   const pendingRun = runArbitraryColdProject(runDescriptor, { artifactRoot });
@@ -154,6 +165,17 @@ try {
   assert.ok(!JSON.stringify(result.evidence).match(
     /miopen|hiprt|flow|diamond|neural|blas|cuda|rocm|project_name|fixture_name/i,
   ));
+
+  const movedArtifactSessionRoot = `${result.artifactSessionRoot}-moved`;
+  await rename(result.artifactSessionRoot, movedArtifactSessionRoot);
+  await mkdir(result.artifactSessionRoot);
+  await assert.rejects(
+    () => verifyArbitraryColdProjectRun(result),
+    /artifact_session_identity_changed|result_invalid/,
+  );
+  await rm(result.artifactSessionRoot, { recursive: true, force: true });
+  await rename(movedArtifactSessionRoot, result.artifactSessionRoot);
+  assert.equal(await verifyArbitraryColdProjectRun(result), result);
 
   const descriptorPath = path.join(root, 'descriptor.json');
   const cliArtifactRoot = path.join(root, 'cli retained artifact cas');

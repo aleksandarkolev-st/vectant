@@ -153,6 +153,11 @@ function pathIdentityHash(value) {
   return contentHash(process.platform === 'win32' ? normalized.toLowerCase() : normalized);
 }
 
+function comparablePath(value) {
+  const resolved = path.resolve(value);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
 function sameOrInside(candidate, parent) {
   const relative = path.relative(parent, candidate);
   return relative === '' || (
@@ -326,37 +331,108 @@ async function removePrivateOrchestrationRoot(root) {
   await rm(resolved, { recursive: true, force: true });
 }
 
-async function createArtifactSessionRoot(artifactRoot, sourceRoot) {
-  const requested = requireHostPath(artifactRoot, 'artifact_root');
-  await mkdir(requested, { recursive: true });
-  const [metadata, canonical] = await Promise.all([lstat(requested), realpath(requested)]);
-  const compare = (value) => process.platform === 'win32'
-    ? path.resolve(value).toLowerCase()
-    : path.resolve(value);
-  if (
-    metadata.isSymbolicLink()
-    || !metadata.isDirectory()
-    || compare(canonical) !== compare(requested)
-  ) {
-    throw new Error('arbitrary_cold_runner_artifact_root_invalid');
+async function observeDirectoryIdentity(directory, errorCode) {
+  try {
+    const [metadata, canonicalPath] = await Promise.all([
+      lstat(directory, { bigint: true }),
+      realpath(directory),
+    ]);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error(errorCode);
+    }
+    return Object.freeze({
+      canonicalPath,
+      device: metadata.dev.toString(),
+      inode: metadata.ino.toString(),
+    });
+  } catch {
+    throw new Error(errorCode);
   }
-  const canonicalSource = await realpath(sourceRoot);
-  if (sameOrInside(canonical, canonicalSource) || sameOrInside(canonicalSource, canonical)) {
-    throw new Error('arbitrary_cold_runner_artifact_source_overlap');
-  }
-  const sessionRoot = await mkdtemp(path.join(canonical, 'cold-run-'));
-  const sessionMetadata = await lstat(sessionRoot);
-  if (sessionMetadata.isSymbolicLink() || !sessionMetadata.isDirectory()) {
-    throw new Error('arbitrary_cold_runner_artifact_session_invalid');
-  }
-  return sessionRoot;
 }
 
-async function persistOutputs(outputEvidence, artifactRoot, sessionNamespace) {
+async function verifyDirectoryIdentity(identity, errorCode) {
+  const observed = await observeDirectoryIdentity(identity.canonicalPath, errorCode);
+  if (
+    comparablePath(observed.canonicalPath) !== comparablePath(identity.canonicalPath)
+    || observed.device !== identity.device
+    || observed.inode !== identity.inode
+  ) {
+    throw new Error(errorCode);
+  }
+  return observed;
+}
+
+async function inspectArtifactRoot(artifactRoot, sourceRoot) {
+  const requested = requireHostPath(artifactRoot, 'artifact_root');
+  const [identity, canonicalSource] = await Promise.all([
+    observeDirectoryIdentity(requested, 'arbitrary_cold_runner_artifact_root_invalid'),
+    realpath(sourceRoot),
+  ]);
+  if (comparablePath(identity.canonicalPath) !== comparablePath(requested)) {
+    throw new Error('arbitrary_cold_runner_artifact_root_invalid');
+  }
+  if (
+    sameOrInside(identity.canonicalPath, canonicalSource)
+    || sameOrInside(canonicalSource, identity.canonicalPath)
+  ) {
+    throw new Error('arbitrary_cold_runner_artifact_source_overlap');
+  }
+  return identity;
+}
+
+async function createArtifactSessionRoot(artifactRootIdentity) {
+  await verifyDirectoryIdentity(
+    artifactRootIdentity,
+    'arbitrary_cold_runner_artifact_root_identity_changed',
+  );
+  const requestedSessionPath = await mkdtemp(path.join(
+    artifactRootIdentity.canonicalPath,
+    'cold-run-',
+  ));
+  const sessionIdentity = await observeDirectoryIdentity(
+    requestedSessionPath,
+    'arbitrary_cold_runner_artifact_session_invalid',
+  );
+  await verifyDirectoryIdentity(
+    artifactRootIdentity,
+    'arbitrary_cold_runner_artifact_root_identity_changed',
+  );
+  if (
+    comparablePath(requestedSessionPath) !== comparablePath(sessionIdentity.canonicalPath)
+    || comparablePath(path.dirname(sessionIdentity.canonicalPath))
+      !== comparablePath(artifactRootIdentity.canonicalPath)
+  ) {
+    throw new Error('arbitrary_cold_runner_artifact_session_invalid');
+  }
+  return Object.freeze({
+    ...sessionIdentity,
+    parent: artifactRootIdentity,
+  });
+}
+
+async function verifyArtifactSessionRoot(sessionIdentity) {
+  await verifyDirectoryIdentity(
+    sessionIdentity.parent,
+    'arbitrary_cold_runner_artifact_root_identity_changed',
+  );
+  await verifyDirectoryIdentity(
+    sessionIdentity,
+    'arbitrary_cold_runner_artifact_session_identity_changed',
+  );
+  if (
+    comparablePath(path.dirname(sessionIdentity.canonicalPath))
+    !== comparablePath(sessionIdentity.parent.canonicalPath)
+  ) {
+    throw new Error('arbitrary_cold_runner_artifact_session_identity_changed');
+  }
+}
+
+async function persistOutputs(outputEvidence, artifactSession, sessionNamespace) {
   const persisted = [];
   for (const output of outputEvidence.outputs) {
+    await verifyArtifactSessionRoot(artifactSession);
     const locator = await writeArtifactToCas(output.bytes, {
-      artifactRoot,
+      artifactRoot: artifactSession.canonicalPath,
       artifactKind: 'cold_build_artifact',
       mediaType: output.metadata.declaredMediaType,
       role: 'cold_build_output',
@@ -365,10 +441,12 @@ async function persistOutputs(outputEvidence, artifactRoot, sessionNamespace) {
       sessionNamespace,
       includeLocalPath: true,
     });
+    await verifyArtifactSessionRoot(artifactSession);
     const transportEvidence = await validateArtifactCasManifest(locator, {
-      artifactRoot,
-      allowedRoots: [artifactRoot],
+      artifactRoot: artifactSession.canonicalPath,
+      allowedRoots: [artifactSession.canonicalPath],
     });
+    await verifyArtifactSessionRoot(artifactSession);
     if (
       transportEvidence.accepted !== true
       || transportEvidence.acceptedAsTransportEvidence !== true
@@ -414,6 +492,11 @@ export async function runArbitraryColdProject(descriptorInput, {
     policy: normalizedPolicy,
   });
   const descriptorHash = contentHash(stableJson(descriptor));
+  const artifactRootStarted = process.hrtime.bigint();
+  const artifactRootIdentity = await inspectArtifactRoot(artifactRoot, descriptor.sourceRoot);
+  const artifactRootValidationNanos = Number(
+    process.hrtime.bigint() - artifactRootStarted
+  );
   const imageStarted = process.hrtime.bigint();
   const workerImage = await inspectImmutableColdBuildWorkerImage(
     descriptor.workerImage,
@@ -506,13 +589,10 @@ export async function runArbitraryColdProject(descriptorInput, {
     const outputEvidenceNanos = Number(process.hrtime.bigint() - outputStarted);
 
     const persistenceStarted = process.hrtime.bigint();
-    const artifactSessionRoot = await createArtifactSessionRoot(
-      artifactRoot,
-      descriptor.sourceRoot,
-    );
+    const artifactSession = await createArtifactSessionRoot(artifactRootIdentity);
     const outputs = await persistOutputs(
       outputEvidence,
-      artifactSessionRoot,
+      artifactSession,
       `cold-${plan.planHash.slice('sha256:'.length, 'sha256:'.length + 24)}`,
     );
     const artifactPersistenceNanos = Number(process.hrtime.bigint() - persistenceStarted);
@@ -534,12 +614,13 @@ export async function runArbitraryColdProject(descriptorInput, {
       outputEvidenceHash: outputEvidence.evidence.evidenceHash,
       outputSetHash: outputEvidence.evidence.outputSetHash,
       outputContractHash: contentHash(stableJson(expectedOutputContract)),
-      artifactSessionRootIdentityHash: pathIdentityHash(artifactSessionRoot),
+      artifactSessionRootIdentityHash: pathIdentityHash(artifactSession.canonicalPath),
       artifactLocatorSetHash: contentHash(stableJson(locatorProjection)),
       artifactCount: outputs.length,
       timings: {
         metricClock: 'monotonic_ns',
         metricScope: 'cold',
+        artifactRootValidationNanos,
         imageInspectionNanos,
         sourceBindingNanos,
         launcherMaterializationNanos,
@@ -559,12 +640,12 @@ export async function runArbitraryColdProject(descriptorInput, {
     const result = {
       evidence,
       outputs,
-      artifactSessionRoot,
+      artifactSessionRoot: artifactSession.canonicalPath,
     };
     PINNED_RUNS.set(result, Object.freeze({
       descriptor,
       descriptorHash,
-      artifactSessionRoot,
+      artifactSession,
       sourceTreeBindingEvidence,
       workerImage,
       contract,
@@ -586,6 +667,7 @@ export async function verifyArbitraryColdProjectRun(result) {
     throw new Error('arbitrary_cold_runner_result_invalid');
   }
   try {
+    await verifyArtifactSessionRoot(pinned.artifactSession);
     verifyColdBuildSourceTreeBindingEvidence(
       pinned.sourceTreeBindingEvidence,
       pinned.descriptor.sourceRoot,
@@ -620,9 +702,10 @@ export async function verifyArbitraryColdProjectRun(result) {
       throw new Error('arbitrary_cold_runner_result_invalid');
     }
     const transportEvidence = await validateArtifactCasManifest(output.artifactLocator, {
-      artifactRoot: pinned.artifactSessionRoot,
-      allowedRoots: [pinned.artifactSessionRoot],
+      artifactRoot: pinned.artifactSession.canonicalPath,
+      allowedRoots: [pinned.artifactSession.canonicalPath],
     });
+    await verifyArtifactSessionRoot(pinned.artifactSession);
     if (
       transportEvidence.accepted !== true
       || transportEvidence.acceptedAsTransportEvidence !== true
@@ -636,7 +719,7 @@ export async function verifyArbitraryColdProjectRun(result) {
   if (
     pinned.evidenceHash !== evidence?.evidenceHash
     || pinned.descriptorHash !== contentHash(stableJson(pinned.descriptor))
-    || result?.artifactSessionRoot !== pinned.artifactSessionRoot
+    || result?.artifactSessionRoot !== pinned.artifactSession.canonicalPath
     || evidence?.schemaVersion !== ARBITRARY_COLD_PROJECT_RUN_SCHEMA
     || evidence?.proofAuthority !== ARBITRARY_COLD_PROJECT_RUN_AUTHORITY
     || evidence?.descriptorHash !== pinned.descriptorHash
@@ -654,7 +737,8 @@ export async function verifyArbitraryColdProjectRun(result) {
     || evidence?.outputSetHash !== pinned.outputEvidence.evidence.outputSetHash
     || evidence?.outputContractHash !== contentHash(stableJson(expectedOutputContract))
     || stableJson(expectedOutputContract) !== stableJson(observedOutputContract)
-    || evidence?.artifactSessionRootIdentityHash !== pathIdentityHash(pinned.artifactSessionRoot)
+    || evidence?.artifactSessionRootIdentityHash
+      !== pathIdentityHash(pinned.artifactSession.canonicalPath)
     || evidence?.artifactLocatorSetHash !== contentHash(stableJson(locatorProjection))
     || evidence?.artifactCount !== outputs.length
     || evidence?.timings?.metricClock !== 'monotonic_ns'
