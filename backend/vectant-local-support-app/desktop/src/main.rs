@@ -1391,7 +1391,7 @@ async fn release_relay_approval(
         .content_sha256
         .as_deref()
         .ok_or_else(|| "Approved relay payload hash was missing. Nothing was sent.".to_string())?;
-    let bytes_sent = runtime
+    let bytes_sent = match runtime
         .relay_client
         .upload_approved_payload(
             &runtime.device_identity,
@@ -1404,8 +1404,32 @@ async fn release_relay_approval(
                 scanner_version: &response.scanner_version,
             },
         )
-        .await?;
+        .await
+    {
+        Ok(bytes_sent) => bytes_sent,
+        Err(error) => {
+            clear_pending_relay_approval(runtime, &pending.delivery.request_id);
+            let _ = runtime
+                .relay_client
+                .deny_reviewed_request(
+                    &runtime.device_identity,
+                    &pending.delivery.session_id,
+                    &pending.delivery.request_id,
+                )
+                .await;
+            let _ = append_control_event(
+                state,
+                &pending.delivery.request_id,
+                "Approved relay payload delivery status was uncertain. The local session was disconnected before further sends.",
+            )
+            .await;
+            let _ = shutdown_cleanup(state, "relay_delivery_uncertain").await;
+            return Err(error);
+        }
+    };
     if bytes_sent != content.len() {
+        clear_pending_relay_approval(runtime, &pending.delivery.request_id);
+        let _ = shutdown_cleanup(state, "relay_bytes_mismatch").await;
         return Err(
             "Relay payload receipt byte count did not match. Session should be disconnected."
                 .to_string(),
@@ -1431,11 +1455,19 @@ async fn release_relay_approval(
         true,
     );
     if let Some(store) = &state.audit_store {
-        store
-            .persist(&audit)
-            .map_err(|_| "Sent activity could not be persisted locally.".to_string())?;
+        if store.persist(&audit).is_err() {
+            drop(audit);
+            let _ = shutdown_cleanup(state, "relay_audit_persist_failed").await;
+            return Err("Sent activity could not be persisted locally.".to_string());
+        }
     }
     Ok(())
+}
+
+fn clear_pending_relay_approval(runtime: &DesktopRuntime, request_id: &str) {
+    if let Ok(mut pending) = runtime.pending_relay_approvals.write() {
+        pending.remove(request_id);
+    }
 }
 
 fn relay_release_context_allowed(
