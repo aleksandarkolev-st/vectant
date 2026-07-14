@@ -33,6 +33,7 @@ use crate::preview::{
     validate_preview_response_size, PortApproval, PortApprovalOptions, PortApprovalRegistry,
     PreviewDecision, PreviewRedirectDecision, PreviewTrafficGuard, MAX_PREVIEW_RESPONSE_BYTES,
 };
+use crate::process_adapter::ProcessInspectionAdapter;
 use crate::scanner::SecretScanner;
 use crate::session::SessionGuard;
 use crate::workspace::{FileReadRequest, FileReadResponse, WorkspacePolicy};
@@ -283,6 +284,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/full-access/graph/node", post(full_access_graph_node))
         .route("/v1/full-access/mutation", post(full_access_mutation))
         .route("/v1/full-access/mutation/revert", post(full_access_revert))
+        .route(
+            "/v1/full-access/processes/:request_id",
+            get(full_access_processes),
+        )
         .route("/v1/session/pause/:request_id", post(pause_session))
         .route("/v1/session/resume/:request_id", post(resume_session))
         .route(
@@ -868,6 +873,68 @@ async fn full_access_revert(
         "raw_bodies_included": false,
         "bytes_sent": 0
     })))
+}
+
+async fn full_access_processes(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    validate_safe_request_id(&request_id)?;
+    let token = bearer(&headers)?;
+    let (session_id, account_id, org_id, device_fingerprint) = {
+        let mut session = state.session.lock().await;
+        session
+            .validate(token, &request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+        (
+            session.session_id().to_string(),
+            session.account_id().to_string(),
+            session.org_id().to_string(),
+            session.device_fingerprint().to_string(),
+        )
+    };
+    let workspace_hash = state.workspace.summary().root_hash;
+    let full_access = state.full_access.lock().await;
+    let receipt = full_access
+        .receipt
+        .clone()
+        .ok_or_else(|| denied(StatusCode::FORBIDDEN, "full_access_not_enrolled"))?;
+    let binding = ReceiptBinding {
+        session_id: &session_id,
+        account_id: &account_id,
+        organization_id: &org_id,
+        actor: &receipt.support_actor,
+        device_fingerprint: &device_fingerprint,
+        workspace_hash: &workspace_hash,
+        policy_version: crate::POLICY_VERSION,
+        scanner_version: crate::SCANNER_VERSION,
+        app_version: &receipt.app_version,
+        policy_major: full_access.policy.policy_major,
+        capability: crate::full_access::FullAccessCapability::ProcessInventory,
+    };
+    authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
+        .map_err(full_access_denied)?;
+    if full_access.process_visibility_paused {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "process_visibility_paused_locally",
+        ));
+    }
+    let max_records = full_access.policy.max_process_records;
+    drop(full_access);
+    let records =
+        ProcessInspectionAdapter::list_workspace_processes(state.workspace.root(), max_records)
+            .map_err(|_| denied(StatusCode::FORBIDDEN, "process_inventory_unavailable"))?;
+    let count = records.len();
+    let mut audit = state.audit.lock().await;
+    audit.append(AuditClass::Data, Some(request_id.clone()), format!("Collected {count} sanitized workspace process records under Full Access policy. Command lines, environments, raw paths, and PIDs were excluded."), true);
+    persist_audit(&state, &audit)?;
+    Ok(Json(
+        serde_json::json!({"request_id":request_id,"decision":"auto_accepted","records":records,"raw_process_fields_included":false,"bytes_sent":0}),
+    ))
 }
 
 fn full_access_denied(error: FullAccessDenied) -> (StatusCode, Json<serde_json::Value>) {
