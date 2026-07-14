@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -176,6 +176,10 @@ pub struct AppState {
     pub port_approvals: Arc<Mutex<PortApprovalRegistry>>,
     pub preview_traffic: Arc<Mutex<PreviewTrafficGuard>>,
     pub full_access: Arc<Mutex<FullAccessState>>,
+    // `None` is used only by the standalone library/test daemon. The desktop
+    // installs a cloud-derived ceiling before it permits Full Access enrollment.
+    pub cloud_full_access_capabilities:
+        Arc<Mutex<Option<BTreeSet<crate::full_access::FullAccessCapability>>>>,
     pub mutation_broker: Arc<Mutex<WorkspaceMutationBroker>>,
     local_control_secret_hash: Arc<String>,
 }
@@ -196,6 +200,7 @@ impl AppState {
             port_approvals: Arc::new(Mutex::new(PortApprovalRegistry::new())),
             preview_traffic: Arc::new(Mutex::new(PreviewTrafficGuard::new())),
             full_access: Arc::new(Mutex::new(FullAccessState::default())),
+            cloud_full_access_capabilities: Arc::new(Mutex::new(None)),
             mutation_broker: Arc::new(Mutex::new(WorkspaceMutationBroker::new(
                 workspace.as_ref().clone(),
                 chrono::Duration::hours(24),
@@ -226,6 +231,7 @@ impl AppState {
             port_approvals: Arc::new(Mutex::new(PortApprovalRegistry::new())),
             preview_traffic: Arc::new(Mutex::new(PreviewTrafficGuard::new())),
             full_access: Arc::new(Mutex::new(FullAccessState::default())),
+            cloud_full_access_capabilities: Arc::new(Mutex::new(None)),
             mutation_broker: Arc::new(Mutex::new(WorkspaceMutationBroker::new(
                 workspace.as_ref().clone(),
                 chrono::Duration::hours(24),
@@ -246,6 +252,27 @@ impl AppState {
 
     pub fn set_local_control_secret_for_test(&mut self, secret: &str) {
         self.local_control_secret_hash = Arc::new(hash_local_control_secret(secret));
+    }
+
+    pub async fn set_cloud_full_access_capabilities(
+        &self,
+        capabilities: BTreeSet<crate::full_access::FullAccessCapability>,
+    ) {
+        *self.cloud_full_access_capabilities.lock().await = Some(capabilities.clone());
+        let mut full_access = self.full_access.lock().await;
+        full_access.policy.allowed_capabilities = full_access
+            .policy
+            .allowed_capabilities
+            .intersection(&capabilities)
+            .cloned()
+            .collect();
+        if full_access
+            .receipt
+            .as_ref()
+            .is_some_and(|receipt| !receipt.capabilities.is_subset(&capabilities))
+        {
+            full_access.revoke();
+        }
     }
 }
 
@@ -549,6 +576,19 @@ async fn enroll_full_access(
             StatusCode::FORBIDDEN,
             "full_access_scope_not_allowed_by_policy",
         ));
+    }
+    if let Some(cloud_capabilities) = state.cloud_full_access_capabilities.lock().await.clone() {
+        if !request
+            .policy
+            .allowed_capabilities
+            .is_subset(&cloud_capabilities)
+            || !request.receipt.capabilities.is_subset(&cloud_capabilities)
+        {
+            return Err(denied(
+                StatusCode::FORBIDDEN,
+                "full_access_scope_exceeds_cloud_policy",
+            ));
+        }
     }
     let graph = state
         .workspace

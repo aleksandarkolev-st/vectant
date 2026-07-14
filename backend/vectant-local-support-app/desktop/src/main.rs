@@ -3,7 +3,7 @@
 mod pairing_client;
 mod relay_client;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -20,6 +20,7 @@ use uuid::Uuid;
 use vectant_local_support_app::audit::{AuditClass, LocalAuditStore};
 use vectant_local_support_app::desktop::{build_desktop_status_state, plan_desktop_ipc_action};
 use vectant_local_support_app::http::{bind_loopback, shutdown_cleanup, AppState};
+use vectant_local_support_app::full_access::FullAccessCapability;
 use vectant_local_support_app::ipc::IpcRequest;
 use vectant_local_support_app::pair::{DeviceIdentity, DeviceIdentityStore};
 use vectant_local_support_app::port_adapter::{
@@ -713,6 +714,9 @@ async fn apply_policy_to_local_state(
     state: &AppState,
     policy: &DesktopPolicyStatus,
 ) -> Result<(), String> {
+    state
+        .set_cloud_full_access_capabilities(cloud_full_access_capabilities(policy))
+        .await;
     let Some(store) = &state.audit_store else {
         return Ok(());
     };
@@ -732,6 +736,46 @@ async fn apply_policy_to_local_state(
         ));
     }
     Ok(())
+}
+
+fn cloud_full_access_capabilities(policy: &DesktopPolicyStatus) -> BTreeSet<FullAccessCapability> {
+    let mut capabilities = BTreeSet::new();
+    if !policy.full_access_allowed() {
+        return capabilities;
+    }
+    capabilities.extend([
+        FullAccessCapability::Enroll,
+        FullAccessCapability::GraphRead,
+        FullAccessCapability::GraphNodeRequest,
+    ]);
+    if policy.full_access_auto_approval_enabled {
+        capabilities.insert(FullAccessCapability::AutoApprovalEnable);
+    }
+    if policy.full_access_workspace_mutation_enabled {
+        capabilities.extend([
+            FullAccessCapability::WorkspaceFileMutate,
+            FullAccessCapability::WorkspaceFileRevert,
+        ]);
+    }
+    if policy.full_access_command_execution_enabled {
+        capabilities.extend([
+            FullAccessCapability::CommandExecute,
+            FullAccessCapability::CommandContextRead,
+        ]);
+    }
+    if policy.full_access_process_visibility_enabled {
+        capabilities.extend([
+            FullAccessCapability::ProcessInventory,
+            FullAccessCapability::ProcessListenerMetadata,
+        ]);
+    }
+    if policy.full_access_local_port_discovery_enabled {
+        capabilities.insert(FullAccessCapability::LocalPortDiscover);
+    }
+    if policy.full_access_local_port_use_enabled {
+        capabilities.insert(FullAccessCapability::LocalPortUse);
+    }
+    capabilities
 }
 
 async fn append_control_event(
