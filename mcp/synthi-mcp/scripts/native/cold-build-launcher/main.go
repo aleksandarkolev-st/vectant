@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -579,6 +580,8 @@ func runMain(specPath string) error {
 }
 
 func childMain(specPath string) error {
+	// Linux capability and no_new_privs state is thread-local until exec.
+	runtime.LockOSThread()
 	spec, _, _, err := readSpec(specPath)
 	if err != nil {
 		return err
@@ -686,7 +689,7 @@ func dropChildPrivileges(uid, gid int) error {
 }
 
 func currentIdentityReceipt(nonce string) (childIdentityReceipt, error) {
-	status, err := parseProcStatus("/proc/self/status")
+	status, err := parseProcStatus("/proc/thread-self/status")
 	if err != nil {
 		return childIdentityReceipt{}, err
 	}

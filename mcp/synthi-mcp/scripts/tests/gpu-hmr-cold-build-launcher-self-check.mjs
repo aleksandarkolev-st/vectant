@@ -788,6 +788,8 @@ async function main() {
   const sourceBindingHash = contentHash('launcher-self-check-source');
   const artifactBytes = Buffer.from('project-neutral-cold-build-artifact\n', 'utf8');
   const artifactHash = contentHash(artifactBytes);
+  const postExecIdentityBytes = Buffer.from('post-exec-identity-accepted\n', 'utf8');
+  const postExecIdentityHash = contentHash(postExecIdentityBytes);
   const root = await mkdtemp(path.join(os.tmpdir(), 'synthi-cold-launcher-self-check-'));
   const sourceDir = path.join(root, 'source');
   const releaseDir = path.join(root, 'release');
@@ -812,19 +814,49 @@ async function main() {
       acceptedForGpuHmr: false,
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
-      outputs: [{
-        path: 'artifact.bin',
-        role: 'generic_build_artifact',
-        artifactKind: 'opaque_build_output',
-        mediaType: 'application/octet-stream',
-        contentHash: artifactHash,
-        byteLength: artifactBytes.byteLength,
-      }],
+      outputs: [
+        {
+          path: 'artifact.bin',
+          role: 'generic_build_artifact',
+          artifactKind: 'opaque_build_output',
+          mediaType: 'application/octet-stream',
+          contentHash: artifactHash,
+          byteLength: artifactBytes.byteLength,
+        },
+        {
+          path: 'post-exec-identity.txt',
+          role: 'post_exec_identity_probe',
+          artifactKind: 'structured_runtime_probe',
+          mediaType: 'text/plain',
+          contentHash: postExecIdentityHash,
+          byteLength: postExecIdentityBytes.byteLength,
+        },
+      ],
     };
     const script = [
       '#!/bin/sh',
       'set -eu',
       `if printf 'mutated\\n' > '${COLD_BUILD_LAUNCHER_SOURCE_ROOT}/source-sentinel.txt' 2>/dev/null; then exit 91; fi`,
+      'uid_fields= gid_fields= groups_fields= cap_inh= cap_prm= cap_eff= cap_bnd= cap_amb= no_new_privs=',
+      'while IFS= read -r status_line; do',
+      '  case "$status_line" in',
+      '    Uid:*) uid_fields=${status_line#Uid:} ;;',
+      '    Gid:*) gid_fields=${status_line#Gid:} ;;',
+      '    Groups:*) groups_fields=${status_line#Groups:} ;;',
+      '    CapInh:*) set -- ${status_line#CapInh:}; cap_inh=${1-} ;;',
+      '    CapPrm:*) set -- ${status_line#CapPrm:}; cap_prm=${1-} ;;',
+      '    CapEff:*) set -- ${status_line#CapEff:}; cap_eff=${1-} ;;',
+      '    CapBnd:*) set -- ${status_line#CapBnd:}; cap_bnd=${1-} ;;',
+      '    CapAmb:*) set -- ${status_line#CapAmb:}; cap_amb=${1-} ;;',
+      '    NoNewPrivs:*) set -- ${status_line#NoNewPrivs:}; no_new_privs=${1-} ;;',
+      '  esac',
+      'done < /proc/thread-self/status',
+      'set -- $uid_fields; [ "$#" -eq 4 ] && [ "$1" = "65532" ] && [ "$2" = "65532" ] && [ "$3" = "65532" ] && [ "$4" = "65532" ] || exit 92',
+      'set -- $gid_fields; [ "$#" -eq 4 ] && [ "$1" = "65532" ] && [ "$2" = "65532" ] && [ "$3" = "65532" ] && [ "$4" = "65532" ] || exit 93',
+      'set -- $groups_fields; [ "$#" -eq 0 ] || exit 94',
+      "for capability in \"$cap_inh\" \"$cap_prm\" \"$cap_eff\" \"$cap_bnd\" \"$cap_amb\"; do case \"$capability\" in ''|*[!0]*) exit 95 ;; esac; done",
+      '[ "$no_new_privs" = "1" ] || exit 96',
+      `printf 'post-exec-identity-accepted\\n' > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/post-exec-identity.txt'`,
       `printf 'project-neutral-cold-build-artifact\\n' > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/artifact.bin'`,
       `cat > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/${COLD_BUILD_OUTPUT_MANIFEST_CONTAINER_PATH}' <<'SYNTHI_MANIFEST'`,
       JSON.stringify(manifest),
@@ -856,7 +888,7 @@ async function main() {
       workspaceByteLimit: 64 * 1024 * 1024,
       workspaceEntryLimit: 4096,
       collectedByteLimit: 4 * 1024 * 1024,
-      collectedEntryLimit: 2,
+      collectedEntryLimit: 3,
     });
     const specBytes = encodeColdBuildLauncherSpec(spec);
     const specHash = coldBuildLauncherSpecHash(spec);
@@ -945,7 +977,7 @@ async function main() {
     const frame = parseColdBuildCollectorFrame(collectResult.stdout, {
       maxHeaderBytes: 1024 * 1024,
       maxPayloadBytes: 4 * 1024 * 1024,
-      maxEntryCount: 2,
+      maxEntryCount: 3,
       expectedExecutionNonce: executionNonce,
       expectedSpecHash: specHash,
       expectedReadyReceiptHash: readyHash,
@@ -959,13 +991,18 @@ async function main() {
     const artifact = frame.payloads.find(({ entry }) => entry.path === 'artifact.bin');
     assert.ok(artifact);
     assert.equal(contentHash(artifact.bytes), artifactHash);
+    const postExecIdentity = frame.payloads.find(
+      ({ entry }) => entry.path === 'post-exec-identity.txt',
+    );
+    assert.ok(postExecIdentity);
+    assert.equal(contentHash(postExecIdentity.bytes), postExecIdentityHash);
     const corruptedFrame = Buffer.from(collectResult.stdout);
     corruptedFrame[corruptedFrame.length - 1] ^= 0xff;
     assert.throws(
       () => parseColdBuildCollectorFrame(corruptedFrame, {
         maxHeaderBytes: 1024 * 1024,
         maxPayloadBytes: 4 * 1024 * 1024,
-        maxEntryCount: 2,
+        maxEntryCount: 3,
         expectedExecutionNonce: executionNonce,
         expectedSpecHash: specHash,
         expectedReadyReceiptHash: readyHash,
@@ -977,7 +1014,7 @@ async function main() {
       () => parseColdBuildCollectorFrame(collectResult.stdout, {
         maxHeaderBytes: 1024 * 1024,
         maxPayloadBytes: 4 * 1024 * 1024,
-        maxEntryCount: 2,
+        maxEntryCount: 3,
         expectedExecutionNonce: '0'.repeat(32),
         expectedSpecHash: specHash,
         expectedReadyReceiptHash: readyHash,
@@ -991,7 +1028,7 @@ async function main() {
         {
           maxHeaderBytes: 1024 * 1024,
           maxPayloadBytes: 4 * 1024 * 1024,
-          maxEntryCount: 2,
+          maxEntryCount: 3,
           expectedExecutionNonce: executionNonce,
           expectedSpecHash: specHash,
           expectedReadyReceiptHash: readyHash,
@@ -1003,7 +1040,7 @@ async function main() {
     const parserBindings = {
       maxHeaderBytes: 1024 * 1024,
       maxPayloadBytes: 4 * 1024 * 1024,
-      maxEntryCount: 2,
+      maxEntryCount: 3,
       expectedExecutionNonce: executionNonce,
       expectedSpecHash: specHash,
       expectedReadyReceiptHash: readyHash,
@@ -1178,6 +1215,9 @@ async function main() {
     'windows-absolute-output-path',
   ]) {
     await runProtocolRefusalScenario({ launcher, mode });
+  }
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await runProtocolRefusalScenario({ launcher, mode: 'direct-argv-no-manifest' });
   }
   process.stdout.write('gpu-hmr cold-build static launcher self-check passed\n');
 }
