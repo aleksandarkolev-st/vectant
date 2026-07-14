@@ -463,6 +463,20 @@ function visualOutputTargetId(record) {
   );
 }
 
+function visualOutputTargetValue(record) {
+  const outputEvent = asObject(record.output_event ?? record.outputEvent);
+  const outputOracle = asObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+  return outputEvent.output_target
+    ?? outputEvent.outputTarget
+    ?? outputEvent.output_oracle_target
+    ?? outputEvent.outputOracleTarget
+    ?? record.output_oracle_target
+    ?? record.outputOracleTarget
+    ?? outputOracle.output_oracle_target
+    ?? outputOracle.outputOracleTarget
+    ?? null;
+}
+
 function runtimeSessionId(record) {
   const processIdentity = asObject(record.process_identity ?? record.processIdentity);
   const dispatchEvent = asObject(record.dispatch_event ?? record.dispatchEvent);
@@ -1013,8 +1027,10 @@ function visualFrameGateRuntimeBindingProjection(record) {
     output_epoch: eventEpoch(outputEvent),
     output_artifact_hash: canonicalArtifactSha256(eventArtifactHash(outputEvent)),
     output_target_id: visualOutputTargetId(record),
+    output_target_hash: `sha256:${sha256Hex(stableJson(visualOutputTargetValue(record)))}`,
     output_timestamp: eventTimestampBinding(outputEvent, record.metricClock),
     process_id: eventProcessId(processIdentity),
+    process_identity_hash: `sha256:${sha256Hex(stableJson(processIdentity))}`,
     runtime_session_id: firstText(record.runtimeSessionId, record.runtime_session_id),
     device_id: firstIdentifierText(
       deviceIdentity.device_uuid,
@@ -1084,10 +1100,18 @@ function canonicalVisualFrameGateRuntimeBinding(value) {
       source.outputArtifactHash,
     )),
     output_target_id: firstText(source.output_target_id, source.outputTargetId),
+    output_target_hash: canonicalSha256(firstText(
+      source.output_target_hash,
+      source.outputTargetHash,
+    )),
     output_timestamp: timestampBindingProjection(
       source.output_timestamp ?? source.outputTimestamp,
     ),
     process_id: firstIdentifierText(source.process_id, source.processId),
+    process_identity_hash: canonicalSha256(firstText(
+      source.process_identity_hash,
+      source.processIdentityHash,
+    )),
     runtime_session_id: firstText(source.runtime_session_id, source.runtimeSessionId),
     device_id: firstIdentifierText(source.device_id, source.deviceId),
     metric_clock: firstText(source.metric_clock, source.metricClock),

@@ -761,6 +761,14 @@ assert.equal(
   strictVisualBinding.recomputedBinding.runtime_binding.output_target_id,
   'render-target-1',
 );
+assert.equal(
+  strictVisualBinding.recomputedBinding.runtime_binding.output_target_hash,
+  contentHash('render-target-1'),
+);
+assert.equal(
+  strictVisualBinding.recomputedBinding.runtime_binding.process_identity_hash,
+  contentHash(strictVisualRecord.process_identity),
+);
 assert.deepEqual(
   strictVisualBinding.suppliedBinding,
   buildGpuHmrVisualCaptureRuntimeBinding(strictVisualRecord),
@@ -943,6 +951,49 @@ const missingVisualLoaderProcessResult = evaluateGpuHmrProofLedger(
 assert.equal(missingVisualLoaderProcessResult.gpuHmrSuccess, false);
 assert.ok(missingVisualLoaderProcessResult.failedInvariants.some(
   (failure) => failure.code === 'visual_capture_runtime_process_identity_material_incomplete',
+));
+
+const changedVisualProcessMaterialRecord = structuredClone(strictVisualRecord);
+changedVisualProcessMaterialRecord.process_identity.runtime_resource_ptr = '0xfeed';
+const changedVisualProcessMaterialResult = evaluateGpuHmrProofLedger(
+  changedVisualProcessMaterialRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(changedVisualProcessMaterialResult.gpuHmrSuccess, false);
+assert.ok(changedVisualProcessMaterialResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_runtime_binding_mismatch',
+));
+
+const structuredVisualTargetRecord = baselineVisualRecord({
+  output_event: {
+    id: 'output-visual-1',
+    kind: 'render_target_hash',
+    epoch: 'epoch-7',
+    artifact_hash: HASH_B,
+    process_id: 'pid-1',
+    after_dispatch_id: 'dispatch-1',
+    output_target: {
+      id: 'render-target-1',
+      format: 'rgba8unorm',
+      width: 640,
+      height: 480,
+    },
+    passed: true,
+    timestamp_monotonic_ns: 400,
+  },
+});
+assert.equal(evaluateGpuHmrProofLedger(structuredVisualTargetRecord, {
+  requireVisualCaptureRuntimeBinding: true,
+}).gpuHmrSuccess, true);
+const changedStructuredVisualTargetRecord = structuredClone(structuredVisualTargetRecord);
+changedStructuredVisualTargetRecord.output_event.output_target.format = 'rgba16float';
+const changedStructuredVisualTargetResult = evaluateGpuHmrProofLedger(
+  changedStructuredVisualTargetRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(changedStructuredVisualTargetResult.gpuHmrSuccess, false);
+assert.ok(changedStructuredVisualTargetResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_runtime_binding_mismatch',
 ));
 
 const mixedClockVisualRecord = structuredClone(strictVisualRecord);
