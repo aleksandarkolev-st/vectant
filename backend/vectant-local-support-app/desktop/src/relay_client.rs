@@ -15,7 +15,7 @@ pub enum RelayPoll {
     Revoked,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayControlCommand {
     pub command_id: String,
     pub session_id: String,

@@ -8,7 +8,9 @@ mod relay_client;
 
 use std::path::PathBuf;
 
-use relay_client::{ApprovedRelayPayload, RelayClient, RelayOutcome, RelayPoll};
+use relay_client::{
+    ApprovedRelayPayload, RelayClient, RelayControlCommand, RelayOutcome, RelayPoll,
+};
 use sha2::{Digest, Sha256};
 use vectant_local_support_app::pair::DeviceIdentityStore;
 
@@ -81,6 +83,45 @@ async fn main() -> anyhow::Result<()> {
             println!(
                 "{}",
                 serde_json::json!({ "decision": decision, "bytes_sent": 0 })
+            );
+        }
+        "control-outcome" => {
+            let command_id = args
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("control command id is required"))?;
+            let lease_id = args
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("control lease id is required"))?;
+            let decision = args
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("control outcome decision is required"))?;
+            let reason = args
+                .next()
+                .unwrap_or_else(|| "live_relay_control_test".to_string());
+            client
+                .report_control_outcome(
+                    &identity,
+                    &session_id,
+                    &RelayControlCommand {
+                        command_id,
+                        session_id: session_id.clone(),
+                        account_id: "acct_live_relay".to_string(),
+                        org_id: "org_live_relay".to_string(),
+                        workspace_id: "wk_live_relay".to_string(),
+                        device_fingerprint: identity.public_identity().device_fingerprint,
+                        action: "pause_session".to_string(),
+                        port: None,
+                        expires_at: "2099-01-01T00:00:00Z".to_string(),
+                        lease_id,
+                    },
+                    &decision,
+                    &reason,
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
+            println!(
+                "{}",
+                serde_json::json!({ "decision": decision, "reason": reason })
             );
         }
         "upload" => {

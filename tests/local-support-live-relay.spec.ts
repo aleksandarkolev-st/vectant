@@ -11,6 +11,7 @@ import {
   signDeviceProof,
   signRequestEnvelope,
 } from '../synthi/src/lib/local-support/controlPlane.js';
+import { enqueueLocalControlCommand } from '../synthi/src/lib/local-support/relayStore.js';
 
 const enabled = process.env.LOCAL_SUPPORT_LIVE_RELAY_E2E === '1';
 const baseUrl = process.env.VECTANT_TEST_BASE_URL;
@@ -26,6 +27,7 @@ const alertRequestId = `req_live_alert_${runId}`;
 const accountId = `acct_live_relay_${runId}`;
 const orgId = `org_live_relay_${runId}`;
 const workspaceId = `wk_live_relay_${runId}`;
+const controlCommandId = `cmd_live_relay_${runId}`;
 
 test.skip(!enabled, 'Set LOCAL_SUPPORT_LIVE_RELAY_E2E=1 to run the live Rust relay probe.');
 if (enabled && !baseUrl) throw new Error('VECTANT_TEST_BASE_URL is required for live relay E2E.');
@@ -82,6 +84,33 @@ test('Rust RelayClient polls, reports review, uploads, and leaves scrubbed cloud
       },
     });
 
+    const endpoint = `${baseUrl}/api/local-support/relay/device`;
+    await enqueueLocalControlCommand({
+      commandId: controlCommandId,
+      sessionId,
+      accountId,
+      orgId,
+      workspaceId,
+      deviceFingerprint: identity.device_fingerprint,
+      action: 'pause_session',
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+      policyVersion: POLICY_VERSION,
+      scannerVersion: 'not_applicable',
+    });
+    const control = JSON.parse(execFileSync(relayBinary, [endpoint, identityPath, sessionId, 'poll'], { encoding: 'utf8' }));
+    expect(control).toMatchObject({
+      command_id: controlCommandId,
+      action: 'pause_session',
+      session_id: sessionId,
+      workspace_id: workspaceId,
+    });
+    const controlOutcome = JSON.parse(execFileSync(relayBinary, [
+      endpoint, identityPath, sessionId, 'control-outcome', control.command_id, control.lease_id, 'applied', 'local_session_paused',
+    ], { encoding: 'utf8' }));
+    expect(controlOutcome).toMatchObject({ decision: 'applied' });
+    const controlAudit = await prisma.localSupportControlAudit.findUnique({ where: { commandId: controlCommandId } });
+    expect(controlAudit).toMatchObject({ commandId: controlCommandId, decision: 'applied', bytesSent: 0 });
+
     const envelope = {
       request_id: requestId,
       session_id: sessionId,
@@ -111,7 +140,6 @@ test('Rust RelayClient polls, reports review, uploads, and leaves scrubbed cloud
     expect(queued.status()).toBe(202);
     await expect(queued.json()).resolves.toMatchObject({ decision: 'relay_queued', relay_forward: true });
 
-    const endpoint = `${baseUrl}/api/local-support/relay/device`;
     const pollOutput = execFileSync(relayBinary, [endpoint, identityPath, sessionId, 'poll'], { encoding: 'utf8' });
     const delivery = JSON.parse(pollOutput.trim());
     expect(delivery).toMatchObject({ request_id: requestId, session_id: sessionId, capability: 'workspace.log.read' });
@@ -191,6 +219,8 @@ test('Rust RelayClient polls, reports review, uploads, and leaves scrubbed cloud
     expect(purged?.payload).toBeNull();
   } finally {
     await prisma.localSupportRelayRequest.deleteMany({ where: { requestId: { in: [requestId, alertRequestId] } } });
+    await prisma.localSupportControlAudit.deleteMany({ where: { commandId: controlCommandId } });
+    await prisma.localSupportControlCommand.deleteMany({ where: { commandId: controlCommandId } });
     await prisma.localSupportSession.deleteMany({ where: { sessionId } });
     await prisma.localSupportPolicyState.deleteMany({ where: { id: 'global' } });
     await prisma.$disconnect();
