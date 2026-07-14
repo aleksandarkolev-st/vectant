@@ -50,6 +50,10 @@ export const COLD_BUILD_REFUSAL_DIAGNOSTICS_SCHEMA =
 export const COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY =
   'bounded_redacted_command_diagnostics_only_not_cold_build_or_gpu_hmr_success';
 export const COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES = 64 * 1024;
+export const COLD_BUILD_CONTAINER_CLEANUP_SCHEMA =
+  'synthi.gpu_hmr.cold_build_container_cleanup.v1';
+export const COLD_BUILD_CONTAINER_CLEANUP_AUTHORITY =
+  'container_cleanup_only_not_gpu_hmr_success';
 
 const CONTAINER_ID_PATTERN = /^[a-f0-9]{64}$/;
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
@@ -952,8 +956,8 @@ async function cleanupContainer(
     absenceProven ? null : 'cold_build_execution_driver_container_absence_unproven',
   ].filter(Boolean);
   const evidence = {
-    schemaVersion: 'synthi.gpu_hmr.cold_build_container_cleanup.v1',
-    proofAuthority: 'container_cleanup_only_not_gpu_hmr_success',
+    schemaVersion: COLD_BUILD_CONTAINER_CLEANUP_SCHEMA,
+    proofAuthority: COLD_BUILD_CONTAINER_CLEANUP_AUTHORITY,
     attempted: true,
     removed: removedSuccessfully,
     removeCommandSucceeded,
@@ -1349,8 +1353,8 @@ export function verifyColdBuildExecutionDriverResult(result, plan) {
     || stableJson(payloadManifest) !== stableJson(evidence.payloadManifest)
     || contentHash(stableJson(payloadManifest)) !== evidence.payloadManifestHash
     || recomputeEvidenceHash(evidence) !== evidence.evidenceHash
-    || cleanup?.schemaVersion !== 'synthi.gpu_hmr.cold_build_container_cleanup.v1'
-    || cleanup?.proofAuthority !== 'container_cleanup_only_not_gpu_hmr_success'
+    || cleanup?.schemaVersion !== COLD_BUILD_CONTAINER_CLEANUP_SCHEMA
+    || cleanup?.proofAuthority !== COLD_BUILD_CONTAINER_CLEANUP_AUTHORITY
     || cleanup?.acceptedAsCleanupEvidence !== true
     || cleanup?.absenceProven !== true
     || !Array.isArray(cleanup?.blockingGaps)

@@ -25,6 +25,12 @@ import {
   materializeColdBuildLauncher,
 } from './lib/gpu-hmr-cold-build-container-contract.mjs';
 import {
+  COLD_BUILD_CONTAINER_CLEANUP_AUTHORITY,
+  COLD_BUILD_CONTAINER_CLEANUP_SCHEMA,
+  COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY,
+  COLD_BUILD_REFUSAL_DIAGNOSTICS_SCHEMA,
+  COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY,
+  COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA,
   executeColdBuildLauncherPlan,
   verifyColdBuildExecutionDriverResult,
 } from './lib/gpu-hmr-cold-build-execution-driver.mjs';
@@ -50,6 +56,10 @@ export const ARBITRARY_COLD_PROJECT_RUN_SCHEMA =
   'synthi.gpu_hmr.arbitrary_cold_project_run.v1';
 export const ARBITRARY_COLD_PROJECT_RUN_AUTHORITY =
   'orchestrated_cold_build_evidence_only_not_gpu_hmr_success';
+export const ARBITRARY_COLD_PROJECT_RUN_FAILURE_SCHEMA =
+  'synthi.gpu_hmr.arbitrary_cold_project_run_failure.v1';
+export const ARBITRARY_COLD_PROJECT_RUN_FAILURE_AUTHORITY =
+  'runner_failure_diagnostics_only_not_cold_build_or_gpu_hmr_success';
 
 export const DEFAULT_ARBITRARY_COLD_RUNNER_POLICY = Object.freeze({
   maxSourceEntryCount: 1_000_000,
@@ -114,6 +124,245 @@ function exactKeys(value, keys) {
     && typeof value === 'object'
     && !Array.isArray(value)
     && stableJson(Object.keys(value).sort()) === stableJson([...keys].sort());
+}
+
+const SUPPORT_ONLY_FLAG_KEYS = new Set([
+  'acceptedAsColdBuildEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+]);
+const READY_REFUSAL_KEYS = [
+  'schemaVersion',
+  'proofAuthority',
+  'executionNonce',
+  'specHash',
+  'commandSpecHash',
+  'sourceBindingHash',
+  'inputSetHash',
+  'launcherExecutableHash',
+  'readyReceiptHash',
+  'readyFrameHash',
+  'protocolAccepted',
+  'childIdentityAccepted',
+  'childExitCode',
+  'commandTimedOut',
+  'commandStdoutByteLength',
+  'commandStdoutHash',
+  'commandStderrByteLength',
+  'commandStderrHash',
+  'processTreeQuiescent',
+  'residualProcessCount',
+  'outputSnapshotAccepted',
+  'outputSnapshotHash',
+  'outputEntryCount',
+  'outputByteLength',
+  'blockingGaps',
+  'acceptedAsColdBuildRefusalEvidence',
+  'acceptedAsColdBuildEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+];
+const REFUSAL_DIAGNOSTICS_KEYS = [
+  'schemaVersion',
+  'proofAuthority',
+  'executionNonce',
+  'specHash',
+  'readyReceiptHash',
+  'captureByteLimit',
+  'streams',
+  'blockingGaps',
+  'acceptedAsDiagnosticSupportEvidence',
+  'acceptedAsColdBuildEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+];
+const REFUSAL_DIAGNOSTIC_STREAM_KEYS = [
+  'controlName',
+  'sourceByteLength',
+  'sourceContentHash',
+  'excerptAvailable',
+  'excerptByteLength',
+  'excerptContentHash',
+  'excerptIsComplete',
+  'excerptIsTail',
+  'truncated',
+  'bindingMismatch',
+  'redactionPolicy',
+  'redactionApplied',
+  'redactedText',
+  'redactedTextHash',
+  'readFailure',
+];
+const CLEANUP_KEYS = [
+  'schemaVersion',
+  'proofAuthority',
+  'attempted',
+  'removed',
+  'removeCommandSucceeded',
+  'absenceProven',
+  'blockingGaps',
+  'acceptedAsCleanupEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+];
+
+function hasForbiddenSupportAuthority(value) {
+  if (Array.isArray(value)) return value.some(hasForbiddenSupportAuthority);
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, child]) => (
+    (SUPPORT_ONLY_FLAG_KEYS.has(key) && child !== false)
+    || hasForbiddenSupportAuthority(child)
+  ));
+}
+
+function cloneSupportFacet(value, {
+  keys,
+  schemaVersion,
+  proofAuthority,
+  nestedValidator = null,
+}) {
+  if (
+    !exactKeys(value, keys)
+    || value.schemaVersion !== schemaVersion
+    || value.proofAuthority !== proofAuthority
+    || hasForbiddenSupportAuthority(value)
+    || recomputeEvidenceHash(value) !== value.evidenceHash
+    || (nestedValidator && !nestedValidator(value))
+  ) {
+    return null;
+  }
+  return structuredClone(value);
+}
+
+function diagnosticsShapeAccepted(value) {
+  const streams = value?.streams;
+  if (
+    !exactKeys(streams, ['stdout', 'stderr'])
+    || !exactKeys(streams.stdout, REFUSAL_DIAGNOSTIC_STREAM_KEYS)
+    || !exactKeys(streams.stderr, REFUSAL_DIAGNOSTIC_STREAM_KEYS)
+  ) {
+    return false;
+  }
+  const serialized = `${streams.stdout.redactedText ?? ''}\n${streams.stderr.redactedText ?? ''}`;
+  const secretValuePatterns = [
+    /\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*([^\r\n]+)/gi,
+    /\bBearer\s+([^\s\r\n]+)/gi,
+    /\b[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Z0-9_]*\s*=\s*([^\s\r\n]+)/g,
+    /--(?:api[-_]?key|token|password|secret|credential)(?:\s+|=)([^\s\r\n]+)/gi,
+  ];
+  return secretValuePatterns.every((pattern) => (
+    [...serialized.matchAll(pattern)].every((match) => match[1].trim() === '<redacted>')
+  ));
+}
+
+function createArbitraryColdProjectRunFailure(error) {
+  const failureCodeCandidate = String(error?.message ?? '');
+  const failureCode = /^[a-z0-9][a-z0-9_.:-]{0,255}$/.test(failureCodeCandidate)
+    ? failureCodeCandidate
+    : 'arbitrary_cold_runner_failed';
+  const readyRefusalEvidence = cloneSupportFacet(error?.readyRefusalEvidence, {
+    keys: READY_REFUSAL_KEYS,
+    schemaVersion: COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA,
+    proofAuthority: COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY,
+  });
+  const refusalDiagnostics = cloneSupportFacet(error?.refusalDiagnostics, {
+    keys: REFUSAL_DIAGNOSTICS_KEYS,
+    schemaVersion: COLD_BUILD_REFUSAL_DIAGNOSTICS_SCHEMA,
+    proofAuthority: COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY,
+    nestedValidator: diagnosticsShapeAccepted,
+  });
+  const cleanupEvidence = cloneSupportFacet(error?.cleanupEvidence, {
+    keys: CLEANUP_KEYS,
+    schemaVersion: COLD_BUILD_CONTAINER_CLEANUP_SCHEMA,
+    proofAuthority: COLD_BUILD_CONTAINER_CLEANUP_AUTHORITY,
+  });
+  const evidence = {
+    schemaVersion: ARBITRARY_COLD_PROJECT_RUN_FAILURE_SCHEMA,
+    proofAuthority: ARBITRARY_COLD_PROJECT_RUN_FAILURE_AUTHORITY,
+    failureCode,
+    readyRefusalEvidence,
+    refusalDiagnostics,
+    cleanupEvidence,
+    acceptedAsFailureDiagnostics: [
+      readyRefusalEvidence,
+      refusalDiagnostics,
+      cleanupEvidence,
+    ].some(Boolean),
+    acceptedAsColdBuildEvidence: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  evidence.evidenceHash = recomputeEvidenceHash(evidence);
+  return evidence;
+}
+
+export function verifyArbitraryColdProjectRunFailure(evidence) {
+  const ready = evidence?.readyRefusalEvidence;
+  const diagnostics = evidence?.refusalDiagnostics;
+  const cleanup = evidence?.cleanupEvidence;
+  const readyClone = ready === null ? null : cloneSupportFacet(ready, {
+    keys: READY_REFUSAL_KEYS,
+    schemaVersion: COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA,
+    proofAuthority: COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY,
+  });
+  const diagnosticsClone = diagnostics === null ? null : cloneSupportFacet(diagnostics, {
+    keys: REFUSAL_DIAGNOSTICS_KEYS,
+    schemaVersion: COLD_BUILD_REFUSAL_DIAGNOSTICS_SCHEMA,
+    proofAuthority: COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY,
+    nestedValidator: diagnosticsShapeAccepted,
+  });
+  const cleanupClone = cleanup === null ? null : cloneSupportFacet(cleanup, {
+    keys: CLEANUP_KEYS,
+    schemaVersion: COLD_BUILD_CONTAINER_CLEANUP_SCHEMA,
+    proofAuthority: COLD_BUILD_CONTAINER_CLEANUP_AUTHORITY,
+  });
+  const supportCount = [ready, diagnostics, cleanup].filter(Boolean).length;
+  if (
+    !exactKeys(evidence, [
+      'schemaVersion',
+      'proofAuthority',
+      'failureCode',
+      'readyRefusalEvidence',
+      'refusalDiagnostics',
+      'cleanupEvidence',
+      'acceptedAsFailureDiagnostics',
+      'acceptedAsColdBuildEvidence',
+      'acceptedForGpuHmr',
+      'gpuHmrSuccess',
+      'canSatisfyRuntimeProof',
+      'canSatisfyDispatchProof',
+      'evidenceHash',
+    ])
+    || evidence.schemaVersion !== ARBITRARY_COLD_PROJECT_RUN_FAILURE_SCHEMA
+    || evidence.proofAuthority !== ARBITRARY_COLD_PROJECT_RUN_FAILURE_AUTHORITY
+    || !/^[a-z0-9][a-z0-9_.:-]{0,255}$/.test(evidence.failureCode ?? '')
+    || (ready !== null && readyClone === null)
+    || (diagnostics !== null && diagnosticsClone === null)
+    || (cleanup !== null && cleanupClone === null)
+    || evidence.acceptedAsFailureDiagnostics !== (supportCount > 0)
+    || evidence.acceptedAsColdBuildEvidence !== false
+    || evidence.acceptedForGpuHmr !== false
+    || evidence.gpuHmrSuccess !== false
+    || evidence.canSatisfyRuntimeProof !== false
+    || evidence.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(evidence) !== evidence.evidenceHash
+  ) {
+    throw new Error('arbitrary_cold_runner_failure_evidence_invalid');
+  }
+  return evidence;
 }
 
 function cloneDescriptorValue(value, seen = new WeakSet()) {
@@ -1051,5 +1300,12 @@ const directInvocation = process.argv[1]
   && await canonicalInvocationPath(process.argv[1])
     === await canonicalInvocationPath(fileURLToPath(import.meta.url));
 if (directInvocation) {
-  await main();
+  try {
+    await main();
+  } catch (error) {
+    const failure = createArbitraryColdProjectRunFailure(error);
+    verifyArbitraryColdProjectRunFailure(failure);
+    process.stderr.write(`${JSON.stringify({ failure }, null, 2)}\n`);
+    process.exitCode = 1;
+  }
 }

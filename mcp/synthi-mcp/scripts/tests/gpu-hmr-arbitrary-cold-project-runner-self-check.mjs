@@ -18,10 +18,13 @@ import { promisify } from 'node:util';
 import {
   ARBITRARY_COLD_PROJECT_DESCRIPTOR_SCHEMA,
   ARBITRARY_COLD_PROJECT_RUN_AUTHORITY,
+  ARBITRARY_COLD_PROJECT_RUN_FAILURE_AUTHORITY,
+  ARBITRARY_COLD_PROJECT_RUN_FAILURE_SCHEMA,
   ARBITRARY_COLD_PROJECT_RUN_SCHEMA,
   normalizeArbitraryColdProjectDescriptor,
   runArbitraryColdProject,
   verifyArbitraryColdProjectRun,
+  verifyArbitraryColdProjectRunFailure,
 } from '../gpu-hmr-arbitrary-cold-project-runner.mjs';
 import {
   COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
@@ -338,6 +341,65 @@ try {
   assert.ok(!JSON.stringify(cliResult.evidence).match(
     /miopen|hiprt|flow|diamond|neural|blas|cuda|rocm|project_name|fixture_name/i,
   ));
+
+  const refusedScript = [
+    '#!/bin/sh',
+    'set -eu',
+    "printf 'opaque command failed\\n'",
+    "printf 'Authorization: Bearer cli-secret-must-not-leak\\n' >&2",
+    "printf 'ARBITRARY_API_KEY=second-cli-secret\\n' >&2",
+    'exit 19',
+    '',
+  ].join('\n');
+  const refusedArtifactRoot = path.join(root, 'refused cli retained artifact cas');
+  await Promise.all([
+    writeFile(scriptPath, refusedScript, { encoding: 'utf8', mode: 0o755 }),
+    mkdir(refusedArtifactRoot, { recursive: true }),
+  ]);
+  await chmod(scriptPath, 0o755);
+  let refusedCliError = null;
+  try {
+    await execFileAsync(process.execPath, [
+      cliRunnerPath,
+      '--descriptor', descriptorPath,
+      '--artifact-root', refusedArtifactRoot,
+    ], {
+      encoding: 'utf8',
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 120_000,
+      windowsHide: true,
+    });
+  } catch (error) {
+    refusedCliError = error;
+  }
+  assert.ok(refusedCliError instanceof Error);
+  assert.equal(refusedCliError.stdout, '');
+  const refusedCliEnvelope = JSON.parse(refusedCliError.stderr);
+  const failure = refusedCliEnvelope.failure;
+  assert.equal(failure.schemaVersion, ARBITRARY_COLD_PROJECT_RUN_FAILURE_SCHEMA);
+  assert.equal(failure.proofAuthority, ARBITRARY_COLD_PROJECT_RUN_FAILURE_AUTHORITY);
+  assert.equal(verifyArbitraryColdProjectRunFailure(failure), failure);
+  assert.equal(failure.failureCode, 'cold_build_execution_driver_ready_receipt_refused');
+  assert.equal(failure.acceptedAsFailureDiagnostics, true);
+  assert.equal(failure.acceptedAsColdBuildEvidence, false);
+  assert.equal(failure.acceptedForGpuHmr, false);
+  assert.equal(failure.gpuHmrSuccess, false);
+  assert.equal(failure.canSatisfyRuntimeProof, false);
+  assert.equal(failure.canSatisfyDispatchProof, false);
+  assert.equal(failure.readyRefusalEvidence.childExitCode, 19);
+  assert.equal(failure.refusalDiagnostics.acceptedAsDiagnosticSupportEvidence, true);
+  assert.match(failure.refusalDiagnostics.streams.stdout.redactedText, /opaque command failed/);
+  assert.match(failure.refusalDiagnostics.streams.stderr.redactedText, /<redacted>/);
+  assert.doesNotMatch(refusedCliError.stderr, /cli-secret-must-not-leak/);
+  assert.doesNotMatch(refusedCliError.stderr, /second-cli-secret/);
+  assert.equal(failure.cleanupEvidence.absenceProven, true);
+  failure.gpuHmrSuccess = true;
+  assert.throws(
+    () => verifyArbitraryColdProjectRunFailure(failure),
+    /failure_evidence_invalid/,
+  );
+  failure.gpuHmrSuccess = false;
+  assert.equal(verifyArbitraryColdProjectRunFailure(failure), failure);
 
   console.log(JSON.stringify({
     status: 'self_check_passed',
