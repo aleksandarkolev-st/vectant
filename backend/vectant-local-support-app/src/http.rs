@@ -13,7 +13,7 @@ use axum::response::Response;
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -156,6 +156,15 @@ pub struct FullAccessRevertRequest {
     pub current_content_hash: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct FullAccessPortUseRequest {
+    pub request_id: String,
+    pub port: u16,
+    pub expected_process_identity_hash: String,
+    pub path: String,
+    pub max_response_bytes: usize,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub session: Arc<Mutex<SessionGuard>>,
@@ -285,7 +294,11 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/full-access/graph/node", post(full_access_graph_node))
         .route("/v1/full-access/mutation", post(full_access_mutation))
         .route("/v1/full-access/command", post(full_access_command))
-        .route("/v1/full-access/port/discover/:port/:request_id", get(full_access_port_discover))
+        .route(
+            "/v1/full-access/port/discover/:port/:request_id",
+            get(full_access_port_discover),
+        )
+        .route("/v1/full-access/port/use", post(full_access_port_use))
         .route("/v1/full-access/mutation/revert", post(full_access_revert))
         .route(
             "/v1/full-access/processes/:request_id",
@@ -1001,6 +1014,148 @@ async fn full_access_command(
     Ok(Json(
         serde_json::json!({"decision":"auto_executed","request_id":request.request_id,"executable":context.executable,"argument_hash":context.argument_hash,"exit_code":context.exit_code,"stdout":context.stdout,"stderr":context.stderr,"bytes_captured":context.bytes_captured,"redaction_count":context.redaction_count,"raw_command_line_included":false}),
     ))
+}
+
+async fn full_access_port_use(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<FullAccessPortUseRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    if request.port == 0
+        || request.max_response_bytes == 0
+        || request.max_response_bytes > MAX_PREVIEW_RESPONSE_BYTES as usize
+        || !safe_port_path(&request.path)
+    {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "invalid_loopback_port_request",
+        ));
+    }
+    let token = bearer(&headers)?;
+    let (session_id, account_id, org_id, device_fingerprint) = {
+        let mut session = state.session.lock().await;
+        session
+            .validate(token, &request.request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+        (
+            session.session_id().to_string(),
+            session.account_id().to_string(),
+            session.org_id().to_string(),
+            session.device_fingerprint().to_string(),
+        )
+    };
+    let workspace_hash = state.workspace.summary().root_hash;
+    let mut full_access = state.full_access.lock().await;
+    let receipt = full_access
+        .receipt
+        .clone()
+        .ok_or_else(|| denied(StatusCode::FORBIDDEN, "full_access_not_enrolled"))?;
+    let binding = ReceiptBinding {
+        session_id: &session_id,
+        account_id: &account_id,
+        organization_id: &org_id,
+        actor: &receipt.support_actor,
+        device_fingerprint: &device_fingerprint,
+        workspace_hash: &workspace_hash,
+        policy_version: crate::POLICY_VERSION,
+        scanner_version: crate::SCANNER_VERSION,
+        app_version: &receipt.app_version,
+        policy_major: full_access.policy.policy_major,
+        capability: crate::full_access::FullAccessCapability::LocalPortUse,
+    };
+    authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
+        .map_err(full_access_denied)?;
+    if !receipt.auto_approval_enabled
+        || !full_access
+            .policy
+            .allowed_loopback_ports
+            .contains(&request.port)
+    {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "loopback_port_not_auto_approved",
+        ));
+    }
+    let policy = full_access.policy.clone();
+    full_access
+        .budget
+        .reserve(&policy, request.max_response_bytes as u64)
+        .map_err(full_access_denied)?;
+    drop(full_access);
+    let before = detect_loopback_listener(request.port)
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "loopback_listener_unavailable"))?;
+    if before.process_identity_hash != request.expected_process_identity_hash {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "loopback_listener_identity_changed",
+        ));
+    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "loopback_client_unavailable"))?;
+    let response = client
+        .get(format!("http://127.0.0.1:{}{}", request.port, request.path))
+        .send()
+        .await
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "loopback_request_failed"))?;
+    if !response.status().is_success()
+        || response.headers().contains_key("set-cookie")
+        || response.headers().contains_key("location")
+    {
+        return Err(denied(StatusCode::FORBIDDEN, "loopback_response_denied"));
+    }
+    if response
+        .content_length()
+        .is_some_and(|size| size as usize > request.max_response_bytes)
+    {
+        return Err(denied(StatusCode::FORBIDDEN, "loopback_response_too_large"));
+    }
+    let mut output = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| denied(StatusCode::FORBIDDEN, "loopback_response_failed"))?;
+        if output.len().saturating_add(chunk.len()) > request.max_response_bytes {
+            return Err(denied(StatusCode::FORBIDDEN, "loopback_response_too_large"));
+        }
+        output.extend_from_slice(&chunk);
+    }
+    let content = String::from_utf8(output)
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "loopback_binary_response_denied"))?;
+    let scan = SecretScanner::default()
+        .try_scan(&content)
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "scanner_failure"))?;
+    if !scan.findings.is_empty() {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "loopback_response_requires_redaction",
+        ));
+    }
+    let after = detect_loopback_listener(request.port)
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "loopback_listener_unavailable"))?;
+    if after.process_identity_hash != request.expected_process_identity_hash {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "loopback_listener_identity_changed",
+        ));
+    }
+    let mut audit = state.audit.lock().await;
+    audit.append(AuditClass::Data, Some(request.request_id.clone()), format!("Automatically read {} bytes from policy-scoped loopback port {}. Credentials, cookies, redirects, and response headers were blocked.", content.len(), request.port), true);
+    persist_audit(&state, &audit)?;
+    Ok(Json(
+        serde_json::json!({"decision":"auto_accepted","request_id":request.request_id,"port":request.port,"content":content,"bytes_sent":content.len(),"redaction_count":0,"raw_headers_included":false}),
+    ))
+}
+
+fn safe_port_path(value: &str) -> bool {
+    value.starts_with('/')
+        && value.len() <= 2048
+        && !value.contains(['\\', '\0', '#'])
+        && !value.contains('?')
+        && !value.contains("..")
 }
 
 async fn full_access_processes(
