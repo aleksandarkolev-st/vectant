@@ -16,6 +16,7 @@ import {
   COLD_BUILD_LAUNCHER_OUTPUT_ROOT,
   COLD_BUILD_LAUNCHER_SOURCE_ROOT,
   COLD_BUILD_OUTPUT_MANIFEST_MODE_LAUNCHER_GENERATED,
+  coldBuildDockerHostEnvironment,
   materializeColdBuildLauncher,
   runColdBuildHostProcess,
 } from '../lib/gpu-hmr-cold-build-container-contract.mjs';
@@ -214,6 +215,27 @@ async function assertContainerAbsent(reference) {
 }
 
 async function main() {
+  const sanitizedDockerEnvironment = coldBuildDockerHostEnvironment({
+    PATH: 'trusted-path',
+    SystemRoot: 'trusted-system-root',
+    DOCKER_HOST: 'tcp://untrusted.invalid:2375',
+    docker_context: 'untrusted-context',
+    DOCKER_CONFIG: '/untrusted/config',
+    DOCKER_CERT_PATH: '/untrusted/certs',
+    DOCKER_TLS_VERIFY: '1',
+    BUILDKIT_HOST: 'tcp://untrusted.invalid:1234',
+    BUILDX_CONFIG: '/untrusted/buildx',
+    CONTAINER_CONNECTION: 'untrusted-connection',
+    CONTAINER_HOST: 'tcp://untrusted.invalid:5678',
+  });
+  assert.deepEqual(sanitizedDockerEnvironment, {
+    PATH: 'trusted-path',
+    SystemRoot: 'trusted-system-root',
+  });
+  assert.throws(
+    () => coldBuildDockerHostEnvironment([]),
+    /cold_build_docker_host_environment_invalid/,
+  );
   const workerImage = await workerImageDescriptor();
   const launcherIdentity = await materializeColdBuildLauncher({
     dockerExecutable,
@@ -227,13 +249,41 @@ async function main() {
       workerImage,
       valid: true,
     });
-    const accepted = await executeColdBuildLauncherPlan(acceptedFixture.plan, {
-      dockerExecutable,
-      maxReceiptBytes: 1024 * 1024,
-      maxDiagnosticBytes: 1024 * 1024,
-      readyTimeoutMs: 30_000,
-      controlTimeoutMs: 30_000,
-    });
+    const inheritedDockerRedirects = Object.fromEntries([
+      'DOCKER_HOST',
+      'DOCKER_CONTEXT',
+      'DOCKER_CONFIG',
+      'DOCKER_CERT_PATH',
+      'DOCKER_TLS_VERIFY',
+      'BUILDKIT_HOST',
+      'BUILDX_CONFIG',
+      'CONTAINER_CONNECTION',
+      'CONTAINER_HOST',
+    ].map((name) => [name, process.env[name]]));
+    let accepted;
+    try {
+      process.env.DOCKER_HOST = 'tcp://127.0.0.1:1';
+      process.env.DOCKER_CONTEXT = 'untrusted-context';
+      process.env.DOCKER_CONFIG = path.join(root, 'untrusted-docker-config');
+      process.env.DOCKER_CERT_PATH = path.join(root, 'untrusted-docker-certs');
+      process.env.DOCKER_TLS_VERIFY = '1';
+      process.env.BUILDKIT_HOST = 'tcp://127.0.0.1:2';
+      process.env.BUILDX_CONFIG = path.join(root, 'untrusted-buildx-config');
+      process.env.CONTAINER_CONNECTION = 'untrusted-connection';
+      process.env.CONTAINER_HOST = 'tcp://127.0.0.1:3';
+      accepted = await executeColdBuildLauncherPlan(acceptedFixture.plan, {
+        dockerExecutable,
+        maxReceiptBytes: 1024 * 1024,
+        maxDiagnosticBytes: 1024 * 1024,
+        readyTimeoutMs: 30_000,
+        controlTimeoutMs: 30_000,
+      });
+    } finally {
+      for (const [name, value] of Object.entries(inheritedDockerRedirects)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
     assert.equal(
       verifyColdBuildExecutionDriverResult(accepted, acceptedFixture.plan),
       accepted,

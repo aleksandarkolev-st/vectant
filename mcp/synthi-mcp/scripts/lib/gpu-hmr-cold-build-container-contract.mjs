@@ -285,12 +285,38 @@ function normalizeArchitecture(value) {
   return architecture;
 }
 
+const COLD_BUILD_DOCKER_REDIRECT_ENVIRONMENT_NAMES = new Set([
+  'BUILDKIT_HOST',
+  'BUILDX_CONFIG',
+  'CONTAINER_CONNECTION',
+  'CONTAINER_HOST',
+]);
+
+export function coldBuildDockerHostEnvironment(source = process.env) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new Error('cold_build_docker_host_environment_invalid');
+  }
+  const environment = {};
+  for (const [name, value] of Object.entries(source)) {
+    const normalizedName = String(name).toUpperCase();
+    if (
+      normalizedName.startsWith('DOCKER_')
+      || COLD_BUILD_DOCKER_REDIRECT_ENVIRONMENT_NAMES.has(normalizedName)
+    ) {
+      continue;
+    }
+    if (typeof value === 'string') environment[name] = value;
+  }
+  return environment;
+}
+
 export function runColdBuildHostProcess(executable, args, {
   timeoutMs = 120_000,
   maxStdoutBytes = 1024 * 1024,
   maxStderrBytes = 1024 * 1024,
   encoding = 'utf8',
   onStdoutChunk = null,
+  environment = process.env,
 } = {}) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
@@ -300,7 +326,7 @@ export function runColdBuildHostProcess(executable, args, {
         windowsHide: true,
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: process.env,
+        env: environment,
       });
     } catch (error) {
       resolve({
@@ -467,6 +493,7 @@ function runProcess(executable, args, { timeoutMs = 120_000, maxOutputBytes = 10
     maxStdoutBytes: maxOutputBytes,
     maxStderrBytes: maxOutputBytes,
     encoding: 'utf8',
+    environment: coldBuildDockerHostEnvironment(),
   });
 }
 

@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 
-import { runColdBuildHostProcess } from './gpu-hmr-cold-build-container-contract.mjs';
+import {
+  coldBuildDockerHostEnvironment,
+  runColdBuildHostProcess,
+} from './gpu-hmr-cold-build-container-contract.mjs';
 
 export const COLD_BUILD_WORKER_IMAGE_EVIDENCE_SCHEMA =
   'synthi.gpu_hmr.cold_build_worker_image_evidence.v1';
@@ -223,6 +226,7 @@ export async function inspectImmutableColdBuildWorkerImage(imageReference, {
       maxStdoutBytes: 4 * 1024 * 1024,
       maxStderrBytes: 256 * 1024,
       encoding: 'utf8',
+      environment: coldBuildDockerHostEnvironment(),
     },
   );
   if (inspection.exitCode !== 0 || inspection.timedOut === true) {

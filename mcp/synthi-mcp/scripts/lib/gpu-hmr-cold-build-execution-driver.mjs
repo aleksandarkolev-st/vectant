@@ -19,6 +19,7 @@ import {
   COLD_BUILD_CONTROL_FRAME_MAGIC,
   COLD_BUILD_LAUNCHER_CONTAINER_PATH,
   COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH,
+  coldBuildDockerHostEnvironment,
   parseColdBuildCollectorCompletionReceipt,
   parseColdBuildCollectorFrame,
   parseColdBuildControlFrame,
@@ -738,7 +739,10 @@ function parseSingleInspect(stdout) {
 }
 
 async function runDocker(dockerExecutable, args, options) {
-  return runColdBuildHostProcess(dockerExecutable, args, options);
+  return runColdBuildHostProcess(dockerExecutable, args, {
+    ...options,
+    environment: coldBuildDockerHostEnvironment(),
+  });
 }
 
 function beginAttachedContainer({
