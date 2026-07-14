@@ -119,10 +119,13 @@ jobs:
           src/app/api/local-support/httpGuards.test.js
           src/app/api/local-support/request-envelope/route.test.js
           src/app/api/local-support/relay/route.test.js
+          src/app/api/local-support/relay/device/route.test.js
+          src/app/api/local-support/relay/device/payload/route.test.js
           src/app/api/local-support/preview-gateway/route.test.js
           src/app/api/local-support/admin/state/route.test.js
           src/app/api/local-support/policy/route.test.js
           src/app/api/local-support/security-event/route.test.js
+          src/app/api/local-support/test-request/route.test.js
           src/app/api/local-support/transparency-action/route.test.js
           src/app/api/local-support/transparency-state/route.test.js
           src/app/api/local-support/pairing/route.test.js
