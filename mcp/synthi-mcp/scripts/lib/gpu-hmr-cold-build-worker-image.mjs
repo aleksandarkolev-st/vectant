@@ -6,11 +6,39 @@ export const COLD_BUILD_WORKER_IMAGE_EVIDENCE_SCHEMA =
   'synthi.gpu_hmr.cold_build_worker_image_evidence.v1';
 export const COLD_BUILD_WORKER_IMAGE_EVIDENCE_AUTHORITY =
   'immutable_local_image_inspection_only_not_gpu_hmr_success';
+export const COLD_BUILD_WORKER_IMAGE_RECEIPT_SCHEMA =
+  'synthi.gpu_hmr.cold_build_worker_image_receipt.v1';
+export const COLD_BUILD_WORKER_IMAGE_RECEIPT_AUTHORITY =
+  'serialized_worker_image_commitments_only_not_plaintext_environment_or_gpu_hmr_success';
 
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const DIGEST_REFERENCE_PATTERN = /^[^\s@\0\r\n]+@sha256:[a-f0-9]{64}$/;
 const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PINNED_RESULTS = new WeakMap();
+const WORKER_IMAGE_RECEIPT_KEYS = Object.freeze([
+  'schemaVersion',
+  'proofAuthority',
+  'requestedImageReferenceHash',
+  'requestedImageReferenceKind',
+  'imageId',
+  'operatingSystem',
+  'architecture',
+  'descriptorHash',
+  'environmentHash',
+  'environmentEntryCount',
+  'repoDigestSetHash',
+  'repoDigestCount',
+  'inspectionEvidenceHash',
+  'environmentValuesEmbedded',
+  'repoDigestValuesEmbedded',
+  'acceptedAsWorkerImageReceipt',
+  'acceptedAsWorkerImageEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+]);
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -298,4 +326,76 @@ export function verifyRetainedImmutableColdBuildWorkerImage(result, imageReferen
     throw new Error('cold_build_worker_image_retained_evidence_invalid');
   }
   return result;
+}
+
+function workerImageReceiptAccepted(receipt) {
+  return exactKeys(receipt, WORKER_IMAGE_RECEIPT_KEYS)
+    && receipt.schemaVersion === COLD_BUILD_WORKER_IMAGE_RECEIPT_SCHEMA
+    && receipt.proofAuthority === COLD_BUILD_WORKER_IMAGE_RECEIPT_AUTHORITY
+    && [
+      'requestedImageReferenceHash',
+      'imageId',
+      'descriptorHash',
+      'environmentHash',
+      'repoDigestSetHash',
+      'inspectionEvidenceHash',
+      'evidenceHash',
+    ].every((name) => SHA256_PATTERN.test(receipt[name] ?? ''))
+    && ['image_id', 'repo_digest'].includes(receipt.requestedImageReferenceKind)
+    && receipt.operatingSystem === 'linux'
+    && ['amd64', 'arm64'].includes(receipt.architecture)
+    && Number.isSafeInteger(receipt.environmentEntryCount)
+    && receipt.environmentEntryCount >= 0
+    && receipt.environmentEntryCount <= 256
+    && Number.isSafeInteger(receipt.repoDigestCount)
+    && receipt.repoDigestCount >= 0
+    && receipt.repoDigestCount <= 256
+    && receipt.environmentValuesEmbedded === false
+    && receipt.repoDigestValuesEmbedded === false
+    && receipt.acceptedAsWorkerImageReceipt === true
+    && receipt.acceptedAsWorkerImageEvidence === false
+    && receipt.acceptedForGpuHmr === false
+    && receipt.gpuHmrSuccess === false
+    && receipt.canSatisfyRuntimeProof === false
+    && receipt.canSatisfyDispatchProof === false
+    && receipt.evidenceHash === recomputeEvidenceHash(receipt);
+}
+
+export function createColdBuildWorkerImageReceipt(result, imageReference) {
+  verifyImmutableColdBuildWorkerImage(result, imageReference);
+  const receipt = {
+    schemaVersion: COLD_BUILD_WORKER_IMAGE_RECEIPT_SCHEMA,
+    proofAuthority: COLD_BUILD_WORKER_IMAGE_RECEIPT_AUTHORITY,
+    requestedImageReferenceHash: result.evidence.requestedImageReferenceHash,
+    requestedImageReferenceKind: result.evidence.requestedImageReferenceKind,
+    imageId: result.descriptor.imageId,
+    operatingSystem: result.descriptor.operatingSystem,
+    architecture: result.descriptor.architecture,
+    descriptorHash: result.evidence.descriptorHash,
+    environmentHash: result.evidence.environmentHash,
+    environmentEntryCount: result.descriptor.environment.length,
+    repoDigestSetHash: result.evidence.repoDigestSetHash,
+    repoDigestCount: result.descriptor.repoDigests.length,
+    inspectionEvidenceHash: result.evidence.evidenceHash,
+    environmentValuesEmbedded: false,
+    repoDigestValuesEmbedded: false,
+    acceptedAsWorkerImageReceipt: true,
+    acceptedAsWorkerImageEvidence: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  receipt.evidenceHash = recomputeEvidenceHash(receipt);
+  if (!workerImageReceiptAccepted(receipt)) {
+    throw new Error('cold_build_worker_image_receipt_source_invalid');
+  }
+  return receipt;
+}
+
+export function verifyColdBuildWorkerImageReceipt(receipt) {
+  if (!workerImageReceiptAccepted(receipt)) {
+    throw new Error('cold_build_worker_image_receipt_invalid');
+  }
+  return receipt;
 }
