@@ -73,12 +73,28 @@ describe("local support transparency action route", () => {
     const response = await POST(request({ action: "delete_history" }));
     const json = await response.json();
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(401);
     expect(json).toMatchObject({
       decision: "denied",
-      reason: "local_app_not_connected",
+      reason: "authentication_required",
       bytes_sent: 0,
     });
+  });
+
+  it("requires authentication before touching configured local daemon credentials", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET = "desktop_control_secret_123456789012345";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request({ action: "pause_session" }));
+    const json = await response.json();
+
+    expect(response.status).toBe(401);
+    expect(json).toMatchObject({ decision: "denied", reason: "authentication_required", bytes_sent: 0 });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("does not treat a static environment snapshot as a connected local app", async () => {
@@ -102,11 +118,11 @@ describe("local support transparency action route", () => {
     });
 
     const response = await POST(request({ action: "pause_session" }));
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(401);
     const json = await response.json();
     expect(json).toMatchObject({
       decision: "denied",
-      reason: "local_app_not_connected",
+      reason: "authentication_required",
       bytes_sent: 0,
     });
   });
@@ -187,6 +203,7 @@ describe("local support transparency action route", () => {
 
   it("forwards connected actions to the configured loopback daemon", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    cloudMocks.session.mockResolvedValue({ user: { id: "acct_live" } });
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET = "desktop_control_secret_123456789012345";
@@ -241,13 +258,38 @@ describe("local support transparency action route", () => {
     );
   });
 
+  it("rejects a daemon paired to a different authenticated account", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET = "desktop_control_secret_123456789012345";
+    cloudMocks.session.mockResolvedValue({ user: { id: "acct_browser" } });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      session: { session_id: "sess_live", account_id: "acct_other" },
+      workspace: { workspace_id: "wk_live" },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request({ action: "pause_session" }));
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json).toMatchObject({
+      decision: "denied",
+      reason: "local_control_context_mismatch",
+      bytes_sent: 0,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("denies connected actions when the daemon control credentials are missing", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    cloudMocks.session.mockResolvedValue({ user: { id: "acct_live" } });
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
     delete process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET;
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      session: { session_id: "sess_live" },
+      session: { session_id: "sess_live", account_id: "acct_live" },
       workspace: { workspace_id: "wk_live" },
     }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -266,13 +308,14 @@ describe("local support transparency action route", () => {
 
   it("forwards session approval revocation to the local daemon", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    cloudMocks.session.mockResolvedValue({ user: { id: "acct_live" } });
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET = "desktop_control_secret_123456789012345";
     const fetchMock = vi.fn(async (url) => {
       if (String(url).includes("/v1/status/")) {
         return new Response(JSON.stringify({
-          session: { session_id: "sess_live" },
+          session: { session_id: "sess_live", account_id: "acct_live" },
           workspace: { workspace_id: "wk_live" },
         }), { status: 200 });
       }
@@ -308,13 +351,14 @@ describe("local support transparency action route", () => {
 
   it("sanitizes daemon history export responses before returning them to the browser", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    cloudMocks.session.mockResolvedValue({ user: { id: "acct_live" } });
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET = "desktop_control_secret_123456789012345";
     const fetchMock = vi.fn(async (url) => {
       if (String(url).includes("/v1/status/")) {
         return new Response(JSON.stringify({
-          session: { session_id: "sess_live" },
+          session: { session_id: "sess_live", account_id: "acct_live" },
           workspace: { workspace_id: "wk_live" },
         }), { status: 200 });
       }
@@ -372,13 +416,14 @@ describe("local support transparency action route", () => {
 
   it("scrubs daemon denial messages before returning them to the browser", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    cloudMocks.session.mockResolvedValue({ user: { id: "acct_live" } });
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET = "desktop_control_secret_123456789012345";
     const fetchMock = vi.fn(async (url) => {
       if (String(url).includes("/v1/status/")) {
         return new Response(JSON.stringify({
-          session: { session_id: "sess_live" },
+          session: { session_id: "sess_live", account_id: "acct_live" },
           workspace: { workspace_id: "wk_live" },
         }), { status: 200 });
       }

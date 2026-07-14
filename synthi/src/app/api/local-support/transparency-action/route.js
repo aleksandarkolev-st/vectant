@@ -54,19 +54,34 @@ export async function POST(req) {
     );
   }
 
+  let cloudAccountId;
+  try {
+    const session = await getServerSession(authOptions);
+    cloudAccountId = session?.user?.id || session?.user?.email || null;
+  } catch {
+    return jsonNoStore(deniedBody("cloud_control_unavailable", "Cloud account state is unavailable."), 503);
+  }
+  if (!cloudAccountId) {
+    return jsonNoStore(deniedBody("authentication_required", "Sign in before changing Local Support state."), 401);
+  }
+
   const localStatus = await readLocalDaemonStatus();
-  let cloudAccountId = null;
   let cloudState = null;
   if (!localStatus) {
     try {
-      const session = await getServerSession(authOptions);
-      cloudAccountId = session?.user?.id || session?.user?.email || null;
-      if (cloudAccountId) cloudState = await readCloudTransparencyState(cloudAccountId);
+      cloudState = await readCloudTransparencyState(cloudAccountId);
     } catch {
       return jsonNoStore(deniedBody("cloud_control_unavailable", "Cloud control state is unavailable."), 503);
     }
   }
   const currentState = localStatus?.state || cloudState || {};
+  if (localStatus?.state?.session?.account_id
+    && localStatus.state.session.account_id !== cloudAccountId) {
+    return jsonNoStore(
+      deniedBody("local_control_context_mismatch", "The installed app is paired to a different account."),
+      403,
+    );
+  }
   const orgId = currentState?.session?.org_id || bodyResult.value?.org_id || null;
   if (orgId) {
     try {
