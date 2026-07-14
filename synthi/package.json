@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "node scripts/build-node-polyfills.js && next build",
+    "build": "node scripts/build-node-polyfills.js && next build && node scripts/prepare-standalone.js",
     "build:turbopack": "node scripts/build-node-polyfills.js && next build --turbopack",
     "start": "next start",
     "lint": "eslint",
