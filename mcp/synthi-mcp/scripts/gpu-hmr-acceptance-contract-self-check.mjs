@@ -814,6 +814,42 @@ assert.ok(
 );
 assert.equal(evaluateGpuHmrAcceptanceContract(derivedCandidateBackendRefusal).accepted, false);
 
+const derivedProjectNameBackendSpoof = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+  ...derivedProofInput,
+  backend: 'rocm',
+  backendEvidence: 'hiprtBuildScene',
+  gpuApi: 'hiprtBuildScene',
+  launchApi: 'hiprtCreateContext',
+  firewallEvidence: verifiedGpuFirewallEvidence,
+  dispatchProof: {
+    ...derivedProofInput.dispatchProof,
+    evidenceRefs: [
+      'runtime:project:hiprtpathtracer',
+      'runtime:target:hiprt-oro',
+      'runtime:fixture:hiprt_kernel',
+    ],
+  },
+});
+assert.equal(
+  derivedProjectNameBackendSpoof.backend,
+  'unknown',
+  'project, target, and fixture names must not become backend evidence',
+);
+
+const derivedTypedHiprtApiEvidence = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+  ...derivedProofInput,
+  backend: 'rocm',
+  firewallEvidence: verifiedGpuFirewallEvidence,
+  validationContext: {
+    gpuApi: 'hiprtBuildScene',
+  },
+});
+assert.equal(
+  derivedTypedHiprtApiEvidence.backend,
+  'hiprt',
+  'a typed HIPRT API observation should identify the backend family',
+);
+
 const derivedNativeBoundarySupplemental = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
   ...derivedProofInput,
   firewallEvidence: verifiedGpuFirewallEvidence,

@@ -1118,24 +1118,14 @@ export function evaluateGpuHmrAcceptanceContractConsistency({
   };
 }
 
-function backendEvidenceText({ input, validationContext, selectedIsland, dispatchProof, artifactTransportProof }) {
+function backendEvidenceText({ validationContext, selectedIsland, dispatchProof, artifactTransportProof }) {
   return [
-    input.backendEvidence,
-    input.backend_evidence,
-    input.gpuApi,
-    input.gpu_api,
-    input.launchApi,
-    input.launch_api,
-    validationContext.backendEvidence,
-    validationContext.backend_evidence,
     validationContext.gpuApi,
     validationContext.gpu_api,
     validationContext.launchApi,
     validationContext.launch_api,
     validationContext.deviceIdentity?.backend,
     validationContext.device_identity?.backend,
-    selectedIsland?.artifactKind,
-    selectedIsland?.artifact_kind,
     selectedIsland?.compiler,
     selectedIsland?.compilerName,
     selectedIsland?.compiler_name,
@@ -1145,17 +1135,11 @@ function backendEvidenceText({ input, validationContext, selectedIsland, dispatc
     dispatchProof?.launch_api,
     artifactTransportProof?.loaderApi,
     artifactTransportProof?.loader_api,
-    ...(asArray(dispatchProof?.dispatchEvidenceRefs)),
-    ...(asArray(dispatchProof?.dispatch_evidence_refs)),
-    ...(asArray(dispatchProof?.evidenceRefs)),
-    ...(asArray(dispatchProof?.evidence_refs)),
-    ...(asArray(artifactTransportProof?.evidenceRefs)),
-    ...(asArray(artifactTransportProof?.evidence_refs)),
   ].map((value) => String(value ?? '').toLowerCase()).join(' ');
 }
 
 function hasHiprtBackendEvidence(evidence) {
-  return /\bhiprt\b|hiprtpathtracer|hiprt[_-]?oro|hiprto|hiprt[_-]?kernel/.test(evidence);
+  return /\bhiprt\b|\bhiprt(?:create|destroy|build|get|set)[a-z0-9_]*\b/.test(evidence);
 }
 
 function hasHipBackendEvidence(evidence) {
