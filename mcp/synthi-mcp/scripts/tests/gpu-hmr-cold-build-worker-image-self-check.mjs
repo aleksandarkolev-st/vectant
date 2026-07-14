@@ -6,6 +6,7 @@ import {
   COLD_BUILD_WORKER_IMAGE_EVIDENCE_SCHEMA,
   inspectImmutableColdBuildWorkerImage,
   verifyImmutableColdBuildWorkerImage,
+  verifyRetainedImmutableColdBuildWorkerImage,
 } from '../lib/gpu-hmr-cold-build-worker-image.mjs';
 
 const digestResult = await inspectImmutableColdBuildWorkerImage(
@@ -32,6 +33,40 @@ assert.equal(
 assert.equal(idResult.evidence.requestedImageReferenceKind, 'image_id');
 assert.equal(idResult.descriptor.imageId, digestResult.descriptor.imageId);
 assert.notEqual(idResult.evidence.evidenceHash, digestResult.evidence.evidenceHash);
+const retainedIdResult = JSON.parse(JSON.stringify(idResult));
+assert.equal(
+  verifyRetainedImmutableColdBuildWorkerImage(
+    retainedIdResult,
+    digestResult.descriptor.imageId,
+  ),
+  retainedIdResult,
+);
+const retainedDigestResult = JSON.parse(JSON.stringify(digestResult));
+assert.equal(
+  verifyRetainedImmutableColdBuildWorkerImage(
+    retainedDigestResult,
+    COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
+  ),
+  retainedDigestResult,
+);
+const retainedResultWithUnknownField = structuredClone(retainedIdResult);
+retainedResultWithUnknownField.projectName = 'must-not-be-accepted';
+assert.throws(
+  () => verifyRetainedImmutableColdBuildWorkerImage(
+    retainedResultWithUnknownField,
+    digestResult.descriptor.imageId,
+  ),
+  /retained_evidence_invalid/,
+);
+const retainedAuthorityClaim = structuredClone(retainedIdResult);
+retainedAuthorityClaim.evidence.gpuHmrSuccess = true;
+assert.throws(
+  () => verifyRetainedImmutableColdBuildWorkerImage(
+    retainedAuthorityClaim,
+    digestResult.descriptor.imageId,
+  ),
+  /retained_evidence_invalid/,
+);
 
 await assert.rejects(
   () => inspectImmutableColdBuildWorkerImage('golang:mutable-tag'),

@@ -33,6 +33,13 @@ function recomputeEvidenceHash(evidence) {
   return contentHash(stableJson(projection));
 }
 
+function exactKeys(value, keys) {
+  return value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && stableJson(Object.keys(value).sort()) === stableJson([...keys].sort());
+}
+
 function normalizeImageReference(value) {
   if (typeof value !== 'string' || value.length < 1 || value.length > 2048) {
     throw new Error('cold_build_worker_image_reference_invalid');
@@ -247,6 +254,48 @@ export function verifyImmutableColdBuildWorkerImage(result, imageReference) {
     || stableJson(result?.descriptor) !== stableJson(normalized)
   ) {
     throw new Error('cold_build_worker_image_evidence_invalid');
+  }
+  return result;
+}
+
+export function verifyRetainedImmutableColdBuildWorkerImage(result, imageReference) {
+  const reference = normalizeImageReference(imageReference);
+  let normalized;
+  try {
+    normalized = verifyProjection(result, reference);
+  } catch {
+    throw new Error('cold_build_worker_image_retained_evidence_invalid');
+  }
+  if (
+    !exactKeys(result, ['descriptor', 'evidence'])
+    || !exactKeys(result.descriptor, [
+      'imageId',
+      'operatingSystem',
+      'architecture',
+      'environment',
+      'repoDigests',
+    ])
+    || !exactKeys(result.evidence, [
+      'schemaVersion',
+      'proofAuthority',
+      'requestedImageReferenceHash',
+      'requestedImageReferenceKind',
+      'imageId',
+      'operatingSystem',
+      'architecture',
+      'descriptorHash',
+      'environmentHash',
+      'repoDigestSetHash',
+      'acceptedAsWorkerImageEvidence',
+      'acceptedForGpuHmr',
+      'gpuHmrSuccess',
+      'canSatisfyRuntimeProof',
+      'canSatisfyDispatchProof',
+      'evidenceHash',
+    ])
+    || stableJson(result.descriptor) !== stableJson(normalized)
+  ) {
+    throw new Error('cold_build_worker_image_retained_evidence_invalid');
   }
   return result;
 }
