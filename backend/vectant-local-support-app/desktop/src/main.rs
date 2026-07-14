@@ -794,21 +794,63 @@ async fn policy_poll_loop(app_handle: tauri::AppHandle) {
         }
         if let Ok(state) = current_app_state(&runtime) {
             let _ = apply_policy_to_local_state(&state, &policy).await;
-            if preview_disabled {
-                let session_id = state.session.lock().await.session_id().to_string();
-                state
-                    .port_approvals
-                    .lock()
-                    .await
-                    .disconnect_session(&session_id);
-                state.preview_traffic.lock().await.clear_all();
-                if let Ok(mut contexts) = runtime.preview_contexts.write() {
-                    contexts.clear();
-                }
-            }
+            enforce_cloud_policy(&runtime, &state, &policy, preview_disabled).await;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+async fn enforce_cloud_policy(
+    runtime: &DesktopRuntime,
+    state: &AppState,
+    policy: &DesktopPolicyStatus,
+    preview_disabled: bool,
+) {
+    if policy_requires_session_disconnect(policy) {
+        let session_active = state.session.lock().await.is_active();
+        if session_active {
+            let _ = shutdown_cleanup(state, "cloud_policy_disabled").await;
+        } else {
+            state.approvals.lock().await.revoke_all();
+            let session_id = state.session.lock().await.session_id().to_string();
+            state
+                .port_approvals
+                .lock()
+                .await
+                .disconnect_session(&session_id);
+            state.preview_traffic.lock().await.clear_all();
+        }
+        if let Ok(mut pending) = runtime.pending_relay_approvals.write() {
+            pending.clear();
+        }
+        if let Ok(mut contexts) = runtime.preview_contexts.write() {
+            contexts.clear();
+        }
+        if let Ok(mut last_status) = runtime.last_synced_port_status.write() {
+            *last_status = None;
+        }
+        return;
+    }
+
+    if preview_disabled {
+        let session_id = state.session.lock().await.session_id().to_string();
+        state
+            .port_approvals
+            .lock()
+            .await
+            .disconnect_session(&session_id);
+        state.preview_traffic.lock().await.clear_all();
+        if let Ok(mut contexts) = runtime.preview_contexts.write() {
+            contexts.clear();
+        }
+        if let Ok(mut last_status) = runtime.last_synced_port_status.write() {
+            *last_status = None;
+        }
+    }
+}
+
+fn policy_requires_session_disconnect(policy: &DesktopPolicyStatus) -> bool {
+    !policy.available || !policy.enabled || policy.update_required
 }
 
 fn required_port(payload: &serde_json::Value) -> Result<u16, String> {
@@ -1463,7 +1505,8 @@ fn app_data_root() -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        relay_release_context_allowed, validate_private_target, DesktopPolicyStatus, RelayDelivery,
+        policy_requires_session_disconnect, relay_release_context_allowed, validate_private_target,
+        DesktopPolicyStatus, RelayDelivery,
     };
     use vectant_local_support_app::session::SessionState;
 
@@ -1560,5 +1603,22 @@ mod tests {
         assert!(!relay_release_context_allowed(
             true, &session, "wk_123", &delivery, &disabled,
         ));
+    }
+
+    #[test]
+    fn cloud_policy_disconnects_when_unavailable_or_blocked() {
+        let mut policy = release_policy();
+        assert!(!policy_requires_session_disconnect(&policy));
+
+        policy.available = false;
+        assert!(policy_requires_session_disconnect(&policy));
+
+        policy = release_policy();
+        policy.enabled = false;
+        assert!(policy_requires_session_disconnect(&policy));
+
+        policy = release_policy();
+        policy.update_required = true;
+        assert!(policy_requires_session_disconnect(&policy));
     }
 }
