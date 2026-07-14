@@ -1613,6 +1613,107 @@ const char* synthi_probe_required_env(const char* name)
 	return value;
 }
 
+void synthi_configure_deterministic_visual_probe(HIPRTRenderData& render_data)
+{
+	render_data.render_settings.accumulate = false;
+	render_data.render_settings.freeze_random = true;
+	render_data.render_settings.samples_per_frame = 1;
+	render_data.render_settings.restir_di_settings.common_temporal_pass.do_temporal_reuse_pass = false;
+	render_data.render_settings.restir_di_settings.do_fused_spatiotemporal = false;
+	render_data.render_settings.restir_gi_settings.common_temporal_pass.do_temporal_reuse_pass = false;
+	render_data.current_camera.do_jittering = false;
+	render_data.prev_camera.do_jittering = false;
+	render_data.random_number = 42;
+}
+
+void synthi_append_float_bits(std::ostringstream& output, float value)
+{
+	std::uint32_t bits = 0;
+	static_assert(sizeof(bits) == sizeof(value));
+	std::memcpy(&bits, &value, sizeof(bits));
+	output << std::hex << std::setw(8) << std::setfill('0') << bits;
+}
+
+int synthi_runtime_visual_process_id()
+{
+#if defined(_WIN32)
+	return static_cast<int>(::_getpid());
+#else
+	return static_cast<int>(::getpid());
+#endif
+}
+
+std::string synthi_camera_state_token(const HIPRTCamera& camera)
+{
+	std::ostringstream output;
+	auto append_matrix = [&output](const char* label, const float4x4& matrix)
+	{
+		output << label << ':';
+		for (int row = 0; row < 4; row++)
+			for (int column = 0; column < 4; column++)
+				synthi_append_float_bits(output, matrix.m[row][column]);
+	};
+	append_matrix("iv", camera.inverse_view);
+	append_matrix("ip", camera.inverse_projection);
+	append_matrix("vp", camera.view_projection);
+	output << "p:";
+	synthi_append_float_bits(output, camera.position.x);
+	synthi_append_float_bits(output, camera.position.y);
+	synthi_append_float_bits(output, camera.position.z);
+	output << "f:";
+	synthi_append_float_bits(output, camera.vertical_fov);
+	output << std::dec
+		<< "r:" << camera.sensor_width << 'x' << camera.sensor_height
+		<< "j:" << (camera.do_jittering ? 1 : 0);
+	return output.str();
+}
+
+void synthi_emit_runtime_visual_control_state(
+	const char* phase,
+	const HIPRTRenderData& render_data,
+	int width,
+	int height,
+	bool after_epoch_dispatch)
+{
+	const auto timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+	const int process_id = synthi_runtime_visual_process_id();
+	const bool temporal_disabled =
+		!render_data.render_settings.accumulate
+		&& !render_data.render_settings.restir_di_settings.common_temporal_pass.do_temporal_reuse_pass
+		&& !render_data.render_settings.restir_di_settings.do_fused_spatiotemporal
+		&& !render_data.render_settings.restir_gi_settings.common_temporal_pass.do_temporal_reuse_pass;
+	const bool fixed_seed =
+		render_data.render_settings.freeze_random
+		&& !render_data.current_camera.do_jittering;
+	const std::string seed_state_token =
+		std::string("freeze_random=") + (render_data.render_settings.freeze_random ? "1" : "0")
+		+ ",seed_policy=" + (render_data.render_settings.freeze_random
+			? "device_pixel_index_seed_host_rng_ignored"
+			: "host_rng_and_sample_number")
+		+ ",host_random_number=" + (render_data.render_settings.freeze_random
+			? "not_effective"
+			: std::to_string(render_data.random_number))
+		+ ",camera_jitter=" + (render_data.current_camera.do_jittering ? "1" : "0");
+	const std::string camera_state_token = synthi_camera_state_token(render_data.current_camera);
+	std::fprintf(stderr,
+		"[gpu-runtime-boundary] visual_control_observation {\"schema_version\":\"synthi.gpu_hmr.runtime_visual_control_state.v1\",\"proof_authority\":\"target_process_runtime_visual_control_state\",\"phase\":\"%s\",\"runtime_session\":\"native-launch-observer:%d\",\"process_id\":\"pid:%d\",\"capture_event_id\":\"hiprt-frame:%s:%d:%lld\",\"frame_timestamp_monotonic_ns\":\"%lld\",\"after_epoch_dispatch\":%s,\"capture_synchronized\":true,\"presentation_boundary_observed\":true,\"presentation_boundary_kind\":\"offscreen_stream_synchronized_framebuffer_readback\",\"fixed_seed\":%s,\"seed_state_token\":\"%s\",\"camera_state_token\":\"%s\",\"temporal_accumulation_present\":true,\"temporal_accumulation_disabled\":%s,\"temporal_accumulation_not_applicable\":false,\"taa_present\":false,\"taa_disabled\":false,\"taa_not_applicable\":true,\"denoiser_present\":false,\"denoiser_disabled\":false,\"denoiser_not_applicable\":true,\"presentation_image_count\":1,\"warmup_frames\":1,\"width\":%d,\"height\":%d,\"accepted_for_gpu_hmr\":false,\"gpu_hmr_success\":false,\"can_satisfy_runtime_proof\":false,\"can_satisfy_dispatch_proof\":false}\n",
+		phase,
+		process_id,
+		process_id,
+		phase,
+		process_id,
+		static_cast<long long>(timestamp_ns),
+		static_cast<long long>(timestamp_ns),
+		after_epoch_dispatch ? "true" : "false",
+		fixed_seed ? "true" : "false",
+		seed_state_token.c_str(),
+		camera_state_token.c_str(),
+		temporal_disabled ? "true" : "false",
+		width,
+		height);
+}
+
 bool synthi_wait_for_reload_trigger()
 {
 	const char* trigger_path = synthi_probe_required_env("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TRIGGER_PATH");
@@ -1710,15 +1811,29 @@ bool synthi_write_runtime_framebuffer_to_path(const std::shared_ptr<OpenGLIntero
 `;
 
 const SAME_PROCESS_RENDER_BLOCK = String.raw`
+	// SYNTHI_RUNTIME_VISUAL_CONTROL_RENDER_BLOCK_BEGIN
 	if (std::getenv("SYNTHI_HIPRT_RUNTIME_PROBE_SAME_PROCESS") != nullptr)
 	{
 		static bool synthi_same_process_probe_completed = false;
 		if (!synthi_same_process_probe_completed)
 		{
 			synthi_same_process_probe_completed = true;
+			const char* baseline_capture_path = synthi_probe_required_env("SYNTHI_HIPRT_RUNTIME_PROBE_CAPTURE_PATH");
 			const char* second_capture_path = synthi_probe_required_env("SYNTHI_HIPRT_RUNTIME_PROBE_SECOND_CAPTURE_PATH");
 			const int synthi_probe_width = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_PROOF_WIDTH", m_renderer->m_render_resolution.x);
 			const int synthi_probe_height = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_PROOF_HEIGHT", m_renderer->m_render_resolution.y);
+			if (baseline_capture_path == nullptr || !synthi_probe_file_exists(baseline_capture_path))
+			{
+				std::fprintf(stderr, "[synthi-hiprt-runtime-probe] visual_control_before_capture_missing\n");
+				std::fflush(stderr);
+				std::exit(88);
+			}
+			synthi_emit_runtime_visual_control_state(
+				"before",
+				m_render_data_for_frame,
+				synthi_probe_width,
+				synthi_probe_height,
+				false);
 			if (second_capture_path != nullptr && synthi_wait_for_reload_trigger())
 			{
 				const char* synthi_reload_kernel_name = synthi_probe_required_env("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_KERNEL_NAME");
@@ -1750,7 +1865,7 @@ const SAME_PROCESS_RENDER_BLOCK = String.raw`
 				m_render_data_for_frame.render_settings.render_resolution = make_int2(synthi_probe_width, synthi_probe_height);
 				m_render_data_for_frame.current_camera = m_renderer->m_camera.to_hiprt(synthi_probe_width, synthi_probe_height);
 				m_render_data_for_frame.prev_camera = m_renderer->m_previous_frame_camera.to_hiprt(synthi_probe_width, synthi_probe_height);
-				m_render_data_for_frame.random_number = 42;
+				synthi_configure_deterministic_visual_probe(m_render_data_for_frame);
 				m_compiler_options_for_frame = m_renderer->get_global_compiler_options()->deep_copy();
 				std::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_resolution proof_width=%d proof_height=%d renderer_width=%d renderer_height=%d render_data_width=%d render_data_height=%d\n",
 					synthi_probe_width,
@@ -1769,6 +1884,13 @@ const SAME_PROCESS_RENDER_BLOCK = String.raw`
 					m_renderer->get_main_stream(),
 					second_capture_path,
 					"changed-after-in-process-recompile");
+				if (wrote_second)
+					synthi_emit_runtime_visual_control_state(
+						"after",
+						m_render_data_for_frame,
+						synthi_probe_width,
+						synthi_probe_height,
+						true);
 				if (wrote_second && std::getenv("SYNTHI_HIPRT_RUNTIME_PROBE_EXIT_AFTER_SECOND_CAPTURE") != nullptr)
 				{
 					std::fflush(stderr);
@@ -1777,6 +1899,26 @@ const SAME_PROCESS_RENDER_BLOCK = String.raw`
 			}
 		}
 	}
+	// SYNTHI_RUNTIME_VISUAL_CONTROL_RENDER_BLOCK_END
+`;
+
+const SAME_PROCESS_DETERMINISTIC_SETUP_BLOCK = String.raw`	// SYNTHI_RUNTIME_VISUAL_CONTROL_SETUP_BLOCK_BEGIN
+	if (std::getenv("SYNTHI_HIPRT_RUNTIME_PROBE_SAME_PROCESS") != nullptr)
+		synthi_configure_deterministic_visual_probe(m_render_data_for_frame);
+	// SYNTHI_RUNTIME_VISUAL_CONTROL_SETUP_BLOCK_END
+`;
+
+const SAME_PROCESS_VISUAL_CONTROL_INCLUDES = String.raw`// SYNTHI_RUNTIME_VISUAL_CONTROL_INCLUDES_BEGIN
+#include <cstdint>
+#include <cstring>
+#include <iomanip>
+#include <sstream>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+// SYNTHI_RUNTIME_VISUAL_CONTROL_INCLUDES_END
 `;
 
 async function runHiprtVariant(variant) {
@@ -1922,6 +2064,100 @@ async function applySameProcessAdapter() {
 				}
 				synthi_reload_kernel->second->compile(m_renderer->m_hiprt_orochi_ctx, m_renderer->m_func_name_sets, true, false);`;
     let upgraded = false;
+    const replaceMarkedSection = (source, startMarker, endMarker, replacement, label) => {
+      const start = source.indexOf(startMarker);
+      const end = source.indexOf(endMarker, start);
+      if (start < 0 || end < 0) {
+        throw new Error(`GPURendererThread.cpp ${label} markers not found`);
+      }
+      const endExclusive = end + endMarker.length;
+      if (source.slice(start, endExclusive) === replacement) return source;
+      return `${source.slice(0, start)}${replacement}${source.slice(endExclusive)}`;
+    };
+    const includeStartMarker = '// SYNTHI_RUNTIME_VISUAL_CONTROL_INCLUDES_BEGIN';
+    const includeEndMarker = '// SYNTHI_RUNTIME_VISUAL_CONTROL_INCLUDES_END';
+    const desiredIncludes = SAME_PROCESS_VISUAL_CONTROL_INCLUDES.trimEnd();
+    if (!text.includes(includeStartMarker)) {
+      const includeAnchor = '#include <vector>\n';
+      if (!text.includes(includeAnchor)) {
+        throw new Error('GPURendererThread.cpp include anchor not found for visual controls');
+      }
+      text = text.replace(
+        includeAnchor,
+        `${includeAnchor}${SAME_PROCESS_VISUAL_CONTROL_INCLUDES}`,
+      );
+      upgraded = true;
+    } else {
+      const updated = replaceMarkedSection(
+        text,
+        includeStartMarker,
+        includeEndMarker,
+        desiredIncludes,
+        'visual-control include',
+      );
+      upgraded ||= updated !== text;
+      text = updated;
+    }
+    const helperStartMarker = '// SYNTHI_SAME_PROCESS_HIPRT_HOT_SWAP_ADAPTER_BEGIN';
+    const helperEndMarker = '// SYNTHI_SAME_PROCESS_HIPRT_HOT_SWAP_ADAPTER_END';
+    const desiredHelpers = SAME_PROCESS_ADAPTER_HELPERS.trim();
+    const updatedHelpers = replaceMarkedSection(
+      text,
+      helperStartMarker,
+      helperEndMarker,
+      desiredHelpers,
+      'same-process helper',
+    );
+    upgraded ||= updatedHelpers !== text;
+    text = updatedHelpers;
+    const renderControlStartMarker = '// SYNTHI_RUNTIME_VISUAL_CONTROL_RENDER_BLOCK_BEGIN';
+    const renderControlEndMarker = '// SYNTHI_RUNTIME_VISUAL_CONTROL_RENDER_BLOCK_END';
+    const desiredRenderBlock = SAME_PROCESS_RENDER_BLOCK.replace(/^\n/, '').trimEnd();
+    if (!text.includes(renderControlStartMarker)) {
+      const renderStartMarker = '\n\tif (std::getenv("SYNTHI_HIPRT_RUNTIME_PROBE_SAME_PROCESS") != nullptr)';
+      const renderEndMarker = '\n\n\t// Recording GPU frame time';
+      const renderStart = text.indexOf(renderStartMarker);
+      const renderEnd = text.indexOf(renderEndMarker, renderStart);
+      if (renderStart < 0 || renderEnd < 0) {
+        throw new Error('GPURendererThread.cpp same-process render block anchors not found');
+      }
+      text = `${text.slice(0, renderStart)}\n${desiredRenderBlock}${text.slice(renderEnd)}`;
+      upgraded = true;
+    } else {
+      const updated = replaceMarkedSection(
+        text,
+        renderControlStartMarker,
+        renderControlEndMarker,
+        desiredRenderBlock.trimStart(),
+        'runtime visual-control render block',
+      );
+      upgraded ||= updated !== text;
+      text = updated;
+    }
+    const setupStartMarker = '// SYNTHI_RUNTIME_VISUAL_CONTROL_SETUP_BLOCK_BEGIN';
+    const setupEndMarker = '// SYNTHI_RUNTIME_VISUAL_CONTROL_SETUP_BLOCK_END';
+    const desiredSetupBlock = SAME_PROCESS_DETERMINISTIC_SETUP_BLOCK.trimEnd();
+    if (!text.includes(setupStartMarker)) {
+      const baselineCameraAnchor = '\tm_render_data_for_frame.prev_camera = m_renderer->m_previous_frame_camera.to_hiprt(m_renderer->m_render_resolution.x, m_renderer->m_render_resolution.y);\n';
+      if (!text.includes(baselineCameraAnchor)) {
+        throw new Error('GPURendererThread.cpp baseline camera anchor not found for visual controls');
+      }
+      text = text.replace(
+        baselineCameraAnchor,
+        `${baselineCameraAnchor}\n${SAME_PROCESS_DETERMINISTIC_SETUP_BLOCK}`,
+      );
+      upgraded = true;
+    } else {
+      const updated = replaceMarkedSection(
+        text,
+        setupStartMarker,
+        setupEndMarker,
+        desiredSetupBlock.trimStart(),
+        'runtime visual-control setup block',
+      );
+      upgraded ||= updated !== text;
+      text = updated;
+    }
     if (text.includes(wholeGraphRecompile)) {
       text = text.replace(wholeGraphRecompile, profiledTargetRecompile);
       upgraded = true;
@@ -2053,7 +2289,7 @@ int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
       const localPath = await writeWorkerText(workerPath, text, 'same-process-upgraded-GPURendererThread.cpp');
       return {
         applied: true,
-        reason: 'upgraded-targeted-megakernel-recompile',
+        reason: 'upgraded-targeted-runtime-visual-control-attestation',
         workerPath,
         localPath,
         beforeHash,
@@ -2076,7 +2312,7 @@ int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
   }
   text = text.replace(
     '#include <vector>\n',
-    '#include <vector>\n#include <chrono>\n#include <fstream>\n#include <string>\n#include <thread>\n',
+    `#include <vector>\n${SAME_PROCESS_VISUAL_CONTROL_INCLUDES}#include <chrono>\n#include <fstream>\n#include <string>\n#include <thread>\n`,
   );
 
   const namespaceEndAnchor = '\n}\n\nvoid GPURendererThread::init(GPURenderer* renderer)';
@@ -2098,6 +2334,15 @@ int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
   }
   text = text.replace(captureCall, `${captureCall}\n${SAME_PROCESS_RENDER_BLOCK}`);
 
+  const baselineCameraAnchor = '\tm_render_data_for_frame.prev_camera = m_renderer->m_previous_frame_camera.to_hiprt(m_renderer->m_render_resolution.x, m_renderer->m_render_resolution.y);\n';
+  if (!text.includes(baselineCameraAnchor)) {
+    throw new Error('GPURendererThread.cpp baseline camera anchor not found for visual controls');
+  }
+  text = text.replace(
+    baselineCameraAnchor,
+    `${baselineCameraAnchor}\n${SAME_PROCESS_DETERMINISTIC_SETUP_BLOCK}`,
+  );
+
   const localPath = await writeWorkerText(workerPath, text, 'same-process-adapted-GPURendererThread.cpp');
   return {
     applied: true,
@@ -2114,6 +2359,7 @@ function buildHiprtRuntimeProbeInstrumentationDisclosure(sameProcessAdapter) {
   const sourceAdaptations = Array.from(new Set([
     ...(Array.isArray(baseAdapter.sourceAdaptations) ? baseAdapter.sourceAdaptations : []),
     sameProcessAdapter ? 'same_process_targeted_kernel_recompile_hook' : null,
+    sameProcessAdapter ? 'target_process_runtime_visual_control_attestation' : null,
   ].filter(Boolean)));
   const files = Array.isArray(baseAdapter.records)
     ? baseAdapter.records.flatMap((record) => Array.isArray(record?.files) ? record.files : [])
