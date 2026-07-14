@@ -77,10 +77,12 @@ pub async fn execute_command_cancellable(
     command
         .current_dir(workspace)
         .args(&request.arguments)
+        .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    apply_sanitized_environment(&mut command);
     #[cfg(windows)]
     {
         command.creation_flags(0x0800_0000);
@@ -248,6 +250,27 @@ fn shell_executable(value: &str) -> bool {
     )
 }
 
+fn apply_sanitized_environment(command: &mut Command) {
+    // Do not inherit API keys, cloud credentials, proxy settings, user home,
+    // or tool-specific configuration. PATH is retained solely for the explicit
+    // executable resolution model; it is never sent to the relay or audit log.
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
+    #[cfg(windows)]
+    {
+        if let Some(system_root) = std::env::var_os("SystemRoot") {
+            command.env("SystemRoot", system_root);
+        }
+        if let Some(windir) = std::env::var_os("WINDIR") {
+            command.env("WINDIR", windir);
+        }
+    }
+    command.env("LANG", "C");
+    command.env("LC_ALL", "C");
+    command.env("TERM", "dumb");
+}
+
 #[allow(clippy::while_let_on_iterator)] // OSC parsing needs look-ahead for the ST terminator.
 fn strip_terminal_controls(value: &str) -> String {
     let mut clean = String::with_capacity(value.len());
@@ -395,7 +418,8 @@ impl CommandJob {
 #[cfg(test)]
 mod tests {
     use super::{
-        execute_command_cancellable, strip_terminal_controls, CommandError, CommandRequest,
+        apply_sanitized_environment, execute_command_cancellable, strip_terminal_controls,
+        CommandError, CommandRequest,
     };
     use crate::full_access::FullAccessPolicy;
     use std::collections::BTreeSet;
@@ -454,5 +478,14 @@ mod tests {
             },
         );
         assert_eq!(result, Err(CommandError::ExecutableDenied));
+    }
+
+    #[test]
+    fn command_environment_omits_secret_bearing_parent_variables() {
+        let mut command = tokio::process::Command::new("rustc");
+        apply_sanitized_environment(&mut command);
+        let debug = format!("{command:?}");
+        assert!(!debug.contains("AWS_SECRET_ACCESS_KEY"));
+        assert!(!debug.contains("DATABASE_URL"));
     }
 }
