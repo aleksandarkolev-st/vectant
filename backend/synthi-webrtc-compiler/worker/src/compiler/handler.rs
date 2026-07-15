@@ -7560,6 +7560,27 @@ fn is_device_sidecar_only_reload(modules_to_load: &[(String, String)]) -> bool {
             .all(|(name, _)| is_gpu_device_reload_marker(name))
 }
 
+fn is_mixed_host_device_reload(modules_to_load: &[(String, String)]) -> bool {
+    let has_device = modules_to_load
+        .iter()
+        .any(|(name, _)| is_gpu_device_reload_marker(name));
+    let has_host = modules_to_load
+        .iter()
+        .any(|(name, _)| !is_gpu_device_reload_marker(name));
+    has_device && has_host
+}
+
+fn runner_restart_reasons(
+    device_abi_reason: Option<String>,
+    mixed_host_device_reload: bool,
+) -> Vec<String> {
+    let mut reasons = device_abi_reason.into_iter().collect::<Vec<_>>();
+    if mixed_host_device_reload {
+        reasons.push("mixed_host_gpu_edit_requires_full_runner_restart".to_string());
+    }
+    reasons
+}
+
 fn adapter_reload_can_finalize_without_runner(
     adapter_handled: bool,
     runner_device_reload_required: bool,
@@ -13375,12 +13396,15 @@ pub async fn handle_compile_request(
         && runtime_host_runner_bin_path.is_some();
 
     let device_sidecar_only_reload = is_device_sidecar_only_reload(&modules_to_load);
+    let mixed_host_device_reload = is_mixed_host_device_reload(&modules_to_load);
 
     let device_abi_restart_reason = device_compile_outcome
         .as_ref()
         .and_then(device_outcome_requires_runner_abi_restart);
-    let runner_reload_policy = if let Some(reason) = device_abi_restart_reason {
-        RunnerReloadPolicy::require_runner_restart(vec![reason])
+    let restart_reasons =
+        runner_restart_reasons(device_abi_restart_reason, mixed_host_device_reload);
+    let runner_reload_policy = if !restart_reasons.is_empty() {
+        RunnerReloadPolicy::require_runner_restart(restart_reasons)
     } else if planner_output.decision.is_in_process() {
         RunnerReloadPolicy::default()
     } else {
@@ -14119,6 +14143,35 @@ mod gpu_host_contract_tests {
             ),
             ("core".to_string(), "/tmp/libcore.so".to_string()),
         ]));
+    }
+
+    #[test]
+    fn mixed_host_device_reload_requires_a_full_runner_restart() {
+        let device_only = vec![(
+            "__gpu_device:rocm:shade:abi".to_string(),
+            "/tmp/device.hsaco".to_string(),
+        )];
+        let mixed = vec![
+            (
+                "__gpu_device:rocm:shade:abi".to_string(),
+                "/tmp/device.hsaco".to_string(),
+            ),
+            ("core".to_string(), "/tmp/libcore.so".to_string()),
+        ];
+
+        assert!(!is_mixed_host_device_reload(&device_only));
+        assert!(is_mixed_host_device_reload(&mixed));
+        assert_eq!(
+            runner_restart_reasons(None, true),
+            vec!["mixed_host_gpu_edit_requires_full_runner_restart"]
+        );
+        assert_eq!(
+            runner_restart_reasons(Some("device_abi_changed".to_string()), true),
+            vec![
+                "device_abi_changed",
+                "mixed_host_gpu_edit_requires_full_runner_restart",
+            ]
+        );
     }
 
     #[test]
