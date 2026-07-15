@@ -2756,6 +2756,16 @@ impl StreamOrderingDrain {
     }
 }
 
+fn logical_epoch_retirement_proven(
+    retired_module_count: usize,
+    drain: &StreamOrderingDrain,
+) -> bool {
+    retired_module_count == 0
+        || (drain.is_synced()
+            && runtime_epoch_retirement_proof_value(drain.retirement_strategy_for_log())
+                != "unproven")
+}
+
 fn affected_stream_tokens_for_symbols(expected_symbols: &[String]) -> Vec<usize> {
     let active_generation = current_launch_generation();
     let mut tokens = launch_records_snapshot()
@@ -3826,7 +3836,11 @@ impl Adapter for GpuModuleAdapter {
                     });
                 }
             }
-            let retirement_proven = retired_module_count == 0;
+            let retirement_fence_ids =
+                drain.retirement_fence_ids_for_log(previous_generation, active_generation);
+            let retirement_strategy = drain.retirement_strategy_for_log();
+            let retirement_proven =
+                logical_epoch_retirement_proven(retired_module_count, &drain);
             let acceptance_ledger = GpuHmrAcceptanceLedger::new(GpuHmrAcceptanceLedgerInput {
                 hot_reload: !first_device_load,
                 artifact_id_after: new_artifact_id.clone(),
@@ -3948,9 +3962,6 @@ impl Adapter for GpuModuleAdapter {
             );
             eprintln!("{artifact_transport_line}");
             runtime_log_lines.push(artifact_transport_line);
-            let retirement_fence_ids =
-                drain.retirement_fence_ids_for_log(previous_generation, active_generation);
-            let retirement_strategy = drain.retirement_strategy_for_log();
             let delayed_unload_result = if retired_module_count == 0 {
                 "not_required"
             } else {
@@ -6023,6 +6034,19 @@ mod tests {
             context_fallback.retirement_strategy_for_log(),
             "conservative_drain_fallback"
         );
+        assert!(logical_epoch_retirement_proven(1, &context_fallback));
+
+        let timed_out = StreamOrderingDrain {
+            outcome: DrainOutcome::TimedOut {
+                scope: DrainScope::Stream,
+                elapsed_ms: 25,
+                budget_ms: 25,
+            },
+            scope_label: "affected",
+            stream_tokens: vec![0x77],
+        };
+        assert!(!logical_epoch_retirement_proven(1, &timed_out));
+        assert!(logical_epoch_retirement_proven(0, &timed_out));
     }
 
     #[test]
@@ -6612,7 +6636,7 @@ mod tests {
     }
 
     #[test]
-    fn rejected_candidate_stays_unpublished_when_candidate_unload_fails() {
+    fn quiescent_candidate_passes_retirement_gate_before_device_attestation() {
         let _guard = runtime_boundary_test_guard();
         reset_for_test();
         UNLOAD_CALLS.store(0, Ordering::SeqCst);
@@ -6650,11 +6674,12 @@ mod tests {
         match second_result {
             AdapterReloadResult::Failed { error, recoverable } => {
                 assert!(recoverable);
-                assert!(error.contains("epoch_retirement_unproven"));
+                assert!(error.contains("device_identity_missing"));
+                assert!(!error.contains("epoch_retirement_unproven"));
                 assert!(error.contains("candidate rolled back"));
                 assert!(error.contains("candidate unload failed"));
             }
-            other => panic!("expected prepublication retirement rejection, got {other:?}"),
+            other => panic!("expected device-attestation rejection, got {other:?}"),
         }
         assert_eq!(current_launch_generation(), first_generation);
         assert_eq!(adapter.active_module_handle, first_handle);
