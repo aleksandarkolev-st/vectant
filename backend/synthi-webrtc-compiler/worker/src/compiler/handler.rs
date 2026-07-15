@@ -501,7 +501,7 @@ fn normalized_request_filename(path: &str) -> Option<String> {
         .map(|p| p.to_string_lossy().replace('\\', "/"))
 }
 
-fn compile_request_content_hash(req: &CompileRequest) -> u64 {
+fn compile_request_fingerprint(req: &CompileRequest) -> String {
     let primary_name = normalized_request_filename(&req.filename)
         .unwrap_or_else(|| req.filename.trim().replace('\\', "/"));
     let mut files: BTreeMap<String, &str> = BTreeMap::new();
@@ -548,7 +548,18 @@ fn compile_request_content_hash(req: &CompileRequest) -> u64 {
             fingerprint.push('\n');
         }
     }
-    hash_content(&fingerprint)
+    fingerprint
+}
+
+fn compile_request_content_hash(req: &CompileRequest) -> u64 {
+    hash_content(&compile_request_fingerprint(req))
+}
+
+fn compile_request_content_sha256(req: &CompileRequest) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(compile_request_fingerprint(req).as_bytes())
+    )
 }
 
 fn is_editing_adapted_module_or_device(
@@ -782,8 +793,8 @@ fn apply_edit_list(
 use crate::hmr::adapted_project::{detect_adapted_project, AdaptedProjectStatus};
 use crate::hmr::adapter_trait::{
     configured_gpu_hmr_runtime_output_oracle_profile_path, encode_reload_capsule_metadata_token,
-    AdapterReloadResult, ReloadArtifactBlob, ReloadCapsuleMetadata,
-    ReloadOutputOracleProfileCommitment,
+    normalized_reload_source_edit_id, AdapterReloadResult, ReloadArtifactBlob,
+    ReloadCapsuleMetadata, ReloadOutputOracleProfileCommitment,
     RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
 };
 use crate::hmr::ai_bypass::{check_ai_bypass, AiBypassResult, SplitCache};
@@ -6774,7 +6785,7 @@ async fn write_device_hmr_proof_artifact(
     workspace: &Path,
     workspace_slug: Option<&str>,
     session_id: &str,
-    source_hash: &str,
+    source_edit_id: &str,
     outcome: &DeviceCompileOutcome,
     sources: Option<&DeviceCompileSources>,
     proof: &GpuHmrProofTelemetry,
@@ -6791,7 +6802,8 @@ async fn write_device_hmr_proof_artifact(
         })?;
     let artifact_hash = sha256_hex_bytes(&artifact_bytes);
     let selected_artifact_id = format!("artifact:sha256:{artifact_hash}");
-    let source_edit_id = format!("source-edit:{source_hash}");
+    let source_edit_id = normalized_reload_source_edit_id(Some(source_edit_id))
+        .context("normalizing compiler-derived GPU HMR source edit identity")?;
     let runtime_session_id = format!("runtime-session:{session_id}");
     let workspace_slug = workspace_slug
         .filter(|slug| !slug.trim().is_empty())
@@ -9300,6 +9312,7 @@ pub async fn handle_compile_request(
     // auxiliary shader/header/source edits invalidate adapted-project state.
     let source_hash_value = compile_request_content_hash(&req);
     let source_hash_str = format!("{}", source_hash_value);
+    let source_edit_sha256 = compile_request_content_sha256(&req);
 
     let sidecar_path = ctx.workspace_path.join(".synthi_split_meta.json");
     let active_runner_session = {
@@ -12696,14 +12709,16 @@ pub async fn handle_compile_request(
     let mut device_hmr_proof: Option<GpuHmrProofTelemetry> = None;
     let mut device_reload_artifact_blob: Option<ReloadArtifactBlob> = None;
     let mut device_reload_capsule_metadata: Option<ReloadCapsuleMetadata> = None;
+    let mut device_reload_source_edit_id: Option<String> = None;
     if let Some(ref out) = device_compile_outcome {
+        let source_edit_id = format!("source-edit:sha256:{source_edit_sha256}");
         let proof = device_hmr_proof_telemetry(out);
         let proof_sidecar_meta = read_normalized_split_sidecar_for_proof(&sidecar_path).await;
         let proof_artifact = write_device_hmr_proof_artifact(
             &ctx.workspace_path,
             req.slug.as_deref(),
             &session_id,
-            &source_hash_str,
+            &source_edit_id,
             out,
             device_source_content.as_ref(),
             &proof,
@@ -12721,6 +12736,7 @@ pub async fn handle_compile_request(
         device_reload_artifact_blob = Some(reload_artifact_blob_from_outcome(out).await?);
         device_reload_capsule_metadata =
             Some(reload_capsule_metadata_from_proof_artifact(&proof_artifact, out).await);
+        device_reload_source_edit_id = Some(source_edit_id);
         let proof = proof.with_artifact_ref(proof_artifact.proof_id, proof_artifact.relative_path);
         let selected_artifact_bytes = out
             .selected_artifact_bytes
@@ -13077,6 +13093,7 @@ pub async fn handle_compile_request(
                         &device_manifest,
                         device_reload_artifact_blob.clone(),
                         device_reload_capsule_metadata.clone(),
+                        device_reload_source_edit_id.as_deref(),
                         &format!("{}-device", reload_id),
                     )
             };
@@ -13278,12 +13295,16 @@ pub async fn handle_compile_request(
                 encode_gpu_kernel_command_specs(&kernel_symbol_specs),
                 kernel_abi_hash
             );
-            if let Some(capsule_token) = device_reload_capsule_metadata
+            let capsule_token = device_reload_capsule_metadata
                 .as_ref()
-                .and_then(encode_reload_capsule_metadata_token)
-            {
+                .and_then(encode_reload_capsule_metadata_token);
+            if capsule_token.is_some() || device_reload_source_edit_id.is_some() {
                 device_cmd.push(':');
-                device_cmd.push_str(&capsule_token);
+                device_cmd.push_str(capsule_token.as_deref().unwrap_or("-"));
+            }
+            if let Some(source_edit_id) = device_reload_source_edit_id.as_deref() {
+                device_cmd.push(':');
+                device_cmd.push_str(&encode_gpu_kernel_command_token(source_edit_id));
             }
             modules_to_load.insert(
                 0,
@@ -13677,6 +13698,8 @@ mod gpu_host_contract_tests {
     const FIXTURE_SOURCE_PATH: &str = "fixtures/device/source.hip";
     const FIXTURE_SYMBOL: &str = "fixture_kernel_a";
     const FIXTURE_SIBLING_SYMBOL: &str = "fixture_kernel_b";
+    const FIXTURE_SOURCE_EDIT_ID: &str =
+        "source-edit:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const FIXTURE_SOURCE_PARTIAL_FILENAME: &str = ".synthi/generated/gpu/device.partial.source.hip";
     const FIXTURE_KERNEL_PARTIAL_FILENAME: &str = ".synthi/generated/gpu/device.partial.kernel.hip";
 
@@ -14389,6 +14412,36 @@ mod gpu_host_contract_tests {
     }
 
     #[tokio::test]
+    async fn device_hmr_proof_artifact_preserves_exact_source_edit_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact_path = temp.path().join("device.hsaco");
+        tokio::fs::write(&artifact_path, b"device-artifact")
+            .await
+            .unwrap();
+        let mut outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        outcome.artifact_path = artifact_path;
+        let proof = device_hmr_proof_telemetry(&outcome);
+
+        let written = write_device_hmr_proof_artifact(
+            temp.path(),
+            Some("workspace"),
+            "runtime-session",
+            FIXTURE_SOURCE_EDIT_ID,
+            &outcome,
+            None,
+            &proof,
+            None,
+        )
+        .await
+        .unwrap();
+        let artifact = crate::hmr::gpu_proof::read_proof_artifact(&written.path)
+            .await
+            .unwrap();
+
+        assert_eq!(artifact.source_edit_id, FIXTURE_SOURCE_EDIT_ID);
+    }
+
+    #[tokio::test]
     async fn device_hmr_proof_artifact_records_metadata_only_abi_evidence() {
         let temp = tempfile::tempdir().unwrap();
         let artifact_path = temp.path().join("device.hsaco");
@@ -14426,7 +14479,7 @@ __constant__ int scale;
             temp.path(),
             Some("workspace"),
             "runtime-session",
-            "source-edit:unit",
+            FIXTURE_SOURCE_EDIT_ID,
             &outcome,
             None,
             &proof,
@@ -14689,7 +14742,7 @@ __constant__ int scale;
             temp.path(),
             Some("workspace"),
             "runtime-session",
-            "source-edit:fission",
+            FIXTURE_SOURCE_EDIT_ID,
             &outcome,
             None,
             &proof,
@@ -14795,7 +14848,7 @@ __constant__ int scale;
             temp.path(),
             Some("workspace"),
             "runtime-session",
-            "source-edit:partial",
+            FIXTURE_SOURCE_EDIT_ID,
             &outcome,
             Some(&sources),
             &proof,
@@ -14943,6 +14996,15 @@ __constant__ int scale;
             device_hmr_fission_publication_blocker(&artifact, &outcome)
                 .map(|block| block.reason_code),
             fission_stage.degraded_reason.clone()
+        );
+    }
+
+    #[test]
+    fn gpu_source_edit_protocol_token_uses_byte_exact_percent_encoding() {
+        let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
+        assert_eq!(
+            encode_gpu_kernel_command_token(&source_edit_id),
+            format!("source%2Dedit%3Asha256%3A{}", "a".repeat(64))
         );
     }
 
@@ -15259,7 +15321,7 @@ __constant__ int scale;
             temp.path(),
             Some("workspace"),
             "runtime-session",
-            "source-edit:partial",
+            FIXTURE_SOURCE_EDIT_ID,
             &outcome,
             Some(&sources),
             &proof,
@@ -15422,7 +15484,7 @@ __constant__ int scale;
             temp.path(),
             Some("workspace"),
             "runtime-session",
-            "source-edit:partial",
+            FIXTURE_SOURCE_EDIT_ID,
             &outcome,
             Some(&sources),
             &proof,
@@ -15695,7 +15757,7 @@ void bind_and_launch(Buffer* pixels) {
             temp.path(),
             Some("workspace"),
             "runtime-session",
-            "source-edit:partial",
+            FIXTURE_SOURCE_EDIT_ID,
             &outcome,
             Some(&sources),
             &proof,
@@ -16061,7 +16123,7 @@ void enqueue(float* pixels, dim3 grid, dim3 block, void** args, void* stream) {
             temp.path(),
             Some("workspace"),
             "runtime-session",
-            "source-edit:direct-tu",
+            FIXTURE_SOURCE_EDIT_ID,
             &outcome,
             Some(&sources),
             &proof,
@@ -17896,6 +17958,28 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             project_root: None,
             slug: None,
         }
+    }
+
+    #[test]
+    fn compile_request_source_edit_identity_is_canonical_and_content_addressed() {
+        let mut request = compile_request_with_file_refs(Vec::new());
+        let before = compile_request_content_sha256(&request);
+        assert_eq!(before.len(), 64);
+        assert!(before
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')));
+        assert!(
+            normalized_reload_source_edit_id(Some(&format!("source-edit:sha256:{before}")))
+                .is_some()
+        );
+
+        request.source.push_str("// changed\n");
+        let after = compile_request_content_sha256(&request);
+        assert_ne!(before, after);
+        assert_eq!(
+            compile_request_content_hash(&request),
+            hash_content(&compile_request_fingerprint(&request))
+        );
     }
 
     #[tokio::test]

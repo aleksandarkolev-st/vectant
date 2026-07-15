@@ -233,22 +233,19 @@ pub fn decode_reload_capsule_metadata_token(token: &str) -> Option<ReloadCapsule
     normalized_reload_capsule_metadata(&metadata)
 }
 
-/// Extracts a bounded source-edit token for request transport.
+/// Normalizes a content-addressed source-edit token received through an
+/// independent request transport.
 ///
 /// This is correlation input, not proof authority. The GPU adapter must still
 /// validate the complete commitment before using this identity in proof output.
-pub fn reload_capsule_source_edit_id(metadata: Option<&ReloadCapsuleMetadata>) -> Option<String> {
-    const MAX_SOURCE_EDIT_ID_BYTES: usize = 512;
-    let value = metadata?
-        .output_oracle_profile_commitment
-        .as_ref()?
-        .edit_id
-        .trim();
-    (!value.is_empty()
-        && value.len() <= MAX_SOURCE_EDIT_ID_BYTES
-        && !value.chars().any(char::is_whitespace)
-        && !value.chars().any(char::is_control))
-    .then(|| value.to_string())
+pub fn normalized_reload_source_edit_id(value: Option<&str>) -> Option<String> {
+    let raw = value?;
+    let digest = raw.strip_prefix("source-edit:sha256:")?;
+    (digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
+    .then(|| raw.to_string())
 }
 
 /// High-level reload request that the planner feeds to an adapter.
@@ -529,35 +526,27 @@ mod tests {
     }
 
     #[test]
-    fn capsule_source_edit_identity_requires_bounded_token_shape() {
-        let metadata = ReloadCapsuleMetadata {
-            output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
-                edit_id: "source-edit:proof-bound".into(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+    fn independent_source_edit_identity_requires_canonical_sha256_shape() {
+        let canonical = format!("source-edit:sha256:{}", "a1".repeat(32));
         assert_eq!(
-            reload_capsule_source_edit_id(Some(&metadata)).as_deref(),
-            Some("source-edit:proof-bound")
+            normalized_reload_source_edit_id(Some(&canonical)).as_deref(),
+            Some(canonical.as_str())
         );
 
-        for invalid in ["", "source edit", "source-edit:\nforged"] {
-            let mut malformed = metadata.clone();
-            malformed
-                .output_oracle_profile_commitment
-                .as_mut()
-                .unwrap()
-                .edit_id = invalid.into();
-            assert_eq!(reload_capsule_source_edit_id(Some(&malformed)), None);
+        let invalid = vec![
+            String::new(),
+            "source-edit:sha256:".to_string(),
+            format!("source-edit:sha256:{}", "a".repeat(63)),
+            format!("source-edit:sha256:{}", "a".repeat(65)),
+            format!("source-edit:sha256:{}", "A".repeat(64)),
+            format!(" source-edit:sha256:{}", "a".repeat(64)),
+            format!("source-edit:sha256:{} ", "a".repeat(64)),
+            format!("source-edit:sha256:{}g", "a".repeat(63)),
+        ];
+        for invalid in invalid {
+            assert_eq!(normalized_reload_source_edit_id(Some(&invalid)), None);
         }
-        let mut oversized = metadata;
-        oversized
-            .output_oracle_profile_commitment
-            .as_mut()
-            .unwrap()
-            .edit_id = "x".repeat(513);
-        assert_eq!(reload_capsule_source_edit_id(Some(&oversized)), None);
+        assert_eq!(normalized_reload_source_edit_id(None), None);
     }
 
     #[test]

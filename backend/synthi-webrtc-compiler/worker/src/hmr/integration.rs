@@ -25,7 +25,7 @@ use crate::hmr::adapter_lifecycle_fsm::{AdapterLifecycleFsm, LifecycleEvent};
 use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix};
 use crate::hmr::adapter_registry::{create_adapter_for_language, AdapterRegistry};
 use crate::hmr::adapter_trait::{
-    reload_capsule_source_edit_id, AdapterHealth, AdapterReloadRequest, AdapterReloadResult,
+    normalized_reload_source_edit_id, AdapterHealth, AdapterReloadRequest, AdapterReloadResult,
     ReloadArtifactBlob, ReloadCapsuleMetadata, ReloadFirewallEvidence,
 };
 use crate::hmr::ai_gate::{AiGate, AiGateDecision};
@@ -647,6 +647,7 @@ impl HmrPipeline {
         manifest: &BuildManifest,
         artifact_blob: Option<ReloadArtifactBlob>,
         capsule_metadata: Option<ReloadCapsuleMetadata>,
+        source_edit_id: Option<&str>,
         reload_id: &str,
     ) -> (AdapterReloadResult, PipelineNotifications) {
         let start = Instant::now();
@@ -661,7 +662,7 @@ impl HmrPipeline {
 
         let firewall_process_id_before = std::process::id();
         let firewall_process_id_after = std::process::id();
-        let source_edit_id = reload_capsule_source_edit_id(capsule_metadata.as_ref());
+        let source_edit_id = normalized_reload_source_edit_id(source_edit_id);
         let reload_req = AdapterReloadRequest {
             reload_id: reload_id.to_string(),
             source_edit_id,
@@ -990,10 +991,79 @@ fn current_time_ms() -> u64 {
 #[cfg(test)]
 mod current_api_tests {
     use super::*;
+    use crate::hmr::adapter_matrix::CapabilityTier;
+    use crate::hmr::adapter_trait::{Adapter, AdapterInfo, ReloadOutputOracleProfileCommitment};
     use crate::hmr::build_manifest::{
         BuildSlot, HealthcheckStrategy, PreviewPreservationMode, SnapshotMode,
     };
     use crate::hmr::planner_decision::ReloadDecision;
+    use std::sync::{Arc, Mutex};
+
+    struct RecordingAdapter {
+        requests: Arc<Mutex<Vec<AdapterReloadRequest>>>,
+    }
+
+    impl Adapter for RecordingAdapter {
+        fn info(&self) -> AdapterInfo {
+            AdapterInfo {
+                name: "recording-gpu".into(),
+                family: AdapterFamily::DynamicLibrary,
+                capability_tier: CapabilityTier::Tier0,
+                supported_languages: vec!["recording-gpu".into()],
+                extra: HashMap::new(),
+            }
+        }
+
+        fn initialize(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn shutdown(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn reload(&mut self, req: &AdapterReloadRequest) -> AdapterReloadResult {
+            self.requests.lock().unwrap().push(req.clone());
+            AdapterReloadResult::Success {
+                reload_ms: 0,
+                state_preserved: true,
+            }
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+
+        fn restore_state(&mut self, _data: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn healthcheck(&self) -> AdapterHealth {
+            AdapterHealth::Healthy
+        }
+    }
+
+    fn recording_gpu_pipeline() -> (HmrPipeline, Arc<Mutex<Vec<AdapterReloadRequest>>>) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut pipeline = HmrPipeline::new("test-preview");
+        pipeline.adapter_registry.register(
+            "recording-gpu",
+            Box::new(RecordingAdapter {
+                requests: requests.clone(),
+            }),
+        );
+        (pipeline, requests)
+    }
+
+    fn capsule_with_source_edit_id(source_edit_id: &str) -> ReloadCapsuleMetadata {
+        ReloadCapsuleMetadata {
+            output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
+                edit_id: source_edit_id.into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
 
     fn make_manifest(language: &str) -> BuildManifest {
         BuildManifest {
@@ -1038,6 +1108,56 @@ mod current_api_tests {
                 user_message: String::new(),
             },
         }
+    }
+
+    #[test]
+    fn gpu_device_reload_uses_explicit_source_edit_id_not_capsule_commitment() {
+        let (mut pipeline, requests) = recording_gpu_pipeline();
+        let capsule_source_edit_id = format!("source-edit:sha256:{}", "c".repeat(64));
+        let request_source_edit_id = format!("source-edit:sha256:{}", "d".repeat(64));
+        let capsule = capsule_with_source_edit_id(&capsule_source_edit_id);
+
+        let _ = pipeline.execute_gpu_device_reload(
+            "recording-gpu",
+            &make_manifest("rocm"),
+            None,
+            Some(capsule),
+            Some(&request_source_edit_id),
+            "reload-correlation",
+        );
+
+        let requests = requests.lock().unwrap();
+        let request = requests.last().expect("recorded device reload request");
+        assert_eq!(
+            request.source_edit_id.as_deref(),
+            Some(request_source_edit_id.as_str())
+        );
+        assert_eq!(
+            request
+                .capsule_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.output_oracle_profile_commitment.as_ref())
+                .map(|commitment| commitment.edit_id.as_str()),
+            Some(capsule_source_edit_id.as_str())
+        );
+    }
+
+    #[test]
+    fn gpu_device_reload_does_not_backfill_source_edit_id_from_capsule() {
+        let (mut pipeline, requests) = recording_gpu_pipeline();
+
+        let _ = pipeline.execute_gpu_device_reload(
+            "recording-gpu",
+            &make_manifest("rocm"),
+            None,
+            Some(capsule_with_source_edit_id("source-edit:capsule")),
+            None,
+            "reload-correlation",
+        );
+
+        let requests = requests.lock().unwrap();
+        let request = requests.last().expect("recorded device reload request");
+        assert_eq!(request.source_edit_id, None);
     }
 
     #[test]

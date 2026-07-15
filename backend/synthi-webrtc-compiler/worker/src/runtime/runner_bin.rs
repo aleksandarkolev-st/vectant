@@ -155,32 +155,7 @@ fn emit_runtime_control_status(
 
 #[cfg(feature = "gpu-hmr")]
 fn decode_gpu_kernel_command_token(value: &str) -> Option<String> {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            let hi = *bytes.get(i + 1)?;
-            let lo = *bytes.get(i + 2)?;
-            let decoded = hex_nibble(hi)? << 4 | hex_nibble(lo)?;
-            out.push(decoded);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
-#[cfg(feature = "gpu-hmr")]
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
+    worker::runtime::runner_protocol::decode_runner_command_token(value)
 }
 
 use loader::ModuleLoader; // Removed LoadResult
@@ -190,7 +165,7 @@ use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::adapter_trait::{
-    decode_reload_capsule_metadata_token, reload_capsule_source_edit_id, Adapter,
+    decode_reload_capsule_metadata_token, normalized_reload_source_edit_id, Adapter,
     AdapterReloadRequest, AdapterReloadResult, ReloadArtifactBlob, ReloadCapsuleMetadata,
     ReloadFirewallEvidence,
 };
@@ -202,6 +177,12 @@ use worker::hmr::gpu_module_adapter::{
 };
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::gpu_proof::sha256_hex_bytes;
+#[cfg(feature = "gpu-hmr")]
+use worker::runtime::runner_protocol::{
+    GpuReloadV2Payload, GpuReloadV2Result, RunnerProtocolAck,
+    GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, RUNNER_PROTOCOL_CURRENT_VERSION,
+    RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
+};
 
 // use enhanced_fingerprint::{extract_fingerprint_from_module}; // Removed AbiFingerprint
 
@@ -217,8 +198,146 @@ struct GpuReloadCompletion {
     language: String,
     artifact_path: String,
     kernels: String,
+    request_id: Option<String>,
+    source_edit_id: Option<String>,
     adapter: GpuModuleAdapter,
     result: AdapterReloadResult,
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn matching_strict_gpu_runtime_proof_id(
+    log_lines: &[String],
+    request_id: &str,
+    source_edit_id: &str,
+) -> Option<String> {
+    let reload_ref = format!("reload:{request_id}");
+    let source_edit_ref = format!("source-edit-id:{source_edit_id}");
+    log_lines.iter().rev().find_map(|line| {
+        let proof = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        if proof.get("type").and_then(serde_json::Value::as_str) != Some("gpu_hmr_proof")
+            || proof.get("resultState").and_then(serde_json::Value::as_str)
+                != Some("gpu-hmr-full-runtime-proven")
+        {
+            return None;
+        }
+        let proof_id = proof.get("proofId").and_then(serde_json::Value::as_str)?;
+        let runtime_artifact = proof.get("runtimeProofArtifact")?;
+        if runtime_artifact
+            .get("proofId")
+            .and_then(serde_json::Value::as_str)
+            != Some(proof_id)
+            || runtime_artifact
+                .get("resultState")
+                .and_then(serde_json::Value::as_str)
+                != Some("gpu-hmr-full-runtime-proven")
+            || runtime_artifact
+                .get("fullRuntimeProven")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || runtime_artifact
+                .get("gpuHmrSuccess")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || runtime_artifact
+                .pointer("/acceptanceContractEvaluation/accepted")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || runtime_artifact
+                .pointer("/acceptanceContractConsistency/accepted")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || runtime_artifact
+                .pointer("/derivedAcceptanceContractEvaluation/accepted")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || runtime_artifact
+                .pointer("/proofLedgerSourceConsistency/accepted")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || runtime_artifact
+                .get("limitations")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(|limitations| !limitations.is_empty())
+        {
+            return None;
+        }
+
+        let proof_ledger = proof.get("proofLedger")?;
+        if proof_ledger
+            .get("gpuHmrSuccess")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+            || runtime_artifact.get("proofLedger") != Some(proof_ledger)
+        {
+            return None;
+        }
+        let record = proof_ledger.pointer("/records/0")?;
+        if record.get("edit_id").and_then(serde_json::Value::as_str) != Some(source_edit_id)
+            || runtime_artifact
+                .pointer("/explicitProofLedgerRecord/edit_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(source_edit_id)
+            || runtime_artifact
+                .pointer("/acceptanceContract/edit_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(source_edit_id)
+            || runtime_artifact
+                .pointer("/derivedAcceptanceContract/edit_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(source_edit_id)
+            || runtime_artifact.get("explicitProofLedgerRecord") != Some(record)
+            || runtime_artifact.get("derivedProofLedgerRecord") != Some(record)
+            || runtime_artifact
+                .pointer("/proofLedgerQuery/gpuHmrSuccess")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || runtime_artifact
+                .pointer("/proofLedgerQuery/failedInvariants")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(|failures| !failures.is_empty())
+        {
+            return None;
+        }
+        let evidence_refs = record
+            .get("evidence_refs")
+            .and_then(serde_json::Value::as_array)?;
+        let has_ref = |expected: &str| {
+            evidence_refs
+                .iter()
+                .any(|value| value.as_str() == Some(expected))
+        };
+        (has_ref(&reload_ref) && has_ref(&source_edit_ref)).then(|| proof_id.to_string())
+    })
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn strict_gpu_reload_terminal_result(
+    request_id: &str,
+    source_edit_id: &str,
+    result: &AdapterReloadResult,
+    log_lines: &[String],
+) -> Result<GpuReloadV2Result, String> {
+    match result {
+        AdapterReloadResult::Success { .. } => {
+            if let Some(proof_id) =
+                matching_strict_gpu_runtime_proof_id(log_lines, request_id, source_edit_id)
+            {
+                GpuReloadV2Result::applied(request_id, source_edit_id, proof_id)
+            } else {
+                GpuReloadV2Result::rejected(
+                    request_id,
+                    source_edit_id,
+                    "strict GPU reload completed without a matching accepted full runtime proof",
+                )
+            }
+        }
+        AdapterReloadResult::Failed { error, .. } => {
+            GpuReloadV2Result::rejected(request_id, source_edit_id, error)
+        }
+        AdapterReloadResult::Unsupported { reason } => {
+            GpuReloadV2Result::rejected(request_id, source_edit_id, reason)
+        }
+    }
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -227,6 +346,43 @@ fn emit_gpu_reload_completion(completion: &GpuReloadCompletion) {
         "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact={} kernels={} result={:?}",
         completion.language, completion.artifact_path, completion.kernels, completion.result
     );
+    match (
+        completion.request_id.as_deref(),
+        completion.source_edit_id.as_deref(),
+    ) {
+        (Some(request_id), Some(source_edit_id)) => {
+            match strict_gpu_reload_terminal_result(
+                request_id,
+                source_edit_id,
+                &completion.result,
+                completion.adapter.last_reload_log(),
+            )
+            .and_then(|result| result.to_json())
+            {
+                Ok(status) => eprintln!("[Runner] [HMR-STATUS] {status}"),
+                Err(error) => {
+                    let status = HmrStatus::rejected_with_fallback(
+                        "device",
+                        &format!("strict GPU reload terminal result invalid: {error}"),
+                        "Keep previous GPU sidecar loaded",
+                    );
+                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                }
+            }
+            return;
+        }
+        (None, None) => {}
+        _ => {
+            let status = HmrStatus::rejected_with_fallback(
+                "device",
+                "strict GPU reload terminal identity is incomplete",
+                "Keep previous GPU sidecar loaded",
+            );
+            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+            return;
+        }
+    }
+
     let status = match &completion.result {
         AdapterReloadResult::Success {
             state_preserved, ..
@@ -325,6 +481,80 @@ fn gpu_reload_capsule_metadata_from_token(token: Option<&str>) -> Option<ReloadC
         eprintln!("[Runner] [GPU HMR] Ignoring invalid reload capsule metadata token");
     }
     metadata
+}
+
+#[cfg(feature = "gpu-hmr")]
+#[derive(Debug)]
+struct ParsedGpuReloadCommand {
+    request_id: Option<String>,
+    partial: bool,
+    vendor: String,
+    artifact_path: String,
+    kernels: Vec<String>,
+    abi_version: String,
+    capsule_metadata: Option<ReloadCapsuleMetadata>,
+    source_edit_id: Option<String>,
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn parse_gpu_reload_command(parts: &[&str]) -> Result<ParsedGpuReloadCommand, String> {
+    if parts.first().copied() == Some("gpu_reload_v2") {
+        if parts.len() != 3 {
+            return Err("GPU reload V2 command must contain request ID and payload".to_string());
+        }
+        let payload = GpuReloadV2Payload::decode(parts[2])?;
+        if parts[1] != payload.request_id {
+            return Err("GPU reload V2 command request ID mismatch".to_string());
+        }
+        let source_edit_id = normalized_reload_source_edit_id(Some(&payload.source_edit_id))
+            .ok_or_else(|| "GPU reload V2 source edit identity is invalid".to_string())?;
+        let abi_version =
+            device_load_abi_version(&payload.kernels, payload.abi_fingerprint.as_deref());
+        let capsule_metadata =
+            gpu_reload_capsule_metadata_from_token(payload.capsule_token.as_deref());
+        return Ok(ParsedGpuReloadCommand {
+            request_id: Some(payload.request_id),
+            partial: payload.mode == "partial",
+            vendor: payload.vendor,
+            artifact_path: payload.artifact_path,
+            kernels: payload.kernels,
+            abi_version,
+            capsule_metadata,
+            source_edit_id: Some(source_edit_id),
+        });
+    }
+
+    let command = parts.first().copied().unwrap_or_default();
+    if !matches!(command, "load_device" | "load_device_partial") || parts.len() < 3 {
+        return Err("legacy GPU reload command format is invalid".to_string());
+    }
+    let kernels_arg = parts.get(3).copied().unwrap_or("-");
+    let kernels = kernels_arg
+        .split(',')
+        .filter(|value| !value.trim().is_empty() && *value != "-")
+        .map(|value| {
+            let raw = value.trim();
+            decode_gpu_kernel_command_token(raw)
+                .ok_or_else(|| format!("invalid encoded legacy GPU kernel token {raw:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let abi_version = device_load_abi_version(&kernels, parts.get(4).copied());
+    let capsule_metadata = gpu_reload_capsule_metadata_from_token(parts.get(5).copied());
+    if parts.get(6).is_some() {
+        eprintln!(
+            "[Runner] [GPU HMR] Ignoring independent edit identity on legacy GPU reload verb"
+        );
+    }
+    Ok(ParsedGpuReloadCommand {
+        request_id: None,
+        partial: command == "load_device_partial",
+        vendor: parts[1].to_string(),
+        artifact_path: parts[2].to_string(),
+        kernels,
+        abi_version,
+        capsule_metadata,
+        source_edit_id: None,
+    })
 }
 
 // ============================================================
@@ -1357,6 +1587,41 @@ fn main() {
             }
 
             match parts[0] {
+                "handshake_v2" => {
+                    #[cfg(feature = "gpu-hmr")]
+                    {
+                        let valid = parts.len() == 5
+                            && !parts[1].is_empty()
+                            && parts[1].len() <= 128
+                            && parts[1]
+                                .bytes()
+                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                            && parts[2].parse::<u32>().ok()
+                                == Some(RUNNER_PROTOCOL_CURRENT_VERSION)
+                            && parts[3].parse::<u32>().ok()
+                                == Some(RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION)
+                            && parts[4] == GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY;
+                        if !valid {
+                            eprintln!(
+                                "[Runner] [GPU HMR] Refusing malformed strict GPU protocol handshake"
+                            );
+                            continue;
+                        }
+                        match RunnerProtocolAck::current(parts[1]).line() {
+                            Ok(line) => eprintln!("{line}"),
+                            Err(error) => eprintln!(
+                                "[Runner] [GPU HMR] Failed to serialize protocol acknowledgement: {error}"
+                            ),
+                        }
+                    }
+
+                    #[cfg(not(feature = "gpu-hmr"))]
+                    {
+                        eprintln!(
+                            "[Runner] [GPU HMR] Strict GPU protocol unavailable without gpu-hmr"
+                        );
+                    }
+                }
                 // ============================================================
                 // SET_SESSION COMMAND - Must be called before loading Host KV modules
                 // ============================================================
@@ -1601,36 +1866,30 @@ fn main() {
                     // before on_render uses it — prevents flicker
                     skip_render_frames = 1;
                 }
-                "load_device" | "load_device_partial" => {
-                    // usage: load_device[_partial] <cuda|rocm|hip> <cubin|hsaco> <kernel1,kernel2,...|-> [abi_fingerprint]
+                "load_device" | "load_device_partial" | "gpu_reload_v2" => {
                     #[cfg(feature = "gpu-hmr")]
                     {
-                        let partial_device_load = parts[0] == "load_device_partial";
-                        if parts.len() < 3 {
-                            eprintln!("[Runner] [GPU HMR] Invalid {} command format", parts[0]);
-                            continue;
-                        }
-
-                        let vendor_raw = parts[1];
-                        let artifact_path = parts[2];
-                        let kernels_arg = parts.get(3).copied().unwrap_or("-");
-                        let kernels: Vec<String> = kernels_arg
-                            .split(',')
-                            .filter(|s| !s.trim().is_empty() && *s != "-")
-                            .filter_map(|s| {
-                                let raw = s.trim();
-                                decode_gpu_kernel_command_token(raw).or_else(|| {
-                                    eprintln!(
-                                        "[Runner] [GPU HMR] Ignoring invalid encoded kernel token '{}'",
-                                        raw
-                                    );
-                                    None
-                                })
-                            })
-                            .collect();
-                        let abi_version = device_load_abi_version(&kernels, parts.get(4).copied());
-                        let capsule_metadata =
-                            gpu_reload_capsule_metadata_from_token(parts.get(5).copied());
+                        let parsed = match parse_gpu_reload_command(&parts) {
+                            Ok(parsed) => parsed,
+                            Err(error) => {
+                                eprintln!(
+                                    "[Runner] [GPU HMR] Refusing invalid GPU reload command: {error}"
+                                );
+                                continue;
+                            }
+                        };
+                        let partial_device_load = parsed.partial;
+                        let vendor_raw = parsed.vendor.as_str();
+                        let artifact_path = parsed.artifact_path.as_str();
+                        let kernels = parsed.kernels;
+                        let abi_version = parsed.abi_version;
+                        let capsule_metadata = parsed.capsule_metadata;
+                        let terminal_request_id = parsed.request_id.clone();
+                        let terminal_source_edit_id = parsed.source_edit_id.clone();
+                        let source_edit_id = parsed.source_edit_id;
+                        let reload_id = parsed.request_id.unwrap_or_else(|| {
+                            format!("runner-device-{}-{}", vendor_raw, frame_count)
+                        });
 
                         let (language, vendor) = match vendor_raw {
                             "cuda" => ("cuda", GpuVendor::Cuda),
@@ -1679,10 +1938,8 @@ fn main() {
 
                         let firewall_process_id_before = std::process::id();
                         let firewall_process_id_after = std::process::id();
-                        let source_edit_id =
-                            reload_capsule_source_edit_id(capsule_metadata.as_ref());
                         let req = AdapterReloadRequest {
-                            reload_id: format!("runner-device-{}-{}", language, frame_count),
+                            reload_id,
                             source_edit_id,
                             module_id: "device".into(),
                             changed_files: manifest.dirty_units.clone().unwrap_or_default(),
@@ -1710,12 +1967,27 @@ fn main() {
                                 artifact_path,
                                 kernels.join(",")
                             );
-                            let status = HmrStatus::rejected_with_fallback(
-                                "device",
-                                "GPU sidecar reload already in flight",
-                                "Wait for active GPU sidecar reload or restart runner",
-                            );
-                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                            if let (Some(request_id), Some(source_edit_id)) = (
+                                terminal_request_id.as_deref(),
+                                terminal_source_edit_id.as_deref(),
+                            ) {
+                                if let Ok(status) = GpuReloadV2Result::rejected(
+                                    request_id,
+                                    source_edit_id,
+                                    "GPU sidecar reload already in flight",
+                                )
+                                .and_then(|result| result.to_json())
+                                {
+                                    eprintln!("[Runner] [HMR-STATUS] {status}");
+                                }
+                            } else {
+                                let status = HmrStatus::rejected_with_fallback(
+                                    "device",
+                                    "GPU sidecar reload already in flight",
+                                    "Wait for active GPU sidecar reload or restart runner",
+                                );
+                                eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                            }
                             continue;
                         }
 
@@ -1759,6 +2031,8 @@ fn main() {
                                 language: language_owned,
                                 artifact_path: artifact_path_owned,
                                 kernels: kernels_log,
+                                request_id: terminal_request_id,
+                                source_edit_id: terminal_source_edit_id,
                                 adapter,
                                 result,
                             };
@@ -1777,6 +2051,8 @@ fn main() {
                                 language: language_owned,
                                 artifact_path: artifact_path_owned,
                                 kernels: kernels_log,
+                                request_id: terminal_request_id,
+                                source_edit_id: terminal_source_edit_id,
                                 adapter,
                                 result,
                             });
@@ -2203,10 +2479,13 @@ mod tests {
     use super::{
         gpu_artifact_loader_transport_for_reload, gpu_reload_artifact_blob_from_path,
         gpu_reload_capsule_metadata_from_token, parse_gpu_artifact_loader_transport,
-        reload_capsule_source_edit_id, ArtifactLoaderTransport, ReloadArtifactBlob,
+        parse_gpu_reload_command, strict_gpu_reload_terminal_result, AdapterReloadResult,
+        ArtifactLoaderTransport, ReloadArtifactBlob,
     };
     #[cfg(feature = "gpu-hmr")]
     use std::io::Write as _;
+    #[cfg(feature = "gpu-hmr")]
+    use worker::runtime::runner_protocol::GpuReloadV2Payload;
 
     #[test]
     fn device_load_abi_version_prefers_protocol_fingerprint() {
@@ -2351,10 +2630,6 @@ mod tests {
             gpu_reload_capsule_metadata_from_token(Some(&token)).expect("runner capsule metadata");
 
         assert_eq!(
-            reload_capsule_source_edit_id(Some(&metadata)).as_deref(),
-            Some("source-edit:runner-proof")
-        );
-        assert_eq!(
             metadata.fission_island_id.as_deref(),
             Some("fission-island:sha256:abc")
         );
@@ -2365,6 +2640,143 @@ mod tests {
         );
         assert_eq!(metadata.proof_hash.as_deref(), Some("sha256:456"));
         assert!(gpu_reload_capsule_metadata_from_token(Some("-")).is_none());
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn gpu_reload_v2_parser_preserves_independent_identity_and_typed_fields() {
+        let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
+        let payload = GpuReloadV2Payload::new(
+            format!("gpu-reload:request:{}", "1".repeat(32)),
+            "partial",
+            "rocm",
+            "/tmp/path with space/device.hsaco",
+            vec!["gpu::shade".to_string()],
+            Some("sha256:abi".to_string()),
+            None,
+            source_edit_id.clone(),
+        )
+        .unwrap();
+        let encoded = payload.encode().unwrap();
+        let parts = [
+            "gpu_reload_v2",
+            payload.request_id.as_str(),
+            encoded.as_str(),
+        ];
+        let parsed = parse_gpu_reload_command(&parts).unwrap();
+        assert_eq!(
+            parsed.request_id.as_deref(),
+            Some(payload.request_id.as_str())
+        );
+        assert!(parsed.partial);
+        assert_eq!(parsed.vendor, "rocm");
+        assert_eq!(parsed.artifact_path, "/tmp/path with space/device.hsaco");
+        assert_eq!(parsed.kernels, vec!["gpu::shade"]);
+        assert_eq!(parsed.abi_version, "sha256:abi");
+        assert_eq!(
+            parsed.source_edit_id.as_deref(),
+            Some(source_edit_id.as_str())
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn legacy_gpu_reload_never_backfills_strict_source_identity() {
+        let encoded_source = format!("source%2Dedit%3Asha256%3A{}", "a".repeat(64));
+        let parts = [
+            "load_device",
+            "rocm",
+            "/tmp/device.hsaco",
+            "shade",
+            "sha256:abi",
+            "-",
+            encoded_source.as_str(),
+        ];
+        let parsed = parse_gpu_reload_command(&parts).unwrap();
+        assert_eq!(parsed.source_edit_id, None);
+        assert_eq!(parsed.request_id, None);
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn strict_gpu_reload_terminal_requires_matching_full_runtime_proof() {
+        let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
+        let request_id = format!("gpu-reload:request:{}", "2".repeat(32));
+        let proof_id = format!("gpu-runtime-proof:sha256:{}", "b".repeat(64));
+        let evidence_refs = vec![
+            format!("reload:{request_id}"),
+            format!("source-edit-id:{source_edit_id}"),
+        ];
+        let record = serde_json::json!({
+            "edit_id": source_edit_id,
+            "evidence_refs": evidence_refs,
+        });
+        let proof_ledger = serde_json::json!({
+            "gpuHmrSuccess": true,
+            "records": [record],
+        });
+        let proof_line = serde_json::json!({
+            "type": "gpu_hmr_proof",
+            "resultState": "gpu-hmr-full-runtime-proven",
+            "proofId": proof_id,
+            "proofLedger": proof_ledger,
+            "runtimeProofArtifact": {
+                "proofId": proof_id,
+                "resultState": "gpu-hmr-full-runtime-proven",
+                "fullRuntimeProven": true,
+                "gpuHmrSuccess": true,
+                "limitations": [],
+                "proofLedger": proof_ledger,
+                "proofLedgerQuery": {
+                    "gpuHmrSuccess": true,
+                    "failedInvariants": [],
+                },
+                "explicitProofLedgerRecord": record,
+                "derivedProofLedgerRecord": record,
+                "acceptanceContract": { "edit_id": source_edit_id },
+                "derivedAcceptanceContract": { "edit_id": source_edit_id },
+                "acceptanceContractEvaluation": { "accepted": true },
+                "acceptanceContractConsistency": { "accepted": true },
+                "derivedAcceptanceContractEvaluation": { "accepted": true },
+                "proofLedgerSourceConsistency": { "accepted": true },
+            },
+        })
+        .to_string();
+        let success = AdapterReloadResult::Success {
+            reload_ms: 1,
+            state_preserved: true,
+        };
+
+        let terminal = strict_gpu_reload_terminal_result(
+            &request_id,
+            &source_edit_id,
+            &success,
+            &[proof_line.clone()],
+        )
+        .unwrap();
+        assert_eq!(terminal.status, "applied");
+        assert_eq!(
+            terminal.full_runtime_proof_id.as_deref(),
+            Some(proof_id.as_str())
+        );
+        assert!(terminal.gpu_hmr_success);
+
+        let missing =
+            strict_gpu_reload_terminal_result(&request_id, &source_edit_id, &success, &[]).unwrap();
+        assert_eq!(missing.status, "rejected");
+        assert!(!missing.gpu_hmr_success);
+
+        let other_source_edit_id = format!("source-edit:sha256:{}", "c".repeat(64));
+        let other_request_id = format!("gpu-reload:request:{}", "3".repeat(32));
+        let stale = strict_gpu_reload_terminal_result(
+            &other_request_id,
+            &other_source_edit_id,
+            &success,
+            &[proof_line],
+        )
+        .unwrap();
+        assert_eq!(stale.status, "rejected");
+        assert!(!stale.full_runtime_proof_accepted);
     }
 
     #[cfg(feature = "gpu-hmr")]

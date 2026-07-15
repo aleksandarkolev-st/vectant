@@ -54,6 +54,7 @@ use std::env;
 use std::ffi::{c_void, CString};
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -62,8 +63,9 @@ use serde_json::{json, Value};
 
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::adapter_trait::{
-    Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest, AdapterReloadResult,
-    ReloadCapsuleMetadata,
+    normalized_reload_source_edit_id, Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest,
+    AdapterReloadResult, ReloadCapsuleMetadata,
+    RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
 };
 use crate::hmr::compile_manifest::{DeviceVendor, SnapshotMode};
 use crate::hmr::device_snapshot::BufferRegistry;
@@ -75,7 +77,7 @@ use crate::hmr::gpu_module_manager::{
     GpuModuleManager, KernelResolution, KernelTable, ModuleManagerError, ModuleSlot,
 };
 use crate::hmr::gpu_proof::{
-    normalized_gpu_hardware_uuid, sha256_hex_bytes, GpuHmrAcceptanceLedger,
+    normalized_gpu_hardware_uuid, sha256_hex_bytes, stable_json_hash, GpuHmrAcceptanceLedger,
     GpuHmrAcceptanceLedgerInput, GpuHmrDegradedState,
 };
 use crate::hmr::gpu_reload_orchestrator::{
@@ -1077,6 +1079,7 @@ const GPU_HMR_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof.v1";
 const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.validation-proof.v1";
 const GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION: &str = "synthi.gpu_hmr.contract.v1";
 const GPU_HMR_FULL_RUNTIME_RESULT_STATE: &str = "gpu-hmr-full-runtime-proven";
+const MAX_RUNTIME_PROOF_ORACLE_PROFILE_BYTES: u64 = 1024 * 1024;
 
 fn stable_json_string(value: &Value) -> String {
     match value {
@@ -1119,6 +1122,50 @@ fn sha256_prefixed_from_text(value: &str) -> String {
 
 fn normalize_sha256_prefixed(value: &str) -> Option<String> {
     normalized_sha256_hex(value).map(|hash| format!("sha256:{hash}"))
+}
+
+fn verified_runtime_source_edit_commitment(
+    capsule_metadata: Option<&ReloadCapsuleMetadata>,
+    source_edit_id: &str,
+    artifact_hash: &str,
+) -> Option<()> {
+    if normalized_reload_source_edit_id(Some(source_edit_id)).as_deref() != Some(source_edit_id) {
+        return None;
+    }
+    let metadata = capsule_metadata?;
+    let commitment = metadata.output_oracle_profile_commitment.as_ref()?;
+    if commitment.schema_version != RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION
+        || commitment.edit_id != source_edit_id
+        || commitment.candidate_artifact_sha256 != format!("sha256:{artifact_hash}")
+    {
+        return None;
+    }
+    let contract = metadata
+        .fission_output_oracle_contract
+        .as_ref()
+        .filter(|contract| contract.is_object())?;
+    if commitment.fission_output_oracle_contract_sha256
+        != format!("sha256:{}", stable_json_hash(contract))
+    {
+        return None;
+    }
+
+    let file = fs::File::open(runtime_output_oracle_profile_path()).ok()?;
+    let reported_bytes = file.metadata().ok()?.len();
+    if reported_bytes == 0 || reported_bytes > MAX_RUNTIME_PROOF_ORACLE_PROFILE_BYTES {
+        return None;
+    }
+    let mut profile_bytes = Vec::with_capacity(reported_bytes as usize);
+    file.take(MAX_RUNTIME_PROOF_ORACLE_PROFILE_BYTES + 1)
+        .read_to_end(&mut profile_bytes)
+        .ok()?;
+    if profile_bytes.is_empty()
+        || profile_bytes.len() as u64 > MAX_RUNTIME_PROOF_ORACLE_PROFILE_BYTES
+        || commitment.profile_bytes_sha256 != format!("sha256:{}", sha256_hex_bytes(&profile_bytes))
+    {
+        return None;
+    }
+    Some(())
 }
 
 fn saturating_u128_to_u64(value: u128) -> u64 {
@@ -1378,6 +1425,7 @@ fn canonical_runtime_ledger_proof_id(record: &Value) -> String {
 
 fn runtime_acceptance_contract(
     req: &AdapterReloadRequest,
+    source_edit_id: &str,
     vendor: GpuVendor,
     contract_hash: &str,
     previous_artifact_id: &str,
@@ -1471,7 +1519,7 @@ fn runtime_acceptance_contract(
         "contract_id": format!("gpu-hmr-contract:{contract_hash}"),
         "contract_hash": contract_hash,
         "project_id": req.build_manifest.preview_id,
-        "edit_id": req.reload_id,
+        "edit_id": source_edit_id,
         "backend": vendor.proof_backend(),
         "confidence": 0.95,
         "evidence_refs": acceptance_evidence_refs,
@@ -1660,6 +1708,9 @@ fn runtime_full_proof_line(
     capsule_metadata: Option<&ReloadCapsuleMetadata>,
     after_dispatch_id: &str,
 ) -> Option<String> {
+    let source_edit_id = normalized_reload_source_edit_id(req.source_edit_id.as_deref())?;
+    let source_edit_id = source_edit_id.as_str();
+    verified_runtime_source_edit_commitment(capsule_metadata, source_edit_id, artifact_hash)?;
     if req.firewall_evidence.cpu_hmr_used != Some(false)
         || req.firewall_evidence.full_rebuild_used != Some(false)
         || req.firewall_evidence.process_restarted != Some(false)
@@ -1727,6 +1778,7 @@ fn runtime_full_proof_line(
     let mut evidence_ref_values = vec![
         format!("runtime-session:{}", runtime_session_id()),
         format!("reload:{}", req.reload_id),
+        format!("source-edit-id:{source_edit_id}"),
         format!("loader:{new_artifact_id}"),
         format!("epoch:{active_generation}"),
         format!("dispatch:{after_dispatch_id}"),
@@ -1771,6 +1823,7 @@ fn runtime_full_proof_line(
         .unwrap_or_else(|| {
             sha256_prefixed_from_text(&stable_json_string(&json!({
                 "reload_id": req.reload_id,
+                "source_edit_id": source_edit_id,
                 "module_id": req.module_id,
                 "backend": vendor.proof_backend(),
                 "artifact_before": previous_artifact_id,
@@ -1857,7 +1910,7 @@ fn runtime_full_proof_line(
     let ledger_record = json!({
         "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
         "project_id": req.build_manifest.preview_id,
-        "edit_id": req.reload_id,
+        "edit_id": source_edit_id,
         "backend": vendor.proof_backend(),
         "classification": {
             "project_kind": "gpu_project",
@@ -2153,6 +2206,7 @@ fn runtime_full_proof_line(
     });
     let acceptance_contract = runtime_acceptance_contract(
         req,
+        source_edit_id,
         vendor,
         &contract_hash,
         previous_artifact_id,
@@ -3973,6 +4027,7 @@ mod tests {
     use crate::hmr::adapter_matrix::AdapterFamily;
     use crate::hmr::adapter_trait::{
         AdapterReloadRequest, ReloadArtifactBlob, ReloadCapsuleMetadata, ReloadFirewallEvidence,
+        ReloadOutputOracleProfileCommitment,
     };
     use crate::hmr::build_manifest::BuildManifest;
     use crate::hmr::gpu_driver_loader::{
@@ -4005,6 +4060,111 @@ mod tests {
             ),
             preserve_state: true,
             timeout_ms: 5_000,
+        }
+    }
+
+    #[test]
+    fn runtime_source_edit_requires_exact_prepublication_commitment() {
+        let _guard = runtime_boundary_test_guard();
+        let previous_profile_path = std::env::var_os("SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH");
+        let mut profile = tempfile::NamedTempFile::new().unwrap();
+        let profile_bytes = br#"{"schemaVersion":"synthi.gpu_hmr.runtime_output_oracle_profile.v1","enabled":true}"#;
+        profile.write_all(profile_bytes).unwrap();
+        std::env::set_var("SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH", profile.path());
+
+        let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
+        let artifact_hash = sha256_hex_bytes(b"arbitrary-project-device-artifact");
+        let contract = json!({
+            "kind": "compute_readback",
+            "outputTargetId": "tensor:result",
+            "causalOutputChangeRequired": true,
+        });
+        let metadata = ReloadCapsuleMetadata {
+            fission_output_oracle_contract: Some(contract.clone()),
+            output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
+                schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.into(),
+                candidate_artifact_sha256: format!("sha256:{artifact_hash}"),
+                fission_output_oracle_contract_sha256: format!(
+                    "sha256:{}",
+                    stable_json_hash(&contract)
+                ),
+                profile_bytes_sha256: format!("sha256:{}", sha256_hex_bytes(profile_bytes)),
+                edit_id: source_edit_id.clone(),
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            verified_runtime_source_edit_commitment(
+                Some(&metadata),
+                &source_edit_id,
+                &artifact_hash,
+            ),
+            Some(())
+        );
+        assert_eq!(
+            verified_runtime_source_edit_commitment(None, &source_edit_id, &artifact_hash),
+            None
+        );
+
+        let mut mismatched = metadata.clone();
+        mismatched
+            .output_oracle_profile_commitment
+            .as_mut()
+            .unwrap()
+            .edit_id = format!("source-edit:sha256:{}", "b".repeat(64));
+        assert_eq!(
+            verified_runtime_source_edit_commitment(
+                Some(&mismatched),
+                &source_edit_id,
+                &artifact_hash,
+            ),
+            None
+        );
+
+        let mut mismatched = metadata.clone();
+        mismatched
+            .output_oracle_profile_commitment
+            .as_mut()
+            .unwrap()
+            .candidate_artifact_sha256 = format!("sha256:{}", "c".repeat(64));
+        assert_eq!(
+            verified_runtime_source_edit_commitment(
+                Some(&mismatched),
+                &source_edit_id,
+                &artifact_hash,
+            ),
+            None
+        );
+
+        let mut mismatched = metadata.clone();
+        mismatched.fission_output_oracle_contract = Some(json!({
+            "kind": "compute_readback",
+            "outputTargetId": "tensor:other",
+            "causalOutputChangeRequired": true,
+        }));
+        assert_eq!(
+            verified_runtime_source_edit_commitment(
+                Some(&mismatched),
+                &source_edit_id,
+                &artifact_hash,
+            ),
+            None
+        );
+
+        fs::write(profile.path(), b"different-profile-bytes").unwrap();
+        assert_eq!(
+            verified_runtime_source_edit_commitment(
+                Some(&metadata),
+                &source_edit_id,
+                &artifact_hash,
+            ),
+            None
+        );
+
+        match previous_profile_path {
+            Some(path) => std::env::set_var("SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH", path),
+            None => std::env::remove_var("SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH"),
         }
     }
 
@@ -4083,6 +4243,8 @@ mod tests {
     fn runtime_acceptance_contract_uses_shared_schema_enums() {
         let mut req = dummy_request();
         req.reload_id = "edit-runtime-contract".to_string();
+        let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
+        req.source_edit_id = Some(source_edit_id.clone());
         req.changed_files = vec!["kernels/device.hip".to_string()];
         req.build_manifest.preview_id = "runtime-contract-preview".to_string();
         req.build_manifest.artifact_path = "build/device.hsaco".to_string();
@@ -4145,6 +4307,7 @@ mod tests {
 
         let contract = runtime_acceptance_contract(
             &req,
+            &source_edit_id,
             GpuVendor::Rocm,
             "sha256:contract",
             "sha256:before",
@@ -4166,6 +4329,8 @@ mod tests {
         );
 
         assert_eq!(contract["confidence"], json!(0.95));
+        assert_eq!(contract["edit_id"], json!(source_edit_id));
+        assert_ne!(contract["edit_id"], json!(req.reload_id));
         assert_eq!(contract["classification"]["confidence"], json!(0.95));
         assert_eq!(
             contract["artifact_identity"]["artifact_kind"],
