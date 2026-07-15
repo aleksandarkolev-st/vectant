@@ -142,14 +142,43 @@ try {
   }), 'not present in the immutable commit');
   rmSync(path.join(root, 'src', 'ignored-generated.h'));
 
-  mkdirSync(path.join(root, '.synthi', 'generated', 'gpu'), { recursive: true });
-  writeFileSync(path.join(root, '.synthi', 'generated', 'gpu', 'device.hip'), 'precompiled\n');
+  mkdirSync(path.join(root, 'src', 'nested', '.synthi', 'generated', 'gpu'), { recursive: true });
+  writeFileSync(
+    path.join(root, 'src', 'nested', '.synthi', 'generated', 'gpu', 'device.hip'),
+    'precompiled\n',
+  );
   expectFailure(() => inspectDirectSourceGitIdentity({
     sourceRoot: root,
     requestedCommit: secondCommit,
     sourceManifestHash,
     sourceFilePaths,
   }), 'preexisting Synthi artifact');
+  rmSync(path.join(root, 'src', 'nested'), { recursive: true, force: true });
+
+  mkdirSync(path.join(root, '.synthi', 'project'), { recursive: true });
+  writeFileSync(path.join(root, '.synthi', 'project', 'main.cpp'), 'int main(){return 0;}\n');
+  expectFailure(() => inspectDirectSourceGitIdentity({
+    sourceRoot: path.join(root, '.synthi', 'project'),
+    requestedCommit: secondCommit,
+    sourceManifestHash,
+    sourceFilePaths: ['main.cpp'],
+  }), 'inside a preexisting Synthi artifact namespace');
+  rmSync(path.join(root, '.synthi'), { recursive: true, force: true });
+
+  mkdirSync(path.join(root, 'generated'), { recursive: true });
+  const committedMarker = path.join(root, 'generated', '.synthi_split_meta.json');
+  writeFileSync(committedMarker, '{}\n');
+  git(root, ['add', 'generated/.synthi_split_meta.json']);
+  git(root, ['commit', '-m', 'commit forbidden Synthi marker']);
+  const markerCommit = git(root, ['rev-parse', 'HEAD']);
+  git(root, ['update-index', '--skip-worktree', 'generated/.synthi_split_meta.json']);
+  rmSync(committedMarker);
+  expectFailure(() => inspectDirectSourceGitIdentity({
+    sourceRoot: root,
+    requestedCommit: markerCommit,
+    sourceManifestHash,
+    sourceFilePaths,
+  }), 'committed Synthi artifact');
 
   console.log('direct source immutable Git identity self-check passed');
 } finally {

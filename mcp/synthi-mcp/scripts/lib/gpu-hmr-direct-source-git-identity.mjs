@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, realpathSync } from 'node:fs';
+import { readdirSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 
 export const DIRECT_SOURCE_GIT_IDENTITY_SCHEMA_VERSION =
@@ -160,12 +160,33 @@ function sourceFileHashEntry(entry) {
   };
 }
 
+function isSynthiArtifactPath(value) {
+  const normalized = String(value ?? '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (!normalized) return false;
+  const segments = normalized.split('/').map((segment) => segment.toLowerCase());
+  return segments.includes('.synthi') || segments.includes('.synthi_split_meta.json');
+}
+
 function preexistingSynthiArtifact(sourceRoot) {
-  const candidates = [
-    '.synthi',
-    '.synthi_split_meta.json',
-  ];
-  return candidates.find((candidate) => existsSync(path.join(sourceRoot, candidate))) ?? null;
+  const vcsControlDirectories = new Set(['.git', '.hg', '.svn']);
+  const walk = (directory, relativeDirectory = '') => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const relativePath = relativeDirectory
+        ? `${relativeDirectory}/${entry.name}`
+        : entry.name;
+      if (isSynthiArtifactPath(relativePath)) return relativePath;
+      if (
+        entry.isDirectory()
+        && !entry.isSymbolicLink()
+        && !vcsControlDirectories.has(entry.name.toLowerCase())
+      ) {
+        const nested = walk(path.join(directory, entry.name), relativePath);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  };
+  return walk(sourceRoot);
 }
 
 function normalizedDeclaredIdentity(value) {
@@ -260,6 +281,15 @@ export function materializeDirectSourceGitSnapshot({
     throw new Error('direct source root is outside its reported Git repository root');
   }
   const sourceRootRelativePath = relativeRootRaw || '.';
+  if (
+    isSynthiArtifactPath(sourceRootRelativePath)
+    || path.resolve(sourceRootReal).split(path.sep).some((segment) =>
+      segment.toLowerCase() === '.synthi'
+      || segment.toLowerCase() === '.synthi_split_meta.json'
+    )
+  ) {
+    throw new Error('direct source root is inside a preexisting Synthi artifact namespace');
+  }
   const headCommit = fullCommitOid(
     gitText(repoRoot, ['rev-parse', '--verify', 'HEAD^{commit}']),
     'Git HEAD commit',
@@ -302,6 +332,14 @@ export function materializeDirectSourceGitSnapshot({
     ? ['ls-tree', '-r', '-z', headCommit]
     : ['ls-tree', '-r', '-z', headCommit, '--', pathspec]);
   const committedEntries = parseCommittedTreeEntries(committedTreeOutput);
+  const committedSynthiArtifact = [...committedEntries.keys()]
+    .map((repoPath) => sourcePathFromRepo(sourceRootRelativePath, repoPath))
+    .find(isSynthiArtifactPath);
+  if (committedSynthiArtifact) {
+    throw new Error(
+      `direct source cold path contains committed Synthi artifact: ${committedSynthiArtifact}`,
+    );
+  }
   const selectedEntries = selectedSourcePaths.map((sourcePath) => {
     const repoPath = sourcePathInRepo(sourceRootRelativePath, sourcePath);
     return { sourcePath, repoPath, entry: committedEntries.get(repoPath) ?? null };
