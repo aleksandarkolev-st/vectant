@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import {
@@ -92,23 +92,37 @@ const COMPUTE_SLICE_BYTES = COMPUTE_RAW_BYTES.subarray(0, 64);
 const COMPUTE_SLICE_HASH = sha256Buffer(COMPUTE_SLICE_BYTES);
 
 function writeVisualFixturePngs() {
-  const relativeDir = path.join('.gpu-hmr-test-logs', 'runtime-boundary-adapter-visual-smoke');
-  const absoluteDir = path.resolve(relativeDir);
-  mkdirSync(absoluteDir, { recursive: true });
+  const fixtureParent = path.resolve('.gpu-hmr-test-logs');
+  mkdirSync(fixtureParent, { recursive: true });
+  const fixtureDir = mkdtempSync(path.join(fixtureParent, 'runtime-boundary-adapter-visual-smoke-'));
+  const allowedDir = path.join(fixtureDir, 'allowed');
+  const outsideDir = path.join(fixtureDir, 'outside');
+  mkdirSync(allowedDir, { recursive: true });
+  mkdirSync(outsideDir, { recursive: true });
   const roles = [
     ['before', tinyRgbPng(255, 0, 0)],
     ['after', tinyRgbPng(0, 255, 0)],
     ['diff', tinyRgbPng(0, 0, 255)],
   ];
-  return Object.fromEntries(roles.flatMap(([role, bytes]) => {
-    const file = path.join(relativeDir, `${role}.png`);
-    writeFileSync(path.resolve(file), bytes);
+  const fixture = Object.fromEntries(roles.flatMap(([role, bytes]) => {
+    const file = path.join(allowedDir, `${role}.png`);
+    writeFileSync(file, bytes);
     return [
       [`${role}Image`, file],
       [`${role}ImageHash`, sha256Buffer(bytes)],
       [`${role}ImageByteLength`, bytes.length],
     ];
   }));
+  const directEscapeAfterImage = path.join(outsideDir, 'after.png');
+  writeFileSync(directEscapeAfterImage, tinyRgbPng(0, 255, 0));
+  const symlinkDir = path.join(allowedDir, 'outside-link');
+  symlinkSync(outsideDir, symlinkDir, process.platform === 'win32' ? 'junction' : 'dir');
+  return {
+    ...fixture,
+    artifactRoot: allowedDir,
+    directEscapeAfterImage,
+    symlinkEscapeAfterImage: path.join(symlinkDir, 'after.png'),
+  };
 }
 
 function visualEvidenceArtifactsFromFixture(fixture) {
@@ -378,6 +392,17 @@ function mutateCaptureManifest(input, mutate) {
   return changed;
 }
 
+function withAfterVisualArtifactPath(input, artifactPath) {
+  const changed = structuredClone(input);
+  const artifact = changed.visualEvidenceArtifacts.find((entry) => entry.role === 'after');
+  artifact.path = artifactPath;
+  artifact.filePath = artifactPath;
+  artifact.file_path = artifactPath;
+  artifact.sourcePath = artifactPath;
+  artifact.source_path = artifactPath;
+  return changed;
+}
+
 function visualLedgerArtifactsFromResult(result) {
   const record = result.runtimeProofArtifact?.proofLedger?.records?.[0] ?? {};
   const oracleArtifacts = record.oracle_artifacts ?? record.oracleArtifacts ?? {};
@@ -490,6 +515,7 @@ const visualInputWithoutCaptureManifest = adapterInput({
     evidenceRefs: ['validation:output-oracle:visual-pngs'],
   },
   visualEvidenceArtifacts: visualEvidenceArtifactsFromFixture(visualFixture),
+  allowedArtifactRoots: [visualFixture.artifactRoot],
 });
 
 const visualMissingCaptureManifest = buildRuntimeBoundaryProofAdapter(
@@ -518,6 +544,16 @@ const preliminaryRuntimeBindingGate =
   'runtime_boundary_visual_capture_preliminary_runtime_binding_material_incomplete';
 const visualRefused = buildRuntimeBoundaryProofAdapter(visualInput);
 assertVisualCaptureRefused(visualRefused, preliminaryRuntimeBindingGate);
+assert.ok(
+  !visualRefused.failedGates.includes('runtime_boundary_visual_capture_allowed_artifact_roots_missing'),
+  visualRefused.failedGates.join(','),
+);
+assert.ok(
+  !visualRefused.failedGates.includes(
+    'runtime_boundary_visual_capture_after_image_path_outside_allowed_artifact_roots',
+  ),
+  visualRefused.failedGates.join(','),
+);
 assert.equal(visualRefused.gpuHmrSuccess, false, 'adapter facet must stay evidence-only for visual proof');
 assert.equal(visualInput.visualOracleArtifacts.visual_capture_runtime_binding, undefined);
 for (const field of Object.keys(CALLER_RUNTIME_PROOF_CLAIMS)) {
@@ -552,6 +588,33 @@ for (const [field, value] of Object.entries({
     `${field} must not be promoted from caller capture evidence`,
   );
 }
+
+const visualMissingAllowedRoots = buildRuntimeBoundaryProofAdapter({
+  ...visualInput,
+  allowedArtifactRoots: [],
+});
+assertVisualCaptureRefused(
+  visualMissingAllowedRoots,
+  'runtime_boundary_visual_capture_allowed_artifact_roots_missing',
+);
+
+const visualDirectPathEscape = buildRuntimeBoundaryProofAdapter(withAfterVisualArtifactPath(
+  visualInput,
+  visualFixture.directEscapeAfterImage,
+));
+assertVisualCaptureRefused(
+  visualDirectPathEscape,
+  'runtime_boundary_visual_capture_after_image_path_outside_allowed_artifact_roots',
+);
+
+const visualSymlinkEscape = buildRuntimeBoundaryProofAdapter(withAfterVisualArtifactPath(
+  visualInput,
+  visualFixture.symlinkEscapeAfterImage,
+));
+assertVisualCaptureRefused(
+  visualSymlinkEscape,
+  'runtime_boundary_visual_capture_after_image_path_outside_allowed_artifact_roots',
+);
 
 const visualWrongImageHash = buildRuntimeBoundaryProofAdapter(mutateCaptureManifest(
   visualInput,

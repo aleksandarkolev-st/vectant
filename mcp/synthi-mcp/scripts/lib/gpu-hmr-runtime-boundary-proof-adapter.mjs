@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import {
   deriveGpuHmrAcceptanceContractFromVerifiedProofs,
@@ -217,6 +217,74 @@ function proofArtifactPath(value) {
   if (!text) return null;
   if (/^[a-z][a-z0-9+.-]*:/iu.test(text)) return null;
   return text;
+}
+
+function pathInsideRoot(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (
+    relative !== '..'
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative)
+  );
+}
+
+function visualCaptureArtifactRoots(input = {}) {
+  const roots = compactStringList([
+    ...(Array.isArray(input.visualArtifactRoots) ? input.visualArtifactRoots : []),
+    ...(Array.isArray(input.visual_artifact_roots) ? input.visual_artifact_roots : []),
+    ...(Array.isArray(input.allowedArtifactRoots) ? input.allowedArtifactRoots : []),
+    ...(Array.isArray(input.allowed_artifact_roots) ? input.allowed_artifact_roots : []),
+    ...(Array.isArray(input.artifactCasRoots) ? input.artifactCasRoots : []),
+    ...(Array.isArray(input.artifact_cas_roots) ? input.artifact_cas_roots : []),
+    ...(Array.isArray(input.allowedCasRoots) ? input.allowedCasRoots : []),
+    ...(Array.isArray(input.allowed_cas_roots) ? input.allowed_cas_roots : []),
+  ]);
+  const canonicalRoots = [];
+  const seen = new Set();
+  for (const root of roots) {
+    try {
+      const canonicalRoot = realpathSync(path.resolve(root));
+      if (!statSync(canonicalRoot).isDirectory()) continue;
+      const identity = process.platform === 'win32'
+        ? canonicalRoot.toLowerCase()
+        : canonicalRoot;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      canonicalRoots.push(canonicalRoot);
+    } catch {
+      // A missing or unreadable root cannot authorize visual artifact bytes.
+    }
+  }
+  return canonicalRoots;
+}
+
+function resolveVisualCaptureArtifactPath(rawPath, roots) {
+  const pathText = firstText(rawPath);
+  if (!pathText || (/^[a-z][a-z0-9+.-]*:/iu.test(pathText) && !path.isAbsolute(pathText))) {
+    return { path: null, outsideAllowedRoots: false };
+  }
+  const candidates = path.isAbsolute(pathText)
+    ? [path.resolve(pathText)]
+    : roots.map((root) => path.resolve(root, pathText));
+  let outsideAllowedRoots = false;
+  for (const candidate of candidates) {
+    if (!roots.some((root) => pathInsideRoot(candidate, root))) {
+      outsideAllowedRoots = true;
+      continue;
+    }
+    try {
+      const canonicalPath = realpathSync(candidate);
+      if (!statSync(canonicalPath).isFile()) continue;
+      if (!roots.some((root) => pathInsideRoot(canonicalPath, root))) {
+        outsideAllowedRoots = true;
+        continue;
+      }
+      return { path: canonicalPath, outsideAllowedRoots: false };
+    } catch {
+      // Keep trying explicit roots for a relative artifact path.
+    }
+  }
+  return { path: null, outsideAllowedRoots };
 }
 
 function runtimeBoundaryStrictGateOptions(input = {}) {
@@ -708,6 +776,7 @@ function visualCaptureByteVerificationFailures(
   captureManifest,
   visualOracleArtifacts,
   visualEvidenceArtifacts,
+  input,
 ) {
   if (!captureManifest) return ['runtime_boundary_visual_capture_manifest_missing'];
   const afterArtifact = verifiedVisualEvidenceArtifactForRole(
@@ -719,13 +788,24 @@ function visualCaptureByteVerificationFailures(
     return ['runtime_boundary_visual_capture_after_artifact_unverified'];
   }
   const artifactPath = visualArtifactPath(afterArtifact);
-  if (!artifactPath || /^[a-z][a-z0-9+.-]*:/iu.test(artifactPath)) {
+  if (!artifactPath) {
     return ['runtime_boundary_visual_capture_after_image_bytes_unreadable'];
+  }
+
+  const allowedRoots = visualCaptureArtifactRoots(input);
+  if (allowedRoots.length === 0) {
+    return ['runtime_boundary_visual_capture_allowed_artifact_roots_missing'];
+  }
+  const resolvedArtifact = resolveVisualCaptureArtifactPath(artifactPath, allowedRoots);
+  if (!resolvedArtifact.path) {
+    return [resolvedArtifact.outsideAllowedRoots
+      ? 'runtime_boundary_visual_capture_after_image_path_outside_allowed_artifact_roots'
+      : 'runtime_boundary_visual_capture_after_image_bytes_unreadable'];
   }
 
   let bytes;
   try {
-    bytes = readFileSync(path.resolve(artifactPath));
+    bytes = readFileSync(resolvedArtifact.path);
   } catch {
     return ['runtime_boundary_visual_capture_after_image_bytes_unreadable'];
   }
@@ -838,6 +918,7 @@ function prepareVisualCaptureRuntimeBinding({
       capture.manifest,
       components.visualOracleArtifacts,
       components.visualEvidenceArtifacts,
+      input,
     ));
   }
   if (failedGates.length > 0 || !capture.evidenceBinding) {
