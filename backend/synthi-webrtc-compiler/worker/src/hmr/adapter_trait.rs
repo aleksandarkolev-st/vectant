@@ -10,6 +10,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::build_manifest::BuildManifest;
@@ -34,6 +35,19 @@ pub struct ReloadArtifactBlob {
 
 pub const RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION: &str =
     "synthi.gpu_hmr.reload_output_oracle_profile_commitment.v1";
+pub const GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH_ENV: &str =
+    "SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH";
+pub const GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_DEFAULT_PATH: &str =
+    "/tmp/synthi-gpu-hmr-runtime-output-oracle.json";
+
+pub fn configured_gpu_hmr_runtime_output_oracle_profile_path() -> PathBuf {
+    std::env::var(GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_DEFAULT_PATH))
+}
 
 /// Hash-only commitment to an output oracle fixed before candidate publication.
 ///

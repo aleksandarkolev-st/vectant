@@ -781,8 +781,10 @@ fn apply_edit_list(
 
 use crate::hmr::adapted_project::{detect_adapted_project, AdaptedProjectStatus};
 use crate::hmr::adapter_trait::{
-    encode_reload_capsule_metadata_token, AdapterReloadResult, ReloadArtifactBlob,
-    ReloadCapsuleMetadata,
+    configured_gpu_hmr_runtime_output_oracle_profile_path, encode_reload_capsule_metadata_token,
+    AdapterReloadResult, ReloadArtifactBlob, ReloadCapsuleMetadata,
+    ReloadOutputOracleProfileCommitment,
+    RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
 };
 use crate::hmr::ai_bypass::{check_ai_bypass, AiBypassResult, SplitCache};
 use crate::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
@@ -801,9 +803,10 @@ use crate::hmr::gpu_device_fast_path::{
 use crate::hmr::gpu_fission::verify_fission_candidates;
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::gpu_proof::{
-    read_proof_artifact, sha256_hex_bytes, sha256_hex_str, write_proof_artifact,
-    GpuHmrDegradedState, GpuHmrProofArtifact, GpuHmrProofArtifactInput, GpuHmrProofArtifactWrite,
-    GpuHmrProofEvidenceRef, GpuHmrProofStageResult, GpuHmrProofState, GpuHmrProofTelemetry,
+    read_proof_artifact, sha256_hex_bytes, sha256_hex_str, stable_json_hash,
+    write_proof_artifact, GpuHmrDegradedState, GpuHmrProofArtifact, GpuHmrProofArtifactInput,
+    GpuHmrProofArtifactWrite, GpuHmrProofEvidenceRef, GpuHmrProofStageResult, GpuHmrProofState,
+    GpuHmrProofTelemetry,
 };
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
 
@@ -6353,6 +6356,36 @@ fn proof_fission_output_oracle_contract(proof: &serde_json::Value) -> Option<ser
         .cloned()
 }
 
+fn proof_output_oracle_profile_commitment(
+    proof: &serde_json::Value,
+    contract: &serde_json::Value,
+    profile_bytes: &[u8],
+) -> Option<ReloadOutputOracleProfileCommitment> {
+    if profile_bytes.is_empty() || !contract.is_object() {
+        return None;
+    }
+    let candidate_artifact_sha256 = proof_selected_fission_candidate(proof)
+        .and_then(|candidate| candidate.pointer("/candidate/artifactHash"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| normalized_capsule_hash(Some(value)))?;
+    let edit_id = proof
+        .get("sourceEditId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    Some(ReloadOutputOracleProfileCommitment {
+        schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.to_string(),
+        candidate_artifact_sha256,
+        fission_output_oracle_contract_sha256: format!(
+            "sha256:{}",
+            stable_json_hash(contract)
+        ),
+        profile_bytes_sha256: format!("sha256:{}", sha256_hex_bytes(profile_bytes)),
+        edit_id,
+    })
+}
+
 fn proof_abi_membrane_hash(proof: &serde_json::Value) -> Option<String> {
     first_proof_evidence(proof, "device-abi-metadata")
         .and_then(|evidence| evidence.get("contentHash"))
@@ -6376,10 +6409,37 @@ async fn reload_capsule_metadata_from_proof_artifact(
     proof_artifact: &GpuHmrProofArtifactWrite,
     outcome: &DeviceCompileOutcome,
 ) -> ReloadCapsuleMetadata {
+    let profile_path = configured_gpu_hmr_runtime_output_oracle_profile_path();
+    reload_capsule_metadata_from_proof_artifact_with_profile_path(
+        proof_artifact,
+        outcome,
+        &profile_path,
+    )
+    .await
+}
+
+async fn reload_capsule_metadata_from_proof_artifact_with_profile_path(
+    proof_artifact: &GpuHmrProofArtifactWrite,
+    outcome: &DeviceCompileOutcome,
+    profile_path: &Path,
+) -> ReloadCapsuleMetadata {
     let proof = tokio::fs::read_to_string(&proof_artifact.path)
         .await
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    let fission_output_oracle_contract = proof
+        .as_ref()
+        .and_then(proof_fission_output_oracle_contract);
+    let output_oracle_profile_commitment = match (
+        proof.as_ref(),
+        fission_output_oracle_contract.as_ref(),
+    ) {
+        (Some(proof), Some(contract)) => tokio::fs::read(profile_path)
+            .await
+            .ok()
+            .and_then(|bytes| proof_output_oracle_profile_commitment(proof, contract, &bytes)),
+        _ => None,
+    };
     ReloadCapsuleMetadata {
         fission_island_id: proof.as_ref().and_then(proof_fission_island_id),
         fission_verifier_evidence_id: proof.as_ref().and_then(proof_fission_verifier_evidence_id),
@@ -6393,10 +6453,8 @@ async fn reload_capsule_metadata_from_proof_artifact(
         fission_selection_decision_hash: proof
             .as_ref()
             .and_then(proof_fission_selection_decision_hash),
-        fission_output_oracle_contract: proof
-            .as_ref()
-            .and_then(proof_fission_output_oracle_contract),
-        output_oracle_profile_commitment: None,
+        fission_output_oracle_contract,
+        output_oracle_profile_commitment,
         abi_membrane_hash: proof.as_ref().and_then(proof_abi_membrane_hash),
         dependency_closure_hash: proof
             .as_ref()
@@ -14700,8 +14758,22 @@ __constant__ int scale;
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
-        let capsule_metadata =
-            reload_capsule_metadata_from_proof_artifact(&written, &outcome).await;
+        let profile_bytes =
+            br#"{"schemaVersion":"synthi.gpu_hmr.runtime_output_oracle_profile.v1"}"#;
+        let profile_path = temp.path().join("runtime-output-oracle-profile.json");
+        tokio::fs::write(&profile_path, profile_bytes)
+            .await
+            .unwrap();
+        let capsule_metadata = reload_capsule_metadata_from_proof_artifact_with_profile_path(
+            &written,
+            &outcome,
+            &profile_path,
+        )
+        .await;
+        let emitted_commitment = capsule_metadata
+            .output_oracle_profile_commitment
+            .clone()
+            .expect("capsule output oracle profile commitment");
         let exact_oracle_contract = capsule_metadata
             .fission_output_oracle_contract
             .expect("selected exact output oracle contract");
@@ -14712,6 +14784,57 @@ __constant__ int scale;
             .expect("selected raw output oracle contract");
         assert_eq!(&exact_oracle_contract, selected_raw_oracle_contract);
         assert!(exact_oracle_contract.get("proposalValid").is_none());
+        let proof_value = serde_json::to_value(&artifact).unwrap();
+        let commitment = proof_output_oracle_profile_commitment(
+            &proof_value,
+            &exact_oracle_contract,
+            profile_bytes,
+        )
+        .expect("prepublication output oracle profile commitment");
+        assert_eq!(emitted_commitment, commitment);
+        assert_eq!(
+            commitment.schema_version,
+            RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            commitment.candidate_artifact_sha256,
+            candidate
+                .get("artifactHash")
+                .and_then(serde_json::Value::as_str)
+                .unwrap()
+        );
+        assert_eq!(
+            commitment.fission_output_oracle_contract_sha256,
+            format!("sha256:{}", stable_json_hash(&exact_oracle_contract))
+        );
+        assert_eq!(
+            commitment.profile_bytes_sha256,
+            format!("sha256:{}", sha256_hex_bytes(profile_bytes))
+        );
+        assert_eq!(commitment.edit_id, artifact.source_edit_id);
+        assert!(proof_output_oracle_profile_commitment(
+            &proof_value,
+            &exact_oracle_contract,
+            &[],
+        )
+        .is_none());
+        let mut missing_edit_identity = proof_value.clone();
+        missing_edit_identity
+            .as_object_mut()
+            .unwrap()
+            .remove("sourceEditId");
+        assert!(proof_output_oracle_profile_commitment(
+            &missing_edit_identity,
+            &exact_oracle_contract,
+            profile_bytes,
+        )
+        .is_none());
+        assert!(proof_output_oracle_profile_commitment(
+            &proof_value,
+            &serde_json::Value::String("declaration-only".to_string()),
+            profile_bytes,
+        )
+        .is_none());
     }
 
     #[tokio::test]
