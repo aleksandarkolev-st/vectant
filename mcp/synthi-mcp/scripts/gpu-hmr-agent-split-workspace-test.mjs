@@ -57,7 +57,7 @@ import {
   visualEvidenceArtifactsFromVisualOracleArtifacts,
 } from './lib/gpu-hmr-validation-proof-artifact.mjs';
 import {
-  inspectDirectSourceGitIdentity,
+  materializeDirectSourceGitSnapshot,
   verifyDirectSourceGitIdentity,
 } from './lib/gpu-hmr-direct-source-git-identity.mjs';
 
@@ -6173,23 +6173,13 @@ function selfCheckAgentVisualProfile() {
       ['-C', directLocalSelfCheckRoot, 'rev-parse', 'HEAD'],
       { encoding: 'utf8', windowsHide: true },
     )).trim();
-    const directLocalSourceFiles = [
-      { path: 'include/params.hpp', content: multiFileHeaderSource },
-      { path: 'src/main.cpp', content: multiFileEntrySource },
-    ].map((entry) => ({
-      ...entry,
-      contentHash: sourceContentHash(entry.content),
-      content_hash: sourceContentHash(entry.content),
-      byteLength: Buffer.byteLength(entry.content, 'utf8'),
-      byte_length: Buffer.byteLength(entry.content, 'utf8'),
-    }));
-    const directLocalManifestHash = sourceFilesManifestHash(directLocalSourceFiles);
-    const directLocalGitIdentity = inspectDirectSourceGitIdentity({
+    const directLocalGitSnapshot = materializeDirectSourceGitSnapshot({
       sourceRoot: directLocalSelfCheckRoot,
       requestedCommit: directLocalCommit,
-      sourceManifestHash: directLocalManifestHash,
-      sourceFilePaths: directLocalSourceFiles.map((entry) => entry.path),
+      sourceFilePaths: ['include/params.hpp', 'src/main.cpp'],
     });
+    const directLocalManifestHash = directLocalGitSnapshot.manifestHash;
+    const directLocalGitIdentity = directLocalGitSnapshot.identity;
     const directLocalSourceProfile = applyDirectSourceOverride(
       normalizeAgentVisualProfile({
         schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
@@ -6214,18 +6204,7 @@ function selfCheckAgentVisualProfile() {
         immutableCommit: directLocalCommit,
         immutableSourceIdentity: directLocalGitIdentity,
         entryPath: 'src/main.cpp',
-        files: [
-          {
-            path: 'include/params.hpp',
-            sourcePath: 'include/params.hpp',
-            contentHash: sourceContentHash(multiFileHeaderSource),
-          },
-          {
-            path: 'src/main.cpp',
-            sourcePath: 'src/main.cpp',
-            contentHash: sourceContentHash(multiFileEntrySource),
-          },
-        ],
+        files: directLocalGitSnapshot.files,
       }, {
         manifestPath: path.join(directLocalSelfCheckRoot, 'self-check-direct-local-source-manifest.json'),
         sourceRoot: directLocalSelfCheckRoot,

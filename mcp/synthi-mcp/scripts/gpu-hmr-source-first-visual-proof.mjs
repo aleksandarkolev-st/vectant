@@ -22,7 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  inspectDirectSourceGitIdentity,
+  materializeDirectSourceGitSnapshot,
 } from './lib/gpu-hmr-direct-source-git-identity.mjs';
 
 function readOption(args, name) {
@@ -51,20 +51,8 @@ function sha256Hex(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function stableJson(value) {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  return `{${Object.keys(value).sort().map((key) =>
-    `${JSON.stringify(key)}:${stableJson(value[key])}`
-  ).join(',')}}`;
-}
-
 function contentHashForText(value) {
   return `sha256:${sha256Hex(String(value ?? ''))}`;
-}
-
-function contentHashForObject(value) {
-  return `sha256:${sha256Hex(stableJson(value))}`;
 }
 
 function uniqueSortedStrings(values) {
@@ -285,19 +273,11 @@ function synthesizeSourceManifestFromRoot({
   if (!sourceRoot) throw new Error('source root is required');
   const root = realpathSync(path.resolve(sourceRoot));
   if (!existsSync(root)) throw new Error(`source root not found: ${root}`);
-  const files = sourceFilesForRoot(root);
-  if (files.length === 0) {
+  const scannedFiles = sourceFilesForRoot(root);
+  if (scannedFiles.length === 0) {
     throw new Error(`source root ${root} contains no supported source files`);
   }
-  const entryPath = inferEntryPath(files, sourceEntry);
-  const fileManifest = files.map((file) => ({
-    path: file.path,
-    contentHash: file.contentHash,
-    content_hash: file.contentHash,
-    byteLength: file.byteLength,
-    byte_length: file.byteLength,
-  }));
-  const manifestHash = contentHashForObject(fileManifest);
+  const entryPath = inferEntryPath(scannedFiles, sourceEntry);
   const directSourceAuthority = sourceAuthority || 'direct_local_git_repo_path';
   if (!sourceCommit) {
     throw new Error('auto-scanned --source-root requires an explicit full --source-commit');
@@ -307,12 +287,15 @@ function synthesizeSourceManifestFromRoot({
     : directSourceAuthority === 'direct_source_url_commit'
       ? 'source_url_commit'
       : 'source_tree_files';
-  const immutableSourceIdentity = inspectDirectSourceGitIdentity({
+  const immutableSnapshot = materializeDirectSourceGitSnapshot({
     sourceRoot: root,
     requestedCommit: sourceCommit,
-    sourceManifestHash: manifestHash,
-    sourceFilePaths: files.map((file) => file.path),
+    sourceFilePaths: scannedFiles.map((file) => file.path),
   });
+  const files = immutableSnapshot.files;
+  const fileManifest = immutableSnapshot.fileManifest;
+  const manifestHash = immutableSnapshot.manifestHash;
+  const immutableSourceIdentity = immutableSnapshot.identity;
   const immutableCommit = immutableSourceIdentity.commitOid;
   const directSourceInputChannels = uniqueSortedStrings(inputChannels);
   const entryInferenceEvidence = {

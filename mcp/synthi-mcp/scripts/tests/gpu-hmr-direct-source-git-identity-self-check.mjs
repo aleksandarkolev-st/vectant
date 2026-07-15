@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import {
   mkdirSync,
   mkdtempSync,
@@ -14,6 +13,7 @@ import {
   DIRECT_SOURCE_GIT_IDENTITY_AUTHORITY,
   DIRECT_SOURCE_GIT_IDENTITY_SCHEMA_VERSION,
   inspectDirectSourceGitIdentity,
+  materializeDirectSourceGitSnapshot,
   verifyDirectSourceGitIdentity,
 } from '../lib/gpu-hmr-direct-source-git-identity.mjs';
 
@@ -50,10 +50,21 @@ try {
   git(root, ['commit', '-m', 'immutable source fixture']);
 
   const firstCommit = git(root, ['rev-parse', 'HEAD']);
-  const sourceManifestHash = `sha256:${createHash('sha256')
-    .update('self-check-source-manifest')
-    .digest('hex')}`;
   const sourceFilePaths = ['include/config.h', 'src/main.cpp'];
+  const snapshot = materializeDirectSourceGitSnapshot({
+    sourceRoot: root,
+    requestedCommit: firstCommit,
+    sourceFilePaths,
+  });
+  const sourceManifestHash = snapshot.manifestHash;
+  if (
+    snapshot.files.length !== sourceFilePaths.length
+    || snapshot.files.some((entry) => typeof entry.inline !== 'string')
+    || snapshot.files.some((entry) => !entry.gitBlobOid)
+    || snapshot.identity.sourceBlobSetHash !== snapshot.identity.source_blob_set_hash
+  ) {
+    throw new Error(`pinned Git blob materialization was incomplete: ${JSON.stringify(snapshot)}`);
+  }
   const identity = inspectDirectSourceGitIdentity({
     sourceRoot: root,
     requestedCommit: firstCommit,
@@ -82,6 +93,13 @@ try {
   if (verified.identityHash !== identity.identityHash) {
     throw new Error('recomputed immutable Git identity hash changed');
   }
+
+  expectFailure(() => inspectDirectSourceGitIdentity({
+    sourceRoot: root,
+    requestedCommit: firstCommit,
+    sourceManifestHash: `sha256:${'0'.repeat(64)}`,
+    sourceFilePaths,
+  }), 'manifest hash does not match pinned Git blob bytes');
 
   expectFailure(() => verifyDirectSourceGitIdentity({
     declaredIdentity: {

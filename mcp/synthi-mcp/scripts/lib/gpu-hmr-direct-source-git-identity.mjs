@@ -89,6 +89,77 @@ function sourcePathInRepo(relativeRoot, sourcePath) {
     : `${relativeRoot}/${cleanSourcePath}`;
 }
 
+function sourcePathFromRepo(relativeRoot, repoPath) {
+  if (relativeRoot === '.') return cleanRelativePath(repoPath, 'committed source path');
+  const prefix = `${relativeRoot}/`;
+  if (!repoPath.startsWith(prefix)) {
+    throw new Error(`committed source path is outside the submitted source root: ${repoPath}`);
+  }
+  return cleanRelativePath(repoPath.slice(prefix.length), 'committed source path');
+}
+
+function statusForSubmittedRoot(repoRoot, pathspec) {
+  return gitBuffer(repoRoot, [
+    'status',
+    '--porcelain=v1',
+    '-z',
+    '--untracked-files=all',
+    '--',
+    pathspec,
+  ]);
+}
+
+function assertStableHead(repoRoot, expectedCommit, phase) {
+  const observed = fullCommitOid(
+    gitText(repoRoot, ['rev-parse', '--verify', 'HEAD^{commit}']),
+    `Git HEAD commit ${phase}`,
+  );
+  if (observed !== expectedCommit) {
+    throw new Error(
+      `direct source Git HEAD changed ${phase}: expected ${expectedCommit} but observed ${observed}`,
+    );
+  }
+}
+
+function assertCleanSubmittedRoot(repoRoot, pathspec, phase) {
+  if (statusForSubmittedRoot(repoRoot, pathspec).length > 0) {
+    throw new Error(`direct source Git worktree is dirty within the submitted source root ${phase}`);
+  }
+}
+
+function decodeUtf8Source(buffer, sourcePath) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  } catch {
+    throw new Error(`direct source file is not valid UTF-8: ${sourcePath}`);
+  }
+}
+
+function parseCommittedTreeEntries(buffer) {
+  const entries = new Map();
+  for (const record of buffer.toString('utf8').split('\0').filter(Boolean)) {
+    const tab = record.indexOf('\t');
+    if (tab < 0) throw new Error('direct source Git tree entry is malformed');
+    const [mode, type, oid] = record.slice(0, tab).split(' ');
+    const repoPath = cleanRelativePath(record.slice(tab + 1), 'committed source path');
+    if (!mode || !type || !oid) {
+      throw new Error(`direct source Git tree entry is malformed: ${repoPath}`);
+    }
+    entries.set(repoPath, { mode, type, oid, repoPath });
+  }
+  return entries;
+}
+
+function sourceFileHashEntry(entry) {
+  return {
+    path: entry.path,
+    contentHash: entry.contentHash,
+    content_hash: entry.content_hash,
+    byteLength: entry.byteLength,
+    byte_length: entry.byte_length,
+  };
+}
+
 function preexistingSynthiArtifact(sourceRoot) {
   const candidates = [
     '.synthi',
@@ -163,14 +234,15 @@ function assertDeclaredIdentityMatches(declaredIdentity, actual) {
   }
 }
 
-export function inspectDirectSourceGitIdentity({
+export function materializeDirectSourceGitSnapshot({
   sourceRoot,
   requestedCommit = '',
-  sourceManifestHash,
+  sourceManifestHash = '',
   sourceFilePaths,
 } = {}) {
   if (!sourceRoot) throw new Error('direct source Git identity requires sourceRoot');
-  if (!/^sha256:[a-f0-9]{64}$/i.test(String(sourceManifestHash ?? ''))) {
+  const declaredSourceManifestHash = String(sourceManifestHash ?? '').trim().toLowerCase();
+  if (declaredSourceManifestHash && !/^sha256:[a-f0-9]{64}$/.test(declaredSourceManifestHash)) {
     throw new Error('direct source Git identity requires a content-addressed sourceManifestHash');
   }
   const selectedSourcePaths = [...new Set(
@@ -201,23 +273,15 @@ export function inspectDirectSourceGitIdentity({
     );
   }
 
+  assertStableHead(repoRoot, expectedCommit, 'before source materialization');
+
   const artifact = preexistingSynthiArtifact(sourceRootReal);
   if (artifact) {
     throw new Error(`direct source cold path contains preexisting Synthi artifact: ${artifact}`);
   }
 
   const pathspec = gitPathspec(sourceRootRelativePath);
-  const status = gitBuffer(repoRoot, [
-    'status',
-    '--porcelain=v1',
-    '-z',
-    '--untracked-files=all',
-    '--',
-    pathspec,
-  ]);
-  if (status.length > 0) {
-    throw new Error('direct source Git worktree is dirty within the submitted source root');
-  }
+  assertCleanSubmittedRoot(repoRoot, pathspec, 'before source materialization');
 
   const rootTreeOid = fullCommitOid(
     gitText(repoRoot, ['rev-parse', `${headCommit}^{tree}`]),
@@ -234,25 +298,79 @@ export function inspectDirectSourceGitIdentity({
     throw new Error(`direct source root does not resolve to a Git tree: ${sourceRootRelativePath}`);
   }
 
-  const committedPathsOutput = gitBuffer(repoRoot, sourceRootRelativePath === '.'
-    ? ['ls-tree', '-r', '-z', '--name-only', headCommit]
-    : ['ls-tree', '-r', '-z', '--name-only', headCommit, '--', pathspec]);
-  const committedPaths = new Set(
-    committedPathsOutput.toString('utf8').split('\0').filter(Boolean),
-  );
-  const missingCommittedPaths = selectedSourcePaths
-    .map((sourcePath) => sourcePathInRepo(sourceRootRelativePath, sourcePath))
-    .filter((sourcePath) => !committedPaths.has(sourcePath));
+  const committedTreeOutput = gitBuffer(repoRoot, sourceRootRelativePath === '.'
+    ? ['ls-tree', '-r', '-z', headCommit]
+    : ['ls-tree', '-r', '-z', headCommit, '--', pathspec]);
+  const committedEntries = parseCommittedTreeEntries(committedTreeOutput);
+  const selectedEntries = selectedSourcePaths.map((sourcePath) => {
+    const repoPath = sourcePathInRepo(sourceRootRelativePath, sourcePath);
+    return { sourcePath, repoPath, entry: committedEntries.get(repoPath) ?? null };
+  });
+  const missingCommittedPaths = selectedEntries
+    .filter(({ entry }) => !entry)
+    .map(({ repoPath }) => repoPath);
   if (missingCommittedPaths.length > 0) {
     throw new Error(
       `direct source files are not present in the immutable commit: ${missingCommittedPaths.join(', ')}`,
     );
   }
 
+  const nonBlobPaths = selectedEntries
+    .filter(({ entry }) => entry?.type !== 'blob')
+    .map(({ repoPath }) => repoPath);
+  if (nonBlobPaths.length > 0) {
+    throw new Error(`direct source files do not resolve to Git blobs: ${nonBlobPaths.join(', ')}`);
+  }
+
+  const files = selectedEntries.map(({ sourcePath, repoPath, entry }) => {
+    const bytes = gitBuffer(repoRoot, ['cat-file', 'blob', entry.oid]);
+    const content = decodeUtf8Source(bytes, sourcePath);
+    const committedSourcePath = sourcePathFromRepo(sourceRootRelativePath, repoPath);
+    if (committedSourcePath !== sourcePath) {
+      throw new Error(
+        `direct source Git path normalization mismatch: selected ${sourcePath} committed ${committedSourcePath}`,
+      );
+    }
+    const fileHash = `sha256:${sha256Hex(bytes)}`;
+    return {
+      path: sourcePath,
+      inline: content,
+      contentHash: fileHash,
+      content_hash: fileHash,
+      byteLength: bytes.length,
+      byte_length: bytes.length,
+      gitBlobOid: entry.oid,
+      git_blob_oid: entry.oid,
+      gitMode: entry.mode,
+      git_mode: entry.mode,
+    };
+  });
+  const fileManifest = files.map(sourceFileHashEntry);
+  const computedSourceManifestHash = contentHash(fileManifest);
+  if (
+    declaredSourceManifestHash
+    && declaredSourceManifestHash !== computedSourceManifestHash
+  ) {
+    throw new Error(
+      `direct source manifest hash does not match pinned Git blob bytes: declared ${declaredSourceManifestHash} actual ${computedSourceManifestHash}`,
+    );
+  }
+
+  assertStableHead(repoRoot, expectedCommit, 'after source materialization');
+  assertCleanSubmittedRoot(repoRoot, pathspec, 'after source materialization');
+
   const objectFormat = gitText(repoRoot, ['rev-parse', '--show-object-format'], {
     allowFailure: true,
   }) || (headCommit.length === 64 ? 'sha256' : 'sha1');
   const sourcePathSetHash = contentHash(selectedSourcePaths);
+  const sourceBlobManifest = files.map((entry) => ({
+    path: entry.path,
+    gitBlobOid: entry.gitBlobOid,
+    gitMode: entry.gitMode,
+    contentHash: entry.contentHash,
+    byteLength: entry.byteLength,
+  }));
+  const sourceBlobSetHash = contentHash(sourceBlobManifest);
   const identitySeed = {
     schemaVersion: DIRECT_SOURCE_GIT_IDENTITY_SCHEMA_VERSION,
     vcs: 'git',
@@ -261,14 +379,15 @@ export function inspectDirectSourceGitIdentity({
     rootTreeOid,
     sourceTreeOid,
     sourceRootRelativePath,
-    sourceManifestHash: String(sourceManifestHash).toLowerCase(),
+    sourceManifestHash: computedSourceManifestHash,
     sourcePathSetHash,
+    sourceBlobSetHash,
     selectedSourceFileCount: selectedSourcePaths.length,
     worktreeClean: true,
   };
   const identityHash = contentHash(identitySeed);
   const evidenceRef = `direct-source-git-identity:${identityHash}`;
-  return {
+  const identity = {
     schemaVersion: DIRECT_SOURCE_GIT_IDENTITY_SCHEMA_VERSION,
     schema_version: DIRECT_SOURCE_GIT_IDENTITY_SCHEMA_VERSION,
     proofAuthority: DIRECT_SOURCE_GIT_IDENTITY_AUTHORITY,
@@ -295,10 +414,14 @@ export function inspectDirectSourceGitIdentity({
     source_tree_oid: sourceTreeOid,
     sourceRootRelativePath,
     source_root_relative_path: sourceRootRelativePath,
-    sourceManifestHash: String(sourceManifestHash).toLowerCase(),
-    source_manifest_hash: String(sourceManifestHash).toLowerCase(),
+    sourceManifestHash: computedSourceManifestHash,
+    source_manifest_hash: computedSourceManifestHash,
     sourcePathSetHash,
     source_path_set_hash: sourcePathSetHash,
+    sourceBlobSetHash,
+    source_blob_set_hash: sourceBlobSetHash,
+    sourceBlobManifest,
+    source_blob_manifest: sourceBlobManifest,
     selectedSourceFileCount: selectedSourcePaths.length,
     selected_source_file_count: selectedSourcePaths.length,
     worktreeClean: true,
@@ -308,6 +431,21 @@ export function inspectDirectSourceGitIdentity({
     evidenceRef,
     evidence_ref: evidenceRef,
   };
+  return {
+    identity,
+    files,
+    fileManifest,
+    file_manifest: fileManifest,
+    manifestHash: computedSourceManifestHash,
+    manifest_hash: computedSourceManifestHash,
+  };
+}
+
+export function inspectDirectSourceGitIdentity(inspection = {}) {
+  if (!/^sha256:[a-f0-9]{64}$/i.test(String(inspection.sourceManifestHash ?? ''))) {
+    throw new Error('direct source Git identity requires a content-addressed sourceManifestHash');
+  }
+  return materializeDirectSourceGitSnapshot(inspection).identity;
 }
 
 export function verifyDirectSourceGitIdentity({
