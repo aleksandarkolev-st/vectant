@@ -99,6 +99,17 @@ pub struct CompileRequest {
     /// nonces whenever `require_ai_provider_call` is enabled.
     #[serde(default, alias = "provider_call_nonce", alias = "aiProviderCallNonce")]
     pub ai_provider_call_nonce: Option<String>,
+    /// Explicit AI provider selected by the caller for split requests.
+    #[serde(
+        default,
+        alias = "provider",
+        alias = "provider_name",
+        alias = "aiProvider"
+    )]
+    pub ai_provider: Option<String>,
+    /// Explicit AI model selected by the caller for split requests.
+    #[serde(default, alias = "model", alias = "model_name", alias = "aiModel")]
+    pub ai_model: Option<String>,
     /// Explicit user request for AI-assisted compilation (Loop B).
     #[serde(default)]
     pub user_requested_ai: bool,
@@ -158,6 +169,8 @@ mod tests {
         assert!(!req.bypass_ai_split_cache);
         assert!(!req.require_ai_provider_call);
         assert!(req.ai_provider_call_nonce.is_none());
+        assert!(req.ai_provider.is_none());
+        assert!(req.ai_model.is_none());
     }
 
     #[test]
@@ -217,6 +230,26 @@ mod tests {
                 Some("provider-call:0123456789abcdef0123456789abcdef"),
                 "alias {field}"
             );
+        }
+    }
+
+    #[test]
+    fn compile_request_accepts_provider_and_model_aliases() {
+        for (provider_field, model_field) in [
+            ("ai_provider", "ai_model"),
+            ("provider", "model"),
+            ("provider_name", "model_name"),
+            ("aiProvider", "aiModel"),
+        ] {
+            let mut raw = base_request();
+            let object = raw.as_object_mut().expect("object");
+            object.insert(provider_field.to_string(), json!("generic-provider"));
+            object.insert(model_field.to_string(), json!("generic-model"));
+
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
+
+            assert_eq!(req.ai_provider.as_deref(), Some("generic-provider"));
+            assert_eq!(req.ai_model.as_deref(), Some("generic-model"));
         }
     }
 }

@@ -301,6 +301,26 @@ const TOOLS = [
           pattern: "^provider-call:[a-f0-9]{32}$",
           description: "Alias for ai_provider_call_nonce.",
         },
+        ai_provider: {
+          type: "string",
+          minLength: 1,
+          description: "Explicit provider identifier for AI split requests.",
+        },
+        provider: {
+          type: "string",
+          minLength: 1,
+          description: "Alias for ai_provider.",
+        },
+        ai_model: {
+          type: "string",
+          minLength: 1,
+          description: "Explicit model identifier for AI split requests.",
+        },
+        model: {
+          type: "string",
+          minLength: 1,
+          description: "Alias for ai_model.",
+        },
         user_requested_ai: {
           type: "boolean",
           description: "Explicit opt-in to the AI-split (Loop B). Default false.",

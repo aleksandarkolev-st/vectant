@@ -34,8 +34,29 @@ fn first_nonempty_env(keys: &[&str]) -> Option<String> {
     })
 }
 
-fn gpu_split_model_override() -> Option<String> {
-    first_nonempty_env(&["SYNTHI_GPU_SPLIT_MODEL", "SYNTHI_GEMINI_MODEL"])
+fn gpu_split_provider(req: &CompileRequest) -> String {
+    req.ai_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .or_else(|| first_nonempty_env(&["SYNTHI_SPLIT_PROVIDER", "SYNTHI_GPU_SPLIT_PROVIDER"]))
+        .unwrap_or_else(|| "gemini".to_string())
+}
+
+fn gpu_split_model_override(req: &CompileRequest) -> Option<String> {
+    req.ai_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            first_nonempty_env(&[
+                "SYNTHI_SPLIT_MODEL",
+                "SYNTHI_GPU_SPLIT_MODEL",
+                "SYNTHI_GEMINI_MODEL",
+            ])
+        })
 }
 
 fn gpu_delta_model_override() -> Option<String> {
@@ -48,7 +69,8 @@ fn ai_split_cache_key(req: &CompileRequest) -> u64 {
         .as_deref()
         .unwrap_or("auto")
         .to_ascii_lowercase();
-    let split_model = gpu_split_model_override();
+    let split_provider = gpu_split_provider(req);
+    let split_model = gpu_split_model_override(req);
     let has_gpu_markers = request_has_gpu_markers(req);
     let file_context = request_file_context(req);
     let arch_hint = gpu_arch_hint(req);
@@ -66,6 +88,7 @@ fn ai_split_cache_key(req: &CompileRequest) -> u64 {
         gpu_mode.as_str(),
         arch_hint.as_deref().unwrap_or(""),
         has_gpu_markers,
+        split_provider.as_str(),
         split_model.as_deref().unwrap_or(""),
     ))
 }
@@ -1384,7 +1407,8 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         .as_deref()
         .unwrap_or("auto")
         .to_ascii_lowercase();
-    let split_model = gpu_split_model_override();
+    let split_provider = gpu_split_provider(req);
+    let split_model = gpu_split_model_override(req);
     let has_gpu_markers = request_has_gpu_markers(req);
     let file_context = request_file_context(req);
     let arch_hint = gpu_arch_hint(req);
@@ -1460,6 +1484,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             }))
             .collect::<Vec<_>>()
     });
+    payload["provider"] = serde_json::Value::String(split_provider.clone());
     payload["require_provider_call"] = serde_json::Value::Bool(req.require_ai_provider_call);
     if let Some(arch) = &arch_hint {
         payload["gpu_arch"] = serde_json::Value::String(arch.clone());
@@ -1475,8 +1500,10 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         payload["model"] = serde_json::Value::String(model.clone());
         eprintln!("[AI Split] Split model override attached: {}", model);
     } else if req.require_ai_provider_call {
-        payload["model"] = serde_json::Value::String("gemini-3.5-flash".to_string());
-        eprintln!("[AI Split] Explicit default split model attached for provider receipt");
+        anyhow::bail!(
+            "required AI provider call needs an explicit model for provider {}",
+            split_provider
+        );
     }
 
     let provider_call_expectation = if req.require_ai_provider_call {
@@ -3094,6 +3121,8 @@ mod tests {
             bypass_ai_split_cache: false,
             require_ai_provider_call: false,
             ai_provider_call_nonce: None,
+            ai_provider: None,
+            ai_model: None,
             user_requested_ai: false,
             user_requested_deterministic: false,
             force_gpu_ai_delta: false,
@@ -3306,6 +3335,8 @@ int main() {
             bypass_ai_split_cache: false,
             require_ai_provider_call: false,
             ai_provider_call_nonce: None,
+            ai_provider: None,
+            ai_model: None,
             user_requested_ai: false,
             user_requested_deterministic: false,
             force_gpu_ai_delta: false,
@@ -3348,6 +3379,8 @@ int main() {
             bypass_ai_split_cache: false,
             require_ai_provider_call: false,
             ai_provider_call_nonce: None,
+            ai_provider: None,
+            ai_model: None,
             user_requested_ai: false,
             user_requested_deterministic: false,
             force_gpu_ai_delta: false,

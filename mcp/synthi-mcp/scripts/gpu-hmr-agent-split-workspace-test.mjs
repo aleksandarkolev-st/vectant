@@ -153,7 +153,13 @@ const CFG = {
   mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
     ?? ((process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY) ? 'gemini_api' : 'agent_side'),
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? process.env.SYNTHI_GPU_SPLIT_MODEL ?? 'gemini-3.5-flash',
+  gpuSplitProvider: (
+    process.env.SYNTHI_SPLIT_PROVIDER
+      ?? process.env.SYNTHI_GPU_SPLIT_PROVIDER
+      ?? 'gemini'
+  ).trim().toLowerCase(),
   gpuSplitModel: process.env.SYNTHI_GPU_SPLIT_MODEL
+    ?? process.env.SYNTHI_SPLIT_MODEL
     ?? process.env.SYNTHI_GEMINI_MODEL
     ?? 'gemini-3.5-flash',
   gpuDeltaModel: process.env.SYNTHI_GPU_DELTA_MODEL
@@ -10205,6 +10211,8 @@ async function run() {
     bypass_ai_split_cache: CFG.mode === 'cold-ai-split',
     require_ai_provider_call: CFG.mode === 'cold-ai-split',
     ai_provider_call_nonce: coldProviderCallNonce,
+    ai_provider: CFG.gpuSplitProvider,
+    ai_model: CFG.gpuSplitModel,
     user_requested_ai: true,
     prefer_gpu_pipeline: true,
     gpu_mode: vendor,

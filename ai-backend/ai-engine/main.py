@@ -411,6 +411,7 @@ class AnalyzeAiRequest(BaseModel):
     focus: Optional[str] = None
     model: Optional[str] = None
     api_key: Optional[str] = None
+    provider: Optional[str] = None
     gpu_arch: Optional[str] = None
 
 
@@ -1429,6 +1430,9 @@ async def analyze_code_ai(req: AnalyzeAiRequest):
     enforce_ai_request_limits(req)
 
     def select_provider_name() -> str | None:
+        explicit = str(req.provider or "").strip().lower()
+        if explicit:
+            return explicit
         if req.api_key:
             model_name = (req.model or '').lower()
             if 'gemini' in model_name:
@@ -1461,6 +1465,16 @@ async def analyze_code_ai(req: AnalyzeAiRequest):
 @app.post("/refactor/split")
 async def refactor_split(req: AnalyzeAiRequest):
     def select_provider_name() -> str | None:
+        explicit = str(req.provider or "").strip().lower()
+        if explicit:
+            return explicit
+        configured = str(
+            os.getenv("SYNTHI_SPLIT_PROVIDER")
+            or os.getenv("SYNTHI_GPU_SPLIT_PROVIDER")
+            or ""
+        ).strip().lower()
+        if configured:
+            return configured
         if req.api_key:
             model_name = (req.model or '').lower()
             if 'gemini' in model_name:
@@ -2345,6 +2359,16 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     start_time = time.time()
 
     def select_provider_name() -> str | None:
+        explicit = str(req.provider or "").strip().lower()
+        if explicit:
+            return explicit
+        configured = str(
+            os.getenv("SYNTHI_SPLIT_PROVIDER")
+            or os.getenv("SYNTHI_GPU_SPLIT_PROVIDER")
+            or ""
+        ).strip().lower()
+        if configured:
+            return configured
         if req.api_key:
             model_name = (req.model or "").lower()
             if "gemini" in model_name:
@@ -2382,10 +2406,18 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     split = None
     split_model = (
         req.model
+        or os.getenv("SYNTHI_SPLIT_MODEL")
         or os.getenv("SYNTHI_GPU_SPLIT_MODEL")
-        or os.getenv("SYNTHI_GEMINI_MODEL")
-        or "gemini-3.5-flash"
+        or getattr(provider, "model_name", None)
     )
+    if req.require_provider_call and (not req.provider or not req.model):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Request-bound provider proof requires explicit provider and model",
+                "reason_code": "ai_provider_selection_not_explicit",
+            },
+        )
     request_arch_hint = (
         req.gpu_arch.strip()
         if req.gpu_arch and req.gpu_arch.strip().lower() != "auto"

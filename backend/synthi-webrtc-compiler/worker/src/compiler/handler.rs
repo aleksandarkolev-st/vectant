@@ -18115,6 +18115,8 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             bypass_ai_split_cache: false,
             require_ai_provider_call: false,
             ai_provider_call_nonce: None,
+            ai_provider: None,
+            ai_model: None,
             user_requested_ai: false,
             user_requested_deterministic: true,
             force_gpu_ai_delta: false,

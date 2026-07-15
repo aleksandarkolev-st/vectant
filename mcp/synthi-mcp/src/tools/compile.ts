@@ -71,6 +71,14 @@ interface RawArgs {
   ai_provider_call_nonce?: unknown;
   provider_call_nonce?: unknown;
   aiProviderCallNonce?: unknown;
+  ai_provider?: unknown;
+  provider?: unknown;
+  provider_name?: unknown;
+  aiProvider?: unknown;
+  ai_model?: unknown;
+  model?: unknown;
+  model_name?: unknown;
+  aiModel?: unknown;
   user_requested_ai?: unknown;
   user_requested_deterministic?: unknown;
   force_gpu_ai_delta?: unknown;
@@ -214,6 +222,16 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
   if (typeof aiProviderCallNonce === "string") {
     payload["ai_provider_call_nonce"] = aiProviderCallNonce;
   }
+  const aiProvider = a.ai_provider ?? a.provider ?? a.provider_name ?? a.aiProvider;
+  if (aiProvider !== undefined && (typeof aiProvider !== "string" || aiProvider.trim() === "")) {
+    return errorResponse("invalid_args", { field: "ai_provider", expected: "non-empty string" });
+  }
+  const aiModel = a.ai_model ?? a.model ?? a.model_name ?? a.aiModel;
+  if (aiModel !== undefined && (typeof aiModel !== "string" || aiModel.trim() === "")) {
+    return errorResponse("invalid_args", { field: "ai_model", expected: "non-empty string" });
+  }
+  if (typeof aiProvider === "string") payload["ai_provider"] = aiProvider.trim().toLowerCase();
+  if (typeof aiModel === "string") payload["ai_model"] = aiModel.trim();
   if (typeof a.user_requested_ai === "boolean") payload["user_requested_ai"] = a.user_requested_ai;
   if (typeof a.user_requested_deterministic === "boolean") {
     payload["user_requested_deterministic"] = a.user_requested_deterministic;
@@ -266,6 +284,8 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
         typeof bypassAiSplitCache === "boolean" ? bypassAiSplitCache : undefined,
       require_ai_provider_call:
         typeof requireAiProviderCall === "boolean" ? requireAiProviderCall : undefined,
+      ...(typeof aiProvider === "string" ? { ai_provider: aiProvider.trim().toLowerCase() } : {}),
+      ...(typeof aiModel === "string" ? { ai_model: aiModel.trim() } : {}),
       file_count: files.length,
       file_ref_count: fileRefs.length,
       source_chars: (a.source as string).length,

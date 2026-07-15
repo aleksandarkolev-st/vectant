@@ -133,13 +133,32 @@ describe("synthi_compile", () => {
       source: "int main(){return 0;}",
       require_ai_provider_call: true,
       ai_provider_call_nonce: nonce,
+      ai_provider: "generic-provider",
+      ai_model: "generic-model",
       gpu_mode: "rocm",
     });
 
     expect(res.isError).toBeUndefined();
     expect(fake.sent[0]!.parsed["require_ai_provider_call"]).toBe(true);
     expect(fake.sent[0]!.parsed["ai_provider_call_nonce"]).toBe(nonce);
+    expect(fake.sent[0]!.parsed["ai_provider"]).toBe("generic-provider");
+    expect(fake.sent[0]!.parsed["ai_model"]).toBe("generic-model");
     expect(fake.sent[0]!.parsed["gpu_mode"]).toBe("rocm");
+  });
+
+  it("normalizes provider and model aliases onto canonical worker keys", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      provider_name: "  Generic-Provider  ",
+      model_name: "  generic-model  ",
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent[0]!.parsed["ai_provider"]).toBe("generic-provider");
+    expect(fake.sent[0]!.parsed["ai_model"]).toBe("generic-model");
   });
 
   it("forwards provider proof field aliases using canonical worker keys", async () => {
