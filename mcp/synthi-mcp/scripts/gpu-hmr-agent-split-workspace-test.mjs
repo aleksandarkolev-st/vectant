@@ -193,7 +193,11 @@ const VISUAL_SEMANTIC_PROBE_AUTHORITY =
 let ACTIVE_AGENT_PROFILE = null;
 
 const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
-const RESULTS_BASENAME = CFG.mode === 'seed-only' ? 'agent-split-seed-results' : 'agent-split-results';
+const RESULTS_BASENAME = CFG.mode === 'seed-only'
+  ? 'agent-split-seed-results'
+  : CFG.mode === 'cold-ai-split'
+    ? 'agent-split-cold-ai-results'
+    : 'agent-split-results';
 const RESULTS_JSON = path.join(LOG_DIR, `${RESULTS_BASENAME}.json`);
 const RESULTS_TXT = path.join(LOG_DIR, `${RESULTS_BASENAME}.txt`);
 const ARTIFACT_DIR = path.join(
@@ -8908,6 +8912,51 @@ async function writeRunModeProofArtifact(name, proof) {
   return writeJsonArtifact(name, withProofId);
 }
 
+function coldAiSplitProofFromSeed(coldSplitProofSeed) {
+  if (!coldSplitProofSeed) {
+    throw new Error('cold AI split proof requires captured visual output artifacts');
+  }
+  return {
+    ...coldSplitProofSeed,
+    proofAuthority: 'cold_ai_split_visual_output_only_not_gpu_hmr_acceptance',
+    proof_authority: 'cold_ai_split_visual_output_only_not_gpu_hmr_acceptance',
+    acceptedAsColdAiSplitEvidence: true,
+    accepted_as_cold_ai_split_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+  };
+}
+
+function selfCheckColdAiSplitProof() {
+  const proof = coldAiSplitProofFromSeed({
+    coldSplitProven: true,
+    visualArtifacts: { beforeImage: 'cas:sha256:self-check' },
+  });
+  let missingVisualRejected = false;
+  try {
+    coldAiSplitProofFromSeed(null);
+  } catch (error) {
+    missingVisualRejected = String(error?.message ?? '').includes('captured visual output');
+  }
+  if (
+    proof.acceptedAsColdAiSplitEvidence !== true
+    || proof.acceptedForGpuHmr !== false
+    || proof.gpuHmrSuccess !== false
+    || proof.canSatisfyRuntimeProof !== false
+    || proof.canSatisfyDispatchProof !== false
+    || !missingVisualRejected
+  ) {
+    throw new Error('cold AI split proof authority self-check failed');
+  }
+  console.log('cold AI split proof authority self-check passed');
+}
+
 async function writeNegativeEditRefusalArtifact(name, proof) {
   const seed = {
     schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
@@ -9697,6 +9746,17 @@ async function run() {
     };
   }
 
+  if (CFG.mode === 'cold-ai-split') {
+    const coldPath = await writeRunModeProofArtifact(
+      'run-mode-cold-ai-split',
+      coldAiSplitProofFromSeed(coldSplitProofSeed),
+    );
+    record('cold AI split visual proof artifact', 'pass', coldPath);
+    await writeResults();
+    console.log(`url: ${CFG.frontendUrl}/workspace/${CFG.slug}`);
+    return;
+  }
+
   const hotDelta1Edit = deviceEditForRun(split.files[split.roles.device], {
     attempt: 0,
     runMode: 'hot_delta_1',
@@ -10070,6 +10130,7 @@ if (process.argv.includes('--self-check')) {
     selfCheckRunModeVisualLedgerClockDomain();
     await selfCheckProofFinalizationRetry();
     selfCheckRequestedProofStateGate();
+    selfCheckColdAiSplitProof();
     selfCheckMcpStartupCleanup();
     await selfCheckHttpWorkspaceTimeoutDiagnostics();
   } catch (err) {

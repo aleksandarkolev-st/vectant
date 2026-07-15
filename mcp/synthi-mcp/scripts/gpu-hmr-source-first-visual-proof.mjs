@@ -649,6 +649,10 @@ function selfCheckProfileDirectSourceOverlayPolicy() {
 const args = process.argv.slice(2);
 const selfCheck = hasFlag(args, '--self-check');
 const prepareSourceManifestOnly = hasFlag(args, '--prepare-source-manifest-only');
+const coldAiSplitOnly = hasFlag(args, '--cold-ai-split-only');
+if (coldAiSplitOnly) {
+  process.env.SYNTHI_GPU_AGENT_MODE = 'cold-ai-split';
+}
 const launcherInputs = resolveLauncherInputs(args);
 const {
   fixture,
