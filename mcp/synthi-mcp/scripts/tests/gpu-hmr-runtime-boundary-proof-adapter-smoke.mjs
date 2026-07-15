@@ -296,7 +296,15 @@ function installCaptureEvidenceBinding(captureManifest, binding) {
   captureManifest.frame_gate.evidence_binding_hash = bindingHash;
 }
 
-function targetCaptureBoundaryManifest(input, fixture) {
+const CALLER_RUNTIME_PROOF_CLAIMS = Object.freeze({
+  runtime_proof_id: `gpu-runtime-proof:${HASH_C}`,
+  runtime_proof_state: 'gpu-hmr-full-runtime-proven',
+  runtime_proof_accepted: true,
+  runtime_proof_observed_at_ms: 1_100,
+  hmr_observed_at_ms: 1_000,
+});
+
+function callerSuppliedCaptureBoundaryManifest(input, fixture) {
   const unbound = buildRuntimeBoundaryProofAdapter(input);
   const sourceRecord = unbound.runtimeProofArtifact?.derivedProofLedgerRecord;
   if (!sourceRecord) throw new Error('visual_capture_smoke_derived_record_missing');
@@ -323,11 +331,7 @@ function targetCaptureBoundaryManifest(input, fixture) {
     ...record.device_identity,
     device_uuid: stages.host_identity.deviceUuid,
   };
-  record.runtime_proof_id = `gpu-runtime-proof:${HASH_C}`;
-  record.runtime_proof_state = 'gpu-hmr-full-runtime-proven';
-  record.runtime_proof_accepted = true;
-  record.runtime_proof_observed_at_ms = 1_100;
-  record.hmr_observed_at_ms = 1_000;
+  Object.assign(record, CALLER_RUNTIME_PROOF_CLAIMS);
   record.runtime_session_id = stages.dispatch_trace.runtimeSessionId;
 
   const evidenceBinding = buildGpuHmrFrameGateRuntimeBinding(record);
@@ -496,7 +500,7 @@ assertVisualCaptureRefused(
   'runtime_boundary_visual_capture_manifest_missing',
 );
 
-const captureManifest = targetCaptureBoundaryManifest(
+const captureManifest = callerSuppliedCaptureBoundaryManifest(
   visualInputWithoutCaptureManifest,
   visualFixture,
 );
@@ -510,35 +514,44 @@ const visualInput = {
 const visualStageEvidence = buildRuntimeBoundaryStageEvidence(visualInput.runtimeBoundaryEvents);
 assert.equal(visualStageEvidence.accepted, true, visualStageEvidence.failedGates.join(','));
 assert.equal(buildRuntimeBoundaryInputEvidence(visualInput).accepted, true);
-const visualAccepted = buildRuntimeBoundaryProofAdapter(visualInput);
-assert.equal(visualAccepted.accepted, true, visualAccepted.failedGates.join(','));
-assert.equal(visualAccepted.gpuHmrSuccess, false, 'adapter facet must stay evidence-only for visual proof');
-assert.equal(visualAccepted.runtimeProofArtifact.gpuHmrSuccess, true);
-assert.equal(visualAccepted.runtimeProofArtifact.proofLedgerQuery.gpuHmrSuccess, true);
-const visualLedgerRecord = visualAccepted.runtimeProofArtifact.proofLedger.records[0];
-const visualLedgerOracleArtifacts = visualLedgerRecord.oracle_artifacts
-  ?? visualLedgerRecord.oracleArtifacts
-  ?? {};
-const visualLedgerArtifacts = visualLedgerOracleArtifacts.visual_oracle_artifacts
-  ?? visualLedgerOracleArtifacts.visualOracleArtifacts;
-assert.ok(visualLedgerArtifacts, Object.keys(visualLedgerRecord).join(','));
-assert.equal(visualLedgerArtifacts.after_image_hash, visualFixture.afterImageHash);
-assert.equal(
-  visualLedgerArtifacts.visual_capture_runtime_binding.schema_version,
-  'synthi.gpu_hmr.visual_capture_runtime_binding.v1',
-);
-assert.match(
-  visualLedgerArtifacts.visual_capture_runtime_binding.binding_hash,
-  /^sha256:[0-9a-f]{64}$/,
-);
-assert.equal(
-  Object.isFrozen(
-    visualAccepted.components.visualOracleArtifacts.visual_capture_runtime_binding,
-  ),
-  true,
-);
+const preliminaryRuntimeBindingGate =
+  'runtime_boundary_visual_capture_preliminary_runtime_binding_material_incomplete';
+const visualRefused = buildRuntimeBoundaryProofAdapter(visualInput);
+assertVisualCaptureRefused(visualRefused, preliminaryRuntimeBindingGate);
+assert.equal(visualRefused.gpuHmrSuccess, false, 'adapter facet must stay evidence-only for visual proof');
 assert.equal(visualInput.visualOracleArtifacts.visual_capture_runtime_binding, undefined);
-assert.equal(visualAccepted.strictGate.status, 'pass', visualAccepted.strictGate.detail);
+for (const field of Object.keys(CALLER_RUNTIME_PROOF_CLAIMS)) {
+  assert.ok(
+    visualRefused.failedGates.includes(
+      `runtime_boundary_visual_capture_preliminary_${field}_missing`,
+    ),
+    visualRefused.failedGates.join(','),
+  );
+}
+
+for (const [field, value] of Object.entries({
+  runtime_proof_id: `gpu-runtime-proof:${HASH_D}`,
+  runtime_proof_state: 'caller-asserted-runtime-proof',
+  runtime_proof_accepted: false,
+  runtime_proof_observed_at_ms: 1_150,
+  hmr_observed_at_ms: 1_050,
+})) {
+  const result = buildRuntimeBoundaryProofAdapter(mutateCaptureManifest(
+    visualInput,
+    (manifest) => {
+      const binding = structuredClone(manifest.frame_gate.evidence_binding);
+      binding[field] = value;
+      installCaptureEvidenceBinding(manifest, binding);
+    },
+  ));
+  assertVisualCaptureRefused(result, preliminaryRuntimeBindingGate);
+  const preliminaryRecord = result.runtimeProofArtifact?.derivedProofLedgerRecord ?? {};
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(preliminaryRecord, field),
+    false,
+    `${field} must not be promoted from caller capture evidence`,
+  );
+}
 
 const visualWrongImageHash = buildRuntimeBoundaryProofAdapter(mutateCaptureManifest(
   visualInput,
@@ -561,7 +574,7 @@ const visualWrongRuntimeSession = buildRuntimeBoundaryProofAdapter(mutateCapture
 ));
 assertVisualCaptureRefused(
   visualWrongRuntimeSession,
-  'visual_capture_manifest_runtime_binding_mismatch',
+  preliminaryRuntimeBindingGate,
 );
 
 const visualWrongProcess = buildRuntimeBoundaryProofAdapter(mutateCaptureManifest(
@@ -574,7 +587,7 @@ const visualWrongProcess = buildRuntimeBoundaryProofAdapter(mutateCaptureManifes
 ));
 assertVisualCaptureRefused(
   visualWrongProcess,
-  'visual_capture_manifest_runtime_binding_mismatch',
+  preliminaryRuntimeBindingGate,
 );
 
 const visualPreDispatchFrame = buildRuntimeBoundaryProofAdapter(mutateCaptureManifest(
@@ -586,7 +599,7 @@ const visualPreDispatchFrame = buildRuntimeBoundaryProofAdapter(mutateCaptureMan
 ));
 assertVisualCaptureRefused(
   visualPreDispatchFrame,
-  'visual_capture_manifest_timestamp_order_invalid',
+  preliminaryRuntimeBindingGate,
 );
 
 const visualPreGateCapture = buildRuntimeBoundaryProofAdapter(mutateCaptureManifest(
@@ -597,7 +610,7 @@ const visualPreGateCapture = buildRuntimeBoundaryProofAdapter(mutateCaptureManif
 ));
 assertVisualCaptureRefused(
   visualPreGateCapture,
-  'visual_capture_manifest_timestamp_order_invalid',
+  preliminaryRuntimeBindingGate,
 );
 
 const visualDeclaredOnlyOracle = buildRuntimeBoundaryProofAdapter({

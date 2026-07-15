@@ -65,6 +65,14 @@ const FISSION_VERIFICATION_CATEGORIES = Object.freeze([
   'output_oracle',
 ]);
 
+const REQUIRED_PRELIMINARY_VISUAL_RUNTIME_PROOF_FIELDS = Object.freeze([
+  'runtime_proof_id',
+  'runtime_proof_state',
+  'runtime_proof_accepted',
+  'runtime_proof_observed_at_ms',
+  'hmr_observed_at_ms',
+]);
+
 const STAGE_ALIASES = Object.freeze({
   artifact_transport: new Set([
     'artifact_transport',
@@ -770,11 +778,21 @@ function proofBindingErrorCodes(error, fallback) {
   return compactStringList([fallback, ...details]);
 }
 
+function missingPreliminaryVisualRuntimeProofFields(error) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (!message.startsWith('visual_frame_gate_runtime_binding_material_incomplete:')) {
+    return [];
+  }
+  const missingFields = new Set(
+    message.slice(message.indexOf(':') + 1).split(',').map((value) => value.trim()),
+  );
+  return REQUIRED_PRELIMINARY_VISUAL_RUNTIME_PROOF_FIELDS
+    .filter((field) => missingFields.has(field));
+}
+
 function buildVisualCaptureProofLedgerRecord(
   preliminaryArtifact,
   stageEvidence,
-  evidenceBinding,
-  visualOracleArtifacts,
 ) {
   const sourceRecord = objectOrNull(preliminaryArtifact?.derivedProofLedgerRecord)
     ?? objectOrNull(preliminaryArtifact?.derived_proof_ledger_record);
@@ -803,16 +821,7 @@ function buildVisualCaptureProofLedgerRecord(
     ...objectOrNull(record.device_identity),
     device_uuid: stages.host_identity?.deviceUuid ?? null,
   };
-  record.runtime_proof_id = evidenceBinding.runtime_proof_id;
-  record.runtime_proof_state = evidenceBinding.runtime_proof_state;
-  record.runtime_proof_accepted = evidenceBinding.runtime_proof_accepted;
-  record.runtime_proof_observed_at_ms = evidenceBinding.runtime_proof_observed_at_ms;
-  record.hmr_observed_at_ms = evidenceBinding.hmr_observed_at_ms;
   record.runtime_session_id = stages.dispatch_trace?.runtimeSessionId ?? null;
-  record.oracle_artifacts = {
-    ...objectOrNull(record.oracle_artifacts),
-    visual_oracle_artifacts: visualOracleArtifacts,
-  };
   return record;
 }
 
@@ -838,8 +847,6 @@ function prepareVisualCaptureRuntimeBinding({
   const record = buildVisualCaptureProofLedgerRecord(
     preliminaryArtifact,
     stageEvidence,
-    capture.evidenceBinding,
-    components.visualOracleArtifacts,
   );
   if (!record) {
     return {
@@ -852,6 +859,18 @@ function prepareVisualCaptureRuntimeBinding({
   try {
     frameGateRuntimeBinding = buildGpuHmrFrameGateRuntimeBinding(record);
   } catch (error) {
+    const missingPreliminaryFields = missingPreliminaryVisualRuntimeProofFields(error);
+    if (missingPreliminaryFields.length > 0) {
+      return {
+        accepted: false,
+        failedGates: [
+          'runtime_boundary_visual_capture_preliminary_runtime_binding_material_incomplete',
+          ...missingPreliminaryFields.map((field) =>
+            `runtime_boundary_visual_capture_preliminary_${field}_missing`
+          ),
+        ],
+      };
+    }
     return {
       accepted: false,
       failedGates: proofBindingErrorCodes(
@@ -873,6 +892,16 @@ function prepareVisualCaptureRuntimeBinding({
       ],
     };
   }
+  if (stableJson(capture.evidenceBinding) !== stableJson(frameGateRuntimeBinding)) {
+    return {
+      accepted: false,
+      failedGates: ['visual_capture_manifest_runtime_binding_mismatch'],
+    };
+  }
+  record.oracle_artifacts = {
+    ...objectOrNull(record.oracle_artifacts),
+    visual_oracle_artifacts: components.visualOracleArtifacts,
+  };
 
   let visualCaptureRuntimeBinding;
   try {
