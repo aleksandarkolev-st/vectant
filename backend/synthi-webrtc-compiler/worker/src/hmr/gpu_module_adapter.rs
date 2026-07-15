@@ -63,9 +63,9 @@ use serde_json::{json, Value};
 
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::adapter_trait::{
-    normalized_reload_source_edit_id, Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest,
-    AdapterReloadResult, ReloadCapsuleMetadata,
-    RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
+    configured_gpu_hmr_runtime_output_oracle_profile_path, normalized_reload_source_edit_id,
+    Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest, AdapterReloadResult,
+    ReloadCapsuleMetadata, RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
 };
 use crate::hmr::build_manifest::{
     BuildSlot, GPU_SIDECAR_MODULE_CAPABILITY, GPU_SIDECAR_PARTIAL_MODULE_CAPABILITY,
@@ -457,8 +457,6 @@ fn log_optional_token(value: Option<&str>) -> String {
         .to_string()
 }
 
-const RUNTIME_OUTPUT_ORACLE_DEFAULT_PATH: &str = "/tmp/synthi-gpu-hmr-runtime-output-oracle.json";
-
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeOutputOracleProfile {
@@ -480,6 +478,16 @@ struct RuntimeOutputOracleProfile {
     probe_mode: String,
     probe_config_hash: String,
     probe_evidence_ref: String,
+}
+
+#[derive(Debug, Clone)]
+struct PinnedRuntimeOutputOracleProfile {
+    profile: RuntimeOutputOracleProfile,
+    candidate_artifact_sha256: String,
+    fission_output_oracle_contract_sha256: String,
+    profile_bytes_sha256: String,
+    source_edit_id: String,
+    evidence_line: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -553,26 +561,10 @@ fn default_true() -> bool {
     true
 }
 
-fn runtime_output_oracle_profile_path() -> String {
-    env::var("SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| RUNTIME_OUTPUT_ORACLE_DEFAULT_PATH.to_string())
-}
-
-fn read_runtime_output_oracle_profile() -> Result<Option<RuntimeOutputOracleProfile>, String> {
-    let path = runtime_output_oracle_profile_path();
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(format!(
-                "runtime output oracle profile read failed: {error}"
-            ))
-        }
-    };
-    let profile: RuntimeOutputOracleProfile = serde_json::from_str(&text)
+fn parse_runtime_output_oracle_profile(
+    bytes: &[u8],
+) -> Result<Option<RuntimeOutputOracleProfile>, String> {
+    let profile: RuntimeOutputOracleProfile = serde_json::from_slice(bytes)
         .map_err(|error| format!("runtime output oracle profile JSON invalid: {error}"))?;
     if !profile.enabled {
         return Ok(None);
@@ -590,6 +582,177 @@ fn read_runtime_output_oracle_profile() -> Result<Option<RuntimeOutputOracleProf
         return Err("runtime output oracle profile is missing required fields".to_string());
     }
     Ok(Some(profile))
+}
+
+fn read_runtime_output_oracle_profile_bytes() -> Result<Option<Vec<u8>>, String> {
+    let path = configured_gpu_hmr_runtime_output_oracle_profile_path();
+    let file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "runtime output oracle profile read failed before module mutation: {error}"
+            ))
+        }
+    };
+    let reported_bytes = file
+        .metadata()
+        .map_err(|error| {
+            format!("runtime output oracle profile metadata failed before module mutation: {error}")
+        })?
+        .len();
+    if reported_bytes > MAX_RUNTIME_PROOF_ORACLE_PROFILE_BYTES {
+        return Err(format!(
+            "runtime output oracle profile exceeds {MAX_RUNTIME_PROOF_ORACLE_PROFILE_BYTES} bytes before module mutation"
+        ));
+    }
+    let mut bytes = Vec::with_capacity(reported_bytes as usize);
+    file.take(MAX_RUNTIME_PROOF_ORACLE_PROFILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            format!("runtime output oracle profile read failed before module mutation: {error}")
+        })?;
+    if bytes.len() as u64 > MAX_RUNTIME_PROOF_ORACLE_PROFILE_BYTES {
+        return Err(format!(
+            "runtime output oracle profile exceeds {MAX_RUNTIME_PROOF_ORACLE_PROFILE_BYTES} bytes before module mutation"
+        ));
+    }
+    Ok(Some(bytes))
+}
+
+fn runtime_output_oracle_log_token(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_whitespace() { '_' } else { ch })
+        .collect()
+}
+
+fn pin_runtime_output_oracle_profile(
+    req: &AdapterReloadRequest,
+    candidate_artifact_sha256: &str,
+    hot_reload: bool,
+) -> Result<Option<PinnedRuntimeOutputOracleProfile>, String> {
+    if !hot_reload {
+        return Ok(None);
+    }
+
+    let commitment = req
+        .capsule_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.output_oracle_profile_commitment.as_ref());
+    let profile_bytes = read_runtime_output_oracle_profile_bytes()?;
+    let (commitment, profile_bytes) = match (commitment, profile_bytes) {
+        (None, None) => return Ok(None),
+        (None, Some(profile_bytes)) => {
+            if parse_runtime_output_oracle_profile(&profile_bytes)?.is_some() {
+                return Err(
+                    "enabled runtime output oracle profile is missing a prepublication commitment before module mutation"
+                        .to_string(),
+                );
+            }
+            return Ok(None);
+        }
+        (Some(_), None) => return Err(
+            "runtime output oracle profile commitment has no profile bytes before module mutation"
+                .to_string(),
+        ),
+        (Some(commitment), Some(profile_bytes)) => (commitment, profile_bytes),
+    };
+    let profile = parse_runtime_output_oracle_profile(&profile_bytes)?.ok_or_else(|| {
+        "committed runtime output oracle profile is disabled before module mutation".to_string()
+    })?;
+
+    if commitment.schema_version != RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION {
+        return Err(format!(
+            "runtime output oracle commitment schema mismatch before module mutation: expected {RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION:?} got {:?}",
+            commitment.schema_version
+        ));
+    }
+    if commitment.candidate_artifact_sha256 != candidate_artifact_sha256 {
+        return Err(
+            "runtime output oracle commitment candidate artifact mismatch before module mutation"
+                .to_string(),
+        );
+    }
+    let contract = req
+        .capsule_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.fission_output_oracle_contract.as_ref())
+        .filter(|contract| contract.is_object())
+        .ok_or_else(|| {
+            "runtime output oracle commitment is missing its fission oracle contract before module mutation"
+                .to_string()
+        })?;
+    let contract_sha256 = format!("sha256:{}", stable_json_hash(contract));
+    if commitment.fission_output_oracle_contract_sha256 != contract_sha256 {
+        return Err(
+            "runtime output oracle commitment fission contract mismatch before module mutation"
+                .to_string(),
+        );
+    }
+    let profile_bytes_sha256 = format!("sha256:{}", sha256_hex_bytes(&profile_bytes));
+    if commitment.profile_bytes_sha256 != profile_bytes_sha256 {
+        return Err(
+            "runtime output oracle commitment profile bytes mismatch before module mutation"
+                .to_string(),
+        );
+    }
+    let source_edit_id = normalized_reload_source_edit_id(req.source_edit_id.as_deref())
+        .ok_or_else(|| {
+            "runtime output oracle request source edit identity is missing or invalid before module mutation"
+                .to_string()
+        })?;
+    if commitment.edit_id != source_edit_id {
+        return Err(
+            "runtime output oracle commitment source edit mismatch before module mutation"
+                .to_string(),
+        );
+    }
+
+    let evidence_line = format!(
+        "[gpu-runtime-boundary] runtime_output_oracle_profile_pin schema=synthi.gpu_hmr.runtime_output_oracle_profile_pin.v1 status=verified profile={} candidate_artifact_sha256={} fission_output_oracle_contract_sha256={} profile_bytes_sha256={} source_edit_id={} proof_authority=prepublication_profile_binding_only_not_gpu_hmr_success accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false",
+        runtime_output_oracle_log_token(&profile.profile_id),
+        candidate_artifact_sha256,
+        contract_sha256,
+        profile_bytes_sha256,
+        source_edit_id,
+    );
+    Ok(Some(PinnedRuntimeOutputOracleProfile {
+        profile,
+        candidate_artifact_sha256: candidate_artifact_sha256.to_string(),
+        fission_output_oracle_contract_sha256: contract_sha256,
+        profile_bytes_sha256,
+        source_edit_id,
+        evidence_line,
+    }))
+}
+
+#[cfg(test)]
+type RuntimeOutputOraclePostPinHook = Box<dyn FnOnce() + Send + 'static>;
+
+#[cfg(test)]
+static RUNTIME_OUTPUT_ORACLE_POST_PIN_HOOK: std::sync::OnceLock<
+    std::sync::Mutex<Option<RuntimeOutputOraclePostPinHook>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn install_runtime_output_oracle_post_pin_hook_for_test(hook: impl FnOnce() + Send + 'static) {
+    *RUNTIME_OUTPUT_ORACLE_POST_PIN_HOOK
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("runtime output oracle post-pin hook lock") = Some(Box::new(hook));
+}
+
+#[cfg(test)]
+fn run_runtime_output_oracle_post_pin_hook_for_test() {
+    let hook = RUNTIME_OUTPUT_ORACLE_POST_PIN_HOOK
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("runtime output oracle post-pin hook lock")
+        .take();
+    if let Some(hook) = hook {
+        hook();
+    }
 }
 
 fn runtime_oracle_buffer_bytes(buffer: &RuntimeOutputOracleBuffer) -> Result<Vec<u8>, String> {
@@ -650,8 +813,9 @@ fn run_runtime_output_oracle_profile(
     changed_symbols: &[String],
     active_generation: u64,
     active_artifact_id: &str,
+    pinned_profile: Option<&PinnedRuntimeOutputOracleProfile>,
 ) -> Result<Option<String>, String> {
-    let Some(profile) = read_runtime_output_oracle_profile()? else {
+    let Some(profile) = pinned_profile.map(|pinned| &pinned.profile) else {
         return Ok(None);
     };
     let kernel_name = profile.kernel_name.trim();
@@ -1040,6 +1204,7 @@ fn run_runtime_output_oracle_probe(
     previous_generation: u64,
     active_generation: u64,
     active_artifact_id: &str,
+    pinned_profile: Option<&PinnedRuntimeOutputOracleProfile>,
 ) -> Result<Option<String>, String> {
     match run_runtime_output_oracle_profile(
         symbols,
@@ -1047,6 +1212,7 @@ fn run_runtime_output_oracle_probe(
         changed_symbols,
         active_generation,
         active_artifact_id,
+        pinned_profile,
     )? {
         Some(line) if runtime_boundary_token(&line, "status") != Some("skipped") => Ok(Some(line)),
         _ => run_runtime_output_observation_replay(
@@ -1131,15 +1297,20 @@ fn verified_runtime_source_edit_commitment(
     capsule_metadata: Option<&ReloadCapsuleMetadata>,
     source_edit_id: &str,
     artifact_hash: &str,
+    pinned_profile: Option<&PinnedRuntimeOutputOracleProfile>,
 ) -> Option<()> {
     if normalized_reload_source_edit_id(Some(source_edit_id)).as_deref() != Some(source_edit_id) {
         return None;
     }
     let metadata = capsule_metadata?;
     let commitment = metadata.output_oracle_profile_commitment.as_ref()?;
+    let pinned_profile = pinned_profile?;
     if commitment.schema_version != RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION
         || commitment.edit_id != source_edit_id
         || commitment.candidate_artifact_sha256 != format!("sha256:{artifact_hash}")
+        || pinned_profile.source_edit_id != source_edit_id
+        || pinned_profile.candidate_artifact_sha256 != commitment.candidate_artifact_sha256
+        || pinned_profile.profile_bytes_sha256 != commitment.profile_bytes_sha256
     {
         return None;
     }
@@ -1149,22 +1320,8 @@ fn verified_runtime_source_edit_commitment(
         .filter(|contract| contract.is_object())?;
     if commitment.fission_output_oracle_contract_sha256
         != format!("sha256:{}", stable_json_hash(contract))
-    {
-        return None;
-    }
-
-    let file = fs::File::open(runtime_output_oracle_profile_path()).ok()?;
-    let reported_bytes = file.metadata().ok()?.len();
-    if reported_bytes == 0 || reported_bytes > MAX_RUNTIME_PROOF_ORACLE_PROFILE_BYTES {
-        return None;
-    }
-    let mut profile_bytes = Vec::with_capacity(reported_bytes as usize);
-    file.take(MAX_RUNTIME_PROOF_ORACLE_PROFILE_BYTES + 1)
-        .read_to_end(&mut profile_bytes)
-        .ok()?;
-    if profile_bytes.is_empty()
-        || profile_bytes.len() as u64 > MAX_RUNTIME_PROOF_ORACLE_PROFILE_BYTES
-        || commitment.profile_bytes_sha256 != format!("sha256:{}", sha256_hex_bytes(&profile_bytes))
+        || pinned_profile.fission_output_oracle_contract_sha256
+            != commitment.fission_output_oracle_contract_sha256
     {
         return None;
     }
@@ -1709,11 +1866,17 @@ fn runtime_full_proof_line(
     retirement_strategy: &str,
     retirement_fence_ids: &str,
     capsule_metadata: Option<&ReloadCapsuleMetadata>,
+    pinned_output_oracle_profile: Option<&PinnedRuntimeOutputOracleProfile>,
     after_dispatch_id: &str,
 ) -> Option<String> {
     let source_edit_id = normalized_reload_source_edit_id(req.source_edit_id.as_deref())?;
     let source_edit_id = source_edit_id.as_str();
-    verified_runtime_source_edit_commitment(capsule_metadata, source_edit_id, artifact_hash)?;
+    verified_runtime_source_edit_commitment(
+        capsule_metadata,
+        source_edit_id,
+        artifact_hash,
+        pinned_output_oracle_profile,
+    )?;
     if req.firewall_evidence.cpu_hmr_used != Some(false)
         || req.firewall_evidence.full_rebuild_used != Some(false)
         || req.firewall_evidence.process_restarted != Some(false)
@@ -3267,6 +3430,37 @@ impl Adapter for GpuModuleAdapter {
             };
         }
 
+        let first_device_load =
+            self.active_module_handle.is_none() && self.module_manager.primary().is_none();
+        let candidate_artifact_sha256 = format!("sha256:{artifact_hash}");
+        let pinned_output_oracle_profile = match pin_runtime_output_oracle_profile(
+            req,
+            &candidate_artifact_sha256,
+            !first_device_load,
+        ) {
+            Ok(profile) => profile,
+            Err(error) => {
+                let reason = runtime_output_oracle_log_token(&error);
+                let line = format!(
+                    "[gpu-runtime-boundary] runtime_output_oracle_profile_pin schema=synthi.gpu_hmr.runtime_output_oracle_profile_pin.v1 status=refused candidate_artifact_sha256={} reason={} proof_authority=prepublication_profile_binding_only_not_gpu_hmr_success accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false",
+                    candidate_artifact_sha256, reason
+                );
+                eprintln!("{line}");
+                self.last_reload_log = vec![line];
+                self.health = AdapterHealth::Degraded;
+                self.phase = GpuPhase::Ready;
+                return AdapterReloadResult::Failed {
+                    error,
+                    recoverable: false,
+                };
+            }
+        };
+        if let Some(pinned) = pinned_output_oracle_profile.as_ref() {
+            eprintln!("{}", pinned.evidence_line);
+        }
+        #[cfg(test)]
+        run_runtime_output_oracle_post_pin_hook_for_test();
+
         self.phase = GpuPhase::Swapping;
         let started = Instant::now();
         let symbols = match self.symbols() {
@@ -3301,8 +3495,6 @@ impl Adapter for GpuModuleAdapter {
             .capabilities
             .iter()
             .any(|capability| capability == GPU_SIDECAR_PARTIAL_MODULE_CAPABILITY);
-        let first_device_load =
-            self.active_module_handle.is_none() && self.module_manager.primary().is_none();
         if partial_device_reload && first_device_load {
             self.health = AdapterHealth::Degraded;
             self.phase = GpuPhase::Ready;
@@ -3512,6 +3704,9 @@ impl Adapter for GpuModuleAdapter {
             };
             record_hmr_runtime_identity_snapshot();
             let mut runtime_log_lines = Vec::new();
+            if let Some(pinned) = pinned_output_oracle_profile.as_ref() {
+                runtime_log_lines.push(pinned.evidence_line.clone());
+            }
             let stream_epoch_counters = drain.stream_epoch_counters_for_log(active_generation);
             let ram_transport_proven = ram_artifact_reference_provided
                 && loader_transport == ArtifactLoaderTransport::RamBytes;
@@ -3640,6 +3835,7 @@ impl Adapter for GpuModuleAdapter {
                     previous_generation,
                     active_generation,
                     &new_artifact_id,
+                    pinned_output_oracle_profile.as_ref(),
                 ) {
                     Ok(Some(line)) => {
                         output_oracle_artifact_id =
@@ -3841,6 +4037,7 @@ impl Adapter for GpuModuleAdapter {
                         retirement_strategy,
                         &retirement_fence_ids,
                         capsule_metadata,
+                        pinned_output_oracle_profile.as_ref(),
                         after_dispatch_id,
                     ) {
                         eprintln!("{proof_line}");
@@ -4046,13 +4243,11 @@ mod tests {
     fn runtime_source_edit_requires_exact_prepublication_commitment() {
         let _guard = runtime_boundary_test_guard();
         let previous_profile_path = std::env::var_os("SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH");
-        let mut profile = tempfile::NamedTempFile::new().unwrap();
-        let profile_bytes = br#"{"schemaVersion":"synthi.gpu_hmr.runtime_output_oracle_profile.v1","enabled":true}"#;
-        profile.write_all(profile_bytes).unwrap();
-        std::env::set_var("SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH", profile.path());
+        let profile_bytes = install_runtime_output_oracle_profile_for_tests();
 
         let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
         let artifact_hash = sha256_hex_bytes(b"arbitrary-project-device-artifact");
+        let candidate_artifact_sha256 = format!("sha256:{artifact_hash}");
         let contract = json!({
             "kind": "compute_readback",
             "outputTargetId": "tensor:result",
@@ -4067,22 +4262,34 @@ mod tests {
                     "sha256:{}",
                     stable_json_hash(&contract)
                 ),
-                profile_bytes_sha256: format!("sha256:{}", sha256_hex_bytes(profile_bytes)),
+                profile_bytes_sha256: format!("sha256:{}", sha256_hex_bytes(&profile_bytes)),
                 edit_id: source_edit_id.clone(),
             }),
             ..Default::default()
         };
+        let mut request = dummy_request();
+        request.source_edit_id = Some(source_edit_id.clone());
+        request.capsule_metadata = Some(metadata.clone());
+        let pinned = pin_runtime_output_oracle_profile(&request, &candidate_artifact_sha256, true)
+            .unwrap()
+            .expect("committed output oracle profile pin");
 
         assert_eq!(
             verified_runtime_source_edit_commitment(
                 Some(&metadata),
                 &source_edit_id,
                 &artifact_hash,
+                Some(&pinned),
             ),
             Some(())
         );
         assert_eq!(
-            verified_runtime_source_edit_commitment(None, &source_edit_id, &artifact_hash),
+            verified_runtime_source_edit_commitment(
+                None,
+                &source_edit_id,
+                &artifact_hash,
+                Some(&pinned),
+            ),
             None
         );
 
@@ -4097,6 +4304,7 @@ mod tests {
                 Some(&mismatched),
                 &source_edit_id,
                 &artifact_hash,
+                Some(&pinned),
             ),
             None
         );
@@ -4112,6 +4320,7 @@ mod tests {
                 Some(&mismatched),
                 &source_edit_id,
                 &artifact_hash,
+                Some(&pinned),
             ),
             None
         );
@@ -4127,24 +4336,159 @@ mod tests {
                 Some(&mismatched),
                 &source_edit_id,
                 &artifact_hash,
+                Some(&pinned),
             ),
             None
         );
 
-        fs::write(profile.path(), b"different-profile-bytes").unwrap();
+        fs::write(
+            configured_gpu_hmr_runtime_output_oracle_profile_path(),
+            b"different-profile-bytes",
+        )
+        .unwrap();
         assert_eq!(
             verified_runtime_source_edit_commitment(
                 Some(&metadata),
                 &source_edit_id,
                 &artifact_hash,
+                Some(&pinned),
             ),
-            None
+            Some(())
         );
 
         match previous_profile_path {
             Some(path) => std::env::set_var("SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH", path),
             None => std::env::remove_var("SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH"),
         }
+    }
+
+    #[test]
+    fn output_oracle_profile_refusal_precedes_module_mutation() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        MODULE_LOAD_CALLS.store(0, Ordering::SeqCst);
+        UNLOAD_CALLS.store(0, Ordering::SeqCst);
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"profile-preflight-before").unwrap();
+        second.write_all(b"profile-preflight-after").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let mut adapter = adapter_with_config_and_symbols(
+            GpuModuleAdapterConfig {
+                vendor: GpuVendor::Rocm,
+                ..GpuModuleAdapterConfig::default()
+            },
+            stub_symbols(),
+        );
+        assert!(matches!(
+            adapter.reload(&request_with_artifact(
+                &first_path,
+                vec!["kernels/arbitrary.compute".into()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+
+        adapter.pending_retired_modules.push(ModuleSlot {
+            handle: 0xfeed,
+            blob_bytes: 32,
+        });
+        let module_loads_before = MODULE_LOAD_CALLS.load(Ordering::SeqCst);
+        let unloads_before = UNLOAD_CALLS.load(Ordering::SeqCst);
+        let generation_before = current_launch_generation();
+        let swaps_before = adapter.module_manager.swap_count();
+        let active_artifact_before = adapter.active_generation_artifact_id.clone();
+        let mut second_request =
+            request_with_artifact(&second_path, vec!["generated/device-stage.bin".into()]);
+        second_request.source_edit_id = Some(format!("source-edit:sha256:{}", "f".repeat(64)));
+
+        match adapter.reload(&second_request) {
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(!recoverable);
+                assert!(error.contains("source edit mismatch before module mutation"));
+            }
+            other => panic!("expected prepublication profile refusal, got {other:?}"),
+        }
+        assert_eq!(
+            MODULE_LOAD_CALLS.load(Ordering::SeqCst),
+            module_loads_before
+        );
+        assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), unloads_before);
+        assert_eq!(adapter.pending_retired_modules.len(), 1);
+        assert_eq!(current_launch_generation(), generation_before);
+        assert_eq!(adapter.module_manager.swap_count(), swaps_before);
+        assert_eq!(
+            adapter.active_generation_artifact_id,
+            active_artifact_before
+        );
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("runtime_output_oracle_profile_pin")
+                && line.contains("status=refused")
+                && line.contains("accepted_for_gpu_hmr=false")
+        }));
+        assert!(!adapter
+            .last_reload_log()
+            .iter()
+            .any(|line| line.contains("dispatcher_epoch event=published")));
+        adapter.pending_retired_modules.clear();
+        reset_for_test();
+    }
+
+    #[test]
+    fn output_oracle_execution_uses_pinned_profile_after_disk_swap() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"profile-pin-before").unwrap();
+        second.write_all(b"profile-pin-after").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let mut adapter = adapter_with_config_and_symbols(
+            GpuModuleAdapterConfig {
+                vendor: GpuVendor::Rocm,
+                ..GpuModuleAdapterConfig::default()
+            },
+            stub_symbols(),
+        );
+        assert!(matches!(
+            adapter.reload(&request_with_artifact(
+                &first_path,
+                vec!["source/arbitrary.device".into()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        let second_request =
+            request_with_artifact(&second_path, vec!["build/generated/device-stage".into()]);
+        let profile_path = configured_gpu_hmr_runtime_output_oracle_profile_path();
+        install_runtime_output_oracle_post_pin_hook_for_test(move || {
+            fs::write(&profile_path, b"{malformed-after-pin").unwrap();
+        });
+
+        match adapter.reload(&second_request) {
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(!recoverable);
+                assert!(error.contains("device_identity_missing"));
+                assert!(!error.contains("output_oracle_not_passed"));
+            }
+            other => panic!("expected independent device identity refusal, got {other:?}"),
+        }
+        assert_eq!(
+            fs::read(configured_gpu_hmr_runtime_output_oracle_profile_path()).unwrap(),
+            b"{malformed-after-pin"
+        );
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("runtime_output_oracle_profile_pin")
+                && line.contains("status=verified")
+                && line.contains("profile=test-vec-add-readback")
+                && line.contains("accepted_for_gpu_hmr=false")
+        }));
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("runtime_output_oracle_probe status=pass")
+                && line.contains("profile=test-vec-add-readback")
+        }));
+        let _ = install_runtime_output_oracle_profile_for_tests();
+        reset_for_test();
     }
 
     fn epoch_graph_json_from_line(line: &str) -> serde_json::Value {
@@ -4356,6 +4700,7 @@ mod tests {
     static LAST_LAUNCH_GRID_X: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_BLOCK_X: AtomicUsize = AtomicUsize::new(0);
     static UNLOAD_GENERATION_AT_CALL: AtomicU64 = AtomicU64::new(0);
+    static MODULE_LOAD_CALLS: AtomicUsize = AtomicUsize::new(0);
     static UNLOAD_CALLS: AtomicUsize = AtomicUsize::new(0);
     static MODULE_RESOLVE_OBSERVED: AtomicBool = AtomicBool::new(false);
 
@@ -4435,6 +4780,7 @@ mod tests {
         module: *mut CuModule,
         _image: *const c_void,
     ) -> CuResult {
+        MODULE_LOAD_CALLS.fetch_add(1, Ordering::SeqCst);
         if !module.is_null() {
             let handle = NEXT_HANDLE.fetch_add(0x100, Ordering::SeqCst);
             *module = handle as CuModule;
@@ -4617,7 +4963,7 @@ mod tests {
         }
     }
 
-    fn install_runtime_output_oracle_profile_for_tests() {
+    fn install_runtime_output_oracle_profile_for_tests() -> Vec<u8> {
         let output_bytes = vec![0_u8; 4 * std::mem::size_of::<f32>()];
         let expected_sha256 = format!("sha256:{}", sha256_hex_bytes(&output_bytes));
         let profile_path = std::env::temp_dir().join("synthi-gpu-hmr-test-output-oracle.json");
@@ -4663,12 +5009,11 @@ mod tests {
             "probeConfigHash": "sha256:test-stub-output-oracle",
             "probeEvidenceRef": "gpu_module_adapter.rs:test_runtime_output_oracle_profile"
         });
-        fs::write(
-            &profile_path,
-            serde_json::to_string_pretty(&profile).expect("serialize test oracle profile"),
-        )
-        .expect("write test oracle profile");
+        let profile_bytes =
+            serde_json::to_vec_pretty(&profile).expect("serialize test oracle profile");
+        fs::write(&profile_path, &profile_bytes).expect("write test oracle profile");
         std::env::set_var("SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH", profile_path);
+        profile_bytes
     }
 
     fn adapter_with_symbols(symbols: GpuDriverSymbolTable) -> GpuModuleAdapter {
@@ -4679,7 +5024,7 @@ mod tests {
         config: GpuModuleAdapterConfig,
         symbols: GpuDriverSymbolTable,
     ) -> GpuModuleAdapter {
-        install_runtime_output_oracle_profile_for_tests();
+        let _ = install_runtime_output_oracle_profile_for_tests();
         let mut a = GpuModuleAdapter::new(config);
         a.phase = GpuPhase::Ready;
         a.health = AdapterHealth::Healthy;
@@ -4696,22 +5041,58 @@ mod tests {
         changed_files: Vec<String>,
         abi_version: &str,
     ) -> AdapterReloadRequest {
+        let commitment_inputs = fs::read(path).ok().zip(
+            fs::read(configured_gpu_hmr_runtime_output_oracle_profile_path()).ok(),
+        );
+        let (source_edit_id, capsule_metadata) = commitment_inputs
+            .map(|(artifact_bytes, profile_bytes)| {
+                let artifact_hash = sha256_hex_bytes(&artifact_bytes);
+                let source_edit_id = format!("source-edit:sha256:{artifact_hash}");
+                let fission_output_oracle_contract = json!({
+                    "kind": "compute_readback",
+                    "outputTargetId": "buffer:out",
+                    "causalOutputChangeRequired": true,
+                });
+                let metadata = ReloadCapsuleMetadata {
+                    fission_output_oracle_contract: Some(
+                        fission_output_oracle_contract.clone(),
+                    ),
+                    output_oracle_profile_commitment: Some(
+                        ReloadOutputOracleProfileCommitment {
+                            schema_version:
+                                RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.to_string(),
+                            candidate_artifact_sha256: format!("sha256:{artifact_hash}"),
+                            fission_output_oracle_contract_sha256: format!(
+                                "sha256:{}",
+                                stable_json_hash(&fission_output_oracle_contract)
+                            ),
+                            profile_bytes_sha256: format!(
+                                "sha256:{}",
+                                sha256_hex_bytes(&profile_bytes)
+                            ),
+                            edit_id: source_edit_id.clone(),
+                        },
+                    ),
+                    ..ReloadCapsuleMetadata::default()
+                };
+                (Some(source_edit_id), Some(metadata))
+            })
+            .unwrap_or((None, None));
         let pid = std::process::id();
-        let mut manifest =
-            BuildManifest::for_language("test-preview", "cuda")
-                .with_slot(BuildSlot::Custom("test-gpu-sidecar".to_string()))
-                .with_artifact(path, "test-hash")
-                .with_capabilities(vec![GPU_SIDECAR_MODULE_CAPABILITY.to_string()]);
+        let mut manifest = BuildManifest::for_language("test-preview", "cuda")
+            .with_slot(BuildSlot::Custom("test-gpu-sidecar".to_string()))
+            .with_artifact(path, "test-hash")
+            .with_capabilities(vec![GPU_SIDECAR_MODULE_CAPABILITY.to_string()]);
         manifest.abi_version = abi_version.to_string();
         manifest.exported_symbols = vec!["vec_add".into()];
         AdapterReloadRequest {
             reload_id: "test".into(),
-            source_edit_id: None,
+            source_edit_id,
             module_id: "device".into(),
             changed_files,
             build_manifest: manifest,
             artifact_blob: None,
-            capsule_metadata: None,
+            capsule_metadata,
             firewall_evidence: ReloadFirewallEvidence::from_gpu_device_sidecar_boundary(
                 "gpu_module_adapter_test:request_with_artifact",
                 pid,
@@ -5456,14 +5837,14 @@ mod tests {
             AdapterReloadResult::Success { .. }
         ));
         let _device_bytes = launch_replayable_vec_add_on_stream(0x77);
-        fs::remove_file(runtime_output_oracle_profile_path())
+        let mut second_request =
+            request_with_artifact_and_abi(&second_path, vec!["device.hip".into()], "sig-v1");
+        second_request.source_edit_id = None;
+        second_request.capsule_metadata = None;
+        fs::remove_file(configured_gpu_hmr_runtime_output_oracle_profile_path())
             .expect("remove precommitted output profile for fallback test");
 
-        match adapter.reload(&request_with_artifact_and_abi(
-            &second_path,
-            vec!["device.hip".into()],
-            "sig-v1",
-        )) {
+        match adapter.reload(&second_request) {
             AdapterReloadResult::Failed { error, recoverable } => {
                 assert!(!recoverable);
                 assert!(error.contains("output_oracle_not_passed"));
