@@ -124,6 +124,54 @@ describe("synthi_compile", () => {
     }
   });
 
+  it("forwards request-bound provider proof fields and a backend routing hint", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const nonce = "provider-call:0123456789abcdef0123456789abcdef";
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      require_ai_provider_call: true,
+      ai_provider_call_nonce: nonce,
+      gpu_mode: "rocm",
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent[0]!.parsed["require_ai_provider_call"]).toBe(true);
+    expect(fake.sent[0]!.parsed["ai_provider_call_nonce"]).toBe(nonce);
+    expect(fake.sent[0]!.parsed["gpu_mode"]).toBe("rocm");
+  });
+
+  it("forwards provider proof field aliases using canonical worker keys", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const nonce = "provider-call:fedcba9876543210fedcba9876543210";
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      force_ai_provider_call: true,
+      provider_call_nonce: nonce,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent[0]!.parsed["require_ai_provider_call"]).toBe(true);
+    expect(fake.sent[0]!.parsed["ai_provider_call_nonce"]).toBe(nonce);
+  });
+
+  it("rejects a required provider call without a valid caller nonce", async () => {
+    installFakeAttached();
+    session.setWireState("running");
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      require_ai_provider_call: true,
+      ai_provider_call_nonce: "provider-call:not-hex",
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { field?: string }).field).toBe("ai_provider_call_nonce");
+  });
+
   it("forwards workspace file refs without requiring inline contents", async () => {
     const fake = installFakeAttached();
     session.setWireState("running");

@@ -277,6 +277,30 @@ const TOOLS = [
           type: "boolean",
           description: "Alias for bypass_ai_split_cache.",
         },
+        require_ai_provider_call: {
+          type: "boolean",
+          description:
+            "Require a fresh, request-bound AI provider receipt. This is provenance evidence only and cannot authorize GPU HMR success.",
+        },
+        require_provider_call: {
+          type: "boolean",
+          description: "Alias for require_ai_provider_call.",
+        },
+        force_ai_provider_call: {
+          type: "boolean",
+          description: "Alias for require_ai_provider_call.",
+        },
+        ai_provider_call_nonce: {
+          type: "string",
+          pattern: "^provider-call:[a-f0-9]{32}$",
+          description:
+            "Caller-generated nonce binding a required provider call to this compile request.",
+        },
+        provider_call_nonce: {
+          type: "string",
+          pattern: "^provider-call:[a-f0-9]{32}$",
+          description: "Alias for ai_provider_call_nonce.",
+        },
         user_requested_ai: {
           type: "boolean",
           description: "Explicit opt-in to the AI-split (Loop B). Default false.",
@@ -304,8 +328,8 @@ const TOOLS = [
         },
         gpu_mode: {
           type: "string",
-          enum: ["auto", "disabled"],
-          description: "GPU mode from the IDE toggle. 'auto' lets the worker detect/use GPU HMR; 'disabled' routes through the host-only path.",
+          minLength: 1,
+          description: "GPU routing hint. 'auto' detects a backend, 'disabled' selects the host-only path, and backend identifiers such as rocm, hip, cuda, opencl, vulkan, or webgpu select a compatible GPU path when available.",
         },
         gpu_arch: {
           type: "string",

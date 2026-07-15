@@ -65,6 +65,12 @@ interface RawArgs {
   force_ai_split?: unknown;
   force_fresh_ai_split?: unknown;
   require_fresh_ai_split?: unknown;
+  require_ai_provider_call?: unknown;
+  require_provider_call?: unknown;
+  force_ai_provider_call?: unknown;
+  ai_provider_call_nonce?: unknown;
+  provider_call_nonce?: unknown;
+  aiProviderCallNonce?: unknown;
   user_requested_ai?: unknown;
   user_requested_deterministic?: unknown;
   force_gpu_ai_delta?: unknown;
@@ -174,6 +180,40 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
   if (typeof bypassAiSplitCache === "boolean") {
     payload["bypass_ai_split_cache"] = bypassAiSplitCache;
   }
+  const requireAiProviderCall =
+    a.require_ai_provider_call ?? a.require_provider_call ?? a.force_ai_provider_call;
+  if (requireAiProviderCall !== undefined && typeof requireAiProviderCall !== "boolean") {
+    return errorResponse("invalid_args", {
+      field: "require_ai_provider_call",
+      expected: "boolean",
+    });
+  }
+  const aiProviderCallNonce =
+    a.ai_provider_call_nonce ?? a.provider_call_nonce ?? a.aiProviderCallNonce;
+  if (aiProviderCallNonce !== undefined && typeof aiProviderCallNonce !== "string") {
+    return errorResponse("invalid_args", {
+      field: "ai_provider_call_nonce",
+      expected: "string",
+    });
+  }
+  if (
+    requireAiProviderCall === true
+    && (
+      typeof aiProviderCallNonce !== "string"
+      || !/^provider-call:[a-f0-9]{32}$/.test(aiProviderCallNonce)
+    )
+  ) {
+    return errorResponse("invalid_args", {
+      field: "ai_provider_call_nonce",
+      expected: "provider-call followed by 32 lowercase hexadecimal characters",
+    });
+  }
+  if (typeof requireAiProviderCall === "boolean") {
+    payload["require_ai_provider_call"] = requireAiProviderCall;
+  }
+  if (typeof aiProviderCallNonce === "string") {
+    payload["ai_provider_call_nonce"] = aiProviderCallNonce;
+  }
   if (typeof a.user_requested_ai === "boolean") payload["user_requested_ai"] = a.user_requested_ai;
   if (typeof a.user_requested_deterministic === "boolean") {
     payload["user_requested_deterministic"] = a.user_requested_deterministic;
@@ -224,6 +264,8 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       use_ai_split: Boolean(payload["use_ai_split"]),
       bypass_ai_split_cache:
         typeof bypassAiSplitCache === "boolean" ? bypassAiSplitCache : undefined,
+      require_ai_provider_call:
+        typeof requireAiProviderCall === "boolean" ? requireAiProviderCall : undefined,
       file_count: files.length,
       file_ref_count: fileRefs.length,
       source_chars: (a.source as string).length,
