@@ -484,6 +484,7 @@ mod tests {
 
         let req = AdapterReloadRequest {
             reload_id: "r-1".into(),
+            source_edit_id: None,
             module_id: "app".into(),
             changed_files: vec!["main.go".into()],
             build_manifest: test_manifest(&executable),
@@ -509,6 +510,7 @@ mod tests {
         for i in 0..3 {
             let req = AdapterReloadRequest {
                 reload_id: format!("r-{}", i),
+                source_edit_id: None,
                 module_id: "app".into(),
                 changed_files: vec![],
                 build_manifest: test_manifest(&executable),

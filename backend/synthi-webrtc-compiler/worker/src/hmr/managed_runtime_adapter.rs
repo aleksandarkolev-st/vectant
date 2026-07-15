@@ -229,6 +229,7 @@ mod tests {
 
         let req = AdapterReloadRequest {
             reload_id: "r-1".into(),
+            source_edit_id: None,
             module_id: "app".into(),
             changed_files: vec!["Main.java".into()],
             build_manifest: jvm_manifest("app.jar"),
@@ -251,6 +252,7 @@ mod tests {
 
         let req = AdapterReloadRequest {
             reload_id: "r-2".into(),
+            source_edit_id: None,
             module_id: "app".into(),
             changed_files: vec![],
             build_manifest: jvm_manifest("app.so"),

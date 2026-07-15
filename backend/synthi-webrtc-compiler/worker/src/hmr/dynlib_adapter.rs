@@ -308,6 +308,7 @@ mod tests {
 
         let req = AdapterReloadRequest {
             reload_id: "r-1".into(),
+            source_edit_id: None,
             module_id: "mod_a".into(),
             changed_files: vec!["src/main.c".into()],
             build_manifest: test_manifest("libmod_a.so"),
@@ -331,6 +332,7 @@ mod tests {
 
         let req = AdapterReloadRequest {
             reload_id: "r-2".into(),
+            source_edit_id: None,
             module_id: "mod_a".into(),
             changed_files: vec![],
             build_manifest: test_manifest("not_a_lib.txt"),

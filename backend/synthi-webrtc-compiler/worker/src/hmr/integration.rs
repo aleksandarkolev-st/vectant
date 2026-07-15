@@ -25,8 +25,8 @@ use crate::hmr::adapter_lifecycle_fsm::{AdapterLifecycleFsm, LifecycleEvent};
 use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix};
 use crate::hmr::adapter_registry::{create_adapter_for_language, AdapterRegistry};
 use crate::hmr::adapter_trait::{
-    AdapterHealth, AdapterReloadRequest, AdapterReloadResult, ReloadArtifactBlob,
-    ReloadCapsuleMetadata, ReloadFirewallEvidence,
+    reload_capsule_source_edit_id, AdapterHealth, AdapterReloadRequest, AdapterReloadResult,
+    ReloadArtifactBlob, ReloadCapsuleMetadata, ReloadFirewallEvidence,
 };
 use crate::hmr::ai_gate::{AiGate, AiGateDecision};
 use crate::hmr::build_manifest::BuildManifest;
@@ -463,6 +463,7 @@ impl HmrPipeline {
         // Dispatch to the adapter
         let reload_req = AdapterReloadRequest {
             reload_id: reload_id.to_string(),
+            source_edit_id: None,
             module_id: manifest.slot_name(),
             changed_files: manifest.dirty_units.clone().unwrap_or_default(),
             build_manifest: manifest.clone(),
@@ -660,8 +661,10 @@ impl HmrPipeline {
 
         let firewall_process_id_before = std::process::id();
         let firewall_process_id_after = std::process::id();
+        let source_edit_id = reload_capsule_source_edit_id(capsule_metadata.as_ref());
         let reload_req = AdapterReloadRequest {
             reload_id: reload_id.to_string(),
+            source_edit_id,
             module_id: manifest.slot_name(),
             changed_files: manifest.dirty_units.clone().unwrap_or_default(),
             build_manifest: manifest.clone(),

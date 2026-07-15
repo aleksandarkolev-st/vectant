@@ -233,11 +233,32 @@ pub fn decode_reload_capsule_metadata_token(token: &str) -> Option<ReloadCapsule
     normalized_reload_capsule_metadata(&metadata)
 }
 
+/// Extracts a bounded source-edit token for request transport.
+///
+/// This is correlation input, not proof authority. The GPU adapter must still
+/// validate the complete commitment before using this identity in proof output.
+pub fn reload_capsule_source_edit_id(metadata: Option<&ReloadCapsuleMetadata>) -> Option<String> {
+    const MAX_SOURCE_EDIT_ID_BYTES: usize = 512;
+    let value = metadata?
+        .output_oracle_profile_commitment
+        .as_ref()?
+        .edit_id
+        .trim();
+    (!value.is_empty()
+        && value.len() <= MAX_SOURCE_EDIT_ID_BYTES
+        && !value.chars().any(char::is_whitespace)
+        && !value.chars().any(char::is_control))
+    .then(|| value.to_string())
+}
+
 /// High-level reload request that the planner feeds to an adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdapterReloadRequest {
     /// Unique reload ID for correlation.
     pub reload_id: String,
+    /// Proof-derived source edit identity, kept separate from reload correlation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_edit_id: Option<String>,
     /// Module that changed.
     pub module_id: String,
     /// Paths of changed files.
@@ -471,6 +492,72 @@ mod tests {
             decode_reload_capsule_metadata_token(&token).expect("legacy capsule metadata");
         assert_eq!(decoded.fission_island_id.as_deref(), Some("legacy-island"));
         assert!(decoded.output_oracle_profile_commitment.is_none());
+    }
+
+    #[test]
+    fn reload_request_source_edit_identity_is_distinct_and_legacy_optional() {
+        let manifest = BuildManifest::new(
+            "preview",
+            "rust",
+            "dynamic_library",
+            0,
+            crate::hmr::build_manifest::BuildSlot::Core,
+            "artifact.so",
+            "sha256:artifact",
+        );
+        let request = AdapterReloadRequest {
+            reload_id: "reload-correlation-7".into(),
+            source_edit_id: Some("source-edit:proof-bound".into()),
+            module_id: "core".into(),
+            changed_files: vec![],
+            build_manifest: manifest,
+            artifact_blob: None,
+            capsule_metadata: None,
+            firewall_evidence: Default::default(),
+            preserve_state: false,
+            timeout_ms: 1000,
+        };
+        let mut value = serde_json::to_value(&request).expect("serialized reload request");
+        assert_eq!(value["reload_id"], "reload-correlation-7");
+        assert_eq!(value["source_edit_id"], "source-edit:proof-bound");
+
+        value.as_object_mut().unwrap().remove("source_edit_id");
+        let legacy: AdapterReloadRequest =
+            serde_json::from_value(value).expect("legacy reload request");
+        assert_eq!(legacy.reload_id, "reload-correlation-7");
+        assert_eq!(legacy.source_edit_id, None);
+    }
+
+    #[test]
+    fn capsule_source_edit_identity_requires_bounded_token_shape() {
+        let metadata = ReloadCapsuleMetadata {
+            output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
+                edit_id: "source-edit:proof-bound".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            reload_capsule_source_edit_id(Some(&metadata)).as_deref(),
+            Some("source-edit:proof-bound")
+        );
+
+        for invalid in ["", "source edit", "source-edit:\nforged"] {
+            let mut malformed = metadata.clone();
+            malformed
+                .output_oracle_profile_commitment
+                .as_mut()
+                .unwrap()
+                .edit_id = invalid.into();
+            assert_eq!(reload_capsule_source_edit_id(Some(&malformed)), None);
+        }
+        let mut oversized = metadata;
+        oversized
+            .output_oracle_profile_commitment
+            .as_mut()
+            .unwrap()
+            .edit_id = "x".repeat(513);
+        assert_eq!(reload_capsule_source_edit_id(Some(&oversized)), None);
     }
 
     #[test]

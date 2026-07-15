@@ -3992,6 +3992,7 @@ mod tests {
         let pid = std::process::id();
         AdapterReloadRequest {
             reload_id: "test".into(),
+            source_edit_id: None,
             module_id: "device".into(),
             changed_files: vec!["device.cu".into()],
             build_manifest: BuildManifest::for_language("test-preview", "cuda"),
@@ -4558,6 +4559,7 @@ mod tests {
         manifest.exported_symbols = vec!["vec_add".into()];
         AdapterReloadRequest {
             reload_id: "test".into(),
+            source_edit_id: None,
             module_id: "device".into(),
             changed_files,
             build_manifest: manifest,

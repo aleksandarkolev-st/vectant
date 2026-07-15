@@ -190,8 +190,9 @@ use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::adapter_trait::{
-    decode_reload_capsule_metadata_token, Adapter, AdapterReloadRequest, AdapterReloadResult,
-    ReloadArtifactBlob, ReloadCapsuleMetadata, ReloadFirewallEvidence,
+    decode_reload_capsule_metadata_token, reload_capsule_source_edit_id, Adapter,
+    AdapterReloadRequest, AdapterReloadResult, ReloadArtifactBlob, ReloadCapsuleMetadata,
+    ReloadFirewallEvidence,
 };
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
@@ -1678,8 +1679,11 @@ fn main() {
 
                         let firewall_process_id_before = std::process::id();
                         let firewall_process_id_after = std::process::id();
+                        let source_edit_id =
+                            reload_capsule_source_edit_id(capsule_metadata.as_ref());
                         let req = AdapterReloadRequest {
                             reload_id: format!("runner-device-{}-{}", language, frame_count),
+                            source_edit_id,
                             module_id: "device".into(),
                             changed_files: manifest.dirty_units.clone().unwrap_or_default(),
                             build_manifest: manifest,
@@ -2199,7 +2203,7 @@ mod tests {
     use super::{
         gpu_artifact_loader_transport_for_reload, gpu_reload_artifact_blob_from_path,
         gpu_reload_capsule_metadata_from_token, parse_gpu_artifact_loader_transport,
-        ArtifactLoaderTransport, ReloadArtifactBlob,
+        reload_capsule_source_edit_id, ArtifactLoaderTransport, ReloadArtifactBlob,
     };
     #[cfg(feature = "gpu-hmr")]
     use std::io::Write as _;
@@ -2323,6 +2327,18 @@ mod tests {
         let token = worker::hmr::adapter_trait::encode_reload_capsule_metadata_token(
             &worker::hmr::adapter_trait::ReloadCapsuleMetadata {
                 fission_island_id: Some("fission-island:sha256:abc".into()),
+                output_oracle_profile_commitment: Some(
+                    worker::hmr::adapter_trait::ReloadOutputOracleProfileCommitment {
+                        schema_version: worker::hmr::adapter_trait::RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.into(),
+                        candidate_artifact_sha256: format!("sha256:{}", "a".repeat(64)),
+                        fission_output_oracle_contract_sha256: format!(
+                            "sha256:{}",
+                            "b".repeat(64)
+                        ),
+                        profile_bytes_sha256: format!("sha256:{}", "c".repeat(64)),
+                        edit_id: "source-edit:runner-proof".into(),
+                    },
+                ),
                 abi_membrane_hash: Some("sha256:def".into()),
                 dependency_closure_hash: Some("sha256:123".into()),
                 proof_hash: Some("sha256:456".into()),
@@ -2334,6 +2350,10 @@ mod tests {
         let metadata =
             gpu_reload_capsule_metadata_from_token(Some(&token)).expect("runner capsule metadata");
 
+        assert_eq!(
+            reload_capsule_source_edit_id(Some(&metadata)).as_deref(),
+            Some("source-edit:runner-proof")
+        );
         assert_eq!(
             metadata.fission_island_id.as_deref(),
             Some("fission-island:sha256:abc")
