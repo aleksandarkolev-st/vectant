@@ -41,6 +41,12 @@ import {
   ARBITRARY_COLD_RETAINED_EXECUTION_CHAIN_SCHEMA,
   verifyArbitraryColdRetainedExecutionChain,
 } from '../lib/gpu-hmr-arbitrary-cold-retained-chain.mjs';
+import {
+  ARBITRARY_COLD_COMPILE_SUPPORT_RECEIPT_AUTHORITY,
+  ARBITRARY_COLD_COMPILE_SUPPORT_RECEIPT_SCHEMA,
+  createArbitraryColdCompileSupportReceipt,
+  verifyArbitraryColdCompileSupportReceipt,
+} from '../lib/gpu-hmr-arbitrary-cold-compile-support-receipt.mjs';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'synthi-arbitrary-cold-self-check-'));
 const execFileAsync = promisify(execFile);
@@ -443,6 +449,93 @@ try {
       output.bytes.length,
     );
   }
+  const compileSupportReceipt = await createArbitraryColdCompileSupportReceipt(result);
+  assert.equal(
+    await verifyArbitraryColdCompileSupportReceipt(compileSupportReceipt),
+    compileSupportReceipt,
+  );
+  await assert.rejects(
+    () => createArbitraryColdCompileSupportReceipt(structuredClone(result)),
+    /result_invalid/,
+  );
+  await assert.rejects(
+    () => verifyArbitraryColdCompileSupportReceipt(
+      JSON.parse(JSON.stringify(compileSupportReceipt)),
+    ),
+    /support_receipt_invalid/,
+  );
+  const originalBuildGraphObserved = compileSupportReceipt.buildGraphObserved;
+  compileSupportReceipt.buildGraphObserved = true;
+  await assert.rejects(
+    () => verifyArbitraryColdCompileSupportReceipt(compileSupportReceipt),
+    /support_receipt_invalid/,
+  );
+  compileSupportReceipt.buildGraphObserved = originalBuildGraphObserved;
+  assert.equal(
+    await verifyArbitraryColdCompileSupportReceipt(compileSupportReceipt),
+    compileSupportReceipt,
+  );
+
+  const mutatedCasOutput = result.outputs[0];
+  const mutatedCasPath = mutatedCasOutput.artifactLocator.storage.localPath;
+  const originalCasBytes = await readFile(mutatedCasPath);
+  try {
+    await writeFile(mutatedCasPath, Buffer.concat([
+      originalCasBytes,
+      Buffer.from('mutated CAS bytes', 'utf8'),
+    ]));
+    await assert.rejects(
+      () => verifyArbitraryColdCompileSupportReceipt(compileSupportReceipt),
+      /support_receipt_invalid/,
+    );
+  } finally {
+    await writeFile(mutatedCasPath, originalCasBytes);
+  }
+  assert.equal(
+    await verifyArbitraryColdCompileSupportReceipt(compileSupportReceipt),
+    compileSupportReceipt,
+  );
+
+  assert.equal(
+    compileSupportReceipt.schemaVersion,
+    ARBITRARY_COLD_COMPILE_SUPPORT_RECEIPT_SCHEMA,
+  );
+  assert.equal(
+    compileSupportReceipt.proofAuthority,
+    ARBITRARY_COLD_COMPILE_SUPPORT_RECEIPT_AUTHORITY,
+  );
+  assert.match(compileSupportReceipt.proofAuthority, /support_only/);
+  assert.equal(compileSupportReceipt.supportOnly, true);
+  assert.equal(compileSupportReceipt.trustedColdCommandExecution, true);
+  assert.equal(compileSupportReceipt.byteBackedOutputsVerified, true);
+  assert.equal(compileSupportReceipt.buildGraphObserved, false);
+  assert.equal(compileSupportReceipt.deviceArtifactSemanticsObserved, false);
+  for (const [name, value] of Object.entries(compileSupportReceipt)) {
+    if (/(runtime|dispatch|accept|success)/i.test(name)) {
+      assert.equal(value, false, `${name} must not claim authority`);
+    }
+  }
+  assert.match(compileSupportReceipt.receiptHash, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(compileSupportReceipt.artifactCount, result.outputs.length);
+  assert.deepEqual(
+    Object.keys(compileSupportReceipt.artifactBindings[0]).sort(),
+    [
+      'actualByteLength',
+      'actualContentHash',
+      'artifactId',
+      'byteLength',
+      'contentHash',
+      'manifestHash',
+    ].sort(),
+  );
+  const serializedCompileSupportReceipt = JSON.stringify(compileSupportReceipt);
+  assert.equal(serializedCompileSupportReceipt.includes(sourceRoot), false);
+  assert.equal(serializedCompileSupportReceipt.includes(readOnlyInputRoot), false);
+  assert.doesNotMatch(serializedCompileSupportReceipt, /result\.(?:bin|json)/);
+  assert.doesNotMatch(
+    serializedCompileSupportReceipt,
+    /projectName|repositoryName|targetName|fixtureName|backendName|compilerName|executableName/,
+  );
   await assert.rejects(
     () => verifyArbitraryColdProjectRun(structuredClone(result)),
     /result_invalid/,
