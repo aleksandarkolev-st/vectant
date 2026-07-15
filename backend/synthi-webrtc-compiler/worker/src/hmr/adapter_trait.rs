@@ -32,6 +32,28 @@ pub struct ReloadArtifactBlob {
     pub bytes: Vec<u8>,
 }
 
+pub const RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.reload_output_oracle_profile_commitment.v1";
+
+/// Hash-only commitment to an output oracle fixed before candidate publication.
+///
+/// This does not authorize output proof by itself. The GPU adapter must verify
+/// every field against the exact candidate, capsule contract, and profile bytes
+/// before it may execute an authoritative output probe.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReloadOutputOracleProfileCommitment {
+    #[serde(default)]
+    pub schema_version: String,
+    #[serde(default)]
+    pub candidate_artifact_sha256: String,
+    #[serde(default)]
+    pub fission_output_oracle_contract_sha256: String,
+    #[serde(default)]
+    pub profile_bytes_sha256: String,
+    #[serde(default)]
+    pub edit_id: String,
+}
+
 /// Optional proof/capsule identity metadata for a hot-reload publication.
 ///
 /// Adapters may ignore fields they cannot use, but GPU epoch publication
@@ -53,6 +75,8 @@ pub struct ReloadCapsuleMetadata {
     pub fission_selection_decision_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fission_output_oracle_contract: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub output_oracle_profile_commitment: Option<ReloadOutputOracleProfileCommitment>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub abi_membrane_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,8 +140,12 @@ fn normalized_reload_capsule_metadata(
 ) -> Option<ReloadCapsuleMetadata> {
     let normalized = ReloadCapsuleMetadata {
         fission_island_id: non_empty_token(metadata.fission_island_id.clone()),
-        fission_verifier_evidence_id: non_empty_token(metadata.fission_verifier_evidence_id.clone()),
-        selected_verifier_evidence_id: non_empty_token(metadata.selected_verifier_evidence_id.clone()),
+        fission_verifier_evidence_id: non_empty_token(
+            metadata.fission_verifier_evidence_id.clone(),
+        ),
+        selected_verifier_evidence_id: non_empty_token(
+            metadata.selected_verifier_evidence_id.clone(),
+        ),
         deterministic_verifier_evidence_refs: non_empty_string_vec(
             metadata.deterministic_verifier_evidence_refs.clone(),
         ),
@@ -127,6 +155,18 @@ fn normalized_reload_capsule_metadata(
         ),
         fission_output_oracle_contract: non_empty_json_object(
             metadata.fission_output_oracle_contract.clone(),
+        ),
+        output_oracle_profile_commitment: metadata.output_oracle_profile_commitment.clone().map(
+            |commitment| ReloadOutputOracleProfileCommitment {
+                schema_version: commitment.schema_version.trim().to_string(),
+                candidate_artifact_sha256: commitment.candidate_artifact_sha256.trim().to_string(),
+                fission_output_oracle_contract_sha256: commitment
+                    .fission_output_oracle_contract_sha256
+                    .trim()
+                    .to_string(),
+                profile_bytes_sha256: commitment.profile_bytes_sha256.trim().to_string(),
+                edit_id: commitment.edit_id.trim().to_string(),
+            },
         ),
         abi_membrane_hash: non_empty_token(metadata.abi_membrane_hash.clone()),
         dependency_closure_hash: non_empty_token(metadata.dependency_closure_hash.clone()),
@@ -139,6 +179,7 @@ fn normalized_reload_capsule_metadata(
         || normalized.fission_source_paths.is_some()
         || normalized.fission_selection_decision_hash.is_some()
         || normalized.fission_output_oracle_contract.is_some()
+        || normalized.output_oracle_profile_commitment.is_some()
         || normalized.abi_membrane_hash.is_some()
         || normalized.dependency_closure_hash.is_some()
         || normalized.proof_hash.is_some())
@@ -344,6 +385,15 @@ mod tests {
     fn reload_capsule_metadata_token_round_trips_non_empty_fields() {
         let metadata = ReloadCapsuleMetadata {
             fission_island_id: Some(" fission-island:sha256:abc ".into()),
+            output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
+                schema_version: format!(
+                    " {RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION} "
+                ),
+                candidate_artifact_sha256: format!(" sha256:{} ", "a".repeat(64)),
+                fission_output_oracle_contract_sha256: format!(" sha256:{} ", "b".repeat(64)),
+                profile_bytes_sha256: format!(" sha256:{} ", "c".repeat(64)),
+                edit_id: " edit-7 ".into(),
+            }),
             abi_membrane_hash: Some("sha256:def".into()),
             dependency_closure_hash: Some("".into()),
             proof_hash: Some("sha256:123".into()),
@@ -364,6 +414,49 @@ mod tests {
         assert_eq!(decoded.abi_membrane_hash.as_deref(), Some("sha256:def"));
         assert_eq!(decoded.dependency_closure_hash, None);
         assert_eq!(decoded.proof_hash.as_deref(), Some("sha256:123"));
+        assert_eq!(
+            decoded.output_oracle_profile_commitment,
+            Some(ReloadOutputOracleProfileCommitment {
+                schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.into(),
+                candidate_artifact_sha256: format!("sha256:{}", "a".repeat(64)),
+                fission_output_oracle_contract_sha256: format!("sha256:{}", "b".repeat(64)),
+                profile_bytes_sha256: format!("sha256:{}", "c".repeat(64)),
+                edit_id: "edit-7".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn reload_capsule_metadata_preserves_incomplete_oracle_commitment() {
+        let metadata = ReloadCapsuleMetadata {
+            output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
+                schema_version: " invalid-schema ".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let token = encode_reload_capsule_metadata_token(&metadata).expect("capsule token");
+        let decoded = decode_reload_capsule_metadata_token(&token).expect("capsule metadata");
+        let commitment = decoded
+            .output_oracle_profile_commitment
+            .expect("incomplete commitment remains visible to fail-closed validation");
+        assert_eq!(commitment.schema_version, "invalid-schema");
+        assert!(commitment.candidate_artifact_sha256.is_empty());
+        assert!(commitment.fission_output_oracle_contract_sha256.is_empty());
+        assert!(commitment.profile_bytes_sha256.is_empty());
+        assert!(commitment.edit_id.is_empty());
+    }
+
+    #[test]
+    fn reload_capsule_metadata_decodes_legacy_payload_without_oracle_commitment() {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(br#"{"fission_island_id":"legacy-island"}"#);
+        let token = format!("{RELOAD_CAPSULE_METADATA_TOKEN_PREFIX}{payload}");
+
+        let decoded =
+            decode_reload_capsule_metadata_token(&token).expect("legacy capsule metadata");
+        assert_eq!(decoded.fission_island_id.as_deref(), Some("legacy-island"));
+        assert!(decoded.output_oracle_profile_commitment.is_none());
     }
 
     #[test]

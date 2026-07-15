@@ -6387,6 +6387,7 @@ async fn reload_capsule_metadata_from_proof_artifact(
         fission_output_oracle_contract: proof
             .as_ref()
             .and_then(proof_fission_output_oracle_contract),
+        output_oracle_profile_commitment: None,
         abi_membrane_hash: proof.as_ref().and_then(proof_abi_membrane_hash),
         dependency_closure_hash: proof
             .as_ref()
