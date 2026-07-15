@@ -371,7 +371,11 @@ const visualStageEvidence = buildRuntimeBoundaryStageEvidence(visualInput.runtim
 assert.equal(visualStageEvidence.accepted, true, visualStageEvidence.failedGates.join(','));
 assert.equal(buildRuntimeBoundaryInputEvidence(visualInput).accepted, true);
 const visualAccepted = buildRuntimeBoundaryProofAdapter(visualInput);
-assert.equal(visualAccepted.accepted, true, visualAccepted.failedGates.join(','));
+assert.equal(visualAccepted.accepted, false);
+assert.ok(
+  visualAccepted.failedGates.includes('proof_ledger_recomputed_query_rejected'),
+  visualAccepted.failedGates.join(','),
+);
 assert.equal(visualAccepted.gpuHmrSuccess, false, 'adapter facet must stay evidence-only for visual proof');
 assert.equal(visualAccepted.runtimeProofArtifact.gpuHmrSuccess, true);
 assert.equal(visualAccepted.runtimeProofArtifact.proofLedgerQuery.gpuHmrSuccess, true);
@@ -383,7 +387,9 @@ const visualLedgerArtifacts = visualLedgerOracleArtifacts.visual_oracle_artifact
   ?? visualLedgerOracleArtifacts.visualOracleArtifacts;
 assert.ok(visualLedgerArtifacts, Object.keys(visualLedgerRecord).join(','));
 assert.equal(visualLedgerArtifacts.after_image_hash, visualFixture.afterImageHash);
-assert.equal(visualAccepted.strictGate.status, 'pass', visualAccepted.strictGate.detail);
+assert.equal(visualLedgerArtifacts.visual_capture_runtime_binding, undefined);
+assert.equal(visualAccepted.strictGate.status, 'fail');
+assert.ok(visualAccepted.strictGate.failures.includes('proof_ledger_recomputed_query_rejected'));
 
 const visualDeclaredOnlyOracle = buildRuntimeBoundaryProofAdapter({
   ...visualInput,

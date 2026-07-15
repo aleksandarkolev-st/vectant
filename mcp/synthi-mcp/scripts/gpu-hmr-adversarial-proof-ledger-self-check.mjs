@@ -747,15 +747,16 @@ const strictVisualRecord = baselineVisualRecord();
 const strictVisualRecordWithoutBinding = structuredClone(strictVisualRecord);
 delete strictVisualRecordWithoutBinding.oracle_artifacts.visual_oracle_artifacts
   .visual_capture_runtime_binding;
-assert.equal(
-  normalizeGpuHmrProofLedgerRecord(strictVisualRecord).proofId,
-  normalizeGpuHmrProofLedgerRecord(strictVisualRecordWithoutBinding).proofId,
-);
+const strictVisualProofId = normalizeGpuHmrProofLedgerRecord(strictVisualRecord).proofId;
+const strictVisualBaseProofId = normalizeGpuHmrProofLedgerRecord(
+  strictVisualRecordWithoutBinding,
+).proofId;
+assert.notEqual(strictVisualProofId, strictVisualBaseProofId);
 const strictVisualBinding = evaluateGpuHmrVisualCaptureRuntimeBinding(strictVisualRecord);
 assert.equal(strictVisualBinding.accepted, true);
 assert.equal(
   strictVisualBinding.recomputedBinding.proof_ledger_id,
-  normalizeGpuHmrProofLedgerRecord(strictVisualRecord).proofId,
+  strictVisualBaseProofId,
 );
 assert.equal(
   strictVisualBinding.recomputedBinding.runtime_binding.output_target_id,
@@ -777,6 +778,7 @@ const strictVisualAccepted = evaluateGpuHmrProofLedger(strictVisualRecord, {
   requireVisualCaptureRuntimeBinding: true,
 });
 assert.equal(strictVisualAccepted.gpuHmrSuccess, true);
+assert.equal(strictVisualAccepted.proofId, strictVisualProofId);
 assert.equal(strictVisualAccepted.visualCaptureRuntimeBinding?.accepted, true);
 
 const artifactPrefixedVisualRecord = structuredClone(strictVisualRecord);

@@ -11,7 +11,9 @@ import {
   strictProofGateFailures,
 } from './lib/gpu-hmr-proof-strict-gates.mjs';
 import {
+  buildGpuHmrFrameGateRuntimeBinding,
   buildGpuHmrProofLedger,
+  buildGpuHmrVisualCaptureRuntimeBinding,
   queryGpuHmrLedgerInvariants,
 } from './lib/gpu-hmr-proof-ledger.mjs';
 import {
@@ -35,6 +37,18 @@ mkdirSync(SELF_CHECK_CAS_ROOT, { recursive: true });
 
 function sha256Bytes(buffer) {
   return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
+function contentHash(value) {
+  return sha256Bytes(Buffer.from(stableJson(value)));
 }
 
 function writeVisualArtifact(name, bytes) {
@@ -445,6 +459,79 @@ function visualLedgerRecord(overrides = {}) {
   });
 }
 
+function installCaptureEvidenceBinding(captureManifest, binding) {
+  const bindingHash = contentHash(binding);
+  captureManifest.evidence_binding = structuredClone(binding);
+  captureManifest.evidence_binding_hash = bindingHash;
+  captureManifest.frame_gate.evidence_binding = structuredClone(binding);
+  captureManifest.frame_gate.evidence_binding_hash = bindingHash;
+}
+
+function boundVisualLedgerRecord(overrides = {}) {
+  const record = visualLedgerRecord({
+    runtime_proof_id: `gpu-runtime-proof:${HASH_C}`,
+    runtime_proof_state: 'gpu-hmr-full-runtime-proven',
+    runtime_proof_accepted: true,
+    runtime_proof_observed_at_ms: 1_100,
+    hmr_observed_at_ms: 1_000,
+    runtime_session_id: 'runtime-session-1',
+    ...overrides,
+  });
+  record.output_event.output_target ??= 'render-target-1';
+  for (const event of [
+    record.loader_event,
+    record.epoch_publish_event,
+    record.dispatch_event,
+    record.output_event,
+  ]) {
+    event.runtime_session_id ??= record.runtime_session_id;
+    event.device_uuid ??= record.device_identity.device_uuid;
+  }
+  record.process_identity.runtime_session_id ??= record.runtime_session_id;
+
+  const artifacts = record.oracle_artifacts.visual_oracle_artifacts;
+  const [width, height] = artifacts.swapchain_size ?? artifacts.swapchainSize;
+  const afterImageHash = artifacts.after_image_hash ?? artifacts.afterImageHash;
+  const gateToken = 'frame-gate:strict-visual-proof';
+  const evidenceBinding = buildGpuHmrFrameGateRuntimeBinding(record);
+  artifacts.capture_manifest = {
+    schema_version: 'synthi.mcp.capture_manifest.v1',
+    session_id: 'strict-preview-session-1',
+    capture_backend: artifacts.capture_backend ?? artifacts.captureBackend,
+    capture_event_id: 'screenshot:strict-preview-session-1:12:1500',
+    frame_event_id: 'broker-frame:strict-preview-session-1:12',
+    frame_seq: 12,
+    frame_ts_ms: 1_400,
+    capture_ts_ms: 1_500,
+    source_frame_hash: afterImageHash,
+    broker_frame_hash: afterImageHash,
+    image_sha256: afterImageHash,
+    image_byte_length: readFileSync(VISUAL_AFTER.path).length,
+    width,
+    height,
+    gate_token: gateToken,
+    gate_token_verified: true,
+    required_frame_seq: 11,
+    required_ts_ms: 1_200,
+    frame_gate: {
+      status: 'satisfied',
+      required_frame_seq: 11,
+      required_ts_ms: 1_200,
+      gate_token: gateToken,
+      gate_token_verified: true,
+      gate_token_issued_at_ms: 1_300,
+      gate_token_expires_at_ms: 2_000,
+      session_id: 'strict-preview-session-1',
+      captured_frame_seq: 12,
+      captured_ts_ms: 1_400,
+      timeout_ms: 120_000,
+    },
+  };
+  installCaptureEvidenceBinding(artifacts.capture_manifest, evidenceBinding);
+  artifacts.visual_capture_runtime_binding = buildGpuHmrVisualCaptureRuntimeBinding(record);
+  return record;
+}
+
 function acceptanceContract(overrides = {}) {
   return {
     contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
@@ -651,7 +738,7 @@ const webgpuComputeOnlyLedger = buildGpuHmrProofLedger(ledgerRecord({
     evidence_refs: ['runtime:webgpu-compute-readback'],
   },
 }));
-const byteBackedVisualLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+const byteBackedVisualLedger = buildGpuHmrProofLedger(boundVisualLedgerRecord({
   oracle_artifacts: {
     visual_oracle_artifacts: byteBackedVisualOracleArtifacts(),
   },
@@ -662,7 +749,7 @@ const byteBackedVisualArtifact = runtimeArtifact({
   proofLedgerQuery: byteBackedVisualLedger.query,
   deterministicVisualModeEvaluation: { accepted: true },
 });
-const casOnlyVisualLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+const casOnlyVisualLedger = buildGpuHmrProofLedger(boundVisualLedgerRecord({
   oracle_artifacts: {
     visual_oracle_artifacts: casOnlyVisualOracleArtifacts(),
   },
@@ -706,6 +793,26 @@ assert.match(
   /compute_oracle_raw_readback_bytes_unreadable/,
 );
 assert.equal(runtimeProofArtifactStrictGate(byteBackedVisualArtifact).status, 'pass');
+const strippedVisualBindingArtifact = structuredClone(byteBackedVisualArtifact);
+const strippedVisualBindingArtifacts = strippedVisualBindingArtifact
+  .proofLedger.records[0].oracleArtifacts.visual_oracle_artifacts;
+assert.ok(strippedVisualBindingArtifacts.visual_capture_runtime_binding);
+delete strippedVisualBindingArtifacts.visual_capture_runtime_binding;
+const strippedVisualBindingQuery = queryGpuHmrLedgerInvariants(
+  strippedVisualBindingArtifact.proofLedger,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(strippedVisualBindingQuery.gpuHmrSuccess, false);
+assert.ok(strippedVisualBindingQuery.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_binding_missing',
+));
+assert.notEqual(strippedVisualBindingQuery.proofId, byteBackedVisualLedger.proofId);
+const strippedVisualBindingGate = runtimeProofArtifactStrictGate(strippedVisualBindingArtifact);
+assert.equal(strippedVisualBindingGate.status, 'fail');
+assert.match(
+  strippedVisualBindingGate.detail,
+  /proof_ledger_recomputed_query_rejected/,
+);
 const casOnlyStrictGate = runtimeProofArtifactStrictGate(casOnlyVisualArtifact, {
   visualArtifactRoots: [SELF_CHECK_CAS_ROOT],
 });

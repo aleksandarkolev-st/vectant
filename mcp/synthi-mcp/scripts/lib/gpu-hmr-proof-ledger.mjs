@@ -919,6 +919,18 @@ function visualCaptureRuntimeBindingObject(artifacts) {
   ]));
 }
 
+function visualCaptureRuntimeBindingProofIdentity(record) {
+  const artifacts = visualOracleArtifacts(record.oracleArtifacts, record.outputEvent);
+  const supplied = visualCaptureRuntimeBindingObject(artifacts);
+  if (!supplied) return null;
+  const identity = { ...supplied };
+  delete identity.proof_ledger_id;
+  delete identity.proofLedgerId;
+  delete identity.binding_hash;
+  delete identity.bindingHash;
+  return identity;
+}
+
 function visualCaptureManifestObject(artifacts) {
   return nonEmptyObject(objectFieldValue(artifacts, [
     'capture_manifest',
@@ -1475,7 +1487,7 @@ function visualCaptureRuntimeBindingProjection(record, artifacts) {
   const projection = {
     schema_version: GPU_HMR_VISUAL_CAPTURE_RUNTIME_BINDING_SCHEMA_VERSION,
     proof_authority: GPU_HMR_VISUAL_CAPTURE_RUNTIME_BINDING_AUTHORITY,
-    proof_ledger_id: firstText(record.proofId, record.proof_id),
+    proof_ledger_id: canonicalLedgerProofId(canonicalLedgerRecordProofMaterial(record)),
     runtime_binding: manifestEvaluation.expectedRuntimeBinding,
     capture_manifest_hash: manifestEvaluation.captureManifest
       ? `sha256:${sha256Hex(stableJson(manifestEvaluation.captureManifest))}`
@@ -1960,7 +1972,23 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     modelProvenance: asObject(record.model_provenance ?? record.modelProvenance),
     evidenceRefs: compactStringList(record.evidence_refs ?? record.evidenceRefs),
   };
-  normalized.proofId = canonicalLedgerProofId({
+  const baseProofMaterial = canonicalLedgerRecordProofMaterial(normalized);
+  const visualCaptureBindingIdentity = visualCaptureRuntimeBindingProofIdentity(normalized);
+  normalized.proofId = canonicalLedgerProofId(visualCaptureBindingIdentity
+    ? {
+        ...baseProofMaterial,
+        visualCaptureRuntimeBinding: visualCaptureBindingIdentity,
+      }
+    : baseProofMaterial);
+  Object.defineProperty(normalized, 'suppliedProofId', {
+    value: suppliedProofId,
+    enumerable: false,
+  });
+  return normalized;
+}
+
+function canonicalLedgerRecordProofMaterial(normalized) {
+  return {
     schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     projectId: normalized.projectId,
     editId: normalized.editId,
@@ -2002,12 +2030,7 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
       processIdBefore: normalized.firewallProcessIdBefore,
       processIdAfter: normalized.firewallProcessIdAfter,
     },
-  });
-  Object.defineProperty(normalized, 'suppliedProofId', {
-    value: suppliedProofId,
-    enumerable: false,
-  });
-  return normalized;
+  };
 }
 
 function addFailure(failures, code, detail = {}) {

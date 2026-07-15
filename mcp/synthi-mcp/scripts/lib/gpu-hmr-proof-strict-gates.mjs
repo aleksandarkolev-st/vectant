@@ -1642,10 +1642,13 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       );
       recomputedProofLedgerQuery = queryGpuHmrLedgerInvariants(
         proofLedger,
-        visualOverlayUsed ? {
-          visualOracleArtifactOverlays,
-          ignoreSuppliedLedgerQueryAndSuccess: true,
-        } : {},
+        {
+          requireVisualCaptureRuntimeBinding: visualLedgerRequiresDeterministicMode,
+          ...(visualOverlayUsed ? {
+            visualOracleArtifactOverlays,
+            ignoreSuppliedLedgerQueryAndSuccess: true,
+          } : {}),
+        },
       );
       if (recomputedProofLedgerQuery.gpuHmrSuccess !== true) {
         failures.push('proof_ledger_recomputed_query_rejected');
