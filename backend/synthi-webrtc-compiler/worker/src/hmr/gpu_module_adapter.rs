@@ -3615,6 +3615,9 @@ impl Adapter for GpuModuleAdapter {
         let module_checkpoint = self.module_manager.checkpoint();
         let mut dispatcher_recovery_failed = false;
         let mut failure_runtime_log_lines = Vec::new();
+        if let Some(pinned) = pinned_output_oracle_profile.as_ref() {
+            failure_runtime_log_lines.push(pinned.evidence_line.clone());
+        }
         let load_result = (|| -> Result<DeviceReloadOwnership, String> {
             let previous_table = self.module_manager.kernel_table().clone();
             let previous_dispatch_table_hash = dispatch_table_hash(&previous_table);
@@ -3822,6 +3825,72 @@ impl Adapter for GpuModuleAdapter {
                         Ok(_) => format!("{validation_error}; dispatcher candidate rolled back"),
                     });
                 }
+            }
+            let retirement_proven = retired_module_count == 0;
+            let acceptance_ledger = GpuHmrAcceptanceLedger::new(GpuHmrAcceptanceLedgerInput {
+                hot_reload: !first_device_load,
+                artifact_id_after: new_artifact_id.clone(),
+                loader_artifact_id: Some(new_artifact_id.clone()),
+                epoch_publish_artifact_id: Some(new_artifact_id.clone()),
+                dispatch_artifact_id: if output_after_dispatch {
+                    Some(new_artifact_id.clone())
+                } else {
+                    None
+                },
+                output_artifact_id: output_oracle_artifact_id.clone(),
+                output_oracle_passed,
+                output_after_dispatch,
+                retirement_proven,
+                cpu_hmr_used: req.firewall_evidence.cpu_hmr_used,
+                full_rebuild_used: req.firewall_evidence.full_rebuild_used,
+                process_restarted: req.firewall_evidence.process_restarted,
+                firewall_route: req.firewall_evidence.route.clone(),
+                firewall_evidence_source: req.firewall_evidence.evidence_source.clone(),
+                firewall_process_id_before: req.firewall_evidence.process_id_before,
+                firewall_process_id_after: req.firewall_evidence.process_id_after,
+                process_id: Some(format!("pid:{}", std::process::id())),
+                device_identity: None,
+            });
+            let acceptance_line = acceptance_ledger.to_log_line();
+            if !first_device_load && !acceptance_ledger.gpu_hmr_success {
+                if let Some(line) = candidate_oracle_line.as_ref() {
+                    failure_runtime_log_lines.push(line.clone());
+                }
+                eprintln!("{acceptance_line}");
+                failure_runtime_log_lines.push(acceptance_line.clone());
+                let validation_error = format!(
+                    "GPU HMR acceptance ledger rejected candidate before global publication: {}",
+                    acceptance_ledger.failed_invariants.join(",")
+                );
+                let rollback_result =
+                    rollback_launch_dispatcher_publication(&mut dispatcher_publication);
+                dispatcher_recovery_failed = rollback_result.is_err();
+                let rollback_line = match rollback_result.as_ref() {
+                    Ok(receipt) => format!(
+                        "[gpu-runtime-boundary] dispatcher_epoch schema=synthi.gpu_hmr.dispatcher_epoch.v1 event=rolled_back status=refused publication_id={} previous_generation={} candidate_generation={} restored_generation={} candidate_artifact_id={} restored_artifact_id={} reason=acceptance_ledger_rejected proof_authority=candidate_rollback_refusal_only_not_gpu_hmr_success accepted_for_gpu_hmr=false gpu_hmr_success=false",
+                        receipt.publication_id,
+                        receipt.previous_generation,
+                        receipt.candidate_generation,
+                        receipt.restored_generation,
+                        new_artifact_id,
+                        log_optional_token(receipt.restored_artifact_id.as_deref()),
+                    ),
+                    Err(error) => format!(
+                        "[gpu-runtime-boundary] dispatcher_epoch schema=synthi.gpu_hmr.dispatcher_epoch.v1 event=rollback_failed status=fail previous_generation={} candidate_generation={} candidate_artifact_id={} reason={} proof_authority=candidate_rollback_refusal_only_not_gpu_hmr_success accepted_for_gpu_hmr=false gpu_hmr_success=false",
+                        previous_generation,
+                        active_generation,
+                        new_artifact_id,
+                        runtime_output_oracle_log_token(&error.to_string()),
+                    ),
+                };
+                eprintln!("{rollback_line}");
+                failure_runtime_log_lines.push(rollback_line);
+                return Err(match rollback_result {
+                    Err(rollback_error) => {
+                        format!("{validation_error}; dispatcher rollback failed: {rollback_error}")
+                    }
+                    Ok(_) => format!("{validation_error}; dispatcher candidate rolled back"),
+                });
             }
             let publication_commit = match commit_launch_dispatcher_publication(
                 &mut dispatcher_publication,
@@ -4066,42 +4135,6 @@ impl Adapter for GpuModuleAdapter {
                 eprintln!("{pending_graph_line}");
                 runtime_log_lines.push(pending_graph_line);
             }
-            let retirement_proven = retired_module_count == 0
-                || (retired_unload_failures.is_empty()
-                    && runtime_log_lines.iter().any(|line| {
-                        line.contains("dispatcher_epoch")
-                            && runtime_boundary_token(line, "event") == Some("retired")
-                            && runtime_boundary_token(line, "active_generation")
-                                .and_then(|value| value.parse::<u64>().ok())
-                                == Some(active_generation)
-                            && runtime_boundary_token(line, "old_generation_retired")
-                                == Some("true")
-                    }));
-            let acceptance_ledger = GpuHmrAcceptanceLedger::new(GpuHmrAcceptanceLedgerInput {
-                hot_reload: !first_device_load,
-                artifact_id_after: new_artifact_id.clone(),
-                loader_artifact_id: Some(new_artifact_id.clone()),
-                epoch_publish_artifact_id: Some(new_artifact_id.clone()),
-                dispatch_artifact_id: if output_after_dispatch {
-                    Some(new_artifact_id.clone())
-                } else {
-                    None
-                },
-                output_artifact_id: output_oracle_artifact_id,
-                output_oracle_passed,
-                output_after_dispatch,
-                retirement_proven,
-                cpu_hmr_used: req.firewall_evidence.cpu_hmr_used,
-                full_rebuild_used: req.firewall_evidence.full_rebuild_used,
-                process_restarted: req.firewall_evidence.process_restarted,
-                firewall_route: req.firewall_evidence.route.clone(),
-                firewall_evidence_source: req.firewall_evidence.evidence_source.clone(),
-                firewall_process_id_before: req.firewall_evidence.process_id_before,
-                firewall_process_id_after: req.firewall_evidence.process_id_after,
-                process_id: Some(format!("pid:{}", std::process::id())),
-                device_identity: None,
-            });
-            let acceptance_line = acceptance_ledger.to_log_line();
             eprintln!("{acceptance_line}");
             runtime_log_lines.push(acceptance_line);
             if !first_device_load && acceptance_ledger.gpu_hmr_success && output_oracle_passed {
@@ -4554,6 +4587,10 @@ mod tests {
             )),
             AdapterReloadResult::Success { .. }
         ));
+        let previous_generation = current_launch_generation();
+        let previous_handle = adapter.active_module_handle;
+        let previous_artifact_id = adapter.active_generation_artifact_id.clone();
+        let previous_swap_count = adapter.module_manager.swap_count();
         let second_request =
             request_with_artifact(&second_path, vec!["build/generated/device-stage".into()]);
         let profile_path = configured_gpu_hmr_runtime_output_oracle_profile_path();
@@ -4563,12 +4600,17 @@ mod tests {
 
         match adapter.reload(&second_request) {
             AdapterReloadResult::Failed { error, recoverable } => {
-                assert!(!recoverable);
+                assert!(recoverable);
                 assert!(error.contains("device_identity_missing"));
                 assert!(!error.contains("output_oracle_not_passed"));
+                assert!(error.contains("candidate rolled back"));
             }
             other => panic!("expected independent device identity refusal, got {other:?}"),
         }
+        assert_eq!(current_launch_generation(), previous_generation);
+        assert_eq!(adapter.active_module_handle, previous_handle);
+        assert_eq!(adapter.active_generation_artifact_id, previous_artifact_id);
+        assert_eq!(adapter.module_manager.swap_count(), previous_swap_count);
         assert_eq!(
             fs::read(configured_gpu_hmr_runtime_output_oracle_profile_path()).unwrap(),
             b"{malformed-after-pin"
@@ -4582,6 +4624,11 @@ mod tests {
         assert!(adapter.last_reload_log().iter().any(|line| {
             line.contains("runtime_output_oracle_probe status=pass")
                 && line.contains("profile=test-vec-add-readback")
+        }));
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("dispatcher_epoch")
+                && line.contains("event=rolled_back")
+                && line.contains("reason=acceptance_ledger_rejected")
         }));
         let _ = install_runtime_output_oracle_profile_for_tests();
         reset_for_test();
@@ -6024,17 +6071,41 @@ mod tests {
             AdapterReloadResult::Success { .. }
         ));
         launch_vec_add_on_stream(0x77);
+        let previous_generation = current_launch_generation();
+        let previous_handle = a.active_module_handle;
+        let previous_artifact_id = a.active_generation_artifact_id.clone();
+        let previous_swap_count = a.module_manager.swap_count();
+        let unloads_before = UNLOAD_CALLS.load(Ordering::SeqCst);
         match a.reload(&request_with_artifact_and_abi(
             &second_path,
             vec!["device.cu".into()],
             "sig-v1",
         )) {
             AdapterReloadResult::Failed { error, recoverable } => {
-                assert!(!recoverable);
+                assert!(recoverable);
                 assert!(error.contains("device_identity_missing"));
+                assert!(error.contains("candidate rolled back"));
             }
             other => panic!("expected device-identity refusal, got {other:?}"),
         }
+        assert_eq!(current_launch_generation(), previous_generation);
+        assert_eq!(a.active_module_handle, previous_handle);
+        assert_eq!(a.active_generation_artifact_id, previous_artifact_id);
+        assert_eq!(a.module_manager.swap_count(), previous_swap_count);
+        assert_eq!(
+            a.module_manager.primary().map(|slot| slot.handle),
+            previous_handle
+        );
+        assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), unloads_before + 1);
+        assert!(!a
+            .last_reload_log()
+            .iter()
+            .any(|line| line.contains("dispatcher_epoch event=published")));
+        assert!(a.last_reload_log().iter().any(|line| {
+            line.contains("dispatcher_epoch")
+                && line.contains("event=rolled_back")
+                && line.contains("reason=acceptance_ledger_rejected")
+        }));
 
         let acceptance_line = a
             .last_reload_log()
@@ -6090,6 +6161,9 @@ mod tests {
             AdapterReloadResult::Success { .. }
         ));
         launch_vec_add_on_stream(0x77);
+        let previous_generation = current_launch_generation();
+        let previous_handle = adapter.active_module_handle;
+        let previous_artifact_id = adapter.active_generation_artifact_id.clone();
         NESTED_LAUNCH_ARMED.store(true, Ordering::SeqCst);
         match adapter.reload(&request_with_artifact_and_abi(
             &second_path,
@@ -6097,33 +6171,40 @@ mod tests {
             "sig-v1",
         )) {
             AdapterReloadResult::Failed { error, recoverable } => {
-                assert!(!recoverable);
+                assert!(recoverable);
                 assert!(error.contains("device_identity_missing"));
+                assert!(error.contains("candidate rolled back"));
             }
             other => panic!(
                 "expected device-identity refusal after exact oracle dispatch, got {other:?}"
             ),
         }
         assert_eq!(NESTED_LAUNCH_COUNT.load(Ordering::SeqCst), 1);
+        assert_eq!(current_launch_generation(), previous_generation);
+        assert_eq!(adapter.active_module_handle, previous_handle);
+        assert_eq!(adapter.active_generation_artifact_id, previous_artifact_id);
 
-        let active_generation = current_launch_generation();
         let launches = launch_records_snapshot()
             .into_iter()
             .filter(|record| {
-                record.active_generation == active_generation
-                    && record.active_artifact_id.as_deref() == Some(second_artifact_id.as_str())
+                record.active_artifact_id.as_deref() == Some(second_artifact_id.as_str())
                     && record.dispatched
                     && record.dispatch_error.is_none()
             })
             .collect::<Vec<_>>();
         assert_eq!(launches.len(), 2);
+        let candidate_generation = launches[0].active_generation;
+        assert!(launches
+            .iter()
+            .all(|record| record.active_generation == candidate_generation));
+        assert_ne!(candidate_generation, current_launch_generation());
         assert_eq!(launches[0].stream_token, 0);
         assert_eq!(launches[1].stream_token, 0x99);
         let output = output_oracle_records_snapshot()
             .into_iter()
             .rev()
             .find(|record| {
-                record.generation == active_generation
+                record.generation == candidate_generation
                     && record.artifact_id.as_deref() == Some(second_artifact_id.as_str())
                     && record.passed
             })
@@ -6136,6 +6217,11 @@ mod tests {
             output.after_dispatch_id.as_deref(),
             launches[1].dispatch_id.as_deref()
         );
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("dispatcher_epoch")
+                && line.contains("event=rolled_back")
+                && line.contains("reason=acceptance_ledger_rejected")
+        }));
         reset_for_test();
     }
 
@@ -6526,7 +6612,7 @@ mod tests {
     }
 
     #[test]
-    fn committed_candidate_stays_coherent_when_old_module_unload_fails() {
+    fn rejected_candidate_stays_unpublished_when_candidate_unload_fails() {
         let _guard = runtime_boundary_test_guard();
         reset_for_test();
         UNLOAD_CALLS.store(0, Ordering::SeqCst);
@@ -6537,7 +6623,7 @@ mod tests {
         second.write_all(b"second-hsaco").unwrap();
         let first_path = first.path().to_string_lossy().to_string();
         let second_path = second.path().to_string_lossy().to_string();
-        let second_artifact_id = artifact_id_for_hash(&sha256_hex_bytes(b"second-hsaco"));
+        let first_artifact_id = artifact_id_for_hash(&sha256_hex_bytes(b"first-hsaco"));
         let mut adapter = adapter_with_config_and_symbols(
             GpuModuleAdapterConfig {
                 vendor: GpuVendor::Rocm,
@@ -6563,27 +6649,33 @@ mod tests {
 
         match second_result {
             AdapterReloadResult::Failed { error, recoverable } => {
-                assert!(!recoverable);
+                assert!(recoverable);
                 assert!(error.contains("epoch_retirement_unproven"));
+                assert!(error.contains("candidate rolled back"));
+                assert!(error.contains("candidate unload failed"));
             }
-            other => panic!("expected strict retirement rejection, got {other:?}"),
+            other => panic!("expected prepublication retirement rejection, got {other:?}"),
         }
-        assert!(current_launch_generation() > first_generation);
-        assert_ne!(adapter.active_module_handle, first_handle);
+        assert_eq!(current_launch_generation(), first_generation);
+        assert_eq!(adapter.active_module_handle, first_handle);
         assert_eq!(
             adapter.active_module_handle,
             adapter.module_manager.primary().map(|slot| slot.handle)
         );
         assert_eq!(
             adapter.active_generation_artifact_id.as_deref(),
-            Some(second_artifact_id.as_str())
+            Some(first_artifact_id.as_str())
         );
         assert_eq!(adapter.pending_retired_modules.len(), 1);
         assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), 1);
+        assert!(!adapter
+            .last_reload_log()
+            .iter()
+            .any(|line| line.contains("dispatcher_epoch event=published")));
         assert!(adapter.last_reload_log().iter().any(|line| {
-            line.contains("dispatcher_epoch event=retirement_failed")
-                && line.contains("old_generation_retired=false")
-                && line.contains("delayed_unload_result=failed")
+            line.contains("dispatcher_epoch")
+                && line.contains("event=rolled_back")
+                && line.contains("reason=acceptance_ledger_rejected")
         }));
 
         adapter
