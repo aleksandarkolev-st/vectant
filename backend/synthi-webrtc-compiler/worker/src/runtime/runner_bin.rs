@@ -484,6 +484,15 @@ fn gpu_reload_capsule_metadata_from_token(token: Option<&str>) -> Option<ReloadC
 }
 
 #[cfg(feature = "gpu-hmr")]
+fn gpu_reload_source_paths(
+    capsule_metadata: Option<&ReloadCapsuleMetadata>,
+) -> Vec<String> {
+    capsule_metadata
+        .and_then(|metadata| metadata.fission_source_paths.clone())
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "gpu-hmr")]
 #[derive(Debug)]
 struct ParsedGpuReloadCommand {
     request_id: Option<String>,
@@ -1884,6 +1893,7 @@ fn main() {
                         let kernels = parsed.kernels;
                         let abi_version = parsed.abi_version;
                         let capsule_metadata = parsed.capsule_metadata;
+                        let source_paths = gpu_reload_source_paths(capsule_metadata.as_ref());
                         let terminal_request_id = parsed.request_id.clone();
                         let terminal_source_edit_id = parsed.source_edit_id.clone();
                         let source_edit_id = parsed.source_edit_id;
@@ -1917,7 +1927,7 @@ fn main() {
                         if partial_device_load {
                             capabilities.push("gpu_sidecar_partial_module".to_string());
                         }
-                        let manifest = BuildManifest::for_language(
+                        let mut manifest = BuildManifest::for_language(
                             session_id
                                 .clone()
                                 .unwrap_or_else(|| "runner-gpu".to_string()),
@@ -1927,14 +1937,13 @@ fn main() {
                         .with_artifact(artifact_path, &artifact_hash)
                         .with_abi_version(&abi_version)
                         .with_state_schema_hash(&artifact_hash)
-                        .with_dirty_units(vec![if vendor == GpuVendor::Cuda {
-                            "device.cu".to_string()
-                        } else {
-                            "device.hip".to_string()
-                        }])
                         .with_exported_symbols(kernels.clone())
                         .with_capabilities(capabilities)
                         .with_snapshot_modes(vec![SnapshotMode::Binary]);
+                        if !source_paths.is_empty() {
+                            manifest.translation_units = Some(source_paths.clone());
+                            manifest.dirty_units = Some(source_paths.clone());
+                        }
 
                         let firewall_process_id_before = std::process::id();
                         let firewall_process_id_after = std::process::id();
@@ -1942,7 +1951,7 @@ fn main() {
                             reload_id,
                             source_edit_id,
                             module_id: "device".into(),
-                            changed_files: manifest.dirty_units.clone().unwrap_or_default(),
+                            changed_files: source_paths,
                             build_manifest: manifest,
                             artifact_blob,
                             capsule_metadata,
@@ -2478,7 +2487,8 @@ mod tests {
     #[cfg(feature = "gpu-hmr")]
     use super::{
         gpu_artifact_loader_transport_for_reload, gpu_reload_artifact_blob_from_path,
-        gpu_reload_capsule_metadata_from_token, parse_gpu_artifact_loader_transport,
+        gpu_reload_capsule_metadata_from_token, gpu_reload_source_paths,
+        parse_gpu_artifact_loader_transport,
         parse_gpu_reload_command, strict_gpu_reload_terminal_result, AdapterReloadResult,
         ArtifactLoaderTransport, ReloadArtifactBlob,
     };
@@ -2640,6 +2650,28 @@ mod tests {
         );
         assert_eq!(metadata.proof_hash.as_deref(), Some("sha256:456"));
         assert!(gpu_reload_capsule_metadata_from_token(Some("-")).is_none());
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn gpu_reload_source_paths_come_only_from_verified_capsule_provenance() {
+        let metadata = worker::hmr::adapter_trait::ReloadCapsuleMetadata {
+            fission_source_paths: Some(vec![
+                "engines/render/include/material_kernel.inc".to_string(),
+                "src/scene lighting/material graph.cpp".to_string(),
+            ]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            gpu_reload_source_paths(Some(&metadata)),
+            vec![
+                "engines/render/include/material_kernel.inc",
+                "src/scene lighting/material graph.cpp",
+            ]
+        );
+        assert!(gpu_reload_source_paths(None).is_empty());
+        assert!(gpu_reload_source_paths(Some(&Default::default())).is_empty());
     }
 
     #[cfg(feature = "gpu-hmr")]
