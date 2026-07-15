@@ -16,6 +16,7 @@ source_manifest="${SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH:-${SYNTHI_GPU_AGENT_DIR
 source_root="${SYNTHI_GPU_AGENT_SOURCE_ROOT:-${SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT:-}}"
 source_entry="${SYNTHI_GPU_AGENT_SOURCE_ENTRY_PATH:-${SYNTHI_GPU_AGENT_DIRECT_SOURCE_ENTRY_PATH:-}}"
 source_authority="${SYNTHI_GPU_AGENT_SOURCE_AUTHORITY:-${SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY:-}}"
+source_commit="${SYNTHI_GPU_AGENT_SOURCE_COMMIT:-${SYNTHI_GPU_AGENT_DIRECT_SOURCE_COMMIT:-}}"
 
 usage() {
   cat <<'USAGE'
@@ -36,6 +37,7 @@ Options:
   --source-manifest PATH   Source-tree manifest for --validate source-first-visual.
   --source-root PATH       Source root for --validate source-first-visual.
   --source-entry PATH      Entry path inside --source-root when it is not unambiguous.
+  --source-commit OID      Full pinned Git commit for --source-root.
   --source-authority NAME  Source authority for --validate source-first-visual, e.g.
                            direct_local_git_repo_path, user_source_files, workspace_source_files.
   --help, -h               Show this help.
@@ -47,7 +49,7 @@ High-fidelity deterministic visual validation:
   scripts/run-project.sh --build --validate realistic-raytrace
 
 Generic arbitrary source-first visual validation:
-  scripts/run-project.sh --validate source-first-visual --source-root /path/to/project --source-authority direct_local_git_repo_path
+  scripts/run-project.sh --validate source-first-visual --source-root /path/to/project --source-commit FULL_GIT_OID --source-authority direct_local_git_repo_path
 
 Use --vendor/--arch only when you want to override auto detection.
 
@@ -129,6 +131,14 @@ while [ "$#" -gt 0 ]; do
       fi
       source_entry="$1"
       ;;
+    --source-commit)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "--source-commit requires a full Git object id" >&2
+        exit 2
+      fi
+      source_commit="$1"
+      ;;
     --source-authority)
       shift
       if [ "$#" -eq 0 ]; then
@@ -168,6 +178,26 @@ esac
 
 if [ "$validation" = "source-first-visual" ] && [ -z "$source_manifest" ] && [ -z "$source_root" ]; then
   echo "--validate source-first-visual requires --source-manifest or --source-root" >&2
+  exit 2
+fi
+
+if [ -n "$source_root" ] && [ -z "$source_manifest" ] && [ -z "$source_commit" ]; then
+  echo "--source-root requires --source-commit with a full Git object id" >&2
+  exit 2
+fi
+
+if [ -n "$source_commit" ] && [ -z "$source_root" ]; then
+  echo "--source-commit requires --source-root" >&2
+  exit 2
+fi
+
+if [ -n "$source_commit" ] && ! [[ "$source_commit" =~ ^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$ ]]; then
+  echo "--source-commit must be a full 40- or 64-character Git object id" >&2
+  exit 2
+fi
+
+if [ -n "$source_manifest" ] && [ -n "$source_commit" ]; then
+  echo "--source-commit cannot override --source-manifest" >&2
   exit 2
 fi
 
@@ -334,6 +364,9 @@ if [ "$validation" = "source-first-visual" ]; then
   if [ -n "$source_authority" ]; then
     echo "    source authority: $source_authority"
   fi
+  if [ -n "$source_commit" ]; then
+    echo "    source commit: $source_commit"
+  fi
 fi
 
 cd "$repo_root/mcp/synthi-mcp"
@@ -369,6 +402,9 @@ case "$validation" in
     fi
     if [ -n "$source_authority" ]; then
       source_first_args+=(--source-authority "$source_authority")
+    fi
+    if [ -n "$source_commit" ]; then
+      source_first_args+=(--source-commit "$source_commit")
     fi
     node scripts/gpu-hmr-source-first-visual-proof.mjs "${source_first_args[@]}"
     ;;
