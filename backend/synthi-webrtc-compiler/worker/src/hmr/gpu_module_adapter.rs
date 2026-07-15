@@ -883,7 +883,7 @@ fn latest_replayable_launch_record(
         })
 }
 
-fn run_runtime_output_oracle_replay(
+fn run_runtime_output_observation_replay(
     symbols: &GpuDriverSymbolTable,
     changed_symbols: &[String],
     previous_generation: u64,
@@ -892,7 +892,7 @@ fn run_runtime_output_oracle_replay(
 ) -> Result<Option<String>, String> {
     let Some(record) = latest_replayable_launch_record(changed_symbols, previous_generation) else {
         return Ok(Some(format!(
-            "[gpu-runtime-boundary] runtime_output_oracle_probe status=skipped profile=runtime-dispatch-replay generation={} artifact_id={} reason=no_replayable_prior_dispatch",
+            "[gpu-runtime-boundary] runtime_output_oracle_probe status=skipped profile=runtime-dispatch-observation generation={} artifact_id={} accepted_for_gpu_hmr=false gpu_hmr_success=false reason=no_replayable_prior_dispatch",
             active_generation,
             active_artifact_id
         )));
@@ -1006,56 +1006,23 @@ fn run_runtime_output_oracle_replay(
             record.kernel_name
         ));
     }
-    let expected = format!("sha256:{}", sha256_hex_bytes(&after));
-    let probe_material = json!({
-        "profile": "runtime-dispatch-replay",
-        "kernel": record.kernel_name.clone(),
-        "previous_generation": previous_generation,
-        "active_generation": active_generation,
-        "active_artifact_id": active_artifact_id,
-        "readback_bytes": readback_bytes,
-        "target_arg_index": target.index,
-        "target_allocation_id": target.allocation_id,
-    });
-    let probe_config_hash = sha256_prefixed_from_text(&stable_json_string(&probe_material));
-    let oracle_id = format!("runtime-replay.{}", record.kernel_name);
+    let observed_hash = format!("sha256:{}", sha256_hex_bytes(&after));
     let output_target_id = format!(
-        "runtime-replay:{}:{}",
+        "runtime-observation:{}:{}",
         &record.kernel_name,
         target
             .allocation_id
             .as_deref()
             .unwrap_or("registered-device-allocation")
     );
-    let probe_evidence_ref = format!(
-        "evidence:runtime-dispatch-replay:{}:{}",
-        &record.kernel_name, after_dispatch_id
-    );
-    let passed = record_output_buffer_checksum_with_probe_bytes_after_dispatch(
-        &oracle_id,
-        &after,
-        &expected,
-        "worker.gpu_module_adapter.runtime_replay",
-        &output_target_id,
-        Some(active_artifact_id),
-        Some(&after_dispatch_id),
-        None,
-        if before == after {
-            "runtime_replay_readback_snapshot"
-        } else {
-            "runtime_replay_readback_changed"
-        },
-        &probe_config_hash,
-        &probe_evidence_ref,
-    );
     Ok(Some(format!(
-        "[gpu-runtime-boundary] runtime_output_oracle_probe status={} profile=runtime-dispatch-replay schema=synthi.gpu_hmr.runtime_output_oracle.v1 kernel={} generation={} output_buffer={} bytes={} changed={} artifact_id={} after_dispatch_id={}",
-        if passed { "pass" } else { "fail" },
+        "[gpu-runtime-boundary] runtime_output_oracle_probe status=unproven profile=runtime-dispatch-observation schema=synthi.gpu_hmr.runtime_output_observation.v1 kernel={} generation={} output_buffer={} bytes={} changed={} observed_hash={} artifact_id={} after_dispatch_id={} accepted_for_gpu_hmr=false gpu_hmr_success=false reason=precommitted_expected_output_missing",
         record.kernel_name,
         active_generation,
         output_target_id,
         after.len(),
         before != after,
+        observed_hash,
         active_artifact_id,
         log_optional_token(Some(&after_dispatch_id))
     )))
@@ -1077,7 +1044,7 @@ fn run_runtime_output_oracle_probe(
         active_artifact_id,
     )? {
         Some(line) if runtime_boundary_token(&line, "status") != Some("skipped") => Ok(Some(line)),
-        _ => run_runtime_output_oracle_replay(
+        _ => run_runtime_output_observation_replay(
             symbols,
             changed_symbols,
             previous_generation,
@@ -4624,6 +4591,42 @@ mod tests {
         ));
     }
 
+    fn launch_replayable_vec_add_on_stream(stream_token: usize) -> Box<[u8; 16]> {
+        let kernel = CString::new("vec_add").unwrap();
+        let name = CString::new("replay-output").unwrap();
+        let lifetime = CString::new("persistent").unwrap();
+        let grid = [1_u32, 1, 1];
+        let block = [1_u32, 1, 1];
+        let mut device_bytes = Box::new([0_u8; 16]);
+        let device_ptr = device_bytes.as_mut_ptr().cast::<c_void>();
+        synthi_gpu_register_buffer(
+            std::ptr::null_mut(),
+            device_ptr,
+            device_bytes.len(),
+            name.as_ptr(),
+            lifetime.as_ptr(),
+        );
+        let arg = SynthiGpuLaunchArg {
+            value_ptr: (&device_ptr as *const *mut c_void).cast(),
+            value_size: std::mem::size_of_val(&device_ptr),
+            value_kind: SYNTHI_GPU_ARG_KIND_POINTER,
+        };
+        let receipt = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            grid.as_ptr().cast(),
+            std::mem::size_of_val(&grid),
+            block.as_ptr().cast(),
+            std::mem::size_of_val(&block),
+            0,
+            stream_token,
+            &arg,
+            1,
+        );
+        assert!(receipt.dispatched);
+        device_bytes
+    }
+
     #[test]
     fn defaults_target_cuda() {
         let cfg = GpuModuleAdapterConfig::default();
@@ -5271,6 +5274,73 @@ mod tests {
             output.after_dispatch_id.as_deref(),
             launches[1].dispatch_id.as_deref()
         );
+        reset_for_test();
+    }
+
+    #[test]
+    fn replay_observation_does_not_authorize_output_oracle() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-observation-before").unwrap();
+        second.write_all(b"fake-cubin-observation-after").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let second_artifact_id = format!(
+            "artifact:sha256:{}",
+            sha256_hex_bytes(b"fake-cubin-observation-after")
+        );
+        let mut adapter = adapter_with_config_and_symbols(
+            GpuModuleAdapterConfig {
+                vendor: GpuVendor::Rocm,
+                ..GpuModuleAdapterConfig::default()
+            },
+            stub_symbols(),
+        );
+        assert!(matches!(
+            adapter.reload(&request_with_artifact_and_abi(
+                &first_path,
+                vec!["device.hip".into()],
+                "sig-v1"
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        let _device_bytes = launch_replayable_vec_add_on_stream(0x77);
+        fs::remove_file(runtime_output_oracle_profile_path())
+            .expect("remove precommitted output profile for fallback test");
+
+        match adapter.reload(&request_with_artifact_and_abi(
+            &second_path,
+            vec!["device.hip".into()],
+            "sig-v1",
+        )) {
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(!recoverable);
+                assert!(error.contains("output_oracle_not_passed"));
+                assert!(error.contains("device_identity_missing"));
+            }
+            other => {
+                panic!("expected strict refusal without precommitted output oracle, got {other:?}")
+            }
+        }
+
+        let active_generation = current_launch_generation();
+        assert!(output_oracle_records_snapshot().into_iter().all(|record| {
+            record.generation != active_generation
+                || record.artifact_id.as_deref() != Some(second_artifact_id.as_str())
+                || !record.passed
+        }));
+        let observation = adapter
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("profile=runtime-dispatch-observation"))
+            .expect("support-only replay observation");
+        assert!(observation.contains("status=unproven"));
+        assert!(observation.contains("observed_hash=sha256:"));
+        assert!(observation.contains("accepted_for_gpu_hmr=false"));
+        assert!(observation.contains("gpu_hmr_success=false"));
+        assert!(observation.contains("reason=precommitted_expected_output_missing"));
         reset_for_test();
     }
 
