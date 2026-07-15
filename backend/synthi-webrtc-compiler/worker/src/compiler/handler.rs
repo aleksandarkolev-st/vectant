@@ -6338,8 +6338,17 @@ fn proof_fission_selection_decision_hash(proof: &serde_json::Value) -> Option<St
 }
 
 fn proof_fission_output_oracle_contract(proof: &serde_json::Value) -> Option<serde_json::Value> {
-    proof_selected_fission_candidate(proof)
-        .and_then(|candidate| candidate.get("outputOracleContract"))
+    let verified_candidate = proof_selected_fission_candidate(proof)?;
+    let candidate = verified_candidate
+        .get("candidate")
+        .filter(|candidate| candidate.is_object())?;
+    candidate
+        .get("outputOracleContract")
+        .or_else(|| candidate.get("resolvedOutputOracleContract"))
+        .or_else(|| candidate.get("output_oracle_contract"))
+        .or_else(|| candidate.get("resolved_output_oracle_contract"))
+        .or_else(|| candidate.get("outputOracleProposal"))
+        .or_else(|| candidate.get("output_oracle_proposal"))
         .filter(|contract| contract.is_object())
         .cloned()
 }
@@ -14691,6 +14700,18 @@ __constant__ int scale;
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
+        let capsule_metadata =
+            reload_capsule_metadata_from_proof_artifact(&written, &outcome).await;
+        let exact_oracle_contract = capsule_metadata
+            .fission_output_oracle_contract
+            .expect("selected exact output oracle contract");
+        let selected_raw_oracle_contract = candidate
+            .get("outputOracleContract")
+            .or_else(|| candidate.get("resolvedOutputOracleContract"))
+            .or_else(|| candidate.get("outputOracleProposal"))
+            .expect("selected raw output oracle contract");
+        assert_eq!(&exact_oracle_contract, selected_raw_oracle_contract);
+        assert!(exact_oracle_contract.get("proposalValid").is_none());
     }
 
     #[tokio::test]
