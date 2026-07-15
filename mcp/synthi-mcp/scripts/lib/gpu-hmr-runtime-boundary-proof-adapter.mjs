@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   deriveGpuHmrAcceptanceContractFromVerifiedProofs,
@@ -9,6 +10,10 @@ import {
 import {
   runtimeProofArtifactStrictGate,
 } from './gpu-hmr-proof-strict-gates.mjs';
+import {
+  buildGpuHmrFrameGateRuntimeBinding,
+  buildGpuHmrVisualCaptureRuntimeBinding,
+} from './gpu-hmr-proof-ledger.mjs';
 import {
   classifyGpuHmrAbiProof,
   classifyGpuHmrFissionProof,
@@ -152,6 +157,10 @@ function sha256Hex(value) {
 
 function sha256Stable(value) {
   return `sha256:${sha256Hex(stableJson(value))}`;
+}
+
+function sha256Bytes(value) {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
 function normalizeSha256(value) {
@@ -611,6 +620,284 @@ function visualOracleArtifactsWithEvidenceVerification(visualOracleArtifacts, ar
     result[camelKey] = true;
   }
   return result;
+}
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+function pngDimensionsFromBytes(bytes) {
+  if (
+    !Buffer.isBuffer(bytes)
+    || bytes.length < 24
+    || !bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)
+    || bytes.toString('ascii', 12, 16) !== 'IHDR'
+  ) {
+    return null;
+  }
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  return width > 0 && height > 0 ? [width, height] : null;
+}
+
+function visualCaptureManifestCandidates(input, visualOracleArtifacts) {
+  const artifacts = objectOrNull(visualOracleArtifacts) ?? {};
+  return compactObjectList([
+    artifacts.capture_manifest,
+    artifacts.captureManifest,
+    artifacts.after_capture_manifest,
+    artifacts.afterCaptureManifest,
+    input.capture_manifest,
+    input.captureManifest,
+    input.visual_capture_manifest,
+    input.visualCaptureManifest,
+  ]);
+}
+
+function resolveVisualCaptureManifest(input, visualOracleArtifacts) {
+  const candidates = visualCaptureManifestCandidates(input, visualOracleArtifacts);
+  if (candidates.length === 0) {
+    return {
+      manifest: null,
+      frameGate: null,
+      evidenceBinding: null,
+      failedGates: ['runtime_boundary_visual_capture_manifest_missing'],
+    };
+  }
+  const failedGates = [];
+  if (new Set(candidates.map(stableJson)).size !== 1) {
+    failedGates.push('runtime_boundary_visual_capture_manifest_conflict');
+  }
+  const manifest = candidates[0];
+  const frameGateCandidates = compactObjectList([
+    manifest.frame_gate,
+    manifest.frameGate,
+  ]);
+  if (frameGateCandidates.length === 0) {
+    failedGates.push('runtime_boundary_visual_capture_frame_gate_missing');
+  } else if (new Set(frameGateCandidates.map(stableJson)).size !== 1) {
+    failedGates.push('runtime_boundary_visual_capture_frame_gate_conflict');
+  }
+  const frameGate = frameGateCandidates[0] ?? null;
+  if (firstText(manifest.schema_version, manifest.schemaVersion)
+    !== 'synthi.mcp.capture_manifest.v1') {
+    failedGates.push('runtime_boundary_visual_capture_manifest_schema_invalid');
+  }
+  if (firstText(frameGate?.status) !== 'satisfied') {
+    failedGates.push('runtime_boundary_visual_capture_frame_gate_unsatisfied');
+  }
+  const evidenceBinding = objectOrNull(frameGate?.evidence_binding);
+  if (!evidenceBinding) {
+    failedGates.push('runtime_boundary_visual_capture_frame_gate_evidence_binding_missing');
+  }
+  return {
+    manifest,
+    frameGate,
+    evidenceBinding,
+    failedGates: [...new Set(failedGates)],
+  };
+}
+
+function visualCaptureByteVerificationFailures(
+  captureManifest,
+  visualOracleArtifacts,
+  visualEvidenceArtifacts,
+) {
+  if (!captureManifest) return ['runtime_boundary_visual_capture_manifest_missing'];
+  const afterArtifact = verifiedVisualEvidenceArtifactForRole(
+    visualOracleArtifacts,
+    visualEvidenceArtifacts,
+    'after',
+  );
+  if (!afterArtifact) {
+    return ['runtime_boundary_visual_capture_after_artifact_unverified'];
+  }
+  const artifactPath = visualArtifactPath(afterArtifact);
+  if (!artifactPath || /^[a-z][a-z0-9+.-]*:/iu.test(artifactPath)) {
+    return ['runtime_boundary_visual_capture_after_image_bytes_unreadable'];
+  }
+
+  let bytes;
+  try {
+    bytes = readFileSync(path.resolve(artifactPath));
+  } catch {
+    return ['runtime_boundary_visual_capture_after_image_bytes_unreadable'];
+  }
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+    return ['runtime_boundary_visual_capture_after_image_bytes_unreadable'];
+  }
+
+  const actualHash = sha256Bytes(bytes);
+  const actualDimensions = pngDimensionsFromBytes(bytes);
+  const manifestHash = normalizeSha256(firstText(
+    captureManifest.image_sha256,
+    captureManifest.imageSha256,
+  ));
+  const manifestByteLength = captureManifest.image_byte_length
+    ?? captureManifest.imageByteLength;
+  const manifestWidth = captureManifest.width;
+  const manifestHeight = captureManifest.height;
+  const artifactByteLength = visualArtifactByteLength(afterArtifact);
+  return [
+    visualArtifactHash(afterArtifact) === actualHash
+      ? null
+      : 'runtime_boundary_visual_capture_after_artifact_hash_mismatch',
+    visualRoleHash(visualOracleArtifacts, 'after') === actualHash
+      ? null
+      : 'runtime_boundary_visual_capture_visual_oracle_hash_mismatch',
+    manifestHash === actualHash
+      ? null
+      : 'runtime_boundary_visual_capture_manifest_image_hash_mismatch',
+    artifactByteLength === bytes.length
+      ? null
+      : 'runtime_boundary_visual_capture_after_artifact_byte_length_mismatch',
+    Number.isSafeInteger(manifestByteLength) && manifestByteLength === bytes.length
+      ? null
+      : 'runtime_boundary_visual_capture_manifest_image_byte_length_mismatch',
+    actualDimensions
+      && Number.isSafeInteger(manifestWidth)
+      && Number.isSafeInteger(manifestHeight)
+      && actualDimensions[0] === manifestWidth
+      && actualDimensions[1] === manifestHeight
+      ? null
+      : 'runtime_boundary_visual_capture_manifest_dimensions_mismatch',
+  ].filter(Boolean);
+}
+
+function proofBindingErrorCodes(error, fallback) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const details = message.includes(':')
+    ? message.slice(message.indexOf(':') + 1).split(',').map((value) => value.trim())
+    : [];
+  return compactStringList([fallback, ...details]);
+}
+
+function buildVisualCaptureProofLedgerRecord(
+  preliminaryArtifact,
+  stageEvidence,
+  evidenceBinding,
+  visualOracleArtifacts,
+) {
+  const sourceRecord = objectOrNull(preliminaryArtifact?.derivedProofLedgerRecord)
+    ?? objectOrNull(preliminaryArtifact?.derived_proof_ledger_record);
+  if (!sourceRecord) return null;
+  const record = structuredClone(sourceRecord);
+  const stages = stageEvidence.stageEvents;
+  const eventBindings = [
+    ['loader_event', stages.artifact_transport],
+    ['epoch_publish_event', stages.epoch_publication],
+    ['dispatch_event', stages.dispatch_trace],
+    ['output_event', stages.output_oracle],
+  ];
+  for (const [recordKey, stage] of eventBindings) {
+    record[recordKey] = {
+      ...objectOrNull(record[recordKey]),
+      runtime_session_id: stage?.runtimeSessionId ?? null,
+      device_uuid: stage?.deviceUuid ?? null,
+    };
+  }
+  record.output_event.output_target_id = stages.output_oracle?.outputTargetId ?? null;
+  record.process_identity = {
+    ...objectOrNull(record.process_identity),
+    runtime_session_id: stages.host_identity?.runtimeSessionId ?? null,
+  };
+  record.device_identity = {
+    ...objectOrNull(record.device_identity),
+    device_uuid: stages.host_identity?.deviceUuid ?? null,
+  };
+  record.runtime_proof_id = evidenceBinding.runtime_proof_id;
+  record.runtime_proof_state = evidenceBinding.runtime_proof_state;
+  record.runtime_proof_accepted = evidenceBinding.runtime_proof_accepted;
+  record.runtime_proof_observed_at_ms = evidenceBinding.runtime_proof_observed_at_ms;
+  record.hmr_observed_at_ms = evidenceBinding.hmr_observed_at_ms;
+  record.runtime_session_id = stages.dispatch_trace?.runtimeSessionId ?? null;
+  record.oracle_artifacts = {
+    ...objectOrNull(record.oracle_artifacts),
+    visual_oracle_artifacts: visualOracleArtifacts,
+  };
+  return record;
+}
+
+function prepareVisualCaptureRuntimeBinding({
+  input,
+  components,
+  stageEvidence,
+  preliminaryArtifact,
+}) {
+  const capture = resolveVisualCaptureManifest(input, components.visualOracleArtifacts);
+  const failedGates = [...capture.failedGates];
+  if (capture.manifest) {
+    failedGates.push(...visualCaptureByteVerificationFailures(
+      capture.manifest,
+      components.visualOracleArtifacts,
+      components.visualEvidenceArtifacts,
+    ));
+  }
+  if (failedGates.length > 0 || !capture.evidenceBinding) {
+    return { accepted: false, failedGates: [...new Set(failedGates)] };
+  }
+
+  const record = buildVisualCaptureProofLedgerRecord(
+    preliminaryArtifact,
+    stageEvidence,
+    capture.evidenceBinding,
+    components.visualOracleArtifacts,
+  );
+  if (!record) {
+    return {
+      accepted: false,
+      failedGates: ['runtime_boundary_visual_capture_derived_ledger_record_missing'],
+    };
+  }
+
+  let frameGateRuntimeBinding;
+  try {
+    frameGateRuntimeBinding = buildGpuHmrFrameGateRuntimeBinding(record);
+  } catch (error) {
+    return {
+      accepted: false,
+      failedGates: proofBindingErrorCodes(
+        error,
+        'runtime_boundary_visual_capture_frame_gate_runtime_binding_rejected',
+      ),
+    };
+  }
+  const missingSuppliedFields = Object.keys(frameGateRuntimeBinding)
+    .filter((key) => !Object.prototype.hasOwnProperty.call(capture.evidenceBinding, key));
+  if (missingSuppliedFields.length > 0) {
+    return {
+      accepted: false,
+      failedGates: [
+        'runtime_boundary_visual_capture_frame_gate_runtime_binding_incomplete',
+        ...missingSuppliedFields.map((field) =>
+          `runtime_boundary_visual_capture_frame_gate_${field}_missing`
+        ),
+      ],
+    };
+  }
+
+  let visualCaptureRuntimeBinding;
+  try {
+    visualCaptureRuntimeBinding = buildGpuHmrVisualCaptureRuntimeBinding(record);
+  } catch (error) {
+    return {
+      accepted: false,
+      failedGates: proofBindingErrorCodes(
+        error,
+        'runtime_boundary_visual_capture_runtime_binding_rejected',
+      ),
+    };
+  }
+  const boundVisualOracleArtifacts = components.visualOracleArtifacts;
+  boundVisualOracleArtifacts.visual_capture_runtime_binding = visualCaptureRuntimeBinding;
+  record.oracle_artifacts = {
+    ...objectOrNull(record.oracle_artifacts),
+    visual_oracle_artifacts: boundVisualOracleArtifacts,
+  };
+  return {
+    accepted: true,
+    failedGates: [],
+    proofLedgerRecord: record,
+    visualOracleArtifacts: boundVisualOracleArtifacts,
+  };
 }
 
 function eventKind(event) {
@@ -1221,8 +1508,18 @@ function visualOracleArtifactsFromInput(input = {}, outputEvent = null) {
     ?? objectOrNull(inputArtifacts.visual_oracle_artifacts)
     ?? null;
   const rawOutput = objectOrNull(outputEvent?.raw) ?? {};
+  const captureManifest = objectOrNull(explicit?.capture_manifest)
+    ?? objectOrNull(explicit?.captureManifest)
+    ?? objectOrNull(explicit?.after_capture_manifest)
+    ?? objectOrNull(explicit?.afterCaptureManifest)
+    ?? objectOrNull(input.capture_manifest)
+    ?? objectOrNull(input.captureManifest)
+    ?? objectOrNull(input.visual_capture_manifest)
+    ?? objectOrNull(input.visualCaptureManifest)
+    ?? null;
   const source = {
     ...(explicit ?? {}),
+    ...(captureManifest ? { capture_manifest: captureManifest } : {}),
   };
   const beforeImage = firstText(source.beforeImage, source.before_image, rawOutput.beforeImage, rawOutput.before_image);
   const afterImage = firstText(source.afterImage, source.after_image, rawOutput.afterImage, rawOutput.after_image);
@@ -2104,6 +2401,65 @@ function runtimeProofFailureCodes(runtimeProofArtifact, strictGate, stageEvidenc
   ]);
 }
 
+function buildBoundaryValidationRuntimeProofArtifact({
+  input,
+  components,
+  fullRuntimeProof,
+  acceptanceContract,
+  proofLedgerRecord = null,
+  createdAt = null,
+}) {
+  return buildValidationRuntimeProofArtifact({
+    workspaceSlug: components.projectId,
+    sourceEditId: components.editId,
+    backend: components.backend,
+    gpuArch: firstText(input.gpuArch, input.gpu_arch, input.compileTarget, input.compile_target),
+    processId: components.processId,
+    runtimeSessionId: components.runtimeSessionId,
+    deviceUuid: components.deviceUuid,
+    contextHandle: components.contextHandle,
+    classification: components.classification,
+    cpuHmrUsed: components.firewallEvidence.cpu_hmr_used,
+    fullRebuildUsed: components.firewallEvidence.full_rebuild_used,
+    processRestarted: components.firewallEvidence.process_restarted,
+    firewallEvidence: components.firewallEvidence,
+    modelProvenance: components.modelProvenance,
+    timings: components.timings,
+    metricClock: 'monotonic_ns',
+    metricScope: components.timings.metric_scope,
+    cacheState: components.timings.cache_state,
+    sourceProofs: components.sourceProofs,
+    fissionProof: components.fissionProof,
+    abiProof: components.abiProof,
+    artifactTransportProof: components.artifactTransportProof,
+    epochProof: components.epochProof,
+    dispatchProof: components.dispatchProof,
+    outputProof: components.outputProof,
+    hostPreservationProof: components.hostPreservationProof,
+    fullRuntimeProof,
+    acceptanceContract,
+    computeOracleArtifacts: components.computeOracleArtifacts,
+    visualOracleArtifacts: components.visualOracleArtifacts,
+    visualEvidenceArtifacts: components.visualEvidenceArtifacts,
+    visualEvidenceRefs: components.outputProof.visualEvidenceRefs,
+    deterministicVisualMode: components.deterministicVisualMode,
+    evidenceRefs: components.evidenceRefs,
+    ...(proofLedgerRecord ? { proofLedgerRecord } : {}),
+    ...(createdAt ? { createdAt } : {}),
+    adversarialPreflight: {
+      schemaVersion: 'synthi.gpu_hmr.adversarial_preflight.v1',
+      ok: true,
+      skipped: false,
+      scriptPath: 'runtime-boundary-proof-adapter',
+      exitCode: 0,
+      elapsedMs: 0,
+      stdoutHash: sha256Stable({ adapter: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION, ok: true }),
+      stderrHash: sha256Stable({ adapter: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION, stderr: '' }),
+      error: null,
+    },
+  });
+}
+
 export function buildRuntimeBoundaryProofAdapter(input = {}) {
   const stageEvidence = buildRuntimeBoundaryStageEvidence(input.runtimeBoundaryEvents ?? input.runtime_boundary_events ?? []);
   const inputEvidence = buildRuntimeBoundaryInputEvidence(input);
@@ -2113,6 +2469,7 @@ export function buildRuntimeBoundaryProofAdapter(input = {}) {
   let strictGate = null;
   let fullRuntimeProof = null;
   let acceptanceContract = null;
+  let visualCaptureBindingFailedGates = [];
 
   if (
     stageEvidence.accepted === true
@@ -2155,52 +2512,32 @@ export function buildRuntimeBoundaryProofAdapter(input = {}) {
       hostPreservationProof: components.hostPreservationProof,
       fullRuntimeProof,
     });
-    runtimeProofArtifact = buildValidationRuntimeProofArtifact({
-      workspaceSlug: components.projectId,
-      sourceEditId: components.editId,
-      backend: components.backend,
-      gpuArch: firstText(input.gpuArch, input.gpu_arch, input.compileTarget, input.compile_target),
-      processId: components.processId,
-      deviceUuid: components.deviceUuid,
-      contextHandle: components.contextHandle,
-      classification: components.classification,
-      cpuHmrUsed: components.firewallEvidence.cpu_hmr_used,
-      fullRebuildUsed: components.firewallEvidence.full_rebuild_used,
-      processRestarted: components.firewallEvidence.process_restarted,
-      firewallEvidence: components.firewallEvidence,
-      modelProvenance: components.modelProvenance,
-      timings: components.timings,
-      metricClock: 'monotonic_ns',
-      metricScope: components.timings.metric_scope,
-      cacheState: components.timings.cache_state,
-      sourceProofs: components.sourceProofs,
-      fissionProof: components.fissionProof,
-      abiProof: components.abiProof,
-      artifactTransportProof: components.artifactTransportProof,
-      epochProof: components.epochProof,
-      dispatchProof: components.dispatchProof,
-      outputProof: components.outputProof,
-      hostPreservationProof: components.hostPreservationProof,
+    runtimeProofArtifact = buildBoundaryValidationRuntimeProofArtifact({
+      input,
+      components,
       fullRuntimeProof,
       acceptanceContract,
-      computeOracleArtifacts: components.computeOracleArtifacts,
-      visualOracleArtifacts: components.visualOracleArtifacts,
-      visualEvidenceArtifacts: components.visualEvidenceArtifacts,
-      visualEvidenceRefs: components.outputProof.visualEvidenceRefs,
-      deterministicVisualMode: components.deterministicVisualMode,
-      evidenceRefs: components.evidenceRefs,
-      adversarialPreflight: {
-        schemaVersion: 'synthi.gpu_hmr.adversarial_preflight.v1',
-        ok: true,
-        skipped: false,
-        scriptPath: 'runtime-boundary-proof-adapter',
-        exitCode: 0,
-        elapsedMs: 0,
-        stdoutHash: sha256Stable({ adapter: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION, ok: true }),
-        stderrHash: sha256Stable({ adapter: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION, stderr: '' }),
-        error: null,
-      },
     });
+    if (components.visualOracleArtifacts) {
+      const visualCaptureBinding = prepareVisualCaptureRuntimeBinding({
+        input,
+        components,
+        stageEvidence,
+        preliminaryArtifact: runtimeProofArtifact,
+      });
+      visualCaptureBindingFailedGates = visualCaptureBinding.failedGates;
+      if (visualCaptureBinding.accepted === true) {
+        components.visualOracleArtifacts = visualCaptureBinding.visualOracleArtifacts;
+        runtimeProofArtifact = buildBoundaryValidationRuntimeProofArtifact({
+          input,
+          components,
+          fullRuntimeProof,
+          acceptanceContract,
+          proofLedgerRecord: visualCaptureBinding.proofLedgerRecord,
+          createdAt: runtimeProofArtifact.createdAt,
+        });
+      }
+    }
     strictGate = runtimeProofArtifactStrictGate(
       runtimeProofArtifact,
       runtimeBoundaryStrictGateOptions(input),
@@ -2212,6 +2549,7 @@ export function buildRuntimeBoundaryProofAdapter(input = {}) {
     ...failedGates,
     ...inputEvidence.failedGates,
     ...inputStageBindingEvidence.failedGates,
+    ...visualCaptureBindingFailedGates,
   ]);
   const accepted =
     stageEvidence.accepted === true

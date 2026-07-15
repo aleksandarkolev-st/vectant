@@ -12,6 +12,9 @@ import {
   buildRuntimeBoundaryStageEvidence,
   materializeRuntimeBoundaryEventLines,
 } from '../lib/gpu-hmr-runtime-boundary-proof-adapter.mjs';
+import {
+  buildGpuHmrFrameGateRuntimeBinding,
+} from '../lib/gpu-hmr-proof-ledger.mjs';
 
 const HASH_A = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HASH_B = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -60,6 +63,18 @@ function tinyRgbPng(red, green, blue) {
 
 function sha256Buffer(buffer) {
   return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
+function contentHash(value) {
+  return sha256Buffer(Buffer.from(stableJson(value)));
 }
 
 const COMPUTE_RAW_BYTES = Buffer.from(Array.from({ length: 128 }, (_, index) =>
@@ -144,6 +159,7 @@ function visualEvidenceArtifactsFromFixture(fixture) {
 function boundaryEvents(overrides = {}) {
   const session = overrides.session ?? 'runtime-session-1';
   const processId = overrides.processId ?? 'pid-1';
+  const deviceUuid = overrides.deviceUuid ?? 'device-1';
   const artifactHash = overrides.artifactHash ?? HASH_B;
   const epoch = overrides.epoch ?? 'epoch-7';
   const dispatchId = overrides.dispatchId ?? 'dispatch-1';
@@ -154,6 +170,7 @@ function boundaryEvents(overrides = {}) {
       artifactHash,
       processId,
       runtimeSession: session,
+      deviceUuid,
       timestampMonotonicNs: 100,
       evidenceRefs: ['runtime-boundary:artifact-transport'],
       ...(overrides.artifactTransport ?? {}),
@@ -165,6 +182,7 @@ function boundaryEvents(overrides = {}) {
       epoch,
       processId,
       runtimeSession: session,
+      deviceUuid,
       timestampMonotonicNs: 200,
       dispatchTableHashBefore: HASH_D,
       dispatchTableHashAfter: HASH_E,
@@ -179,6 +197,7 @@ function boundaryEvents(overrides = {}) {
       dispatchId,
       processId,
       runtimeSession: session,
+      deviceUuid,
       stream: 'stream-1',
       dispatchTableEntry: 'generic_kernel:epoch-7',
       timestampMonotonicNs: 300,
@@ -193,7 +212,7 @@ function boundaryEvents(overrides = {}) {
       eventId: 'host-1',
       processId,
       runtimeSession: session,
-      deviceUuid: 'device-1',
+      deviceUuid,
       contextId: 'ctx-1',
       stream: 'stream-1',
       timestampMonotonicNs: 310,
@@ -215,6 +234,7 @@ function boundaryEvents(overrides = {}) {
       afterDispatchId: dispatchId,
       processId,
       runtimeSession: session,
+      deviceUuid,
       outputTargetId: 'allocation-1',
       oracleKind: 'buffer_checksum',
       timestampMonotonicNs: 400,
@@ -268,6 +288,106 @@ function adapterInput(overrides = {}) {
   };
 }
 
+function installCaptureEvidenceBinding(captureManifest, binding) {
+  const bindingHash = contentHash(binding);
+  captureManifest.evidence_binding = structuredClone(binding);
+  captureManifest.evidence_binding_hash = bindingHash;
+  captureManifest.frame_gate.evidence_binding = structuredClone(binding);
+  captureManifest.frame_gate.evidence_binding_hash = bindingHash;
+}
+
+function targetCaptureBoundaryManifest(input, fixture) {
+  const unbound = buildRuntimeBoundaryProofAdapter(input);
+  const sourceRecord = unbound.runtimeProofArtifact?.derivedProofLedgerRecord;
+  if (!sourceRecord) throw new Error('visual_capture_smoke_derived_record_missing');
+  const record = structuredClone(sourceRecord);
+  const stages = buildRuntimeBoundaryStageEvidence(input.runtimeBoundaryEvents).stageEvents;
+  for (const [recordKey, stage] of [
+    ['loader_event', stages.artifact_transport],
+    ['epoch_publish_event', stages.epoch_publication],
+    ['dispatch_event', stages.dispatch_trace],
+    ['output_event', stages.output_oracle],
+  ]) {
+    record[recordKey] = {
+      ...record[recordKey],
+      runtime_session_id: stage.runtimeSessionId,
+      device_uuid: stage.deviceUuid,
+    };
+  }
+  record.output_event.output_target_id = stages.output_oracle.outputTargetId;
+  record.process_identity = {
+    ...record.process_identity,
+    runtime_session_id: stages.host_identity.runtimeSessionId,
+  };
+  record.device_identity = {
+    ...record.device_identity,
+    device_uuid: stages.host_identity.deviceUuid,
+  };
+  record.runtime_proof_id = `gpu-runtime-proof:${HASH_C}`;
+  record.runtime_proof_state = 'gpu-hmr-full-runtime-proven';
+  record.runtime_proof_accepted = true;
+  record.runtime_proof_observed_at_ms = 1_100;
+  record.hmr_observed_at_ms = 1_000;
+  record.runtime_session_id = stages.dispatch_trace.runtimeSessionId;
+
+  const evidenceBinding = buildGpuHmrFrameGateRuntimeBinding(record);
+  const captureManifest = {
+    schema_version: 'synthi.mcp.capture_manifest.v1',
+    session_id: 'capture-session-1',
+    capture_backend: 'png-smoke',
+    capture_event_id: 'screenshot:capture-session-1:12:1500',
+    frame_event_id: 'broker-frame:capture-session-1:12',
+    frame_seq: 12,
+    frame_ts_ms: 1_400,
+    capture_ts_ms: 1_500,
+    source_frame_hash: fixture.afterImageHash,
+    broker_frame_hash: fixture.afterImageHash,
+    image_sha256: fixture.afterImageHash,
+    image_byte_length: fixture.afterImageByteLength,
+    width: 1,
+    height: 1,
+    gate_token: 'frame-gate:caller-supplied-capture-token',
+    gate_token_verified: true,
+    required_frame_seq: 11,
+    required_ts_ms: 1_200,
+    frame_gate: {
+      status: 'satisfied',
+      required_frame_seq: 11,
+      required_ts_ms: 1_200,
+      gate_token: 'frame-gate:caller-supplied-capture-token',
+      gate_token_verified: true,
+      gate_token_issued_at_ms: 1_300,
+      gate_token_expires_at_ms: 2_000,
+      session_id: 'capture-session-1',
+      captured_frame_seq: 12,
+      captured_ts_ms: 1_400,
+      timeout_ms: 120_000,
+    },
+  };
+  installCaptureEvidenceBinding(captureManifest, evidenceBinding);
+  return captureManifest;
+}
+
+function mutateCaptureManifest(input, mutate) {
+  const changed = structuredClone(input);
+  mutate(changed.visualOracleArtifacts.capture_manifest);
+  return changed;
+}
+
+function visualLedgerArtifactsFromResult(result) {
+  const record = result.runtimeProofArtifact?.proofLedger?.records?.[0] ?? {};
+  const oracleArtifacts = record.oracle_artifacts ?? record.oracleArtifacts ?? {};
+  return oracleArtifacts.visual_oracle_artifacts
+    ?? oracleArtifacts.visualOracleArtifacts
+    ?? null;
+}
+
+function assertVisualCaptureRefused(result, expectedFailure) {
+  assert.equal(result.accepted, false);
+  assert.ok(result.failedGates.includes(expectedFailure), result.failedGates.join(','));
+  assert.equal(visualLedgerArtifactsFromResult(result)?.visual_capture_runtime_binding, undefined);
+}
+
 const stageEvidence = buildRuntimeBoundaryStageEvidence(boundaryEvents());
 assert.equal(stageEvidence.accepted, true, stageEvidence.failedGates.join(','));
 assert.equal(stageEvidence.normalizedEvents.length, 5);
@@ -312,7 +432,7 @@ assert.equal(runModeProof.runtimeProofArtifact.gpuHmrSuccess, true);
 assert.equal(runModeProof.runtimeBoundaryProofAdapter.gpuHmrSuccess, false);
 
 const visualFixture = writeVisualFixturePngs();
-const visualInput = adapterInput({
+const visualInputWithoutCaptureManifest = adapterInput({
   backend: 'hip',
   outputTargetId: 'framebuffer-1',
   computeOracleArtifacts: null,
@@ -367,15 +487,31 @@ const visualInput = adapterInput({
   },
   visualEvidenceArtifacts: visualEvidenceArtifactsFromFixture(visualFixture),
 });
+
+const visualMissingCaptureManifest = buildRuntimeBoundaryProofAdapter(
+  visualInputWithoutCaptureManifest,
+);
+assertVisualCaptureRefused(
+  visualMissingCaptureManifest,
+  'runtime_boundary_visual_capture_manifest_missing',
+);
+
+const captureManifest = targetCaptureBoundaryManifest(
+  visualInputWithoutCaptureManifest,
+  visualFixture,
+);
+const visualInput = {
+  ...visualInputWithoutCaptureManifest,
+  visualOracleArtifacts: {
+    ...visualInputWithoutCaptureManifest.visualOracleArtifacts,
+    capture_manifest: captureManifest,
+  },
+};
 const visualStageEvidence = buildRuntimeBoundaryStageEvidence(visualInput.runtimeBoundaryEvents);
 assert.equal(visualStageEvidence.accepted, true, visualStageEvidence.failedGates.join(','));
 assert.equal(buildRuntimeBoundaryInputEvidence(visualInput).accepted, true);
 const visualAccepted = buildRuntimeBoundaryProofAdapter(visualInput);
-assert.equal(visualAccepted.accepted, false);
-assert.ok(
-  visualAccepted.failedGates.includes('proof_ledger_recomputed_query_rejected'),
-  visualAccepted.failedGates.join(','),
-);
+assert.equal(visualAccepted.accepted, true, visualAccepted.failedGates.join(','));
 assert.equal(visualAccepted.gpuHmrSuccess, false, 'adapter facet must stay evidence-only for visual proof');
 assert.equal(visualAccepted.runtimeProofArtifact.gpuHmrSuccess, true);
 assert.equal(visualAccepted.runtimeProofArtifact.proofLedgerQuery.gpuHmrSuccess, true);
@@ -387,9 +523,82 @@ const visualLedgerArtifacts = visualLedgerOracleArtifacts.visual_oracle_artifact
   ?? visualLedgerOracleArtifacts.visualOracleArtifacts;
 assert.ok(visualLedgerArtifacts, Object.keys(visualLedgerRecord).join(','));
 assert.equal(visualLedgerArtifacts.after_image_hash, visualFixture.afterImageHash);
-assert.equal(visualLedgerArtifacts.visual_capture_runtime_binding, undefined);
-assert.equal(visualAccepted.strictGate.status, 'fail');
-assert.ok(visualAccepted.strictGate.failures.includes('proof_ledger_recomputed_query_rejected'));
+assert.equal(
+  visualLedgerArtifacts.visual_capture_runtime_binding.schema_version,
+  'synthi.gpu_hmr.visual_capture_runtime_binding.v1',
+);
+assert.match(
+  visualLedgerArtifacts.visual_capture_runtime_binding.binding_hash,
+  /^sha256:[0-9a-f]{64}$/,
+);
+assert.equal(
+  Object.isFrozen(
+    visualAccepted.components.visualOracleArtifacts.visual_capture_runtime_binding,
+  ),
+  true,
+);
+assert.equal(visualInput.visualOracleArtifacts.visual_capture_runtime_binding, undefined);
+assert.equal(visualAccepted.strictGate.status, 'pass', visualAccepted.strictGate.detail);
+
+const visualWrongImageHash = buildRuntimeBoundaryProofAdapter(mutateCaptureManifest(
+  visualInput,
+  (manifest) => {
+    manifest.image_sha256 = HASH_D;
+  },
+));
+assertVisualCaptureRefused(
+  visualWrongImageHash,
+  'runtime_boundary_visual_capture_manifest_image_hash_mismatch',
+);
+
+const visualWrongRuntimeSession = buildRuntimeBoundaryProofAdapter(mutateCaptureManifest(
+  visualInput,
+  (manifest) => {
+    const binding = structuredClone(manifest.frame_gate.evidence_binding);
+    binding.runtime_session_id = 'runtime-session-stale';
+    installCaptureEvidenceBinding(manifest, binding);
+  },
+));
+assertVisualCaptureRefused(
+  visualWrongRuntimeSession,
+  'visual_capture_manifest_runtime_binding_mismatch',
+);
+
+const visualWrongProcess = buildRuntimeBoundaryProofAdapter(mutateCaptureManifest(
+  visualInput,
+  (manifest) => {
+    const binding = structuredClone(manifest.frame_gate.evidence_binding);
+    binding.process_id = 'pid-stale';
+    installCaptureEvidenceBinding(manifest, binding);
+  },
+));
+assertVisualCaptureRefused(
+  visualWrongProcess,
+  'visual_capture_manifest_runtime_binding_mismatch',
+);
+
+const visualPreDispatchFrame = buildRuntimeBoundaryProofAdapter(mutateCaptureManifest(
+  visualInput,
+  (manifest) => {
+    manifest.frame_ts_ms = 1_100;
+    manifest.frame_gate.captured_ts_ms = 1_100;
+  },
+));
+assertVisualCaptureRefused(
+  visualPreDispatchFrame,
+  'visual_capture_manifest_timestamp_order_invalid',
+);
+
+const visualPreGateCapture = buildRuntimeBoundaryProofAdapter(mutateCaptureManifest(
+  visualInput,
+  (manifest) => {
+    manifest.capture_ts_ms = 1_299;
+  },
+));
+assertVisualCaptureRefused(
+  visualPreGateCapture,
+  'visual_capture_manifest_timestamp_order_invalid',
+);
 
 const visualDeclaredOnlyOracle = buildRuntimeBoundaryProofAdapter({
   ...visualInput,
