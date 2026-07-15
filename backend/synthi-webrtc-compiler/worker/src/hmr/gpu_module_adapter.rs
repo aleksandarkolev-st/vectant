@@ -55,7 +55,7 @@ use std::ffi::{c_void, CString};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -72,7 +72,7 @@ use crate::hmr::gpu_driver_loader::{
     GpuDriverSymbolTable,
 };
 use crate::hmr::gpu_module_manager::{
-    GpuModuleManager, KernelResolution, KernelTable, ModuleManagerError,
+    GpuModuleManager, KernelResolution, KernelTable, ModuleManagerError, ModuleSlot,
 };
 use crate::hmr::gpu_proof::{
     normalized_gpu_hardware_uuid, sha256_hex_bytes, GpuHmrAcceptanceLedger,
@@ -83,11 +83,12 @@ use crate::hmr::gpu_reload_orchestrator::{
 };
 use crate::hmr::gpu_stream_drain::{drain_context, drain_stream, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
-    clear_launch_dispatcher, current_launch_generation,
-    install_launch_dispatcher_with_metadata_timed, launch_records_snapshot,
+    begin_launch_dispatcher_publication, clear_launch_dispatcher,
+    commit_launch_dispatcher_publication, current_launch_generation, launch_records_snapshot,
     managed_buffers_snapshot, monotonic_timestamp_ns, output_oracle_records_snapshot,
     record_hmr_runtime_identity_snapshot,
-    record_output_buffer_checksum_with_probe_bytes_after_dispatch, runtime_session_id,
+    record_output_buffer_checksum_with_probe_bytes_after_dispatch,
+    rollback_launch_dispatcher_publication, runtime_session_id,
     synthi_gpu_launch_raw_arg_info_with_receipt, synthi_gpu_register_buffer, GpuLaunchDispatcher,
     GpuLaunchDispatcherMetadata, GpuLaunchRequest, LaunchArgProvenance, LaunchRecord,
     OutputOracleRecord, SynthiGpuLaunchArg, SYNTHI_GPU_ARG_KIND_FLOATING,
@@ -1566,7 +1567,7 @@ fn runtime_acceptance_contract(
             "persistent_gpu_allocations": "runtime-managed-buffers-preserved",
         },
         "epoch_policy": {
-            "publish_mechanism": "install_launch_dispatcher_with_metadata",
+            "publish_mechanism": "dispatcher_publication_transaction",
             "dispatch_binding": "runtime_launch_generation",
             "retirement_mechanism": retirement_strategy,
         },
@@ -2649,6 +2650,10 @@ pub struct GpuModuleAdapter {
     /// image. The driver handle owns the function pointers; this
     /// manager owns only opaque module and function handles.
     module_manager: GpuModuleManager,
+    /// Driver modules no longer reachable from the active dispatch table whose
+    /// unload call failed. Keeping ownership prevents an untracked handle leak;
+    /// the next reload retries these unloads before loading another candidate.
+    pending_retired_modules: Vec<ModuleSlot>,
     /// Last deterministic reload report lines. These are also
     /// printed during `reload()` so the worker log carries the
     /// markers from docs/GPU_HMR_ULTRAPLAN.md §9.
@@ -2685,6 +2690,7 @@ impl GpuModuleAdapter {
             health: AdapterHealth::Unknown,
             driver: None,
             module_manager: GpuModuleManager::new(),
+            pending_retired_modules: Vec::new(),
             last_reload_log: Vec::new(),
             last_device_abi_version: None,
             last_driver_error: None,
@@ -2941,6 +2947,37 @@ impl GpuModuleAdapter {
         self.last_reload_log.push(line);
     }
 
+    fn retry_pending_retired_modules(
+        &mut self,
+        symbols: &GpuDriverSymbolTable,
+    ) -> Result<(), String> {
+        if self.pending_retired_modules.is_empty() {
+            return Ok(());
+        }
+
+        let pending = std::mem::take(&mut self.pending_retired_modules);
+        let mut failures = Vec::new();
+        for slot in pending {
+            if let Err(error) = self.module_manager.unload_retired(symbols, slot) {
+                failures.push(format!(
+                    "handle=0x{:x}:{}",
+                    slot.handle,
+                    Self::module_manager_error(error)
+                ));
+                self.pending_retired_modules.push(slot);
+            }
+        }
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "GPU module retirement retry failed: {}",
+                failures.join("|")
+            ))
+        }
+    }
+
     fn module_manager_error(err: ModuleManagerError) -> String {
         format!("gpu module manager {}: {err}", err.short_label())
     }
@@ -2964,6 +3001,10 @@ impl Adapter for GpuModuleAdapter {
         extra.insert(
             "swap_count".into(),
             self.module_manager.swap_count().to_string(),
+        );
+        extra.insert(
+            "pending_retired_modules".into(),
+            self.pending_retired_modules.len().to_string(),
         );
         if let Some(primary) = self.module_manager.primary() {
             extra.insert("active_module_bytes".into(), primary.blob_bytes.to_string());
@@ -3246,6 +3287,14 @@ impl Adapter for GpuModuleAdapter {
                 recoverable: true,
             };
         }
+        if let Err(error) = self.retry_pending_retired_modules(&symbols) {
+            self.health = AdapterHealth::Degraded;
+            self.phase = GpuPhase::Ready;
+            return AdapterReloadResult::Failed {
+                error,
+                recoverable: true,
+            };
+        }
 
         let partial_device_reload = req
             .build_manifest
@@ -3304,7 +3353,7 @@ impl Adapter for GpuModuleAdapter {
                 };
             }
         }
-        let drain = drain_affected_streams(
+        let mut drain = drain_affected_streams(
             &symbols,
             &expected_symbols,
             first_device_load,
@@ -3331,6 +3380,8 @@ impl Adapter for GpuModuleAdapter {
             };
         }
 
+        let module_checkpoint = self.module_manager.checkpoint();
+        let mut dispatcher_recovery_failed = false;
         let load_result = (|| -> Result<DeviceReloadOwnership, String> {
             let previous_table = self.module_manager.kernel_table().clone();
             let previous_dispatch_table_hash = dispatch_table_hash(&previous_table);
@@ -3393,24 +3444,72 @@ impl Adapter for GpuModuleAdapter {
                 changed_function_handle_ids(&dispatcher_kernels, &expected_symbols);
             let dispatcher_kernels_for_probe = dispatcher_kernels.clone();
             record_hmr_runtime_identity_snapshot();
-            let previous_generation = current_launch_generation();
-            let (_, active_generation, publish_timestamp_monotonic_ns) =
-                install_launch_dispatcher_with_metadata_timed(
-                    Arc::new(DriverLaunchDispatcher {
-                        symbols,
-                        kernels: dispatcher_kernels,
-                    }),
-                    GpuLaunchDispatcherMetadata {
-                        artifact_id: Some(new_artifact_id.clone()),
-                        dispatch_table_hash: Some(format!("0x{dispatch_table_hash:016x}")),
-                        changed_symbols: expected_symbols.clone(),
-                        function_handle_ids: function_handle_ids
-                            .split(',')
-                            .filter(|value| !value.trim().is_empty() && *value != "none")
-                            .map(str::to_string)
-                            .collect(),
-                    },
+            let mut dispatcher_publication = begin_launch_dispatcher_publication(
+                Arc::new(DriverLaunchDispatcher {
+                    symbols,
+                    kernels: dispatcher_kernels,
+                }),
+                GpuLaunchDispatcherMetadata {
+                    artifact_id: Some(new_artifact_id.clone()),
+                    dispatch_table_hash: Some(format!("0x{dispatch_table_hash:016x}")),
+                    changed_symbols: expected_symbols.clone(),
+                    function_handle_ids: function_handle_ids
+                        .split(',')
+                        .filter(|value| !value.trim().is_empty() && *value != "none")
+                        .map(str::to_string)
+                        .collect(),
+                },
+                Duration::from_millis(self.config.drain_timeout_ms),
+            )
+            .map_err(|error| format!("GPU dispatcher publication begin failed: {error}"))?;
+            let previous_generation = dispatcher_publication.previous_generation();
+            let active_generation = dispatcher_publication.candidate_generation();
+            let publication_id = dispatcher_publication.publication_id().to_string();
+            let candidate_registration_id = dispatcher_publication
+                .candidate_registration_id()
+                .to_string();
+            let publish_timestamp_monotonic_ns =
+                dispatcher_publication.publication_timestamp_monotonic_ns();
+            let publication_drain = drain_affected_streams(
+                &symbols,
+                &expected_symbols,
+                first_device_load,
+                self.config.drain_timeout_ms,
+            );
+            if !publication_drain.is_synced() {
+                let drain_error = format!(
+                    "GPU publication retirement drain failed: {:?}",
+                    publication_drain.outcome
                 );
+                let rollback_error =
+                    rollback_launch_dispatcher_publication(&mut dispatcher_publication).err();
+                dispatcher_recovery_failed = rollback_error.is_some();
+                return Err(match rollback_error {
+                    Some(rollback_error) => {
+                        format!("{drain_error}; dispatcher rollback failed: {rollback_error}")
+                    }
+                    None => format!("{drain_error}; dispatcher publication rolled back"),
+                });
+            }
+            drain = publication_drain;
+            let publication_commit = match commit_launch_dispatcher_publication(
+                &mut dispatcher_publication,
+            ) {
+                Ok(receipt) => receipt,
+                Err(commit_error) => {
+                    let rollback_error =
+                        rollback_launch_dispatcher_publication(&mut dispatcher_publication).err();
+                    dispatcher_recovery_failed = rollback_error.is_some();
+                    return Err(match rollback_error {
+                        Some(rollback_error) => format!(
+                            "GPU dispatcher publication commit failed: {commit_error}; rollback failed: {rollback_error}"
+                        ),
+                        None => format!(
+                            "GPU dispatcher publication commit failed and was rolled back: {commit_error}"
+                        ),
+                    });
+                }
+            };
             record_hmr_runtime_identity_snapshot();
             let mut runtime_log_lines = Vec::new();
             let stream_epoch_counters = drain.stream_epoch_counters_for_log(active_generation);
@@ -3460,10 +3559,13 @@ impl Adapter for GpuModuleAdapter {
                 drain.stream_epoch_counters_for_graph(active_generation);
             let publish_timestamp_ms = epoch_millis_now();
             let publish_line = format!(
-                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} publish_timestamp_ms={} publish_timestamp_monotonic_ns={} previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} capsule_id={} fission_island_id={} abi_membrane_hash={} dependency_closure_hash={} proof_hash={} changed_symbols={} function_handle_ids={} stream_epoch_counters={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} retirement_fence_ids={} retirement_strategy={} delayed_unload_result={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
+                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} publish_timestamp_ms={} publish_timestamp_monotonic_ns={} publication_id={} candidate_registration_id={} publication_commit_timestamp_monotonic_ns={} host_boundary_quiescence_proven=true previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} capsule_id={} fission_island_id={} abi_membrane_hash={} dependency_closure_hash={} proof_hash={} changed_symbols={} function_handle_ids={} stream_epoch_counters={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} retirement_fence_ids={} retirement_strategy={} delayed_unload_result={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
                 runtime_session,
                 publish_timestamp_ms,
                 publish_timestamp_monotonic_ns,
+                publication_id,
+                candidate_registration_id,
+                publication_commit.committed_timestamp_monotonic_ns,
                 previous_generation,
                 active_generation,
                 previous_artifact_id,
@@ -3575,13 +3677,21 @@ impl Adapter for GpuModuleAdapter {
                     }
                 }
             }
+            let mut retired_unload_failures = Vec::new();
             for retired in retired {
-                self.module_manager
-                    .unload_retired(&symbols, retired)
-                    .map_err(Self::module_manager_error)?;
+                if let Err(error) = self.module_manager.unload_retired(&symbols, retired) {
+                    let reason = Self::module_manager_error(error);
+                    retired_unload_failures.push(
+                        reason
+                            .chars()
+                            .map(|ch| if ch.is_whitespace() { '_' } else { ch })
+                            .collect::<String>(),
+                    );
+                    self.pending_retired_modules.push(retired);
+                }
             }
             let retirement_timestamp_monotonic_ns = monotonic_timestamp_ns();
-            if retired_module_count > 0 {
+            if retired_module_count > 0 && retired_unload_failures.is_empty() {
                 let retired_line = format!(
                     "[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session={} retirement_timestamp_monotonic_ns={} previous_generation={} active_generation={} retired_modules={} old_generation_retired=true stream_scope={} stream_ids={} stream_ordering_proven=true retirement_fence_ids={} retirement_strategy={} delayed_unload_result=unloaded",
                     runtime_session_id(),
@@ -3623,16 +3733,62 @@ impl Adapter for GpuModuleAdapter {
                     });
                 eprintln!("{retired_graph_line}");
                 runtime_log_lines.push(retired_graph_line);
+            } else if retired_module_count > 0 {
+                let retirement_failed_line = format!(
+                    "[gpu-runtime-boundary] dispatcher_epoch event=retirement_failed runtime_session={} retirement_timestamp_monotonic_ns={} previous_generation={} active_generation={} retired_modules={} old_generation_retired=false stream_scope={} stream_ids={} stream_ordering_proven=true retirement_fence_ids={} retirement_strategy={} delayed_unload_result=failed pending_retired_modules={} reasons={}",
+                    runtime_session_id(),
+                    retirement_timestamp_monotonic_ns,
+                    previous_generation,
+                    active_generation,
+                    retired_module_count,
+                    drain.scope_label,
+                    drain.stream_ids_for_log(),
+                    retirement_fence_ids,
+                    retirement_strategy,
+                    self.pending_retired_modules.len(),
+                    retired_unload_failures.join("|")
+                );
+                eprintln!("{retirement_failed_line}");
+                runtime_log_lines.push(retirement_failed_line);
+                let pending_graph_line =
+                    epoch_generation_graph_line(EpochGenerationGraphLineInput {
+                        runtime_session: &runtime_session,
+                        publish_timestamp_ms,
+                        previous_generation,
+                        active_generation,
+                        old_artifact_id: &previous_artifact_id,
+                        new_artifact_id: &new_artifact_id,
+                        new_artifact_hash: &new_artifact_hash,
+                        capsule_id: &capsule_id,
+                        fission_island_id: &fission_island_id,
+                        abi_membrane_hash: &abi_membrane_hash,
+                        dependency_closure_hash: &dependency_closure_hash,
+                        proof_hash: &proof_hash,
+                        changed_symbols: &expected_symbols,
+                        function_handle_ids: &function_handle_ids,
+                        stream_epoch_counters: stream_epoch_counters_graph.clone(),
+                        dispatch_table_hash_before: previous_dispatch_table_hash,
+                        dispatch_table_hash_after: dispatch_table_hash,
+                        changed_entries: touched_symbols.len(),
+                        retirement_fence_ids: &retirement_fence_ids,
+                        retirement_strategy,
+                        delayed_unload_result: "failed",
+                        retirement_state: "pending",
+                    });
+                eprintln!("{pending_graph_line}");
+                runtime_log_lines.push(pending_graph_line);
             }
             let retirement_proven = retired_module_count == 0
-                || runtime_log_lines.iter().any(|line| {
-                    line.contains("dispatcher_epoch")
-                        && runtime_boundary_token(line, "event") == Some("retired")
-                        && runtime_boundary_token(line, "active_generation")
-                            .and_then(|value| value.parse::<u64>().ok())
-                            == Some(active_generation)
-                        && runtime_boundary_token(line, "old_generation_retired") == Some("true")
-                });
+                || (retired_unload_failures.is_empty()
+                    && runtime_log_lines.iter().any(|line| {
+                        line.contains("dispatcher_epoch")
+                            && runtime_boundary_token(line, "event") == Some("retired")
+                            && runtime_boundary_token(line, "active_generation")
+                                .and_then(|value| value.parse::<u64>().ok())
+                                == Some(active_generation)
+                            && runtime_boundary_token(line, "old_generation_retired")
+                                == Some("true")
+                    }));
             let acceptance_ledger = GpuHmrAcceptanceLedger::new(GpuHmrAcceptanceLedgerInput {
                 hot_reload: !first_device_load,
                 artifact_id_after: new_artifact_id.clone(),
@@ -3706,6 +3862,44 @@ impl Adapter for GpuModuleAdapter {
             })
         })();
 
+        let mut manager_recovery_failed = false;
+        let load_result = match load_result {
+            Ok(ownership) => Ok(ownership),
+            Err(load_error) => match self.module_manager.rollback_to(module_checkpoint) {
+                Ok(introduced_modules) => {
+                    let mut unload_failures = Vec::new();
+                    for introduced in introduced_modules {
+                        if let Err(error) = self.module_manager.unload_retired(&symbols, introduced)
+                        {
+                            unload_failures.push(format!(
+                                "handle=0x{:x}:{}",
+                                introduced.handle,
+                                Self::module_manager_error(error)
+                            ));
+                            self.pending_retired_modules.push(introduced);
+                        }
+                    }
+                    if unload_failures.is_empty() {
+                        Err(format!(
+                            "{load_error}; provisional module ownership rolled back"
+                        ))
+                    } else {
+                        Err(format!(
+                            "{load_error}; provisional module ownership rolled back; candidate unload failed: {}",
+                            unload_failures.join("|")
+                        ))
+                    }
+                }
+                Err(rollback_error) => {
+                    manager_recovery_failed = true;
+                    Err(format!(
+                        "{load_error}; GPU module manager rollback failed: {}",
+                        Self::module_manager_error(rollback_error)
+                    ))
+                }
+            },
+        };
+
         match load_result {
             Ok(ownership) => {
                 self.active_module_handle = self.module_manager.primary().map(|s| s.handle);
@@ -3765,11 +3959,20 @@ impl Adapter for GpuModuleAdapter {
                     expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
                     matched_kernel_hashes: 0,
                 });
-                self.phase = GpuPhase::Ready;
-                self.health = AdapterHealth::Degraded;
+                let recovery_failed = dispatcher_recovery_failed || manager_recovery_failed;
+                self.phase = if recovery_failed {
+                    GpuPhase::Faulted
+                } else {
+                    GpuPhase::Ready
+                };
+                self.health = if recovery_failed {
+                    AdapterHealth::Faulted
+                } else {
+                    AdapterHealth::Degraded
+                };
                 AdapterReloadResult::Failed {
                     error,
-                    recoverable: true,
+                    recoverable: !recovery_failed,
                 }
             }
         }
@@ -3809,12 +4012,14 @@ mod tests {
         CuContext, CuDevicePtr, CuFunction, CuModule, CuResult, CuStream,
     };
     use crate::runtime::gpu_runtime_boundary::{
-        current_launch_generation, reset_for_test, synthi_gpu_launch_raw,
-        synthi_gpu_register_buffer, test_guard_for_test as runtime_boundary_test_guard,
+        current_launch_generation, install_launch_dispatcher_with_metadata, reset_for_test,
+        synthi_gpu_launch_raw, synthi_gpu_register_buffer,
+        test_guard_for_test as runtime_boundary_test_guard,
     };
     use std::ffi::{c_void, CString};
     use std::io::Write;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{mpsc, Mutex};
 
     fn dummy_request() -> AdapterReloadRequest {
         let pid = std::process::id();
@@ -3977,7 +4182,10 @@ mod tests {
             "sha256:before",
             "sha256:after",
             &["shade".to_string()],
-            &["kernels/device.hip".to_string(), "build/device.hsaco".to_string()],
+            &[
+                "kernels/device.hip".to_string(),
+                "build/device.hsaco".to_string(),
+            ],
             &evidence_refs,
             "sha256:abi",
             "4321",
@@ -3991,7 +4199,10 @@ mod tests {
 
         assert_eq!(contract["confidence"], json!(0.95));
         assert_eq!(contract["classification"]["confidence"], json!(0.95));
-        assert_eq!(contract["artifact_identity"]["artifact_kind"], json!("hsaco"));
+        assert_eq!(
+            contract["artifact_identity"]["artifact_kind"],
+            json!("hsaco")
+        );
         assert_eq!(contract["reload_mechanism"], json!("generated_adapter"));
         assert_eq!(contract["adapter_outcome"], json!("adapter_generated"));
         assert_eq!(
@@ -4033,6 +4244,54 @@ mod tests {
     static LAST_LAUNCH_GRID_X: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_BLOCK_X: AtomicUsize = AtomicUsize::new(0);
     static UNLOAD_GENERATION_AT_CALL: AtomicU64 = AtomicU64::new(0);
+    static UNLOAD_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static MODULE_RESOLVE_OBSERVED: AtomicBool = AtomicBool::new(false);
+
+    struct BlockingDispatcher {
+        entered: mpsc::SyncSender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl GpuLaunchDispatcher for BlockingDispatcher {
+        fn dispatch(
+            &self,
+            _request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.entered
+                .send(())
+                .map_err(|error| format!("blocking dispatcher entry send failed: {error}"))?;
+            self.release
+                .lock()
+                .map_err(|_| "blocking dispatcher release mutex poisoned".to_string())?
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| format!("blocking dispatcher release failed: {error}"))
+        }
+    }
+
+    struct ModuleResolveReleasedDispatcher {
+        entered: mpsc::SyncSender<()>,
+    }
+
+    impl GpuLaunchDispatcher for ModuleResolveReleasedDispatcher {
+        fn dispatch(
+            &self,
+            _request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.entered
+                .send(())
+                .map_err(|error| format!("resolve dispatcher entry send failed: {error}"))?;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !MODULE_RESOLVE_OBSERVED.load(Ordering::SeqCst) {
+                if Instant::now() >= deadline {
+                    return Err("candidate module resolution was not observed".to_string());
+                }
+                std::thread::yield_now();
+            }
+            Ok(())
+        }
+    }
     static NESTED_LAUNCH_ARMED: AtomicBool = AtomicBool::new(false);
     static NESTED_LAUNCH_COUNT: AtomicUsize = AtomicUsize::new(0);
     unsafe extern "C" fn ok_init(_flags: u32) -> CuResult {
@@ -4076,8 +4335,15 @@ mod tests {
     }
 
     unsafe extern "C" fn ok_module_unload(_module: CuModule) -> CuResult {
+        UNLOAD_CALLS.fetch_add(1, Ordering::SeqCst);
         UNLOAD_GENERATION_AT_CALL.store(current_launch_generation(), Ordering::SeqCst);
         0
+    }
+
+    unsafe extern "C" fn err_module_unload(_module: CuModule) -> CuResult {
+        UNLOAD_CALLS.fetch_add(1, Ordering::SeqCst);
+        UNLOAD_GENERATION_AT_CALL.store(current_launch_generation(), Ordering::SeqCst);
+        701
     }
 
     unsafe extern "C" fn ok_module_get_function(
@@ -4085,6 +4351,7 @@ mod tests {
         _hmod: CuModule,
         _name: *const u8,
     ) -> CuResult {
+        MODULE_RESOLVE_OBSERVED.store(true, Ordering::SeqCst);
         if !hfunc.is_null() {
             let handle = NEXT_HANDLE.fetch_add(0x10, Ordering::SeqCst);
             *hfunc = handle as CuFunction;
@@ -4227,6 +4494,13 @@ mod tests {
     fn drain_error_symbols() -> GpuDriverSymbolTable {
         GpuDriverSymbolTable {
             cu_stream_synchronize: err_stream_synchronize,
+            ..stub_symbols()
+        }
+    }
+
+    fn unload_error_symbols() -> GpuDriverSymbolTable {
+        GpuDriverSymbolTable {
+            cu_module_unload: err_module_unload,
             ..stub_symbols()
         }
     }
@@ -5153,6 +5427,245 @@ mod tests {
     }
 
     #[test]
+    fn provisional_publication_timeout_rolls_back_candidate_module() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        UNLOAD_CALLS.store(0, Ordering::SeqCst);
+
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::channel();
+        install_launch_dispatcher_with_metadata(
+            Arc::new(BlockingDispatcher {
+                entered: entered_tx,
+                release: Mutex::new(release_rx),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:prior".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+        let previous_generation = current_launch_generation();
+        let launch = std::thread::spawn(|| {
+            synthi_gpu_launch_raw(
+                std::ptr::null_mut(),
+                b"prior_kernel\0".as_ptr().cast(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                0,
+                0,
+                std::ptr::null(),
+                0,
+            )
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("prior dispatcher entered runtime boundary");
+
+        let mut artifact = tempfile::NamedTempFile::new().unwrap();
+        artifact.write_all(b"provisional-hsaco").unwrap();
+        let artifact_path = artifact.path().to_string_lossy().to_string();
+        let mut adapter = adapter_with_config_and_symbols(
+            GpuModuleAdapterConfig {
+                vendor: GpuVendor::Rocm,
+                drain_timeout_ms: 5,
+                ..GpuModuleAdapterConfig::default()
+            },
+            stub_symbols(),
+        );
+
+        let result = adapter.reload(&request_with_artifact(
+            &artifact_path,
+            vec!["kernel.hip".to_string()],
+        ));
+
+        match result {
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(recoverable);
+                assert!(error.contains("dispatcher publication begin failed"));
+                assert!(error.contains("provisional module ownership rolled back"));
+            }
+            other => panic!("expected provisional publication failure, got {other:?}"),
+        }
+        assert_eq!(current_launch_generation(), previous_generation);
+        assert!(adapter.module_manager.primary().is_none());
+        assert!(adapter.module_manager.standby().is_none());
+        assert_eq!(adapter.module_manager.swap_count(), 0);
+        assert!(adapter
+            .module_manager
+            .kernel_table()
+            .names()
+            .next()
+            .is_none());
+        assert!(adapter.active_module_handle.is_none());
+        assert!(adapter.active_generation_artifact_id.is_none());
+        assert!(adapter.pending_retired_modules.is_empty());
+        assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), 1);
+
+        release_tx.send(()).expect("release prior dispatcher");
+        assert!(launch.join().expect("prior dispatch thread joined"));
+        reset_for_test();
+    }
+
+    #[test]
+    fn provisional_gate_redrains_old_launches_started_during_candidate_load() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"first-race-hsaco").unwrap();
+        second.write_all(b"second-race-hsaco").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let mut adapter = adapter_with_config_and_symbols(
+            GpuModuleAdapterConfig {
+                vendor: GpuVendor::Rocm,
+                ..GpuModuleAdapterConfig::default()
+            },
+            stub_symbols(),
+        );
+        assert!(matches!(
+            adapter.reload(&request_with_artifact(
+                &first_path,
+                vec!["kernel.hip".to_string()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+
+        MODULE_RESOLVE_OBSERVED.store(false, Ordering::SeqCst);
+        CTX_SYNC_CALLS.store(0, Ordering::SeqCst);
+        STREAM_SYNC_CALLS.store(0, Ordering::SeqCst);
+        LAST_STREAM_SYNC_TOKEN.store(0, Ordering::SeqCst);
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        install_launch_dispatcher_with_metadata(
+            Arc::new(ModuleResolveReleasedDispatcher {
+                entered: entered_tx,
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: adapter.active_generation_artifact_id.clone(),
+                changed_symbols: vec!["vec_add".to_string()],
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+        let old_launch = std::thread::spawn(|| {
+            synthi_gpu_launch_raw(
+                std::ptr::null_mut(),
+                b"vec_add\0".as_ptr().cast(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                0,
+                0x77,
+                std::ptr::null(),
+                0,
+            )
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("old launch entered during candidate load window");
+
+        let result = adapter.reload(&request_with_artifact(
+            &second_path,
+            vec!["kernel.hip".to_string()],
+        ));
+
+        match &result {
+            AdapterReloadResult::Success { .. } => {}
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(!recoverable);
+                assert!(error.contains("device_identity_missing"));
+            }
+            other => panic!("unexpected publication-race result: {other:?}"),
+        }
+        assert!(old_launch.join().expect("old launch thread joined"));
+        assert!(CTX_SYNC_CALLS.load(Ordering::SeqCst) >= 1);
+        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x77);
+        let publish = adapter
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("dispatcher_epoch event=published"))
+            .expect("transactional dispatcher publication line");
+        assert!(publish.contains("host_boundary_quiescence_proven=true"));
+        assert!(publish.contains("stream_scope=affected"));
+        assert!(publish.contains("stream_ids=0x77"));
+        assert!(publish.contains("retirement_strategy=epoch_fence"));
+        reset_for_test();
+    }
+
+    #[test]
+    fn committed_candidate_stays_coherent_when_old_module_unload_fails() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        UNLOAD_CALLS.store(0, Ordering::SeqCst);
+
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"first-hsaco").unwrap();
+        second.write_all(b"second-hsaco").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let second_artifact_id = artifact_id_for_hash(&sha256_hex_bytes(b"second-hsaco"));
+        let mut adapter = adapter_with_config_and_symbols(
+            GpuModuleAdapterConfig {
+                vendor: GpuVendor::Rocm,
+                ..GpuModuleAdapterConfig::default()
+            },
+            unload_error_symbols(),
+        );
+
+        assert!(matches!(
+            adapter.reload(&request_with_artifact(
+                &first_path,
+                vec!["kernel.hip".to_string()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        let first_handle = adapter.active_module_handle;
+        let first_generation = current_launch_generation();
+
+        let second_result = adapter.reload(&request_with_artifact(
+            &second_path,
+            vec!["kernel.hip".to_string()],
+        ));
+
+        match second_result {
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(!recoverable);
+                assert!(error.contains("epoch_retirement_unproven"));
+            }
+            other => panic!("expected strict retirement rejection, got {other:?}"),
+        }
+        assert!(current_launch_generation() > first_generation);
+        assert_ne!(adapter.active_module_handle, first_handle);
+        assert_eq!(
+            adapter.active_module_handle,
+            adapter.module_manager.primary().map(|slot| slot.handle)
+        );
+        assert_eq!(
+            adapter.active_generation_artifact_id.as_deref(),
+            Some(second_artifact_id.as_str())
+        );
+        assert_eq!(adapter.pending_retired_modules.len(), 1);
+        assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), 1);
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("dispatcher_epoch event=retirement_failed")
+                && line.contains("old_generation_retired=false")
+                && line.contains("delayed_unload_result=failed")
+        }));
+
+        adapter
+            .retry_pending_retired_modules(&stub_symbols())
+            .expect("pending old module unload retry");
+        assert!(adapter.pending_retired_modules.is_empty());
+        assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), 2);
+        reset_for_test();
+    }
+
+    #[test]
     fn phase3_hot_reload_rejects_missing_firewall_evidence() {
         let _guard = runtime_boundary_test_guard();
         reset_for_test();
@@ -5338,7 +5851,7 @@ mod tests {
             CTX_SYNC_CALLS.load(Ordering::SeqCst),
             ctx_sync_before_oracle + 1
         );
-        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 2);
         assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x77);
         let publish = a
             .last_reload_log()
@@ -5388,7 +5901,7 @@ mod tests {
         );
         assert_eq!(
             STREAM_SYNC_CALLS.load(Ordering::SeqCst),
-            stream_sync_before_partial + 2
+            stream_sync_before_partial + 4
         );
         assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x88);
         let partial_publish = a
