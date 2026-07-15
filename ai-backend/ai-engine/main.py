@@ -40,7 +40,7 @@ from pydantic import BaseModel
 from analyzer import get_analyzer
 from analyzer import supported_languages
 
-from llm.providers import get_provider
+from llm.providers import ProviderSelectionError, get_provider
 from llm.prompts import SPLIT_GUI_PROMPT, UNIVERSAL_SPLIT_PROMPT
 from llm.structural_prompts import format_heal_prompt
 from build_manifest import (
@@ -2352,7 +2352,22 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
             return "chatgpt"
         return None
 
-    provider = get_provider(provider_name=select_provider_name(), use_custom=bool(req.api_key))
+    try:
+        provider = get_provider(
+            provider_name=select_provider_name(),
+            use_custom=bool(req.api_key),
+            require_exact=req.require_provider_call,
+        )
+    except ProviderSelectionError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "GPU split AI provider selection failed",
+                "reason_code": "ai_provider_selection_failed",
+                "provider": select_provider_name() or "gemini",
+                "error_type": type(exc).__name__,
+            },
+        ) from exc
     file_map = _file_map_from_request(req)
     logger.info(
         "[split/gpu] request file context count=%s focus=%s names=%s",
