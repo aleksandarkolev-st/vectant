@@ -584,17 +584,6 @@ struct ActiveDispatcher {
     metadata: ActiveDispatcherMetadata,
 }
 
-impl ActiveDispatcherMetadata {
-    fn public_metadata(&self) -> GpuLaunchDispatcherMetadata {
-        GpuLaunchDispatcherMetadata {
-            artifact_id: self.artifact_id.clone(),
-            dispatch_table_hash: self.dispatch_table_hash.clone(),
-            changed_symbols: self.changed_symbols.clone(),
-            function_handle_ids: self.function_handle_ids.clone(),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct ProvisionalDispatcherPublication {
     publication_id: String,
@@ -668,21 +657,12 @@ impl Drop for DispatcherPublication {
             .copied()
             .unwrap_or(0);
         if active_candidate_matches && candidate_in_flight == 0 {
-            if let Some(restored_generation) = guard.generation.checked_add(1) {
-                guard.active = self.previous.take().map(|previous| ActiveDispatcher {
-                    dispatcher: previous.dispatcher,
-                    metadata: active_dispatcher_metadata(
-                        restored_generation,
-                        previous.metadata.public_metadata(),
-                    ),
-                });
-                guard.generation = restored_generation;
-            } else {
-                guard.active = None;
-            }
+            guard.active = self.previous.take();
+            guard.generation = self.previous_generation;
         } else if active_candidate_matches {
             guard.active = None;
-            if let Some(invalidated_generation) = guard.generation.checked_add(1) {
+            if let Some(invalidated_generation) = guard.generation_high_watermark.checked_add(1) {
+                guard.generation_high_watermark = invalidated_generation;
                 guard.generation = invalidated_generation;
             }
         }
@@ -840,6 +820,7 @@ impl std::error::Error for DispatcherMutationError {}
 
 struct DispatcherState {
     generation: u64,
+    generation_high_watermark: u64,
     active: Option<ActiveDispatcher>,
     in_flight_by_generation: HashMap<u64, usize>,
     provisional: Option<ProvisionalDispatcherPublication>,
@@ -850,6 +831,7 @@ impl Default for DispatcherState {
     fn default() -> Self {
         Self {
             generation: 1,
+            generation_high_watermark: 1,
             active: None,
             in_flight_by_generation: HashMap::new(),
             provisional: None,
@@ -976,11 +958,12 @@ pub fn try_install_launch_dispatcher_with_metadata_timed(
     metadata: GpuLaunchDispatcherMetadata,
 ) -> Result<(Option<Arc<dyn GpuLaunchDispatcher>>, u64, u128), DispatcherMutationError> {
     let mut guard = try_lock_dispatcher_for_mutation()?;
-    guard.generation = guard
-        .generation
+    guard.generation_high_watermark = guard
+        .generation_high_watermark
         .checked_add(1)
         .ok_or(DispatcherMutationError::GenerationExhausted)?;
-    let generation = guard.generation;
+    let generation = guard.generation_high_watermark;
+    guard.generation = generation;
     let previous = guard.active.replace(ActiveDispatcher {
         dispatcher,
         metadata: active_dispatcher_metadata(generation, metadata),
@@ -1002,10 +985,11 @@ pub fn try_clear_launch_dispatcher(
 ) -> Result<Option<Arc<dyn GpuLaunchDispatcher>>, DispatcherMutationError> {
     let mut guard = try_lock_dispatcher_for_mutation()?;
     let next_generation = guard
-        .generation
+        .generation_high_watermark
         .checked_add(1)
         .ok_or(DispatcherMutationError::GenerationExhausted)?;
     let previous = guard.active.take();
+    guard.generation_high_watermark = next_generation;
     guard.generation = next_generation;
     Ok(previous.map(|active| active.dispatcher))
 }
@@ -1108,7 +1092,7 @@ pub fn begin_launch_dispatcher_publication(
         }
     }
 
-    let Some(candidate_generation) = guard.generation.checked_add(1) else {
+    let Some(candidate_generation) = guard.generation_high_watermark.checked_add(1) else {
         guard.provisional = None;
         dispatcher_state_changed().notify_all();
         return Err(DispatcherPublicationError::GenerationExhausted);
@@ -1119,6 +1103,7 @@ pub fn begin_launch_dispatcher_publication(
         dispatcher,
         metadata: candidate_metadata,
     });
+    guard.generation_high_watermark = candidate_generation;
     guard.generation = candidate_generation;
     if let Some(provisional) = guard.provisional.as_mut() {
         provisional.candidate_generation = Some(candidate_generation);
@@ -1218,20 +1203,8 @@ pub fn rollback_launch_dispatcher_publication(
         });
     }
 
-    let restored_generation = guard
-        .generation
-        .checked_add(1)
-        .ok_or(DispatcherPublicationError::GenerationExhausted)?;
-    let restored = publication
-        .previous
-        .take()
-        .map(|previous| ActiveDispatcher {
-            dispatcher: previous.dispatcher,
-            metadata: active_dispatcher_metadata(
-                restored_generation,
-                previous.metadata.public_metadata(),
-            ),
-        });
+    let restored_generation = publication.previous_generation;
+    let restored = publication.previous.take();
     let restored_registration_id = restored
         .as_ref()
         .map(|active| active.metadata.registration_id.clone());
@@ -5862,12 +5835,12 @@ mod tests {
         let rollback = rollback_launch_dispatcher_publication(&mut publication).unwrap();
         assert_eq!(rollback.previous_generation, old_generation);
         assert_eq!(rollback.candidate_generation, old_generation + 1);
-        assert_eq!(rollback.restored_generation, old_generation + 2);
+        assert_eq!(rollback.restored_generation, old_generation);
         assert_eq!(
             rollback.restored_artifact_id.as_deref(),
             Some("artifact:sha256:prior")
         );
-        assert_ne!(
+        assert_eq!(
             rollback.restored_registration_id.as_deref(),
             Some(old_attribution.registration_id.as_str())
         );
@@ -5914,11 +5887,29 @@ mod tests {
             launches[0].active_artifact_id.as_deref(),
             Some("artifact:sha256:prior")
         );
-        assert_eq!(launches[1].active_generation, old_generation + 2);
+        assert_eq!(launches[1].active_generation, old_generation);
         assert_eq!(
             launches[1].active_artifact_id.as_deref(),
             Some("artifact:sha256:prior")
         );
+
+        let mut next_publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: candidate_calls,
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:next-candidate".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        assert_eq!(next_publication.previous_generation(), old_generation);
+        assert_eq!(next_publication.candidate_generation(), old_generation + 2);
+        let next_rollback = rollback_launch_dispatcher_publication(&mut next_publication).unwrap();
+        assert_eq!(next_rollback.restored_generation, old_generation);
+        assert_eq!(current_launch_generation(), old_generation);
     }
 
     #[test]
@@ -6676,7 +6667,7 @@ mod tests {
 
         drop(publication);
 
-        assert_eq!(current_launch_generation(), old_generation + 2);
+        assert_eq!(current_launch_generation(), old_generation);
         let guard = lock_dispatcher_state();
         assert!(guard.provisional.is_none());
         assert_eq!(
@@ -6728,6 +6719,7 @@ mod tests {
         {
             let mut guard = lock_dispatcher_state();
             guard.generation = newer_generation;
+            guard.generation_high_watermark = newer_generation;
             guard.active = Some(ActiveDispatcher {
                 dispatcher: Arc::new(TestDispatcher {
                     should_fail: false,
