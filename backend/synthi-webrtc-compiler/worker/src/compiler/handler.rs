@@ -7550,7 +7550,7 @@ async fn resume_active_runner_after_gpu_hmr(ctx: &CompileContext, session_id: &s
 }
 
 fn is_gpu_device_reload_marker(name: &str) -> bool {
-    name.starts_with("__gpu_device:") || name.starts_with("__gpu_device_partial:")
+    crate::runtime::path_c::hmr_protocol::module_requires_strict_gpu_reload_proof(name)
 }
 
 fn is_device_sidecar_only_reload(modules_to_load: &[(String, String)]) -> bool {
@@ -7568,6 +7568,16 @@ fn is_mixed_host_device_reload(modules_to_load: &[(String, String)]) -> bool {
         .iter()
         .any(|(name, _)| !is_gpu_device_reload_marker(name));
     has_device && has_host
+}
+
+fn path_c_v1_gpu_reload_refused(
+    supervisor_enabled: bool,
+    modules_to_load: &[(String, String)],
+) -> bool {
+    supervisor_enabled
+        && modules_to_load
+            .iter()
+            .any(|(name, _)| is_gpu_device_reload_marker(name))
 }
 
 fn runner_restart_reasons(
@@ -13421,7 +13431,12 @@ pub async fn handle_compile_request(
         } else {
             None
         };
-    let runner_result = if use_supervisor {
+    let path_c_gpu_reload_refused = path_c_v1_gpu_reload_refused(use_supervisor, &modules_to_load);
+    let runner_result = if path_c_gpu_reload_refused {
+        Err(anyhow::anyhow!(
+            "Path-C supervisor protocol v1 cannot authorize this GPU reload; use the strict runner GPU reload protocol with source-edit, artifact, epoch, dispatch, and output proof"
+        ))
+    } else if use_supervisor {
         use crate::runtime::path_c::supervisor::spawn_supervised;
 
         let bin_path = runtime_host_runner_bin_path.as_ref().unwrap();
@@ -14172,6 +14187,26 @@ mod gpu_host_contract_tests {
                 "mixed_host_gpu_edit_requires_full_runner_restart",
             ]
         );
+    }
+
+    #[test]
+    fn path_c_v1_refuses_every_batch_with_a_gpu_module() {
+        let host_only = vec![("core".to_string(), "/tmp/libcore.so".to_string())];
+        let full_device = vec![(
+            "__gpu_device:rocm:all:abi".to_string(),
+            "/tmp/device.hsaco".to_string(),
+        )];
+        let partial_device = vec![(
+            "__gpu_device_partial:rocm:shade:abi".to_string(),
+            "/tmp/device.partial.hsaco".to_string(),
+        )];
+        let mixed = vec![host_only[0].clone(), full_device[0].clone()];
+
+        assert!(!path_c_v1_gpu_reload_refused(true, &host_only));
+        assert!(!path_c_v1_gpu_reload_refused(false, &full_device));
+        assert!(path_c_v1_gpu_reload_refused(true, &full_device));
+        assert!(path_c_v1_gpu_reload_refused(true, &partial_device));
+        assert!(path_c_v1_gpu_reload_refused(true, &mixed));
     }
 
     #[test]
