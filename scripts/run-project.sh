@@ -32,10 +32,10 @@ Options:
   --arch ARCH              Override GPU arch hint, e.g. gfx1201, sm_80, sm_120.
   --slug SLUG              Workspace slug for validation.
   --validate NAME          none | agent-split | dynamic | flow | flow-source-first | realistic-raytrace |
-                           source-first-visual | vector.
+                           source-first-visual | source-first-cold-ai-split | vector.
                            Default: none.
-  --source-manifest PATH   Source-tree manifest for --validate source-first-visual.
-  --source-root PATH       Source root for --validate source-first-visual.
+  --source-manifest PATH   Source-tree manifest for either source-first validation mode.
+  --source-root PATH       Source root for either source-first validation mode.
   --source-entry PATH      Entry path inside --source-root when it is not unambiguous.
   --source-commit OID      Full pinned Git commit for --source-root.
   --source-authority NAME  Source authority for --validate source-first-visual, e.g.
@@ -50,6 +50,9 @@ High-fidelity deterministic visual validation:
 
 Generic arbitrary source-first visual validation:
   scripts/run-project.sh --validate source-first-visual --source-root /path/to/project --source-commit FULL_GIT_OID --source-authority direct_local_git_repo_path
+
+Real-user cold AI split without runtime acceptance claims:
+  scripts/run-project.sh --validate source-first-cold-ai-split --source-root /path/to/project --source-commit FULL_GIT_OID --source-authority direct_local_git_repo_path
 
 Use --vendor/--arch only when you want to override auto detection.
 
@@ -169,15 +172,16 @@ case "$vendor" in
 esac
 
 case "$validation" in
-  none|agent-split|dynamic|flow|flow-source-first|realistic-raytrace|source-first-visual|vector) ;;
+  none|agent-split|dynamic|flow|flow-source-first|realistic-raytrace|source-first-visual|source-first-cold-ai-split|vector) ;;
   *)
-    echo "--validate must be none, agent-split, dynamic, flow, flow-source-first, realistic-raytrace, source-first-visual, or vector" >&2
+    echo "--validate must be none, agent-split, dynamic, flow, flow-source-first, realistic-raytrace, source-first-visual, source-first-cold-ai-split, or vector" >&2
     exit 2
     ;;
 esac
 
-if [ "$validation" = "source-first-visual" ] && [ -z "$source_manifest" ] && [ -z "$source_root" ]; then
-  echo "--validate source-first-visual requires --source-manifest or --source-root" >&2
+if [[ "$validation" = "source-first-visual" || "$validation" = "source-first-cold-ai-split" ]] \
+  && [ -z "$source_manifest" ] && [ -z "$source_root" ]; then
+  echo "--validate $validation requires --source-manifest or --source-root" >&2
   exit 2
 fi
 
@@ -338,6 +342,7 @@ if [ -z "$slug" ]; then
     flow-source-first) slug="gpu-flow-source-first-${ts}" ;;
     realistic-raytrace) slug="gpu-realistic-raytrace-${ts}" ;;
     source-first-visual) slug="gpu-source-first-visual-${ts}" ;;
+    source-first-cold-ai-split) slug="gpu-source-first-cold-ai-split-${ts}" ;;
     vector) slug="gpu-vector-${ts}" ;;
   esac
 fi
@@ -351,7 +356,7 @@ echo "    vendor: $SYNTHI_GPU_VENDOR"
 if [ -n "${SYNTHI_GPU_ARCH:-}" ]; then
   echo "    arch: $SYNTHI_GPU_ARCH"
 fi
-if [ "$validation" = "source-first-visual" ]; then
+if [[ "$validation" = "source-first-visual" || "$validation" = "source-first-cold-ai-split" ]]; then
   if [ -n "$source_manifest" ]; then
     echo "    source manifest: $source_manifest"
   fi
@@ -389,7 +394,7 @@ case "$validation" in
   realistic-raytrace)
     node scripts/gpu-hmr-source-first-visual-proof.mjs --profile scripts/profiles/agent-realistic-raytrace-scene.json
     ;;
-  source-first-visual)
+  source-first-visual|source-first-cold-ai-split)
     source_first_args=()
     if [ -n "$source_manifest" ]; then
       source_first_args+=(--source-manifest "$source_manifest")
@@ -405,6 +410,9 @@ case "$validation" in
     fi
     if [ -n "$source_commit" ]; then
       source_first_args+=(--source-commit "$source_commit")
+    fi
+    if [ "$validation" = "source-first-cold-ai-split" ]; then
+      source_first_args+=(--cold-ai-split-only)
     fi
     node scripts/gpu-hmr-source-first-visual-proof.mjs "${source_first_args[@]}"
     ;;
