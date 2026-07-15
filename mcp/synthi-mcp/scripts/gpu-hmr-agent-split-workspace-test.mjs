@@ -10,10 +10,19 @@
 //   cd mcp/synthi-mcp
 //   SYNTHI_GPU_HMR=1 SYNTHI_GPU_VENDOR=auto node scripts/gpu-hmr-agent-split-workspace-test.mjs
 
-import { spawn, execFile } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +56,10 @@ import {
 import {
   visualEvidenceArtifactsFromVisualOracleArtifacts,
 } from './lib/gpu-hmr-validation-proof-artifact.mjs';
+import {
+  inspectDirectSourceGitIdentity,
+  verifyDirectSourceGitIdentity,
+} from './lib/gpu-hmr-direct-source-git-identity.mjs';
 
 let stdioPipeClosed = false;
 
@@ -585,6 +598,14 @@ function agentProfileSourceForHash(source) {
       : [],
     manifestHash: source.manifestHash ?? null,
     manifest_hash: source.manifest_hash ?? null,
+    immutableSourceIdentityHash:
+      source.immutableSourceIdentity?.identityHash
+      ?? source.immutable_source_identity?.identity_hash
+      ?? null,
+    immutable_source_identity_hash:
+      source.immutable_source_identity?.identity_hash
+      ?? source.immutableSourceIdentity?.identityHash
+      ?? null,
     contentHash: source.contentHash ?? null,
     content_hash: source.content_hash ?? null,
     declaredContentHash: source.declaredContentHash ?? null,
@@ -917,6 +938,12 @@ function normalizeDirectSourceOverride(rawManifest, {
       ?? source.commit,
     'directSourceManifest.immutableCommit',
   );
+  const declaredImmutableSourceIdentity =
+    raw.immutableSourceIdentity
+    ?? raw.immutable_source_identity
+    ?? source.immutableSourceIdentity
+    ?? source.immutable_source_identity
+    ?? null;
   const sourceKind = profileString(
     raw.sourceKind
       ?? raw.source_kind
@@ -991,11 +1018,16 @@ function normalizeDirectSourceOverride(rawManifest, {
     );
   }
   const manifestHash = sourceFilesManifestHash(files);
-  const immutableCommit = declaredImmutableCommit || (
-    sourceAuthority === 'direct_local_git_repo_path'
-      ? `source-tree:${manifestHash}`
-      : ''
-  );
+  const immutableSourceIdentity = sourceAuthority === 'direct_local_git_repo_path'
+    ? verifyDirectSourceGitIdentity({
+        declaredIdentity: declaredImmutableSourceIdentity,
+        sourceRoot: resolvedSourceRoot,
+        requestedCommit: declaredImmutableCommit,
+        sourceManifestHash: manifestHash,
+        sourceFilePaths: files.map((entry) => entry.path),
+      })
+    : null;
+  const immutableCommit = immutableSourceIdentity?.commitOid ?? declaredImmutableCommit;
   const evidenceRef = `evidence:agent-direct-source-manifest:${manifestHash}`;
   return {
     sourceAuthority,
@@ -1008,6 +1040,8 @@ function normalizeDirectSourceOverride(rawManifest, {
     repo_path: repoPath || null,
     immutableCommit: immutableCommit || null,
     immutable_commit: immutableCommit || null,
+    immutableSourceIdentity,
+    immutable_source_identity: immutableSourceIdentity,
     directSourceInputChannels,
     direct_source_input_channels: directSourceInputChannels,
     entryPath,
@@ -1093,6 +1127,8 @@ function applyDirectSourceOverride(profile, override = loadDirectSourceOverride(
     repo_path: override.repo_path,
     immutableCommit: override.immutableCommit,
     immutable_commit: override.immutable_commit,
+    immutableSourceIdentity: override.immutableSourceIdentity,
+    immutable_source_identity: override.immutable_source_identity,
     directSourceInputChannels: override.directSourceInputChannels,
     direct_source_input_channels: override.direct_source_input_channels,
     evidenceRef: override.evidenceRef,
@@ -4632,6 +4668,15 @@ function directSourceContextFromProfile(profile = ACTIVE_AGENT_PROFILE) {
       ?? source.immutable_commit
       ?? '',
   ).trim();
+  const immutableSourceIdentity =
+    source.immutableSourceIdentity
+    ?? source.immutable_source_identity
+    ?? null;
+  const immutableSourceIdentityHash = String(
+    immutableSourceIdentity?.identityHash
+      ?? immutableSourceIdentity?.identity_hash
+      ?? '',
+  ).trim().toLowerCase();
   const suppliedInputChannels = uniqueSortedStrings([
     ...(Array.isArray(source.directSourceInputChannels) ? source.directSourceInputChannels : []),
     ...(Array.isArray(source.direct_source_input_channels) ? source.direct_source_input_channels : []),
@@ -4656,6 +4701,10 @@ function directSourceContextFromProfile(profile = ACTIVE_AGENT_PROFILE) {
     repo_path: repoPath || null,
     immutableCommit: immutableCommit || null,
     immutable_commit: immutableCommit || null,
+    immutableSourceIdentity,
+    immutable_source_identity: immutableSourceIdentity,
+    immutableSourceIdentityHash: immutableSourceIdentityHash || null,
+    immutable_source_identity_hash: immutableSourceIdentityHash || null,
     inputChannels,
     input_channels: inputChannels,
   };
@@ -4667,6 +4716,7 @@ function directSourceIdentityHash({
   sourceUrl,
   repoPath,
   immutableCommit,
+  immutableSourceIdentityHash,
   inputChannels,
 } = {}) {
   const normalizedSourceUrl = String(sourceUrl ?? '').trim();
@@ -4680,6 +4730,7 @@ function directSourceIdentityHash({
     sourceUrlHash: normalizedSourceUrl ? `sha256:${sha256Hex(normalizedSourceUrl)}` : null,
     repoPathHash: normalizedRepoPath ? `sha256:${sha256Hex(normalizedRepoPath)}` : null,
     immutableCommit: String(immutableCommit ?? '').trim().toLowerCase(),
+    immutableSourceIdentityHash: String(immutableSourceIdentityHash ?? '').trim().toLowerCase() || null,
     inputChannels: uniqueSortedStrings(inputChannels),
   };
   return `sha256:${sha256Hex(stableJson(seed))}`;
@@ -4693,6 +4744,8 @@ function directSourceInputEvidenceForProfile(profile = ACTIVE_AGENT_PROFILE) {
   const sourceUrl = context.sourceUrl;
   const repoPath = context.repoPath;
   const immutableCommit = context.immutableCommit;
+  const immutableSourceIdentity = context.immutableSourceIdentity;
+  const immutableSourceIdentityHash = context.immutableSourceIdentityHash;
   const inputChannels = uniqueSortedStrings(context.inputChannels);
   const sourceIdentityHash = directSourceIdentityHash({
     candidateSource,
@@ -4700,6 +4753,7 @@ function directSourceInputEvidenceForProfile(profile = ACTIVE_AGENT_PROFILE) {
     sourceUrl,
     repoPath,
     immutableCommit,
+    immutableSourceIdentityHash,
     inputChannels,
   });
   const cliOrEnvChannelObserved = inputChannels.some((channel) =>
@@ -4714,6 +4768,9 @@ function directSourceInputEvidenceForProfile(profile = ACTIVE_AGENT_PROFILE) {
       : 'direct_source_input_source_kind_mismatch',
     cliOrEnvChannelObserved ? null : 'direct_source_input_cli_or_env_channel_missing',
     immutableCommit ? null : 'direct_source_input_commit_missing',
+    candidateSource !== 'direct_local_git_repo_path' || immutableSourceIdentityHash
+      ? null
+      : 'direct_source_input_git_identity_missing',
     sourceUrl || repoPath ? null : 'direct_source_input_source_identity_missing',
   ].filter(Boolean);
   const accepted = blockingGaps.length === 0;
@@ -4751,6 +4808,10 @@ function directSourceInputEvidenceForProfile(profile = ACTIVE_AGENT_PROFILE) {
     specific_target_ids_allowed: [],
     sourceIdentityHash,
     source_identity_hash: sourceIdentityHash,
+    immutableSourceIdentity,
+    immutable_source_identity: immutableSourceIdentity,
+    immutableSourceIdentityHash: immutableSourceIdentityHash || null,
+    immutable_source_identity_hash: immutableSourceIdentityHash || null,
     evidenceHash: sourceIdentityHash,
     evidence_hash: sourceIdentityHash,
     blockingGaps,
@@ -5729,6 +5790,7 @@ function selfCheckAgentVisualProfile() {
   const originalProfile = ACTIVE_AGENT_PROFILE;
   const originalFixture = CFG.fixture;
   const originalAllowPackagedDefaultFixture = CFG.allowPackagedDefaultFixture;
+  let directLocalSelfCheckRoot = null;
   try {
     let implicitPackagedFixtureRejected = false;
     try {
@@ -6076,6 +6138,46 @@ function selfCheckAgentVisualProfile() {
       directSourceUndeclaredHotEditRejected =
         String(err.message).includes('profile_declared_edit_missing');
     }
+    directLocalSelfCheckRoot = mkdtempSync(path.join(os.tmpdir(), 'synthi-agent-direct-local-source-'));
+    mkdirSync(path.join(directLocalSelfCheckRoot, 'include'), { recursive: true });
+    mkdirSync(path.join(directLocalSelfCheckRoot, 'src'), { recursive: true });
+    writeFileSync(path.join(directLocalSelfCheckRoot, 'include', 'params.hpp'), multiFileHeaderSource);
+    writeFileSync(path.join(directLocalSelfCheckRoot, 'src', 'main.cpp'), multiFileEntrySource);
+    for (const gitArgs of [
+      ['init'],
+      ['config', 'user.email', 'gpu-hmr-self-check@example.invalid'],
+      ['config', 'user.name', 'GPU HMR Self Check'],
+      ['config', 'core.autocrlf', 'false'],
+      ['add', '.'],
+      ['commit', '-m', 'immutable direct source fixture'],
+    ]) {
+      execFileSync('git', ['-C', directLocalSelfCheckRoot, ...gitArgs], {
+        windowsHide: true,
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+    }
+    const directLocalCommit = String(execFileSync(
+      'git',
+      ['-C', directLocalSelfCheckRoot, 'rev-parse', 'HEAD'],
+      { encoding: 'utf8', windowsHide: true },
+    )).trim();
+    const directLocalSourceFiles = [
+      { path: 'include/params.hpp', content: multiFileHeaderSource },
+      { path: 'src/main.cpp', content: multiFileEntrySource },
+    ].map((entry) => ({
+      ...entry,
+      contentHash: sourceContentHash(entry.content),
+      content_hash: sourceContentHash(entry.content),
+      byteLength: Buffer.byteLength(entry.content, 'utf8'),
+      byte_length: Buffer.byteLength(entry.content, 'utf8'),
+    }));
+    const directLocalManifestHash = sourceFilesManifestHash(directLocalSourceFiles);
+    const directLocalGitIdentity = inspectDirectSourceGitIdentity({
+      sourceRoot: directLocalSelfCheckRoot,
+      requestedCommit: directLocalCommit,
+      sourceManifestHash: directLocalManifestHash,
+      sourceFilePaths: directLocalSourceFiles.map((entry) => entry.path),
+    });
     const directLocalSourceProfile = applyDirectSourceOverride(
       normalizeAgentVisualProfile({
         schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
@@ -6092,20 +6194,29 @@ function selfCheckAgentVisualProfile() {
       }),
       normalizeDirectSourceOverride({
         sourceAuthority: 'direct_local_git_repo_path',
-        directSourceInputChannels: ['cli_arg:source-root', 'cli_arg:source-entry'],
+        directSourceInputChannels: [
+          'cli_arg:source-root',
+          'cli_arg:source-entry',
+          'cli_arg:source-commit',
+        ],
+        immutableCommit: directLocalCommit,
+        immutableSourceIdentity: directLocalGitIdentity,
         entryPath: 'src/main.cpp',
         files: [
           {
             path: 'include/params.hpp',
-            inline: multiFileHeaderSource,
+            sourcePath: 'include/params.hpp',
+            contentHash: sourceContentHash(multiFileHeaderSource),
           },
           {
             path: 'src/main.cpp',
-            inline: multiFileEntrySource,
+            sourcePath: 'src/main.cpp',
+            contentHash: sourceContentHash(multiFileEntrySource),
           },
         ],
       }, {
-        manifestPath: path.join(process.cwd(), 'self-check-direct-local-source-manifest.json'),
+        manifestPath: path.join(directLocalSelfCheckRoot, 'self-check-direct-local-source-manifest.json'),
+        sourceRoot: directLocalSelfCheckRoot,
       }),
     );
     ACTIVE_AGENT_PROFILE = ambiguousProfile;
@@ -6526,7 +6637,9 @@ function selfCheckAgentVisualProfile() {
       || directLocalSourceProfile.sourceAuthority !== 'direct_local_git_repo_path'
       || directLocalSourceProfile.source.sourceKind !== 'local_repo_path_commit'
       || !directLocalSourceProfile.source.repoPath
-      || !String(directLocalSourceProfile.source.immutableCommit ?? '').startsWith('source-tree:sha256:')
+      || directLocalSourceProfile.source.immutableCommit !== directLocalCommit
+      || directLocalSourceProfile.source.immutableSourceIdentity?.identityHash
+        !== directLocalGitIdentity.identityHash
       || directSourceProfile.source.files.length !== 2
       || !directSourceProfile.source.manifestHash?.startsWith('sha256:')
       || !directSourceProfile.source.evidenceRef?.startsWith('evidence:agent-direct-source-manifest:sha256:')
@@ -6592,6 +6705,8 @@ function selfCheckAgentVisualProfile() {
       || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.acceptedForGpuHmr !== false
       || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.gpuHmrSuccess !== false
       || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.canSatisfyRuntimeProof !== false
+      || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.immutableSourceIdentityHash
+        !== directLocalGitIdentity.identityHash
       || acceptedDirectLocalSourceFirst.directSourceRuntimeContractExpectation?.accepted !== false
       || acceptedDirectLocalSourceFirst.directSourceRuntimeContractExpectation?.sourceIdentityHash
         !== acceptedDirectLocalSourceFirst.directSourceInputEvidence?.sourceIdentityHash
@@ -6650,6 +6765,9 @@ function selfCheckAgentVisualProfile() {
     ACTIVE_AGENT_PROFILE = originalProfile;
     CFG.fixture = originalFixture;
     CFG.allowPackagedDefaultFixture = originalAllowPackagedDefaultFixture;
+    if (directLocalSelfCheckRoot) {
+      rmSync(directLocalSelfCheckRoot, { recursive: true, force: true });
+    }
   }
 }
 

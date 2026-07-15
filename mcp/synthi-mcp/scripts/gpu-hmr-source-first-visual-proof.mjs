@@ -19,6 +19,9 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  inspectDirectSourceGitIdentity,
+} from './lib/gpu-hmr-direct-source-git-identity.mjs';
 
 function readOption(args, name) {
   const prefix = `${name}=`;
@@ -274,6 +277,7 @@ function synthesizeSourceManifestFromRoot({
   sourceRoot,
   sourceEntry,
   sourceAuthority,
+  sourceCommit,
   inputChannels = [],
 }) {
   if (!sourceRoot) throw new Error('source root is required');
@@ -293,12 +297,23 @@ function synthesizeSourceManifestFromRoot({
   }));
   const manifestHash = contentHashForObject(fileManifest);
   const directSourceAuthority = sourceAuthority || 'direct_local_git_repo_path';
+  if (sourceCommit && directSourceAuthority !== 'direct_local_git_repo_path') {
+    throw new Error('--source-commit is valid only for direct_local_git_repo_path source authority');
+  }
   const sourceKind = directSourceAuthority === 'direct_local_git_repo_path'
     ? 'local_repo_path_commit'
     : directSourceAuthority === 'direct_source_url_commit'
       ? 'source_url_commit'
       : 'source_tree_files';
-  const immutableCommit = `source-tree:${manifestHash}`;
+  const immutableSourceIdentity = directSourceAuthority === 'direct_local_git_repo_path'
+    ? inspectDirectSourceGitIdentity({
+        sourceRoot: root,
+        requestedCommit: sourceCommit,
+        sourceManifestHash: manifestHash,
+        sourceFilePaths: files.map((file) => file.path),
+      })
+    : null;
+  const immutableCommit = immutableSourceIdentity?.commitOid ?? `source-tree:${manifestHash}`;
   const directSourceInputChannels = uniqueSortedStrings(inputChannels);
   const entryInferenceEvidence = {
     schemaVersion: 'synthi.gpu_hmr.source_root_entry_inference.v1',
@@ -381,6 +396,8 @@ function synthesizeSourceManifestFromRoot({
     repo_path: root,
     immutableCommit,
     immutable_commit: immutableCommit,
+    immutableSourceIdentity,
+    immutable_source_identity: immutableSourceIdentity,
     directSourceInputChannels,
     direct_source_input_channels: directSourceInputChannels,
     entryInferenceEvidence,
@@ -405,6 +422,8 @@ function synthesizeSourceManifestFromRoot({
       repo_path: root,
       immutableCommit,
       immutable_commit: immutableCommit,
+      immutableSourceIdentity,
+      immutable_source_identity: immutableSourceIdentity,
       directSourceInputChannels,
       direct_source_input_channels: directSourceInputChannels,
       entryInferenceEvidence,
@@ -469,6 +488,7 @@ function resolveLauncherInputs(args, env = process.env) {
   const sourceRootArg = readOption(args, '--source-root');
   const sourceEntryArg = readOption(args, '--source-entry');
   const sourceAuthorityArg = readOption(args, '--source-authority');
+  const sourceCommitArg = readOption(args, '--source-commit');
   const directSourceRequested = Boolean(
     sourceManifestArg
     || sourceRootArg
@@ -501,6 +521,11 @@ function resolveLauncherInputs(args, env = process.env) {
     || env.SYNTHI_GPU_AGENT_SOURCE_AUTHORITY
     || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY
     || '';
+  const sourceCommit =
+    sourceCommitArg
+    || env.SYNTHI_GPU_AGENT_SOURCE_COMMIT
+    || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_COMMIT
+    || '';
   const vendor = readOption(args, '--vendor') || env.SYNTHI_GPU_VENDOR || 'rocm';
 
   if (fixture && profile) {
@@ -508,6 +533,12 @@ function resolveLauncherInputs(args, env = process.env) {
   }
   if (fixtureArg && directSourceRequested) {
     throw new Error('choose either --fixture or direct source inputs, not both');
+  }
+  if (sourceCommit && !sourceRoot) {
+    throw new Error('--source-commit requires --source-root or SYNTHI_GPU_AGENT_SOURCE_ROOT');
+  }
+  if (sourceCommit && sourceManifest) {
+    throw new Error('--source-commit cannot override an existing direct source manifest');
   }
 
   return {
@@ -517,6 +548,7 @@ function resolveLauncherInputs(args, env = process.env) {
     sourceRootArg,
     sourceEntryArg,
     sourceAuthorityArg,
+    sourceCommitArg,
     directSourceRequested,
     fixture,
     profile,
@@ -524,6 +556,7 @@ function resolveLauncherInputs(args, env = process.env) {
     sourceRoot,
     sourceEntry,
     sourceAuthority,
+    sourceCommit,
     vendor,
   };
 }
@@ -536,6 +569,7 @@ function applyLauncherInputs(inputs, env = process.env) {
     sourceRoot,
     sourceEntry,
     sourceAuthority,
+    sourceCommit,
   } = inputs;
   if (fixture) env.SYNTHI_GPU_AGENT_FIXTURE = fixture;
   if (profile) env.SYNTHI_GPU_AGENT_PROFILE_PATH = profile;
@@ -557,6 +591,10 @@ function applyLauncherInputs(inputs, env = process.env) {
   if (sourceAuthority) {
     env.SYNTHI_GPU_AGENT_SOURCE_AUTHORITY = sourceAuthority;
     env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY = sourceAuthority;
+  }
+  if (sourceCommit) {
+    env.SYNTHI_GPU_AGENT_SOURCE_COMMIT = sourceCommit;
+    env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_COMMIT = sourceCommit;
   }
 }
 
@@ -618,9 +656,11 @@ const {
   sourceRoot,
   sourceEntry,
   sourceAuthority,
+  sourceCommit,
   sourceRootArg,
   sourceEntryArg,
   sourceAuthorityArg,
+  sourceCommitArg,
   vendor,
 } = launcherInputs;
 let { sourceManifest } = launcherInputs;
@@ -649,11 +689,16 @@ if (!sourceManifest && sourceRoot) {
     !sourceAuthorityArg && (process.env.SYNTHI_GPU_AGENT_SOURCE_AUTHORITY || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY)
       ? 'env:SYNTHI_GPU_AGENT_SOURCE_AUTHORITY'
       : null,
+    sourceCommitArg ? 'cli_arg:source-commit' : null,
+    !sourceCommitArg && (process.env.SYNTHI_GPU_AGENT_SOURCE_COMMIT || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_COMMIT)
+      ? 'env:SYNTHI_GPU_AGENT_SOURCE_COMMIT'
+      : null,
   ];
   generatedSourceManifest = synthesizeSourceManifestFromRoot({
     sourceRoot,
     sourceEntry,
     sourceAuthority,
+    sourceCommit,
     inputChannels: directSourceInputChannels,
   });
   sourceManifest = generatedSourceManifest.manifestPath;
