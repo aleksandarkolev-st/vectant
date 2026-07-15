@@ -217,6 +217,9 @@ const EXPOSED_SPLIT_DIR = cleanVisibleWorkspaceDir(
 
 const results = [];
 const REDACTED_SECRET = '[REDACTED_SECRET]';
+const COMPILE_TERMINAL_DIAGNOSTIC_SCHEMA_VERSION =
+  'synthi.gpu_hmr.compile_terminal_diagnostic.v1';
+const COMPILE_TERMINAL_DIAGNOSTIC_MAX_CHARS = 4000;
 let writingResultCheckpoint = false;
 
 function sanitizeProofLogString(value) {
@@ -3605,6 +3608,11 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
     timingMetrics,
     timing_metrics: timingMetrics,
   };
+  const terminalDiagnostic = compileTerminalDiagnosticEvidence(wait);
+  if (terminalDiagnostic) {
+    waitSummary.terminalDiagnostic = terminalDiagnostic;
+    waitSummary.terminal_diagnostic = terminalDiagnostic;
+  }
   if (retryEvidence) {
     waitSummary.proofFinalizationRetry = retryEvidence;
     waitSummary.proof_finalization_retry = retryEvidence;
@@ -3629,7 +3637,12 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
     JSON.stringify(waitSummary),
   );
   if (requireAppliedWait && !waitGateSatisfied) {
-    throw new Error(`required synthi_wait_hmr proof gate did not apply: ${JSON.stringify(waitSummary).slice(0, 4000)}`);
+    const error = new Error(
+      `required synthi_wait_hmr proof gate did not apply: ${JSON.stringify(waitSummary).slice(0, 4000)}`,
+    );
+    error.waitSummary = waitSummary;
+    error.wait_summary = waitSummary;
+    throw error;
   }
   return { compile, wait, waitContract, waitSummary, timingMetrics };
 }
@@ -5483,6 +5496,44 @@ function collectAiProviderReasonCodes(value, seen = new Set()) {
   ])];
 }
 
+function compileTerminalDiagnosticEvidence(wait) {
+  const status = String(wait?.status ?? '').trim();
+  if (!['compile-error', 'rejected', 'full-reload-required', 'discarded'].includes(status)) {
+    return null;
+  }
+  if (wait?.detail === null || wait?.detail === undefined) return null;
+
+  const sanitizedDetail = sanitizeProofLogValue(wait.detail);
+  const serializedDetail = typeof sanitizedDetail === 'string'
+    ? sanitizedDetail
+    : JSON.stringify(sanitizedDetail);
+  const boundedDetail = sanitizeProofLogString(serializedDetail)
+    .slice(0, COMPILE_TERMINAL_DIAGNOSTIC_MAX_CHARS);
+  const reasonCodes = collectAiProviderReasonCodes(sanitizedDetail);
+
+  return {
+    schemaVersion: COMPILE_TERMINAL_DIAGNOSTIC_SCHEMA_VERSION,
+    schema_version: COMPILE_TERMINAL_DIAGNOSTIC_SCHEMA_VERSION,
+    proofAuthority: 'compile_terminal_diagnostic_only_not_gpu_hmr_acceptance',
+    proof_authority: 'compile_terminal_diagnostic_only_not_gpu_hmr_acceptance',
+    accepted: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    status,
+    source: String(wait?.source ?? 'unknown'),
+    reasonCodes,
+    reason_codes: reasonCodes,
+    sanitizedDetail: boundedDetail,
+    sanitized_detail: boundedDetail,
+    detailTruncated: serializedDetail.length > COMPILE_TERMINAL_DIAGNOSTIC_MAX_CHARS,
+    detail_truncated: serializedDetail.length > COMPILE_TERMINAL_DIAGNOSTIC_MAX_CHARS,
+  };
+}
+
 function sourceFirstProviderDiagnosticEvidence({
   error,
   initialCompileArgs,
@@ -5490,11 +5541,14 @@ function sourceFirstProviderDiagnosticEvidence({
   entryPath,
 }) {
   const compileResult = error?.compileResult ?? error?.compile_result ?? null;
+  const waitSummary = error?.waitSummary ?? error?.wait_summary ?? null;
   const sanitizedCompileResult = sanitizeProofLogValue(compileResult);
+  const sanitizedWaitSummary = sanitizeProofLogValue(waitSummary);
   const sanitizedMessage = sanitizeProofLogString(error?.stack || error?.message || String(error ?? ''));
   const reasonCodes = collectAiProviderReasonCodes({
     message: sanitizedMessage,
     compileResult: sanitizedCompileResult,
+    waitSummary: sanitizedWaitSummary,
   });
   const initialFiles = sourceFirstInitialFileManifest(initialCompileArgs?.files);
   const normalizedEntryPath = cleanRel(entryPath);
@@ -5557,6 +5611,8 @@ function sourceFirstProviderDiagnosticEvidence({
     sanitized_error_message: sanitizedMessage.slice(0, 4000),
     sanitizedCompileResult,
     sanitized_compile_result: sanitizedCompileResult,
+    terminalDiagnostic: sanitizedWaitSummary?.terminalDiagnostic ?? null,
+    terminal_diagnostic: sanitizedWaitSummary?.terminal_diagnostic ?? null,
   };
 }
 
@@ -6460,6 +6516,30 @@ function selfCheckAgentVisualProfile() {
       && redactedProviderObject.apiKey === REDACTED_SECRET
       && !redactedProviderObject.nested.message.includes(redactionFixtureKey)
       && !redactedProviderObject.nested.bearer.includes('payload.signature');
+    const terminalProviderDiagnostic = compileTerminalDiagnosticEvidence({
+      status: 'compile-error',
+      source: 'hmr_status',
+      detail: {
+        module: 'pipeline',
+        errors: [
+          `GPU split endpoint failed: ai_provider_account_suspended Consumer api_key:${redactionFixtureKey}`,
+        ],
+      },
+    });
+    const terminalProviderDiagnosticSerialized = JSON.stringify(terminalProviderDiagnostic);
+    const retainedWaitProviderDiagnostic = sourceFirstProviderDiagnosticEvidence({
+      error: Object.assign(new Error('required synthi_wait_hmr proof gate did not apply'), {
+        waitSummary: {
+          status: 'compile-error',
+          terminalDiagnostic: terminalProviderDiagnostic,
+          terminal_diagnostic: terminalProviderDiagnostic,
+        },
+      }),
+      initialCompileArgs: sourceFirstInitialCompileArgs,
+      source: multiFileResolvedSource,
+      entryPath: multiFileProfile.source.entryPath,
+    });
+    const retainedWaitProviderDiagnosticSerialized = JSON.stringify(retainedWaitProviderDiagnostic);
     const providerDiagnostic = sourceFirstProviderDiagnosticEvidence({
       error: Object.assign(
         new Error(
@@ -6746,6 +6826,15 @@ function selfCheckAgentVisualProfile() {
       || schedulingEvidence.proofAuthority !== 'visual_worker_scheduling_support_only'
       || schedulingEvidence.strategy !== 'bounded_concurrent_worker_threads'
       || !redactionAccepted
+      || terminalProviderDiagnostic?.schemaVersion !== COMPILE_TERMINAL_DIAGNOSTIC_SCHEMA_VERSION
+      || terminalProviderDiagnostic?.acceptedForGpuHmr !== false
+      || terminalProviderDiagnostic?.gpuHmrSuccess !== false
+      || terminalProviderDiagnostic?.canSatisfyRuntimeProof !== false
+      || !terminalProviderDiagnostic?.reasonCodes.includes('ai_provider_account_suspended')
+      || terminalProviderDiagnosticSerialized.includes(redactionFixtureKey)
+      || retainedWaitProviderDiagnostic.acceptedAsDiagnostic !== true
+      || !retainedWaitProviderDiagnostic.reasonCodes.includes('ai_provider_account_suspended')
+      || retainedWaitProviderDiagnosticSerialized.includes(redactionFixtureKey)
       || providerDiagnostic.accepted !== false
       || providerDiagnostic.acceptedAsDiagnostic !== true
       || providerDiagnostic.acceptedForGpuHmr !== false
