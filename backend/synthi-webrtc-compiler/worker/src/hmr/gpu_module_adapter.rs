@@ -3352,6 +3352,17 @@ impl Adapter for GpuModuleAdapter {
                     };
                 }
             }
+            let expected_blob_id = format!("artifact:sha256:{ram_hash}");
+            if ram_artifact.blob_id != expected_blob_id {
+                self.health = AdapterHealth::Degraded;
+                return AdapterReloadResult::Failed {
+                    error: format!(
+                        "GPU RAM artifact blob id mismatch: expected {expected_blob_id:?} got {:?}",
+                        ram_artifact.blob_id
+                    ),
+                    recoverable: true,
+                };
+            }
             if let Some(path_blob) = path_blob.as_ref() {
                 let path_hash = sha256_hex_bytes(path_blob);
                 if path_hash != ram_hash {
@@ -5705,6 +5716,52 @@ mod tests {
         assert!(transport.contains(&format!("ram_blob_id=artifact:sha256:{artifact_hash}")));
         assert!(transport.contains("ram_transport_proven=true"));
         assert!(transport.contains("degraded_state=none"));
+    }
+
+    #[test]
+    fn ram_artifact_blob_id_must_bind_exact_loader_bytes_before_module_mutation() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        MODULE_LOAD_CALLS.store(0, Ordering::SeqCst);
+        UNLOAD_CALLS.store(0, Ordering::SeqCst);
+        let artifact_bytes = b"content-bound-loader-bytes";
+        let artifact_hash = sha256_hex_bytes(artifact_bytes);
+        let mut artifact_file = tempfile::NamedTempFile::new().unwrap();
+        artifact_file.write_all(artifact_bytes).unwrap();
+        let artifact_path = artifact_file.path().to_string_lossy().to_string();
+        let generation_before = current_launch_generation();
+
+        for invalid_blob_id in [
+            "artifact:sha256:not-a-digest".to_string(),
+            format!("artifact:sha256:{}", "0".repeat(64)),
+        ] {
+            let mut request =
+                request_with_artifact(&artifact_path, vec!["src/device-stage".into()]);
+            request.artifact_blob = Some(ReloadArtifactBlob {
+                blob_id: invalid_blob_id.clone(),
+                content_hash: format!("sha256:{artifact_hash}"),
+                bytes: artifact_bytes.to_vec(),
+            });
+            let mut adapter = adapter_with_symbols(stub_symbols());
+
+            match adapter.reload(&request) {
+                AdapterReloadResult::Failed { error, recoverable } => {
+                    assert!(recoverable);
+                    assert!(error.contains("GPU RAM artifact blob id mismatch"));
+                    assert!(error.contains(&invalid_blob_id));
+                    assert!(error.contains(&format!("artifact:sha256:{artifact_hash}")));
+                }
+                other => panic!("expected RAM blob id refusal, got {other:?}"),
+            }
+            assert_eq!(MODULE_LOAD_CALLS.load(Ordering::SeqCst), 0);
+            assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), 0);
+            assert_eq!(adapter.module_manager.swap_count(), 0);
+            assert_eq!(current_launch_generation(), generation_before);
+            assert!(adapter.last_reload_log().is_empty());
+        }
+
+        let _ = install_runtime_output_oracle_profile_for_tests();
+        reset_for_test();
     }
 
     #[test]
