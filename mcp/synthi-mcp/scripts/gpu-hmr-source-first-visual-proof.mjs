@@ -421,7 +421,11 @@ function synthesizeSourceManifestFromRoot({
   const scriptDir = path.dirname(fileURLToPath(import.meta.url));
   const outputDir = path.resolve(scriptDir, '..', '.gpu-hmr-test-logs', 'direct-source-manifests', 'generated');
   mkdirSync(outputDir, { recursive: true });
-  const manifestPath = path.join(outputDir, `source-root-${manifestHash.slice('sha256:'.length, 'sha256:'.length + 16)}.json`);
+  const identityHash = immutableSourceIdentity.identityHash;
+  const manifestPath = path.join(
+    outputDir,
+    `source-root-${identityHash.slice('sha256:'.length, 'sha256:'.length + 16)}-${manifestHash.slice('sha256:'.length, 'sha256:'.length + 16)}.json`,
+  );
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   return {
     manifest,
@@ -490,6 +494,34 @@ function selfCheckSourceRootManifest() {
       || generated.manifest.entryInferenceEvidence?.accepted !== true
     ) {
       throw new Error('source-root manifest self-check failed: runtime contract expectation shape mismatch');
+    }
+    writeFileSync(path.join(tmpRoot, 'README.md'), 'identity-only commit change\n');
+    execFileSync('git', ['-C', tmpRoot, 'add', 'README.md'], {
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    execFileSync('git', ['-C', tmpRoot, 'commit', '-m', 'advance immutable identity'], {
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    const secondSourceCommit = String(execFileSync('git', ['-C', tmpRoot, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    })).trim();
+    const secondGenerated = synthesizeSourceManifestFromRoot({
+      sourceRoot: tmpRoot,
+      sourceEntry: 'src/main.cpp',
+      sourceAuthority: 'user_source_files',
+      sourceCommit: secondSourceCommit,
+      inputChannels: ['cli_arg:source-root', 'cli_arg:source-commit'],
+    });
+    if (
+      secondGenerated.manifest.manifestHash !== generated.manifest.manifestHash
+      || secondGenerated.manifest.immutableSourceIdentity?.identityHash
+        === generated.manifest.immutableSourceIdentity?.identityHash
+      || secondGenerated.manifestPath === generated.manifestPath
+    ) {
+      throw new Error('source-root manifest self-check failed: immutable identities reused a manifest path');
     }
     console.log(`source-root manifest self-check passed: ${generated.manifestPath}`);
   } finally {
