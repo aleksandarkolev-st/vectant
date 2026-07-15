@@ -7560,6 +7560,13 @@ fn is_device_sidecar_only_reload(modules_to_load: &[(String, String)]) -> bool {
             .all(|(name, _)| is_gpu_device_reload_marker(name))
 }
 
+fn adapter_reload_can_finalize_without_runner(
+    adapter_handled: bool,
+    runner_device_reload_required: bool,
+) -> bool {
+    adapter_handled && !runner_device_reload_required
+}
+
 fn is_device_source_request(filename: &str) -> bool {
     normalized_request_filename(filename)
         .map(|name| {
@@ -13029,7 +13036,9 @@ pub async fn handle_compile_request(
         .as_ref()
         .and_then(|m| m.gpu.as_ref())
         .is_some();
-    if gpu_sidecar_loaded_by_runner && device_compile_outcome.is_some() {
+    let runner_device_reload_required =
+        gpu_sidecar_loaded_by_runner && device_compile_outcome.is_some();
+    if runner_device_reload_required {
         debug_log!(
             "[GPU HMR] Skipping worker-side device reload; shipped runner will load sidecar"
         );
@@ -13321,7 +13330,7 @@ pub async fn handle_compile_request(
         processed_core.contains("on_update") || processed_core.contains("core_on_update");
 
     // If the adapter already handled the reload in-process, skip the runner path.
-    if adapter_handled {
+    if adapter_reload_can_finalize_without_runner(adapter_handled, runner_device_reload_required) {
         let authoritative_reload_ms = match &reload_result {
             AdapterReloadResult::Success { reload_ms, .. } => *reload_ms,
             _ => compile_start.elapsed().as_millis() as u64,
@@ -14110,6 +14119,14 @@ mod gpu_host_contract_tests {
             ),
             ("core".to_string(), "/tmp/libcore.so".to_string()),
         ]));
+    }
+
+    #[test]
+    fn host_adapter_cannot_finalize_a_runner_owned_gpu_reload() {
+        assert!(adapter_reload_can_finalize_without_runner(true, false));
+        assert!(!adapter_reload_can_finalize_without_runner(true, true));
+        assert!(!adapter_reload_can_finalize_without_runner(false, false));
+        assert!(!adapter_reload_can_finalize_without_runner(false, true));
     }
 
     #[test]
