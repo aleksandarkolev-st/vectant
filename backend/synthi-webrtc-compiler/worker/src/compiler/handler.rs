@@ -6340,20 +6340,278 @@ fn proof_fission_selection_decision_hash(proof: &serde_json::Value) -> Option<St
         .map(|decision| format!("sha256:{}", sha256_hex_str(&decision.to_string())))
 }
 
+fn output_oracle_contract_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 1024
+        && value.trim() == value
+        && !value.chars().any(char::is_whitespace)
+        && !value.chars().any(char::is_control)
+}
+
+fn output_oracle_contract_string_alias<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    aliases: &[&str],
+) -> Result<Option<&'a str>, ()> {
+    let mut selected = None;
+    for alias in aliases {
+        let Some(value) = object.get(*alias) else {
+            continue;
+        };
+        let value = value
+            .as_str()
+            .filter(|value| output_oracle_contract_token(value))
+            .ok_or(())?;
+        if selected.is_some_and(|selected| selected != value) {
+            return Err(());
+        }
+        selected = Some(value);
+    }
+    Ok(selected)
+}
+
+fn output_oracle_contract_bool_alias(
+    object: &serde_json::Map<String, serde_json::Value>,
+    aliases: &[&str],
+) -> Result<Option<bool>, ()> {
+    let mut selected = None;
+    for alias in aliases {
+        let Some(value) = object.get(*alias) else {
+            continue;
+        };
+        let value = value.as_bool().ok_or(())?;
+        if selected.is_some_and(|selected| selected != value) {
+            return Err(());
+        }
+        selected = Some(value);
+    }
+    Ok(selected)
+}
+
+fn canonical_output_oracle_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+fn materialize_compute_readback_output_oracle_contract(
+    candidate: &serde_json::Value,
+    contract: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let candidate = candidate.as_object()?;
+    let kind =
+        output_oracle_contract_string_alias(contract, &["kind", "oracleKind", "oracle_kind"])
+            .ok()??;
+    if !matches!(
+        kind,
+        "buffer_checksum" | "compute_readback" | "readback_checksum"
+    ) {
+        return None;
+    }
+
+    let contract_oracle_id = output_oracle_contract_string_alias(
+        contract,
+        &[
+            "oracleId",
+            "requiredOracleId",
+            "oracle_id",
+            "required_oracle_id",
+        ],
+    )
+    .ok()?;
+    let candidate_oracle_id = output_oracle_contract_string_alias(
+        candidate,
+        &[
+            "oracleId",
+            "requiredOracleId",
+            "oracle_id",
+            "required_oracle_id",
+        ],
+    )
+    .ok()?;
+    if contract_oracle_id
+        .zip(candidate_oracle_id)
+        .is_some_and(|(contract, candidate)| contract != candidate)
+    {
+        return None;
+    }
+    let oracle_id = contract_oracle_id.or(candidate_oracle_id)?;
+    let expected_sha256 = output_oracle_contract_string_alias(
+        contract,
+        &[
+            "expected",
+            "expectedValue",
+            "expectedSha256",
+            "expectedHash",
+            "expected_value",
+            "expected_sha256",
+            "expected_hash",
+        ],
+    )
+    .ok()??;
+    if !canonical_output_oracle_sha256(expected_sha256) {
+        return None;
+    }
+    let producer = output_oracle_contract_string_alias(
+        contract,
+        &[
+            "producer",
+            "producerId",
+            "producerSubsystem",
+            "producer_id",
+            "producer_subsystem",
+        ],
+    )
+    .ok()??;
+    let output_target_id = output_oracle_contract_string_alias(
+        contract,
+        &[
+            "outputTargetId",
+            "outputTarget",
+            "target",
+            "output_target_id",
+            "output_target",
+        ],
+    )
+    .ok()??;
+    let baseline_sha256 = output_oracle_contract_string_alias(
+        contract,
+        &[
+            "baselineSha256",
+            "baselineHash",
+            "baseline_sha256",
+            "baseline_hash",
+        ],
+    )
+    .ok()?;
+    if baseline_sha256.is_some_and(|value| !canonical_output_oracle_sha256(value)) {
+        return None;
+    }
+    let kernel_symbol = output_oracle_contract_string_alias(
+        contract,
+        &["kernelSymbol", "kernelName", "kernel_symbol", "kernel_name"],
+    )
+    .ok()?;
+    let probe_mode =
+        output_oracle_contract_string_alias(contract, &["probeMode", "probe_mode"]).ok()?;
+    let probe_config_hash =
+        output_oracle_contract_string_alias(contract, &["probeConfigHash", "probe_config_hash"])
+            .ok()?;
+    if probe_config_hash.is_some_and(|value| !canonical_output_oracle_sha256(value)) {
+        return None;
+    }
+    let expected_output_change = output_oracle_contract_bool_alias(
+        contract,
+        &["expectedOutputChange", "expected_output_change"],
+    )
+    .ok()?;
+    if expected_output_change == Some(false) {
+        return None;
+    }
+
+    let mut materialized = serde_json::Map::new();
+    materialized.insert("kind".to_string(), serde_json::json!(kind));
+    materialized.insert("oracleId".to_string(), serde_json::json!(oracle_id));
+    materialized.insert(
+        "expectedSha256".to_string(),
+        serde_json::json!(expected_sha256),
+    );
+    materialized.insert("producer".to_string(), serde_json::json!(producer));
+    materialized.insert(
+        "outputTargetId".to_string(),
+        serde_json::json!(output_target_id),
+    );
+    for (field, value) in [
+        ("baselineSha256", baseline_sha256),
+        ("kernelSymbol", kernel_symbol),
+        ("probeMode", probe_mode),
+        ("probeConfigHash", probe_config_hash),
+    ] {
+        if let Some(value) = value {
+            materialized.insert(field.to_string(), serde_json::json!(value));
+        }
+    }
+    materialized.insert(
+        "expectedOutputChange".to_string(),
+        serde_json::Value::Bool(true),
+    );
+    Some(serde_json::Value::Object(materialized))
+}
+
+fn materialized_resolved_output_oracle_contract(
+    candidate: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let candidate_object = candidate.as_object()?;
+    let mut selected = None;
+    for field in [
+        "outputOracleContract",
+        "resolvedOutputOracleContract",
+        "output_oracle_contract",
+        "resolved_output_oracle_contract",
+    ] {
+        let Some(value) = candidate_object.get(field) else {
+            continue;
+        };
+        let contract = value.as_object()?;
+        let materialized =
+            materialize_compute_readback_output_oracle_contract(candidate, contract)?;
+        if selected
+            .as_ref()
+            .is_some_and(|selected| selected != &materialized)
+        {
+            return None;
+        }
+        selected = Some(materialized);
+    }
+    selected
+}
+
+fn fission_verifier_metadata_recomputes_exactly(metadata: &serde_json::Value) -> bool {
+    let Some(candidate_reports) = metadata
+        .get("candidates")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    let Some(candidates) = candidate_reports
+        .iter()
+        .map(|report| report.get("candidate").cloned())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    verify_fission_candidates(&serde_json::Value::Array(candidates)) == *metadata
+}
+
+fn concrete_compute_readback_output_oracle_contract(contract: &serde_json::Value) -> bool {
+    let Some(contract) = contract.as_object() else {
+        return false;
+    };
+    let candidate = serde_json::Value::Object(contract.clone());
+    materialize_compute_readback_output_oracle_contract(&candidate, contract).is_some()
+}
+
 fn proof_fission_output_oracle_contract(proof: &serde_json::Value) -> Option<serde_json::Value> {
+    let metadata = proof_fission_verifier_metadata(proof)?;
+    if !fission_verifier_metadata_recomputes_exactly(metadata)
+        || metadata.get("status").and_then(serde_json::Value::as_str) != Some("pass")
+    {
+        return None;
+    }
     let verified_candidate = proof_selected_fission_candidate(proof)?;
     let candidate = verified_candidate
         .get("candidate")
         .filter(|candidate| candidate.is_object())?;
-    candidate
-        .get("outputOracleContract")
-        .or_else(|| candidate.get("resolvedOutputOracleContract"))
-        .or_else(|| candidate.get("output_oracle_contract"))
-        .or_else(|| candidate.get("resolved_output_oracle_contract"))
-        .or_else(|| candidate.get("outputOracleProposal"))
-        .or_else(|| candidate.get("output_oracle_proposal"))
-        .filter(|contract| contract.is_object())
-        .cloned()
+    if verified_candidate
+        .pointer("/outputOracleContract/resolvedContractValid")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        return None;
+    }
+    materialized_resolved_output_oracle_contract(candidate)
 }
 
 fn proof_output_oracle_profile_commitment(
@@ -6361,7 +6619,10 @@ fn proof_output_oracle_profile_commitment(
     contract: &serde_json::Value,
     profile_bytes: &[u8],
 ) -> Option<ReloadOutputOracleProfileCommitment> {
-    if profile_bytes.is_empty() || !contract.is_object() {
+    if profile_bytes.is_empty() || !concrete_compute_readback_output_oracle_contract(contract) {
+        return None;
+    }
+    if proof_fission_output_oracle_contract(proof).as_ref() != Some(contract) {
         return None;
     }
     let candidate_artifact_sha256 = proof_selected_fission_candidate(proof)
@@ -6377,10 +6638,7 @@ fn proof_output_oracle_profile_commitment(
     Some(ReloadOutputOracleProfileCommitment {
         schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.to_string(),
         candidate_artifact_sha256,
-        fission_output_oracle_contract_sha256: format!(
-            "sha256:{}",
-            stable_json_hash(contract)
-        ),
+        fission_output_oracle_contract_sha256: format!("sha256:{}", stable_json_hash(contract)),
         profile_bytes_sha256: format!("sha256:{}", sha256_hex_bytes(profile_bytes)),
         edit_id,
     })
@@ -13426,6 +13684,73 @@ mod gpu_host_contract_tests {
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
+    fn complete_fission_candidate_with_output_oracle(
+        output_oracle_contract: serde_json::Value,
+    ) -> serde_json::Value {
+        let artifact_digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        serde_json::json!({
+            "islandId": "island:sha256:oracle-contract",
+            "sourceEditId": "source-edit:concrete-oracle",
+            "selectedArtifactId": format!("artifact:sha256:{artifact_digest}"),
+            "artifactHash": format!("sha256:{artifact_digest}"),
+            "sourcePaths": ["src/device.kernel"],
+            "sourceSpans": [{"path": "src/device.kernel", "startLine": 10, "endLine": 12}],
+            "generatedRolePath": ".synthi/generated/gpu/device.kernel",
+            "generatedTopologyBinding": {
+                "schemaVersion": "synthi.gpu.generated_topology_binding.v1",
+                "source": "generated_manifest_device_role_topology",
+                "generatedRolePath": ".synthi/generated/gpu/device.kernel",
+                "selectedArtifactId": format!("artifact:sha256:{artifact_digest}"),
+                "selectedArtifactHash": format!("sha256:{artifact_digest}"),
+                "artifactKind": "device_partial",
+                "replacementScope": "device_partial",
+                "materializedPartialArtifact": true,
+                "separatelyMaterializedPartialArtifact": true,
+                "contentAddressedPartialArtifact": true,
+                "sourcePaths": ["src/device.kernel"],
+                "targetSymbols": ["step"]
+            },
+            "generatedTopologyEvidenceIds": ["evidence:generated-topology"],
+            "targetSymbols": ["step"],
+            "exportedSymbolsExpected": ["step", "helper"],
+            "artifactKind": "device_partial",
+            "safeExportSupersetReason": "helper symbol is verifier-owned dependency closure",
+            "includeClosure": [],
+            "dependencyClosureHash": format!("sha256:{}", "1".repeat(64)),
+            "abiMembraneId": "abi:membrane",
+            "compileRecipeHash": format!("sha256:{}", "2".repeat(64)),
+            "compileCommandHash": format!("sha256:{}", "3".repeat(64)),
+            "loaderCapabilityRequirement": {"transport": "content_addressed_blob"},
+            "requiredOracleId": "oracle:readback:explicit",
+            "outputOracleContract": output_oracle_contract,
+            "sourceMappingEvidenceIds": ["evidence:source-map"],
+            "includeClosureEvidenceIds": ["evidence:include-closure"],
+            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
+            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
+            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
+            "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
+            "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
+            "outputOracleEvidenceIds": ["evidence:output-oracle"],
+            "verifierEvidenceIds": ["evidence:source-map"],
+            "narrowerCandidateRejections": [{
+                "scopeRank": 0,
+                "reasonCode": "fission.edit_crosses_body_boundary",
+                "verifierEvidenceIds": ["evidence:source-map"]
+            }]
+        })
+    }
+
+    fn proof_with_selected_fission_candidate(candidate: serde_json::Value) -> serde_json::Value {
+        let metadata = verify_fission_candidates(&candidate);
+        serde_json::json!({
+            "sourceEditId": "source-edit:concrete-oracle",
+            "evidenceRefs": [{
+                "kind": "fission-verifier-report",
+                "metadata": metadata
+            }]
+        })
+    }
+
     fn fixture_kernel_source(symbol: &str) -> String {
         format!("extern \"C\" __global__ void {symbol}() {{ }}")
     }
@@ -14621,6 +14946,251 @@ __constant__ int scale;
         );
     }
 
+    #[test]
+    fn resolved_compute_readback_contract_materializes_adapter_semantics() {
+        let expected_sha256 = format!("sha256:{}", "1".repeat(64));
+        let baseline_sha256 = format!("sha256:{}", "2".repeat(64));
+        let probe_config_hash = format!("sha256:{}", "3".repeat(64));
+        let mut candidate = complete_fission_candidate_with_output_oracle(serde_json::json!({
+            "kind": "buffer_checksum",
+            "oracleId": "oracle:readback:explicit",
+            "expectedHash": expected_sha256,
+            "producerSubsystem": "verified.runtime_probe",
+            "outputTarget": "buffer:result",
+            "baselineHash": baseline_sha256,
+            "kernelName": "explicit_kernel_symbol",
+            "probeMode": "deterministic_readback",
+            "probeConfigHash": probe_config_hash,
+            "expectedOutputChange": true,
+            "readbackPlan": {"syncPoint": "after-dispatch"},
+            "runtimeSessionIdSource": "runtime-boundary",
+            "artifactIdSource": "selected-artifact",
+            "acceptedForGpuHmr": true,
+            "gpuHmrSuccess": true,
+            "canSatisfyRuntimeProof": true,
+            "proofAuthority": "serialized_claim"
+        }));
+        candidate["resolved_output_oracle_contract"] = serde_json::json!({
+            "kind": "buffer_checksum",
+            "required_oracle_id": "oracle:readback:explicit",
+            "expected_hash": expected_sha256,
+            "producer_subsystem": "verified.runtime_probe",
+            "output_target": "buffer:result",
+            "baseline_hash": baseline_sha256,
+            "kernel_name": "explicit_kernel_symbol",
+            "probe_mode": "deterministic_readback",
+            "probe_config_hash": probe_config_hash,
+            "expected_output_change": true
+        });
+        let proof = proof_with_selected_fission_candidate(candidate);
+        assert_eq!(
+            proof.pointer("/evidenceRefs/0/metadata/status"),
+            Some(&serde_json::json!("pass")),
+            "{}",
+            proof["evidenceRefs"][0]["metadata"]
+        );
+        assert_eq!(
+            proof.pointer(
+                "/evidenceRefs/0/metadata/candidates/0/outputOracleContract/resolvedContractValid"
+            ),
+            Some(&serde_json::json!(true))
+        );
+
+        let contract = proof_fission_output_oracle_contract(&proof)
+            .expect("concrete resolved output oracle contract");
+
+        assert_eq!(contract["kind"], "buffer_checksum");
+        assert_eq!(contract["oracleId"], "oracle:readback:explicit");
+        assert_eq!(contract["expectedSha256"], expected_sha256);
+        assert_eq!(contract["producer"], "verified.runtime_probe");
+        assert_eq!(contract["outputTargetId"], "buffer:result");
+        assert_eq!(contract["baselineSha256"], baseline_sha256);
+        assert_eq!(contract["kernelSymbol"], "explicit_kernel_symbol");
+        assert_eq!(contract["probeMode"], "deterministic_readback");
+        assert_eq!(contract["probeConfigHash"], probe_config_hash);
+        assert_eq!(contract["expectedOutputChange"], true);
+        assert_eq!(contract.as_object().map(serde_json::Map::len), Some(10));
+        for forbidden in [
+            "acceptedForGpuHmr",
+            "gpuHmrSuccess",
+            "canSatisfyRuntimeProof",
+            "proofAuthority",
+            "readbackPlan",
+        ] {
+            assert!(contract.get(forbidden).is_none());
+        }
+        assert!(
+            proof_output_oracle_profile_commitment(&proof, &contract, br#"{"enabled":true}"#,)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn unverified_resolved_output_oracle_material_is_never_promoted_to_runtime_contract() {
+        let proposal_expected = "runtime_readback_changed_after_epoch_dispatch";
+        let mut candidate = complete_fission_candidate_with_output_oracle(serde_json::json!({
+            "kind": "buffer_checksum",
+            "oracleId": "oracle:readback:explicit",
+            "expectedSha256": format!("sha256:{}", "4".repeat(64)),
+            "producer": "worker.runtime_dispatch_replay",
+            "outputTargetId": "buffer:result",
+            "kernelName": "step",
+            "probeMode": "runtime-dispatch-replay"
+        }));
+        candidate["outputOracleProposal"] = serde_json::json!({
+            "kind": "buffer_checksum",
+            "expected": proposal_expected,
+            "producer": "worker.runtime_dispatch_replay",
+            "outputTargetId": "buffer:result",
+            "readbackPlan": {"syncPoint": "after-dispatch"},
+            "runtimeSessionIdSource": "runtime-boundary",
+            "artifactIdSource": "selected-artifact"
+        });
+        let unverified_contract = proof_with_selected_fission_candidate(candidate);
+        assert_eq!(
+            unverified_contract.pointer("/evidenceRefs/0/metadata/status"),
+            Some(&serde_json::json!("pass"))
+        );
+        assert_eq!(
+            unverified_contract.pointer(
+                "/evidenceRefs/0/metadata/candidates/0/outputOracleContract/resolvedContractValid"
+            ),
+            Some(&serde_json::json!(false))
+        );
+        assert!(proof_fission_output_oracle_contract(&unverified_contract).is_none());
+        let unverified_raw = unverified_contract
+            .pointer("/evidenceRefs/0/metadata/candidates/0/candidate/outputOracleContract")
+            .expect("unverified resolved contract fixture");
+        assert!(proof_output_oracle_profile_commitment(
+            &unverified_contract,
+            unverified_raw,
+            br#"{"enabled":true}"#,
+        )
+        .is_none());
+        let fabricated_concrete_contract = serde_json::json!({
+            "kind": "compute_readback",
+            "oracleId": "oracle:readback:explicit",
+            "expectedSha256": format!("sha256:{}", "4".repeat(64)),
+            "producer": "worker.runtime_dispatch_replay",
+            "outputTargetId": "buffer:result"
+        });
+        assert!(proof_output_oracle_profile_commitment(
+            &unverified_contract,
+            &fabricated_concrete_contract,
+            br#"{"enabled":true}"#,
+        )
+        .is_none());
+
+        let mut proposal_only_candidate =
+            complete_fission_candidate_with_output_oracle(serde_json::json!({
+                "kind": "buffer_checksum",
+                "oracleId": "oracle:readback:explicit",
+                "expectedSha256": format!("sha256:{}", "5".repeat(64)),
+                "producer": "worker.runtime_dispatch_replay",
+                "outputTargetId": "buffer:result",
+                "readbackPlan": {"syncPoint": "after-dispatch"},
+                "runtimeSessionIdSource": "runtime-boundary",
+                "artifactIdSource": "selected-artifact"
+            }));
+        proposal_only_candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("outputOracleContract");
+        proposal_only_candidate["outputOracleProposal"] = serde_json::json!({
+            "kind": "buffer_checksum",
+            "expected": proposal_expected,
+            "producer": "worker.runtime_dispatch_replay",
+            "outputTargetId": "buffer:result",
+            "readbackPlan": {"syncPoint": "after-dispatch"},
+            "runtimeSessionIdSource": "runtime-boundary",
+            "artifactIdSource": "selected-artifact"
+        });
+        let proposal_only = proof_with_selected_fission_candidate(proposal_only_candidate);
+        assert!(proof_fission_output_oracle_contract(&proposal_only).is_none());
+    }
+
+    #[test]
+    fn output_oracle_commitment_requires_exact_recomputed_verifier_metadata() {
+        let candidate = complete_fission_candidate_with_output_oracle(serde_json::json!({
+            "kind": "buffer_checksum",
+            "oracleId": "oracle:readback:explicit",
+            "expectedSha256": format!("sha256:{}", "6".repeat(64)),
+            "producer": "verified.runtime_probe",
+            "outputTargetId": "buffer:result",
+            "readbackPlan": {"syncPoint": "after-dispatch"},
+            "runtimeSessionIdSource": "runtime-boundary",
+            "artifactIdSource": "selected-artifact"
+        }));
+        let fabricated = serde_json::json!({
+            "sourceEditId": "source-edit:concrete-oracle",
+            "evidenceRefs": [{
+                "kind": "fission-verifier-report",
+                "metadata": {
+                    "status": "pass",
+                    "selectedCandidateIndex": 0,
+                    "candidates": [{
+                        "status": "pass",
+                        "selected": true,
+                        "outputOracleContract": {"resolvedContractValid": true},
+                        "candidate": candidate
+                    }]
+                }
+            }]
+        });
+        assert!(proof_fission_output_oracle_contract(&fabricated).is_none());
+
+        let mut tampered = proof_with_selected_fission_candidate(
+            complete_fission_candidate_with_output_oracle(serde_json::json!({
+                "kind": "buffer_checksum",
+                "oracleId": "oracle:readback:explicit",
+                "expectedSha256": format!("sha256:{}", "7".repeat(64)),
+                "producer": "verified.runtime_probe",
+                "outputTargetId": "buffer:result",
+                "readbackPlan": {"syncPoint": "after-dispatch"},
+                "runtimeSessionIdSource": "runtime-boundary",
+                "artifactIdSource": "selected-artifact"
+            })),
+        );
+        tampered["evidenceRefs"][0]["metadata"]["reasonCodes"] =
+            serde_json::json!(["fission.candidate_accepted", "serialized_override"]);
+        assert!(proof_fission_output_oracle_contract(&tampered).is_none());
+    }
+
+    #[test]
+    fn compute_readback_contract_rejects_noncanonical_and_conflicting_hashes() {
+        let candidate = serde_json::json!({"requiredOracleId": "oracle:readback:explicit"});
+        for invalid in [
+            "not-a-hash".to_string(),
+            format!("sha256:{}", "8".repeat(63)),
+            format!("sha256:{}", "A".repeat(64)),
+        ] {
+            let contract = serde_json::json!({
+                "kind": "compute_readback",
+                "expectedSha256": invalid,
+                "producer": "verified.runtime_probe",
+                "outputTargetId": "buffer:result"
+            });
+            assert!(materialize_compute_readback_output_oracle_contract(
+                &candidate,
+                contract.as_object().unwrap(),
+            )
+            .is_none());
+        }
+
+        let conflicting = serde_json::json!({
+            "kind": "compute_readback",
+            "expectedSha256": format!("sha256:{}", "8".repeat(64)),
+            "expected_hash": format!("sha256:{}", "9".repeat(64)),
+            "producer": "verified.runtime_probe",
+            "outputTargetId": "buffer:result"
+        });
+        assert!(materialize_compute_readback_output_oracle_contract(
+            &candidate,
+            conflicting.as_object().unwrap(),
+        )
+        .is_none());
+    }
+
     #[tokio::test]
     async fn partial_hmr_proof_artifact_promotes_ai_fission_candidate_with_deterministic_evidence()
     {
@@ -14770,71 +15340,23 @@ __constant__ int scale;
             &profile_path,
         )
         .await;
-        let emitted_commitment = capsule_metadata
-            .output_oracle_profile_commitment
-            .clone()
-            .expect("capsule output oracle profile commitment");
-        let exact_oracle_contract = capsule_metadata
-            .fission_output_oracle_contract
-            .expect("selected exact output oracle contract");
-        let selected_raw_oracle_contract = candidate
-            .get("outputOracleContract")
-            .or_else(|| candidate.get("resolvedOutputOracleContract"))
-            .or_else(|| candidate.get("outputOracleProposal"))
-            .expect("selected raw output oracle contract");
-        assert_eq!(&exact_oracle_contract, selected_raw_oracle_contract);
-        assert!(exact_oracle_contract.get("proposalValid").is_none());
-        let proof_value = serde_json::to_value(&artifact).unwrap();
-        let commitment = proof_output_oracle_profile_commitment(
-            &proof_value,
-            &exact_oracle_contract,
-            profile_bytes,
-        )
-        .expect("prepublication output oracle profile commitment");
-        assert_eq!(emitted_commitment, commitment);
+        assert!(capsule_metadata.fission_output_oracle_contract.is_none());
+        assert!(capsule_metadata.output_oracle_profile_commitment.is_none());
         assert_eq!(
-            commitment.schema_version,
-            RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION
-        );
-        assert_eq!(
-            commitment.candidate_artifact_sha256,
             candidate
-                .get("artifactHash")
-                .and_then(serde_json::Value::as_str)
-                .unwrap()
+                .pointer("/outputOracleProposal/expectedIncrement")
+                .and_then(serde_json::Value::as_str),
+            Some("1")
         );
-        assert_eq!(
-            commitment.fission_output_oracle_contract_sha256,
-            format!("sha256:{}", stable_json_hash(&exact_oracle_contract))
+        let proof_value = serde_json::to_value(&artifact).unwrap();
+        assert!(proof_fission_output_oracle_contract(&proof_value).is_none());
+        let proposal = candidate
+            .get("outputOracleProposal")
+            .expect("proposal remains available as non-runtime hint");
+        assert!(
+            proof_output_oracle_profile_commitment(&proof_value, proposal, profile_bytes,)
+                .is_none()
         );
-        assert_eq!(
-            commitment.profile_bytes_sha256,
-            format!("sha256:{}", sha256_hex_bytes(profile_bytes))
-        );
-        assert_eq!(commitment.edit_id, artifact.source_edit_id);
-        assert!(proof_output_oracle_profile_commitment(
-            &proof_value,
-            &exact_oracle_contract,
-            &[],
-        )
-        .is_none());
-        let mut missing_edit_identity = proof_value.clone();
-        missing_edit_identity
-            .as_object_mut()
-            .unwrap()
-            .remove("sourceEditId");
-        assert!(proof_output_oracle_profile_commitment(
-            &missing_edit_identity,
-            &exact_oracle_contract,
-            profile_bytes,
-        )
-        .is_none());
-        assert!(proof_output_oracle_profile_commitment(
-            &proof_value,
-            &serde_json::Value::String("declaration-only".to_string()),
-            profile_bytes,
-        )
-        .is_none());
     }
 
     #[tokio::test]
