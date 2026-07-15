@@ -9306,11 +9306,38 @@ fn has_gpu_state_serialization_symbols(exported_symbols: &[String]) -> bool {
         .all(|required| exported_symbols.iter().any(|symbol| symbol == required))
 }
 
+fn validate_required_provider_call_dispatch(
+    language: &str,
+    require_ai_provider_call: bool,
+    user_requested_deterministic: bool,
+) -> Result<()> {
+    if !require_ai_provider_call {
+        return Ok(());
+    }
+    if user_requested_deterministic {
+        anyhow::bail!(
+            "required_ai_provider_call_conflicts_with_deterministic_mode: a required provider call cannot use deterministic routing"
+        );
+    }
+    if language.eq_ignore_ascii_case("java") {
+        anyhow::bail!(
+            "required_ai_provider_call_unsupported_language: the Java compile pipeline has no AI split provider boundary"
+        );
+    }
+    Ok(())
+}
+
 pub async fn handle_compile_request(
     ctx: &CompileContext,
     mut req: CompileRequest,
     session_id: String,
 ) -> Result<serde_json::Value> {
+    validate_required_provider_call_dispatch(
+        &req.language,
+        req.require_ai_provider_call,
+        req.user_requested_deterministic,
+    )?;
+
     // ── Language dispatch: route non-C++ languages to dedicated pipelines ──
     if req.language == "java" {
         return crate::compiler::java::handler::handle_java_request(ctx, req, session_id).await;
@@ -9416,10 +9443,11 @@ pub async fn handle_compile_request(
         consecutive_failures: classifier_consecutive_failures,
         failure_rescue_threshold: 2,
         user_requested_ai: classifier_user_requested_ai,
+        require_ai_provider_call: req.require_ai_provider_call,
         user_requested_deterministic: req.user_requested_deterministic,
     };
 
-    let classification = classify_loop(&classifier_input);
+    let classification = classify_loop(&classifier_input)?;
     let compile_loop = classification.loop_type;
 
     // ── Build CompileEnrichment ──
@@ -9436,7 +9464,7 @@ pub async fn handle_compile_request(
     // classifier's inputs live, we're guessing at why. The line is noisy
     // but fires once per compile request, which is fine.
     eprintln!(
-        "[HMR] classify_loop → {:?} (reason={:?}) inputs: is_adapted={} split_hash={:?} src_hash={} consec_fail={} effective_consec_fail={} prefer_det_gpu={} user_ai={} effective_user_ai={} user_det={} lang={}",
+        "[HMR] classify_loop → {:?} (reason={:?}) inputs: is_adapted={} split_hash={:?} src_hash={} consec_fail={} effective_consec_fail={} prefer_det_gpu={} user_ai={} effective_user_ai={} required_provider={} user_det={} lang={}",
         compile_loop,
         classification.reason,
         adapted_status.is_adapted,
@@ -9447,6 +9475,7 @@ pub async fn handle_compile_request(
         prefer_deterministic_gpu_edit_flag,
         req.user_requested_ai,
         classifier_user_requested_ai,
+        req.require_ai_provider_call,
         req.user_requested_deterministic,
         language
     );
@@ -9463,6 +9492,11 @@ pub async fn handle_compile_request(
             &source_hash_str,
         )
     };
+    if req.require_ai_provider_call && !matches!(&ai_bypass_result, AiBypassResult::Proceed) {
+        anyhow::bail!(
+            "required_ai_provider_call_bypassed: strict provider execution did not reach the AI split endpoint"
+        );
+    }
 
     // ============================================================
     // PHASE 1: AI SPLIT & PROCESSING (routed through ai_bypass)
@@ -17185,14 +17219,32 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
             consecutive_failures: effective_failures,
             failure_rescue_threshold: 2,
             user_requested_ai: false,
+            require_ai_provider_call: false,
             user_requested_deterministic: false,
-        });
+        })
+        .expect("ordinary deterministic routing");
 
         assert_eq!(effective_failures, 0);
         assert_eq!(
             classification.loop_type,
             crate::hmr::loop_classifier::CompileLoop::LoopA
         );
+    }
+
+    #[test]
+    fn required_provider_call_rejects_unsupported_java_dispatch() {
+        let error = validate_required_provider_call_dispatch("java", true, false)
+            .expect_err("Java must not bypass the provider boundary")
+            .to_string();
+        assert!(error.contains("required_ai_provider_call_unsupported_language"));
+    }
+
+    #[test]
+    fn required_provider_call_rejects_deterministic_dispatch() {
+        let error = validate_required_provider_call_dispatch("cpp", true, true)
+            .expect_err("deterministic routing must not mask a provider requirement")
+            .to_string();
+        assert!(error.contains("required_ai_provider_call_conflicts_with_deterministic_mode"));
     }
 
     fn warm_launch_indirection_report() -> serde_json::Value {

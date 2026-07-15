@@ -136,9 +136,10 @@ mod tests {
     }
 
     #[test]
-    fn loop_b_proceeds() {
+    fn loop_b_ignores_populated_split_cache() {
         let gate = AiGate::new();
         let cache = SplitCache::new(10);
+        cache.put(make_cache_entry("h1"));
         let result = check_ai_bypass(&gate, &cache, CompileLoop::LoopB, "h1");
         assert!(matches!(result, AiBypassResult::Proceed));
     }
