@@ -5,6 +5,7 @@
 // acceptance still comes from the source-first runner, strict runtime ledger,
 // epoch/dispatch proof, output oracle bytes, and validation-matrix recompute.
 
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -13,6 +14,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -297,23 +299,21 @@ function synthesizeSourceManifestFromRoot({
   }));
   const manifestHash = contentHashForObject(fileManifest);
   const directSourceAuthority = sourceAuthority || 'direct_local_git_repo_path';
-  if (sourceCommit && directSourceAuthority !== 'direct_local_git_repo_path') {
-    throw new Error('--source-commit is valid only for direct_local_git_repo_path source authority');
+  if (!sourceCommit) {
+    throw new Error('auto-scanned --source-root requires an explicit full --source-commit');
   }
   const sourceKind = directSourceAuthority === 'direct_local_git_repo_path'
     ? 'local_repo_path_commit'
     : directSourceAuthority === 'direct_source_url_commit'
       ? 'source_url_commit'
       : 'source_tree_files';
-  const immutableSourceIdentity = directSourceAuthority === 'direct_local_git_repo_path'
-    ? inspectDirectSourceGitIdentity({
-        sourceRoot: root,
-        requestedCommit: sourceCommit,
-        sourceManifestHash: manifestHash,
-        sourceFilePaths: files.map((file) => file.path),
-      })
-    : null;
-  const immutableCommit = immutableSourceIdentity?.commitOid ?? `source-tree:${manifestHash}`;
+  const immutableSourceIdentity = inspectDirectSourceGitIdentity({
+    sourceRoot: root,
+    requestedCommit: sourceCommit,
+    sourceManifestHash: manifestHash,
+    sourceFilePaths: files.map((file) => file.path),
+  });
+  const immutableCommit = immutableSourceIdentity.commitOid;
   const directSourceInputChannels = uniqueSortedStrings(inputChannels);
   const entryInferenceEvidence = {
     schemaVersion: 'synthi.gpu_hmr.source_root_entry_inference.v1',
@@ -448,37 +448,70 @@ function synthesizeSourceManifestFromRoot({
 
 function selfCheckSourceRootManifest() {
   const tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'synthi-source-root-manifest-'));
-  mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
-  writeFileSync(path.join(tmpRoot, 'src', 'main.cpp'), '#include "scene_config.h"\nint main(){return 0;}\n');
-  writeFileSync(path.join(tmpRoot, 'src', 'scene_config.h'), '#pragma once\nconstexpr int kPixels = 16;\n');
-  const generated = synthesizeSourceManifestFromRoot({
-    sourceRoot: tmpRoot,
-    sourceEntry: 'src/main.cpp',
-    sourceAuthority: 'user_source_files',
-    inputChannels: ['cli_arg:source-root', 'cli_arg:source-entry', 'cli_arg:source-authority'],
-  });
-  if (!existsSync(generated.manifestPath)) {
-    throw new Error('source-root manifest self-check failed: manifest not written');
+  try {
+    mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
+    writeFileSync(path.join(tmpRoot, 'src', 'main.cpp'), '#include "scene_config.h"\nint main(){return 0;}\n');
+    writeFileSync(path.join(tmpRoot, 'src', 'scene_config.h'), '#pragma once\nconstexpr int kPixels = 16;\n');
+    for (const gitArgs of [
+      ['init'],
+      ['config', 'user.email', 'gpu-hmr-self-check@example.invalid'],
+      ['config', 'user.name', 'GPU HMR Self Check'],
+      ['config', 'core.autocrlf', 'false'],
+      ['add', '.'],
+      ['commit', '-m', 'immutable source-root fixture'],
+    ]) {
+      execFileSync('git', ['-C', tmpRoot, ...gitArgs], {
+        windowsHide: true,
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+    }
+    const sourceCommit = String(execFileSync('git', ['-C', tmpRoot, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    })).trim();
+    const generated = synthesizeSourceManifestFromRoot({
+      sourceRoot: tmpRoot,
+      sourceEntry: 'src/main.cpp',
+      sourceAuthority: 'user_source_files',
+      sourceCommit,
+      inputChannels: [
+        'cli_arg:source-root',
+        'cli_arg:source-entry',
+        'cli_arg:source-authority',
+        'cli_arg:source-commit',
+      ],
+    });
+    if (!existsSync(generated.manifestPath)) {
+      throw new Error('source-root manifest self-check failed: manifest not written');
+    }
+    if (generated.manifest.entryPath !== 'src/main.cpp') {
+      throw new Error('source-root manifest self-check failed: entry not preserved');
+    }
+    if (generated.manifest.files.length !== 2) {
+      throw new Error('source-root manifest self-check failed: source file count mismatch');
+    }
+    if (
+      generated.manifest.immutableCommit !== sourceCommit
+      || generated.manifest.immutableSourceIdentity?.commitOid !== sourceCommit
+    ) {
+      throw new Error('source-root manifest self-check failed: immutable Git identity missing');
+    }
+    if (generated.manifest.acceptedForGpuHmr !== false || generated.manifest.gpuHmrSuccess !== false) {
+      throw new Error('source-root manifest self-check failed: manifest claimed GPU HMR authority');
+    }
+    if (
+      generated.manifest.runtimeContractExpectation?.accepted !== false
+      || generated.manifest.runtimeContractExpectation?.canSatisfyRuntimeProof !== false
+      || !generated.manifest.runtimeContractExpectation?.blockingGaps
+        ?.includes('direct_source_runtime_contract_boundary_stages_incomplete')
+      || generated.manifest.entryInferenceEvidence?.accepted !== true
+    ) {
+      throw new Error('source-root manifest self-check failed: runtime contract expectation shape mismatch');
+    }
+    console.log(`source-root manifest self-check passed: ${generated.manifestPath}`);
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
   }
-  if (generated.manifest.entryPath !== 'src/main.cpp') {
-    throw new Error('source-root manifest self-check failed: entry not preserved');
-  }
-  if (generated.manifest.files.length !== 2) {
-    throw new Error('source-root manifest self-check failed: source file count mismatch');
-  }
-  if (generated.manifest.acceptedForGpuHmr !== false || generated.manifest.gpuHmrSuccess !== false) {
-    throw new Error('source-root manifest self-check failed: manifest claimed GPU HMR authority');
-  }
-  if (
-    generated.manifest.runtimeContractExpectation?.accepted !== false
-    || generated.manifest.runtimeContractExpectation?.canSatisfyRuntimeProof !== false
-    || !generated.manifest.runtimeContractExpectation?.blockingGaps
-      ?.includes('direct_source_runtime_contract_boundary_stages_incomplete')
-    || generated.manifest.entryInferenceEvidence?.accepted !== true
-  ) {
-    throw new Error('source-root manifest self-check failed: runtime contract expectation shape mismatch');
-  }
-  console.log(`source-root manifest self-check passed: ${generated.manifestPath}`);
 }
 
 function resolveLauncherInputs(args, env = process.env) {
@@ -536,6 +569,9 @@ function resolveLauncherInputs(args, env = process.env) {
   }
   if (sourceCommit && !sourceRoot) {
     throw new Error('--source-commit requires --source-root or SYNTHI_GPU_AGENT_SOURCE_ROOT');
+  }
+  if (sourceRoot && !sourceManifest && !sourceCommit) {
+    throw new Error('--source-root requires an explicit full --source-commit');
   }
   if (sourceCommit && sourceManifest) {
     throw new Error('--source-commit cannot override an existing direct source manifest');
@@ -609,6 +645,8 @@ function selfCheckProfileDirectSourceOverlayPolicy() {
     'src/main.cpp',
     '--source-authority',
     'user_source_files',
+    '--source-commit',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   ], {});
   const env = {
     SYNTHI_GPU_AGENT_FIXTURE: 'flow',

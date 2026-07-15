@@ -1022,7 +1022,7 @@ function normalizeDirectSourceOverride(rawManifest, {
     );
   }
   const manifestHash = sourceFilesManifestHash(files);
-  const immutableSourceIdentity = sourceAuthority === 'direct_local_git_repo_path'
+  const immutableSourceIdentity = declaredImmutableSourceIdentity
     ? verifyDirectSourceGitIdentity({
         declaredIdentity: declaredImmutableSourceIdentity,
         sourceRoot: resolvedSourceRoot,
@@ -1030,7 +1030,15 @@ function normalizeDirectSourceOverride(rawManifest, {
         sourceManifestHash: manifestHash,
         sourceFilePaths: files.map((entry) => entry.path),
       })
-    : null;
+    : sourceAuthority === 'direct_local_git_repo_path'
+      ? verifyDirectSourceGitIdentity({
+          declaredIdentity: declaredImmutableSourceIdentity,
+          sourceRoot: resolvedSourceRoot,
+          requestedCommit: declaredImmutableCommit,
+          sourceManifestHash: manifestHash,
+          sourceFilePaths: files.map((entry) => entry.path),
+        })
+      : null;
   const immutableCommit = immutableSourceIdentity?.commitOid ?? declaredImmutableCommit;
   const evidenceRef = `evidence:agent-direct-source-manifest:${manifestHash}`;
   return {
