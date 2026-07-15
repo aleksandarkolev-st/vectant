@@ -11,7 +11,7 @@
 //   SYNTHI_GPU_HMR=1 SYNTHI_GPU_VENDOR=auto node scripts/gpu-hmr-agent-split-workspace-test.mjs
 
 import { spawn, execFile, execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import {
   existsSync,
@@ -8903,6 +8903,71 @@ function coldAiSplitProofFromSeed(coldSplitProofSeed) {
   if (!coldSplitProofSeed) {
     throw new Error('cold AI split proof requires captured visual output artifacts');
   }
+  const providerCallEvidence =
+    coldSplitProofSeed.coldAiProviderCallEvidence
+    ?? coldSplitProofSeed.cold_ai_provider_call_evidence;
+  if (providerCallEvidence?.acceptedAsColdAiProviderCallEvidence !== true) {
+    throw new Error('cold AI split proof requires an observed AI provider call');
+  }
+  const visualArtifacts =
+    coldSplitProofSeed.visualArtifacts
+    ?? coldSplitProofSeed.visual_artifacts;
+  const visualMetrics =
+    coldSplitProofSeed.visualMetrics
+    ?? coldSplitProofSeed.visual_metrics;
+  const visualSample =
+    coldSplitProofSeed.coldSingleFrameVisual
+    ?? coldSplitProofSeed.cold_single_frame_visual;
+  const transport =
+    visualArtifacts?.visualArtifactTransportEvidence
+    ?? visualArtifacts?.visual_artifact_transport_evidence;
+  const locators =
+    visualArtifacts?.artifactCasLocators
+    ?? visualArtifacts?.artifact_cas_locators;
+  const afterImageHash =
+    visualArtifacts?.afterImageHash
+    ?? visualArtifacts?.after_image_hash;
+  const locatorBoundToFrame = Array.isArray(locators)
+    && locators.some((locator) =>
+      (locator?.contentHash ?? locator?.content_hash) === afterImageHash
+      && locator?.role === 'after_frame'
+      && locator?.mediaType === 'image/png'
+    );
+  const transportBoundToFrame = Array.isArray(transport?.entries)
+    && transport.entries.some((entry) => entry?.contentHash === afterImageHash);
+  const visiblePixelCount = Number(
+    visualMetrics?.visiblePixelCount
+    ?? visualMetrics?.visible_pixel_count
+    ?? visualSample?.visiblePixels
+    ?? 0,
+  );
+  const visualBlockingGaps = [
+    coldSplitProofSeed.coldSplitProven === true
+      || coldSplitProofSeed.cold_split_proven === true
+      ? null
+      : 'cold_ai_split_not_proven',
+    /^sha256:[a-f0-9]{64}$/.test(String(afterImageHash ?? ''))
+      ? null
+      : 'cold_ai_split_visual_hash_missing',
+    Array.isArray(locators) && locators.length > 0
+      ? null
+      : 'cold_ai_split_visual_cas_locator_missing',
+    locatorBoundToFrame && transportBoundToFrame
+      ? null
+      : 'cold_ai_split_visual_cas_binding_mismatch',
+    transport?.accepted === true && transport?.acceptedAsTransportEvidence === true
+      ? null
+      : 'cold_ai_split_visual_transport_unproven',
+    Number(visualSample?.width) >= 320
+      && Number(visualSample?.height) >= 240
+      && Number(visualSample?.bytes) > 512
+      && visiblePixelCount > 500
+      ? null
+      : 'cold_ai_split_visual_frame_blank_or_invalid',
+  ].filter(Boolean);
+  if (visualBlockingGaps.length > 0) {
+    throw new Error(`cold AI split visual proof rejected: ${visualBlockingGaps.join('|')}`);
+  }
   return {
     ...coldSplitProofSeed,
     proofAuthority: 'cold_ai_split_visual_output_only_not_gpu_hmr_acceptance',
@@ -8920,10 +8985,433 @@ function coldAiSplitProofFromSeed(coldSplitProofSeed) {
   };
 }
 
+const PROVIDER_CALL_REQUEST_SCHEMA_VERSION = 'synthi.ai.provider_call_request.v1';
+const PROVIDER_CALL_RECEIPT_SCHEMA_VERSION = 'synthi.ai.provider_call_receipt.v1';
+const PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION = 'synthi.ai.provider_call_challenge.v1';
+const PROVIDER_CALL_RECEIPT_AUTHORITY =
+  'request_bound_provider_call_only_not_gpu_hmr_success';
+
+function orderedJsonHash(values) {
+  return `sha256:${sha256Hex(JSON.stringify(values))}`;
+}
+
+function providerCallRequestHash(binding) {
+  return orderedJsonHash([
+    binding?.schema_version,
+    binding?.nonce,
+    binding?.mode,
+    binding?.request_mode,
+    binding?.language,
+    binding?.focus,
+    binding?.requested_model,
+    binding?.gpu_arch,
+    binding?.source_hash,
+    binding?.file_manifest_hash,
+    binding?.file_count,
+    binding?.extra_instructions_hash,
+  ]);
+}
+
+function providerCallReceiptHash(receipt) {
+  return orderedJsonHash([
+    PROVIDER_CALL_RECEIPT_SCHEMA_VERSION,
+    PROVIDER_CALL_RECEIPT_AUTHORITY,
+    receipt?.request_nonce,
+    receipt?.request_hash,
+    receipt?.response_hash,
+    receipt?.challenge_hash,
+    receipt?.provider,
+    receipt?.requested_model,
+    receipt?.actual_model,
+    receipt?.request_mode,
+    receipt?.provider_model_status,
+    String(receipt?.fallback_model ?? ''),
+    receipt?.fallback_used,
+    String(receipt?.provider_model_alias_resolved_to ?? ''),
+    receipt?.provider_shutdown_or_deprecation_detected,
+    receipt?.model_availability_checked_at,
+    receipt?.started_monotonic_ns,
+    receipt?.completed_monotonic_ns,
+    receipt?.started_unix_ns,
+    receipt?.completed_unix_ns,
+  ]);
+}
+
+function providerCallNormalizedPath(value) {
+  let normalized = String(value ?? '').replace(/\\/g, '/').trim();
+  while (normalized.startsWith('./')) normalized = normalized.slice(2);
+  return normalized.replace(/^\/+/, '');
+}
+
+function providerCallFileManifestFromCompileArgs(initialCompileArgs) {
+  const files = new Map();
+  const primary = providerCallNormalizedPath(initialCompileArgs?.filename);
+  if (primary) files.set(primary, String(initialCompileArgs?.source ?? ''));
+  for (const file of initialCompileArgs?.files ?? []) {
+    const name = providerCallNormalizedPath(file?.path ?? file?.name ?? file?.filename);
+    if (name && typeof file?.content === 'string') files.set(name, file.content);
+  }
+  const entries = [...files.entries()]
+    .sort(([left], [right]) => Buffer.compare(Buffer.from(left), Buffer.from(right)))
+    .map(([name, content]) => [name, `sha256:${sha256Hex(content)}`]);
+  return {
+    count: entries.length,
+    hash: orderedJsonHash(['synthi.ai.provider_call_file_manifest.v1', entries]),
+  };
+}
+
+function validProviderCallInterval(receipt) {
+  try {
+    return BigInt(receipt?.completed_monotonic_ns) > BigInt(receipt?.started_monotonic_ns)
+      && BigInt(receipt?.completed_unix_ns) >= BigInt(receipt?.started_unix_ns);
+  } catch {
+    return false;
+  }
+}
+
+function supportEvidenceClaimsAuthority(value) {
+  return [
+    'accepted_for_gpu_hmr',
+    'acceptedForGpuHmr',
+    'gpu_hmr_success',
+    'gpuHmrSuccess',
+    'can_satisfy_runtime_proof',
+    'canSatisfyRuntimeProof',
+    'can_satisfy_dispatch_proof',
+    'canSatisfyDispatchProof',
+  ].some((key) => value?.[key] !== undefined && value?.[key] !== false);
+}
+
+function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
+  const provenance = split?.sidecar?.model_provenance;
+  const receipt = split?.sidecar?.provider_call_receipt;
+  const binding = receipt?.request_binding;
+  const expectedFileManifest = providerCallFileManifestFromCompileArgs(initialCompileArgs);
+  const expectedNonce = String(initialCompileArgs?.ai_provider_call_nonce ?? '');
+  const expectedLanguage = String(initialCompileArgs?.language ?? '').trim();
+  const expectedFocus = providerCallNormalizedPath(initialCompileArgs?.filename);
+  const expectedGpuArch = String(initialCompileArgs?.gpu_arch ?? '').trim();
+  const expectedSourceHash = `sha256:${sha256Hex(initialCompileArgs?.source ?? '')}`;
+  const providerCallUsed = provenance?.provider_call_used === true
+    && receipt?.provider_call_used === true;
+  const provider = String(receipt?.provider ?? '').trim();
+  const requestedModel = String(receipt?.requested_model ?? '').trim();
+  const actualModel = String(receipt?.actual_model ?? '').trim();
+  const providerStatus = String(receipt?.provider_model_status ?? '').trim().toLowerCase();
+  const fallbackModel = String(receipt?.fallback_model ?? '').trim();
+  const fallbackUsed = receipt?.fallback_used;
+  const aliasResolvedTo = String(receipt?.provider_model_alias_resolved_to ?? '').trim();
+  const shutdownOrDeprecationDetected = receipt?.provider_shutdown_or_deprecation_detected;
+  const hardInfraFailure = receipt?.hard_infra_failure;
+  const computedRequestHash = binding ? providerCallRequestHash(binding) : '';
+  const computedReceiptHash = receipt ? providerCallReceiptHash(receipt) : '';
+  const challenge = receipt?.challenge;
+  const computedChallengeHash = challenge
+    ? orderedJsonHash([
+        PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION,
+        challenge?.request_nonce,
+        challenge?.request_hash,
+        challenge?.prompt_payload_hash,
+      ])
+    : '';
+  const sha256Pattern = /^sha256:[a-f0-9]{64}$/;
+  const allowedProviderStatuses = new Set(['available', 'deprecated', 'unknown', 'private_alias']);
+  const blockingGaps = [
+    receipt ? null : 'cold_ai_split_provider_receipt_missing',
+    receipt?.schema_version === PROVIDER_CALL_RECEIPT_SCHEMA_VERSION
+      ? null
+      : 'cold_ai_split_provider_receipt_schema_invalid',
+    receipt?.proof_authority === PROVIDER_CALL_RECEIPT_AUTHORITY
+      ? null
+      : 'cold_ai_split_provider_receipt_authority_invalid',
+    receipt?.accepted === true ? null : 'cold_ai_split_provider_receipt_not_accepted',
+    providerCallUsed ? null : 'cold_ai_split_provider_call_not_observed',
+    binding?.schema_version === PROVIDER_CALL_REQUEST_SCHEMA_VERSION
+      ? null
+      : 'cold_ai_split_provider_request_schema_invalid',
+    binding?.mode === 'split' && binding?.request_mode === 'split'
+      ? null
+      : 'cold_ai_split_provider_request_mode_binding_invalid',
+    /^provider-call:[a-f0-9]{32}$/.test(String(binding?.nonce ?? ''))
+      ? null
+      : 'cold_ai_split_provider_request_nonce_invalid',
+    expectedNonce && binding?.nonce === expectedNonce
+      ? null
+      : 'cold_ai_split_provider_request_nonce_not_caller_bound',
+    receipt?.request_nonce === binding?.nonce
+      ? null
+      : 'cold_ai_split_provider_request_nonce_mismatch',
+    binding?.language === expectedLanguage
+      && binding?.focus === expectedFocus
+      && binding?.gpu_arch === expectedGpuArch
+      ? null
+      : 'cold_ai_split_provider_request_context_mismatch',
+    binding?.source_hash === expectedSourceHash
+      ? null
+      : 'cold_ai_split_provider_request_source_hash_mismatch',
+    binding?.file_manifest_hash === expectedFileManifest.hash
+      && binding?.file_count === expectedFileManifest.count
+      ? null
+      : 'cold_ai_split_provider_request_file_manifest_mismatch',
+    requestedModel && binding?.requested_model === requestedModel
+      ? null
+      : 'cold_ai_split_provider_request_model_mismatch',
+    sha256Pattern.test(String(binding?.source_hash ?? ''))
+      && sha256Pattern.test(String(binding?.file_manifest_hash ?? ''))
+      && sha256Pattern.test(String(binding?.extra_instructions_hash ?? ''))
+      ? null
+      : 'cold_ai_split_provider_request_hash_fields_invalid',
+    receipt?.request_hash === computedRequestHash && sha256Pattern.test(computedRequestHash)
+      ? null
+      : 'cold_ai_split_provider_request_hash_mismatch',
+    sha256Pattern.test(String(receipt?.response_hash ?? ''))
+      ? null
+      : 'cold_ai_split_provider_response_hash_invalid',
+    challenge?.schema_version === PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION
+      && challenge?.request_nonce === binding?.nonce
+      && challenge?.request_hash === computedRequestHash
+      && sha256Pattern.test(String(challenge?.prompt_payload_hash ?? ''))
+      && challenge?.challenge_hash === computedChallengeHash
+      && receipt?.challenge_hash === computedChallengeHash
+      ? null
+      : 'cold_ai_split_provider_challenge_binding_mismatch',
+    receipt?.challenge_echo_verified === true
+      ? null
+      : 'cold_ai_split_provider_challenge_echo_unproven',
+    receipt?.receipt_hash === computedReceiptHash
+      && receipt?.call_id === `provider-call:${computedReceiptHash}`
+      ? null
+      : 'cold_ai_split_provider_receipt_hash_mismatch',
+    provider ? null : 'cold_ai_split_provider_identity_missing',
+    requestedModel ? null : 'cold_ai_split_requested_model_missing',
+    actualModel ? null : 'cold_ai_split_actual_model_missing',
+    provider.toLowerCase() !== 'deterministic_static_splitter'
+      ? null
+      : 'cold_ai_split_deterministic_splitter_not_provider_call',
+    allowedProviderStatuses.has(providerStatus)
+      ? null
+      : 'cold_ai_split_provider_model_status_invalid',
+    typeof fallbackUsed === 'boolean'
+      ? null
+      : 'cold_ai_split_provider_fallback_state_missing',
+    typeof shutdownOrDeprecationDetected === 'boolean'
+      ? null
+      : 'cold_ai_split_provider_lifecycle_state_missing',
+    hardInfraFailure === false ? null : 'cold_ai_split_provider_hard_infra_failure',
+    receipt?.request_mode === 'split' ? null : 'cold_ai_split_provider_request_mode_invalid',
+    String(receipt?.model_availability_checked_at ?? '').trim()
+      ? null
+      : 'cold_ai_split_provider_availability_timestamp_missing',
+    validProviderCallInterval(receipt) ? null : 'cold_ai_split_provider_interval_invalid',
+    provenance?.provider === provider
+      && provenance?.requested_model === requestedModel
+      && provenance?.actual_model === actualModel
+      && provenance?.request_mode === receipt?.request_mode
+      && provenance?.provider_model_status === providerStatus
+      && String(provenance?.fallback_model ?? '').trim() === fallbackModel
+      && provenance?.fallback_used === fallbackUsed
+      && String(provenance?.provider_model_alias_resolved_to ?? '').trim() === aliasResolvedTo
+      && provenance?.provider_shutdown_or_deprecation_detected === shutdownOrDeprecationDetected
+      && provenance?.model_availability_checked_at === receipt?.model_availability_checked_at
+      && provenance?.hard_infra_failure === false
+      ? null
+      : 'cold_ai_split_provider_provenance_receipt_mismatch',
+    receipt?.accepted_for_gpu_hmr === false
+      && receipt?.gpu_hmr_success === false
+      && receipt?.can_satisfy_runtime_proof === false
+      && receipt?.can_satisfy_dispatch_proof === false
+      && !supportEvidenceClaimsAuthority(receipt)
+      && !supportEvidenceClaimsAuthority(provenance)
+      ? null
+      : 'cold_ai_split_provider_receipt_claims_gpu_authority',
+  ].filter(Boolean);
+  const accepted = blockingGaps.length === 0;
+  const seed = {
+    schemaVersion: 'synthi.gpu_hmr.cold_ai_provider_call.v1',
+    proofAuthority: 'observed_ai_split_provider_call_only_not_gpu_hmr_success',
+    requiredByCaller: true,
+    providerCallUsed: providerCallUsed === true,
+    provider,
+    requestedModel,
+    actualModel,
+    providerModelStatus: providerStatus || null,
+    fallbackModel: fallbackModel || null,
+    fallbackUsed,
+    providerModelAliasResolvedTo: aliasResolvedTo || null,
+    providerShutdownOrDeprecationDetected: shutdownOrDeprecationDetected,
+    hardInfraFailure: hardInfraFailure === true,
+    providerCallId: receipt?.call_id ?? null,
+    providerCallReceiptHash: receipt?.receipt_hash ?? null,
+    providerCallRequestHash: receipt?.request_hash ?? null,
+    providerCallResponseHash: receipt?.response_hash ?? null,
+    providerCallChallengeHash: receipt?.challenge_hash ?? null,
+    providerCallNonce: receipt?.request_nonce ?? null,
+    blockingGaps,
+  };
+  const evidenceHash = `sha256:${sha256Hex(stableJson(seed))}`;
+  return {
+    ...seed,
+    schema_version: seed.schemaVersion,
+    proof_authority: seed.proofAuthority,
+    required_by_caller: true,
+    accepted,
+    acceptedAsColdAiProviderCallEvidence: accepted,
+    accepted_as_cold_ai_provider_call_evidence: accepted,
+    provider_call_used: seed.providerCallUsed,
+    requested_model: requestedModel,
+    actual_model: actualModel,
+    provider_model_status: seed.providerModelStatus,
+    fallback_model: seed.fallbackModel,
+    fallback_used: seed.fallbackUsed,
+    provider_model_alias_resolved_to: seed.providerModelAliasResolvedTo,
+    provider_shutdown_or_deprecation_detected: seed.providerShutdownOrDeprecationDetected,
+    hard_infra_failure: seed.hardInfraFailure,
+    provider_call_id: seed.providerCallId,
+    provider_call_receipt_hash: seed.providerCallReceiptHash,
+    provider_call_request_hash: seed.providerCallRequestHash,
+    provider_call_response_hash: seed.providerCallResponseHash,
+    provider_call_challenge_hash: seed.providerCallChallengeHash,
+    provider_call_nonce: seed.providerCallNonce,
+    blocking_gaps: blockingGaps,
+    evidenceHash,
+    evidence_hash: evidenceHash,
+    evidenceRef: `cold-ai-provider-call:${evidenceHash}`,
+    evidence_ref: `cold-ai-provider-call:${evidenceHash}`,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+  };
+}
+
+function selfCheckProviderCallReceipt(initialCompileArgs) {
+  const fileManifest = providerCallFileManifestFromCompileArgs(initialCompileArgs);
+  const binding = {
+    schema_version: PROVIDER_CALL_REQUEST_SCHEMA_VERSION,
+    nonce: initialCompileArgs.ai_provider_call_nonce,
+    mode: 'split',
+    request_mode: 'split',
+    language: initialCompileArgs.language,
+    focus: initialCompileArgs.filename,
+    requested_model: 'self-check-model',
+    gpu_arch: initialCompileArgs.gpu_arch,
+    source_hash: `sha256:${sha256Hex(initialCompileArgs.source)}`,
+    file_manifest_hash: fileManifest.hash,
+    file_count: fileManifest.count,
+    extra_instructions_hash: `sha256:${'3'.repeat(64)}`,
+  };
+  const requestHash = providerCallRequestHash(binding);
+  const challenge = {
+    schema_version: PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION,
+    request_nonce: binding.nonce,
+    request_hash: requestHash,
+    prompt_payload_hash: `sha256:${'5'.repeat(64)}`,
+  };
+  challenge.challenge_hash = orderedJsonHash([
+    challenge.schema_version,
+    challenge.request_nonce,
+    challenge.request_hash,
+    challenge.prompt_payload_hash,
+  ]);
+  const receipt = {
+    schema_version: PROVIDER_CALL_RECEIPT_SCHEMA_VERSION,
+    proof_authority: PROVIDER_CALL_RECEIPT_AUTHORITY,
+    accepted: true,
+    provider_call_used: true,
+    request_binding: binding,
+    request_nonce: binding.nonce,
+    request_hash: requestHash,
+    response_hash: `sha256:${'4'.repeat(64)}`,
+    challenge,
+    challenge_hash: challenge.challenge_hash,
+    challenge_echo_verified: true,
+    provider: 'self_check_provider',
+    requested_model: binding.requested_model,
+    actual_model: 'self-check-model',
+    request_mode: 'split',
+    provider_model_status: 'available',
+    fallback_model: null,
+    fallback_used: false,
+    provider_model_alias_resolved_to: null,
+    provider_shutdown_or_deprecation_detected: false,
+    model_availability_checked_at: '2026-07-15T00:00:00+00:00',
+    hard_infra_failure: false,
+    started_monotonic_ns: '100',
+    completed_monotonic_ns: '200',
+    started_unix_ns: '1700000000000000000',
+    completed_unix_ns: '1700000000000000100',
+    accepted_for_gpu_hmr: false,
+    gpu_hmr_success: false,
+    can_satisfy_runtime_proof: false,
+    can_satisfy_dispatch_proof: false,
+  };
+  receipt.receipt_hash = providerCallReceiptHash(receipt);
+  receipt.call_id = `provider-call:${receipt.receipt_hash}`;
+  return receipt;
+}
+
 function selfCheckColdAiSplitProof() {
+  const selfCheckSource = '__global__ void self_check(float* out) { out[0] = 1.0f; }';
+  const selfCheckInitialCompileArgs = {
+    language: 'cpp',
+    filename: 'src/main.hip',
+    source: selfCheckSource,
+    files: [{ path: 'src/main.hip', name: 'src/main.hip', content: selfCheckSource }],
+    gpu_arch: 'gfx1201',
+    ai_provider_call_nonce: 'provider-call:0123456789abcdef0123456789abcdef',
+  };
+  const providerCallReceipt = selfCheckProviderCallReceipt(selfCheckInitialCompileArgs);
+  const selfCheckSplit = {
+    sidecar: {
+      model_provenance: {
+        provider_call_used: true,
+        provider: 'self_check_provider',
+        requested_model: 'self-check-model',
+        actual_model: 'self-check-model',
+        provider_model_status: 'available',
+        fallback_model: null,
+        fallback_used: false,
+        provider_model_alias_resolved_to: null,
+        provider_shutdown_or_deprecation_detected: false,
+        request_mode: 'split',
+        model_availability_checked_at: '2026-07-15T00:00:00+00:00',
+        hard_infra_failure: false,
+      },
+      provider_call_receipt: providerCallReceipt,
+    },
+  };
+  const providerEvidence = coldAiProviderCallEvidenceFromSplit(
+    selfCheckSplit,
+    selfCheckInitialCompileArgs,
+  );
   const proof = coldAiSplitProofFromSeed({
     coldSplitProven: true,
-    visualArtifacts: { beforeImage: 'cas:sha256:self-check' },
+    coldSingleFrameVisual: {
+      width: 640,
+      height: 480,
+      bytes: 4096,
+      visiblePixels: 1000,
+    },
+    visualArtifacts: {
+      afterImageHash: `sha256:${'6'.repeat(64)}`,
+      artifactCasLocators: [{
+        schemaVersion: 'synthi.cas.artifact_locator.v1',
+        contentHash: `sha256:${'6'.repeat(64)}`,
+        role: 'after_frame',
+        mediaType: 'image/png',
+      }],
+      visualArtifactTransportEvidence: {
+        accepted: true,
+        acceptedAsTransportEvidence: true,
+        entries: [{ contentHash: `sha256:${'6'.repeat(64)}` }],
+      },
+    },
+    visualMetrics: { visiblePixelCount: 1000 },
+    coldAiProviderCallEvidence: providerEvidence,
   });
   let missingVisualRejected = false;
   try {
@@ -8931,6 +9419,100 @@ function selfCheckColdAiSplitProof() {
   } catch (error) {
     missingVisualRejected = String(error?.message ?? '').includes('captured visual output');
   }
+  let missingProviderRejected = false;
+  try {
+    coldAiSplitProofFromSeed({
+      coldSplitProven: true,
+      visualArtifacts: { beforeImage: 'cas:sha256:self-check' },
+    });
+  } catch (error) {
+    missingProviderRejected = String(error?.message ?? '').includes('observed AI provider call');
+  }
+  let forgedVisualRejected = false;
+  try {
+    coldAiSplitProofFromSeed({
+      coldSplitProven: true,
+      coldSingleFrameVisual: {
+        width: 640,
+        height: 480,
+        bytes: 4096,
+        visiblePixels: 0,
+      },
+      visualArtifacts: {
+        afterImageHash: `sha256:${'6'.repeat(64)}`,
+        artifactCasLocators: [{
+          schemaVersion: 'synthi.cas.artifact_locator.v1',
+          contentHash: `sha256:${'6'.repeat(64)}`,
+          role: 'after_frame',
+          mediaType: 'image/png',
+        }],
+        visualArtifactTransportEvidence: {
+          accepted: true,
+          acceptedAsTransportEvidence: true,
+          entries: [{ contentHash: `sha256:${'6'.repeat(64)}` }],
+        },
+      },
+      visualMetrics: { visiblePixelCount: 0 },
+      coldAiProviderCallEvidence: providerEvidence,
+    });
+  } catch (error) {
+    forgedVisualRejected = String(error?.message ?? '').includes('blank_or_invalid');
+  }
+  const forgedReceiptEvidence = coldAiProviderCallEvidenceFromSplit({
+    sidecar: {
+      model_provenance: {
+        provider_call_used: true,
+        provider: 'self_check_provider',
+        requested_model: 'self-check-model',
+        actual_model: 'self-check-model',
+        provider_model_status: 'available',
+        request_mode: 'split',
+        model_availability_checked_at: '2026-07-15T00:00:00+00:00',
+        hard_infra_failure: false,
+      },
+      provider_call_receipt: {
+        ...providerCallReceipt,
+        response_hash: `sha256:${'9'.repeat(64)}`,
+      },
+    },
+  }, selfCheckInitialCompileArgs);
+  const forgedChallengeEvidence = coldAiProviderCallEvidenceFromSplit({
+    sidecar: {
+      model_provenance: selfCheckSplit.sidecar.model_provenance,
+      provider_call_receipt: {
+        ...providerCallReceipt,
+        challenge: {
+          ...providerCallReceipt.challenge,
+          prompt_payload_hash: `sha256:${'8'.repeat(64)}`,
+        },
+      },
+    },
+  }, selfCheckInitialCompileArgs);
+  const typedAuthorityEvidence = coldAiProviderCallEvidenceFromSplit({
+    sidecar: {
+      model_provenance: selfCheckSplit.sidecar.model_provenance,
+      provider_call_receipt: {
+        ...providerCallReceipt,
+        gpuHmrSuccess: 'true',
+      },
+    },
+  }, selfCheckInitialCompileArgs);
+  const replayedNonceEvidence = coldAiProviderCallEvidenceFromSplit(
+    selfCheckSplit,
+    {
+      ...selfCheckInitialCompileArgs,
+      ai_provider_call_nonce: 'provider-call:fedcba9876543210fedcba9876543210',
+    },
+  );
+  const changedSource = `${selfCheckSource}\n// changed submission`;
+  const replayedSourceEvidence = coldAiProviderCallEvidenceFromSplit(
+    selfCheckSplit,
+    {
+      ...selfCheckInitialCompileArgs,
+      source: changedSource,
+      files: [{ path: 'src/main.hip', name: 'src/main.hip', content: changedSource }],
+    },
+  );
   if (
     proof.acceptedAsColdAiSplitEvidence !== true
     || proof.acceptedForGpuHmr !== false
@@ -8938,6 +9520,22 @@ function selfCheckColdAiSplitProof() {
     || proof.canSatisfyRuntimeProof !== false
     || proof.canSatisfyDispatchProof !== false
     || !missingVisualRejected
+    || !missingProviderRejected
+    || !forgedVisualRejected
+    || providerEvidence.accepted !== true
+    || providerEvidence.acceptedForGpuHmr !== false
+    || providerEvidence.gpuHmrSuccess !== false
+    || forgedReceiptEvidence.accepted !== false
+    || !forgedReceiptEvidence.blockingGaps.includes('cold_ai_split_provider_receipt_hash_mismatch')
+    || forgedChallengeEvidence.accepted !== false
+    || !forgedChallengeEvidence.blockingGaps.includes('cold_ai_split_provider_challenge_binding_mismatch')
+    || typedAuthorityEvidence.accepted !== false
+    || !typedAuthorityEvidence.blockingGaps.includes('cold_ai_split_provider_receipt_claims_gpu_authority')
+    || replayedNonceEvidence.accepted !== false
+    || !replayedNonceEvidence.blockingGaps.includes('cold_ai_split_provider_request_nonce_not_caller_bound')
+    || replayedSourceEvidence.accepted !== false
+    || !replayedSourceEvidence.blockingGaps.includes('cold_ai_split_provider_request_source_hash_mismatch')
+    || !replayedSourceEvidence.blockingGaps.includes('cold_ai_split_provider_request_file_manifest_mismatch')
   ) {
     throw new Error('cold AI split proof authority self-check failed');
   }
@@ -9594,6 +10192,9 @@ async function run() {
   }
 
   const firstStart = await workerCheckpoint();
+  const coldProviderCallNonce = CFG.mode === 'cold-ai-split'
+    ? `provider-call:${randomBytes(16).toString('hex')}`
+    : null;
   const initialCompileArgs = {
     language: 'cpp',
     filename: entryPath,
@@ -9601,6 +10202,9 @@ async function run() {
     files: initialSourceFiles,
     is_gui: true,
     use_ai_split: true,
+    bypass_ai_split_cache: CFG.mode === 'cold-ai-split',
+    require_ai_provider_call: CFG.mode === 'cold-ai-split',
+    ai_provider_call_nonce: coldProviderCallNonce,
     user_requested_ai: true,
     prefer_gpu_pipeline: true,
     gpu_mode: vendor,
@@ -9666,6 +10270,27 @@ async function run() {
 
   const split = await readGeneratedSplit(vendor);
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
+  const coldAiProviderCallEvidence = CFG.mode === 'cold-ai-split'
+    ? coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs)
+    : null;
+  if (coldAiProviderCallEvidence) {
+    const providerEvidencePath = await writeJsonArtifact(
+      'cold-ai-provider-call',
+      coldAiProviderCallEvidence,
+    );
+    record(
+      'cold AI split provider call evidence',
+      coldAiProviderCallEvidence.accepted ? 'pass' : 'fail',
+      coldAiProviderCallEvidence.accepted
+        ? `${coldAiProviderCallEvidence.evidenceHash} artifact=${providerEvidencePath}`
+        : coldAiProviderCallEvidence.blockingGaps.join('|'),
+    );
+    if (!coldAiProviderCallEvidence.accepted) {
+      throw new Error(
+        `cold AI split provider call evidence rejected: ${coldAiProviderCallEvidence.blockingGaps.join('|')}`,
+      );
+    }
+  }
   const splitEndpointEvidence = gpuSplitEndpointEvidenceFromSidecar(split);
   record(
     'worker used GPU split endpoint',
@@ -9724,6 +10349,8 @@ async function run() {
       timing_metrics: initialCompileResult.timingMetrics,
       sourceFirstIngestion,
       source_first_ingestion: sourceFirstIngestion,
+      coldAiProviderCallEvidence,
+      cold_ai_provider_call_evidence: coldAiProviderCallEvidence,
       coldSingleFrameVisual: coldVisual.sample,
       cold_single_frame_visual: coldVisual.sample,
       visualArtifacts: coldVisual.visualArtifacts,
