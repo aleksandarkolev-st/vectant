@@ -4596,17 +4596,26 @@ mod tests {
         let profile_path = configured_gpu_hmr_runtime_output_oracle_profile_path();
         let mut profile: serde_json::Value =
             serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
-        profile["expectedSha256"] = serde_json::Value::String(format!("sha256:{}", "f".repeat(64)));
+        let rejected_expected_sha256 = format!("sha256:{}", "f".repeat(64));
+        profile["expectedSha256"] =
+            serde_json::Value::String(rejected_expected_sha256.clone());
         let profile_bytes = serde_json::to_vec_pretty(&profile).unwrap();
         fs::write(&profile_path, &profile_bytes).unwrap();
-        second_request
+        let metadata = second_request
             .capsule_metadata
             .as_mut()
-            .unwrap()
+            .unwrap();
+        let contract_hash = {
+            let contract = metadata.fission_output_oracle_contract.as_mut().unwrap();
+            contract["expected"] = serde_json::Value::String(rejected_expected_sha256);
+            format!("sha256:{}", stable_json_hash(contract))
+        };
+        let commitment = metadata
             .output_oracle_profile_commitment
             .as_mut()
-            .unwrap()
-            .profile_bytes_sha256 = format!("sha256:{}", sha256_hex_bytes(&profile_bytes));
+            .unwrap();
+        commitment.profile_bytes_sha256 = format!("sha256:{}", sha256_hex_bytes(&profile_bytes));
+        commitment.fission_output_oracle_contract_sha256 = contract_hash;
 
         match adapter.reload(&second_request) {
             AdapterReloadResult::Failed { error, recoverable } => {
