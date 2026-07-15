@@ -343,6 +343,10 @@ impl ArtifactLoaderTransport {
             Self::RamBytes => "module_load_data",
         }
     }
+
+    pub fn is_content_bound(self) -> bool {
+        matches!(self, Self::RamBytes)
+    }
 }
 
 fn normalized_sha256_hex(raw: &str) -> Option<String> {
@@ -1877,6 +1881,9 @@ fn runtime_full_proof_line(
     pinned_output_oracle_profile: Option<&PinnedRuntimeOutputOracleProfile>,
     after_dispatch_id: &str,
 ) -> Option<String> {
+    if !loader_transport.is_content_bound() {
+        return None;
+    }
     let source_edit_id = normalized_reload_source_edit_id(req.source_edit_id.as_deref())?;
     let source_edit_id = source_edit_id.as_str();
     verified_runtime_source_edit_commitment(
@@ -3441,6 +3448,20 @@ impl Adapter for GpuModuleAdapter {
         let first_device_load =
             self.active_module_handle.is_none() && self.module_manager.primary().is_none();
         let candidate_artifact_sha256 = format!("sha256:{artifact_hash}");
+        if !first_device_load && !loader_transport.is_content_bound() {
+            let line = format!(
+                "[gpu-runtime-boundary] artifact_transport schema=synthi.gpu_hmr.artifact_transport.v1 status=refused candidate_artifact_sha256={} selected_loader_transport={} loader_api={} content_bound=false reason=mutable_path_transport_not_eligible_for_hot_reload proof_authority=transport_refusal_only_not_gpu_hmr_success accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false",
+                candidate_artifact_sha256,
+                loader_transport.as_str(),
+                loader_transport.loader_api(),
+            );
+            eprintln!("{line}");
+            self.last_reload_log = vec![line];
+            return AdapterReloadResult::Unsupported {
+                reason: "strict GPU hot reload requires content-bound artifact bytes; mutable filesystem path transport requires a cold reload"
+                    .to_string(),
+            };
+        }
         let pinned_output_oracle_profile = match pin_runtime_output_oracle_profile(
             req,
             &candidate_artifact_sha256,
@@ -5721,6 +5742,72 @@ mod tests {
         assert!(transport.contains("ram_transport_proven=false"));
         assert!(transport.contains("degraded_state=gpu-hmr-ram-io-unavailable"));
         assert!(transport.contains("degraded_reason=selected_loader_uses_filesystem_path"));
+    }
+
+    #[test]
+    fn hot_reload_refuses_mutable_path_transport_before_module_mutation() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        MODULE_LOAD_CALLS.store(0, Ordering::SeqCst);
+        UNLOAD_CALLS.store(0, Ordering::SeqCst);
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"path-cold-initialization").unwrap();
+        second.write_all(b"path-hot-candidate").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let mut adapter = adapter_with_config_and_symbols(
+            GpuModuleAdapterConfig {
+                artifact_loader_transport: ArtifactLoaderTransport::FilesystemPath,
+                ..Default::default()
+            },
+            stub_symbols(),
+        );
+        assert!(matches!(
+            adapter.reload(&request_with_artifact(
+                &first_path,
+                vec!["source/arbitrary.device".into()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+
+        let loads_before = MODULE_LOAD_CALLS.load(Ordering::SeqCst);
+        let unloads_before = UNLOAD_CALLS.load(Ordering::SeqCst);
+        let generation_before = current_launch_generation();
+        let active_handle_before = adapter.active_module_handle;
+        let active_artifact_before = adapter.active_generation_artifact_id.clone();
+        let swaps_before = adapter.module_manager.swap_count();
+        match adapter.reload(&request_with_artifact(
+            &second_path,
+            vec!["build/generated/device-stage".into()],
+        )) {
+            AdapterReloadResult::Unsupported { reason } => {
+                assert!(reason.contains("requires content-bound artifact bytes"));
+                assert!(reason.contains("cold reload"));
+            }
+            other => panic!("expected mutable path hot reload refusal, got {other:?}"),
+        }
+
+        assert_eq!(MODULE_LOAD_CALLS.load(Ordering::SeqCst), loads_before);
+        assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), unloads_before);
+        assert_eq!(current_launch_generation(), generation_before);
+        assert_eq!(adapter.active_module_handle, active_handle_before);
+        assert_eq!(adapter.active_generation_artifact_id, active_artifact_before);
+        assert_eq!(adapter.module_manager.swap_count(), swaps_before);
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("artifact_transport")
+                && line.contains("status=refused")
+                && line.contains("selected_loader_transport=filesystem_path")
+                && line.contains("content_bound=false")
+                && line.contains("accepted_for_gpu_hmr=false")
+                && line.contains("gpu_hmr_success=false")
+        }));
+        assert!(!adapter
+            .last_reload_log()
+            .iter()
+            .any(|line| line.contains("dispatcher_epoch event=published")));
+        let _ = install_runtime_output_oracle_profile_for_tests();
+        reset_for_test();
     }
 
     #[test]
