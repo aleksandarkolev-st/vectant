@@ -749,6 +749,7 @@ def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provide
     assert "constexpr int N" not in result.files["device.hip"]
 
     class RequiredProvider:
+        name = "gemini"
         called = False
         preflight_called = False
 
@@ -767,6 +768,7 @@ def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provide
         lang="cpp",
         files=[{"name": "src/demo.hip", "content": source}],
         focus="src/demo.hip",
+        provider="gemini",
         model="gemini-3.5-flash",
         gpu_arch_hint="gfx1201",
         extra_instructions=None,
@@ -801,6 +803,7 @@ def test_provider_call_receipt_binds_request_response_and_provider_metadata():
             "content": "__global__ void kernel(float* out) { out[0] = 1.0f; }",
         }],
         focus="src/main.hip",
+        provider="generic-provider",
         model="model-under-test",
         gpu_arch_hint="gfx1201",
         extra_instructions="preserve output",
@@ -847,6 +850,7 @@ def test_provider_call_receipt_binds_request_response_and_provider_metadata():
     assert receipt["accepted"] is True
     assert receipt["provider_call_used"] is True
     assert receipt["request_binding"] == request
+    assert receipt["request_binding"]["requested_provider"] == "generic-provider"
     assert receipt["request_hash"] == request_hash
     assert receipt["response_hash"] == kernel_splitter._sha256_prefixed(raw_response)
     assert receipt["challenge"] == challenge
@@ -876,6 +880,31 @@ def test_provider_call_receipt_binds_request_response_and_provider_metadata():
                 "provider": "generic-provider",
                 "requested_model": "replayed-model",
                 "actual_model": "replayed-model",
+                "request_mode": "split",
+                "provider_model_status": "available",
+                "fallback_model": None,
+                "fallback_used": False,
+                "provider_model_alias_resolved_to": None,
+                "provider_shutdown_or_deprecation_detected": False,
+                "model_availability_checked_at": "2026-07-15T00:00:00+00:00",
+                "hard_infra_failure": False,
+            },
+            started_monotonic_ns=100,
+            completed_monotonic_ns=200,
+            started_unix_ns=1_700_000_000_000_000_000,
+            completed_unix_ns=1_700_000_000_000_000_100,
+        )
+
+    with pytest.raises(ValueError, match="provider does not match"):
+        kernel_splitter._provider_call_receipt(
+            request_binding=request,
+            request_hash=request_hash,
+            challenge=challenge,
+            raw_response=raw_response,
+            provider_metadata={
+                "provider": "substituted-provider",
+                "requested_model": "model-under-test",
+                "actual_model": "model-under-test-v2",
                 "request_mode": "split",
                 "provider_model_status": "available",
                 "fallback_model": None,
@@ -951,6 +980,7 @@ def test_required_provider_call_echoes_fresh_challenge_through_split_parser():
         lang="cpp",
         files=files,
         focus="src/main.cu",
+        provider="generic-provider",
         model="model-under-test",
         gpu_arch_hint="sm_80",
         extra_instructions=None,

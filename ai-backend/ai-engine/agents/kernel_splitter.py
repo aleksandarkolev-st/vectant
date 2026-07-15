@@ -102,7 +102,7 @@ class KernelSplitResult:
 
 
 MAX_DETERMINISTIC_REPAIR_PASSES = 4
-PROVIDER_CALL_REQUEST_SCHEMA_VERSION = "synthi.ai.provider_call_request.v1"
+PROVIDER_CALL_REQUEST_SCHEMA_VERSION = "synthi.ai.provider_call_request.v2"
 PROVIDER_CALL_RECEIPT_SCHEMA_VERSION = "synthi.ai.provider_call_receipt.v1"
 PROVIDER_CALL_RECEIPT_AUTHORITY = "request_bound_provider_call_only_not_gpu_hmr_success"
 PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION = "synthi.ai.provider_call_challenge.v1"
@@ -134,6 +134,7 @@ def provider_call_request_binding(
     lang: str,
     files: Optional[Sequence[Mapping[str, Any]]],
     focus: Optional[str],
+    provider: Optional[str],
     model: Optional[str],
     gpu_arch_hint: Optional[str],
     extra_instructions: Optional[str],
@@ -141,6 +142,9 @@ def provider_call_request_binding(
     normalized_nonce = str(nonce or "").strip().lower()
     if not _PROVIDER_CALL_NONCE_RE.fullmatch(normalized_nonce):
         raise ValueError("provider call request requires a caller-generated nonce")
+    requested_provider = str(provider or "").strip().lower()
+    if not requested_provider:
+        raise ValueError("provider call request requires an explicit provider")
     requested_model = str(model or "").strip()
     if not requested_model:
         raise ValueError("provider call request requires an explicit model")
@@ -174,6 +178,7 @@ def provider_call_request_binding(
         "request_mode": "split",
         "language": str(lang or "").strip(),
         "focus": str(focus or "").strip().replace("\\", "/"),
+        "requested_provider": requested_provider,
         "requested_model": requested_model,
         "gpu_arch": str(gpu_arch_hint or "").strip(),
         "source_hash": _sha256_prefixed(user_code),
@@ -188,6 +193,7 @@ def provider_call_request_binding(
         binding["request_mode"],
         binding["language"],
         binding["focus"],
+        binding["requested_provider"],
         binding["requested_model"],
         binding["gpu_arch"],
         binding["source_hash"],
@@ -256,7 +262,7 @@ def _provider_call_receipt(
     started_unix_ns: int,
     completed_unix_ns: int,
 ) -> dict:
-    provider = str(provider_metadata.get("provider") or "").strip()
+    provider = str(provider_metadata.get("provider") or "").strip().lower()
     requested_model = str(provider_metadata.get("requested_model") or "").strip()
     actual_model = str(provider_metadata.get("actual_model") or "").strip()
     request_mode = str(provider_metadata.get("request_mode") or "").strip().lower()
@@ -273,6 +279,8 @@ def _provider_call_receipt(
     hard_infra_failure = provider_metadata.get("hard_infra_failure")
     if not provider or provider.lower() == "deterministic_static_splitter":
         raise ValueError("provider call receipt requires a non-deterministic provider identity")
+    if provider != str(request_binding.get("requested_provider") or "").strip().lower():
+        raise ValueError("provider call receipt provider does not match request binding")
     if requested_model != request_binding.get("requested_model"):
         raise ValueError("provider call receipt requested model does not match request binding")
     if not actual_model:
@@ -2221,6 +2229,7 @@ async def run_kernel_splitter(
                 lang=lang,
                 files=files,
                 focus=focus,
+                provider=str(getattr(provider, "name", "") or "").strip().lower(),
                 model=model,
                 gpu_arch_hint=gpu_arch_hint,
                 extra_instructions=provider_call_binding_instructions,

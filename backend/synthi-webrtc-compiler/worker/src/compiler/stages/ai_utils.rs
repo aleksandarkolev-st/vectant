@@ -904,7 +904,7 @@ fn validate_gpu_split_live_update_contract(
 // (FallbackDeterministic → classify → targeted diff_patch with cached
 // architecture hint) now handles the same case language-agnostically.
 
-const PROVIDER_CALL_REQUEST_SCHEMA_VERSION: &str = "synthi.ai.provider_call_request.v1";
+const PROVIDER_CALL_REQUEST_SCHEMA_VERSION: &str = "synthi.ai.provider_call_request.v2";
 const PROVIDER_CALL_RECEIPT_SCHEMA_VERSION: &str = "synthi.ai.provider_call_receipt.v1";
 const PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION: &str = "synthi.ai.provider_call_challenge.v1";
 const PROVIDER_CALL_RECEIPT_AUTHORITY: &str =
@@ -1011,6 +1011,22 @@ fn provider_call_request_binding(
         .map(str::trim)
         .filter(|value| valid_provider_call_nonce(value))
         .ok_or_else(|| anyhow!("required AI provider call needs a caller-generated nonce"))?;
+    let requested_provider = req
+        .ai_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| anyhow!("required AI provider call needs an explicit provider"))?;
+    let caller_requested_model = req
+        .ai_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("required AI provider call needs an explicit model"))?;
+    if caller_requested_model != requested_model.trim() {
+        anyhow::bail!("required AI provider call model does not match caller request");
+    }
     let mut file_entries = file_context
         .iter()
         .map(|(name, content)| serde_json::json!([name, prefixed_sha256(content)]))
@@ -1031,6 +1047,7 @@ fn provider_call_request_binding(
         "request_mode": "split",
         "language": req.language.trim(),
         "focus": normalized_request_path(&req.filename),
+        "requested_provider": requested_provider,
         "requested_model": requested_model.trim(),
         "gpu_arch": arch_hint.unwrap_or("").trim(),
         "source_hash": prefixed_sha256(&req.source),
@@ -1045,6 +1062,7 @@ fn provider_call_request_binding(
         binding["request_mode"].clone(),
         binding["language"].clone(),
         binding["focus"].clone(),
+        binding["requested_provider"].clone(),
         binding["requested_model"].clone(),
         binding["gpu_arch"].clone(),
         binding["source_hash"].clone(),
@@ -1213,6 +1231,10 @@ fn validate_required_ai_provider_call(
         .get("nonce")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
+    let expected_requested_provider = expected_request_binding
+        .get("requested_provider")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
     let expected_requested_model = expected_request_binding
         .get("requested_model")
         .and_then(serde_json::Value::as_str)
@@ -1307,6 +1329,11 @@ fn validate_required_ai_provider_call(
     }
     if receipt_nonce != expected_nonce || receipt_request_hash != expected_request_hash {
         reason_codes.push("ai_split_provider_receipt_request_identity_mismatch");
+    }
+    if !provider.eq_ignore_ascii_case(expected_requested_provider)
+        || !receipt_provider.eq_ignore_ascii_case(expected_requested_provider)
+    {
+        reason_codes.push("ai_split_provider_receipt_requested_provider_mismatch");
     }
     if requested_model != expected_requested_model
         || receipt_requested_model != expected_requested_model
@@ -2845,6 +2872,7 @@ mod tests {
             "request_mode": "split",
             "language": "cpp",
             "focus": "src/main.hip",
+            "requested_provider": "generic_provider",
             "requested_model": "requested-model",
             "gpu_arch": "gfx1201",
             "source_hash": format!("sha256:{}", "1".repeat(64)),
@@ -2859,6 +2887,7 @@ mod tests {
             binding["request_mode"].clone(),
             binding["language"].clone(),
             binding["focus"].clone(),
+            binding["requested_provider"].clone(),
             binding["requested_model"].clone(),
             binding["gpu_arch"].clone(),
             binding["source_hash"].clone(),
@@ -3016,6 +3045,45 @@ mod tests {
                 .to_string();
         assert!(error.contains("ai_split_provider_receipt_requested_model_mismatch"));
 
+        let mut forged_requested_provider = valid.clone();
+        forged_requested_provider["model_provenance"]["provider"] = json!("other_provider");
+        forged_requested_provider["provider_call_receipt"]["provider"] =
+            json!("other_provider");
+        let forged_provider_receipt_hash = ordered_json_hash(vec![
+            json!(PROVIDER_CALL_RECEIPT_SCHEMA_VERSION),
+            json!(PROVIDER_CALL_RECEIPT_AUTHORITY),
+            binding["nonce"].clone(),
+            json!(request_hash),
+            json!(response_hash),
+            json!(challenge_hash),
+            json!("other_provider"),
+            json!("requested-model"),
+            json!("actual-model"),
+            json!("split"),
+            json!("available"),
+            json!(""),
+            json!(false),
+            json!(""),
+            json!(false),
+            json!(checked_at),
+            json!("100"),
+            json!("200"),
+            json!("1700000000000000000"),
+            json!("1700000000000000100"),
+        ]);
+        forged_requested_provider["provider_call_receipt"]["receipt_hash"] =
+            json!(forged_provider_receipt_hash);
+        forged_requested_provider["provider_call_receipt"]["call_id"] =
+            json!(format!("provider-call:{}", forged_provider_receipt_hash));
+        let error = validate_required_ai_provider_call(
+            &forged_requested_provider,
+            &binding,
+            &request_hash,
+        )
+        .expect_err("receipt provider must remain bound to request")
+        .to_string();
+        assert!(error.contains("ai_split_provider_receipt_requested_provider_mismatch"));
+
         let mut authority_claim = valid.clone();
         authority_claim["provider_call_receipt"]["gpuHmrSuccess"] = json!(true);
         let error = validate_required_ai_provider_call(&authority_claim, &binding, &request_hash)
@@ -3137,7 +3205,7 @@ mod tests {
     }
 
     #[test]
-    fn required_provider_call_requires_caller_nonce() {
+    fn required_provider_call_requires_caller_identity() {
         let mut req = gpu_compile_request_for_source("__global__ void kernel(float* out) {}");
         req.require_ai_provider_call = true;
 
@@ -3155,10 +3223,36 @@ mod tests {
 
         let nonce = "provider-call:0123456789abcdef0123456789abcdef";
         req.ai_provider_call_nonce = Some(nonce.to_string());
+        let error = provider_call_request_binding(
+            &req,
+            &[],
+            "requested-model",
+            Some("gfx1201"),
+            None,
+        )
+        .expect_err("missing caller provider must fail before provider execution")
+        .to_string();
+        assert!(error.contains("explicit provider"));
+
+        req.ai_provider = Some("Generic-Provider".to_string());
+        let error = provider_call_request_binding(
+            &req,
+            &[],
+            "requested-model",
+            Some("gfx1201"),
+            None,
+        )
+        .expect_err("missing caller model must fail before provider execution")
+        .to_string();
+        assert!(error.contains("explicit model"));
+
+        req.ai_model = Some("requested-model".to_string());
         let (binding, _) =
             provider_call_request_binding(&req, &[], "requested-model", Some("gfx1201"), None)
                 .expect("valid caller nonce");
         assert_eq!(binding["nonce"], nonce);
+        assert_eq!(binding["requested_provider"], "generic-provider");
+        assert_eq!(binding["requested_model"], "requested-model");
     }
 
     #[test]
