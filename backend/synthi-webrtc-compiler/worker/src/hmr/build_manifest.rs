@@ -9,6 +9,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub const GPU_SIDECAR_MODULE_CAPABILITY: &str = "gpu_sidecar_module";
+pub const GPU_SIDECAR_PARTIAL_MODULE_CAPABILITY: &str = "gpu_sidecar_partial_module";
+
 /// Snapshot modes supported by an adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

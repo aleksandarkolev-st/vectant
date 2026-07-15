@@ -67,6 +67,9 @@ use crate::hmr::adapter_trait::{
     AdapterReloadResult, ReloadCapsuleMetadata,
     RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
 };
+use crate::hmr::build_manifest::{
+    BuildSlot, GPU_SIDECAR_MODULE_CAPABILITY, GPU_SIDECAR_PARTIAL_MODULE_CAPABILITY,
+};
 use crate::hmr::compile_manifest::{DeviceVendor, SnapshotMode};
 use crate::hmr::device_snapshot::BufferRegistry;
 use crate::hmr::gpu_driver_loader::{
@@ -2853,60 +2856,36 @@ impl GpuModuleAdapter {
         Ok(())
     }
 
-    fn request_touches_device(req: &AdapterReloadRequest) -> bool {
-        req.changed_files.iter().any(|path| {
-            let p = path.as_str();
-            p.ends_with(".cu")
-                || p.ends_with(".hip")
-                || p == "device"
-                || p == "device.cu"
-                || p == "device.hip"
-        })
-    }
-
-    fn classify_plan_from_paths(req: &AdapterReloadRequest) -> GpuReloadPlan {
-        let mut touches_device = false;
-        let mut touches_host = false;
-        for path in &req.changed_files {
-            let p = path.as_str();
-            if p.ends_with(".cu")
-                || p.ends_with(".hip")
-                || p == "device"
-                || p == "device.cu"
-                || p == "device.hip"
-            {
-                touches_device = true;
-            } else {
-                touches_host = true;
-            }
-        }
-        match (touches_device, touches_host) {
-            (true, true) => GpuReloadPlan::Mixed,
-            (true, false) => GpuReloadPlan::DeviceOnly,
-            (false, true) => GpuReloadPlan::HostOnly,
-            (false, false) => GpuReloadPlan::DeviceOnly,
-        }
+    fn request_targets_gpu_sidecar(req: &AdapterReloadRequest) -> bool {
+        matches!(req.build_manifest.slot, BuildSlot::Custom(_))
+            && req
+                .build_manifest
+                .capabilities
+                .iter()
+                .any(|capability| capability == GPU_SIDECAR_MODULE_CAPABILITY)
     }
 
     fn classify_plan(&self, req: &AdapterReloadRequest) -> GpuReloadPlan {
-        let path_plan = Self::classify_plan_from_paths(req);
+        if !Self::request_targets_gpu_sidecar(req) {
+            return GpuReloadPlan::HostOnly;
+        }
         let partial_device_reload = req
             .build_manifest
             .capabilities
             .iter()
-            .any(|capability| capability == "gpu_sidecar_partial_module");
+            .any(|capability| capability == GPU_SIDECAR_PARTIAL_MODULE_CAPABILITY);
         if partial_device_reload {
-            return path_plan;
+            return GpuReloadPlan::DeviceOnly;
         }
         let current_abi = req.build_manifest.abi_version.trim();
-        if Self::request_touches_device(req) && !current_abi.is_empty() {
+        if !current_abi.is_empty() {
             if let Some(previous_abi) = self.last_device_abi_version.as_deref() {
                 if !previous_abi.is_empty() && previous_abi != current_abi {
                     return GpuReloadPlan::AbiBreaking;
                 }
             }
         }
-        path_plan
+        GpuReloadPlan::DeviceOnly
     }
 
     fn remember_device_abi(&mut self, req: &AdapterReloadRequest) {
@@ -2914,7 +2893,7 @@ impl GpuModuleAdapter {
             .build_manifest
             .capabilities
             .iter()
-            .any(|capability| capability == "gpu_sidecar_partial_module")
+            .any(|capability| capability == GPU_SIDECAR_PARTIAL_MODULE_CAPABILITY)
         {
             return;
         }
@@ -3321,7 +3300,7 @@ impl Adapter for GpuModuleAdapter {
             .build_manifest
             .capabilities
             .iter()
-            .any(|capability| capability == "gpu_sidecar_partial_module");
+            .any(|capability| capability == GPU_SIDECAR_PARTIAL_MODULE_CAPABILITY);
         let first_device_load =
             self.active_module_handle.is_none() && self.module_manager.primary().is_none();
         if partial_device_reload && first_device_load {
@@ -4029,7 +4008,7 @@ mod tests {
         AdapterReloadRequest, ReloadArtifactBlob, ReloadCapsuleMetadata, ReloadFirewallEvidence,
         ReloadOutputOracleProfileCommitment,
     };
-    use crate::hmr::build_manifest::BuildManifest;
+    use crate::hmr::build_manifest::{BuildManifest, BuildSlot};
     use crate::hmr::gpu_driver_loader::{
         CuContext, CuDevicePtr, CuFunction, CuModule, CuResult, CuStream,
     };
@@ -4719,7 +4698,10 @@ mod tests {
     ) -> AdapterReloadRequest {
         let pid = std::process::id();
         let mut manifest =
-            BuildManifest::for_language("test-preview", "cuda").with_artifact(path, "test-hash");
+            BuildManifest::for_language("test-preview", "cuda")
+                .with_slot(BuildSlot::Custom("test-gpu-sidecar".to_string()))
+                .with_artifact(path, "test-hash")
+                .with_capabilities(vec![GPU_SIDECAR_MODULE_CAPABILITY.to_string()]);
         manifest.abi_version = abi_version.to_string();
         manifest.exported_symbols = vec!["vec_add".into()];
         AdapterReloadRequest {
@@ -6021,7 +6003,7 @@ mod tests {
         partial
             .build_manifest
             .capabilities
-            .push("gpu_sidecar_partial_module".into());
+            .push(GPU_SIDECAR_PARTIAL_MODULE_CAPABILITY.into());
         assert!(matches!(
             a.reload(&partial),
             AdapterReloadResult::Success { .. }
@@ -6124,7 +6106,7 @@ mod tests {
         partial
             .build_manifest
             .capabilities
-            .push("gpu_sidecar_partial_module".into());
+            .push(GPU_SIDECAR_PARTIAL_MODULE_CAPABILITY.into());
         launch_vec_add_on_stream(0x88);
         let ctx_sync_before_partial_oracle = CTX_SYNC_CALLS.load(Ordering::SeqCst);
         let stream_sync_before_partial = STREAM_SYNC_CALLS.load(Ordering::SeqCst);
@@ -6199,7 +6181,7 @@ mod tests {
     }
 
     #[test]
-    fn phase3_reload_reports_mixed_plan_when_host_and_device_changed() {
+    fn phase3_reload_uses_typed_sidecar_role_for_arbitrary_source_paths() {
         let _guard = runtime_boundary_test_guard();
         reset_for_test();
         let mut file = tempfile::NamedTempFile::new().unwrap();
@@ -6208,14 +6190,28 @@ mod tests {
         let mut a = adapter_with_symbols(stub_symbols());
         let r = a.reload(&request_with_artifact(
             &path,
-            vec!["core.cpp".into(), "device.cu".into()],
+            vec![
+                "engines/render/include/material_kernel.inc".into(),
+                "src/scene lighting/material graph.cpp".into(),
+            ],
         ));
         assert!(matches!(r, AdapterReloadResult::Success { .. }));
-        assert!(a.last_reload_log().iter().any(|l| l.contains("plan=mixed")));
         assert!(a
             .last_reload_log()
             .iter()
-            .any(|l| l.contains("device_restore ok")));
+            .any(|l| l.contains("plan=device_only")));
+    }
+
+    #[test]
+    fn filename_cannot_forge_gpu_sidecar_ownership() {
+        let mut request = request_with_artifact("/tmp/device.hsaco", vec!["device.hip".into()]);
+        request.build_manifest.capabilities.clear();
+        let adapter = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
+        assert_eq!(adapter.classify_plan(&request), GpuReloadPlan::HostOnly);
+
+        request.build_manifest.capabilities = vec![GPU_SIDECAR_MODULE_CAPABILITY.to_string()];
+        request.build_manifest.slot = BuildSlot::Full;
+        assert_eq!(adapter.classify_plan(&request), GpuReloadPlan::HostOnly);
     }
 
     #[test]

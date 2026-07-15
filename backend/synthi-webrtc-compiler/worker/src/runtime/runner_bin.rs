@@ -170,7 +170,10 @@ use worker::hmr::adapter_trait::{
     ReloadFirewallEvidence,
 };
 #[cfg(feature = "gpu-hmr")]
-use worker::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
+use worker::hmr::build_manifest::{
+    BuildManifest, BuildSlot, SnapshotMode, GPU_SIDECAR_MODULE_CAPABILITY,
+    GPU_SIDECAR_PARTIAL_MODULE_CAPABILITY,
+};
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::gpu_module_adapter::{
     ArtifactLoaderTransport, GpuModuleAdapter, GpuModuleAdapterConfig, GpuVendor,
@@ -1921,11 +1924,11 @@ fn main() {
                             })
                             .unwrap_or_else(|| "unknown".to_string());
                         let mut capabilities = vec![
-                            "gpu_sidecar_module".to_string(),
+                            GPU_SIDECAR_MODULE_CAPABILITY.to_string(),
                             "synthi_gpu_launch".to_string(),
                         ];
                         if partial_device_load {
-                            capabilities.push("gpu_sidecar_partial_module".to_string());
+                            capabilities.push(GPU_SIDECAR_PARTIAL_MODULE_CAPABILITY.to_string());
                         }
                         let mut manifest = BuildManifest::for_language(
                             session_id
