@@ -765,6 +765,13 @@ fn model_provenance_report(result: &serde_json::Value) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+fn provider_call_receipt_report(result: &serde_json::Value) -> serde_json::Value {
+    result
+        .get("_synthi_provider_call_receipt")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
 /// Thin handler-side wrapper around `edit_applier::apply_edit_list`
 /// that adds per-edit eprintln logging for operator observability.
 /// The actual dispatch logic lives in `hmr::edit_applier::apply_edit_list`
@@ -9502,6 +9509,7 @@ pub async fn handle_compile_request(
             let source_report = source_context_report(&result);
             let launch_report = launch_indirection_report(&result);
             let model_provenance = model_provenance_report(&result);
+            let provider_call_receipt = provider_call_receipt_report(&result);
             let mut meta = serde_json::json!({
                 "split_hash": source_hash_str,
                 "original_source": req.source,
@@ -9514,6 +9522,7 @@ pub async fn handle_compile_request(
                 "source_context_report": source_report,
                 "launch_indirection_report": launch_report,
                 "model_provenance": model_provenance,
+                "provider_call_receipt": provider_call_receipt,
             });
             let (baseline_count, generated_baseline_count) =
                 upsert_compile_and_generated_source_baselines(&mut meta, &req, &result);
@@ -18052,6 +18061,8 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             supports_h265: None,
             use_ai_split: false,
             bypass_ai_split_cache: false,
+            require_ai_provider_call: false,
+            ai_provider_call_nonce: None,
             user_requested_ai: false,
             user_requested_deterministic: true,
             force_gpu_ai_delta: false,

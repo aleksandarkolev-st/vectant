@@ -748,6 +748,241 @@ def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provide
     assert "constexpr int N" in result.files["shared.h"]
     assert "constexpr int N" not in result.files["device.hip"]
 
+    class RequiredProvider:
+        called = False
+        preflight_called = False
+
+        async def preflight(self, *_args, **_kwargs):
+            self.preflight_called = True
+            return {"ok": True}
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise RuntimeError("required provider call observed")
+
+    required_provider = RequiredProvider()
+    provider_request, provider_request_hash = kernel_splitter.provider_call_request_binding(
+        nonce="provider-call:0123456789abcdef0123456789abcdef",
+        user_code=source,
+        lang="cpp",
+        files=[{"name": "src/demo.hip", "content": source}],
+        focus="src/demo.hip",
+        model="gemini-3.5-flash",
+        gpu_arch_hint="gfx1201",
+        extra_instructions=None,
+    )
+    with pytest.raises(KernelSplitProviderError, match="required provider call observed"):
+        asyncio.run(
+            run_kernel_splitter(
+                provider=required_provider,
+                user_code=source,
+                lang="cpp",
+                detection=detection,
+                files=[{"name": "src/demo.hip", "content": source}],
+                focus="src/demo.hip",
+                model="gemini-3.5-flash",
+                gpu_arch_hint="gfx1201",
+                require_provider_call=True,
+                provider_call_request=provider_request,
+                provider_call_request_hash=provider_request_hash,
+            )
+        )
+    assert required_provider.preflight_called is True
+    assert required_provider.called is True
+
+
+def test_provider_call_receipt_binds_request_response_and_provider_metadata():
+    request, request_hash = kernel_splitter.provider_call_request_binding(
+        nonce="provider-call:fedcba9876543210fedcba9876543210",
+        user_code="__global__ void kernel(float* out) { out[0] = 1.0f; }",
+        lang="cpp",
+        files=[{
+            "name": "src/main.hip",
+            "content": "__global__ void kernel(float* out) { out[0] = 1.0f; }",
+        }],
+        focus="src/main.hip",
+        model="model-under-test",
+        gpu_arch_hint="gfx1201",
+        extra_instructions="preserve output",
+    )
+    challenge, _ = kernel_splitter._provider_call_challenge(
+        request_binding=request,
+        request_hash=request_hash,
+        prompt_payload="prompt-under-test",
+    )
+    challenge_json = json.dumps(
+        challenge,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    raw_response = (
+        '{"files":{"device.hip":"kernel"}}'
+        f"<synthi_provider_call_challenge>{challenge_json}</synthi_provider_call_challenge>"
+    )
+    receipt = kernel_splitter._provider_call_receipt(
+        request_binding=request,
+        request_hash=request_hash,
+        challenge=challenge,
+        raw_response=raw_response,
+        provider_metadata={
+            "provider": "generic-provider",
+            "requested_model": "model-under-test",
+            "actual_model": "model-under-test-v2",
+            "request_mode": "split",
+            "provider_model_status": "available",
+            "fallback_model": None,
+            "fallback_used": False,
+            "provider_model_alias_resolved_to": None,
+            "provider_shutdown_or_deprecation_detected": False,
+            "model_availability_checked_at": "2026-07-15T00:00:00+00:00",
+            "hard_infra_failure": False,
+        },
+        started_monotonic_ns=100,
+        completed_monotonic_ns=200,
+        started_unix_ns=1_700_000_000_000_000_000,
+        completed_unix_ns=1_700_000_000_000_000_100,
+    )
+
+    assert receipt["accepted"] is True
+    assert receipt["provider_call_used"] is True
+    assert receipt["request_binding"] == request
+    assert receipt["request_hash"] == request_hash
+    assert receipt["response_hash"] == kernel_splitter._sha256_prefixed(raw_response)
+    assert receipt["challenge"] == challenge
+    assert receipt["challenge_echo_verified"] is True
+    assert receipt["call_id"] == f"provider-call:{receipt['receipt_hash']}"
+    assert receipt["accepted_for_gpu_hmr"] is False
+    assert receipt["gpu_hmr_success"] is False
+
+    noncanonical_challenge = json.dumps(challenge, ensure_ascii=False, indent=2)
+    with pytest.raises(ValueError, match="exact fresh-call challenge"):
+        kernel_splitter._validate_provider_call_challenge_echo(
+            (
+                '{"files":{"device.hip":"kernel"}}'
+                f"<synthi_provider_call_challenge>{noncanonical_challenge}"
+                "</synthi_provider_call_challenge>"
+            ),
+            challenge,
+        )
+
+    with pytest.raises(ValueError, match="requested model"):
+        kernel_splitter._provider_call_receipt(
+            request_binding=request,
+            request_hash=request_hash,
+            challenge=challenge,
+            raw_response=raw_response,
+            provider_metadata={
+                "provider": "generic-provider",
+                "requested_model": "replayed-model",
+                "actual_model": "replayed-model",
+                "request_mode": "split",
+                "provider_model_status": "available",
+                "fallback_model": None,
+                "fallback_used": False,
+                "provider_model_alias_resolved_to": None,
+                "provider_shutdown_or_deprecation_detected": False,
+                "model_availability_checked_at": "2026-07-15T00:00:00+00:00",
+                "hard_infra_failure": False,
+            },
+            started_monotonic_ns=100,
+            completed_monotonic_ns=200,
+            started_unix_ns=1_700_000_000_000_000_000,
+            completed_unix_ns=1_700_000_000_000_000_100,
+        )
+
+    with pytest.raises(ValueError, match="fresh-call challenge"):
+        kernel_splitter._provider_call_receipt(
+            request_binding=request,
+            request_hash=request_hash,
+            challenge=challenge,
+            raw_response='{"files":{"device.hip":"stale"}}',
+            provider_metadata={
+                "provider": "generic-provider",
+                "requested_model": "model-under-test",
+                "actual_model": "model-under-test-v2",
+                "request_mode": "split",
+                "provider_model_status": "available",
+                "fallback_model": None,
+                "fallback_used": False,
+                "provider_model_alias_resolved_to": None,
+                "provider_shutdown_or_deprecation_detected": False,
+                "model_availability_checked_at": "2026-07-15T00:00:00+00:00",
+                "hard_infra_failure": False,
+            },
+            started_monotonic_ns=100,
+            completed_monotonic_ns=200,
+            started_unix_ns=1_700_000_000_000_000_000,
+            completed_unix_ns=1_700_000_000_000_000_100,
+        )
+
+
+def test_required_provider_call_echoes_fresh_challenge_through_split_parser():
+    class Provider:
+        name = "generic-provider"
+        last_call_metadata = {}
+
+        async def preflight(self, *_args, **_kwargs):
+            return {"ok": True}
+
+        async def ask_llm(self, _code, _lang, prompt, **kwargs):
+            challenge = kernel_splitter._PROVIDER_CALL_CHALLENGE_RE.search(prompt)
+            assert challenge is not None
+            self.last_call_metadata = {
+                "provider": self.name,
+                "requested_model": kwargs["model"],
+                "actual_model": kwargs["model"],
+                "request_mode": "split",
+                "provider_model_status": "available",
+                "fallback_model": None,
+                "fallback_used": False,
+                "provider_model_alias_resolved_to": None,
+                "provider_shutdown_or_deprecation_detected": False,
+                "model_availability_checked_at": "2026-07-15T00:00:00+00:00",
+                "hard_infra_failure": False,
+            }
+            return f"{SAMPLE_RAW}\n{challenge.group(0)}"
+
+    source = '__global__ void vec_add(const float* a, const float* b, float* c, int n) {}'
+    files = [{"name": "src/main.cu", "content": source}]
+    request, request_hash = kernel_splitter.provider_call_request_binding(
+        nonce="provider-call:0123456789abcdef0123456789abcdef",
+        user_code=source,
+        lang="cpp",
+        files=files,
+        focus="src/main.cu",
+        model="model-under-test",
+        gpu_arch_hint="sm_80",
+        extra_instructions=None,
+    )
+    result = asyncio.run(
+        run_kernel_splitter(
+            provider=Provider(),
+            user_code=source,
+            lang="cpp",
+            detection=GpuDetectionResult(
+                is_gpu=True,
+                vendor_hint="cuda",
+                per_file={"src/main.cu": GpuDetectionEvidence(qualifier_hits=1)},
+            ),
+            files=files,
+            focus="src/main.cu",
+            model="model-under-test",
+            gpu_arch_hint="sm_80",
+            require_provider_call=True,
+            provider_call_request=request,
+            provider_call_request_hash=request_hash,
+        )
+    )
+
+    assert result.verification is not None
+    assert "device.cu" in result.files
+    assert result.provider_call_receipt["challenge_echo_verified"] is True
+    assert result.provider_call_receipt["response_hash"] == kernel_splitter._sha256_prefixed(
+        result.raw_response
+    )
+    assert "<synthi_provider_call_challenge>" in result.raw_response
+
 
 def test_deterministic_rocm_sdl_split_preserves_texture_render_path(monkeypatch):
     class Provider:

@@ -85,6 +85,20 @@ pub struct CompileRequest {
         alias = "require_fresh_ai_split"
     )]
     pub bypass_ai_split_cache: bool,
+    /// Require the split result to come from an observed AI provider call.
+    /// This is an evidence-mode constraint; deterministic splitting remains
+    /// the default when the caller does not request provider execution.
+    #[serde(
+        default,
+        alias = "require_provider_call",
+        alias = "force_ai_provider_call"
+    )]
+    pub require_ai_provider_call: bool,
+    /// Caller-generated nonce that binds a required provider call to the
+    /// concrete compile request. The worker rejects missing or malformed
+    /// nonces whenever `require_ai_provider_call` is enabled.
+    #[serde(default, alias = "provider_call_nonce", alias = "aiProviderCallNonce")]
+    pub ai_provider_call_nonce: Option<String>,
     /// Explicit user request for AI-assisted compilation (Loop B).
     #[serde(default)]
     pub user_requested_ai: bool,
@@ -142,6 +156,8 @@ mod tests {
         let req: CompileRequest = serde_json::from_value(base_request()).expect("compile request");
 
         assert!(!req.bypass_ai_split_cache);
+        assert!(!req.require_ai_provider_call);
+        assert!(req.ai_provider_call_nonce.is_none());
     }
 
     #[test]
@@ -160,6 +176,47 @@ mod tests {
             let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
 
             assert!(req.bypass_ai_split_cache, "alias {field}");
+        }
+    }
+
+    #[test]
+    fn compile_request_accepts_provider_call_requirement_aliases() {
+        for field in [
+            "require_ai_provider_call",
+            "require_provider_call",
+            "force_ai_provider_call",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut()
+                .expect("object")
+                .insert(field.to_string(), json!(true));
+
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
+
+            assert!(req.require_ai_provider_call, "alias {field}");
+        }
+    }
+
+    #[test]
+    fn compile_request_accepts_provider_call_nonce_aliases() {
+        for field in [
+            "ai_provider_call_nonce",
+            "provider_call_nonce",
+            "aiProviderCallNonce",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut().expect("object").insert(
+                field.to_string(),
+                json!("provider-call:0123456789abcdef0123456789abcdef"),
+            );
+
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
+
+            assert_eq!(
+                req.ai_provider_call_nonce.as_deref(),
+                Some("provider-call:0123456789abcdef0123456789abcdef"),
+                "alias {field}"
+            );
         }
     }
 }

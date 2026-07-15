@@ -1590,6 +1590,9 @@ class VerifiedAiRequest(AnalyzeAiRequest):
     auto_repair: bool = True
     session_id: Optional[str] = None
     grounding_spans: Optional[List[dict]] = None
+    require_provider_call: bool = False
+    provider_call_request: Optional[Dict[str, Any]] = None
+    provider_call_request_hash: Optional[str] = None
 
 
 @app.post("/analyze/ai/verified")
@@ -2390,6 +2393,10 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 files=req.files,
                 focus=req.focus,
                 gpu_arch_hint=request_arch_hint,
+                require_provider_call=req.require_provider_call,
+                provider_call_request=req.provider_call_request,
+                provider_call_request_hash=req.provider_call_request_hash,
+                provider_call_binding_instructions=req.prompt,
             )
         except _KernelSplitterUnsupportedProjectError as e:
             verification = _split_failure_verification(
@@ -2650,7 +2657,15 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
             "provider_call_used": False,
         }
     else:
-        split_provider_model = getattr(provider, "last_call_metadata", {}) or {}
+        split_provider_model = dict(getattr(provider, "last_call_metadata", {}) or {})
+        provider_receipt = split.provider_call_receipt or {}
+        provider_call_used = (
+            provider_receipt.get("accepted") is True
+            and provider_receipt.get("provider_call_used") is True
+        )
+        split_provider_model["provider_call_used"] = provider_call_used
+        split_provider_model["providerCallUsed"] = provider_call_used
+        split_provider_model["provider_call_receipt_id"] = provider_receipt.get("call_id")
     split_actual_model = split_provider_model.get("actual_model") or split_model
     split_fallback_used = bool(split_provider_model.get("fallback_used"))
     logger.info(
@@ -2684,6 +2699,13 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         "model_fallback_used": split_fallback_used,
         "provider_model": split_provider_model,
         "model_provenance": split_provider_model,
+        "provider_call_used": bool(split_provider_model.get("provider_call_used")),
+        "providerCallUsed": bool(split_provider_model.get("provider_call_used")),
+        "provider_call_required": req.require_provider_call,
+        "provider_call_receipt": split.provider_call_receipt,
+        "provider_call_raw_response": (
+            split.raw_response if req.require_provider_call else None
+        ),
         "model_role": "gpu_split",
         "verified": bool(split.verification.ok if split.verification else True),
         "verification": verification,

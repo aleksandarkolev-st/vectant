@@ -1,6 +1,7 @@
+use crate::hmr::gpu_proof::sha256_hex_str;
 use crate::infra::messages::CompileRequest;
 use crate::infra::utils::get_wsl_host_ip;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use reqwest;
 use serde_json;
 use std::collections::hash_map::DefaultHasher;
@@ -880,6 +881,494 @@ fn validate_gpu_split_live_update_contract(
 // (FallbackDeterministic → classify → targeted diff_patch with cached
 // architecture hint) now handles the same case language-agnostically.
 
+const PROVIDER_CALL_REQUEST_SCHEMA_VERSION: &str = "synthi.ai.provider_call_request.v1";
+const PROVIDER_CALL_RECEIPT_SCHEMA_VERSION: &str = "synthi.ai.provider_call_receipt.v1";
+const PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION: &str = "synthi.ai.provider_call_challenge.v1";
+const PROVIDER_CALL_RECEIPT_AUTHORITY: &str =
+    "request_bound_provider_call_only_not_gpu_hmr_success";
+
+fn prefixed_sha256(value: &str) -> String {
+    format!("sha256:{}", sha256_hex_str(value))
+}
+
+fn ordered_json_hash(values: Vec<serde_json::Value>) -> String {
+    let material = serde_json::to_string(&values).expect("provider call hash material");
+    prefixed_sha256(&material)
+}
+
+fn valid_provider_call_nonce(value: &str) -> bool {
+    value.strip_prefix("provider-call:").is_some_and(|suffix| {
+        suffix.len() == 32
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+fn valid_prefixed_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|suffix| {
+        suffix.len() == 64
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+fn canonical_provider_call_challenge_tag(challenge: &serde_json::Value) -> Result<String> {
+    const OPEN: &str = "<synthi_provider_call_challenge>";
+    const CLOSE: &str = "</synthi_provider_call_challenge>";
+    let object = challenge
+        .as_object()
+        .context("AI provider response challenge must be an object")?;
+    if object.len() != 5 {
+        anyhow::bail!("AI provider response challenge has unexpected fields");
+    }
+    let field = |key: &str| {
+        object
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .with_context(|| format!("AI provider response challenge field {key} is invalid"))
+    };
+    let encoded = format!(
+        "{{\"challenge_hash\":{},\"prompt_payload_hash\":{},\"request_hash\":{},\"request_nonce\":{},\"schema_version\":{}}}",
+        serde_json::to_string(field("challenge_hash")?)?,
+        serde_json::to_string(field("prompt_payload_hash")?)?,
+        serde_json::to_string(field("request_hash")?)?,
+        serde_json::to_string(field("request_nonce")?)?,
+        serde_json::to_string(field("schema_version")?)?,
+    );
+    Ok(format!("{OPEN}{encoded}{CLOSE}"))
+}
+
+fn validate_provider_call_challenge_echo(
+    raw_response: &str,
+    challenge: &serde_json::Value,
+) -> Result<()> {
+    const OPEN: &str = "<synthi_provider_call_challenge>";
+    const CLOSE: &str = "</synthi_provider_call_challenge>";
+    let expected_tag = canonical_provider_call_challenge_tag(challenge)?;
+    if raw_response.matches(OPEN).count() != 1
+        || raw_response.matches(CLOSE).count() != 1
+        || !raw_response.contains(&expected_tag)
+    {
+        anyhow::bail!("AI provider response did not echo the exact fresh-call challenge");
+    }
+    Ok(())
+}
+
+fn object_has_gpu_authority_claim(object: &serde_json::Map<String, serde_json::Value>) -> bool {
+    [
+        "accepted_for_gpu_hmr",
+        "acceptedForGpuHmr",
+        "gpu_hmr_success",
+        "gpuHmrSuccess",
+        "can_satisfy_runtime_proof",
+        "canSatisfyRuntimeProof",
+        "can_satisfy_dispatch_proof",
+        "canSatisfyDispatchProof",
+    ]
+    .iter()
+    .any(|key| {
+        object
+            .get(*key)
+            .is_some_and(|value| value.as_bool() != Some(false))
+    })
+}
+
+fn provider_call_request_binding(
+    req: &CompileRequest,
+    file_context: &[(String, String)],
+    requested_model: &str,
+    arch_hint: Option<&str>,
+    extra_instructions: Option<&str>,
+) -> Result<(serde_json::Value, String)> {
+    let nonce = req
+        .ai_provider_call_nonce
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| valid_provider_call_nonce(value))
+        .ok_or_else(|| anyhow!("required AI provider call needs a caller-generated nonce"))?;
+    let mut file_entries = file_context
+        .iter()
+        .map(|(name, content)| serde_json::json!([name, prefixed_sha256(content)]))
+        .collect::<Vec<_>>();
+    file_entries.sort_by(|left, right| {
+        left.get(0)
+            .and_then(serde_json::Value::as_str)
+            .cmp(&right.get(0).and_then(serde_json::Value::as_str))
+    });
+    let file_manifest_hash = ordered_json_hash(vec![
+        serde_json::Value::String("synthi.ai.provider_call_file_manifest.v1".to_string()),
+        serde_json::Value::Array(file_entries.clone()),
+    ]);
+    let binding = serde_json::json!({
+        "schema_version": PROVIDER_CALL_REQUEST_SCHEMA_VERSION,
+        "nonce": nonce,
+        "mode": "split",
+        "request_mode": "split",
+        "language": req.language.trim(),
+        "focus": normalized_request_path(&req.filename),
+        "requested_model": requested_model.trim(),
+        "gpu_arch": arch_hint.unwrap_or("").trim(),
+        "source_hash": prefixed_sha256(&req.source),
+        "file_manifest_hash": file_manifest_hash,
+        "file_count": file_entries.len(),
+        "extra_instructions_hash": prefixed_sha256(extra_instructions.unwrap_or("")),
+    });
+    let request_hash = ordered_json_hash(vec![
+        binding["schema_version"].clone(),
+        binding["nonce"].clone(),
+        binding["mode"].clone(),
+        binding["request_mode"].clone(),
+        binding["language"].clone(),
+        binding["focus"].clone(),
+        binding["requested_model"].clone(),
+        binding["gpu_arch"].clone(),
+        binding["source_hash"].clone(),
+        binding["file_manifest_hash"].clone(),
+        binding["file_count"].clone(),
+        binding["extra_instructions_hash"].clone(),
+    ]);
+    Ok((binding, request_hash))
+}
+
+fn validate_required_ai_provider_call(
+    raw_response: &serde_json::Value,
+    expected_request_binding: &serde_json::Value,
+    expected_request_hash: &str,
+) -> Result<serde_json::Value> {
+    let Some(provenance) = raw_response
+        .get("model_provenance")
+        .or_else(|| raw_response.get("provider_model"))
+        .and_then(serde_json::Value::as_object)
+    else {
+        anyhow::bail!("AI split provider call was required but model provenance is missing");
+    };
+
+    let Some(receipt) = raw_response
+        .get("provider_call_receipt")
+        .and_then(serde_json::Value::as_object)
+    else {
+        anyhow::bail!("AI split provider call was required but receipt is missing");
+    };
+
+    let provider_call_used = provenance
+        .get("provider_call_used")
+        .or_else(|| provenance.get("providerCallUsed"))
+        .and_then(serde_json::Value::as_bool);
+    let provider = provenance
+        .get("provider")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let requested_model = provenance
+        .get("requested_model")
+        .or_else(|| provenance.get("requestedModel"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let actual_model = provenance
+        .get("actual_model")
+        .or_else(|| provenance.get("actualModel"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let provider_status = provenance
+        .get("provider_model_status")
+        .or_else(|| provenance.get("providerModelStatus"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let fallback_model = provenance
+        .get("fallback_model")
+        .or_else(|| provenance.get("fallbackModel"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let fallback_used = provenance
+        .get("fallback_used")
+        .or_else(|| provenance.get("fallbackUsed"))
+        .and_then(serde_json::Value::as_bool);
+    let alias_resolved_to = provenance
+        .get("provider_model_alias_resolved_to")
+        .or_else(|| provenance.get("providerModelAliasResolvedTo"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let shutdown_or_deprecation_detected = provenance
+        .get("provider_shutdown_or_deprecation_detected")
+        .or_else(|| provenance.get("providerShutdownOrDeprecationDetected"))
+        .and_then(serde_json::Value::as_bool);
+    let hard_infra_failure = provenance
+        .get("hard_infra_failure")
+        .or_else(|| provenance.get("hardInfraFailure"))
+        .and_then(serde_json::Value::as_bool);
+    let request_mode = provenance
+        .get("request_mode")
+        .or_else(|| provenance.get("requestMode"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let checked_at = provenance
+        .get("model_availability_checked_at")
+        .or_else(|| provenance.get("modelAvailabilityCheckedAt"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+
+    let mut reason_codes = Vec::new();
+    if provider_call_used != Some(true) {
+        reason_codes.push("ai_split_provider_call_not_observed");
+    }
+    if provider.is_empty() {
+        reason_codes.push("ai_split_provider_identity_missing");
+    } else if provider.eq_ignore_ascii_case("deterministic_static_splitter") {
+        reason_codes.push("ai_split_deterministic_splitter_not_provider_call");
+    }
+    if requested_model.is_empty() {
+        reason_codes.push("ai_split_requested_model_missing");
+    }
+    if actual_model.is_empty() {
+        reason_codes.push("ai_split_actual_model_missing");
+    }
+    if !matches!(
+        provider_status,
+        "available" | "deprecated" | "unknown" | "private_alias"
+    ) {
+        reason_codes.push("ai_split_provider_model_status_invalid");
+    }
+    if fallback_used.is_none() {
+        reason_codes.push("ai_split_provider_fallback_state_missing");
+    }
+    if shutdown_or_deprecation_detected.is_none() {
+        reason_codes.push("ai_split_provider_lifecycle_state_missing");
+    }
+    if hard_infra_failure != Some(false) {
+        reason_codes.push("ai_split_provider_hard_infra_failure");
+    }
+    if request_mode != "split" {
+        reason_codes.push("ai_split_provider_request_mode_invalid");
+    }
+    if checked_at.is_empty() {
+        reason_codes.push("ai_split_provider_availability_timestamp_missing");
+    }
+
+    let receipt_string = |key: &str| {
+        receipt
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+    };
+    let receipt_schema = receipt_string("schema_version");
+    let receipt_authority = receipt_string("proof_authority");
+    let receipt_nonce = receipt_string("request_nonce");
+    let receipt_request_hash = receipt_string("request_hash");
+    let receipt_response_hash = receipt_string("response_hash");
+    let receipt_challenge_hash = receipt_string("challenge_hash");
+    let receipt_provider = receipt_string("provider");
+    let receipt_requested_model = receipt_string("requested_model");
+    let receipt_actual_model = receipt_string("actual_model");
+    let receipt_request_mode = receipt_string("request_mode");
+    let receipt_provider_status = receipt_string("provider_model_status");
+    let receipt_fallback_model = receipt_string("fallback_model");
+    let receipt_fallback_used = receipt
+        .get("fallback_used")
+        .and_then(serde_json::Value::as_bool);
+    let receipt_alias_resolved_to = receipt_string("provider_model_alias_resolved_to");
+    let receipt_shutdown_or_deprecation_detected = receipt
+        .get("provider_shutdown_or_deprecation_detected")
+        .and_then(serde_json::Value::as_bool);
+    let receipt_checked_at = receipt_string("model_availability_checked_at");
+    let started_monotonic = receipt_string("started_monotonic_ns");
+    let completed_monotonic = receipt_string("completed_monotonic_ns");
+    let started_unix = receipt_string("started_unix_ns");
+    let completed_unix = receipt_string("completed_unix_ns");
+    let receipt_hash = receipt_string("receipt_hash");
+    let call_id = receipt_string("call_id");
+    let expected_nonce = expected_request_binding
+        .get("nonce")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let expected_requested_model = expected_request_binding
+        .get("requested_model")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let provider_raw_response = raw_response
+        .get("provider_call_raw_response")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let response_hash = if provider_raw_response.is_empty() {
+        String::new()
+    } else {
+        prefixed_sha256(provider_raw_response)
+    };
+    let challenge = receipt.get("challenge");
+    let challenge_schema = challenge
+        .and_then(|value| value.get("schema_version"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let challenge_nonce = challenge
+        .and_then(|value| value.get("request_nonce"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let challenge_request_hash = challenge
+        .and_then(|value| value.get("request_hash"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let challenge_prompt_hash = challenge
+        .and_then(|value| value.get("prompt_payload_hash"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let challenge_embedded_hash = challenge
+        .and_then(|value| value.get("challenge_hash"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let expected_challenge_hash = ordered_json_hash(vec![
+        serde_json::Value::String(PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION.to_string()),
+        serde_json::Value::String(challenge_nonce.to_string()),
+        serde_json::Value::String(challenge_request_hash.to_string()),
+        serde_json::Value::String(challenge_prompt_hash.to_string()),
+    ]);
+    let challenge_echo_verified = challenge.is_some_and(|value| {
+        validate_provider_call_challenge_echo(provider_raw_response, value).is_ok()
+    });
+    let intervals_valid = started_monotonic
+        .parse::<u128>()
+        .ok()
+        .zip(completed_monotonic.parse::<u128>().ok())
+        .is_some_and(|(started, completed)| completed > started)
+        && started_unix
+            .parse::<u128>()
+            .ok()
+            .zip(completed_unix.parse::<u128>().ok())
+            .is_some_and(|(started, completed)| completed >= started);
+    let expected_receipt_hash = ordered_json_hash(vec![
+        serde_json::Value::String(PROVIDER_CALL_RECEIPT_SCHEMA_VERSION.to_string()),
+        serde_json::Value::String(PROVIDER_CALL_RECEIPT_AUTHORITY.to_string()),
+        serde_json::Value::String(receipt_nonce.to_string()),
+        serde_json::Value::String(receipt_request_hash.to_string()),
+        serde_json::Value::String(receipt_response_hash.to_string()),
+        serde_json::Value::String(receipt_challenge_hash.to_string()),
+        serde_json::Value::String(receipt_provider.to_string()),
+        serde_json::Value::String(receipt_requested_model.to_string()),
+        serde_json::Value::String(receipt_actual_model.to_string()),
+        serde_json::Value::String(receipt_request_mode.to_string()),
+        serde_json::Value::String(receipt_provider_status.to_string()),
+        serde_json::Value::String(receipt_fallback_model.to_string()),
+        serde_json::Value::Bool(receipt_fallback_used.unwrap_or(false)),
+        serde_json::Value::String(receipt_alias_resolved_to.to_string()),
+        serde_json::Value::Bool(receipt_shutdown_or_deprecation_detected.unwrap_or(false)),
+        serde_json::Value::String(receipt_checked_at.to_string()),
+        serde_json::Value::String(started_monotonic.to_string()),
+        serde_json::Value::String(completed_monotonic.to_string()),
+        serde_json::Value::String(started_unix.to_string()),
+        serde_json::Value::String(completed_unix.to_string()),
+    ]);
+    if receipt_schema != PROVIDER_CALL_RECEIPT_SCHEMA_VERSION {
+        reason_codes.push("ai_split_provider_receipt_schema_invalid");
+    }
+    if receipt_authority != PROVIDER_CALL_RECEIPT_AUTHORITY {
+        reason_codes.push("ai_split_provider_receipt_authority_invalid");
+    }
+    if receipt.get("accepted").and_then(serde_json::Value::as_bool) != Some(true)
+        || receipt
+            .get("provider_call_used")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
+        reason_codes.push("ai_split_provider_receipt_not_accepted");
+    }
+    if receipt.get("request_binding") != Some(expected_request_binding) {
+        reason_codes.push("ai_split_provider_receipt_request_binding_mismatch");
+    }
+    if receipt_nonce != expected_nonce || receipt_request_hash != expected_request_hash {
+        reason_codes.push("ai_split_provider_receipt_request_identity_mismatch");
+    }
+    if requested_model != expected_requested_model
+        || receipt_requested_model != expected_requested_model
+    {
+        reason_codes.push("ai_split_provider_receipt_requested_model_mismatch");
+    }
+    if receipt_response_hash != response_hash || response_hash.is_empty() {
+        reason_codes.push("ai_split_provider_receipt_response_hash_mismatch");
+    }
+    if challenge_schema != PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION
+        || challenge_nonce != expected_nonce
+        || challenge_request_hash != expected_request_hash
+        || !valid_prefixed_sha256(challenge_prompt_hash)
+        || receipt_challenge_hash != expected_challenge_hash
+        || challenge_embedded_hash != expected_challenge_hash
+    {
+        reason_codes.push("ai_split_provider_receipt_challenge_binding_mismatch");
+    }
+    if !challenge_echo_verified
+        || receipt
+            .get("challenge_echo_verified")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
+        reason_codes.push("ai_split_provider_receipt_challenge_echo_mismatch");
+    }
+    if receipt_provider != provider
+        || receipt_requested_model != requested_model
+        || receipt_actual_model != actual_model
+        || receipt_request_mode != request_mode
+        || receipt_provider_status != provider_status
+        || receipt_fallback_model != fallback_model
+        || receipt_fallback_used != fallback_used
+        || receipt_alias_resolved_to != alias_resolved_to
+        || receipt_shutdown_or_deprecation_detected != shutdown_or_deprecation_detected
+        || receipt_checked_at != checked_at
+    {
+        reason_codes.push("ai_split_provider_receipt_provenance_mismatch");
+    }
+    if receipt
+        .get("hard_infra_failure")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false)
+    {
+        reason_codes.push("ai_split_provider_receipt_hard_infra_failure");
+    }
+    if !intervals_valid {
+        reason_codes.push("ai_split_provider_receipt_interval_invalid");
+    }
+    if receipt_hash != expected_receipt_hash
+        || call_id != format!("provider-call:{}", expected_receipt_hash)
+    {
+        reason_codes.push("ai_split_provider_receipt_hash_mismatch");
+    }
+    if object_has_gpu_authority_claim(receipt)
+        || object_has_gpu_authority_claim(provenance)
+        || receipt
+            .get("accepted_for_gpu_hmr")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+        || receipt
+            .get("gpu_hmr_success")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+        || receipt
+            .get("can_satisfy_runtime_proof")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+        || receipt
+            .get("can_satisfy_dispatch_proof")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+    {
+        reason_codes.push("ai_split_provider_receipt_claims_gpu_authority");
+    }
+
+    if !reason_codes.is_empty() {
+        anyhow::bail!(
+            "AI split provider call was required but provenance failed: reason_codes={}",
+            reason_codes.join(",")
+        );
+    }
+    Ok(serde_json::Value::Object(receipt.clone()))
+}
+
 pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     // Level 1: Full source hash → instant cache hit.
     // No other cache levels — Level 2 (structural match + string patching),
@@ -913,10 +1402,11 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
 
     let cache_entries_before_lookup = {
         let cache = get_ai_split_cache().lock().await;
-        if req.bypass_ai_split_cache {
+        if req.bypass_ai_split_cache || req.require_ai_provider_call {
             eprintln!(
-                "[AI Split] Level 1 BYPASS requested (cache entries: {})",
-                cache.len()
+                "[AI Split] Level 1 BYPASS requested (cache entries: {}, provider_call_required={})",
+                cache.len(),
+                req.require_ai_provider_call
             );
         } else if let Some(cached) = cache.get(&source_hash) {
             eprintln!("[AI Split] Level 1 HIT (exact source_hash match)");
@@ -970,6 +1460,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             }))
             .collect::<Vec<_>>()
     });
+    payload["require_provider_call"] = serde_json::Value::Bool(req.require_ai_provider_call);
     if let Some(arch) = &arch_hint {
         payload["gpu_arch"] = serde_json::Value::String(arch.clone());
     }
@@ -983,7 +1474,30 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     if let Some(model) = &split_model {
         payload["model"] = serde_json::Value::String(model.clone());
         eprintln!("[AI Split] Split model override attached: {}", model);
+    } else if req.require_ai_provider_call {
+        payload["model"] = serde_json::Value::String("gemini-3.5-flash".to_string());
+        eprintln!("[AI Split] Explicit default split model attached for provider receipt");
     }
+
+    let provider_call_expectation = if req.require_ai_provider_call {
+        let requested_model = payload
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let extra_instructions = payload.get("prompt").and_then(serde_json::Value::as_str);
+        let (binding, request_hash) = provider_call_request_binding(
+            req,
+            &file_context,
+            requested_model,
+            arch_hint.as_deref(),
+            extra_instructions,
+        )?;
+        payload["provider_call_request"] = binding.clone();
+        payload["provider_call_request_hash"] = serde_json::Value::String(request_hash.clone());
+        Some((binding, request_hash))
+    } else {
+        None
+    };
 
     let backend_url = get_ai_backend_url();
 
@@ -1268,6 +1782,14 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         }
     }
 
+    if let Some((expected_binding, expected_hash)) = provider_call_expectation.as_ref() {
+        let receipt =
+            validate_required_ai_provider_call(&raw_response, expected_binding, expected_hash)?;
+        if let Some(obj) = res.as_object_mut() {
+            obj.insert("_synthi_provider_call_receipt".to_string(), receipt);
+        }
+    }
+
     validate_gpu_split_live_update_contract(req, &res)?;
 
     // ULTRAPLAN Phase 4: log host_runner presence. The parsed `res` Value
@@ -1300,15 +1822,20 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         }
     }
 
-    // Cache result (Level 1 only — the structural cache is gone).
-    let cached_entry = CachedSplit {
-        result: res.clone(),
-        original_source: req.source.clone(),
-    };
-    get_ai_split_cache()
-        .lock()
-        .await
-        .insert(source_hash, cached_entry);
+    // Cache ordinary results only. Request-bound receipts are single-use and
+    // must never be replayed through the split cache.
+    if !req.require_ai_provider_call {
+        let cached_entry = CachedSplit {
+            result: res.clone(),
+            original_source: req.source.clone(),
+        };
+        get_ai_split_cache()
+            .lock()
+            .await
+            .insert(source_hash, cached_entry);
+    } else {
+        eprintln!("[AI Split] provider-receipt result intentionally not cached");
+    }
 
     Ok(res)
 }
@@ -2259,6 +2786,237 @@ mod tests {
     }
 
     #[test]
+    fn provider_call_challenge_echo_requires_exact_canonical_tag() {
+        let challenge = json!({
+            "schema_version": PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION,
+            "request_nonce": "provider-call:0123456789abcdef0123456789abcdef",
+            "request_hash": format!("sha256:{}", "1".repeat(64)),
+            "prompt_payload_hash": format!("sha256:{}", "2".repeat(64)),
+            "challenge_hash": format!("sha256:{}", "3".repeat(64)),
+        });
+        let canonical = canonical_provider_call_challenge_tag(&challenge)
+            .expect("canonical provider challenge tag");
+        validate_provider_call_challenge_echo(&format!("prefix{canonical}suffix"), &challenge)
+            .expect("exact canonical challenge should pass");
+
+        let noncanonical = format!(
+            "<synthi_provider_call_challenge>{}</synthi_provider_call_challenge>",
+            serde_json::to_string_pretty(&challenge).expect("pretty challenge JSON")
+        );
+        let error = validate_provider_call_challenge_echo(&noncanonical, &challenge)
+            .expect_err("semantic JSON equivalence must not replace exact prompt bytes")
+            .to_string();
+        assert!(error.contains("exact fresh-call challenge"));
+    }
+
+    #[test]
+    fn required_provider_call_provenance_is_fail_closed() {
+        let binding = json!({
+            "schema_version": PROVIDER_CALL_REQUEST_SCHEMA_VERSION,
+            "nonce": "provider-call:0123456789abcdef0123456789abcdef",
+            "mode": "split",
+            "request_mode": "split",
+            "language": "cpp",
+            "focus": "src/main.hip",
+            "requested_model": "requested-model",
+            "gpu_arch": "gfx1201",
+            "source_hash": format!("sha256:{}", "1".repeat(64)),
+            "file_manifest_hash": format!("sha256:{}", "2".repeat(64)),
+            "file_count": 1,
+            "extra_instructions_hash": format!("sha256:{}", "3".repeat(64)),
+        });
+        let request_hash = ordered_json_hash(vec![
+            binding["schema_version"].clone(),
+            binding["nonce"].clone(),
+            binding["mode"].clone(),
+            binding["request_mode"].clone(),
+            binding["language"].clone(),
+            binding["focus"].clone(),
+            binding["requested_model"].clone(),
+            binding["gpu_arch"].clone(),
+            binding["source_hash"].clone(),
+            binding["file_manifest_hash"].clone(),
+            binding["file_count"].clone(),
+            binding["extra_instructions_hash"].clone(),
+        ]);
+        let challenge_prompt_hash = prefixed_sha256("provider prompt payload");
+        let challenge_hash = ordered_json_hash(vec![
+            json!(PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION),
+            binding["nonce"].clone(),
+            json!(request_hash),
+            json!(challenge_prompt_hash),
+        ]);
+        let challenge = json!({
+            "schema_version": PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION,
+            "request_nonce": binding["nonce"],
+            "request_hash": request_hash,
+            "prompt_payload_hash": challenge_prompt_hash,
+            "challenge_hash": challenge_hash,
+        });
+        let raw_provider_response = format!(
+            "{{\"files\":{{\"device.hip\":\"kernel\"}}}}<synthi_provider_call_challenge>{}</synthi_provider_call_challenge>",
+            serde_json::to_string(&challenge).expect("challenge JSON")
+        );
+        let raw_result = r#"{"files":{"device.hip":"normalized-kernel"}}"#;
+        let response_hash = prefixed_sha256(&raw_provider_response);
+        let checked_at = "2026-07-15T00:00:00+00:00";
+        let receipt_hash = ordered_json_hash(vec![
+            json!(PROVIDER_CALL_RECEIPT_SCHEMA_VERSION),
+            json!(PROVIDER_CALL_RECEIPT_AUTHORITY),
+            binding["nonce"].clone(),
+            json!(request_hash),
+            json!(response_hash),
+            json!(challenge_hash),
+            json!("generic_provider"),
+            json!("requested-model"),
+            json!("actual-model"),
+            json!("split"),
+            json!("available"),
+            json!(""),
+            json!(false),
+            json!(""),
+            json!(false),
+            json!(checked_at),
+            json!("100"),
+            json!("200"),
+            json!("1700000000000000000"),
+            json!("1700000000000000100"),
+        ]);
+        let valid = json!({
+            "result": raw_result,
+            "provider_call_raw_response": raw_provider_response,
+            "model_provenance": {
+                "provider_call_used": true,
+                "provider": "generic_provider",
+                "requested_model": "requested-model",
+                "actual_model": "actual-model",
+                "provider_model_status": "available",
+                "fallback_model": null,
+                "fallback_used": false,
+                "provider_model_alias_resolved_to": null,
+                "provider_shutdown_or_deprecation_detected": false,
+                "request_mode": "split",
+                "model_availability_checked_at": checked_at,
+                "hard_infra_failure": false
+            },
+            "provider_call_receipt": {
+                "schema_version": PROVIDER_CALL_RECEIPT_SCHEMA_VERSION,
+                "proof_authority": PROVIDER_CALL_RECEIPT_AUTHORITY,
+                "accepted": true,
+                "provider_call_used": true,
+                "request_binding": binding,
+                "request_nonce": binding["nonce"],
+                "request_hash": request_hash,
+                "response_hash": response_hash,
+                "challenge": challenge,
+                "challenge_hash": challenge_hash,
+                "challenge_echo_verified": true,
+                "provider": "generic_provider",
+                "requested_model": "requested-model",
+                "actual_model": "actual-model",
+                "request_mode": "split",
+                "provider_model_status": "available",
+                "fallback_model": null,
+                "fallback_used": false,
+                "provider_model_alias_resolved_to": null,
+                "provider_shutdown_or_deprecation_detected": false,
+                "model_availability_checked_at": checked_at,
+                "hard_infra_failure": false,
+                "started_monotonic_ns": "100",
+                "completed_monotonic_ns": "200",
+                "started_unix_ns": "1700000000000000000",
+                "completed_unix_ns": "1700000000000000100",
+                "receipt_hash": receipt_hash,
+                "call_id": format!("provider-call:{}", receipt_hash),
+                "accepted_for_gpu_hmr": false,
+                "gpu_hmr_success": false,
+                "can_satisfy_runtime_proof": false,
+                "can_satisfy_dispatch_proof": false
+            }
+        });
+        validate_required_ai_provider_call(&valid, &binding, &request_hash)
+            .expect("valid provider provenance");
+
+        let mut top_level_only = valid.clone();
+        top_level_only["provider_call_used"] = json!(true);
+        top_level_only["model_provenance"]["provider_call_used"] = json!(false);
+        let error = validate_required_ai_provider_call(&top_level_only, &binding, &request_hash)
+            .expect_err("nested provider observation remains authoritative")
+            .to_string();
+        assert!(error.contains("ai_split_provider_call_not_observed"));
+
+        let mut forged_response = valid.clone();
+        forged_response["provider_call_receipt"]["response_hash"] =
+            json!(format!("sha256:{}", "9".repeat(64)));
+        let error = validate_required_ai_provider_call(&forged_response, &binding, &request_hash)
+            .expect_err("forged provider response hash")
+            .to_string();
+        assert!(error.contains("ai_split_provider_receipt_response_hash_mismatch"));
+        assert!(error.contains("ai_split_provider_receipt_hash_mismatch"));
+
+        let mut forged_requested_model = valid.clone();
+        forged_requested_model["model_provenance"]["requested_model"] = json!("other-model");
+        forged_requested_model["provider_call_receipt"]["requested_model"] = json!("other-model");
+        let forged_receipt_hash = ordered_json_hash(vec![
+            json!(PROVIDER_CALL_RECEIPT_SCHEMA_VERSION),
+            json!(PROVIDER_CALL_RECEIPT_AUTHORITY),
+            binding["nonce"].clone(),
+            json!(request_hash),
+            json!(response_hash),
+            json!(challenge_hash),
+            json!("generic_provider"),
+            json!("other-model"),
+            json!("actual-model"),
+            json!("split"),
+            json!("available"),
+            json!(""),
+            json!(false),
+            json!(""),
+            json!(false),
+            json!(checked_at),
+            json!("100"),
+            json!("200"),
+            json!("1700000000000000000"),
+            json!("1700000000000000100"),
+        ]);
+        forged_requested_model["provider_call_receipt"]["receipt_hash"] =
+            json!(forged_receipt_hash);
+        forged_requested_model["provider_call_receipt"]["call_id"] =
+            json!(format!("provider-call:{}", forged_receipt_hash));
+        let error =
+            validate_required_ai_provider_call(&forged_requested_model, &binding, &request_hash)
+                .expect_err("receipt model must remain bound to request")
+                .to_string();
+        assert!(error.contains("ai_split_provider_receipt_requested_model_mismatch"));
+
+        let mut authority_claim = valid.clone();
+        authority_claim["provider_call_receipt"]["gpuHmrSuccess"] = json!(true);
+        let error = validate_required_ai_provider_call(&authority_claim, &binding, &request_hash)
+            .expect_err("provider receipt authority claim")
+            .to_string();
+        assert!(error.contains("ai_split_provider_receipt_claims_gpu_authority"));
+
+        let mut typed_authority_claim = valid.clone();
+        typed_authority_claim["provider_call_receipt"]["gpuHmrSuccess"] = json!("true");
+        let error =
+            validate_required_ai_provider_call(&typed_authority_claim, &binding, &request_hash)
+                .expect_err("provider receipt non-boolean authority claim")
+                .to_string();
+        assert!(error.contains("ai_split_provider_receipt_claims_gpu_authority"));
+
+        let mut provenance_authority_claim = valid.clone();
+        provenance_authority_claim["model_provenance"]["acceptedForGpuHmr"] = json!(1);
+        let error = validate_required_ai_provider_call(
+            &provenance_authority_claim,
+            &binding,
+            &request_hash,
+        )
+        .expect_err("provider provenance authority claim")
+        .to_string();
+        assert!(error.contains("ai_split_provider_receipt_claims_gpu_authority"));
+    }
+
+    #[test]
     fn normalizes_gpu_filename_map_to_role_entries() {
         let split = json!({
             "include/flow_state.hpp": "#pragma once\n",
@@ -2334,6 +3092,8 @@ mod tests {
             supports_h265: None,
             use_ai_split: true,
             bypass_ai_split_cache: false,
+            require_ai_provider_call: false,
+            ai_provider_call_nonce: None,
             user_requested_ai: false,
             user_requested_deterministic: false,
             force_gpu_ai_delta: false,
@@ -2345,6 +3105,31 @@ mod tests {
             project_root: None,
             slug: None,
         }
+    }
+
+    #[test]
+    fn required_provider_call_requires_caller_nonce() {
+        let mut req = gpu_compile_request_for_source("__global__ void kernel(float* out) {}");
+        req.require_ai_provider_call = true;
+
+        let error =
+            provider_call_request_binding(&req, &[], "requested-model", Some("gfx1201"), None)
+                .expect_err("missing caller nonce must fail before provider execution")
+                .to_string();
+        assert!(error.contains("caller-generated nonce"));
+
+        req.ai_provider_call_nonce = Some("provider-call:not-hex".to_string());
+        assert!(
+            provider_call_request_binding(&req, &[], "requested-model", Some("gfx1201"), None,)
+                .is_err()
+        );
+
+        let nonce = "provider-call:0123456789abcdef0123456789abcdef";
+        req.ai_provider_call_nonce = Some(nonce.to_string());
+        let (binding, _) =
+            provider_call_request_binding(&req, &[], "requested-model", Some("gfx1201"), None)
+                .expect("valid caller nonce");
+        assert_eq!(binding["nonce"], nonce);
     }
 
     #[test]
@@ -2519,6 +3304,8 @@ int main() {
             supports_h265: None,
             use_ai_split: true,
             bypass_ai_split_cache: false,
+            require_ai_provider_call: false,
+            ai_provider_call_nonce: None,
             user_requested_ai: false,
             user_requested_deterministic: false,
             force_gpu_ai_delta: false,
@@ -2559,6 +3346,8 @@ int main() {
             supports_h265: None,
             use_ai_split: true,
             bypass_ai_split_cache: false,
+            require_ai_provider_call: false,
+            ai_provider_call_nonce: None,
             user_requested_ai: false,
             user_requested_deterministic: false,
             force_gpu_ai_delta: false,

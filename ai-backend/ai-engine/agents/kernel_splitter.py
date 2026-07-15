@@ -40,7 +40,9 @@ import json
 import os
 import posixpath
 import re
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from agents.abi_stamper import mask_comments_for_parsing, stamp_device_source
@@ -82,6 +84,7 @@ class KernelSplitResult:
     source_context_report: dict = field(default_factory=dict)
     verification: Optional[SplitVerificationResult] = None
     repair_report: dict = field(default_factory=dict)
+    provider_call_receipt: Optional[dict] = None
     raw_response: str = ""
 
     def to_dict(self) -> dict:
@@ -94,10 +97,279 @@ class KernelSplitResult:
             "source_context_report": self.source_context_report,
             "verification": self.verification.to_dict() if self.verification else None,
             "repair_report": self.repair_report,
+            "provider_call_receipt": self.provider_call_receipt,
         }
 
 
 MAX_DETERMINISTIC_REPAIR_PASSES = 4
+PROVIDER_CALL_REQUEST_SCHEMA_VERSION = "synthi.ai.provider_call_request.v1"
+PROVIDER_CALL_RECEIPT_SCHEMA_VERSION = "synthi.ai.provider_call_receipt.v1"
+PROVIDER_CALL_RECEIPT_AUTHORITY = "request_bound_provider_call_only_not_gpu_hmr_success"
+PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION = "synthi.ai.provider_call_challenge.v1"
+_PROVIDER_CALL_STATUS_VALUES = {"available", "deprecated", "unknown", "private_alias"}
+_PROVIDER_CALL_NONCE_RE = re.compile(r"^provider-call:[0-9a-f]{32}$")
+_PROVIDER_CALL_CHALLENGE_RE = re.compile(
+    r"<synthi_provider_call_challenge>\s*(\{.*?\})\s*</synthi_provider_call_challenge>",
+    re.DOTALL,
+)
+
+
+def _sha256_prefixed(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+
+def _ordered_json_hash(values: Sequence[Any]) -> str:
+    material = json.dumps(
+        list(values),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return _sha256_prefixed(material)
+
+
+def provider_call_request_binding(
+    *,
+    nonce: str,
+    user_code: str,
+    lang: str,
+    files: Optional[Sequence[Mapping[str, Any]]],
+    focus: Optional[str],
+    model: Optional[str],
+    gpu_arch_hint: Optional[str],
+    extra_instructions: Optional[str],
+) -> tuple[dict, str]:
+    normalized_nonce = str(nonce or "").strip().lower()
+    if not _PROVIDER_CALL_NONCE_RE.fullmatch(normalized_nonce):
+        raise ValueError("provider call request requires a caller-generated nonce")
+    requested_model = str(model or "").strip()
+    if not requested_model:
+        raise ValueError("provider call request requires an explicit model")
+    source_files: Dict[str, str] = {}
+    for index, item in enumerate(files or []):
+        if isinstance(item, Mapping):
+            path_value = item.get("path") or item.get("name") or item.get("filename")
+            content_value = item.get("content")
+        else:
+            path_value = (
+                getattr(item, "path", None)
+                or getattr(item, "name", None)
+                or getattr(item, "filename", None)
+            )
+            content_value = getattr(item, "content", None)
+        path_value = str(path_value or f"input-{index}.cpp").strip().replace("\\", "/")
+        if isinstance(content_value, str):
+            source_files[path_value] = content_value
+    file_entries = [
+        [path, _sha256_prefixed(content)]
+        for path, content in sorted(source_files.items())
+    ]
+    file_manifest_hash = _ordered_json_hash([
+        "synthi.ai.provider_call_file_manifest.v1",
+        file_entries,
+    ])
+    binding = {
+        "schema_version": PROVIDER_CALL_REQUEST_SCHEMA_VERSION,
+        "nonce": normalized_nonce,
+        "mode": "split",
+        "request_mode": "split",
+        "language": str(lang or "").strip(),
+        "focus": str(focus or "").strip().replace("\\", "/"),
+        "requested_model": requested_model,
+        "gpu_arch": str(gpu_arch_hint or "").strip(),
+        "source_hash": _sha256_prefixed(user_code),
+        "file_manifest_hash": file_manifest_hash,
+        "file_count": len(file_entries),
+        "extra_instructions_hash": _sha256_prefixed(extra_instructions or ""),
+    }
+    request_hash = _ordered_json_hash([
+        binding["schema_version"],
+        binding["nonce"],
+        binding["mode"],
+        binding["request_mode"],
+        binding["language"],
+        binding["focus"],
+        binding["requested_model"],
+        binding["gpu_arch"],
+        binding["source_hash"],
+        binding["file_manifest_hash"],
+        binding["file_count"],
+        binding["extra_instructions_hash"],
+    ])
+    return binding, request_hash
+
+
+def _provider_call_challenge(
+    *,
+    request_binding: Mapping[str, Any],
+    request_hash: str,
+    prompt_payload: str,
+) -> tuple[dict, str]:
+    challenge = {
+        "schema_version": PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION,
+        "request_nonce": str(request_binding.get("nonce") or ""),
+        "request_hash": request_hash,
+        "prompt_payload_hash": _sha256_prefixed(prompt_payload),
+    }
+    challenge_hash = _ordered_json_hash([
+        challenge["schema_version"],
+        challenge["request_nonce"],
+        challenge["request_hash"],
+        challenge["prompt_payload_hash"],
+    ])
+    challenge["challenge_hash"] = challenge_hash
+    encoded = json.dumps(challenge, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    contract = (
+        "\n\nFRESH PROVIDER CALL CHALLENGE (mandatory):\n"
+        "This challenge is unique to the caller's current source tree and request. "
+        "Emit the following tag exactly once in your response, outside generated source files. "
+        "Do not alter, omit, or explain it.\n"
+        f"<synthi_provider_call_challenge>{encoded}</synthi_provider_call_challenge>"
+    )
+    return challenge, contract
+
+
+def _validate_provider_call_challenge_echo(raw_response: str, challenge: Mapping[str, Any]) -> None:
+    encoded = json.dumps(
+        dict(challenge),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    expected_tag = (
+        f"<synthi_provider_call_challenge>{encoded}"
+        "</synthi_provider_call_challenge>"
+    )
+    matches = list(_PROVIDER_CALL_CHALLENGE_RE.finditer(raw_response))
+    if len(matches) != 1 or matches[0].group(0) != expected_tag:
+        raise ValueError("provider response did not echo the exact fresh-call challenge")
+
+
+def _provider_call_receipt(
+    *,
+    request_binding: Mapping[str, Any],
+    request_hash: str,
+    challenge: Mapping[str, Any],
+    raw_response: str,
+    provider_metadata: Mapping[str, Any],
+    started_monotonic_ns: int,
+    completed_monotonic_ns: int,
+    started_unix_ns: int,
+    completed_unix_ns: int,
+) -> dict:
+    provider = str(provider_metadata.get("provider") or "").strip()
+    requested_model = str(provider_metadata.get("requested_model") or "").strip()
+    actual_model = str(provider_metadata.get("actual_model") or "").strip()
+    request_mode = str(provider_metadata.get("request_mode") or "").strip().lower()
+    provider_status = str(provider_metadata.get("provider_model_status") or "").strip().lower()
+    fallback_model = str(provider_metadata.get("fallback_model") or "").strip()
+    fallback_used = provider_metadata.get("fallback_used")
+    alias_resolved_to = str(
+        provider_metadata.get("provider_model_alias_resolved_to") or ""
+    ).strip()
+    shutdown_or_deprecation_detected = provider_metadata.get(
+        "provider_shutdown_or_deprecation_detected"
+    )
+    checked_at = str(provider_metadata.get("model_availability_checked_at") or "").strip()
+    hard_infra_failure = provider_metadata.get("hard_infra_failure")
+    if not provider or provider.lower() == "deterministic_static_splitter":
+        raise ValueError("provider call receipt requires a non-deterministic provider identity")
+    if requested_model != request_binding.get("requested_model"):
+        raise ValueError("provider call receipt requested model does not match request binding")
+    if not actual_model:
+        raise ValueError("provider call receipt requires an actual model identity")
+    if request_mode != "split":
+        raise ValueError("provider call receipt requires request_mode=split")
+    if provider_status not in _PROVIDER_CALL_STATUS_VALUES:
+        raise ValueError("provider call receipt has invalid provider model status")
+    if not isinstance(fallback_used, bool):
+        raise ValueError("provider call receipt requires explicit fallback state")
+    if not isinstance(shutdown_or_deprecation_detected, bool):
+        raise ValueError("provider call receipt requires explicit model lifecycle state")
+    if not checked_at:
+        raise ValueError("provider call receipt requires model availability timestamp")
+    if not isinstance(hard_infra_failure, bool) or hard_infra_failure:
+        raise ValueError("provider call receipt requires explicit non-failed infrastructure state")
+    if completed_monotonic_ns <= started_monotonic_ns:
+        raise ValueError("provider call receipt monotonic interval is invalid")
+    _validate_provider_call_challenge_echo(raw_response, challenge)
+
+    response_hash = _sha256_prefixed(raw_response)
+    challenge_hash = str(challenge.get("challenge_hash") or "")
+    expected_challenge_hash = _ordered_json_hash([
+        PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION,
+        challenge.get("request_nonce"),
+        challenge.get("request_hash"),
+        challenge.get("prompt_payload_hash"),
+    ])
+    if (
+        challenge.get("schema_version") != PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION
+        or challenge.get("request_nonce") != request_binding.get("nonce")
+        or challenge.get("request_hash") != request_hash
+        or challenge_hash != expected_challenge_hash
+    ):
+        raise ValueError("provider call receipt challenge hash is invalid")
+    started_at = datetime.fromtimestamp(started_unix_ns / 1_000_000_000, tz=timezone.utc).isoformat()
+    completed_at = datetime.fromtimestamp(completed_unix_ns / 1_000_000_000, tz=timezone.utc).isoformat()
+    receipt_values = [
+        PROVIDER_CALL_RECEIPT_SCHEMA_VERSION,
+        PROVIDER_CALL_RECEIPT_AUTHORITY,
+        request_binding["nonce"],
+        request_hash,
+        response_hash,
+        challenge_hash,
+        provider,
+        requested_model,
+        actual_model,
+        request_mode,
+        provider_status,
+        fallback_model,
+        fallback_used,
+        alias_resolved_to,
+        shutdown_or_deprecation_detected,
+        checked_at,
+        str(started_monotonic_ns),
+        str(completed_monotonic_ns),
+        str(started_unix_ns),
+        str(completed_unix_ns),
+    ]
+    receipt_hash = _ordered_json_hash(receipt_values)
+    return {
+        "schema_version": PROVIDER_CALL_RECEIPT_SCHEMA_VERSION,
+        "proof_authority": PROVIDER_CALL_RECEIPT_AUTHORITY,
+        "accepted": True,
+        "provider_call_used": True,
+        "request_binding": dict(request_binding),
+        "request_nonce": request_binding["nonce"],
+        "request_hash": request_hash,
+        "response_hash": response_hash,
+        "challenge": dict(challenge),
+        "challenge_hash": challenge_hash,
+        "challenge_echo_verified": True,
+        "provider": provider,
+        "requested_model": requested_model,
+        "actual_model": actual_model,
+        "request_mode": request_mode,
+        "provider_model_status": provider_status,
+        "fallback_model": fallback_model or None,
+        "fallback_used": fallback_used,
+        "provider_model_alias_resolved_to": alias_resolved_to or None,
+        "provider_shutdown_or_deprecation_detected": shutdown_or_deprecation_detected,
+        "model_availability_checked_at": checked_at,
+        "hard_infra_failure": False,
+        "started_monotonic_ns": str(started_monotonic_ns),
+        "completed_monotonic_ns": str(completed_monotonic_ns),
+        "started_unix_ns": str(started_unix_ns),
+        "completed_unix_ns": str(completed_unix_ns),
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "receipt_hash": receipt_hash,
+        "call_id": f"provider-call:{receipt_hash}",
+        "accepted_for_gpu_hmr": False,
+        "gpu_hmr_success": False,
+        "can_satisfy_runtime_proof": False,
+        "can_satisfy_dispatch_proof": False,
+        "limitations": ["provider_transport_not_cryptographically_attested"],
+    }
 
 
 def _reason_codes(verification: SplitVerificationResult) -> List[str]:
@@ -904,21 +1176,31 @@ def _source_file_map(files: Optional[Sequence[Mapping[str, Any]]]) -> Dict[str, 
     for index, item in enumerate(files):
         if isinstance(item, Mapping):
             name = item.get("path") or item.get("name") or item.get("filename")
-            content = item.get("content") or item.get("source") or item.get("file_content")
+            content = next(
+                (
+                    item.get(key)
+                    for key in ("content", "source", "file_content")
+                    if isinstance(item.get(key), str)
+                ),
+                None,
+            )
         else:
             name = (
                 getattr(item, "path", None)
                 or getattr(item, "name", None)
                 or getattr(item, "filename", None)
             )
-            content = (
-                getattr(item, "content", None)
-                or getattr(item, "source", None)
-                or getattr(item, "file_content", None)
+            content = next(
+                (
+                    getattr(item, key, None)
+                    for key in ("content", "source", "file_content")
+                    if isinstance(getattr(item, key, None), str)
+                ),
+                None,
             )
         if not name:
             name = f"input-{index}.cpp"
-        if isinstance(content, str) and content.strip():
+        if isinstance(content, str):
             out[str(name).strip().replace("\\", "/")] = content
     return out
 
@@ -1729,6 +2011,10 @@ async def run_kernel_splitter(
     files: Optional[Sequence[Mapping[str, Any]]] = None,
     focus: Optional[str] = None,
     gpu_arch_hint: Optional[str] = None,
+    require_provider_call: bool = False,
+    provider_call_request: Optional[Mapping[str, Any]] = None,
+    provider_call_request_hash: Optional[str] = None,
+    provider_call_binding_instructions: Optional[str] = None,
 ) -> KernelSplitResult:
     """Run the Kernel Splitter Agent end-to-end.
 
@@ -1870,25 +2156,34 @@ async def run_kernel_splitter(
             stable_repair_report,
         )
         if verification.ok:
-            source_context_report["deterministicSplit"] = deterministic.report
-            return KernelSplitResult(
-                files=parsed["files"],
-                manifest=deterministic.manifest,
-                architecture_md=parsed["architecture_md"],
-                kernel_hashes=parsed["kernel_hashes"],
-                launch_graph=parsed["launch_graph"],
-                source_context_report=source_context_report,
-                verification=verification,
-                repair_report=merged_deterministic_report,
-                raw_response="",
-            )
-        source_context_report["deterministicSplit"] = {
-            **deterministic.report,
-            "supported": False,
-            "reasonCode": "deterministic_split_verifier_rejected",
-            "verifierReasonCodes": _reason_codes(verification),
-            "repairReport": merged_deterministic_report,
-        }
+            if not require_provider_call:
+                source_context_report["deterministicSplit"] = deterministic.report
+                return KernelSplitResult(
+                    files=parsed["files"],
+                    manifest=deterministic.manifest,
+                    architecture_md=parsed["architecture_md"],
+                    kernel_hashes=parsed["kernel_hashes"],
+                    launch_graph=parsed["launch_graph"],
+                    source_context_report=source_context_report,
+                    verification=verification,
+                    repair_report=merged_deterministic_report,
+                    raw_response="",
+                )
+            source_context_report["deterministicSplit"] = {
+                **deterministic.report,
+                "supported": True,
+                "selected": False,
+                "providerCallRequired": True,
+                "reasonCode": "provider_call_required_by_caller",
+            }
+        else:
+            source_context_report["deterministicSplit"] = {
+                **deterministic.report,
+                "supported": False,
+                "reasonCode": "deterministic_split_verifier_rejected",
+                "verifierReasonCodes": _reason_codes(verification),
+                "repairReport": merged_deterministic_report,
+            }
     prompt = build_prompt(
         user_code,
         detection=detection,
@@ -1914,7 +2209,32 @@ async def run_kernel_splitter(
         ),
     )
 
+    provider_receipt: Optional[dict] = None
+    provider_challenge: Optional[dict] = None
     try:
+        expected_provider_request: Optional[dict] = None
+        expected_provider_request_hash: Optional[str] = None
+        if require_provider_call:
+            expected_provider_request, expected_provider_request_hash = provider_call_request_binding(
+                nonce=str((provider_call_request or {}).get("nonce") or ""),
+                user_code=user_code,
+                lang=lang,
+                files=files,
+                focus=focus,
+                model=model,
+                gpu_arch_hint=gpu_arch_hint,
+                extra_instructions=provider_call_binding_instructions,
+            )
+            if dict(provider_call_request or {}) != expected_provider_request:
+                raise ValueError("provider call request binding does not match split request")
+            if provider_call_request_hash != expected_provider_request_hash:
+                raise ValueError("provider call request hash does not match split request")
+            provider_challenge, challenge_contract = _provider_call_challenge(
+                request_binding=expected_provider_request,
+                request_hash=expected_provider_request_hash,
+                prompt_payload=prompt,
+            )
+            prompt = f"{prompt}{challenge_contract}"
         preflight = await _run_provider_preflight(
             provider,
             model=model,
@@ -1929,6 +2249,10 @@ async def run_kernel_splitter(
                 provider=str(preflight.get("provider") or getattr(provider, "name", "")),
                 metadata=preflight,
             )
+        if require_provider_call:
+            setattr(provider, "last_call_metadata", {})
+        started_monotonic_ns = time.monotonic_ns()
+        started_unix_ns = time.time_ns()
         raw = await provider.ask_llm(
             user_code,
             lang,
@@ -1940,6 +2264,20 @@ async def run_kernel_splitter(
             api_key=api_key,
             request_mode="split",
         )
+        completed_monotonic_ns = time.monotonic_ns()
+        completed_unix_ns = time.time_ns()
+        if require_provider_call:
+            provider_receipt = _provider_call_receipt(
+                request_binding=expected_provider_request or {},
+                request_hash=expected_provider_request_hash or "",
+                challenge=provider_challenge or {},
+                raw_response=raw,
+                provider_metadata=dict(getattr(provider, "last_call_metadata", {}) or {}),
+                started_monotonic_ns=started_monotonic_ns,
+                completed_monotonic_ns=completed_monotonic_ns,
+                started_unix_ns=started_unix_ns,
+                completed_unix_ns=completed_unix_ns,
+            )
     except Exception as exc:
         raise KernelSplitProviderError(exc) from exc
 
@@ -2001,5 +2339,6 @@ async def run_kernel_splitter(
         source_context_report=source_context_report,
         verification=verification,
         repair_report=repair_report,
+        provider_call_receipt=provider_receipt,
         raw_response=raw,
     )
