@@ -1,7 +1,7 @@
 # PROTOTYPING AI ENGINE WITH PYTHON, LATER SWITCH TO RUST
 from __future__ import annotations
 
-from typing import Any, List, Mapping, Optional, Union, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Union, Tuple
 import re
 import requests
 import json
