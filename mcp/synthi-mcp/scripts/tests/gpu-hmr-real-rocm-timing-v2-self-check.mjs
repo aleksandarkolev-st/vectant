@@ -48,6 +48,8 @@ const terminalCases = [
   ['emergency', payload.emergency, 'refused'],
   ['hotOnly', payload.hotOnly, 'refused'],
   ['visualRetry', payload.visualRetry, 'pass'],
+  ['persistencePass', payload.persistencePass, 'pass'],
+  ['persistenceFailure', payload.persistenceFailure, 'failed'],
 ];
 for (const [caseName, record, outcome] of terminalCases) {
   const validation = validateGpuHmrTestTiming(record);
@@ -144,6 +146,19 @@ assert.ok(
   BigInt(payload.visualRetry.phases.trigger_to_visible.endNs)
     < BigInt(payload.visualRetry.phases.screenshot_capture.startNs),
 );
+assert.equal(payload.persistencePass.phases.proof_finalization.durationNs, '53');
+assert.ok(
+  BigInt(payload.persistencePass.phases.total_wall.endNs)
+    >= BigInt(payload.persistenceChecks.persistedThroughNs),
+);
+assert.equal(payload.persistenceFailure.phases.proof_finalization.durationNs, '59');
+assert.deepEqual(payload.persistenceChecks, {
+  persistedThroughNs: payload.persistenceChecks.persistedThroughNs,
+  persistenceFailureObserved: true,
+  persistenceFailureOutcome: 'failed',
+  persistenceFailureTerminalReason: 'real_rocm_final_result_write_exception',
+  persistenceFailureDetailRetained: false,
+});
 
 assert.deepEqual(payload.attachment, {
   aliasesShareRecord: true,

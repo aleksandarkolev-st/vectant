@@ -507,6 +507,46 @@ function recordRealRocmAcceptedVisualTiming({
   return true;
 }
 
+async function finalizeRealRocmTimingAfterResultPersistence({
+  coordinator = realRocmTestTiming,
+  outcome,
+  terminalReason,
+  persistResults,
+  onPersistenceError = () => {},
+} = {}) {
+  if (typeof persistResults !== 'function' || typeof onPersistenceError !== 'function') {
+    throw new TypeError('real ROCm timing persistence requires callbacks');
+  }
+  if (coordinator.phaseState('proof_finalization') === 'untouched') {
+    coordinator.startPhase('proof_finalization');
+  }
+  let resolvedOutcome = outcome;
+  let resolvedTerminalReason = terminalReason;
+  let persistenceError = null;
+  try {
+    await persistResults();
+  } catch (error) {
+    persistenceError = error;
+    resolvedOutcome = 'failed';
+    resolvedTerminalReason = REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalWriteException;
+    onPersistenceError(error);
+  } finally {
+    if (coordinator.phaseState('proof_finalization') === 'started') {
+      coordinator.finishPhase('proof_finalization');
+    }
+  }
+  const testTiming = coordinator.snapshot({
+    outcome: resolvedOutcome,
+    terminalReason: resolvedTerminalReason,
+  });
+  return Object.freeze({
+    testTiming,
+    outcome: resolvedOutcome,
+    terminalReason: resolvedTerminalReason,
+    persistenceError,
+  });
+}
+
 function realRocmBootstrapResultPaths() {
   const logDir = process.env.SYNTHI_REAL_ROCM_BOOTSTRAP_RESULTS_DIR
     ? path.resolve(process.env.SYNTHI_REAL_ROCM_BOOTSTRAP_RESULTS_DIR)
@@ -580,10 +620,10 @@ function writeRealRocmBootstrapTerminalTimingSync({
     '',
   ].join('\n');
   mkdirSync(paths.retainedDir, { recursive: true });
-  writeFileSync(paths.retainedJson, `${JSON.stringify(result, null, 2)}\n`);
-  writeFileSync(paths.retainedTxt, text);
-  writeFileSync(paths.latestJson, `${JSON.stringify(result, null, 2)}\n`);
-  writeFileSync(paths.latestTxt, text);
+  writeFileSync(paths.retainedJson, `${JSON.stringify(result, null, 2)}\n`, { flush: true });
+  writeFileSync(paths.retainedTxt, text, { flush: true });
+  writeFileSync(paths.latestJson, `${JSON.stringify(result, null, 2)}\n`, { flush: true });
+  writeFileSync(paths.latestTxt, text, { flush: true });
   return result;
 }
 
@@ -3834,7 +3874,7 @@ async function writeTextAtomic(filePath, text) {
     dir,
     `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
   );
-  await writeFile(tempPath, text);
+  await writeFile(tempPath, text, { flush: true });
   await rename(tempPath, filePath);
 }
 
@@ -27535,7 +27575,7 @@ function writeTextAtomicSync(filePath, text) {
     path.dirname(filePath),
     `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
   );
-  writeFileSync(tempPath, text);
+  writeFileSync(tempPath, text, { flush: true });
   renameSync(tempPath, filePath);
 }
 
@@ -28322,12 +28362,6 @@ async function writeResults({ checkpointLabel = 'final' } = {}) {
     checkpointStatus: resultCheckpoint.status,
     checkpoint_status: resultCheckpoint.status,
   };
-  if (
-    checkpointLabel === 'final'
-    && realRocmTestTiming.phaseState('proof_finalization') === 'started'
-  ) {
-    realRocmTestTiming.finishPhase('proof_finalization');
-  }
   const timingOutcome = realRocmExecutionExceptionObserved
     ? 'failed'
     : checkpointLabel !== 'final'
@@ -28342,16 +28376,7 @@ async function writeResults({ checkpointLabel = 'final' } = {}) {
       : realRocmGpuHmrSuccess
         ? REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalSuccess
         : REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalRefusal;
-  attachRealRocmTestTimingV2(
-    report,
-    realRocmTestTiming.snapshot({
-      outcome: timingOutcome,
-      terminalReason: timingTerminalReason,
-    }),
-  );
-  await writeTextAtomic(retainedResultsJson, JSON.stringify(report, null, 2) + '\n');
-  await writeTextAtomic(RESULTS_JSON, JSON.stringify(report, null, 2) + '\n');
-  const lines = [
+  const resultText = () => [
     `slug: ${report.slug}`,
     `retained_results_json: ${retainedResultsJson}`,
     `retained_results_txt: ${retainedResultsTxt}`,
@@ -28424,9 +28449,86 @@ async function writeResults({ checkpointLabel = 'final' } = {}) {
     `PROOF_ARTIFACTS ${JSON.stringify(report.proof_artifacts)}`,
     '',
     `EVIDENCE ${JSON.stringify(report.evidence)}`,
-  ];
-  await writeTextAtomic(retainedResultsTxt, lines.join('\n') + '\n');
-  await writeTextAtomic(RESULTS_TXT, lines.join('\n') + '\n');
+  ].join('\n') + '\n';
+  const persistResultArtifacts = async () => {
+    await writeTextAtomic(retainedResultsJson, JSON.stringify(report, null, 2) + '\n');
+    await writeTextAtomic(RESULTS_JSON, JSON.stringify(report, null, 2) + '\n');
+    await writeTextAtomic(retainedResultsTxt, resultText());
+    await writeTextAtomic(RESULTS_TXT, resultText());
+  };
+
+  if (checkpointLabel !== 'final') {
+    attachRealRocmTestTimingV2(
+      report,
+      realRocmTestTiming.snapshot({
+        outcome: timingOutcome,
+        terminalReason: timingTerminalReason,
+      }),
+    );
+    await persistResultArtifacts();
+  } else {
+    report.testTiming = null;
+    report.test_timing = null;
+    const finalizedTiming = await finalizeRealRocmTimingAfterResultPersistence({
+      outcome: timingOutcome,
+      terminalReason: timingTerminalReason,
+      persistResults: persistResultArtifacts,
+      onPersistenceError: () => {
+        realRocmExecutionExceptionObserved = true;
+      },
+    });
+    if (finalizedTiming.persistenceError) {
+      const persistenceGap = 'real_rocm_result_artifact_persistence_failed';
+      report.gpuHmrSuccess = false;
+      report.gpu_hmr_success = false;
+      report.acceptedForGpuHmr = false;
+      report.accepted_for_gpu_hmr = false;
+      report.fullRuntimeProven = false;
+      report.full_runtime_proven = false;
+      report.real_rocm_gpu_hmr_verdict = {
+        ...(report.real_rocm_gpu_hmr_verdict ?? {}),
+        gpuHmrSuccess: false,
+        gpu_hmr_success: false,
+        fullRuntimeProven: false,
+        full_runtime_proven: false,
+        failedGates: compactStringList([
+          ...(report.real_rocm_gpu_hmr_verdict?.failedGates ?? []),
+          persistenceGap,
+        ]),
+        failed_gates: compactStringList([
+          ...(report.real_rocm_gpu_hmr_verdict?.failed_gates ?? []),
+          persistenceGap,
+        ]),
+      };
+      report.realRocmGpuHmrVerdict = report.real_rocm_gpu_hmr_verdict;
+      resultCheckpoint.acceptedForGpuHmr = false;
+      resultCheckpoint.accepted_for_gpu_hmr = false;
+      resultCheckpoint.gpuHmrSuccess = false;
+      resultCheckpoint.gpu_hmr_success = false;
+      report.result_persistence_failure = {
+        schemaVersion: 'synthi.real_rocm.result_persistence_failure.v1',
+        schema_version: 'synthi.real_rocm.result_persistence_failure.v1',
+        reasonCode: persistenceGap,
+        reason_code: persistenceGap,
+        proofAuthority: 'result_persistence_failure_only_not_gpu_hmr_success',
+        proof_authority: 'result_persistence_failure_only_not_gpu_hmr_success',
+        acceptedForGpuHmr: false,
+        accepted_for_gpu_hmr: false,
+        gpuHmrSuccess: false,
+        gpu_hmr_success: false,
+      };
+      report.resultPersistenceFailure = report.result_persistence_failure;
+    }
+    attachRealRocmTestTimingV2(report, finalizedTiming.testTiming);
+    const persistedTimingFields = monotonicTimingFields(RUN_STARTED_MONOTONIC_NS);
+    report.finished_at = new Date().toISOString();
+    report.finished_monotonic_ns = persistedTimingFields.finished_monotonic_ns;
+    report.duration_monotonic_ns = persistedTimingFields.duration_monotonic_ns;
+    report.duration_ms = persistedTimingFields.duration_ms;
+    report.timingMetrics = realRocmTimingMetrics(report);
+    await persistResultArtifacts();
+    if (finalizedTiming.persistenceError) throw finalizedTiming.persistenceError;
+  }
   console.log(`retained results: ${retainedResultsTxt}`);
   console.log(`results: ${RESULTS_TXT}`);
 }
@@ -28966,6 +29068,43 @@ async function buildRealRocmTimingV2SelfCheckCases() {
     terminalReason: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalSuccess,
   });
 
+  const persistenceClock = realRocmTimingSelfCheckClock(4_800n);
+  const persistenceCoordinator = createRealRocmTestTimingV2Coordinator({
+    clock: persistenceClock.now,
+    totalStartNs: persistenceClock.now(),
+    visualContract: false,
+  });
+  let persistedThroughNs = null;
+  const persistedTiming = await finalizeRealRocmTimingAfterResultPersistence({
+    coordinator: persistenceCoordinator,
+    outcome: 'pass',
+    terminalReason: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalSuccess,
+    persistResults: async () => {
+      persistenceClock.tick(53n);
+      persistedThroughNs = persistenceClock.now();
+    },
+  });
+
+  const persistenceFailureClock = realRocmTimingSelfCheckClock(4_900n);
+  const persistenceFailureCoordinator = createRealRocmTestTimingV2Coordinator({
+    clock: persistenceFailureClock.now,
+    totalStartNs: persistenceFailureClock.now(),
+    visualContract: false,
+  });
+  let persistenceFailureObserved = false;
+  const failedPersistenceTiming = await finalizeRealRocmTimingAfterResultPersistence({
+    coordinator: persistenceFailureCoordinator,
+    outcome: 'pass',
+    terminalReason: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalSuccess,
+    persistResults: async () => {
+      persistenceFailureClock.tick(59n);
+      throw new Error('self-check persistence detail must not enter timing');
+    },
+    onPersistenceError: () => {
+      persistenceFailureObserved = true;
+    },
+  });
+
   let regressedIntervalRejected = false;
   const adversarialClock = realRocmTimingSelfCheckClock(5_000n);
   const adversarialCoordinator = createRealRocmTestTimingV2Coordinator({
@@ -29012,6 +29151,16 @@ async function buildRealRocmTimingV2SelfCheckCases() {
     emergency,
     hotOnly,
     visualRetry,
+    persistencePass: persistedTiming.testTiming,
+    persistenceFailure: failedPersistenceTiming.testTiming,
+    persistenceChecks: {
+      persistedThroughNs: persistedThroughNs.toString(),
+      persistenceFailureObserved,
+      persistenceFailureOutcome: failedPersistenceTiming.outcome,
+      persistenceFailureTerminalReason: failedPersistenceTiming.terminalReason,
+      persistenceFailureDetailRetained:
+        JSON.stringify(failedPersistenceTiming.testTiming).includes('self-check persistence detail'),
+    },
     visualTimingSelection: {
       causalWaitAccepted: realRocmCausalVisibleSignalObserved(causalWait),
       weakWaitRejected: !realRocmCausalVisibleSignalObserved(weakWait),
