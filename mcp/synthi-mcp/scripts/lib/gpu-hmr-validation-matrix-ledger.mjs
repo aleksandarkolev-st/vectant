@@ -23,6 +23,10 @@ import {
   runtimeHostIdentityEvidence,
 } from './gpu-hmr-runtime-evidence.mjs';
 import {
+  GPU_HMR_TEST_TIMING_SCHEMA,
+  validateGpuHmrTestTiming,
+} from './gpu-hmr-test-timing-v2.mjs';
+import {
   COLD_BUILD_CONTAINER_COMMAND_GID,
   COLD_BUILD_CONTAINER_COMMAND_UID,
   COLD_BUILD_CONTAINER_CONTROL_TMPFS_BYTES,
@@ -62,6 +66,12 @@ export const GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation_matrix_ledger.v1';
 export const GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation_matrix_row.v1';
+export const GPU_HMR_TEST_TIMING_V2_FACET_SCHEMA_VERSION =
+  'synthi.gpu_hmr.test_timing_matrix_facet.v1';
+export const GPU_HMR_TEST_TIMING_V2_FACET_AUTHORITY =
+  'matrix_recomputed_timing_support_only_not_gpu_hmr_success';
+
+const GPU_HMR_TEST_TIMING_V2_ALIASES = Object.freeze(['testTiming', 'test_timing']);
 
 const MATRIX_OUTCOME_PRIORITY = new Map([
   ['full_runtime_gpu_hmr', 100],
@@ -674,6 +684,253 @@ function rowIdFor(row = {}) {
 
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function gpuHmrTestTimingV2Path(parentPath, key) {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)
+    ? `${parentPath}.${key}`
+    : `${parentPath}[${JSON.stringify(key)}]`;
+}
+
+function isGpuHmrTestTimingV2Record(value) {
+  return isObject(value)
+    && (
+      value.schema === GPU_HMR_TEST_TIMING_SCHEMA
+      || value.schemaVersion === GPU_HMR_TEST_TIMING_SCHEMA
+    );
+}
+
+function sameGpuHmrTestTimingV2Value(left, right) {
+  return stableJson(left) === stableJson(right);
+}
+
+export function discoverGpuHmrTestTimingV2Records(value) {
+  const discovered = [];
+  const visited = new Set();
+  const retain = ({
+    record,
+    recordPaths,
+    aliases = [],
+    aliasConflict = false,
+    aliasContainerPath = null,
+  }) => {
+    discovered.push({
+      record,
+      recordPath: recordPaths[0],
+      recordPaths: [...recordPaths],
+      aliases: [...aliases],
+      aliasConflict,
+      aliasContainerPath,
+    });
+  };
+
+  const visit = (current, currentPath) => {
+    if (current === null || typeof current !== 'object') return;
+    if (visited.has(current)) return;
+    visited.add(current);
+
+    if (isGpuHmrTestTimingV2Record(current)) {
+      retain({ record: current, recordPaths: [currentPath] });
+      return;
+    }
+    if (Array.isArray(current)) {
+      current.forEach((entry, index) => visit(entry, `${currentPath}[${index}]`));
+      return;
+    }
+
+    const aliasEntries = GPU_HMR_TEST_TIMING_V2_ALIASES
+      .filter((alias) => Object.hasOwn(current, alias))
+      .map((alias) => ({
+        alias,
+        path: gpuHmrTestTimingV2Path(currentPath, alias),
+        record: current[alias],
+      }));
+    if (aliasEntries.length === 2) {
+      const aliasesMatch = sameGpuHmrTestTimingV2Value(
+        aliasEntries[0].record,
+        aliasEntries[1].record,
+      );
+      if (aliasesMatch) {
+        retain({
+          record: aliasEntries[0].record,
+          recordPaths: aliasEntries.map((entry) => entry.path),
+          aliases: aliasEntries.map((entry) => entry.alias),
+          aliasContainerPath: currentPath,
+        });
+        if (!isGpuHmrTestTimingV2Record(aliasEntries[0].record)) {
+          visit(aliasEntries[0].record, aliasEntries[0].path);
+        }
+      } else {
+        for (const entry of aliasEntries) {
+          retain({
+            record: entry.record,
+            recordPaths: [entry.path],
+            aliases: [entry.alias],
+            aliasConflict: true,
+            aliasContainerPath: currentPath,
+          });
+          if (!isGpuHmrTestTimingV2Record(entry.record)) {
+            visit(entry.record, entry.path);
+          }
+        }
+      }
+    } else if (aliasEntries.length === 1) {
+      const [entry] = aliasEntries;
+      retain({
+        record: entry.record,
+        recordPaths: [entry.path],
+        aliases: [entry.alias],
+        aliasContainerPath: currentPath,
+      });
+      if (!isGpuHmrTestTimingV2Record(entry.record)) {
+        visit(entry.record, entry.path);
+      }
+    }
+
+    for (const [key, nested] of Object.entries(current)) {
+      if (GPU_HMR_TEST_TIMING_V2_ALIASES.includes(key)) continue;
+      visit(nested, gpuHmrTestTimingV2Path(currentPath, key));
+    }
+  };
+
+  visit(value, '$');
+  return discovered;
+}
+
+function gpuHmrTestTimingV2String(value) {
+  return typeof value === 'string' ? value : null;
+}
+
+function gpuHmrTestTimingV2Boolean(value) {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function gpuHmrTestTimingV2CanonicalNs(value) {
+  return typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value)
+    ? value
+    : null;
+}
+
+function gpuHmrTestTimingV2RecordDiagnostic(candidate) {
+  const validation = validateGpuHmrTestTiming(candidate.record);
+  const record = isObject(candidate.record) ? candidate.record : {};
+  const phases = isObject(record.phases) ? record.phases : {};
+  const phaseValues = Object.values(phases).filter(isObject);
+  const validationGaps = [...validation.validationGaps];
+  if (candidate.aliasConflict && !validationGaps.includes('test_timing_alias_conflict')) {
+    validationGaps.push('test_timing_alias_conflict');
+  }
+  const blockingGaps = [...validationGaps];
+  for (const gap of validation.completenessGaps) {
+    if (!blockingGaps.includes(gap)) blockingGaps.push(gap);
+  }
+  const valid = validation.valid && candidate.aliasConflict !== true;
+  const complete = validation.complete && candidate.aliasConflict !== true;
+
+  return {
+    recordPath: candidate.recordPath,
+    recordPaths: [...candidate.recordPaths],
+    aliases: [...candidate.aliases],
+    aliasConflict: candidate.aliasConflict === true,
+    aliasContainerPath: candidate.aliasContainerPath,
+    recordHash: stableJsonHash(candidate.record),
+    schema: gpuHmrTestTimingV2String(record.schema),
+    schemaVersion: gpuHmrTestTimingV2String(record.schemaVersion),
+    clock: gpuHmrTestTimingV2String(record.clock),
+    reportedAuthority: gpuHmrTestTimingV2String(record.authority),
+    outcome: gpuHmrTestTimingV2String(record.outcome),
+    visualCapable: gpuHmrTestTimingV2Boolean(record.visualCapable),
+    timingOnly: gpuHmrTestTimingV2Boolean(record.timingOnly),
+    totalWallDurationNs: gpuHmrTestTimingV2CanonicalNs(
+      isObject(phases.total_wall) ? phases.total_wall.durationNs : null,
+    ),
+    measuredPhaseCount: phaseValues.filter((phase) => phase.state === 'measured').length,
+    unavailablePhaseCount: phaseValues.filter((phase) => phase.state === 'unavailable').length,
+    notApplicablePhaseCount: phaseValues
+      .filter((phase) => phase.state === 'not_applicable').length,
+    valid,
+    complete,
+    accepted: complete,
+    acceptedAsTimingEvidence: complete,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+    validationGaps,
+    completenessGaps: [...validation.completenessGaps],
+    blockingGaps,
+  };
+}
+
+export function recomputeGpuHmrTestTimingV2Facet(value) {
+  const candidates = discoverGpuHmrTestTimingV2Records(value);
+  const diagnostics = candidates.map(gpuHmrTestTimingV2RecordDiagnostic);
+  const failedGates = compactStringList(diagnostics.flatMap((entry) => entry.blockingGaps));
+  const aliasConflictCount = new Set(candidates
+    .filter((entry) => entry.aliasConflict)
+    .map((entry) => entry.aliasContainerPath ?? entry.recordPath)).size;
+  const acceptedRecordCount = diagnostics
+    .filter((entry) => entry.acceptedAsTimingEvidence).length;
+  const present = diagnostics.length > 0;
+  const accepted = present && acceptedRecordCount === diagnostics.length;
+
+  return {
+    schemaVersion: GPU_HMR_TEST_TIMING_V2_FACET_SCHEMA_VERSION,
+    proofAuthority: GPU_HMR_TEST_TIMING_V2_FACET_AUTHORITY,
+    present,
+    recomputed: true,
+    accepted,
+    acceptedAsTimingEvidence: accepted,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+    recordCount: diagnostics.length,
+    validRecordCount: diagnostics.filter((entry) => entry.valid).length,
+    completeRecordCount: diagnostics.filter((entry) => entry.complete).length,
+    acceptedRecordCount,
+    rejectedRecordCount: diagnostics.length - acceptedRecordCount,
+    aliasConflictCount,
+    failedGates,
+    diagnostics,
+  };
+}
+
+export const gpuHmrTestTimingV2Facet = recomputeGpuHmrTestTimingV2Facet;
+
+function gpuHmrTestTimingV2LedgerDiagnostics(entries) {
+  const diagnostics = entries.flatMap(({ artifactPath, facet }) =>
+    facet.diagnostics.map((entry) => ({ artifactPath, ...entry }))
+  );
+  const failedGates = compactStringList(diagnostics.flatMap((entry) => entry.blockingGaps));
+  const acceptedRecordCount = diagnostics
+    .filter((entry) => entry.acceptedAsTimingEvidence).length;
+  const present = diagnostics.length > 0;
+  const accepted = present && acceptedRecordCount === diagnostics.length;
+  return {
+    schemaVersion: GPU_HMR_TEST_TIMING_V2_FACET_SCHEMA_VERSION,
+    proofAuthority: GPU_HMR_TEST_TIMING_V2_FACET_AUTHORITY,
+    present,
+    recomputed: true,
+    accepted,
+    acceptedAsTimingEvidence: accepted,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+    artifactCount: entries.length,
+    recordCount: diagnostics.length,
+    validRecordCount: diagnostics.filter((entry) => entry.valid).length,
+    completeRecordCount: diagnostics.filter((entry) => entry.complete).length,
+    acceptedRecordCount,
+    rejectedRecordCount: diagnostics.length - acceptedRecordCount,
+    aliasConflictCount: entries.reduce(
+      (count, entry) => count + entry.facet.aliasConflictCount,
+      0,
+    ),
+    failedGates,
+    diagnostics,
+  };
 }
 
 function text(value) {
@@ -20283,6 +20540,31 @@ function identityShortcutAcceptanceFailures(source) {
 
 function rowSafetyFailures(row, context = {}) {
   const failures = [];
+  const testTimingV2 = compactObject(row.testTimingV2 ?? row.test_timing_v2);
+  if (testTimingV2.present === true) {
+    if (firstText(testTimingV2.proofAuthority, testTimingV2.proof_authority)
+      !== GPU_HMR_TEST_TIMING_V2_FACET_AUTHORITY) {
+      failures.push({ code: 'test_timing_v2_support_authority_invalid' });
+    }
+    if (firstBool(testTimingV2.acceptedForGpuHmr, testTimingV2.accepted_for_gpu_hmr) !== false) {
+      failures.push({ code: 'test_timing_v2_cannot_authorize_gpu_hmr_acceptance' });
+    }
+    if (firstBool(testTimingV2.gpuHmrSuccess, testTimingV2.gpu_hmr_success) !== false) {
+      failures.push({ code: 'test_timing_v2_cannot_claim_gpu_hmr_success' });
+    }
+    if (firstBool(
+      testTimingV2.canSatisfyRuntimeProof,
+      testTimingV2.can_satisfy_runtime_proof,
+    ) !== false) {
+      failures.push({ code: 'test_timing_v2_cannot_satisfy_runtime_proof' });
+    }
+    if (firstBool(
+      testTimingV2.canSatisfyDispatchProof,
+      testTimingV2.can_satisfy_dispatch_proof,
+    ) !== false) {
+      failures.push({ code: 'test_timing_v2_cannot_satisfy_dispatch_proof' });
+    }
+  }
   const acceptanceScope = firstText(row.acceptanceScope, row.acceptance_scope);
   const declaredAcceptanceScope = firstText(
     row.declaredAcceptanceScope,
@@ -41770,11 +42052,19 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
     files.push(...await walkJsonFiles(path.resolve(root)));
   }
   const rows = [];
+  const testTimingV2Entries = [];
   for (const filePath of files) {
     if (options.includeInvalidated !== true && filePath.split(path.sep).includes('invalidated')) continue;
     const stat = await fs.stat(filePath);
     const artifact = await readJsonArtifact(filePath);
     if (artifact === null) continue;
+    const testTimingV2 = recomputeGpuHmrTestTimingV2Facet(artifact.json);
+    if (testTimingV2.present) {
+      testTimingV2Entries.push({
+        artifactPath: relPath(filePath, repoRoot),
+        facet: testTimingV2,
+      });
+    }
     const cacheKey = classifiedJsonArtifactCacheKey({
       filePath,
       stat,
@@ -41792,11 +42082,19 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
       mcpRoot,
       updatedAt: stat.mtime.toISOString(),
     });
-    const classifiedRows = (Array.isArray(classified) ? classified : [classified]).filter(Boolean);
+    const classifiedRows = (Array.isArray(classified) ? classified : [classified])
+      .filter(Boolean)
+      .map((row) => testTimingV2.present
+        ? {
+            ...row,
+            testTimingV2,
+            test_timing_v2: testTimingV2,
+          }
+        : row);
     rememberClassifiedJsonArtifactRows(cacheKey, classifiedRows);
     rows.push(...classifiedRows);
   }
-  return buildGpuHmrValidationMatrixLedger(rows, {
+  const ledger = buildGpuHmrValidationMatrixLedger(rows, {
     latestPerTarget: options.latestPerTarget !== false,
     includeInvalidated: options.includeInvalidated === true,
     includeUnproven: options.includeUnproven === true,
@@ -41805,4 +42103,10 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
     repoRoot,
     mcpRoot,
   });
+  const testTimingV2 = gpuHmrTestTimingV2LedgerDiagnostics(testTimingV2Entries);
+  return {
+    ...ledger,
+    testTimingV2,
+    test_timing_v2: testTimingV2,
+  };
 }

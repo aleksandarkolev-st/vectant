@@ -11,7 +11,10 @@ import {
   collectGpuHmrValidationMatrixLedger,
   GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+  GPU_HMR_TEST_TIMING_V2_FACET_AUTHORITY,
   coldRuntimeBoundaryEventManifestTemplateFacet,
+  discoverGpuHmrTestTimingV2Records,
+  recomputeGpuHmrTestTimingV2Facet,
   queryGpuHmrValidationMatrixLedger,
   recomputeGpuHmrValidationMatrixRowId,
 } from '../lib/gpu-hmr-validation-matrix-ledger.mjs';
@@ -34428,6 +34431,258 @@ assert.equal(workerTransferRefusalRow.attemptCompleteness.workerRepoTransferPres
 assert.equal(workerTransferRefusalRow.attemptCompleteness.workerRepoTransferAcceptedAsRefusalEvidence, true);
 assert.equal(workerTransferRefusalRow.attemptCompleteness.upstreamLifecycleAcceptedAsRefusalEvidence, false);
 assert.equal(workerTransferRefusalRow.attemptCompleteness.accepted, false);
+
+function completeTestTimingV2Record({ visualCapable = false } = {}) {
+  const phaseKeys = [
+    'cold_intake',
+    'discovery',
+    'split',
+    'compile',
+    'load',
+    'epoch_publication',
+    'dispatch',
+    'output_ready',
+    'trigger_to_visible',
+    'screenshot_capture',
+    'visual_analysis',
+    'retirement',
+    'proof_finalization',
+  ];
+  const visualPhaseKeys = new Set([
+    'trigger_to_visible',
+    'screenshot_capture',
+    'visual_analysis',
+  ]);
+  const totalStartNs = 1_000n;
+  let cursor = totalStartNs;
+  const phases = {};
+  for (const phaseKey of phaseKeys) {
+    if (!visualCapable && visualPhaseKeys.has(phaseKey)) {
+      phases[phaseKey] = {
+        state: 'not_applicable',
+        startNs: null,
+        endNs: null,
+        durationNs: null,
+        reasonCode: 'nonvisual_test',
+      };
+      continue;
+    }
+    const startNs = cursor;
+    cursor += 10n;
+    phases[phaseKey] = {
+      state: 'measured',
+      startNs: startNs.toString(),
+      endNs: cursor.toString(),
+      durationNs: '10',
+      reasonCode: null,
+    };
+  }
+  phases.total_wall = {
+    state: 'measured',
+    startNs: totalStartNs.toString(),
+    endNs: cursor.toString(),
+    durationNs: (cursor - totalStartNs).toString(),
+    reasonCode: null,
+  };
+  return {
+    schema: 'synthi.gpu_hmr.test_timing.v2',
+    schemaVersion: 'synthi.gpu_hmr.test_timing.v2',
+    clock: 'monotonic_ns',
+    authority: 'timing_only',
+    timingOnly: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    outcome: 'pass',
+    visualCapable,
+    complete: true,
+    blockingGaps: [],
+    completeness: {
+      complete: true,
+      blockingGaps: [],
+    },
+    phases,
+  };
+}
+
+function incompleteTestTimingV2Record(record, phaseKey, state, reasonCode, gap) {
+  const incomplete = cloneJson(record);
+  incomplete.phases[phaseKey] = {
+    state,
+    startNs: null,
+    endNs: null,
+    durationNs: null,
+    reasonCode,
+  };
+  incomplete.complete = false;
+  incomplete.blockingGaps = [gap];
+  incomplete.completeness = {
+    complete: false,
+    blockingGaps: [gap],
+  };
+  return incomplete;
+}
+
+const completeNonvisualTimingV2 = completeTestTimingV2Record();
+const nestedTimingDiscovery = discoverGpuHmrTestTimingV2Records({
+  arbitrary: [{ opaque: { test_timing: completeNonvisualTimingV2 } }],
+});
+assert.equal(nestedTimingDiscovery.length, 1);
+assert.equal(nestedTimingDiscovery[0].recordPath, '$.arbitrary[0].opaque.test_timing');
+
+const nestedTimingFacet = recomputeGpuHmrTestTimingV2Facet({
+  arbitrary: [{ opaque: { test_timing: completeNonvisualTimingV2 } }],
+});
+assert.equal(nestedTimingFacet.present, true);
+assert.equal(nestedTimingFacet.accepted, true);
+assert.equal(nestedTimingFacet.acceptedAsTimingEvidence, true);
+assert.equal(nestedTimingFacet.proofAuthority, GPU_HMR_TEST_TIMING_V2_FACET_AUTHORITY);
+assert.equal(nestedTimingFacet.acceptedForGpuHmr, false);
+assert.equal(nestedTimingFacet.gpuHmrSuccess, false);
+assert.equal(nestedTimingFacet.canSatisfyRuntimeProof, false);
+assert.equal(nestedTimingFacet.canSatisfyDispatchProof, false);
+assert.equal(nestedTimingFacet.diagnostics[0].totalWallDurationNs, '100');
+
+const equalTimingAliasesFacet = recomputeGpuHmrTestTimingV2Facet({
+  testTiming: completeNonvisualTimingV2,
+  test_timing: cloneJson(completeNonvisualTimingV2),
+});
+assert.equal(equalTimingAliasesFacet.accepted, true);
+assert.equal(equalTimingAliasesFacet.recordCount, 1);
+assert.equal(equalTimingAliasesFacet.diagnostics[0].recordPaths.length, 2);
+
+const forgedTimingAuthority = cloneJson(completeNonvisualTimingV2);
+forgedTimingAuthority.authority = 'full_runtime_gpu_hmr';
+forgedTimingAuthority.acceptedForGpuHmr = true;
+forgedTimingAuthority.gpuHmrSuccess = true;
+const forgedTimingFacet = recomputeGpuHmrTestTimingV2Facet({
+  nested: { testTiming: forgedTimingAuthority },
+});
+assert.equal(forgedTimingFacet.accepted, false);
+assert.ok(forgedTimingFacet.failedGates.includes('timing_authority_invalid'));
+assert.ok(forgedTimingFacet.failedGates.includes('accepted_for_gpu_hmr_must_be_false'));
+assert.ok(forgedTimingFacet.failedGates.includes('gpu_hmr_success_must_be_false'));
+assert.equal(forgedTimingFacet.acceptedForGpuHmr, false);
+assert.equal(forgedTimingFacet.gpuHmrSuccess, false);
+
+const conflictingTimingAliasesFacet = recomputeGpuHmrTestTimingV2Facet({
+  nested: {
+    testTiming: completeNonvisualTimingV2,
+    test_timing: forgedTimingAuthority,
+  },
+});
+assert.equal(conflictingTimingAliasesFacet.accepted, false);
+assert.equal(conflictingTimingAliasesFacet.aliasConflictCount, 1);
+assert.equal(conflictingTimingAliasesFacet.acceptedRecordCount, 0);
+assert.ok(conflictingTimingAliasesFacet.failedGates.includes('test_timing_alias_conflict'));
+
+const zeroSentinelAliasFacet = recomputeGpuHmrTestTimingV2Facet({ testTiming: 0 });
+assert.equal(zeroSentinelAliasFacet.present, true);
+assert.equal(zeroSentinelAliasFacet.accepted, false);
+assert.equal(zeroSentinelAliasFacet.validRecordCount, 0);
+assert.ok(zeroSentinelAliasFacet.failedGates.includes('record_not_object'));
+
+const zeroSentinelDuration = cloneJson(completeNonvisualTimingV2);
+zeroSentinelDuration.phases.total_wall.durationNs = 0;
+const zeroSentinelDurationFacet = recomputeGpuHmrTestTimingV2Facet({
+  test_timing: zeroSentinelDuration,
+});
+assert.equal(zeroSentinelDurationFacet.accepted, false);
+assert.equal(zeroSentinelDurationFacet.diagnostics[0].totalWallDurationNs, null);
+assert.ok(zeroSentinelDurationFacet.failedGates.includes(
+  'phase_duration_ns_invalid:total_wall',
+));
+
+const unavailableTiming = incompleteTestTimingV2Record(
+  completeNonvisualTimingV2,
+  'compile',
+  'unavailable',
+  'compiler_timing_unavailable',
+  'phase_unavailable:compile',
+);
+const unavailableTimingFacet = recomputeGpuHmrTestTimingV2Facet({
+  testTiming: unavailableTiming,
+});
+assert.equal(unavailableTimingFacet.diagnostics[0].valid, true);
+assert.equal(unavailableTimingFacet.diagnostics[0].complete, false);
+assert.equal(unavailableTimingFacet.accepted, false);
+assert.ok(unavailableTimingFacet.failedGates.includes('phase_unavailable:compile'));
+
+const unavailableTimestampSubstitution = cloneJson(unavailableTiming);
+unavailableTimestampSubstitution.phases.compile.startNs = '0';
+const unavailableTimestampFacet = recomputeGpuHmrTestTimingV2Facet({
+  test_timing: unavailableTimestampSubstitution,
+});
+assert.equal(unavailableTimestampFacet.diagnostics[0].valid, false);
+assert.ok(unavailableTimestampFacet.failedGates.includes(
+  'reasoned_phase_timestamp_must_be_null:compile:startNs',
+));
+
+const completeVisualTimingV2 = completeTestTimingV2Record({ visualCapable: true });
+const notApplicableVisualTiming = incompleteTestTimingV2Record(
+  completeVisualTimingV2,
+  'trigger_to_visible',
+  'not_applicable',
+  'visible_timing_not_applicable',
+  'visual_phase_not_measured:trigger_to_visible',
+);
+const notApplicableVisualFacet = recomputeGpuHmrTestTimingV2Facet({
+  testTiming: notApplicableVisualTiming,
+});
+assert.equal(notApplicableVisualFacet.diagnostics[0].valid, true);
+assert.equal(notApplicableVisualFacet.diagnostics[0].complete, false);
+assert.equal(notApplicableVisualFacet.accepted, false);
+assert.ok(notApplicableVisualFacet.failedGates.includes(
+  'visual_phase_not_measured:trigger_to_visible',
+));
+
+const malformedTimingFacet = recomputeGpuHmrTestTimingV2Facet({
+  arbitrary: { test_timing: { schema: 'synthi.gpu_hmr.test_timing.v2' } },
+});
+assert.equal(malformedTimingFacet.accepted, false);
+assert.ok(malformedTimingFacet.failedGates.includes('record_field_missing:authority'));
+assert.equal(malformedTimingFacet.acceptedForGpuHmr, false);
+
+const timingV2MatrixDir = path.join(tmpRoot, 'timing-v2-matrix-diagnostics');
+await writeJson(path.join(timingV2MatrixDir, 'nested.json'), {
+  arbitrary: [{ opaque: { test_timing: completeNonvisualTimingV2 } }],
+});
+await writeJson(path.join(timingV2MatrixDir, 'conflict.json'), {
+  arbitrary: [{
+    testTiming: completeNonvisualTimingV2,
+    test_timing: forgedTimingAuthority,
+  }],
+});
+await writeJson(path.join(timingV2MatrixDir, 'preflight.json'), {
+  schemaVersion: 'synthi.gpu_hmr.webgpu_preflight.v1',
+  diagnostics: { timing: { testTiming: completeNonvisualTimingV2 } },
+});
+const timingV2MatrixLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [timingV2MatrixDir],
+  includeInvalidated: true,
+  includeUnproven: true,
+});
+assert.equal(timingV2MatrixLedger.testTimingV2.present, true);
+assert.equal(timingV2MatrixLedger.testTimingV2.recomputed, true);
+assert.equal(timingV2MatrixLedger.testTimingV2.accepted, false);
+assert.equal(timingV2MatrixLedger.testTimingV2.artifactCount, 3);
+assert.equal(timingV2MatrixLedger.testTimingV2.recordCount, 4);
+assert.equal(timingV2MatrixLedger.testTimingV2.aliasConflictCount, 1);
+assert.equal(timingV2MatrixLedger.testTimingV2.acceptedForGpuHmr, false);
+assert.equal(timingV2MatrixLedger.testTimingV2.gpuHmrSuccess, false);
+assert.equal(timingV2MatrixLedger.testTimingV2.canSatisfyRuntimeProof, false);
+assert.equal(timingV2MatrixLedger.testTimingV2.canSatisfyDispatchProof, false);
+assert.equal(timingV2MatrixLedger.testTimingV2, timingV2MatrixLedger.test_timing_v2);
+const timingV2PreflightRow = timingV2MatrixLedger.rows.find(
+  (row) => row.proofMode === 'runtime_preflight',
+);
+assert.equal(timingV2PreflightRow?.testTimingV2.present, true);
+assert.equal(timingV2PreflightRow.testTimingV2.accepted, true);
+assert.equal(timingV2PreflightRow.testTimingV2.acceptedForGpuHmr, false);
+assert.equal(timingV2PreflightRow.testTimingV2.gpuHmrSuccess, false);
+assert.equal(timingV2PreflightRow.acceptedForGpuHmr, false);
+assert.equal(timingV2PreflightRow.gpuHmrSuccess, false);
 
 console.log(JSON.stringify({
   ok: true,
