@@ -568,6 +568,16 @@ pub struct GpuLaunchDispatcherMetadata {
     pub function_handle_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuDispatchSlotBinding {
+    pub runtime_session_id: String,
+    pub generation: u64,
+    pub dispatcher_registration_id: String,
+    pub artifact_id: String,
+    pub artifact_content_hash: String,
+    pub dispatch_table_hash: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ActiveDispatcherMetadata {
     generation: u64,
@@ -1321,6 +1331,44 @@ fn active_dispatcher_metadata(
         changed_symbols: metadata.changed_symbols,
         function_handle_ids: metadata.function_handle_ids,
     }
+}
+
+fn canonical_prefixed_sha256(value: &str, prefix: &str) -> bool {
+    value.strip_prefix(prefix).is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    })
+}
+
+fn dispatch_slot_binding(
+    runtime_session_id: &str,
+    active_generation: u64,
+    metadata: &ActiveDispatcherMetadata,
+) -> Option<GpuDispatchSlotBinding> {
+    if metadata.generation != active_generation
+        || !canonical_prefixed_sha256(&metadata.registration_id, "dispatcher:sha256:")
+    {
+        return None;
+    }
+    let artifact_id = metadata.artifact_id.as_deref()?;
+    if !canonical_prefixed_sha256(artifact_id, "artifact:sha256:") {
+        return None;
+    }
+    let artifact_digest = artifact_id.strip_prefix("artifact:sha256:")?;
+    let dispatch_table_hash = metadata.dispatch_table_hash.as_deref()?;
+    if !canonical_prefixed_sha256(dispatch_table_hash, "sha256:") {
+        return None;
+    }
+    Some(GpuDispatchSlotBinding {
+        runtime_session_id: runtime_session_id.to_string(),
+        generation: active_generation,
+        dispatcher_registration_id: metadata.registration_id.clone(),
+        artifact_id: artifact_id.to_string(),
+        artifact_content_hash: format!("sha256:{artifact_digest}"),
+        dispatch_table_hash: dispatch_table_hash.to_string(),
+    })
 }
 
 fn sha256_hex_raw(bytes: &[u8]) -> String {
@@ -2959,6 +3007,7 @@ pub struct GpuLaunchReceipt {
     pub runtime_session_id: String,
     pub stream_token: usize,
     pub dispatch_timestamp_monotonic_ns: u128,
+    pub dispatch_slot: Option<GpuDispatchSlotBinding>,
     pub dispatch_device_attestation: Option<GpuDispatchDeviceAttestation>,
 }
 
@@ -3048,6 +3097,9 @@ fn synthi_gpu_launch_raw_impl(
     #[cfg(test)]
     run_dispatcher_snapshot_test_hook();
     let runtime_session_id = runtime_session_id().to_string();
+    let dispatch_slot = active_dispatcher_metadata.as_ref().and_then(|metadata| {
+        dispatch_slot_binding(&runtime_session_id, active_generation, metadata)
+    });
     let active_dispatch_table_entry_id = active_dispatcher_metadata
         .as_ref()
         .and_then(|metadata| dispatch_table_entry_id_for_kernel(metadata, &kernel_name));
@@ -3414,6 +3466,7 @@ fn synthi_gpu_launch_raw_impl(
         runtime_session_id,
         stream_token,
         dispatch_timestamp_monotonic_ns,
+        dispatch_slot,
         dispatch_device_attestation,
     }
 }
@@ -5708,24 +5761,72 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_slot_binding_rejects_noncanonical_or_mismatched_metadata() {
+        let valid_metadata = active_dispatcher_metadata(
+            7,
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some(format!("artifact:sha256:{}", "1".repeat(64))),
+                dispatch_table_hash: Some(format!("sha256:{}", "2".repeat(64))),
+                changed_symbols: vec!["kernel".to_string()],
+                function_handle_ids: vec!["function:1".to_string()],
+            },
+        );
+        let binding = dispatch_slot_binding("runtime-session:test", 7, &valid_metadata)
+            .expect("canonical dispatch slot");
+        assert_eq!(binding.generation, 7);
+        assert_eq!(
+            binding.artifact_content_hash,
+            format!("sha256:{}", "1".repeat(64))
+        );
+        assert!(dispatch_slot_binding("runtime-session:test", 8, &valid_metadata).is_none());
+
+        let invalid_artifact = active_dispatcher_metadata(
+            7,
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:not-content-addressed".to_string()),
+                dispatch_table_hash: Some(format!("sha256:{}", "2".repeat(64))),
+                ..Default::default()
+            },
+        );
+        assert!(dispatch_slot_binding("runtime-session:test", 7, &invalid_artifact).is_none());
+
+        let invalid_table = active_dispatcher_metadata(
+            7,
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some(format!("artifact:sha256:{}", "1".repeat(64))),
+                dispatch_table_hash: Some("declared-table-name".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(dispatch_slot_binding("runtime-session:test", 7, &invalid_table).is_none());
+    }
+
+    #[test]
     fn publication_after_snapshot_cannot_split_dispatcher_generation_and_metadata() {
         let _guard = test_guard_for_test();
         reset_for_test();
         let first_calls = Arc::new(Mutex::new(Vec::new()));
         let second_calls = Arc::new(Mutex::new(Vec::new()));
+        let first_artifact_digest = "1".repeat(64);
+        let second_artifact_digest = "2".repeat(64);
+        let first_dispatch_table_hash = format!("sha256:{}", "a".repeat(64));
+        let second_dispatch_table_hash = format!("sha256:{}", "b".repeat(64));
         let (_previous, first_generation) = install_launch_dispatcher_with_metadata(
             Arc::new(TestDispatcher {
                 should_fail: false,
                 calls: first_calls.clone(),
             }),
             GpuLaunchDispatcherMetadata {
-                artifact_id: Some("artifact:sha256:first".to_string()),
-                dispatch_table_hash: Some("dispatch-table:first".to_string()),
+                artifact_id: Some(format!("artifact:sha256:{first_artifact_digest}")),
+                dispatch_table_hash: Some(first_dispatch_table_hash.clone()),
                 changed_symbols: vec!["concurrent_kernel".to_string()],
                 function_handle_ids: vec!["concurrent_kernel:first".to_string()],
             },
         );
+        let first_attribution = dispatcher_attribution_snapshot().1.unwrap();
         let hook_calls = second_calls.clone();
+        let hook_artifact_digest = second_artifact_digest.clone();
+        let hook_dispatch_table_hash = second_dispatch_table_hash.clone();
         set_dispatcher_snapshot_test_hook(move || {
             install_launch_dispatcher_with_metadata(
                 Arc::new(TestDispatcher {
@@ -5733,8 +5834,8 @@ mod tests {
                     calls: hook_calls,
                 }),
                 GpuLaunchDispatcherMetadata {
-                    artifact_id: Some("artifact:sha256:second".to_string()),
-                    dispatch_table_hash: Some("dispatch-table:second".to_string()),
+                    artifact_id: Some(format!("artifact:sha256:{hook_artifact_digest}")),
+                    dispatch_table_hash: Some(hook_dispatch_table_hash),
                     changed_symbols: vec!["concurrent_kernel".to_string()],
                     function_handle_ids: vec!["concurrent_kernel:second".to_string()],
                 },
@@ -5759,6 +5860,22 @@ mod tests {
 
         assert!(receipt.dispatched);
         assert_eq!(receipt.active_generation, first_generation);
+        let dispatch_slot = receipt.dispatch_slot.as_ref().expect("exact dispatch slot");
+        assert_eq!(dispatch_slot.runtime_session_id, runtime_session_id());
+        assert_eq!(dispatch_slot.generation, first_generation);
+        assert_eq!(
+            dispatch_slot.dispatcher_registration_id,
+            first_attribution.registration_id
+        );
+        assert_eq!(
+            dispatch_slot.artifact_id,
+            format!("artifact:sha256:{first_artifact_digest}")
+        );
+        assert_eq!(
+            dispatch_slot.artifact_content_hash,
+            format!("sha256:{first_artifact_digest}")
+        );
+        assert_eq!(dispatch_slot.dispatch_table_hash, first_dispatch_table_hash);
         assert!(second_generation > first_generation);
         assert_eq!(current_launch_generation(), second_generation);
         assert_eq!(first_calls.lock().unwrap().len(), 1);
@@ -5768,11 +5885,15 @@ mod tests {
         assert_eq!(launches[0].active_generation, first_generation);
         assert_eq!(
             launches[0].active_artifact_id.as_deref(),
-            Some("artifact:sha256:first")
+            Some(format!("artifact:sha256:{first_artifact_digest}").as_str())
         );
         assert_eq!(
             launches[0].dispatch_table_hash.as_deref(),
-            Some("dispatch-table:first")
+            Some(first_dispatch_table_hash.as_str())
+        );
+        assert_eq!(
+            launches[0].dispatcher_registration_id.as_deref(),
+            Some(dispatch_slot.dispatcher_registration_id.as_str())
         );
         assert_eq!(
             launches[0].dispatch_table_entry_id.as_deref(),
