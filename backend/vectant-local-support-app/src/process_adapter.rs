@@ -96,7 +96,6 @@ fn list_workspace_processes_platform(
                 {
                     return None;
                 }
-                let name = Path::new(&full_path).file_name()?.to_str()?.to_string();
                 let (mut creation, mut exit, mut kernel, mut user) = (
                     FILETIME::default(),
                     FILETIME::default(),
@@ -113,7 +112,7 @@ fn list_workspace_processes_platform(
                     ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
                 sanitized_process_record(
                     &format!("pid={pid};created={created};image={full_path}"),
-                    &name,
+                    "workspace-process",
                     "workspace_process",
                     0,
                     Vec::new(),
@@ -249,6 +248,42 @@ mod linux_tests {
         assert!(!serialized.contains(&pid));
         assert!(!serialized.contains(root.to_string_lossy().as_ref()));
         assert!(!serialized.contains("/bin/sleep"));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::process::Command;
+    use std::time::Duration;
+
+    #[test]
+    fn reports_only_sanitized_workspace_process_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let source = std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\\Windows"))
+            .join("System32")
+            .join("ping.exe");
+        let executable = root.path().join("workspace_probe.exe");
+        std::fs::copy(&source, &executable).unwrap();
+        let mut child = Command::new(&executable)
+            .args(["-t", "127.0.0.1"])
+            .current_dir(root.path())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+
+        let records = ProcessInspectionAdapter::list_workspace_processes(root.path(), 8).unwrap();
+        let pid = child.id().to_string();
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(records.iter().any(|record| record.workspace_related));
+        let serialized = serde_json::to_string(&records).unwrap();
+        assert!(!serialized.contains(&pid));
+        assert!(!serialized.contains(root.path().to_string_lossy().as_ref()));
+        assert!(!serialized.contains("workspace_probe.exe"));
     }
 }
 
