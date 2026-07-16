@@ -112,6 +112,18 @@ assert.equal(supportOnlyProof.proofId, proofIdBeforeTiming);
 assert.equal(supportOnlyProof.testTiming, passTiming);
 assert.equal(supportOnlyProof.test_timing, passTiming);
 
+for (const forgedTiming of [
+  { ...passTiming, authority: 'gpu_hmr_success_authority' },
+  { ...passTiming, timingOnly: false },
+  { ...passTiming, acceptedForGpuHmr: true },
+  { ...passTiming, gpuHmrSuccess: true },
+]) {
+  assert.throws(
+    () => attachWebgpuRuntimeVisualTestTiming({}, forgedTiming),
+    /requires valid support-only timing v2/,
+  );
+}
+
 const refusalClock = controlledClock(100n);
 const refusalRecorder = createWebgpuRuntimeVisualTimingV2Recorder({ clock: refusalClock.now });
 await measure(refusalRecorder, refusalClock, 'cold_intake', 3n);

@@ -14,6 +14,7 @@ import {
 import {
   GPU_HMR_TEST_TIMING_SCHEMA,
   GpuHmrTestTimingRecorder,
+  validateGpuHmrTestTiming,
 } from './lib/gpu-hmr-test-timing-v2.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -208,8 +209,11 @@ export function attachWebgpuRuntimeVisualTestTiming(target, testTiming) {
   if (!target || typeof target !== 'object' || Array.isArray(target)) {
     throw new TypeError('webgpu timing attachment target must be an object');
   }
-  if (testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA) {
-    throw new TypeError('webgpu timing attachment requires timing v2');
+  const validation = validateGpuHmrTestTiming(testTiming);
+  if (testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA || validation.valid !== true) {
+    throw new TypeError(
+      `webgpu timing attachment requires valid support-only timing v2: ${validation.validationGaps.join(',')}`,
+    );
   }
   target.testTiming = testTiming;
   target.test_timing = testTiming;
