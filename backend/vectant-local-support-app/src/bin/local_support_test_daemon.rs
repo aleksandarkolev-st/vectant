@@ -3,6 +3,7 @@
 //! unless `--features live-test-daemon` is explicitly requested.
 
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -89,9 +90,20 @@ async fn main() -> anyhow::Result<()> {
         (String::new(), String::new(), String::new())
     };
     let address = bind_loopback(state.clone()).await?;
-    println!(
+    let ready_record = format!(
         "LIVE_TEST_DAEMON_READY http://{address} token={session_token} control={TEST_CONTROL_SECRET} preview_token={preview_token} preview_host={preview_host} process_identity={TEST_PROCESS_IDENTITY}"
     );
+    println!("{ready_record}");
+    // A redirected stdout is block-buffered on Windows. Flush the readiness
+    // record so detached live-validation launchers can reliably discover it
+    // before the daemon receives any request or shuts down.
+    std::io::stdout().flush()?;
+    // Windows Task Scheduler does not provide a dependable attached stdout
+    // stream. The feature-gated harness may therefore publish its one-line
+    // readiness record to a caller-selected local file for live validation.
+    if let Some(path) = std::env::var_os("VECTANT_TEST_DAEMON_READY_FILE") {
+        std::fs::write(path, ready_record.as_bytes())?;
+    }
     // Remote Windows validation runs without an interactive console. In that
     // environment Ctrl+C can resolve as soon as the SSH command detaches, so
     // an explicit test-only keep-alive mode makes the harness deterministic.
