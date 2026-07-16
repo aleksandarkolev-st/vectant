@@ -12,11 +12,23 @@ import {
   webGpuRuntimeComputeTimingMetrics,
   webGpuRuntimeVisualTimingMetrics,
 } from './lib/gpu-hmr-timing-metrics.mjs';
+import {
+  GPU_HMR_TEST_TIMING_PHASE_KEYS,
+  GPU_HMR_TEST_TIMING_SCHEMA,
+  GpuHmrTestTimingRecorder,
+  validateGpuHmrTestTiming,
+} from './lib/gpu-hmr-test-timing-v2.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptsDir = path.dirname(__filename);
 const mcpRoot = path.resolve(scriptsDir, '..');
 const repoRoot = path.resolve(mcpRoot, '..', '..');
+const GPU_HMR_TEST_TIMING_ALIASES = new Set([
+  'testTiming',
+  'test_timing',
+  'timingV2',
+  'timing_v2',
+]);
 
 function parseArgs(argv) {
   const args = {
@@ -105,6 +117,80 @@ function objectOrEmpty(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function isGpuHmrTestTimingV2Record(value) {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && (
+      value.schema === GPU_HMR_TEST_TIMING_SCHEMA
+      || value.schemaVersion === GPU_HMR_TEST_TIMING_SCHEMA
+    );
+}
+
+function phaseDurationMs(phase) {
+  if (phase?.durationNs === undefined || phase?.durationNs === null) return null;
+  try {
+    const durationNs = BigInt(String(phase.durationNs));
+    if (durationNs < 0n) return null;
+    const durationMs = Number(durationNs) / 1_000_000;
+    return Number.isFinite(durationMs) ? durationMs : null;
+  } catch {
+    return null;
+  }
+}
+
+export function discoverGpuHmrTestTimingV2Records(json) {
+  if (isGpuHmrTestTimingV2Record(json)) {
+    return [{ record: json, recordPath: '$', alias: null }];
+  }
+
+  const candidates = [];
+  const visit = (value, location) => {
+    if (value === null || typeof value !== 'object') return;
+
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => visit(entry, `${location}[${index}]`));
+      return;
+    }
+
+    for (const [key, nested] of Object.entries(value)) {
+      const nestedLocation = `${location}.${key}`;
+      if (GPU_HMR_TEST_TIMING_ALIASES.has(key)) {
+        candidates.push({ record: nested, recordPath: nestedLocation, alias: key });
+      } else {
+        visit(nested, nestedLocation);
+      }
+    }
+  };
+
+  visit(json, '$');
+  return candidates;
+}
+
+function gpuHmrTestTimingV2Metrics(record) {
+  const timing = objectOrEmpty(record);
+  return {
+    source: 'gpu_hmr_test_timing_v2',
+    schemaVersion: timing.schemaVersion ?? timing.schema ?? null,
+    metricClock: timing.clock ?? null,
+    metricUnit: 'ms',
+    metricScope: 'generic_test_timing_v2',
+    proofMode: 'generic_test_timing_v2',
+    totalWallMs: phaseDurationMs(timing.phases?.total_wall),
+  };
+}
+
+function classifyGpuHmrTestTimingV2(record, recordPath, alias) {
+  return {
+    kind: 'gpu_hmr_test_timing_v2',
+    metrics: gpuHmrTestTimingV2Metrics(record),
+    testTimingRecord: record,
+    timingValidation: validateGpuHmrTestTiming(record),
+    recordPath,
+    recordAlias: alias,
+  };
+}
+
 function eventsByEpoch(events, epoch) {
   return Array.isArray(events)
     ? objectOrEmpty(events.find((event) => Number(event?.epoch) === Number(epoch)))
@@ -169,6 +255,10 @@ function withProofContext(metrics, json) {
 
 function classifyReport(json, filePath) {
   if (!json || typeof json !== 'object') return null;
+
+  if (isGpuHmrTestTimingV2Record(json)) {
+    return classifyGpuHmrTestTimingV2(json, '$', null);
+  }
 
   if (json.timingMetrics?.schemaVersion === GPU_HMR_TIMING_METRICS_SCHEMA_VERSION) {
     if (json.timingMetrics.source === 'webgpu_runtime_compute') {
@@ -259,11 +349,36 @@ function classifyReport(json, filePath) {
   return null;
 }
 
+export function classifyReports(json, filePath) {
+  const timingCandidates = discoverGpuHmrTestTimingV2Records(json);
+  if (timingCandidates.some((candidate) => candidate.recordPath === '$')) {
+    return timingCandidates.map((candidate) => classifyGpuHmrTestTimingV2(
+      candidate.record,
+      candidate.recordPath,
+      candidate.alias,
+    ));
+  }
+
+  const classified = [];
+  const legacy = classifyReport(json, filePath);
+  if (legacy) classified.push(legacy);
+  for (const candidate of timingCandidates) {
+    classified.push(classifyGpuHmrTestTimingV2(
+      candidate.record,
+      candidate.recordPath,
+      candidate.alias,
+    ));
+  }
+  return classified;
+}
+
 function includesPathPart(filePath, part) {
   return filePath.split(path.sep).includes(part);
 }
 
-function hasMeaningfulMetrics(metrics) {
+export function hasMeaningfulMetrics(metrics, kind = null) {
+  if (kind === 'gpu_hmr_test_timing_v2') return true;
+
   const timingKeys = [
     'totalWallMs',
     'setupBuildMs',
@@ -306,17 +421,18 @@ async function collectCandidates(options) {
   for (const filePath of files) {
     if (!options.includeInvalidated && includesPathPart(filePath, 'invalidated')) continue;
     const json = await readJson(filePath);
-    const classified = classifyReport(json, filePath);
-    if (!classified) continue;
-    if (!hasMeaningfulMetrics(classified.metrics)) continue;
+    const classifiedReports = classifyReports(json, filePath)
+      .filter((classified) => hasMeaningfulMetrics(classified.metrics, classified.kind));
+    if (classifiedReports.length === 0) continue;
 
     const stat = await fs.stat(filePath);
-    rows.push({
-      filePath,
-      kind: classified.kind,
-      updatedAt: stat.mtime.toISOString(),
-      metrics: classified.metrics,
-    });
+    for (const classified of classifiedReports) {
+      rows.push({
+        ...classified,
+        filePath,
+        updatedAt: stat.mtime.toISOString(),
+      });
+    }
   }
 
   return rows;
@@ -325,12 +441,17 @@ async function collectCandidates(options) {
 function latestPerProfile(rows) {
   const byKey = new Map();
   for (const row of rows) {
-    const key = [
+    const fallbackProfile = Object.hasOwn(row, 'testTimingRecord')
+      ? `${row.filePath}#${row.recordPath}`
+      : row.filePath;
+    const keyParts = [
       row.metrics?.source ?? row.kind ?? 'unknown',
-      row.metrics?.profileId ?? row.metrics?.projectName ?? row.filePath,
+      row.metrics?.profileId ?? row.metrics?.projectName ?? fallbackProfile,
       row.metrics?.proofMode ?? 'unknown',
       row.metrics?.metricScope ?? row.metrics?.metric_scope ?? 'unknown_scope',
-    ].join('|');
+    ];
+    if (Object.hasOwn(row, 'testTimingRecord')) keyParts.push(row.recordPath);
+    const key = keyParts.join('|');
 
     const existing = byKey.get(key);
     if (!existing || existing.updatedAt < row.updatedAt) {
@@ -341,7 +462,73 @@ function latestPerProfile(rows) {
   return [...byKey.values()];
 }
 
-function compactRow(row) {
+function compactTestTimingPhase(phase) {
+  const timingPhase = objectOrEmpty(phase);
+  return {
+    state: timingPhase.state ?? null,
+    durationNs: timingPhase.durationNs ?? null,
+    durationMs: phaseDurationMs(timingPhase),
+    reasonCode: timingPhase.reasonCode ?? null,
+  };
+}
+
+function compactGpuHmrTestTimingV2Row(row) {
+  const record = objectOrEmpty(row.testTimingRecord);
+  const validation = row.timingValidation ?? validateGpuHmrTestTiming(row.testTimingRecord);
+  const phases = Object.fromEntries(GPU_HMR_TEST_TIMING_PHASE_KEYS.map((phaseKey) => [
+    phaseKey,
+    compactTestTimingPhase(record.phases?.[phaseKey]),
+  ]));
+  const totalWall = objectOrEmpty(record.phases?.total_wall);
+
+  return {
+    source: 'gpu_hmr_test_timing_v2',
+    schemaVersion: record.schemaVersion ?? record.schema ?? null,
+    metricClock: record.clock ?? null,
+    metricUnit: 'ms',
+    metricScope: 'generic_test_timing_v2',
+    cacheState: null,
+    startedMonotonicNs: totalWall.startNs ?? null,
+    finishedMonotonicNs: totalWall.endNs ?? null,
+    durationMonotonicNs: totalWall.durationNs ?? null,
+    durationMonotonicMs: phases.total_wall.durationMs,
+    proofId: null,
+    profileId: null,
+    profileTargetId: null,
+    projectName: null,
+    proofMode: 'generic_test_timing_v2',
+    telemetryOnly: true,
+    timingOnly: true,
+    evidenceAuthority: GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
+    proofVerdict: 'not_evaluated_by_timing_summary',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    reportedStatus: null,
+    outcome: record.outcome ?? null,
+    visualCapable: record.visualCapable ?? null,
+    valid: validation.valid,
+    complete: validation.complete,
+    validationGaps: [...validation.validationGaps],
+    completenessGaps: [...validation.completenessGaps],
+    blockingGaps: [...validation.blockingGaps],
+    totalWallMs: phases.total_wall.durationMs,
+    triggerToVisibleMs: phases.trigger_to_visible.durationMs,
+    screenshotCaptureMs: phases.screenshot_capture.durationMs,
+    visualAnalysisMs: phases.visual_analysis.durationMs,
+    proofFinalizationMs: phases.proof_finalization.durationMs,
+    phases,
+    recordAlias: row.recordAlias ?? null,
+    recordPath: row.recordPath ?? '$',
+    updatedAt: row.updatedAt,
+    filePath: path.relative(repoRoot, row.filePath),
+  };
+}
+
+export function compactRow(row) {
+  if (Object.hasOwn(row, 'testTimingRecord')) {
+    return compactGpuHmrTestTimingV2Row(row);
+  }
+
   const metrics = row.metrics ?? {};
   return {
     source: metrics.source ?? row.kind,
@@ -407,7 +594,7 @@ function value(value) {
 }
 
 function markdownTable(rows) {
-  const columns = [
+  const legacyColumns = [
     'source',
     'profileId',
     'metricClock',
@@ -431,6 +618,22 @@ function markdownTable(rows) {
     'reportedVisualAccepted',
     'reportedComputeCardAccepted',
   ];
+  const includesTestTimingV2 = rows.some((row) => row.source === 'gpu_hmr_test_timing_v2');
+  const columns = includesTestTimingV2
+    ? [
+      ...legacyColumns.slice(0, 6),
+      'outcome',
+      'valid',
+      'complete',
+      'blockingGaps',
+      ...legacyColumns.slice(6, 8),
+      'triggerToVisibleMs',
+      'screenshotCaptureMs',
+      'visualAnalysisMs',
+      'proofFinalizationMs',
+      ...legacyColumns.slice(8),
+    ]
+    : legacyColumns;
   const header = `| ${columns.join(' | ')} |`;
   const divider = `| ${columns.map(() => '---').join(' | ')} |`;
   const body = rows.map((row) => `| ${columns.map((column) => value(row[column])).join(' | ')} |`);
@@ -438,8 +641,13 @@ function markdownTable(rows) {
     `# GPU HMR Timing Metrics`,
     '',
     `Schema: \`${GPU_HMR_TIMING_METRICS_SCHEMA_VERSION}\``,
+    ...(includesTestTimingV2
+      ? [`Generic test timing records: \`${GPU_HMR_TEST_TIMING_SCHEMA}\``]
+      : []),
     '',
-    'Timing metrics are telemetry only; validation-matrix proof ledgers are the acceptance authority. Reported status/accepted columns are copied from source artifacts for timing context and must not be treated as GPU HMR acceptance.',
+    includesTestTimingV2
+      ? 'Timing metrics are telemetry only; validation-matrix proof ledgers are the acceptance authority. Reported status/accepted columns and v2 outcomes are copied from source artifacts for timing context and must not be treated as GPU HMR acceptance.'
+      : 'Timing metrics are telemetry only; validation-matrix proof ledgers are the acceptance authority. Reported status/accepted columns are copied from source artifacts for timing context and must not be treated as GPU HMR acceptance.',
     '',
     header,
     divider,
@@ -450,6 +658,35 @@ function markdownTable(rows) {
 
 function assertSelfCheck(condition, message) {
   if (!condition) throw new Error(`Timing metrics summary self-check failed: ${message}`);
+}
+
+function controlledSelfCheckClock(initialNs) {
+  let currentNs = initialNs;
+  return {
+    now: () => currentNs,
+    tick: (durationNs) => {
+      currentNs += durationNs;
+    },
+  };
+}
+
+function measureSelfCheckPhase(recorder, clock, phaseKey, durationNs) {
+  recorder.startPhase(phaseKey);
+  clock.tick(durationNs);
+  recorder.finishPhase(phaseKey);
+}
+
+function compactSelfCheckReport(report, name) {
+  const filePath = path.join(repoRoot, 'tmp', `${name}.json`);
+  const classified = classifyReports(report, filePath);
+  return {
+    classified,
+    rows: classified.map((entry) => compactRow({
+      ...entry,
+      filePath,
+      updatedAt: '2026-07-16T00:00:00.000Z',
+    })),
+  };
 }
 
 function runSelfCheck() {
@@ -519,6 +756,10 @@ function runSelfCheck() {
   for (const column of ['metricClock', 'metricScope', 'cacheState', 'reportedStatus', 'proofVerdict', 'durationMonotonicMs', 'modelAvailabilityCheckMs']) {
     assertSelfCheck(markdown.includes(column), `markdown missing ${column}`);
   }
+  assertSelfCheck(
+    !markdown.includes('Generic test timing records:'),
+    'v1-only markdown changed its schema header',
+  );
 
   const pathFallbackOnly = classifyReport(
     { repo: { target: 'HIPRTPathTracer' }, timings: { totalWallMs: 1 } },
@@ -569,10 +810,167 @@ function runSelfCheck() {
     'WebGPU compute timing must preserve compute-card evidence separately',
   );
 
+  const visualClock = controlledSelfCheckClock(1_000_000n);
+  const visualRecorder = new GpuHmrTestTimingRecorder({ clock: visualClock.now });
+  visualClock.tick(5_000_000n);
+  const visualPass = visualRecorder.finalize({
+    outcome: 'pass',
+    visualCapable: true,
+    terminalReason: 'summary_self_check_unavailable',
+  });
+  const visualResult = compactSelfCheckReport(visualPass, 'v2-visual-pass');
+  const visualRow = visualResult.rows[0];
+  assertSelfCheck(visualResult.classified.length === 1, 'direct v2 visual pass not discovered');
+  assertSelfCheck(
+    hasMeaningfulMetrics(
+      visualResult.classified[0].metrics,
+      visualResult.classified[0].kind,
+    ),
+    'total-wall-only v2 visual pass was dropped as meaningless',
+  );
+  assertSelfCheck(visualRow.outcome === 'pass', 'v2 visual outcome missing');
+  assertSelfCheck(visualRow.valid === true, 'v2 visual pass must remain valid');
+  assertSelfCheck(visualRow.complete === false, 'total-wall-only visual pass must be incomplete');
+  assertSelfCheck(visualRow.totalWallMs === 5, 'v2 visual total wall duration missing');
+  assertSelfCheck(
+    visualRow.phases.trigger_to_visible.state === 'unavailable',
+    'v2 visual phase state missing',
+  );
+  const visualMarkdown = markdownTable([visualRow]);
+  assertSelfCheck(
+    visualMarkdown.includes(`Generic test timing records: \`${GPU_HMR_TEST_TIMING_SCHEMA}\``),
+    'v2 markdown schema header missing',
+  );
+  for (const column of [
+    'outcome',
+    'valid',
+    'complete',
+    'blockingGaps',
+    'triggerToVisibleMs',
+    'screenshotCaptureMs',
+    'visualAnalysisMs',
+    'proofFinalizationMs',
+  ]) {
+    assertSelfCheck(visualMarkdown.includes(column), `v2 markdown missing ${column}`);
+  }
+
+  const computeClock = controlledSelfCheckClock(10_000_000n);
+  const computeRecorder = new GpuHmrTestTimingRecorder({ clock: computeClock.now });
+  computeClock.tick(7_000_000n);
+  const computePass = computeRecorder.finalize({
+    outcome: 'pass',
+    visualCapable: false,
+    terminalReason: 'summary_self_check_unavailable',
+    notApplicableReason: 'summary_self_check_not_applicable',
+  });
+  const computeResult = compactSelfCheckReport(computePass, 'v2-compute-pass');
+  const computeRow = computeResult.rows[0];
+  assertSelfCheck(computeRow.valid === true, 'v2 compute pass must remain valid');
+  assertSelfCheck(computeRow.complete === false, 'total-wall-only compute pass must be incomplete');
+  assertSelfCheck(
+    computeRow.phases.trigger_to_visible.state === 'not_applicable',
+    'v2 compute visual phase must remain typed not_applicable',
+  );
+
+  const refusalClock = controlledSelfCheckClock(20_000_000n);
+  const refusalRecorder = new GpuHmrTestTimingRecorder({ clock: refusalClock.now });
+  measureSelfCheckPhase(refusalRecorder, refusalClock, 'cold_intake', 1_000_000n);
+  measureSelfCheckPhase(refusalRecorder, refusalClock, 'discovery', 2_000_000n);
+  const refusal = refusalRecorder.finalize({
+    outcome: 'refused',
+    visualCapable: false,
+    terminalReason: 'summary_self_check_refused',
+    notApplicableReason: 'summary_self_check_not_applicable',
+  });
+  const refusalRow = compactSelfCheckReport(refusal, 'v2-refusal').rows[0];
+  assertSelfCheck(refusalRow.outcome === 'refused', 'v2 refusal outcome missing');
+  assertSelfCheck(refusalRow.valid === true, 'v2 refusal must remain valid');
+  assertSelfCheck(refusalRow.phases.compile.state === 'unavailable', 'v2 refusal compile state missing');
+
+  const failureClock = controlledSelfCheckClock(30_000_000n);
+  const failureRecorder = new GpuHmrTestTimingRecorder({ clock: failureClock.now });
+  failureRecorder.startPhase('compile');
+  failureClock.tick(3_000_000n);
+  const thrownFailure = failureRecorder.finalize({
+    outcome: 'failed',
+    visualCapable: true,
+    terminalReason: 'summary_self_check_exception',
+  });
+  const failureRow = compactSelfCheckReport(thrownFailure, 'v2-thrown-failure').rows[0];
+  assertSelfCheck(failureRow.outcome === 'failed', 'v2 failure outcome missing');
+  assertSelfCheck(failureRow.valid === true, 'v2 failure must remain valid');
+  assertSelfCheck(failureRow.phases.compile.state === 'measured', 'partial measured failure phase missing');
+  assertSelfCheck(failureRow.phases.compile.durationMs === 3, 'partial measured failure duration missing');
+
+  for (const alias of GPU_HMR_TEST_TIMING_ALIASES) {
+    const aliasResult = compactSelfCheckReport(
+      { generic: { nested: { [alias]: computePass } } },
+      `v2-alias-${alias}`,
+    );
+    assertSelfCheck(aliasResult.classified.length === 1, `nested alias ${alias} not discovered`);
+    assertSelfCheck(aliasResult.classified[0].recordAlias === alias, `nested alias ${alias} not retained`);
+    assertSelfCheck(
+      aliasResult.rows[0].recordPath === `$.generic.nested.${alias}`,
+      `nested alias ${alias} path missing`,
+    );
+  }
+
+  const authorityForgery = JSON.parse(JSON.stringify(visualPass));
+  authorityForgery.authority = 'gpu_hmr_success_authority';
+  authorityForgery.acceptedForGpuHmr = true;
+  authorityForgery.gpuHmrSuccess = true;
+  authorityForgery.success = true;
+  authorityForgery.hiprt_runtime_probe = {};
+  const forgedResult = compactSelfCheckReport(authorityForgery, 'v2-forged-authority');
+  const forgedRow = forgedResult.rows[0];
+  assertSelfCheck(forgedResult.classified.length === 1, 'forged direct v2 record fell through');
+  assertSelfCheck(
+    forgedResult.classified[0].kind === 'gpu_hmr_test_timing_v2',
+    'forged direct v2 record was treated as v1',
+  );
+  assertSelfCheck(forgedRow.valid === false, 'forged v2 authority was accepted');
+  assertSelfCheck(
+    forgedRow.validationGaps.includes('timing_authority_invalid'),
+    'forged v2 authority gap missing',
+  );
+  assertSelfCheck(forgedRow.acceptedForGpuHmr === false, 'v2 row claimed GPU HMR acceptance');
+  assertSelfCheck(forgedRow.gpuHmrSuccess === false, 'v2 row claimed GPU HMR success');
+  assertSelfCheck(
+    forgedRow.evidenceAuthority === GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
+    'v2 row escaped telemetry-only authority',
+  );
+  assertSelfCheck(!('status' in forgedRow), 'v2 row exposed status as success authority');
+
+  for (const phaseKey of GPU_HMR_TEST_TIMING_PHASE_KEYS) {
+    assertSelfCheck(Object.hasOwn(failureRow.phases, phaseKey), `compact v2 phase ${phaseKey} missing`);
+    assertSelfCheck(
+      Object.hasOwn(failureRow.phases[phaseKey], 'state')
+      && Object.hasOwn(failureRow.phases[phaseKey], 'durationNs')
+      && Object.hasOwn(failureRow.phases[phaseKey], 'durationMs'),
+      `compact v2 phase ${phaseKey} state/duration missing`,
+    );
+  }
+  assertSelfCheck(
+    failureRow.triggerToVisibleMs === failureRow.phases.trigger_to_visible.durationMs
+    && failureRow.screenshotCaptureMs === failureRow.phases.screenshot_capture.durationMs
+    && failureRow.visualAnalysisMs === failureRow.phases.visual_analysis.durationMs
+    && failureRow.proofFinalizationMs === failureRow.phases.proof_finalization.durationMs
+    && failureRow.totalWallMs === failureRow.phases.total_wall.durationMs,
+    'compact v2 named phase durations missing',
+  );
+
   console.log(JSON.stringify({
     ok: true,
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
     checked: 'gpu-hmr-timing-metrics-summary',
+    v2Cases: [
+      'visual_pass',
+      'compute_pass',
+      'refusal_before_compile',
+      'thrown_failure_partial_phase',
+      'nested_aliases',
+      'forged_authority',
+    ],
   }, null, 2));
 }
 
@@ -631,4 +1029,6 @@ async function main() {
   }, null, 2));
 }
 
-await main();
+const directInvocation = process.argv[1]
+  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (directInvocation) await main();

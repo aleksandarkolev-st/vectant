@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {
   externalProjectTimingMetrics,
   hiprtWarmTimingMetrics,
@@ -9,6 +10,15 @@ import {
   GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
   GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
 } from '../lib/gpu-hmr-timing-metrics.mjs';
+import {
+  GPU_HMR_TEST_TIMING_PHASE_KEYS,
+  GpuHmrTestTimingRecorder,
+} from '../lib/gpu-hmr-test-timing-v2.mjs';
+import {
+  classifyReports,
+  compactRow,
+  hasMeaningfulMetrics,
+} from '../gpu-hmr-timing-metrics-summary.mjs';
 
 const REQUIRED_KEYS = [
   'schemaVersion',
@@ -91,6 +101,35 @@ function assertCommonShape(metrics) {
   for (const key of NORMALIZED_KEYS) {
     assert.ok(Object.prototype.hasOwnProperty.call(metrics.normalizedTimings, key), `missing normalized key ${key}`);
   }
+}
+
+function controlledClock(initialNs) {
+  let currentNs = initialNs;
+  return {
+    now: () => currentNs,
+    tick: (durationNs) => {
+      currentNs += durationNs;
+    },
+  };
+}
+
+function measurePhase(recorder, clock, phaseKey, durationNs) {
+  recorder.startPhase(phaseKey);
+  clock.tick(durationNs);
+  recorder.finishPhase(phaseKey);
+}
+
+function summaryRows(report, name) {
+  const filePath = path.join(process.cwd(), 'tmp', `${name}.json`);
+  const classified = classifyReports(report, filePath);
+  return {
+    classified,
+    rows: classified.map((entry) => compactRow({
+      ...entry,
+      filePath,
+      updatedAt: '2026-07-16T00:00:00.000Z',
+    })),
+  };
 }
 
 const external = externalProjectTimingMetrics({
@@ -358,8 +397,198 @@ assert.equal(
 assert.equal(webgpuCompute.editToFirstVisualMs, null);
 assert.equal(webgpuCompute.normalizedTimings.dispatchToOutputProofTimeMs, 55);
 
+const visualClock = controlledClock(1_000_000n);
+const visualRecorder = new GpuHmrTestTimingRecorder({ clock: visualClock.now });
+visualClock.tick(5_000_000n);
+const visualPass = visualRecorder.finalize({
+  outcome: 'pass',
+  visualCapable: true,
+  terminalReason: 'timing_smoke_unavailable',
+});
+const visualSummary = summaryRows(visualPass, 'timing-v2-visual-pass');
+const visualTimingRow = visualSummary.rows[0];
+assert.equal(visualSummary.classified.length, 1);
+assert.equal(visualSummary.classified[0].kind, 'gpu_hmr_test_timing_v2');
+assert.equal(hasMeaningfulMetrics(
+  visualSummary.classified[0].metrics,
+  visualSummary.classified[0].kind,
+), true);
+assert.equal(visualTimingRow.outcome, 'pass');
+assert.equal(visualTimingRow.valid, true);
+assert.equal(visualTimingRow.complete, false);
+assert.equal(visualTimingRow.totalWallMs, 5);
+assert.equal(visualTimingRow.phases.trigger_to_visible.state, 'unavailable');
+assert.ok(visualTimingRow.completenessGaps.includes(
+  'visual_phase_not_measured:trigger_to_visible',
+));
+
+const computeClock = controlledClock(10_000_000n);
+const computeRecorder = new GpuHmrTestTimingRecorder({ clock: computeClock.now });
+computeClock.tick(7_000_000n);
+const computePass = computeRecorder.finalize({
+  outcome: 'pass',
+  visualCapable: false,
+  terminalReason: 'timing_smoke_unavailable',
+  notApplicableReason: 'timing_smoke_not_applicable',
+});
+const computeTimingRow = summaryRows(computePass, 'timing-v2-compute-pass').rows[0];
+assert.equal(computeTimingRow.outcome, 'pass');
+assert.equal(computeTimingRow.valid, true);
+assert.equal(computeTimingRow.complete, false);
+assert.equal(computeTimingRow.totalWallMs, 7);
+for (const phaseKey of ['trigger_to_visible', 'screenshot_capture', 'visual_analysis']) {
+  assert.equal(computeTimingRow.phases[phaseKey].state, 'not_applicable');
+  assert.equal(computeTimingRow.phases[phaseKey].durationNs, null);
+  assert.equal(computeTimingRow.phases[phaseKey].durationMs, null);
+}
+
+const refusalClock = controlledClock(20_000_000n);
+const refusalRecorder = new GpuHmrTestTimingRecorder({ clock: refusalClock.now });
+measurePhase(refusalRecorder, refusalClock, 'cold_intake', 1_000_000n);
+measurePhase(refusalRecorder, refusalClock, 'discovery', 2_000_000n);
+const refusal = refusalRecorder.finalize({
+  outcome: 'refused',
+  visualCapable: false,
+  terminalReason: 'timing_smoke_refused',
+  notApplicableReason: 'timing_smoke_not_applicable',
+});
+const refusalTimingRow = summaryRows(refusal, 'timing-v2-refusal').rows[0];
+assert.equal(refusalTimingRow.outcome, 'refused');
+assert.equal(refusalTimingRow.valid, true);
+assert.equal(refusalTimingRow.complete, false);
+assert.equal(refusalTimingRow.phases.compile.state, 'unavailable');
+assert.ok(refusalTimingRow.blockingGaps.includes('phase_unavailable:compile'));
+
+const failureClock = controlledClock(30_000_000n);
+const failureRecorder = new GpuHmrTestTimingRecorder({ clock: failureClock.now });
+let thrownFailure;
+try {
+  failureRecorder.startPhase('compile');
+  failureClock.tick(3_000_000n);
+  throw new Error('timing_smoke_injected_failure');
+} catch {
+  thrownFailure = failureRecorder.finalize({
+    outcome: 'failed',
+    visualCapable: true,
+    terminalReason: 'timing_smoke_exception',
+  });
+}
+const failureTimingRow = summaryRows(thrownFailure, 'timing-v2-thrown-failure').rows[0];
+assert.equal(failureTimingRow.outcome, 'failed');
+assert.equal(failureTimingRow.valid, true);
+assert.equal(failureTimingRow.complete, false);
+assert.equal(failureTimingRow.phases.compile.state, 'measured');
+assert.equal(failureTimingRow.phases.compile.durationNs, '3000000');
+assert.equal(failureTimingRow.phases.compile.durationMs, 3);
+
+for (const [outcome, visualCapable] of [
+  ['refused', false],
+  ['failed', true],
+]) {
+  const clock = controlledClock(40_000_000n);
+  const recorder = new GpuHmrTestTimingRecorder({ clock: clock.now });
+  clock.tick(1_000_000n);
+  const totalOnly = recorder.finalize({
+    outcome,
+    visualCapable,
+    terminalReason: `timing_smoke_total_only_${outcome}`,
+    notApplicableReason: visualCapable ? null : 'timing_smoke_not_applicable',
+  });
+  const result = summaryRows(totalOnly, `timing-v2-total-only-${outcome}`);
+  assert.equal(result.classified.length, 1);
+  assert.equal(hasMeaningfulMetrics(
+    result.classified[0].metrics,
+    result.classified[0].kind,
+  ), true);
+  assert.equal(result.rows[0].valid, true);
+  assert.equal(result.rows[0].outcome, outcome);
+  assert.equal(result.rows[0].totalWallMs, 1);
+}
+
+for (const alias of ['testTiming', 'test_timing', 'timingV2', 'timing_v2']) {
+  const aliasSummary = summaryRows(
+    { generic: { nested: { [alias]: computePass } } },
+    `timing-v2-alias-${alias}`,
+  );
+  assert.equal(aliasSummary.classified.length, 1);
+  assert.equal(aliasSummary.classified[0].recordAlias, alias);
+  assert.equal(aliasSummary.rows[0].recordPath, `$.generic.nested.${alias}`);
+}
+
+const additiveSummary = summaryRows({
+  timingMetrics: external,
+  generic: { testTiming: visualPass },
+}, 'timing-v1-v2-additive');
+assert.equal(additiveSummary.classified.length, 2);
+const retainedV1 = additiveSummary.rows.find((row) => row.source === external.source);
+assert.equal(retainedV1.totalWallMs, external.totalWallMs);
+assert.equal(retainedV1.metricClock, external.metricClock);
+assert.equal(
+  additiveSummary.rows.find((row) => row.source === 'gpu_hmr_test_timing_v2').outcome,
+  'pass',
+);
+
+const authorityForgery = JSON.parse(JSON.stringify(visualPass));
+authorityForgery.authority = 'gpu_hmr_success_authority';
+authorityForgery.acceptedForGpuHmr = true;
+authorityForgery.gpuHmrSuccess = true;
+authorityForgery.success = true;
+authorityForgery.hiprt_runtime_probe = {};
+const forgedSummary = summaryRows(authorityForgery, 'timing-v2-forged-authority');
+const forgedTimingRow = forgedSummary.rows[0];
+assert.equal(forgedSummary.classified.length, 1);
+assert.equal(forgedSummary.classified[0].kind, 'gpu_hmr_test_timing_v2');
+assert.equal(forgedTimingRow.valid, false);
+assert.equal(forgedTimingRow.complete, false);
+assert.ok(forgedTimingRow.validationGaps.includes('timing_authority_invalid'));
+assert.ok(forgedTimingRow.validationGaps.includes('accepted_for_gpu_hmr_must_be_false'));
+assert.ok(forgedTimingRow.validationGaps.includes('gpu_hmr_success_must_be_false'));
+assert.equal(forgedTimingRow.acceptedForGpuHmr, false);
+assert.equal(forgedTimingRow.gpuHmrSuccess, false);
+assert.equal(forgedTimingRow.evidenceAuthority, GPU_HMR_TIMING_TELEMETRY_AUTHORITY);
+assert.equal(forgedTimingRow.proofVerdict, 'not_evaluated_by_timing_summary');
+assert.equal(Object.hasOwn(forgedTimingRow, 'status'), false);
+
+for (const phaseKey of GPU_HMR_TEST_TIMING_PHASE_KEYS) {
+  assert.ok(Object.hasOwn(failureTimingRow.phases, phaseKey));
+  assert.ok(Object.hasOwn(failureTimingRow.phases[phaseKey], 'state'));
+  assert.ok(Object.hasOwn(failureTimingRow.phases[phaseKey], 'durationNs'));
+  assert.ok(Object.hasOwn(failureTimingRow.phases[phaseKey], 'durationMs'));
+}
+for (const phaseKey of [
+  'trigger_to_visible',
+  'screenshot_capture',
+  'visual_analysis',
+  'proof_finalization',
+  'total_wall',
+]) {
+  assert.ok(Object.hasOwn(failureTimingRow.phases, phaseKey));
+}
+assert.equal(
+  failureTimingRow.triggerToVisibleMs,
+  failureTimingRow.phases.trigger_to_visible.durationMs,
+);
+assert.equal(
+  failureTimingRow.screenshotCaptureMs,
+  failureTimingRow.phases.screenshot_capture.durationMs,
+);
+assert.equal(failureTimingRow.visualAnalysisMs, failureTimingRow.phases.visual_analysis.durationMs);
+assert.equal(
+  failureTimingRow.proofFinalizationMs,
+  failureTimingRow.phases.proof_finalization.durationMs,
+);
+assert.equal(failureTimingRow.totalWallMs, failureTimingRow.phases.total_wall.durationMs);
+
 console.log(JSON.stringify({
   ok: true,
   schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
   checkedProfiles: [external.profileId, hiprt.profileId, rocm.profileId, webgpu.profileId, webgpuCompute.profileId],
+  checkedV2Cases: [
+    'visual_pass',
+    'compute_pass',
+    'refusal_before_compile',
+    'thrown_failure_partial_phase',
+    'nested_aliases',
+    'forged_authority',
+  ],
 }, null, 2));
