@@ -155,6 +155,13 @@ try {
       BigInt(1000 * (index + 1)),
       { visualCapable: testCase.childVisualCapable === true },
     );
+    const persistenceEvents = [];
+    const eventSequence = [];
+    const baseTimingClock = advancingClock(BigInt(10000 * (index + 1)));
+    const timingClock = () => {
+      eventSequence.push('clock');
+      return baseTimingClock();
+    };
     const outputDir = path.join(tmpRoot, testCase.lifecycleState);
     const { manifest, written } = await buildManifest({
       seed: `timing-self-check-${testCase.lifecycleState}`,
@@ -167,7 +174,11 @@ try {
       candidates: [candidate],
       outputDir,
       sourceMode: 'configured_candidate_pool',
-      timingClock: advancingClock(BigInt(10000 * (index + 1))),
+      timingClock,
+      onManifestPersisted: (event) => {
+        persistenceEvents.push(event);
+        eventSequence.push(event.stage);
+      },
       runCandidate: async (selectedCandidate) => ({
         candidateId: selectedCandidate.id,
         ...testCase.result,
@@ -185,6 +196,28 @@ try {
     assert.equal(manifest.lifecycle_state, testCase.lifecycleState);
     assert.equal(manifest.testTiming, manifest.test_timing);
     assertParentTiming(manifest.testTiming, testCase.timingOutcome);
+
+    assert.deepEqual(
+      persistenceEvents.map((event) => [event.stage, event.timingAttached]),
+      [
+        ['pending_outcome', false],
+        ['pending_timing', true],
+        ['terminal_outcome', false],
+        ['terminal_timing', true],
+      ],
+    );
+    assert.equal(persistenceEvents[0].filePath, persistenceEvents[1].filePath);
+    assert.equal(persistenceEvents[2].filePath, persistenceEvents[3].filePath);
+    for (const [outcomeStage, timingStage] of [
+      ['pending_outcome', 'pending_timing'],
+      ['terminal_outcome', 'terminal_timing'],
+    ]) {
+      const outcomeIndex = eventSequence.indexOf(outcomeStage);
+      const timingIndex = eventSequence.indexOf(timingStage);
+      assert.ok(outcomeIndex >= 0);
+      assert.ok(timingIndex > outcomeIndex);
+      assert.ok(eventSequence.slice(outcomeIndex + 1, timingIndex).includes('clock'));
+    }
 
     assert.equal(manifest.results[0].testTiming, childTiming);
     assert.equal(manifest.results[0].test_timing, childTiming);

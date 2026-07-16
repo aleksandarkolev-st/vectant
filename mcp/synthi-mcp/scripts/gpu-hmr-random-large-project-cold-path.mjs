@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION } from './lib/gpu-hmr-runtime-profile.mjs';
@@ -722,15 +722,6 @@ function createRandomLargeColdPathTimingRecorder({ clock, pending = false } = {}
     pending ? TEST_TIMING_PENDING_REASON : TEST_TIMING_OUTPUT_READY_UNAVAILABLE_REASON,
   );
   return recorder;
-}
-
-function measureRandomLargeColdPathTimingPhase(recorder, phaseKey, operation) {
-  recorder.startPhase(phaseKey);
-  try {
-    return operation();
-  } finally {
-    recorder.finishPhase(phaseKey);
-  }
 }
 
 function resultLifecycleState(result) {
@@ -7135,8 +7126,24 @@ async function writeManifest(manifest, outputDir = LOG_DIR, { suffix = '', fileP
   const stamp = manifest.runId ?? manifest.run_id ?? makeStamp();
   const resolvedFilePath = filePath ?? path.join(outputDir, `random-large-project-cold-path-${stamp}${suffix}.json`);
   const body = `${JSON.stringify(manifest, null, 2)}\n`;
-  await writeFile(resolvedFilePath, body);
+  const handle = await open(resolvedFilePath, 'w');
+  try {
+    await handle.writeFile(body, 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
   return { filePath: resolvedFilePath, hash: contentHash(body) };
+}
+
+async function notifyManifestPersisted(callback, stage, manifest, written) {
+  if (typeof callback !== 'function') return;
+  await callback(Object.freeze({
+    stage,
+    filePath: written.filePath,
+    manifestHash: written.hash,
+    timingAttached: manifest?.testTiming?.schema === GPU_HMR_TEST_TIMING_SCHEMA,
+  }));
 }
 
 export async function buildManifest({
@@ -7156,6 +7163,7 @@ export async function buildManifest({
   coldBuildCommandSpec = null,
   runCandidate = runSelectedCandidate,
   timingClock = null,
+  onManifestPersisted = null,
 }) {
   const timingRecorder = createRandomLargeColdPathTimingRecorder({ clock: timingClock });
   const pendingTimingRecorder = dryRun
@@ -7180,44 +7188,63 @@ export async function buildManifest({
   const startedAt = new Date().toISOString();
   let pendingWritten = null;
   if (!dryRun) {
-    const pendingManifest = measureRandomLargeColdPathTimingPhase(
-      pendingTimingRecorder,
-      'proof_finalization',
-      () => createManifest({
-        runId,
-        seed,
-        count,
-        candidateId,
-        dryRun,
-        timeoutMs,
-        runnerTimeoutMs,
-        sourceIntake,
-        sourceIntakeTimeoutMs,
-        candidates,
-        selected,
-        sourceMode,
-        requireDirectSource,
-        samplePool,
-        coldBuildCommandSpec,
-        startedAt,
-        finishedAt: null,
-        eventType: 'cold_path_pending',
-        status: 'pending',
-        lifecycleState: 'pending',
-        results: selected.map((candidate) => ({
-          candidateId: candidate.id,
-          status: 'selected_pending_execution',
-          acceptedForGpuHmr: false,
-          gpuHmrSuccess: false,
-          canSatisfyRuntimeProof: false,
-        })),
-      }),
+    pendingTimingRecorder.startPhase('proof_finalization');
+    const pendingManifest = createManifest({
+      runId,
+      seed,
+      count,
+      candidateId,
+      dryRun,
+      timeoutMs,
+      runnerTimeoutMs,
+      sourceIntake,
+      sourceIntakeTimeoutMs,
+      candidates,
+      selected,
+      sourceMode,
+      requireDirectSource,
+      samplePool,
+      coldBuildCommandSpec,
+      startedAt,
+      finishedAt: null,
+      eventType: 'cold_path_pending',
+      status: 'pending',
+      lifecycleState: 'pending',
+      results: selected.map((candidate) => ({
+        candidateId: candidate.id,
+        status: 'selected_pending_execution',
+        acceptedForGpuHmr: false,
+        gpuHmrSuccess: false,
+        canSatisfyRuntimeProof: false,
+      })),
+    });
+    const pendingOutcomeWritten = await writeManifest(
+      pendingManifest,
+      outputDir,
+      { suffix: '-pending' },
     );
+    await notifyManifestPersisted(
+      onManifestPersisted,
+      'pending_outcome',
+      pendingManifest,
+      pendingOutcomeWritten,
+    );
+    pendingTimingRecorder.finishPhase('proof_finalization');
     attachRandomLargeColdPathTestTiming(
       pendingManifest,
       finalizeRandomLargeColdPathTiming(pendingTimingRecorder, 'pending'),
     );
-    pendingWritten = await writeManifest(pendingManifest, outputDir, { suffix: '-pending' });
+    pendingWritten = await writeManifest(
+      pendingManifest,
+      outputDir,
+      { filePath: pendingOutcomeWritten.filePath },
+    );
+    await notifyManifestPersisted(
+      onManifestPersisted,
+      'pending_timing',
+      pendingManifest,
+      pendingWritten,
+    );
   }
   const results = [];
   for (const candidate of selected) {
@@ -7243,39 +7270,54 @@ export async function buildManifest({
   }
   const finishedAt = new Date().toISOString();
   const lifecycleState = manifestLifecycleState(results, { dryRun });
-  const manifest = measureRandomLargeColdPathTimingPhase(
-    timingRecorder,
-    'proof_finalization',
-    () => createManifest({
-      runId,
-      seed,
-      count,
-      candidateId,
-      dryRun,
-      timeoutMs,
-      runnerTimeoutMs,
-      sourceIntake,
-      sourceIntakeTimeoutMs,
-      candidates,
-      selected,
-      sourceMode,
-      requireDirectSource,
-      samplePool,
-      coldBuildCommandSpec,
-      startedAt,
-      finishedAt,
-      eventType: 'cold_path_complete',
-      status: 'complete',
-      lifecycleState,
-      results,
-      pendingWritten,
-    }),
+  timingRecorder.startPhase('proof_finalization');
+  const manifest = createManifest({
+    runId,
+    seed,
+    count,
+    candidateId,
+    dryRun,
+    timeoutMs,
+    runnerTimeoutMs,
+    sourceIntake,
+    sourceIntakeTimeoutMs,
+    candidates,
+    selected,
+    sourceMode,
+    requireDirectSource,
+    samplePool,
+    coldBuildCommandSpec,
+    startedAt,
+    finishedAt,
+    eventType: 'cold_path_complete',
+    status: 'complete',
+    lifecycleState,
+    results,
+    pendingWritten,
+  });
+  const outcomeWritten = await writeManifest(manifest, outputDir);
+  await notifyManifestPersisted(
+    onManifestPersisted,
+    'terminal_outcome',
+    manifest,
+    outcomeWritten,
   );
+  timingRecorder.finishPhase('proof_finalization');
   attachRandomLargeColdPathTestTiming(
     manifest,
     finalizeRandomLargeColdPathTiming(timingRecorder, lifecycleState),
   );
-  const written = await writeManifest(manifest, outputDir);
+  const written = await writeManifest(
+    manifest,
+    outputDir,
+    { filePath: outcomeWritten.filePath },
+  );
+  await notifyManifestPersisted(
+    onManifestPersisted,
+    'terminal_timing',
+    manifest,
+    written,
+  );
   return { manifest: { ...manifest, manifestPath: written.filePath, manifestHash: written.hash }, written };
 }
 
