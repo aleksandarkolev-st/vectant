@@ -3417,29 +3417,33 @@ export function queryGpuHmrLedgerInvariants(input = {}, options = {}) {
   const ledgerModelPolicy = resolveGpuHmrModelPolicy(ledger.modelPolicy, ledger.model_policy);
   const ignoreSuppliedLedgerQueryAndSuccess = options.ignoreSuppliedLedgerQueryAndSuccess === true
     || options.ignore_supplied_ledger_query_and_success === true;
+  const recordsFieldPresent = hasOwn(ledger, 'records');
   const records = Array.isArray(ledger.records) ? ledger.records : null;
-  const evaluations = records && records.length > 0
-    ? records.map((record, index) => ({
-      index,
-      result: record && typeof record === 'object' && !Array.isArray(record)
-        ? evaluateGpuHmrProofLedger(record, {
-          modelPolicy: ledgerModelPolicy,
-          computeOracleArtifactOverlay: computeOracleArtifactOverlay(options, index),
-          visualOracleArtifactOverlay: visualOracleArtifactOverlay(options, index),
-          requireVisualCaptureRuntimeBinding:
-            options.requireVisualCaptureRuntimeBinding === true
-            || options.require_visual_capture_runtime_binding === true,
-        })
-        : {
-          schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
-          proofId: null,
-          gpuHmrSuccess: false,
-          failedInvariants: [{ code: 'ledger_record_not_object' }],
-          warnings: [],
-          record: null,
-          invariantSummary: {},
-        },
-    }))
+  const invalidRecordResult = (code) => ({
+    schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+    proofId: null,
+    gpuHmrSuccess: false,
+    failedInvariants: [{ code }],
+    warnings: [],
+    record: null,
+    invariantSummary: {},
+  });
+  const evaluations = recordsFieldPresent
+    ? records && records.length > 0
+      ? records.map((record, index) => ({
+        index,
+        result: record && typeof record === 'object' && !Array.isArray(record)
+          ? evaluateGpuHmrProofLedger(record, {
+            modelPolicy: ledgerModelPolicy,
+            computeOracleArtifactOverlay: computeOracleArtifactOverlay(options, index),
+            visualOracleArtifactOverlay: visualOracleArtifactOverlay(options, index),
+            requireVisualCaptureRuntimeBinding:
+              options.requireVisualCaptureRuntimeBinding === true
+              || options.require_visual_capture_runtime_binding === true,
+          })
+          : invalidRecordResult('ledger_record_not_object'),
+      }))
+      : [{ index: 0, result: invalidRecordResult('ledger_record_unavailable') }]
     : [{
       index: 0,
       result: evaluateGpuHmrProofLedger(input, {
@@ -3452,7 +3456,7 @@ export function queryGpuHmrLedgerInvariants(input = {}, options = {}) {
       }),
     }];
   const recomputed = evaluations[evaluations.length - 1].result;
-  const proofId = records && records.length > 0
+  const proofId = recordsFieldPresent && records && records.length > 0
     ? canonicalLedgerRootProofId(evaluations.map(({ result }) => result.proofId))
     : recomputed.proofId;
   const failures = evaluations.flatMap(({ index, result }) =>
@@ -3475,7 +3479,9 @@ export function queryGpuHmrLedgerInvariants(input = {}, options = {}) {
       expectedSchemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     });
   }
-  if (records && records.length === 0) {
+  if (recordsFieldPresent && records === null) {
+    failures.push({ code: 'ledger_records_not_array' });
+  } else if (records && records.length === 0) {
     failures.push({ code: 'ledger_records_empty' });
   }
   if (records && records.length > 1) {

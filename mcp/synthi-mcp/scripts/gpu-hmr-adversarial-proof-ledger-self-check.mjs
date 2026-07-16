@@ -1188,6 +1188,16 @@ assert.ok(duplicateRecordLedgerResult.failedInvariants.some(
   ({ code }) => code === 'ledger_record_proof_ids_duplicate',
 ));
 
+const malformedRecordsWrapperResult = queryGpuHmrLedgerInvariants({
+  ...structuredClone(commitEraLedger.records[0]),
+  schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+  records: 'not-an-array',
+});
+assert.equal(malformedRecordsWrapperResult.gpuHmrSuccess, false);
+assert.ok(malformedRecordsWrapperResult.failedInvariants.some(
+  ({ code }) => code === 'ledger_records_not_array',
+));
+
 const missingLedgerSchema = buildGpuHmrProofLedger(commitEraRecord());
 delete missingLedgerSchema.schemaVersion;
 const missingLedgerSchemaResult = queryGpuHmrLedgerInvariants(missingLedgerSchema);
