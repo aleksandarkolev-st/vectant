@@ -786,6 +786,25 @@ pub struct DispatcherCommitReceipt {
 }
 
 impl DispatcherCommitReceipt {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        publication_id: impl Into<String>,
+        previous_generation: u64,
+        candidate_generation: u64,
+        candidate_registration_id: impl Into<String>,
+        publication_timestamp_monotonic_ns: u128,
+        committed_timestamp_monotonic_ns: u128,
+    ) -> Self {
+        Self {
+            publication_id: publication_id.into(),
+            previous_generation,
+            candidate_generation,
+            candidate_registration_id: candidate_registration_id.into(),
+            publication_timestamp_monotonic_ns,
+            committed_timestamp_monotonic_ns,
+        }
+    }
+
     pub fn publication_id(&self) -> &str {
         &self.publication_id
     }

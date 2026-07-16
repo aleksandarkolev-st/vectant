@@ -96,7 +96,7 @@ use crate::runtime::gpu_runtime_boundary::{
     record_output_buffer_checksum_with_probe_bytes_after_dispatch,
     rollback_launch_dispatcher_publication, runtime_session_id,
     synthi_gpu_launch_raw_arg_info_with_receipt, synthi_gpu_register_buffer,
-    with_dispatcher_publication_validation, GpuDispatchAttestationError,
+    with_dispatcher_publication_validation, DispatcherCommitReceipt, GpuDispatchAttestationError,
     GpuDispatchDeviceAttestation, GpuDispatchDeviceObservation, GpuLaunchDispatcher,
     GpuLaunchDispatcherMetadata, GpuLaunchRequest, LaunchArgProvenance, LaunchRecord,
     OutputOracleRecord, SynthiGpuLaunchArg, GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY,
@@ -1400,6 +1400,9 @@ fn runtime_output_oracle_line_passed(
 }
 
 const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof_ledger.v1";
+const GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE: &str =
+    "synthi.gpu_hmr.proof_ledger.portable.v2";
+const GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const GPU_HMR_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof.v1";
 const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.validation-proof.v1";
 const GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION: &str = "synthi.gpu_hmr.contract.v1";
@@ -1778,7 +1781,7 @@ fn latest_accepted_output_oracle_record(
 
 fn canonical_runtime_ledger_proof_id(record: &Value) -> String {
     let firewall = json_object_field_or_empty(record, "firewall_evidence");
-    let material = json!({
+    let mut material = json!({
         "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
         "projectId": json_field(record, "project_id"),
         "editId": json_field(record, "edit_id"),
@@ -1819,7 +1822,45 @@ fn canonical_runtime_ledger_proof_id(record: &Value) -> String {
                 .and_then(|value| value.as_str().map(str::to_string).or_else(|| value.as_u64().map(|pid| pid.to_string()))),
         },
     });
+    if record
+        .get("proof_canonical_profile")
+        .and_then(Value::as_str)
+        == Some(GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE)
+    {
+        let object = material
+            .as_object_mut()
+            .expect("canonical ledger proof material is an object");
+        object.insert(
+            "proofCanonicalProfile".to_string(),
+            json!(GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE),
+        );
+        if record.get("epoch_commit_event").is_some() {
+            object.insert(
+                "epochCommitEvent".to_string(),
+                json_object_field_or_empty(record, "epoch_commit_event"),
+            );
+        }
+    }
     format!("gpu-ledger-proof:sha256:{}", stable_json_sha256(&material))
+}
+
+fn portable_canonical_json_numbers_supported(value: &Value) -> bool {
+    match value {
+        Value::Number(number) => number
+            .as_i64()
+            .map(|value| value.unsigned_abs() <= GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER)
+            .or_else(|| {
+                number
+                    .as_u64()
+                    .map(|value| value <= GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER)
+            })
+            .unwrap_or(false),
+        Value::Array(values) => values.iter().all(portable_canonical_json_numbers_supported),
+        Value::Object(fields) => fields
+            .values()
+            .all(portable_canonical_json_numbers_supported),
+        _ => true,
+    }
 }
 
 fn runtime_acceptance_contract(
@@ -2051,6 +2092,7 @@ struct RuntimeProofTimestamps {
     publish_ns: u64,
     dispatch_ns: u64,
     output_ns: u64,
+    commit_ns: u64,
     retirement_ns: u64,
     dispatch_to_output_ms: u64,
 }
@@ -2060,17 +2102,20 @@ fn validate_runtime_proof_timestamps(
     publish_timestamp_monotonic_ns: u128,
     dispatch_timestamp_monotonic_ns: Option<u128>,
     output_timestamp_monotonic_ns: u128,
+    commit_timestamp_monotonic_ns: u128,
     retirement_timestamp_monotonic_ns: u128,
 ) -> Option<RuntimeProofTimestamps> {
     let loader_ns = saturating_u128_to_u64(loader_timestamp_monotonic_ns);
     let publish_ns = saturating_u128_to_u64(publish_timestamp_monotonic_ns);
     let dispatch_ns = dispatch_timestamp_monotonic_ns.map(saturating_u128_to_u64)?;
     let output_ns = saturating_u128_to_u64(output_timestamp_monotonic_ns);
+    let commit_ns = saturating_u128_to_u64(commit_timestamp_monotonic_ns);
     let retirement_ns = saturating_u128_to_u64(retirement_timestamp_monotonic_ns);
     if publish_ns < loader_ns
         || dispatch_ns < publish_ns
         || output_ns < dispatch_ns
-        || retirement_ns < output_ns
+        || commit_ns < output_ns
+        || retirement_ns < commit_ns
     {
         return None;
     }
@@ -2079,9 +2124,40 @@ fn validate_runtime_proof_timestamps(
         publish_ns,
         dispatch_ns,
         output_ns,
+        commit_ns,
         retirement_ns,
         dispatch_to_output_ms: output_ns.saturating_sub(dispatch_ns) / 1_000_000,
     })
+}
+
+fn validate_runtime_publication_binding(
+    publication_id: &str,
+    receipt_previous_generation: u64,
+    receipt_candidate_generation: u64,
+    candidate_registration_id: &str,
+    expected_previous_generation: u64,
+    expected_active_generation: u64,
+    dispatch_registration_id: Option<&str>,
+) -> Result<(), String> {
+    if publication_id.trim().is_empty() {
+        return Err("runtime_proof_publication_id_missing".to_string());
+    }
+    if receipt_previous_generation != expected_previous_generation {
+        return Err("runtime_proof_publication_previous_generation_mismatch".to_string());
+    }
+    if receipt_candidate_generation != expected_active_generation {
+        return Err("runtime_proof_publication_candidate_generation_mismatch".to_string());
+    }
+    if receipt_candidate_generation <= receipt_previous_generation {
+        return Err("runtime_proof_publication_generation_transition_missing".to_string());
+    }
+    if candidate_registration_id.trim().is_empty() {
+        return Err("runtime_proof_candidate_registration_id_missing".to_string());
+    }
+    if dispatch_registration_id != Some(candidate_registration_id) {
+        return Err("runtime_proof_dispatch_registration_mismatch".to_string());
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2094,7 +2170,7 @@ fn runtime_full_proof_line(
     active_generation: u64,
     previous_generation: u64,
     loader_timestamp_monotonic_ns: u128,
-    publish_timestamp_monotonic_ns: u128,
+    publication_commit: &DispatcherCommitReceipt,
     retirement_timestamp_monotonic_ns: u128,
     dispatch_device_identity: &VerifiedRuntimeDispatchDeviceIdentity,
     expected_symbols: &[String],
@@ -2155,6 +2231,15 @@ fn runtime_full_proof_line(
                 && record.dispatched
         })
         .ok_or_else(|| "runtime_proof_dispatch_record_missing".to_string())?;
+    validate_runtime_publication_binding(
+        publication_commit.publication_id(),
+        publication_commit.previous_generation(),
+        publication_commit.candidate_generation(),
+        publication_commit.candidate_registration_id(),
+        previous_generation,
+        active_generation,
+        dispatch_record.dispatcher_registration_id.as_deref(),
+    )?;
     let dispatch_timestamp_monotonic_ns = dispatch_record
         .dispatch_timestamp_monotonic_ns
         .ok_or_else(|| "runtime_proof_dispatch_timestamp_missing".to_string())?;
@@ -2201,9 +2286,10 @@ fn runtime_full_proof_line(
         });
     let timestamps = validate_runtime_proof_timestamps(
         loader_timestamp_monotonic_ns,
-        publish_timestamp_monotonic_ns,
+        publication_commit.publication_timestamp_monotonic_ns(),
         dispatch_record.dispatch_timestamp_monotonic_ns,
         output_record.readback_timestamp_monotonic_ns,
+        publication_commit.committed_timestamp_monotonic_ns(),
         retirement_timestamp_monotonic_ns,
     )
     .ok_or_else(|| "runtime_proof_timestamp_order_invalid".to_string())?;
@@ -2211,6 +2297,7 @@ fn runtime_full_proof_line(
     let publish_ts = timestamps.publish_ns;
     let dispatch_ts = timestamps.dispatch_ns;
     let output_ts = timestamps.output_ns;
+    let commit_ts = timestamps.commit_ns;
     let retirement_ts = timestamps.retirement_ns;
     let dispatch_to_output_ms = timestamps.dispatch_to_output_ms;
     let mut evidence_ref_values = vec![
@@ -2219,6 +2306,14 @@ fn runtime_full_proof_line(
         format!("source-edit-id:{source_edit_id}"),
         format!("loader:{new_artifact_id}"),
         format!("epoch:{active_generation}"),
+        format!(
+            "dispatcher-publication:{}",
+            publication_commit.publication_id()
+        ),
+        format!(
+            "dispatcher-registration:{}",
+            publication_commit.candidate_registration_id()
+        ),
         format!("dispatch:{after_dispatch_id}"),
         format!("dispatch-device-attestation:{after_dispatch_id}"),
         format!("oracle:{}", output_record.oracle_id),
@@ -2362,6 +2457,7 @@ fn runtime_full_proof_line(
         .unwrap_or_else(|| json!({}));
     let ledger_record = json!({
         "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+        "proof_canonical_profile": GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE,
         "project_id": req.build_manifest.preview_id,
         "edit_id": source_edit_id,
         "backend": vendor.proof_backend(),
@@ -2385,11 +2481,26 @@ fn runtime_full_proof_line(
         },
         "epoch_publish_event": {
             "id": format!("epoch-publish:{active_generation}:{new_artifact_id}"),
+            "event": "provisional_install",
+            "publication_id": publication_commit.publication_id(),
+            "candidate_registration_id": publication_commit.candidate_registration_id(),
             "epoch": active_generation.to_string(),
             "previous_epoch": previous_generation.to_string(),
             "artifact_id": new_artifact_id,
             "artifact_hash": new_artifact_id,
             "timestamp_monotonic_ns": publish_ts,
+            "process_id": process_id,
+        },
+        "epoch_commit_event": {
+            "id": format!("epoch-commit:{active_generation}:{new_artifact_id}"),
+            "event": "unrestricted_visibility_commit",
+            "publication_id": publication_commit.publication_id(),
+            "candidate_registration_id": publication_commit.candidate_registration_id(),
+            "epoch": active_generation.to_string(),
+            "previous_epoch": previous_generation.to_string(),
+            "artifact_id": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "timestamp_monotonic_ns": commit_ts,
             "process_id": process_id,
         },
         "dispatch_event": {
@@ -2399,6 +2510,8 @@ fn runtime_full_proof_line(
             "artifact_id": new_artifact_id,
             "artifact_hash": new_artifact_id,
             "kernel_name": dispatch_record.kernel_name,
+            "dispatcher_registration_id": publication_commit.candidate_registration_id(),
+            "publication_id": publication_commit.publication_id(),
             "timestamp_monotonic_ns": dispatch_ts,
             "process_id": process_id,
         },
@@ -2458,6 +2571,9 @@ fn runtime_full_proof_line(
             "process_id_after": process_id,
         },
     });
+    if !portable_canonical_json_numbers_supported(&ledger_record) {
+        return Err("runtime_proof_portable_canonical_number_unsupported".to_string());
+    }
     let ledger_proof_id = canonical_runtime_ledger_proof_id(&ledger_record);
     let proof_ledger_query = json!({
         "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
@@ -2516,6 +2632,11 @@ fn runtime_full_proof_line(
         }],
         "epochEvents": [{
             "id": format!("epoch-publish:{active_generation}:{new_artifact_id}"),
+            "event": "provisional_install",
+            "publicationId": publication_commit.publication_id(),
+            "publication_id": publication_commit.publication_id(),
+            "candidateRegistrationId": publication_commit.candidate_registration_id(),
+            "candidate_registration_id": publication_commit.candidate_registration_id(),
             "epoch": active_generation.to_string(),
             "previousEpoch": previous_generation.to_string(),
             "previous_epoch": previous_generation.to_string(),
@@ -2532,6 +2653,11 @@ fn runtime_full_proof_line(
         }],
         "epoch_events": [{
             "id": format!("epoch-publish:{active_generation}:{new_artifact_id}"),
+            "event": "provisional_install",
+            "publicationId": publication_commit.publication_id(),
+            "publication_id": publication_commit.publication_id(),
+            "candidateRegistrationId": publication_commit.candidate_registration_id(),
+            "candidate_registration_id": publication_commit.candidate_registration_id(),
             "epoch": active_generation.to_string(),
             "previousEpoch": previous_generation.to_string(),
             "previous_epoch": previous_generation.to_string(),
@@ -2543,6 +2669,48 @@ fn runtime_full_proof_line(
             "process_id": process_id,
             "timestampMonotonicNs": publish_ts,
             "timestamp_monotonic_ns": publish_ts,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+        }],
+        "epochCommitEvents": [{
+            "id": format!("epoch-commit:{active_generation}:{new_artifact_id}"),
+            "event": "unrestricted_visibility_commit",
+            "publicationId": publication_commit.publication_id(),
+            "publication_id": publication_commit.publication_id(),
+            "candidateRegistrationId": publication_commit.candidate_registration_id(),
+            "candidate_registration_id": publication_commit.candidate_registration_id(),
+            "epoch": active_generation.to_string(),
+            "previousEpoch": previous_generation.to_string(),
+            "previous_epoch": previous_generation.to_string(),
+            "artifactHash": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "artifactId": new_artifact_id,
+            "artifact_id": new_artifact_id,
+            "processId": process_id,
+            "process_id": process_id,
+            "timestampMonotonicNs": commit_ts,
+            "timestamp_monotonic_ns": commit_ts,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+        }],
+        "epoch_commit_events": [{
+            "id": format!("epoch-commit:{active_generation}:{new_artifact_id}"),
+            "event": "unrestricted_visibility_commit",
+            "publicationId": publication_commit.publication_id(),
+            "publication_id": publication_commit.publication_id(),
+            "candidateRegistrationId": publication_commit.candidate_registration_id(),
+            "candidate_registration_id": publication_commit.candidate_registration_id(),
+            "epoch": active_generation.to_string(),
+            "previousEpoch": previous_generation.to_string(),
+            "previous_epoch": previous_generation.to_string(),
+            "artifactHash": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "artifactId": new_artifact_id,
+            "artifact_id": new_artifact_id,
+            "processId": process_id,
+            "process_id": process_id,
+            "timestampMonotonicNs": commit_ts,
+            "timestamp_monotonic_ns": commit_ts,
             "evidenceRefs": evidence_refs,
             "evidence_refs": evidence_refs,
         }],
@@ -2558,6 +2726,10 @@ fn runtime_full_proof_line(
             "epoch": active_generation.to_string(),
             "kernelName": dispatch_record.kernel_name,
             "kernel_name": dispatch_record.kernel_name,
+            "publicationId": publication_commit.publication_id(),
+            "publication_id": publication_commit.publication_id(),
+            "dispatcherRegistrationId": publication_commit.candidate_registration_id(),
+            "dispatcher_registration_id": publication_commit.candidate_registration_id(),
             "processId": process_id,
             "process_id": process_id,
             "timestampMonotonicNs": dispatch_ts,
@@ -2577,6 +2749,10 @@ fn runtime_full_proof_line(
             "epoch": active_generation.to_string(),
             "kernelName": dispatch_record.kernel_name,
             "kernel_name": dispatch_record.kernel_name,
+            "publicationId": publication_commit.publication_id(),
+            "publication_id": publication_commit.publication_id(),
+            "dispatcherRegistrationId": publication_commit.candidate_registration_id(),
+            "dispatcher_registration_id": publication_commit.candidate_registration_id(),
             "processId": process_id,
             "process_id": process_id,
             "timestampMonotonicNs": dispatch_ts,
@@ -2732,6 +2908,10 @@ fn runtime_full_proof_line(
             "previousGeneration": previous_generation,
             "dispatchId": after_dispatch_id,
             "outputOracleId": output_record.oracle_id,
+            "publicationId": publication_commit.publication_id(),
+            "candidateRegistrationId": publication_commit.candidate_registration_id(),
+            "provisionalPublishTimestampMonotonicNs": publish_ts,
+            "commitTimestampMonotonicNs": commit_ts,
         },
     });
     let message = json!({
@@ -4634,7 +4814,7 @@ impl Adapter for GpuModuleAdapter {
                             active_generation,
                             previous_generation,
                             loader_timestamp_monotonic_ns,
-                            publish_timestamp_monotonic_ns,
+                            &publication_commit,
                             retirement_timestamp_monotonic_ns,
                             dispatch_device_identity,
                             &expected_symbols,
@@ -5268,10 +5448,68 @@ mod tests {
             line.contains("\"type\":\"gpu_hmr_acceptance_ledger\"")
                 && line.contains("\"gpuHmrSuccess\":true")
         }));
-        assert!(adapter
+        let proof_line = adapter
             .last_reload_log()
             .iter()
-            .any(|line| line.contains("\"type\":\"gpu_hmr_proof\"")));
+            .find(|line| line.contains("\"type\":\"gpu_hmr_proof\""))
+            .expect("strict GPU HMR proof line");
+        let proof = proof_json_from_line(proof_line);
+        let record = &proof["proofLedger"]["records"][0];
+        let publish = &record["epoch_publish_event"];
+        let commit = &record["epoch_commit_event"];
+        let dispatch = &record["dispatch_event"];
+        assert_eq!(publish["event"], "provisional_install");
+        assert_eq!(commit["event"], "unrestricted_visibility_commit");
+        assert_eq!(publish["publication_id"], commit["publication_id"]);
+        assert_eq!(publish["publication_id"], dispatch["publication_id"]);
+        assert_eq!(
+            publish["candidate_registration_id"],
+            commit["candidate_registration_id"]
+        );
+        assert_eq!(
+            publish["candidate_registration_id"],
+            dispatch["dispatcher_registration_id"]
+        );
+        assert!(publish["publication_id"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        assert!(publish["candidate_registration_id"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        let loader_ts = record["loader_event"]["timestamp_monotonic_ns"]
+            .as_u64()
+            .unwrap();
+        let publish_ts = publish["timestamp_monotonic_ns"].as_u64().unwrap();
+        let dispatch_ts = dispatch["timestamp_monotonic_ns"].as_u64().unwrap();
+        let output_ts = record["output_event"]["timestamp_monotonic_ns"]
+            .as_u64()
+            .unwrap();
+        let commit_ts = commit["timestamp_monotonic_ns"].as_u64().unwrap();
+        let retirement_ts = record["retirement_event"]["timestamp_monotonic_ns"]
+            .as_u64()
+            .unwrap();
+        assert!(loader_ts <= publish_ts);
+        assert!(publish_ts <= dispatch_ts);
+        assert!(dispatch_ts <= output_ts);
+        assert!(output_ts <= commit_ts);
+        assert!(commit_ts <= retirement_ts);
+        let runtime_trace = &proof["runtimeProofArtifact"]["runtimeTrace"];
+        assert_eq!(
+            runtime_trace["epochEvents"][0]["event"],
+            "provisional_install"
+        );
+        assert_eq!(
+            runtime_trace["epochCommitEvents"][0]["event"],
+            "unrestricted_visibility_commit"
+        );
+        assert_eq!(
+            runtime_trace["epochCommitEvents"][0]["publicationId"],
+            runtime_trace["dispatchEvents"][0]["publicationId"]
+        );
+        assert_eq!(
+            runtime_trace["epochCommitEvents"][0]["candidateRegistrationId"],
+            runtime_trace["dispatchEvents"][0]["dispatcherRegistrationId"]
+        );
         let _ = install_runtime_output_oracle_profile_for_tests();
         reset_for_test();
     }
@@ -5411,40 +5649,199 @@ mod tests {
     #[test]
     fn runtime_proof_timestamps_require_observed_monotonic_order() {
         assert_eq!(
-            validate_runtime_proof_timestamps(50, 100, Some(200), 2_000_200, 2_000_300),
+            validate_runtime_proof_timestamps(50, 100, Some(200), 2_000_200, 2_000_250, 2_000_300,),
             Some(RuntimeProofTimestamps {
                 loader_ns: 50,
                 publish_ns: 100,
                 dispatch_ns: 200,
                 output_ns: 2_000_200,
+                commit_ns: 2_000_250,
                 retirement_ns: 2_000_300,
                 dispatch_to_output_ms: 2,
             })
         );
         assert_eq!(
-            validate_runtime_proof_timestamps(50, 100, None, 200, 300),
+            validate_runtime_proof_timestamps(50, 100, None, 200, 250, 300),
             None
         );
         assert_eq!(
-            validate_runtime_proof_timestamps(200, 100, Some(300), 400, 500),
+            validate_runtime_proof_timestamps(200, 100, Some(300), 400, 450, 500),
             None
         );
         assert_eq!(
-            validate_runtime_proof_timestamps(50, 200, Some(100), 300, 400),
+            validate_runtime_proof_timestamps(50, 200, Some(100), 300, 350, 400),
             None
         );
         assert_eq!(
-            validate_runtime_proof_timestamps(50, 100, Some(300), 200, 400),
+            validate_runtime_proof_timestamps(50, 100, Some(300), 200, 350, 400),
             None
         );
         assert_eq!(
-            validate_runtime_proof_timestamps(50, 100, Some(200), 400, 300),
+            validate_runtime_proof_timestamps(50, 100, Some(200), 400, 300, 500),
+            None
+        );
+        assert_eq!(
+            validate_runtime_proof_timestamps(50, 100, Some(200), 300, 500, 400),
             None
         );
     }
 
     #[test]
+    fn runtime_proof_publication_binding_requires_exact_receipt_and_dispatch_registration() {
+        assert_eq!(
+            validate_runtime_publication_binding(
+                "publication:2",
+                1,
+                2,
+                "registration:2",
+                1,
+                2,
+                Some("registration:2"),
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_runtime_publication_binding(
+                "",
+                1,
+                2,
+                "registration:2",
+                1,
+                2,
+                Some("registration:2")
+            ),
+            Err("runtime_proof_publication_id_missing".to_string())
+        );
+        assert_eq!(
+            validate_runtime_publication_binding(
+                "publication:2",
+                0,
+                2,
+                "registration:2",
+                1,
+                2,
+                Some("registration:2"),
+            ),
+            Err("runtime_proof_publication_previous_generation_mismatch".to_string())
+        );
+        assert_eq!(
+            validate_runtime_publication_binding(
+                "publication:2",
+                1,
+                3,
+                "registration:2",
+                1,
+                2,
+                Some("registration:2"),
+            ),
+            Err("runtime_proof_publication_candidate_generation_mismatch".to_string())
+        );
+        assert_eq!(
+            validate_runtime_publication_binding(
+                "publication:2",
+                1,
+                2,
+                "",
+                1,
+                2,
+                Some("registration:2"),
+            ),
+            Err("runtime_proof_candidate_registration_id_missing".to_string())
+        );
+        assert_eq!(
+            validate_runtime_publication_binding(
+                "publication:2",
+                1,
+                2,
+                "registration:2",
+                1,
+                2,
+                Some("registration:stale"),
+            ),
+            Err("runtime_proof_dispatch_registration_mismatch".to_string())
+        );
+        assert_eq!(
+            validate_runtime_publication_binding(
+                "publication:2",
+                2,
+                2,
+                "registration:2",
+                2,
+                2,
+                Some("registration:2"),
+            ),
+            Err("runtime_proof_publication_generation_transition_missing".to_string())
+        );
+        assert_eq!(
+            validate_runtime_publication_binding(
+                "publication:3",
+                1,
+                3,
+                "registration:3",
+                1,
+                3,
+                Some("registration:3"),
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn portable_ledger_canonical_profile_matches_cross_language_golden_id() {
+        let record = json!({
+            "proof_canonical_profile": GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE,
+            "project_id": "project",
+            "edit_id": "edit",
+            "backend": "hip",
+            "classification": {},
+            "contract_hash": "contract",
+            "artifact_before_hash": "before",
+            "artifact_after_hash": "after",
+            "loader_event": {},
+            "epoch_publish_event": {},
+            "epoch_commit_event": {
+                "id": "commit",
+                "safe_integer": GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER,
+                "decimal_fraction": "1.25",
+            },
+            "dispatch_event": {},
+            "output_event": {},
+            "retirement_event": {},
+            "process_identity": {},
+            "device_identity": {},
+            "oracle_artifacts": {},
+            "deterministic_visual_mode": {},
+            "output_oracle_target": {},
+            "metric_clock": null,
+            "metric_scope": null,
+            "cache_state": null,
+            "timings": {},
+            "timing_metrics": {},
+            "model_provenance": {},
+            "evidence_refs": [],
+            "cpu_hmr_used": false,
+            "full_rebuild_used": false,
+            "process_restarted": false,
+            "firewall_evidence": {
+                "cpu_hmr_used": false,
+                "full_rebuild_used": false,
+                "process_restarted": false,
+            },
+        });
+        assert_eq!(
+            canonical_runtime_ledger_proof_id(&record),
+            "gpu-ledger-proof:sha256:6b7c1a2fe57042594e099b136b20ddb54fc529b9e55638bde4d089fc689f4f4e"
+        );
+        let mut unsafe_number = record;
+        unsafe_number["epoch_commit_event"]["unsafe_integer"] =
+            json!(GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER + 1);
+        assert!(!portable_canonical_json_numbers_supported(&unsafe_number));
+    }
+
+    #[test]
     fn strict_runtime_proof_builder_reports_content_binding_gap() {
+        let unreachable_commit =
+            DispatcherCommitReceipt::for_test("publication:test", 1, 2, "registration:test", 2, 3);
         let unreachable_dispatch_identity = VerifiedRuntimeDispatchDeviceIdentity {
             runtime_session_id: runtime_session_id().to_string(),
             active_generation: 2,
@@ -5467,7 +5864,7 @@ mod tests {
             2,
             1,
             1,
-            2,
+            &unreachable_commit,
             3,
             &unreachable_dispatch_identity,
             &[],

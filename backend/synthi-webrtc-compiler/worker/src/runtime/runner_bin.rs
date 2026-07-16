@@ -245,6 +245,9 @@ fn gpu_reload_result_allows_adapter_restore(result: &AdapterReloadResult) -> boo
 
 #[cfg(feature = "gpu-hmr")]
 const RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof_ledger.v1";
+const RUNNER_GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE: &str =
+    "synthi.gpu_hmr.proof_ledger.portable.v2";
+const RUNNER_GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 #[cfg(feature = "gpu-hmr")]
 const RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof.v1";
 #[cfg(feature = "gpu-hmr")]
@@ -314,7 +317,7 @@ fn runtime_proof_json_object_or_empty(value: &serde_json::Value, key: &str) -> s
 #[cfg(feature = "gpu-hmr")]
 fn canonical_runner_runtime_ledger_proof_id(record: &serde_json::Value) -> String {
     let firewall = runtime_proof_json_object_or_empty(record, "firewall_evidence");
-    let material = serde_json::json!({
+    let mut material = serde_json::json!({
         "schemaVersion": RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
         "projectId": runtime_proof_json_field(record, "project_id"),
         "editId": runtime_proof_json_field(record, "edit_id"),
@@ -355,10 +358,235 @@ fn canonical_runner_runtime_ledger_proof_id(record: &serde_json::Value) -> Strin
                 .and_then(|value| value.as_str().map(str::to_string).or_else(|| value.as_u64().map(|pid| pid.to_string()))),
         },
     });
+    if record
+        .get("proof_canonical_profile")
+        .and_then(serde_json::Value::as_str)
+        == Some(RUNNER_GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE)
+    {
+        let object = material
+            .as_object_mut()
+            .expect("canonical runner ledger proof material is an object");
+        object.insert(
+            "proofCanonicalProfile".to_string(),
+            serde_json::json!(RUNNER_GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE),
+        );
+        if record.get("epoch_commit_event").is_some() {
+            object.insert(
+                "epochCommitEvent".to_string(),
+                runtime_proof_json_object_or_empty(record, "epoch_commit_event"),
+            );
+        }
+    }
     format!(
         "gpu-ledger-proof:sha256:{}",
         runtime_proof_json_sha256(&material)
     )
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn portable_runner_json_numbers_supported(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Number(number) => number
+            .as_i64()
+            .map(|value| value.unsigned_abs() <= RUNNER_GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER)
+            .or_else(|| {
+                number
+                    .as_u64()
+                    .map(|value| value <= RUNNER_GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER)
+            })
+            .unwrap_or(false),
+        serde_json::Value::Array(values) => {
+            values.iter().all(portable_runner_json_numbers_supported)
+        }
+        serde_json::Value::Object(fields) => {
+            fields.values().all(portable_runner_json_numbers_supported)
+        }
+        _ => true,
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn portable_runner_json_aliases_consistent(value: &serde_json::Value) -> bool {
+    fn alias_group_consistent(
+        fields: &serde_json::Map<String, serde_json::Value>,
+        names: &[&str],
+    ) -> bool {
+        let mut values = names.iter().filter_map(|name| fields.get(*name));
+        let Some(first) = values.next() else {
+            return true;
+        };
+        values.all(|value| value == first)
+    }
+
+    match value {
+        serde_json::Value::Array(values) => {
+            values.iter().all(portable_runner_json_aliases_consistent)
+        }
+        serde_json::Value::Object(fields) => {
+            let semantic_aliases_match = [
+                &["backend", "gpu_backend", "gpuBackend"][..],
+                &[
+                    "artifact_after_hash",
+                    "changed_gpu_artifact_hash",
+                    "changedGpuArtifactHash",
+                ][..],
+                &[
+                    "artifact_hash",
+                    "artifact_id",
+                    "artifactHash",
+                    "artifactId",
+                    "loaded_artifact_id",
+                    "loadedArtifactId",
+                    "published_artifact_id",
+                    "publishedArtifactId",
+                ][..],
+            ]
+            .iter()
+            .all(|names| alias_group_consistent(fields, names));
+            semantic_aliases_match
+                && fields.iter().all(|(key, field_value)| {
+                    let mut camel_key = String::with_capacity(key.len());
+                    let mut uppercase_next = false;
+                    let mut had_separator = false;
+                    for character in key.chars() {
+                        if character == '_' {
+                            uppercase_next = true;
+                            had_separator = true;
+                        } else if uppercase_next {
+                            camel_key.push(character.to_ascii_uppercase());
+                            uppercase_next = false;
+                        } else {
+                            camel_key.push(character);
+                        }
+                    }
+                    let alias_matches = !had_separator
+                        || fields
+                            .get(&camel_key)
+                            .is_none_or(|alias_value| alias_value == field_value);
+                    alias_matches && portable_runner_json_aliases_consistent(field_value)
+                })
+        }
+        _ => true,
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+#[derive(Clone, Copy)]
+enum PortableRunnerEventAliasMode {
+    Standard,
+    Dispatch,
+    Output,
+    Retirement,
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn portable_runner_event_aliases_consistent(
+    event: &serde_json::Value,
+    mode: PortableRunnerEventAliasMode,
+) -> bool {
+    let Some(fields) = event.as_object() else {
+        return false;
+    };
+    let alias_group_consistent = |names: &[&str]| {
+        let mut values = names.iter().filter_map(|name| fields.get(*name));
+        let Some(first) = values.next() else {
+            return true;
+        };
+        values.all(|value| value == first)
+    };
+
+    let standard_event_ids = ["id", "event_id", "eventId", "proof_id", "proofId"];
+    let dispatch_event_ids = [
+        "id",
+        "event_id",
+        "eventId",
+        "proof_id",
+        "proofId",
+        "dispatch_id",
+        "dispatchId",
+    ];
+    let event_ids = if matches!(mode, PortableRunnerEventAliasMode::Dispatch) {
+        dispatch_event_ids.as_slice()
+    } else {
+        standard_event_ids.as_slice()
+    };
+    let artifact_ids = [
+        "artifact_hash",
+        "artifactHash",
+        "artifact_id",
+        "artifactId",
+        "loaded_artifact_hash",
+        "loadedArtifactHash",
+        "loaded_artifact_id",
+        "loadedArtifactId",
+        "published_artifact_hash",
+        "publishedArtifactHash",
+        "published_artifact_id",
+        "publishedArtifactId",
+        "runtime_artifact_id",
+        "runtimeArtifactId",
+        "selected_artifact_id",
+        "selectedArtifactId",
+        "new_artifact_hash",
+        "newArtifactHash",
+        "hash",
+    ];
+    let standard_groups = [
+        event_ids,
+        &["event", "event_kind", "eventKind", "kind"],
+        &["epoch", "epoch_id", "epochId", "generation"],
+        artifact_ids.as_slice(),
+        &["process_id", "processId", "pid"],
+        &["publication_id", "publicationId"],
+        &["candidate_registration_id", "candidateRegistrationId"],
+        &["dispatcher_registration_id", "dispatcherRegistrationId"],
+        &["previous_epoch", "previousEpoch"],
+        &["device_uuid", "deviceUuid", "device_id", "deviceId"],
+        &[
+            "timestamp_monotonic_ns",
+            "timestampMonotonicNs",
+            "timestamp_ms",
+            "timestampMs",
+            "ts",
+        ],
+        &[
+            "passed",
+            "success",
+            "succeeded",
+            "accepted",
+            "gpu_hmr_success",
+            "gpuHmrSuccess",
+        ],
+    ];
+    standard_groups
+        .iter()
+        .all(|group| alias_group_consistent(group))
+        && (!matches!(mode, PortableRunnerEventAliasMode::Output)
+            || alias_group_consistent(&[
+                "after_dispatch_id",
+                "afterDispatchId",
+                "dispatch_id",
+                "dispatchId",
+            ]))
+        && (!matches!(mode, PortableRunnerEventAliasMode::Retirement)
+            || (alias_group_consistent(&[
+                "status",
+                "result",
+                "retirement_result",
+                "retirementResult",
+            ]) && alias_group_consistent(&["proof", "retirement_proof", "retirementProof"])))
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn canonical_runner_epoch(value: Option<&str>) -> Option<u64> {
+    let value = value?;
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    value.parse::<u64>().ok()
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -369,6 +597,13 @@ fn expected_runtime_artifact_id(artifact_content_hash: &str) -> Option<String> {
             artifact_content_hash.trim_start_matches("sha256:")
         )
     })
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn canonical_runtime_artifact_id(value: &str) -> bool {
+    value
+        .strip_prefix("artifact:")
+        .is_some_and(canonical_sha256_content_hash)
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -391,6 +626,29 @@ fn strict_runtime_record_chain_matches(
     };
     let event_process = |event: &str| field_str(&format!("/{event}/process_id"));
     let process_id = event_process("loader_event");
+    let commit_event_id = field_str("/epoch_commit_event/id");
+    let previous_epoch = field_str("/epoch_publish_event/previous_epoch");
+    let candidate_epoch = field_str("/epoch_publish_event/epoch");
+    let publication_id = field_str("/epoch_commit_event/publication_id");
+    let candidate_registration_id = field_str("/epoch_commit_event/candidate_registration_id");
+    let previous_artifact_id = field_str("/artifact_before_hash");
+    let canonical_record_proof_id = canonical_runner_runtime_ledger_proof_id(record);
+    let record_proof_id_matches = ["proof_id", "proofId"]
+        .iter()
+        .filter_map(|name| record.get(*name))
+        .all(|value| value.as_str() == Some(canonical_record_proof_id.as_str()));
+    let generation_transition_matches = canonical_runner_epoch(previous_epoch)
+        .zip(canonical_runner_epoch(candidate_epoch))
+        .is_some_and(|(previous, candidate)| candidate > previous);
+    let retirement_proof_accepted = matches!(
+        field_str("/retirement_event/retirement_proof"),
+        Some(
+            "stream_event_proven"
+                | "queue_idle_proven"
+                | "frame_boundary_proven"
+                | "no_retirement_required"
+        )
+    );
     let firewall = record.get("firewall_evidence");
     let evidence_refs = record
         .get("evidence_refs")
@@ -403,6 +661,11 @@ fn strict_runtime_record_chain_matches(
         .get("schemaVersion")
         .and_then(serde_json::Value::as_str)
         == Some(RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION)
+        && field_str("/proof_canonical_profile")
+            == Some(RUNNER_GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE)
+        && portable_runner_json_numbers_supported(record)
+        && portable_runner_json_aliases_consistent(record)
+        && record_proof_id_matches
         && record.get("edit_id").and_then(serde_json::Value::as_str) == Some(source_edit_id)
         && record
             .get("artifact_after_hash")
@@ -411,11 +674,59 @@ fn strict_runtime_record_chain_matches(
         && record
             .get("artifact_before_hash")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|before| before != expected_artifact_id)
+            .is_some_and(|before| {
+                canonical_runtime_artifact_id(before) && before != expected_artifact_id
+            })
+        && portable_runner_event_aliases_consistent(
+            &record["loader_event"],
+            PortableRunnerEventAliasMode::Standard,
+        )
+        && portable_runner_event_aliases_consistent(
+            &record["epoch_publish_event"],
+            PortableRunnerEventAliasMode::Standard,
+        )
+        && portable_runner_event_aliases_consistent(
+            &record["epoch_commit_event"],
+            PortableRunnerEventAliasMode::Standard,
+        )
+        && portable_runner_event_aliases_consistent(
+            &record["dispatch_event"],
+            PortableRunnerEventAliasMode::Dispatch,
+        )
+        && portable_runner_event_aliases_consistent(
+            &record["output_event"],
+            PortableRunnerEventAliasMode::Output,
+        )
+        && portable_runner_event_aliases_consistent(
+            &record["retirement_event"],
+            PortableRunnerEventAliasMode::Retirement,
+        )
         && event_artifact_matches("loader_event")
         && event_artifact_matches("epoch_publish_event")
+        && event_artifact_matches("epoch_commit_event")
         && event_artifact_matches("dispatch_event")
         && event_artifact_matches("output_event")
+        && field_str("/epoch_publish_event/event") == Some("provisional_install")
+        && field_str("/epoch_publish_event/kind")
+            .is_none_or(|kind| Some(kind) == field_str("/epoch_publish_event/event"))
+        && field_str("/epoch_commit_event/event") == Some("unrestricted_visibility_commit")
+        && field_str("/epoch_commit_event/kind")
+            .is_none_or(|kind| Some(kind) == field_str("/epoch_commit_event/event"))
+        && commit_event_id.is_some_and(|value| !value.is_empty())
+        && generation_transition_matches
+        && publication_id.is_some_and(|value| !value.is_empty())
+        && candidate_registration_id.is_some_and(|value| !value.is_empty())
+        && field_str("/epoch_publish_event/publication_id") == publication_id
+        && field_str("/dispatch_event/publication_id") == publication_id
+        && field_str("/epoch_publish_event/candidate_registration_id") == candidate_registration_id
+        && field_str("/dispatch_event/dispatcher_registration_id") == candidate_registration_id
+        && field_str("/epoch_commit_event/epoch") == field_str("/epoch_publish_event/epoch")
+        && field_str("/epoch_commit_event/previous_epoch") == previous_epoch
+        && field_str("/retirement_event/epoch") == previous_epoch
+        && field_str("/retirement_event/artifact_hash") == previous_artifact_id
+        && field_str("/retirement_event/artifact_id") == previous_artifact_id
+        && field_str("/retirement_event/status") == Some("retired_after_quiescent")
+        && retirement_proof_accepted
         && field_str("/dispatch_event/epoch") == field_str("/epoch_publish_event/epoch")
         && field_str("/output_event/epoch") == field_str("/dispatch_event/epoch")
         && field_str("/output_event/after_dispatch_id") == field_str("/dispatch_event/id")
@@ -425,6 +736,7 @@ fn strict_runtime_record_chain_matches(
             == Some(true)
         && process_id == Some(expected_process_id)
         && event_process("epoch_publish_event") == process_id
+        && event_process("epoch_commit_event") == process_id
         && event_process("dispatch_event") == process_id
         && event_process("output_event") == process_id
         && event_process("retirement_event") == process_id
@@ -472,10 +784,21 @@ fn strict_runtime_record_chain_matches(
             .zip(field_u64("/output_event/timestamp_monotonic_ns"))
             .is_some_and(|(dispatch, output)| dispatch <= output)
         && field_u64("/output_event/timestamp_monotonic_ns")
+            .zip(field_u64("/epoch_commit_event/timestamp_monotonic_ns"))
+            .is_some_and(|(output, commit)| output <= commit)
+        && field_u64("/epoch_commit_event/timestamp_monotonic_ns")
             .zip(field_u64("/retirement_event/timestamp_monotonic_ns"))
-            .is_some_and(|(output, retirement)| output <= retirement)
+            .is_some_and(|(commit, retirement)| commit <= retirement)
         && has_ref(&format!("reload:{request_id}"))
         && has_ref(&format!("source-edit-id:{source_edit_id}"))
+        && has_ref(&format!(
+            "dispatcher-publication:{}",
+            publication_id.unwrap_or_default()
+        ))
+        && has_ref(&format!(
+            "dispatcher-registration:{}",
+            candidate_registration_id.unwrap_or_default()
+        ))
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -674,7 +997,9 @@ fn matching_strict_gpu_runtime_proof_id(
     let expected_runtime_session_id = runtime_session_id();
     log_lines.iter().rev().find_map(|line| {
         let proof = serde_json::from_str::<serde_json::Value>(line).ok()?;
-        if proof.get("type").and_then(serde_json::Value::as_str) != Some("gpu_hmr_proof")
+        if !portable_runner_json_numbers_supported(&proof)
+            || !portable_runner_json_aliases_consistent(&proof)
+            || proof.get("type").and_then(serde_json::Value::as_str) != Some("gpu_hmr_proof")
             || proof
                 .get("schemaVersion")
                 .and_then(serde_json::Value::as_str)
@@ -781,6 +1106,10 @@ fn matching_strict_gpu_runtime_proof_id(
                 != proof_ledger
                     .get("proofId")
                     .and_then(serde_json::Value::as_str)
+            || runtime_artifact
+                .pointer("/proofLedgerQuery/schemaVersion")
+                .and_then(serde_json::Value::as_str)
+                != Some(RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION)
             || runtime_artifact
                 .pointer("/explicitProofLedgerRecord/edit_id")
                 .and_then(serde_json::Value::as_str)
@@ -3366,8 +3695,9 @@ mod tests {
         strict_gpu_reload_terminal_result_with_oracle_records,
         validate_gpu_reload_artifact_content_hash, AdapterReloadResult, ArtifactLoaderTransport,
         ReloadArtifactBlob, RUNNER_GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
-        RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE, RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
-        RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION, RUNNER_GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
+        RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE, RUNNER_GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER,
+        RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION, RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION,
+        RUNNER_GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
     };
     use super::{
         decode_gpu_kernel_command_token, device_load_abi_version, is_runtime_execution_paused,
@@ -4020,9 +4350,12 @@ mod tests {
         let evidence_refs = vec![
             format!("reload:{request_id}"),
             format!("source-edit-id:{source_edit_id}"),
+            "dispatcher-publication:publication:2".to_string(),
+            "dispatcher-registration:registration:2".to_string(),
         ];
         let record = serde_json::json!({
             "schemaVersion": RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+            "proof_canonical_profile": super::RUNNER_GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE,
             "project_id": "content-bound-fixture",
             "edit_id": source_edit_id,
             "backend": "rocm",
@@ -4043,14 +4376,32 @@ mod tests {
             },
             "epoch_publish_event": {
                 "id": "epoch:2",
+                "event": "provisional_install",
+                "publication_id": "publication:2",
+                "candidate_registration_id": "registration:2",
                 "epoch": "2",
+                "previous_epoch": "1",
                 "artifact_id": artifact_id,
                 "artifact_hash": artifact_id,
                 "timestamp_monotonic_ns": 20,
                 "process_id": process_id,
             },
+            "epoch_commit_event": {
+                "id": "epoch-commit:2",
+                "event": "unrestricted_visibility_commit",
+                "publication_id": "publication:2",
+                "candidate_registration_id": "registration:2",
+                "epoch": "2",
+                "previous_epoch": "1",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 45,
+                "process_id": process_id,
+            },
             "dispatch_event": {
                 "id": dispatch_id,
+                "publication_id": "publication:2",
+                "dispatcher_registration_id": "registration:2",
                 "epoch": "2",
                 "artifact_id": artifact_id,
                 "artifact_hash": artifact_id,
@@ -4079,8 +4430,12 @@ mod tests {
             },
             "retirement_event": {
                 "id": "retirement:1",
+                "epoch": "1",
                 "artifact_id": previous_artifact_id,
                 "artifact_hash": previous_artifact_id,
+                "status": "retired_after_quiescent",
+                "retirement_proof": "stream_event_proven",
+                "retirement_strategy": "epoch_fence",
                 "timestamp_monotonic_ns": 50,
                 "process_id": process_id,
             },
@@ -4129,6 +4484,7 @@ mod tests {
             "limitations": [],
             "proofLedger": proof_ledger,
             "proofLedgerQuery": {
+                "schemaVersion": RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
                 "proofId": ledger_proof_id,
                 "gpuHmrSuccess": true,
                 "failedInvariants": [],
@@ -4195,6 +4551,50 @@ mod tests {
         assert!(terminal.gpu_hmr_success);
 
         assert_eq!(terminal.artifact_content_hash, artifact_content_hash);
+
+        let parsed_proof = serde_json::from_str::<serde_json::Value>(&proof_line).unwrap();
+        let mut conflicting_outer_id = parsed_proof.clone();
+        conflicting_outer_id["proof_id"] = serde_json::json!("gpu-runtime-proof:stale");
+        let mut conflicting_artifact_id = parsed_proof.clone();
+        conflicting_artifact_id["runtimeProofArtifact"]["proof_id"] =
+            serde_json::json!("gpu-runtime-proof:stale");
+        let mut conflicting_query_id = parsed_proof.clone();
+        conflicting_query_id["runtimeProofArtifact"]["proofLedgerQuery"]["proof_id"] =
+            serde_json::json!("gpu-ledger-proof:stale");
+        for replay in [
+            conflicting_outer_id,
+            conflicting_artifact_id,
+            conflicting_query_id,
+        ] {
+            let rejected = strict_gpu_reload_terminal_result_with_oracle_records(
+                &request_id,
+                &source_edit_id,
+                &artifact_content_hash,
+                &success,
+                &[replay.to_string()],
+                std::slice::from_ref(&oracle_receipt),
+            )
+            .unwrap();
+            assert_eq!(rejected.status, "rejected");
+            assert!(!rejected.gpu_hmr_success);
+        }
+
+        let mut missing_query_schema = parsed_proof;
+        missing_query_schema["runtimeProofArtifact"]["proofLedgerQuery"]
+            .as_object_mut()
+            .unwrap()
+            .remove("schemaVersion");
+        let rejected = strict_gpu_reload_terminal_result_with_oracle_records(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &success,
+            &[missing_query_schema.to_string()],
+            std::slice::from_ref(&oracle_receipt),
+        )
+        .unwrap();
+        assert_eq!(rejected.status, "rejected");
+        assert!(!rejected.gpu_hmr_success);
 
         let missing = strict_gpu_reload_terminal_result_with_oracle_records(
             &request_id,
@@ -4305,6 +4705,240 @@ mod tests {
         .unwrap();
         assert_eq!(forged_live_bytes.status, "rejected");
         assert!(!forged_live_bytes.gpu_hmr_success);
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn strict_runtime_record_chain_binds_publication_dispatch_commit_and_retirement() {
+        let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
+        let request_id = format!("gpu-reload:request:{}", "2".repeat(32));
+        let artifact_content_hash = format!("sha256:{}", "b".repeat(64));
+        let process_id = std::process::id().to_string();
+        let runtime_session_id = super::runtime_session_id().to_string();
+        let (proof_line, _, _) = strict_runtime_proof_fixture(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &process_id,
+            &runtime_session_id,
+        );
+        let proof: serde_json::Value = serde_json::from_str(&proof_line).unwrap();
+        let record = proof.pointer("/proofLedger/records/0").unwrap();
+        let matches = |candidate: &serde_json::Value| {
+            super::strict_runtime_record_chain_matches(
+                candidate,
+                &request_id,
+                &source_edit_id,
+                &artifact_content_hash,
+                &process_id,
+                &runtime_session_id,
+            )
+        };
+        assert!(matches(record));
+
+        let mut missing_commit = record.clone();
+        missing_commit
+            .as_object_mut()
+            .unwrap()
+            .remove("epoch_commit_event");
+        assert!(!matches(&missing_commit));
+
+        let mut stale_registration = record.clone();
+        stale_registration["dispatch_event"]["dispatcher_registration_id"] =
+            serde_json::json!("registration:stale");
+        assert!(!matches(&stale_registration));
+
+        let mut commit_before_output = record.clone();
+        commit_before_output["epoch_commit_event"]["timestamp_monotonic_ns"] =
+            serde_json::json!(39);
+        assert!(!matches(&commit_before_output));
+
+        let mut retirement_before_commit = record.clone();
+        retirement_before_commit["retirement_event"]["timestamp_monotonic_ns"] =
+            serde_json::json!(44);
+        assert!(!matches(&retirement_before_commit));
+
+        let mut stale_retirement_epoch = record.clone();
+        stale_retirement_epoch["retirement_event"]["epoch"] = serde_json::json!("0");
+        assert!(!matches(&stale_retirement_epoch));
+
+        let mut missing_epoch_transition = record.clone();
+        missing_epoch_transition["epoch_publish_event"]["previous_epoch"] = serde_json::json!("2");
+        missing_epoch_transition["epoch_commit_event"]["previous_epoch"] = serde_json::json!("2");
+        missing_epoch_transition["retirement_event"]["epoch"] = serde_json::json!("2");
+        assert!(!matches(&missing_epoch_transition));
+
+        let mut numerically_equal_epoch = record.clone();
+        for event in [
+            "epoch_publish_event",
+            "epoch_commit_event",
+            "dispatch_event",
+            "output_event",
+        ] {
+            numerically_equal_epoch[event]["epoch"] = serde_json::json!("01");
+        }
+        assert!(!matches(&numerically_equal_epoch));
+
+        let mut skipped_epoch = record.clone();
+        for event in [
+            "epoch_publish_event",
+            "epoch_commit_event",
+            "dispatch_event",
+            "output_event",
+        ] {
+            skipped_epoch[event]["epoch"] = serde_json::json!("3");
+        }
+        assert!(matches(&skipped_epoch));
+
+        let mut failed_retirement = record.clone();
+        failed_retirement["retirement_event"]["status"] = serde_json::json!("retirement_failed");
+        failed_retirement["retirement_event"]["retirement_proof"] = serde_json::json!("unproven");
+        assert!(!matches(&failed_retirement));
+
+        let mut conflicting_retirement_result = record.clone();
+        conflicting_retirement_result["retirement_event"]["result"] =
+            serde_json::json!("retirement_failed");
+        assert!(!matches(&conflicting_retirement_result));
+
+        let mut conflicting_retirement_proof = record.clone();
+        conflicting_retirement_proof["retirement_event"]["proof"] = serde_json::json!("unproven");
+        assert!(!matches(&conflicting_retirement_proof));
+
+        let mut candidate_retirement = record.clone();
+        let candidate_artifact = candidate_retirement["artifact_after_hash"].clone();
+        candidate_retirement["retirement_event"]["artifact_id"] = candidate_artifact.clone();
+        candidate_retirement["retirement_event"]["artifact_hash"] = candidate_artifact;
+        assert!(!matches(&candidate_retirement));
+
+        let mut conflicting_backend_alias = record.clone();
+        conflicting_backend_alias["gpu_backend"] = serde_json::json!("cuda");
+        assert!(!matches(&conflicting_backend_alias));
+
+        let mut conflicting_changed_artifact_alias = record.clone();
+        conflicting_changed_artifact_alias["changed_gpu_artifact_hash"] =
+            conflicting_changed_artifact_alias["artifact_before_hash"].clone();
+        assert!(!matches(&conflicting_changed_artifact_alias));
+
+        let mut conflicting_event_kind = record.clone();
+        conflicting_event_kind["epoch_publish_event"]["kind"] =
+            serde_json::json!("unrestricted_visibility_commit");
+        assert!(!matches(&conflicting_event_kind));
+
+        for event in [
+            "loader_event",
+            "dispatch_event",
+            "output_event",
+            "retirement_event",
+        ] {
+            let mut conflicting_event_alias = record.clone();
+            conflicting_event_alias[event]["event"] = serde_json::json!("observed");
+            conflicting_event_alias[event]["event_kind"] = serde_json::json!("forged");
+            assert!(!matches(&conflicting_event_alias), "{event}");
+        }
+
+        let mut conflicting_dispatch_id = record.clone();
+        conflicting_dispatch_id["dispatch_event"]["dispatch_id"] =
+            serde_json::json!("dispatch:stale");
+        assert!(!matches(&conflicting_dispatch_id));
+
+        let mut stale_event_proof_id = record.clone();
+        stale_event_proof_id["loader_event"]["proof_id"] = serde_json::json!("loader:stale");
+        assert!(!matches(&stale_event_proof_id));
+
+        let mut unsafe_number = record.clone();
+        unsafe_number["epoch_commit_event"]["unsafe_integer"] =
+            serde_json::json!(RUNNER_GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER + 1);
+        assert!(!matches(&unsafe_number));
+
+        let mut conflicting_alias = record.clone();
+        conflicting_alias["output_event"]["afterDispatchId"] = serde_json::json!("dispatch:stale");
+        assert!(!matches(&conflicting_alias));
+
+        let mut conflicting_proof_id_alias = record.clone();
+        conflicting_proof_id_alias["proof_id"] = serde_json::json!("proof:one");
+        conflicting_proof_id_alias["proofId"] = serde_json::json!("proof:two");
+        assert!(!matches(&conflicting_proof_id_alias));
+
+        let mut stale_record_proof_id = record.clone();
+        stale_record_proof_id["proof_id"] = serde_json::json!("gpu-ledger-proof:stale");
+        assert!(!matches(&stale_record_proof_id));
+
+        let mut matching_record_proof_id = record.clone();
+        matching_record_proof_id["proof_id"] =
+            serde_json::json!(canonical_runner_runtime_ledger_proof_id(record));
+        assert!(matches(&matching_record_proof_id));
+
+        for malformed_previous_artifact in [
+            "build/old.hsaco",
+            " artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifact:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ] {
+            let mut malformed_previous = record.clone();
+            malformed_previous["artifact_before_hash"] =
+                serde_json::json!(malformed_previous_artifact);
+            malformed_previous["retirement_event"]["artifact_id"] =
+                serde_json::json!(malformed_previous_artifact);
+            malformed_previous["retirement_event"]["artifact_hash"] =
+                serde_json::json!(malformed_previous_artifact);
+            assert!(
+                !matches(&malformed_previous),
+                "{malformed_previous_artifact}"
+            );
+        }
+
+        let mut string_timestamp = record.clone();
+        string_timestamp["epoch_commit_event"]["timestamp_monotonic_ns"] =
+            serde_json::json!("9007199254740992");
+        assert!(!matches(&string_timestamp));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn portable_ledger_canonical_profile_matches_cross_language_golden_id() {
+        let record = serde_json::json!({
+            "proof_canonical_profile": super::RUNNER_GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE,
+            "project_id": "project",
+            "edit_id": "edit",
+            "backend": "hip",
+            "classification": {},
+            "contract_hash": "contract",
+            "artifact_before_hash": "before",
+            "artifact_after_hash": "after",
+            "loader_event": {},
+            "epoch_publish_event": {},
+            "epoch_commit_event": {
+                "id": "commit",
+                "safe_integer": super::RUNNER_GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER,
+                "decimal_fraction": "1.25",
+            },
+            "dispatch_event": {},
+            "output_event": {},
+            "retirement_event": {},
+            "process_identity": {},
+            "device_identity": {},
+            "oracle_artifacts": {},
+            "deterministic_visual_mode": {},
+            "output_oracle_target": {},
+            "metric_clock": null,
+            "metric_scope": null,
+            "cache_state": null,
+            "timings": {},
+            "timing_metrics": {},
+            "model_provenance": {},
+            "evidence_refs": [],
+            "cpu_hmr_used": false,
+            "full_rebuild_used": false,
+            "process_restarted": false,
+            "firewall_evidence": {
+                "cpu_hmr_used": false,
+                "full_rebuild_used": false,
+                "process_restarted": false,
+            },
+        });
+        assert_eq!(
+            super::canonical_runner_runtime_ledger_proof_id(&record),
+            "gpu-ledger-proof:sha256:6b7c1a2fe57042594e099b136b20ddb54fc529b9e55638bde4d089fc689f4f4e"
+        );
     }
 
     #[cfg(feature = "gpu-hmr")]
