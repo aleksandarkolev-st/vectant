@@ -11095,24 +11095,46 @@ async function selfCheck({ workerImage = null, commandJson = null } = {}) {
   if (
     genericRuntimeBoundaryResult.status !== 'unprofiled_arbitrary_project_cold_intake_runtime_profile_bridged_refused'
     || genericRuntimeBoundaryResult.runtimeProfileProofBridgeAccepted !== true
-    || genericRuntimeBoundaryResult.runtimeProfileStrictRuntimeProofAccepted !== true
-    || genericRuntimeBoundaryResult.runtimeProfileProofBridge?.strictRuntimeProofId === null
-    || genericRuntimeBoundaryResult.runtimeProfileProofBridge?.proofLedgerId === null
-    || genericRuntimeBoundaryResult.runtimeProfileProofBridge?.runtimeBoundaryProofAdapterAccepted !== true
+    || genericRuntimeBoundaryResult.runtimeProfileStrictRuntimeProofAccepted !== false
+    || genericRuntimeBoundaryResult.runtimeProfileProofBridge?.strictRuntimeProofId !== null
+    || genericRuntimeBoundaryResult.runtimeProfileProofBridge?.proofLedgerId !== null
+    || genericRuntimeBoundaryResult.runtimeProfileProofBridge?.runtimeBoundaryProofAdapterAccepted !== false
     || !genericRuntimeBoundaryResult.runtimeProfileProofBridge?.runtimeBoundaryEventManifestSha256?.startsWith('sha256:')
     || genericRuntimeBoundaryResult.runtimeBoundaryPlanBindingAccepted !== false
     || genericRuntimeBoundaryResult.runtimeBoundaryPlanBinding !== null
-    || genericRuntimeBoundaryResult.blockingGaps?.includes('same_process_loader_unproven')
-    || genericRuntimeBoundaryResult.blockingGaps?.includes('epoch_publication_unproven')
-    || genericRuntimeBoundaryResult.blockingGaps?.includes('dispatch_trace_unproven')
-    || genericRuntimeBoundaryResult.blockingGaps?.includes('host_identity_unproven')
-    || genericRuntimeBoundaryResult.blockingGaps?.includes('output_oracle_unproven')
-    || !genericRuntimeBoundaryResult.blockingGaps?.includes('cold_path_runtime_profile_proof_requires_matrix_ingestion')
+    || !genericRuntimeBoundaryResult.blockingGaps?.includes('same_process_loader_unproven')
+    || !genericRuntimeBoundaryResult.blockingGaps?.includes('epoch_publication_unproven')
+    || !genericRuntimeBoundaryResult.blockingGaps?.includes('dispatch_trace_unproven')
+    || !genericRuntimeBoundaryResult.blockingGaps?.includes('host_identity_unproven')
+    || !genericRuntimeBoundaryResult.blockingGaps?.includes('output_oracle_unproven')
+    || !genericRuntimeBoundaryResult.blockingGaps?.includes(
+      'runtime_profile_adapter_strict_runtime_proof_not_accepted',
+    )
+    || !genericRuntimeBoundaryResult.blockingGaps?.includes(
+      'runtime_support_closure_requires_strict_runtime_proof',
+    )
+    || !genericRuntimeBoundaryResult.blockingGaps?.includes('strict_runtime_ledger_missing')
+    || genericRuntimeBoundaryResult.blockingGaps?.includes(
+      'cold_path_runtime_profile_proof_requires_matrix_ingestion',
+    )
     || genericRuntimeBoundaryResult.acceptedForGpuHmr !== false
     || genericRuntimeBoundaryResult.gpuHmrSuccess !== false
     || genericRuntimeBoundaryResult.canSatisfyRuntimeProof !== false
   ) {
-    throw new Error('random large-project cold-path generic runtime-boundary bridge self-check failed');
+    throw new Error(
+      `random large-project cold-path generic runtime-boundary bridge self-check failed: ${stableJson({
+        status: genericRuntimeBoundaryResult.status,
+        runtimeProfileProofBridgeAccepted:
+          genericRuntimeBoundaryResult.runtimeProfileProofBridgeAccepted,
+        runtimeProfileStrictRuntimeProofAccepted:
+          genericRuntimeBoundaryResult.runtimeProfileStrictRuntimeProofAccepted,
+        runtimeProfileProofBridge: genericRuntimeBoundaryResult.runtimeProfileProofBridge,
+        runtimeBoundaryPlanBindingAccepted:
+          genericRuntimeBoundaryResult.runtimeBoundaryPlanBindingAccepted,
+        runtimeBoundaryPlanBinding: genericRuntimeBoundaryResult.runtimeBoundaryPlanBinding,
+        blockingGaps: genericRuntimeBoundaryResult.blockingGaps,
+      })}`,
+    );
   }
   const spoofedDirectPool = await loadCandidates({
     candidatesJson: JSON.stringify([
