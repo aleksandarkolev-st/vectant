@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +14,7 @@ import {
 import {
   attachRandomLargeColdPathTestTiming,
   buildManifest,
+  installRandomLargeColdPathTerminalHandlers,
 } from '../gpu-hmr-random-large-project-cold-path.mjs';
 
 function advancingClock(initialNs = 0n) {
@@ -21,6 +23,16 @@ function advancingClock(initialNs = 0n) {
     currentNs += 1n;
     return currentNs;
   };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function completeChildTiming(outcome, initialNs, { visualCapable = false } = {}) {
@@ -244,6 +256,108 @@ try {
     assert.deepEqual(persisted.results[0].testTiming, childTiming);
     assert.deepEqual(persisted.results[0].test_timing, childTiming);
     assert.deepEqual(persisted.testTiming, manifest.testTiming);
+  }
+
+  const candidateStarted = deferred();
+  const releaseCandidate = deferred();
+  let retainParentTerminal = null;
+  const retentionPersistenceEvents = [];
+  const interruptedBuild = buildManifest({
+    seed: 'parent-terminal-retention',
+    count: 1,
+    dryRun: false,
+    timeoutMs: 100,
+    runnerTimeoutMs: 100,
+    sourceIntake: false,
+    sourceIntakeTimeoutMs: 100,
+    candidates: [candidate],
+    outputDir: path.join(tmpRoot, 'parent-terminal-retention'),
+    sourceMode: 'configured_candidate_pool',
+    registerTerminalRetention: (retain) => {
+      retainParentTerminal = retain;
+    },
+    onManifestPersisted: (event) => retentionPersistenceEvents.push(event),
+    runCandidate: async (selectedCandidate) => {
+      candidateStarted.resolve();
+      await releaseCandidate.promise;
+      return {
+        candidateId: selectedCandidate.id,
+        status: 'runner_completed',
+        exitCode: 0,
+        acceptedForGpuHmr: false,
+        gpuHmrSuccess: false,
+        canSatisfyRuntimeProof: false,
+      };
+    },
+  });
+  await candidateStarted.promise;
+  assert.equal(typeof retainParentTerminal, 'function');
+  const retainedInterruption = await retainParentTerminal({
+    kind: 'signal',
+    signal: 'SIGTERM',
+  });
+  assert.equal(retainedInterruption.manifest.eventType, 'cold_path_interrupted');
+  assert.equal(retainedInterruption.manifest.lifecycleState, 'interrupted');
+  assert.equal(retainedInterruption.manifest.results.length, 1);
+  assert.equal(
+    retainedInterruption.manifest.results[0].status,
+    'parent_sigterm_interrupted',
+  );
+  assert.equal(retainedInterruption.manifest.results[0].signal, 'SIGTERM');
+  assert.equal(retainedInterruption.manifest.results[0].acceptedForGpuHmr, false);
+  assert.equal(retainedInterruption.manifest.results[0].gpuHmrSuccess, false);
+  assert.equal(retainedInterruption.manifest.results[0].canSatisfyRuntimeProof, false);
+  assertParentTiming(retainedInterruption.manifest.testTiming, 'failed');
+  assert.deepEqual(
+    retentionPersistenceEvents
+      .filter((event) => event.stage.startsWith('parent_terminal'))
+      .map((event) => [event.stage, event.timingAttached]),
+    [
+      ['parent_terminal_outcome', false],
+      ['parent_terminal_timing', true],
+    ],
+  );
+  const persistedInterruption = JSON.parse(
+    await readFile(retainedInterruption.written.filePath, 'utf8'),
+  );
+  assert.deepEqual(persistedInterruption.testTiming, retainedInterruption.manifest.testTiming);
+  releaseCandidate.resolve();
+  await interruptedBuild;
+
+  for (const [eventName, emittedArgs, expected] of [
+    ['SIGINT', [], { kind: 'signal', signal: 'SIGINT', exitCode: 130 }],
+    ['SIGTERM', [], { kind: 'signal', signal: 'SIGTERM', exitCode: 143 }],
+    [
+      'uncaughtException',
+      [Object.assign(new Error('must-not-enter-retained-output'), { name: 'ProbeException' })],
+      { kind: 'unhandled_error', signal: null, exitCode: 1, errorName: 'ProbeException' },
+    ],
+    [
+      'unhandledRejection',
+      [Object.assign(new Error('must-not-enter-retained-output'), { name: 'ProbeRejection' })],
+      { kind: 'unhandled_error', signal: null, exitCode: 1, errorName: 'ProbeRejection' },
+    ],
+  ]) {
+    const processTarget = new EventEmitter();
+    const retainedEvents = [];
+    const exitCodes = [];
+    const reportedErrors = [];
+    const handlers = installRandomLargeColdPathTerminalHandlers({
+      processTarget,
+      retainTerminal: async (event) => retainedEvents.push(event),
+      exitProcess: (code) => exitCodes.push(code),
+      reportError: (error) => reportedErrors.push(error),
+    });
+    processTarget.emit(eventName, ...emittedArgs);
+    processTarget.emit(eventName, ...emittedArgs);
+    await handlers.waitForTerminal();
+    assert.equal(retainedEvents.length, 1);
+    assert.equal(retainedEvents[0].kind, expected.kind);
+    assert.equal(retainedEvents[0].signal, expected.signal);
+    assert.equal(retainedEvents[0].errorName, expected.errorName ?? null);
+    assert.deepEqual(exitCodes, [expected.exitCode]);
+    assert.deepEqual(reportedErrors, []);
+    handlers.dispose();
   }
 } finally {
   await rm(tmpRoot, { recursive: true, force: true });

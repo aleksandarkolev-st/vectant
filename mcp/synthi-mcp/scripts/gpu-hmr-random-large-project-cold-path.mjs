@@ -771,6 +771,114 @@ function finalizeRandomLargeColdPathTiming(recorder, lifecycleState) {
   });
 }
 
+function normalizedParentTerminalEvent(event = {}) {
+  const kind = event?.kind === 'signal' ? 'signal' : 'unhandled_error';
+  const signal = kind === 'signal' && ['SIGINT', 'SIGTERM'].includes(event?.signal)
+    ? event.signal
+    : null;
+  const reasonCode = kind === 'signal'
+    ? `parent_${signal?.toLowerCase() ?? 'signal'}_interrupted`
+    : event?.reasonCode === 'uncaught_exception'
+      ? 'parent_uncaught_exception_failed_closed'
+      : 'parent_unhandled_rejection_failed_closed';
+  return Object.freeze({
+    kind,
+    signal,
+    reasonCode,
+    lifecycleState: kind === 'signal' ? 'interrupted' : 'failed',
+    exitCode: signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : 1,
+    errorName: kind === 'unhandled_error'
+      ? firstString(event?.errorName, event?.error?.name, 'Error')
+      : null,
+  });
+}
+
+function parentTerminalResult(candidate, terminalEvent, { active = false } = {}) {
+  return {
+    candidateId: candidate.id,
+    status: active
+      ? terminalEvent.reasonCode
+      : `${terminalEvent.reasonCode}_before_candidate_execution`,
+    lifecycleState: terminalEvent.lifecycleState,
+    lifecycle_state: terminalEvent.lifecycleState,
+    terminalEventKind: terminalEvent.kind,
+    terminal_event_kind: terminalEvent.kind,
+    signal: terminalEvent.signal,
+    errorName: terminalEvent.errorName,
+    error_name: terminalEvent.errorName,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+  };
+}
+
+export function installRandomLargeColdPathTerminalHandlers({
+  processTarget = process,
+  retainTerminal,
+  exitProcess = (code) => processTarget.exit(code),
+  reportError = (error) => console.error(error?.stack || error?.message || String(error)),
+} = {}) {
+  if (
+    !processTarget
+    || typeof processTarget.once !== 'function'
+    || typeof processTarget.removeListener !== 'function'
+    || typeof retainTerminal !== 'function'
+    || typeof exitProcess !== 'function'
+    || typeof reportError !== 'function'
+  ) {
+    throw new TypeError('random large cold-path terminal handler options are invalid');
+  }
+
+  let terminalPromise = null;
+  let disposed = false;
+  const listeners = new Map();
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    for (const [eventName, listener] of listeners) {
+      processTarget.removeListener(eventName, listener);
+    }
+    listeners.clear();
+  };
+  const beginTerminalRetention = (event) => {
+    if (terminalPromise) return terminalPromise;
+    const terminalEvent = normalizedParentTerminalEvent(event);
+    dispose();
+    terminalPromise = (async () => {
+      try {
+        await retainTerminal(terminalEvent);
+      } catch (error) {
+        reportError(error);
+      } finally {
+        exitProcess(terminalEvent.exitCode);
+      }
+      return terminalEvent;
+    })();
+    return terminalPromise;
+  };
+  const register = (eventName, listener) => {
+    listeners.set(eventName, listener);
+    processTarget.once(eventName, listener);
+  };
+  register('SIGINT', () => beginTerminalRetention({ kind: 'signal', signal: 'SIGINT' }));
+  register('SIGTERM', () => beginTerminalRetention({ kind: 'signal', signal: 'SIGTERM' }));
+  register('uncaughtException', (error) => beginTerminalRetention({
+    kind: 'unhandled_error',
+    reasonCode: 'uncaught_exception',
+    error,
+  }));
+  register('unhandledRejection', (error) => beginTerminalRetention({
+    kind: 'unhandled_error',
+    reasonCode: 'unhandled_rejection',
+    error,
+  }));
+
+  return Object.freeze({
+    dispose,
+    waitForTerminal: () => terminalPromise ?? Promise.resolve(null),
+  });
+}
+
 function firstArrayField(object, ...keys) {
   const source = object && typeof object === 'object' ? object : {};
   for (const key of keys) {
@@ -7164,14 +7272,113 @@ export async function buildManifest({
   runCandidate = runSelectedCandidate,
   timingClock = null,
   onManifestPersisted = null,
+  registerTerminalRetention = null,
 }) {
   const timingRecorder = createRandomLargeColdPathTimingRecorder({ clock: timingClock });
+  const terminalTimingRecorder = createRandomLargeColdPathTimingRecorder({ clock: timingClock });
   const pendingTimingRecorder = dryRun
     ? null
     : createRandomLargeColdPathTimingRecorder({ clock: timingClock, pending: true });
+  const runId = makeStamp();
+  const startedAt = new Date().toISOString();
+  const results = [];
+  let selected = [];
+  let activeCandidate = null;
+  let pendingWritten = null;
+  let terminalRetentionPromise = null;
+  const retainParentTerminal = (event) => {
+    if (terminalRetentionPromise) return terminalRetentionPromise;
+    const terminalEvent = event?.exitCode && event?.reasonCode
+      ? event
+      : normalizedParentTerminalEvent(event);
+    terminalRetentionPromise = (async () => {
+      const completedCandidateIds = new Set(
+        results.map((result) => firstString(result?.candidateId, result?.candidate_id)),
+      );
+      const terminalResults = [
+        ...results,
+        ...selected
+          .filter((candidate) => !completedCandidateIds.has(candidate.id))
+          .map((candidate) => parentTerminalResult(
+            candidate,
+            terminalEvent,
+            { active: candidate.id === activeCandidate?.id },
+          )),
+      ];
+      terminalTimingRecorder.startPhase('proof_finalization');
+      const terminalManifest = createManifest({
+        runId,
+        seed,
+        count,
+        candidateId,
+        dryRun,
+        timeoutMs,
+        runnerTimeoutMs,
+        sourceIntake,
+        sourceIntakeTimeoutMs,
+        candidates,
+        selected,
+        sourceMode,
+        requireDirectSource,
+        samplePool,
+        coldBuildCommandSpec,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        eventType: terminalEvent.lifecycleState === 'interrupted'
+          ? 'cold_path_interrupted'
+          : 'cold_path_failed_closed',
+        status: terminalEvent.lifecycleState,
+        lifecycleState: terminalEvent.lifecycleState,
+        results: terminalResults,
+        pendingWritten,
+      });
+      const terminalOutcomeWritten = await writeManifest(
+        terminalManifest,
+        outputDir,
+        { suffix: `-parent-${terminalEvent.lifecycleState}` },
+      );
+      await notifyManifestPersisted(
+        onManifestPersisted,
+        'parent_terminal_outcome',
+        terminalManifest,
+        terminalOutcomeWritten,
+      );
+      terminalTimingRecorder.finishPhase('proof_finalization');
+      attachRandomLargeColdPathTestTiming(
+        terminalManifest,
+        finalizeRandomLargeColdPathTiming(
+          terminalTimingRecorder,
+          terminalEvent.lifecycleState,
+        ),
+      );
+      const written = await writeManifest(
+        terminalManifest,
+        outputDir,
+        { filePath: terminalOutcomeWritten.filePath },
+      );
+      await notifyManifestPersisted(
+        onManifestPersisted,
+        'parent_terminal_timing',
+        terminalManifest,
+        written,
+      );
+      return {
+        manifest: {
+          ...terminalManifest,
+          manifestPath: written.filePath,
+          manifestHash: written.hash,
+        },
+        written,
+      };
+    })();
+    return terminalRetentionPromise;
+  };
+  if (typeof registerTerminalRetention === 'function') {
+    registerTerminalRetention(retainParentTerminal);
+  }
   timingRecorder.startPhase('discovery');
+  terminalTimingRecorder.startPhase('discovery');
   pendingTimingRecorder?.startPhase('discovery');
-  let selected;
   try {
     selected = selectCandidates({
       candidates,
@@ -7182,11 +7389,9 @@ export async function buildManifest({
     });
   } finally {
     timingRecorder.finishPhase('discovery');
+    terminalTimingRecorder.finishPhase('discovery');
     pendingTimingRecorder?.finishPhase('discovery');
   }
-  const runId = makeStamp();
-  const startedAt = new Date().toISOString();
-  let pendingWritten = null;
   if (!dryRun) {
     pendingTimingRecorder.startPhase('proof_finalization');
     const pendingManifest = createManifest({
@@ -7246,8 +7451,8 @@ export async function buildManifest({
       pendingWritten,
     );
   }
-  const results = [];
   for (const candidate of selected) {
+    activeCandidate = candidate;
     try {
       results.push(await runCandidate(candidate, {
         dryRun,
@@ -7266,6 +7471,8 @@ export async function buildManifest({
         gpuHmrSuccess: false,
         canSatisfyRuntimeProof: false,
       });
+    } finally {
+      activeCandidate = null;
     }
   }
   const finishedAt = new Date().toISOString();
@@ -9665,22 +9872,44 @@ async function main() {
   });
   const count = Number(args.count ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_COUNT ?? defaultCount);
   const effectiveCount = directCandidate ? 1 : count;
-  const { manifest, written } = await buildManifest({
-    seed,
-    count: effectiveCount,
-    candidateId: effectiveCandidateId,
-    dryRun,
-    timeoutMs,
-    runnerTimeoutMs,
-    sourceIntake,
-    sourceIntakeTimeoutMs,
-    candidates,
-    sourceMode,
-    requireDirectSource,
-    samplePool: samplePoolModeRequested(args),
-    coldBuildCommandSpec,
-    outputDir: path.resolve(args.outputDir ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_OUTPUT_DIR ?? LOG_DIR),
+  let retainParentTerminal = null;
+  const terminalHandlers = installRandomLargeColdPathTerminalHandlers({
+    retainTerminal: (event) => {
+      if (typeof retainParentTerminal !== 'function') {
+        throw new Error('random_large_cold_path_terminal_retention_not_registered');
+      }
+      return retainParentTerminal(event);
+    },
   });
+  let manifest;
+  let written;
+  try {
+    ({ manifest, written } = await buildManifest({
+      seed,
+      count: effectiveCount,
+      candidateId: effectiveCandidateId,
+      dryRun,
+      timeoutMs,
+      runnerTimeoutMs,
+      sourceIntake,
+      sourceIntakeTimeoutMs,
+      candidates,
+      sourceMode,
+      requireDirectSource,
+      samplePool: samplePoolModeRequested(args),
+      coldBuildCommandSpec,
+      outputDir: path.resolve(
+        args.outputDir
+          ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_OUTPUT_DIR
+          ?? LOG_DIR,
+      ),
+      registerTerminalRetention: (retain) => {
+        retainParentTerminal = retain;
+      },
+    }));
+  } finally {
+    terminalHandlers.dispose();
+  }
   console.log(JSON.stringify({
     ok: true,
     schemaVersion: SCHEMA,
