@@ -4,6 +4,10 @@ import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION } from './lib/gpu-hmr-runtime-profile.mjs';
+import {
+  GPU_HMR_TEST_TIMING_SCHEMA,
+  GpuHmrTestTimingRecorder,
+} from './lib/gpu-hmr-test-timing-v2.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MCP_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -89,6 +93,34 @@ const REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS = Object.freeze([
   'dispatch_trace',
   'host_identity',
   'output_oracle',
+]);
+
+const TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON =
+  'random_large_cold_path_orchestrator_has_no_visual_observer';
+const TEST_TIMING_PENDING_REASON = 'random_large_cold_path_execution_pending';
+const TEST_TIMING_PARENT_PHASE_REASON =
+  'candidate_phase_boundaries_not_observed_by_manifest_clock';
+const TEST_TIMING_SPLIT_NOT_APPLICABLE_REASON =
+  'split_not_performed_by_random_large_cold_path_orchestrator';
+const TEST_TIMING_PARENT_UNAVAILABLE_PHASES = Object.freeze([
+  'cold_intake',
+  'compile',
+  'load',
+  'epoch_publication',
+  'dispatch',
+  'retirement',
+]);
+const TEST_TIMING_VISUAL_PHASES = Object.freeze([
+  'trigger_to_visible',
+  'screenshot_capture',
+  'visual_analysis',
+]);
+const RANDOM_LARGE_COLD_PATH_LIFECYCLE_STATES = new Set([
+  'pending',
+  'completed',
+  'refused',
+  'failed',
+  'interrupted',
 ]);
 
 const RUNTIME_BOUNDARY_ADAPTER_INPUT_REQUIRED_FIELDS = Object.freeze([
@@ -644,6 +676,92 @@ function firstString(...values) {
     if (text) return text;
   }
   return null;
+}
+
+export function attachRandomLargeColdPathTestTiming(target, testTiming) {
+  if (!target || typeof target !== 'object' || Array.isArray(target)) {
+    throw new TypeError('random large cold-path timing attachment target must be an object');
+  }
+  if (testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA) {
+    throw new TypeError('random large cold-path timing attachment requires timing v2');
+  }
+  target.testTiming = testTiming;
+  target.test_timing = testTiming;
+  return target;
+}
+
+function createRandomLargeColdPathTimingRecorder({ clock, pending = false } = {}) {
+  const recorder = new GpuHmrTestTimingRecorder(
+    typeof clock === 'function' ? { clock } : undefined,
+  );
+  const unavailableReason = pending
+    ? TEST_TIMING_PENDING_REASON
+    : TEST_TIMING_PARENT_PHASE_REASON;
+  for (const phaseKey of TEST_TIMING_PARENT_UNAVAILABLE_PHASES) {
+    recorder.unavailable(phaseKey, unavailableReason);
+  }
+  recorder.notApplicable('split', TEST_TIMING_SPLIT_NOT_APPLICABLE_REASON);
+  for (const phaseKey of TEST_TIMING_VISUAL_PHASES) {
+    recorder.notApplicable(phaseKey, TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON);
+  }
+  if (pending) recorder.unavailable('output_ready', TEST_TIMING_PENDING_REASON);
+  return recorder;
+}
+
+function measureRandomLargeColdPathTimingPhase(recorder, phaseKey, operation) {
+  recorder.startPhase(phaseKey);
+  try {
+    return operation();
+  } finally {
+    recorder.finishPhase(phaseKey);
+  }
+}
+
+function resultLifecycleState(result) {
+  const explicitState = firstString(result?.lifecycleState, result?.lifecycle_state);
+  if (RANDOM_LARGE_COLD_PATH_LIFECYCLE_STATES.has(explicitState)) return explicitState;
+
+  const status = firstString(result?.status)?.toLowerCase() ?? '';
+  const timedOut = result?.timedOut === true || result?.timed_out === true;
+  if (
+    (!timedOut && firstString(result?.signal))
+    || /(?:^|[_-])(?:interrupt|interrupted|terminated|signal)(?:[_-]|$)/.test(status)
+  ) {
+    return 'interrupted';
+  }
+  if (
+    timedOut
+    || result?.error
+    || (Number.isInteger(result?.exitCode) && result.exitCode !== 0)
+    || /(?:^|[_-])(?:fail|failed|failure|error|timeout)(?:[_-]|$)/.test(status)
+  ) {
+    return 'failed';
+  }
+  if (/(?:^|[_-])(?:refused|unsupported|not_executed|not_supported)(?:[_-]|$)/.test(status)) {
+    return 'refused';
+  }
+  return 'completed';
+}
+
+function manifestLifecycleState(results, { dryRun = false } = {}) {
+  if (dryRun) return 'refused';
+  const states = (Array.isArray(results) ? results : []).map(resultLifecycleState);
+  if (states.includes('interrupted')) return 'interrupted';
+  if (states.includes('failed')) return 'failed';
+  if (states.length === 0 || states.every((state) => state === 'refused')) return 'refused';
+  return 'completed';
+}
+
+function finalizeRandomLargeColdPathTiming(recorder, lifecycleState) {
+  const outcome = lifecycleState === 'completed'
+    ? 'pass'
+    : lifecycleState === 'refused' || lifecycleState === 'pending'
+      ? 'refused'
+      : 'failed';
+  return recorder.finalize({
+    outcome,
+    visualCapable: false,
+  });
 }
 
 function firstArrayField(object, ...keys) {
@@ -7005,7 +7123,7 @@ async function writeManifest(manifest, outputDir = LOG_DIR, { suffix = '', fileP
   return { filePath: resolvedFilePath, hash: contentHash(body) };
 }
 
-async function buildManifest({
+export async function buildManifest({
   seed,
   count,
   candidateId,
@@ -7021,49 +7139,72 @@ async function buildManifest({
   samplePool = false,
   coldBuildCommandSpec = null,
   runCandidate = runSelectedCandidate,
+  timingClock = null,
 }) {
-  const selected = selectCandidates({
-    candidates,
-    seed,
-    count,
-    candidateId,
-    stratifyByClass: sourceMode === 'configured_sample_pool',
-  });
+  const timingRecorder = createRandomLargeColdPathTimingRecorder({ clock: timingClock });
+  const pendingTimingRecorder = dryRun
+    ? null
+    : createRandomLargeColdPathTimingRecorder({ clock: timingClock, pending: true });
+  timingRecorder.startPhase('discovery');
+  pendingTimingRecorder?.startPhase('discovery');
+  let selected;
+  try {
+    selected = selectCandidates({
+      candidates,
+      seed,
+      count,
+      candidateId,
+      stratifyByClass: sourceMode === 'configured_sample_pool',
+    });
+  } finally {
+    timingRecorder.finishPhase('discovery');
+    pendingTimingRecorder?.finishPhase('discovery');
+  }
   const runId = makeStamp();
   const startedAt = new Date().toISOString();
   let pendingWritten = null;
   if (!dryRun) {
-    const pendingManifest = createManifest({
-      runId,
-      seed,
-      count,
-      candidateId,
-      dryRun,
-      timeoutMs,
-      runnerTimeoutMs,
-      sourceIntake,
-      sourceIntakeTimeoutMs,
-      candidates,
-      selected,
-      sourceMode,
-      requireDirectSource,
-      samplePool,
-      coldBuildCommandSpec,
-      startedAt,
-      finishedAt: null,
-      eventType: 'cold_path_pending',
-      status: 'pending',
-      results: selected.map((candidate) => ({
-        candidateId: candidate.id,
-        status: 'selected_pending_execution',
-        acceptedForGpuHmr: false,
-        gpuHmrSuccess: false,
-        canSatisfyRuntimeProof: false,
-      })),
-    });
+    const pendingManifest = measureRandomLargeColdPathTimingPhase(
+      pendingTimingRecorder,
+      'proof_finalization',
+      () => createManifest({
+        runId,
+        seed,
+        count,
+        candidateId,
+        dryRun,
+        timeoutMs,
+        runnerTimeoutMs,
+        sourceIntake,
+        sourceIntakeTimeoutMs,
+        candidates,
+        selected,
+        sourceMode,
+        requireDirectSource,
+        samplePool,
+        coldBuildCommandSpec,
+        startedAt,
+        finishedAt: null,
+        eventType: 'cold_path_pending',
+        status: 'pending',
+        lifecycleState: 'pending',
+        results: selected.map((candidate) => ({
+          candidateId: candidate.id,
+          status: 'selected_pending_execution',
+          acceptedForGpuHmr: false,
+          gpuHmrSuccess: false,
+          canSatisfyRuntimeProof: false,
+        })),
+      }),
+    );
+    attachRandomLargeColdPathTestTiming(
+      pendingManifest,
+      finalizeRandomLargeColdPathTiming(pendingTimingRecorder, 'pending'),
+    );
     pendingWritten = await writeManifest(pendingManifest, outputDir, { suffix: '-pending' });
   }
   const results = [];
+  timingRecorder.startPhase('output_ready');
   for (const candidate of selected) {
     try {
       results.push(await runCandidate(candidate, {
@@ -7085,30 +7226,41 @@ async function buildManifest({
       });
     }
   }
+  timingRecorder.finishPhase('output_ready');
   const finishedAt = new Date().toISOString();
-  const manifest = createManifest({
-    runId,
-    seed,
-    count,
-    candidateId,
-    dryRun,
-    timeoutMs,
-    runnerTimeoutMs,
-    sourceIntake,
-    sourceIntakeTimeoutMs,
-    candidates,
-    selected,
-    sourceMode,
-    requireDirectSource,
-    samplePool,
-    coldBuildCommandSpec,
-    startedAt,
-    finishedAt,
-    eventType: 'cold_path_complete',
-    status: 'complete',
-    results,
-    pendingWritten,
-  });
+  const lifecycleState = manifestLifecycleState(results, { dryRun });
+  const manifest = measureRandomLargeColdPathTimingPhase(
+    timingRecorder,
+    'proof_finalization',
+    () => createManifest({
+      runId,
+      seed,
+      count,
+      candidateId,
+      dryRun,
+      timeoutMs,
+      runnerTimeoutMs,
+      sourceIntake,
+      sourceIntakeTimeoutMs,
+      candidates,
+      selected,
+      sourceMode,
+      requireDirectSource,
+      samplePool,
+      coldBuildCommandSpec,
+      startedAt,
+      finishedAt,
+      eventType: 'cold_path_complete',
+      status: 'complete',
+      lifecycleState,
+      results,
+      pendingWritten,
+    }),
+  );
+  attachRandomLargeColdPathTestTiming(
+    manifest,
+    finalizeRandomLargeColdPathTiming(timingRecorder, lifecycleState),
+  );
   const written = await writeManifest(manifest, outputDir);
   return { manifest: { ...manifest, manifestPath: written.filePath, manifestHash: written.hash }, written };
 }
@@ -7133,6 +7285,7 @@ function createManifest({
   finishedAt,
   eventType,
   status,
+  lifecycleState = status === 'pending' ? 'pending' : 'completed',
   results,
   pendingWritten = null,
 }) {
@@ -7182,6 +7335,8 @@ function createManifest({
     eventType,
     event_type: eventType,
     status,
+    lifecycleState,
+    lifecycle_state: lifecycleState,
     startedAt,
     started_at: startedAt,
     finishedAt,
@@ -9482,7 +9637,9 @@ async function main() {
   }, null, 2));
 }
 
-main().catch((error) => {
-  console.error(error?.stack || error?.message || String(error));
-  process.exit(1);
-});
+if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error?.stack || error?.message || String(error));
+    process.exit(1);
+  });
+}
