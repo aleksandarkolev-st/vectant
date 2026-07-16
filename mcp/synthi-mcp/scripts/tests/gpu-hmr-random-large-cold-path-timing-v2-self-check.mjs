@@ -10,7 +10,10 @@ import {
   GpuHmrTestTimingRecorder,
   validateGpuHmrTestTiming,
 } from '../lib/gpu-hmr-test-timing-v2.mjs';
-import { buildManifest } from '../gpu-hmr-random-large-project-cold-path.mjs';
+import {
+  attachRandomLargeColdPathTestTiming,
+  buildManifest,
+} from '../gpu-hmr-random-large-project-cold-path.mjs';
 
 function advancingClock(initialNs = 0n) {
   let currentNs = initialNs;
@@ -69,6 +72,31 @@ function assertParentTiming(record, expectedOutcome, { pending = false } = {}) {
       assert.ok(phase.reasonCode.length > 0);
     }
   }
+}
+
+const validAttachmentTiming = completeChildTiming('refused', 100n);
+const validAttachmentTarget = {};
+attachRandomLargeColdPathTestTiming(validAttachmentTarget, validAttachmentTiming);
+assert.equal(validAttachmentTarget.testTiming, validAttachmentTiming);
+assert.equal(validAttachmentTarget.test_timing, validAttachmentTiming);
+
+for (const forgedFields of [
+  { authority: 'gpu_hmr_success_authority' },
+  { timingOnly: false },
+  { acceptedForGpuHmr: true },
+  { gpuHmrSuccess: true },
+]) {
+  const forgedTiming = {
+    ...structuredClone(validAttachmentTiming),
+    ...forgedFields,
+  };
+  const target = {};
+  assert.throws(
+    () => attachRandomLargeColdPathTestTiming(target, forgedTiming),
+    /valid support-only timing v2/,
+  );
+  assert.equal(Object.hasOwn(target, 'testTiming'), false);
+  assert.equal(Object.hasOwn(target, 'test_timing'), false);
 }
 
 const candidate = {

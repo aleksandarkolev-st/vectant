@@ -7,6 +7,7 @@ import { GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION } from './lib/gpu-hmr-runtime-pr
 import {
   GPU_HMR_TEST_TIMING_SCHEMA,
   GpuHmrTestTimingRecorder,
+  validateGpuHmrTestTiming,
 } from './lib/gpu-hmr-test-timing-v2.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -682,8 +683,18 @@ export function attachRandomLargeColdPathTestTiming(target, testTiming) {
   if (!target || typeof target !== 'object' || Array.isArray(target)) {
     throw new TypeError('random large cold-path timing attachment target must be an object');
   }
-  if (testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA) {
-    throw new TypeError('random large cold-path timing attachment requires timing v2');
+  const validation = validateGpuHmrTestTiming(testTiming);
+  if (
+    testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA
+    || validation.valid !== true
+    || testTiming?.authority !== 'timing_only'
+    || testTiming?.timingOnly !== true
+    || testTiming?.acceptedForGpuHmr !== false
+    || testTiming?.gpuHmrSuccess !== false
+  ) {
+    throw new TypeError(
+      'random large cold-path timing attachment requires valid support-only timing v2',
+    );
   }
   target.testTiming = testTiming;
   target.test_timing = testTiming;
