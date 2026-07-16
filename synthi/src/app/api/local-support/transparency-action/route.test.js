@@ -6,6 +6,7 @@ const cloudMocks = vi.hoisted(() => ({
   enqueue: vi.fn(),
   findSession: vi.fn(),
   revoke: vi.fn(),
+  policy: vi.fn(),
 }));
 
 vi.mock("next-auth", () => ({ getServerSession: cloudMocks.session }));
@@ -27,10 +28,9 @@ vi.mock("@/lib/local-support/adminStore", () => ({
   recordDurableAdminRevocation: cloudMocks.revoke,
 }));
 
-vi.mock("@/lib/local-support/policyStore", async () => {
-  const controlPlane = await import("@/lib/local-support/controlPlane");
-  return { readDurableLocalSupportPolicy: async () => controlPlane.readLocalSupportPolicy() };
-});
+vi.mock("@/lib/local-support/policyStore", () => ({
+  readDurableLocalSupportPolicy: (...args) => cloudMocks.policy(...args),
+}));
 
 import { POST, buildFullAccessEnrollmentProposal } from "./route";
 
@@ -42,6 +42,10 @@ beforeEach(() => {
   cloudMocks.enqueue.mockResolvedValue({ commandId: "cmd_12345678" });
   cloudMocks.findSession.mockResolvedValue(null);
   cloudMocks.revoke.mockResolvedValue({ decision: "revocation_required", revocation_recorded: true });
+  cloudMocks.policy.mockImplementation(async () => {
+    const controlPlane = await import("@/lib/local-support/controlPlane");
+    return controlPlane.readLocalSupportPolicy();
+  });
 });
 
 afterEach(() => {
@@ -52,11 +56,16 @@ afterEach(() => {
   cloudMocks.enqueue.mockReset();
   cloudMocks.findSession.mockReset();
   cloudMocks.revoke.mockReset();
+  cloudMocks.policy.mockReset();
   cloudMocks.session.mockResolvedValue(null);
   cloudMocks.cloudState.mockResolvedValue(null);
   cloudMocks.enqueue.mockResolvedValue({ commandId: "cmd_12345678" });
   cloudMocks.findSession.mockResolvedValue(null);
   cloudMocks.revoke.mockResolvedValue({ decision: "revocation_required", revocation_recorded: true });
+  cloudMocks.policy.mockImplementation(async () => {
+    const controlPlane = await import("@/lib/local-support/controlPlane");
+    return controlPlane.readLocalSupportPolicy();
+  });
 });
 
 function request(body, headers = {}) {
@@ -111,6 +120,47 @@ describe("local support transparency action route", () => {
       },
     });
     expect(buildFullAccessEnrollmentProposal(policy, "browser_user")).toBeNull();
+  });
+
+  it("queues an authenticated bounded enrollment proposal for native desktop confirmation", async () => {
+    const enrollment = {
+      policy_major: 1, mandatory_reconsent_version: 3, allowed_support_actors: ["support_agent"],
+      max_bytes_per_request: 4096, max_bytes_per_session: 16384, max_requests_per_minute: 10,
+      max_concurrent_reads: 1, max_process_records: 32, allowed_command_executables: [],
+      max_command_timeout_seconds: 30, max_command_output_bytes: 4096, max_command_concurrency: 1,
+      allowed_loopback_ports: [], enrollment_ttl_seconds: 60,
+    };
+    cloudMocks.policy.mockResolvedValue({
+      enabled: true, policy_version: "2026.07.05",
+      full_access: {
+        enabled: true, auto_approval_enabled: false, process_visibility_enabled: false,
+        workspace_mutation_enabled: false, command_execution_enabled: false,
+        local_port_discovery_enabled: false, local_port_use_enabled: false, enrollment,
+      },
+    });
+    cloudMocks.session.mockResolvedValue({ user: { id: "acct_live" } });
+    cloudMocks.cloudState.mockResolvedValue({
+      session: { connected: true, session_id: "sess_live_12345678", account_id: "acct_live", org_id: "org_live" },
+      workspace: { workspace_id: "wk_live_12345678", display: "Live workspace" },
+      full_access: { enrolled: false },
+    });
+    cloudMocks.findSession.mockResolvedValue({
+      sessionId: "sess_live_12345678", accountId: "acct_live", orgId: "org_live",
+      workspaceId: "wk_live_12345678", deviceFingerprint: "sha256:1111111111111111",
+    });
+
+    const response = await POST(request({
+      action: "full_access_enrollment_proposal", support_actor: "support_agent",
+      session_id: "sess_live_12345678", workspace_id: "wk_live_12345678",
+    }));
+    const json = await response.json();
+
+    expect(response.status).toBe(202);
+    expect(json).toMatchObject({ decision: "local_control_command_queued", action: "full_access_enrollment_proposal" });
+    expect(cloudMocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      action: "full_access_enrollment_proposal",
+      proposal: expect.objectContaining({ support_actor: "support_agent", policy: expect.objectContaining({ allowed_capabilities: expect.arrayContaining(["enroll", "graph_read"]) }) }),
+    }));
   });
 
   it("denies disconnected page-only actions instead of faking local storage changes", async () => {
