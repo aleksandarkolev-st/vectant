@@ -66,7 +66,7 @@ fn list_workspace_processes_platform(
         GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
-    let root = workspace_root.to_string_lossy().to_ascii_lowercase();
+    let root = comparable_windows_path(workspace_root.to_string_lossy().as_ref());
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return Err(ProcessInspectionError::Unavailable);
@@ -90,10 +90,7 @@ fn list_workspace_processes_platform(
                 }
                 path.truncate(length as usize);
                 let full_path = OsString::from_wide(&path).to_string_lossy().into_owned();
-                if !full_path
-                    .to_ascii_lowercase()
-                    .starts_with(&(root.clone() + "\\"))
-                {
+                if !comparable_windows_path(&full_path).starts_with(&(root.clone() + "\\")) {
                     return None;
                 }
                 let (mut creation, mut exit, mut kernel, mut user) = (
@@ -136,6 +133,17 @@ fn list_workspace_processes_platform(
         CloseHandle(snapshot);
     }
     Ok(result)
+}
+
+#[cfg(windows)]
+fn comparable_windows_path(path: &str) -> String {
+    // Process image APIs may return an extended-length Win32 path while the
+    // selected workspace comes from a normal Win32 path. Normalize only that
+    // representation prefix for comparison; the unmodified image path remains
+    // confined to the opaque identity hash below.
+    path.trim_start_matches(r"\\?\")
+        .trim_start_matches(r"\??\")
+        .to_ascii_lowercase()
 }
 
 #[cfg(target_os = "linux")]
@@ -284,6 +292,18 @@ mod windows_tests {
         assert!(!serialized.contains(&pid));
         assert!(!serialized.contains(root.path().to_string_lossy().as_ref()));
         assert!(!serialized.contains("workspace_probe.exe"));
+    }
+
+    #[test]
+    fn normalizes_extended_paths_only_for_workspace_comparison() {
+        assert_eq!(
+            comparable_windows_path(r"\\?\C:\\Workspace\\app.exe"),
+            r"c:\\workspace\\app.exe"
+        );
+        assert_eq!(
+            comparable_windows_path(r"\??\C:\\Workspace\\app.exe"),
+            r"c:\\workspace\\app.exe"
+        );
     }
 }
 
