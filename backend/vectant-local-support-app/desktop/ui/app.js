@@ -54,7 +54,7 @@ const fallbackState = {
   approvals: [],
   ports: [],
   activity: [],
-  fullAccess: { enrolled: false, autoApproval: false, processVisibilityPaused: false, graphNodeCount: 0, automaticDeliveryPaused: false },
+  fullAccess: { enrolled: false, autoApproval: false, processVisibilityPaused: false, graphNodeCount: 0, automaticDeliveryPaused: false, localMutations: [] },
   updatePolicy: {
     available: false,
     enabled: false,
@@ -187,6 +187,24 @@ function renderFullAccess(fullAccess) {
   actionButtons.pauseFullAccess.disabled = !enrolled || fullAccess.automaticDeliveryPaused;
   actionButtons.pauseProcessVisibility.disabled = !enrolled || fullAccess.processVisibilityPaused;
   actionButtons.revokeFullAccess.disabled = !enrolled;
+  renderLocalMutations(fullAccess.localMutations);
+}
+
+function renderLocalMutations(mutations) {
+  const list = document.querySelector('[data-field="full-access-mutations"]');
+  const count = Array.isArray(mutations) ? mutations.length : 0;
+  setText('[data-field="full-access-mutations-title"]', count ? `${count} reversible workspace change${count === 1 ? "" : "s"}` : "No reversible workspace changes");
+  setText('[data-field="full-access-mutations-tag"]', count ? "Local-only summary" : "Content stays local");
+  setText('[data-field="full-access-mutations-copy"]', count
+    ? "These are local transaction summaries. File bodies, unified diff text, and recovery content never cross the desktop boundary."
+    : "When a scoped Full Access mutation occurs, this desktop view records its file and line-change count. File bodies are not sent through the relay or stored in activity history.");
+  if (!list) return;
+  list.replaceChildren();
+  for (const mutation of mutations || []) {
+    const item = document.createElement("li");
+    item.textContent = `${mutation.path}: +${mutation.added} / -${mutation.removed}, reversible until ${mutation.reversibleUntil}`;
+    list.append(item);
+  }
 }
 
 function renderUpdatePolicy(policy) {
@@ -381,6 +399,14 @@ function normalizeFullAccess(rawAccess) {
     processVisibilityPaused: raw.process_visibility_paused === true,
     graphNodeCount: Math.min(Math.max(Number(raw.graph_node_count) || 0, 0), 20000),
     automaticDeliveryPaused: raw.automatic_delivery_paused === true,
+    localMutations: Array.isArray(raw.local_mutations)
+      ? raw.local_mutations.slice(0, 64).map((mutation) => ({
+          path: sanitizeText(mutation.relative_path, "workspace file"),
+          added: Math.min(Math.max(Number(mutation.lines_added) || 0, 0), 262144),
+          removed: Math.min(Math.max(Number(mutation.lines_removed) || 0, 0), 262144),
+          reversibleUntil: sanitizeText(mutation.reversible_until, "retention window"),
+        }))
+      : [],
   };
 }
 

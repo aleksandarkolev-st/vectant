@@ -65,6 +65,7 @@ pub async fn build_desktop_status_state(state: &AppState) -> Value {
     let approval_reviews = state.approvals.lock().await.pending_review_summaries();
     let ports = state.port_approvals.lock().await.approvals();
     let events = state.audit.lock().await.events().to_vec();
+    let mutation_summaries = state.mutation_broker.lock().await.local_summaries();
     let full_access = state.full_access.lock().await;
     let receipt = full_access.receipt.as_ref();
     let capabilities = receipt
@@ -113,6 +114,7 @@ pub async fn build_desktop_status_state(state: &AppState) -> Value {
             "graph_node_count": full_access.graph.len(),
             "bytes_sent_this_session": full_access.budget.bytes_sent,
             "automatic_delivery_paused": full_access.budget.paused,
+            "local_mutations": mutation_summaries,
             "raw_process_fields_included": false
         },
         "activity": events,

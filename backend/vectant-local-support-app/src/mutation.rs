@@ -58,6 +58,15 @@ pub struct MutationDiffSummary {
     pub changed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalMutationSummary {
+    pub transaction_id: String,
+    pub relative_path: String,
+    pub lines_added: usize,
+    pub lines_removed: usize,
+    pub reversible_until: DateTime<Utc>,
+}
+
 /// On-disk transaction metadata. Recovery content remains in the sibling backup
 /// file; the journal intentionally records hashes and identifiers only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,6 +224,24 @@ impl WorkspaceMutationBroker {
 
     pub fn transaction(&self, transaction_id: &str) -> Option<&MutationTransaction> {
         self.transactions.get(transaction_id)
+    }
+
+    /// Summaries are for the native desktop only. They intentionally omit all
+    /// before/after content and are never part of an HTTP or audit response.
+    pub fn local_summaries(&self) -> Vec<LocalMutationSummary> {
+        let mut summaries = self
+            .transactions
+            .values()
+            .map(|transaction| LocalMutationSummary {
+                transaction_id: transaction.transaction_id.clone(),
+                relative_path: transaction.relative_path.clone(),
+                lines_added: transaction.diff_summary.lines_added,
+                lines_removed: transaction.diff_summary.lines_removed,
+                reversible_until: transaction.recovery_expires_at,
+            })
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| right.reversible_until.cmp(&left.reversible_until));
+        summaries
     }
 
     fn recovery_directory(&self) -> Result<PathBuf, MutationError> {
