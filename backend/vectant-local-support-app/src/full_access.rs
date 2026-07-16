@@ -110,6 +110,90 @@ impl Default for FullAccessPolicy {
     }
 }
 
+impl FullAccessPolicy {
+    pub fn is_valid_enrollment_policy(&self) -> bool {
+        if !self.organization_enabled
+            || self.emergency_paused
+            || self.policy_major != FULL_ACCESS_POLICY_MAJOR
+            || self.mandatory_reconsent_version == 0
+            || !self.allowed_capabilities.contains(&FullAccessCapability::Enroll)
+            || self.allowed_actors.is_empty()
+            || self.allowed_actors.len() > 32
+            || self
+                .allowed_actors
+                .iter()
+                .any(|actor| !safe_policy_identifier(actor, 128))
+            || self.max_bytes_per_request == 0
+            || self.max_bytes_per_request > MAX_GRAPH_NODE_BYTES
+            || self.max_bytes_per_session < self.max_bytes_per_request
+            || self.max_bytes_per_session > 64 * 1024 * 1024
+            || self.max_requests_per_minute == 0
+            || self.max_requests_per_minute > 240
+            || self.max_concurrent_reads == 0
+            || self.max_concurrent_reads > 16
+            || self.max_process_records == 0
+            || self.max_process_records > MAX_PROCESS_RECORDS
+        {
+            return false;
+        }
+
+        let command_enabled = self
+            .allowed_capabilities
+            .contains(&FullAccessCapability::CommandExecute);
+        if command_enabled {
+            if self.allowed_command_executables.is_empty()
+                || self.allowed_command_executables.len() > 32
+                || self
+                    .allowed_command_executables
+                    .iter()
+                    .any(|executable| !safe_executable_name(executable))
+                || self.max_command_timeout_seconds == 0
+                || self.max_command_timeout_seconds > 300
+                || self.max_command_output_bytes == 0
+                || self.max_command_output_bytes > 1_048_576
+                || self.max_command_concurrency == 0
+                || self.max_command_concurrency > 8
+            {
+                return false;
+            }
+        } else if !self.allowed_command_executables.is_empty() {
+            return false;
+        }
+
+        let port_enabled = self
+            .allowed_capabilities
+            .contains(&FullAccessCapability::LocalPortDiscover)
+            || self
+                .allowed_capabilities
+                .contains(&FullAccessCapability::LocalPortUse);
+        if port_enabled {
+            if self.allowed_loopback_ports.is_empty() || self.allowed_loopback_ports.len() > 128 {
+                return false;
+            }
+        } else if !self.allowed_loopback_ports.is_empty() {
+            return false;
+        }
+        true
+    }
+}
+
+fn safe_policy_identifier(value: &str, max_len: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+}
+
+fn safe_executable_name(value: &str) -> bool {
+    let base = value.strip_suffix(".exe").unwrap_or(value);
+    !base.is_empty()
+        && base.len() <= 124
+        && base
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FullAccessConsentReceipt {
     pub consent_id: String,
@@ -459,6 +543,33 @@ mod tests {
             revoked_at: None,
             local_confirmation: "native_button".into(),
         }
+    }
+
+    #[test]
+    fn enrollment_policy_rejects_latent_command_or_port_scope() {
+        let mut policy = FullAccessPolicy {
+            organization_enabled: true,
+            ..Default::default()
+        };
+        policy.allowed_actors.insert("support_agent".to_string());
+        policy
+            .allowed_capabilities
+            .insert(FullAccessCapability::Enroll);
+        assert!(policy.is_valid_enrollment_policy());
+
+        policy
+            .allowed_capabilities
+            .insert(FullAccessCapability::CommandExecute);
+        assert!(!policy.is_valid_enrollment_policy());
+        policy.allowed_command_executables.insert("python.exe".to_string());
+        assert!(policy.is_valid_enrollment_policy());
+
+        policy
+            .allowed_capabilities
+            .insert(FullAccessCapability::LocalPortUse);
+        assert!(!policy.is_valid_enrollment_policy());
+        policy.allowed_loopback_ports.insert(3000);
+        assert!(policy.is_valid_enrollment_policy());
     }
 
     fn binding() -> ReceiptBinding<'static> {
