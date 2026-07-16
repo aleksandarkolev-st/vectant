@@ -27,9 +27,10 @@ function controlledClock(initialNs = 0n) {
 }
 
 function finishTerminalPhases(lifecycle, clock) {
-  lifecycle.beginPhase('retirement');
-  clock.tick(5n);
-  lifecycle.finishPhase('retirement');
+  lifecycle.markUnavailable(
+    'retirement',
+    'runtime_retirement_boundary_not_observed_in_validator_clock',
+  );
   lifecycle.beginPhase('proof_finalization');
   clock.tick(7n);
   lifecycle.finishPhase('proof_finalization');
@@ -60,13 +61,10 @@ visualLifecycle.finishPhase('cold_intake');
 
 const editTriggerNs = visualClock.tick(2n);
 visualLifecycle.observeEditTrigger(editTriggerNs);
-const compileEndNs = visualClock.tick(13n);
-visualLifecycle.recordWindow('split', editTriggerNs, compileEndNs);
-visualLifecycle.recordWindow('compile', editTriggerNs, compileEndNs);
+visualClock.tick(13n);
+visualLifecycle.observeOpaqueCompileRequest();
 visualLifecycle.observeRuntimeWait();
-const outputStartNs = visualClock.tick(1n);
-const outputEndNs = visualClock.tick(17n);
-visualLifecycle.recordWindow('output_ready', outputStartNs, outputEndNs);
+visualClock.tick(18n);
 
 const captureResult = {
   profileId: 'name_must_not_enable_visual_timing',
@@ -115,6 +113,19 @@ assert.equal(
 assert.ok(visualValidation.blockingGaps.includes('phase_unavailable:load'));
 assert.ok(visualValidation.blockingGaps.includes('phase_unavailable:epoch_publication'));
 assert.ok(visualValidation.blockingGaps.includes('phase_unavailable:dispatch'));
+assert.equal(
+  visualTiming.phases.split.reasonCode,
+  'split_boundary_not_observed_in_validator_clock',
+);
+assert.equal(
+  visualTiming.phases.compile.reasonCode,
+  'compile_boundary_not_observed_in_validator_clock',
+);
+assert.equal(visualTiming.phases.output_ready.reasonCode, 'output_ready_signal_not_observed');
+assert.equal(
+  visualTiming.phases.retirement.reasonCode,
+  'runtime_retirement_boundary_not_observed_in_validator_clock',
+);
 
 const proofIdentity = 'agent-split-run-mode-proof:self-check';
 const supportOnlyProof = { proofId: proofIdentity, gpuHmrSuccess: true };
@@ -222,10 +233,8 @@ for (const [name, terminal] of [
   const clock = controlledClock(3_000n);
   const lifecycle = createAgentSplitTestTimingV2Lifecycle({ nowNs: clock.now });
   if (name === 'provider') {
-    const splitStartNs = clock.tick(2n);
-    const splitEndNs = clock.tick(5n);
-    lifecycle.recordWindow('split', splitStartNs, splitEndNs);
-    lifecycle.markUnavailable('compile', 'compile_response_not_observed');
+    clock.tick(7n);
+    lifecycle.observeOpaqueCompileRequest();
   }
   if (name === 'emergency') {
     lifecycle.markUnavailable('retirement', 'emergency_retirement_not_observed');

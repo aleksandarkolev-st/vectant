@@ -238,7 +238,10 @@ const TEST_TIMING_LOAD_REASON = 'load_boundary_not_observed_in_validator_clock';
 const TEST_TIMING_EPOCH_REASON = 'epoch_publication_boundary_not_observed_in_validator_clock';
 const TEST_TIMING_DISPATCH_REASON = 'dispatch_boundary_not_observed_in_validator_clock';
 const TEST_TIMING_OUTPUT_REASON = 'output_ready_signal_not_observed';
-const TEST_TIMING_COMPILE_REASON = 'compile_response_not_observed';
+const TEST_TIMING_SPLIT_REASON = 'split_boundary_not_observed_in_validator_clock';
+const TEST_TIMING_COMPILE_REASON = 'compile_boundary_not_observed_in_validator_clock';
+const TEST_TIMING_RETIREMENT_REASON =
+  'runtime_retirement_boundary_not_observed_in_validator_clock';
 const TEST_TIMING_SUCCESS_GAP_REASON = 'phase_not_observed_before_success';
 const TEST_TIMING_SEED_ONLY_REASON = 'seed_only_terminal_path';
 const TEST_TIMING_EMERGENCY_RETIREMENT_REASON = 'emergency_retirement_not_observed';
@@ -437,11 +440,17 @@ export class AgentSplitTestTimingV2Lifecycle {
     return true;
   }
 
+  observeOpaqueCompileRequest() {
+    this.markUnavailable('split', TEST_TIMING_SPLIT_REASON);
+    this.markUnavailable('compile', TEST_TIMING_COMPILE_REASON);
+  }
+
   observeRuntimeWait() {
     this.#runtimeWaitObserved = true;
     this.markUnavailable('load', TEST_TIMING_LOAD_REASON);
     this.markUnavailable('epoch_publication', TEST_TIMING_EPOCH_REASON);
     this.markUnavailable('dispatch', TEST_TIMING_DISPATCH_REASON);
+    this.markUnavailable('output_ready', TEST_TIMING_OUTPUT_REASON);
   }
 
   observeCaptureContract(contract, captureStartNs, captureEndNs) {
@@ -4104,18 +4113,12 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
   } catch (error) {
     compileEndNs = timingBoundaryNs();
     if (isColdSourceFirstCompile) {
-      activeAgentSplitTestTiming?.recordWindow('split', compileStartNs, compileEndNs);
-      activeAgentSplitTestTiming?.markUnavailable('compile', TEST_TIMING_COMPILE_REASON);
+      activeAgentSplitTestTiming?.observeOpaqueCompileRequest();
     }
     throw error;
   }
   if (isColdSourceFirstCompile) {
-    activeAgentSplitTestTiming?.recordWindow('split', compileStartNs, compileEndNs);
-    if (compile?.ok) {
-      activeAgentSplitTestTiming?.recordWindow('compile', compileStartNs, compileEndNs);
-    } else {
-      activeAgentSplitTestTiming?.markUnavailable('compile', TEST_TIMING_COMPILE_REASON);
-    }
+    activeAgentSplitTestTiming?.observeOpaqueCompileRequest();
   }
   if (!compile?.ok) {
     const error = new Error(`synthi_compile failed: ${JSON.stringify(sanitizeProofLogValue(compile)).slice(0, 4000)}`);
@@ -4192,13 +4195,6 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
     || waitContract.isGpuDeviceEdit
     || typeof options.requiredGpuProofState === 'string';
   const waitGateSatisfied = wait?.status === 'applied' || requestedProofStateGate?.accepted === true;
-  if (isColdSourceFirstCompile) {
-    if (waitGateSatisfied) {
-      activeAgentSplitTestTiming?.recordWindow('output_ready', waitStartNs, waitEndNs);
-    } else {
-      activeAgentSplitTestTiming?.markUnavailable('output_ready', TEST_TIMING_OUTPUT_REASON);
-    }
-  }
   record(
     options.waitRecordLabel ?? 'mcp wait_hmr proof gate',
     waitGateSatisfied ? 'pass' : requireAppliedWait ? 'fail' : 'warn',
@@ -11562,20 +11558,18 @@ async function runAgentSplitTerminal() {
   }
 
   activeAgentSplitTestTiming.closeActivePhases();
-  activeAgentSplitTestTiming.beginPhase('retirement');
+  activeAgentSplitTestTiming.markUnavailable('retirement', TEST_TIMING_RETIREMENT_REASON);
   try {
     await stopMcp();
   } catch (error) {
     if (timingTerminal.outcome === 'pass') {
       timingTerminal = Object.freeze({
         outcome: 'failed',
-        category: 'retirement_failure',
-        reasonCode: 'agent_split_retirement_failure',
+        category: 'cleanup_failure',
+        reasonCode: 'agent_split_mcp_cleanup_failure',
       });
     }
-    record('mcp retirement', 'fail', error?.message || String(error));
-  } finally {
-    activeAgentSplitTestTiming.finishPhase('retirement');
+    record('mcp cleanup', 'fail', error?.message || String(error));
   }
 
   activeAgentSplitTestTiming.beginPhase('proof_finalization');
