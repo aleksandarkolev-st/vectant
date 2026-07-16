@@ -7879,7 +7879,6 @@ fn apply_ai_fission_proposal_metadata(
         "proposalSource",
         "candidateSource",
         "plannerSource",
-        "outputOracleProposal",
         "attachmentInstrumentationProposals",
         "originalHostAttachmentInstrumentationProposals",
         "originalHostAttachmentInstrumentationProposalIds",
@@ -15509,8 +15508,7 @@ __constant__ int scale;
     }
 
     #[tokio::test]
-    async fn partial_hmr_proof_artifact_promotes_ai_fission_candidate_with_deterministic_evidence()
-    {
+    async fn partial_hmr_proof_artifact_preserves_ai_hint_without_promoting_ai_oracle() {
         let temp = tempfile::tempdir().unwrap();
         let artifact_path = temp.path().join("device.hsaco");
         tokio::fs::write(&artifact_path, b"device-artifact")
@@ -15628,6 +15626,30 @@ __constant__ int scale;
             .get("islandId")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|value| value.starts_with("fission-island:sha256:")));
+        assert_eq!(
+            candidate
+                .pointer("/outputOracleProposal/kind")
+                .and_then(serde_json::Value::as_str),
+            Some("buffer_checksum")
+        );
+        assert_eq!(
+            candidate
+                .pointer("/outputOracleProposal/producer")
+                .and_then(serde_json::Value::as_str),
+            Some("worker.runtime_dispatch_replay")
+        );
+        assert_eq!(
+            candidate
+                .pointer("/outputOracleProposal/expectedIncrement")
+                .and_then(serde_json::Value::as_str),
+            None
+        );
+        assert_eq!(
+            candidate
+                .pointer("/aiProposalCandidate/outputOracleProposal/expectedIncrement")
+                .and_then(serde_json::Value::as_str),
+            Some("1")
+        );
         assert!(promotion_ids.iter().all(|id| id.starts_with("evidence:")));
         assert!(promotion_ids
             .iter()
@@ -15659,12 +15681,6 @@ __constant__ int scale;
         .await;
         assert!(capsule_metadata.fission_output_oracle_contract.is_none());
         assert!(capsule_metadata.output_oracle_profile_commitment.is_none());
-        assert_eq!(
-            candidate
-                .pointer("/outputOracleProposal/expectedIncrement")
-                .and_then(serde_json::Value::as_str),
-            Some("1")
-        );
         let proof_value = serde_json::to_value(&artifact).unwrap();
         assert!(proof_fission_output_oracle_contract(&proof_value).is_none());
         let proposal = candidate
