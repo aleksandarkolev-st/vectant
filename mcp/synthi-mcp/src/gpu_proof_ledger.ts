@@ -1,12 +1,21 @@
 import { createHash } from "node:crypto";
 
 export const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION = "synthi.gpu.hmr.proof_ledger.v1";
+export const GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE =
+  "synthi.gpu_hmr.proof_ledger.portable.v2";
 
 const GPU_PROJECT_KINDS = new Set(["gpu_project", "mixed_project"]);
 const GPU_ARTIFACT_EDIT_KINDS = new Set(["gpu_artifact_edit"]);
 const METRIC_CLOCKS = new Set(["monotonic_ns"]);
 const METRIC_SCOPES = new Set(["cold", "warm", "hot_delta_1", "hot_delta_2"]);
 const CACHE_STATES = new Set(["clean", "compiler_cache_warm", "pipeline_cache_warm"]);
+const RECOGNIZED_RETIREMENT_PROOFS = new Set([
+  "stream_event_proven",
+  "queue_idle_proven",
+  "frame_boundary_proven",
+  "no_retirement_required",
+]);
+const RECOGNIZED_RETIREMENT_RESULTS = new Set(["retired_after_quiescent"]);
 const MODEL_PROVIDER_STATUSES = new Set(["available", "deprecated", "private_alias"]);
 const MODEL_AVAILABILITY_BASES = new Set([
   "static_registry",
@@ -294,6 +303,135 @@ function stableJson(value: unknown): string {
   ).join(",")}}`;
 }
 
+function objectAliasMismatch(
+  object: Record<string, unknown>,
+  leftKey: string,
+  rightKey: string
+): boolean {
+  return hasOwn(object, leftKey)
+    && hasOwn(object, rightKey)
+    && stableJson(object[leftKey]) !== stableJson(object[rightKey]);
+}
+
+function aliasGroupMismatch(object: Record<string, unknown>, keys: readonly string[]): boolean {
+  const values = keys
+    .filter((key) => hasOwn(object, key))
+    .map((key) => stableJson(object[key]));
+  return new Set(values).size > 1;
+}
+
+function aliasGroupValues(
+  sources: ReadonlyArray<[Record<string, unknown>, readonly string[]]>
+): unknown[] {
+  const values: unknown[] = [];
+  for (const [object, keys] of sources) {
+    for (const key of keys) {
+      if (hasOwn(object, key)) values.push(object[key]);
+    }
+  }
+  return values;
+}
+
+function aliasValuesMismatch(values: readonly unknown[]): boolean {
+  return new Set(values.map(stableJson)).size > 1;
+}
+
+function canonicalDecimalEpoch(value: unknown): string | null {
+  return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value) ? value : null;
+}
+
+function exactSchemaVersion(
+  object: Record<string, unknown>
+): { present: boolean; aliasMismatch: boolean; exact: boolean; value: string | null } {
+  const values = ["schema_version", "schemaVersion"]
+    .filter((key) => hasOwn(object, key))
+    .map((key) => object[key]);
+  return {
+    present: values.length > 0,
+    aliasMismatch: objectAliasMismatch(object, "schemaVersion", "schema_version"),
+    exact: values.length > 0
+      && values.every((value) => value === GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION),
+    value: firstText(object.schema_version, object.schemaVersion),
+  };
+}
+
+function deepSnakeCamelAliasMismatch(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(deepSnakeCamelAliasMismatch);
+  if (!isObject(value)) return false;
+  for (const key of Object.keys(value)) {
+    if (key.includes("_")) {
+      const camelKey = key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
+      if (
+        camelKey !== key
+        && hasOwn(value, camelKey)
+        && stableJson(value[key]) !== stableJson(value[camelKey])
+      ) {
+        return true;
+      }
+    }
+    if (deepSnakeCamelAliasMismatch(value[key])) return true;
+  }
+  return false;
+}
+
+function eventFieldAliasMismatch(
+  event: Record<string, unknown>,
+  mode: "standard" | "dispatch" | "output" | "retirement" = "standard"
+): boolean {
+  const eventIdAliases = ["id", "event_id", "eventId", "proof_id", "proofId"];
+  if (mode === "dispatch") eventIdAliases.push("dispatch_id", "dispatchId");
+  const aliasGroups = [
+    eventIdAliases,
+    ["event", "event_kind", "eventKind", "kind"],
+    ["epoch", "epoch_id", "epochId", "generation"],
+    [
+      "artifact_hash", "artifactHash", "artifact_id", "artifactId",
+      "loaded_artifact_hash", "loadedArtifactHash", "loaded_artifact_id",
+      "loadedArtifactId", "published_artifact_hash", "publishedArtifactHash",
+      "published_artifact_id", "publishedArtifactId", "runtime_artifact_id", "runtimeArtifactId",
+      "selected_artifact_id", "selectedArtifactId", "new_artifact_hash",
+      "newArtifactHash", "hash",
+    ],
+    ["process_id", "processId", "pid"],
+    ["publication_id", "publicationId"],
+    ["candidate_registration_id", "candidateRegistrationId"],
+    ["dispatcher_registration_id", "dispatcherRegistrationId"],
+    ["previous_epoch", "previousEpoch"],
+    ["device_uuid", "deviceUuid", "device_id", "deviceId"],
+    ["timestamp_monotonic_ns", "timestampMonotonicNs", "timestamp_ms", "timestampMs", "ts"],
+    ["passed", "success", "succeeded", "accepted", "gpu_hmr_success", "gpuHmrSuccess"],
+  ];
+  if (mode === "output") {
+    aliasGroups.push(["after_dispatch_id", "afterDispatchId", "dispatch_id", "dispatchId"]);
+  }
+  if (mode === "retirement") {
+    aliasGroups.push(
+      ["status", "result", "retirement_result", "retirementResult"],
+      ["proof", "retirement_proof", "retirementProof"]
+    );
+  }
+  return aliasGroups.some((keys) => {
+    const values = keys
+      .filter((key) => hasOwn(event, key))
+      .map((key) => stableJson(event[key]));
+    return new Set(values).size > 1;
+  });
+}
+
+function portableMonotonicTimestamp(event: Record<string, unknown>): number | null {
+  const value = event.timestamp_monotonic_ns ?? event.timestampMonotonicNs;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function portableCanonicalJsonNumbersSupported(value: unknown): boolean {
+  if (typeof value === "number") return Number.isSafeInteger(value);
+  if (Array.isArray(value)) return value.every(portableCanonicalJsonNumbersSupported);
+  if (isObject(value)) {
+    return Object.values(value).every(portableCanonicalJsonNumbersSupported);
+  }
+  return true;
+}
+
 function sha256Hex(value: unknown): string {
   return createHash("sha256").update(String(value ?? "")).digest("hex");
 }
@@ -329,8 +467,12 @@ function eventArtifactHash(event: Record<string, unknown>): string | null {
     event.artifactId,
     event.loaded_artifact_hash,
     event.loadedArtifactHash,
+    event.loaded_artifact_id,
+    event.loadedArtifactId,
     event.published_artifact_hash,
     event.publishedArtifactHash,
+    event.published_artifact_id,
+    event.publishedArtifactId,
     event.runtime_artifact_id,
     event.runtimeArtifactId,
     event.selected_artifact_id,
@@ -949,9 +1091,36 @@ function modelMatchesRequiredModel(
 
 function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation {
   const failures: GpuHmrLedgerFailure[] = [];
+  const recordSchema = exactSchemaVersion(input);
+  if (recordSchema.aliasMismatch) failures.push({ code: "record_schema_alias_mismatch" });
+  if (!recordSchema.present || !recordSchema.value) {
+    failures.push({ code: "record_schema_version_missing" });
+  } else if (!recordSchema.exact) {
+    failures.push({
+      code: "record_schema_version_mismatch",
+      suppliedSchemaVersion: recordSchema.value,
+      expectedSchemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+    });
+  }
   const classification = asObject(input.classification);
   const loaderEvent = asObject(input.loader_event ?? input.loaderEvent);
+  const epochPublishEventAliasMismatch =
+    objectAliasMismatch(input, "epoch_publish_event", "epochPublishEvent");
   const epochPublishEvent = asObject(input.epoch_publish_event ?? input.epochPublishEvent);
+  const epochCommitEventSnakePresent = hasOwn(input, "epoch_commit_event");
+  const epochCommitEventCamelPresent = hasOwn(input, "epochCommitEvent");
+  const epochCommitEventPresent = epochCommitEventSnakePresent || epochCommitEventCamelPresent;
+  const epochCommitEvent = asObject(
+    epochCommitEventSnakePresent ? input.epoch_commit_event : input.epochCommitEvent
+  );
+  const epochCommitEventAliasMismatch =
+    (
+      epochCommitEventSnakePresent
+      && epochCommitEventCamelPresent
+      && stableJson(input.epoch_commit_event) !== stableJson(input.epochCommitEvent)
+    );
+  const dispatchEventAliasMismatch =
+    objectAliasMismatch(input, "dispatch_event", "dispatchEvent");
   const dispatchEvent = asObject(input.dispatch_event ?? input.dispatchEvent);
   const outputEvent = asObject(input.output_event ?? input.outputEvent);
   const retirementEvent = asObject(input.retirement_event ?? input.retirementEvent);
@@ -980,6 +1149,11 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
     modelProvenance.model_policy
   );
   const projectId = firstText(input.project_id, input.projectId);
+  const canonicalProfileSnake = firstText(input.proof_canonical_profile);
+  const canonicalProfileCamel = firstText(input.proofCanonicalProfile);
+  const proofCanonicalProfile = canonicalProfileSnake ?? canonicalProfileCamel;
+  const proofCanonicalProfileAliasMismatch =
+    objectAliasMismatch(input, "proof_canonical_profile", "proofCanonicalProfile");
   const editId = firstText(input.edit_id, input.editId);
   const backend = firstText(input.backend, input.gpu_backend, input.gpuBackend);
   const outputOracleTarget = outputOracleTargetForRecord(input, outputEvent);
@@ -1026,10 +1200,11 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
     [firewallEvidence, "process_restarted"],
     [firewallEvidence, "processRestarted"]
   );
-  const metricClock = firstText(input.metric_clock, input.metricClock, timings.metric_clock, timings.metricClock, timingMetrics.metric_clock, timingMetrics.metricClock);
+  const topLevelMetricClock = firstText(input.metric_clock, input.metricClock);
+  const metricClock = topLevelMetricClock;
   const metricScope = firstText(input.metric_scope, input.metricScope, timings.metric_scope, timings.metricScope, timingMetrics.metric_scope, timingMetrics.metricScope);
   const cacheState = firstText(input.cache_state, input.cacheState, timings.cache_state, timings.cacheState, timingMetrics.cache_state, timingMetrics.cacheState);
-  const recomputedProofId = canonicalLedgerProofId({
+  const proofMaterial: Record<string, unknown> = {
     schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     projectId,
     editId,
@@ -1065,14 +1240,430 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
       processIdBefore: firewallPidBefore,
       processIdAfter: firewallPidAfter,
     },
-  });
+  };
+  if (proofCanonicalProfile === GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE) {
+    proofMaterial.proofCanonicalProfile = proofCanonicalProfile;
+    if (epochCommitEventPresent) proofMaterial.epochCommitEvent = epochCommitEvent;
+  }
+  const recomputedProofId = canonicalLedgerProofId(proofMaterial);
   const suppliedRecordProofId = firstText(input.proof_id, input.proofId);
+  if (objectAliasMismatch(input, "proof_id", "proofId")) {
+    failures.push({ code: "record_proof_id_alias_mismatch" });
+  }
   if (suppliedRecordProofId && suppliedRecordProofId !== recomputedProofId) {
     failures.push({
       code: "record_proof_id_mismatch",
       suppliedProofId: suppliedRecordProofId,
       recomputedProofId,
     });
+  }
+
+  for (const [code, keys] of [
+    ["project_id_alias_mismatch", ["project_id", "projectId"]],
+    ["edit_id_alias_mismatch", ["edit_id", "editId"]],
+    ["backend_alias_mismatch", ["backend", "gpu_backend", "gpuBackend"]],
+    ["contract_hash_alias_mismatch", ["contract_hash", "contractHash"]],
+    [
+      "artifact_before_hash_alias_mismatch",
+      ["artifact_before_hash", "artifactBeforeHash"],
+    ],
+    [
+      "artifact_after_hash_alias_mismatch",
+      [
+        "artifact_after_hash",
+        "artifactAfterHash",
+        "changed_gpu_artifact_hash",
+        "changedGpuArtifactHash",
+      ],
+    ],
+    ["metric_clock_alias_mismatch", ["metric_clock", "metricClock"]],
+    ["metric_scope_alias_mismatch", ["metric_scope", "metricScope"]],
+    ["cache_state_alias_mismatch", ["cache_state", "cacheState"]],
+    ["cpu_hmr_used_alias_mismatch", ["cpu_hmr_used", "cpuHmrUsed"]],
+    ["full_rebuild_used_alias_mismatch", ["full_rebuild_used", "fullRebuildUsed"]],
+    ["process_restarted_alias_mismatch", ["process_restarted", "processRestarted"]],
+    ["record_success_alias_mismatch", ["gpu_hmr_success", "gpuHmrSuccess"]],
+  ] as const) {
+    if (aliasGroupMismatch(input, keys)) failures.push({ code });
+  }
+  for (const [code, leftKey, rightKey] of [
+    ["loader_event_alias_mismatch", "loader_event", "loaderEvent"],
+    ["output_event_alias_mismatch", "output_event", "outputEvent"],
+    ["retirement_event_alias_mismatch", "retirement_event", "retirementEvent"],
+    ["process_identity_alias_mismatch", "process_identity", "processIdentity"],
+    ["device_identity_alias_mismatch", "device_identity", "deviceIdentity"],
+    ["firewall_evidence_alias_mismatch", "firewall_evidence", "firewallEvidence"],
+    ["oracle_artifacts_alias_mismatch", "oracle_artifacts", "oracleArtifacts"],
+    [
+      "deterministic_visual_mode_alias_mismatch",
+      "deterministic_visual_mode",
+      "deterministicVisualMode",
+    ],
+    ["output_oracle_target_alias_mismatch", "output_oracle_target", "outputOracleTarget"],
+    ["timing_metrics_alias_mismatch", "timing_metrics", "timingMetrics"],
+    ["model_provenance_alias_mismatch", "model_provenance", "modelProvenance"],
+    ["evidence_refs_alias_mismatch", "evidence_refs", "evidenceRefs"],
+  ] as const) {
+    if (objectAliasMismatch(input, leftKey, rightKey)) failures.push({ code });
+  }
+
+  const nestedMetricClocks = [
+    timings.metric_clock,
+    timings.metricClock,
+    timingMetrics.metric_clock,
+    timingMetrics.metricClock,
+    asObject(timings.clock_evidence).metric_clock,
+    asObject(timings.clockEvidence).metricClock,
+    asObject(timingMetrics.clock_evidence).metric_clock,
+    asObject(timingMetrics.clockEvidence).metricClock,
+  ].map(text).filter((clock): clock is string => clock !== null);
+  if (
+    topLevelMetricClock !== null
+    && nestedMetricClocks.some((clock) => clock !== topLevelMetricClock)
+  ) {
+    failures.push({ code: "metric_clock_nested_contradiction" });
+  }
+
+  for (const [field, snakeKey, camelKey, invalidCode] of [
+    ["cpu_hmr_used", "cpu_hmr_used", "cpuHmrUsed", "cpu_hmr_firewall_evidence_invalid"],
+    [
+      "full_rebuild_used",
+      "full_rebuild_used",
+      "fullRebuildUsed",
+      "full_rebuild_firewall_evidence_invalid",
+    ],
+    [
+      "process_restarted",
+      "process_restarted",
+      "processRestarted",
+      "process_restart_firewall_evidence_invalid",
+    ],
+  ] as const) {
+    const topValues = aliasGroupValues([[input, [snakeKey, camelKey]]]);
+    const nestedValues = aliasGroupValues([[firewallEvidence, [snakeKey, camelKey]]]);
+    if (aliasValuesMismatch(nestedValues)) {
+      failures.push({ code: `firewall_${field}_alias_mismatch` });
+    }
+    if (
+      topValues.length > 0
+      && nestedValues.length > 0
+      && stableJson(topValues[0]) !== stableJson(nestedValues[0])
+    ) {
+      failures.push({ code: `firewall_${field}_contradiction` });
+    }
+    if ([...topValues, ...nestedValues].some((value) => typeof value !== "boolean")) {
+      failures.push({ code: invalidCode });
+    }
+  }
+  if (eventFieldAliasMismatch(firewallEvidence)) {
+    failures.push({ code: "firewall_evidence_field_alias_mismatch" });
+  }
+  for (const [code, keys] of [
+    [
+      "firewall_process_id_before_alias_mismatch",
+      ["process_id_before", "processIdBefore", "firewall_process_id_before", "firewallProcessIdBefore"],
+    ],
+    [
+      "firewall_process_id_after_alias_mismatch",
+      ["process_id_after", "processIdAfter", "firewall_process_id_after", "firewallProcessIdAfter"],
+    ],
+  ] as const) {
+    if (aliasGroupMismatch(firewallEvidence, keys)) failures.push({ code });
+  }
+
+  const outputOracle = outputOracleObject(outputEvent);
+  const outputSuccessKeys = [
+    "passed", "success", "succeeded", "accepted", "gpu_hmr_success", "gpuHmrSuccess",
+  ];
+  const outputSuccessValues = aliasGroupValues([[outputEvent, outputSuccessKeys]]);
+  const oracleSuccessValues = aliasGroupValues([[outputOracle, outputSuccessKeys]]);
+  if (
+    outputSuccessValues.length > 0
+    && oracleSuccessValues.length > 0
+    && stableJson(outputSuccessValues[0]) !== stableJson(oracleSuccessValues[0])
+  ) {
+    failures.push({ code: "output_event_success_contradiction" });
+  }
+
+  if (proofCanonicalProfileAliasMismatch) {
+    failures.push({ code: "proof_canonical_profile_alias_mismatch" });
+  }
+  if (epochCommitEventAliasMismatch) {
+    failures.push({ code: "epoch_commit_event_alias_mismatch" });
+  }
+  if (epochPublishEventAliasMismatch) {
+    failures.push({ code: "epoch_publish_event_alias_mismatch" });
+  }
+  if (dispatchEventAliasMismatch) {
+    failures.push({ code: "dispatch_event_alias_mismatch" });
+  }
+
+  const publishEventKind = firstText(
+    epochPublishEvent.event,
+    epochPublishEvent.event_kind,
+    epochPublishEvent.eventKind,
+    epochPublishEvent.kind
+  );
+  const commitEventKind = firstText(
+    epochCommitEvent.event,
+    epochCommitEvent.event_kind,
+    epochCommitEvent.eventKind,
+    epochCommitEvent.kind
+  );
+  const publicationId = firstText(
+    epochPublishEvent.publication_id,
+    epochPublishEvent.publicationId
+  );
+  const commitPublicationId = firstText(
+    epochCommitEvent.publication_id,
+    epochCommitEvent.publicationId
+  );
+  const dispatchPublicationId = firstText(
+    dispatchEvent.publication_id,
+    dispatchEvent.publicationId
+  );
+  const candidateRegistrationId = firstText(
+    epochPublishEvent.candidate_registration_id,
+    epochPublishEvent.candidateRegistrationId
+  );
+  const commitCandidateRegistrationId = firstText(
+    epochCommitEvent.candidate_registration_id,
+    epochCommitEvent.candidateRegistrationId
+  );
+  const dispatchRegistrationId = firstText(
+    dispatchEvent.dispatcher_registration_id,
+    dispatchEvent.dispatcherRegistrationId
+  );
+  const commitEraRecord =
+    proofCanonicalProfile !== null
+    || epochCommitEventPresent
+    || publishEventKind === "provisional_install"
+    || publicationId !== null
+    || candidateRegistrationId !== null
+    || dispatchPublicationId !== null
+    || dispatchRegistrationId !== null;
+  if (
+    proofCanonicalProfile !== null
+    && proofCanonicalProfile !== GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE
+  ) {
+    failures.push({
+      code: "proof_canonical_profile_unsupported",
+      proofCanonicalProfile,
+    });
+  }
+  if (commitEraRecord) {
+    if (!portableCanonicalJsonNumbersSupported(input)) {
+      failures.push({ code: "portable_canonical_number_unsupported" });
+    }
+    if (deepSnakeCamelAliasMismatch(input)) {
+      failures.push({ code: "portable_canonical_alias_mismatch" });
+    }
+    if (eventFieldAliasMismatch(loaderEvent)) {
+      failures.push({ code: "loader_event_field_alias_mismatch" });
+    }
+    if (eventFieldAliasMismatch(epochPublishEvent)) {
+      failures.push({ code: "epoch_publish_event_field_alias_mismatch" });
+    }
+    if (eventFieldAliasMismatch(epochCommitEvent)) {
+      failures.push({ code: "epoch_commit_event_field_alias_mismatch" });
+    }
+    if (eventFieldAliasMismatch(dispatchEvent, "dispatch")) {
+      failures.push({ code: "dispatch_event_field_alias_mismatch" });
+    }
+    if (eventFieldAliasMismatch(outputEvent, "output")) {
+      failures.push({ code: "output_event_field_alias_mismatch" });
+    }
+    if (eventFieldAliasMismatch(retirementEvent, "retirement")) {
+      failures.push({ code: "retirement_event_field_alias_mismatch" });
+    }
+    if (eventFieldAliasMismatch(processIdentity)) {
+      failures.push({ code: "process_identity_field_alias_mismatch" });
+    }
+    if (eventFieldAliasMismatch(deviceIdentity)) {
+      failures.push({ code: "device_identity_field_alias_mismatch" });
+    }
+    const portableTimestampEvents = [
+      ["loader", loaderEvent],
+      ["epoch_publish", epochPublishEvent],
+      ["dispatch", dispatchEvent],
+      ["output", outputEvent],
+      ["epoch_commit", epochCommitEvent],
+      ["retirement", retirementEvent],
+    ] as const;
+    const invalidPortableTimestampEvents = portableTimestampEvents
+      .filter(([, event]) => portableMonotonicTimestamp(event) === null)
+      .map(([name]) => name);
+    if (invalidPortableTimestampEvents.length > 0) {
+      failures.push({
+        code: "portable_event_timestamp_invalid",
+        events: invalidPortableTimestampEvents,
+      });
+    }
+    if (proofCanonicalProfile !== GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE) {
+      failures.push({ code: "epoch_commit_canonical_profile_missing" });
+    }
+    if (!epochCommitEventPresent || Object.keys(epochCommitEvent).length === 0) {
+      failures.push({ code: "epoch_commit_event_missing" });
+    }
+    if (publishEventKind !== "provisional_install") {
+      failures.push({ code: "epoch_publish_event_not_provisional" });
+    }
+    if (commitEventKind !== "unrestricted_visibility_commit") {
+      failures.push({ code: "epoch_commit_event_kind_invalid" });
+    }
+    if (!eventId(epochCommitEvent)) failures.push({ code: "epoch_commit_event_id_missing" });
+    if (!publicationId) failures.push({ code: "epoch_publication_id_missing" });
+    if (!candidateRegistrationId) {
+      failures.push({ code: "epoch_candidate_registration_id_missing" });
+    }
+    if (publicationId && commitPublicationId !== publicationId) {
+      failures.push({ code: "epoch_commit_publication_id_mismatch" });
+    }
+    if (publicationId && dispatchPublicationId !== publicationId) {
+      failures.push({ code: "dispatch_publication_id_mismatch" });
+    }
+    if (
+      candidateRegistrationId
+      && commitCandidateRegistrationId !== candidateRegistrationId
+    ) {
+      failures.push({ code: "epoch_commit_candidate_registration_id_mismatch" });
+    }
+    if (candidateRegistrationId && dispatchRegistrationId !== candidateRegistrationId) {
+      failures.push({ code: "dispatch_registration_id_mismatch" });
+    }
+    const commitArtifactHash = eventArtifactHash(epochCommitEvent);
+    if (!commitArtifactHash) {
+      failures.push({ code: "epoch_commit_artifact_hash_missing" });
+    } else if (artifactAfterHash && commitArtifactHash !== artifactAfterHash) {
+      failures.push({ code: "epoch_commit_artifact_hash_mismatch" });
+    }
+    const rawCandidateEpoch = epochPublishEvent.epoch
+      ?? epochPublishEvent.epoch_id
+      ?? epochPublishEvent.epochId
+      ?? epochPublishEvent.generation;
+    const rawPreviousEpoch = epochPublishEvent.previous_epoch ?? epochPublishEvent.previousEpoch;
+    const rawCommitEpoch = epochCommitEvent.epoch
+      ?? epochCommitEvent.epoch_id
+      ?? epochCommitEvent.epochId
+      ?? epochCommitEvent.generation;
+    const rawCommitPreviousEpoch =
+      epochCommitEvent.previous_epoch ?? epochCommitEvent.previousEpoch;
+    const rawDispatchEpoch = dispatchEvent.epoch
+      ?? dispatchEvent.epoch_id
+      ?? dispatchEvent.epochId
+      ?? dispatchEvent.generation;
+    const rawOutputEpoch = outputEvent.epoch
+      ?? outputEvent.epoch_id
+      ?? outputEvent.epochId
+      ?? outputEvent.generation;
+    const rawRetirementEpoch = retirementEvent.epoch
+      ?? retirementEvent.epoch_id
+      ?? retirementEvent.epochId
+      ?? retirementEvent.generation;
+    const candidateEpoch = canonicalDecimalEpoch(rawCandidateEpoch);
+    const canonicalPreviousEpoch = canonicalDecimalEpoch(rawPreviousEpoch);
+    const commitEpoch = canonicalDecimalEpoch(rawCommitEpoch);
+    const canonicalCommitPreviousEpoch = canonicalDecimalEpoch(rawCommitPreviousEpoch);
+    const canonicalDispatchEpoch = canonicalDecimalEpoch(rawDispatchEpoch);
+    const canonicalOutputEpoch = canonicalDecimalEpoch(rawOutputEpoch);
+    const retirementEpoch = canonicalDecimalEpoch(rawRetirementEpoch);
+    const nonCanonicalEpochs = [
+      ["previous_epoch", rawPreviousEpoch],
+      ["published_epoch", rawCandidateEpoch],
+      ["commit_epoch", rawCommitEpoch],
+      ["commit_previous_epoch", rawCommitPreviousEpoch],
+      ["dispatch_epoch", rawDispatchEpoch],
+      ["output_epoch", rawOutputEpoch],
+      ["retirement_epoch", rawRetirementEpoch],
+    ].filter(([, epoch]) => epoch !== undefined && epoch !== null
+      && canonicalDecimalEpoch(epoch) === null)
+      .map(([field, epoch]) => ({ field, epoch }));
+    if (nonCanonicalEpochs.length > 0) {
+      failures.push({ code: "epoch_generation_not_canonical_decimal", fields: nonCanonicalEpochs });
+    }
+    if (commitEpoch && candidateEpoch && commitEpoch !== candidateEpoch) {
+      failures.push({ code: "epoch_commit_epoch_mismatch" });
+    }
+    if (
+      rawPreviousEpoch !== undefined
+      && rawCandidateEpoch !== undefined
+      && (
+        canonicalPreviousEpoch === null
+        || candidateEpoch === null
+        || BigInt(candidateEpoch) <= BigInt(canonicalPreviousEpoch)
+      )
+    ) {
+      failures.push({
+        code: "epoch_generation_transition_not_forward",
+        previousEpoch: rawPreviousEpoch,
+        candidateEpoch: rawCandidateEpoch,
+      });
+    }
+    if (
+      canonicalPreviousEpoch
+      && canonicalCommitPreviousEpoch !== canonicalPreviousEpoch
+    ) {
+      failures.push({ code: "epoch_commit_previous_epoch_mismatch" });
+    }
+    if (candidateEpoch && canonicalDispatchEpoch !== candidateEpoch) {
+      failures.push({ code: "dispatch_epoch_mismatch" });
+    }
+    if (candidateEpoch && canonicalOutputEpoch !== candidateEpoch) {
+      failures.push({ code: "output_epoch_mismatch" });
+    }
+    if (canonicalPreviousEpoch && retirementEpoch !== canonicalPreviousEpoch) {
+      failures.push({ code: "retirement_epoch_mismatch" });
+    }
+    const retirementArtifactHash = eventArtifactHash(retirementEvent);
+    if (!retirementArtifactHash) {
+      failures.push({ code: "retirement_artifact_hash_missing" });
+    } else if (artifactBeforeHash && retirementArtifactHash !== artifactBeforeHash) {
+      failures.push({ code: "retirement_artifact_hash_mismatch" });
+    }
+    const retirementStatus = firstText(
+      retirementEvent.status,
+      retirementEvent.result,
+      retirementEvent.retirement_result,
+      retirementEvent.retirementResult
+    );
+    const retirementProof = firstText(
+      retirementEvent.proof,
+      retirementEvent.retirement_proof,
+      retirementEvent.retirementProof
+    );
+    if (!RECOGNIZED_RETIREMENT_PROOFS.has(retirementProof ?? "")) {
+      failures.push({ code: "retirement_proof_not_successful", retirementProof });
+    }
+    if (!RECOGNIZED_RETIREMENT_RESULTS.has(retirementStatus ?? "")) {
+      failures.push({ code: "retirement_result_not_successful", retirementResult: retirementStatus });
+    }
+    const commitPid = eventProcessId(epochCommitEvent);
+    const retirementPid = eventProcessId(retirementEvent);
+    if (!commitPid) failures.push({ code: "epoch_commit_process_identity_missing" });
+    else if (identityPid && commitPid !== identityPid) {
+      failures.push({ code: "epoch_commit_process_identity_mismatch" });
+    }
+    if (!retirementPid) failures.push({ code: "retirement_process_identity_missing" });
+    else if (identityPid && retirementPid !== identityPid) {
+      failures.push({ code: "retirement_process_identity_mismatch" });
+    }
+    const commitTs = eventTimestamp(epochCommitEvent);
+    if (commitTs === null) failures.push({ code: "epoch_commit_timestamp_missing" });
+    if (outputTs !== null && commitTs !== null && commitTs < outputTs) {
+      failures.push({ code: "epoch_commit_precedes_output" });
+    }
+    if (commitTs !== null && retirementTs !== null && retirementTs < commitTs) {
+      failures.push({ code: "retirement_precedes_epoch_commit" });
+    }
+    if (publicationId && !evidenceRefs.includes(`dispatcher-publication:${publicationId}`)) {
+      failures.push({ code: "epoch_publication_evidence_ref_missing" });
+    }
+    if (
+      candidateRegistrationId
+      && !evidenceRefs.includes(`dispatcher-registration:${candidateRegistrationId}`)
+    ) {
+      failures.push({ code: "epoch_registration_evidence_ref_missing" });
+    }
   }
 
   if (!projectId) failures.push({ code: "project_id_missing" });
@@ -1577,25 +2168,35 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
 export function queryGpuHmrLedgerInvariants(input: unknown): GpuHmrLedgerValidation {
   const ledger = asObject(input);
   const ledgerModelPolicy = resolveGpuHmrModelPolicy(ledger.modelPolicy, ledger.model_policy);
+  const recordsFieldPresent = hasOwn(ledger, "records");
   const records = Array.isArray(ledger.records) ? ledger.records : null;
-  const validations = records && records.length > 0
-    ? records.map((record, index) => ({
-        index,
-        result: isObject(record)
-          ? validateRecord({
-              modelPolicy: ledgerModelPolicy,
-              ...record,
-            })
-          : {
-              schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
-              proofId: null,
-              gpuHmrSuccess: false,
-              failedInvariants: [{ code: "ledger_record_not_object" }],
-            },
-      }))
-    : [{ index: 0, result: validateRecord({ modelPolicy: ledgerModelPolicy, ...ledger }) }];
+  const ledgerSchema = exactSchemaVersion(ledger);
+  const invalidRecordValidation = (code: string): GpuHmrLedgerValidation => ({
+    schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+    proofId: null,
+    gpuHmrSuccess: false,
+    failedInvariants: [{ code }],
+  });
+  const validations = recordsFieldPresent
+    ? records && records.length > 0
+      ? records.map((record, index) => ({
+          index,
+          result: isObject(record)
+            ? validateRecord(
+                {
+                  modelPolicy: ledgerModelPolicy,
+                  ...record,
+                }
+              )
+            : invalidRecordValidation("ledger_record_not_object"),
+        }))
+      : [{ index: 0, result: invalidRecordValidation("ledger_record_unavailable") }]
+    : [{
+        index: 0,
+        result: validateRecord({ modelPolicy: ledgerModelPolicy, ...ledger }),
+      }];
   const recomputed = validations[validations.length - 1]!.result;
-  const proofId = records && records.length > 0
+  const proofId = recordsFieldPresent && records && records.length > 0
     ? canonicalLedgerRootProofId(validations.map(({ result }) => result.proofId))
     : recomputed.proofId;
   const failures: GpuHmrLedgerFailure[] = validations.flatMap(({ index, result }) =>
@@ -1604,21 +2205,69 @@ export function queryGpuHmrLedgerInvariants(input: unknown): GpuHmrLedgerValidat
       record_index: failure.record_index ?? index,
     }))
   );
-  if (records && records.length === 0) {
+  if (recordsFieldPresent) {
+    if (ledgerSchema.aliasMismatch) failures.push({ code: "ledger_schema_alias_mismatch" });
+    if (!ledgerSchema.present || !ledgerSchema.value) {
+      failures.push({ code: "ledger_schema_version_missing" });
+    } else if (!ledgerSchema.exact) {
+      failures.push({
+        code: "ledger_schema_version_mismatch",
+        suppliedSchemaVersion: ledgerSchema.value,
+        expectedSchemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+      });
+    }
+  }
+  if (recordsFieldPresent && records === null) {
+    failures.push({ code: "ledger_records_not_array" });
+  } else if (records && records.length === 0) {
     failures.push({ code: "ledger_records_empty" });
   }
-  const recordSuccess = failures.length === 0;
+  if (records && records.length > 1) {
+    const proofIdIndexes = new Map<string, number[]>();
+    for (const { index, result } of validations) {
+      if (!result.proofId) continue;
+      const indexes = proofIdIndexes.get(result.proofId) ?? [];
+      indexes.push(index);
+      proofIdIndexes.set(result.proofId, indexes);
+    }
+    const duplicates = [...proofIdIndexes.entries()]
+      .filter(([, indexes]) => indexes.length > 1)
+      .map(([recordProofId, recordIndexes]) => ({ recordProofId, recordIndexes }));
+    if (duplicates.length > 0) {
+      failures.push({ code: "ledger_record_proof_ids_duplicate", duplicates });
+    }
+  }
+  if (objectAliasMismatch(ledger, "proof_id", "proofId")) {
+    failures.push({ code: "ledger_proof_id_alias_mismatch" });
+  }
   const topLevelProofId = firstText(ledger.proofId, ledger.proof_id);
   if (topLevelProofId && topLevelProofId !== proofId) {
     failures.push({ code: "ledger_proof_id_mismatch", suppliedProofId: topLevelProofId, recomputedProofId: proofId });
   }
+  const recordSuccess = failures.length === 0;
+  if (objectAliasMismatch(ledger, "gpu_hmr_success", "gpuHmrSuccess")) {
+    failures.push({ code: "ledger_success_flag_alias_mismatch" });
+  }
   const successFlag = firstPresent([ledger, "gpuHmrSuccess"], [ledger, "gpu_hmr_success"]);
-  if (successFlag.present && successFlag.value !== recordSuccess) {
+  if (
+    successFlag.present
+    && (typeof successFlag.value !== "boolean" || successFlag.value !== recordSuccess)
+  ) {
     failures.push({ code: "ledger_success_flag_mismatch" });
   }
   const suppliedQuery = asObject(ledger.query);
   if (Object.keys(suppliedQuery).length > 0) {
-    if (firstText(suppliedQuery.schemaVersion, suppliedQuery.schema_version) !== GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION) {
+    if (objectAliasMismatch(suppliedQuery, "proof_id", "proofId")) {
+      failures.push({ code: "supplied_ledger_query_proof_id_alias_mismatch" });
+    }
+    const suppliedQuerySchema = exactSchemaVersion(suppliedQuery);
+    if (suppliedQuerySchema.aliasMismatch) {
+      failures.push({ code: "supplied_ledger_query_schema_alias_mismatch" });
+    }
+    if (objectAliasMismatch(suppliedQuery, "gpu_hmr_success", "gpuHmrSuccess")) {
+      failures.push({ code: "supplied_ledger_query_success_alias_mismatch" });
+    }
+    if (!suppliedQuerySchema.exact) {
       failures.push({ code: "supplied_ledger_query_schema_mismatch" });
     } else {
       const suppliedFailures = compactStringList(
@@ -1627,8 +2276,14 @@ export function queryGpuHmrLedgerInvariants(input: unknown): GpuHmrLedgerValidat
           : []
       ).sort();
       const recomputedFailures = failures.map((failure) => failure.code).sort();
+      const suppliedQuerySuccess = firstPresent(
+        [suppliedQuery, "gpuHmrSuccess"],
+        [suppliedQuery, "gpu_hmr_success"]
+      );
       if (
-        suppliedQuery.gpuHmrSuccess !== recordSuccess
+        !suppliedQuerySuccess.present
+        || typeof suppliedQuerySuccess.value !== "boolean"
+        || suppliedQuerySuccess.value !== recordSuccess
         || firstText(suppliedQuery.proofId, suppliedQuery.proof_id) !== proofId
         || suppliedFailures.join("|") !== recomputedFailures.join("|")
       ) {
