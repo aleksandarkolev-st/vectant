@@ -539,6 +539,27 @@ impl GpuHmrAcceptanceLedger {
 }
 
 impl GpuHmrProofArtifact {
+    fn identity_material(&self) -> Value {
+        json!({
+            "schemaVersion": self.schema_version,
+            "workspaceSlug": self.workspace_slug,
+            "runtimeSessionId": self.runtime_session_id,
+            "sourceEditId": self.source_edit_id,
+            "selectedArtifactId": self.selected_artifact_id,
+            "resultState": self.result_state,
+            "degradedState": self.degraded_state,
+            "degradedReason": self.degraded_reason,
+            "stageResults": self.stage_results,
+            "evidenceRefs": self.evidence_refs,
+            "visualEvidenceRefs": self.visual_evidence_refs,
+            "createdAt": self.created_at,
+        })
+    }
+
+    fn expected_proof_id(&self) -> String {
+        format!("gpu-proof:{}", stable_json_hash(&self.identity_material()))
+    }
+
     pub fn new(input: GpuHmrProofArtifactInput) -> Self {
         let created_at = input.created_at.unwrap_or_else(now_rfc3339);
         let proof_material = json!({
@@ -615,6 +636,13 @@ impl GpuHmrProofArtifact {
             || self.created_at.trim().is_empty()
         {
             anyhow::bail!("GPU HMR proof artifact is missing required identity fields");
+        }
+        let expected_proof_id = self.expected_proof_id();
+        if self.proof_id != expected_proof_id {
+            anyhow::bail!(
+                "GPU HMR proof artifact proofId does not match its content: expected {}",
+                expected_proof_id
+            );
         }
         for stage in &self.stage_results {
             if stage.stage_id.trim().is_empty()
@@ -1031,6 +1059,24 @@ mod tests {
         let latest = read_latest_proof_artifact(temp.path()).await.unwrap();
         assert_eq!(exact, artifact);
         assert_eq!(latest, artifact);
+    }
+
+    #[tokio::test]
+    async fn proof_artifact_reader_rejects_content_replayed_under_stale_proof_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = sample_artifact("2026-05-26T00:00:00Z".to_string());
+        let written = write_proof_artifact(temp.path(), &artifact).await.unwrap();
+        let mut tampered = serde_json::to_value(&artifact).unwrap();
+        tampered["resultState"] = serde_json::json!("gpu-hmr-full-runtime-proven");
+        tokio::fs::write(&written.path, serde_json::to_vec_pretty(&tampered).unwrap())
+            .await
+            .unwrap();
+
+        let error = read_proof_artifact(&written.path).await.unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("proofId does not match its content"));
     }
 
     fn sample_artifact(created_at: String) -> GpuHmrProofArtifact {
