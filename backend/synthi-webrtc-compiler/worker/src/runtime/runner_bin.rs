@@ -962,6 +962,35 @@ fn emit_correlated_gpu_command_rejection(
 }
 
 #[cfg(feature = "gpu-hmr")]
+fn legacy_cold_gpu_artifact_status(
+    artifact_content_hash: &str,
+    result: &AdapterReloadResult,
+) -> String {
+    match result {
+        AdapterReloadResult::Success { .. } => serde_json::json!({
+            "status": "gpu-artifact-loaded",
+            "module": "device",
+            "loadKind": "cold_legacy_compatibility",
+            "artifactContentHash": artifact_content_hash,
+            "proofAuthority": "legacy_cold_artifact_load_only_not_gpu_hmr_success",
+            "acceptedForGpuHmr": false,
+            "gpuHmrSuccess": false,
+        })
+        .to_string(),
+        AdapterReloadResult::Failed { error, .. } => HmrStatus::rejected_with_fallback(
+            "device",
+            error,
+            "Keep the previous device state or use a correlated V4 cold load",
+        )
+        .to_json(),
+        AdapterReloadResult::Unsupported { reason } => {
+            HmrStatus::rejected_with_fallback("device", reason, "Use a correlated V4 cold load")
+                .to_json()
+        }
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
 fn emit_gpu_reload_completion(completion: &GpuReloadCompletion) {
     eprintln!(
         "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact={} kernels={} result={:?}",
@@ -1003,7 +1032,16 @@ fn emit_gpu_reload_completion(completion: &GpuReloadCompletion) {
             }
             return;
         }
-        (None, None) => {}
+        (None, None) => {
+            eprintln!(
+                "[Runner] [HMR-STATUS] {}",
+                legacy_cold_gpu_artifact_status(
+                    &completion.artifact_content_hash,
+                    &completion.result,
+                )
+            );
+            return;
+        }
         _ => {
             let status = HmrStatus::rejected_with_fallback(
                 "device",
@@ -1014,23 +1052,6 @@ fn emit_gpu_reload_completion(completion: &GpuReloadCompletion) {
             return;
         }
     }
-
-    let status = match &completion.result {
-        AdapterReloadResult::Success {
-            state_preserved, ..
-        } => HmrStatus::Applied {
-            module: "device".into(),
-            capability: "GPU sidecar HMR".into(),
-            state_preserved: *state_preserved,
-        },
-        AdapterReloadResult::Failed { error, .. } => {
-            HmrStatus::rejected_with_fallback("device", error, "Keep previous GPU sidecar loaded")
-        }
-        AdapterReloadResult::Unsupported { reason } => {
-            HmrStatus::rejected_with_fallback("device", reason, "Full GPU sidecar reload required")
-        }
-    };
-    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -1229,6 +1250,18 @@ fn parse_gpu_reload_command(
     if !matches!(command, "load_device" | "load_device_partial") || parts.len() < 3 {
         return Err("legacy GPU reload command format is invalid".to_string());
     }
+    if command == "load_device_partial" {
+        return Err(
+            "legacy partial GPU commands are unsupported; use a challenge-bound V4 hot reload"
+                .to_string(),
+        );
+    }
+    if parts.len() > 5 {
+        return Err(
+            "legacy GPU cold load commands cannot carry proof capsules, edit identities, or content hashes; use the GPU reload V4 envelope"
+                .to_string(),
+        );
+    }
     let kernels_arg = parts.get(3).copied().unwrap_or("-");
     let kernels = kernels_arg
         .split(',')
@@ -1240,23 +1273,16 @@ fn parse_gpu_reload_command(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let abi_version = device_load_abi_version(&kernels, parts.get(4).copied());
-    let capsule_metadata = gpu_reload_capsule_metadata_from_token(parts.get(5).copied());
-    if parts.get(6).is_some() {
-        return Err(
-            "legacy GPU reload commands cannot claim content binding; use the GPU reload V4 envelope"
-                .to_string(),
-        );
-    }
     Ok(ParsedGpuReloadCommand {
         request_id: None,
-        cold_load: false,
-        partial: command == "load_device_partial",
+        cold_load: true,
+        partial: false,
         vendor: parts[1].to_string(),
         artifact_path: parts[2].to_string(),
         expected_artifact_content_hash: None,
         kernels,
         abi_version,
-        capsule_metadata,
+        capsule_metadata: None,
         source_edit_id: None,
     })
 }
@@ -3335,8 +3361,9 @@ mod tests {
         consume_gpu_protocol_challenge, gpu_artifact_loader_transport_for_reload,
         gpu_reload_artifact_blob_from_path, gpu_reload_capsule_metadata_from_token,
         gpu_reload_operation_matches_epoch, gpu_reload_result_allows_adapter_restore,
-        gpu_reload_source_paths, parse_gpu_artifact_loader_transport, parse_gpu_reload_command,
-        recomputed_runtime_proof_id, strict_gpu_reload_terminal_result_with_oracle_records,
+        gpu_reload_source_paths, legacy_cold_gpu_artifact_status,
+        parse_gpu_artifact_loader_transport, parse_gpu_reload_command, recomputed_runtime_proof_id,
+        strict_gpu_reload_terminal_result_with_oracle_records,
         validate_gpu_reload_artifact_content_hash, AdapterReloadResult, ArtifactLoaderTransport,
         ReloadArtifactBlob, RUNNER_GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
         RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE, RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
@@ -3830,8 +3857,59 @@ mod tests {
             artifact_hash.as_str(),
         ];
         let error = parse_gpu_reload_command(&parts, None).unwrap_err();
-        assert!(error.contains("cannot claim content binding"));
+        assert!(error.contains("cannot carry proof capsules"));
         assert!(error.contains("V4"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn legacy_gpu_commands_are_cold_only_and_never_claim_hmr_success() {
+        let parsed = parse_gpu_reload_command(
+            &[
+                "load_device",
+                "rocm",
+                "/tmp/device.hsaco",
+                "shade",
+                "sha256:abi",
+            ],
+            None,
+        )
+        .unwrap();
+        assert!(parsed.cold_load);
+        assert!(!parsed.partial);
+        assert!(parsed.request_id.is_none());
+        assert!(parsed.source_edit_id.is_none());
+        assert!(parsed.expected_artifact_content_hash.is_none());
+        assert!(gpu_reload_operation_matches_epoch(parsed.cold_load, false));
+        assert!(!gpu_reload_operation_matches_epoch(parsed.cold_load, true));
+
+        let partial_error = parse_gpu_reload_command(
+            &[
+                "load_device_partial",
+                "rocm",
+                "/tmp/device.hsaco",
+                "shade",
+                "sha256:abi",
+            ],
+            None,
+        )
+        .unwrap_err();
+        assert!(partial_error.contains("legacy partial GPU commands are unsupported"));
+        assert!(partial_error.contains("V4"));
+
+        let status = legacy_cold_gpu_artifact_status(
+            &format!("sha256:{}", "a".repeat(64)),
+            &AdapterReloadResult::Success {
+                reload_ms: 1,
+                state_preserved: false,
+            },
+        );
+        let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status["status"], "gpu-artifact-loaded");
+        assert_eq!(status["loadKind"], "cold_legacy_compatibility");
+        assert_eq!(status["acceptedForGpuHmr"], false);
+        assert_eq!(status["gpuHmrSuccess"], false);
+        assert_ne!(status["status"], "applied");
     }
 
     #[cfg(feature = "gpu-hmr")]
