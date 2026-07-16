@@ -146,6 +146,7 @@ async fn local_support_ipc(
                 .write()
                 .map_err(|_| "Preview state lock failed closed.".to_string())?
                 .clear();
+            clear_process_visibility_snapshot(&runtime)?;
         }
         "workspace.pick" => {
             let Some(path) = rfd::FileDialog::new()
@@ -463,6 +464,7 @@ async fn local_support_ipc(
                 .write()
                 .map_err(|_| "Preview state lock failed closed.".to_string())?
                 .clear();
+            clear_process_visibility_snapshot(&runtime)?;
             append_control_event(
                 &app_state,
                 &request_id,
@@ -472,6 +474,7 @@ async fn local_support_ipc(
         }
         "full_access.pause" => {
             app_state.full_access.lock().await.pause();
+            clear_process_visibility_snapshot(&runtime)?;
             append_control_event(
                 &app_state,
                 &request_id,
@@ -484,6 +487,7 @@ async fn local_support_ipc(
         }
         "full_access.revoke" => {
             app_state.full_access.lock().await.revoke();
+            clear_process_visibility_snapshot(&runtime)?;
             append_control_event(
                 &app_state,
                 &request_id,
@@ -495,6 +499,7 @@ async fn local_support_ipc(
             let mut full_access = app_state.full_access.lock().await;
             full_access.process_visibility_paused = true;
             drop(full_access);
+            clear_process_visibility_snapshot(&runtime)?;
             append_control_event(
                 &app_state,
                 &request_id,
@@ -814,6 +819,14 @@ async fn refresh_process_visibility(
         &format!("Collected {count} sanitized process visibility record(s) locally; command lines, environments, raw paths, and PIDs were excluded."),
     )
     .await
+}
+
+fn clear_process_visibility_snapshot(runtime: &DesktopRuntime) -> Result<(), String> {
+    *runtime
+        .process_visibility_snapshot
+        .write()
+        .map_err(|_| "Process visibility state lock failed closed.".to_string())? = None;
+    Ok(())
 }
 
 async fn confirm_full_access_enrollment(
@@ -1204,6 +1217,7 @@ async fn enforce_cloud_policy(
         if full_access.receipt.is_some() {
             full_access.revoke();
             drop(full_access);
+            let _ = clear_process_visibility_snapshot(runtime);
             state.audit.lock().await.append(
                 vectant_local_support_app::audit::AuditClass::Security,
                 None,
@@ -1637,15 +1651,19 @@ async fn handle_relay_control_command(
         }
         "full_access_pause" => {
             state.full_access.lock().await.pause();
+            clear_process_visibility_snapshot(runtime)?;
             Ok("full_access_paused")
         }
         "full_access_revoke" => {
             state.full_access.lock().await.revoke();
+            clear_process_visibility_snapshot(runtime)?;
             Ok("full_access_revoked")
         }
         "process_visibility_pause" => {
             let mut full_access = state.full_access.lock().await;
             full_access.process_visibility_paused = true;
+            drop(full_access);
+            clear_process_visibility_snapshot(runtime)?;
             Ok("process_visibility_paused")
         }
         "revoke_port" => {
@@ -1675,6 +1693,7 @@ async fn handle_relay_control_command(
             shutdown_cleanup(state, "cloud_control_disconnect")
                 .await
                 .map_err(|error| error.to_string())?;
+            clear_process_visibility_snapshot(runtime)?;
             runtime
                 .pending_relay_approvals
                 .write()
