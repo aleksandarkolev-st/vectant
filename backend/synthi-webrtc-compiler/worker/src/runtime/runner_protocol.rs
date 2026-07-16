@@ -3,12 +3,17 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 pub const RUNNER_PROTOCOL_ACK_SCHEMA_VERSION: &str = "synthi.runner.protocol_ack.v2";
-pub const GPU_RELOAD_V2_SCHEMA_VERSION: &str = "synthi.runner.gpu_reload.v2";
-pub const GPU_RELOAD_V2_RESULT_SCHEMA_VERSION: &str = "synthi.runner.gpu_reload_result.v2";
+pub const GPU_RELOAD_V3_SCHEMA_VERSION: &str = "synthi.runner.gpu_reload.v3";
+pub const GPU_RELOAD_V3_RESULT_SCHEMA_VERSION: &str = "synthi.runner.gpu_reload_result.v3";
+pub const GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION: &str =
+    "synthi.runner.gpu_artifact_load_result.v1";
 pub const GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY: &str =
     "gpu_reload.independent_edit_identity.v1";
+pub const GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY: &str = "gpu_reload.artifact_content_hash.v1";
+pub const GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY: &str =
+    "gpu_load.correlated_terminal.v1";
 pub const RUNNER_PROTOCOL_ACK_PREFIX: &str = "[synthi-runner-protocol-ack] ";
-pub const RUNNER_PROTOCOL_CURRENT_VERSION: u32 = 2;
+pub const RUNNER_PROTOCOL_CURRENT_VERSION: u32 = 3;
 pub const RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,7 +35,11 @@ impl RunnerProtocolAck {
             current_version: RUNNER_PROTOCOL_CURRENT_VERSION,
             min_supported_version: RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
             runner_pid: std::process::id(),
-            capabilities: vec![GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY.to_string()],
+            capabilities: vec![
+                GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY.to_string(),
+                GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY.to_string(),
+                GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY.to_string(),
+            ],
         }
     }
 
@@ -48,6 +57,14 @@ impl RunnerProtocolAck {
                 .capabilities
                 .iter()
                 .any(|capability| capability == GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY)
+            && self
+                .capabilities
+                .iter()
+                .any(|capability| capability == GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY)
+            && self
+                .capabilities
+                .iter()
+                .any(|capability| capability == GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY)
     }
 }
 
@@ -58,12 +75,13 @@ pub fn parse_runner_protocol_ack(line: &str) -> Option<RunnerProtocolAck> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GpuReloadV2Payload {
+pub struct GpuReloadV3Payload {
     pub schema_version: String,
     pub request_id: String,
     pub mode: String,
     pub vendor: String,
     pub artifact_path: String,
+    pub artifact_content_hash: String,
     pub kernels: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub abi_fingerprint: Option<String>,
@@ -72,23 +90,25 @@ pub struct GpuReloadV2Payload {
     pub source_edit_id: String,
 }
 
-impl GpuReloadV2Payload {
+impl GpuReloadV3Payload {
     pub fn new(
         request_id: String,
         mode: &str,
         vendor: &str,
         artifact_path: &str,
+        artifact_content_hash: String,
         kernels: Vec<String>,
         abi_fingerprint: Option<String>,
         capsule_token: Option<String>,
         source_edit_id: String,
     ) -> Result<Self, String> {
         let payload = Self {
-            schema_version: GPU_RELOAD_V2_SCHEMA_VERSION.to_string(),
+            schema_version: GPU_RELOAD_V3_SCHEMA_VERSION.to_string(),
             request_id,
             mode: mode.to_string(),
             vendor: vendor.to_string(),
             artifact_path: artifact_path.to_string(),
+            artifact_content_hash,
             kernels,
             abi_fingerprint,
             capsule_token,
@@ -99,24 +119,27 @@ impl GpuReloadV2Payload {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != GPU_RELOAD_V2_SCHEMA_VERSION {
-            return Err("GPU reload V2 schema mismatch".to_string());
+        if self.schema_version != GPU_RELOAD_V3_SCHEMA_VERSION {
+            return Err("GPU reload V3 schema mismatch".to_string());
         }
         if !matches!(self.mode.as_str(), "full" | "partial") {
-            return Err("GPU reload V2 mode is invalid".to_string());
+            return Err("GPU reload V3 mode is invalid".to_string());
         }
         if !matches!(self.vendor.as_str(), "cuda" | "rocm") {
-            return Err("GPU reload V2 vendor is invalid".to_string());
+            return Err("GPU reload V3 vendor is invalid".to_string());
         }
         if self.artifact_path.is_empty() || self.artifact_path.chars().any(char::is_control) {
-            return Err("GPU reload V2 artifact path is invalid".to_string());
+            return Err("GPU reload V3 artifact path is invalid".to_string());
+        }
+        if !canonical_sha256_content_hash(&self.artifact_content_hash) {
+            return Err("GPU reload V3 artifact content hash is invalid".to_string());
         }
         if self
             .kernels
             .iter()
             .any(|kernel| kernel.is_empty() || kernel.chars().any(char::is_control))
         {
-            return Err("GPU reload V2 kernel list is invalid".to_string());
+            return Err("GPU reload V3 kernel list is invalid".to_string());
         }
         for value in [
             self.abi_fingerprint.as_deref(),
@@ -129,14 +152,14 @@ impl GpuReloadV2Payload {
                 || value.chars().any(char::is_whitespace)
                 || value.chars().any(char::is_control)
             {
-                return Err("GPU reload V2 optional token is invalid".to_string());
+                return Err("GPU reload V3 optional token is invalid".to_string());
             }
         }
         if !canonical_gpu_reload_request_id(&self.request_id) {
-            return Err("GPU reload V2 request identity is invalid".to_string());
+            return Err("GPU reload V3 request identity is invalid".to_string());
         }
         if !canonical_source_edit_id(&self.source_edit_id) {
-            return Err("GPU reload V2 source edit identity is invalid".to_string());
+            return Err("GPU reload V3 source edit identity is invalid".to_string());
         }
         Ok(())
     }
@@ -145,37 +168,56 @@ impl GpuReloadV2Payload {
         self.validate()?;
         serde_json::to_vec(self)
             .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
-            .map_err(|error| format!("serializing GPU reload V2 payload: {error}"))
+            .map_err(|error| format!("serializing GPU reload V3 payload: {error}"))
     }
 
     pub fn decode(encoded: &str) -> Result<Self, String> {
         let bytes = URL_SAFE_NO_PAD
             .decode(encoded.as_bytes())
-            .map_err(|error| format!("decoding GPU reload V2 payload: {error}"))?;
+            .map_err(|error| format!("decoding GPU reload V3 payload: {error}"))?;
         let payload: Self = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("parsing GPU reload V2 payload: {error}"))?;
+            .map_err(|error| format!("parsing GPU reload V3 payload: {error}"))?;
         payload.validate()?;
         Ok(payload)
     }
+}
+
+pub fn canonical_sha256_content_hash(value: &str) -> bool {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuReloadV2Expectation {
     pub request_id: String,
     pub source_edit_id: String,
+    pub artifact_content_hash: String,
 }
 
 impl GpuReloadV2Expectation {
-    pub fn new(request_id: String, source_edit_id: String) -> Result<Self, String> {
+    pub fn new(
+        request_id: String,
+        source_edit_id: String,
+        artifact_content_hash: String,
+    ) -> Result<Self, String> {
         if !canonical_gpu_reload_request_id(&request_id) {
-            return Err("GPU reload V2 expectation request identity is invalid".to_string());
+            return Err("GPU reload V3 expectation request identity is invalid".to_string());
         }
         if !canonical_source_edit_id(&source_edit_id) {
-            return Err("GPU reload V2 expectation source edit identity is invalid".to_string());
+            return Err("GPU reload V3 expectation source edit identity is invalid".to_string());
+        }
+        if !canonical_sha256_content_hash(&artifact_content_hash) {
+            return Err("GPU reload V3 expectation artifact content hash is invalid".to_string());
         }
         Ok(Self {
             request_id,
             source_edit_id,
+            artifact_content_hash,
         })
     }
 }
@@ -208,6 +250,7 @@ pub struct GpuReloadV2Result {
     pub module: String,
     pub request_id: String,
     pub source_edit_id: String,
+    pub artifact_content_hash: String,
     pub full_runtime_proof_accepted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub full_runtime_proof_id: Option<String>,
@@ -220,14 +263,16 @@ impl GpuReloadV2Result {
     pub fn applied(
         request_id: impl Into<String>,
         source_edit_id: impl Into<String>,
+        artifact_content_hash: impl Into<String>,
         full_runtime_proof_id: impl Into<String>,
     ) -> Result<Self, String> {
         let result = Self {
-            schema_version: GPU_RELOAD_V2_RESULT_SCHEMA_VERSION.to_string(),
+            schema_version: GPU_RELOAD_V3_RESULT_SCHEMA_VERSION.to_string(),
             status: "applied".to_string(),
             module: "device".to_string(),
             request_id: request_id.into(),
             source_edit_id: source_edit_id.into(),
+            artifact_content_hash: artifact_content_hash.into(),
             full_runtime_proof_accepted: true,
             full_runtime_proof_id: Some(full_runtime_proof_id.into()),
             gpu_hmr_success: true,
@@ -240,14 +285,16 @@ impl GpuReloadV2Result {
     pub fn rejected(
         request_id: impl Into<String>,
         source_edit_id: impl Into<String>,
+        artifact_content_hash: impl Into<String>,
         reason: impl Into<String>,
     ) -> Result<Self, String> {
         let result = Self {
-            schema_version: GPU_RELOAD_V2_RESULT_SCHEMA_VERSION.to_string(),
+            schema_version: GPU_RELOAD_V3_RESULT_SCHEMA_VERSION.to_string(),
             status: "rejected".to_string(),
             module: "device".to_string(),
             request_id: request_id.into(),
             source_edit_id: source_edit_id.into(),
+            artifact_content_hash: artifact_content_hash.into(),
             full_runtime_proof_accepted: false,
             full_runtime_proof_id: None,
             gpu_hmr_success: false,
@@ -258,14 +305,15 @@ impl GpuReloadV2Result {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != GPU_RELOAD_V2_RESULT_SCHEMA_VERSION {
-            return Err("GPU reload V2 result schema mismatch".to_string());
+        if self.schema_version != GPU_RELOAD_V3_RESULT_SCHEMA_VERSION {
+            return Err("GPU reload V3 result schema mismatch".to_string());
         }
         if self.module != "device"
             || !canonical_gpu_reload_request_id(&self.request_id)
             || !canonical_source_edit_id(&self.source_edit_id)
+            || !canonical_sha256_content_hash(&self.artifact_content_hash)
         {
-            return Err("GPU reload V2 terminal identity mismatch".to_string());
+            return Err("GPU reload V3 terminal identity mismatch".to_string());
         }
         match self.status.as_str() {
             "applied"
@@ -288,20 +336,30 @@ impl GpuReloadV2Result {
                 Ok(())
             }
             "applied" | "rejected" => {
-                Err("GPU reload V2 terminal proof fields are inconsistent".to_string())
+                Err("GPU reload V3 terminal proof fields are inconsistent".to_string())
             }
-            _ => Err("GPU reload V2 terminal status is invalid".to_string()),
+            _ => Err("GPU reload V3 terminal status is invalid".to_string()),
         }
     }
 
-    pub fn matches(&self, request_id: &str, source_edit_id: &str) -> bool {
+    pub fn matches(
+        &self,
+        request_id: &str,
+        source_edit_id: &str,
+        artifact_content_hash: &str,
+    ) -> bool {
         self.validate().is_ok()
             && self.request_id == request_id
             && self.source_edit_id == source_edit_id
+            && self.artifact_content_hash == artifact_content_hash
     }
 
     pub fn matches_expectation(&self, expectation: &GpuReloadV2Expectation) -> bool {
-        self.matches(&expectation.request_id, &expectation.source_edit_id)
+        self.matches(
+            &expectation.request_id,
+            &expectation.source_edit_id,
+            &expectation.artifact_content_hash,
+        )
     }
 
     pub fn to_json(&self) -> Result<String, String> {
@@ -313,6 +371,112 @@ impl GpuReloadV2Result {
     pub fn from_json(value: &str) -> Result<Self, String> {
         let result: Self = serde_json::from_str(value)
             .map_err(|error| format!("parsing GPU reload V2 result: {error}"))?;
+        result.validate()?;
+        Ok(result)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GpuArtifactLoadV1Result {
+    pub schema_version: String,
+    pub status: String,
+    pub module: String,
+    pub request_id: String,
+    pub source_edit_id: String,
+    pub artifact_content_hash: String,
+    pub accepted_for_gpu_hmr: bool,
+    pub gpu_hmr_success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl GpuArtifactLoadV1Result {
+    pub fn loaded(
+        request_id: impl Into<String>,
+        source_edit_id: impl Into<String>,
+        artifact_content_hash: impl Into<String>,
+    ) -> Result<Self, String> {
+        let result = Self {
+            schema_version: GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION.to_string(),
+            status: "loaded".to_string(),
+            module: "device".to_string(),
+            request_id: request_id.into(),
+            source_edit_id: source_edit_id.into(),
+            artifact_content_hash: artifact_content_hash.into(),
+            accepted_for_gpu_hmr: false,
+            gpu_hmr_success: false,
+            reason: None,
+        };
+        result.validate()?;
+        Ok(result)
+    }
+
+    pub fn rejected(
+        request_id: impl Into<String>,
+        source_edit_id: impl Into<String>,
+        artifact_content_hash: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Result<Self, String> {
+        let result = Self {
+            schema_version: GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION.to_string(),
+            status: "rejected".to_string(),
+            module: "device".to_string(),
+            request_id: request_id.into(),
+            source_edit_id: source_edit_id.into(),
+            artifact_content_hash: artifact_content_hash.into(),
+            accepted_for_gpu_hmr: false,
+            gpu_hmr_success: false,
+            reason: Some(reason.into()),
+        };
+        result.validate()?;
+        Ok(result)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION {
+            return Err("GPU artifact load V1 result schema mismatch".to_string());
+        }
+        if self.module != "device"
+            || !canonical_gpu_reload_request_id(&self.request_id)
+            || !canonical_source_edit_id(&self.source_edit_id)
+            || !canonical_sha256_content_hash(&self.artifact_content_hash)
+            || self.accepted_for_gpu_hmr
+            || self.gpu_hmr_success
+        {
+            return Err("GPU artifact load V1 result identity or authority mismatch".to_string());
+        }
+        match self.status.as_str() {
+            "loaded" if self.reason.is_none() => Ok(()),
+            "rejected" if self.reason.as_deref().is_some_and(nonempty_safe_text) => Ok(()),
+            "loaded" | "rejected" => {
+                Err("GPU artifact load V1 result fields are inconsistent".to_string())
+            }
+            _ => Err("GPU artifact load V1 result status is invalid".to_string()),
+        }
+    }
+
+    pub fn matches(
+        &self,
+        request_id: &str,
+        source_edit_id: &str,
+        artifact_content_hash: &str,
+    ) -> bool {
+        self.validate().is_ok()
+            && self.request_id == request_id
+            && self.source_edit_id == source_edit_id
+            && self.artifact_content_hash == artifact_content_hash
+    }
+
+    pub fn to_json(&self) -> Result<String, String> {
+        self.validate()?;
+        serde_json::to_string(self)
+            .map_err(|error| format!("serializing GPU artifact load V1 result: {error}"))
+    }
+
+    pub fn from_json(value: &str) -> Result<Self, String> {
+        let result: Self = serde_json::from_str(value)
+            .map_err(|error| format!("parsing GPU artifact load V1 result: {error}"))?;
         result.validate()?;
         Ok(result)
     }
@@ -372,12 +536,13 @@ mod tests {
     }
 
     #[test]
-    fn gpu_reload_v2_round_trip_preserves_exact_typed_payload() {
-        let payload = GpuReloadV2Payload::new(
+    fn gpu_reload_v3_round_trip_preserves_exact_typed_payload() {
+        let payload = GpuReloadV3Payload::new(
             fixture_request_id('1'),
             "partial",
             "rocm",
             "/tmp/path with space/device.hsaco",
+            format!("sha256:{}", "b".repeat(64)),
             vec!["gpu::shade".to_string()],
             Some("sha256:abi".to_string()),
             Some("capsulev1_payload".to_string()),
@@ -386,16 +551,17 @@ mod tests {
         .unwrap();
         let encoded = payload.encode().unwrap();
         assert!(!encoded.chars().any(char::is_whitespace));
-        assert_eq!(GpuReloadV2Payload::decode(&encoded).unwrap(), payload);
+        assert_eq!(GpuReloadV3Payload::decode(&encoded).unwrap(), payload);
     }
 
     #[test]
-    fn gpu_reload_v2_rejects_noncanonical_or_conflicting_identity() {
-        assert!(GpuReloadV2Payload::new(
+    fn gpu_reload_v3_rejects_noncanonical_or_conflicting_identity() {
+        assert!(GpuReloadV3Payload::new(
             fixture_request_id('1'),
             "full",
             "rocm",
             "/tmp/device.hsaco",
+            format!("sha256:{}", "b".repeat(64)),
             Vec::new(),
             None,
             None,
@@ -403,11 +569,12 @@ mod tests {
         )
         .is_err());
 
-        let mut payload = GpuReloadV2Payload::new(
+        let mut payload = GpuReloadV3Payload::new(
             fixture_request_id('2'),
             "full",
             "rocm",
             "/tmp/device.hsaco",
+            format!("sha256:{}", "b".repeat(64)),
             Vec::new(),
             None,
             None,
@@ -427,34 +594,81 @@ mod tests {
         assert!(!parsed.supports_strict_gpu_reload("nonce-b", std::process::id()));
         assert!(!parsed.supports_strict_gpu_reload("nonce-a", std::process::id() + 1));
 
-        let mut missing_capability = parsed;
-        missing_capability.capabilities.clear();
-        assert!(!missing_capability.supports_strict_gpu_reload("nonce-a", std::process::id()));
+        for required in [
+            GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
+            GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
+            GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+        ] {
+            let mut missing_capability = parsed.clone();
+            missing_capability
+                .capabilities
+                .retain(|capability| capability != required);
+            assert!(!missing_capability.supports_strict_gpu_reload("nonce-a", std::process::id()));
+        }
     }
 
     #[test]
     fn gpu_reload_v2_terminal_result_is_bound_to_request_source_and_runtime_proof() {
         let source_edit_id = source_edit_id();
         let request_id = fixture_request_id('3');
+        let artifact_hash = format!("sha256:{}", "a".repeat(64));
         let proof_id = format!("gpu-runtime-proof:sha256:{}", "b".repeat(64));
-        let applied = GpuReloadV2Result::applied(&request_id, &source_edit_id, &proof_id).unwrap();
+        let applied =
+            GpuReloadV2Result::applied(&request_id, &source_edit_id, &artifact_hash, &proof_id)
+                .unwrap();
         let encoded = applied.to_json().unwrap();
         let decoded = GpuReloadV2Result::from_json(&encoded).unwrap();
         assert_eq!(decoded, applied);
-        assert!(decoded.matches(&request_id, &source_edit_id));
-        assert!(!decoded.matches(&fixture_request_id('4'), &source_edit_id));
+        assert!(decoded.matches(&request_id, &source_edit_id, &artifact_hash));
+        assert!(!decoded.matches(&fixture_request_id('4'), &source_edit_id, &artifact_hash));
+        assert!(!decoded.matches(
+            &request_id,
+            &source_edit_id,
+            &format!("sha256:{}", "c".repeat(64))
+        ));
 
         let mut forged = decoded;
         forged.full_runtime_proof_accepted = false;
         assert!(forged.to_json().is_err());
-        assert!(
-            GpuReloadV2Result::applied(&request_id, &source_edit_id, "proof:declared").is_err()
-        );
+        assert!(GpuReloadV2Result::applied(
+            &request_id,
+            &source_edit_id,
+            &artifact_hash,
+            "proof:declared"
+        )
+        .is_err());
 
-        let rejected =
-            GpuReloadV2Result::rejected(&request_id, &source_edit_id, "strict proof missing")
-                .unwrap();
+        let rejected = GpuReloadV2Result::rejected(
+            &request_id,
+            &source_edit_id,
+            &artifact_hash,
+            "strict proof missing",
+        )
+        .unwrap();
         assert!(!rejected.gpu_hmr_success);
         assert!(rejected.full_runtime_proof_id.is_none());
+    }
+
+    #[test]
+    fn cold_gpu_artifact_load_terminal_is_correlated_but_never_claims_hmr() {
+        let request_id = fixture_request_id('5');
+        let source_edit_id = source_edit_id();
+        let artifact_hash = format!("sha256:{}", "d".repeat(64));
+        let loaded =
+            GpuArtifactLoadV1Result::loaded(&request_id, &source_edit_id, &artifact_hash).unwrap();
+        let decoded = GpuArtifactLoadV1Result::from_json(&loaded.to_json().unwrap()).unwrap();
+        assert!(decoded.matches(&request_id, &source_edit_id, &artifact_hash));
+        assert!(!decoded.accepted_for_gpu_hmr);
+        assert!(!decoded.gpu_hmr_success);
+
+        let rejected = GpuArtifactLoadV1Result::rejected(
+            &request_id,
+            &source_edit_id,
+            &artifact_hash,
+            "artifact bytes mismatched",
+        )
+        .unwrap();
+        assert_eq!(rejected.status, "rejected");
+        assert!(!rejected.gpu_hmr_success);
     }
 }

@@ -35,6 +35,8 @@ use worker::hmr::orchestrator as hmr_orchestrator;
 use worker::infra::crash_recovery;
 use worker::infra::host_kv;
 use worker::runtime::capability;
+#[cfg(feature = "gpu-hmr")]
+use worker::runtime::gpu_runtime_boundary::runtime_session_id;
 use worker::runtime::loader;
 // use worker::safety::boundary;
 // use worker::compiler::source_map;
@@ -182,9 +184,10 @@ use worker::hmr::gpu_module_adapter::{
 use worker::hmr::gpu_proof::sha256_hex_bytes;
 #[cfg(feature = "gpu-hmr")]
 use worker::runtime::runner_protocol::{
-    GpuReloadV2Payload, GpuReloadV2Result, RunnerProtocolAck,
-    GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, RUNNER_PROTOCOL_CURRENT_VERSION,
-    RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
+    canonical_sha256_content_hash, GpuArtifactLoadV1Result, GpuReloadV2Result, GpuReloadV3Payload,
+    RunnerProtocolAck, GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+    GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
+    RUNNER_PROTOCOL_CURRENT_VERSION, RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
 };
 
 // use enhanced_fingerprint::{extract_fingerprint_from_module}; // Removed AbiFingerprint
@@ -200,7 +203,9 @@ use worker::runtime::legacy_module_state::{AppState, ModuleState};
 struct GpuReloadCompletion {
     language: String,
     artifact_path: String,
+    artifact_content_hash: String,
     kernels: String,
+    cold_load: bool,
     request_id: Option<String>,
     source_edit_id: Option<String>,
     adapter: GpuModuleAdapter,
@@ -208,31 +213,323 @@ struct GpuReloadCompletion {
 }
 
 #[cfg(feature = "gpu-hmr")]
+fn catch_gpu_reload_worker_result(
+    reload: impl FnOnce() -> AdapterReloadResult,
+) -> AdapterReloadResult {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(reload)).unwrap_or_else(|_| {
+        AdapterReloadResult::Failed {
+            error: "GPU reload worker panicked before producing a terminal result".to_string(),
+            recoverable: false,
+        }
+    })
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn gpu_reload_result_allows_adapter_restore(result: &AdapterReloadResult) -> bool {
+    !matches!(
+        result,
+        AdapterReloadResult::Failed {
+            recoverable: false,
+            ..
+        }
+    )
+}
+
+#[cfg(feature = "gpu-hmr")]
+const RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof_ledger.v1";
+#[cfg(feature = "gpu-hmr")]
+const RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof.v1";
+#[cfg(feature = "gpu-hmr")]
+const RUNNER_GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.validation-proof.v1";
+#[cfg(feature = "gpu-hmr")]
+const RUNNER_GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION: &str = "synthi.gpu_hmr.contract.v1";
+#[cfg(feature = "gpu-hmr")]
+const RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE: &str = "gpu-hmr-full-runtime-proven";
+
+#[cfg(feature = "gpu-hmr")]
+fn stable_runtime_proof_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {
+            serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+        }
+        serde_json::Value::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(stable_runtime_proof_json)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        serde_json::Value::Object(map) => {
+            let mut keys = map.keys().collect::<Vec<_>>();
+            keys.sort();
+            let fields = keys
+                .into_iter()
+                .map(|key| {
+                    let encoded_key =
+                        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string());
+                    let encoded_value =
+                        stable_runtime_proof_json(map.get(key).unwrap_or(&serde_json::Value::Null));
+                    format!("{encoded_key}:{encoded_value}")
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{fields}}}")
+        }
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn runtime_proof_json_sha256(value: &serde_json::Value) -> String {
+    sha256_hex_bytes(stable_runtime_proof_json(value).as_bytes())
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn runtime_proof_json_field(value: &serde_json::Value, key: &str) -> serde_json::Value {
+    value.get(key).cloned().unwrap_or(serde_json::Value::Null)
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn runtime_proof_json_object_or_empty(value: &serde_json::Value, key: &str) -> serde_json::Value {
+    match value.get(key) {
+        Some(serde_json::Value::Object(_)) => value
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})),
+        _ => serde_json::json!({}),
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn canonical_runner_runtime_ledger_proof_id(record: &serde_json::Value) -> String {
+    let firewall = runtime_proof_json_object_or_empty(record, "firewall_evidence");
+    let material = serde_json::json!({
+        "schemaVersion": RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+        "projectId": runtime_proof_json_field(record, "project_id"),
+        "editId": runtime_proof_json_field(record, "edit_id"),
+        "backend": runtime_proof_json_field(record, "backend"),
+        "classification": runtime_proof_json_object_or_empty(record, "classification"),
+        "contractHash": runtime_proof_json_field(record, "contract_hash"),
+        "artifactBeforeHash": runtime_proof_json_field(record, "artifact_before_hash"),
+        "artifactAfterHash": runtime_proof_json_field(record, "artifact_after_hash"),
+        "loaderEvent": runtime_proof_json_object_or_empty(record, "loader_event"),
+        "epochPublishEvent": runtime_proof_json_object_or_empty(record, "epoch_publish_event"),
+        "dispatchEvent": runtime_proof_json_object_or_empty(record, "dispatch_event"),
+        "outputEvent": runtime_proof_json_object_or_empty(record, "output_event"),
+        "retirementEvent": runtime_proof_json_object_or_empty(record, "retirement_event"),
+        "processIdentity": runtime_proof_json_object_or_empty(record, "process_identity"),
+        "deviceIdentity": runtime_proof_json_object_or_empty(record, "device_identity"),
+        "oracleArtifacts": runtime_proof_json_object_or_empty(record, "oracle_artifacts"),
+        "deterministicVisualMode": runtime_proof_json_object_or_empty(record, "deterministic_visual_mode"),
+        "outputOracleTarget": runtime_proof_json_object_or_empty(record, "output_oracle_target"),
+        "metricClock": runtime_proof_json_field(record, "metric_clock"),
+        "metricScope": runtime_proof_json_field(record, "metric_scope"),
+        "cacheState": runtime_proof_json_field(record, "cache_state"),
+        "timings": runtime_proof_json_object_or_empty(record, "timings"),
+        "timingMetrics": runtime_proof_json_object_or_empty(record, "timing_metrics"),
+        "modelProvenance": runtime_proof_json_object_or_empty(record, "model_provenance"),
+        "evidenceRefs": runtime_proof_json_field(record, "evidence_refs"),
+        "cpuHmrUsed": record.get("cpu_hmr_used").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        "fullRebuildUsed": record.get("full_rebuild_used").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        "processRestarted": record.get("process_restarted").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        "firewallEvidence": {
+            "cpuHmrUsedEvidencePresent": firewall.get("cpu_hmr_used").is_some() || firewall.get("cpuHmrUsed").is_some(),
+            "fullRebuildUsedEvidencePresent": firewall.get("full_rebuild_used").is_some() || firewall.get("fullRebuildUsed").is_some(),
+            "processRestartedEvidencePresent": firewall.get("process_restarted").is_some() || firewall.get("processRestarted").is_some(),
+            "processIdBefore": firewall.get("process_id_before")
+                .or_else(|| firewall.get("processIdBefore"))
+                .and_then(|value| value.as_str().map(str::to_string).or_else(|| value.as_u64().map(|pid| pid.to_string()))),
+            "processIdAfter": firewall.get("process_id_after")
+                .or_else(|| firewall.get("processIdAfter"))
+                .and_then(|value| value.as_str().map(str::to_string).or_else(|| value.as_u64().map(|pid| pid.to_string()))),
+        },
+    });
+    format!(
+        "gpu-ledger-proof:sha256:{}",
+        runtime_proof_json_sha256(&material)
+    )
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn expected_runtime_artifact_id(artifact_content_hash: &str) -> Option<String> {
+    canonical_sha256_content_hash(artifact_content_hash).then(|| {
+        format!(
+            "artifact:sha256:{}",
+            artifact_content_hash.trim_start_matches("sha256:")
+        )
+    })
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn strict_runtime_record_chain_matches(
+    record: &serde_json::Value,
+    request_id: &str,
+    source_edit_id: &str,
+    artifact_content_hash: &str,
+    expected_process_id: &str,
+    expected_runtime_session_id: &str,
+) -> bool {
+    let Some(expected_artifact_id) = expected_runtime_artifact_id(artifact_content_hash) else {
+        return false;
+    };
+    let field_str = |pointer: &str| record.pointer(pointer).and_then(serde_json::Value::as_str);
+    let field_u64 = |pointer: &str| record.pointer(pointer).and_then(serde_json::Value::as_u64);
+    let event_artifact_matches = |event: &str| {
+        field_str(&format!("/{event}/artifact_hash")) == Some(expected_artifact_id.as_str())
+            && field_str(&format!("/{event}/artifact_id")) == Some(expected_artifact_id.as_str())
+    };
+    let event_process = |event: &str| field_str(&format!("/{event}/process_id"));
+    let process_id = event_process("loader_event");
+    let firewall = record.get("firewall_evidence");
+    let evidence_refs = record
+        .get("evidence_refs")
+        .and_then(serde_json::Value::as_array);
+    let has_ref = |expected: &str| {
+        evidence_refs.is_some_and(|refs| refs.iter().any(|value| value.as_str() == Some(expected)))
+    };
+
+    record
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_str)
+        == Some(RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION)
+        && record.get("edit_id").and_then(serde_json::Value::as_str) == Some(source_edit_id)
+        && record
+            .get("artifact_after_hash")
+            .and_then(serde_json::Value::as_str)
+            == Some(expected_artifact_id.as_str())
+        && record
+            .get("artifact_before_hash")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|before| before != expected_artifact_id)
+        && event_artifact_matches("loader_event")
+        && event_artifact_matches("epoch_publish_event")
+        && event_artifact_matches("dispatch_event")
+        && event_artifact_matches("output_event")
+        && field_str("/dispatch_event/epoch") == field_str("/epoch_publish_event/epoch")
+        && field_str("/output_event/epoch") == field_str("/dispatch_event/epoch")
+        && field_str("/output_event/after_dispatch_id") == field_str("/dispatch_event/id")
+        && record
+            .pointer("/output_event/passed")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        && process_id == Some(expected_process_id)
+        && event_process("epoch_publish_event") == process_id
+        && event_process("dispatch_event") == process_id
+        && event_process("output_event") == process_id
+        && event_process("retirement_event") == process_id
+        && field_str("/process_identity/process_id") == Some(expected_process_id)
+        && field_str("/process_identity/runtime_session_id") == Some(expected_runtime_session_id)
+        && record
+            .get("cpu_hmr_used")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        && record
+            .get("full_rebuild_used")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        && record
+            .get("process_restarted")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        && firewall
+            .and_then(|value| value.get("cpu_hmr_used"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        && firewall
+            .and_then(|value| value.get("full_rebuild_used"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        && firewall
+            .and_then(|value| value.get("process_restarted"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        && firewall
+            .and_then(|value| value.get("process_id_before"))
+            .and_then(serde_json::Value::as_str)
+            == process_id
+        && firewall
+            .and_then(|value| value.get("process_id_after"))
+            .and_then(serde_json::Value::as_str)
+            == process_id
+        && field_u64("/loader_event/timestamp_monotonic_ns")
+            .zip(field_u64("/epoch_publish_event/timestamp_monotonic_ns"))
+            .is_some_and(|(loader, publish)| loader <= publish)
+        && field_u64("/epoch_publish_event/timestamp_monotonic_ns")
+            .zip(field_u64("/dispatch_event/timestamp_monotonic_ns"))
+            .is_some_and(|(publish, dispatch)| publish <= dispatch)
+        && field_u64("/dispatch_event/timestamp_monotonic_ns")
+            .zip(field_u64("/output_event/timestamp_monotonic_ns"))
+            .is_some_and(|(dispatch, output)| dispatch <= output)
+        && field_u64("/output_event/timestamp_monotonic_ns")
+            .zip(field_u64("/retirement_event/timestamp_monotonic_ns"))
+            .is_some_and(|(output, retirement)| output <= retirement)
+        && has_ref(&format!("reload:{request_id}"))
+        && has_ref(&format!("source-edit-id:{source_edit_id}"))
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn recomputed_runtime_proof_id(
+    runtime_artifact: &serde_json::Value,
+    record: &serde_json::Value,
+) -> Option<String> {
+    let material = serde_json::json!({
+        "resultState": runtime_artifact.get("resultState")?,
+        "proofLedger": runtime_artifact.get("proofLedger")?,
+        "acceptanceContract": runtime_artifact.get("acceptanceContract")?,
+        "stageResults": runtime_artifact.get("stageResults")?,
+        "runtimeTrace": runtime_artifact.get("runtimeTrace")?,
+        "runtimeSessionId": runtime_artifact.pointer("/runtimeTrace/runtimeSessionId")?,
+        "artifactBefore": record.get("artifact_before_hash")?,
+        "artifactAfter": record.get("artifact_after_hash")?,
+        "dispatchId": record.pointer("/dispatch_event/id")?,
+    });
+    Some(format!(
+        "gpu-runtime-proof:sha256:{}",
+        runtime_proof_json_sha256(&material)
+    ))
+}
+
+#[cfg(feature = "gpu-hmr")]
 fn matching_strict_gpu_runtime_proof_id(
     log_lines: &[String],
     request_id: &str,
     source_edit_id: &str,
+    artifact_content_hash: &str,
 ) -> Option<String> {
     let reload_ref = format!("reload:{request_id}");
     let source_edit_ref = format!("source-edit-id:{source_edit_id}");
+    let expected_process_id = std::process::id().to_string();
+    let expected_runtime_session_id = runtime_session_id();
     log_lines.iter().rev().find_map(|line| {
         let proof = serde_json::from_str::<serde_json::Value>(line).ok()?;
         if proof.get("type").and_then(serde_json::Value::as_str) != Some("gpu_hmr_proof")
+            || proof
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_str)
+                != Some(RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION)
+            || proof.get("module").and_then(serde_json::Value::as_str) != Some("device")
             || proof.get("resultState").and_then(serde_json::Value::as_str)
-                != Some("gpu-hmr-full-runtime-proven")
+                != Some(RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE)
         {
             return None;
         }
         let proof_id = proof.get("proofId").and_then(serde_json::Value::as_str)?;
         let runtime_artifact = proof.get("runtimeProofArtifact")?;
         if runtime_artifact
-            .get("proofId")
+            .get("schemaVersion")
             .and_then(serde_json::Value::as_str)
-            != Some(proof_id)
+            != Some(RUNNER_GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION)
+            || runtime_artifact
+                .get("proofId")
+                .and_then(serde_json::Value::as_str)
+                != Some(proof_id)
             || runtime_artifact
                 .get("resultState")
                 .and_then(serde_json::Value::as_str)
-                != Some("gpu-hmr-full-runtime-proven")
+                != Some(RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE)
             || runtime_artifact
                 .get("fullRuntimeProven")
                 .and_then(serde_json::Value::as_bool)
@@ -261,21 +558,55 @@ fn matching_strict_gpu_runtime_proof_id(
                 .get("limitations")
                 .and_then(serde_json::Value::as_array)
                 .is_none_or(|limitations| !limitations.is_empty())
+            || runtime_artifact
+                .pointer("/runtimeTrace/processId")
+                .and_then(serde_json::Value::as_str)
+                != Some(expected_process_id.as_str())
+            || runtime_artifact
+                .pointer("/runtimeTrace/runtimeSessionId")
+                .and_then(serde_json::Value::as_str)
+                != Some(expected_runtime_session_id)
         {
             return None;
         }
 
         let proof_ledger = proof.get("proofLedger")?;
         if proof_ledger
-            .get("gpuHmrSuccess")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_str)
+            != Some(RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION)
+            || proof_ledger
+                .get("gpuHmrSuccess")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
             || runtime_artifact.get("proofLedger") != Some(proof_ledger)
         {
             return None;
         }
         let record = proof_ledger.pointer("/records/0")?;
-        if record.get("edit_id").and_then(serde_json::Value::as_str) != Some(source_edit_id)
+        let expected_ledger_proof_id = canonical_runner_runtime_ledger_proof_id(record);
+        if proof_ledger
+            .get("records")
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(|records| records.len() != 1)
+            || !strict_runtime_record_chain_matches(
+                record,
+                request_id,
+                source_edit_id,
+                artifact_content_hash,
+                &expected_process_id,
+                expected_runtime_session_id,
+            )
+            || proof_ledger
+                .get("proofId")
+                .and_then(serde_json::Value::as_str)
+                != Some(expected_ledger_proof_id.as_str())
+            || runtime_artifact
+                .pointer("/proofLedgerQuery/proofId")
+                .and_then(serde_json::Value::as_str)
+                != proof_ledger
+                    .get("proofId")
+                    .and_then(serde_json::Value::as_str)
             || runtime_artifact
                 .pointer("/explicitProofLedgerRecord/edit_id")
                 .and_then(serde_json::Value::as_str)
@@ -301,15 +632,35 @@ fn matching_strict_gpu_runtime_proof_id(
         {
             return None;
         }
-        let evidence_refs = record
+        let expected_artifact_id = expected_runtime_artifact_id(artifact_content_hash)?;
+        let acceptance_contract = runtime_artifact.get("acceptanceContract")?;
+        if acceptance_contract
+            .get("contract_version")
+            .and_then(serde_json::Value::as_str)
+            != Some(RUNNER_GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION)
+            || acceptance_contract
+                .get("edit_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(source_edit_id)
+            || acceptance_contract
+                .get("artifact_hash_after")
+                .and_then(serde_json::Value::as_str)
+                != Some(expected_artifact_id.as_str())
+            || runtime_artifact.get("derivedAcceptanceContract") != Some(acceptance_contract)
+            || recomputed_runtime_proof_id(runtime_artifact, record).as_deref() != Some(proof_id)
+        {
+            return None;
+        }
+        (record
             .get("evidence_refs")
-            .and_then(serde_json::Value::as_array)?;
-        let has_ref = |expected: &str| {
-            evidence_refs
-                .iter()
-                .any(|value| value.as_str() == Some(expected))
-        };
-        (has_ref(&reload_ref) && has_ref(&source_edit_ref)).then(|| proof_id.to_string())
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|refs| {
+                refs.iter().any(|value| value.as_str() == Some(&reload_ref))
+                    && refs
+                        .iter()
+                        .any(|value| value.as_str() == Some(&source_edit_ref))
+            }))
+        .then(|| proof_id.to_string())
     })
 }
 
@@ -317,28 +668,100 @@ fn matching_strict_gpu_runtime_proof_id(
 fn strict_gpu_reload_terminal_result(
     request_id: &str,
     source_edit_id: &str,
+    artifact_content_hash: &str,
     result: &AdapterReloadResult,
     log_lines: &[String],
 ) -> Result<GpuReloadV2Result, String> {
     match result {
         AdapterReloadResult::Success { .. } => {
-            if let Some(proof_id) =
-                matching_strict_gpu_runtime_proof_id(log_lines, request_id, source_edit_id)
-            {
-                GpuReloadV2Result::applied(request_id, source_edit_id, proof_id)
+            if let Some(proof_id) = matching_strict_gpu_runtime_proof_id(
+                log_lines,
+                request_id,
+                source_edit_id,
+                artifact_content_hash,
+            ) {
+                GpuReloadV2Result::applied(
+                    request_id,
+                    source_edit_id,
+                    artifact_content_hash,
+                    proof_id,
+                )
             } else {
                 GpuReloadV2Result::rejected(
                     request_id,
                     source_edit_id,
+                    artifact_content_hash,
                     "strict GPU reload completed without a matching accepted full runtime proof",
                 )
             }
         }
         AdapterReloadResult::Failed { error, .. } => {
-            GpuReloadV2Result::rejected(request_id, source_edit_id, error)
+            GpuReloadV2Result::rejected(request_id, source_edit_id, artifact_content_hash, error)
         }
         AdapterReloadResult::Unsupported { reason } => {
-            GpuReloadV2Result::rejected(request_id, source_edit_id, reason)
+            GpuReloadV2Result::rejected(request_id, source_edit_id, artifact_content_hash, reason)
+        }
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn cold_gpu_artifact_load_terminal_result(
+    request_id: &str,
+    source_edit_id: &str,
+    artifact_content_hash: &str,
+    result: &AdapterReloadResult,
+) -> Result<GpuArtifactLoadV1Result, String> {
+    match result {
+        AdapterReloadResult::Success { .. } => {
+            GpuArtifactLoadV1Result::loaded(request_id, source_edit_id, artifact_content_hash)
+        }
+        AdapterReloadResult::Failed { error, .. } => GpuArtifactLoadV1Result::rejected(
+            request_id,
+            source_edit_id,
+            artifact_content_hash,
+            error,
+        ),
+        AdapterReloadResult::Unsupported { reason } => GpuArtifactLoadV1Result::rejected(
+            request_id,
+            source_edit_id,
+            artifact_content_hash,
+            reason,
+        ),
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn emit_correlated_gpu_command_rejection(
+    cold_load: bool,
+    request_id: Option<&str>,
+    source_edit_id: Option<&str>,
+    artifact_content_hash: Option<&str>,
+    reason: &str,
+) {
+    let status = match (request_id, source_edit_id) {
+        (Some(request_id), Some(source_edit_id)) if cold_load => artifact_content_hash
+            .ok_or_else(|| "cold GPU artifact load hash is missing".to_string())
+            .and_then(|artifact_hash| {
+                GpuArtifactLoadV1Result::rejected(request_id, source_edit_id, artifact_hash, reason)
+                    .and_then(|result| result.to_json())
+            }),
+        (Some(request_id), Some(source_edit_id)) => artifact_content_hash
+            .ok_or_else(|| "hot GPU reload hash is missing".to_string())
+            .and_then(|artifact_hash| {
+                GpuReloadV2Result::rejected(request_id, source_edit_id, artifact_hash, reason)
+            })
+            .and_then(|result| result.to_json()),
+        _ => Err("correlated GPU command terminal identity is incomplete".to_string()),
+    };
+    match status {
+        Ok(status) => eprintln!("[Runner] [HMR-STATUS] {status}"),
+        Err(error) => {
+            let fallback = HmrStatus::rejected_with_fallback(
+                "device",
+                &format!("GPU command terminal result invalid: {error}"),
+                "Keep previous GPU sidecar loaded",
+            );
+            eprintln!("[Runner] [HMR-STATUS] {}", fallback.to_json());
         }
     }
 }
@@ -354,14 +777,25 @@ fn emit_gpu_reload_completion(completion: &GpuReloadCompletion) {
         completion.source_edit_id.as_deref(),
     ) {
         (Some(request_id), Some(source_edit_id)) => {
-            match strict_gpu_reload_terminal_result(
-                request_id,
-                source_edit_id,
-                &completion.result,
-                completion.adapter.last_reload_log(),
-            )
-            .and_then(|result| result.to_json())
-            {
+            let terminal = if completion.cold_load {
+                cold_gpu_artifact_load_terminal_result(
+                    request_id,
+                    source_edit_id,
+                    &completion.artifact_content_hash,
+                    &completion.result,
+                )
+                .and_then(|result| result.to_json())
+            } else {
+                strict_gpu_reload_terminal_result(
+                    request_id,
+                    source_edit_id,
+                    &completion.artifact_content_hash,
+                    &completion.result,
+                    completion.adapter.last_reload_log(),
+                )
+                .and_then(|result| result.to_json())
+            };
+            match terminal {
                 Ok(status) => eprintln!("[Runner] [HMR-STATUS] {status}"),
                 Err(error) => {
                     let status = HmrStatus::rejected_with_fallback(
@@ -426,6 +860,26 @@ fn gpu_reload_artifact_blob_from_path(artifact_path: &str) -> Option<ReloadArtif
 }
 
 #[cfg(feature = "gpu-hmr")]
+fn validate_gpu_reload_artifact_content_hash(
+    expected_hash: Option<&str>,
+    artifact_blob: Option<&ReloadArtifactBlob>,
+) -> Result<(), String> {
+    let Some(expected_hash) = expected_hash else {
+        return Ok(());
+    };
+    if artifact_blob
+        .map(|blob| blob.content_hash.as_str())
+        .is_some_and(|observed_hash| observed_hash == expected_hash)
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "GPU reload artifact bytes do not match request-bound content hash {expected_hash}"
+        ))
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
 fn parse_gpu_artifact_loader_transport(
     value: Option<&str>,
 ) -> Result<ArtifactLoaderTransport, String> {
@@ -485,9 +939,7 @@ fn gpu_reload_capsule_metadata_from_token(token: Option<&str>) -> Option<ReloadC
 }
 
 #[cfg(feature = "gpu-hmr")]
-fn gpu_reload_source_paths(
-    capsule_metadata: Option<&ReloadCapsuleMetadata>,
-) -> Vec<String> {
+fn gpu_reload_source_paths(capsule_metadata: Option<&ReloadCapsuleMetadata>) -> Vec<String> {
     capsule_metadata
         .and_then(|metadata| metadata.fission_source_paths.clone())
         .unwrap_or_default()
@@ -497,9 +949,11 @@ fn gpu_reload_source_paths(
 #[derive(Debug)]
 struct ParsedGpuReloadCommand {
     request_id: Option<String>,
+    cold_load: bool,
     partial: bool,
     vendor: String,
     artifact_path: String,
+    expected_artifact_content_hash: Option<String>,
     kernels: Vec<String>,
     abi_version: String,
     capsule_metadata: Option<ReloadCapsuleMetadata>,
@@ -508,13 +962,16 @@ struct ParsedGpuReloadCommand {
 
 #[cfg(feature = "gpu-hmr")]
 fn parse_gpu_reload_command(parts: &[&str]) -> Result<ParsedGpuReloadCommand, String> {
-    if parts.first().copied() == Some("gpu_reload_v2") {
+    if matches!(
+        parts.first().copied(),
+        Some("gpu_reload_v3" | "gpu_load_v3")
+    ) {
         if parts.len() != 3 {
-            return Err("GPU reload V2 command must contain request ID and payload".to_string());
+            return Err("GPU reload V3 command must contain request ID and payload".to_string());
         }
-        let payload = GpuReloadV2Payload::decode(parts[2])?;
+        let payload = GpuReloadV3Payload::decode(parts[2])?;
         if parts[1] != payload.request_id {
-            return Err("GPU reload V2 command request ID mismatch".to_string());
+            return Err("GPU reload V3 command request ID mismatch".to_string());
         }
         let source_edit_id = normalized_reload_source_edit_id(Some(&payload.source_edit_id))
             .ok_or_else(|| "GPU reload V2 source edit identity is invalid".to_string())?;
@@ -524,9 +981,11 @@ fn parse_gpu_reload_command(parts: &[&str]) -> Result<ParsedGpuReloadCommand, St
             gpu_reload_capsule_metadata_from_token(payload.capsule_token.as_deref());
         return Ok(ParsedGpuReloadCommand {
             request_id: Some(payload.request_id),
+            cold_load: parts[0] == "gpu_load_v3",
             partial: payload.mode == "partial",
             vendor: payload.vendor,
             artifact_path: payload.artifact_path,
+            expected_artifact_content_hash: Some(payload.artifact_content_hash),
             kernels: payload.kernels,
             abi_version,
             capsule_metadata,
@@ -551,15 +1010,18 @@ fn parse_gpu_reload_command(parts: &[&str]) -> Result<ParsedGpuReloadCommand, St
     let abi_version = device_load_abi_version(&kernels, parts.get(4).copied());
     let capsule_metadata = gpu_reload_capsule_metadata_from_token(parts.get(5).copied());
     if parts.get(6).is_some() {
-        eprintln!(
-            "[Runner] [GPU HMR] Ignoring independent edit identity on legacy GPU reload verb"
+        return Err(
+            "legacy GPU reload commands cannot claim content binding; use the GPU reload V3 envelope"
+                .to_string(),
         );
     }
     Ok(ParsedGpuReloadCommand {
         request_id: None,
+        cold_load: false,
         partial: command == "load_device_partial",
         vendor: parts[1].to_string(),
         artifact_path: parts[2].to_string(),
+        expected_artifact_content_hash: None,
         kernels,
         abi_version,
         capsule_metadata,
@@ -1355,7 +1817,14 @@ fn main() {
         while let Ok(completion) = gpu_reload_rx.try_recv() {
             emit_gpu_reload_completion(&completion);
             gpu_reload_inflight.remove(&completion.language);
-            gpu_adapters.insert(completion.language, completion.adapter);
+            if gpu_reload_result_allows_adapter_restore(&completion.result) {
+                gpu_adapters.insert(completion.language, completion.adapter);
+            } else {
+                runtime_paused = true;
+                eprintln!(
+                    "[Runner] [GPU HMR] Non-recoverable device reload failure; runtime remains paused and adapter was discarded"
+                );
+            }
         }
 
         #[cfg(feature = "gpu-hmr")]
@@ -1597,10 +2066,10 @@ fn main() {
             }
 
             match parts[0] {
-                "handshake_v2" => {
+                "handshake_v3" => {
                     #[cfg(feature = "gpu-hmr")]
                     {
-                        let valid = parts.len() == 5
+                        let valid = parts.len() == 7
                             && !parts[1].is_empty()
                             && parts[1].len() <= 128
                             && parts[1]
@@ -1610,7 +2079,9 @@ fn main() {
                                 == Some(RUNNER_PROTOCOL_CURRENT_VERSION)
                             && parts[3].parse::<u32>().ok()
                                 == Some(RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION)
-                            && parts[4] == GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY;
+                            && parts[4] == GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY
+                            && parts[5] == GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY
+                            && parts[6] == GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY;
                         if !valid {
                             eprintln!(
                                 "[Runner] [GPU HMR] Refusing malformed strict GPU protocol handshake"
@@ -1876,7 +2347,7 @@ fn main() {
                     // before on_render uses it — prevents flicker
                     skip_render_frames = 1;
                 }
-                "load_device" | "load_device_partial" | "gpu_reload_v2" => {
+                "load_device" | "load_device_partial" | "gpu_reload_v3" | "gpu_load_v3" => {
                     #[cfg(feature = "gpu-hmr")]
                     {
                         let parsed = match parse_gpu_reload_command(&parts) {
@@ -1888,9 +2359,12 @@ fn main() {
                                 continue;
                             }
                         };
+                        let cold_load = parsed.cold_load;
                         let partial_device_load = parsed.partial;
                         let vendor_raw = parsed.vendor.as_str();
                         let artifact_path = parsed.artifact_path.as_str();
+                        let expected_artifact_content_hash =
+                            parsed.expected_artifact_content_hash.as_deref();
                         let kernels = parsed.kernels;
                         let abi_version = parsed.abi_version;
                         let capsule_metadata = parsed.capsule_metadata;
@@ -1906,12 +2380,34 @@ fn main() {
                             "cuda" => ("cuda", GpuVendor::Cuda),
                             "rocm" | "hip" => ("rocm", GpuVendor::Rocm),
                             other => {
-                                eprintln!("[Runner] [GPU HMR] Unknown device vendor '{}'", other);
+                                let error = format!("Unknown device vendor '{other}'");
+                                eprintln!("[Runner] [GPU HMR] {error}");
+                                emit_correlated_gpu_command_rejection(
+                                    cold_load,
+                                    terminal_request_id.as_deref(),
+                                    terminal_source_edit_id.as_deref(),
+                                    expected_artifact_content_hash,
+                                    &error,
+                                );
                                 continue;
                             }
                         };
 
                         let artifact_blob = gpu_reload_artifact_blob_from_path(artifact_path);
+                        if let Err(error) = validate_gpu_reload_artifact_content_hash(
+                            expected_artifact_content_hash,
+                            artifact_blob.as_ref(),
+                        ) {
+                            eprintln!("[Runner] [GPU HMR] {error}");
+                            emit_correlated_gpu_command_rejection(
+                                cold_load,
+                                terminal_request_id.as_deref(),
+                                terminal_source_edit_id.as_deref(),
+                                expected_artifact_content_hash,
+                                &error,
+                            );
+                            continue;
+                        }
                         let artifact_hash = artifact_blob
                             .as_ref()
                             .map(|blob| blob.content_hash.clone())
@@ -1974,33 +2470,41 @@ fn main() {
                                     eprintln!(
                                         "[Runner] [GPU HMR] Device sidecar reload refused before adapter creation: {error}"
                                     );
-                                    if let (Some(request_id), Some(source_edit_id)) = (
-                                        terminal_request_id.as_deref(),
-                                        terminal_source_edit_id.as_deref(),
-                                    ) {
-                                        if let Ok(status) = GpuReloadV2Result::rejected(
-                                            request_id,
-                                            source_edit_id,
+                                    if terminal_request_id.is_some()
+                                        || terminal_source_edit_id.is_some()
+                                    {
+                                        emit_correlated_gpu_command_rejection(
+                                            cold_load,
+                                            terminal_request_id.as_deref(),
+                                            terminal_source_edit_id.as_deref(),
+                                            expected_artifact_content_hash,
                                             &error,
-                                        )
-                                        .and_then(|result| result.to_json())
-                                        {
-                                            eprintln!("[Runner] [HMR-STATUS] {status}");
-                                        }
+                                        );
                                     } else {
                                         let status = HmrStatus::rejected_with_fallback(
                                             "device",
                                             &error,
                                             "Correct the GPU artifact loader transport or use a cold reload",
                                         );
-                                        eprintln!(
-                                            "[Runner] [HMR-STATUS] {}",
-                                            status.to_json()
-                                        );
+                                        eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                                     }
                                     continue;
                                 }
                             };
+                        if expected_artifact_content_hash.is_some()
+                            && artifact_loader_transport != ArtifactLoaderTransport::RamBytes
+                        {
+                            let error = "content-bound GPU command requires RAM artifact bytes after hash verification";
+                            eprintln!("[Runner] [GPU HMR] {error}");
+                            emit_correlated_gpu_command_rejection(
+                                cold_load,
+                                terminal_request_id.as_deref(),
+                                terminal_source_edit_id.as_deref(),
+                                expected_artifact_content_hash,
+                                error,
+                            );
+                            continue;
+                        }
 
                         if gpu_reload_inflight.contains_key(language) {
                             eprintln!(
@@ -2009,19 +2513,14 @@ fn main() {
                                 artifact_path,
                                 kernels.join(",")
                             );
-                            if let (Some(request_id), Some(source_edit_id)) = (
-                                terminal_request_id.as_deref(),
-                                terminal_source_edit_id.as_deref(),
-                            ) {
-                                if let Ok(status) = GpuReloadV2Result::rejected(
-                                    request_id,
-                                    source_edit_id,
+                            if terminal_request_id.is_some() || terminal_source_edit_id.is_some() {
+                                emit_correlated_gpu_command_rejection(
+                                    cold_load,
+                                    terminal_request_id.as_deref(),
+                                    terminal_source_edit_id.as_deref(),
+                                    expected_artifact_content_hash,
                                     "GPU sidecar reload already in flight",
-                                )
-                                .and_then(|result| result.to_json())
-                                {
-                                    eprintln!("[Runner] [HMR-STATUS] {status}");
-                                }
+                                );
                             } else {
                                 let status = HmrStatus::rejected_with_fallback(
                                     "device",
@@ -2068,11 +2567,13 @@ fn main() {
                         }
 
                         if partial_device_load {
-                            let result = adapter.reload(&req);
+                            let result = catch_gpu_reload_worker_result(|| adapter.reload(&req));
                             let completion = GpuReloadCompletion {
                                 language: language_owned,
                                 artifact_path: artifact_path_owned,
+                                artifact_content_hash: artifact_hash.clone(),
                                 kernels: kernels_log,
+                                cold_load,
                                 request_id: terminal_request_id,
                                 source_edit_id: terminal_source_edit_id,
                                 adapter,
@@ -2080,25 +2581,62 @@ fn main() {
                             };
                             emit_gpu_reload_completion(&completion);
                             let GpuReloadCompletion {
-                                language, adapter, ..
+                                language,
+                                adapter,
+                                result,
+                                ..
                             } = completion;
                             gpu_reload_inflight.remove(&language);
-                            gpu_adapters.insert(language, adapter);
+                            if gpu_reload_result_allows_adapter_restore(&result) {
+                                gpu_adapters.insert(language, adapter);
+                            } else {
+                                runtime_paused = true;
+                                eprintln!(
+                                    "[Runner] [GPU HMR] Non-recoverable partial device reload failure; runtime remains paused and adapter was discarded"
+                                );
+                            }
                             continue;
                         }
 
-                        thread::spawn(move || {
-                            let result = adapter.reload(&req);
-                            let _ = completion_tx.send(GpuReloadCompletion {
-                                language: language_owned,
-                                artifact_path: artifact_path_owned,
-                                kernels: kernels_log,
-                                request_id: terminal_request_id,
-                                source_edit_id: terminal_source_edit_id,
-                                adapter,
-                                result,
+                        let spawn_failure_language = language_owned.clone();
+                        let spawn_failure_request_id = terminal_request_id.clone();
+                        let spawn_failure_source_edit_id = terminal_source_edit_id.clone();
+                        let spawn_failure_artifact_hash = artifact_hash.clone();
+                        let spawn_result = thread::Builder::new()
+                            .name("synthi-gpu-reload".to_string())
+                            .spawn(move || {
+                                let result =
+                                    catch_gpu_reload_worker_result(|| adapter.reload(&req));
+                                let completion = GpuReloadCompletion {
+                                    language: language_owned,
+                                    artifact_path: artifact_path_owned,
+                                    artifact_content_hash: artifact_hash,
+                                    kernels: kernels_log,
+                                    cold_load,
+                                    request_id: terminal_request_id,
+                                    source_edit_id: terminal_source_edit_id,
+                                    adapter,
+                                    result,
+                                };
+                                if let Err(error) = completion_tx.send(completion) {
+                                    emit_gpu_reload_completion(&error.0);
+                                }
                             });
-                        });
+                        if let Err(error) = spawn_result {
+                            runtime_paused = true;
+                            gpu_reload_inflight.remove(&spawn_failure_language);
+                            let reason = format!(
+                                "GPU reload worker thread could not start; runtime paused: {error}"
+                            );
+                            eprintln!("[Runner] [GPU HMR] {reason}");
+                            emit_correlated_gpu_command_rejection(
+                                cold_load,
+                                spawn_failure_request_id.as_deref(),
+                                spawn_failure_source_edit_id.as_deref(),
+                                Some(spawn_failure_artifact_hash.as_str()),
+                                &reason,
+                            );
+                        }
                     }
 
                     #[cfg(not(feature = "gpu-hmr"))]
@@ -2513,22 +3051,62 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "gpu-hmr")]
+    use super::{
+        canonical_runner_runtime_ledger_proof_id, catch_gpu_reload_worker_result,
+        gpu_artifact_loader_transport_for_reload, gpu_reload_artifact_blob_from_path,
+        gpu_reload_capsule_metadata_from_token, gpu_reload_result_allows_adapter_restore,
+        gpu_reload_source_paths, parse_gpu_artifact_loader_transport, parse_gpu_reload_command,
+        recomputed_runtime_proof_id, strict_gpu_reload_terminal_result,
+        validate_gpu_reload_artifact_content_hash, AdapterReloadResult, ArtifactLoaderTransport,
+        ReloadArtifactBlob, RUNNER_GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
+        RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE, RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+        RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION, RUNNER_GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
+    };
     use super::{
         decode_gpu_kernel_command_token, device_load_abi_version, is_runtime_execution_paused,
         runtime_control_status_payload, should_process_runner_command,
     };
     #[cfg(feature = "gpu-hmr")]
-    use super::{
-        gpu_artifact_loader_transport_for_reload, gpu_reload_artifact_blob_from_path,
-        gpu_reload_capsule_metadata_from_token, gpu_reload_source_paths,
-        parse_gpu_artifact_loader_transport,
-        parse_gpu_reload_command, strict_gpu_reload_terminal_result, AdapterReloadResult,
-        ArtifactLoaderTransport, ReloadArtifactBlob,
-    };
-    #[cfg(feature = "gpu-hmr")]
     use std::io::Write as _;
     #[cfg(feature = "gpu-hmr")]
-    use worker::runtime::runner_protocol::GpuReloadV2Payload;
+    use worker::runtime::runner_protocol::GpuReloadV3Payload;
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn gpu_reload_worker_panic_becomes_an_explicit_failure() {
+        let result = catch_gpu_reload_worker_result(|| panic!("simulated worker panic"));
+        assert!(!gpu_reload_result_allows_adapter_restore(&result));
+        match result {
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(error.contains("panicked before producing a terminal result"));
+                assert!(!recoverable);
+            }
+            other => panic!("unexpected worker result: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn only_non_recoverable_gpu_reload_failures_discard_the_adapter() {
+        assert!(!gpu_reload_result_allows_adapter_restore(
+            &AdapterReloadResult::Failed {
+                error: "runtime state may be corrupt".to_string(),
+                recoverable: false,
+            }
+        ));
+        assert!(gpu_reload_result_allows_adapter_restore(
+            &AdapterReloadResult::Failed {
+                error: "previous epoch restored".to_string(),
+                recoverable: true,
+            }
+        ));
+        assert!(gpu_reload_result_allows_adapter_restore(
+            &AdapterReloadResult::Unsupported {
+                reason: "adapter cannot load this artifact".to_string(),
+            }
+        ));
+    }
 
     #[test]
     fn device_load_abi_version_prefers_protocol_fingerprint() {
@@ -2645,6 +3223,30 @@ mod tests {
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
+    fn strict_gpu_reload_rejects_path_bytes_that_do_not_match_request_hash() {
+        let expected_bytes = b"compiler-bound-artifact";
+        let replaced_bytes = b"path-replaced-artifact";
+        let expected_hash = format!(
+            "sha256:{}",
+            worker::hmr::gpu_proof::sha256_hex_bytes(expected_bytes)
+        );
+        let replaced_hash = worker::hmr::gpu_proof::sha256_hex_bytes(replaced_bytes);
+        let replaced_blob = ReloadArtifactBlob {
+            blob_id: format!("artifact:sha256:{replaced_hash}"),
+            content_hash: format!("sha256:{replaced_hash}"),
+            bytes: replaced_bytes.to_vec(),
+        };
+
+        let error =
+            validate_gpu_reload_artifact_content_hash(Some(&expected_hash), Some(&replaced_blob))
+                .unwrap_err();
+
+        assert!(error.contains("do not match request-bound content hash"));
+        assert!(validate_gpu_reload_artifact_content_hash(None, Some(&replaced_blob)).is_ok());
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
     fn gpu_reload_capsule_metadata_decodes_runner_protocol_token() {
         let token = worker::hmr::adapter_trait::encode_reload_capsule_metadata_token(
             &worker::hmr::adapter_trait::ReloadCapsuleMetadata {
@@ -2709,13 +3311,14 @@ mod tests {
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
-    fn gpu_reload_v2_parser_preserves_independent_identity_and_typed_fields() {
+    fn gpu_reload_v3_parser_preserves_independent_identity_and_typed_fields() {
         let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
-        let payload = GpuReloadV2Payload::new(
+        let payload = GpuReloadV3Payload::new(
             format!("gpu-reload:request:{}", "1".repeat(32)),
             "partial",
             "rocm",
             "/tmp/path with space/device.hsaco",
+            format!("sha256:{}", "b".repeat(64)),
             vec!["gpu::shade".to_string()],
             Some("sha256:abi".to_string()),
             None,
@@ -2724,11 +3327,12 @@ mod tests {
         .unwrap();
         let encoded = payload.encode().unwrap();
         let parts = [
-            "gpu_reload_v2",
+            "gpu_reload_v3",
             payload.request_id.as_str(),
             encoded.as_str(),
         ];
         let parsed = parse_gpu_reload_command(&parts).unwrap();
+        assert!(!parsed.cold_load);
         assert_eq!(
             parsed.request_id.as_deref(),
             Some(payload.request_id.as_str())
@@ -2736,6 +3340,10 @@ mod tests {
         assert!(parsed.partial);
         assert_eq!(parsed.vendor, "rocm");
         assert_eq!(parsed.artifact_path, "/tmp/path with space/device.hsaco");
+        assert_eq!(
+            parsed.expected_artifact_content_hash.as_deref(),
+            Some(format!("sha256:{}", "b".repeat(64)).as_str())
+        );
         assert_eq!(parsed.kernels, vec!["gpu::shade"]);
         assert_eq!(parsed.abi_version, "sha256:abi");
         assert_eq!(
@@ -2746,8 +3354,8 @@ mod tests {
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
-    fn legacy_gpu_reload_never_backfills_strict_source_identity() {
-        let encoded_source = format!("source%2Dedit%3Asha256%3A{}", "a".repeat(64));
+    fn legacy_gpu_reload_rejects_hash_bearing_commands_without_strict_identity() {
+        let artifact_hash = format!("sha256:{}", "a".repeat(64));
         let parts = [
             "load_device",
             "rocm",
@@ -2755,58 +3363,201 @@ mod tests {
             "shade",
             "sha256:abi",
             "-",
-            encoded_source.as_str(),
+            artifact_hash.as_str(),
         ];
-        let parsed = parse_gpu_reload_command(&parts).unwrap();
-        assert_eq!(parsed.source_edit_id, None);
-        assert_eq!(parsed.request_id, None);
+        let error = parse_gpu_reload_command(&parts).unwrap_err();
+        assert!(error.contains("cannot claim content binding"));
+        assert!(error.contains("V3"));
     }
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
-    fn strict_gpu_reload_terminal_requires_matching_full_runtime_proof() {
+    fn cold_gpu_load_v3_preserves_correlation_without_claiming_hot_reload() {
         let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
-        let request_id = format!("gpu-reload:request:{}", "2".repeat(32));
-        let proof_id = format!("gpu-runtime-proof:sha256:{}", "b".repeat(64));
+        let payload = GpuReloadV3Payload::new(
+            format!("gpu-reload:request:{}", "4".repeat(32)),
+            "full",
+            "rocm",
+            "/tmp/device.hsaco",
+            format!("sha256:{}", "b".repeat(64)),
+            vec!["shade".to_string()],
+            Some("sha256:abi".to_string()),
+            None,
+            source_edit_id,
+        )
+        .unwrap();
+        let encoded = payload.encode().unwrap();
+        let parts = ["gpu_load_v3", payload.request_id.as_str(), encoded.as_str()];
+        let parsed = parse_gpu_reload_command(&parts).unwrap();
+        assert!(parsed.cold_load);
+        assert_eq!(
+            parsed.request_id.as_deref(),
+            Some(payload.request_id.as_str())
+        );
+        assert_eq!(
+            parsed.expected_artifact_content_hash.as_deref(),
+            Some(payload.artifact_content_hash.as_str())
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    fn strict_runtime_proof_fixture(
+        request_id: &str,
+        source_edit_id: &str,
+        artifact_content_hash: &str,
+        process_id: &str,
+        runtime_session_id: &str,
+    ) -> (String, String) {
+        let artifact_id = format!(
+            "artifact:sha256:{}",
+            artifact_content_hash.trim_start_matches("sha256:")
+        );
+        let previous_artifact_id = format!("artifact:sha256:{}", "0".repeat(64));
+        let dispatch_id = "dispatch:epoch:2";
         let evidence_refs = vec![
             format!("reload:{request_id}"),
             format!("source-edit-id:{source_edit_id}"),
         ];
         let record = serde_json::json!({
+            "schemaVersion": RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+            "project_id": "content-bound-fixture",
             "edit_id": source_edit_id,
+            "backend": "rocm",
+            "classification": {
+                "project_kind": "gpu_project",
+                "edit_kind": "gpu_artifact_edit",
+                "route": "gpu_hmr",
+            },
+            "contract_hash": format!("sha256:{}", "1".repeat(64)),
+            "artifact_before_hash": previous_artifact_id,
+            "artifact_after_hash": artifact_id,
+            "loader_event": {
+                "id": "loader:2",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 10,
+                "process_id": process_id,
+            },
+            "epoch_publish_event": {
+                "id": "epoch:2",
+                "epoch": "2",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 20,
+                "process_id": process_id,
+            },
+            "dispatch_event": {
+                "id": dispatch_id,
+                "epoch": "2",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 30,
+                "process_id": process_id,
+            },
+            "output_event": {
+                "id": "output:2",
+                "passed": true,
+                "after_dispatch_id": dispatch_id,
+                "epoch": "2",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 40,
+                "process_id": process_id,
+            },
+            "retirement_event": {
+                "id": "retirement:1",
+                "artifact_id": previous_artifact_id,
+                "artifact_hash": previous_artifact_id,
+                "timestamp_monotonic_ns": 50,
+                "process_id": process_id,
+            },
+            "process_identity": {
+                "process_id": process_id,
+                "runtime_session_id": runtime_session_id,
+            },
+            "cpu_hmr_used": false,
+            "full_rebuild_used": false,
+            "process_restarted": false,
+            "firewall_evidence": {
+                "cpu_hmr_used": false,
+                "full_rebuild_used": false,
+                "process_restarted": false,
+                "process_id_before": process_id,
+                "process_id_after": process_id,
+            },
             "evidence_refs": evidence_refs,
         });
+        let ledger_proof_id = canonical_runner_runtime_ledger_proof_id(&record);
         let proof_ledger = serde_json::json!({
+            "schemaVersion": RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+            "proofId": ledger_proof_id,
             "gpuHmrSuccess": true,
             "records": [record],
         });
+        let acceptance_contract = serde_json::json!({
+            "contract_version": RUNNER_GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
+            "edit_id": source_edit_id,
+            "artifact_hash_before": previous_artifact_id,
+            "artifact_hash_after": artifact_id,
+        });
+        let runtime_trace = serde_json::json!({
+            "runtimeSessionId": runtime_session_id,
+            "processId": process_id,
+        });
+        let mut runtime_artifact = serde_json::json!({
+            "schemaVersion": RUNNER_GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
+            "proofId": "pending",
+            "resultState": RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE,
+            "fullRuntimeProven": true,
+            "gpuHmrSuccess": true,
+            "stageResults": [],
+            "limitations": [],
+            "proofLedger": proof_ledger,
+            "proofLedgerQuery": {
+                "proofId": ledger_proof_id,
+                "gpuHmrSuccess": true,
+                "failedInvariants": [],
+            },
+            "runtimeTrace": runtime_trace,
+            "acceptanceContract": acceptance_contract,
+            "derivedAcceptanceContract": acceptance_contract,
+            "acceptanceContractEvaluation": { "accepted": true },
+            "acceptanceContractConsistency": { "accepted": true },
+            "derivedAcceptanceContractEvaluation": { "accepted": true },
+            "explicitProofLedgerRecord": record,
+            "derivedProofLedgerRecord": record,
+            "proofLedgerSourceConsistency": { "accepted": true },
+        });
+        let proof_id = recomputed_runtime_proof_id(&runtime_artifact, &record).unwrap();
+        runtime_artifact["proofId"] = serde_json::Value::String(proof_id.clone());
         let proof_line = serde_json::json!({
             "type": "gpu_hmr_proof",
-            "resultState": "gpu-hmr-full-runtime-proven",
+            "schemaVersion": RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION,
+            "module": "device",
+            "resultState": RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE,
             "proofId": proof_id,
             "proofLedger": proof_ledger,
-            "runtimeProofArtifact": {
-                "proofId": proof_id,
-                "resultState": "gpu-hmr-full-runtime-proven",
-                "fullRuntimeProven": true,
-                "gpuHmrSuccess": true,
-                "limitations": [],
-                "proofLedger": proof_ledger,
-                "proofLedgerQuery": {
-                    "gpuHmrSuccess": true,
-                    "failedInvariants": [],
-                },
-                "explicitProofLedgerRecord": record,
-                "derivedProofLedgerRecord": record,
-                "acceptanceContract": { "edit_id": source_edit_id },
-                "derivedAcceptanceContract": { "edit_id": source_edit_id },
-                "acceptanceContractEvaluation": { "accepted": true },
-                "acceptanceContractConsistency": { "accepted": true },
-                "derivedAcceptanceContractEvaluation": { "accepted": true },
-                "proofLedgerSourceConsistency": { "accepted": true },
-            },
+            "runtimeProofArtifact": runtime_artifact,
         })
         .to_string();
+        (proof_line, proof_id)
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn strict_gpu_reload_terminal_recomputes_artifact_bound_full_runtime_proof() {
+        let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
+        let request_id = format!("gpu-reload:request:{}", "2".repeat(32));
+        let artifact_content_hash = format!("sha256:{}", "b".repeat(64));
+        let live_process_id = std::process::id().to_string();
+        let live_runtime_session_id = super::runtime_session_id().to_string();
+        let (proof_line, proof_id) = strict_runtime_proof_fixture(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &live_process_id,
+            &live_runtime_session_id,
+        );
         let success = AdapterReloadResult::Success {
             reload_ms: 1,
             state_preserved: true,
@@ -2815,6 +3566,7 @@ mod tests {
         let terminal = strict_gpu_reload_terminal_result(
             &request_id,
             &source_edit_id,
+            &artifact_content_hash,
             &success,
             &[proof_line.clone()],
         )
@@ -2826,16 +3578,73 @@ mod tests {
         );
         assert!(terminal.gpu_hmr_success);
 
-        let missing =
-            strict_gpu_reload_terminal_result(&request_id, &source_edit_id, &success, &[]).unwrap();
+        assert_eq!(terminal.artifact_content_hash, artifact_content_hash);
+
+        let missing = strict_gpu_reload_terminal_result(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &success,
+            &[],
+        )
+        .unwrap();
         assert_eq!(missing.status, "rejected");
         assert!(!missing.gpu_hmr_success);
+
+        let other_artifact_hash = format!("sha256:{}", "c".repeat(64));
+        let artifact_mismatch = strict_gpu_reload_terminal_result(
+            &request_id,
+            &source_edit_id,
+            &other_artifact_hash,
+            &success,
+            &[proof_line.clone()],
+        )
+        .unwrap();
+        assert_eq!(artifact_mismatch.status, "rejected");
+        assert!(!artifact_mismatch.gpu_hmr_success);
+
+        let (wrong_process_line, _) = strict_runtime_proof_fixture(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            "0",
+            &live_runtime_session_id,
+        );
+        let wrong_process = strict_gpu_reload_terminal_result(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &success,
+            &[wrong_process_line],
+        )
+        .unwrap();
+        assert_eq!(wrong_process.status, "rejected");
+        assert!(!wrong_process.gpu_hmr_success);
+
+        let (wrong_session_line, _) = strict_runtime_proof_fixture(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &live_process_id,
+            "runtime-session:unrelated",
+        );
+        let wrong_session = strict_gpu_reload_terminal_result(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &success,
+            &[wrong_session_line],
+        )
+        .unwrap();
+        assert_eq!(wrong_session.status, "rejected");
+        assert!(!wrong_session.gpu_hmr_success);
 
         let other_source_edit_id = format!("source-edit:sha256:{}", "c".repeat(64));
         let other_request_id = format!("gpu-reload:request:{}", "3".repeat(32));
         let stale = strict_gpu_reload_terminal_result(
             &other_request_id,
             &other_source_edit_id,
+            &artifact_content_hash,
             &success,
             &[proof_line],
         )
@@ -2923,12 +3732,7 @@ mod tests {
             bytes: b"runtime-artifact".to_vec(),
         };
 
-        for configured in [
-            "filesystem",
-            "filesystem_path",
-            "path",
-            "module_load_path",
-        ] {
+        for configured in ["filesystem", "filesystem_path", "path", "module_load_path"] {
             assert_eq!(
                 gpu_artifact_loader_transport_for_reload(Some(configured), None),
                 Ok(ArtifactLoaderTransport::FilesystemPath)

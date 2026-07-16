@@ -38,7 +38,8 @@ use crate::compiler::stages::ai_utils::{
 };
 use crate::compiler::stages::compile_core::compile_core;
 use crate::compiler::stages::compile_device::{
-    compile_device_phase0, DeviceCompileOutcome, DeviceCompileProofMetadata,
+    compile_device_phase0_with_cache_policy, enforce_requested_cold_device_compile,
+    DeviceCompileOutcome, DeviceCompileProofMetadata,
 };
 use crate::compiler::stages::compile_gui::compile_gui;
 use crate::compiler::stages::compile_runner::{
@@ -821,10 +822,9 @@ use crate::hmr::gpu_device_fast_path::{
 use crate::hmr::gpu_fission::verify_fission_candidates;
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::gpu_proof::{
-    read_proof_artifact, sha256_hex_bytes, sha256_hex_str, stable_json_hash,
-    write_proof_artifact, GpuHmrDegradedState, GpuHmrProofArtifact, GpuHmrProofArtifactInput,
-    GpuHmrProofArtifactWrite, GpuHmrProofEvidenceRef, GpuHmrProofStageResult, GpuHmrProofState,
-    GpuHmrProofTelemetry,
+    read_proof_artifact, sha256_hex_bytes, sha256_hex_str, stable_json_hash, write_proof_artifact,
+    GpuHmrDegradedState, GpuHmrProofArtifact, GpuHmrProofArtifactInput, GpuHmrProofArtifactWrite,
+    GpuHmrProofEvidenceRef, GpuHmrProofStageResult, GpuHmrProofState, GpuHmrProofTelemetry,
 };
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
 
@@ -3310,6 +3310,7 @@ async fn compile_device_sources_phase0(
     manifest: &CompileManifest,
     allow_direct_translation_unit_partial: bool,
     allow_partial_device_reload: bool,
+    bypass_device_compile_cache: bool,
 ) -> Result<Option<DeviceCompileOutcome>> {
     let mut fallback_reason: Option<String> = None;
     if should_compile_partial_device_source(sources, allow_partial_device_reload) {
@@ -3324,13 +3325,14 @@ async fn compile_device_sources_phase0(
                 sources.full_source.len(),
                 sources.partial_symbols.join(",")
             );
-            match compile_device_phase0(
+            match compile_device_phase0_with_cache_policy(
                 workspace_path,
                 output_dir,
                 timestamp,
                 partial_source,
                 Some(partial_filename),
                 manifest,
+                bypass_device_compile_cache,
             )
             .await
             {
@@ -3419,13 +3421,14 @@ async fn compile_device_sources_phase0(
         );
     }
 
-    let mut outcome = compile_device_phase0(
+    let mut outcome = compile_device_phase0_with_cache_policy(
         workspace_path,
         output_dir,
         timestamp,
         &sources.full_source,
         sources.full_filename.as_deref(),
         manifest,
+        bypass_device_compile_cache,
     )
     .await?;
     if let Some(outcome) = outcome.as_mut() {
@@ -4373,7 +4376,11 @@ fn upsert_compile_request_source_baselines(
     count
 }
 
-fn split_role_filename(result: &serde_json::Value, manifest: &serde_json::Value, role: &str) -> Option<String> {
+fn split_role_filename(
+    result: &serde_json::Value,
+    manifest: &serde_json::Value,
+    role: &str,
+) -> Option<String> {
     result
         .get(role)
         .and_then(|v| v.get("filename"))
@@ -4405,7 +4412,11 @@ fn upsert_generated_split_source_baselines(
         .get("_synthi_manifest")
         .filter(|value| !value.is_null())
         .cloned()
-        .or_else(|| meta.get("compile_manifest").filter(|value| !value.is_null()).cloned())
+        .or_else(|| {
+            meta.get("compile_manifest")
+                .filter(|value| !value.is_null())
+                .cloned()
+        })
         .unwrap_or(serde_json::Value::Null);
     let Some(root) = meta.as_object_mut() else {
         return 0;
@@ -5669,7 +5680,7 @@ fn partial_fission_candidate_and_evidence(
     abi_evidence_id: &str,
     transport_evidence_id: &str,
 ) -> Option<(serde_json::Value, Vec<GpuHmrProofEvidenceRef>)> {
-    if !outcome.partial_module {
+    if !outcome.partial_module || outcome.proof_metadata.artifact_cache_bypassed {
         return None;
     }
 
@@ -6023,9 +6034,7 @@ fn partial_fission_candidate_and_evidence(
                 .unwrap_or(0),
             outcome.target_symbols.len()
         ),
-        metadata: candidate
-            .get("generatedTopologyBinding")
-            .cloned(),
+        metadata: candidate.get("generatedTopologyBinding").cloned(),
     });
     if let Some((mapping, _, evidence_id)) = original_host_launch_mapping {
         let hash = sha256_hex_str(&mapping.to_string());
@@ -6170,20 +6179,36 @@ fn fission_verifier_evidence_and_stage(
 async fn reload_artifact_blob_from_outcome(
     outcome: &DeviceCompileOutcome,
 ) -> Result<ReloadArtifactBlob> {
-    let bytes = tokio::fs::read(&outcome.artifact_path)
-        .await
-        .with_context(|| {
-            format!(
-                "reading selected GPU HMR artifact for RAM reload transport {}",
-                outcome.artifact_path.display()
-            )
-        })?;
+    let bytes = device_artifact_bytes_for_consumer(outcome, "RAM reload transport").await?;
     let artifact_hash = sha256_hex_bytes(&bytes);
     Ok(ReloadArtifactBlob {
         blob_id: format!("artifact:sha256:{artifact_hash}"),
         content_hash: format!("sha256:{artifact_hash}"),
         bytes,
     })
+}
+
+async fn device_artifact_bytes_for_consumer(
+    outcome: &DeviceCompileOutcome,
+    consumer: &str,
+) -> Result<Vec<u8>> {
+    if let Some(snapshot) = outcome.proof_metadata.artifact_snapshot.as_ref() {
+        return Ok(snapshot.as_ref().to_vec());
+    }
+    if outcome.proof_metadata.artifact_cache_bypassed {
+        anyhow::bail!(
+            "cold device artifact snapshot missing for {consumer}: {}",
+            outcome.artifact_path.display()
+        );
+    }
+    tokio::fs::read(&outcome.artifact_path)
+        .await
+        .with_context(|| {
+            format!(
+                "reading selected GPU HMR artifact for {consumer} {}",
+                outcome.artifact_path.display()
+            )
+        })
 }
 
 fn normalized_capsule_hash(value: Option<&str>) -> Option<String> {
@@ -6669,16 +6694,12 @@ fn proof_abi_membrane_hash(proof: &serde_json::Value) -> Option<String> {
         .and_then(|value| normalized_capsule_hash(Some(value)))
 }
 
-fn proof_dependency_closure_hash(
-    proof: &serde_json::Value,
-    outcome: &DeviceCompileOutcome,
-) -> Option<String> {
+fn proof_dependency_closure_hash(proof: &serde_json::Value) -> Option<String> {
     first_proof_evidence(proof, "fission-island-input")
         .and_then(|evidence| evidence.get("metadata"))
         .and_then(|metadata| metadata.get("dependencyClosureHash"))
         .and_then(serde_json::Value::as_str)
         .and_then(|value| normalized_capsule_hash(Some(value)))
-        .or_else(|| normalized_capsule_hash(outcome.proof_metadata.dependency_hash.as_deref()))
 }
 
 async fn reload_capsule_metadata_from_proof_artifact(
@@ -6706,16 +6727,14 @@ async fn reload_capsule_metadata_from_proof_artifact_with_profile_path(
     let fission_output_oracle_contract = proof
         .as_ref()
         .and_then(proof_fission_output_oracle_contract);
-    let output_oracle_profile_commitment = match (
-        proof.as_ref(),
-        fission_output_oracle_contract.as_ref(),
-    ) {
-        (Some(proof), Some(contract)) => tokio::fs::read(profile_path)
-            .await
-            .ok()
-            .and_then(|bytes| proof_output_oracle_profile_commitment(proof, contract, &bytes)),
-        _ => None,
-    };
+    let output_oracle_profile_commitment =
+        match (proof.as_ref(), fission_output_oracle_contract.as_ref()) {
+            (Some(proof), Some(contract)) => tokio::fs::read(profile_path)
+                .await
+                .ok()
+                .and_then(|bytes| proof_output_oracle_profile_commitment(proof, contract, &bytes)),
+            _ => None,
+        };
     ReloadCapsuleMetadata {
         fission_island_id: proof.as_ref().and_then(proof_fission_island_id),
         fission_verifier_evidence_id: proof.as_ref().and_then(proof_fission_verifier_evidence_id),
@@ -6732,9 +6751,7 @@ async fn reload_capsule_metadata_from_proof_artifact_with_profile_path(
         fission_output_oracle_contract,
         output_oracle_profile_commitment,
         abi_membrane_hash: proof.as_ref().and_then(proof_abi_membrane_hash),
-        dependency_closure_hash: proof
-            .as_ref()
-            .and_then(|proof| proof_dependency_closure_hash(proof, outcome)),
+        dependency_closure_hash: proof.as_ref().and_then(proof_dependency_closure_hash),
         proof_hash: proof_id_capsule_hash(&proof_artifact.proof_id),
     }
 }
@@ -6799,14 +6816,7 @@ async fn write_device_hmr_proof_artifact(
     sidecar_meta: Option<&serde_json::Value>,
 ) -> Result<GpuHmrProofArtifactWrite> {
     let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let artifact_bytes = tokio::fs::read(&outcome.artifact_path)
-        .await
-        .with_context(|| {
-            format!(
-                "reading selected GPU HMR artifact for proof {}",
-                outcome.artifact_path.display()
-            )
-        })?;
+    let artifact_bytes = device_artifact_bytes_for_consumer(outcome, "proof").await?;
     let artifact_hash = sha256_hex_bytes(&artifact_bytes);
     let selected_artifact_id = format!("artifact:sha256:{artifact_hash}");
     let source_edit_id = normalized_reload_source_edit_id(Some(source_edit_id))
@@ -7447,6 +7457,7 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
         manifest,
         allow_direct_translation_unit_partial,
         runtime_paused,
+        req.bypass_device_compile_cache,
     )
     .await;
     let device = match device_result {
@@ -7615,9 +7626,7 @@ fn is_device_source_request(filename: &str) -> bool {
 }
 
 fn normalize_manifest_path_for_compare(path: &str) -> String {
-    path.trim()
-        .trim_start_matches("./")
-        .replace('\\', "/")
+    path.trim().trim_start_matches("./").replace('\\', "/")
 }
 
 fn compile_manifest_has_device_request_evidence(
@@ -8324,9 +8333,8 @@ fn include_bridge_maps_kernel_symbol(
 ) -> bool {
     let source =
         normalized_request_filename(source_path).unwrap_or_else(|| source_path.replace('\\', "/"));
-    let expected_generated = generated_path.map(|path| {
-        normalized_request_filename(path).unwrap_or_else(|| path.replace('\\', "/"))
-    });
+    let expected_generated = generated_path
+        .map(|path| normalized_request_filename(path).unwrap_or_else(|| path.replace('\\', "/")));
     let symbol = symbol.trim();
     if symbol.is_empty() {
         return false;
@@ -9168,10 +9176,8 @@ fn try_warm_rebuild_header_plan(
             .chain(template_symbols)
             .collect(),
         affected_source_paths: if deterministic_body_rebuild {
-            vec![
-                normalized_request_filename(user_path)
-                    .unwrap_or_else(|| user_path.replace('\\', "/")),
-            ]
+            vec![normalized_request_filename(user_path)
+                .unwrap_or_else(|| user_path.replace('\\', "/"))]
         } else {
             template_source_paths
         },
@@ -9327,10 +9333,56 @@ fn validate_required_provider_call_dispatch(
     Ok(())
 }
 
+#[derive(Debug)]
+struct ColdDeviceCompileRequirement {
+    required: bool,
+    completed: bool,
+}
+
+impl ColdDeviceCompileRequirement {
+    fn new(required: bool) -> Self {
+        Self {
+            required,
+            completed: false,
+        }
+    }
+
+    fn observe(&mut self, outcome: Option<&DeviceCompileOutcome>) -> Result<()> {
+        enforce_requested_cold_device_compile(self.required, outcome)?;
+        if self.required {
+            self.completed = true;
+        }
+        Ok(())
+    }
+
+    fn enforce_before_success(&self) -> Result<()> {
+        if self.required && !self.completed {
+            anyhow::bail!(
+                "cold device compile required but the request returned before a verified device compiler outcome was produced"
+            );
+        }
+        Ok(())
+    }
+}
+
 pub async fn handle_compile_request(
+    ctx: &CompileContext,
+    req: CompileRequest,
+    session_id: String,
+) -> Result<serde_json::Value> {
+    let mut cold_device_compile =
+        ColdDeviceCompileRequirement::new(req.bypass_device_compile_cache);
+    let result =
+        handle_compile_request_inner(ctx, req, session_id, &mut cold_device_compile).await?;
+    cold_device_compile.enforce_before_success()?;
+    Ok(result)
+}
+
+async fn handle_compile_request_inner(
     ctx: &CompileContext,
     mut req: CompileRequest,
     session_id: String,
+    cold_device_compile: &mut ColdDeviceCompileRequirement,
 ) -> Result<serde_json::Value> {
     validate_required_provider_call_dispatch(
         &req.language,
@@ -10215,8 +10267,9 @@ pub async fn handle_compile_request(
                             &generated_path,
                             &generated_device_source,
                         );
-                        if let Some(cache_report) =
-                            meta.get_mut("cacheReport").and_then(serde_json::Value::as_object_mut)
+                        if let Some(cache_report) = meta
+                            .get_mut("cacheReport")
+                            .and_then(serde_json::Value::as_object_mut)
                         {
                             cache_report.insert(
                                 "generatedDeviceBaselineHash".to_string(),
@@ -11470,30 +11523,29 @@ pub async fn handle_compile_request(
                                 .or_else(|| sidecar_meta.get("launch_indirection_report"))
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null);
-                            let reconstructed_device_role =
-                                if let Some(device_filename) =
-                                    CompileManifest::from_json_value(&sidecar_manifest_json)
-                                        .and_then(|manifest| {
-                                            manifest.device_source_filename().map(ToString::to_string)
-                                        })
-                                {
-                                    let normalized = device_filename.replace('\\', "/");
-                                    match compile_request_relpath(&normalized) {
-                                        Ok(rel) => match tokio::fs::read_to_string(
-                                            ctx.workspace_path.join(rel),
-                                        )
-                                        .await
-                                        {
-                                            Ok(content) if !content.trim().is_empty() => {
-                                                Some((normalized, content))
-                                            }
-                                            _ => None,
-                                        },
-                                        Err(_) => None,
-                                    }
-                                } else {
-                                    None
-                                };
+                            let reconstructed_device_role = if let Some(device_filename) =
+                                CompileManifest::from_json_value(&sidecar_manifest_json).and_then(
+                                    |manifest| {
+                                        manifest.device_source_filename().map(ToString::to_string)
+                                    },
+                                ) {
+                                let normalized = device_filename.replace('\\', "/");
+                                match compile_request_relpath(&normalized) {
+                                    Ok(rel) => match tokio::fs::read_to_string(
+                                        ctx.workspace_path.join(rel),
+                                    )
+                                    .await
+                                    {
+                                        Ok(content) if !content.trim().is_empty() => {
+                                            Some((normalized, content))
+                                        }
+                                        _ => None,
+                                    },
+                                    Err(_) => None,
+                                }
+                            } else {
+                                None
+                            };
                             let mut meta = serde_json::json!({
                                 "split_hash": source_hash_str,
                                 "original_source": req.source,
@@ -11511,9 +11563,10 @@ pub async fn handle_compile_request(
                                 "_synthi_source_context_report": source_report,
                                 "_synthi_launch_indirection_report": launch_report,
                             });
-                            if let (Some(obj), Some((device_filename, device_content))) =
-                                (reconstructed_split.as_object_mut(), reconstructed_device_role)
-                            {
+                            if let (Some(obj), Some((device_filename, device_content))) = (
+                                reconstructed_split.as_object_mut(),
+                                reconstructed_device_role,
+                            ) {
                                 obj.insert(
                                     "device".to_string(),
                                     serde_json::json!({
@@ -11924,7 +11977,11 @@ pub async fn handle_compile_request(
             eprintln!("[compile-device] skipping — GPU pipeline disabled by compile request");
         }
         None
-    } else if compile_manifest.as_ref().and_then(|m| m.gpu.as_ref()).is_some() {
+    } else if compile_manifest
+        .as_ref()
+        .and_then(|m| m.gpu.as_ref())
+        .is_some()
+    {
         let declared_device_filename = compile_manifest
             .as_ref()
             .and_then(|m| m.device_source_filename())
@@ -12309,10 +12366,10 @@ pub async fn handle_compile_request(
         );
     }
 
-    let tier0_bypassed = if tier0_v2_eligible
-        && rebuild_scope != RebuildScope::None
-        && tier0_flags_safe
-    {
+    let tier0_bypassed = if req.bypass_device_compile_cache {
+        eprintln!("[compile-device] cold device compile request disables Tier 0 compile bypass");
+        false
+    } else if tier0_v2_eligible && rebuild_scope != RebuildScope::None && tier0_flags_safe {
         use crate::hmr::tier0_unified::{try_tier0_v2, Tier0V2Outcome};
         let t0_start = std::time::Instant::now();
         let old_src = tier0_old_source.as_deref().unwrap_or("");
@@ -12779,6 +12836,8 @@ pub async fn handle_compile_request(
         };
         (core_opt, gui_opt, runner_opt, device_opt.0, device_opt.1)
     };
+
+    cold_device_compile.observe(device_compile_outcome.as_ref())?;
 
     let core_lib_path = core_lib_path_opt
         .ok_or_else(|| anyhow::anyhow!("Core compilation produced no output (no core module in split data or scope is GUI-only)"))?;
@@ -13381,14 +13440,25 @@ pub async fn handle_compile_request(
             let capsule_token = device_reload_capsule_metadata
                 .as_ref()
                 .and_then(encode_reload_capsule_metadata_token);
-            if capsule_token.is_some() || device_reload_source_edit_id.is_some() {
-                device_cmd.push(':');
-                device_cmd.push_str(capsule_token.as_deref().unwrap_or("-"));
-            }
-            if let Some(source_edit_id) = device_reload_source_edit_id.as_deref() {
-                device_cmd.push(':');
-                device_cmd.push_str(&encode_gpu_kernel_command_token(source_edit_id));
-            }
+            let expected_artifact_hash = device_reload_artifact_blob
+                .as_ref()
+                .map(|blob| blob.content_hash.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "device reload artifact snapshot is missing before runner publication"
+                    )
+                })?;
+            device_cmd.push(':');
+            device_cmd.push_str(capsule_token.as_deref().unwrap_or("-"));
+            device_cmd.push(':');
+            device_cmd.push_str(
+                &device_reload_source_edit_id
+                    .as_deref()
+                    .map(encode_gpu_kernel_command_token)
+                    .unwrap_or_else(|| "-".to_string()),
+            );
+            device_cmd.push(':');
+            device_cmd.push_str(&encode_gpu_kernel_command_token(expected_artifact_hash));
             modules_to_load.insert(
                 0,
                 (
@@ -13798,6 +13868,38 @@ mod gpu_host_contract_tests {
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
+    #[test]
+    fn cold_device_compile_requirement_rejects_every_unobserved_success_path() {
+        let required = ColdDeviceCompileRequirement::new(true);
+        let error = required.enforce_before_success().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("request returned before a verified device compiler outcome"));
+
+        let optional = ColdDeviceCompileRequirement::new(false);
+        optional.enforce_before_success().unwrap();
+    }
+
+    #[tokio::test]
+    async fn cold_device_proof_and_reload_consumers_use_the_bound_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact_path = temp.path().join("device.hsaco");
+        tokio::fs::write(&artifact_path, b"later-path-bytes")
+            .await
+            .unwrap();
+        let mut outcome = fixture_device_outcome(false, Vec::new(), Vec::new());
+        outcome.artifact_path = artifact_path;
+        outcome.proof_metadata.artifact_cache_bypassed = true;
+        outcome.proof_metadata.artifact_snapshot =
+            Some(std::sync::Arc::<[u8]>::from(&b"compiler-bound-bytes"[..]));
+
+        let bytes = device_artifact_bytes_for_consumer(&outcome, "test consumer")
+            .await
+            .unwrap();
+
+        assert_eq!(bytes, b"compiler-bound-bytes");
+    }
+
     fn complete_fission_candidate_with_output_oracle(
         output_oracle_contract: serde_json::Value,
     ) -> serde_json::Value {
@@ -14098,7 +14200,7 @@ mod gpu_host_contract_tests {
             partial_symbols: vec!["shade".to_string()],
             partial_source_paths: vec!["src/gpu/shade.h".to_string()],
             partial_required: true,
-            partial_artifact_kind: Some("source_include_bridge".to_string()),
+            partial_artifact_kind: Some("opaque_partial_unit".to_string()),
             partial_fallback_reason: None,
             partial_fission_candidate: None,
             source_baseline_contents: Vec::new(),
@@ -14618,6 +14720,7 @@ __constant__ int scale;
             dependency_method: Some("depfile".to_string()),
             artifact_cache_key: Some("artifact-cache-key".to_string()),
             cache_hit: false,
+            ..Default::default()
         };
         outcome.requested_artifact_kind = Some("source_include_bridge".to_string());
         outcome.selected_artifact_kind = Some("source_include_bridge".to_string());
@@ -14941,6 +15044,47 @@ __constant__ int scale;
         );
     }
 
+    #[test]
+    fn cold_preprocessed_input_hash_is_not_promoted_to_dependency_closure_proof() {
+        let mut outcome =
+            fixture_device_outcome(true, symbols(&["shade"]), symbols(&["_Z5shadePf"]));
+        outcome.proof_metadata.artifact_cache_bypassed = true;
+        outcome.proof_metadata.dependency_hash = Some(format!("sha256:{}", "1".repeat(64)));
+        outcome.proof_metadata.dependency_method =
+            Some("compiler_preprocessed_translation_unit_sha256".to_string());
+        let sources = DeviceCompileSources {
+            full_source: "device source".to_string(),
+            full_filename: Some("roles/compute-stage.input".to_string()),
+            full_symbols: symbols(&["shade"]),
+            direct_workspace_source: false,
+            partial_source: Some("partial source".to_string()),
+            partial_filename: Some("roles/partial-stage.input".to_string()),
+            partial_symbols: symbols(&["shade"]),
+            partial_source_paths: vec!["sources/compute-stage.input".to_string()],
+            partial_required: true,
+            partial_artifact_kind: Some("source_include_bridge".to_string()),
+            partial_fallback_reason: None,
+            partial_fission_candidate: None,
+            source_baseline_contents: Vec::new(),
+            launch_mapping_sources: Vec::new(),
+        };
+
+        assert!(partial_fission_candidate_and_evidence(
+            &outcome,
+            Some(&sources),
+            "2026-07-16T00:00:00Z",
+            "runtime-session:fixture",
+            FIXTURE_SOURCE_EDIT_ID,
+            "artifact:sha256:fixture",
+            &"2".repeat(64),
+            "compiler-evidence",
+            "symbol-evidence",
+            "abi-evidence",
+            "transport-evidence",
+        )
+        .is_none());
+    }
+
     #[tokio::test]
     async fn partial_hmr_proof_artifact_promotes_partial_metadata_to_fission_candidate() {
         let temp = tempfile::tempdir().unwrap();
@@ -14973,6 +15117,7 @@ __constant__ int scale;
             dependency_method: Some("depfile".to_string()),
             artifact_cache_key: Some("artifact-cache-key".to_string()),
             cache_hit: false,
+            ..Default::default()
         };
         let sources = DeviceCompileSources {
             full_source: partial_source.to_string(),
@@ -15433,6 +15578,7 @@ __constant__ int scale;
             dependency_method: Some("depfile".to_string()),
             artifact_cache_key: Some("artifact-cache-key".to_string()),
             cache_hit: false,
+            ..Default::default()
         };
         let sources = DeviceCompileSources {
             full_source: partial_source.to_string(),
@@ -15601,6 +15747,7 @@ __constant__ int scale;
             dependency_method: Some("depfile".to_string()),
             artifact_cache_key: Some("artifact-cache-key".to_string()),
             cache_hit: false,
+            ..Default::default()
         };
         let sources = DeviceCompileSources {
             full_source: partial_source.to_string(),
@@ -15871,6 +16018,7 @@ __constant__ int scale;
             dependency_method: Some("depfile".to_string()),
             artifact_cache_key: Some("artifact-cache-key".to_string()),
             cache_hit: false,
+            ..Default::default()
         };
         let host_source = r#"
 void bind_and_launch(Buffer* pixels) {
@@ -16248,6 +16396,7 @@ void enqueue(float* pixels, dim3 grid, dim3 block, void** args, void* stream) {
             dependency_method: Some("depfile".to_string()),
             artifact_cache_key: Some("artifact-cache-key".to_string()),
             cache_hit: false,
+            ..Default::default()
         };
         let sources = DeviceCompileSources {
             full_source: source.to_string(),
@@ -16665,7 +16814,10 @@ extern "C" __global__ void shade(RenderData render_data) {}
             }
         });
 
-        assert_eq!(upsert_generated_split_source_baselines(&mut meta, &split), 2);
+        assert_eq!(
+            upsert_generated_split_source_baselines(&mut meta, &split),
+            2
+        );
 
         assert_eq!(
             meta.pointer("/sourceBaselineContents/.synthi~1generated~1gpu~1core.cpp")
@@ -17159,14 +17311,15 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
         let source_manifest = fixture_rocm_manifest("src/gpu/flow.hip");
         let mut header_manifest = fixture_rocm_manifest(".synthi/generated/gpu/device.hip");
         if let Some(gpu) = header_manifest.gpu.as_mut() {
-            gpu.device_roles.push(crate::hmr::compile_manifest::GpuDeviceRole {
-                id: "device.flow".to_string(),
-                path: ".synthi/generated/gpu/device.hip".to_string(),
-                source_files: vec!["src/gpu/flow_template.hpp".to_string()],
-                compiler: None,
-                arch: Vec::new(),
-                requires_rdc: false,
-            });
+            gpu.device_roles
+                .push(crate::hmr::compile_manifest::GpuDeviceRole {
+                    id: "device.flow".to_string(),
+                    path: ".synthi/generated/gpu/device.hip".to_string(),
+                    source_files: vec!["src/gpu/flow_template.hpp".to_string()],
+                    compiler: None,
+                    arch: Vec::new(),
+                    requires_rdc: false,
+                });
         }
 
         assert!(!compile_manifest_has_device_request_evidence(
@@ -18113,6 +18266,7 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             supports_h265: None,
             use_ai_split: false,
             bypass_ai_split_cache: false,
+            bypass_device_compile_cache: false,
             require_ai_provider_call: false,
             ai_provider_call_nonce: None,
             ai_provider: None,
@@ -19459,9 +19613,18 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
 
     #[test]
     fn include_bridge_symbol_matching_accepts_qualified_and_mangled_identity() {
-        assert!(device_mapping_symbol_matches("gpu::CameraRays", "CameraRays"));
-        assert!(device_mapping_symbol_matches("CameraRays", "gpu::CameraRays"));
-        assert!(device_mapping_symbol_matches("_ZN3gpu10CameraRaysEv", "CameraRays"));
+        assert!(device_mapping_symbol_matches(
+            "gpu::CameraRays",
+            "CameraRays"
+        ));
+        assert!(device_mapping_symbol_matches(
+            "CameraRays",
+            "gpu::CameraRays"
+        ));
+        assert!(device_mapping_symbol_matches(
+            "_ZN3gpu10CameraRaysEv",
+            "CameraRays"
+        ));
         assert!(!device_mapping_symbol_matches("OtherKernel", "CameraRays"));
     }
 

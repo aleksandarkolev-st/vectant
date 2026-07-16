@@ -85,6 +85,11 @@ pub struct CompileRequest {
         alias = "require_fresh_ai_split"
     )]
     pub bypass_ai_split_cache: bool,
+    /// Bypass Synthi's device artifact cache and execute the device compiler
+    /// under the recorded cache-control contract. This does not claim an
+    /// observed external cache miss or complete toolchain-input closure.
+    #[serde(default)]
+    pub bypass_device_compile_cache: bool,
     /// Require the split result to come from an observed AI provider call.
     /// This is an evidence-mode constraint; deterministic splitting remains
     /// the default when the caller does not request provider execution.
@@ -167,10 +172,37 @@ mod tests {
         let req: CompileRequest = serde_json::from_value(base_request()).expect("compile request");
 
         assert!(!req.bypass_ai_split_cache);
+        assert!(!req.bypass_device_compile_cache);
         assert!(!req.require_ai_provider_call);
         assert!(req.ai_provider_call_nonce.is_none());
         assert!(req.ai_provider.is_none());
         assert!(req.ai_model.is_none());
+    }
+
+    #[test]
+    fn compile_request_requires_honest_device_cache_bypass_field() {
+        let mut canonical = base_request();
+        canonical
+            .as_object_mut()
+            .expect("object")
+            .insert("bypass_device_compile_cache".to_string(), json!(true));
+        let req: CompileRequest =
+            serde_json::from_value(canonical).expect("canonical compile request");
+        assert!(req.bypass_device_compile_cache);
+
+        for field in ["force_fresh_device_compile", "require_fresh_device_compile"] {
+            let mut raw = base_request();
+            raw.as_object_mut()
+                .expect("object")
+                .insert(field.to_string(), json!(true));
+
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
+
+            assert!(
+                !req.bypass_device_compile_cache,
+                "misleading legacy alias must not assert a cache miss: {field}"
+            );
+        }
     }
 
     #[test]

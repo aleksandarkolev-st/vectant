@@ -187,7 +187,10 @@ fn summarize_ai_error_body(body: &str) -> String {
             summarize_ai_error_json(detail)
         })
         .unwrap_or_else(|| trimmed.to_string());
-    redact_sensitive_ai_text(&summary).chars().take(1200).collect()
+    redact_sensitive_ai_text(&summary)
+        .chars()
+        .take(1200)
+        .collect()
 }
 
 fn push_summary_part(parts: &mut Vec<String>, part: impl Into<String>) {
@@ -2017,9 +2020,7 @@ struct GpuDiffPatchResponse {
     model_provenance: Option<serde_json::Value>,
 }
 
-fn gpu_diff_patch_model_provenance(
-    parsed: &GpuDiffPatchResponse,
-) -> Option<serde_json::Value> {
+fn gpu_diff_patch_model_provenance(parsed: &GpuDiffPatchResponse) -> Option<serde_json::Value> {
     parsed
         .model_provenance
         .clone()
@@ -3047,8 +3048,7 @@ mod tests {
 
         let mut forged_requested_provider = valid.clone();
         forged_requested_provider["model_provenance"]["provider"] = json!("other_provider");
-        forged_requested_provider["provider_call_receipt"]["provider"] =
-            json!("other_provider");
+        forged_requested_provider["provider_call_receipt"]["provider"] = json!("other_provider");
         let forged_provider_receipt_hash = ordered_json_hash(vec![
             json!(PROVIDER_CALL_RECEIPT_SCHEMA_VERSION),
             json!(PROVIDER_CALL_RECEIPT_AUTHORITY),
@@ -3075,13 +3075,10 @@ mod tests {
             json!(forged_provider_receipt_hash);
         forged_requested_provider["provider_call_receipt"]["call_id"] =
             json!(format!("provider-call:{}", forged_provider_receipt_hash));
-        let error = validate_required_ai_provider_call(
-            &forged_requested_provider,
-            &binding,
-            &request_hash,
-        )
-        .expect_err("receipt provider must remain bound to request")
-        .to_string();
+        let error =
+            validate_required_ai_provider_call(&forged_requested_provider, &binding, &request_hash)
+                .expect_err("receipt provider must remain bound to request")
+                .to_string();
         assert!(error.contains("ai_split_provider_receipt_requested_provider_mismatch"));
 
         let mut authority_claim = valid.clone();
@@ -3187,6 +3184,7 @@ mod tests {
             supports_h265: None,
             use_ai_split: true,
             bypass_ai_split_cache: false,
+            bypass_device_compile_cache: false,
             require_ai_provider_call: false,
             ai_provider_call_nonce: None,
             ai_provider: None,
@@ -3223,27 +3221,17 @@ mod tests {
 
         let nonce = "provider-call:0123456789abcdef0123456789abcdef";
         req.ai_provider_call_nonce = Some(nonce.to_string());
-        let error = provider_call_request_binding(
-            &req,
-            &[],
-            "requested-model",
-            Some("gfx1201"),
-            None,
-        )
-        .expect_err("missing caller provider must fail before provider execution")
-        .to_string();
+        let error =
+            provider_call_request_binding(&req, &[], "requested-model", Some("gfx1201"), None)
+                .expect_err("missing caller provider must fail before provider execution")
+                .to_string();
         assert!(error.contains("explicit provider"));
 
         req.ai_provider = Some("Generic-Provider".to_string());
-        let error = provider_call_request_binding(
-            &req,
-            &[],
-            "requested-model",
-            Some("gfx1201"),
-            None,
-        )
-        .expect_err("missing caller model must fail before provider execution")
-        .to_string();
+        let error =
+            provider_call_request_binding(&req, &[], "requested-model", Some("gfx1201"), None)
+                .expect_err("missing caller model must fail before provider execution")
+                .to_string();
         assert!(error.contains("explicit model"));
 
         req.ai_model = Some("requested-model".to_string());
@@ -3427,6 +3415,7 @@ int main() {
             supports_h265: None,
             use_ai_split: true,
             bypass_ai_split_cache: false,
+            bypass_device_compile_cache: false,
             require_ai_provider_call: false,
             ai_provider_call_nonce: None,
             ai_provider: None,
@@ -3471,6 +3460,7 @@ int main() {
             supports_h265: None,
             use_ai_split: true,
             bypass_ai_split_cache: false,
+            bypass_device_compile_cache: false,
             require_ai_provider_call: false,
             ai_provider_call_nonce: None,
             ai_provider: None,
