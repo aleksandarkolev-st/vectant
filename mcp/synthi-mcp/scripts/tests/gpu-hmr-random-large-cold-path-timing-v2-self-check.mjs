@@ -51,7 +51,13 @@ function assertParentTiming(record, expectedOutcome, { pending = false } = {}) {
   assert.equal(record.phases.cold_intake.state, 'unavailable');
   assert.equal(record.phases.discovery.state, 'measured');
   assert.equal(record.phases.compile.state, 'unavailable');
-  assert.equal(record.phases.output_ready.state, pending ? 'unavailable' : 'measured');
+  assert.equal(record.phases.output_ready.state, 'unavailable');
+  assert.equal(
+    record.phases.output_ready.reasonCode,
+    pending
+      ? 'random_large_cold_path_execution_pending'
+      : 'verified_child_output_ready_not_observed_in_parent_clock_domain',
+  );
   assert.equal(record.phases.proof_finalization.state, 'measured');
   assert.equal(record.phases.total_wall.state, 'measured');
 
@@ -183,6 +189,8 @@ try {
     assert.equal(manifest.results[0].testTiming, childTiming);
     assert.equal(manifest.results[0].test_timing, childTiming);
     assert.deepEqual(manifest.results[0].testTiming, childTiming);
+    assert.equal(manifest.results[0].testTiming.phases.output_ready.state, 'measured');
+    assert.equal(manifest.testTiming.phases.output_ready.state, 'unavailable');
     assert.equal(
       manifest.results[0].testTiming.visualCapable,
       testCase.childVisualCapable === true,

@@ -101,6 +101,8 @@ const TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON =
 const TEST_TIMING_PENDING_REASON = 'random_large_cold_path_execution_pending';
 const TEST_TIMING_PARENT_PHASE_REASON =
   'candidate_phase_boundaries_not_observed_by_manifest_clock';
+const TEST_TIMING_OUTPUT_READY_UNAVAILABLE_REASON =
+  'verified_child_output_ready_not_observed_in_parent_clock_domain';
 const TEST_TIMING_SPLIT_NOT_APPLICABLE_REASON =
   'split_not_performed_by_random_large_cold_path_orchestrator';
 const TEST_TIMING_PARENT_UNAVAILABLE_PHASES = Object.freeze([
@@ -715,7 +717,10 @@ function createRandomLargeColdPathTimingRecorder({ clock, pending = false } = {}
   for (const phaseKey of TEST_TIMING_VISUAL_PHASES) {
     recorder.notApplicable(phaseKey, TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON);
   }
-  if (pending) recorder.unavailable('output_ready', TEST_TIMING_PENDING_REASON);
+  recorder.unavailable(
+    'output_ready',
+    pending ? TEST_TIMING_PENDING_REASON : TEST_TIMING_OUTPUT_READY_UNAVAILABLE_REASON,
+  );
   return recorder;
 }
 
@@ -7215,7 +7220,6 @@ export async function buildManifest({
     pendingWritten = await writeManifest(pendingManifest, outputDir, { suffix: '-pending' });
   }
   const results = [];
-  timingRecorder.startPhase('output_ready');
   for (const candidate of selected) {
     try {
       results.push(await runCandidate(candidate, {
@@ -7237,7 +7241,6 @@ export async function buildManifest({
       });
     }
   }
-  timingRecorder.finishPhase('output_ready');
   const finishedAt = new Date().toISOString();
   const lifecycleState = manifestLifecycleState(results, { dryRun });
   const manifest = measureRandomLargeColdPathTimingPhase(
