@@ -22,8 +22,9 @@ use crate::infra::constants::GUI_TOOLS;
 use crate::infra::messages::CompileRequest;
 use crate::runtime::runner_protocol::{
     decode_runner_command_token, parse_runner_protocol_ack, GpuArtifactLoadV1Result,
-    GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV3Payload,
+    GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload, RunnerProtocolAck,
     GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY, GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
+    GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
     GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, RUNNER_PROTOCOL_CURRENT_VERSION,
     RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
 };
@@ -238,10 +239,17 @@ enum RunnerGpuTerminalExpectation {
     HotReload(GpuReloadV2Expectation),
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RunnerCommandProofContext<'a> {
+    runner_runtime_session_id: &'a str,
+    runner_challenge: &'a str,
+}
+
 fn runner_load_command(
     name: &str,
     path: &str,
     strict_hot_reload: bool,
+    proof_context: Option<RunnerCommandProofContext<'_>>,
 ) -> Result<RunnerLoadCommand> {
     let gpu_marker = name
         .strip_prefix("__gpu_device_partial:")
@@ -251,7 +259,7 @@ fn runner_load_command(
                 .map(|rest| ("load_device", rest))
         });
     if let Some((command, rest)) = gpu_marker {
-        let mut fields = rest.splitn(6, ':');
+        let mut fields = rest.splitn(7, ':');
         let vendor = fields
             .next()
             .filter(|s| matches!(*s, "cuda" | "rocm"))
@@ -266,6 +274,9 @@ fn runner_load_command(
         let capsule = fields.next().filter(|s| !s.is_empty());
         let source_edit_id = fields.next().filter(|s| !s.is_empty());
         let artifact_content_hash = fields.next().filter(|s| !s.is_empty());
+        let proof_runtime_session_id = fields
+            .next()
+            .filter(|value| !value.is_empty() && *value != "-");
         if strict_hot_reload && source_edit_id.is_none() {
             anyhow::bail!("hot GPU reload requires an independent canonical source edit identity");
         }
@@ -284,6 +295,9 @@ fn runner_load_command(
             );
         }
         if strict_hot_reload || artifact_content_hash.is_some() {
+            let proof_context = proof_context.context(
+                "content-bound GPU artifact load requires a runner-issued protocol challenge",
+            )?;
             let source_edit_id = source_edit_id
                 .map(|encoded| {
                     decode_runner_command_token(encoded)
@@ -306,6 +320,17 @@ fn runner_load_command(
                     "hot GPU reload requires a typed proof capsule before runner mutation"
                 );
             }
+            let proof_runtime_session_id = proof_runtime_session_id
+                .map(|encoded| {
+                    decode_runner_command_token(encoded)
+                        .context("decoding independent GPU proof runtime session identity")
+                })
+                .transpose()?;
+            if capsule.is_some_and(|value| value != "-") && proof_runtime_session_id.is_none() {
+                anyhow::bail!(
+                    "GPU proof capsule requires an independently transported runtime session identity"
+                );
+            }
             let decoded_kernels = if kernels == "-" {
                 Vec::new()
             } else {
@@ -317,8 +342,13 @@ fn runner_load_command(
                     })
                     .collect::<Result<Vec<_>>>()?
             };
-            let payload = GpuReloadV3Payload::new(
+            let payload = GpuReloadV4Payload::new(
                 request_id.clone(),
+                if strict_hot_reload {
+                    "hot_reload"
+                } else {
+                    "cold_load"
+                },
                 if command == "load_device_partial" {
                     "partial"
                 } else {
@@ -331,6 +361,9 @@ fn runner_load_command(
                 abi.filter(|value| *value != "-").map(str::to_string),
                 capsule.filter(|value| *value != "-").map(str::to_string),
                 source_edit_id.clone(),
+                proof_runtime_session_id,
+                proof_context.runner_runtime_session_id.to_string(),
+                proof_context.runner_challenge.to_string(),
             )
             .map_err(anyhow::Error::msg)?;
             let encoded = payload.encode().map_err(anyhow::Error::msg)?;
@@ -347,9 +380,9 @@ fn runner_load_command(
                 wire: format!(
                     "{} {} {}\n",
                     if strict_hot_reload {
-                        "gpu_reload_v3"
+                        "gpu_reload_v4"
                     } else {
-                        "gpu_load_v3"
+                        "gpu_load_v4"
                     },
                     request_id,
                     encoded
@@ -388,8 +421,25 @@ fn runner_load_command(
     }
 }
 
+#[cfg(test)]
 fn runner_command_requires_strict_gpu_protocol(command: &RunnerLoadCommand) -> bool {
     command.gpu_terminal.is_some()
+}
+
+fn module_requires_strict_gpu_protocol(name: &str, strict_hot_reload: bool) -> bool {
+    let marker = name
+        .strip_prefix("__gpu_device_partial:")
+        .or_else(|| name.strip_prefix("__gpu_device:"));
+    let Some(marker) = marker else {
+        return false;
+    };
+    if strict_hot_reload {
+        return true;
+    }
+    marker
+        .splitn(7, ':')
+        .nth(5)
+        .is_some_and(|value| !value.is_empty() && value != "-")
 }
 
 fn runner_has_hot_device_epoch(
@@ -415,7 +465,7 @@ async fn wait_for_strict_gpu_protocol_ack(
     receiver: &mut tokio::sync::broadcast::Receiver<String>,
     nonce: &str,
     expected_pid: u32,
-) -> Result<()> {
+) -> Result<RunnerProtocolAck> {
     let deadline = tokio::time::Instant::now() + runner_protocol_handshake_timeout();
     loop {
         let line = tokio::time::timeout_at(deadline, receiver.recv())
@@ -433,7 +483,7 @@ async fn wait_for_strict_gpu_protocol_ack(
                 "strict GPU runner protocol acknowledgement failed version, PID, or capability validation"
             );
         }
-        return Ok(());
+        return Ok(ack);
     }
 }
 
@@ -1768,17 +1818,9 @@ pub async fn handle_runner_execution(
                 existing_runner_can_hmr,
                 state.loaded_device_abi.as_deref(),
             );
-            let load_commands = modules_to_load
+            let requires_strict_gpu_protocol = modules_to_load
                 .iter()
-                .map(|(name, path)| runner_load_command(name, path, strict_gpu_hot_reload))
-                .collect::<Result<Vec<_>>>()?;
-            let gpu_terminal_expectations = load_commands
-                .iter()
-                .filter_map(|command| command.gpu_terminal.clone())
-                .collect::<Vec<_>>();
-            let requires_strict_gpu_protocol = load_commands
-                .iter()
-                .any(|command| runner_command_requires_strict_gpu_protocol(command));
+                .any(|(name, _)| module_requires_strict_gpu_protocol(name, strict_gpu_hot_reload));
             let mut strict_output_receiver =
                 requires_strict_gpu_protocol.then(|| state.output_tx.subscribe());
             // Check if process is still alive before sending anything.
@@ -1799,7 +1841,7 @@ pub async fn handle_runner_execution(
             }
 
             if process_alive {
-                if requires_strict_gpu_protocol {
+                let strict_protocol_ack = if requires_strict_gpu_protocol {
                     let handshake_result = async {
                         let expected_pid = state
                             .process
@@ -1808,13 +1850,14 @@ pub async fn handle_runner_execution(
                             .context("strict GPU runner process has no PID")?;
                         let nonce = uuid::Uuid::new_v4().simple().to_string();
                         let handshake = format!(
-                            "handshake_v3 {} {} {} {} {} {}\n",
+                            "handshake_v4 {} {} {} {} {} {} {}\n",
                             nonce,
                             RUNNER_PROTOCOL_CURRENT_VERSION,
                             RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
                             GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
                             GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
                             GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+                            GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
                         );
                         {
                             let mut stdin = stdin_arc.lock().await;
@@ -1838,13 +1881,35 @@ pub async fn handle_runner_execution(
                         .await
                     }
                     .await;
-                    if let Err(error) = handshake_result {
-                        invalidate_runner_after_command_failure(state).await;
-                        return Err(error.context(
-                            "strict GPU runner handshake failed before loaded module state publication",
-                        ));
+                    match handshake_result {
+                        Ok(ack) => Some(ack),
+                        Err(error) => {
+                            invalidate_runner_after_command_failure(state).await;
+                            return Err(error.context(
+                                "strict GPU runner handshake failed before loaded module state publication",
+                            ));
+                        }
                     }
-                }
+                } else {
+                    None
+                };
+                let proof_context =
+                    strict_protocol_ack
+                        .as_ref()
+                        .map(|ack| RunnerCommandProofContext {
+                            runner_runtime_session_id: &ack.runner_runtime_session_id,
+                            runner_challenge: &ack.runner_challenge,
+                        });
+                let load_commands = modules_to_load
+                    .iter()
+                    .map(|(name, path)| {
+                        runner_load_command(name, path, strict_gpu_hot_reload, proof_context)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let gpu_terminal_expectations = load_commands
+                    .iter()
+                    .filter_map(|command| command.gpu_terminal.clone())
+                    .collect::<Vec<_>>();
 
                 let mut stdin = stdin_arc.lock().await;
                 let mut send_failed = false;
@@ -1982,14 +2047,15 @@ mod tests {
         runner_session_matches, same_session_full_device_abi_changed,
         should_forward_runner_stderr_line_to_log_dc, structured_log_json_chunks,
         uncommitted_runner_module_state, wait_for_gpu_command_terminals,
-        wait_for_strict_gpu_protocol_ack, RunnerGpuTerminalExpectation, RunnerReloadPolicy,
-        STRUCTURED_LOG_CHUNK_BYTES,
+        wait_for_strict_gpu_protocol_ack, RunnerCommandProofContext, RunnerGpuTerminalExpectation,
+        RunnerReloadPolicy, STRUCTURED_LOG_CHUNK_BYTES,
     };
     use crate::compiler::builder::ModuleHashes;
     use crate::runtime::runner_protocol::{
-        GpuArtifactLoadV1Result, GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV3Payload,
+        GpuArtifactLoadV1Result, GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload,
         RunnerProtocolAck, GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
         GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
+        GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
         GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
     };
     use base64::{engine::general_purpose, Engine as _};
@@ -2010,11 +2076,22 @@ mod tests {
         format!("sha256%3A{}", "b".repeat(64))
     }
 
-    fn decode_gpu_v3_command(command: &str, expected_verb: &str) -> (String, GpuReloadV3Payload) {
+    fn encoded_proof_runtime_session_id() -> &'static str {
+        "runtime%2Dsession%3Atest"
+    }
+
+    fn proof_context() -> RunnerCommandProofContext<'static> {
+        RunnerCommandProofContext {
+            runner_runtime_session_id: "pid123-456",
+            runner_challenge: "11111111111111111111111111111111",
+        }
+    }
+
+    fn decode_gpu_v4_command(command: &str, expected_verb: &str) -> (String, GpuReloadV4Payload) {
         let parts = command.trim().split_whitespace().collect::<Vec<_>>();
         assert_eq!(parts.len(), 3);
         assert_eq!(parts[0], expected_verb);
-        let payload = GpuReloadV3Payload::decode(parts[2]).unwrap();
+        let payload = GpuReloadV4Payload::decode(parts[2]).unwrap();
         assert_eq!(parts[1], payload.request_id);
         (parts[1].to_string(), payload)
     }
@@ -2051,9 +2128,14 @@ mod tests {
     #[test]
     fn gpu_device_load_command_preserves_legacy_shape_without_abi() {
         assert_eq!(
-            runner_load_command("__gpu_device:rocm:advance,init", "/tmp/device.hsaco", false)
-                .unwrap()
-                .wire,
+            runner_load_command(
+                "__gpu_device:rocm:advance,init",
+                "/tmp/device.hsaco",
+                false,
+                None,
+            )
+            .unwrap()
+            .wire,
             "load_device rocm /tmp/device.hsaco advance,init\n"
         );
     }
@@ -2065,6 +2147,7 @@ mod tests {
                 "__gpu_device:rocm:advance,init:12345",
                 "/tmp/device.hsaco",
                 false,
+                None,
             )
             .unwrap()
             .wire,
@@ -2079,6 +2162,7 @@ mod tests {
                 "__gpu_device:rocm:advance,init:12345:capsulev1_abcd",
                 "/tmp/device.hsaco",
                 false,
+                None,
             )
             .unwrap()
             .wire,
@@ -2089,12 +2173,14 @@ mod tests {
     #[test]
     fn gpu_device_load_command_carries_independent_source_edit_identity() {
         let marker = format!(
-            "__gpu_device:rocm:advance,init:12345:capsulev1_abcd:{}:{}",
+            "__gpu_device:rocm:advance,init:12345:capsulev1_abcd:{}:{}:{}",
             encoded_source_edit_id(),
-            encoded_artifact_content_hash()
+            encoded_artifact_content_hash(),
+            encoded_proof_runtime_session_id(),
         );
-        let command = runner_load_command(&marker, "/tmp/device.hsaco", true).unwrap();
-        let (_, payload) = decode_gpu_v3_command(&command.wire, "gpu_reload_v3");
+        let command =
+            runner_load_command(&marker, "/tmp/device.hsaco", true, Some(proof_context())).unwrap();
+        let (_, payload) = decode_gpu_v4_command(&command.wire, "gpu_reload_v4");
         assert_eq!(payload.mode, "full");
         assert_eq!(payload.vendor, "rocm");
         assert_eq!(payload.artifact_path, "/tmp/device.hsaco");
@@ -2105,8 +2191,9 @@ mod tests {
         assert_eq!(payload.artifact_content_hash, artifact_content_hash());
         assert!(runner_command_requires_strict_gpu_protocol(&command));
 
-        let second = runner_load_command(&marker, "/tmp/device.hsaco", true).unwrap();
-        let (_, second_payload) = decode_gpu_v3_command(&second.wire, "gpu_reload_v3");
+        let second =
+            runner_load_command(&marker, "/tmp/device.hsaco", true, Some(proof_context())).unwrap();
+        let (_, second_payload) = decode_gpu_v4_command(&second.wire, "gpu_reload_v4");
         assert_eq!(second_payload.source_edit_id, payload.source_edit_id);
         assert_ne!(second_payload.request_id, payload.request_id);
         assert_ne!(
@@ -2118,12 +2205,15 @@ mod tests {
     #[test]
     fn cold_device_load_does_not_claim_strict_hot_runtime_identity() {
         let marker = format!(
-            "__gpu_device:rocm:advance:12345:capsulev1_abcd:{}:{}",
+            "__gpu_device:rocm:advance:12345:capsulev1_abcd:{}:{}:{}",
             encoded_source_edit_id(),
-            encoded_artifact_content_hash()
+            encoded_artifact_content_hash(),
+            encoded_proof_runtime_session_id(),
         );
-        let command = runner_load_command(&marker, "/tmp/device.hsaco", false).unwrap();
-        let (_, payload) = decode_gpu_v3_command(&command.wire, "gpu_load_v3");
+        let command =
+            runner_load_command(&marker, "/tmp/device.hsaco", false, Some(proof_context()))
+                .unwrap();
+        let (_, payload) = decode_gpu_v4_command(&command.wire, "gpu_load_v4");
         assert_eq!(payload.artifact_content_hash, artifact_content_hash());
         assert!(matches!(
             command.gpu_terminal,
@@ -2137,6 +2227,7 @@ mod tests {
             "__gpu_device:rocm:advance:12345:capsulev1_abcd",
             "/tmp/device.hsaco",
             true,
+            Some(proof_context()),
         )
         .unwrap_err();
         assert!(missing_identity
@@ -2158,7 +2249,8 @@ mod tests {
             "__gpu_device:rocm:advance:12345:-:source%2Dedit%3Asha256%3Ashort:{}",
             encoded_artifact_content_hash()
         );
-        let error = runner_load_command(&marker, "/tmp/device.hsaco", true).unwrap_err();
+        let error = runner_load_command(&marker, "/tmp/device.hsaco", true, Some(proof_context()))
+            .unwrap_err();
         assert!(error
             .to_string()
             .contains("source edit identity is invalid"));
@@ -2169,7 +2261,15 @@ mod tests {
         let (sender, _) = tokio::sync::broadcast::channel(4);
         let mut receiver = sender.subscribe();
         sender
-            .send(RunnerProtocolAck::current("nonce-a").line().unwrap())
+            .send(
+                RunnerProtocolAck::current(
+                    "nonce-a",
+                    "pid123-456",
+                    "11111111111111111111111111111111",
+                )
+                .line()
+                .unwrap(),
+            )
             .unwrap();
         wait_for_strict_gpu_protocol_ack(&mut receiver, "nonce-a", std::process::id())
             .await
@@ -2179,8 +2279,13 @@ mod tests {
             GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
             GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
             GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+            GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
         ] {
-            let mut invalid = RunnerProtocolAck::current("nonce-b");
+            let mut invalid = RunnerProtocolAck::current(
+                "nonce-b",
+                "pid123-456",
+                "22222222222222222222222222222222",
+            );
             invalid
                 .capabilities
                 .retain(|capability| capability != required);
@@ -2353,11 +2458,14 @@ mod tests {
     #[tokio::test]
     async fn cold_gpu_load_wait_requires_correlated_hash_bound_terminal() {
         let marker = format!(
-            "__gpu_device:rocm:advance:12345:capsulev1_abcd:{}:{}",
+            "__gpu_device:rocm:advance:12345:capsulev1_abcd:{}:{}:{}",
             encoded_source_edit_id(),
-            encoded_artifact_content_hash()
+            encoded_artifact_content_hash(),
+            encoded_proof_runtime_session_id(),
         );
-        let command = runner_load_command(&marker, "/tmp/device.hsaco", false).unwrap();
+        let command =
+            runner_load_command(&marker, "/tmp/device.hsaco", false, Some(proof_context()))
+                .unwrap();
         let expectation = command.gpu_terminal.clone().unwrap();
         let RunnerGpuTerminalExpectation::ColdLoad(cold) = &expectation else {
             panic!("expected a cold artifact-load terminal");
@@ -2411,10 +2519,12 @@ mod tests {
     #[test]
     fn hot_gpu_device_load_rejects_capsule_placeholder() {
         let marker = format!(
-            "__gpu_device:rocm:advance,init:12345:-:{}",
-            encoded_source_edit_id()
+            "__gpu_device:rocm:advance,init:12345:-:{}:{}",
+            encoded_source_edit_id(),
+            encoded_artifact_content_hash(),
         );
-        let error = runner_load_command(&marker, "/tmp/device.hsaco", true).unwrap_err();
+        let error = runner_load_command(&marker, "/tmp/device.hsaco", true, Some(proof_context()))
+            .unwrap_err();
         assert!(error.to_string().contains("requires a typed proof capsule"));
     }
 
@@ -2425,6 +2535,7 @@ mod tests {
                 "__gpu_device_partial:rocm:advance:12345",
                 "/tmp/device_part.hsaco",
                 false,
+                None,
             )
             .unwrap()
             .wire,
@@ -2435,12 +2546,19 @@ mod tests {
     #[test]
     fn gpu_device_partial_load_command_carries_independent_source_edit_identity() {
         let marker = format!(
-            "__gpu_device_partial:rocm:advance:12345:capsulev1_abcd:{}:{}",
+            "__gpu_device_partial:rocm:advance:12345:capsulev1_abcd:{}:{}:{}",
             encoded_source_edit_id(),
-            encoded_artifact_content_hash()
+            encoded_artifact_content_hash(),
+            encoded_proof_runtime_session_id(),
         );
-        let command = runner_load_command(&marker, "/tmp/device_part.hsaco", true).unwrap();
-        let (_, payload) = decode_gpu_v3_command(&command.wire, "gpu_reload_v3");
+        let command = runner_load_command(
+            &marker,
+            "/tmp/device_part.hsaco",
+            true,
+            Some(proof_context()),
+        )
+        .unwrap();
+        let (_, payload) = decode_gpu_v4_command(&command.wire, "gpu_reload_v4");
         assert_eq!(payload.mode, "partial");
         assert_eq!(payload.source_edit_id, canonical_source_edit_id());
     }
@@ -2594,13 +2712,18 @@ mod tests {
 
     #[test]
     fn gpu_device_load_command_rejects_missing_or_unknown_vendor() {
-        assert!(
-            runner_load_command("__gpu_device::advance,init", "/tmp/device.hsaco", false,).is_err()
-        );
+        assert!(runner_load_command(
+            "__gpu_device::advance,init",
+            "/tmp/device.hsaco",
+            false,
+            None,
+        )
+        .is_err());
         assert!(runner_load_command(
             "__gpu_device:vulkan:advance,init",
             "/tmp/device.hsaco",
             false,
+            None,
         )
         .is_err());
     }

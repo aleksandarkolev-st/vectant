@@ -1,9 +1,11 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
 
-pub const RUNNER_PROTOCOL_ACK_SCHEMA_VERSION: &str = "synthi.runner.protocol_ack.v2";
-pub const GPU_RELOAD_V3_SCHEMA_VERSION: &str = "synthi.runner.gpu_reload.v3";
+pub const RUNNER_PROTOCOL_ACK_SCHEMA_VERSION: &str = "synthi.runner.protocol_ack.v3";
+pub const GPU_RELOAD_V4_SCHEMA_VERSION: &str = "synthi.runner.gpu_reload.v4";
 pub const GPU_RELOAD_V3_RESULT_SCHEMA_VERSION: &str = "synthi.runner.gpu_reload_result.v3";
 pub const GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION: &str =
     "synthi.runner.gpu_artifact_load_result.v1";
@@ -12,8 +14,10 @@ pub const GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY: &str =
 pub const GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY: &str = "gpu_reload.artifact_content_hash.v1";
 pub const GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY: &str =
     "gpu_load.correlated_terminal.v1";
+pub const GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY: &str =
+    "gpu_reload.challenge_bound_envelope.v1";
 pub const RUNNER_PROTOCOL_ACK_PREFIX: &str = "[synthi-runner-protocol-ack] ";
-pub const RUNNER_PROTOCOL_CURRENT_VERSION: u32 = 3;
+pub const RUNNER_PROTOCOL_CURRENT_VERSION: u32 = 4;
 pub const RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,21 +28,30 @@ pub struct RunnerProtocolAck {
     pub current_version: u32,
     pub min_supported_version: u32,
     pub runner_pid: u32,
+    pub runner_runtime_session_id: String,
+    pub runner_challenge: String,
     pub capabilities: Vec<String>,
 }
 
 impl RunnerProtocolAck {
-    pub fn current(nonce: impl Into<String>) -> Self {
+    pub fn current(
+        nonce: impl Into<String>,
+        runner_runtime_session_id: impl Into<String>,
+        runner_challenge: impl Into<String>,
+    ) -> Self {
         Self {
             schema_version: RUNNER_PROTOCOL_ACK_SCHEMA_VERSION.to_string(),
             nonce: nonce.into(),
             current_version: RUNNER_PROTOCOL_CURRENT_VERSION,
             min_supported_version: RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
             runner_pid: std::process::id(),
+            runner_runtime_session_id: runner_runtime_session_id.into(),
+            runner_challenge: runner_challenge.into(),
             capabilities: vec![
                 GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY.to_string(),
                 GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY.to_string(),
                 GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY.to_string(),
+                GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY.to_string(),
             ],
         }
     }
@@ -53,6 +66,8 @@ impl RunnerProtocolAck {
             && self.current_version >= RUNNER_PROTOCOL_CURRENT_VERSION
             && self.min_supported_version <= RUNNER_PROTOCOL_CURRENT_VERSION
             && self.runner_pid == expected_pid
+            && valid_protocol_token(&self.runner_runtime_session_id)
+            && canonical_runner_challenge(&self.runner_challenge)
             && self
                 .capabilities
                 .iter()
@@ -65,6 +80,10 @@ impl RunnerProtocolAck {
                 .capabilities
                 .iter()
                 .any(|capability| capability == GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY)
+            && self
+                .capabilities
+                .iter()
+                .any(|capability| capability == GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY)
     }
 }
 
@@ -75,9 +94,10 @@ pub fn parse_runner_protocol_ack(line: &str) -> Option<RunnerProtocolAck> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GpuReloadV3Payload {
+pub struct GpuReloadV4Payload {
     pub schema_version: String,
     pub request_id: String,
+    pub operation: String,
     pub mode: String,
     pub vendor: String,
     pub artifact_path: String,
@@ -88,11 +108,17 @@ pub struct GpuReloadV3Payload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capsule_token: Option<String>,
     pub source_edit_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub proof_runtime_session_id: Option<String>,
+    pub runner_runtime_session_id: String,
+    pub runner_challenge: String,
+    pub envelope_sha256: String,
 }
 
-impl GpuReloadV3Payload {
+impl GpuReloadV4Payload {
     pub fn new(
         request_id: String,
+        operation: &str,
         mode: &str,
         vendor: &str,
         artifact_path: &str,
@@ -101,10 +127,14 @@ impl GpuReloadV3Payload {
         abi_fingerprint: Option<String>,
         capsule_token: Option<String>,
         source_edit_id: String,
+        proof_runtime_session_id: Option<String>,
+        runner_runtime_session_id: String,
+        runner_challenge: String,
     ) -> Result<Self, String> {
-        let payload = Self {
-            schema_version: GPU_RELOAD_V3_SCHEMA_VERSION.to_string(),
+        let mut payload = Self {
+            schema_version: GPU_RELOAD_V4_SCHEMA_VERSION.to_string(),
             request_id,
+            operation: operation.to_string(),
             mode: mode.to_string(),
             vendor: vendor.to_string(),
             artifact_path: artifact_path.to_string(),
@@ -113,37 +143,70 @@ impl GpuReloadV3Payload {
             abi_fingerprint,
             capsule_token,
             source_edit_id,
+            proof_runtime_session_id,
+            runner_runtime_session_id,
+            runner_challenge,
+            envelope_sha256: String::new(),
         };
+        payload.envelope_sha256 = payload.expected_envelope_sha256();
         payload.validate()?;
         Ok(payload)
     }
 
+    fn expected_envelope_sha256(&self) -> String {
+        let material = json!({
+            "schemaVersion": self.schema_version,
+            "requestId": self.request_id,
+            "operation": self.operation,
+            "mode": self.mode,
+            "vendor": self.vendor,
+            "artifactPath": self.artifact_path,
+            "artifactContentHash": self.artifact_content_hash,
+            "kernels": self.kernels,
+            "abiFingerprint": self.abi_fingerprint,
+            "capsuleToken": self.capsule_token,
+            "sourceEditId": self.source_edit_id,
+            "proofRuntimeSessionId": self.proof_runtime_session_id,
+            "runnerRuntimeSessionId": self.runner_runtime_session_id,
+            "runnerChallenge": self.runner_challenge,
+        });
+        let bytes = serde_json::to_vec(&material).unwrap_or_default();
+        format!("sha256:{:x}", Sha256::digest(bytes))
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != GPU_RELOAD_V3_SCHEMA_VERSION {
-            return Err("GPU reload V3 schema mismatch".to_string());
+        if self.schema_version != GPU_RELOAD_V4_SCHEMA_VERSION {
+            return Err("GPU reload V4 schema mismatch".to_string());
+        }
+        if !matches!(self.operation.as_str(), "cold_load" | "hot_reload") {
+            return Err("GPU reload V4 operation is invalid".to_string());
         }
         if !matches!(self.mode.as_str(), "full" | "partial") {
-            return Err("GPU reload V3 mode is invalid".to_string());
+            return Err("GPU reload V4 mode is invalid".to_string());
+        }
+        if self.operation == "cold_load" && self.mode != "full" {
+            return Err("GPU reload V4 cold load cannot publish a partial artifact".to_string());
         }
         if !matches!(self.vendor.as_str(), "cuda" | "rocm") {
-            return Err("GPU reload V3 vendor is invalid".to_string());
+            return Err("GPU reload V4 vendor is invalid".to_string());
         }
         if self.artifact_path.is_empty() || self.artifact_path.chars().any(char::is_control) {
-            return Err("GPU reload V3 artifact path is invalid".to_string());
+            return Err("GPU reload V4 artifact path is invalid".to_string());
         }
         if !canonical_sha256_content_hash(&self.artifact_content_hash) {
-            return Err("GPU reload V3 artifact content hash is invalid".to_string());
+            return Err("GPU reload V4 artifact content hash is invalid".to_string());
         }
         if self
             .kernels
             .iter()
             .any(|kernel| kernel.is_empty() || kernel.chars().any(char::is_control))
         {
-            return Err("GPU reload V3 kernel list is invalid".to_string());
+            return Err("GPU reload V4 kernel list is invalid".to_string());
         }
         for value in [
             self.abi_fingerprint.as_deref(),
             self.capsule_token.as_deref(),
+            self.proof_runtime_session_id.as_deref(),
         ]
         .into_iter()
         .flatten()
@@ -152,14 +215,33 @@ impl GpuReloadV3Payload {
                 || value.chars().any(char::is_whitespace)
                 || value.chars().any(char::is_control)
             {
-                return Err("GPU reload V3 optional token is invalid".to_string());
+                return Err("GPU reload V4 optional token is invalid".to_string());
             }
         }
         if !canonical_gpu_reload_request_id(&self.request_id) {
-            return Err("GPU reload V3 request identity is invalid".to_string());
+            return Err("GPU reload V4 request identity is invalid".to_string());
         }
         if !canonical_source_edit_id(&self.source_edit_id) {
-            return Err("GPU reload V3 source edit identity is invalid".to_string());
+            return Err("GPU reload V4 source edit identity is invalid".to_string());
+        }
+        if self.capsule_token.is_some() != self.proof_runtime_session_id.is_some() {
+            return Err(
+                "GPU reload V4 proof capsule/runtime session binding is incomplete".to_string(),
+            );
+        }
+        if self.operation == "hot_reload" && self.capsule_token.is_none() {
+            return Err("GPU reload V4 hot reload requires a proof capsule".to_string());
+        }
+        if !valid_protocol_token(&self.runner_runtime_session_id) {
+            return Err("GPU reload V4 runner runtime session is invalid".to_string());
+        }
+        if !canonical_runner_challenge(&self.runner_challenge) {
+            return Err("GPU reload V4 runner challenge is invalid".to_string());
+        }
+        if !canonical_sha256_content_hash(&self.envelope_sha256)
+            || self.envelope_sha256 != self.expected_envelope_sha256()
+        {
+            return Err("GPU reload V4 envelope content binding is invalid".to_string());
         }
         Ok(())
     }
@@ -168,18 +250,32 @@ impl GpuReloadV3Payload {
         self.validate()?;
         serde_json::to_vec(self)
             .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
-            .map_err(|error| format!("serializing GPU reload V3 payload: {error}"))
+            .map_err(|error| format!("serializing GPU reload V4 payload: {error}"))
     }
 
     pub fn decode(encoded: &str) -> Result<Self, String> {
         let bytes = URL_SAFE_NO_PAD
             .decode(encoded.as_bytes())
-            .map_err(|error| format!("decoding GPU reload V3 payload: {error}"))?;
+            .map_err(|error| format!("decoding GPU reload V4 payload: {error}"))?;
         let payload: Self = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("parsing GPU reload V3 payload: {error}"))?;
+            .map_err(|error| format!("parsing GPU reload V4 payload: {error}"))?;
         payload.validate()?;
         Ok(payload)
     }
+}
+
+fn valid_protocol_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 1024
+        && !value.chars().any(char::is_whitespace)
+        && !value.chars().any(char::is_control)
+}
+
+fn canonical_runner_challenge(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 pub fn canonical_sha256_content_hash(value: &str) -> bool {
@@ -535,10 +631,19 @@ mod tests {
         format!("gpu-reload:request:{}", value.to_string().repeat(32))
     }
 
+    fn runner_runtime_session_id() -> String {
+        "pid123-456".to_string()
+    }
+
+    fn runner_challenge() -> String {
+        "1".repeat(32)
+    }
+
     #[test]
-    fn gpu_reload_v3_round_trip_preserves_exact_typed_payload() {
-        let payload = GpuReloadV3Payload::new(
+    fn gpu_reload_v4_round_trip_preserves_exact_typed_payload() {
+        let payload = GpuReloadV4Payload::new(
             fixture_request_id('1'),
+            "hot_reload",
             "partial",
             "rocm",
             "/tmp/path with space/device.hsaco",
@@ -547,17 +652,21 @@ mod tests {
             Some("sha256:abi".to_string()),
             Some("capsulev1_payload".to_string()),
             source_edit_id(),
+            Some("runtime-session:test".to_string()),
+            runner_runtime_session_id(),
+            runner_challenge(),
         )
         .unwrap();
         let encoded = payload.encode().unwrap();
         assert!(!encoded.chars().any(char::is_whitespace));
-        assert_eq!(GpuReloadV3Payload::decode(&encoded).unwrap(), payload);
+        assert_eq!(GpuReloadV4Payload::decode(&encoded).unwrap(), payload);
     }
 
     #[test]
-    fn gpu_reload_v3_rejects_noncanonical_or_conflicting_identity() {
-        assert!(GpuReloadV3Payload::new(
+    fn gpu_reload_v4_rejects_noncanonical_or_conflicting_identity() {
+        assert!(GpuReloadV4Payload::new(
             fixture_request_id('1'),
+            "cold_load",
             "full",
             "rocm",
             "/tmp/device.hsaco",
@@ -566,11 +675,15 @@ mod tests {
             None,
             None,
             "source-edit:sha256:short".to_string(),
+            None,
+            runner_runtime_session_id(),
+            runner_challenge(),
         )
         .is_err());
 
-        let mut payload = GpuReloadV3Payload::new(
+        let mut payload = GpuReloadV4Payload::new(
             fixture_request_id('2'),
+            "cold_load",
             "full",
             "rocm",
             "/tmp/device.hsaco",
@@ -579,6 +692,9 @@ mod tests {
             None,
             None,
             source_edit_id(),
+            None,
+            runner_runtime_session_id(),
+            runner_challenge(),
         )
         .unwrap();
         payload.request_id = format!("gpu-reload:request:{}", "z".repeat(32));
@@ -586,8 +702,108 @@ mod tests {
     }
 
     #[test]
+    fn gpu_reload_v4_rejects_incomplete_capsule_session_pairs() {
+        let base = GpuReloadV4Payload::new(
+            fixture_request_id('3'),
+            "hot_reload",
+            "partial",
+            "rocm",
+            "/tmp/device.hsaco",
+            format!("sha256:{}", "b".repeat(64)),
+            Vec::new(),
+            None,
+            Some("capsulev1_payload".to_string()),
+            source_edit_id(),
+            Some("runtime-session:test".to_string()),
+            runner_runtime_session_id(),
+            runner_challenge(),
+        )
+        .unwrap();
+
+        let mut missing_session = base.clone();
+        missing_session.proof_runtime_session_id = None;
+        assert!(missing_session.encode().is_err());
+
+        let mut missing_capsule = base;
+        missing_capsule.capsule_token = None;
+        assert!(missing_capsule.encode().is_err());
+    }
+
+    #[test]
+    fn gpu_reload_v4_envelope_rejects_every_mutation_relevant_field_splice() {
+        let payload = GpuReloadV4Payload::new(
+            fixture_request_id('4'),
+            "hot_reload",
+            "partial",
+            "rocm",
+            "/tmp/device.hsaco",
+            format!("sha256:{}", "b".repeat(64)),
+            vec!["gpu::shade".to_string()],
+            Some("sha256:abi".to_string()),
+            Some("capsulev1_payload".to_string()),
+            source_edit_id(),
+            Some("runtime-session:test".to_string()),
+            runner_runtime_session_id(),
+            runner_challenge(),
+        )
+        .unwrap();
+
+        let mut mutations = Vec::new();
+        let mut value = payload.clone();
+        value.schema_version = "synthi.runner.gpu_reload.invalid".to_string();
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.request_id = fixture_request_id('5');
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.operation = "cold_load".to_string();
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.mode = "full".to_string();
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.vendor = "cuda".to_string();
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.kernels = vec!["gpu::other".to_string()];
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.abi_fingerprint = Some("sha256:other".to_string());
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.capsule_token = Some("capsulev1_other".to_string());
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.proof_runtime_session_id = Some("runtime-session:other".to_string());
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.artifact_path = "/tmp/other.hsaco".to_string();
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.artifact_content_hash = format!("sha256:{}", "c".repeat(64));
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.source_edit_id = format!("source-edit:sha256:{}", "d".repeat(64));
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.runner_runtime_session_id = "pid999-999".to_string();
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.runner_challenge = "2".repeat(32);
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.envelope_sha256 = format!("sha256:{}", "f".repeat(64));
+        mutations.push(value);
+
+        for mutation in mutations {
+            assert!(mutation.encode().is_err());
+        }
+    }
+
+    #[test]
     fn protocol_ack_is_bound_to_nonce_pid_version_and_capability() {
-        let ack = RunnerProtocolAck::current("nonce-a");
+        let ack =
+            RunnerProtocolAck::current("nonce-a", runner_runtime_session_id(), runner_challenge());
         let line = ack.line().unwrap();
         let parsed = parse_runner_protocol_ack(&line).unwrap();
         assert!(parsed.supports_strict_gpu_reload("nonce-a", std::process::id()));
@@ -598,6 +814,7 @@ mod tests {
             GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
             GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
             GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+            GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
         ] {
             let mut missing_capability = parsed.clone();
             missing_capability

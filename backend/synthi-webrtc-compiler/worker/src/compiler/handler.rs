@@ -794,8 +794,9 @@ fn apply_edit_list(
 
 use crate::hmr::adapted_project::{detect_adapted_project, AdaptedProjectStatus};
 use crate::hmr::adapter_trait::{
-    configured_gpu_hmr_runtime_output_oracle_profile_path, encode_reload_capsule_metadata_token,
-    normalized_reload_source_edit_id, AdapterReloadResult, ReloadArtifactBlob,
+    bind_reload_output_oracle_proof_context, configured_gpu_hmr_runtime_output_oracle_profile_path,
+    encode_reload_capsule_metadata_token, normalized_reload_source_edit_id,
+    reload_output_oracle_contract_content_hash, AdapterReloadResult, ReloadArtifactBlob,
     ReloadCapsuleMetadata, ReloadOutputOracleProfileCommitment,
     RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
 };
@@ -814,13 +815,16 @@ use crate::hmr::gpu_device_fast_path::{
     try_direct_device_body_patch,
 };
 use crate::hmr::gpu_fission::{
-    materialize_content_bound_fission_evidence, verify_fission_candidates,
+    canonical_fission_json_hash, current_run_fission_category_evidence_valid,
+    fission_output_oracle_evidence_subject, produce_fission_phase_source_evidence,
+    verify_fission_candidates, verify_fission_candidates_with_evidence,
+    FissionEvidenceProducerContext, FISSION_RUN_BINDING_SCHEMA_VERSION,
 };
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::gpu_proof::{
     read_proof_artifact, sha256_hex_bytes, sha256_hex_str, stable_json_hash, write_proof_artifact,
-    GpuHmrDegradedState, GpuHmrProofArtifact, GpuHmrProofArtifactInput, GpuHmrProofArtifactWrite,
-    GpuHmrProofEvidenceRef, GpuHmrProofStageResult, GpuHmrProofState, GpuHmrProofTelemetry,
+    GpuHmrDegradedState, GpuHmrProofArtifact, GpuHmrProofArtifactInput, GpuHmrProofEvidenceRef,
+    GpuHmrProofStageResult, GpuHmrProofState, GpuHmrProofTelemetry, GPU_HMR_PROOF_SCHEMA_VERSION,
 };
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
 
@@ -5552,25 +5556,85 @@ struct GpuHmrPublicationBlock {
     detail: String,
 }
 
+#[derive(Debug, Clone)]
+struct CurrentRunFissionEvidenceRegistry {
+    proof_id: String,
+    evidence_refs: Vec<GpuHmrProofEvidenceRef>,
+    producer_subsystem: String,
+    timestamp: String,
+    session_id: String,
+    source_edit_id: String,
+    selected_artifact_id: String,
+    file_path: Option<String>,
+}
+
+impl CurrentRunFissionEvidenceRegistry {
+    fn matches_proof(&self, proof: &serde_json::Value) -> bool {
+        proof.get("proofId").and_then(serde_json::Value::as_str) == Some(self.proof_id.as_str())
+            && proof.get("createdAt").and_then(serde_json::Value::as_str)
+                == Some(self.timestamp.as_str())
+            && proof
+                .get("runtimeSessionId")
+                .and_then(serde_json::Value::as_str)
+                == Some(self.session_id.as_str())
+            && proof
+                .get("sourceEditId")
+                .and_then(serde_json::Value::as_str)
+                == Some(self.source_edit_id.as_str())
+            && proof
+                .get("selectedArtifactId")
+                .and_then(serde_json::Value::as_str)
+                == Some(self.selected_artifact_id.as_str())
+    }
+
+    fn context(&self) -> FissionEvidenceProducerContext<'_> {
+        FissionEvidenceProducerContext {
+            producer_subsystem: &self.producer_subsystem,
+            timestamp: &self.timestamp,
+            session_id: &self.session_id,
+            source_edit_id: &self.source_edit_id,
+            selected_artifact_id: &self.selected_artifact_id,
+            file_path: self.file_path.as_deref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DeviceHmrProofArtifactReceipt {
+    proof_id: String,
+    path: PathBuf,
+    relative_path: String,
+    artifact: GpuHmrProofArtifact,
+    fission_registry: Option<CurrentRunFissionEvidenceRegistry>,
+}
+
 fn device_hmr_fission_publication_blocker(
     proof: &GpuHmrProofArtifact,
     outcome: &DeviceCompileOutcome,
+    fission_registry: Option<&CurrentRunFissionEvidenceRegistry>,
 ) -> Option<GpuHmrPublicationBlock> {
     if !device_outcome_requires_fission_publication_gate(outcome) {
         return None;
     }
 
-    let Some(stage) = proof
+    let mut matching_stages = proof
         .stage_results
         .iter()
-        .find(|stage| stage.stage_id == "fission-candidate-verification")
-    else {
+        .filter(|stage| stage.stage_id == "fission-candidate-verification");
+    let Some(stage) = matching_stages.next() else {
         return Some(GpuHmrPublicationBlock {
             reason_code: "fission.candidate_verification_missing".to_string(),
             detail: "partial device artifact proof is missing the fission verifier stage"
                 .to_string(),
         });
     };
+    if matching_stages.next().is_some() {
+        return Some(GpuHmrPublicationBlock {
+            reason_code: "fission.candidate_verification_ambiguous".to_string(),
+            detail: "partial device artifact proof contains multiple fission verifier stages"
+                .to_string(),
+        });
+    }
 
     if stage.status == "passed"
         && stage
@@ -5586,7 +5650,22 @@ fn device_hmr_fission_publication_blocker(
             .trim()
             .is_empty()
     {
-        return None;
+        let report_bound = serde_json::to_value(proof).ok().is_some_and(|proof| {
+            proof_fission_verifier_evidence(&proof)
+                .and_then(|evidence| evidence.get("metadata"))
+                .is_some_and(|metadata| {
+                    metadata.get("status").and_then(serde_json::Value::as_str) == Some("pass")
+                        && fission_verifier_metadata_recomputes_exactly(
+                            &proof,
+                            metadata,
+                            fission_registry,
+                        )
+                })
+        });
+        return (!report_bound).then(|| GpuHmrPublicationBlock {
+            reason_code: "fission.verifier_report_binding_missing".to_string(),
+            detail: "partial device artifact proof has no unique content-bound fission verifier report for its passed stage".to_string(),
+        });
     }
 
     let reason_code = stage
@@ -5651,6 +5730,38 @@ fn partial_fission_narrower_rejections(
         .collect()
 }
 
+#[derive(Debug)]
+struct GeneratedFissionCandidate {
+    candidate: serde_json::Value,
+    evidence_refs: Vec<GpuHmrProofEvidenceRef>,
+    trusted_evidence: Vec<GpuHmrProofEvidenceRef>,
+}
+
+fn fission_run_binding(
+    timestamp: &str,
+    session_id: &str,
+    source_edit_id: &str,
+    selected_artifact_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": FISSION_RUN_BINDING_SCHEMA_VERSION,
+        "timestamp": timestamp,
+        "sessionId": session_id,
+        "sourceEditId": source_edit_id,
+        "selectedArtifactId": selected_artifact_id,
+    })
+}
+
+fn metadata_with_fission_run_binding(
+    mut metadata: serde_json::Value,
+    run_binding: &serde_json::Value,
+) -> serde_json::Value {
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("runBinding".to_string(), run_binding.clone());
+    }
+    metadata
+}
+
 fn partial_fission_candidate_and_evidence(
     outcome: &DeviceCompileOutcome,
     sources: Option<&DeviceCompileSources>,
@@ -5663,10 +5774,17 @@ fn partial_fission_candidate_and_evidence(
     symbol_evidence_id: &str,
     abi_evidence_id: &str,
     transport_evidence_id: &str,
-) -> Option<(serde_json::Value, Vec<GpuHmrProofEvidenceRef>)> {
+    trusted_upstream_evidence: &[GpuHmrProofEvidenceRef],
+) -> Option<GeneratedFissionCandidate> {
     if !outcome.partial_module || outcome.proof_metadata.artifact_cache_bypassed {
         return None;
     }
+    let run_binding = fission_run_binding(
+        created_at,
+        runtime_session_id,
+        source_edit_id,
+        selected_artifact_id,
+    );
 
     let source_paths = partial_fission_source_paths(outcome, sources);
     if source_paths.is_empty() || outcome.target_symbols.is_empty() {
@@ -5768,6 +5886,67 @@ fn partial_fission_candidate_and_evidence(
         outcome.proof_metadata.compile_command_hash.as_deref(),
         &compile_command_material,
     );
+    let source_mapping_material = metadata_with_fission_run_binding(
+        serde_json::json!({
+            "schemaVersion": "synthi.gpu.fission_source_mapping_evidence.v1",
+            "sourceEditId": source_edit_id,
+            "selectedArtifactId": selected_artifact_id,
+            "sourcePaths": &source_paths,
+            "sourceSpans": &source_spans,
+            "generatedRolePath": &generated_role_path,
+        }),
+        &run_binding,
+    );
+    let source_mapping_hash = canonical_fission_json_hash(&source_mapping_material);
+    let source_mapping_evidence_id =
+        format!("evidence:fission-source-mapping:{source_mapping_hash}");
+    let include_closure_material = metadata_with_fission_run_binding(
+        serde_json::json!({
+            "schemaVersion": "synthi.gpu.fission_include_closure_evidence.v1",
+            "selectedArtifactId": selected_artifact_id,
+            "sourcePaths": &source_paths,
+            "includeClosure": &include_closure,
+            "dependencyClosureHash": &dependency_hash,
+            "compilerEvidenceId": compiler_evidence_id,
+        }),
+        &run_binding,
+    );
+    let include_closure_evidence_hash = canonical_fission_json_hash(&include_closure_material);
+    let include_closure_evidence_id =
+        format!("evidence:fission-include-closure:{include_closure_evidence_hash}");
+    let dependency_closure_material = metadata_with_fission_run_binding(
+        serde_json::json!({
+            "schemaVersion": "synthi.gpu.fission_dependency_closure_evidence.v1",
+            "selectedArtifactId": selected_artifact_id,
+            "sourcePaths": &source_paths,
+            "includeClosure": &include_closure,
+            "dependencyClosureHash": &dependency_hash,
+            "compilerEvidenceId": compiler_evidence_id,
+        }),
+        &run_binding,
+    );
+    let dependency_closure_evidence_hash =
+        canonical_fission_json_hash(&dependency_closure_material);
+    let dependency_closure_evidence_id =
+        format!("evidence:fission-dependency-closure:{dependency_closure_evidence_hash}");
+    let compile_recipe_evidence_material = metadata_with_fission_run_binding(
+        serde_json::json!({
+            "schemaVersion": "synthi.gpu.fission_compile_recipe_evidence.v1",
+            "selectedArtifactId": selected_artifact_id,
+            "compileRecipeHash": &compile_recipe_hash,
+            "compileCommandHash": &compile_command_hash,
+            "dependencyClosureHash": &dependency_hash,
+            "compilerEvidenceId": compiler_evidence_id,
+        }),
+        &run_binding,
+    );
+    let compile_recipe_evidence_hash =
+        canonical_fission_json_hash(&compile_recipe_evidence_material);
+    let compile_recipe_evidence_id =
+        format!("evidence:fission-compile-recipe:{compile_recipe_evidence_hash}");
+    let source_path_count = source_paths.len();
+    let source_span_count = source_spans.len();
+    let include_closure_count = include_closure.len();
     let seed = serde_json::json!({
         "sourceEditId": source_edit_id,
         "selectedArtifactId": selected_artifact_id,
@@ -5789,15 +5968,6 @@ fn partial_fission_candidate_and_evidence(
     let seed_hash = sha256_hex_str(&seed.to_string());
     let island_id = format!("fission-island:sha256:{seed_hash}");
     let candidate_evidence_id = format!("evidence:fission-island-input:{seed_hash}");
-    let required_oracle_id = format!("oracle:required:sha256:{seed_hash}");
-    let output_oracle_target = outcome
-        .target_symbols
-        .first()
-        .cloned()
-        .or_else(|| generated_role_path.clone())
-        .or_else(|| source_paths.first().cloned())
-        .unwrap_or_else(|| selected_artifact_id.to_string());
-
     let mut candidate = serde_json::json!({
         "schemaVersion": crate::hmr::gpu_fission::FISSION_ISLAND_SCHEMA_VERSION,
         "islandId": island_id,
@@ -5824,37 +5994,24 @@ fn partial_fission_candidate_and_evidence(
             "contentHash": format!("sha256:{artifact_hash}"),
             "acceptedTransports": ["ram_blob", "filesystem_path"],
         },
-        "requiredOracleId": required_oracle_id,
-        "outputOracleProposal": {
-            "kind": "buffer_checksum",
-            "producer": "worker.runtime_dispatch_replay",
-            "expected": "runtime_readback_changed_after_epoch_dispatch",
-            "outputTargetId": format!("kernel-output:{output_oracle_target}"),
-            "readbackPlan": {
-                "syncPoint": "after-dispatch",
-                "timestampSource": "runtime-boundary",
-                "probeMode": "runtime-dispatch-replay"
-            },
-            "sessionIdSource": "runtime-session",
-            "artifactId": selected_artifact_id,
-            "selectedArtifactId": selected_artifact_id
-        },
         "verifierEvidenceIds": [
             candidate_evidence_id.clone(),
             compiler_evidence_id,
             symbol_evidence_id,
             abi_evidence_id,
             transport_evidence_id,
-            generated_topology_evidence_id.clone()
+            generated_topology_evidence_id.clone(),
+            source_mapping_evidence_id.clone(),
+            include_closure_evidence_id.clone(),
+            dependency_closure_evidence_id.clone(),
+            compile_recipe_evidence_id.clone()
         ],
-        "sourceMappingEvidenceIds": [candidate_evidence_id.clone()],
-        "includeClosureEvidenceIds": [candidate_evidence_id.clone()],
+        "sourceMappingEvidenceIds": [source_mapping_evidence_id.clone()],
+        "includeClosureEvidenceIds": [include_closure_evidence_id.clone()],
         "symbolOwnershipEvidenceIds": [symbol_evidence_id],
-        "dependencyClosureEvidenceIds": [candidate_evidence_id.clone()],
-        "abiMembraneEvidenceIds": [abi_evidence_id],
-        "compileRecipeEvidenceIds": [compiler_evidence_id],
+        "dependencyClosureEvidenceIds": [dependency_closure_evidence_id.clone()],
+        "compileRecipeEvidenceIds": [compile_recipe_evidence_id.clone()],
         "loaderCapabilityEvidenceIds": [transport_evidence_id],
-        "outputOracleEvidenceIds": [candidate_evidence_id.clone()],
         "proposalSource": {
             "producer": "worker.compile_device",
             "kind": "partial_artifact_selection_metadata"
@@ -5976,12 +6133,16 @@ fn partial_fission_candidate_and_evidence(
             );
         }
     }
-    materialize_content_bound_fission_evidence(&mut candidate);
-
+    let candidate_before_phase_evidence = candidate.clone();
+    let candidate_evidence_metadata =
+        metadata_with_fission_run_binding(candidate_before_phase_evidence.clone(), &run_binding);
     let evidence = GpuHmrProofEvidenceRef {
         evidence_id: candidate_evidence_id,
         kind: "fission-island-input".to_string(),
-        content_hash: format!("sha256:{}", sha256_hex_str(&candidate.to_string())),
+        content_hash: format!(
+            "sha256:{}",
+            canonical_fission_json_hash(&candidate_evidence_metadata)
+        ),
         producer_subsystem: "worker.compile_device".to_string(),
         timestamp: created_at.to_string(),
         session_id: Some(runtime_session_id.to_string()),
@@ -5997,9 +6158,73 @@ fn partial_fission_candidate_and_evidence(
             outcome.target_symbols.len(),
             artifact_kind
         ),
-        metadata: Some(candidate.clone()),
+        metadata: Some(candidate_evidence_metadata),
     };
     let mut evidence_refs = vec![evidence];
+    evidence_refs.push(GpuHmrProofEvidenceRef {
+        evidence_id: source_mapping_evidence_id,
+        kind: "fission-source-mapping".to_string(),
+        content_hash: format!("sha256:{source_mapping_hash}"),
+        producer_subsystem: "worker.compile_device.fission_source_mapping".to_string(),
+        timestamp: created_at.to_string(),
+        session_id: Some(runtime_session_id.to_string()),
+        file_path: None,
+        artifact_uri: Some(selected_artifact_id.to_string()),
+        summary: format!(
+            "current-run source mapping source_paths={} source_spans={}",
+            source_path_count, source_span_count
+        ),
+        metadata: Some(source_mapping_material),
+    });
+    evidence_refs.push(GpuHmrProofEvidenceRef {
+        evidence_id: include_closure_evidence_id,
+        kind: "fission-include-closure".to_string(),
+        content_hash: format!("sha256:{include_closure_evidence_hash}"),
+        producer_subsystem: "worker.compile_device.fission_include_closure".to_string(),
+        timestamp: created_at.to_string(),
+        session_id: Some(runtime_session_id.to_string()),
+        file_path: None,
+        artifact_uri: Some(selected_artifact_id.to_string()),
+        summary: format!(
+            "current-run include closure source_paths={} include_entries={}",
+            source_path_count, include_closure_count
+        ),
+        metadata: Some(include_closure_material),
+    });
+    evidence_refs.push(GpuHmrProofEvidenceRef {
+        evidence_id: dependency_closure_evidence_id,
+        kind: "fission-dependency-closure".to_string(),
+        content_hash: format!("sha256:{dependency_closure_evidence_hash}"),
+        producer_subsystem: "worker.compile_device.fission_dependency_closure".to_string(),
+        timestamp: created_at.to_string(),
+        session_id: Some(runtime_session_id.to_string()),
+        file_path: None,
+        artifact_uri: Some(selected_artifact_id.to_string()),
+        summary: format!(
+            "current-run dependency closure source_paths={} include_entries={}",
+            source_path_count, include_closure_count
+        ),
+        metadata: Some(dependency_closure_material),
+    });
+    evidence_refs.push(GpuHmrProofEvidenceRef {
+        evidence_id: compile_recipe_evidence_id,
+        kind: "fission-compile-recipe".to_string(),
+        content_hash: format!("sha256:{compile_recipe_evidence_hash}"),
+        producer_subsystem: "worker.compile_device.fission_compile_recipe".to_string(),
+        timestamp: created_at.to_string(),
+        session_id: Some(runtime_session_id.to_string()),
+        file_path: None,
+        artifact_uri: Some(selected_artifact_id.to_string()),
+        summary: "current-run fission compile recipe bound to compiler evidence".to_string(),
+        metadata: Some(compile_recipe_evidence_material),
+    });
+    let generated_topology_evidence_metadata = metadata_with_fission_run_binding(
+        candidate
+            .get("generatedTopologyBinding")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        &run_binding,
+    );
     evidence_refs.push(GpuHmrProofEvidenceRef {
         evidence_id: generated_topology_evidence_id,
         kind: "generated-device-topology".to_string(),
@@ -6019,7 +6244,7 @@ fn partial_fission_candidate_and_evidence(
                 .unwrap_or(0),
             outcome.target_symbols.len()
         ),
-        metadata: candidate.get("generatedTopologyBinding").cloned(),
+        metadata: Some(generated_topology_evidence_metadata),
     });
     if let Some((mapping, _, evidence_id)) = original_host_launch_mapping {
         let hash = sha256_hex_str(&mapping.to_string());
@@ -6039,10 +6264,52 @@ fn partial_fission_candidate_and_evidence(
                     .map(|sources| sources.launch_mapping_sources.len())
                     .unwrap_or(0)
             ),
-            metadata: Some(mapping),
+            metadata: Some(metadata_with_fission_run_binding(mapping, &run_binding)),
         });
     }
-    Some((candidate, evidence_refs))
+
+    let phase_context = FissionEvidenceProducerContext {
+        producer_subsystem: "worker.compile_device.fission",
+        timestamp: created_at,
+        session_id: runtime_session_id,
+        source_edit_id,
+        selected_artifact_id,
+        file_path: None,
+    };
+    let mut trusted_evidence = trusted_upstream_evidence.to_vec();
+    trusted_evidence.extend(evidence_refs.iter().cloned());
+    if current_run_fission_category_evidence_valid(
+        &candidate,
+        "abi_membrane",
+        abi_evidence_id,
+        &trusted_evidence,
+        phase_context,
+    ) {
+        candidate["abiMembraneEvidenceIds"] = serde_json::json!([abi_evidence_id]);
+    }
+    let trusted_phase_evidence = match produce_fission_phase_source_evidence(
+        &mut candidate,
+        &trusted_evidence,
+        phase_context,
+    ) {
+        Ok(evidence) => evidence,
+        Err(reason) => {
+            if let Some(object) = candidate.as_object_mut() {
+                object.insert(
+                    "phaseEvidenceProductionFailure".to_string(),
+                    serde_json::Value::String(reason.to_string()),
+                );
+            }
+            Vec::new()
+        }
+    };
+    evidence_refs.extend(trusted_phase_evidence.iter().cloned());
+    trusted_evidence.extend(trusted_phase_evidence);
+    Some(GeneratedFissionCandidate {
+        candidate,
+        evidence_refs,
+        trusted_evidence,
+    })
 }
 
 fn fission_report_status(report: &serde_json::Value) -> &str {
@@ -6127,7 +6394,7 @@ fn fission_verifier_evidence_and_stage(
     source_edit_id: &str,
     selected_artifact_id: &str,
 ) -> (GpuHmrProofEvidenceRef, GpuHmrProofStageResult) {
-    let report_hash = sha256_hex_str(&report.to_string());
+    let report_hash = canonical_fission_json_hash(report);
     let evidence_id = format!("evidence:fission-verifier-report:{report_hash}");
     let passed = fission_report_status(report) == "pass";
     let evidence = GpuHmrProofEvidenceRef {
@@ -6227,8 +6494,21 @@ fn first_proof_evidence<'a>(
         })
 }
 
+fn unique_proof_evidence<'a>(
+    proof: &'a serde_json::Value,
+    kind: &str,
+) -> Option<&'a serde_json::Value> {
+    let mut matches = proof
+        .get("evidenceRefs")?
+        .as_array()?
+        .iter()
+        .filter(|item| item.get("kind").and_then(serde_json::Value::as_str) == Some(kind));
+    let evidence = matches.next()?;
+    matches.next().is_none().then_some(evidence)
+}
+
 fn proof_fission_island_id(proof: &serde_json::Value) -> Option<String> {
-    first_proof_evidence(proof, "fission-verifier-report")
+    proof_fission_verifier_evidence(proof)
         .and_then(|evidence| evidence.get("metadata"))
         .and_then(|metadata| {
             if metadata.get("status").and_then(serde_json::Value::as_str) != Some("pass") {
@@ -6269,7 +6549,84 @@ fn proof_fission_island_id(proof: &serde_json::Value) -> Option<String> {
 fn proof_fission_verifier_evidence<'a>(
     proof: &'a serde_json::Value,
 ) -> Option<&'a serde_json::Value> {
-    first_proof_evidence(proof, "fission-verifier-report")
+    let evidence = unique_proof_evidence(proof, "fission-verifier-report")?;
+    let evidence_id = evidence.get("evidenceId")?.as_str()?;
+    let metadata = evidence.get("metadata")?.as_object()?;
+    let created_at = proof.get("createdAt")?.as_str()?;
+    let runtime_session_id = proof.get("runtimeSessionId")?.as_str()?;
+    let source_edit_id = proof.get("sourceEditId")?.as_str()?;
+    let selected_artifact_id = proof.get("selectedArtifactId")?.as_str()?;
+    if [
+        evidence_id,
+        created_at,
+        runtime_session_id,
+        source_edit_id,
+        selected_artifact_id,
+    ]
+    .iter()
+    .any(|value| value.is_empty() || *value != value.trim())
+        || evidence
+            .get("producerSubsystem")
+            .and_then(serde_json::Value::as_str)
+            != Some("worker.gpu_fission_verifier")
+        || evidence
+            .get("timestamp")
+            .and_then(serde_json::Value::as_str)
+            != Some(created_at)
+        || evidence
+            .get("sessionId")
+            .and_then(serde_json::Value::as_str)
+            != Some(runtime_session_id)
+        || evidence
+            .get("artifactUri")
+            .and_then(serde_json::Value::as_str)
+            != Some(selected_artifact_id)
+    {
+        return None;
+    }
+    let metadata = serde_json::Value::Object(metadata.clone());
+    let report_hash = canonical_fission_json_hash(&metadata);
+    let expected_content_hash = format!("sha256:{report_hash}");
+    let expected_evidence_id = format!("evidence:fission-verifier-report:{report_hash}");
+    if evidence
+        .get("contentHash")
+        .and_then(serde_json::Value::as_str)
+        != Some(expected_content_hash.as_str())
+        || evidence_id != expected_evidence_id
+    {
+        return None;
+    }
+
+    let mut stages = proof
+        .get("stageResults")?
+        .as_array()?
+        .iter()
+        .filter(|stage| {
+            stage.get("stageId").and_then(serde_json::Value::as_str)
+                == Some("fission-candidate-verification")
+        });
+    let stage = stages.next()?;
+    if stages.next().is_some()
+        || stage.get("startedAt").and_then(serde_json::Value::as_str) != Some(created_at)
+        || stage.get("completedAt").and_then(serde_json::Value::as_str) != Some(created_at)
+        || stage.get("inputArtifactIds") != Some(&serde_json::json!([source_edit_id]))
+        || stage.get("evidenceRefs") != Some(&serde_json::json!([evidence_id]))
+    {
+        return None;
+    }
+    let report_passed = metadata.get("status").and_then(serde_json::Value::as_str) == Some("pass");
+    let expected_status = if report_passed { "passed" } else { "blocked" };
+    let expected_outputs = if report_passed {
+        serde_json::json!([selected_artifact_id])
+    } else {
+        serde_json::json!([])
+    };
+    if stage.get("status").and_then(serde_json::Value::as_str) != Some(expected_status)
+        || stage.get("outputArtifactIds") != Some(&expected_outputs)
+    {
+        return None;
+    }
+    Some(evidence)
 }
 
 fn proof_fission_verifier_evidence_id(proof: &serde_json::Value) -> Option<String> {
@@ -6596,7 +6953,45 @@ fn materialized_resolved_output_oracle_contract(
     selected
 }
 
-fn fission_verifier_metadata_recomputes_exactly(metadata: &serde_json::Value) -> bool {
+fn proof_value_content_identity_valid(proof: &serde_json::Value) -> bool {
+    if proof
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_str)
+        != Some(GPU_HMR_PROOF_SCHEMA_VERSION)
+    {
+        return false;
+    }
+    let Some(proof_id) = proof.get("proofId").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let identity_material = serde_json::json!({
+        "schemaVersion": proof.get("schemaVersion").cloned().unwrap_or(serde_json::Value::Null),
+        "workspaceSlug": proof.get("workspaceSlug").cloned().unwrap_or(serde_json::Value::Null),
+        "runtimeSessionId": proof.get("runtimeSessionId").cloned().unwrap_or(serde_json::Value::Null),
+        "sourceEditId": proof.get("sourceEditId").cloned().unwrap_or(serde_json::Value::Null),
+        "selectedArtifactId": proof.get("selectedArtifactId").cloned().unwrap_or(serde_json::Value::Null),
+        "resultState": proof.get("resultState").cloned().unwrap_or(serde_json::Value::Null),
+        "degradedState": proof.get("degradedState").cloned().unwrap_or(serde_json::Value::Null),
+        "degradedReason": proof.get("degradedReason").cloned().unwrap_or(serde_json::Value::Null),
+        "stageResults": proof.get("stageResults").cloned().unwrap_or(serde_json::Value::Null),
+        "evidenceRefs": proof.get("evidenceRefs").cloned().unwrap_or(serde_json::Value::Null),
+        "visualEvidenceRefs": proof.get("visualEvidenceRefs").cloned().unwrap_or(serde_json::Value::Null),
+        "createdAt": proof.get("createdAt").cloned().unwrap_or(serde_json::Value::Null),
+    });
+    proof_id == format!("gpu-proof:{}", stable_json_hash(&identity_material))
+}
+
+fn fission_verifier_metadata_recomputes_exactly(
+    proof: &serde_json::Value,
+    metadata: &serde_json::Value,
+    fission_registry: Option<&CurrentRunFissionEvidenceRegistry>,
+) -> bool {
+    let Some(fission_registry) = fission_registry else {
+        return false;
+    };
+    if !proof_value_content_identity_valid(proof) || !fission_registry.matches_proof(proof) {
+        return false;
+    }
     let Some(candidate_reports) = metadata
         .get("candidates")
         .and_then(serde_json::Value::as_array)
@@ -6610,7 +7005,11 @@ fn fission_verifier_metadata_recomputes_exactly(metadata: &serde_json::Value) ->
     else {
         return false;
     };
-    verify_fission_candidates(&serde_json::Value::Array(candidates)) == *metadata
+    verify_fission_candidates_with_evidence(
+        &serde_json::Value::Array(candidates),
+        &fission_registry.evidence_refs,
+        fission_registry.context(),
+    ) == *metadata
 }
 
 fn concrete_compute_readback_output_oracle_contract(contract: &serde_json::Value) -> bool {
@@ -6621,9 +7020,12 @@ fn concrete_compute_readback_output_oracle_contract(contract: &serde_json::Value
     materialize_compute_readback_output_oracle_contract(&candidate, contract).is_some()
 }
 
-fn proof_fission_output_oracle_contract(proof: &serde_json::Value) -> Option<serde_json::Value> {
+fn proof_fission_output_oracle_contract(
+    proof: &serde_json::Value,
+    fission_registry: Option<&CurrentRunFissionEvidenceRegistry>,
+) -> Option<serde_json::Value> {
     let metadata = proof_fission_verifier_metadata(proof)?;
-    if !fission_verifier_metadata_recomputes_exactly(metadata)
+    if !fission_verifier_metadata_recomputes_exactly(proof, metadata, fission_registry)
         || metadata.get("status").and_then(serde_json::Value::as_str) != Some("pass")
     {
         return None;
@@ -6646,11 +7048,12 @@ fn proof_output_oracle_profile_commitment(
     proof: &serde_json::Value,
     contract: &serde_json::Value,
     profile_bytes: &[u8],
+    fission_registry: Option<&CurrentRunFissionEvidenceRegistry>,
 ) -> Option<ReloadOutputOracleProfileCommitment> {
     if profile_bytes.is_empty() || !concrete_compute_readback_output_oracle_contract(contract) {
         return None;
     }
-    if proof_fission_output_oracle_contract(proof).as_ref() != Some(contract) {
+    if proof_fission_output_oracle_contract(proof, fission_registry).as_ref() != Some(contract) {
         return None;
     }
     let candidate_artifact_sha256 = proof_selected_fission_candidate(proof)
@@ -6666,7 +7069,9 @@ fn proof_output_oracle_profile_commitment(
     Some(ReloadOutputOracleProfileCommitment {
         schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.to_string(),
         candidate_artifact_sha256,
-        fission_output_oracle_contract_sha256: format!("sha256:{}", stable_json_hash(contract)),
+        fission_output_oracle_contract_sha256: reload_output_oracle_contract_content_hash(
+            contract,
+        )?,
         profile_bytes_sha256: format!("sha256:{}", sha256_hex_bytes(profile_bytes)),
         edit_id,
     })
@@ -6688,7 +7093,7 @@ fn proof_dependency_closure_hash(proof: &serde_json::Value) -> Option<String> {
 }
 
 async fn reload_capsule_metadata_from_proof_artifact(
-    proof_artifact: &GpuHmrProofArtifactWrite,
+    proof_artifact: &DeviceHmrProofArtifactReceipt,
     outcome: &DeviceCompileOutcome,
 ) -> ReloadCapsuleMetadata {
     let profile_path = configured_gpu_hmr_runtime_output_oracle_profile_path();
@@ -6701,26 +7106,35 @@ async fn reload_capsule_metadata_from_proof_artifact(
 }
 
 async fn reload_capsule_metadata_from_proof_artifact_with_profile_path(
-    proof_artifact: &GpuHmrProofArtifactWrite,
-    outcome: &DeviceCompileOutcome,
+    proof_artifact: &DeviceHmrProofArtifactReceipt,
+    _outcome: &DeviceCompileOutcome,
     profile_path: &Path,
 ) -> ReloadCapsuleMetadata {
-    let proof = tokio::fs::read_to_string(&proof_artifact.path)
+    let proof = read_proof_artifact(&proof_artifact.path)
         .await
         .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
-    let fission_output_oracle_contract = proof
-        .as_ref()
-        .and_then(proof_fission_output_oracle_contract);
+        .filter(|artifact| {
+            artifact.proof_id == proof_artifact.proof_id && artifact == &proof_artifact.artifact
+        })
+        .and_then(|artifact| serde_json::to_value(artifact).ok());
+    let fission_output_oracle_contract = proof.as_ref().and_then(|proof| {
+        proof_fission_output_oracle_contract(proof, proof_artifact.fission_registry.as_ref())
+    });
     let output_oracle_profile_commitment =
         match (proof.as_ref(), fission_output_oracle_contract.as_ref()) {
-            (Some(proof), Some(contract)) => tokio::fs::read(profile_path)
-                .await
-                .ok()
-                .and_then(|bytes| proof_output_oracle_profile_commitment(proof, contract, &bytes)),
+            (Some(proof), Some(contract)) => {
+                tokio::fs::read(profile_path).await.ok().and_then(|bytes| {
+                    proof_output_oracle_profile_commitment(
+                        proof,
+                        contract,
+                        &bytes,
+                        proof_artifact.fission_registry.as_ref(),
+                    )
+                })
+            }
             _ => None,
         };
-    ReloadCapsuleMetadata {
+    let mut metadata = ReloadCapsuleMetadata {
         fission_island_id: proof.as_ref().and_then(proof_fission_island_id),
         fission_verifier_evidence_id: proof.as_ref().and_then(proof_fission_verifier_evidence_id),
         selected_verifier_evidence_id: proof
@@ -6735,16 +7149,30 @@ async fn reload_capsule_metadata_from_proof_artifact_with_profile_path(
             .and_then(proof_fission_selection_decision_hash),
         fission_output_oracle_contract,
         output_oracle_profile_commitment,
+        output_oracle_proof_context: None,
         abi_membrane_hash: proof.as_ref().and_then(proof_abi_membrane_hash),
         dependency_closure_hash: proof.as_ref().and_then(proof_dependency_closure_hash),
         proof_hash: proof_id_capsule_hash(&proof_artifact.proof_id),
+    };
+    if metadata.output_oracle_profile_commitment.is_some()
+        && !bind_reload_output_oracle_proof_context(
+            &mut metadata,
+            &proof_artifact.artifact.proof_id,
+            &proof_artifact.artifact.created_at,
+            &proof_artifact.artifact.runtime_session_id,
+        )
+    {
+        metadata.output_oracle_profile_commitment = None;
+        metadata.output_oracle_proof_context = None;
+        metadata.fission_output_oracle_contract = None;
     }
+    metadata
 }
 
 async fn enforce_device_hmr_publication_gates(
     ctx: &CompileContext,
     session_id: &str,
-    proof_artifact: &GpuHmrProofArtifactWrite,
+    proof_artifact: &DeviceHmrProofArtifactReceipt,
     outcome: &DeviceCompileOutcome,
     runtime_resume_deferred: bool,
 ) -> Result<()> {
@@ -6767,7 +7195,27 @@ async fn enforce_device_hmr_publication_gates(
         }
     };
 
-    if let Some(block) = device_hmr_fission_publication_blocker(&proof, outcome) {
+    if proof.proof_id != proof_artifact.proof_id || proof != proof_artifact.artifact {
+        if runtime_resume_deferred {
+            let _ = resume_active_runner_after_gpu_hmr(ctx, session_id).await;
+        }
+        let status = HmrStatus::gpu_rejected_with_fallback_reason(
+            "device",
+            "GPU HMR proof artifact bytes no longer match the current-run proof receipt",
+            "Keep the previous GPU sidecar loaded and regenerate the proof in the current compiler run",
+            "proof_artifact_identity_mismatch",
+        );
+        let _ = ctx.log_dc.send_text(status.to_json()).await;
+        anyhow::bail!(
+            "GPU HMR proof artifact publication gate failed: proof_artifact_identity_mismatch"
+        );
+    }
+
+    if let Some(block) = device_hmr_fission_publication_blocker(
+        &proof,
+        outcome,
+        proof_artifact.fission_registry.as_ref(),
+    ) {
         if runtime_resume_deferred {
             let _ = resume_active_runner_after_gpu_hmr(ctx, session_id).await;
         }
@@ -6798,7 +7246,7 @@ async fn write_device_hmr_proof_artifact(
     outcome: &DeviceCompileOutcome,
     sources: Option<&DeviceCompileSources>,
     proof: &GpuHmrProofTelemetry,
-) -> Result<GpuHmrProofArtifactWrite> {
+) -> Result<DeviceHmrProofArtifactReceipt> {
     let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let artifact_bytes = device_artifact_bytes_for_consumer(outcome, "proof").await?;
     let artifact_hash = sha256_hex_bytes(&artifact_bytes);
@@ -6806,6 +7254,12 @@ async fn write_device_hmr_proof_artifact(
     let source_edit_id = normalized_reload_source_edit_id(Some(source_edit_id))
         .context("normalizing compiler-derived GPU HMR source edit identity")?;
     let runtime_session_id = format!("runtime-session:{session_id}");
+    let fission_run_binding = fission_run_binding(
+        &created_at,
+        &runtime_session_id,
+        &source_edit_id,
+        &selected_artifact_id,
+    );
     let workspace_slug = workspace_slug
         .filter(|slug| !slug.trim().is_empty())
         .map(str::to_string)
@@ -6825,17 +7279,33 @@ async fn write_device_hmr_proof_artifact(
         artifact_bytes.len(),
         outcome,
     );
-    let transport_evidence_hash = sha256_hex_str(&transport_material.to_string());
+    let transport_evidence_metadata =
+        metadata_with_fission_run_binding(transport_material.clone(), &fission_run_binding);
+    let transport_evidence_hash = canonical_fission_json_hash(&transport_evidence_metadata);
     let transport_evidence_id =
         format!("evidence:device-artifact-transport:{transport_evidence_hash}");
-    let compiler_evidence_hash = sha256_hex_str(&outcome.stderr);
+    let compiler_evidence_metadata = metadata_with_fission_run_binding(
+        serde_json::json!({
+            "schemaVersion": "synthi.gpu.hmr.compiler_evidence.v1",
+            "compilerElapsedMs": outcome.compiler_elapsed_ms,
+            "stderrBytes": outcome.stderr.len(),
+            "stderrHash": format!("sha256:{}", sha256_hex_str(&outcome.stderr)),
+            "diagnostics": &outcome.diagnostics,
+            "compileProvenance": &outcome.proof_metadata,
+        }),
+        &fission_run_binding,
+    );
+    let compiler_evidence_hash = canonical_fission_json_hash(&compiler_evidence_metadata);
     let compiler_evidence_id = format!("evidence:device-compiler:{compiler_evidence_hash}");
     let symbol_material = serde_json::json!({
+        "schemaVersion": "synthi.gpu.hmr.symbol_set.v1",
         "targetSymbols": &outcome.target_symbols,
         "artifactExportedSymbols": &outcome.artifact_exported_symbols,
         "symbolBound": artifact_exports_expected_device_symbols(outcome),
     });
-    let symbol_evidence_hash = sha256_hex_str(&symbol_material.to_string());
+    let symbol_evidence_metadata =
+        metadata_with_fission_run_binding(symbol_material.clone(), &fission_run_binding);
+    let symbol_evidence_hash = canonical_fission_json_hash(&symbol_evidence_metadata);
     let symbol_evidence_id = format!("evidence:device-symbols:{symbol_evidence_hash}");
     let kernel_abi_fingerprint = kernel_abi_fingerprint_source(&outcome.compiled_source);
     let constant_global_layout_hash =
@@ -6891,7 +7361,9 @@ async fn write_device_hmr_proof_artifact(
     });
     let (abi_stage_proven, abi_stage_degraded_reason) =
         abi_stage_verdict_from_metadata(&abi_material);
-    let abi_evidence_hash = sha256_hex_str(&abi_material.to_string());
+    let abi_evidence_metadata =
+        metadata_with_fission_run_binding(abi_material.clone(), &fission_run_binding);
+    let abi_evidence_hash = canonical_fission_json_hash(&abi_evidence_metadata);
     let abi_evidence_id = format!("evidence:device-abi-metadata:{abi_evidence_hash}");
 
     let mut evidence_refs = vec![
@@ -6913,12 +7385,15 @@ async fn write_device_hmr_proof_artifact(
                     .as_deref()
                     .unwrap_or("unspecified")
             ),
-            metadata: Some(serde_json::json!({
-                "artifactBytes": artifact_bytes.len(),
-                "partialModule": outcome.partial_module,
-                "selectedArtifactKind": outcome.selected_artifact_kind.as_deref(),
-                "requestedArtifactKind": outcome.requested_artifact_kind.as_deref(),
-            })),
+            metadata: Some(metadata_with_fission_run_binding(
+                serde_json::json!({
+                    "artifactBytes": artifact_bytes.len(),
+                    "partialModule": outcome.partial_module,
+                    "selectedArtifactKind": outcome.selected_artifact_kind.as_deref(),
+                    "requestedArtifactKind": outcome.requested_artifact_kind.as_deref(),
+                }),
+                &fission_run_binding,
+            )),
         },
         GpuHmrProofEvidenceRef {
             evidence_id: transport_evidence_id.clone(),
@@ -6930,7 +7405,7 @@ async fn write_device_hmr_proof_artifact(
             file_path: None,
             artifact_uri: Some(selected_artifact_id.clone()),
             summary: device_artifact_transport_summary(&transport_material),
-            metadata: Some(transport_material),
+            metadata: Some(transport_evidence_metadata),
         },
         GpuHmrProofEvidenceRef {
             evidence_id: compiler_evidence_id.clone(),
@@ -6940,7 +7415,7 @@ async fn write_device_hmr_proof_artifact(
             timestamp: created_at.clone(),
             session_id: Some(runtime_session_id.clone()),
             file_path: None,
-            artifact_uri: None,
+            artifact_uri: Some(selected_artifact_id.clone()),
             summary: format!(
                 "Device compiler completed in {} ms with stderr_bytes={} compile_command_hash={} dependency_hash={} cache_hit={}",
                 outcome.compiler_elapsed_ms,
@@ -6957,12 +7432,7 @@ async fn write_device_hmr_proof_artifact(
                     .unwrap_or("unavailable"),
                 outcome.proof_metadata.cache_hit
             ),
-            metadata: Some(serde_json::json!({
-                "compilerElapsedMs": outcome.compiler_elapsed_ms,
-                "stderrBytes": outcome.stderr.len(),
-                "diagnostics": &outcome.diagnostics,
-                "compileProvenance": &outcome.proof_metadata,
-            })),
+            metadata: Some(compiler_evidence_metadata),
         },
         GpuHmrProofEvidenceRef {
             evidence_id: symbol_evidence_id.clone(),
@@ -6979,7 +7449,7 @@ async fn write_device_hmr_proof_artifact(
                 outcome.artifact_exported_symbols.len(),
                 artifact_exports_expected_device_symbols(outcome)
             ),
-            metadata: Some(symbol_material),
+            metadata: Some(symbol_evidence_metadata),
         },
         GpuHmrProofEvidenceRef {
             evidence_id: abi_evidence_id.clone(),
@@ -6991,7 +7461,7 @@ async fn write_device_hmr_proof_artifact(
             file_path: None,
             artifact_uri: Some(selected_artifact_id.clone()),
             summary: device_abi_evidence_summary(&abi_material, &constant_global_layout_hash),
-            metadata: Some(abi_material),
+            metadata: Some(abi_evidence_metadata),
         },
     ];
 
@@ -7023,12 +7493,24 @@ async fn write_device_hmr_proof_artifact(
         &symbol_evidence_id,
         &abi_evidence_id,
         &transport_evidence_id,
+        &evidence_refs,
     );
-    if let Some((_, evidence)) = generated_fission.as_ref() {
-        evidence_refs.extend(evidence.iter().cloned());
+    if let Some(generated) = generated_fission.as_ref() {
+        evidence_refs.extend(generated.evidence_refs.iter().cloned());
     }
-    let fission_report = generated_fission.as_ref().map(|(candidate, _)| {
-        verify_fission_candidates(&serde_json::Value::Array(vec![candidate.clone()]))
+    let fission_report = generated_fission.as_ref().map(|generated| {
+        verify_fission_candidates_with_evidence(
+            &serde_json::Value::Array(vec![generated.candidate.clone()]),
+            &generated.trusted_evidence,
+            FissionEvidenceProducerContext {
+                producer_subsystem: "worker.compile_device.fission",
+                timestamp: &created_at,
+                session_id: &runtime_session_id,
+                source_edit_id: &source_edit_id,
+                selected_artifact_id: &selected_artifact_id,
+                file_path: None,
+            },
+        )
     });
     let fission_stage = fission_report.map(|report| {
         let (evidence, stage) = fission_verifier_evidence_and_stage(
@@ -7060,6 +7542,20 @@ async fn write_device_hmr_proof_artifact(
         stage_results.insert(0, fission_stage);
     }
 
+    let fission_registry =
+        generated_fission
+            .as_ref()
+            .map(|generated| CurrentRunFissionEvidenceRegistry {
+                proof_id: String::new(),
+                evidence_refs: generated.trusted_evidence.clone(),
+                producer_subsystem: "worker.compile_device.fission".to_string(),
+                timestamp: created_at.clone(),
+                session_id: runtime_session_id.clone(),
+                source_edit_id: source_edit_id.clone(),
+                selected_artifact_id: selected_artifact_id.clone(),
+                file_path: None,
+            });
+
     let artifact = GpuHmrProofArtifact::new(GpuHmrProofArtifactInput {
         workspace_slug,
         runtime_session_id,
@@ -7074,7 +7570,18 @@ async fn write_device_hmr_proof_artifact(
         created_at: Some(created_at),
     });
 
-    write_proof_artifact(workspace, &artifact).await
+    let write = write_proof_artifact(workspace, &artifact).await?;
+    let fission_registry = fission_registry.map(|mut registry| {
+        registry.proof_id = artifact.proof_id.clone();
+        registry
+    });
+    Ok(DeviceHmrProofArtifactReceipt {
+        proof_id: write.proof_id,
+        path: write.path,
+        relative_path: write.relative_path,
+        artifact,
+        fission_registry,
+    })
 }
 
 fn device_reload_kernel_symbols(source: &str, outcome: &DeviceCompileOutcome) -> Vec<String> {
@@ -12827,6 +13334,7 @@ async fn handle_compile_request_inner(
     let mut device_reload_artifact_blob: Option<ReloadArtifactBlob> = None;
     let mut device_reload_capsule_metadata: Option<ReloadCapsuleMetadata> = None;
     let mut device_reload_source_edit_id: Option<String> = None;
+    let mut device_reload_proof_runtime_session_id: Option<String> = None;
     if let Some(ref out) = device_compile_outcome {
         let source_edit_id = format!("source-edit:sha256:{source_edit_sha256}");
         let proof = device_hmr_proof_telemetry(out);
@@ -12852,6 +13360,8 @@ async fn handle_compile_request_inner(
         device_reload_capsule_metadata =
             Some(reload_capsule_metadata_from_proof_artifact(&proof_artifact, out).await);
         device_reload_source_edit_id = Some(source_edit_id);
+        device_reload_proof_runtime_session_id =
+            Some(proof_artifact.artifact.runtime_session_id.clone());
         let proof = proof.with_artifact_ref(proof_artifact.proof_id, proof_artifact.relative_path);
         let selected_artifact_bytes = out
             .selected_artifact_bytes
@@ -13434,6 +13944,13 @@ async fn handle_compile_request_inner(
             );
             device_cmd.push(':');
             device_cmd.push_str(&encode_gpu_kernel_command_token(expected_artifact_hash));
+            device_cmd.push(':');
+            device_cmd.push_str(
+                &device_reload_proof_runtime_session_id
+                    .as_deref()
+                    .map(encode_gpu_kernel_command_token)
+                    .unwrap_or_else(|| "-".to_string()),
+            );
             modules_to_load.insert(
                 0,
                 (
@@ -13879,6 +14396,7 @@ mod gpu_host_contract_tests {
         output_oracle_contract: serde_json::Value,
     ) -> serde_json::Value {
         let artifact_digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let source_evidence_id = format!("evidence:test-observation:{}", "b".repeat(64));
         serde_json::json!({
             "islandId": "island:sha256:oracle-contract",
             "sourceEditId": "source-edit:concrete-oracle",
@@ -13901,7 +14419,7 @@ mod gpu_host_contract_tests {
                 "sourcePaths": ["src/device.kernel"],
                 "targetSymbols": ["step"]
             },
-            "generatedTopologyEvidenceIds": ["evidence:generated-topology"],
+            "generatedTopologyEvidenceIds": [source_evidence_id.clone()],
             "targetSymbols": ["step"],
             "exportedSymbolsExpected": ["step", "helper"],
             "artifactKind": "device_partial",
@@ -13914,32 +14432,303 @@ mod gpu_host_contract_tests {
             "loaderCapabilityRequirement": {"transport": "content_addressed_blob"},
             "requiredOracleId": "oracle:readback:explicit",
             "outputOracleContract": output_oracle_contract,
-            "sourceMappingEvidenceIds": ["evidence:source-map"],
-            "includeClosureEvidenceIds": ["evidence:include-closure"],
-            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
-            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
-            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
-            "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
-            "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
-            "outputOracleEvidenceIds": ["evidence:output-oracle"],
-            "verifierEvidenceIds": ["evidence:source-map"],
+            "sourceMappingEvidenceIds": [source_evidence_id.clone()],
+            "includeClosureEvidenceIds": [source_evidence_id.clone()],
+            "symbolOwnershipEvidenceIds": [source_evidence_id.clone()],
+            "dependencyClosureEvidenceIds": [source_evidence_id.clone()],
+            "abiMembraneEvidenceIds": [source_evidence_id.clone()],
+            "compileRecipeEvidenceIds": [source_evidence_id.clone()],
+            "loaderCapabilityEvidenceIds": [source_evidence_id.clone()],
+            "outputOracleEvidenceIds": [source_evidence_id.clone()],
+            "verifierEvidenceIds": [source_evidence_id.clone()],
             "narrowerCandidateRejections": [{
                 "scopeRank": 0,
                 "reasonCode": "fission.edit_crosses_body_boundary",
-                "verifierEvidenceIds": ["evidence:source-map"]
+                "verifierEvidenceIds": [source_evidence_id]
             }]
         })
     }
 
-    fn proof_with_selected_fission_candidate(candidate: serde_json::Value) -> serde_json::Value {
-        let metadata = verify_fission_candidates(&candidate);
-        serde_json::json!({
-            "sourceEditId": "source-edit:concrete-oracle",
-            "evidenceRefs": [{
-                "kind": "fission-verifier-report",
-                "metadata": metadata
-            }]
-        })
+    fn proof_with_selected_fission_candidate_and_registry(
+        mut candidate: serde_json::Value,
+    ) -> (serde_json::Value, CurrentRunFissionEvidenceRegistry) {
+        let created_at = "2026-05-26T00:00:00.000Z";
+        let runtime_session_id = "runtime-session:test";
+        let source_edit_id = candidate
+            .get("sourceEditId")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("source-edit:concrete-oracle")
+            .to_string();
+        let selected_artifact_id = candidate
+            .get("selectedArtifactId")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("artifact:sha256:test")
+            .to_string();
+        let run_binding = fission_run_binding(
+            created_at,
+            runtime_session_id,
+            &source_edit_id,
+            &selected_artifact_id,
+        );
+        let bound_record =
+            |descriptor: &str, kind: &str, metadata: serde_json::Value| -> GpuHmrProofEvidenceRef {
+                let metadata = metadata_with_fission_run_binding(metadata, &run_binding);
+                let digest = canonical_fission_json_hash(&metadata);
+                GpuHmrProofEvidenceRef {
+                    evidence_id: format!("evidence:{descriptor}:{digest}"),
+                    kind: kind.to_string(),
+                    content_hash: format!("sha256:{digest}"),
+                    producer_subsystem: "worker.test.current_run".to_string(),
+                    timestamp: created_at.to_string(),
+                    session_id: Some(runtime_session_id.to_string()),
+                    file_path: None,
+                    artifact_uri: Some(selected_artifact_id.clone()),
+                    summary: format!("typed current-run {kind} observation"),
+                    metadata: Some(metadata),
+                }
+            };
+        let compiler_record = bound_record(
+            "device-compiler",
+            "device-compiler-output",
+            serde_json::json!({
+                "schemaVersion": "synthi.gpu.hmr.compiler_evidence.v1",
+                "compileProvenance": {
+                    "compileCommandHash": candidate.get("compileCommandHash"),
+                    "dependencyHash": candidate.get("dependencyClosureHash"),
+                },
+                "stderrBytes": 0,
+                "stderrHash": format!("sha256:{}", sha256_hex_str("")),
+            }),
+        );
+        let compiler_evidence_id = compiler_record.evidence_id.clone();
+        let source_mapping_record = bound_record(
+            "fission-source-mapping",
+            "fission-source-mapping",
+            serde_json::json!({
+                "schemaVersion": "synthi.gpu.fission_source_mapping_evidence.v1",
+                "sourceEditId": candidate.get("sourceEditId"),
+                "selectedArtifactId": candidate.get("selectedArtifactId"),
+                "sourcePaths": candidate.get("sourcePaths"),
+                "sourceSpans": candidate.get("sourceSpans"),
+                "generatedRolePath": candidate.get("generatedRolePath"),
+            }),
+        );
+        let include_closure_record = bound_record(
+            "fission-include-closure",
+            "fission-include-closure",
+            serde_json::json!({
+                "schemaVersion": "synthi.gpu.fission_include_closure_evidence.v1",
+                "selectedArtifactId": candidate.get("selectedArtifactId"),
+                "sourcePaths": candidate.get("sourcePaths"),
+                "includeClosure": candidate.get("includeClosure"),
+                "dependencyClosureHash": candidate.get("dependencyClosureHash"),
+                "compilerEvidenceId": &compiler_evidence_id,
+            }),
+        );
+        let symbol_record = bound_record(
+            "device-symbols",
+            "device-symbol-set",
+            serde_json::json!({
+                "schemaVersion": "synthi.gpu.hmr.symbol_set.v1",
+                "targetSymbols": candidate.get("targetSymbols"),
+                "artifactExportedSymbols": candidate.get("exportedSymbolsExpected"),
+                "symbolBound": true,
+            }),
+        );
+        for field in ["symbolIdentityMappings", "symbolIdentityMap"] {
+            if let Some(mappings) = candidate
+                .get_mut(field)
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for mapping in mappings
+                    .iter_mut()
+                    .filter_map(serde_json::Value::as_object_mut)
+                {
+                    mapping.insert(
+                        "evidenceIds".to_string(),
+                        serde_json::json!([symbol_record.evidence_id.clone()]),
+                    );
+                }
+                break;
+            }
+        }
+        if candidate.get("safeExportSupersetReason").is_some() {
+            candidate["safeExportSupersetEvidenceIds"] =
+                serde_json::json!([symbol_record.evidence_id.clone()]);
+        } else if let Some(object) = candidate.as_object_mut() {
+            object.remove("safeExportSupersetEvidenceIds");
+        }
+        let dependency_record = bound_record(
+            "fission-dependency-closure",
+            "fission-dependency-closure",
+            serde_json::json!({
+                "schemaVersion": "synthi.gpu.fission_dependency_closure_evidence.v1",
+                "selectedArtifactId": candidate.get("selectedArtifactId"),
+                "sourcePaths": candidate.get("sourcePaths"),
+                "includeClosure": candidate.get("includeClosure"),
+                "dependencyClosureHash": candidate.get("dependencyClosureHash"),
+                "compilerEvidenceId": &compiler_evidence_id,
+            }),
+        );
+        let abi_record = bound_record(
+            "device-abi-metadata",
+            "device-abi-metadata",
+            serde_json::json!({
+                "schemaVersion": "synthi.gpu.hmr.abi_metadata.v1",
+                "targetSymbols": candidate.get("targetSymbols"),
+                "artifactExportedSymbols": candidate.get("exportedSymbolsExpected"),
+                "kernelSignatures": [{"name": "step", "parameters": []}],
+                "kernelAbiFingerprintHash": format!("sha256:{}", "4".repeat(64)),
+                "constantGlobalLayoutHash": format!("sha256:{}", "5".repeat(64)),
+                "layoutSizeAlignmentVerified": true,
+                "acceptedExtractorEvidenceRefs": ["evidence:test-abi-extractor"],
+                "acceptedExtractorSources": ["test_structured_abi_extractor"],
+                "extractorProvenance": [{
+                    "extractorKind": "structured_test_extractor",
+                    "acceptedByRuntimeCorrectnessPlan": true
+                }],
+            }),
+        );
+        candidate["abiMembraneId"] =
+            serde_json::json!(format!("abi-membrane:{}", abi_record.evidence_id));
+        let compile_record = bound_record(
+            "fission-compile-recipe",
+            "fission-compile-recipe",
+            serde_json::json!({
+                "schemaVersion": "synthi.gpu.fission_compile_recipe_evidence.v1",
+                "selectedArtifactId": candidate.get("selectedArtifactId"),
+                "compileRecipeHash": candidate.get("compileRecipeHash"),
+                "compileCommandHash": candidate.get("compileCommandHash"),
+                "dependencyClosureHash": candidate.get("dependencyClosureHash"),
+                "compilerEvidenceId": &compiler_evidence_id,
+            }),
+        );
+        let mut loader_metadata = match candidate.get("loaderCapabilityRequirement") {
+            Some(serde_json::Value::Object(object)) => serde_json::Value::Object(object.clone()),
+            Some(serde_json::Value::String(value)) => {
+                serde_json::json!({"transport": value})
+            }
+            _ => serde_json::json!({}),
+        };
+        loader_metadata["schemaVersion"] =
+            serde_json::json!("synthi.gpu.hmr.artifact_transport.v1");
+        loader_metadata["selectedArtifactId"] = candidate
+            .get("selectedArtifactId")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        loader_metadata["artifactContentHash"] = candidate
+            .get("artifactHash")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let loader_record = bound_record(
+            "device-artifact-transport",
+            "device-artifact-transport",
+            loader_metadata,
+        );
+        let oracle_subject = fission_output_oracle_evidence_subject(&candidate);
+        let oracle_record = bound_record(
+            "fission-output-oracle-contract",
+            "fission-output-oracle-contract",
+            serde_json::json!({
+                "schemaVersion": "synthi.gpu.fission_output_oracle_contract_evidence.v1",
+                "sourceEditId": candidate.get("sourceEditId"),
+                "selectedArtifactId": candidate.get("selectedArtifactId"),
+                "oracleSubject": oracle_subject,
+                "contractMaterialized": true,
+                "proposalOnly": false,
+            }),
+        );
+        let category_records = [
+            ("sourceMappingEvidenceIds", source_mapping_record),
+            ("includeClosureEvidenceIds", include_closure_record),
+            ("symbolOwnershipEvidenceIds", symbol_record),
+            ("dependencyClosureEvidenceIds", dependency_record),
+            ("abiMembraneEvidenceIds", abi_record),
+            ("compileRecipeEvidenceIds", compile_record),
+            ("loaderCapabilityEvidenceIds", loader_record),
+            ("outputOracleEvidenceIds", oracle_record),
+        ];
+        for (field, record) in &category_records {
+            candidate[*field] = serde_json::json!([record.evidence_id]);
+        }
+        candidate["verifierEvidenceIds"] = serde_json::json!(category_records
+            .iter()
+            .map(|(_, record)| record.evidence_id.clone())
+            .collect::<Vec<_>>());
+        let mut trusted_evidence = std::iter::once(compiler_record)
+            .chain(category_records.into_iter().map(|(_, record)| record))
+            .collect::<Vec<_>>();
+        let context = FissionEvidenceProducerContext {
+            producer_subsystem: "worker.compile_device.fission",
+            timestamp: created_at,
+            session_id: runtime_session_id,
+            source_edit_id: &source_edit_id,
+            selected_artifact_id: &selected_artifact_id,
+            file_path: None,
+        };
+        let phase_evidence =
+            produce_fission_phase_source_evidence(&mut candidate, &trusted_evidence, context)
+                .expect("test fission evidence producer");
+        trusted_evidence.extend(phase_evidence);
+        let metadata =
+            verify_fission_candidates_with_evidence(&candidate, &trusted_evidence, context);
+        let (verifier_evidence, verifier_stage) = fission_verifier_evidence_and_stage(
+            &metadata,
+            created_at,
+            runtime_session_id,
+            &source_edit_id,
+            &selected_artifact_id,
+        );
+        let mut evidence_refs = serde_json::to_value(&trusted_evidence)
+            .unwrap()
+            .as_array()
+            .cloned()
+            .unwrap();
+        evidence_refs.push(serde_json::to_value(verifier_evidence).unwrap());
+        let mut proof = serde_json::json!({
+            "schemaVersion": GPU_HMR_PROOF_SCHEMA_VERSION,
+            "proofId": serde_json::Value::Null,
+            "workspaceSlug": "test-workspace",
+            "createdAt": created_at,
+            "runtimeSessionId": runtime_session_id,
+            "sourceEditId": source_edit_id,
+            "selectedArtifactId": selected_artifact_id,
+            "resultState": "gpu-hmr-compile-proven",
+            "degradedState": serde_json::Value::Null,
+            "degradedReason": serde_json::Value::Null,
+            "evidenceRefs": evidence_refs,
+            "visualEvidenceRefs": [],
+            "stageResults": [verifier_stage],
+        });
+        let identity_material = serde_json::json!({
+            "schemaVersion": proof["schemaVersion"],
+            "workspaceSlug": proof["workspaceSlug"],
+            "runtimeSessionId": proof["runtimeSessionId"],
+            "sourceEditId": proof["sourceEditId"],
+            "selectedArtifactId": proof["selectedArtifactId"],
+            "resultState": proof["resultState"],
+            "degradedState": proof["degradedState"],
+            "degradedReason": proof["degradedReason"],
+            "stageResults": proof["stageResults"],
+            "evidenceRefs": proof["evidenceRefs"],
+            "visualEvidenceRefs": proof["visualEvidenceRefs"],
+            "createdAt": proof["createdAt"],
+        });
+        proof["proofId"] = serde_json::json!(format!(
+            "gpu-proof:{}",
+            stable_json_hash(&identity_material)
+        ));
+        let registry = CurrentRunFissionEvidenceRegistry {
+            proof_id: proof["proofId"].as_str().unwrap().to_string(),
+            evidence_refs: trusted_evidence,
+            producer_subsystem: "worker.compile_device.fission".to_string(),
+            timestamp: created_at.to_string(),
+            session_id: runtime_session_id.to_string(),
+            source_edit_id,
+            selected_artifact_id,
+            file_path: None,
+        };
+        (proof, registry)
     }
 
     fn fixture_kernel_source(symbol: &str) -> String {
@@ -14009,8 +14798,29 @@ mod gpu_host_contract_tests {
     }
 
     fn fixture_publication_proof(
-        stage_results: Vec<GpuHmrProofStageResult>,
+        mut stage_results: Vec<GpuHmrProofStageResult>,
     ) -> GpuHmrProofArtifact {
+        let mut evidence_refs = Vec::new();
+        if let Some(stage) = stage_results.iter_mut().find(|stage| {
+            stage.stage_id == "fission-candidate-verification" && stage.status == "passed"
+        }) {
+            let report = serde_json::json!({"status": "pass"});
+            let report_hash = canonical_fission_json_hash(&report);
+            let evidence_id = format!("evidence:fission-verifier-report:{report_hash}");
+            stage.evidence_refs = vec![evidence_id.clone()];
+            evidence_refs.push(GpuHmrProofEvidenceRef {
+                evidence_id,
+                kind: "fission-verifier-report".to_string(),
+                content_hash: format!("sha256:{report_hash}"),
+                producer_subsystem: "worker.gpu_fission_verifier".to_string(),
+                timestamp: "2026-05-26T00:00:00.000Z".to_string(),
+                session_id: Some("runtime-session:test".to_string()),
+                file_path: None,
+                artifact_uri: Some("artifact:sha256:test".to_string()),
+                summary: "typed test fission verifier report".to_string(),
+                metadata: Some(report),
+            });
+        }
         GpuHmrProofArtifact::new(GpuHmrProofArtifactInput {
             workspace_slug: "workspace".to_string(),
             runtime_session_id: "runtime-session:test".to_string(),
@@ -14020,10 +14830,27 @@ mod gpu_host_contract_tests {
             degraded_state: None,
             degraded_reason: None,
             stage_results,
-            evidence_refs: Vec::new(),
+            evidence_refs,
             visual_evidence_refs: Vec::new(),
             created_at: Some("2026-05-26T00:00:00.000Z".to_string()),
         })
+    }
+
+    fn fixture_verified_publication_proof(
+    ) -> (GpuHmrProofArtifact, CurrentRunFissionEvidenceRegistry) {
+        let candidate = complete_fission_candidate_with_output_oracle(serde_json::json!({
+            "kind": "buffer_checksum",
+            "oracleId": "oracle:readback:explicit",
+            "expectedHash": format!("sha256:{}", "1".repeat(64)),
+            "producerSubsystem": "verified.runtime_probe",
+            "outputTarget": "buffer:result",
+            "readbackPlan": {"syncPoint": "after-dispatch"},
+            "runtimeSessionIdSource": "runtime-boundary",
+            "artifactIdSource": "selected-artifact"
+        }));
+        let (proof, registry) = proof_with_selected_fission_candidate_and_registry(candidate);
+        let artifact = serde_json::from_value(proof).expect("typed fixture proof artifact");
+        (artifact, registry)
     }
 
     fn fixture_fission_stage(status: &str, reason: Option<&str>) -> GpuHmrProofStageResult {
@@ -14054,7 +14881,7 @@ mod gpu_host_contract_tests {
 
         assert!(!device_outcome_requires_fission_publication_gate(&outcome));
         assert_eq!(
-            device_hmr_fission_publication_blocker(&proof, &outcome),
+            device_hmr_fission_publication_blocker(&proof, &outcome, None),
             None
         );
     }
@@ -14068,22 +14895,77 @@ mod gpu_host_contract_tests {
             "blocked",
             Some("fission.output_oracle_missing"),
         )]);
-        let passed_stage = fixture_publication_proof(vec![fixture_fission_stage("passed", None)]);
+        let minimal_pass_stage =
+            fixture_publication_proof(vec![fixture_fission_stage("passed", None)]);
+        let (verified_pass_stage, verified_registry) = fixture_verified_publication_proof();
+        let mut passed_stage_without_report = verified_pass_stage.clone();
+        passed_stage_without_report.evidence_refs.clear();
 
         assert!(device_outcome_requires_fission_publication_gate(&outcome));
         assert_eq!(
-            device_hmr_fission_publication_blocker(&missing_stage, &outcome)
+            device_hmr_fission_publication_blocker(&missing_stage, &outcome, None)
                 .map(|block| block.reason_code),
             Some("fission.candidate_verification_missing".to_string())
         );
         assert_eq!(
-            device_hmr_fission_publication_blocker(&blocked_stage, &outcome)
+            device_hmr_fission_publication_blocker(&blocked_stage, &outcome, None)
                 .map(|block| block.reason_code),
             Some("fission.output_oracle_missing".to_string())
         );
         assert_eq!(
-            device_hmr_fission_publication_blocker(&passed_stage, &outcome),
+            device_hmr_fission_publication_blocker(&minimal_pass_stage, &outcome, None)
+                .map(|block| block.reason_code),
+            Some("fission.verifier_report_binding_missing".to_string())
+        );
+        assert_eq!(
+            device_hmr_fission_publication_blocker(
+                &verified_pass_stage,
+                &outcome,
+                Some(&verified_registry),
+            ),
             None
+        );
+        assert_eq!(
+            device_hmr_fission_publication_blocker(
+                &passed_stage_without_report,
+                &outcome,
+                Some(&verified_registry),
+            )
+            .map(|block| block.reason_code),
+            Some("fission.verifier_report_binding_missing".to_string())
+        );
+    }
+
+    #[test]
+    fn fully_rehashed_serialized_fission_proof_cannot_mint_current_run_authority() {
+        let mut outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        outcome.selected_artifact_kind = Some("source_include_bridge".to_string());
+        let (proof, registry) = fixture_verified_publication_proof();
+
+        assert_eq!(
+            device_hmr_fission_publication_blocker(&proof, &outcome, None)
+                .map(|block| block.reason_code),
+            Some("fission.verifier_report_binding_missing".to_string())
+        );
+
+        let rehashed = GpuHmrProofArtifact::new(GpuHmrProofArtifactInput {
+            workspace_slug: "attacker-rehashed-workspace".to_string(),
+            runtime_session_id: proof.runtime_session_id.clone(),
+            source_edit_id: proof.source_edit_id.clone(),
+            selected_artifact_id: proof.selected_artifact_id.clone(),
+            result_state: proof.result_state.clone(),
+            degraded_state: proof.degraded_state.clone(),
+            degraded_reason: proof.degraded_reason.clone(),
+            stage_results: proof.stage_results.clone(),
+            evidence_refs: proof.evidence_refs.clone(),
+            visual_evidence_refs: proof.visual_evidence_refs.clone(),
+            created_at: Some(proof.created_at.clone()),
+        });
+        assert_ne!(rehashed.proof_id, proof.proof_id);
+        assert_eq!(
+            device_hmr_fission_publication_blocker(&rehashed, &outcome, Some(&registry))
+                .map(|block| block.reason_code),
+            Some("fission.verifier_report_binding_missing".to_string())
         );
     }
 
@@ -15003,7 +15885,12 @@ __constant__ int scale;
             artifact.stage_results[0].stage_id,
             "fission-candidate-verification"
         );
-        assert!(device_hmr_fission_publication_blocker(&artifact, &outcome).is_some());
+        assert!(device_hmr_fission_publication_blocker(
+            &artifact,
+            &outcome,
+            written.fission_registry.as_ref(),
+        )
+        .is_some());
     }
 
     #[test]
@@ -15043,6 +15930,7 @@ __constant__ int scale;
             "symbol-evidence",
             "abi-evidence",
             "transport-evidence",
+            &[],
         )
         .is_none());
     }
@@ -15123,6 +16011,24 @@ __constant__ int scale;
             .iter()
             .find(|evidence| evidence.kind == "fission-verifier-report")
             .expect("partial artifact fission verifier should be recorded");
+        let source_mapping_evidence = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| {
+                evidence.kind == "fission-phase-source"
+                    && evidence
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("category"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("source_mapping")
+            })
+            .expect("current-run source mapping phase evidence should be recorded");
+        let source_mapping_observation = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| evidence.kind == "fission-source-mapping")
+            .expect("independent source mapping observation should be recorded");
         let symbol_evidence = artifact
             .evidence_refs
             .iter()
@@ -15138,12 +16044,10 @@ __constant__ int scale;
             .as_ref()
             .expect("fission report metadata should be present");
         assert_eq!(fission_stage.status, "blocked");
-        assert!(matches!(
-            fission_stage.degraded_reason.as_deref(),
-            Some("fission.original_host_attachment_instrumentation_missing")
-                | Some("fission.original_host_launch_mapping_missing")
-                | Some("fission.original_host_launch_mapping_evidence_missing")
-        ));
+        assert_eq!(
+            fission_stage.degraded_reason,
+            fission_verifier_rejection_reason(report)
+        );
         assert_eq!(
             report.get("status").and_then(serde_json::Value::as_str),
             Some("reject")
@@ -15158,6 +16062,12 @@ __constant__ int scale;
             report.pointer("/candidates/0/originalHostLaunchMappingId"),
             Some(&serde_json::Value::Null)
         );
+        assert!(report
+            .pointer("/candidates/0/reasonCodes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|codes| codes
+                .iter()
+                .any(|code| code == "fission.output_oracle_missing")));
         assert!(report
             .pointer("/candidates/0/reasonCodes")
             .and_then(serde_json::Value::as_array)
@@ -15202,14 +16112,32 @@ __constant__ int scale;
         );
         assert!(report
             .pointer("/candidates/0/candidate/requiredOracleId")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|value| value.starts_with("oracle:required:sha256:")));
+            .is_none());
+        assert!(report
+            .pointer("/candidates/0/candidate/outputOracleContract")
+            .is_none());
         assert_eq!(
             report
                 .pointer("/candidates/0/candidate/sourceMappingEvidenceIds/0")
                 .and_then(serde_json::Value::as_str),
-            Some(fission_input.evidence_id.as_str())
+            Some(source_mapping_evidence.evidence_id.as_str())
         );
+        assert!(source_mapping_evidence
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("upstreamEvidenceIds"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|ids| ids
+                .iter()
+                .any(|id| id == source_mapping_observation.evidence_id.as_str())));
+        assert!(source_mapping_evidence
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("upstreamEvidenceIds"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|ids| ids
+                .iter()
+                .all(|id| id != fission_input.evidence_id.as_str())));
         assert_eq!(
             report
                 .pointer("/candidates/0/candidate/originalHostLaunchMappingRequired")
@@ -15247,8 +16175,12 @@ __constant__ int scale;
             proof_id_capsule_hash(&written.proof_id).as_deref()
         );
         assert_eq!(
-            device_hmr_fission_publication_blocker(&artifact, &outcome)
-                .map(|block| block.reason_code),
+            device_hmr_fission_publication_blocker(
+                &artifact,
+                &outcome,
+                written.fission_registry.as_ref(),
+            )
+            .map(|block| block.reason_code),
             fission_stage.degraded_reason.clone()
         );
     }
@@ -15267,7 +16199,7 @@ __constant__ int scale;
         let expected_sha256 = format!("sha256:{}", "1".repeat(64));
         let baseline_sha256 = format!("sha256:{}", "2".repeat(64));
         let probe_config_hash = format!("sha256:{}", "3".repeat(64));
-        let mut candidate = complete_fission_candidate_with_output_oracle(serde_json::json!({
+        let candidate = complete_fission_candidate_with_output_oracle(serde_json::json!({
             "kind": "buffer_checksum",
             "oracleId": "oracle:readback:explicit",
             "expectedHash": expected_sha256,
@@ -15286,33 +16218,21 @@ __constant__ int scale;
             "canSatisfyRuntimeProof": true,
             "proofAuthority": "serialized_claim"
         }));
-        candidate["resolved_output_oracle_contract"] = serde_json::json!({
-            "kind": "buffer_checksum",
-            "required_oracle_id": "oracle:readback:explicit",
-            "expected_hash": expected_sha256,
-            "producer_subsystem": "verified.runtime_probe",
-            "output_target": "buffer:result",
-            "baseline_hash": baseline_sha256,
-            "kernel_name": "explicit_kernel_symbol",
-            "probe_mode": "deterministic_readback",
-            "probe_config_hash": probe_config_hash,
-            "expected_output_change": true
-        });
-        let proof = proof_with_selected_fission_candidate(candidate);
+        let (proof, registry) = proof_with_selected_fission_candidate_and_registry(candidate);
+        let verifier_metadata =
+            proof_fission_verifier_metadata(&proof).expect("fission verifier metadata");
         assert_eq!(
-            proof.pointer("/evidenceRefs/0/metadata/status"),
+            verifier_metadata.get("status"),
             Some(&serde_json::json!("pass")),
             "{}",
-            proof["evidenceRefs"][0]["metadata"]
+            verifier_metadata
         );
         assert_eq!(
-            proof.pointer(
-                "/evidenceRefs/0/metadata/candidates/0/outputOracleContract/resolvedContractValid"
-            ),
+            verifier_metadata.pointer("/candidates/0/outputOracleContract/resolvedContractValid"),
             Some(&serde_json::json!(true))
         );
 
-        let contract = proof_fission_output_oracle_contract(&proof)
+        let contract = proof_fission_output_oracle_contract(&proof, Some(&registry))
             .expect("concrete resolved output oracle contract");
 
         assert_eq!(contract["kind"], "buffer_checksum");
@@ -15335,10 +16255,13 @@ __constant__ int scale;
         ] {
             assert!(contract.get(forbidden).is_none());
         }
-        assert!(
-            proof_output_oracle_profile_commitment(&proof, &contract, br#"{"enabled":true}"#,)
-                .is_some()
-        );
+        assert!(proof_output_oracle_profile_commitment(
+            &proof,
+            &contract,
+            br#"{"enabled":true}"#,
+            Some(&registry),
+        )
+        .is_some());
     }
 
     #[test]
@@ -15362,25 +16285,31 @@ __constant__ int scale;
             "runtimeSessionIdSource": "runtime-boundary",
             "artifactIdSource": "selected-artifact"
         });
-        let unverified_contract = proof_with_selected_fission_candidate(candidate);
+        let (unverified_contract, unverified_registry) =
+            proof_with_selected_fission_candidate_and_registry(candidate);
+        let verifier_metadata = proof_fission_verifier_metadata(&unverified_contract)
+            .expect("fission verifier metadata");
         assert_eq!(
-            unverified_contract.pointer("/evidenceRefs/0/metadata/status"),
+            verifier_metadata.get("status"),
             Some(&serde_json::json!("pass"))
         );
         assert_eq!(
-            unverified_contract.pointer(
-                "/evidenceRefs/0/metadata/candidates/0/outputOracleContract/resolvedContractValid"
-            ),
+            verifier_metadata.pointer("/candidates/0/outputOracleContract/resolvedContractValid"),
             Some(&serde_json::json!(false))
         );
-        assert!(proof_fission_output_oracle_contract(&unverified_contract).is_none());
-        let unverified_raw = unverified_contract
-            .pointer("/evidenceRefs/0/metadata/candidates/0/candidate/outputOracleContract")
+        assert!(proof_fission_output_oracle_contract(
+            &unverified_contract,
+            Some(&unverified_registry),
+        )
+        .is_none());
+        let unverified_raw = verifier_metadata
+            .pointer("/candidates/0/candidate/outputOracleContract")
             .expect("unverified resolved contract fixture");
         assert!(proof_output_oracle_profile_commitment(
             &unverified_contract,
             unverified_raw,
             br#"{"enabled":true}"#,
+            Some(&unverified_registry),
         )
         .is_none());
         let fabricated_concrete_contract = serde_json::json!({
@@ -15394,6 +16323,7 @@ __constant__ int scale;
             &unverified_contract,
             &fabricated_concrete_contract,
             br#"{"enabled":true}"#,
+            Some(&unverified_registry),
         )
         .is_none());
 
@@ -15421,8 +16351,12 @@ __constant__ int scale;
             "runtimeSessionIdSource": "runtime-boundary",
             "artifactIdSource": "selected-artifact"
         });
-        let proposal_only = proof_with_selected_fission_candidate(proposal_only_candidate);
-        assert!(proof_fission_output_oracle_contract(&proposal_only).is_none());
+        let (proposal_only, proposal_registry) =
+            proof_with_selected_fission_candidate_and_registry(proposal_only_candidate);
+        assert!(
+            proof_fission_output_oracle_contract(&proposal_only, Some(&proposal_registry),)
+                .is_none()
+        );
     }
 
     #[test]
@@ -15453,9 +16387,9 @@ __constant__ int scale;
                 }
             }]
         });
-        assert!(proof_fission_output_oracle_contract(&fabricated).is_none());
+        assert!(proof_fission_output_oracle_contract(&fabricated, None).is_none());
 
-        let mut tampered = proof_with_selected_fission_candidate(
+        let (mut tampered, tampered_registry) = proof_with_selected_fission_candidate_and_registry(
             complete_fission_candidate_with_output_oracle(serde_json::json!({
                 "kind": "buffer_checksum",
                 "oracleId": "oracle:readback:explicit",
@@ -15469,7 +16403,9 @@ __constant__ int scale;
         );
         tampered["evidenceRefs"][0]["metadata"]["reasonCodes"] =
             serde_json::json!(["fission.candidate_accepted", "serialized_override"]);
-        assert!(proof_fission_output_oracle_contract(&tampered).is_none());
+        assert!(
+            proof_fission_output_oracle_contract(&tampered, Some(&tampered_registry),).is_none()
+        );
     }
 
     #[test]
@@ -15607,9 +16543,16 @@ __constant__ int scale;
 
         assert_eq!(
             report.get("status").and_then(serde_json::Value::as_str),
-            Some("pass")
+            Some("reject")
         );
-        assert_eq!(fission_stage.status, "passed");
+        assert!(report
+            .pointer("/candidates/0/reasonCodes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|codes| codes
+                .iter()
+                .any(|code| code == "fission.output_oracle_missing")));
+        assert_eq!(fission_stage.status, "blocked");
+        assert!(fission_stage.output_artifact_ids.is_empty());
         assert_eq!(
             candidate
                 .get("aiProposalId")
@@ -15630,13 +16573,13 @@ __constant__ int scale;
             candidate
                 .pointer("/outputOracleProposal/kind")
                 .and_then(serde_json::Value::as_str),
-            Some("buffer_checksum")
+            None
         );
         assert_eq!(
             candidate
                 .pointer("/outputOracleProposal/producer")
                 .and_then(serde_json::Value::as_str),
-            Some("worker.runtime_dispatch_replay")
+            None
         );
         assert_eq!(
             candidate
@@ -15665,7 +16608,7 @@ __constant__ int scale;
             report
                 .pointer("/candidates/0/outputOracleContract/proposalValid")
                 .and_then(serde_json::Value::as_bool),
-            Some(true)
+            Some(false)
         );
         let profile_bytes =
             br#"{"schemaVersion":"synthi.gpu_hmr.runtime_output_oracle_profile.v1"}"#;
@@ -15682,14 +16625,17 @@ __constant__ int scale;
         assert!(capsule_metadata.fission_output_oracle_contract.is_none());
         assert!(capsule_metadata.output_oracle_profile_commitment.is_none());
         let proof_value = serde_json::to_value(&artifact).unwrap();
-        assert!(proof_fission_output_oracle_contract(&proof_value).is_none());
+        assert!(proof_fission_output_oracle_contract(&proof_value, None).is_none());
         let proposal = candidate
-            .get("outputOracleProposal")
-            .expect("proposal remains available as non-runtime hint");
-        assert!(
-            proof_output_oracle_profile_commitment(&proof_value, proposal, profile_bytes,)
-                .is_none()
-        );
+            .pointer("/aiProposalCandidate/outputOracleProposal")
+            .expect("AI proposal remains quarantined as a non-runtime hint");
+        assert!(proof_output_oracle_profile_commitment(
+            &proof_value,
+            proposal,
+            profile_bytes,
+            None
+        )
+        .is_none());
     }
 
     #[tokio::test]
@@ -15926,8 +16872,20 @@ __constant__ int scale;
             .expect("fission report metadata should be present");
         assert_eq!(
             report.get("status").and_then(serde_json::Value::as_str),
-            Some("pass")
+            Some("reject")
         );
+        assert!(report
+            .pointer("/candidates/0/reasonCodes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|codes| codes
+                .iter()
+                .any(|code| code == "fission.output_oracle_evidence_missing")));
+        assert!(report
+            .pointer("/candidates/0/reasonCodes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|codes| codes
+                .iter()
+                .any(|code| code == "fission.output_oracle_missing")));
         assert_eq!(
             report
                 .pointer("/candidates/0/originalHostLaunchMappingId")
@@ -15959,7 +16917,11 @@ __constant__ int scale;
             .iter()
             .find(|stage| stage.stage_id == "fission-candidate-verification")
             .expect("fission stage should be recorded");
-        assert_eq!(fission_stage.status, "passed");
+        assert_eq!(fission_stage.status, "blocked");
+        assert_eq!(
+            fission_stage.degraded_reason,
+            fission_verifier_rejection_reason(report)
+        );
     }
 
     #[tokio::test]
@@ -16183,12 +17145,41 @@ void bind_and_launch(Buffer* pixels) {
             Some(true)
         );
 
+        let fission_evidence = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| evidence.kind == "fission-verifier-report")
+            .expect("partial artifact fission verifier should be recorded");
+        let report = fission_evidence
+            .metadata
+            .as_ref()
+            .expect("fission report metadata should be present");
+        assert_eq!(
+            report.get("status").and_then(serde_json::Value::as_str),
+            Some("reject")
+        );
+        assert!(report
+            .pointer("/candidates/0/reasonCodes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|codes| codes
+                .iter()
+                .any(|code| code == "fission.output_oracle_evidence_missing")));
+        assert!(report
+            .pointer("/candidates/0/reasonCodes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|codes| codes
+                .iter()
+                .any(|code| code == "fission.output_oracle_missing")));
         let fission_stage = artifact
             .stage_results
             .iter()
             .find(|stage| stage.stage_id == "fission-candidate-verification")
             .expect("fission stage should be recorded");
-        assert_eq!(fission_stage.status, "passed");
+        assert_eq!(fission_stage.status, "blocked");
+        assert_eq!(
+            fission_stage.degraded_reason,
+            fission_verifier_rejection_reason(report)
+        );
     }
 
     #[test]
@@ -16410,6 +17401,11 @@ void enqueue(float* pixels, dim3 grid, dim3 block, void** args, void* stream) {
             .iter()
             .find(|evidence| evidence.kind == "fission-verifier-report")
             .expect("direct translation unit fission verifier should be recorded");
+        let fission_stage = artifact
+            .stage_results
+            .iter()
+            .find(|stage| stage.stage_id == "fission-candidate-verification")
+            .expect("direct translation unit fission stage should be recorded");
         let report = fission_evidence
             .metadata
             .as_ref()
@@ -16417,8 +17413,25 @@ void enqueue(float* pixels, dim3 grid, dim3 block, void** args, void* stream) {
 
         assert_eq!(
             report.get("status").and_then(serde_json::Value::as_str),
-            Some("pass")
+            Some("reject")
         );
+        assert_eq!(fission_stage.status, "blocked");
+        assert_eq!(
+            fission_stage.degraded_reason,
+            fission_verifier_rejection_reason(report)
+        );
+        assert!(report
+            .pointer("/candidates/0/reasonCodes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|codes| codes
+                .iter()
+                .any(|code| code == "fission.output_oracle_evidence_missing")));
+        assert!(report
+            .pointer("/candidates/0/reasonCodes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|codes| codes
+                .iter()
+                .any(|code| code == "fission.output_oracle_missing")));
         assert_eq!(
             report
                 .pointer("/candidates/0/narrowerRejectionCoverage/requiredRanks")
@@ -16437,6 +17450,15 @@ void enqueue(float* pixels, dim3 grid, dim3 block, void** args, void* stream) {
                 .and_then(serde_json::Value::as_array)
                 .map(Vec::len),
             Some(2)
+        );
+        assert_eq!(
+            device_hmr_fission_publication_blocker(
+                &artifact,
+                &outcome,
+                written.fission_registry.as_ref(),
+            )
+            .map(|block| block.reason_code),
+            fission_stage.degraded_reason
         );
     }
 

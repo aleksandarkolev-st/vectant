@@ -120,6 +120,11 @@ fn should_process_runner_command(command: &str, gpu_reload_inflight_count: usize
     gpu_reload_inflight_count == 0 || is_runtime_control_command(command)
 }
 
+#[cfg(feature = "gpu-hmr")]
+fn gpu_reload_operation_matches_epoch(cold_load: bool, active_epoch_exists: bool) -> bool {
+    cold_load != active_epoch_exists
+}
+
 #[cfg(not(feature = "gpu-hmr"))]
 fn should_process_runner_command(_command: &str, _gpu_reload_inflight_count: usize) -> bool {
     true
@@ -167,9 +172,9 @@ use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::adapter_trait::{
-    decode_reload_capsule_metadata_token, normalized_reload_source_edit_id, Adapter,
-    AdapterReloadRequest, AdapterReloadResult, ReloadArtifactBlob, ReloadCapsuleMetadata,
-    ReloadFirewallEvidence,
+    decode_reload_capsule_metadata_token, normalized_reload_source_edit_id,
+    reload_output_oracle_proof_context_valid_for_reload, Adapter, AdapterReloadRequest,
+    AdapterReloadResult, ReloadArtifactBlob, ReloadCapsuleMetadata, ReloadFirewallEvidence,
 };
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::build_manifest::{
@@ -184,10 +189,11 @@ use worker::hmr::gpu_module_adapter::{
 use worker::hmr::gpu_proof::sha256_hex_bytes;
 #[cfg(feature = "gpu-hmr")]
 use worker::runtime::runner_protocol::{
-    canonical_sha256_content_hash, GpuArtifactLoadV1Result, GpuReloadV2Result, GpuReloadV3Payload,
+    canonical_sha256_content_hash, GpuArtifactLoadV1Result, GpuReloadV2Result, GpuReloadV4Payload,
     RunnerProtocolAck, GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
-    GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
-    RUNNER_PROTOCOL_CURRENT_VERSION, RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
+    GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+    GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, RUNNER_PROTOCOL_CURRENT_VERSION,
+    RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
 };
 
 // use enhanced_fingerprint::{extract_fingerprint_from_module}; // Removed AbiFingerprint
@@ -961,27 +967,64 @@ struct ParsedGpuReloadCommand {
 }
 
 #[cfg(feature = "gpu-hmr")]
-fn parse_gpu_reload_command(parts: &[&str]) -> Result<ParsedGpuReloadCommand, String> {
+fn parse_gpu_reload_command(
+    parts: &[&str],
+    expected_runner_challenge: Option<&str>,
+) -> Result<ParsedGpuReloadCommand, String> {
     if matches!(
         parts.first().copied(),
-        Some("gpu_reload_v3" | "gpu_load_v3")
+        Some("gpu_reload_v4" | "gpu_load_v4")
     ) {
         if parts.len() != 3 {
-            return Err("GPU reload V3 command must contain request ID and payload".to_string());
+            return Err("GPU reload V4 command must contain request ID and payload".to_string());
         }
-        let payload = GpuReloadV3Payload::decode(parts[2])?;
+        let payload = GpuReloadV4Payload::decode(parts[2])?;
         if parts[1] != payload.request_id {
-            return Err("GPU reload V3 command request ID mismatch".to_string());
+            return Err("GPU reload V4 command request ID mismatch".to_string());
+        }
+        let expected_operation = if parts[0] == "gpu_load_v4" {
+            "cold_load"
+        } else {
+            "hot_reload"
+        };
+        if payload.operation != expected_operation {
+            return Err("GPU reload V4 command operation mismatch".to_string());
+        }
+        if expected_runner_challenge != Some(payload.runner_challenge.as_str()) {
+            return Err(
+                "GPU reload V4 runner challenge is missing, stale, or mismatched".to_string(),
+            );
+        }
+        if payload.runner_runtime_session_id != runtime_session_id() {
+            return Err("GPU reload V4 target runtime session mismatch".to_string());
         }
         let source_edit_id = normalized_reload_source_edit_id(Some(&payload.source_edit_id))
             .ok_or_else(|| "GPU reload V2 source edit identity is invalid".to_string())?;
         let abi_version =
             device_load_abi_version(&payload.kernels, payload.abi_fingerprint.as_deref());
-        let capsule_metadata =
-            gpu_reload_capsule_metadata_from_token(payload.capsule_token.as_deref());
+        let capsule_metadata = match payload.capsule_token.as_deref() {
+            Some(token) => Some(
+                gpu_reload_capsule_metadata_from_token(Some(token))
+                    .ok_or_else(|| "GPU reload V4 proof capsule is invalid".to_string())?,
+            ),
+            None => None,
+        };
+        if capsule_metadata.as_ref().is_some_and(|metadata| {
+            !reload_output_oracle_proof_context_valid_for_reload(
+                metadata,
+                payload
+                    .proof_runtime_session_id
+                    .as_deref()
+                    .unwrap_or_default(),
+                &payload.artifact_content_hash,
+                &payload.source_edit_id,
+            )
+        }) {
+            return Err("GPU reload V4 proof capsule/envelope binding mismatch".to_string());
+        }
         return Ok(ParsedGpuReloadCommand {
             request_id: Some(payload.request_id),
-            cold_load: parts[0] == "gpu_load_v3",
+            cold_load: payload.operation == "cold_load",
             partial: payload.mode == "partial",
             vendor: payload.vendor,
             artifact_path: payload.artifact_path,
@@ -1011,7 +1054,7 @@ fn parse_gpu_reload_command(parts: &[&str]) -> Result<ParsedGpuReloadCommand, St
     let capsule_metadata = gpu_reload_capsule_metadata_from_token(parts.get(5).copied());
     if parts.get(6).is_some() {
         return Err(
-            "legacy GPU reload commands cannot claim content binding; use the GPU reload V3 envelope"
+            "legacy GPU reload commands cannot claim content binding; use the GPU reload V4 envelope"
                 .to_string(),
         );
     }
@@ -1027,6 +1070,16 @@ fn parse_gpu_reload_command(parts: &[&str]) -> Result<ParsedGpuReloadCommand, St
         capsule_metadata,
         source_edit_id: None,
     })
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn consume_gpu_protocol_challenge(
+    active_challenge: &mut Option<String>,
+    command_name: &str,
+) -> Option<String> {
+    matches!(command_name, "gpu_reload_v4" | "gpu_load_v4")
+        .then(|| active_challenge.take())
+        .flatten()
 }
 
 // ============================================================
@@ -1696,6 +1749,8 @@ fn main() {
     // processing, frame presentation, or capture.
     let mut runtime_paused: bool = false;
     let mut deferred_commands: VecDeque<String> = VecDeque::new();
+    #[cfg(feature = "gpu-hmr")]
+    let mut active_gpu_protocol_challenge: Option<String> = None;
 
     // ============================================================
     // MODULE LOADER WITH ABI VALIDATION
@@ -2066,10 +2121,10 @@ fn main() {
             }
 
             match parts[0] {
-                "handshake_v3" => {
+                "handshake_v4" => {
                     #[cfg(feature = "gpu-hmr")]
                     {
-                        let valid = parts.len() == 7
+                        let valid = parts.len() == 8
                             && !parts[1].is_empty()
                             && parts[1].len() <= 128
                             && parts[1]
@@ -2081,14 +2136,23 @@ fn main() {
                                 == Some(RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION)
                             && parts[4] == GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY
                             && parts[5] == GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY
-                            && parts[6] == GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY;
+                            && parts[6] == GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY
+                            && parts[7] == GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY;
                         if !valid {
                             eprintln!(
                                 "[Runner] [GPU HMR] Refusing malformed strict GPU protocol handshake"
                             );
                             continue;
                         }
-                        match RunnerProtocolAck::current(parts[1]).line() {
+                        let runner_challenge = uuid::Uuid::new_v4().simple().to_string();
+                        active_gpu_protocol_challenge = Some(runner_challenge.clone());
+                        match RunnerProtocolAck::current(
+                            parts[1],
+                            runtime_session_id(),
+                            runner_challenge,
+                        )
+                        .line()
+                        {
                             Ok(line) => eprintln!("{line}"),
                             Err(error) => eprintln!(
                                 "[Runner] [GPU HMR] Failed to serialize protocol acknowledgement: {error}"
@@ -2347,10 +2411,17 @@ fn main() {
                     // before on_render uses it — prevents flicker
                     skip_render_frames = 1;
                 }
-                "load_device" | "load_device_partial" | "gpu_reload_v3" | "gpu_load_v3" => {
+                "load_device" | "load_device_partial" | "gpu_reload_v4" | "gpu_load_v4" => {
                     #[cfg(feature = "gpu-hmr")]
                     {
-                        let parsed = match parse_gpu_reload_command(&parts) {
+                        let runner_challenge = consume_gpu_protocol_challenge(
+                            &mut active_gpu_protocol_challenge,
+                            parts.first().copied().unwrap_or_default(),
+                        );
+                        let parsed = match parse_gpu_reload_command(
+                            &parts,
+                            runner_challenge.as_deref(),
+                        ) {
                             Ok(parsed) => parsed,
                             Err(error) => {
                                 eprintln!(
@@ -2392,6 +2463,24 @@ fn main() {
                                 continue;
                             }
                         };
+
+                        let active_epoch_exists = gpu_adapters.contains_key(language);
+                        if !gpu_reload_operation_matches_epoch(cold_load, active_epoch_exists) {
+                            let error = if cold_load {
+                                "cold GPU load cannot replace an active device epoch"
+                            } else {
+                                "hot GPU reload requires an active device epoch"
+                            };
+                            eprintln!("[Runner] [GPU HMR] {error}");
+                            emit_correlated_gpu_command_rejection(
+                                cold_load,
+                                terminal_request_id.as_deref(),
+                                terminal_source_edit_id.as_deref(),
+                                expected_artifact_content_hash,
+                                error,
+                            );
+                            continue;
+                        }
 
                         let artifact_blob = gpu_reload_artifact_blob_from_path(artifact_path);
                         if let Err(error) = validate_gpu_reload_artifact_content_hash(
@@ -3054,8 +3143,9 @@ mod tests {
     #[cfg(feature = "gpu-hmr")]
     use super::{
         canonical_runner_runtime_ledger_proof_id, catch_gpu_reload_worker_result,
-        gpu_artifact_loader_transport_for_reload, gpu_reload_artifact_blob_from_path,
-        gpu_reload_capsule_metadata_from_token, gpu_reload_result_allows_adapter_restore,
+        consume_gpu_protocol_challenge, gpu_artifact_loader_transport_for_reload,
+        gpu_reload_artifact_blob_from_path, gpu_reload_capsule_metadata_from_token,
+        gpu_reload_operation_matches_epoch, gpu_reload_result_allows_adapter_restore,
         gpu_reload_source_paths, parse_gpu_artifact_loader_transport, parse_gpu_reload_command,
         recomputed_runtime_proof_id, strict_gpu_reload_terminal_result,
         validate_gpu_reload_artifact_content_hash, AdapterReloadResult, ArtifactLoaderTransport,
@@ -3070,7 +3160,7 @@ mod tests {
     #[cfg(feature = "gpu-hmr")]
     use std::io::Write as _;
     #[cfg(feature = "gpu-hmr")]
-    use worker::runtime::runner_protocol::GpuReloadV3Payload;
+    use worker::runtime::runner_protocol::GpuReloadV4Payload;
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
@@ -3208,6 +3298,15 @@ mod tests {
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
+    fn gpu_reload_operation_requires_matching_epoch_state() {
+        assert!(gpu_reload_operation_matches_epoch(true, false));
+        assert!(gpu_reload_operation_matches_epoch(false, true));
+        assert!(!gpu_reload_operation_matches_epoch(true, true));
+        assert!(!gpu_reload_operation_matches_epoch(false, false));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
     fn gpu_reload_artifact_blob_from_path_hashes_runtime_bytes() {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"runtime-artifact").unwrap();
@@ -3246,45 +3345,210 @@ mod tests {
     }
 
     #[cfg(feature = "gpu-hmr")]
+    fn bound_gpu_reload_capsule_token(
+        runtime_session_id: &str,
+        artifact_content_hash: &str,
+        source_edit_id: &str,
+    ) -> String {
+        use worker::hmr::adapter_trait::{
+            bind_reload_output_oracle_proof_context, encode_reload_capsule_metadata_token,
+            reload_output_oracle_contract_content_hash, ReloadCapsuleMetadata,
+            ReloadOutputOracleProfileCommitment,
+            RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
+        };
+
+        let proof_digest = "d".repeat(64);
+        let contract = serde_json::json!({
+            "kind": "compute_readback",
+            "outputTargetId": "buffer:result",
+            "causalOutputChangeRequired": true,
+        });
+        let mut metadata =
+            ReloadCapsuleMetadata {
+                fission_island_id: Some(format!("fission-island:sha256:{}", "1".repeat(64))),
+                fission_output_oracle_contract: Some(contract.clone()),
+                output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
+                    schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.into(),
+                    candidate_artifact_sha256: artifact_content_hash.to_string(),
+                    fission_output_oracle_contract_sha256:
+                        reload_output_oracle_contract_content_hash(&contract).unwrap(),
+                    profile_bytes_sha256: format!("sha256:{}", "c".repeat(64)),
+                    edit_id: source_edit_id.to_string(),
+                }),
+                abi_membrane_hash: Some(format!("sha256:{}", "4".repeat(64))),
+                dependency_closure_hash: Some(format!("sha256:{}", "5".repeat(64))),
+                proof_hash: Some(format!("sha256:{proof_digest}")),
+                ..Default::default()
+            };
+        assert!(bind_reload_output_oracle_proof_context(
+            &mut metadata,
+            &format!("gpu-proof:{proof_digest}"),
+            "2026-07-16T12:00:00.000Z",
+            runtime_session_id,
+        ));
+        encode_reload_capsule_metadata_token(&metadata).expect("bound capsule token")
+    }
+
+    #[cfg(feature = "gpu-hmr")]
     #[test]
     fn gpu_reload_capsule_metadata_decodes_runner_protocol_token() {
-        let token = worker::hmr::adapter_trait::encode_reload_capsule_metadata_token(
-            &worker::hmr::adapter_trait::ReloadCapsuleMetadata {
-                fission_island_id: Some("fission-island:sha256:abc".into()),
-                output_oracle_profile_commitment: Some(
-                    worker::hmr::adapter_trait::ReloadOutputOracleProfileCommitment {
-                        schema_version: worker::hmr::adapter_trait::RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.into(),
-                        candidate_artifact_sha256: format!("sha256:{}", "a".repeat(64)),
-                        fission_output_oracle_contract_sha256: format!(
-                            "sha256:{}",
-                            "b".repeat(64)
-                        ),
-                        profile_bytes_sha256: format!("sha256:{}", "c".repeat(64)),
-                        edit_id: "source-edit:runner-proof".into(),
-                    },
-                ),
-                abi_membrane_hash: Some("sha256:def".into()),
-                dependency_closure_hash: Some("sha256:123".into()),
-                proof_hash: Some("sha256:456".into()),
-                ..Default::default()
-            },
-        )
-        .expect("capsule token");
+        let artifact_hash = format!("sha256:{}", "a".repeat(64));
+        let source_edit_id = format!("source-edit:sha256:{}", "e".repeat(64));
+        let token =
+            bound_gpu_reload_capsule_token("runtime-session:test", &artifact_hash, &source_edit_id);
 
         let metadata =
             gpu_reload_capsule_metadata_from_token(Some(&token)).expect("runner capsule metadata");
 
         assert_eq!(
             metadata.fission_island_id.as_deref(),
-            Some("fission-island:sha256:abc")
+            Some(format!("fission-island:sha256:{}", "1".repeat(64)).as_str())
         );
-        assert_eq!(metadata.abi_membrane_hash.as_deref(), Some("sha256:def"));
+        assert_eq!(
+            metadata.abi_membrane_hash.as_deref(),
+            Some(format!("sha256:{}", "4".repeat(64)).as_str())
+        );
         assert_eq!(
             metadata.dependency_closure_hash.as_deref(),
-            Some("sha256:123")
+            Some(format!("sha256:{}", "5".repeat(64)).as_str())
         );
-        assert_eq!(metadata.proof_hash.as_deref(), Some("sha256:456"));
+        assert_eq!(
+            metadata.proof_hash.as_deref(),
+            Some(format!("sha256:{}", "d".repeat(64)).as_str())
+        );
         assert!(gpu_reload_capsule_metadata_from_token(Some("-")).is_none());
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn gpu_reload_v4_parser_rejects_replayed_capsule_or_envelope_identity() {
+        let artifact_hash = format!("sha256:{}", "a".repeat(64));
+        let source_edit_id = format!("source-edit:sha256:{}", "e".repeat(64));
+        let runner_challenge = "6".repeat(32);
+        let runner_session = super::runtime_session_id().to_string();
+        let capsule =
+            bound_gpu_reload_capsule_token("runtime-session:a", &artifact_hash, &source_edit_id);
+        let make_payload = |session: &str, artifact_hash: String, source_edit_id: String| {
+            GpuReloadV4Payload::new(
+                format!("gpu-reload:request:{}", "6".repeat(32)),
+                "hot_reload",
+                "partial",
+                "rocm",
+                "/tmp/device.hsaco",
+                artifact_hash,
+                vec!["gpu::shade".to_string()],
+                Some("sha256:abi".to_string()),
+                Some(capsule.clone()),
+                source_edit_id,
+                Some(session.to_string()),
+                runner_session.clone(),
+                runner_challenge.clone(),
+            )
+            .unwrap()
+        };
+        let parse = |payload: &GpuReloadV4Payload| {
+            let encoded = payload.encode().unwrap();
+            parse_gpu_reload_command(
+                &[
+                    "gpu_reload_v4",
+                    payload.request_id.as_str(),
+                    encoded.as_str(),
+                ],
+                Some(&runner_challenge),
+            )
+        };
+
+        let accepted = make_payload(
+            "runtime-session:a",
+            artifact_hash.clone(),
+            source_edit_id.clone(),
+        );
+        assert!(parse(&accepted).is_ok());
+
+        let wrong_session = make_payload(
+            "runtime-session:b",
+            artifact_hash.clone(),
+            source_edit_id.clone(),
+        );
+        assert!(parse(&wrong_session)
+            .unwrap_err()
+            .contains("capsule/envelope binding mismatch"));
+
+        let wrong_artifact = make_payload(
+            "runtime-session:a",
+            format!("sha256:{}", "b".repeat(64)),
+            source_edit_id.clone(),
+        );
+        assert!(parse(&wrong_artifact)
+            .unwrap_err()
+            .contains("capsule/envelope binding mismatch"));
+
+        let wrong_edit = make_payload(
+            "runtime-session:a",
+            artifact_hash,
+            format!("source-edit:sha256:{}", "f".repeat(64)),
+        );
+        assert!(parse(&wrong_edit)
+            .unwrap_err()
+            .contains("capsule/envelope binding mismatch"));
+
+        let encoded = accepted.encode().unwrap();
+        assert!(parse_gpu_reload_command(
+            &[
+                "gpu_load_v4",
+                accepted.request_id.as_str(),
+                encoded.as_str(),
+            ],
+            Some(&runner_challenge),
+        )
+        .unwrap_err()
+        .contains("operation mismatch"));
+        assert!(parse_gpu_reload_command(
+            &[
+                "gpu_reload_v4",
+                accepted.request_id.as_str(),
+                encoded.as_str(),
+            ],
+            Some("77777777777777777777777777777777"),
+        )
+        .unwrap_err()
+        .contains("challenge"));
+
+        let wrong_target_session = GpuReloadV4Payload::new(
+            accepted.request_id.clone(),
+            "hot_reload",
+            "partial",
+            "rocm",
+            "/tmp/device.hsaco",
+            accepted.artifact_content_hash.clone(),
+            vec!["gpu::shade".to_string()],
+            Some("sha256:abi".to_string()),
+            accepted.capsule_token.clone(),
+            accepted.source_edit_id.clone(),
+            accepted.proof_runtime_session_id.clone(),
+            "pid:999999:boot:11111111111111111111111111111111".to_string(),
+            runner_challenge.clone(),
+        )
+        .unwrap();
+        assert!(parse(&wrong_target_session)
+            .unwrap_err()
+            .contains("target runtime session mismatch"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn gpu_protocol_challenge_is_consumed_exactly_once() {
+        let challenge = "8".repeat(32);
+        let mut active = Some(challenge.clone());
+
+        assert!(consume_gpu_protocol_challenge(&mut active, "load_device").is_none());
+        assert_eq!(active.as_deref(), Some(challenge.as_str()));
+        assert_eq!(
+            consume_gpu_protocol_challenge(&mut active, "gpu_reload_v4").as_deref(),
+            Some(challenge.as_str())
+        );
+        assert!(active.is_none());
+        assert!(consume_gpu_protocol_challenge(&mut active, "gpu_reload_v4").is_none());
     }
 
     #[cfg(feature = "gpu-hmr")]
@@ -3311,27 +3575,36 @@ mod tests {
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
-    fn gpu_reload_v3_parser_preserves_independent_identity_and_typed_fields() {
+    fn gpu_reload_v4_parser_preserves_independent_identity_and_typed_fields() {
         let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
-        let payload = GpuReloadV3Payload::new(
+        let artifact_hash = format!("sha256:{}", "b".repeat(64));
+        let proof_session = "runtime-session:test";
+        let runner_challenge = "1".repeat(32);
+        let capsule =
+            bound_gpu_reload_capsule_token(proof_session, &artifact_hash, &source_edit_id);
+        let payload = GpuReloadV4Payload::new(
             format!("gpu-reload:request:{}", "1".repeat(32)),
+            "hot_reload",
             "partial",
             "rocm",
             "/tmp/path with space/device.hsaco",
-            format!("sha256:{}", "b".repeat(64)),
+            artifact_hash,
             vec!["gpu::shade".to_string()],
             Some("sha256:abi".to_string()),
-            None,
+            Some(capsule),
             source_edit_id.clone(),
+            Some(proof_session.to_string()),
+            super::runtime_session_id().to_string(),
+            runner_challenge.clone(),
         )
         .unwrap();
         let encoded = payload.encode().unwrap();
         let parts = [
-            "gpu_reload_v3",
+            "gpu_reload_v4",
             payload.request_id.as_str(),
             encoded.as_str(),
         ];
-        let parsed = parse_gpu_reload_command(&parts).unwrap();
+        let parsed = parse_gpu_reload_command(&parts, Some(&runner_challenge)).unwrap();
         assert!(!parsed.cold_load);
         assert_eq!(
             parsed.request_id.as_deref(),
@@ -3365,17 +3638,19 @@ mod tests {
             "-",
             artifact_hash.as_str(),
         ];
-        let error = parse_gpu_reload_command(&parts).unwrap_err();
+        let error = parse_gpu_reload_command(&parts, None).unwrap_err();
         assert!(error.contains("cannot claim content binding"));
-        assert!(error.contains("V3"));
+        assert!(error.contains("V4"));
     }
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
-    fn cold_gpu_load_v3_preserves_correlation_without_claiming_hot_reload() {
+    fn cold_gpu_load_v4_preserves_correlation_without_claiming_hot_reload() {
         let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
-        let payload = GpuReloadV3Payload::new(
+        let runner_challenge = "4".repeat(32);
+        let payload = GpuReloadV4Payload::new(
             format!("gpu-reload:request:{}", "4".repeat(32)),
+            "cold_load",
             "full",
             "rocm",
             "/tmp/device.hsaco",
@@ -3384,11 +3659,14 @@ mod tests {
             Some("sha256:abi".to_string()),
             None,
             source_edit_id,
+            None,
+            super::runtime_session_id().to_string(),
+            runner_challenge.clone(),
         )
         .unwrap();
         let encoded = payload.encode().unwrap();
-        let parts = ["gpu_load_v3", payload.request_id.as_str(), encoded.as_str()];
-        let parsed = parse_gpu_reload_command(&parts).unwrap();
+        let parts = ["gpu_load_v4", payload.request_id.as_str(), encoded.as_str()];
+        let parsed = parse_gpu_reload_command(&parts, Some(&runner_challenge)).unwrap();
         assert!(parsed.cold_load);
         assert_eq!(
             parsed.request_id.as_deref(),

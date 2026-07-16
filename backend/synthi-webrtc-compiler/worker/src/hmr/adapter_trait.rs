@@ -8,7 +8,8 @@
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -35,6 +36,8 @@ pub struct ReloadArtifactBlob {
 
 pub const RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION: &str =
     "synthi.gpu_hmr.reload_output_oracle_profile_commitment.v1";
+pub const RELOAD_OUTPUT_ORACLE_PROOF_CONTEXT_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.reload_output_oracle_proof_context.v1";
 pub const GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH_ENV: &str =
     "SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH";
 pub const GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_DEFAULT_PATH: &str =
@@ -68,6 +71,23 @@ pub struct ReloadOutputOracleProfileCommitment {
     pub edit_id: String,
 }
 
+/// Content binding between a verified proof and the exact capsule fields sent
+/// to the target process. The target still compares `runtime_session_id`
+/// against the independently transported reload envelope before mutation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReloadOutputOracleProofContext {
+    #[serde(default)]
+    pub schema_version: String,
+    #[serde(default)]
+    pub proof_id: String,
+    #[serde(default)]
+    pub proof_created_at: String,
+    #[serde(default)]
+    pub runtime_session_id: String,
+    #[serde(default)]
+    pub binding_sha256: String,
+}
+
 /// Optional proof/capsule identity metadata for a hot-reload publication.
 ///
 /// Adapters may ignore fields they cannot use, but GPU epoch publication
@@ -91,6 +111,8 @@ pub struct ReloadCapsuleMetadata {
     pub fission_output_oracle_contract: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub output_oracle_profile_commitment: Option<ReloadOutputOracleProfileCommitment>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub output_oracle_proof_context: Option<ReloadOutputOracleProofContext>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub abi_membrane_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,13 +165,214 @@ impl ReloadFirewallEvidence {
 
 const RELOAD_CAPSULE_METADATA_TOKEN_PREFIX: &str = "capsulev1_";
 
+fn stable_json_string(value: &Value) -> String {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+        }
+        Value::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(stable_json_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Object(map) => {
+            let mut keys = map.keys().collect::<Vec<_>>();
+            keys.sort();
+            let fields = keys
+                .into_iter()
+                .map(|key| {
+                    let encoded_key =
+                        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string());
+                    let encoded_value = stable_json_string(map.get(key).unwrap_or(&Value::Null));
+                    format!("{encoded_key}:{encoded_value}")
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{fields}}}")
+        }
+    }
+}
+
+fn sha256_prefixed(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+/// Returns the canonical content hash for a typed output-oracle contract.
+/// Callers and validators share this function so object key insertion order
+/// cannot create different commitments for the same contract.
+pub fn reload_output_oracle_contract_content_hash(contract: &Value) -> Option<String> {
+    contract
+        .is_object()
+        .then(|| sha256_prefixed(stable_json_string(contract).as_bytes()))
+}
+
+fn canonical_sha256(value: &str) -> bool {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn canonical_gpu_proof_id(value: &str) -> Option<&str> {
+    let digest = value.strip_prefix("gpu-proof:")?;
+    (digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
+    .then_some(digest)
+}
+
+fn proof_context_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 1024
+        && !value.chars().any(char::is_whitespace)
+        && !value.chars().any(char::is_control)
+}
+
+fn output_oracle_proof_context_material(metadata: &ReloadCapsuleMetadata) -> Option<Value> {
+    let context = metadata.output_oracle_proof_context.as_ref()?;
+    let commitment = metadata.output_oracle_profile_commitment.as_ref()?;
+    Some(json!({
+        "schemaVersion": RELOAD_OUTPUT_ORACLE_PROOF_CONTEXT_SCHEMA_VERSION,
+        "proofId": context.proof_id,
+        "proofCreatedAt": context.proof_created_at,
+        "runtimeSessionId": context.runtime_session_id,
+        "proofHash": metadata.proof_hash,
+        "fissionIslandId": metadata.fission_island_id,
+        "fissionVerifierEvidenceId": metadata.fission_verifier_evidence_id,
+        "selectedVerifierEvidenceId": metadata.selected_verifier_evidence_id,
+        "deterministicVerifierEvidenceRefs": metadata.deterministic_verifier_evidence_refs,
+        "fissionSourcePaths": metadata.fission_source_paths,
+        "fissionSelectionDecisionHash": metadata.fission_selection_decision_hash,
+        "fissionOutputOracleContract": metadata.fission_output_oracle_contract,
+        "outputOracleProfileCommitment": commitment,
+        "abiMembraneHash": metadata.abi_membrane_hash,
+        "dependencyClosureHash": metadata.dependency_closure_hash,
+    }))
+}
+
+fn output_oracle_proof_context_hash(metadata: &ReloadCapsuleMetadata) -> Option<String> {
+    let material = output_oracle_proof_context_material(metadata)?;
+    Some(sha256_prefixed(stable_json_string(&material).as_bytes()))
+}
+
+/// Binds a registry-validated proof identity to every durable capsule field
+/// consumed by output-oracle publication. This function does not grant proof
+/// authority; the runner must also validate the independently transported
+/// runtime-session identity.
+pub fn bind_reload_output_oracle_proof_context(
+    metadata: &mut ReloadCapsuleMetadata,
+    proof_id: &str,
+    proof_created_at: &str,
+    runtime_session_id: &str,
+) -> bool {
+    let Some(mut normalized) = normalized_reload_capsule_metadata_fields(metadata) else {
+        return false;
+    };
+    normalized.output_oracle_proof_context = None;
+    *metadata = normalized;
+    let Some(proof_digest) = canonical_gpu_proof_id(proof_id) else {
+        return false;
+    };
+    let expected_proof_hash = format!("sha256:{proof_digest}");
+    if chrono::DateTime::parse_from_rfc3339(proof_created_at).is_err()
+        || !proof_context_token(runtime_session_id)
+        || metadata.output_oracle_profile_commitment.is_none()
+        || metadata.fission_output_oracle_contract.is_none()
+        || metadata.proof_hash.as_deref() != Some(expected_proof_hash.as_str())
+    {
+        return false;
+    }
+    metadata.output_oracle_proof_context = Some(ReloadOutputOracleProofContext {
+        schema_version: RELOAD_OUTPUT_ORACLE_PROOF_CONTEXT_SCHEMA_VERSION.to_string(),
+        proof_id: proof_id.to_string(),
+        proof_created_at: proof_created_at.to_string(),
+        runtime_session_id: runtime_session_id.to_string(),
+        binding_sha256: String::new(),
+    });
+    let Some(binding_sha256) = output_oracle_proof_context_hash(metadata) else {
+        metadata.output_oracle_proof_context = None;
+        return false;
+    };
+    metadata
+        .output_oracle_proof_context
+        .as_mut()
+        .expect("proof context inserted above")
+        .binding_sha256 = binding_sha256;
+    reload_output_oracle_proof_context_valid(metadata, Some(runtime_session_id))
+}
+
+/// Recomputes the complete proof/capsule binding and optionally checks the
+/// runtime session received through an independent runner-protocol field.
+pub fn reload_output_oracle_proof_context_valid(
+    metadata: &ReloadCapsuleMetadata,
+    expected_runtime_session_id: Option<&str>,
+) -> bool {
+    let Some(context) = metadata.output_oracle_proof_context.as_ref() else {
+        return false;
+    };
+    let Some(commitment) = metadata.output_oracle_profile_commitment.as_ref() else {
+        return false;
+    };
+    let Some(proof_digest) = canonical_gpu_proof_id(&context.proof_id) else {
+        return false;
+    };
+    let Some(contract_sha256) = metadata
+        .fission_output_oracle_contract
+        .as_ref()
+        .and_then(reload_output_oracle_contract_content_hash)
+    else {
+        return false;
+    };
+    let expected_proof_hash = format!("sha256:{proof_digest}");
+    context.schema_version == RELOAD_OUTPUT_ORACLE_PROOF_CONTEXT_SCHEMA_VERSION
+        && chrono::DateTime::parse_from_rfc3339(&context.proof_created_at).is_ok()
+        && proof_context_token(&context.runtime_session_id)
+        && expected_runtime_session_id.is_none_or(|expected| expected == context.runtime_session_id)
+        && metadata.proof_hash.as_deref() == Some(expected_proof_hash.as_str())
+        && commitment.schema_version == RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION
+        && canonical_sha256(&commitment.candidate_artifact_sha256)
+        && commitment.fission_output_oracle_contract_sha256 == contract_sha256
+        && canonical_sha256(&commitment.profile_bytes_sha256)
+        && normalized_reload_source_edit_id(Some(&commitment.edit_id)).is_some()
+        && canonical_sha256(&context.binding_sha256)
+        && output_oracle_proof_context_hash(metadata).as_deref()
+            == Some(context.binding_sha256.as_str())
+}
+
+/// Recomputes the durable capsule binding and ties it to the independently
+/// transported reload envelope. None of these fields grants authority alone.
+pub fn reload_output_oracle_proof_context_valid_for_reload(
+    metadata: &ReloadCapsuleMetadata,
+    expected_runtime_session_id: &str,
+    expected_artifact_content_hash: &str,
+    expected_source_edit_id: &str,
+) -> bool {
+    let Some(commitment) = metadata.output_oracle_profile_commitment.as_ref() else {
+        return false;
+    };
+    reload_output_oracle_proof_context_valid(metadata, Some(expected_runtime_session_id))
+        && canonical_sha256(expected_artifact_content_hash)
+        && commitment.candidate_artifact_sha256 == expected_artifact_content_hash
+        && normalized_reload_source_edit_id(Some(expected_source_edit_id)).is_some()
+        && commitment.edit_id == expected_source_edit_id
+}
+
 fn non_empty_token(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty() && value != "none")
 }
 
-fn normalized_reload_capsule_metadata(
+fn normalized_reload_capsule_metadata_fields(
     metadata: &ReloadCapsuleMetadata,
 ) -> Option<ReloadCapsuleMetadata> {
     let normalized = ReloadCapsuleMetadata {
@@ -182,6 +405,15 @@ fn normalized_reload_capsule_metadata(
                 edit_id: commitment.edit_id.trim().to_string(),
             },
         ),
+        output_oracle_proof_context: metadata.output_oracle_proof_context.clone().map(|context| {
+            ReloadOutputOracleProofContext {
+                schema_version: context.schema_version.trim().to_string(),
+                proof_id: context.proof_id.trim().to_string(),
+                proof_created_at: context.proof_created_at.trim().to_string(),
+                runtime_session_id: context.runtime_session_id.trim().to_string(),
+                binding_sha256: context.binding_sha256.trim().to_string(),
+            }
+        }),
         abi_membrane_hash: non_empty_token(metadata.abi_membrane_hash.clone()),
         dependency_closure_hash: non_empty_token(metadata.dependency_closure_hash.clone()),
         proof_hash: non_empty_token(metadata.proof_hash.clone()),
@@ -194,10 +426,27 @@ fn normalized_reload_capsule_metadata(
         || normalized.fission_selection_decision_hash.is_some()
         || normalized.fission_output_oracle_contract.is_some()
         || normalized.output_oracle_profile_commitment.is_some()
+        || normalized.output_oracle_proof_context.is_some()
         || normalized.abi_membrane_hash.is_some()
         || normalized.dependency_closure_hash.is_some()
         || normalized.proof_hash.is_some())
     .then_some(normalized)
+}
+
+fn normalized_reload_capsule_metadata(
+    metadata: &ReloadCapsuleMetadata,
+) -> Option<ReloadCapsuleMetadata> {
+    let normalized = normalized_reload_capsule_metadata_fields(metadata)?;
+    match (
+        normalized.output_oracle_profile_commitment.as_ref(),
+        normalized.output_oracle_proof_context.as_ref(),
+    ) {
+        (Some(_), Some(_)) if reload_output_oracle_proof_context_valid(&normalized, None) => {
+            Some(normalized)
+        }
+        (None, None) => Some(normalized),
+        _ => None,
+    }
 }
 
 fn non_empty_string_vec(value: Option<Vec<String>>) -> Option<Vec<String>> {
@@ -415,22 +664,35 @@ mod tests {
 
     #[test]
     fn reload_capsule_metadata_token_round_trips_non_empty_fields() {
-        let metadata = ReloadCapsuleMetadata {
-            fission_island_id: Some(" fission-island:sha256:abc ".into()),
-            output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
-                schema_version: format!(
-                    " {RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION} "
-                ),
-                candidate_artifact_sha256: format!(" sha256:{} ", "a".repeat(64)),
-                fission_output_oracle_contract_sha256: format!(" sha256:{} ", "b".repeat(64)),
-                profile_bytes_sha256: format!(" sha256:{} ", "c".repeat(64)),
-                edit_id: " edit-7 ".into(),
-            }),
-            abi_membrane_hash: Some("sha256:def".into()),
-            dependency_closure_hash: Some("".into()),
-            proof_hash: Some("sha256:123".into()),
-            ..Default::default()
-        };
+        let proof_digest = "d".repeat(64);
+        let contract = json!({
+            "kind": "compute_readback",
+            "outputTargetId": "buffer:result",
+            "causalOutputChangeRequired": true,
+        });
+        let mut metadata =
+            ReloadCapsuleMetadata {
+                fission_island_id: Some(" fission-island:sha256:abc ".into()),
+                fission_output_oracle_contract: Some(contract.clone()),
+                output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
+                    schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.into(),
+                    candidate_artifact_sha256: format!("sha256:{}", "a".repeat(64)),
+                    fission_output_oracle_contract_sha256:
+                        reload_output_oracle_contract_content_hash(&contract).unwrap(),
+                    profile_bytes_sha256: format!("sha256:{}", "c".repeat(64)),
+                    edit_id: format!("source-edit:sha256:{}", "e".repeat(64)),
+                }),
+                abi_membrane_hash: Some("sha256:def".into()),
+                dependency_closure_hash: Some("".into()),
+                proof_hash: Some(format!("sha256:{proof_digest}")),
+                ..Default::default()
+            };
+        assert!(bind_reload_output_oracle_proof_context(
+            &mut metadata,
+            &format!("gpu-proof:{proof_digest}"),
+            "2026-07-16T12:00:00.000Z",
+            "runtime-session:test",
+        ));
 
         let token = encode_reload_capsule_metadata_token(&metadata).expect("capsule token");
         assert!(token.starts_with("capsulev1_"));
@@ -445,21 +707,35 @@ mod tests {
         );
         assert_eq!(decoded.abi_membrane_hash.as_deref(), Some("sha256:def"));
         assert_eq!(decoded.dependency_closure_hash, None);
-        assert_eq!(decoded.proof_hash.as_deref(), Some("sha256:123"));
+        assert_eq!(
+            decoded.proof_hash.as_deref(),
+            Some(format!("sha256:{proof_digest}").as_str())
+        );
+        assert!(reload_output_oracle_proof_context_valid(
+            &decoded,
+            Some("runtime-session:test")
+        ));
+        assert!(!reload_output_oracle_proof_context_valid(
+            &decoded,
+            Some("runtime-session:replay")
+        ));
         assert_eq!(
             decoded.output_oracle_profile_commitment,
             Some(ReloadOutputOracleProfileCommitment {
                 schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.into(),
                 candidate_artifact_sha256: format!("sha256:{}", "a".repeat(64)),
-                fission_output_oracle_contract_sha256: format!("sha256:{}", "b".repeat(64)),
+                fission_output_oracle_contract_sha256: reload_output_oracle_contract_content_hash(
+                    &contract
+                )
+                .unwrap(),
                 profile_bytes_sha256: format!("sha256:{}", "c".repeat(64)),
-                edit_id: "edit-7".into(),
+                edit_id: format!("source-edit:sha256:{}", "e".repeat(64)),
             })
         );
     }
 
     #[test]
-    fn reload_capsule_metadata_preserves_incomplete_oracle_commitment() {
+    fn reload_capsule_metadata_rejects_incomplete_oracle_commitment_context() {
         let metadata = ReloadCapsuleMetadata {
             output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
                 schema_version: " invalid-schema ".into(),
@@ -467,16 +743,80 @@ mod tests {
             }),
             ..Default::default()
         };
-        let token = encode_reload_capsule_metadata_token(&metadata).expect("capsule token");
-        let decoded = decode_reload_capsule_metadata_token(&token).expect("capsule metadata");
-        let commitment = decoded
+        assert!(encode_reload_capsule_metadata_token(&metadata).is_none());
+    }
+
+    #[test]
+    fn reload_capsule_proof_context_rejects_cross_session_and_field_splices() {
+        let proof_digest = "d".repeat(64);
+        let contract = json!({
+            "kind": "compute_readback",
+            "outputTargetId": "buffer:result",
+            "causalOutputChangeRequired": true,
+        });
+        let mut metadata =
+            ReloadCapsuleMetadata {
+                fission_island_id: Some(format!("fission-island:sha256:{}", "1".repeat(64))),
+                fission_verifier_evidence_id: Some(format!(
+                    "fission-verifier:sha256:{}",
+                    "2".repeat(64)
+                )),
+                fission_output_oracle_contract: Some(contract.clone()),
+                output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
+                    schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.into(),
+                    candidate_artifact_sha256: format!("sha256:{}", "a".repeat(64)),
+                    fission_output_oracle_contract_sha256:
+                        reload_output_oracle_contract_content_hash(&contract).unwrap(),
+                    profile_bytes_sha256: format!("sha256:{}", "c".repeat(64)),
+                    edit_id: format!("source-edit:sha256:{}", "e".repeat(64)),
+                }),
+                proof_hash: Some(format!("sha256:{proof_digest}")),
+                ..Default::default()
+            };
+        assert!(bind_reload_output_oracle_proof_context(
+            &mut metadata,
+            &format!("gpu-proof:{proof_digest}"),
+            "2026-07-16T12:00:00.000Z",
+            "runtime-session:a",
+        ));
+        assert!(reload_output_oracle_proof_context_valid(
+            &metadata,
+            Some("runtime-session:a")
+        ));
+        assert!(!reload_output_oracle_proof_context_valid(
+            &metadata,
+            Some("runtime-session:b")
+        ));
+
+        let mut changed_context = metadata.clone();
+        changed_context
+            .output_oracle_proof_context
+            .as_mut()
+            .unwrap()
+            .runtime_session_id = "runtime-session:b".to_string();
+        assert!(!reload_output_oracle_proof_context_valid(
+            &changed_context,
+            Some("runtime-session:b")
+        ));
+
+        let mut changed_capsule = metadata.clone();
+        changed_capsule.fission_verifier_evidence_id =
+            Some(format!("fission-verifier:sha256:{}", "3".repeat(64)));
+        assert!(!reload_output_oracle_proof_context_valid(
+            &changed_capsule,
+            Some("runtime-session:a")
+        ));
+
+        let mut changed_contract_commitment = metadata;
+        changed_contract_commitment
             .output_oracle_profile_commitment
-            .expect("incomplete commitment remains visible to fail-closed validation");
-        assert_eq!(commitment.schema_version, "invalid-schema");
-        assert!(commitment.candidate_artifact_sha256.is_empty());
-        assert!(commitment.fission_output_oracle_contract_sha256.is_empty());
-        assert!(commitment.profile_bytes_sha256.is_empty());
-        assert!(commitment.edit_id.is_empty());
+            .as_mut()
+            .unwrap()
+            .fission_output_oracle_contract_sha256 = format!("sha256:{}", "f".repeat(64));
+        assert!(!reload_output_oracle_proof_context_valid(
+            &changed_contract_commitment,
+            Some("runtime-session:a")
+        ));
     }
 
     #[test]

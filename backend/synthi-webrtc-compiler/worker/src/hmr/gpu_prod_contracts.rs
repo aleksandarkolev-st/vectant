@@ -2937,7 +2937,6 @@ fn stable_hash(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hmr::gpu_fission::materialize_content_bound_fission_evidence;
 
     fn gpu_compile_manifest() -> Value {
         json!({
@@ -3118,7 +3117,7 @@ mod tests {
 
     fn content_addressed_fission_candidate(digest: &str) -> Value {
         let source_evidence_id = format!("evidence:test-observation:{}", "b".repeat(64));
-        let mut candidate = json!({
+        let candidate = json!({
             "islandId": "island:sha256:abc",
             "sourceEditId": "edit:abc",
             "sourcePaths": ["src/render.kernel"],
@@ -3181,10 +3180,6 @@ mod tests {
                 }
             ]
         });
-        assert_eq!(
-            materialize_content_bound_fission_evidence(&mut candidate),
-            8
-        );
         candidate
     }
 
@@ -4448,7 +4443,7 @@ mod tests {
     }
 
     #[test]
-    fn fission_candidate_report_is_promoted_into_run_report() {
+    fn serialized_fission_candidate_is_refused_without_current_run_registry() {
         let manifest = gpu_compile_manifest();
         let digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let fission_candidate = content_addressed_fission_candidate(digest);
@@ -4463,7 +4458,7 @@ mod tests {
             migrated
                 .pointer("/fissionVerifierReport/status")
                 .and_then(Value::as_str),
-            Some("pass"),
+            Some("reject"),
             "{}",
             migrated["fissionVerifierReport"]
         );
@@ -4471,18 +4466,28 @@ mod tests {
             migrated
                 .pointer("/runReport/fissionVerifierReport/selectedIslandId")
                 .and_then(Value::as_str),
-            Some("island:sha256:abc")
+            None
         );
         assert_eq!(
             migrated
                 .pointer("/runReport/fissionVerifierReport/candidates/0/status")
                 .and_then(Value::as_str),
-            Some("pass")
+            Some("reject")
         );
+        let reasons = migrated
+            .pointer("/runReport/fissionVerifierReport/candidates/0/reasonCodes")
+            .and_then(Value::as_array)
+            .expect("candidate refusal reasons");
+        assert!(reasons
+            .iter()
+            .any(|code| code == "fission.deterministic_verifier_evidence_missing"));
+        assert!(reasons
+            .iter()
+            .any(|code| code == "fission.output_oracle_evidence_missing"));
     }
 
     #[test]
-    fn fission_readiness_report_passes_with_generic_metadata() {
+    fn fission_readiness_refuses_serialized_candidate_without_current_run_registry() {
         let manifest = gpu_compile_manifest();
         let digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let sidecar = json!({
@@ -4499,7 +4504,7 @@ mod tests {
             migrated
                 .pointer("/fissionReadinessReport/status")
                 .and_then(Value::as_str),
-            Some("ready"),
+            Some("not_ready"),
             "{}",
             migrated["fissionReadinessReport"]
         );
@@ -4507,20 +4512,30 @@ mod tests {
             migrated
                 .pointer("/fissionReadinessReport/ready")
                 .and_then(Value::as_bool),
-            Some(true)
+            Some(false)
         );
         assert_eq!(
             migrated
                 .pointer("/runReport/fissionReadinessReport/status")
                 .and_then(Value::as_str),
-            Some("ready")
+            Some("not_ready")
         );
         assert_eq!(
             migrated
                 .pointer("/fissionReadinessReport/acceptedCandidateCount")
                 .and_then(Value::as_u64),
-            Some(1)
+            Some(0)
         );
+        let reasons = migrated
+            .pointer("/fissionReadinessReport/reasonCodes")
+            .and_then(Value::as_array)
+            .expect("readiness refusal reasons");
+        assert!(reasons
+            .iter()
+            .any(|code| code == "fission.verifier_not_accepted"));
+        assert!(reasons
+            .iter()
+            .any(|code| code == "fission.artifact_identity_not_ready"));
     }
 
     #[test]
