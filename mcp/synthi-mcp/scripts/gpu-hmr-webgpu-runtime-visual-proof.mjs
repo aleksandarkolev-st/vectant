@@ -28,6 +28,8 @@ const MODEL_AVAILABILITY_SOURCE = 'https://ai.google.dev/gemini-api/docs/depreca
 const TEST_TIMING_SPLIT_REASON = 'split_not_performed_by_webgpu_runtime_visual_producer';
 const TEST_TIMING_RUNTIME_GAP_REASON = 'browser_phase_not_delimited_in_node_monotonic_clock';
 const TEST_TIMING_VISUAL_NOT_REACHED_REASON = 'visual_phase_not_reached_before_browser';
+const TEST_TIMING_COLD_ANALYSIS_GAP_REASON = 'cold_visual_analysis_not_executed';
+const TEST_TIMING_NEGATIVE_RUNTIME_GAP_REASON = 'negative_edit_rejected_without_runtime_execution';
 const TEST_TIMING_RUNTIME_GAP_PHASES = Object.freeze([
   'compile',
   'load',
@@ -218,6 +220,40 @@ export function attachWebgpuRuntimeVisualTestTiming(target, testTiming) {
   target.testTiming = testTiming;
   target.test_timing = testTiming;
   return target;
+}
+
+export function attachWebgpuRuntimeVisualOutcomeTimings({
+  proof,
+  runtimeProofArtifact,
+  coldArtifact,
+  hotArtifact,
+  negativeRefusalArtifact = null,
+  hotTiming,
+  coldTiming,
+  negativeRefusalTiming = null,
+}) {
+  if (hotTiming === coldTiming) {
+    throw new TypeError('cold and hot WebGPU outcomes require distinct timing records');
+  }
+  if (coldTiming?.outcome !== 'pass' || coldTiming?.visualCapable !== true) {
+    throw new TypeError('cold WebGPU timing must describe its visual cold-path outcome');
+  }
+  if (negativeRefusalArtifact) {
+    if (!negativeRefusalTiming || negativeRefusalTiming === hotTiming || negativeRefusalTiming === coldTiming) {
+      throw new TypeError('negative WebGPU refusal requires a distinct timing record');
+    }
+    if (negativeRefusalTiming.outcome !== 'refused' || negativeRefusalTiming.visualCapable !== false) {
+      throw new TypeError('negative WebGPU timing must describe a non-runtime refusal');
+    }
+  }
+
+  attachWebgpuRuntimeVisualTestTiming(proof, hotTiming);
+  attachWebgpuRuntimeVisualTestTiming(runtimeProofArtifact, hotTiming);
+  attachWebgpuRuntimeVisualTestTiming(coldArtifact, coldTiming);
+  attachWebgpuRuntimeVisualTestTiming(hotArtifact, hotTiming);
+  if (negativeRefusalArtifact) {
+    attachWebgpuRuntimeVisualTestTiming(negativeRefusalArtifact, negativeRefusalTiming);
+  }
 }
 
 function webgpuRuntimeVisualError(message, {
@@ -2736,7 +2772,7 @@ function buildLedgerRecord({
 }
 
 async function runProofExecution(state) {
-  const { timingRecorder } = state;
+  const { timingRecorder, coldTimingRecorder } = state;
   state.stage = 'artifact_directory_setup';
   await mkdir(ARTIFACT_DIR, { recursive: true });
   const runStartNs = process.hrtime.bigint();
@@ -2747,7 +2783,11 @@ async function runProofExecution(state) {
   const profile = await measureWebgpuRuntimeVisualTimingPhase(
     timingRecorder,
     'cold_intake',
-    () => loadProfile(CFG.profilePath),
+    () => measureWebgpuRuntimeVisualTimingPhase(
+      coldTimingRecorder,
+      'cold_intake',
+      () => loadProfile(CFG.profilePath),
+    ),
   );
   state.profile = profile;
 
@@ -2755,45 +2795,49 @@ async function runProofExecution(state) {
   const discovered = await measureWebgpuRuntimeVisualTimingPhase(
     timingRecorder,
     'discovery',
-    async () => {
-      const runMode = runModeMetadata(profile);
-      const staticEndNs = process.hrtime.bigint();
-      timings.ns.staticDiscovery = durationNs(staticStartNs, staticEndNs);
-      timings.ns.aiContractSynthesis = 0;
-      const modelAvailabilityStartNs = process.hrtime.bigint();
-      const modelProvenanceEvidence = modelProvenance(checkedAt);
-      timings.ns.modelAvailability = durationNs(modelAvailabilityStartNs, process.hrtime.bigint());
+    () => measureWebgpuRuntimeVisualTimingPhase(
+      coldTimingRecorder,
+      'discovery',
+      async () => {
+        const runMode = runModeMetadata(profile);
+        const staticEndNs = process.hrtime.bigint();
+        timings.ns.staticDiscovery = durationNs(staticStartNs, staticEndNs);
+        timings.ns.aiContractSynthesis = 0;
+        const modelAvailabilityStartNs = process.hrtime.bigint();
+        const modelProvenanceEvidence = modelProvenance(checkedAt);
+        timings.ns.modelAvailability = durationNs(modelAvailabilityStartNs, process.hrtime.bigint());
 
-      const hashStartNs = process.hrtime.bigint();
-      const browserExecutable = findBrowserExecutable();
-      const profileSlug = safeSlug(`${CFG.slug}-${profile.id}`);
-      const beforeImage = path.join(ARTIFACT_DIR, `${profileSlug}-before.png`);
-      const afterImage = path.join(ARTIFACT_DIR, `${profileSlug}-after.png`);
-      const diffImage = path.join(ARTIFACT_DIR, `${profileSlug}-diff.png`);
-      const proofPath = path.join(ARTIFACT_DIR, `${profileSlug}-proof.json`);
-      const coldRunModeProofPath = path.join(ARTIFACT_DIR, `${profileSlug}-cold-run-mode-proof.json`);
-      const hotRunModeProofPath = path.join(ARTIFACT_DIR, `${profileSlug}-${runMode.metric_scope}-run-mode-proof.json`);
-      const negativeEditRefusalPath = path.join(ARTIFACT_DIR, `${profileSlug}-negative-edit-refusal.json`);
-      const summaryPath = path.join(ARTIFACT_DIR, `${profileSlug}-summary.txt`);
-      const failurePath = path.join(ARTIFACT_DIR, `${profileSlug}-failure.json`);
-      const hashEndNs = process.hrtime.bigint();
-      timings.ns.artifactHash = durationNs(hashStartNs, hashEndNs);
-      return {
-        runMode,
-        modelProvenanceEvidence,
-        browserExecutable,
-        profileSlug,
-        beforeImage,
-        afterImage,
-        diffImage,
-        proofPath,
-        coldRunModeProofPath,
-        hotRunModeProofPath,
-        negativeEditRefusalPath,
-        summaryPath,
-        failurePath,
-      };
-    },
+        const hashStartNs = process.hrtime.bigint();
+        const browserExecutable = findBrowserExecutable();
+        const profileSlug = safeSlug(`${CFG.slug}-${profile.id}`);
+        const beforeImage = path.join(ARTIFACT_DIR, `${profileSlug}-before.png`);
+        const afterImage = path.join(ARTIFACT_DIR, `${profileSlug}-after.png`);
+        const diffImage = path.join(ARTIFACT_DIR, `${profileSlug}-diff.png`);
+        const proofPath = path.join(ARTIFACT_DIR, `${profileSlug}-proof.json`);
+        const coldRunModeProofPath = path.join(ARTIFACT_DIR, `${profileSlug}-cold-run-mode-proof.json`);
+        const hotRunModeProofPath = path.join(ARTIFACT_DIR, `${profileSlug}-${runMode.metric_scope}-run-mode-proof.json`);
+        const negativeEditRefusalPath = path.join(ARTIFACT_DIR, `${profileSlug}-negative-edit-refusal.json`);
+        const summaryPath = path.join(ARTIFACT_DIR, `${profileSlug}-summary.txt`);
+        const failurePath = path.join(ARTIFACT_DIR, `${profileSlug}-failure.json`);
+        const hashEndNs = process.hrtime.bigint();
+        timings.ns.artifactHash = durationNs(hashStartNs, hashEndNs);
+        return {
+          runMode,
+          modelProvenanceEvidence,
+          browserExecutable,
+          profileSlug,
+          beforeImage,
+          afterImage,
+          diffImage,
+          proofPath,
+          coldRunModeProofPath,
+          hotRunModeProofPath,
+          negativeEditRefusalPath,
+          summaryPath,
+          failurePath,
+        };
+      },
+    ),
   );
   const {
     runMode,
@@ -2850,12 +2894,20 @@ async function runProofExecution(state) {
     timings.ns.runtimeProbe = durationNs(runtimeStartNs, process.hrtime.bigint());
 
     state.stage = 'cold_frame';
-    const beforeTrace = await page.evaluate(
-      ({ code, hash }) => window.__synthiWebGpuRuntimeProof.renderEpoch(code, hash, 'before'),
-      { code: profile.beforeWgsl, hash: profile.beforeHash },
+    const beforeTrace = await measureWebgpuRuntimeVisualTimingPhase(
+      coldTimingRecorder,
+      'trigger_to_visible',
+      () => page.evaluate(
+        ({ code, hash }) => window.__synthiWebGpuRuntimeProof.renderEpoch(code, hash, 'before'),
+        { code: profile.beforeWgsl, hash: profile.beforeHash },
+      ),
     );
     const beforeScreenshotStart = process.hrtime.bigint();
-    await canvasScreenshot(page, beforeImage);
+    await measureWebgpuRuntimeVisualTimingPhase(
+      coldTimingRecorder,
+      'screenshot_capture',
+      () => canvasScreenshot(page, beforeImage),
+    );
     const beforeScreenshotEnd = process.hrtime.bigint();
 
     const adapterStartNs = process.hrtime.bigint();
@@ -3078,13 +3130,24 @@ async function runProofExecution(state) {
           parentProofIds: [proof.proofId],
         });
 
-        const coldRunModeProof = await writeColdRuntimeRunModeProof({
-          filePath: coldRunModeProofPath,
-          profile,
-          proof,
-          artifacts,
-          runModeCoverageSupport,
-          persist: false,
+        const coldRunModeProof = await measureWebgpuRuntimeVisualTimingPhase(
+          coldTimingRecorder,
+          'proof_finalization',
+          () => writeColdRuntimeRunModeProof({
+            filePath: coldRunModeProofPath,
+            profile,
+            proof,
+            artifacts,
+            runModeCoverageSupport,
+            persist: false,
+          }),
+        );
+        const coldTestTiming = finalizeWebgpuRuntimeVisualTimingV2({
+          recorder: coldTimingRecorder,
+          outcome: 'pass',
+          visualCapable: true,
+          runtimeObserved: true,
+          terminalReason: TEST_TIMING_COLD_ANALYSIS_GAP_REASON,
         });
         const hotRunModeProof = await writeHotRuntimeRunModeProof({
           filePath: hotRunModeProofPath,
@@ -3095,14 +3158,32 @@ async function runProofExecution(state) {
           runMode,
           persist: false,
         });
-        const negativeEditRefusal = await writeWebgpuNegativeEditRefusal({
-          filePath: negativeEditRefusalPath,
-          profile,
-          proof,
-          runMode,
-          runModeCoverageSupport,
-          persist: false,
-        });
+        const negativeTimingRecorder = profile.negativeEdit
+          ? createWebgpuRuntimeVisualTimingV2Recorder({ clock: () => process.hrtime.bigint() })
+          : null;
+        const negativeEditRefusal = negativeTimingRecorder
+          ? await measureWebgpuRuntimeVisualTimingPhase(
+            negativeTimingRecorder,
+            'proof_finalization',
+            () => writeWebgpuNegativeEditRefusal({
+              filePath: negativeEditRefusalPath,
+              profile,
+              proof,
+              runMode,
+              runModeCoverageSupport,
+              persist: false,
+            }),
+          )
+          : null;
+        const negativeRefusalTiming = negativeTimingRecorder
+          ? finalizeWebgpuRuntimeVisualTimingV2({
+            recorder: negativeTimingRecorder,
+            outcome: 'refused',
+            visualCapable: false,
+            runtimeObserved: false,
+            terminalReason: TEST_TIMING_NEGATIVE_RUNTIME_GAP_REASON,
+          })
+          : null;
         proof.runModeCompanionArtifacts = {
           coldRuntimeInitial: coldRunModeProofPath,
           [runMode.metric_scope]: hotRunModeProofPath,
@@ -3116,12 +3197,17 @@ async function runProofExecution(state) {
         };
         proof.run_mode_companion_proof_ids = proof.runModeCompanionProofIds;
         state.companionArtifacts = [
-          { artifact: coldRunModeProof, filePath: coldRunModeProofPath },
-          { artifact: hotRunModeProof, filePath: hotRunModeProofPath },
+          { role: 'cold', artifact: coldRunModeProof, filePath: coldRunModeProofPath },
+          { role: 'hot', artifact: hotRunModeProof, filePath: hotRunModeProofPath },
           ...(negativeEditRefusal
-            ? [{ artifact: negativeEditRefusal, filePath: negativeEditRefusalPath }]
+            ? [{
+              role: 'negative_refusal',
+              artifact: negativeEditRefusal,
+              filePath: negativeEditRefusalPath,
+            }]
             : []),
         ];
+        state.outcomeTimings = { coldTestTiming, negativeRefusalTiming };
         return {
           proof,
           proofLedger,
@@ -3129,6 +3215,8 @@ async function runProofExecution(state) {
           coldRunModeProof,
           hotRunModeProof,
           negativeEditRefusal,
+          coldTestTiming,
+          negativeRefusalTiming,
         };
       },
     );
@@ -3139,6 +3227,8 @@ async function runProofExecution(state) {
       coldRunModeProof,
       hotRunModeProof,
       negativeEditRefusal,
+      coldTestTiming,
+      negativeRefusalTiming,
     } = finalizedProof;
     const testTiming = finalizeWebgpuRuntimeVisualTimingV2({
       recorder: timingRecorder,
@@ -3148,11 +3238,16 @@ async function runProofExecution(state) {
       terminalReason: proof.gpuHmrSuccess ? null : 'webgpu_runtime_visual_proof_rejected',
     });
     state.testTiming = testTiming;
-    attachWebgpuRuntimeVisualTestTiming(proof, testTiming);
-    attachWebgpuRuntimeVisualTestTiming(proof.runtimeProofArtifact, testTiming);
-    for (const companion of state.companionArtifacts) {
-      attachWebgpuRuntimeVisualTestTiming(companion.artifact, testTiming);
-    }
+    attachWebgpuRuntimeVisualOutcomeTimings({
+      proof,
+      runtimeProofArtifact: proof.runtimeProofArtifact,
+      coldArtifact: coldRunModeProof,
+      hotArtifact: hotRunModeProof,
+      negativeRefusalArtifact: negativeEditRefusal,
+      hotTiming: testTiming,
+      coldTiming: coldTestTiming,
+      negativeRefusalTiming,
+    });
 
     state.stage = 'artifact_persistence';
     await writeFile(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
@@ -3236,14 +3331,19 @@ async function runProof() {
   const timingRecorder = createWebgpuRuntimeVisualTimingV2Recorder({
     clock: () => process.hrtime.bigint(),
   });
+  const coldTimingRecorder = createWebgpuRuntimeVisualTimingV2Recorder({
+    clock: () => process.hrtime.bigint(),
+  });
   const state = {
     timingRecorder,
+    coldTimingRecorder,
     stage: 'initialization',
     profile: null,
     proof: null,
     proofPath: null,
     proofPersisted: false,
     companionArtifacts: [],
+    outcomeTimings: null,
     failurePath: path.join(ARTIFACT_DIR, `${safeSlug(CFG.slug)}-failure.json`),
     testTiming: null,
     visualCapable: false,
@@ -3278,12 +3378,27 @@ async function runProof() {
     }
 
     if (state.proof) {
-      attachWebgpuRuntimeVisualTestTiming(state.proof, state.testTiming);
-      if (state.proof.runtimeProofArtifact) {
-        attachWebgpuRuntimeVisualTestTiming(state.proof.runtimeProofArtifact, state.testTiming);
-      }
-      for (const companion of state.companionArtifacts) {
-        attachWebgpuRuntimeVisualTestTiming(companion.artifact, state.testTiming);
+      const coldCompanion = state.companionArtifacts.find(({ role }) => role === 'cold');
+      const hotCompanion = state.companionArtifacts.find(({ role }) => role === 'hot');
+      const negativeCompanion = state.companionArtifacts.find(
+        ({ role }) => role === 'negative_refusal',
+      );
+      if (coldCompanion && hotCompanion && state.outcomeTimings?.coldTestTiming) {
+        attachWebgpuRuntimeVisualOutcomeTimings({
+          proof: state.proof,
+          runtimeProofArtifact: state.proof.runtimeProofArtifact,
+          coldArtifact: coldCompanion.artifact,
+          hotArtifact: hotCompanion.artifact,
+          negativeRefusalArtifact: negativeCompanion?.artifact ?? null,
+          hotTiming: state.testTiming,
+          coldTiming: state.outcomeTimings.coldTestTiming,
+          negativeRefusalTiming: state.outcomeTimings.negativeRefusalTiming,
+        });
+      } else {
+        attachWebgpuRuntimeVisualTestTiming(state.proof, state.testTiming);
+        if (state.proof.runtimeProofArtifact) {
+          attachWebgpuRuntimeVisualTestTiming(state.proof.runtimeProofArtifact, state.testTiming);
+        }
       }
       if (!state.proofPersisted && state.proofPath) {
         try {

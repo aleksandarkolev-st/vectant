@@ -7,6 +7,7 @@ import {
 } from '../lib/gpu-hmr-test-timing-v2.mjs';
 import {
   attachWebgpuRuntimeVisualTestTiming,
+  attachWebgpuRuntimeVisualOutcomeTimings,
   buildRetainedWebgpuRuntimeVisualFailure,
   createWebgpuRuntimeVisualTimingV2Recorder,
   finalizeWebgpuRuntimeVisualTimingV2,
@@ -123,6 +124,65 @@ for (const forgedTiming of [
     /requires valid support-only timing v2/,
   );
 }
+
+const coldClock = controlledClock(300n);
+const coldRecorder = createWebgpuRuntimeVisualTimingV2Recorder({ clock: coldClock.now });
+await measure(coldRecorder, coldClock, 'cold_intake', 2n);
+await measure(coldRecorder, coldClock, 'discovery', 3n);
+await measure(coldRecorder, coldClock, 'trigger_to_visible', 5n);
+await measure(coldRecorder, coldClock, 'screenshot_capture', 7n);
+await measure(coldRecorder, coldClock, 'proof_finalization', 11n);
+const coldTiming = finalizeWebgpuRuntimeVisualTimingV2({
+  recorder: coldRecorder,
+  outcome: 'pass',
+  visualCapable: true,
+  runtimeObserved: true,
+  terminalReason: 'cold_visual_analysis_not_executed',
+});
+const negativeClock = controlledClock(400n);
+const negativeRecorder = createWebgpuRuntimeVisualTimingV2Recorder({ clock: negativeClock.now });
+await measure(negativeRecorder, negativeClock, 'proof_finalization', 13n);
+const negativeTiming = finalizeWebgpuRuntimeVisualTimingV2({
+  recorder: negativeRecorder,
+  outcome: 'refused',
+  visualCapable: false,
+  runtimeObserved: false,
+  terminalReason: 'negative_edit_rejected_without_runtime_execution',
+});
+const outcomeArtifacts = {
+  proof: {},
+  runtimeProofArtifact: {},
+  coldArtifact: {},
+  hotArtifact: {},
+  negativeRefusalArtifact: {},
+};
+attachWebgpuRuntimeVisualOutcomeTimings({
+  ...outcomeArtifacts,
+  hotTiming: passTiming,
+  coldTiming,
+  negativeRefusalTiming: negativeTiming,
+});
+assert.equal(outcomeArtifacts.proof.testTiming, passTiming);
+assert.equal(outcomeArtifacts.runtimeProofArtifact.testTiming, passTiming);
+assert.equal(outcomeArtifacts.hotArtifact.testTiming, passTiming);
+assert.equal(outcomeArtifacts.coldArtifact.testTiming, coldTiming);
+assert.equal(outcomeArtifacts.negativeRefusalArtifact.testTiming, negativeTiming);
+assert.notEqual(outcomeArtifacts.coldArtifact.testTiming, outcomeArtifacts.hotArtifact.testTiming);
+assert.notEqual(
+  outcomeArtifacts.negativeRefusalArtifact.testTiming,
+  outcomeArtifacts.hotArtifact.testTiming,
+);
+assert.equal(coldTiming.phases.trigger_to_visible.endNs, coldTiming.phases.screenshot_capture.startNs);
+assert.equal(negativeTiming.phases.trigger_to_visible.state, 'not_applicable');
+assert.throws(
+  () => attachWebgpuRuntimeVisualOutcomeTimings({
+    ...outcomeArtifacts,
+    hotTiming: passTiming,
+    coldTiming: passTiming,
+    negativeRefusalTiming: negativeTiming,
+  }),
+  /distinct timing records/,
+);
 
 const refusalClock = controlledClock(100n);
 const refusalRecorder = createWebgpuRuntimeVisualTimingV2Recorder({ clock: refusalClock.now });
