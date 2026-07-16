@@ -967,6 +967,7 @@ fn pin_runtime_output_oracle_profile(
     req: &AdapterReloadRequest,
     candidate_artifact_sha256: &str,
     hot_reload: bool,
+    expected_symbols: &[String],
 ) -> Result<Option<PinnedRuntimeOutputOracleProfile>, String> {
     if !hot_reload {
         return Ok(None);
@@ -1005,7 +1006,6 @@ fn pin_runtime_output_oracle_profile(
     let profile = parse_runtime_output_oracle_profile(&profile_bytes)?.ok_or_else(|| {
         "committed runtime output oracle profile is disabled before module mutation".to_string()
     })?;
-
     if commitment.schema_version != RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION {
         return Err(format!(
             "runtime output oracle commitment schema mismatch before module mutation: expected {RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION:?} got {:?}",
@@ -1051,6 +1051,13 @@ fn pin_runtime_output_oracle_profile(
             "runtime output oracle commitment source edit mismatch before module mutation"
                 .to_string(),
         );
+    }
+    let kernel_name = profile.kernel_name.trim();
+    if !expected_symbols.iter().any(|symbol| symbol == kernel_name) {
+        return Err(format!(
+            "runtime output oracle profile kernel {kernel_name:?} is not in the exact changed-symbol set [{}] before module mutation",
+            expected_symbols.join(",")
+        ));
     }
 
     let evidence_line = format!(
@@ -1164,10 +1171,9 @@ fn run_runtime_output_oracle_profile(
     };
     let kernel_name = profile.kernel_name.trim();
     if !changed_symbols.iter().any(|symbol| symbol == kernel_name) {
-        return Ok(Some(format!(
-            "[gpu-runtime-boundary] runtime_output_oracle_probe status=skipped profile={} kernel={} generation={} reason=kernel_not_changed",
-            profile.profile_id, kernel_name, active_generation
-        )));
+        return Err(format!(
+            "runtime output oracle profile kernel {kernel_name:?} escaped its pinned changed-symbol set"
+        ));
     }
     let Some(_function_handle) = dispatcher_kernels.get(kernel_name).copied() else {
         return Err(format!(
@@ -1357,215 +1363,22 @@ fn run_runtime_output_oracle_profile(
     result.map(Some)
 }
 
-fn replayable_arg_provenance(record: &LaunchRecord) -> bool {
-    record.arg_provenance_complete
-        && !record.arg_provenance.is_empty()
-        && record.arg_provenance.iter().all(|arg| {
-            arg.value_size > 0
-                && arg
-                    .value_bytes
-                    .as_ref()
-                    .is_some_and(|bytes| !bytes.is_empty() && bytes.len() == arg.value_size)
-        })
-}
-
-fn replay_readback_target(record: &LaunchRecord) -> Option<&LaunchArgProvenance> {
-    record.arg_provenance.iter().find(|arg| {
-        arg.kind == "device-allocation"
-            && arg.observed_value.is_some()
-            && arg
-                .allocation_bytes
-                .is_some_and(|bytes| bytes > arg.allocation_offset.unwrap_or(0))
-    })
-}
-
-fn latest_replayable_launch_record(
-    changed_symbols: &[String],
-    previous_generation: u64,
-) -> Option<LaunchRecord> {
-    launch_records_snapshot().into_iter().rev().find(|record| {
-        record.runtime_session_id == runtime_session_id()
-            && record.dispatched
-            && record.dispatch_error.is_none()
-            && record.active_generation == previous_generation
-            && changed_symbols
-                .iter()
-                .any(|symbol| symbol == &record.kernel_name)
-            && replayable_arg_provenance(record)
-            && replay_readback_target(record).is_some()
-    })
-}
-
-fn run_runtime_output_observation_replay(
-    symbols: &GpuDriverSymbolTable,
-    changed_symbols: &[String],
-    previous_generation: u64,
-    active_generation: u64,
-    active_artifact_id: &str,
-) -> Result<Option<String>, String> {
-    let Some(record) = latest_replayable_launch_record(changed_symbols, previous_generation) else {
-        return Ok(Some(format!(
-            "[gpu-runtime-boundary] runtime_output_oracle_probe status=skipped profile=runtime-dispatch-observation generation={} artifact_id={} accepted_for_gpu_hmr=false gpu_hmr_success=false reason=no_replayable_prior_dispatch",
-            active_generation,
-            active_artifact_id
-        )));
-    };
-    let target = replay_readback_target(&record)
-        .ok_or_else(|| "runtime replay launch lost readback target".to_string())?;
-    let readback_ptr = target
-        .observed_value
-        .ok_or_else(|| "runtime replay readback target missing device pointer".to_string())?
-        as CuDevicePtr;
-    let readback_offset = target.allocation_offset.unwrap_or(0);
-    let available_bytes = target
-        .allocation_bytes
-        .unwrap_or(0)
-        .saturating_sub(readback_offset);
-    let readback_bytes = available_bytes.min(4096);
-    if readback_ptr == 0 || readback_bytes == 0 {
-        return Err("runtime replay readback target is empty".to_string());
-    }
-    let mut before = vec![0u8; readback_bytes];
-    let before_code = unsafe {
-        (symbols.cu_memcpy_dtoh)(
-            before.as_mut_ptr().cast::<c_void>(),
-            readback_ptr,
-            before.len(),
-        )
-    };
-    if before_code != 0 {
-        return Err(format!(
-            "runtime replay pre-dispatch DtoH copy kernel={:?} failed code={before_code}",
-            record.kernel_name
-        ));
-    }
-
-    let mut arg_bytes = record
-        .arg_provenance
-        .iter()
-        .map(|arg| {
-            let bytes = arg.value_bytes.clone().ok_or_else(|| {
-                format!("runtime replay arg {} missing captured bytes", arg.index)
-            })?;
-            if bytes.len() != arg.value_size {
-                return Err(format!(
-                    "runtime replay arg {} byte length mismatch expected={} actual={}",
-                    arg.index,
-                    arg.value_size,
-                    bytes.len()
-                ));
-            }
-            Ok((arg.index, arg.value_kind, bytes))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    arg_bytes.sort_by_key(|(index, _, _)| *index);
-    let arg_infos = arg_bytes
-        .iter()
-        .map(|(_, value_kind, bytes)| SynthiGpuLaunchArg {
-            value_ptr: bytes.as_ptr().cast::<c_void>(),
-            value_size: bytes.len(),
-            value_kind: *value_kind,
-        })
-        .collect::<Vec<_>>();
-    let kernel_cstring = runtime_probe_cstring(&record.kernel_name)?;
-    let grid = record.grid;
-    let block = record.block;
-    let launch_receipt = synthi_gpu_launch_raw_arg_info_with_receipt(
-        std::ptr::null_mut(),
-        kernel_cstring.as_ptr(),
-        &grid as *const (u32, u32, u32) as *const c_void,
-        std::mem::size_of_val(&grid),
-        &block as *const (u32, u32, u32) as *const c_void,
-        std::mem::size_of_val(&block),
-        record.shared_bytes,
-        record.stream_token,
-        arg_infos.as_ptr(),
-        arg_infos.len(),
-    );
-    if !launch_receipt.dispatched {
-        return Err(format!(
-            "runtime replay launch kernel={:?} was rejected by runtime boundary",
-            record.kernel_name
-        ));
-    }
-    if launch_receipt.active_generation != active_generation
-        || launch_receipt.runtime_session_id != runtime_session_id()
-    {
-        return Err(format!(
-            "runtime replay launch kernel={:?} receipt identity mismatch",
-            record.kernel_name
-        ));
-    }
-    let after_dispatch_id = launch_receipt.dispatch_id;
-    let sync_code = unsafe { (symbols.cu_ctx_synchronize)() };
-    if sync_code != 0 {
-        return Err(format!(
-            "runtime replay context synchronize kernel={:?} failed code={sync_code}",
-            record.kernel_name
-        ));
-    }
-    let mut after = vec![0u8; readback_bytes];
-    let after_code = unsafe {
-        (symbols.cu_memcpy_dtoh)(
-            after.as_mut_ptr().cast::<c_void>(),
-            readback_ptr,
-            after.len(),
-        )
-    };
-    if after_code != 0 {
-        return Err(format!(
-            "runtime replay post-dispatch DtoH copy kernel={:?} failed code={after_code}",
-            record.kernel_name
-        ));
-    }
-    let observed_hash = format!("sha256:{}", sha256_hex_bytes(&after));
-    let output_target_id = format!(
-        "runtime-observation:{}:{}",
-        &record.kernel_name,
-        target
-            .allocation_id
-            .as_deref()
-            .unwrap_or("registered-device-allocation")
-    );
-    Ok(Some(format!(
-        "[gpu-runtime-boundary] runtime_output_oracle_probe status=unproven profile=runtime-dispatch-observation schema=synthi.gpu_hmr.runtime_output_observation.v1 kernel={} generation={} output_buffer={} bytes={} changed={} observed_hash={} artifact_id={} after_dispatch_id={} accepted_for_gpu_hmr=false gpu_hmr_success=false reason=precommitted_expected_output_missing",
-        record.kernel_name,
-        active_generation,
-        output_target_id,
-        after.len(),
-        before != after,
-        observed_hash,
-        active_artifact_id,
-        log_optional_token(Some(&after_dispatch_id))
-    )))
-}
-
 fn run_runtime_output_oracle_probe(
     symbols: &GpuDriverSymbolTable,
     dispatcher_kernels: &HashMap<String, u64>,
     changed_symbols: &[String],
-    previous_generation: u64,
     active_generation: u64,
     active_artifact_id: &str,
     pinned_profile: Option<&PinnedRuntimeOutputOracleProfile>,
 ) -> Result<Option<String>, String> {
-    match run_runtime_output_oracle_profile(
+    run_runtime_output_oracle_profile(
         symbols,
         dispatcher_kernels,
         changed_symbols,
         active_generation,
         active_artifact_id,
         pinned_profile,
-    )? {
-        Some(line) if runtime_boundary_token(&line, "status") != Some("skipped") => Ok(Some(line)),
-        _ => run_runtime_output_observation_replay(
-            symbols,
-            changed_symbols,
-            previous_generation,
-            active_generation,
-            active_artifact_id,
-        ),
-    }
+    )
 }
 
 fn runtime_boundary_token<'a>(line: &'a str, key: &str) -> Option<&'a str> {
@@ -3984,10 +3797,22 @@ impl Adapter for GpuModuleAdapter {
                     .to_string(),
             };
         }
+        let expected_symbols = match logical_kernel_symbols(&req.build_manifest.exported_symbols) {
+            Ok(symbols) => symbols,
+            Err(error) => {
+                self.health = AdapterHealth::Degraded;
+                self.phase = GpuPhase::Ready;
+                return AdapterReloadResult::Failed {
+                    error,
+                    recoverable: true,
+                };
+            }
+        };
         let pinned_output_oracle_profile = match pin_runtime_output_oracle_profile(
             req,
             &candidate_artifact_sha256,
             !first_device_load,
+            &expected_symbols,
         ) {
             Ok(profile) => profile,
             Err(error) => {
@@ -4065,17 +3890,6 @@ impl Adapter for GpuModuleAdapter {
         let kernel_resolutions = match kernel_resolution_specs(&req.build_manifest.exported_symbols)
         {
             Ok(resolutions) => resolutions,
-            Err(error) => {
-                self.health = AdapterHealth::Degraded;
-                self.phase = GpuPhase::Ready;
-                return AdapterReloadResult::Failed {
-                    error,
-                    recoverable: true,
-                };
-            }
-        };
-        let expected_symbols = match logical_kernel_symbols(&req.build_manifest.exported_symbols) {
-            Ok(symbols) => symbols,
             Err(error) => {
                 self.health = AdapterHealth::Degraded;
                 self.phase = GpuPhase::Ready;
@@ -4360,7 +4174,6 @@ impl Adapter for GpuModuleAdapter {
                             &symbols,
                             &dispatcher_kernels_for_probe,
                             &expected_symbols,
-                            previous_generation,
                             active_generation,
                             &new_artifact_id,
                             pinned_output_oracle_profile.as_ref(),
@@ -5113,9 +4926,14 @@ mod tests {
         let mut request = dummy_request();
         request.source_edit_id = Some(source_edit_id.clone());
         request.capsule_metadata = Some(metadata.clone());
-        let pinned = pin_runtime_output_oracle_profile(&request, &candidate_artifact_sha256, true)
-            .unwrap()
-            .expect("committed output oracle profile pin");
+        let pinned = pin_runtime_output_oracle_profile(
+            &request,
+            &candidate_artifact_sha256,
+            true,
+            &["vec_add".to_string()],
+        )
+        .unwrap()
+        .expect("committed output oracle profile pin");
 
         assert_eq!(
             verified_runtime_source_edit_commitment(
@@ -5274,6 +5092,108 @@ mod tests {
             .iter()
             .any(|line| line.contains("dispatcher_epoch event=published")));
         adapter.pending_retired_modules.clear();
+        reset_for_test();
+    }
+
+    #[test]
+    fn mismatched_output_oracle_kernel_refuses_before_runtime_mutation() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        MODULE_LOAD_CALLS.store(0, Ordering::SeqCst);
+        LAUNCH_CALLS.store(0, Ordering::SeqCst);
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"oracle-kernel-binding-before").unwrap();
+        second.write_all(b"oracle-kernel-binding-after").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let mut adapter = adapter_with_config_and_symbols(
+            GpuModuleAdapterConfig {
+                vendor: GpuVendor::Rocm,
+                ..GpuModuleAdapterConfig::default()
+            },
+            stub_symbols(),
+        );
+        assert!(matches!(
+            adapter.reload(&request_with_artifact(
+                &first_path,
+                vec!["source/arbitrary.device".into()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+
+        let mut live_buffer = launch_replayable_vec_add_on_stream(0x73);
+        live_buffer[0] = 0x5a;
+        live_buffer[15] = 0xa5;
+        let live_buffer_before = *live_buffer;
+        let module_loads_before = MODULE_LOAD_CALLS.load(Ordering::SeqCst);
+        let launches_before = LAUNCH_CALLS.load(Ordering::SeqCst);
+        let generation_before = current_launch_generation();
+        let active_handle_before = adapter.active_module_handle;
+        let active_artifact_before = adapter.active_generation_artifact_id.clone();
+        let swaps_before = adapter.module_manager.swap_count();
+
+        let mut request = request_with_artifact(
+            &second_path,
+            vec!["generated/arbitrary-device-stage".into()],
+        );
+        let profile_path = configured_gpu_hmr_runtime_output_oracle_profile_path();
+        let mut profile: serde_json::Value =
+            serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
+        profile["kernelName"] = serde_json::Value::String("unrelated_kernel".to_string());
+        let profile_bytes = serde_json::to_vec_pretty(&profile).unwrap();
+        fs::write(&profile_path, &profile_bytes).unwrap();
+        request
+            .capsule_metadata
+            .as_mut()
+            .unwrap()
+            .output_oracle_profile_commitment
+            .as_mut()
+            .unwrap()
+            .profile_bytes_sha256 = format!("sha256:{}", sha256_hex_bytes(&profile_bytes));
+
+        match adapter.reload(&request) {
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(!recoverable);
+                assert!(error.contains("kernel \"unrelated_kernel\""));
+                assert!(error.contains("exact changed-symbol set [vec_add]"));
+                assert!(error.contains("before module mutation"));
+            }
+            other => panic!("expected pre-mutation oracle kernel refusal, got {other:?}"),
+        }
+
+        assert_eq!(
+            MODULE_LOAD_CALLS.load(Ordering::SeqCst),
+            module_loads_before
+        );
+        assert_eq!(LAUNCH_CALLS.load(Ordering::SeqCst), launches_before);
+        assert_eq!(current_launch_generation(), generation_before);
+        assert_eq!(adapter.active_module_handle, active_handle_before);
+        assert_eq!(
+            adapter.active_generation_artifact_id,
+            active_artifact_before
+        );
+        assert_eq!(adapter.module_manager.swap_count(), swaps_before);
+        assert_eq!(*live_buffer, live_buffer_before);
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("runtime_output_oracle_profile_pin")
+                && line.contains("status=refused")
+                && line.contains("unrelated_kernel")
+                && line.contains("accepted_for_gpu_hmr=false")
+        }));
+        assert!(!adapter
+            .last_reload_log()
+            .iter()
+            .any(|line| line.contains("dispatcher_epoch event=published")));
+
+        launch_vec_add_on_stream(0x74);
+        let post_refusal_launch = launch_records_snapshot().pop().unwrap();
+        assert_eq!(post_refusal_launch.active_generation, generation_before);
+        assert_eq!(
+            post_refusal_launch.active_artifact_id,
+            active_artifact_before
+        );
+        let _ = install_runtime_output_oracle_profile_for_tests();
         reset_for_test();
     }
 
