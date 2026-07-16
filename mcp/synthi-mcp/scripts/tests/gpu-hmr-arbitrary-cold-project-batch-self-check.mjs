@@ -19,7 +19,12 @@ import {
 import {
   ARBITRARY_COLD_BATCH_REPORT_AUTHORITY,
   ARBITRARY_COLD_BATCH_REPORT_SCHEMA,
+  ARBITRARY_COLD_BATCH_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+  attachArbitraryColdProjectBatchTestTiming,
+  createArbitraryColdProjectBatchFailure,
+  createArbitraryColdProjectBatchTimingRecorder,
   runArbitraryColdProjectBatch,
+  verifyArbitraryColdProjectBatchFailure,
   verifyArbitraryColdProjectBatchReport,
 } from '../gpu-hmr-arbitrary-cold-project-batch.mjs';
 import {
@@ -48,6 +53,12 @@ import {
   COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
   COLD_BUILD_LAUNCHER_OUTPUT_ROOT,
 } from '../lib/gpu-hmr-cold-build-container-contract.mjs';
+import {
+  GPU_HMR_TEST_TIMING_PHASE_KEYS,
+  GPU_HMR_TEST_TIMING_SCHEMA,
+  GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS,
+  validateGpuHmrTestTiming,
+} from '../lib/gpu-hmr-test-timing-v2.mjs';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'synthi-arbitrary-cold-batch-'));
 
@@ -65,6 +76,63 @@ function rehashEvidence(value) {
   const projection = { ...value };
   delete projection.evidenceHash;
   return `sha256:${createHash('sha256').update(stableJson(projection)).digest('hex')}`;
+}
+
+function controlledClock(initialNs = 0n) {
+  let currentNs = initialNs;
+  return {
+    now: () => currentNs,
+    tick: (durationNs = 1n) => {
+      currentNs += durationNs;
+      return currentNs;
+    },
+  };
+}
+
+function assertSupportOnlyTiming(
+  record,
+  expectedOutcome,
+  { expectedVisualReason = null } = {},
+) {
+  const validation = validateGpuHmrTestTiming(record);
+  assert.equal(validation.valid, true, validation.blockingGaps.join(','));
+  assert.equal(record.schema, GPU_HMR_TEST_TIMING_SCHEMA);
+  assert.equal(record.clock, 'monotonic_ns');
+  assert.equal(record.authority, 'timing_only');
+  assert.equal(record.timingOnly, true);
+  assert.equal(record.acceptedForGpuHmr, false);
+  assert.equal(record.gpuHmrSuccess, false);
+  assert.equal(record.outcome, expectedOutcome);
+  assert.equal(record.visualCapable, false);
+  assert.equal(record.phases.total_wall.state, 'measured');
+  const totalStartNs = BigInt(record.phases.total_wall.startNs);
+  const totalEndNs = BigInt(record.phases.total_wall.endNs);
+  for (const phaseKey of GPU_HMR_TEST_TIMING_PHASE_KEYS) {
+    const phase = record.phases[phaseKey];
+    assert.ok(phase, `timing phase ${phaseKey} must be present`);
+    if (phase.state === 'measured') {
+      assert.equal(phase.reasonCode, null);
+      assert.ok(BigInt(phase.startNs) >= totalStartNs);
+      assert.ok(BigInt(phase.endNs) <= totalEndNs);
+      assert.equal(
+        BigInt(phase.durationNs),
+        BigInt(phase.endNs) - BigInt(phase.startNs),
+      );
+    } else {
+      assert.ok(['unavailable', 'not_applicable'].includes(phase.state));
+      assert.equal(phase.startNs, null);
+      assert.equal(phase.endNs, null);
+      assert.equal(phase.durationNs, null);
+      assert.match(phase.reasonCode, /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
+    }
+  }
+  for (const phaseKey of GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS) {
+    assert.equal(record.phases[phaseKey].state, 'not_applicable');
+    if (expectedVisualReason !== null) {
+      assert.equal(record.phases[phaseKey].reasonCode, expectedVisualReason);
+    }
+  }
+  return record;
 }
 
 function descriptor(sourceRoot, variant) {
@@ -249,11 +317,21 @@ try {
     /attempts_invalid/,
   );
 
+  const batchClock = controlledClock(10_000n);
+  const terminalSnapshots = [];
   const batch = await runArbitraryColdProjectBatch({
     descriptorRoot,
     artifactRoot,
     sampleCount: 1,
     seed: 'live-batch-seed',
+    timingClock: batchClock.now,
+    persistTerminalSnapshot: async (snapshot) => {
+      const persistedThroughNs = batchClock.tick(17n);
+      terminalSnapshots.push({
+        snapshot: structuredClone(snapshot),
+        persistedThroughNs,
+      });
+    },
   });
   assert.equal(batch.schemaVersion, ARBITRARY_COLD_BATCH_REPORT_SCHEMA);
   assert.equal(batch.proofAuthority, ARBITRARY_COLD_BATCH_REPORT_AUTHORITY);
@@ -262,6 +340,46 @@ try {
   assert.equal(batch.gpuHmrSuccess, false);
   assert.equal(batch.canSatisfyRuntimeProof, false);
   assert.equal(batch.canSatisfyDispatchProof, false);
+  assert.equal(batch.terminalOutcome, 'completed');
+  assert.equal(batch.terminal_outcome, 'completed');
+  assert.equal(batch.testTiming, batch.test_timing);
+  assertSupportOnlyTiming(batch.testTiming, 'pass', {
+    expectedVisualReason: ARBITRARY_COLD_BATCH_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+  });
+  assert.equal(batch.reports[0].terminalOutcome, 'completed');
+  assert.equal(batch.reports[0].testTiming, batch.reports[0].test_timing);
+  assertSupportOnlyTiming(batch.reports[0].testTiming, 'pass', {
+    expectedVisualReason: ARBITRARY_COLD_BATCH_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+  });
+  assert.equal(
+    batch.reports[0].childTestTiming,
+    batch.reports[0].child_test_timing,
+  );
+  assertSupportOnlyTiming(batch.reports[0].childTestTiming, 'pass');
+  assert.equal(
+    batch.summary.attempts[0].testTiming,
+    batch.reports[0].testTiming,
+  );
+  assert.equal(
+    batch.summary.attempts[0].childTestTiming,
+    batch.reports[0].childTestTiming,
+  );
+  assert.equal(batch.summary.attempts[0].terminalOutcome, 'completed');
+  assert.equal(Object.keys(batch).includes('testTiming'), false);
+  assert.equal(Object.keys(batch.reports[0]).includes('childTestTiming'), false);
+  assert.equal(Object.keys(batch.summary.attempts[0]).includes('testTiming'), false);
+  assert.deepEqual(
+    terminalSnapshots.map(({ snapshot }) => snapshot.scope),
+    ['attempt', 'batch'],
+  );
+  assert.ok(
+    BigInt(batch.reports[0].testTiming.phases.total_wall.endNs)
+      >= terminalSnapshots[0].persistedThroughNs,
+  );
+  assert.ok(
+    BigInt(batch.testTiming.phases.total_wall.endNs)
+      >= terminalSnapshots[1].persistedThroughNs,
+  );
   assert.equal(verifyArbitraryColdProjectBatchReport(batch), batch);
   assert.equal(
     verifyRetainedArbitraryColdBatchSelection(batch.selection),
@@ -270,6 +388,63 @@ try {
   assert.equal(
     verifyRetainedArbitraryColdBatchSummary(batch.summary, batch.selection),
     batch.summary,
+  );
+  const serializedTimedBatch = JSON.parse(JSON.stringify(batch));
+  assert.equal(serializedTimedBatch.terminalOutcome, 'completed');
+  assert.equal(
+    serializedTimedBatch.testTiming.schema,
+    GPU_HMR_TEST_TIMING_SCHEMA,
+  );
+  assert.equal(
+    serializedTimedBatch.reports[0].childTestTiming.schema,
+    GPU_HMR_TEST_TIMING_SCHEMA,
+  );
+  assert.deepEqual(
+    serializedTimedBatch.summary.attempts[0].testTiming,
+    serializedTimedBatch.reports[0].testTiming,
+  );
+  assert.deepEqual(
+    serializedTimedBatch.summary.attempts[0].childTestTiming,
+    serializedTimedBatch.reports[0].childTestTiming,
+  );
+  assert.equal(
+    verifyArbitraryColdProjectBatchReport(serializedTimedBatch),
+    serializedTimedBatch,
+  );
+
+  const forgedTimingAlias = structuredClone(serializedTimedBatch);
+  forgedTimingAlias.reports[0].test_timing.outcome = 'failed';
+  assert.throws(
+    () => verifyArbitraryColdProjectBatchReport(forgedTimingAlias),
+    /batch_report_invalid/,
+  );
+  const forgedChildTimingAlias = structuredClone(serializedTimedBatch);
+  forgedChildTimingAlias.reports[0].child_test_timing.outcome = 'failed';
+  assert.throws(
+    () => verifyArbitraryColdProjectBatchReport(forgedChildTimingAlias),
+    /batch_report_invalid/,
+  );
+  const forgedSummaryChildTimingAlias = structuredClone(serializedTimedBatch);
+  forgedSummaryChildTimingAlias.summary.attempts[0].child_test_timing.outcome = 'failed';
+  assert.throws(
+    () => verifyArbitraryColdProjectBatchReport(forgedSummaryChildTimingAlias),
+    /batch_report_invalid/,
+  );
+  const forgedChildTimingAuthority = structuredClone(serializedTimedBatch);
+  forgedChildTimingAuthority.reports[0].childTestTiming.authority =
+    'gpu_hmr_success_authority';
+  forgedChildTimingAuthority.reports[0].child_test_timing.authority =
+    'gpu_hmr_success_authority';
+  assert.throws(
+    () => verifyArbitraryColdProjectBatchReport(forgedChildTimingAuthority),
+    /batch_report_invalid/,
+  );
+  const forgedBatchTimingAuthority = structuredClone(serializedTimedBatch);
+  forgedBatchTimingAuthority.testTiming.acceptedForGpuHmr = true;
+  forgedBatchTimingAuthority.test_timing.acceptedForGpuHmr = true;
+  assert.throws(
+    () => verifyArbitraryColdProjectBatchReport(forgedBatchTimingAuthority),
+    /batch_report_invalid/,
   );
   const forgedBatch = structuredClone(batch);
   forgedBatch.acceptedForGpuHmr = true;
@@ -362,6 +537,145 @@ try {
   assert.equal(batch.reports[0].outputs.length, 1);
   assert.equal(JSON.stringify(batch).includes('renamed-'), false);
   assert.equal(JSON.stringify(batch).includes('arbitrary cold batch'), false);
+
+  const terminalCases = [
+    {
+      name: 'refused',
+      failureCode: 'arbitrary_cold_batch_self_check_refused',
+      terminalOutcome: 'refused',
+      timingOutcome: 'refused',
+    },
+    {
+      name: 'failed',
+      failureCode: 'arbitrary_cold_batch_self_check_failed',
+      terminalOutcome: 'failed',
+      timingOutcome: 'failed',
+    },
+  ];
+  for (const [index, terminalCase] of terminalCases.entries()) {
+    const terminalClock = controlledClock(20_000n + BigInt(index * 1_000));
+    const caseSnapshots = [];
+    const terminalBatch = await runArbitraryColdProjectBatch({
+      descriptorRoot,
+      artifactRoot,
+      sampleCount: 1,
+      seed: `terminal-${terminalCase.name}-seed`,
+      timingClock: terminalClock.now,
+      runProject: async () => {
+        throw new Error(terminalCase.failureCode);
+      },
+      persistTerminalSnapshot: async (snapshot) => {
+        const persistedThroughNs = terminalClock.tick(13n);
+        caseSnapshots.push({
+          snapshot: structuredClone(snapshot),
+          persistedThroughNs,
+        });
+      },
+    });
+    assert.equal(terminalBatch.summary.completedColdRunCount, 0);
+    assert.equal(terminalBatch.summary.refusedColdRunCount, 1);
+    assert.equal(terminalBatch.reports[0].outcome, 'cold_run_refused');
+    assert.equal(terminalBatch.reports[0].terminalOutcome, terminalCase.terminalOutcome);
+    assert.equal(terminalBatch.terminalOutcome, terminalCase.terminalOutcome);
+    assert.equal(
+      terminalBatch.summary.attempts[0].terminalOutcome,
+      terminalCase.terminalOutcome,
+    );
+    assert.equal(
+      terminalBatch.summary.attempts[0].testTiming,
+      terminalBatch.reports[0].testTiming,
+    );
+    assertSupportOnlyTiming(
+      terminalBatch.reports[0].testTiming,
+      terminalCase.timingOutcome,
+      { expectedVisualReason: ARBITRARY_COLD_BATCH_TIMING_VISUAL_NOT_APPLICABLE_REASON },
+    );
+    assertSupportOnlyTiming(
+      terminalBatch.testTiming,
+      terminalCase.timingOutcome,
+      { expectedVisualReason: ARBITRARY_COLD_BATCH_TIMING_VISUAL_NOT_APPLICABLE_REASON },
+    );
+    assertSupportOnlyTiming(
+      terminalBatch.reports[0].childTestTiming,
+      terminalCase.timingOutcome,
+    );
+    assert.deepEqual(
+      terminalBatch.reports[0].childTestTiming,
+      terminalBatch.reports[0].failureEvidence.testTiming,
+    );
+    assert.deepEqual(
+      caseSnapshots.map(({ snapshot }) => snapshot.scope),
+      ['attempt', 'batch'],
+    );
+    assert.ok(
+      BigInt(terminalBatch.reports[0].testTiming.phases.total_wall.endNs)
+        >= caseSnapshots[0].persistedThroughNs,
+    );
+    assert.ok(
+      BigInt(terminalBatch.testTiming.phases.total_wall.endNs)
+        >= caseSnapshots[1].persistedThroughNs,
+    );
+    const serializedTerminalBatch = JSON.parse(JSON.stringify(terminalBatch));
+    assert.equal(
+      verifyArbitraryColdProjectBatchReport(serializedTerminalBatch),
+      serializedTerminalBatch,
+    );
+  }
+
+  const topLevelClock = controlledClock(30_000n);
+  const topLevelTimingRecorder = createArbitraryColdProjectBatchTimingRecorder({
+    clock: topLevelClock.now,
+    scope: 'top_level',
+  });
+  topLevelClock.tick(5n);
+  let topLevelPersistedThroughNs = null;
+  const topLevelFailure = await createArbitraryColdProjectBatchFailure(
+    new Error('arbitrary_cold_batch_top_level_runtime_failed'),
+    {
+      timingRecorder: topLevelTimingRecorder,
+      persistTerminalSnapshot: async (snapshot) => {
+        assert.equal(snapshot.scope, 'top_level');
+        assert.equal(snapshot.terminalOutcome, 'failed');
+        topLevelPersistedThroughNs = topLevelClock.tick(19n);
+      },
+    },
+  );
+  assert.equal(topLevelFailure.terminalOutcome, 'failed');
+  assertSupportOnlyTiming(topLevelFailure.testTiming, 'failed', {
+    expectedVisualReason: ARBITRARY_COLD_BATCH_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+  });
+  assert.ok(
+    BigInt(topLevelFailure.testTiming.phases.total_wall.endNs)
+      >= topLevelPersistedThroughNs,
+  );
+  assert.equal(
+    verifyArbitraryColdProjectBatchFailure(topLevelFailure),
+    topLevelFailure,
+  );
+  const serializedTopLevelFailure = JSON.parse(JSON.stringify(topLevelFailure));
+  assert.equal(
+    verifyArbitraryColdProjectBatchFailure(serializedTopLevelFailure),
+    serializedTopLevelFailure,
+  );
+
+  const forgedAttachmentTiming = structuredClone(batch.testTiming);
+  forgedAttachmentTiming.authority = 'gpu_hmr_success_authority';
+  assert.throws(
+    () => attachArbitraryColdProjectBatchTestTiming(
+      {},
+      forgedAttachmentTiming,
+      { terminalOutcome: 'completed' },
+    ),
+    /timing_invalid/,
+  );
+  assert.throws(
+    () => attachArbitraryColdProjectBatchTestTiming(
+      { testTiming: batch.testTiming },
+      batch.testTiming,
+      { terminalOutcome: 'completed' },
+    ),
+    /timing_aliases_invalid/,
+  );
 
   const forgedRetainedChain = structuredClone(batch);
   forgedRetainedChain.reports[0].retainedExecutionChain
@@ -556,6 +870,10 @@ try {
     selectedDescriptorHash: batch.selection.selected[0].descriptorHash,
     batchEvidenceHash: batch.summary.evidenceHash,
     retainedEvidenceHash: retainedEvidence.evidenceHash,
+    timingSchema: batch.testTiming.schema,
+    terminalOutcomes: ['completed', ...terminalCases.map((entry) => entry.terminalOutcome)],
+    persistedTerminalSnapshotIncludedInTotalWall: true,
+    childTimingPreserved: true,
     acceptedAsColdBuildEvidence: batch.summary.acceptedAsColdBuildEvidence,
     acceptedForGpuHmr: batch.summary.acceptedForGpuHmr,
     gpuHmrSuccess: batch.summary.gpuHmrSuccess,
