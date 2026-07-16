@@ -641,6 +641,22 @@ export function attachAgentSplitTestTimingV2(target, testTiming) {
   if (testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA) {
     throw new TypeError('agent split timing attachment requires timing v2');
   }
+  try {
+    assertValidGpuHmrTestTiming(testTiming);
+  } catch (error) {
+    throw new TypeError(
+      `agent split timing attachment requires a valid support-only record: ${error?.message ?? error}`,
+      { cause: error },
+    );
+  }
+  if (
+    testTiming.authority !== 'timing_only'
+    || testTiming.timingOnly !== true
+    || testTiming.acceptedForGpuHmr !== false
+    || testTiming.gpuHmrSuccess !== false
+  ) {
+    throw new TypeError('agent split timing attachment cannot carry GPU HMR authority');
+  }
   target.testTiming = testTiming;
   target.test_timing = testTiming;
   return target;

@@ -124,6 +124,21 @@ assert.equal(supportOnlyProof.gpuHmrSuccess, true);
 assert.equal(supportOnlyProof.testTiming, visualTiming);
 assert.equal(supportOnlyProof.test_timing, visualTiming);
 
+for (const [field, forgedValue] of [
+  ['authority', 'gpu_hmr_success_authority'],
+  ['timingOnly', false],
+  ['acceptedForGpuHmr', true],
+  ['gpuHmrSuccess', true],
+]) {
+  const forgedTiming = structuredClone(visualTiming);
+  forgedTiming[field] = forgedValue;
+  assert.throws(
+    () => attachAgentSplitTestTimingV2({}, forgedTiming),
+    /valid support-only record|cannot carry GPU HMR authority/,
+    `forged timing field ${field} must be rejected`,
+  );
+}
+
 const unavailableClock = controlledClock(2_000n);
 const unavailableLifecycle = createAgentSplitTestTimingV2Lifecycle({
   nowNs: unavailableClock.now,
