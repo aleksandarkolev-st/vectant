@@ -8,24 +8,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import {
-  bindGpuHmrRunModeCoverageSupport,
-  buildGpuHmrProofLedger,
-  buildGpuHmrRunModeCoverageSupport,
-  evaluateGpuHmrProofLedger,
-  queryGpuHmrLedgerInvariants,
-} from './lib/gpu-hmr-proof-ledger.mjs';
-import {
   evaluateGpuHmrAcceptanceContract,
   evaluateGpuHmrAcceptanceContractConsistency,
 } from './lib/gpu-hmr-acceptance-contract.mjs';
-import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
 import {
-  visualEvidenceArtifactsFromVisualOracleArtifacts,
-} from './lib/gpu-hmr-validation-proof-artifact.mjs';
-import {
-  buildAsyncVisualProofBundle,
-  evaluateGpuHmrDeterministicVisualMode,
-} from './lib/gpu-hmr-visual-evidence.mjs';
+  GPU_HMR_TEST_TIMING_SCHEMA,
+  GpuHmrTestTimingRecorder,
+} from './lib/gpu-hmr-test-timing-v2.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,7 +22,38 @@ const REPO_ROOT = path.resolve(__dirname, '../../..');
 const ARTIFACT_DIR = path.join(REPO_ROOT, 'mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-visual-proof');
 const DEFAULT_PROFILE_PATH = path.join(__dirname, 'profiles/webgpu-wgsl-runtime-triangle.json');
 const SCHEMA = 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1';
+const FAILURE_SCHEMA = 'synthi.gpu_hmr.webgpu_runtime_visual_failure.v1';
 const MODEL_AVAILABILITY_SOURCE = 'https://ai.google.dev/gemini-api/docs/deprecations';
+const TEST_TIMING_SPLIT_REASON = 'split_not_performed_by_webgpu_runtime_visual_producer';
+const TEST_TIMING_RUNTIME_GAP_REASON = 'browser_phase_not_delimited_in_node_monotonic_clock';
+const TEST_TIMING_VISUAL_NOT_REACHED_REASON = 'visual_phase_not_reached_before_browser';
+const TEST_TIMING_RUNTIME_GAP_PHASES = Object.freeze([
+  'compile',
+  'load',
+  'epoch_publication',
+  'dispatch',
+  'output_ready',
+  'retirement',
+]);
+const WEBGPU_RUNTIME_VISUAL_ERROR_TAG = Symbol('webgpu_runtime_visual_error');
+const FAILURE_CODE_BY_STAGE = Object.freeze({
+  initialization: 'webgpu_runtime_visual_initialization_failed',
+  artifact_directory_setup: 'webgpu_runtime_visual_artifact_directory_setup_failed',
+  profile_intake: 'webgpu_runtime_visual_profile_intake_failed',
+  discovery: 'webgpu_runtime_visual_discovery_failed',
+  browser_preflight: 'webgpu_runtime_visual_browser_preflight_failed',
+  runtime_dependencies: 'webgpu_runtime_visual_dependency_load_failed',
+  server_start: 'webgpu_runtime_visual_server_start_failed',
+  browser_launch: 'webgpu_runtime_visual_browser_launch_failed',
+  runtime_probe: 'webgpu_runtime_visual_runtime_probe_failed',
+  cold_frame: 'webgpu_runtime_visual_cold_frame_failed',
+  post_edit_trigger: 'webgpu_runtime_visual_post_edit_trigger_failed',
+  post_edit_screenshot: 'webgpu_runtime_visual_post_edit_screenshot_failed',
+  visual_analysis: 'webgpu_runtime_visual_analysis_failed',
+  proof_finalization: 'webgpu_runtime_visual_proof_finalization_failed',
+  artifact_persistence: 'webgpu_runtime_visual_artifact_persistence_failed',
+  acceptance: 'webgpu_runtime_visual_proof_rejected',
+});
 const MODEL_REGISTRY = Object.freeze({
   'gemini-3.5-flash': {
     provider_model_status: 'available',
@@ -59,6 +79,54 @@ const WEBGPU_LAUNCH_ARGS = Object.freeze([
   '--enable-features=Vulkan,WebGPU,UseSkiaRenderer',
   '--disable-gpu-sandbox',
 ]);
+
+let buildAsyncVisualProofBundle;
+let bindGpuHmrRunModeCoverageSupport;
+let buildGpuHmrProofLedger;
+let buildGpuHmrRunModeCoverageSupport;
+let evaluateGpuHmrProofLedger;
+let evaluateGpuHmrDeterministicVisualMode;
+let queryGpuHmrLedgerInvariants;
+let runtimeProofArtifactStrictGate;
+let visualEvidenceArtifactsFromVisualOracleArtifacts;
+
+async function loadWebgpuRuntimeVisualDependencies() {
+  if (
+    buildAsyncVisualProofBundle
+    && bindGpuHmrRunModeCoverageSupport
+    && buildGpuHmrProofLedger
+    && buildGpuHmrRunModeCoverageSupport
+    && evaluateGpuHmrProofLedger
+    && evaluateGpuHmrDeterministicVisualMode
+    && queryGpuHmrLedgerInvariants
+    && runtimeProofArtifactStrictGate
+    && visualEvidenceArtifactsFromVisualOracleArtifacts
+  ) {
+    return;
+  }
+  const [
+    proofLedgerModule,
+    proofStrictGatesModule,
+    visualEvidenceModule,
+    validationArtifactModule,
+  ] = await Promise.all([
+    import('./lib/gpu-hmr-proof-ledger.mjs'),
+    import('./lib/gpu-hmr-proof-strict-gates.mjs'),
+    import('./lib/gpu-hmr-visual-evidence.mjs'),
+    import('./lib/gpu-hmr-validation-proof-artifact.mjs'),
+  ]);
+  bindGpuHmrRunModeCoverageSupport = proofLedgerModule.bindGpuHmrRunModeCoverageSupport;
+  buildGpuHmrProofLedger = proofLedgerModule.buildGpuHmrProofLedger;
+  buildGpuHmrRunModeCoverageSupport = proofLedgerModule.buildGpuHmrRunModeCoverageSupport;
+  evaluateGpuHmrProofLedger = proofLedgerModule.evaluateGpuHmrProofLedger;
+  queryGpuHmrLedgerInvariants = proofLedgerModule.queryGpuHmrLedgerInvariants;
+  runtimeProofArtifactStrictGate = proofStrictGatesModule.runtimeProofArtifactStrictGate;
+  buildAsyncVisualProofBundle = visualEvidenceModule.buildAsyncVisualProofBundle;
+  evaluateGpuHmrDeterministicVisualMode =
+    visualEvidenceModule.evaluateGpuHmrDeterministicVisualMode;
+  visualEvidenceArtifactsFromVisualOracleArtifacts =
+    validationArtifactModule.visualEvidenceArtifactsFromVisualOracleArtifacts;
+}
 
 const CFG = {
   slug: process.env.SLUG ?? `webgpu-runtime-visual-${nowSlugDate()}`,
@@ -98,6 +166,157 @@ async function sha256File(filePath) {
 
 function safeSlug(value) {
   return String(value || 'webgpu-runtime-visual').replace(/[^a-zA-Z0-9_.-]+/g, '-');
+}
+
+export function createWebgpuRuntimeVisualTimingV2Recorder(options = {}) {
+  const recorder = new GpuHmrTestTimingRecorder(options);
+  recorder.notApplicable('split', TEST_TIMING_SPLIT_REASON);
+  return recorder;
+}
+
+export async function measureWebgpuRuntimeVisualTimingPhase(recorder, phaseKey, operation) {
+  recorder.startPhase(phaseKey);
+  try {
+    return await operation();
+  } finally {
+    recorder.finishPhase(phaseKey);
+  }
+}
+
+export function finalizeWebgpuRuntimeVisualTimingV2({
+  recorder,
+  outcome,
+  visualCapable,
+  runtimeObserved,
+  terminalReason = null,
+}) {
+  if (recorder.isFinalized) return recorder.record;
+  if (runtimeObserved) {
+    for (const phaseKey of TEST_TIMING_RUNTIME_GAP_PHASES) {
+      recorder.unavailable(phaseKey, TEST_TIMING_RUNTIME_GAP_REASON);
+    }
+  }
+  return recorder.finalize({
+    outcome,
+    visualCapable,
+    terminalReason,
+    notApplicableReason: visualCapable ? null : TEST_TIMING_VISUAL_NOT_REACHED_REASON,
+  });
+}
+
+export function attachWebgpuRuntimeVisualTestTiming(target, testTiming) {
+  if (!target || typeof target !== 'object' || Array.isArray(target)) {
+    throw new TypeError('webgpu timing attachment target must be an object');
+  }
+  if (testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA) {
+    throw new TypeError('webgpu timing attachment requires timing v2');
+  }
+  target.testTiming = testTiming;
+  target.test_timing = testTiming;
+  return target;
+}
+
+function webgpuRuntimeVisualError(message, {
+  code,
+  outcome = 'failed',
+  stage,
+} = {}) {
+  const error = new Error(message);
+  error[WEBGPU_RUNTIME_VISUAL_ERROR_TAG] = true;
+  error.webgpuRuntimeVisualCode = code;
+  error.webgpuRuntimeVisualOutcome = outcome;
+  error.webgpuRuntimeVisualStage = stage;
+  return error;
+}
+
+function classifyWebgpuRuntimeVisualError(error, state) {
+  const taggedOutcome = error?.webgpuRuntimeVisualOutcome;
+  const taggedCode = error?.webgpuRuntimeVisualCode;
+  const taggedStage = error?.webgpuRuntimeVisualStage;
+  if (
+    error?.[WEBGPU_RUNTIME_VISUAL_ERROR_TAG] === true
+    && (taggedOutcome === 'failed' || taggedOutcome === 'refused')
+    && typeof taggedCode === 'string'
+    && typeof taggedStage === 'string'
+  ) {
+    return {
+      category: 'webgpu_runtime_visual_execution',
+      outcome: taggedOutcome,
+      code: taggedCode,
+      stage: taggedStage,
+      proofObjectCreated: state.proof !== null,
+      errorDetailRetained: false,
+    };
+  }
+
+  if (Array.isArray(error?.unsupportedReasons)) {
+    return {
+      category: 'webgpu_runtime_visual_execution',
+      outcome: 'refused',
+      code: 'webgpu_runtime_visual_profile_unsupported',
+      stage: 'profile_intake',
+      proofObjectCreated: state.proof !== null,
+      errorDetailRetained: false,
+    };
+  }
+
+  if (state.proof?.gpuHmrSuccess === false) {
+    return {
+      category: 'webgpu_runtime_visual_execution',
+      outcome: 'refused',
+      code: 'webgpu_runtime_visual_proof_rejected',
+      stage: 'acceptance',
+      proofObjectCreated: true,
+      errorDetailRetained: false,
+    };
+  }
+
+  const stage = Object.hasOwn(FAILURE_CODE_BY_STAGE, state.stage)
+    ? state.stage
+    : 'initialization';
+  return {
+    category: 'webgpu_runtime_visual_execution',
+    outcome: 'failed',
+    code: FAILURE_CODE_BY_STAGE[stage],
+    stage,
+    proofObjectCreated: state.proof !== null,
+    errorDetailRetained: false,
+  };
+}
+
+export function buildRetainedWebgpuRuntimeVisualFailure({
+  classification,
+  testTiming,
+  generatedAt = new Date().toISOString(),
+}) {
+  const errorClassification = {
+    category: classification.category,
+    outcome: classification.outcome,
+    code: classification.code,
+    stage: classification.stage,
+    proofObjectCreated: false,
+    proof_object_created: false,
+    errorDetailRetained: false,
+    error_detail_retained: false,
+  };
+  const artifact = {
+    schema: FAILURE_SCHEMA,
+    schemaVersion: FAILURE_SCHEMA,
+    generatedAt,
+    resultState: classification.outcome === 'refused'
+      ? 'webgpu-runtime-visual-refused-before-proof'
+      : 'webgpu-runtime-visual-failed-before-proof',
+    result_state: classification.outcome === 'refused'
+      ? 'webgpu-runtime-visual-refused-before-proof'
+      : 'webgpu-runtime-visual-failed-before-proof',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    errorClassification,
+    error_classification: errorClassification,
+  };
+  return attachWebgpuRuntimeVisualTestTiming(artifact, testTiming);
 }
 
 function firstText(...values) {
@@ -1691,6 +1910,7 @@ async function writeColdRuntimeRunModeProof({
   proof,
   artifacts,
   runModeCoverageSupport = null,
+  persist = true,
 }) {
   const runMode = coldRuntimeRunModeMetadata(profile);
   const coverageObligations = webgpuRunModeCoverageObligations(profile);
@@ -1749,7 +1969,7 @@ async function writeColdRuntimeRunModeProof({
     validationTargetScope: 'webgpu_run_mode_target',
     validation_target_scope: 'webgpu_run_mode_target',
   };
-  await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
+  if (persist) await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
   return artifact;
 }
 
@@ -2126,7 +2346,15 @@ function buildNativeWebGpuRuntimeTrace({
   };
 }
 
-async function writeHotRuntimeRunModeProof({ filePath, profile, proof, artifacts, metrics, runMode }) {
+async function writeHotRuntimeRunModeProof({
+  filePath,
+  profile,
+  proof,
+  artifacts,
+  metrics,
+  runMode,
+  persist = true,
+}) {
   const coverageObligations = webgpuRunModeCoverageObligations(profile);
   const firewallEvidence = webgpuCompanionFirewallEvidence(proof);
   const visualOracleArtifacts = visualArtifactsForWebgpuRunMode(artifacts);
@@ -2208,7 +2436,7 @@ async function writeHotRuntimeRunModeProof({ filePath, profile, proof, artifacts
     validationTargetScope: 'webgpu_run_mode_target',
     validation_target_scope: 'webgpu_run_mode_target',
   };
-  await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
+  if (persist) await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
   return artifact;
 }
 
@@ -2218,6 +2446,7 @@ async function writeWebgpuNegativeEditRefusal({
   proof,
   runMode,
   runModeCoverageSupport = null,
+  persist = true,
 }) {
   if (!profile.negativeEdit) return null;
   const negativeRunMode = {
@@ -2301,7 +2530,7 @@ async function writeWebgpuNegativeEditRefusal({
     ...seed,
     proofId: `agent-split-negative-edit-refusal:${sha256Text(stableJson(seed))}`,
   };
-  await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
+  if (persist) await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
   return artifact;
 }
 
@@ -2502,47 +2731,109 @@ function buildLedgerRecord({
   };
 }
 
-async function runProof() {
+async function runProofExecution(state) {
+  const { timingRecorder } = state;
+  state.stage = 'artifact_directory_setup';
   await mkdir(ARTIFACT_DIR, { recursive: true });
   const runStartNs = process.hrtime.bigint();
   const timings = { ns: {} };
   const checkedAt = new Date().toISOString();
   const staticStartNs = process.hrtime.bigint();
-  const profile = await loadProfile(CFG.profilePath);
-  const runMode = runModeMetadata(profile);
-  const staticEndNs = process.hrtime.bigint();
-  timings.ns.staticDiscovery = durationNs(staticStartNs, staticEndNs);
-  timings.ns.aiContractSynthesis = 0;
-  const modelAvailabilityStartNs = process.hrtime.bigint();
-  const modelProvenanceEvidence = modelProvenance(checkedAt);
-  timings.ns.modelAvailability = durationNs(modelAvailabilityStartNs, process.hrtime.bigint());
+  state.stage = 'profile_intake';
+  const profile = await measureWebgpuRuntimeVisualTimingPhase(
+    timingRecorder,
+    'cold_intake',
+    () => loadProfile(CFG.profilePath),
+  );
+  state.profile = profile;
 
-  const hashStartNs = process.hrtime.bigint();
-  const browserExecutable = findBrowserExecutable();
-  const profileSlug = safeSlug(`${CFG.slug}-${profile.id}`);
-  const beforeImage = path.join(ARTIFACT_DIR, `${profileSlug}-before.png`);
-  const afterImage = path.join(ARTIFACT_DIR, `${profileSlug}-after.png`);
-  const diffImage = path.join(ARTIFACT_DIR, `${profileSlug}-diff.png`);
-  const proofPath = path.join(ARTIFACT_DIR, `${profileSlug}-proof.json`);
-  const coldRunModeProofPath = path.join(ARTIFACT_DIR, `${profileSlug}-cold-run-mode-proof.json`);
-  const hotRunModeProofPath = path.join(ARTIFACT_DIR, `${profileSlug}-${runMode.metric_scope}-run-mode-proof.json`);
-  const negativeEditRefusalPath = path.join(ARTIFACT_DIR, `${profileSlug}-negative-edit-refusal.json`);
-  const summaryPath = path.join(ARTIFACT_DIR, `${profileSlug}-summary.txt`);
-  const hashEndNs = process.hrtime.bigint();
-  timings.ns.artifactHash = durationNs(hashStartNs, hashEndNs);
+  state.stage = 'discovery';
+  const discovered = await measureWebgpuRuntimeVisualTimingPhase(
+    timingRecorder,
+    'discovery',
+    async () => {
+      const runMode = runModeMetadata(profile);
+      const staticEndNs = process.hrtime.bigint();
+      timings.ns.staticDiscovery = durationNs(staticStartNs, staticEndNs);
+      timings.ns.aiContractSynthesis = 0;
+      const modelAvailabilityStartNs = process.hrtime.bigint();
+      const modelProvenanceEvidence = modelProvenance(checkedAt);
+      timings.ns.modelAvailability = durationNs(modelAvailabilityStartNs, process.hrtime.bigint());
 
-  if (!browserExecutable) throw new Error('browser executable missing');
+      const hashStartNs = process.hrtime.bigint();
+      const browserExecutable = findBrowserExecutable();
+      const profileSlug = safeSlug(`${CFG.slug}-${profile.id}`);
+      const beforeImage = path.join(ARTIFACT_DIR, `${profileSlug}-before.png`);
+      const afterImage = path.join(ARTIFACT_DIR, `${profileSlug}-after.png`);
+      const diffImage = path.join(ARTIFACT_DIR, `${profileSlug}-diff.png`);
+      const proofPath = path.join(ARTIFACT_DIR, `${profileSlug}-proof.json`);
+      const coldRunModeProofPath = path.join(ARTIFACT_DIR, `${profileSlug}-cold-run-mode-proof.json`);
+      const hotRunModeProofPath = path.join(ARTIFACT_DIR, `${profileSlug}-${runMode.metric_scope}-run-mode-proof.json`);
+      const negativeEditRefusalPath = path.join(ARTIFACT_DIR, `${profileSlug}-negative-edit-refusal.json`);
+      const summaryPath = path.join(ARTIFACT_DIR, `${profileSlug}-summary.txt`);
+      const failurePath = path.join(ARTIFACT_DIR, `${profileSlug}-failure.json`);
+      const hashEndNs = process.hrtime.bigint();
+      timings.ns.artifactHash = durationNs(hashStartNs, hashEndNs);
+      return {
+        runMode,
+        modelProvenanceEvidence,
+        browserExecutable,
+        profileSlug,
+        beforeImage,
+        afterImage,
+        diffImage,
+        proofPath,
+        coldRunModeProofPath,
+        hotRunModeProofPath,
+        negativeEditRefusalPath,
+        summaryPath,
+        failurePath,
+      };
+    },
+  );
+  const {
+    runMode,
+    modelProvenanceEvidence,
+    browserExecutable,
+    profileSlug,
+    beforeImage,
+    afterImage,
+    diffImage,
+    proofPath,
+    coldRunModeProofPath,
+    hotRunModeProofPath,
+    negativeEditRefusalPath,
+    summaryPath,
+    failurePath,
+  } = discovered;
+  state.proofPath = proofPath;
+  state.failurePath = failurePath;
 
+  state.stage = 'browser_preflight';
+  if (!browserExecutable) {
+    throw webgpuRuntimeVisualError('browser executable missing', {
+      code: 'webgpu_browser_executable_missing',
+      outcome: 'refused',
+      stage: 'browser_preflight',
+    });
+  }
+
+  state.stage = 'runtime_dependencies';
+  await loadWebgpuRuntimeVisualDependencies();
+
+  state.stage = 'server_start';
   const { server, url } = await startServer(diagnosticHtml(profile));
   let browser;
   let page;
   try {
+    state.stage = 'browser_launch';
     const runtimeStartNs = process.hrtime.bigint();
     browser = await chromium.launch({
       executablePath: browserExecutable,
       headless: true,
       args: WEBGPU_LAUNCH_ARGS,
     });
+    state.stage = 'runtime_probe';
     const processIdentityBefore = await browserProcessIdentity(browser);
     if (!processIdentityBefore?.processId) throw new Error('browser process identity unavailable before proof');
     page = await browser.newPage({ viewport: { width: profile.width, height: profile.height + 80 } });
@@ -2550,8 +2841,11 @@ async function runProof() {
     await page.waitForFunction(() => Boolean(window.__synthiWebGpuRuntimeProof), null, {
       timeout: CFG.timeoutMs,
     });
+    state.runtimeObserved = true;
+    state.visualCapable = true;
     timings.ns.runtimeProbe = durationNs(runtimeStartNs, process.hrtime.bigint());
 
+    state.stage = 'cold_frame';
     const beforeTrace = await page.evaluate(
       ({ code, hash }) => window.__synthiWebGpuRuntimeProof.renderEpoch(code, hash, 'before'),
       { code: profile.beforeWgsl, hash: profile.beforeHash },
@@ -2561,33 +2855,52 @@ async function runProof() {
     const beforeScreenshotEnd = process.hrtime.bigint();
 
     const adapterStartNs = process.hrtime.bigint();
-    const afterTrace = await page.evaluate(
-      ({ code, hash }) => window.__synthiWebGpuRuntimeProof.renderEpoch(code, hash, 'after'),
-      { code: profile.afterWgsl, hash: profile.afterHash },
+    state.stage = 'post_edit_trigger';
+    const afterTrace = await measureWebgpuRuntimeVisualTimingPhase(
+      timingRecorder,
+      'trigger_to_visible',
+      () => page.evaluate(
+        ({ code, hash }) => window.__synthiWebGpuRuntimeProof.renderEpoch(code, hash, 'after'),
+        { code: profile.afterWgsl, hash: profile.afterHash },
+      ),
     );
     const afterDispatchNs = process.hrtime.bigint();
     const afterScreenshotStart = process.hrtime.bigint();
-    await canvasScreenshot(page, afterImage);
+    state.stage = 'post_edit_screenshot';
+    await measureWebgpuRuntimeVisualTimingPhase(
+      timingRecorder,
+      'screenshot_capture',
+      () => canvasScreenshot(page, afterImage),
+    );
     const afterScreenshotEnd = process.hrtime.bigint();
 
     const oracleStartNs = process.hrtime.bigint();
-    const visualProofBundle = await buildAsyncVisualProofBundle({
-      beforePath: beforeImage,
-      afterPath: afterImage,
-      diffPath: diffImage,
-      artifactDir: ARTIFACT_DIR,
-      sessionNamespace: profileSlug,
-      producer: {
-        name: 'webgpu_runtime_visual_proof',
-        kind: 'runtime_visual_runner',
-      },
-      visualProof: profile.visualProof,
-    });
+    state.stage = 'visual_analysis';
+    const visualProofBundle = await measureWebgpuRuntimeVisualTimingPhase(
+      timingRecorder,
+      'visual_analysis',
+      () => buildAsyncVisualProofBundle({
+        beforePath: beforeImage,
+        afterPath: afterImage,
+        diffPath: diffImage,
+        artifactDir: ARTIFACT_DIR,
+        sessionNamespace: profileSlug,
+        producer: {
+          name: 'webgpu_runtime_visual_proof',
+          kind: 'runtime_visual_runner',
+        },
+        visualProof: profile.visualProof,
+      }),
+    );
     if (visualProofBundle.accepted !== true) {
       const reasons = Array.isArray(visualProofBundle.asyncVisualProof?.reasons)
         ? visualProofBundle.asyncVisualProof.reasons.join(',')
         : 'unknown';
-      throw new Error(`webgpu visual proof worker failed: ${reasons}`);
+      throw webgpuRuntimeVisualError(`webgpu visual proof worker failed: ${reasons}`, {
+        code: 'webgpu_visual_worker_rejected',
+        outcome: 'failed',
+        stage: 'visual_analysis',
+      });
     }
     const metrics = visualProofBundle.metrics;
     const oracleEndNs = process.hrtime.bigint();
@@ -2646,150 +2959,203 @@ async function runProof() {
     timings.ns.dispatchTrace = Math.max(0, timings.outputTimestampNs - timings.dispatchTimestampNs);
     timings.ns.deviceCompileWall = Math.max(0, timings.outputTimestampNs - timings.loaderTimestampNs);
     timings.ns.oracleAnalysis = durationNs(oracleStartNs, oracleEndNs);
-    timings.ns.triggerToVisible = durationNs(adapterStartNs, afterScreenshotEnd);
+    timings.ns.triggerToVisible = durationNs(adapterStartNs, afterDispatchNs);
     timings.ns.screenshotCapture = durationNs(beforeScreenshotStart, beforeScreenshotEnd)
       + durationNs(afterScreenshotStart, afterScreenshotEnd);
     timings.ns.dispatchToOutputProof = durationNs(afterDispatchNs, oracleEndNs);
     timings.ns.totalValidatorWall = nsSince(runStartNs);
     timings.retirementTimestampNs = timings.outputTimestampNs + 1;
 
-    const ledgerRecord = buildLedgerRecord({
-      profile,
-      trace,
-      contract,
-      artifacts,
-      metrics,
-      timings,
-      processContinuity,
-      deviceIdentity,
-      modelProvenanceEvidence,
-      visualThresholdValidation,
-      nativeWebGpuApiEvidence: nativeWebGpuEvidence,
-      runMode,
-    });
-    const runtimeTrace = buildNativeWebGpuRuntimeTrace({
-      trace,
-      processContinuity,
-      nativeWebGpuEvidence,
-    });
-    const proofLedger = buildGpuHmrProofLedger(ledgerRecord);
-    const ledgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
-    const baseRuntimeAccepted = proofLedger.gpuHmrSuccess === true
-      && ledgerQuery.gpuHmrSuccess === true
-      && visualThresholdValidation.accepted === true
-      && processContinuity.accepted === true
-      && nativeWebGpuEvidence.accepted === true;
-    const proof = {
-      schema: SCHEMA,
-      slug: CFG.slug,
-      profile: {
-        id: profile.id,
-        targetId: profile.targetId,
-        target_id: profile.targetId,
-        path: profile.profilePath,
-        hash: profile.profileHash,
-      },
-      browser: {
-        executable: browserExecutable,
-        candidateExecutables: candidateBrowserExecutables(),
-        launchArgs: WEBGPU_LAUNCH_ARGS,
-        processIdentityBefore,
-        processIdentityAfter,
-        processContinuity,
-      },
-      runtime: {
-        url,
-        adapterInfo: afterTrace.adapterInfo,
-        features: afterTrace.features,
-        limits: afterTrace.limits,
-        preferredCanvasFormat: afterTrace.preferredCanvasFormat,
-      },
-      contract,
-      artifacts,
-      metrics,
-      visualThresholdValidation,
-      nativeWebGpuApiEvidence: nativeWebGpuEvidence,
-      runtimeTrace,
-      runtime_trace: runtimeTrace,
-      deterministicVisualMode: profile.deterministicVisualMode,
-      proofLedger,
-      proofLedgerQuery: ledgerQuery,
-      gpuHmrSuccess: baseRuntimeAccepted,
-      resultState: baseRuntimeAccepted
-        ? 'webgpu-hmr-full-runtime-proven'
-        : 'webgpu-hmr-rejected',
-      timingMetrics: runMode,
-      timing_metrics: runMode,
-      timings: timingFields(timings.ns, runMode),
-      noShimApplied: nativeWebGpuEvidence.accepted === true,
-      noBrowserFlagClaimedAsHmr: true,
-    };
-    proof.proofId = `webgpu-runtime-visual-proof:${sha256Text(stableJson({
-      schema: proof.schema,
-      profile: proof.profile,
-      artifacts: proof.artifacts,
-      contractHash: contract.contract_hash,
-      ledgerProofId: proofLedger.proofId,
-      metrics: proof.metrics,
-    }))}`;
-    proof.runtimeProofArtifact = buildRuntimeProofArtifact({
-      proof,
-      trace,
-      artifacts,
-      visualThresholdValidation,
-      nativeWebGpuEvidence,
-      processContinuity,
-      runtimeTrace,
-    });
-    proof.runtime_proof_artifact = proof.runtimeProofArtifact;
-    proof.gpuHmrSuccess = proof.runtimeProofArtifact.gpuHmrSuccess === true;
-    proof.gpu_hmr_success = proof.gpuHmrSuccess;
-    proof.resultState = proof.gpuHmrSuccess
-      ? 'webgpu-hmr-full-runtime-proven'
-      : 'webgpu-hmr-rejected';
-    const runModeCoverageSupport = buildGpuHmrRunModeCoverageSupport({
-      proofLedger,
-      proofLedgerQuery: ledgerQuery,
-      runtimeProofArtifact: proof.runtimeProofArtifact,
-      parentProofIds: [proof.proofId],
-    });
+    state.stage = 'proof_finalization';
+    state.proofFinalizationMeasured = true;
+    const finalizedProof = await measureWebgpuRuntimeVisualTimingPhase(
+      timingRecorder,
+      'proof_finalization',
+      async () => {
+        const ledgerRecord = buildLedgerRecord({
+          profile,
+          trace,
+          contract,
+          artifacts,
+          metrics,
+          timings,
+          processContinuity,
+          deviceIdentity,
+          modelProvenanceEvidence,
+          visualThresholdValidation,
+          nativeWebGpuApiEvidence: nativeWebGpuEvidence,
+          runMode,
+        });
+        const runtimeTrace = buildNativeWebGpuRuntimeTrace({
+          trace,
+          processContinuity,
+          nativeWebGpuEvidence,
+        });
+        const proofLedger = buildGpuHmrProofLedger(ledgerRecord);
+        const ledgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+        const baseRuntimeAccepted = proofLedger.gpuHmrSuccess === true
+          && ledgerQuery.gpuHmrSuccess === true
+          && visualThresholdValidation.accepted === true
+          && processContinuity.accepted === true
+          && nativeWebGpuEvidence.accepted === true;
+        const proof = {
+          schema: SCHEMA,
+          slug: CFG.slug,
+          profile: {
+            id: profile.id,
+            targetId: profile.targetId,
+            target_id: profile.targetId,
+            path: profile.profilePath,
+            hash: profile.profileHash,
+          },
+          browser: {
+            executable: browserExecutable,
+            candidateExecutables: candidateBrowserExecutables(),
+            launchArgs: WEBGPU_LAUNCH_ARGS,
+            processIdentityBefore,
+            processIdentityAfter,
+            processContinuity,
+          },
+          runtime: {
+            url,
+            adapterInfo: afterTrace.adapterInfo,
+            features: afterTrace.features,
+            limits: afterTrace.limits,
+            preferredCanvasFormat: afterTrace.preferredCanvasFormat,
+          },
+          contract,
+          artifacts,
+          metrics,
+          visualThresholdValidation,
+          nativeWebGpuApiEvidence: nativeWebGpuEvidence,
+          runtimeTrace,
+          runtime_trace: runtimeTrace,
+          deterministicVisualMode: profile.deterministicVisualMode,
+          proofLedger,
+          proofLedgerQuery: ledgerQuery,
+          gpuHmrSuccess: baseRuntimeAccepted,
+          resultState: baseRuntimeAccepted
+            ? 'webgpu-hmr-full-runtime-proven'
+            : 'webgpu-hmr-rejected',
+          timingMetrics: runMode,
+          timing_metrics: runMode,
+          timings: timingFields(timings.ns, runMode),
+          noShimApplied: nativeWebGpuEvidence.accepted === true,
+          noBrowserFlagClaimedAsHmr: true,
+        };
+        proof.proofId = `webgpu-runtime-visual-proof:${sha256Text(stableJson({
+          schema: proof.schema,
+          profile: proof.profile,
+          artifacts: proof.artifacts,
+          contractHash: contract.contract_hash,
+          ledgerProofId: proofLedger.proofId,
+          metrics: proof.metrics,
+        }))}`;
+        proof.runtimeProofArtifact = buildRuntimeProofArtifact({
+          proof,
+          trace,
+          artifacts,
+          visualThresholdValidation,
+          nativeWebGpuEvidence,
+          processContinuity,
+          runtimeTrace,
+        });
+        proof.runtime_proof_artifact = proof.runtimeProofArtifact;
+        proof.gpuHmrSuccess = proof.runtimeProofArtifact.gpuHmrSuccess === true;
+        proof.gpu_hmr_success = proof.gpuHmrSuccess;
+        proof.resultState = proof.gpuHmrSuccess
+          ? 'webgpu-hmr-full-runtime-proven'
+          : 'webgpu-hmr-rejected';
+        state.proof = proof;
+        const runModeCoverageSupport = buildGpuHmrRunModeCoverageSupport({
+          proofLedger,
+          proofLedgerQuery: ledgerQuery,
+          runtimeProofArtifact: proof.runtimeProofArtifact,
+          parentProofIds: [proof.proofId],
+        });
 
-    const coldRunModeProof = await writeColdRuntimeRunModeProof({
-      filePath: coldRunModeProofPath,
-      profile,
+        const coldRunModeProof = await writeColdRuntimeRunModeProof({
+          filePath: coldRunModeProofPath,
+          profile,
+          proof,
+          artifacts,
+          runModeCoverageSupport,
+          persist: false,
+        });
+        const hotRunModeProof = await writeHotRuntimeRunModeProof({
+          filePath: hotRunModeProofPath,
+          profile,
+          proof,
+          artifacts,
+          metrics,
+          runMode,
+          persist: false,
+        });
+        const negativeEditRefusal = await writeWebgpuNegativeEditRefusal({
+          filePath: negativeEditRefusalPath,
+          profile,
+          proof,
+          runMode,
+          runModeCoverageSupport,
+          persist: false,
+        });
+        proof.runModeCompanionArtifacts = {
+          coldRuntimeInitial: coldRunModeProofPath,
+          [runMode.metric_scope]: hotRunModeProofPath,
+          ...(negativeEditRefusal ? { negativeEditRefusal: negativeEditRefusalPath } : {}),
+        };
+        proof.run_mode_companion_artifacts = proof.runModeCompanionArtifacts;
+        proof.runModeCompanionProofIds = {
+          coldRuntimeInitial: coldRunModeProof.proofId,
+          [runMode.metric_scope]: hotRunModeProof.proofId,
+          ...(negativeEditRefusal ? { negativeEditRefusal: negativeEditRefusal.proofId } : {}),
+        };
+        proof.run_mode_companion_proof_ids = proof.runModeCompanionProofIds;
+        state.companionArtifacts = [
+          { artifact: coldRunModeProof, filePath: coldRunModeProofPath },
+          { artifact: hotRunModeProof, filePath: hotRunModeProofPath },
+          ...(negativeEditRefusal
+            ? [{ artifact: negativeEditRefusal, filePath: negativeEditRefusalPath }]
+            : []),
+        ];
+        return {
+          proof,
+          proofLedger,
+          ledgerQuery,
+          coldRunModeProof,
+          hotRunModeProof,
+          negativeEditRefusal,
+        };
+      },
+    );
+    const {
       proof,
-      artifacts,
-      runModeCoverageSupport,
+      proofLedger,
+      ledgerQuery,
+      coldRunModeProof,
+      hotRunModeProof,
+      negativeEditRefusal,
+    } = finalizedProof;
+    const testTiming = finalizeWebgpuRuntimeVisualTimingV2({
+      recorder: timingRecorder,
+      outcome: proof.gpuHmrSuccess ? 'pass' : 'refused',
+      visualCapable: true,
+      runtimeObserved: true,
+      terminalReason: proof.gpuHmrSuccess ? null : 'webgpu_runtime_visual_proof_rejected',
     });
-    const hotRunModeProof = await writeHotRuntimeRunModeProof({
-      filePath: hotRunModeProofPath,
-      profile,
-      proof,
-      artifacts,
-      metrics,
-      runMode,
-    });
-    const negativeEditRefusal = await writeWebgpuNegativeEditRefusal({
-      filePath: negativeEditRefusalPath,
-      profile,
-      proof,
-      runMode,
-      runModeCoverageSupport,
-    });
-    proof.runModeCompanionArtifacts = {
-      coldRuntimeInitial: coldRunModeProofPath,
-      [runMode.metric_scope]: hotRunModeProofPath,
-      ...(negativeEditRefusal ? { negativeEditRefusal: negativeEditRefusalPath } : {}),
-    };
-    proof.run_mode_companion_artifacts = proof.runModeCompanionArtifacts;
-    proof.runModeCompanionProofIds = {
-      coldRuntimeInitial: coldRunModeProof.proofId,
-      [runMode.metric_scope]: hotRunModeProof.proofId,
-      ...(negativeEditRefusal ? { negativeEditRefusal: negativeEditRefusal.proofId } : {}),
-    };
-    proof.run_mode_companion_proof_ids = proof.runModeCompanionProofIds;
+    state.testTiming = testTiming;
+    attachWebgpuRuntimeVisualTestTiming(proof, testTiming);
+    attachWebgpuRuntimeVisualTestTiming(proof.runtimeProofArtifact, testTiming);
+    for (const companion of state.companionArtifacts) {
+      attachWebgpuRuntimeVisualTestTiming(companion.artifact, testTiming);
+    }
 
+    state.stage = 'artifact_persistence';
     await writeFile(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
+    state.proofPersisted = true;
+    for (const companion of state.companionArtifacts) {
+      await writeFile(companion.filePath, `${JSON.stringify(companion.artifact, null, 2)}\n`);
+    }
     await writeFile(summaryPath, [
       `proof_id=${proof.proofId}`,
       `result_state=${proof.resultState}`,
@@ -2832,6 +3198,7 @@ async function runProof() {
       '',
     ].join('\n'));
 
+    state.stage = 'acceptance';
     if (!proof.gpuHmrSuccess) {
       const failures = [
         ...ledgerQuery.failedInvariants.map((f) => f.code),
@@ -2840,7 +3207,14 @@ async function runProof() {
         ...processContinuity.failedGates,
         ...nativeWebGpuEvidence.failedGates,
       ];
-      throw new Error(`WebGPU runtime visual proof rejected: ${failures.join(',')}`);
+      throw webgpuRuntimeVisualError(
+        `WebGPU runtime visual proof rejected: ${failures.join(',')}`,
+        {
+          code: 'webgpu_runtime_visual_proof_rejected',
+          outcome: 'refused',
+          stage: 'acceptance',
+        },
+      );
     }
     return { proof, proofPath, summaryPath };
   } finally {
@@ -2848,7 +3222,89 @@ async function runProof() {
       await page?.evaluate(() => window.__synthiWebGpuRuntimeProof?.destroy?.());
     } catch {}
     try { await browser?.close(); } catch {}
-    await new Promise((resolve) => server.close(resolve));
+    try {
+      await new Promise((resolve) => server.close(resolve));
+    } catch {}
+  }
+}
+
+async function runProof() {
+  const timingRecorder = createWebgpuRuntimeVisualTimingV2Recorder({
+    clock: () => process.hrtime.bigint(),
+  });
+  const state = {
+    timingRecorder,
+    stage: 'initialization',
+    profile: null,
+    proof: null,
+    proofPath: null,
+    proofPersisted: false,
+    companionArtifacts: [],
+    failurePath: path.join(ARTIFACT_DIR, `${safeSlug(CFG.slug)}-failure.json`),
+    testTiming: null,
+    visualCapable: false,
+    runtimeObserved: false,
+    proofFinalizationMeasured: false,
+  };
+
+  try {
+    return await runProofExecution(state);
+  } catch (error) {
+    let classification = classifyWebgpuRuntimeVisualError(error, state);
+    if (!timingRecorder.isFinalized) {
+      if (!state.proofFinalizationMeasured) {
+        state.proofFinalizationMeasured = true;
+        await measureWebgpuRuntimeVisualTimingPhase(
+          timingRecorder,
+          'proof_finalization',
+          async () => {
+            classification = classifyWebgpuRuntimeVisualError(error, state);
+          },
+        );
+      }
+      state.testTiming = finalizeWebgpuRuntimeVisualTimingV2({
+        recorder: timingRecorder,
+        outcome: classification.outcome,
+        visualCapable: state.visualCapable,
+        runtimeObserved: state.runtimeObserved,
+        terminalReason: classification.code,
+      });
+    } else {
+      state.testTiming = timingRecorder.record;
+    }
+
+    if (state.proof) {
+      attachWebgpuRuntimeVisualTestTiming(state.proof, state.testTiming);
+      if (state.proof.runtimeProofArtifact) {
+        attachWebgpuRuntimeVisualTestTiming(state.proof.runtimeProofArtifact, state.testTiming);
+      }
+      for (const companion of state.companionArtifacts) {
+        attachWebgpuRuntimeVisualTestTiming(companion.artifact, state.testTiming);
+      }
+      if (!state.proofPersisted && state.proofPath) {
+        try {
+          await writeFile(state.proofPath, `${JSON.stringify(state.proof, null, 2)}\n`);
+          state.proofPersisted = true;
+        } catch {}
+      }
+    } else {
+      const failureArtifact = buildRetainedWebgpuRuntimeVisualFailure({
+        classification,
+        testTiming: state.testTiming,
+      });
+      try {
+        await mkdir(ARTIFACT_DIR, { recursive: true });
+        await writeFile(state.failurePath, `${JSON.stringify(failureArtifact, null, 2)}\n`);
+        if (error && typeof error === 'object') {
+          error.retainedFailureArtifactPath = state.failurePath;
+        }
+      } catch {
+        if (error && typeof error === 'object') {
+          error.failureArtifactRetentionCode = 'webgpu_runtime_visual_failure_artifact_write_failed';
+        }
+      }
+    }
+    throw error;
   }
 }
 
@@ -3119,6 +3575,7 @@ function selfCheck() {
 
 async function main() {
   if (process.argv.includes('--self-check')) {
+    await loadWebgpuRuntimeVisualDependencies();
     selfCheck();
     return;
   }
@@ -3142,7 +3599,12 @@ async function main() {
   console.log(`trigger_to_visible_time=${proof.timings.trigger_to_visible_time}`);
 }
 
-main().catch((error) => {
-  console.error(error?.stack || error?.message || String(error));
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  main().catch((error) => {
+    console.error(error?.stack || error?.message || String(error));
+    if (error?.retainedFailureArtifactPath) {
+      console.error(`failure_json=${error.retainedFailureArtifactPath}`);
+    }
+    process.exit(1);
+  });
+}
