@@ -858,11 +858,14 @@ async fn confirm_full_access_enrollment_proposal(
     drop(session_guard);
     let workspace = state.workspace.summary();
     let now = Utc::now();
-    let cloud_policy = runtime
+    let cloud_policy = runtime.pairing_client.policy().await.map_err(|_| {
+        "Current cloud policy could not be verified. Full Access was not enrolled.".to_string()
+    })?;
+    *runtime
         .cloud_policy
-        .read()
-        .map_err(|_| "Cloud policy lock failed closed.".to_string())?
-        .clone();
+        .write()
+        .map_err(|_| "Cloud policy lock failed closed.".to_string())? = cloud_policy.clone();
+    apply_policy_to_local_state(state, &cloud_policy).await?;
     if proposal.expires_at <= now
         || !proposal.policy.is_valid_enrollment_policy()
         || !proposal.policy.organization_enabled
@@ -1958,6 +1961,7 @@ mod tests {
     };
     use crate::pairing_client::PairingClient;
     use crate::relay_client::RelayClient;
+    use axum::{routing::get, Json, Router};
     use chrono::{Duration as ChronoDuration, Utc};
     use std::collections::{BTreeSet, HashMap};
     use std::fs;
@@ -2132,7 +2136,35 @@ mod tests {
         );
         let mut cloud_policy = release_policy();
         cloud_policy.full_access_enabled = true;
-        let runtime = runtime_for_test(state.clone(), cloud_policy);
+        let mut runtime = runtime_for_test(state.clone(), cloud_policy);
+        let policy_app = Router::new().route(
+            "/api/local-support/policy",
+            get(|| async {
+                Json(serde_json::json!({
+                    "enabled": true,
+                    "min_app_version": env!("CARGO_PKG_VERSION"),
+                    "vulnerable_versions": [],
+                    "emergency_controls": { "pairing_disabled": false },
+                    "full_access": {
+                        "enabled": true,
+                        "auto_approval_enabled": false,
+                        "process_visibility_enabled": false,
+                        "workspace_mutation_enabled": false,
+                        "command_execution_enabled": false,
+                        "local_port_discovery_enabled": false,
+                        "local_port_use_enabled": false,
+                    },
+                    "user_visible_message": "Full Access is allowed by current policy.",
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, policy_app).await.unwrap() });
+        runtime.pairing_client =
+            PairingClient::new(&format!("http://{address}/api/local-support/pairing")).unwrap();
         let capabilities = BTreeSet::from([
             FullAccessCapability::Enroll,
             FullAccessCapability::GraphRead,
