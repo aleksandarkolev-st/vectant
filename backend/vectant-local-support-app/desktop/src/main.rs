@@ -29,6 +29,7 @@ use vectant_local_support_app::pair::{DeviceIdentity, DeviceIdentityStore};
 use vectant_local_support_app::port_adapter::{
     detect_loopback_listener, native_listener_identity_matches,
 };
+use vectant_local_support_app::process_adapter::ProcessInspectionAdapter;
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::SessionGuard;
 use vectant_local_support_app::workspace::FileReadRequest;
@@ -43,6 +44,7 @@ struct DesktopRuntime {
     relay_client: RelayClient,
     pending_pairing: RwLock<Option<ClaimedPairing>>,
     pending_full_access_enrollment: RwLock<Option<PendingFullAccessEnrollment>>,
+    process_visibility_snapshot: RwLock<Option<ProcessVisibilitySnapshot>>,
     pending_relay_approvals: RwLock<HashMap<String, PendingRelayApproval>>,
     preview_contexts: RwLock<HashMap<u16, PreviewContext>>,
     local_api_address: RwLock<Option<SocketAddr>>,
@@ -61,6 +63,13 @@ struct PendingFullAccessEnrollment {
     policy: FullAccessPolicy,
     support_actor: String,
     expires_at: DateTime<Utc>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ProcessVisibilitySnapshot {
+    state: String,
+    collected_at: DateTime<Utc>,
+    records: Vec<vectant_local_support_app::full_access::SanitizedProcessRecord>,
 }
 
 #[derive(Clone)]
@@ -493,6 +502,9 @@ async fn local_support_ipc(
             )
             .await?;
         }
+        "process.visibility.review" => {
+            refresh_process_visibility(&runtime, &app_state, &request_id).await?;
+        }
         "history.export" => {
             let Some(path) = rfd::FileDialog::new()
                 .set_title("Export scrubbed Local Support history")
@@ -697,6 +709,16 @@ async fn desktop_status(
                 "enrollment_pending".to_string(),
                 enrollment.unwrap_or(serde_json::Value::Null),
             );
+            let process_visibility = runtime
+                .process_visibility_snapshot
+                .read()
+                .map_err(|_| "Process visibility state lock failed closed.".to_string())?
+                .clone();
+            full_access.insert(
+                "process_visibility".to_string(),
+                serde_json::to_value(process_visibility)
+                    .map_err(|_| "Process visibility state could not be sanitized.".to_string())?,
+            );
         }
         let policy = runtime
             .cloud_policy
@@ -719,6 +741,79 @@ async fn desktop_status(
         );
     }
     Ok(status)
+}
+
+async fn refresh_process_visibility(
+    runtime: &DesktopRuntime,
+    state: &AppState,
+    request_id: &str,
+) -> Result<(), String> {
+    let session_guard = state.session.lock().await;
+    if !session_guard.is_active() || session_guard.state().paused {
+        return Err(
+            "The local session is inactive or paused. Process visibility was not collected."
+                .to_string(),
+        );
+    }
+    let session = session_guard.state();
+    drop(session_guard);
+    let workspace = state.workspace.summary();
+    let full_access = state.full_access.lock().await;
+    let receipt = full_access
+        .receipt
+        .clone()
+        .ok_or_else(|| "Full Access is not enrolled for this session.".to_string())?;
+    if full_access.process_visibility_paused {
+        return Err(
+            "Process visibility is paused locally. No process records were collected.".to_string(),
+        );
+    }
+    let policy = full_access.policy.clone();
+    drop(full_access);
+    let binding = ReceiptBinding {
+        session_id: &session.session_id,
+        account_id: &session.account_id,
+        organization_id: &session.org_id,
+        actor: &receipt.support_actor,
+        device_fingerprint: &session.device_fingerprint,
+        workspace_hash: &workspace.root_hash,
+        policy_version: vectant_local_support_app::POLICY_VERSION,
+        scanner_version: vectant_local_support_app::SCANNER_VERSION,
+        app_version: env!("CARGO_PKG_VERSION"),
+        policy_major: policy.policy_major,
+        reconsent_version: policy.mandatory_reconsent_version,
+        capability: FullAccessCapability::ProcessInventory,
+    };
+    authorize_full_access(&policy, &receipt, &binding, Utc::now()).map_err(|_| {
+        "The active Full Access receipt does not allow process visibility.".to_string()
+    })?;
+    let collected_at = Utc::now();
+    let snapshot = match ProcessInspectionAdapter::list_workspace_processes(
+        state.workspace.root(),
+        policy.max_process_records,
+    ) {
+        Ok(records) => ProcessVisibilitySnapshot {
+            state: "available".to_string(),
+            collected_at,
+            records,
+        },
+        Err(_) => ProcessVisibilitySnapshot {
+            state: "unavailable".to_string(),
+            collected_at,
+            records: Vec::new(),
+        },
+    };
+    let count = snapshot.records.len();
+    *runtime
+        .process_visibility_snapshot
+        .write()
+        .map_err(|_| "Process visibility state lock failed closed.".to_string())? = Some(snapshot);
+    append_control_event(
+        state,
+        request_id,
+        &format!("Collected {count} sanitized process visibility record(s) locally; command lines, environments, raw paths, and PIDs were excluded."),
+    )
+    .await
 }
 
 async fn confirm_full_access_enrollment(
@@ -991,6 +1086,7 @@ fn main() -> anyhow::Result<()> {
         relay_client: RelayClient::from_environment().map_err(anyhow::Error::msg)?,
         pending_pairing: RwLock::new(None),
         pending_full_access_enrollment: RwLock::new(None),
+        process_visibility_snapshot: RwLock::new(None),
         pending_relay_approvals: RwLock::new(HashMap::new()),
         preview_contexts: RwLock::new(HashMap::new()),
         local_api_address: RwLock::new(None),
@@ -1946,6 +2042,7 @@ mod tests {
                 .unwrap(),
             pending_pairing: RwLock::new(None),
             pending_full_access_enrollment: RwLock::new(None),
+            process_visibility_snapshot: RwLock::new(None),
             pending_relay_approvals: RwLock::new(HashMap::new()),
             preview_contexts: RwLock::new(HashMap::new()),
             local_api_address: RwLock::new(None),
@@ -2107,6 +2204,7 @@ mod tests {
                 .unwrap(),
             pending_pairing: RwLock::new(None),
             pending_full_access_enrollment: RwLock::new(None),
+            process_visibility_snapshot: RwLock::new(None),
             pending_relay_approvals: RwLock::new(HashMap::new()),
             preview_contexts: RwLock::new(HashMap::new()),
             local_api_address: RwLock::new(None),

@@ -34,6 +34,7 @@ const ALLOWED_IPC_COMMANDS: &[&str] = &[
     "full_access.revoke",
     "full_access.enroll",
     "process.visibility.pause",
+    "process.visibility.review",
     "history.export",
     "history.delete",
     "update.check",

@@ -104,11 +104,14 @@
           <p class="label">Local stop controls</p>
           <div class="control-stack">
             <button class="primary" type="button" data-action="confirm-full-access-enrollment" disabled>Confirm Full Access enrollment</button>
+            <button type="button" data-action="review-process-visibility">Review process visibility</button>
             <button type="button" data-action="pause-full-access">Pause Full Access</button>
             <button type="button" data-action="pause-process-visibility">Pause process visibility</button>
             <button type="button" data-action="revoke-full-access">Revoke Full Access grants</button>
           </div>
           <p class="hint">Visible locally does not mean sent. These controls stop future automatic releases immediately.</p>
+          <p class="hint" data-field="process-visibility-summary">Process visibility has not been reviewed locally in this session.</p>
+          <ul class="tight-list" data-field="process-visibility-records" aria-live="polite"></ul>
         </article>
         <article class="panel span-2">
           <div class="panel-head">

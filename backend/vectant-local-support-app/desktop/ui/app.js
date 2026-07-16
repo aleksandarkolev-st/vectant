@@ -20,6 +20,7 @@ const actionButtons = {
   installUpdate: document.querySelector('[data-action="install-update"]'),
   pauseFullAccess: document.querySelector('[data-action="pause-full-access"]'),
   pauseProcessVisibility: document.querySelector('[data-action="pause-process-visibility"]'),
+  reviewProcessVisibility: document.querySelector('[data-action="review-process-visibility"]'),
   revokeFullAccess: document.querySelector('[data-action="revoke-full-access"]'),
   confirmFullAccessEnrollment: document.querySelector('[data-action="confirm-full-access-enrollment"]'),
 };
@@ -188,11 +189,35 @@ function renderFullAccess(fullAccess) {
   setText('[data-field="full-access-graph"]', enrolled ? `${fullAccess.graphNodeCount} scrubbed nodes, no raw bodies` : "Not available");
   setText('[data-field="full-access-delivery"]', enrolled && fullAccess.autoApproval && !fullAccess.automaticDeliveryPaused ? "Enabled within policy and budget" : "Disabled or paused");
   setText('[data-field="full-access-processes"]', enrolled ? (fullAccess.processVisibilityPaused ? "Paused locally" : "Sanitized diagnostic records only") : "Not available");
+  const processReview = fullAccess.processVisibility;
+  setText('[data-field="process-visibility-summary"]', !enrolled
+    ? "Process visibility is unavailable until Full Access is enrolled."
+    : fullAccess.processVisibilityPaused
+      ? "Process visibility is paused locally. No process records can be collected or released."
+      : processReview?.state === "available"
+        ? `${processReview.records.length} sanitized process record${processReview.records.length === 1 ? "" : "s"} reviewed locally at ${processReview.collectedAt}. Command lines, environments, paths, and PIDs remain hidden.`
+        : processReview?.state === "unavailable"
+          ? "Process data is unavailable under current OS permissions. No process state was guessed or sent."
+          : "Review process visibility to collect a fresh local-only sanitized snapshot.");
   actionButtons.pauseFullAccess.disabled = !enrolled || fullAccess.automaticDeliveryPaused;
   actionButtons.pauseProcessVisibility.disabled = !enrolled || fullAccess.processVisibilityPaused;
+  actionButtons.reviewProcessVisibility.disabled = !enrolled || fullAccess.processVisibilityPaused;
   actionButtons.revokeFullAccess.disabled = !enrolled;
   actionButtons.confirmFullAccessEnrollment.disabled = enrolled || !pending;
+  renderProcessVisibility(processReview);
   renderLocalMutations(fullAccess.localMutations);
+}
+
+function renderProcessVisibility(review) {
+  const list = document.querySelector('[data-field="process-visibility-records"]');
+  if (!list) return;
+  list.replaceChildren();
+  if (review?.state !== "available") return;
+  for (const record of review.records) {
+    const item = document.createElement("li");
+    item.textContent = `${record.name} (${record.category}) — included because ${record.reason}. Identity is locally hashed; PID, path, command line, and environment are hidden.`;
+    list.append(item);
+  }
 }
 
 function renderLocalMutations(mutations) {
@@ -402,6 +427,20 @@ function normalizeFullAccess(rawAccess) {
     enrolled: raw.enrolled === true,
     autoApproval: raw.auto_approval_enabled === true,
     processVisibilityPaused: raw.process_visibility_paused === true,
+    processVisibility: raw.process_visibility && typeof raw.process_visibility === "object"
+      ? {
+          state: raw.process_visibility.state === "available" ? "available" : raw.process_visibility.state === "unavailable" ? "unavailable" : "unknown",
+          collectedAt: sanitizeText(raw.process_visibility.collected_at, "an unknown time"),
+          records: Array.isArray(raw.process_visibility.records)
+            ? raw.process_visibility.records.slice(0, 256).map((record) => ({
+                identity: sanitizeText(record.identity_hash, "hidden identity"),
+                name: sanitizeText(record.executable_name, "process"),
+                category: sanitizeText(record.category, "unknown"),
+                reason: sanitizeText(record.inclusion_reason, "local policy"),
+              }))
+            : [],
+        }
+      : null,
     graphNodeCount: Math.min(Math.max(Number(raw.graph_node_count) || 0, 0), 20000),
     automaticDeliveryPaused: raw.automatic_delivery_paused === true,
     enrollmentPending: raw.enrollment_pending && typeof raw.enrollment_pending === "object"
@@ -575,6 +614,9 @@ document.querySelectorAll("[data-action]").forEach((button) => {
     }
     if (button.dataset.action === "pause-process-visibility") {
       await invokeStateAction("process.visibility.pause", "Process visibility pause needs the native desktop app.");
+    }
+    if (button.dataset.action === "review-process-visibility") {
+      await invokeStateAction("process.visibility.review", "Process visibility review needs the native desktop app.");
     }
     if (button.dataset.action === "revoke-full-access") {
       await invokeStateAction("full_access.revoke", "Full Access revocation needs the native desktop app.");
