@@ -3,7 +3,7 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
@@ -254,6 +254,75 @@ export function attachWebgpuRuntimeVisualOutcomeTimings({
   if (negativeRefusalArtifact) {
     attachWebgpuRuntimeVisualTestTiming(negativeRefusalArtifact, negativeRefusalTiming);
   }
+}
+
+async function durableWriteText(filePath, content) {
+  const handle = await open(filePath, 'w');
+  try {
+    await handle.writeFile(content, 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function persistWebgpuRuntimeVisualPayloadsBeforeTiming({
+  proofPath,
+  proof,
+  companionArtifacts,
+  summaryPath,
+  summaryText,
+  writeText = durableWriteText,
+}) {
+  await writeText(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
+  for (const companion of companionArtifacts) {
+    await writeText(companion.filePath, `${JSON.stringify(companion.artifact, null, 2)}\n`);
+  }
+  await writeText(summaryPath, summaryText);
+}
+
+async function persistWebgpuRuntimeVisualTimingAnnotations({
+  proofPath,
+  proof,
+  companionArtifacts,
+  summaryPath,
+  summaryText,
+}) {
+  await durableWriteText(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
+  for (const companion of companionArtifacts) {
+    await durableWriteText(companion.filePath, `${JSON.stringify(companion.artifact, null, 2)}\n`);
+  }
+  await durableWriteText(summaryPath, summaryText);
+}
+
+function finalizeWebgpuRuntimeVisualCompanionTimings(state) {
+  if (state.outcomeTimings) return state.outcomeTimings;
+  const { coldTimingRecorder, negativeTimingRecorder } = state.outcomeTimingRecorders ?? {};
+  if (!coldTimingRecorder) return null;
+  const coldTestTiming = coldTimingRecorder.isFinalized
+    ? coldTimingRecorder.record
+    : finalizeWebgpuRuntimeVisualTimingV2({
+      recorder: coldTimingRecorder,
+      outcome: 'pass',
+      visualCapable: true,
+      runtimeObserved: true,
+      terminalReason: TEST_TIMING_COLD_ANALYSIS_GAP_REASON,
+    });
+  const negativeRefusalTiming = negativeTimingRecorder
+    ? (
+      negativeTimingRecorder.isFinalized
+        ? negativeTimingRecorder.record
+        : finalizeWebgpuRuntimeVisualTimingV2({
+          recorder: negativeTimingRecorder,
+          outcome: 'refused',
+          visualCapable: false,
+          runtimeObserved: false,
+          terminalReason: TEST_TIMING_NEGATIVE_RUNTIME_GAP_REASON,
+        })
+    )
+    : null;
+  state.outcomeTimings = { coldTestTiming, negativeRefusalTiming };
+  return state.outcomeTimings;
 }
 
 function webgpuRuntimeVisualError(message, {
@@ -3142,13 +3211,6 @@ async function runProofExecution(state) {
             persist: false,
           }),
         );
-        const coldTestTiming = finalizeWebgpuRuntimeVisualTimingV2({
-          recorder: coldTimingRecorder,
-          outcome: 'pass',
-          visualCapable: true,
-          runtimeObserved: true,
-          terminalReason: TEST_TIMING_COLD_ANALYSIS_GAP_REASON,
-        });
         const hotRunModeProof = await writeHotRuntimeRunModeProof({
           filePath: hotRunModeProofPath,
           profile,
@@ -3175,15 +3237,6 @@ async function runProofExecution(state) {
             }),
           )
           : null;
-        const negativeRefusalTiming = negativeTimingRecorder
-          ? finalizeWebgpuRuntimeVisualTimingV2({
-            recorder: negativeTimingRecorder,
-            outcome: 'refused',
-            visualCapable: false,
-            runtimeObserved: false,
-            terminalReason: TEST_TIMING_NEGATIVE_RUNTIME_GAP_REASON,
-          })
-          : null;
         proof.runModeCompanionArtifacts = {
           coldRuntimeInitial: coldRunModeProofPath,
           [runMode.metric_scope]: hotRunModeProofPath,
@@ -3207,7 +3260,7 @@ async function runProofExecution(state) {
             }]
             : []),
         ];
-        state.outcomeTimings = { coldTestTiming, negativeRefusalTiming };
+        state.outcomeTimingRecorders = { coldTimingRecorder, negativeTimingRecorder };
         return {
           proof,
           proofLedger,
@@ -3215,8 +3268,6 @@ async function runProofExecution(state) {
           coldRunModeProof,
           hotRunModeProof,
           negativeEditRefusal,
-          coldTestTiming,
-          negativeRefusalTiming,
         };
       },
     );
@@ -3227,35 +3278,9 @@ async function runProofExecution(state) {
       coldRunModeProof,
       hotRunModeProof,
       negativeEditRefusal,
-      coldTestTiming,
-      negativeRefusalTiming,
     } = finalizedProof;
-    const testTiming = finalizeWebgpuRuntimeVisualTimingV2({
-      recorder: timingRecorder,
-      outcome: proof.gpuHmrSuccess ? 'pass' : 'refused',
-      visualCapable: true,
-      runtimeObserved: true,
-      terminalReason: proof.gpuHmrSuccess ? null : 'webgpu_runtime_visual_proof_rejected',
-    });
-    state.testTiming = testTiming;
-    attachWebgpuRuntimeVisualOutcomeTimings({
-      proof,
-      runtimeProofArtifact: proof.runtimeProofArtifact,
-      coldArtifact: coldRunModeProof,
-      hotArtifact: hotRunModeProof,
-      negativeRefusalArtifact: negativeEditRefusal,
-      hotTiming: testTiming,
-      coldTiming: coldTestTiming,
-      negativeRefusalTiming,
-    });
 
-    state.stage = 'artifact_persistence';
-    await writeFile(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
-    state.proofPersisted = true;
-    for (const companion of state.companionArtifacts) {
-      await writeFile(companion.filePath, `${JSON.stringify(companion.artifact, null, 2)}\n`);
-    }
-    await writeFile(summaryPath, [
+    const summaryPayload = [
       `proof_id=${proof.proofId}`,
       `result_state=${proof.resultState}`,
       `gpu_hmr_success=${proof.gpuHmrSuccess}`,
@@ -3295,7 +3320,45 @@ async function runProofExecution(state) {
       `no_shim_applied=true`,
       `no_browser_flag_claimed_as_hmr=true`,
       '',
-    ].join('\n'));
+    ].join('\n');
+
+    state.stage = 'artifact_persistence';
+    await persistWebgpuRuntimeVisualPayloadsBeforeTiming({
+      proofPath,
+      proof,
+      companionArtifacts: state.companionArtifacts,
+      summaryPath,
+      summaryText: summaryPayload,
+    });
+    state.proofPersisted = true;
+
+    const { coldTestTiming, negativeRefusalTiming } =
+      finalizeWebgpuRuntimeVisualCompanionTimings(state);
+    const testTiming = finalizeWebgpuRuntimeVisualTimingV2({
+      recorder: timingRecorder,
+      outcome: proof.gpuHmrSuccess ? 'pass' : 'refused',
+      visualCapable: true,
+      runtimeObserved: true,
+      terminalReason: proof.gpuHmrSuccess ? null : 'webgpu_runtime_visual_proof_rejected',
+    });
+    state.testTiming = testTiming;
+    attachWebgpuRuntimeVisualOutcomeTimings({
+      proof,
+      runtimeProofArtifact: proof.runtimeProofArtifact,
+      coldArtifact: coldRunModeProof,
+      hotArtifact: hotRunModeProof,
+      negativeRefusalArtifact: negativeEditRefusal,
+      hotTiming: testTiming,
+      coldTiming: coldTestTiming,
+      negativeRefusalTiming,
+    });
+    await persistWebgpuRuntimeVisualTimingAnnotations({
+      proofPath,
+      proof,
+      companionArtifacts: state.companionArtifacts,
+      summaryPath,
+      summaryText: `${summaryPayload}test_timing_v2_total_wall_ns=${testTiming.phases.total_wall.durationNs}\n`,
+    });
 
     state.stage = 'acceptance';
     if (!proof.gpuHmrSuccess) {
@@ -3344,6 +3407,7 @@ async function runProof() {
     proofPersisted: false,
     companionArtifacts: [],
     outcomeTimings: null,
+    outcomeTimingRecorders: null,
     failurePath: path.join(ARTIFACT_DIR, `${safeSlug(CFG.slug)}-failure.json`),
     testTiming: null,
     visualCapable: false,
@@ -3378,6 +3442,7 @@ async function runProof() {
     }
 
     if (state.proof) {
+      finalizeWebgpuRuntimeVisualCompanionTimings(state);
       const coldCompanion = state.companionArtifacts.find(({ role }) => role === 'cold');
       const hotCompanion = state.companionArtifacts.find(({ role }) => role === 'hot');
       const negativeCompanion = state.companionArtifacts.find(

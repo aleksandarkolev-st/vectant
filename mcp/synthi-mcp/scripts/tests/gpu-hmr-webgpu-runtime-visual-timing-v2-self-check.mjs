@@ -12,6 +12,7 @@ import {
   createWebgpuRuntimeVisualTimingV2Recorder,
   finalizeWebgpuRuntimeVisualTimingV2,
   measureWebgpuRuntimeVisualTimingPhase,
+  persistWebgpuRuntimeVisualPayloadsBeforeTiming,
 } from '../gpu-hmr-webgpu-runtime-visual-proof.mjs';
 
 const RUNTIME_GAP_REASON = 'browser_phase_not_delimited_in_node_monotonic_clock';
@@ -183,6 +184,40 @@ assert.throws(
   }),
   /distinct timing records/,
 );
+
+const persistenceClock = controlledClock(500n);
+const persistenceRecorder = createWebgpuRuntimeVisualTimingV2Recorder({
+  clock: persistenceClock.now,
+});
+await measure(persistenceRecorder, persistenceClock, 'cold_intake', 2n);
+await measure(persistenceRecorder, persistenceClock, 'discovery', 3n);
+await measure(persistenceRecorder, persistenceClock, 'proof_finalization', 5n);
+const persistenceCompletions = [];
+await persistWebgpuRuntimeVisualPayloadsBeforeTiming({
+  proofPath: 'proof.json',
+  proof: { proofId: 'proof' },
+  companionArtifacts: [
+    { filePath: 'cold.json', artifact: { proofId: 'cold' } },
+    { filePath: 'hot.json', artifact: { proofId: 'hot' } },
+  ],
+  summaryPath: 'summary.txt',
+  summaryText: 'summary\n',
+  writeText: async (filePath) => {
+    persistenceClock.tick(7n);
+    persistenceCompletions.push({ filePath, completedNs: persistenceClock.now() });
+  },
+});
+const persistenceTiming = finalizeWebgpuRuntimeVisualTimingV2({
+  recorder: persistenceRecorder,
+  outcome: 'failed',
+  visualCapable: false,
+  runtimeObserved: false,
+  terminalReason: 'webgpu_runtime_visual_artifact_persistence_failed',
+});
+const lastPayloadCompletionNs = persistenceCompletions.at(-1).completedNs;
+assert.equal(persistenceCompletions.length, 4);
+assert.ok(BigInt(persistenceTiming.phases.total_wall.endNs) >= lastPayloadCompletionNs);
+assert.equal(persistenceTiming.phases.total_wall.endNs, persistenceClock.now().toString());
 
 const refusalClock = controlledClock(100n);
 const refusalRecorder = createWebgpuRuntimeVisualTimingV2Recorder({ clock: refusalClock.now });
