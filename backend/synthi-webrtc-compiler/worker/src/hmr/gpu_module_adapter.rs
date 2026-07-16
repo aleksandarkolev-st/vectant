@@ -2798,6 +2798,15 @@ fn logical_epoch_retirement_proven(
                 != "unproven")
 }
 
+fn physical_epoch_retirement_proven(
+    retired_module_count: usize,
+    drain: &StreamOrderingDrain,
+    unload_failure_count: usize,
+) -> bool {
+    logical_epoch_retirement_proven(retired_module_count, drain)
+        && (retired_module_count == 0 || unload_failure_count == 0)
+}
+
 fn affected_stream_tokens_for_symbols(expected_symbols: &[String]) -> Vec<usize> {
     let active_generation = current_launch_generation();
     let mut tokens = launch_records_snapshot()
@@ -3873,42 +3882,46 @@ impl Adapter for GpuModuleAdapter {
             let retirement_fence_ids =
                 drain.retirement_fence_ids_for_log(previous_generation, active_generation);
             let retirement_strategy = drain.retirement_strategy_for_log();
-            let retirement_proven =
+            let logical_retirement_proven =
                 logical_epoch_retirement_proven(retired_module_count, &drain);
-            let acceptance_ledger = GpuHmrAcceptanceLedger::new(GpuHmrAcceptanceLedgerInput {
-                hot_reload: !first_device_load,
-                artifact_id_after: new_artifact_id.clone(),
-                loader_artifact_id: Some(new_artifact_id.clone()),
-                epoch_publish_artifact_id: Some(new_artifact_id.clone()),
-                dispatch_artifact_id: if output_after_dispatch {
-                    Some(new_artifact_id.clone())
-                } else {
-                    None
-                },
-                output_artifact_id: output_oracle_artifact_id.clone(),
-                output_oracle_passed,
-                output_after_dispatch,
-                retirement_proven,
-                cpu_hmr_used: req.firewall_evidence.cpu_hmr_used,
-                full_rebuild_used: req.firewall_evidence.full_rebuild_used,
-                process_restarted: req.firewall_evidence.process_restarted,
-                firewall_route: req.firewall_evidence.route.clone(),
-                firewall_evidence_source: req.firewall_evidence.evidence_source.clone(),
-                firewall_process_id_before: req.firewall_evidence.process_id_before,
-                firewall_process_id_after: req.firewall_evidence.process_id_after,
-                process_id: Some(format!("pid:{}", std::process::id())),
-                device_identity: None,
-            });
-            let acceptance_line = acceptance_ledger.to_log_line();
-            if !first_device_load && !acceptance_ledger.gpu_hmr_success {
+            let build_acceptance_ledger = |retirement_proven| {
+                GpuHmrAcceptanceLedger::new(GpuHmrAcceptanceLedgerInput {
+                    hot_reload: !first_device_load,
+                    artifact_id_after: new_artifact_id.clone(),
+                    loader_artifact_id: Some(new_artifact_id.clone()),
+                    epoch_publish_artifact_id: Some(new_artifact_id.clone()),
+                    dispatch_artifact_id: if output_after_dispatch {
+                        Some(new_artifact_id.clone())
+                    } else {
+                        None
+                    },
+                    output_artifact_id: output_oracle_artifact_id.clone(),
+                    output_oracle_passed,
+                    output_after_dispatch,
+                    retirement_proven,
+                    cpu_hmr_used: req.firewall_evidence.cpu_hmr_used,
+                    full_rebuild_used: req.firewall_evidence.full_rebuild_used,
+                    process_restarted: req.firewall_evidence.process_restarted,
+                    firewall_route: req.firewall_evidence.route.clone(),
+                    firewall_evidence_source: req.firewall_evidence.evidence_source.clone(),
+                    firewall_process_id_before: req.firewall_evidence.process_id_before,
+                    firewall_process_id_after: req.firewall_evidence.process_id_after,
+                    process_id: Some(format!("pid:{}", std::process::id())),
+                    device_identity: None,
+                })
+            };
+            let prepublication_acceptance_ledger =
+                build_acceptance_ledger(logical_retirement_proven);
+            let prepublication_acceptance_line = prepublication_acceptance_ledger.to_log_line();
+            if !first_device_load && !prepublication_acceptance_ledger.gpu_hmr_success {
                 if let Some(line) = candidate_oracle_line.as_ref() {
                     failure_runtime_log_lines.push(line.clone());
                 }
-                eprintln!("{acceptance_line}");
-                failure_runtime_log_lines.push(acceptance_line.clone());
+                eprintln!("{prepublication_acceptance_line}");
+                failure_runtime_log_lines.push(prepublication_acceptance_line.clone());
                 let validation_error = format!(
                     "GPU HMR acceptance ledger rejected candidate before global publication: {}",
-                    acceptance_ledger.failed_invariants.join(",")
+                    prepublication_acceptance_ledger.failed_invariants.join(",")
                 );
                 let rollback_result =
                     rollback_launch_dispatcher_publication(&mut dispatcher_publication);
@@ -3940,90 +3953,6 @@ impl Adapter for GpuModuleAdapter {
                     Ok(_) => format!("{validation_error}; dispatcher candidate rolled back"),
                 });
             }
-            let strict_runtime_proof_line = if !first_device_load
-                && acceptance_ledger.gpu_hmr_success
-            {
-                let logical_retirement_timestamp_monotonic_ns = monotonic_timestamp_ns();
-                let proof_result = match (
-                    output_oracle_after_dispatch_id.as_deref(),
-                    acceptance_ledger.device_identity.as_deref(),
-                ) {
-                    (Some(after_dispatch_id), Some(device_identity_key)) => {
-                        runtime_full_proof_line(
-                            req,
-                            self.config.vendor,
-                            &previous_artifact_id,
-                            &new_artifact_id,
-                            &artifact_hash,
-                            active_generation,
-                            previous_generation,
-                            loader_timestamp_monotonic_ns,
-                            publish_timestamp_monotonic_ns,
-                            logical_retirement_timestamp_monotonic_ns,
-                            device_identity_key,
-                            &expected_symbols,
-                            loader_transport,
-                            started.elapsed().as_millis() as u64,
-                            drain.outcome.elapsed_ms(),
-                            blob.len(),
-                            retirement_strategy,
-                            &retirement_fence_ids,
-                            capsule_metadata,
-                            pinned_output_oracle_profile.as_ref(),
-                            after_dispatch_id,
-                        )
-                    }
-                    (None, _) => Err("runtime_proof_output_dispatch_id_missing".to_string()),
-                    (_, None) => Err("runtime_proof_device_identity_missing".to_string()),
-                };
-                match proof_result {
-                    Ok(line) => Some(line),
-                    Err(proof_gap) => {
-                        if let Some(line) = candidate_oracle_line.as_ref() {
-                            failure_runtime_log_lines.push(line.clone());
-                        }
-                        failure_runtime_log_lines.push(acceptance_line.clone());
-                        let validation_error = format!(
-                            "GPU strict runtime proof rejected candidate before global publication: {proof_gap}"
-                        );
-                        let rollback_result =
-                            rollback_launch_dispatcher_publication(&mut dispatcher_publication);
-                        dispatcher_recovery_failed = rollback_result.is_err();
-                        let rollback_line = match rollback_result.as_ref() {
-                            Ok(receipt) => format!(
-                                "[gpu-runtime-boundary] dispatcher_epoch schema=synthi.gpu_hmr.dispatcher_epoch.v1 event=rolled_back status=refused publication_id={} previous_generation={} candidate_generation={} restored_generation={} candidate_artifact_id={} restored_artifact_id={} reason=strict_runtime_proof_construction_failed gap={} proof_authority=candidate_rollback_refusal_only_not_gpu_hmr_success accepted_for_gpu_hmr=false gpu_hmr_success=false",
-                                receipt.publication_id,
-                                receipt.previous_generation,
-                                receipt.candidate_generation,
-                                receipt.restored_generation,
-                                new_artifact_id,
-                                log_optional_token(receipt.restored_artifact_id.as_deref()),
-                                runtime_output_oracle_log_token(&proof_gap),
-                            ),
-                            Err(error) => format!(
-                                "[gpu-runtime-boundary] dispatcher_epoch schema=synthi.gpu_hmr.dispatcher_epoch.v1 event=rollback_failed status=fail previous_generation={} candidate_generation={} candidate_artifact_id={} reason=strict_runtime_proof_construction_failed gap={} rollback_error={} proof_authority=candidate_rollback_refusal_only_not_gpu_hmr_success accepted_for_gpu_hmr=false gpu_hmr_success=false",
-                                previous_generation,
-                                active_generation,
-                                new_artifact_id,
-                                runtime_output_oracle_log_token(&proof_gap),
-                                runtime_output_oracle_log_token(&error.to_string()),
-                            ),
-                        };
-                        eprintln!("{rollback_line}");
-                        failure_runtime_log_lines.push(rollback_line);
-                        return Err(match rollback_result {
-                            Err(rollback_error) => format!(
-                                "{validation_error}; dispatcher rollback failed: {rollback_error}"
-                            ),
-                            Ok(_) => {
-                                format!("{validation_error}; dispatcher candidate rolled back")
-                            }
-                        });
-                    }
-                }
-            } else {
-                None
-            };
             let publication_commit = match commit_launch_dispatcher_publication(
                 &mut dispatcher_publication,
             ) {
@@ -4264,11 +4193,84 @@ impl Adapter for GpuModuleAdapter {
                 eprintln!("{pending_graph_line}");
                 runtime_log_lines.push(pending_graph_line);
             }
-            eprintln!("{acceptance_line}");
-            runtime_log_lines.push(acceptance_line);
+            let physical_retirement_proven = physical_epoch_retirement_proven(
+                retired_module_count,
+                &drain,
+                retired_unload_failures.len(),
+            );
+            let acceptance_ledger = build_acceptance_ledger(physical_retirement_proven);
+            let acceptance_line = acceptance_ledger.to_log_line();
+            let strict_runtime_proof_result = if first_device_load {
+                Ok(None)
+            } else if !physical_retirement_proven {
+                Err("runtime_proof_retirement_not_finalized".to_string())
+            } else if !acceptance_ledger.gpu_hmr_success {
+                Ok(None)
+            } else {
+                match (
+                    output_oracle_after_dispatch_id.as_deref(),
+                    acceptance_ledger.device_identity.as_deref(),
+                ) {
+                    (Some(after_dispatch_id), Some(device_identity_key)) => {
+                        runtime_full_proof_line(
+                            req,
+                            self.config.vendor,
+                            &previous_artifact_id,
+                            &new_artifact_id,
+                            &artifact_hash,
+                            active_generation,
+                            previous_generation,
+                            loader_timestamp_monotonic_ns,
+                            publish_timestamp_monotonic_ns,
+                            retirement_timestamp_monotonic_ns,
+                            device_identity_key,
+                            &expected_symbols,
+                            loader_transport,
+                            started.elapsed().as_millis() as u64,
+                            drain.outcome.elapsed_ms(),
+                            blob.len(),
+                            retirement_strategy,
+                            &retirement_fence_ids,
+                            capsule_metadata,
+                            pinned_output_oracle_profile.as_ref(),
+                            after_dispatch_id,
+                        )
+                        .map(Some)
+                    }
+                    (None, _) => Err("runtime_proof_output_dispatch_id_missing".to_string()),
+                    (_, None) => Err("runtime_proof_device_identity_missing".to_string()),
+                }
+            };
+            let (strict_runtime_proof_line, strict_runtime_proof_gap) =
+                match strict_runtime_proof_result {
+                    Ok(line) => (line, None),
+                    Err(gap) => {
+                        let refusal_line = format!(
+                            "[gpu-runtime-boundary] strict_runtime_proof schema={} status=refused runtime_session={} generation={} artifact_id={} gap={} proof_authority=strict_runtime_proof_refusal_only_not_gpu_hmr_success accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false",
+                            GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
+                            runtime_session_id(),
+                            active_generation,
+                            new_artifact_id,
+                            runtime_output_oracle_log_token(&gap),
+                        );
+                        eprintln!("{refusal_line}");
+                        runtime_log_lines.push(refusal_line);
+                        (None, Some(gap))
+                    }
+                };
+            if !acceptance_ledger.gpu_hmr_success || strict_runtime_proof_gap.is_none() {
+                eprintln!("{acceptance_line}");
+                runtime_log_lines.push(acceptance_line);
+            }
             if let Some(proof_line) = strict_runtime_proof_line {
                 eprintln!("{proof_line}");
                 runtime_log_lines.push(proof_line);
+            }
+            let strict_runtime_proof_success =
+                first_device_load || strict_runtime_proof_gap.is_none();
+            let mut final_acceptance_failures = acceptance_ledger.failed_invariants.clone();
+            if let Some(gap) = strict_runtime_proof_gap {
+                final_acceptance_failures.push(gap);
             }
             self.active_generation_artifact_id = Some(new_artifact_id.clone());
             Ok(DeviceReloadOwnership {
@@ -4279,8 +4281,9 @@ impl Adapter for GpuModuleAdapter {
                 replaced_primary,
                 runtime_log_lines,
                 hot_reload_acceptance_required: !first_device_load,
-                acceptance_ledger_success: acceptance_ledger.gpu_hmr_success,
-                acceptance_ledger_failures: acceptance_ledger.failed_invariants,
+                acceptance_ledger_success: acceptance_ledger.gpu_hmr_success
+                    && strict_runtime_proof_success,
+                acceptance_ledger_failures: final_acceptance_failures,
             })
         })();
 
@@ -6177,6 +6180,8 @@ mod tests {
             "conservative_drain_fallback"
         );
         assert!(logical_epoch_retirement_proven(1, &context_fallback));
+        assert!(physical_epoch_retirement_proven(1, &context_fallback, 0));
+        assert!(!physical_epoch_retirement_proven(1, &context_fallback, 1));
 
         let timed_out = StreamOrderingDrain {
             outcome: DrainOutcome::TimedOut {
@@ -6189,6 +6194,8 @@ mod tests {
         };
         assert!(!logical_epoch_retirement_proven(1, &timed_out));
         assert!(logical_epoch_retirement_proven(0, &timed_out));
+        assert!(!physical_epoch_retirement_proven(1, &timed_out, 0));
+        assert!(physical_epoch_retirement_proven(0, &timed_out, 0));
     }
 
     #[test]
