@@ -151,16 +151,18 @@ pub fn plan_desktop_ipc_action(
             "/v1/approval/revoke-all/{request_id}",
             true,
         ),
-        "full_access.enroll" | "full_access.pause" | "full_access.revoke" | "process.visibility.pause" | "process.visibility.review" => {
-            DesktopIpcActionPlan {
-                command,
-                daemon_method: None,
-                daemon_path_template: None,
-                requires_local_control: true,
-                returns_sanitized_state: true,
-                user_visible: true,
-            }
-        }
+        "full_access.enroll"
+        | "full_access.pause"
+        | "full_access.revoke"
+        | "process.visibility.pause"
+        | "process.visibility.review" => DesktopIpcActionPlan {
+            command,
+            daemon_method: None,
+            daemon_path_template: None,
+            requires_local_control: true,
+            returns_sanitized_state: true,
+            user_visible: true,
+        },
         "history.export" => control_plan(command, "GET", "/v1/history/export/{request_id}", true),
         "history.delete" => control_plan(command, "POST", "/v1/history/delete/{request_id}", true),
         "update.check" => control_plan(command, "NATIVE", "signed-updater/check", true),

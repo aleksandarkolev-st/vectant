@@ -656,7 +656,7 @@ async fn enroll_full_access(
     drop(full_access);
     let mut audit = state.audit.lock().await;
     audit.record_full_access_consent(recorded_receipt);
-    audit.append(AuditClass::Control, Some(request.request_id.clone()), "Full Access Support enrolled after local desktop confirmation. Workspace graph is scrubbed and contains no raw bodies.", true);
+    audit.append(AuditClass::FullAccess, Some(request.request_id.clone()), "Full Access Support enrolled after local desktop confirmation. Workspace graph is scrubbed and contains no raw bodies.", true);
     persist_audit(&state, &audit)?;
     Ok(Json(
         serde_json::json!({"decision":"full_access_enrolled","request_id":request.request_id,"raw_bodies_included":false,"bytes_sent":0}),
@@ -806,7 +806,7 @@ async fn full_access_graph_node(
     }
     let bytes_sent = content.len();
     let mut audit = state.audit.lock().await;
-    audit.append(AuditClass::Data, Some(request.request_id.clone()), format!("Automatically sent graph node {} under Full Access policy. {} bytes sent; 0 redactions.", node.node_id, bytes_sent), true);
+    audit.append(AuditClass::FullAccess, Some(request.request_id.clone()), format!("Automatically sent graph node {} under Full Access policy. {} bytes sent; 0 redactions.", node.node_id, bytes_sent), true);
     persist_audit(&state, &audit)?;
     Ok(Json(FullAccessNodeResponse {
         request_id: request.request_id,
@@ -890,7 +890,7 @@ async fn full_access_mutation(
         })?;
     let mut audit = state.audit.lock().await;
     audit.append(
-        AuditClass::Control,
+        AuditClass::Mutation,
         Some(request.request_id.clone()),
         format!(
             "Automatically changed {} under Full Access policy. Transaction {}; {} bytes written; reversible until {}.",
@@ -970,7 +970,7 @@ async fn full_access_revert(
         })?;
     let mut audit = state.audit.lock().await;
     audit.append(
-        AuditClass::Control,
+        AuditClass::Mutation,
         Some(request.request_id.clone()),
         format!(
             "Reverted Full Access transaction {} for {} after current-hash verification.",
@@ -1065,7 +1065,7 @@ async fn full_access_port_discover(
     let listener = detect_loopback_listener(port)
         .map_err(|_| denied(StatusCode::FORBIDDEN, "loopback_listener_unavailable"))?;
     let mut audit = state.audit.lock().await;
-    audit.append(AuditClass::Data, Some(request_id.clone()), format!("Discovered policy-scoped loopback listener on port {port}; process identity is bound locally and raw process fields were excluded."), true);
+    audit.append(AuditClass::Process, Some(request_id.clone()), format!("Discovered policy-scoped loopback listener on port {port}; process identity is bound locally and raw process fields were excluded."), true);
     persist_audit(&state, &audit)?;
     Ok(Json(
         serde_json::json!({"decision":"auto_accepted","request_id":request_id,"port":port,"process_identity_hash":listener.process_identity_hash,"service":listener.service,"loopback_only":true,"raw_process_fields_included":false,"bytes_sent":0}),
@@ -1153,7 +1153,7 @@ async fn full_access_command(
         )
     })?;
     let mut audit = state.audit.lock().await;
-    audit.append(AuditClass::Data, Some(request.request_id.clone()), format!("Automatically ran {} under Full Access policy. Argument hash {}; exit {:?}; {} bytes captured; {} redactions.", context.executable, context.argument_hash, context.exit_code, context.bytes_captured, context.redaction_count), true);
+    audit.append(AuditClass::Command, Some(request.request_id.clone()), format!("Automatically ran {} under Full Access policy. Argument hash {}; exit {:?}; {} bytes captured; {} redactions.", context.executable, context.argument_hash, context.exit_code, context.bytes_captured, context.redaction_count), true);
     persist_audit(&state, &audit)?;
     Ok(Json(
         serde_json::json!({"decision":"auto_executed","request_id":request.request_id,"executable":context.executable,"argument_hash":context.argument_hash,"exit_code":context.exit_code,"stdout":context.stdout,"stderr":context.stderr,"bytes_captured":context.bytes_captured,"redaction_count":context.redaction_count,"raw_command_line_included":false}),
@@ -1288,7 +1288,7 @@ async fn full_access_port_use(
         ));
     }
     let mut audit = state.audit.lock().await;
-    audit.append(AuditClass::Data, Some(request.request_id.clone()), format!("Automatically read {} bytes from policy-scoped loopback port {}. Credentials, cookies, redirects, and response headers were blocked.", content.len(), request.port), true);
+    audit.append(AuditClass::FullAccess, Some(request.request_id.clone()), format!("Automatically read {} bytes from policy-scoped loopback port {}. Credentials, cookies, redirects, and response headers were blocked.", content.len(), request.port), true);
     persist_audit(&state, &audit)?;
     Ok(Json(
         serde_json::json!({"decision":"auto_accepted","request_id":request.request_id,"port":request.port,"content":content,"bytes_sent":content.len(),"redaction_count":0,"raw_headers_included":false}),
@@ -1359,7 +1359,7 @@ async fn full_access_processes(
             .map_err(|_| denied(StatusCode::FORBIDDEN, "process_inventory_unavailable"))?;
     let count = records.len();
     let mut audit = state.audit.lock().await;
-    audit.append(AuditClass::Data, Some(request_id.clone()), format!("Collected {count} sanitized workspace process records under Full Access policy. Command lines, environments, raw paths, and PIDs were excluded."), true);
+    audit.append(AuditClass::Process, Some(request_id.clone()), format!("Collected {count} sanitized workspace process records under Full Access policy. Command lines, environments, raw paths, and PIDs were excluded."), true);
     persist_audit(&state, &audit)?;
     Ok(Json(
         serde_json::json!({"request_id":request_id,"decision":"auto_accepted","records":records,"raw_process_fields_included":false,"bytes_sent":0}),

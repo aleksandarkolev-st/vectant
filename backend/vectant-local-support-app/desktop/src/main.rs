@@ -942,7 +942,7 @@ async fn confirm_full_access_enrollment_proposal(
     let mut audit = state.audit.lock().await;
     audit.record_full_access_consent(receipt);
     audit.append(
-        AuditClass::Control,
+        AuditClass::FullAccess,
         Some(confirmation_request_id.to_string()),
         "Full Access Support enrolled after native desktop confirmation.",
         true,

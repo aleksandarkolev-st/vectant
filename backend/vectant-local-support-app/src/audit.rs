@@ -20,6 +20,11 @@ const ZERO_HASH: &str = "sha256:000000000000000000000000000000000000000000000000
 pub enum AuditClass {
     Control,
     Data,
+    FullAccess,
+    Mutation,
+    Command,
+    Process,
+    Budget,
     Denied,
     Redaction,
     Preview,

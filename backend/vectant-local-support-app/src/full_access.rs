@@ -116,7 +116,9 @@ impl FullAccessPolicy {
             || self.emergency_paused
             || self.policy_major != FULL_ACCESS_POLICY_MAJOR
             || self.mandatory_reconsent_version == 0
-            || !self.allowed_capabilities.contains(&FullAccessCapability::Enroll)
+            || !self
+                .allowed_capabilities
+                .contains(&FullAccessCapability::Enroll)
             || self.allowed_actors.is_empty()
             || self.allowed_actors.len() > 32
             || self
@@ -561,7 +563,9 @@ mod tests {
             .allowed_capabilities
             .insert(FullAccessCapability::CommandExecute);
         assert!(!policy.is_valid_enrollment_policy());
-        policy.allowed_command_executables.insert("python.exe".to_string());
+        policy
+            .allowed_command_executables
+            .insert("python.exe".to_string());
         assert!(policy.is_valid_enrollment_policy());
 
         policy
