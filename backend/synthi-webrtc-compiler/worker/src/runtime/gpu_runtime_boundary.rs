@@ -576,6 +576,7 @@ pub struct GpuDispatchSlotBinding {
     pub artifact_id: String,
     pub artifact_content_hash: String,
     pub dispatch_table_hash: String,
+    pub dispatch_table_entry_id: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1346,6 +1347,7 @@ fn dispatch_slot_binding(
     runtime_session_id: &str,
     active_generation: u64,
     metadata: &ActiveDispatcherMetadata,
+    kernel_name: &str,
 ) -> Option<GpuDispatchSlotBinding> {
     if metadata.generation != active_generation
         || !canonical_prefixed_sha256(&metadata.registration_id, "dispatcher:sha256:")
@@ -1361,6 +1363,16 @@ fn dispatch_slot_binding(
     if !canonical_prefixed_sha256(dispatch_table_hash, "sha256:") {
         return None;
     }
+    let entry_index = metadata
+        .changed_symbols
+        .iter()
+        .position(|symbol| symbol == kernel_name)?;
+    let dispatch_table_entry_id = metadata.function_handle_ids.get(entry_index)?;
+    if dispatch_table_entry_id.is_empty()
+        || dispatch_table_entry_id.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
     Some(GpuDispatchSlotBinding {
         runtime_session_id: runtime_session_id.to_string(),
         generation: active_generation,
@@ -1368,6 +1380,7 @@ fn dispatch_slot_binding(
         artifact_id: artifact_id.to_string(),
         artifact_content_hash: format!("sha256:{artifact_digest}"),
         dispatch_table_hash: dispatch_table_hash.to_string(),
+        dispatch_table_entry_id: dispatch_table_entry_id.clone(),
     })
 }
 
@@ -3098,7 +3111,12 @@ fn synthi_gpu_launch_raw_impl(
     run_dispatcher_snapshot_test_hook();
     let runtime_session_id = runtime_session_id().to_string();
     let dispatch_slot = active_dispatcher_metadata.as_ref().and_then(|metadata| {
-        dispatch_slot_binding(&runtime_session_id, active_generation, metadata)
+        dispatch_slot_binding(
+            &runtime_session_id,
+            active_generation,
+            metadata,
+            &kernel_name,
+        )
     });
     let active_dispatch_table_entry_id = active_dispatcher_metadata
         .as_ref()
@@ -5771,14 +5789,41 @@ mod tests {
                 function_handle_ids: vec!["function:1".to_string()],
             },
         );
-        let binding = dispatch_slot_binding("runtime-session:test", 7, &valid_metadata)
+        let binding = dispatch_slot_binding("runtime-session:test", 7, &valid_metadata, "kernel")
             .expect("canonical dispatch slot");
         assert_eq!(binding.generation, 7);
+        assert_eq!(binding.dispatch_table_entry_id, "function:1");
         assert_eq!(
             binding.artifact_content_hash,
             format!("sha256:{}", "1".repeat(64))
         );
-        assert!(dispatch_slot_binding("runtime-session:test", 8, &valid_metadata).is_none());
+        assert!(
+            dispatch_slot_binding("runtime-session:test", 8, &valid_metadata, "kernel").is_none()
+        );
+        assert!(dispatch_slot_binding(
+            "runtime-session:test",
+            7,
+            &valid_metadata,
+            "unregistered_kernel"
+        )
+        .is_none());
+
+        let missing_function_handle = active_dispatcher_metadata(
+            7,
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some(format!("artifact:sha256:{}", "1".repeat(64))),
+                dispatch_table_hash: Some(format!("sha256:{}", "2".repeat(64))),
+                changed_symbols: vec!["kernel".to_string()],
+                function_handle_ids: Vec::new(),
+            },
+        );
+        assert!(dispatch_slot_binding(
+            "runtime-session:test",
+            7,
+            &missing_function_handle,
+            "kernel"
+        )
+        .is_none());
 
         let invalid_artifact = active_dispatcher_metadata(
             7,
@@ -5788,7 +5833,9 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(dispatch_slot_binding("runtime-session:test", 7, &invalid_artifact).is_none());
+        assert!(
+            dispatch_slot_binding("runtime-session:test", 7, &invalid_artifact, "kernel").is_none()
+        );
 
         let invalid_table = active_dispatcher_metadata(
             7,
@@ -5798,7 +5845,9 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(dispatch_slot_binding("runtime-session:test", 7, &invalid_table).is_none());
+        assert!(
+            dispatch_slot_binding("runtime-session:test", 7, &invalid_table, "kernel").is_none()
+        );
     }
 
     #[test]
@@ -5876,6 +5925,10 @@ mod tests {
             format!("sha256:{first_artifact_digest}")
         );
         assert_eq!(dispatch_slot.dispatch_table_hash, first_dispatch_table_hash);
+        assert_eq!(
+            dispatch_slot.dispatch_table_entry_id,
+            "concurrent_kernel:first"
+        );
         assert!(second_generation > first_generation);
         assert_eq!(current_launch_generation(), second_generation);
         assert_eq!(first_calls.lock().unwrap().len(), 1);
