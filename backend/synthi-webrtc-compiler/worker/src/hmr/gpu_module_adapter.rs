@@ -4097,7 +4097,7 @@ impl Adapter for GpuModuleAdapter {
                 publish_timestamp_monotonic_ns,
                 publication_id,
                 candidate_registration_id,
-                publication_commit.committed_timestamp_monotonic_ns,
+                publication_commit.committed_timestamp_monotonic_ns(),
                 previous_generation,
                 active_generation,
                 previous_artifact_id,

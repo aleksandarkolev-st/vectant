@@ -747,12 +747,38 @@ impl Drop for DispatcherPublicationValidationGuard {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatcherCommitReceipt {
-    pub publication_id: String,
-    pub previous_generation: u64,
-    pub candidate_generation: u64,
-    pub candidate_registration_id: String,
-    pub publication_timestamp_monotonic_ns: u128,
-    pub committed_timestamp_monotonic_ns: u128,
+    publication_id: String,
+    previous_generation: u64,
+    candidate_generation: u64,
+    candidate_registration_id: String,
+    publication_timestamp_monotonic_ns: u128,
+    committed_timestamp_monotonic_ns: u128,
+}
+
+impl DispatcherCommitReceipt {
+    pub fn publication_id(&self) -> &str {
+        &self.publication_id
+    }
+
+    pub fn previous_generation(&self) -> u64 {
+        self.previous_generation
+    }
+
+    pub fn candidate_generation(&self) -> u64 {
+        self.candidate_generation
+    }
+
+    pub fn candidate_registration_id(&self) -> &str {
+        &self.candidate_registration_id
+    }
+
+    pub fn publication_timestamp_monotonic_ns(&self) -> u128 {
+        self.publication_timestamp_monotonic_ns
+    }
+
+    pub fn committed_timestamp_monotonic_ns(&self) -> u128 {
+        self.committed_timestamp_monotonic_ns
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
