@@ -36,7 +36,9 @@ use worker::infra::crash_recovery;
 use worker::infra::host_kv;
 use worker::runtime::capability;
 #[cfg(feature = "gpu-hmr")]
-use worker::runtime::gpu_runtime_boundary::runtime_session_id;
+use worker::runtime::gpu_runtime_boundary::{
+    output_oracle_records_snapshot, runtime_session_id, OutputOracleRecord,
+};
 use worker::runtime::loader;
 // use worker::safety::boundary;
 // use worker::compiler::source_map;
@@ -477,6 +479,166 @@ fn strict_runtime_record_chain_matches(
 }
 
 #[cfg(feature = "gpu-hmr")]
+fn strict_runtime_oracle_receipt_matches(
+    record: &serde_json::Value,
+    expected_runtime_session_id: &str,
+    oracle_records: &[OutputOracleRecord],
+) -> bool {
+    let Some(output_event) = record
+        .get("output_event")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    let Some(oracle_artifacts) = record
+        .get("oracle_artifacts")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    let Some(output_oracle) = output_event
+        .get("output_oracle")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    if output_event.get("oracle_artifacts") != record.get("oracle_artifacts")
+        || output_oracle.get("oracle_artifacts") != record.get("oracle_artifacts")
+    {
+        return false;
+    }
+
+    let Some(oracle_id) = output_event.get("id").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(dispatch_id) = output_event
+        .get("after_dispatch_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    let Some(artifact_id) = output_event
+        .get("artifact_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    let Some(generation) = output_event
+        .get("epoch")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
+        return false;
+    };
+    let Some(output_timestamp) = output_event
+        .get("timestamp_monotonic_ns")
+        .and_then(serde_json::Value::as_u64)
+        .map(u128::from)
+    else {
+        return false;
+    };
+
+    let mut matches = oracle_records.iter().filter(|receipt| {
+        receipt.oracle_id == oracle_id
+            && receipt.required_oracle_id == oracle_id
+            && receipt.runtime_session_id == expected_runtime_session_id
+            && receipt.generation == generation
+            && receipt.artifact_id.as_deref() == Some(artifact_id)
+            && receipt.after_dispatch_id.as_deref() == Some(dispatch_id)
+            && receipt.readback_timestamp_monotonic_ns == output_timestamp
+    });
+    let Some(receipt) = matches.next() else {
+        return false;
+    };
+    if matches.next().is_some() || !receipt.passed || receipt.kind != "buffer_checksum" {
+        return false;
+    }
+    if !canonical_sha256_content_hash(&receipt.expected)
+        || receipt.expected != receipt.actual
+        || output_oracle
+            .get("oracle_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(oracle_id)
+        || output_oracle
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            != Some(receipt.kind.as_str())
+        || output_oracle
+            .get("expected")
+            .and_then(serde_json::Value::as_str)
+            != Some(receipt.expected.as_str())
+        || output_oracle
+            .get("actual")
+            .and_then(serde_json::Value::as_str)
+            != Some(receipt.actual.as_str())
+        || output_oracle
+            .get("passed")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
+        return false;
+    }
+
+    let Some(readback_bytes) = receipt.readback_bytes.filter(|bytes| *bytes > 0) else {
+        return false;
+    };
+    let expected_stride = 1usize.max((readback_bytes - 1) / 1024 + 1);
+    let Some(sample_stride) = receipt
+        .readback_sample_stride
+        .filter(|stride| *stride == expected_stride)
+    else {
+        return false;
+    };
+    let Some(sample_hex) = receipt.readback_sample_hex.as_deref() else {
+        return false;
+    };
+    let Ok(sample_bytes) = hex::decode(sample_hex) else {
+        return false;
+    };
+    let expected_sample_bytes = ((readback_bytes - 1) / sample_stride + 1).min(1024);
+    if sample_bytes.len() != expected_sample_bytes || hex::encode(&sample_bytes) != sample_hex {
+        return false;
+    }
+    let recomputed_sample_hash = format!("sha256:{}", sha256_hex_bytes(&sample_bytes));
+    if receipt.readback_sample_sha256.as_deref() != Some(recomputed_sample_hash.as_str())
+        || oracle_artifacts
+            .get("raw_readback_hash")
+            .and_then(serde_json::Value::as_str)
+            != Some(recomputed_sample_hash.as_str())
+        || oracle_artifacts
+            .get("raw_readback_byte_length")
+            .and_then(serde_json::Value::as_u64)
+            != u64::try_from(readback_bytes).ok()
+        || oracle_artifacts
+            .get("raw_readback_source")
+            .and_then(serde_json::Value::as_str)
+            != Some("runtime_readback_sample")
+        || record
+            .pointer("/oracle_artifacts/raw_readback_verification/hash_verified")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || oracle_artifacts
+            .get("producer")
+            .and_then(serde_json::Value::as_str)
+            != Some(
+                receipt
+                    .producer
+                    .as_deref()
+                    .unwrap_or("worker.gpu_module_adapter"),
+            )
+    {
+        return false;
+    }
+    let Some(output_target_id) = receipt.output_target_id.as_deref() else {
+        return false;
+    };
+    record
+        .pointer("/output_oracle_target/target_id")
+        .and_then(serde_json::Value::as_str)
+        == Some(output_target_id)
+}
+
+#[cfg(feature = "gpu-hmr")]
 fn recomputed_runtime_proof_id(
     runtime_artifact: &serde_json::Value,
     record: &serde_json::Value,
@@ -504,6 +666,7 @@ fn matching_strict_gpu_runtime_proof_id(
     request_id: &str,
     source_edit_id: &str,
     artifact_content_hash: &str,
+    oracle_records: &[OutputOracleRecord],
 ) -> Option<String> {
     let reload_ref = format!("reload:{request_id}");
     let source_edit_ref = format!("source-edit-id:{source_edit_id}");
@@ -603,6 +766,11 @@ fn matching_strict_gpu_runtime_proof_id(
                 &expected_process_id,
                 expected_runtime_session_id,
             )
+            || !strict_runtime_oracle_receipt_matches(
+                record,
+                expected_runtime_session_id,
+                oracle_records,
+            )
             || proof_ledger
                 .get("proofId")
                 .and_then(serde_json::Value::as_str)
@@ -678,6 +846,26 @@ fn strict_gpu_reload_terminal_result(
     result: &AdapterReloadResult,
     log_lines: &[String],
 ) -> Result<GpuReloadV2Result, String> {
+    let oracle_records = output_oracle_records_snapshot();
+    strict_gpu_reload_terminal_result_with_oracle_records(
+        request_id,
+        source_edit_id,
+        artifact_content_hash,
+        result,
+        log_lines,
+        &oracle_records,
+    )
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn strict_gpu_reload_terminal_result_with_oracle_records(
+    request_id: &str,
+    source_edit_id: &str,
+    artifact_content_hash: &str,
+    result: &AdapterReloadResult,
+    log_lines: &[String],
+    oracle_records: &[OutputOracleRecord],
+) -> Result<GpuReloadV2Result, String> {
     match result {
         AdapterReloadResult::Success { .. } => {
             if let Some(proof_id) = matching_strict_gpu_runtime_proof_id(
@@ -685,6 +873,7 @@ fn strict_gpu_reload_terminal_result(
                 request_id,
                 source_edit_id,
                 artifact_content_hash,
+                oracle_records,
             ) {
                 GpuReloadV2Result::applied(
                     request_id,
@@ -3147,7 +3336,7 @@ mod tests {
         gpu_reload_artifact_blob_from_path, gpu_reload_capsule_metadata_from_token,
         gpu_reload_operation_matches_epoch, gpu_reload_result_allows_adapter_restore,
         gpu_reload_source_paths, parse_gpu_artifact_loader_transport, parse_gpu_reload_command,
-        recomputed_runtime_proof_id, strict_gpu_reload_terminal_result,
+        recomputed_runtime_proof_id, strict_gpu_reload_terminal_result_with_oracle_records,
         validate_gpu_reload_artifact_content_hash, AdapterReloadResult, ArtifactLoaderTransport,
         ReloadArtifactBlob, RUNNER_GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
         RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE, RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
@@ -3159,6 +3348,8 @@ mod tests {
     };
     #[cfg(feature = "gpu-hmr")]
     use std::io::Write as _;
+    #[cfg(feature = "gpu-hmr")]
+    use worker::runtime::gpu_runtime_boundary::OutputOracleRecord;
     #[cfg(feature = "gpu-hmr")]
     use worker::runtime::runner_protocol::GpuReloadV4Payload;
 
@@ -3685,13 +3876,69 @@ mod tests {
         artifact_content_hash: &str,
         process_id: &str,
         runtime_session_id: &str,
-    ) -> (String, String) {
+    ) -> (String, String, OutputOracleRecord) {
         let artifact_id = format!(
             "artifact:sha256:{}",
             artifact_content_hash.trim_start_matches("sha256:")
         );
         let previous_artifact_id = format!("artifact:sha256:{}", "0".repeat(64));
         let dispatch_id = "dispatch:epoch:2";
+        let oracle_id = "output:2";
+        let output_target_id = "buffer:output";
+        let output_sample = vec![1u8, 3, 5, 7, 9, 11, 13, 15];
+        let output_sample_hex = hex::encode(&output_sample);
+        let output_sample_sha256 = format!(
+            "sha256:{}",
+            worker::hmr::gpu_proof::sha256_hex_bytes(&output_sample)
+        );
+        let oracle_artifacts = serde_json::json!({
+            "raw_readback_bin": "memory://gpu-runtime-readback/dispatch-epoch-2.bin",
+            "readback_schema_json": "memory://gpu-runtime-readback/dispatch-epoch-2.schema.json",
+            "checksum_before": format!("sha256:{}", "0".repeat(64)),
+            "checksum_after": output_sample_sha256,
+            "raw_readback_hash": output_sample_sha256,
+            "raw_readback_hash_verified": true,
+            "raw_readback_source": "runtime_readback_sample",
+            "raw_readback_byte_length": output_sample.len(),
+            "raw_readback_verification": {
+                "hash_verified": true,
+                "raw_readback_hash_verified": true,
+                "raw_readback_byte_length": output_sample.len(),
+            },
+            "producer": "worker.gpu_module_adapter",
+        });
+        let output_oracle_target = serde_json::json!({
+            "kind": "compute",
+            "target_id": output_target_id,
+            "compute_only_target_verified": true,
+        });
+        let oracle_receipt = OutputOracleRecord {
+            oracle_id: oracle_id.to_string(),
+            required_oracle_id: oracle_id.to_string(),
+            kind: "buffer_checksum".to_string(),
+            expected: output_sample_sha256.clone(),
+            actual: output_sample_sha256.clone(),
+            tolerance: None,
+            producer: Some("worker.gpu_module_adapter".to_string()),
+            output_target_id: Some(output_target_id.to_string()),
+            readback_timestamp_ms: None,
+            readback_timestamp_monotonic_ns: 40,
+            artifact_id: Some(artifact_id.clone()),
+            after_dispatch_id: Some(dispatch_id.to_string()),
+            visual_evidence_ref: None,
+            probe_mode: Some("runtime_profile_dispatch".to_string()),
+            probe_config_hash: Some(format!("sha256:{}", "d".repeat(64))),
+            probe_evidence_ref: Some(
+                "memory://gpu-runtime-readback/dispatch-epoch-2.bin".to_string(),
+            ),
+            readback_bytes: Some(output_sample.len()),
+            readback_sample_stride: Some(1),
+            readback_sample_sha256: Some(output_sample_sha256.clone()),
+            readback_sample_hex: Some(output_sample_hex),
+            passed: true,
+            generation: 2,
+            runtime_session_id: runtime_session_id.to_string(),
+        };
         let evidence_refs = vec![
             format!("reload:{request_id}"),
             format!("source-edit-id:{source_edit_id}"),
@@ -3733,7 +3980,7 @@ mod tests {
                 "process_id": process_id,
             },
             "output_event": {
-                "id": "output:2",
+                "id": oracle_id,
                 "passed": true,
                 "after_dispatch_id": dispatch_id,
                 "epoch": "2",
@@ -3741,6 +3988,16 @@ mod tests {
                 "artifact_hash": artifact_id,
                 "timestamp_monotonic_ns": 40,
                 "process_id": process_id,
+                "output_oracle": {
+                    "oracle_id": oracle_id,
+                    "kind": "buffer_checksum",
+                    "expected": output_sample_sha256,
+                    "actual": output_sample_sha256,
+                    "passed": true,
+                    "output_oracle_target": output_oracle_target,
+                    "oracle_artifacts": oracle_artifacts,
+                },
+                "oracle_artifacts": oracle_artifacts,
             },
             "retirement_event": {
                 "id": "retirement:1",
@@ -3753,6 +4010,8 @@ mod tests {
                 "process_id": process_id,
                 "runtime_session_id": runtime_session_id,
             },
+            "oracle_artifacts": oracle_artifacts,
+            "output_oracle_target": output_oracle_target,
             "cpu_hmr_used": false,
             "full_rebuild_used": false,
             "process_restarted": false,
@@ -3818,7 +4077,7 @@ mod tests {
             "runtimeProofArtifact": runtime_artifact,
         })
         .to_string();
-        (proof_line, proof_id)
+        (proof_line, proof_id, oracle_receipt)
     }
 
     #[cfg(feature = "gpu-hmr")]
@@ -3829,7 +4088,7 @@ mod tests {
         let artifact_content_hash = format!("sha256:{}", "b".repeat(64));
         let live_process_id = std::process::id().to_string();
         let live_runtime_session_id = super::runtime_session_id().to_string();
-        let (proof_line, proof_id) = strict_runtime_proof_fixture(
+        let (proof_line, proof_id, oracle_receipt) = strict_runtime_proof_fixture(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
@@ -3841,12 +4100,13 @@ mod tests {
             state_preserved: true,
         };
 
-        let terminal = strict_gpu_reload_terminal_result(
+        let terminal = strict_gpu_reload_terminal_result_with_oracle_records(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
             &success,
             &[proof_line.clone()],
+            std::slice::from_ref(&oracle_receipt),
         )
         .unwrap();
         assert_eq!(terminal.status, "applied");
@@ -3858,60 +4118,64 @@ mod tests {
 
         assert_eq!(terminal.artifact_content_hash, artifact_content_hash);
 
-        let missing = strict_gpu_reload_terminal_result(
+        let missing = strict_gpu_reload_terminal_result_with_oracle_records(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
             &success,
             &[],
+            std::slice::from_ref(&oracle_receipt),
         )
         .unwrap();
         assert_eq!(missing.status, "rejected");
         assert!(!missing.gpu_hmr_success);
 
         let other_artifact_hash = format!("sha256:{}", "c".repeat(64));
-        let artifact_mismatch = strict_gpu_reload_terminal_result(
+        let artifact_mismatch = strict_gpu_reload_terminal_result_with_oracle_records(
             &request_id,
             &source_edit_id,
             &other_artifact_hash,
             &success,
             &[proof_line.clone()],
+            std::slice::from_ref(&oracle_receipt),
         )
         .unwrap();
         assert_eq!(artifact_mismatch.status, "rejected");
         assert!(!artifact_mismatch.gpu_hmr_success);
 
-        let (wrong_process_line, _) = strict_runtime_proof_fixture(
+        let (wrong_process_line, _, wrong_process_receipt) = strict_runtime_proof_fixture(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
             "0",
             &live_runtime_session_id,
         );
-        let wrong_process = strict_gpu_reload_terminal_result(
+        let wrong_process = strict_gpu_reload_terminal_result_with_oracle_records(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
             &success,
             &[wrong_process_line],
+            std::slice::from_ref(&wrong_process_receipt),
         )
         .unwrap();
         assert_eq!(wrong_process.status, "rejected");
         assert!(!wrong_process.gpu_hmr_success);
 
-        let (wrong_session_line, _) = strict_runtime_proof_fixture(
+        let (wrong_session_line, _, wrong_session_receipt) = strict_runtime_proof_fixture(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
             &live_process_id,
             "runtime-session:unrelated",
         );
-        let wrong_session = strict_gpu_reload_terminal_result(
+        let wrong_session = strict_gpu_reload_terminal_result_with_oracle_records(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
             &success,
             &[wrong_session_line],
+            std::slice::from_ref(&wrong_session_receipt),
         )
         .unwrap();
         assert_eq!(wrong_session.status, "rejected");
@@ -3919,16 +4183,50 @@ mod tests {
 
         let other_source_edit_id = format!("source-edit:sha256:{}", "c".repeat(64));
         let other_request_id = format!("gpu-reload:request:{}", "3".repeat(32));
-        let stale = strict_gpu_reload_terminal_result(
+        let stale = strict_gpu_reload_terminal_result_with_oracle_records(
             &other_request_id,
             &other_source_edit_id,
             &artifact_content_hash,
             &success,
             &[proof_line],
+            std::slice::from_ref(&oracle_receipt),
         )
         .unwrap();
         assert_eq!(stale.status, "rejected");
         assert!(!stale.full_runtime_proof_accepted);
+
+        let (proof_line, _, oracle_receipt) = strict_runtime_proof_fixture(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &live_process_id,
+            &live_runtime_session_id,
+        );
+        let missing_live_receipt = strict_gpu_reload_terminal_result_with_oracle_records(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &success,
+            &[proof_line.clone()],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(missing_live_receipt.status, "rejected");
+        assert!(!missing_live_receipt.gpu_hmr_success);
+
+        let mut forged_receipt = oracle_receipt;
+        forged_receipt.readback_sample_hex = Some("00".repeat(8));
+        let forged_live_bytes = strict_gpu_reload_terminal_result_with_oracle_records(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &success,
+            &[proof_line],
+            &[forged_receipt],
+        )
+        .unwrap();
+        assert_eq!(forged_live_bytes.status, "rejected");
+        assert!(!forged_live_bytes.gpu_hmr_success);
     }
 
     #[cfg(feature = "gpu-hmr")]
