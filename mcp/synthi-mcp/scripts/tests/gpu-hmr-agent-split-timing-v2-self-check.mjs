@@ -11,6 +11,7 @@ import {
   classifyAgentSplitTimingTerminal,
   createAgentSplitTestTimingV2Lifecycle,
   emergencyTimingTerminal,
+  finalizeAgentSplitTimingAfterResultPersistence,
   observedMcpVisualCaptureContract,
   tagAgentSplitTimingError,
 } from '../gpu-hmr-agent-split-workspace-test.mjs';
@@ -280,6 +281,58 @@ for (const [name, terminal] of [
   assert.equal(JSON.stringify(checkpoint).includes('runtime stack'), false);
 }
 
+const persistenceClock = controlledClock(5_000n);
+const persistenceLifecycle = createAgentSplitTestTimingV2Lifecycle({
+  nowNs: persistenceClock.now,
+});
+persistenceLifecycle.markUnavailable(
+  'retirement',
+  'runtime_retirement_boundary_not_observed_in_validator_clock',
+);
+let persistedThroughNs = null;
+const persistedTiming = await finalizeAgentSplitTimingAfterResultPersistence({
+  lifecycle: persistenceLifecycle,
+  timingTerminal: classifyAgentSplitTimingTerminal(),
+  persistResults: async () => {
+    persistenceClock.tick(31n);
+    persistedThroughNs = persistenceClock.now();
+  },
+});
+assertSupportOnlyTiming(persistedTiming.testTiming, 'pass');
+assert.equal(persistedTiming.persistenceError, null);
+assert.equal(persistedTiming.testTiming.phases.proof_finalization.durationNs, '31');
+assert.ok(
+  BigInt(persistedTiming.testTiming.phases.total_wall.endNs) >= persistedThroughNs,
+);
+
+const persistenceFailureClock = controlledClock(6_000n);
+const persistenceFailureLifecycle = createAgentSplitTestTimingV2Lifecycle({
+  nowNs: persistenceFailureClock.now,
+});
+persistenceFailureLifecycle.markUnavailable(
+  'retirement',
+  'runtime_retirement_boundary_not_observed_in_validator_clock',
+);
+let persistenceFailureObserved = false;
+const failedPersistenceTiming = await finalizeAgentSplitTimingAfterResultPersistence({
+  lifecycle: persistenceFailureLifecycle,
+  timingTerminal: classifyAgentSplitTimingTerminal(),
+  persistResults: async () => {
+    persistenceFailureClock.tick(17n);
+    throw new Error('self-check persistence failure detail');
+  },
+  onPersistenceError: () => {
+    persistenceFailureObserved = true;
+  },
+});
+assert.equal(persistenceFailureObserved, true);
+assert.equal(failedPersistenceTiming.timingTerminal.outcome, 'failed');
+assert.equal(
+  failedPersistenceTiming.timingTerminal.reasonCode,
+  'agent_split_result_persistence_failure',
+);
+assertSupportOnlyTiming(failedPersistenceTiming.testTiming, 'failed');
+
 console.log(JSON.stringify({
   ok: true,
   schema: GPU_HMR_TEST_TIMING_SCHEMA,
@@ -296,5 +349,9 @@ console.log(JSON.stringify({
     providerFailureRetained: providerTerminal.category === 'provider_failure',
     runtimeFailureRetained: runtimeTerminal.category === 'runtime_failure',
     emergencyFailureRetained: emergencyTerminal.category === 'emergency_failure',
+    totalWallIncludesResultPersistence:
+      BigInt(persistedTiming.testTiming.phases.total_wall.endNs) >= persistedThroughNs,
+    persistenceFailureRetained:
+      failedPersistenceTiming.testTiming.outcome === 'failed',
   },
 }, null, 2));

@@ -773,6 +773,47 @@ function retainAgentSplitTestTiming(testTiming, timingTerminal) {
   return testTiming;
 }
 
+export async function finalizeAgentSplitTimingAfterResultPersistence({
+  lifecycle,
+  timingTerminal,
+  persistResults,
+  onPersistenceError = () => {},
+}) {
+  if (!(lifecycle instanceof AgentSplitTestTimingV2Lifecycle)) {
+    throw new TypeError('agent split timing persistence requires a timing lifecycle');
+  }
+  if (typeof persistResults !== 'function' || typeof onPersistenceError !== 'function') {
+    throw new TypeError('agent split timing persistence requires persistence callbacks');
+  }
+  let resolvedTerminal = timingTerminal;
+  let persistenceError = null;
+  lifecycle.beginPhase('proof_finalization');
+  try {
+    await persistResults();
+  } catch (error) {
+    persistenceError = error;
+    if (resolvedTerminal?.outcome === 'pass') {
+      resolvedTerminal = Object.freeze({
+        outcome: 'failed',
+        category: 'result_persistence_failure',
+        reasonCode: 'agent_split_result_persistence_failure',
+      });
+    }
+    onPersistenceError(error);
+  } finally {
+    lifecycle.finishPhase('proof_finalization');
+  }
+  const testTiming = lifecycle.finalize({
+    outcome: resolvedTerminal.outcome,
+    terminalReason: resolvedTerminal.reasonCode,
+  });
+  return Object.freeze({
+    testTiming,
+    timingTerminal: resolvedTerminal,
+    persistenceError,
+  });
+}
+
 function writeResultCheckpointSync(reason = 'incremental_record') {
   if (process.env.SYNTHI_GPU_AGENT_INCREMENTAL_RESULTS === '0') return;
   if (writingResultCheckpoint) return;
@@ -11499,13 +11540,21 @@ async function writeResults() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
   const sanitizedResults = sanitizeProofLogValue(results);
-  await writeFile(RESULTS_JSON, JSON.stringify(sanitizedResults, null, 2));
+  await writeFile(
+    RESULTS_JSON,
+    JSON.stringify(sanitizedResults, null, 2),
+    { flush: true },
+  );
   const resultText = resultTextFromRows(sanitizedResults);
-  await writeFile(RESULTS_TXT, resultText);
+  await writeFile(RESULTS_TXT, resultText, { flush: true });
   const archivedJson = path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.json`);
   const archivedTxt = path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.txt`);
-  await writeFile(archivedJson, JSON.stringify(sanitizedResults, null, 2));
-  await writeFile(archivedTxt, resultText);
+  await writeFile(
+    archivedJson,
+    JSON.stringify(sanitizedResults, null, 2),
+    { flush: true },
+  );
+  await writeFile(archivedTxt, resultText, { flush: true });
   console.log(`results: ${RESULTS_TXT}`);
   console.log(`archived results: ${archivedTxt}`);
 }
@@ -11555,29 +11604,16 @@ async function runAgentSplitTerminal() {
     record('mcp cleanup', 'fail', error?.message || String(error));
   }
 
-  activeAgentSplitTestTiming.beginPhase('proof_finalization');
-  try {
-    await writeResults();
-  } catch (error) {
-    if (timingTerminal.outcome === 'pass') {
-      timingTerminal = Object.freeze({
-        outcome: 'failed',
-        category: 'result_persistence_failure',
-        reasonCode: 'agent_split_result_persistence_failure',
-      });
-    }
-    record('result persistence', 'fail', error?.message || String(error));
-  } finally {
-    activeAgentSplitTestTiming.finishPhase('proof_finalization');
-  }
-
-  retainAgentSplitTestTiming(
-    activeAgentSplitTestTiming.finalize({
-      outcome: timingTerminal.outcome,
-      terminalReason: timingTerminal.reasonCode,
-    }),
+  const finalizedTiming = await finalizeAgentSplitTimingAfterResultPersistence({
+    lifecycle: activeAgentSplitTestTiming,
     timingTerminal,
-  );
+    persistResults: writeResults,
+    onPersistenceError: (error) => {
+      record('result persistence', 'fail', error?.message || String(error));
+    },
+  });
+  timingTerminal = finalizedTiming.timingTerminal;
+  retainAgentSplitTestTiming(finalizedTiming.testTiming, timingTerminal);
   writeResultCheckpointSync('terminal_timing_v2');
   console.log(`test timing: ${TEST_TIMING_JSON}`);
   if (timingTerminal.outcome !== 'pass') process.exitCode = 1;
