@@ -2086,6 +2086,16 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     ['full_rebuild_used_alias_mismatch', ['full_rebuild_used', 'fullRebuildUsed']],
     ['process_restarted_alias_mismatch', ['process_restarted', 'processRestarted']],
     ['record_success_alias_mismatch', ['gpu_hmr_success', 'gpuHmrSuccess']],
+    ['loader_event_alias_mismatch', ['loader_event', 'loaderEvent']],
+    ['oracle_artifacts_alias_mismatch', ['oracle_artifacts', 'oracleArtifacts']],
+    [
+      'deterministic_visual_mode_alias_mismatch',
+      ['deterministic_visual_mode', 'deterministicVisualMode'],
+    ],
+    ['output_oracle_target_alias_mismatch', ['output_oracle_target', 'outputOracleTarget']],
+    ['timing_metrics_alias_mismatch', ['timing_metrics', 'timingMetrics']],
+    ['model_provenance_alias_mismatch', ['model_provenance', 'modelProvenance']],
+    ['evidence_refs_alias_mismatch', ['evidence_refs', 'evidenceRefs']],
   ];
   for (const [code, keys] of recordAliasGroups) {
     if (aliasGroupMismatch(record, keys)) recordAliasMismatchCodes.add(code);

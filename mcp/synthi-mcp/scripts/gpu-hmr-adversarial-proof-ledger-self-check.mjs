@@ -1198,6 +1198,69 @@ assert.ok(malformedRecordsWrapperResult.failedInvariants.some(
   ({ code }) => code === 'ledger_records_not_array',
 ));
 
+for (const { snake, snakeValue, camel, camelValue, code } of [
+  {
+    snake: 'loader_event',
+    snakeValue: baselineRecord().loader_event,
+    camel: 'loaderEvent',
+    camelValue: { id: 'forged-loader' },
+    code: 'loader_event_alias_mismatch',
+  },
+  {
+    snake: 'oracle_artifacts',
+    snakeValue: baselineRecord().oracle_artifacts,
+    camel: 'oracleArtifacts',
+    camelValue: {},
+    code: 'oracle_artifacts_alias_mismatch',
+  },
+  {
+    snake: 'deterministic_visual_mode',
+    snakeValue: { fixed_seed: true },
+    camel: 'deterministicVisualMode',
+    camelValue: { fixed_seed: false },
+    code: 'deterministic_visual_mode_alias_mismatch',
+  },
+  {
+    snake: 'output_oracle_target',
+    snakeValue: { kind: 'compute', target_id: 'output-buffer-1' },
+    camel: 'outputOracleTarget',
+    camelValue: { kind: 'visual', target_id: 'framebuffer-1' },
+    code: 'output_oracle_target_alias_mismatch',
+  },
+  {
+    snake: 'timing_metrics',
+    snakeValue: baselineTimingMetrics(),
+    camel: 'timingMetrics',
+    camelValue: {},
+    code: 'timing_metrics_alias_mismatch',
+  },
+  {
+    snake: 'model_provenance',
+    snakeValue: baselineModelProvenance(),
+    camel: 'modelProvenance',
+    camelValue: {},
+    code: 'model_provenance_alias_mismatch',
+  },
+  {
+    snake: 'evidence_refs',
+    snakeValue: baselineRecord().evidence_refs,
+    camel: 'evidenceRefs',
+    camelValue: [],
+    code: 'evidence_refs_alias_mismatch',
+  },
+]) {
+  const conflictingAliases = baselineRecord({
+    [snake]: structuredClone(snakeValue),
+    [camel]: structuredClone(camelValue),
+  });
+  const conflictingAliasesResult = queryGpuHmrLedgerInvariants(conflictingAliases);
+  assert.equal(conflictingAliasesResult.gpuHmrSuccess, false, code);
+  assert.ok(
+    conflictingAliasesResult.failedInvariants.some((failure) => failure.code === code),
+    code,
+  );
+}
+
 const missingLedgerSchema = buildGpuHmrProofLedger(commitEraRecord());
 delete missingLedgerSchema.schemaVersion;
 const missingLedgerSchemaResult = queryGpuHmrLedgerInvariants(missingLedgerSchema);
