@@ -60,7 +60,7 @@ import {
 } from './lib/gpu-hmr-validation-proof-summary.mjs';
 import {
   analyzeGpuHmrImageEvidence,
-  mcpFrameGateSatisfied,
+  mcpFrameGateForScreenshot,
   mcpFrameGateSatisfiedByScreenshot,
   mcpScreenshotArgsForFrameGate,
   mcpScreenshotMetadataFromToolResult,
@@ -470,6 +470,41 @@ export function attachRealRocmTestTimingV2(target, testTiming) {
   target.testTiming = testTiming;
   target.test_timing = testTiming;
   return target;
+}
+
+function realRocmCausalVisibleSignalObserved(wait) {
+  return wait?.status === 'applied' && mcpFrameGateForScreenshot(wait) !== null;
+}
+
+function recordRealRocmAcceptedVisualTiming({
+  coordinator = realRocmTestTiming,
+  acceptedAsVisualEvidence = false,
+  frameCaptureAfterEpochDispatch = false,
+  screenshotCaptureStartedNs = null,
+  screenshotCaptureFinishedNs = null,
+  visualAnalysisStartedNs = null,
+  visualAnalysisFinishedNs = null,
+} = {}) {
+  if (acceptedAsVisualEvidence !== true || frameCaptureAfterEpochDispatch !== true) {
+    return false;
+  }
+  if (
+    coordinator.phaseState('screenshot_capture') !== 'untouched'
+    || coordinator.phaseState('visual_analysis') !== 'untouched'
+  ) {
+    throw new Error('real_rocm_accepted_visual_timing_already_observed');
+  }
+  coordinator.measurePhase(
+    'screenshot_capture',
+    screenshotCaptureStartedNs,
+    screenshotCaptureFinishedNs,
+  );
+  coordinator.measurePhase(
+    'visual_analysis',
+    visualAnalysisStartedNs,
+    visualAnalysisFinishedNs,
+  );
+  return true;
 }
 
 function realRocmBootstrapResultPaths() {
@@ -13371,16 +13406,6 @@ async function captureScreenshot(
     const content = Array.isArray(shot?.content) ? shot.content : [];
     const imageBlock = content.find((block) => block?.type === 'image' && typeof block.data === 'string');
     if (imageBlock?.data) {
-      if (
-        measurePrimaryPostEditVisual
-        && realRocmTestTiming.phaseState('screenshot_capture') === 'untouched'
-      ) {
-        realRocmTestTiming.measurePhase(
-          'screenshot_capture',
-          screenshotCaptureStartedNs,
-          screenshotCaptureFinishedNs,
-        );
-      }
       const suffix = attempt === 1 ? '' : `-attempt-${attempt}`;
       const outPath = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}${suffix}.png`);
       const bytes = Buffer.from(imageBlock.data, 'base64');
@@ -13392,16 +13417,6 @@ async function captureScreenshot(
       const visualAnalysisFinishedNs = measurePrimaryPostEditVisual
         ? monotonicNowNs()
         : null;
-      if (
-        measurePrimaryPostEditVisual
-        && realRocmTestTiming.phaseState('visual_analysis') === 'untouched'
-      ) {
-        realRocmTestTiming.measurePhase(
-          'visual_analysis',
-          visualAnalysisStartedNs,
-          visualAnalysisFinishedNs,
-        );
-      }
       const screenshotMetadata = mcpScreenshotMetadataFromToolResult(shot);
       const frameCaptureAfterEpochDispatch = mcpFrameGateSatisfiedByScreenshot(wait, {
         ...screenshotMetadata,
@@ -13423,6 +13438,16 @@ async function captureScreenshot(
       report.screenshots.push(row);
       const ok = screenshotQualifiesAsVisualEvidence(row);
       if (ok) {
+        if (measurePrimaryPostEditVisual) {
+          recordRealRocmAcceptedVisualTiming({
+            acceptedAsVisualEvidence: ok,
+            frameCaptureAfterEpochDispatch,
+            screenshotCaptureStartedNs,
+            screenshotCaptureFinishedNs,
+            visualAnalysisStartedNs,
+            visualAnalysisFinishedNs,
+          });
+        }
         record(`screenshot ${label}`, 'pass', JSON.stringify(row));
         return row;
       }
@@ -28631,8 +28656,7 @@ async function run() {
       && realRocmTestTiming.phaseState('trigger_to_visible') === 'started'
     ) {
       if (
-        hmrCompileResult.wait?.status === 'applied'
-        && mcpFrameGateSatisfied(hmrCompileResult.wait)
+        realRocmCausalVisibleSignalObserved(hmrCompileResult.wait)
       ) {
         realRocmTestTiming.finishPhase('trigger_to_visible');
       } else {
@@ -28888,6 +28912,60 @@ async function buildRealRocmTimingV2SelfCheckCases() {
     terminalReason: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalRefusal,
   });
 
+  const visualRetryClock = realRocmTimingSelfCheckClock(4_700n);
+  const visualRetryCoordinator = createRealRocmTestTimingV2Coordinator({
+    clock: visualRetryClock.now,
+    totalStartNs: visualRetryClock.now(),
+    visualContract: true,
+  });
+  visualRetryCoordinator.startPhase('trigger_to_visible');
+  visualRetryClock.tick(7n);
+  const causalWait = {
+    status: 'applied',
+    gpu_proof_validation: { satisfied: true },
+    frame_gate: {
+      status: 'satisfied',
+      frame_seq: 41,
+      ts_ms: 1_000,
+      gate_token: 'self-check-gate-token',
+    },
+  };
+  const weakWait = {
+    ...causalWait,
+    frame_gate: { ...causalWait.frame_gate, gate_token: null },
+  };
+  if (realRocmCausalVisibleSignalObserved(causalWait)) {
+    visualRetryCoordinator.finishPhase('trigger_to_visible');
+  }
+  const rejectedCaptureStartedNs = visualRetryClock.tick(3n);
+  const rejectedCaptureFinishedNs = visualRetryClock.tick(11n);
+  const rejectedAnalysisFinishedNs = visualRetryClock.tick(13n);
+  const rejectedAttemptRecorded = recordRealRocmAcceptedVisualTiming({
+    coordinator: visualRetryCoordinator,
+    acceptedAsVisualEvidence: false,
+    frameCaptureAfterEpochDispatch: true,
+    screenshotCaptureStartedNs: rejectedCaptureStartedNs,
+    screenshotCaptureFinishedNs: rejectedCaptureFinishedNs,
+    visualAnalysisStartedNs: rejectedCaptureFinishedNs,
+    visualAnalysisFinishedNs: rejectedAnalysisFinishedNs,
+  });
+  const acceptedCaptureStartedNs = visualRetryClock.tick(5n);
+  const acceptedCaptureFinishedNs = visualRetryClock.tick(17n);
+  const acceptedAnalysisFinishedNs = visualRetryClock.tick(19n);
+  const acceptedAttemptRecorded = recordRealRocmAcceptedVisualTiming({
+    coordinator: visualRetryCoordinator,
+    acceptedAsVisualEvidence: true,
+    frameCaptureAfterEpochDispatch: true,
+    screenshotCaptureStartedNs: acceptedCaptureStartedNs,
+    screenshotCaptureFinishedNs: acceptedCaptureFinishedNs,
+    visualAnalysisStartedNs: acceptedCaptureFinishedNs,
+    visualAnalysisFinishedNs: acceptedAnalysisFinishedNs,
+  });
+  const visualRetry = visualRetryCoordinator.snapshot({
+    outcome: 'pass',
+    terminalReason: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalSuccess,
+  });
+
   let regressedIntervalRejected = false;
   const adversarialClock = realRocmTimingSelfCheckClock(5_000n);
   const adversarialCoordinator = createRealRocmTestTimingV2Coordinator({
@@ -28933,6 +29011,14 @@ async function buildRealRocmTimingV2SelfCheckCases() {
     signal,
     emergency,
     hotOnly,
+    visualRetry,
+    visualTimingSelection: {
+      causalWaitAccepted: realRocmCausalVisibleSignalObserved(causalWait),
+      weakWaitRejected: !realRocmCausalVisibleSignalObserved(weakWait),
+      rejectedAttemptRecorded,
+      acceptedAttemptRecorded,
+      acceptedCaptureStartedNs: acceptedCaptureStartedNs.toString(),
+    },
     attachment: {
       aliasesShareRecord: attachmentTarget.testTiming === attachmentTarget.test_timing,
       proofIdPreserved: attachmentTarget.proofId === proofIdentity,

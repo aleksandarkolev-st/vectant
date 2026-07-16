@@ -47,6 +47,7 @@ const terminalCases = [
   ['signal', payload.signal, 'failed'],
   ['emergency', payload.emergency, 'refused'],
   ['hotOnly', payload.hotOnly, 'refused'],
+  ['visualRetry', payload.visualRetry, 'pass'],
 ];
 for (const [caseName, record, outcome] of terminalCases) {
   const validation = validateGpuHmrTestTiming(record);
@@ -130,6 +131,19 @@ assert.deepEqual(payload.hotOnly.phases.compile, {
   durationNs: null,
   reasonCode: 'real_rocm_cold_device_compile_command_not_observed',
 });
+assert.deepEqual(payload.visualTimingSelection, {
+  causalWaitAccepted: true,
+  weakWaitRejected: true,
+  rejectedAttemptRecorded: false,
+  acceptedAttemptRecorded: true,
+  acceptedCaptureStartedNs: payload.visualRetry.phases.screenshot_capture.startNs,
+});
+assert.equal(payload.visualRetry.phases.screenshot_capture.durationNs, '17');
+assert.equal(payload.visualRetry.phases.visual_analysis.durationNs, '19');
+assert.ok(
+  BigInt(payload.visualRetry.phases.trigger_to_visible.endNs)
+    < BigInt(payload.visualRetry.phases.screenshot_capture.startNs),
+);
 
 assert.deepEqual(payload.attachment, {
   aliasesShareRecord: true,
