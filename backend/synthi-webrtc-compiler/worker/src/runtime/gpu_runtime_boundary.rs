@@ -551,12 +551,29 @@ pub trait GpuLaunchDispatcher: Send + Sync {
         &self,
         request: &GpuLaunchRequest,
         args: *const *const c_void,
-    ) -> Result<GpuDispatchDeviceAttestation, String> {
-        self.dispatch(request, args)?;
+    ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+        self.dispatch(request, args)
+            .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
         Ok(GpuDispatchDeviceAttestation::unavailable(
             request.stream_token,
             "native_dispatch_device_observation_unavailable",
         ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GpuDispatchAttestationError {
+    NativeDispatchFailed(String),
+    AttestationRejectedAfterDispatch(String),
+}
+
+impl GpuDispatchAttestationError {
+    pub fn native_dispatch_failed(error: impl Into<String>) -> Self {
+        Self::NativeDispatchFailed(error.into())
+    }
+
+    pub fn attestation_rejected_after_dispatch(error: impl Into<String>) -> Self {
+        Self::AttestationRejectedAfterDispatch(error.into())
     }
 }
 
@@ -3251,11 +3268,17 @@ fn synthi_gpu_launch_raw_impl(
         .map(|reason| format!("gpu_launch_invalid_dimensions: {reason}"));
 
     let dispatch_result = if let Some(reason) = invalid_launch_dims {
-        Some(Err(reason))
+        Some(Err(GpuDispatchAttestationError::native_dispatch_failed(
+            reason,
+        )))
     } else if stale_generation {
-        Some(Err("reload_failed.stale_launch_pointer".to_string()))
+        Some(Err(GpuDispatchAttestationError::native_dispatch_failed(
+            "reload_failed.stale_launch_pointer",
+        )))
     } else if let Some(reason) = dispatcher_blocked_error {
-        Some(Err(reason))
+        Some(Err(GpuDispatchAttestationError::native_dispatch_failed(
+            reason,
+        )))
     } else {
         dispatcher.as_ref().map(|d| {
             with_dispatch_attestation_challenge(dispatch_attestation_challenge.clone(), || {
@@ -3297,8 +3320,12 @@ fn synthi_gpu_launch_raw_impl(
                     }
                 }
             }
-            Some(Err(e)) => {
+            Some(Err(GpuDispatchAttestationError::NativeDispatchFailed(e))) => {
                 record.dispatch_error = Some(e);
+            }
+            Some(Err(GpuDispatchAttestationError::AttestationRejectedAfterDispatch(error))) => {
+                record.dispatched = true;
+                returned_dispatch_device_attestation_error = Some(error);
             }
             None => {
                 record.dispatch_error = Some("no GPU launch dispatcher installed".to_string());
@@ -5237,15 +5264,45 @@ mod tests {
             &self,
             request: &GpuLaunchRequest,
             args: *const *const c_void,
-        ) -> Result<GpuDispatchDeviceAttestation, String> {
-            self.dispatch(request, args)?;
-            let before = GpuDispatchDeviceObservation::new(2, self.device_uuid, 2)?;
-            let after = GpuDispatchDeviceObservation::new(2, self.device_uuid, 2)?;
+        ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+            self.dispatch(request, args)
+                .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
+            let before = GpuDispatchDeviceObservation::new(2, self.device_uuid, 2)
+                .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
+            let after = GpuDispatchDeviceObservation::new(2, self.device_uuid, 2)
+                .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
             GpuDispatchDeviceAttestation::runtime_driver_observed(
                 request.stream_token,
                 before,
                 after,
             )
+            .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)
+        }
+    }
+
+    struct AttestationRejectingAfterDispatch {
+        calls: Arc<Mutex<Vec<GpuLaunchRequest>>>,
+        error: &'static str,
+    }
+
+    impl GpuLaunchDispatcher for AttestationRejectingAfterDispatch {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            Ok(())
+        }
+
+        fn dispatch_with_device_attestation(
+            &self,
+            request: &GpuLaunchRequest,
+            args: *const *const c_void,
+        ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+            self.dispatch(request, args)
+                .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
+            Err(GpuDispatchAttestationError::attestation_rejected_after_dispatch(self.error))
         }
     }
 
@@ -5269,19 +5326,23 @@ mod tests {
             &self,
             request: &GpuLaunchRequest,
             args: *const *const c_void,
-        ) -> Result<GpuDispatchDeviceAttestation, String> {
-            self.dispatch(request, args)?;
+        ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+            self.dispatch(request, args)
+                .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
             let mut cached = self.cached.lock().unwrap();
             if let Some(attestation) = cached.as_ref() {
                 return Ok(attestation.clone());
             }
-            let before = GpuDispatchDeviceObservation::new(3, self.device_uuid, 3)?;
-            let after = GpuDispatchDeviceObservation::new(3, self.device_uuid, 3)?;
+            let before = GpuDispatchDeviceObservation::new(3, self.device_uuid, 3)
+                .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
+            let after = GpuDispatchDeviceObservation::new(3, self.device_uuid, 3)
+                .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
             let attestation = GpuDispatchDeviceAttestation::runtime_driver_observed(
                 request.stream_token,
                 before,
                 after,
-            )?;
+            )
+            .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
             *cached = Some(attestation.clone());
             Ok(attestation)
         }
@@ -5306,8 +5367,9 @@ mod tests {
             &self,
             request: &GpuLaunchRequest,
             args: *const *const c_void,
-        ) -> Result<GpuDispatchDeviceAttestation, String> {
-            self.dispatch(request, args)?;
+        ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+            self.dispatch(request, args)
+                .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
             let mut cached = self.cached.lock().unwrap();
             if let Some(attestation) = cached.as_ref() {
                 return Ok(attestation.clone());
@@ -5350,15 +5412,19 @@ mod tests {
             &self,
             request: &GpuLaunchRequest,
             args: *const *const c_void,
-        ) -> Result<GpuDispatchDeviceAttestation, String> {
-            self.dispatch(request, args)?;
-            let before = GpuDispatchDeviceObservation::new(5, self.device_uuid, 5)?;
-            let after = GpuDispatchDeviceObservation::new(5, self.device_uuid, 5)?;
+        ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+            self.dispatch(request, args)
+                .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
+            let before = GpuDispatchDeviceObservation::new(5, self.device_uuid, 5)
+                .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
+            let after = GpuDispatchDeviceObservation::new(5, self.device_uuid, 5)
+                .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
             GpuDispatchDeviceAttestation::runtime_driver_observed(
                 request.stream_token,
                 before,
                 after,
             )
+            .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)
         }
     }
 
@@ -5481,6 +5547,44 @@ mod tests {
             )
         );
         assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn post_dispatch_attestation_rejection_preserves_native_launch_truth() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(AttestationRejectingAfterDispatch {
+            calls: calls.clone(),
+            error: "dispatch_device_uuid_changed",
+        }));
+
+        let kernel = CString::new("attestation_rejected_after_dispatch").unwrap();
+        let dim = 1_u32;
+        let receipt = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0x77,
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(receipt.dispatched);
+        assert!(receipt.dispatch_device_attestation.is_none());
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert!(launches[0].dispatched);
+        assert!(launches[0].dispatch_error.is_none());
+        let rejections = dispatch_device_attestation_rejection_records_snapshot();
+        assert_eq!(rejections.len(), 1);
+        assert_eq!(rejections[0].dispatch_id, receipt.dispatch_id);
+        assert_eq!(rejections[0].error, "dispatch_device_uuid_changed");
     }
 
     #[test]
