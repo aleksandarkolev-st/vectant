@@ -378,8 +378,13 @@ export function installWebgpuRuntimeVisualTerminalHandlers({
         outcome: 'failed',
         stage: 'terminal',
       });
-      completion = Promise.resolve()
-        .then(() => onTerminal(terminal))
+      let terminalWork;
+      try {
+        terminalWork = onTerminal(terminal);
+      } catch {
+        terminalWork = null;
+      }
+      completion = Promise.resolve(terminalWork)
         .catch(() => null)
         .then(() => processRef.exit(contract.exitCode));
     };
@@ -3384,14 +3389,22 @@ async function runProofExecution(state) {
     ].join('\n');
 
     state.stage = 'artifact_persistence';
-    await persistWebgpuRuntimeVisualPayloadsBeforeTiming({
+    state.persistenceKind = 'payload';
+    state.persistencePromise = persistWebgpuRuntimeVisualPayloadsBeforeTiming({
       proofPath,
       proof,
       companionArtifacts: state.companionArtifacts,
       summaryPath,
       summaryText: summaryPayload,
     });
+    try {
+      await state.persistencePromise;
+    } finally {
+      state.persistencePromise = null;
+      state.persistenceKind = null;
+    }
     state.proofPersisted = true;
+    await rejectNormalCompletionAfterTerminal(state);
 
     const { coldTestTiming, negativeRefusalTiming } =
       finalizeWebgpuRuntimeVisualCompanionTimings(state);
@@ -3413,13 +3426,21 @@ async function runProofExecution(state) {
       coldTiming: coldTestTiming,
       negativeRefusalTiming,
     });
-    await persistWebgpuRuntimeVisualTimingAnnotations({
+    state.persistenceKind = 'timing_annotation';
+    state.persistencePromise = persistWebgpuRuntimeVisualTimingAnnotations({
       proofPath,
       proof,
       companionArtifacts: state.companionArtifacts,
       summaryPath,
       summaryText: `${summaryPayload}test_timing_v2_total_wall_ns=${testTiming.phases.total_wall.durationNs}\n`,
     });
+    try {
+      await state.persistencePromise;
+    } finally {
+      state.persistencePromise = null;
+      state.persistenceKind = null;
+    }
+    await rejectNormalCompletionAfterTerminal(state);
 
     state.stage = 'acceptance';
     if (!proof.gpuHmrSuccess) {
@@ -3484,6 +3505,20 @@ export async function retainWebgpuRuntimeVisualOutcome({
       proofObjectCreated: state.proof !== null,
       errorDetailRetained: false,
     };
+
+    const activePersistence = state.persistencePromise;
+    const activePersistenceKind = state.persistenceKind;
+    if (activePersistence) {
+      try {
+        await activePersistence;
+        if (activePersistenceKind === 'payload') state.proofPersisted = true;
+      } catch {
+        if (error && typeof error === 'object') {
+          error.failureArtifactRetentionCode =
+            'webgpu_runtime_visual_inflight_persistence_failed';
+        }
+      }
+    }
 
     try {
       await mkdir(ARTIFACT_DIR, { recursive: true });
@@ -3621,6 +3656,21 @@ export async function retainWebgpuRuntimeVisualOutcome({
   return state.retentionPromise;
 }
 
+async function rejectNormalCompletionAfterTerminal(state) {
+  if (!state.terminalRequested) return;
+  if (state.retentionPromise) await state.retentionPromise;
+  const terminal = state.terminalEvent ?? {
+    code: 'webgpu_runtime_visual_terminal_state_missing',
+    outcome: 'failed',
+    stage: 'terminal',
+  };
+  throw webgpuRuntimeVisualError('WebGPU runtime visual proof interrupted', {
+    code: terminal.code,
+    outcome: terminal.outcome,
+    stage: terminal.stage,
+  });
+}
+
 async function runProof() {
   const timingRecorder = createWebgpuRuntimeVisualTimingV2Recorder({
     clock: () => process.hrtime.bigint(),
@@ -3645,19 +3695,27 @@ async function runProof() {
     runtimeObserved: false,
     proofFinalizationMeasured: false,
     retentionPromise: null,
+    persistencePromise: null,
+    persistenceKind: null,
+    terminalRequested: false,
+    terminalEvent: null,
   };
   const terminalHandlers = installWebgpuRuntimeVisualTerminalHandlers({
     processRef: process,
-    onTerminal: (terminal) => retainWebgpuRuntimeVisualOutcome({
-      state,
-      error: null,
-      classification: {
-        category: 'webgpu_runtime_visual_execution',
-        outcome: terminal.outcome,
-        code: terminal.code,
-        stage: terminal.stage,
-      },
-    }),
+    onTerminal: (terminal) => {
+      state.terminalRequested = true;
+      state.terminalEvent = terminal;
+      return retainWebgpuRuntimeVisualOutcome({
+        state,
+        error: null,
+        classification: {
+          category: 'webgpu_runtime_visual_execution',
+          outcome: terminal.outcome,
+          code: terminal.code,
+          stage: terminal.stage,
+        },
+      });
+    },
   });
 
   try {

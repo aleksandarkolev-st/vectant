@@ -321,6 +321,10 @@ try {
     runtimeObserved: false,
     proofFinalizationMeasured: false,
     retentionPromise: null,
+    persistencePromise: null,
+    persistenceKind: null,
+    terminalRequested: true,
+    terminalEvent: null,
   };
   await retainWebgpuRuntimeVisualOutcome({
     state: terminalState,
@@ -344,6 +348,46 @@ try {
     retainedTerminalArtifact.errorClassification.code,
     'webgpu_runtime_visual_interrupted_sigterm',
   );
+
+  let releasePersistence;
+  const inFlightPersistence = new Promise((resolve) => {
+    releasePersistence = resolve;
+  });
+  const serializedTerminalPath = path.join(retainedTerminalDir, 'serialized-terminal.json');
+  const serializedState = {
+    ...terminalState,
+    timingRecorder: createWebgpuRuntimeVisualTimingV2Recorder({ clock: terminalClock.now }),
+    failurePath: serializedTerminalPath,
+    testTiming: null,
+    proofFinalizationMeasured: false,
+    retentionPromise: null,
+    persistencePromise: inFlightPersistence,
+    persistenceKind: 'payload',
+  };
+  let serializedRetentionCompleted = false;
+  const serializedRetention = retainWebgpuRuntimeVisualOutcome({
+    state: serializedState,
+    error: null,
+    classification: {
+      category: 'webgpu_runtime_visual_execution',
+      outcome: 'failed',
+      code: 'webgpu_runtime_visual_interrupted_sigint',
+      stage: 'terminal',
+    },
+  }).then(() => {
+    serializedRetentionCompleted = true;
+  });
+  await Promise.resolve();
+  assert.equal(serializedRetentionCompleted, false);
+  releasePersistence();
+  await serializedRetention;
+  assert.equal(serializedRetentionCompleted, true);
+  const serializedArtifact = JSON.parse(await readFile(serializedTerminalPath, 'utf8'));
+  assert.equal(
+    serializedArtifact.errorClassification.code,
+    'webgpu_runtime_visual_interrupted_sigint',
+  );
+  assert.equal(serializedArtifact.testTiming.outcome, 'failed');
 } finally {
   await rm(retainedTerminalDir, { recursive: true, force: true });
 }
