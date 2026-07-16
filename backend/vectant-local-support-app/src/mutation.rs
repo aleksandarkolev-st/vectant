@@ -240,7 +240,7 @@ impl WorkspaceMutationBroker {
                 reversible_until: transaction.recovery_expires_at,
             })
             .collect::<Vec<_>>();
-        summaries.sort_by(|left, right| right.reversible_until.cmp(&left.reversible_until));
+        summaries.sort_by_key(|summary| std::cmp::Reverse(summary.reversible_until));
         summaries
     }
 
@@ -489,6 +489,22 @@ mod tests {
         assert_eq!(summary.lines_unchanged, 2);
         assert!(summary.changed);
         let serialized = serde_json::to_string(&summary).unwrap();
+        assert!(!serialized.contains("SECRET_REMOVED"));
+        assert!(!serialized.contains("SECRET_ADDED"));
+    }
+
+    #[test]
+    fn local_summary_keeps_only_review_metadata() {
+        let summary = LocalMutationSummary {
+            transaction_id: "txn_abcdefghijklmnopqrstuvwxyz".to_string(),
+            relative_path: "src/example.rs".to_string(),
+            lines_added: 3,
+            lines_removed: 2,
+            reversible_until: Utc::now(),
+        };
+        let serialized = serde_json::to_string(&summary).unwrap();
+        assert!(serialized.contains("src/example.rs"));
+        assert!(serialized.contains("lines_added"));
         assert!(!serialized.contains("SECRET_REMOVED"));
         assert!(!serialized.contains("SECRET_ADDED"));
     }
