@@ -57,6 +57,24 @@ const FAILURE_CODE_BY_STAGE = Object.freeze({
   artifact_persistence: 'webgpu_runtime_visual_artifact_persistence_failed',
   acceptance: 'webgpu_runtime_visual_proof_rejected',
 });
+const TERMINAL_EVENT_CONTRACT = Object.freeze({
+  SIGINT: Object.freeze({
+    code: 'webgpu_runtime_visual_interrupted_sigint',
+    exitCode: 130,
+  }),
+  SIGTERM: Object.freeze({
+    code: 'webgpu_runtime_visual_interrupted_sigterm',
+    exitCode: 143,
+  }),
+  uncaughtException: Object.freeze({
+    code: 'webgpu_runtime_visual_uncaught_exception',
+    exitCode: 1,
+  }),
+  unhandledRejection: Object.freeze({
+    code: 'webgpu_runtime_visual_unhandled_rejection',
+    exitCode: 1,
+  }),
+});
 const MODEL_REGISTRY = Object.freeze({
   'gemini-3.5-flash': {
     provider_model_status: 'available',
@@ -336,6 +354,49 @@ function webgpuRuntimeVisualError(message, {
   error.webgpuRuntimeVisualOutcome = outcome;
   error.webgpuRuntimeVisualStage = stage;
   return error;
+}
+
+export function installWebgpuRuntimeVisualTerminalHandlers({
+  processRef = process,
+  onTerminal,
+}) {
+  if (typeof onTerminal !== 'function') {
+    throw new TypeError('WebGPU terminal handler requires onTerminal');
+  }
+  let terminalStarted = false;
+  let completion = Promise.resolve(null);
+  const handlers = new Map();
+
+  for (const [eventName, contract] of Object.entries(TERMINAL_EVENT_CONTRACT)) {
+    const handler = () => {
+      if (terminalStarted) return;
+      terminalStarted = true;
+      const terminal = Object.freeze({
+        eventName,
+        code: contract.code,
+        exitCode: contract.exitCode,
+        outcome: 'failed',
+        stage: 'terminal',
+      });
+      completion = Promise.resolve()
+        .then(() => onTerminal(terminal))
+        .catch(() => null)
+        .then(() => processRef.exit(contract.exitCode));
+    };
+    handlers.set(eventName, handler);
+    processRef.on(eventName, handler);
+  }
+
+  return {
+    get completion() {
+      return completion;
+    },
+    dispose() {
+      for (const [eventName, handler] of handlers) {
+        processRef.off(eventName, handler);
+      }
+    },
+  };
 }
 
 function classifyWebgpuRuntimeVisualError(error, state) {
@@ -3390,6 +3451,176 @@ async function runProofExecution(state) {
   }
 }
 
+function terminalFailureCheckpoint(classification) {
+  return {
+    schema: FAILURE_SCHEMA,
+    schemaVersion: FAILURE_SCHEMA,
+    resultState: 'webgpu-runtime-visual-terminal-checkpoint',
+    result_state: 'webgpu-runtime-visual-terminal-checkpoint',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    timingPending: true,
+    timing_pending: true,
+    errorClassification: classification,
+    error_classification: classification,
+  };
+}
+
+export async function retainWebgpuRuntimeVisualOutcome({
+  state,
+  error,
+  classification: suppliedClassification = null,
+}) {
+  if (state.retentionPromise) return state.retentionPromise;
+  state.retentionPromise = (async () => {
+    let classification = suppliedClassification ?? classifyWebgpuRuntimeVisualError(error, state);
+    classification = {
+      category: classification.category ?? 'webgpu_runtime_visual_execution',
+      outcome: classification.outcome,
+      code: classification.code,
+      stage: classification.stage,
+      proofObjectCreated: state.proof !== null,
+      errorDetailRetained: false,
+    };
+
+    try {
+      await mkdir(ARTIFACT_DIR, { recursive: true });
+      if (state.proof && state.proofPath && !state.proofPersisted) {
+        await durableWriteText(state.proofPath, `${JSON.stringify(state.proof, null, 2)}\n`);
+        for (const companion of state.companionArtifacts) {
+          await durableWriteText(
+            companion.filePath,
+            `${JSON.stringify(companion.artifact, null, 2)}\n`,
+          );
+        }
+        state.proofPersisted = true;
+      } else if (!state.proof) {
+        await durableWriteText(
+          state.failurePath,
+          `${JSON.stringify(terminalFailureCheckpoint(classification), null, 2)}\n`,
+        );
+      }
+    } catch {
+      if (error && typeof error === 'object') {
+        error.failureArtifactRetentionCode =
+          'webgpu_runtime_visual_failure_checkpoint_write_failed';
+      }
+    }
+
+    const { timingRecorder } = state;
+    if (!timingRecorder.isFinalized) {
+      if (!state.proofFinalizationMeasured) {
+        state.proofFinalizationMeasured = true;
+        await measureWebgpuRuntimeVisualTimingPhase(
+          timingRecorder,
+          'proof_finalization',
+          async () => {
+            classification = suppliedClassification
+              ? classification
+              : classifyWebgpuRuntimeVisualError(error, state);
+          },
+        );
+      }
+      state.testTiming = finalizeWebgpuRuntimeVisualTimingV2({
+        recorder: timingRecorder,
+        outcome: classification.outcome,
+        visualCapable: state.visualCapable,
+        runtimeObserved: state.runtimeObserved,
+        terminalReason: classification.code,
+      });
+    } else if (timingRecorder.record.outcome === classification.outcome) {
+      state.testTiming = timingRecorder.record;
+    } else {
+      const terminalRecorder = createWebgpuRuntimeVisualTimingV2Recorder({
+        clock: () => process.hrtime.bigint(),
+      });
+      await measureWebgpuRuntimeVisualTimingPhase(
+        terminalRecorder,
+        'proof_finalization',
+        async () => {},
+      );
+      state.testTiming = finalizeWebgpuRuntimeVisualTimingV2({
+        recorder: terminalRecorder,
+        outcome: classification.outcome,
+        visualCapable: false,
+        runtimeObserved: false,
+        terminalReason: classification.code,
+      });
+    }
+
+    if (state.proof) {
+      finalizeWebgpuRuntimeVisualCompanionTimings(state);
+      const coldCompanion = state.companionArtifacts.find(({ role }) => role === 'cold');
+      const hotCompanion = state.companionArtifacts.find(({ role }) => role === 'hot');
+      const negativeCompanion = state.companionArtifacts.find(
+        ({ role }) => role === 'negative_refusal',
+      );
+      if (
+        coldCompanion
+        && hotCompanion
+        && state.proof.runtimeProofArtifact
+        && state.outcomeTimings?.coldTestTiming
+      ) {
+        attachWebgpuRuntimeVisualOutcomeTimings({
+          proof: state.proof,
+          runtimeProofArtifact: state.proof.runtimeProofArtifact,
+          coldArtifact: coldCompanion.artifact,
+          hotArtifact: hotCompanion.artifact,
+          negativeRefusalArtifact: negativeCompanion?.artifact ?? null,
+          hotTiming: state.testTiming,
+          coldTiming: state.outcomeTimings.coldTestTiming,
+          negativeRefusalTiming: state.outcomeTimings.negativeRefusalTiming,
+        });
+      } else {
+        attachWebgpuRuntimeVisualTestTiming(state.proof, state.testTiming);
+        if (state.proof.runtimeProofArtifact) {
+          attachWebgpuRuntimeVisualTestTiming(state.proof.runtimeProofArtifact, state.testTiming);
+        }
+      }
+      if (state.proofPath) {
+        try {
+          await durableWriteText(state.proofPath, `${JSON.stringify(state.proof, null, 2)}\n`);
+          for (const companion of state.companionArtifacts) {
+            await durableWriteText(
+              companion.filePath,
+              `${JSON.stringify(companion.artifact, null, 2)}\n`,
+            );
+          }
+          state.proofPersisted = true;
+          if (error && typeof error === 'object') {
+            error.retainedFailureArtifactPath = state.proofPath;
+          }
+        } catch {
+          if (error && typeof error === 'object') {
+            error.failureArtifactRetentionCode =
+              'webgpu_runtime_visual_failure_artifact_write_failed';
+          }
+        }
+      }
+    } else {
+      const failureArtifact = buildRetainedWebgpuRuntimeVisualFailure({
+        classification,
+        testTiming: state.testTiming,
+      });
+      try {
+        await durableWriteText(state.failurePath, `${JSON.stringify(failureArtifact, null, 2)}\n`);
+        if (error && typeof error === 'object') {
+          error.retainedFailureArtifactPath = state.failurePath;
+        }
+      } catch {
+        if (error && typeof error === 'object') {
+          error.failureArtifactRetentionCode =
+            'webgpu_runtime_visual_failure_artifact_write_failed';
+        }
+      }
+    }
+    return { classification, testTiming: state.testTiming };
+  })();
+  return state.retentionPromise;
+}
+
 async function runProof() {
   const timingRecorder = createWebgpuRuntimeVisualTimingV2Recorder({
     clock: () => process.hrtime.bigint(),
@@ -3413,82 +3644,29 @@ async function runProof() {
     visualCapable: false,
     runtimeObserved: false,
     proofFinalizationMeasured: false,
+    retentionPromise: null,
   };
+  const terminalHandlers = installWebgpuRuntimeVisualTerminalHandlers({
+    processRef: process,
+    onTerminal: (terminal) => retainWebgpuRuntimeVisualOutcome({
+      state,
+      error: null,
+      classification: {
+        category: 'webgpu_runtime_visual_execution',
+        outcome: terminal.outcome,
+        code: terminal.code,
+        stage: terminal.stage,
+      },
+    }),
+  });
 
   try {
     return await runProofExecution(state);
   } catch (error) {
-    let classification = classifyWebgpuRuntimeVisualError(error, state);
-    if (!timingRecorder.isFinalized) {
-      if (!state.proofFinalizationMeasured) {
-        state.proofFinalizationMeasured = true;
-        await measureWebgpuRuntimeVisualTimingPhase(
-          timingRecorder,
-          'proof_finalization',
-          async () => {
-            classification = classifyWebgpuRuntimeVisualError(error, state);
-          },
-        );
-      }
-      state.testTiming = finalizeWebgpuRuntimeVisualTimingV2({
-        recorder: timingRecorder,
-        outcome: classification.outcome,
-        visualCapable: state.visualCapable,
-        runtimeObserved: state.runtimeObserved,
-        terminalReason: classification.code,
-      });
-    } else {
-      state.testTiming = timingRecorder.record;
-    }
-
-    if (state.proof) {
-      finalizeWebgpuRuntimeVisualCompanionTimings(state);
-      const coldCompanion = state.companionArtifacts.find(({ role }) => role === 'cold');
-      const hotCompanion = state.companionArtifacts.find(({ role }) => role === 'hot');
-      const negativeCompanion = state.companionArtifacts.find(
-        ({ role }) => role === 'negative_refusal',
-      );
-      if (coldCompanion && hotCompanion && state.outcomeTimings?.coldTestTiming) {
-        attachWebgpuRuntimeVisualOutcomeTimings({
-          proof: state.proof,
-          runtimeProofArtifact: state.proof.runtimeProofArtifact,
-          coldArtifact: coldCompanion.artifact,
-          hotArtifact: hotCompanion.artifact,
-          negativeRefusalArtifact: negativeCompanion?.artifact ?? null,
-          hotTiming: state.testTiming,
-          coldTiming: state.outcomeTimings.coldTestTiming,
-          negativeRefusalTiming: state.outcomeTimings.negativeRefusalTiming,
-        });
-      } else {
-        attachWebgpuRuntimeVisualTestTiming(state.proof, state.testTiming);
-        if (state.proof.runtimeProofArtifact) {
-          attachWebgpuRuntimeVisualTestTiming(state.proof.runtimeProofArtifact, state.testTiming);
-        }
-      }
-      if (!state.proofPersisted && state.proofPath) {
-        try {
-          await writeFile(state.proofPath, `${JSON.stringify(state.proof, null, 2)}\n`);
-          state.proofPersisted = true;
-        } catch {}
-      }
-    } else {
-      const failureArtifact = buildRetainedWebgpuRuntimeVisualFailure({
-        classification,
-        testTiming: state.testTiming,
-      });
-      try {
-        await mkdir(ARTIFACT_DIR, { recursive: true });
-        await writeFile(state.failurePath, `${JSON.stringify(failureArtifact, null, 2)}\n`);
-        if (error && typeof error === 'object') {
-          error.retainedFailureArtifactPath = state.failurePath;
-        }
-      } catch {
-        if (error && typeof error === 'object') {
-          error.failureArtifactRetentionCode = 'webgpu_runtime_visual_failure_artifact_write_failed';
-        }
-      }
-    }
+    await retainWebgpuRuntimeVisualOutcome({ state, error });
     throw error;
+  } finally {
+    terminalHandlers.dispose();
   }
 }
 

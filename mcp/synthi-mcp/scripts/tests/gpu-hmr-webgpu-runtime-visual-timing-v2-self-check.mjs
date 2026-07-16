@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   GPU_HMR_TEST_TIMING_SCHEMA,
   validateGpuHmrTestTiming,
@@ -11,8 +15,10 @@ import {
   buildRetainedWebgpuRuntimeVisualFailure,
   createWebgpuRuntimeVisualTimingV2Recorder,
   finalizeWebgpuRuntimeVisualTimingV2,
+  installWebgpuRuntimeVisualTerminalHandlers,
   measureWebgpuRuntimeVisualTimingPhase,
   persistWebgpuRuntimeVisualPayloadsBeforeTiming,
+  retainWebgpuRuntimeVisualOutcome,
 } from '../gpu-hmr-webgpu-runtime-visual-proof.mjs';
 
 const RUNTIME_GAP_REASON = 'browser_phase_not_delimited_in_node_monotonic_clock';
@@ -218,6 +224,129 @@ const lastPayloadCompletionNs = persistenceCompletions.at(-1).completedNs;
 assert.equal(persistenceCompletions.length, 4);
 assert.ok(BigInt(persistenceTiming.phases.total_wall.endNs) >= lastPayloadCompletionNs);
 assert.equal(persistenceTiming.phases.total_wall.endNs, persistenceClock.now().toString());
+
+const terminalCases = [
+  ['SIGINT', 'webgpu_runtime_visual_interrupted_sigint', 130],
+  ['SIGTERM', 'webgpu_runtime_visual_interrupted_sigterm', 143],
+  ['uncaughtException', 'webgpu_runtime_visual_uncaught_exception', 1],
+  ['unhandledRejection', 'webgpu_runtime_visual_unhandled_rejection', 1],
+];
+for (const [eventName, expectedCode, expectedExitCode] of terminalCases) {
+  class FakeProcess extends EventEmitter {
+    exitCodes = [];
+
+    exit(code) {
+      this.exitCodes.push(code);
+    }
+  }
+  const processRef = new FakeProcess();
+  const retained = [];
+  const controller = installWebgpuRuntimeVisualTerminalHandlers({
+    processRef,
+    onTerminal: async (terminal) => {
+      const clock = controlledClock(600n);
+      const recorder = createWebgpuRuntimeVisualTimingV2Recorder({ clock: clock.now });
+      await measure(recorder, clock, 'proof_finalization', 3n);
+      const timing = finalizeWebgpuRuntimeVisualTimingV2({
+        recorder,
+        outcome: terminal.outcome,
+        visualCapable: false,
+        runtimeObserved: false,
+        terminalReason: terminal.code,
+      });
+      retained.push(buildRetainedWebgpuRuntimeVisualFailure({
+        classification: {
+          category: 'webgpu_runtime_visual_execution',
+          outcome: terminal.outcome,
+          code: terminal.code,
+          stage: terminal.stage,
+        },
+        testTiming: timing,
+      }));
+    },
+  });
+  if (eventName === 'uncaughtException') {
+    processRef.emit(eventName, new Error('sensitive exception detail'));
+  } else if (eventName === 'unhandledRejection') {
+    processRef.emit(eventName, new Error('sensitive rejection detail'), Promise.resolve());
+  } else {
+    processRef.emit(eventName);
+  }
+  await controller.completion;
+  controller.dispose();
+  assert.deepEqual(processRef.exitCodes, [expectedExitCode]);
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0].errorClassification.code, expectedCode);
+  assert.equal(retained[0].testTiming.outcome, 'failed');
+  assert.equal(retained[0].testTiming.authority, 'timing_only');
+  assert.equal(retained[0].testTiming.acceptedForGpuHmr, false);
+  assert.equal(retained[0].testTiming.gpuHmrSuccess, false);
+  assert.equal(JSON.stringify(retained[0]).includes('sensitive'), false);
+  assert.equal(processRef.listenerCount(eventName), 0);
+}
+
+const duplicateProcess = new EventEmitter();
+const duplicateExits = [];
+duplicateProcess.exit = (code) => duplicateExits.push(code);
+let duplicateRetentions = 0;
+const duplicateController = installWebgpuRuntimeVisualTerminalHandlers({
+  processRef: duplicateProcess,
+  onTerminal: async () => {
+    duplicateRetentions += 1;
+  },
+});
+duplicateProcess.emit('SIGINT');
+duplicateProcess.emit('SIGTERM');
+await duplicateController.completion;
+duplicateController.dispose();
+assert.equal(duplicateRetentions, 1);
+assert.deepEqual(duplicateExits, [130]);
+
+const retainedTerminalDir = await mkdtemp(path.join(tmpdir(), 'synthi-webgpu-terminal-'));
+try {
+  const retainedTerminalPath = path.join(retainedTerminalDir, 'terminal-failure.json');
+  const terminalClock = controlledClock(700n);
+  const terminalState = {
+    timingRecorder: createWebgpuRuntimeVisualTimingV2Recorder({ clock: terminalClock.now }),
+    stage: 'runtime_probe',
+    proof: null,
+    proofPath: null,
+    proofPersisted: false,
+    companionArtifacts: [],
+    outcomeTimings: null,
+    outcomeTimingRecorders: null,
+    failurePath: retainedTerminalPath,
+    testTiming: null,
+    visualCapable: false,
+    runtimeObserved: false,
+    proofFinalizationMeasured: false,
+    retentionPromise: null,
+  };
+  await retainWebgpuRuntimeVisualOutcome({
+    state: terminalState,
+    error: null,
+    classification: {
+      category: 'webgpu_runtime_visual_execution',
+      outcome: 'failed',
+      code: 'webgpu_runtime_visual_interrupted_sigterm',
+      stage: 'terminal',
+    },
+  });
+  const retainedTerminalArtifact = JSON.parse(await readFile(retainedTerminalPath, 'utf8'));
+  assert.equal(retainedTerminalArtifact.resultState, 'webgpu-runtime-visual-failed-before-proof');
+  assert.equal(retainedTerminalArtifact.acceptedForGpuHmr, false);
+  assert.equal(retainedTerminalArtifact.gpuHmrSuccess, false);
+  assert.equal(retainedTerminalArtifact.testTiming.outcome, 'failed');
+  assert.equal(retainedTerminalArtifact.testTiming.authority, 'timing_only');
+  assert.equal(retainedTerminalArtifact.testTiming.acceptedForGpuHmr, false);
+  assert.equal(retainedTerminalArtifact.testTiming.gpuHmrSuccess, false);
+  assert.equal(
+    retainedTerminalArtifact.errorClassification.code,
+    'webgpu_runtime_visual_interrupted_sigterm',
+  );
+} finally {
+  await rm(retainedTerminalDir, { recursive: true, force: true });
+}
 
 const refusalClock = controlledClock(100n);
 const refusalRecorder = createWebgpuRuntimeVisualTimingV2Recorder({ clock: refusalClock.now });
