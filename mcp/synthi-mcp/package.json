@@ -167,6 +167,7 @@
     "proof:status-docs:self-check": "node scripts/tests/gpu-hmr-status-docs-freshness-smoke.mjs",
     "proof:external-project:bevy": "node scripts/gpu-hmr-external-project-profile.mjs --profile mcp/synthi-mcp/scripts/profiles/bevy-wgsl-shader-material.json",
     "proof:timing-metrics:self-check": "node scripts/tests/gpu-hmr-timing-metrics-smoke.mjs && node scripts/gpu-hmr-timing-metrics-summary.mjs --self-check",
+    "proof:test-timing:v2:self-check": "node scripts/tests/gpu-hmr-test-timing-v2-self-check.mjs",
     "proof:runtime-profile:hiprt": "node scripts/gpu-hmr-runtime-profile-proof.mjs --profile mcp/synthi-mcp/scripts/profiles/hiprt-megakernel-direct-light-zero.json --mode same-process",
     "proof:runtime-profile:hiprt:camera-rays": "node scripts/gpu-hmr-runtime-profile-proof.mjs --profile mcp/synthi-mcp/scripts/profiles/hiprt-camera-rays-horizontal-mirror.json --mode same-process",
     "proof:runtime-profile:hiprt:megakernel-light-gain": "node scripts/gpu-hmr-runtime-profile-proof.mjs --profile mcp/synthi-mcp/scripts/profiles/hiprt-megakernel-direct-light-gain.json --mode same-process",
