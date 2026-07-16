@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 
 export const COLD_COMPILE_LOAD_RECEIPT_SCHEMA =
-  'synthi.gpu_hmr.cold_compile_load_receipt.v1';
+  'synthi.gpu_hmr.cold_compile_load_receipt.v2';
 export const COLD_COMPILE_LOAD_RECEIPT_AUTHORITY =
-  'content_bound_cold_compiler_stage_and_correlated_runner_load_support_only_not_semantic_build_or_gpu_hmr_runtime_dispatch_acceptance';
+  'content_bound_cold_compile_load_recomputation_diagnostic_only_not_trusted_producer_or_gpu_hmr_runtime_dispatch_acceptance';
 
 const GPU_HMR_PROOF_SCHEMA = 'synthi.gpu.hmr.proof.v1';
 const GPU_ARTIFACT_LOAD_TERMINAL_SCHEMA =
@@ -30,6 +30,16 @@ const PROOF_ARTIFACT_KEYS = Object.freeze([
   'evidenceRefs',
   'visualEvidenceRefs',
   'createdAt',
+]);
+
+const EXPECTED_CONTEXT_KEYS = Object.freeze([
+  'workspaceSlug',
+  'runtimeSessionId',
+  'sourceEditId',
+  'proofId',
+  'sourceFilename',
+  'artifactContentHash',
+  'requestId',
 ]);
 
 const STRICT_COLD_METADATA = Object.freeze({
@@ -102,6 +112,16 @@ function requiredBytes(value, field, { allowEmpty = false } = {}) {
   if (!(value instanceof Uint8Array)) fail(`${field}_missing`);
   const bytes = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
   if (!allowEmpty && bytes.byteLength === 0) fail(`${field}_empty`);
+  return bytes;
+}
+
+function requiredUtf8Bytes(value, field, options = {}) {
+  const bytes = requiredBytes(value, field, options);
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    fail(`${field}_not_utf8`);
+  }
   return bytes;
 }
 
@@ -185,24 +205,35 @@ function proofMaterial(proofArtifact) {
   };
 }
 
+function authorityClaimTruthy(value) {
+  if (value === true || value === 1) return true;
+  if (typeof value !== 'string') return false;
+  return ['true', 'yes', 'accepted', 'success', 'proven']
+    .includes(value.trim().toLowerCase());
+}
+
 function hasAuthorityClaim(value) {
   if (Array.isArray(value)) return value.some(hasAuthorityClaim);
   if (!isRecord(value)) return false;
   for (const [key, nested] of Object.entries(value)) {
-    if (
-      nested === true
-      && [
-        'acceptedForGpuHmr',
-        'accepted_for_gpu_hmr',
-        'gpuHmrSuccess',
-        'gpu_hmr_success',
-        'canSatisfyRuntimeProof',
-        'can_satisfy_runtime_proof',
-        'canSatisfyDispatchProof',
-        'can_satisfy_dispatch_proof',
-      ].includes(key)
-    ) {
+    const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    if ([
+      'acceptedforgpuhmr',
+      'gpuhmrsuccess',
+      'cansatisfyruntimeproof',
+      'cansatisfydispatchproof',
+      'fullruntimeproven',
+      'runtimeproofaccepted',
+      'dispatchproofaccepted',
+    ].includes(normalizedKey) && authorityClaimTruthy(nested)) {
       return true;
+    }
+    if (normalizedKey === 'proofauthority' && typeof nested === 'string') {
+      const authority = nested.trim().toLowerCase();
+      const claimsGpuAuthority = /gpu.?hmr.?success|gpu.?hmr.?accept|runtime.?authority|dispatch.?authority/
+        .test(authority);
+      const explicitlyNonAuthoritative = /(?:^|[_\s-])not(?:[_\s-]|$)/.test(authority);
+      if (claimsGpuAuthority && !explicitlyNonAuthoritative) return true;
     }
     if (hasAuthorityClaim(nested)) return true;
   }
@@ -342,6 +373,7 @@ function verifyStrictColdMetadata(
     transformedSourceBytes: previousBytes.byteLength,
     preprocessorInputHash,
     preprocessorInputBytes: preprocessorInput.byteLength,
+    sourceFilename: metadata.sourceFilename,
     compilerInputHash,
     compilerInputBytes: compilerInput.byteLength,
     artifactHash,
@@ -545,6 +577,8 @@ function verifyProofArtifact(proofArtifact, bindings) {
     ...strictBindings,
     proofArtifactHash: contentHash(proofArtifact),
     proofId: proofArtifact.proofId,
+    workspaceSlug: proofArtifact.workspaceSlug,
+    runtimeSessionId: proofArtifact.runtimeSessionId,
     sourceEditId: proofArtifact.sourceEditId,
     selectedArtifactId: expectedArtifactId,
     artifactEvidenceId: artifactEvidence.evidenceId,
@@ -583,6 +617,44 @@ function verifyRunnerTerminal(terminal, requestId, proofBindings) {
   };
 }
 
+function verifyExpectedContext(context, proofBindings, terminalBindings) {
+  if (!exactKeys(context, EXPECTED_CONTEXT_KEYS)) fail('expected_context_shape_invalid');
+  for (const [field, value] of [
+    ['expected_workspace_slug', context.workspaceSlug],
+    ['expected_runtime_session_id', context.runtimeSessionId],
+  ]) {
+    requiredString(value, field);
+  }
+  coldCompilerInput(context.sourceFilename, Buffer.alloc(0));
+  if (!SOURCE_EDIT_ID_PATTERN.test(context.sourceEditId ?? '')) {
+    fail('expected_source_edit_id_invalid');
+  }
+  if (!PROOF_ID_PATTERN.test(context.proofId ?? '')) fail('expected_proof_id_invalid');
+  if (!SHA256_VALUE_PATTERN.test(context.artifactContentHash ?? '')) {
+    fail('expected_artifact_hash_invalid');
+  }
+  if (!REQUEST_ID_PATTERN.test(context.requestId ?? '')) {
+    fail('expected_context_request_id_invalid');
+  }
+  if (
+    context.workspaceSlug !== proofBindings.workspaceSlug
+    || context.runtimeSessionId !== proofBindings.runtimeSessionId
+    || context.sourceEditId !== proofBindings.sourceEditId
+    || context.proofId !== proofBindings.proofId
+    || context.sourceFilename !== proofBindings.sourceFilename
+    || context.artifactContentHash !== proofBindings.artifactHash
+    || context.requestId !== terminalBindings.requestId
+  ) {
+    fail('expected_context_binding_mismatch');
+  }
+  return {
+    expectedContextHash: contentHash(context),
+    workspaceSlug: context.workspaceSlug,
+    runtimeSessionId: context.runtimeSessionId,
+    sourceFilename: context.sourceFilename,
+  };
+}
+
 function recomputeReceiptHash(receipt) {
   const projection = { ...receipt };
   delete projection.receiptHash;
@@ -590,33 +662,41 @@ function recomputeReceiptHash(receipt) {
 }
 
 /**
- * Verifies the Rust cold compile proof against caller-owned bytes and the
- * correlated runner load terminal. `requestId` is required because the
- * immutable compile proof predates the runner-generated load request.
+ * Recomputes the Rust cold compile proof against caller-owned bytes, a
+ * correlated runner terminal, and explicit current-run expectations. The
+ * result is diagnostic-only: plain JavaScript values cannot establish a
+ * trusted producer or authorize GPU HMR, runtime proof, or dispatch proof.
  */
 export async function verifyColdCompileLoadReceipt(proofArtifact, supplied) {
   if (!isRecord(supplied)) fail('supplied_evidence_missing');
   const requestId = supplied.requestId;
   if (!REQUEST_ID_PATTERN.test(requestId ?? '')) fail('expected_request_id_invalid');
-  const requestSource = requiredBytes(supplied.requestSourceBytes, 'request_source_bytes');
+  const requestSource = requiredUtf8Bytes(
+    supplied.requestSourceBytes,
+    'request_source_bytes',
+  );
   if (!Array.isArray(supplied.sourceTransformOutputBytes)) {
     fail('source_transform_output_bytes_missing');
   }
   const sourceTransformOutputs = supplied.sourceTransformOutputBytes.map((value, index) => (
-    requiredBytes(value, `source_transform_output_${index}_bytes`)
+    requiredUtf8Bytes(value, `source_transform_output_${index}_bytes`)
   ));
-  const preprocessorInput = requiredBytes(
+  const preprocessorInput = requiredUtf8Bytes(
     supplied.preprocessorInputBytes,
     'preprocessor_input_bytes',
   );
-  const compilerInput = requiredBytes(supplied.compilerInputBytes, 'compiler_input_bytes');
-  const compilerStderr = requiredBytes(
+  const compilerInput = requiredUtf8Bytes(
+    supplied.compilerInputBytes,
+    'compiler_input_bytes',
+  );
+  const compilerStderr = requiredUtf8Bytes(
     supplied.compilerStderrBytes,
     'compiler_stderr_bytes',
     { allowEmpty: true },
   );
   const artifact = requiredBytes(supplied.artifactBytes, 'artifact_bytes');
   if (!isRecord(supplied.runnerTerminal)) fail('runner_terminal_missing');
+  if (!isRecord(supplied.expectedContext)) fail('expected_context_missing');
 
   const proofBindings = verifyProofArtifact(proofArtifact, {
     requestSource,
@@ -633,12 +713,23 @@ export async function verifyColdCompileLoadReceipt(proofArtifact, supplied) {
     requestId,
     proofBindings,
   );
+  const contextBindings = verifyExpectedContext(
+    supplied.expectedContext,
+    proofBindings,
+    terminalBindings,
+  );
 
   const receipt = {
     schemaVersion: COLD_COMPILE_LOAD_RECEIPT_SCHEMA,
     proofAuthority: COLD_COMPILE_LOAD_RECEIPT_AUTHORITY,
     proofArtifactHash: proofBindings.proofArtifactHash,
+    proofArtifactTrust: 'caller_supplied_untrusted',
     proofId: proofBindings.proofId,
+    workspaceSlug: contextBindings.workspaceSlug,
+    runtimeSessionId: contextBindings.runtimeSessionId,
+    sourceFilename: contextBindings.sourceFilename,
+    expectedContextHash: contextBindings.expectedContextHash,
+    expectedContextTrust: 'caller_supplied_untrusted',
     sourceEditId: proofBindings.sourceEditId,
     requestId: terminalBindings.requestId,
     selectedArtifactId: proofBindings.selectedArtifactId,
@@ -662,21 +753,23 @@ export async function verifyColdCompileLoadReceipt(proofArtifact, supplied) {
     transportEvidenceId: proofBindings.transportEvidenceId,
     transportMetadataHash: proofBindings.transportMetadataHash,
     runnerTerminalHash: terminalBindings.terminalHash,
+    runnerTerminalTrust: 'caller_supplied_untrusted',
     runnerTerminalSchemaVersion: terminalBindings.terminalSchemaVersion,
     runnerTerminalStatus: terminalBindings.terminalStatus,
-    exactBytesVerified: true,
-    preprocessorInputRecomputed: true,
-    compilerEvidenceBytesVerified: true,
-    proofIdRecomputed: true,
-    transportMetadataHashVerified: true,
-    sourceTransformChainVerified: true,
-    strictColdCompileMetadataVerified: true,
-    artifactStageLinksVerified: true,
-    runnerTerminalCorrelated: true,
-    loadedAsColdSupportEvidence: true,
-    supportOnly: true,
+    callerSuppliedBytesInternallyConsistent: true,
+    preprocessorInputInternallyRecomputed: true,
+    compilerEvidenceBytesInternallyConsistent: true,
+    recomputedProofIdMatches: true,
+    transportMetadataHashInternallyConsistent: true,
+    sourceTransformChainInternallyConsistent: true,
+    strictColdCompileMetadataInternallyConsistent: true,
+    artifactStageLinksInternallyConsistent: true,
+    runnerTerminalInternallyCorrelated: true,
+    expectedCurrentContextMatched: true,
+    trustedProducerObserved: false,
+    diagnosticOnly: true,
     accepted: false,
-    acceptedAsSupportEvidence: true,
+    acceptedAsSupportEvidence: false,
     acceptedForGpuHmr: false,
     gpuHmrSuccess: false,
     canSatisfyRuntimeProof: false,

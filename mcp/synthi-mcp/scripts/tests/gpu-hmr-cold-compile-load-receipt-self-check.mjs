@@ -77,6 +77,23 @@ function refreshTransportAddress(proof) {
   return refreshProofId(proof);
 }
 
+function expectedContextFor(proof, requestId) {
+  const compilerEvidence = proof.evidenceRefs.find(
+    (candidate) => candidate.kind === 'device-compiler-output',
+  );
+  return {
+    workspaceSlug: proof.workspaceSlug,
+    runtimeSessionId: proof.runtimeSessionId,
+    sourceEditId: proof.sourceEditId,
+    proofId: proof.proofId,
+    sourceFilename: compilerEvidence.metadata.compileProvenance.sourceFilename,
+    artifactContentHash: proof.evidenceRefs.find(
+      (candidate) => candidate.kind === 'device-artifact',
+    ).contentHash,
+    requestId,
+  };
+}
+
 function otherHash(value) {
   const marker = value.endsWith('0') ? '1' : '0';
   return `${value.slice(0, -1)}${marker}`;
@@ -296,15 +313,24 @@ async function expectInvalid(proof, supplied, label) {
 const root = await mkdtemp(path.join(os.tmpdir(), 'synthi-cold-compile-load-'));
 try {
   const sourceFilename = 'arbitrary\\source tree\\device-with-quotes-"sample".opaque';
-  const sourceTransformOutputBytes = [randomBytes(59), randomBytes(71)];
+  const sourceTransformOutputBytes = [
+    Buffer.from('extern "C" __global__ void arbitrary_stage_one() {}\n', 'utf8'),
+    Buffer.from('extern "C" __global__ void arbitrary_stage_two() {}\n', 'utf8'),
+  ];
   const generated = {
-    requestSourceBytes: randomBytes(47),
+    requestSourceBytes: Buffer.from(
+      'extern "C" __global__ void arbitrary_initial_source() {}\n',
+      'utf8',
+    ),
     sourceTransformOutputBytes,
     preprocessorInputBytes: coldCompilerInput(
       sourceFilename,
       sourceTransformOutputBytes.at(-1),
     ),
-    compilerInputBytes: randomBytes(83),
+    compilerInputBytes: Buffer.from(
+      '# 1 "arbitrary-preprocessed-input"\nvoid arbitrary_stage_two() {}\n',
+      'utf8',
+    ),
     compilerStderrBytes: Buffer.from('compiler diagnostic bytes\n', 'utf8'),
     artifactBytes: randomBytes(127),
   };
@@ -358,7 +384,12 @@ try {
     acceptedForGpuHmr: false,
     gpuHmrSuccess: false,
   };
-  const supplied = { requestId, ...bytes, runnerTerminal };
+  const supplied = {
+    requestId,
+    ...bytes,
+    runnerTerminal,
+    expectedContext: expectedContextFor(proof, requestId),
+  };
 
   const receipt = await verifyColdCompileLoadReceipt(proof, supplied);
   assert.equal(receipt.schemaVersion, COLD_COMPILE_LOAD_RECEIPT_SCHEMA);
@@ -369,13 +400,19 @@ try {
   assert.equal(receipt.compilerStderrHash, sha256(bytes.compilerStderrBytes));
   assert.equal(receipt.artifactContentHash, sha256(bytes.artifactBytes));
   assert.equal(receipt.sourceTransformBindings.length, 2);
-  assert.equal(receipt.exactBytesVerified, true);
-  assert.equal(receipt.preprocessorInputRecomputed, true);
-  assert.equal(receipt.compilerEvidenceBytesVerified, true);
-  assert.equal(receipt.proofIdRecomputed, true);
-  assert.equal(receipt.transportMetadataHashVerified, true);
-  assert.equal(receipt.runnerTerminalCorrelated, true);
-  assert.equal(receipt.acceptedAsSupportEvidence, true);
+  assert.equal(receipt.callerSuppliedBytesInternallyConsistent, true);
+  assert.equal(receipt.preprocessorInputInternallyRecomputed, true);
+  assert.equal(receipt.compilerEvidenceBytesInternallyConsistent, true);
+  assert.equal(receipt.recomputedProofIdMatches, true);
+  assert.equal(receipt.transportMetadataHashInternallyConsistent, true);
+  assert.equal(receipt.runnerTerminalInternallyCorrelated, true);
+  assert.equal(receipt.expectedCurrentContextMatched, true);
+  assert.equal(receipt.proofArtifactTrust, 'caller_supplied_untrusted');
+  assert.equal(receipt.expectedContextTrust, 'caller_supplied_untrusted');
+  assert.equal(receipt.runnerTerminalTrust, 'caller_supplied_untrusted');
+  assert.equal(receipt.trustedProducerObserved, false);
+  assert.equal(receipt.diagnosticOnly, true);
+  assert.equal(receipt.acceptedAsSupportEvidence, false);
   assert.equal(receipt.accepted, false);
   assert.equal(receipt.acceptedForGpuHmr, false);
   assert.equal(receipt.gpuHmrSuccess, false);
@@ -403,9 +440,10 @@ try {
       requestId: emptyStderrRequestId,
       sourceEditId: emptyStderrProof.sourceEditId,
     },
+    expectedContext: expectedContextFor(emptyStderrProof, emptyStderrRequestId),
   });
   assert.equal(emptyStderrReceipt.compilerStderrBytes, 0);
-  assert.equal(emptyStderrReceipt.compilerEvidenceBytesVerified, true);
+  assert.equal(emptyStderrReceipt.compilerEvidenceBytesInternallyConsistent, true);
 
   const noTransformPreprocessorInput = coldCompilerInput(
     sourceFilename,
@@ -432,9 +470,10 @@ try {
       requestId: noTransformRequestId,
       sourceEditId: noTransformProof.sourceEditId,
     },
+    expectedContext: expectedContextFor(noTransformProof, noTransformRequestId),
   });
   assert.equal(noTransformReceipt.sourceTransformBindings.length, 0);
-  assert.equal(noTransformReceipt.preprocessorInputRecomputed, true);
+  assert.equal(noTransformReceipt.preprocessorInputInternallyRecomputed, true);
 
   const renamed = structuredClone(proof);
   renamed.workspaceSlug = 'entirely-different-workspace-label';
@@ -450,10 +489,13 @@ try {
   renamedMetadata.targetTriple = 'renamed-target-triple-label';
   renamedMetadata.sdkVersion = 'renamed-sdk-label';
   refreshProofId(renamed);
-  const renamedReceipt = await verifyColdCompileLoadReceipt(renamed, supplied);
-  assert.equal(renamedReceipt.exactBytesVerified, true);
-  assert.equal(renamedReceipt.runnerTerminalCorrelated, true);
-  assert.equal(renamedReceipt.acceptedAsSupportEvidence, true);
+  const renamedReceipt = await verifyColdCompileLoadReceipt(renamed, {
+    ...supplied,
+    expectedContext: expectedContextFor(renamed, requestId),
+  });
+  assert.equal(renamedReceipt.callerSuppliedBytesInternallyConsistent, true);
+  assert.equal(renamedReceipt.runnerTerminalInternallyCorrelated, true);
+  assert.equal(renamedReceipt.acceptedAsSupportEvidence, false);
   assert.notEqual(renamedReceipt.proofArtifactHash, receipt.proofArtifactHash);
 
   await expectInvalid(proof, {
@@ -650,6 +692,54 @@ try {
   authorityClaim.gpuHmrSuccess = true;
   await expectInvalid(authorityClaim, supplied, 'proof artifact authority claim');
 
+  for (const [label, key, claimed] of [
+    ['nested string GPU HMR claim', 'gpu_hmr_success', 'true'],
+    ['nested numeric runtime claim', 'canSatisfyRuntimeProof', 1],
+    ['nested proof authority claim', 'proofAuthority', 'gpu_hmr_success_authority'],
+  ]) {
+    const nestedClaim = mutateProof(proof, (value) => {
+      value.evidenceRefs[0].metadata[key] = claimed;
+    });
+    await expectInvalid(nestedClaim, supplied, label);
+  }
+
+  const nonAuthoritativeMetadata = mutateProof(proof, (value) => {
+    value.evidenceRefs[0].metadata.proofAuthority =
+      'artifact_bytes_support_only_not_gpu_hmr_success_or_runtime_authority';
+  });
+  const nonAuthoritativeReceipt = await verifyColdCompileLoadReceipt(
+    nonAuthoritativeMetadata,
+    {
+      ...supplied,
+      expectedContext: expectedContextFor(nonAuthoritativeMetadata, requestId),
+    },
+  );
+  assert.equal(nonAuthoritativeReceipt.diagnosticOnly, true);
+  assert.equal(nonAuthoritativeReceipt.acceptedAsSupportEvidence, false);
+
+  const expectedContextMutations = [
+    ['workspace', 'workspaceSlug', 'different-current-workspace'],
+    ['runtime session', 'runtimeSessionId', 'different-current-runtime-session'],
+    [
+      'source edit',
+      'sourceEditId',
+      `source-edit:sha256:${randomBytes(32).toString('hex')}`,
+    ],
+    ['proof id', 'proofId', `gpu-proof:${randomBytes(32).toString('hex')}`],
+    ['semantic source filename', 'sourceFilename', 'different/current-source.opaque'],
+    ['artifact hash', 'artifactContentHash', sha256(randomBytes(127))],
+    ['request id', 'requestId', `gpu-reload:request:${randomBytes(16).toString('hex')}`],
+  ];
+  for (const [label, key, replacement] of expectedContextMutations) {
+    await expectInvalid(proof, {
+      ...supplied,
+      expectedContext: {
+        ...supplied.expectedContext,
+        [key]: replacement,
+      },
+    }, `mismatched expected current ${label}`);
+  }
+
   await expectInvalid(proof, {
     ...supplied,
     requestId: `gpu-reload:request:${randomBytes(16).toString('hex')}`,
@@ -692,6 +782,7 @@ try {
     'compilerStderrBytes',
     'artifactBytes',
     'runnerTerminal',
+    'expectedContext',
   ]) {
     const incomplete = { ...supplied };
     delete incomplete[missing];
@@ -709,6 +800,9 @@ try {
     transformCount: receipt.sourceTransformBindings.length,
     labelRenamingInvariant: true,
     authority: {
+      diagnosticOnly: receipt.diagnosticOnly,
+      trustedProducerObserved: receipt.trustedProducerObserved,
+      acceptedAsSupportEvidence: receipt.acceptedAsSupportEvidence,
       acceptedForGpuHmr: receipt.acceptedForGpuHmr,
       gpuHmrSuccess: receipt.gpuHmrSuccess,
       canSatisfyRuntimeProof: receipt.canSatisfyRuntimeProof,
