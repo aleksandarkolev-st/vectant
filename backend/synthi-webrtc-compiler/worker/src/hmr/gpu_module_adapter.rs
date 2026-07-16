@@ -86,7 +86,7 @@ use crate::hmr::gpu_proof::{
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
-use crate::hmr::gpu_stream_drain::{drain_context, drain_stream, DrainOutcome, DrainScope};
+use crate::hmr::gpu_stream_drain::{drain_context, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
     begin_launch_dispatcher_publication, clear_launch_dispatcher,
     commit_launch_dispatcher_publication, current_dispatch_has_provisional_validation_capability,
@@ -3155,6 +3155,15 @@ impl StreamOrderingDrain {
         previous_generation: u64,
         active_generation: u64,
     ) -> String {
+        if matches!(
+            self.outcome,
+            DrainOutcome::Synced {
+                scope: DrainScope::Context,
+                ..
+            }
+        ) {
+            return format!("context-sync:{previous_generation}->{active_generation}");
+        }
         if self.stream_tokens.is_empty() {
             return "none".to_string();
         }
@@ -3265,33 +3274,9 @@ fn drain_affected_streams(
     }
 
     let stream_tokens = affected_stream_tokens_for_symbols(expected_symbols);
-    if stream_tokens.is_empty() {
-        return StreamOrderingDrain {
-            outcome: drain_context(symbols, budget_ms),
-            scope_label: "context",
-            stream_tokens,
-        };
-    }
-
-    let started = Instant::now();
-    for token in &stream_tokens {
-        let outcome = drain_stream(symbols, *token as CuStream, budget_ms);
-        if !outcome.is_synced() {
-            return StreamOrderingDrain {
-                outcome,
-                scope_label: "affected",
-                stream_tokens,
-            };
-        }
-    }
-
     StreamOrderingDrain {
-        outcome: DrainOutcome::Synced {
-            scope: DrainScope::Stream,
-            elapsed_ms: started.elapsed().as_millis() as u64,
-            budget_ms,
-        },
-        scope_label: "affected",
+        outcome: drain_context(symbols, budget_ms),
+        scope_label: "context",
         stream_tokens,
     }
 }
@@ -6286,16 +6271,15 @@ mod tests {
         0
     }
 
+    unsafe extern "C" fn err_ctx_synchronize() -> CuResult {
+        CTX_SYNC_CALLS.fetch_add(1, Ordering::SeqCst);
+        700
+    }
+
     unsafe extern "C" fn ok_stream_synchronize(stream: CuStream) -> CuResult {
         STREAM_SYNC_CALLS.fetch_add(1, Ordering::SeqCst);
         LAST_STREAM_SYNC_TOKEN.store(stream as usize, Ordering::SeqCst);
         0
-    }
-
-    unsafe extern "C" fn err_stream_synchronize(stream: CuStream) -> CuResult {
-        STREAM_SYNC_CALLS.fetch_add(1, Ordering::SeqCst);
-        LAST_STREAM_SYNC_TOKEN.store(stream as usize, Ordering::SeqCst);
-        700
     }
 
     unsafe extern "C" fn ok_mem_alloc(dptr: *mut CuDevicePtr, _bytes: usize) -> CuResult {
@@ -6367,7 +6351,7 @@ mod tests {
 
     fn drain_error_symbols() -> GpuDriverSymbolTable {
         GpuDriverSymbolTable {
-            cu_stream_synchronize: err_stream_synchronize,
+            cu_ctx_synchronize: err_ctx_synchronize,
             ..stub_symbols()
         }
     }
@@ -7898,17 +7882,18 @@ mod tests {
         }
         assert!(old_launch.join().expect("old launch thread joined"));
         assert!(CTX_SYNC_CALLS.load(Ordering::SeqCst) >= 1);
-        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 1);
-        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x77);
+        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0);
         let publish = adapter
             .last_reload_log()
             .iter()
             .find(|line| line.contains("dispatcher_epoch event=published"))
             .expect("transactional dispatcher publication line");
         assert!(publish.contains("host_boundary_quiescence_proven=true"));
-        assert!(publish.contains("stream_scope=affected"));
+        assert!(publish.contains("stream_scope=context"));
         assert!(publish.contains("stream_ids=0x77"));
-        assert!(publish.contains("retirement_strategy=epoch_fence"));
+        assert!(publish.contains("retirement_strategy=conservative_drain_fallback"));
+        assert!(publish.contains("retirement_fence_ids=context-sync:"));
         reset_for_test();
     }
 
@@ -8145,7 +8130,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_reload_drains_only_streams_that_used_touched_symbols() {
+    fn observed_streams_do_not_authorize_selective_retirement_without_coverage_receipt() {
         let _guard = runtime_boundary_test_guard();
         reset_for_test();
         let mut first = tempfile::NamedTempFile::new().unwrap();
@@ -8185,19 +8170,19 @@ mod tests {
         ));
         assert_eq!(
             CTX_SYNC_CALLS.load(Ordering::SeqCst),
-            ctx_sync_before_oracle + 1
+            ctx_sync_before_oracle + 3
         );
-        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 2);
-        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x77);
+        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0);
         let publish = a
             .last_reload_log()
             .iter()
             .find(|line| line.contains("dispatcher_epoch event=published"))
             .expect("dispatcher epoch publication");
-        assert!(publish.contains("stream_scope=affected"));
+        assert!(publish.contains("stream_scope=context"));
         assert!(publish.contains("stream_ids=0x77"));
-        assert!(publish.contains("retirement_fence_ids=stream-sync:0x77:"));
-        assert!(publish.contains("retirement_strategy=epoch_fence"));
+        assert!(publish.contains("retirement_fence_ids=context-sync:"));
+        assert!(publish.contains("retirement_strategy=conservative_drain_fallback"));
         let stream_graph_line = a
             .last_reload_log()
             .iter()
@@ -8216,7 +8201,7 @@ mod tests {
             .and_then(serde_json::Value::as_array)
             .is_some_and(|ids| ids.iter().any(|id| id
                 .as_str()
-                .is_some_and(|id| id.starts_with("stream-sync:0x77:")))));
+                .is_some_and(|id| id.starts_with("context-sync:")))));
 
         let mut partial =
             request_with_artifact_and_abi(&partial_path, vec!["device.cu".into()], "sig-v2");
@@ -8233,19 +8218,22 @@ mod tests {
         ));
         assert_eq!(
             CTX_SYNC_CALLS.load(Ordering::SeqCst),
-            ctx_sync_before_partial_oracle + 1
+            ctx_sync_before_partial_oracle + 3
         );
         assert_eq!(
             STREAM_SYNC_CALLS.load(Ordering::SeqCst),
-            stream_sync_before_partial + 4
+            stream_sync_before_partial
         );
-        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x88);
+        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0);
         let partial_publish = a
             .last_reload_log()
             .iter()
             .find(|line| line.contains("dispatcher_epoch event=published"))
             .expect("partial dispatcher epoch publication");
         assert!(partial_publish.contains("stream_ids=default,0x88"));
+        assert!(partial_publish.contains("stream_scope=context"));
+        assert!(partial_publish.contains("retirement_fence_ids=context-sync:"));
+        assert!(partial_publish.contains("retirement_strategy=conservative_drain_fallback"));
         reset_for_test();
     }
 
@@ -8372,6 +8360,9 @@ mod tests {
         second.write_all(b"fake-cubin-b").unwrap();
         let first_path = first.path().to_string_lossy().to_string();
         let second_path = second.path().to_string_lossy().to_string();
+        CTX_SYNC_CALLS.store(0, Ordering::SeqCst);
+        STREAM_SYNC_CALLS.store(0, Ordering::SeqCst);
+        LAST_STREAM_SYNC_TOKEN.store(0, Ordering::SeqCst);
         let mut a = adapter_with_symbols(drain_error_symbols());
         let initial = a.reload(&request_with_artifact(
             &first_path,
@@ -8396,7 +8387,9 @@ mod tests {
         }
         assert_eq!(a.module_manager.swap_count(), 1);
         assert_eq!(a.healthcheck(), AdapterHealth::Faulted);
-        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x99);
+        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0);
         reset_for_test();
     }
 
