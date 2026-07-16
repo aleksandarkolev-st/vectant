@@ -60,6 +60,13 @@ import {
   materializeDirectSourceGitSnapshot,
   verifyDirectSourceGitIdentity,
 } from './lib/gpu-hmr-direct-source-git-identity.mjs';
+import {
+  GPU_HMR_TEST_TIMING_PHASE_KEYS,
+  GPU_HMR_TEST_TIMING_SCHEMA,
+  GpuHmrTestTimingRecorder,
+  assertValidGpuHmrTestTiming,
+  isStableGpuHmrTimingReasonCode,
+} from './lib/gpu-hmr-test-timing-v2.mjs';
 
 let stdioPipeClosed = false;
 
@@ -206,6 +213,7 @@ const RESULTS_BASENAME = CFG.mode === 'seed-only'
     : 'agent-split-results';
 const RESULTS_JSON = path.join(LOG_DIR, `${RESULTS_BASENAME}.json`);
 const RESULTS_TXT = path.join(LOG_DIR, `${RESULTS_BASENAME}.txt`);
+const TEST_TIMING_JSON = path.join(LOG_DIR, `${RESULTS_BASENAME}-timing-v2.json`);
 const ARTIFACT_DIR = path.join(
   LOG_DIR,
   'agent-split-artifacts',
@@ -220,7 +228,367 @@ const REDACTED_SECRET = '[REDACTED_SECRET]';
 const COMPILE_TERMINAL_DIAGNOSTIC_SCHEMA_VERSION =
   'synthi.gpu_hmr.compile_terminal_diagnostic.v1';
 const COMPILE_TERMINAL_DIAGNOSTIC_MAX_CHARS = 4000;
+const AGENT_SPLIT_TIMING_ERROR = Symbol('agent_split_timing_error');
+const TEST_TIMING_VISUAL_NOT_OBSERVED_REASON = 'visual_capture_contract_not_observed';
+const TEST_TIMING_VISUAL_CAPTURE_REASON = 'visual_screenshot_capture_not_observed';
+const TEST_TIMING_VISUAL_ANALYSIS_REASON = 'visual_analysis_not_observed';
+const TEST_TIMING_TRIGGER_REASON = 'first_post_epoch_visible_frame_not_observed';
+const TEST_TIMING_TRIGGER_START_REASON = 'post_edit_trigger_boundary_not_observed';
+const TEST_TIMING_LOAD_REASON = 'load_boundary_not_observed_in_validator_clock';
+const TEST_TIMING_EPOCH_REASON = 'epoch_publication_boundary_not_observed_in_validator_clock';
+const TEST_TIMING_DISPATCH_REASON = 'dispatch_boundary_not_observed_in_validator_clock';
+const TEST_TIMING_OUTPUT_REASON = 'output_ready_signal_not_observed';
+const TEST_TIMING_COMPILE_REASON = 'compile_response_not_observed';
+const TEST_TIMING_SUCCESS_GAP_REASON = 'phase_not_observed_before_success';
+const TEST_TIMING_SEED_ONLY_REASON = 'seed_only_terminal_path';
+const TEST_TIMING_EMERGENCY_RETIREMENT_REASON = 'emergency_retirement_not_observed';
+const TEST_TIMING_PHASE_SET = new Set(GPU_HMR_TEST_TIMING_PHASE_KEYS);
+let activeAgentSplitTestTiming = null;
+let retainedAgentSplitTestTiming = null;
+let retainedAgentSplitTimingTerminal = null;
 let writingResultCheckpoint = false;
+
+function timingBoundaryNs() {
+  return activeAgentSplitTestTiming?.readBoundary() ?? process.hrtime.bigint();
+}
+
+function normalizeTimingBoundary(value) {
+  if (typeof value !== 'bigint' || value < 0n) {
+    throw new TypeError('agent split timing boundary must be a non-negative bigint');
+  }
+  return value;
+}
+
+function requireAgentSplitTimingPhase(phaseKey) {
+  if (!TEST_TIMING_PHASE_SET.has(phaseKey) || phaseKey === 'total_wall') {
+    throw new TypeError(`invalid agent split timing phase: ${phaseKey}`);
+  }
+  return phaseKey;
+}
+
+function requireAgentSplitTimingReason(reasonCode) {
+  if (!isStableGpuHmrTimingReasonCode(reasonCode)) {
+    throw new TypeError(`invalid agent split timing reason code: ${reasonCode}`);
+  }
+  return reasonCode;
+}
+
+export function observedMcpVisualCaptureContract(toolResult) {
+  const content = Array.isArray(toolResult?.content) ? toolResult.content : [];
+  const image = content.find((block) => (
+    block?.type === 'image' && typeof block.data === 'string' && block.data.length > 0
+  ));
+  if (!image) {
+    return Object.freeze({ observed: false, reasonCode: 'visual_capture_image_block_missing' });
+  }
+  const metadata = mcpScreenshotMetadataFromToolResult(toolResult);
+  if (!metadata || typeof metadata !== 'object') {
+    return Object.freeze({ observed: false, reasonCode: 'visual_capture_metadata_missing' });
+  }
+  const width = Number(metadata.w ?? metadata.width ?? 0);
+  const height = Number(metadata.h ?? metadata.height ?? 0);
+  if (!(width > 0 && height > 0)) {
+    return Object.freeze({ observed: false, reasonCode: 'visual_capture_dimensions_missing' });
+  }
+  return Object.freeze({
+    observed: true,
+    reasonCode: null,
+    width,
+    height,
+    hasFrameSequence: Number.isFinite(Number(metadata.seq ?? metadata.frame_seq)),
+    hasCaptureManifest: Boolean(metadata.capture_manifest ?? metadata.captureManifest),
+  });
+}
+
+export class AgentSplitTestTimingV2Lifecycle {
+  #nowNs;
+  #lastObservedNs;
+  #totalStartNs;
+  #windows;
+  #reasoned;
+  #active;
+  #pendingTriggerStartNs;
+  #captureContractObserved;
+  #runtimeWaitObserved;
+  #record;
+
+  constructor(options = {}) {
+    const nowNs = options.nowNs ?? options.clock ?? (() => process.hrtime.bigint());
+    if (typeof nowNs !== 'function') {
+      throw new TypeError('agent split timing clock must be a function');
+    }
+    this.#nowNs = nowNs;
+    this.#lastObservedNs = null;
+    this.#totalStartNs = this.readBoundary();
+    this.#windows = new Map();
+    this.#reasoned = new Map();
+    this.#active = new Map();
+    this.#pendingTriggerStartNs = null;
+    this.#captureContractObserved = false;
+    this.#runtimeWaitObserved = false;
+    this.#record = null;
+  }
+
+  get isFinalized() {
+    return this.#record !== null;
+  }
+
+  get record() {
+    return this.#record;
+  }
+
+  get visualCapable() {
+    return this.#captureContractObserved;
+  }
+
+  readBoundary() {
+    const value = normalizeTimingBoundary(this.#nowNs());
+    if (this.#lastObservedNs !== null && value < this.#lastObservedNs) {
+      throw new Error('agent_split_timing_clock_regressed');
+    }
+    this.#lastObservedNs = value;
+    return value;
+  }
+
+  beginPhase(phaseKey) {
+    requireAgentSplitTimingPhase(phaseKey);
+    if (this.isFinalized || this.#windows.has(phaseKey) || this.#reasoned.has(phaseKey)) {
+      return null;
+    }
+    if (this.#active.has(phaseKey)) return this.#active.get(phaseKey);
+    const token = Object.freeze({ phaseKey, startNs: this.readBoundary() });
+    this.#active.set(phaseKey, token);
+    return token;
+  }
+
+  finishPhase(phaseKey, endNs = this.readBoundary()) {
+    requireAgentSplitTimingPhase(phaseKey);
+    const token = this.#active.get(phaseKey);
+    if (!token) return false;
+    this.#active.delete(phaseKey);
+    return this.recordWindow(phaseKey, token.startNs, endNs);
+  }
+
+  async measurePhase(phaseKey, operation) {
+    this.beginPhase(phaseKey);
+    try {
+      return await operation();
+    } finally {
+      this.finishPhase(phaseKey);
+    }
+  }
+
+  recordWindow(phaseKey, startNs, endNs, { replace = false } = {}) {
+    requireAgentSplitTimingPhase(phaseKey);
+    const normalizedStart = normalizeTimingBoundary(startNs);
+    const normalizedEnd = normalizeTimingBoundary(endNs);
+    if (normalizedStart < this.#totalStartNs || normalizedEnd < normalizedStart) {
+      throw new Error(`agent_split_timing_window_invalid:${phaseKey}`);
+    }
+    if (this.isFinalized) return false;
+    if (replace) {
+      this.#windows.delete(phaseKey);
+      this.#reasoned.delete(phaseKey);
+      this.#active.delete(phaseKey);
+    }
+    if (this.#windows.has(phaseKey) || this.#reasoned.has(phaseKey)) {
+      return false;
+    }
+    this.#active.delete(phaseKey);
+    this.#windows.set(phaseKey, Object.freeze({
+      startNs: normalizedStart,
+      endNs: normalizedEnd,
+    }));
+    return true;
+  }
+
+  markUnavailable(phaseKey, reasonCode) {
+    requireAgentSplitTimingPhase(phaseKey);
+    requireAgentSplitTimingReason(reasonCode);
+    if (this.isFinalized || this.#windows.has(phaseKey) || this.#reasoned.has(phaseKey)) {
+      return false;
+    }
+    this.#active.delete(phaseKey);
+    this.#reasoned.set(phaseKey, Object.freeze({ state: 'unavailable', reasonCode }));
+    return true;
+  }
+
+  markNotApplicable(phaseKey, reasonCode) {
+    requireAgentSplitTimingPhase(phaseKey);
+    requireAgentSplitTimingReason(reasonCode);
+    if (this.isFinalized || this.#windows.has(phaseKey) || this.#reasoned.has(phaseKey)) {
+      return false;
+    }
+    this.#active.delete(phaseKey);
+    this.#reasoned.set(phaseKey, Object.freeze({ state: 'not_applicable', reasonCode }));
+    return true;
+  }
+
+  closeActivePhases(endNs = this.readBoundary()) {
+    for (const phaseKey of [...this.#active.keys()]) {
+      this.finishPhase(phaseKey, endNs);
+    }
+  }
+
+  observeEditTrigger(startNs) {
+    const boundary = normalizeTimingBoundary(startNs);
+    if (boundary < this.#totalStartNs || this.#windows.has('trigger_to_visible')) return false;
+    this.#pendingTriggerStartNs = boundary;
+    return true;
+  }
+
+  observeRuntimeWait() {
+    this.#runtimeWaitObserved = true;
+    this.markUnavailable('load', TEST_TIMING_LOAD_REASON);
+    this.markUnavailable('epoch_publication', TEST_TIMING_EPOCH_REASON);
+    this.markUnavailable('dispatch', TEST_TIMING_DISPATCH_REASON);
+  }
+
+  observeCaptureContract(contract, captureStartNs, captureEndNs) {
+    if (contract?.observed !== true) return false;
+    this.#captureContractObserved = true;
+    this.recordWindow('screenshot_capture', captureStartNs, captureEndNs);
+    return true;
+  }
+
+  observeVisualCapture({
+    contract,
+    captureStartNs,
+    captureEndNs,
+    analysisStartNs,
+    analysisEndNs,
+    postEpochVisible = false,
+    visibleEventNs = captureEndNs,
+  }) {
+    if (!this.observeCaptureContract(contract, captureStartNs, captureEndNs)) return false;
+    this.recordWindow('visual_analysis', analysisStartNs, analysisEndNs);
+    if (postEpochVisible !== true || this.#windows.has('trigger_to_visible')) return true;
+    if (this.#pendingTriggerStartNs === null) {
+      return true;
+    }
+    const visibleBoundary = normalizeTimingBoundary(visibleEventNs);
+    if (visibleBoundary < this.#pendingTriggerStartNs) {
+      this.markUnavailable('trigger_to_visible', TEST_TIMING_TRIGGER_REASON);
+      return true;
+    }
+    const triggerRecorded = this.recordWindow(
+      'trigger_to_visible',
+      this.#pendingTriggerStartNs,
+      visibleBoundary,
+    );
+    if (triggerRecorded) {
+      this.recordWindow(
+        'screenshot_capture',
+        captureStartNs,
+        captureEndNs,
+        { replace: true },
+      );
+      this.recordWindow(
+        'visual_analysis',
+        analysisStartNs,
+        analysisEndNs,
+        { replace: true },
+      );
+    }
+    return true;
+  }
+
+  markSeedOnlyTerminalPath() {
+    for (const phaseKey of [
+      'split',
+      'compile',
+      'load',
+      'epoch_publication',
+      'dispatch',
+      'output_ready',
+    ]) {
+      this.markNotApplicable(phaseKey, TEST_TIMING_SEED_ONLY_REASON);
+    }
+  }
+
+  finalize({ outcome, terminalReason = null } = {}) {
+    if (this.#record) return this.#record;
+    const finalReason = terminalReason ?? (
+      outcome === 'pass' ? TEST_TIMING_SUCCESS_GAP_REASON : 'agent_split_runtime_failure'
+    );
+    requireAgentSplitTimingReason(finalReason);
+    this.closeActivePhases();
+
+    if (this.#captureContractObserved) {
+      if (!this.#windows.has('trigger_to_visible') && !this.#reasoned.has('trigger_to_visible')) {
+        this.markUnavailable(
+          'trigger_to_visible',
+          this.#pendingTriggerStartNs === null
+            ? TEST_TIMING_TRIGGER_START_REASON
+            : TEST_TIMING_TRIGGER_REASON,
+        );
+      }
+      if (!this.#windows.has('screenshot_capture') && !this.#reasoned.has('screenshot_capture')) {
+        this.markUnavailable('screenshot_capture', TEST_TIMING_VISUAL_CAPTURE_REASON);
+      }
+      if (!this.#windows.has('visual_analysis') && !this.#reasoned.has('visual_analysis')) {
+        this.markUnavailable('visual_analysis', TEST_TIMING_VISUAL_ANALYSIS_REASON);
+      }
+    }
+    if (this.#runtimeWaitObserved) {
+      this.observeRuntimeWait();
+      if (!this.#windows.has('output_ready') && !this.#reasoned.has('output_ready')) {
+        this.markUnavailable('output_ready', TEST_TIMING_OUTPUT_REASON);
+      }
+    }
+
+    const totalEndNs = this.readBoundary();
+    const measuredEvents = [];
+    for (const [phaseKey, window] of this.#windows) {
+      measuredEvents.push({ phaseKey, kind: 'start', ns: window.startNs });
+      measuredEvents.push({ phaseKey, kind: 'finish', ns: window.endNs });
+    }
+    measuredEvents.sort((left, right) => {
+      if (left.ns !== right.ns) return left.ns < right.ns ? -1 : 1;
+      if (left.kind !== right.kind) return left.kind === 'start' ? -1 : 1;
+      return GPU_HMR_TEST_TIMING_PHASE_KEYS.indexOf(left.phaseKey)
+        - GPU_HMR_TEST_TIMING_PHASE_KEYS.indexOf(right.phaseKey);
+    });
+    const readings = [
+      this.#totalStartNs,
+      ...measuredEvents.map((event) => event.ns),
+      totalEndNs,
+    ];
+    // Replay only captured process.hrtime boundaries; no wall or worker clock is converted.
+    let readingIndex = 0;
+    const recorder = new GpuHmrTestTimingRecorder({
+      clock: () => readings[readingIndex++],
+    });
+    for (const [phaseKey, reasoned] of this.#reasoned) {
+      if (reasoned.state === 'not_applicable') {
+        recorder.notApplicable(phaseKey, reasoned.reasonCode);
+      } else {
+        recorder.unavailable(phaseKey, reasoned.reasonCode);
+      }
+    }
+    for (const event of measuredEvents) {
+      if (event.kind === 'start') recorder.startPhase(event.phaseKey);
+      else recorder.finishPhase(event.phaseKey);
+    }
+    this.#record = recorder.finalize({
+      outcome,
+      visualCapable: this.#captureContractObserved,
+      terminalReason: finalReason,
+      notApplicableReason: this.#captureContractObserved
+        ? null
+        : TEST_TIMING_VISUAL_NOT_OBSERVED_REASON,
+    });
+    if (readingIndex !== readings.length) {
+      throw new Error('agent_split_timing_boundary_replay_incomplete');
+    }
+    assertValidGpuHmrTestTiming(this.#record);
+    return this.#record;
+  }
+}
+
+export function createAgentSplitTestTimingV2Lifecycle(options) {
+  return new AgentSplitTestTimingV2Lifecycle(options);
+}
 
 function sanitizeProofLogString(value) {
   let text = String(value ?? '');
@@ -266,6 +634,134 @@ function resultTextFromRows(rows) {
   ).join('\n') + '\n';
 }
 
+export function attachAgentSplitTestTimingV2(target, testTiming) {
+  if (!target || typeof target !== 'object' || Array.isArray(target)) {
+    throw new TypeError('agent split timing attachment target must be an object');
+  }
+  if (testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA) {
+    throw new TypeError('agent split timing attachment requires timing v2');
+  }
+  target.testTiming = testTiming;
+  target.test_timing = testTiming;
+  return target;
+}
+
+export function tagAgentSplitTimingError(error, {
+  outcome = 'failed',
+  category = 'runtime_failure',
+  reasonCode = 'agent_split_runtime_failure',
+} = {}) {
+  if (!error || typeof error !== 'object') return error;
+  if (outcome !== 'failed' && outcome !== 'refused') {
+    throw new TypeError(`invalid agent split timing terminal outcome: ${outcome}`);
+  }
+  requireAgentSplitTimingReason(reasonCode);
+  Object.defineProperty(error, AGENT_SPLIT_TIMING_ERROR, {
+    configurable: true,
+    value: Object.freeze({ outcome, category, reasonCode }),
+  });
+  return error;
+}
+
+function observedRefusalStatus(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized === 'refused'
+    || normalized === 'rejected'
+    || normalized === 'unsupported';
+}
+
+export function classifyAgentSplitTimingTerminal(error = null) {
+  if (!error) {
+    return Object.freeze({
+      outcome: 'pass',
+      category: 'success',
+      reasonCode: null,
+    });
+  }
+  const tagged = error?.[AGENT_SPLIT_TIMING_ERROR];
+  if (tagged) return tagged;
+
+  const compileStatus = error?.compileResult?.status
+    ?? error?.compileResult?.resultState
+    ?? error?.compileResult?.result_state;
+  const waitStatus = error?.waitSummary?.status ?? error?.wait_summary?.status;
+  if (observedRefusalStatus(compileStatus) || observedRefusalStatus(waitStatus)) {
+    return Object.freeze({
+      outcome: 'refused',
+      category: 'observed_refusal',
+      reasonCode: 'agent_split_observed_refusal',
+    });
+  }
+  return Object.freeze({
+    outcome: 'failed',
+    category: 'runtime_failure',
+    reasonCode: 'agent_split_runtime_failure',
+  });
+}
+
+function agentSplitRefusalError(message, reasonCode) {
+  return tagAgentSplitTimingError(new Error(message), {
+    outcome: 'refused',
+    category: 'proof_refusal',
+    reasonCode,
+  });
+}
+
+export function emergencyTimingTerminal(kind) {
+  const reasonCode = {
+    'signal:SIGINT': 'agent_split_emergency_sigint',
+    'signal:SIGTERM': 'agent_split_emergency_sigterm',
+    uncaught_exception: 'agent_split_emergency_uncaught_exception',
+    unhandled_rejection: 'agent_split_emergency_unhandled_rejection',
+  }[kind] ?? 'agent_split_emergency_failure';
+  return Object.freeze({
+    outcome: 'failed',
+    category: 'emergency_failure',
+    reasonCode,
+  });
+}
+
+export function buildAgentSplitResultCheckpoint({
+  reason = 'incremental_record',
+  rows = [],
+  testTiming = null,
+  timingTerminal = null,
+  slug = CFG.slug,
+  updatedAt = new Date().toISOString(),
+} = {}) {
+  const checkpoint = {
+    schemaVersion: 'synthi.gpu_hmr.agent_split_result_checkpoint.v1',
+    schema_version: 'synthi.gpu_hmr.agent_split_result_checkpoint.v1',
+    proofAuthority: 'agent_split_result_checkpoint_only_not_gpu_hmr_acceptance',
+    proof_authority: 'agent_split_result_checkpoint_only_not_gpu_hmr_acceptance',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    status: 'checkpoint_written',
+    reason,
+    slug,
+    resultCount: rows.length,
+    result_count: rows.length,
+    updatedAt,
+    updated_at: updatedAt,
+  };
+  if (testTiming) attachAgentSplitTestTimingV2(checkpoint, testTiming);
+  if (timingTerminal) {
+    checkpoint.testTimingTerminal = timingTerminal;
+    checkpoint.test_timing_terminal = timingTerminal;
+  }
+  return checkpoint;
+}
+
+function retainAgentSplitTestTiming(testTiming, timingTerminal) {
+  retainedAgentSplitTestTiming = testTiming;
+  retainedAgentSplitTimingTerminal = timingTerminal;
+  return testTiming;
+}
+
 function writeResultCheckpointSync(reason = 'incremental_record') {
   if (process.env.SYNTHI_GPU_AGENT_INCREMENTAL_RESULTS === '0') return;
   if (writingResultCheckpoint) return;
@@ -274,6 +770,12 @@ function writeResultCheckpointSync(reason = 'incremental_record') {
     mkdirSync(LOG_DIR, { recursive: true });
     mkdirSync(ARTIFACT_DIR, { recursive: true });
     const sanitizedResults = sanitizeProofLogValue(results);
+    const sanitizedTiming = retainedAgentSplitTestTiming
+      ? sanitizeProofLogValue(retainedAgentSplitTestTiming)
+      : null;
+    const sanitizedTimingTerminal = retainedAgentSplitTimingTerminal
+      ? sanitizeProofLogValue(retainedAgentSplitTimingTerminal)
+      : null;
     const resultText = resultTextFromRows(sanitizedResults);
     writeFileSync(RESULTS_JSON, `${JSON.stringify(sanitizedResults, null, 2)}\n`);
     writeFileSync(RESULTS_TXT, resultText);
@@ -282,27 +784,22 @@ function writeResultCheckpointSync(reason = 'incremental_record') {
       `${JSON.stringify(sanitizedResults, null, 2)}\n`,
     );
     writeFileSync(path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.txt`), resultText);
+    if (sanitizedTiming) {
+      const timingJson = `${JSON.stringify(sanitizedTiming, null, 2)}\n`;
+      writeFileSync(TEST_TIMING_JSON, timingJson);
+      writeFileSync(
+        path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}-timing-v2.json`),
+        timingJson,
+      );
+    }
     writeFileSync(
       path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}-checkpoint.json`),
-      `${JSON.stringify({
-        schemaVersion: 'synthi.gpu_hmr.agent_split_result_checkpoint.v1',
-        schema_version: 'synthi.gpu_hmr.agent_split_result_checkpoint.v1',
-        proofAuthority: 'agent_split_result_checkpoint_only_not_gpu_hmr_acceptance',
-        proof_authority: 'agent_split_result_checkpoint_only_not_gpu_hmr_acceptance',
-        acceptedForGpuHmr: false,
-        accepted_for_gpu_hmr: false,
-        gpuHmrSuccess: false,
-        gpu_hmr_success: false,
-        canSatisfyRuntimeProof: false,
-        can_satisfy_runtime_proof: false,
-        status: 'checkpoint_written',
+      `${JSON.stringify(buildAgentSplitResultCheckpoint({
         reason,
-        slug: CFG.slug,
-        resultCount: sanitizedResults.length,
-        result_count: sanitizedResults.length,
-        updatedAt: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }, null, 2)}\n`,
+        rows: sanitizedResults,
+        testTiming: sanitizedTiming,
+        timingTerminal: sanitizedTimingTerminal,
+      }), null, 2)}\n`,
     );
   } catch {
     // Best-effort transport only. This checkpoint cannot authorize GPU HMR.
@@ -325,12 +822,29 @@ let emergencyResultHandled = false;
 function recordEmergencyResult(kind, detail) {
   if (emergencyResultHandled) return;
   emergencyResultHandled = true;
+  const timingTerminal = emergencyTimingTerminal(kind);
+  activeAgentSplitTestTiming?.closeActivePhases();
+  activeAgentSplitTestTiming?.markUnavailable(
+    'retirement',
+    TEST_TIMING_EMERGENCY_RETIREMENT_REASON,
+  );
+  activeAgentSplitTestTiming?.beginPhase('proof_finalization');
   results.push({
     name: 'fatal',
     status: 'fail',
     detail: sanitizeProofLogValue(`${kind}: ${detail}`),
     ts: new Date().toISOString(),
   });
+  activeAgentSplitTestTiming?.finishPhase('proof_finalization');
+  if (activeAgentSplitTestTiming && !activeAgentSplitTestTiming.isFinalized) {
+    retainAgentSplitTestTiming(
+      activeAgentSplitTestTiming.finalize({
+        outcome: timingTerminal.outcome,
+        terminalReason: timingTerminal.reasonCode,
+      }),
+      timingTerminal,
+    );
+  }
   writeResultCheckpointSync(kind);
 }
 
@@ -3563,18 +4077,49 @@ async function waitHmrWithStrictProofRetry(state, waitContract, timeoutMs, optio
 
 async function compileViaMcp(args, timeoutMs, options = {}) {
   const state = await ensureMcpAttached();
-  const compileStartNs = process.hrtime.bigint();
-  const compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
-  const compileEndNs = process.hrtime.bigint();
+  const compileStartNs = timingBoundaryNs();
+  const isColdSourceFirstCompile = options.metricScope === 'cold';
+  activeAgentSplitTestTiming?.observeEditTrigger(compileStartNs);
+  let compile;
+  let compileEndNs;
+  try {
+    compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
+    compileEndNs = timingBoundaryNs();
+  } catch (error) {
+    compileEndNs = timingBoundaryNs();
+    if (isColdSourceFirstCompile) {
+      activeAgentSplitTestTiming?.recordWindow('split', compileStartNs, compileEndNs);
+      activeAgentSplitTestTiming?.markUnavailable('compile', TEST_TIMING_COMPILE_REASON);
+    }
+    throw error;
+  }
+  if (isColdSourceFirstCompile) {
+    activeAgentSplitTestTiming?.recordWindow('split', compileStartNs, compileEndNs);
+    if (compile?.ok) {
+      activeAgentSplitTestTiming?.recordWindow('compile', compileStartNs, compileEndNs);
+    } else {
+      activeAgentSplitTestTiming?.markUnavailable('compile', TEST_TIMING_COMPILE_REASON);
+    }
+  }
   if (!compile?.ok) {
     const error = new Error(`synthi_compile failed: ${JSON.stringify(sanitizeProofLogValue(compile)).slice(0, 4000)}`);
     error.compileResult = compile;
+    if (observedRefusalStatus(
+      compile?.status ?? compile?.resultState ?? compile?.result_state,
+    )) {
+      tagAgentSplitTimingError(error, {
+        outcome: 'refused',
+        category: 'compile_refusal',
+        reasonCode: 'agent_split_compile_refused',
+      });
+    }
     throw error;
   }
   const waitContract = waitContractForCompile({ args, compile, timeoutMs, options });
-  const waitStartNs = process.hrtime.bigint();
+  const waitStartNs = timingBoundaryNs();
+  if (isColdSourceFirstCompile) activeAgentSplitTestTiming?.observeRuntimeWait();
   const { wait, retryEvidence } = await waitHmrWithStrictProofRetry(state, waitContract, timeoutMs, options);
-  const waitEndNs = process.hrtime.bigint();
+  const waitEndNs = timingBoundaryNs();
   const timingMetrics = {
     schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
     metricClock: 'monotonic_ns',
@@ -3631,6 +4176,13 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
     || waitContract.isGpuDeviceEdit
     || typeof options.requiredGpuProofState === 'string';
   const waitGateSatisfied = wait?.status === 'applied' || requestedProofStateGate?.accepted === true;
+  if (isColdSourceFirstCompile) {
+    if (waitGateSatisfied) {
+      activeAgentSplitTestTiming?.recordWindow('output_ready', waitStartNs, waitEndNs);
+    } else {
+      activeAgentSplitTestTiming?.markUnavailable('output_ready', TEST_TIMING_OUTPUT_REASON);
+    }
+  }
   record(
     options.waitRecordLabel ?? 'mcp wait_hmr proof gate',
     waitGateSatisfied ? 'pass' : requireAppliedWait ? 'fail' : 'warn',
@@ -3642,6 +4194,13 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
     );
     error.waitSummary = waitSummary;
     error.wait_summary = waitSummary;
+    if (observedRefusalStatus(waitSummary.status)) {
+      tagAgentSplitTimingError(error, {
+        outcome: 'refused',
+        category: 'runtime_refusal',
+        reasonCode: 'agent_split_wait_proof_refused',
+      });
+    }
     throw error;
   }
   return { compile, wait, waitContract, waitSummary, timingMetrics };
@@ -10030,7 +10589,12 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
       ? `changed=${(best.changedRatio * 100).toFixed(2)}% mean_abs=${best.meanAbs.toFixed(2)} min_changed=${(minChangedRatio * 100).toFixed(2)}% min_mean_abs=${minMeanAbs.toFixed(2)} control_changed=${(control.changedRatio * 100).toFixed(2)}% control_mean_abs=${control.meanAbs.toFixed(2)} selected_seq=${best.shot.seq} selected_delta_ms=${selectedDeltaMs} diff=${path.relative(process.cwd(), diffPath)}`
     : `no eligible post-HMR visual samples diff=${path.relative(process.cwd(), diffPath)}`;
   record(recordLabel, ok ? 'pass' : 'fail', detail);
-  if (!ok) throw new Error(`visual delta too small: ${detail}`);
+  if (!ok) {
+    throw agentSplitRefusalError(
+      `visual delta too small: ${detail}`,
+      'agent_split_visual_delta_refused',
+    );
+  }
   const baselineArtifact = await writeImageArtifact(`${diffArtifactName}-baseline`, baseline.imageData);
   const selectedAfterArtifact = await writeImageArtifact(`${diffArtifactName}-selected-after`, best.shot.imageData);
   const diffArtifact = {
@@ -10141,16 +10705,29 @@ async function assertMcpScreenshot(
     const pixels = Math.max(1, info.width * info.height);
     return { bytes, visiblePixels, meanLuma: lumaTotal / pixels };
   };
+  const isVisibleFrame = (shot) =>
+    shot.width >= 320 &&
+    shot.height >= 240 &&
+    shot.bytes > 512 &&
+    shot.visiblePixels > 500;
   const capture = async () => {
     const useFrameGate = waitEvidence && !gateTokenConsumed;
     const screenshotArgs = mcpScreenshotArgsForFrameGate(useFrameGate ? waitEvidence : null, {
       freshnessMaxMs: 15000,
       frameGateTimeoutMs: CFG.frameGateTimeoutMs,
     });
+    const captureStartNs = timingBoundaryNs();
     const shot = await state.client.toolCallRaw(
       'synthi_screenshot',
       screenshotArgs,
       Math.max(30000, CFG.frameGateTimeoutMs + 5000),
+    );
+    const captureEndNs = timingBoundaryNs();
+    const captureContract = observedMcpVisualCaptureContract(shot);
+    activeAgentSplitTestTiming?.observeCaptureContract(
+      captureContract,
+      captureStartNs,
+      captureEndNs,
     );
     if (screenshotArgs.after_frame_gate) gateTokenConsumed = true;
     const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
@@ -10174,8 +10751,10 @@ async function assertMcpScreenshot(
           && mcpFrameAtOrAfterFrameGate(waitEvidence, frameMeta)
           && frameMeta.seq >= verifiedGateCapture.seq
           && frameMeta.ts >= verifiedGateCapture.ts);
+    const analysisStartNs = timingBoundaryNs();
     const analysis = await analyzeImage(image?.data);
-    return {
+    const analysisEndNs = timingBoundaryNs();
+    const captured = {
       meta,
       imageData: image?.data || '',
       width: Number(meta.w || meta.width || 0),
@@ -10186,12 +10765,18 @@ async function assertMcpScreenshot(
       frameCaptureAfterEpochDispatch: frameAfterGate,
       ...analysis,
     };
+    activeAgentSplitTestTiming?.observeVisualCapture({
+      contract: captureContract,
+      captureStartNs,
+      captureEndNs,
+      analysisStartNs,
+      analysisEndNs,
+      postEpochVisible:
+        Boolean(waitEvidence) && frameAfterGate === true && isVisibleFrame(captured),
+      visibleEventNs: captureEndNs,
+    });
+    return captured;
   };
-  const isVisibleFrame = (shot) =>
-    shot.width >= 320 &&
-    shot.height >= 240 &&
-    shot.bytes > 512 &&
-    shot.visiblePixels > 500;
   const minVisibleSamples = Math.max(2, Number(options.minVisibleSamples ?? 2));
   const captureWindowMs = Math.max(1000, Number(options.captureWindowMs ?? 15000));
   const sampleIntervalMs = Math.max(50, Number(options.sampleIntervalMs ?? 500));
@@ -10255,16 +10840,28 @@ async function assertMcpScreenshot(
       ? `${first.width}x${first.height} seq=${first.seq}->${second.seq} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes} frame_gate_after=${second.frameCaptureAfterEpochDispatch}${artifactDetail}`
       : `invalid screenshot first=${JSON.stringify(first.meta).slice(0, 120)} second=${JSON.stringify(second.meta).slice(0, 120)} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes} frame_gate_after=${second.frameCaptureAfterEpochDispatch}`,
   );
-  if (!ok) throw new Error(`${label} did not return a valid frame`);
+  if (!ok) {
+    throw agentSplitRefusalError(
+      `${label} did not return a valid frame`,
+      'agent_split_visual_frame_refused',
+    );
+  }
   return { first, second, samples: visible };
 }
 
 async function run() {
+  activeAgentSplitTestTiming?.beginPhase('cold_intake');
   await mkdir(LOG_DIR, { recursive: true });
   ACTIVE_AGENT_PROFILE = loadAgentVisualProfile();
-  await resolveDockerContainers();
-  const vendor = await detectVendor();
-  const arch = await detectArch(vendor);
+  const discoverRuntime = async () => {
+    await resolveDockerContainers();
+    const vendor = await detectVendor();
+    const arch = await detectArch(vendor);
+    return { vendor, arch };
+  };
+  const { vendor, arch } = activeAgentSplitTestTiming
+    ? await activeAgentSplitTestTiming.measurePhase('discovery', discoverRuntime)
+    : await discoverRuntime();
   if (arch) {
     CFG.gpuArch = arch;
     process.env.SYNTHI_GPU_ARCH = arch;
@@ -10304,8 +10901,10 @@ async function run() {
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-agent-split-test: seed monolithic source' })
     .then(() => record('workspace commit seed', 'pass'))
     .catch((e) => record('workspace commit seed', 'warn', e.message.slice(0, 200)));
+  activeAgentSplitTestTiming?.finishPhase('cold_intake');
 
   if (CFG.mode === 'seed-only') {
+    activeAgentSplitTestTiming?.markSeedOnlyTerminalPath();
     record('seed-only workspace ready', 'pass', 'open the URL and click Run to trigger AI split');
     await writeResults();
     console.log(`url: ${CFG.frontendUrl}/workspace/${CFG.slug}`);
@@ -10355,7 +10954,24 @@ async function run() {
       entryPath,
     });
     if (providerDiagnostic.providerFailureDetected) {
-      const diagnosticPath = await writeJsonArtifact('source-first-provider-diagnostic', providerDiagnostic);
+      tagAgentSplitTimingError(err, {
+        outcome: 'failed',
+        category: 'provider_failure',
+        reasonCode: 'agent_split_ai_provider_failure',
+      });
+      let diagnosticPath;
+      try {
+        diagnosticPath = await writeJsonArtifact(
+          'source-first-provider-diagnostic',
+          providerDiagnostic,
+        );
+      } catch (retentionError) {
+        throw tagAgentSplitTimingError(retentionError, {
+          outcome: 'failed',
+          category: 'provider_failure',
+          reasonCode: 'agent_split_ai_provider_failure',
+        });
+      }
       record('source-first AI provider diagnostic', 'fail', {
         artifactPath: diagnosticPath,
         proofId: providerDiagnostic.proofId,
@@ -10384,11 +11000,21 @@ async function run() {
       : `structured proof rejected: ${JSON.stringify(structuredInitialCompileProof)}`,
   );
   if (!structuredInitialCompileProof.accepted) {
-    throw new Error('initial GPU compile did not produce a device compile proof');
+    throw agentSplitRefusalError(
+      'initial GPU compile did not produce a device compile proof',
+      'agent_split_cold_compile_proof_refused',
+    );
   }
 
+  const initialFrameGateObserved = Boolean(
+    mcpScreenshotArgsForFrameGate(initialCompileResult.wait).after_frame_gate,
+  );
   const baselineShot = CFG.captureArtifacts
-    ? await assertMcpScreenshot('mcp screenshot before hmr', 'before-hmr')
+    ? await assertMcpScreenshot(
+        'mcp screenshot before hmr',
+        'before-hmr',
+        initialFrameGateObserved ? initialCompileResult.wait : null,
+      )
     : null;
 
   const split = await readGeneratedSplit(vendor);
@@ -10409,8 +11035,9 @@ async function run() {
         : coldAiProviderCallEvidence.blockingGaps.join('|'),
     );
     if (!coldAiProviderCallEvidence.accepted) {
-      throw new Error(
+      throw agentSplitRefusalError(
         `cold AI split provider call evidence rejected: ${coldAiProviderCallEvidence.blockingGaps.join('|')}`,
+        'agent_split_provider_evidence_refused',
       );
     }
   }
@@ -10421,7 +11048,10 @@ async function run() {
     sawGpuSplit.snippet || splitEndpointEvidence.detail || 'no GPU split marker or sidecar evidence',
   );
   if (!(sawGpuSplit.matched || splitEndpointEvidence.observed)) {
-    throw new Error('GPU split endpoint evidence missing after initial compile');
+    throw agentSplitRefusalError(
+      'GPU split endpoint evidence missing after initial compile',
+      'agent_split_endpoint_evidence_refused',
+    );
   }
   const sourceFirstIngestion = sourceFirstIngestionEvidence({
     source,
@@ -10441,7 +11071,10 @@ async function run() {
       : sourceFirstIngestion.failedGates.join('|'),
   );
   if (!sourceFirstIngestion.accepted) {
-    throw new Error(`source-first AI split provenance-only evidence rejected: ${sourceFirstIngestion.failedGates.join('|')}`);
+    throw agentSplitRefusalError(
+      `source-first AI split provenance-only evidence rejected: ${sourceFirstIngestion.failedGates.join('|')}`,
+      'agent_split_source_first_provenance_refused',
+    );
   }
   const granularity = validateGeneratedSplit(split);
   const granularityPath = await writeJsonArtifact('generated-split-granularity', granularity);
@@ -10484,9 +11117,19 @@ async function run() {
   }
 
   if (CFG.mode === 'cold-ai-split') {
+    let coldAiSplitProof;
+    try {
+      coldAiSplitProof = coldAiSplitProofFromSeed(coldSplitProofSeed);
+    } catch (error) {
+      throw tagAgentSplitTimingError(error, {
+        outcome: 'refused',
+        category: 'proof_refusal',
+        reasonCode: 'agent_split_cold_visual_proof_refused',
+      });
+    }
     const coldPath = await writeRunModeProofArtifact(
       'run-mode-cold-ai-split',
-      coldAiSplitProofFromSeed(coldSplitProofSeed),
+      coldAiSplitProof,
     );
     record('cold AI split visual proof artifact', 'pass', coldPath);
     await writeResults();
@@ -10529,7 +11172,10 @@ async function run() {
     JSON.stringify(deviceEditIdentityProof),
   );
   if (!deviceEditIdentityProof.accepted) {
-    throw new Error('generated device edit identity proof failed for hot delta 1');
+    throw agentSplitRefusalError(
+      'generated device edit identity proof failed for hot delta 1',
+      'agent_split_hot_delta_1_identity_refused',
+    );
   }
 
   const hotSwapProof = fullRuntimeGpuHmrProofFromResult(generatedDeviceResult);
@@ -10539,7 +11185,10 @@ async function run() {
     JSON.stringify(hotSwapProof),
   );
   if (!hotSwapProof.accepted) {
-    throw new Error('full-runtime GPU HMR proof failed for hot delta 1');
+    throw agentSplitRefusalError(
+      'full-runtime GPU HMR proof failed for hot delta 1',
+      'agent_split_hot_delta_1_runtime_refused',
+    );
   }
 
   const afterShot = await assertMcpScreenshot(
@@ -10693,7 +11342,10 @@ async function run() {
     JSON.stringify(hotDelta2IdentityProof),
   );
   if (!hotDelta2IdentityProof.accepted) {
-    throw new Error('generated device edit identity proof failed for hot delta 2');
+    throw agentSplitRefusalError(
+      'generated device edit identity proof failed for hot delta 2',
+      'agent_split_hot_delta_2_identity_refused',
+    );
   }
   const hotDelta2ReloadProof = fullRuntimeGpuHmrProofFromResult(hotDelta2Result);
   record(
@@ -10702,7 +11354,10 @@ async function run() {
     JSON.stringify(hotDelta2ReloadProof),
   );
   if (!hotDelta2ReloadProof.accepted) {
-    throw new Error('full-runtime GPU HMR proof failed for hot delta 2');
+    throw agentSplitRefusalError(
+      'full-runtime GPU HMR proof failed for hot delta 2',
+      'agent_split_hot_delta_2_runtime_refused',
+    );
   }
   const afterHotDelta2Shot = await assertMcpScreenshot(
     'mcp screenshot after hmr hot delta 2',
@@ -10860,28 +11515,113 @@ async function writeResults() {
   console.log(`archived results: ${archivedTxt}`);
 }
 
-if (process.argv.includes('--self-check')) {
+async function runAgentSplitTerminal() {
+  activeAgentSplitTestTiming = createAgentSplitTestTimingV2Lifecycle({
+    nowNs: () => process.hrtime.bigint(),
+  });
+  let timingTerminal = classifyAgentSplitTimingTerminal();
+
   try {
-    selfCheckAgentVisualProfile();
-    await selfCheckSemanticVisualProbeEvidence();
-    selfCheckRunModeVisualLedgerClockDomain();
-    await selfCheckProofFinalizationRetry();
-    selfCheckRequestedProofStateGate();
-    selfCheckColdAiSplitProof();
-    selfCheckMcpStartupCleanup();
-    await selfCheckHttpWorkspaceTimeoutDiagnostics();
-  } catch (err) {
-    console.error(err.stack || err.message);
-    process.exitCode = 1;
+    try {
+      assertAgentProfileSelectionConfigured();
+    } catch (error) {
+      throw tagAgentSplitTimingError(error, {
+        outcome: 'refused',
+        category: 'source_input_refusal',
+        reasonCode: 'agent_split_source_input_refused',
+      });
+    }
+    await run();
+    if (results.some((row) => row.status === 'fail')) {
+      timingTerminal = Object.freeze({
+        outcome: 'failed',
+        category: 'recorded_failure',
+        reasonCode: 'agent_split_recorded_failure',
+      });
+    }
+  } catch (error) {
+    activeAgentSplitTestTiming.closeActivePhases();
+    timingTerminal = classifyAgentSplitTimingTerminal(error);
+    record('fatal', 'fail', error?.stack || error?.message || String(error));
   }
-} else {
-  assertAgentProfileSelectionConfigured();
-  installEmergencyResultHandlers();
-  run()
-    .catch(async (err) => {
-      record('fatal', 'fail', err.stack || err.message);
-      await writeResults().catch(() => {});
+
+  activeAgentSplitTestTiming.closeActivePhases();
+  activeAgentSplitTestTiming.beginPhase('retirement');
+  try {
+    await stopMcp();
+  } catch (error) {
+    if (timingTerminal.outcome === 'pass') {
+      timingTerminal = Object.freeze({
+        outcome: 'failed',
+        category: 'retirement_failure',
+        reasonCode: 'agent_split_retirement_failure',
+      });
+    }
+    record('mcp retirement', 'fail', error?.message || String(error));
+  } finally {
+    activeAgentSplitTestTiming.finishPhase('retirement');
+  }
+
+  activeAgentSplitTestTiming.beginPhase('proof_finalization');
+  try {
+    await writeResults();
+  } catch (error) {
+    if (timingTerminal.outcome === 'pass') {
+      timingTerminal = Object.freeze({
+        outcome: 'failed',
+        category: 'result_persistence_failure',
+        reasonCode: 'agent_split_result_persistence_failure',
+      });
+    }
+    record('result persistence', 'fail', error?.message || String(error));
+  } finally {
+    activeAgentSplitTestTiming.finishPhase('proof_finalization');
+  }
+
+  retainAgentSplitTestTiming(
+    activeAgentSplitTestTiming.finalize({
+      outcome: timingTerminal.outcome,
+      terminalReason: timingTerminal.reasonCode,
+    }),
+    timingTerminal,
+  );
+  writeResultCheckpointSync('terminal_timing_v2');
+  console.log(`test timing: ${TEST_TIMING_JSON}`);
+  if (timingTerminal.outcome !== 'pass') process.exitCode = 1;
+}
+
+async function main() {
+  if (process.argv.includes('--self-check')) {
+    try {
+      selfCheckAgentVisualProfile();
+      await selfCheckSemanticVisualProbeEvidence();
+      selfCheckRunModeVisualLedgerClockDomain();
+      await selfCheckProofFinalizationRetry();
+      selfCheckRequestedProofStateGate();
+      selfCheckColdAiSplitProof();
+      selfCheckMcpStartupCleanup();
+      await selfCheckHttpWorkspaceTimeoutDiagnostics();
+    } catch (err) {
+      console.error(err.stack || err.message);
       process.exitCode = 1;
-    })
-    .finally(() => stopMcp());
+    }
+    return;
+  }
+
+  installEmergencyResultHandlers();
+  await runAgentSplitTerminal();
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  main().catch((error) => {
+    try {
+      recordEmergencyResult(
+        'unhandled_rejection',
+        error?.stack || error?.message || String(error),
+      );
+    } catch (emergencyError) {
+      console.error(emergencyError?.stack || emergencyError?.message || String(emergencyError));
+    }
+    process.exitCode = 1;
+  });
 }
