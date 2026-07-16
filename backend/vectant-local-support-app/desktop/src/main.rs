@@ -19,7 +19,9 @@ use tauri_plugin_updater::UpdaterExt;
 use uuid::Uuid;
 use vectant_local_support_app::audit::{AuditClass, LocalAuditStore};
 use vectant_local_support_app::desktop::{build_desktop_status_state, plan_desktop_ipc_action};
-use vectant_local_support_app::full_access::FullAccessCapability;
+use vectant_local_support_app::full_access::{
+    FullAccessCapability, FullAccessConsentReceipt, FullAccessPolicy,
+};
 use vectant_local_support_app::http::{bind_loopback, shutdown_cleanup, AppState};
 use vectant_local_support_app::ipc::IpcRequest;
 use vectant_local_support_app::pair::{DeviceIdentity, DeviceIdentityStore};
@@ -39,6 +41,7 @@ struct DesktopRuntime {
     available_update_version: RwLock<Option<String>>,
     relay_client: RelayClient,
     pending_pairing: RwLock<Option<ClaimedPairing>>,
+    pending_full_access_enrollment: RwLock<Option<PendingFullAccessEnrollment>>,
     pending_relay_approvals: RwLock<HashMap<String, PendingRelayApproval>>,
     preview_contexts: RwLock<HashMap<u16, PreviewContext>>,
     local_api_address: RwLock<Option<SocketAddr>>,
@@ -49,6 +52,13 @@ struct DesktopRuntime {
 struct PendingRelayApproval {
     approval_id: String,
     delivery: RelayDelivery,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct PendingFullAccessEnrollment {
+    request_id: String,
+    policy: FullAccessPolicy,
+    receipt: FullAccessConsentReceipt,
 }
 
 #[derive(Clone)]
@@ -813,6 +823,7 @@ fn main() -> anyhow::Result<()> {
         available_update_version: RwLock::new(None),
         relay_client: RelayClient::from_environment().map_err(anyhow::Error::msg)?,
         pending_pairing: RwLock::new(None),
+        pending_full_access_enrollment: RwLock::new(None),
         pending_relay_approvals: RwLock::new(HashMap::new()),
         preview_contexts: RwLock::new(HashMap::new()),
         local_api_address: RwLock::new(None),
@@ -1318,6 +1329,42 @@ async fn handle_relay_control_command(
                 .clear();
             Ok("session_approvals_revoked")
         }
+        "full_access_enrollment_proposal" => {
+            let proposal = command
+                .proposal
+                .as_ref()
+                .ok_or("full_access_enrollment_proposal_missing")
+                .and_then(|value| {
+                    serde_json::from_value::<PendingFullAccessEnrollment>(value.clone())
+                        .map_err(|_| "full_access_enrollment_proposal_invalid")
+                })?;
+            if proposal.request_id.len() < 3
+                || proposal.request_id.len() > 128
+                || !proposal
+                    .request_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                || proposal.receipt.local_confirmation != "pending_native_confirmation"
+                || !proposal.policy.organization_enabled
+                || proposal.policy.emergency_paused
+                || !proposal
+                    .policy
+                    .allowed_actors
+                    .contains(&proposal.receipt.support_actor)
+                || !proposal
+                    .policy
+                    .allowed_capabilities
+                    .is_superset(&proposal.receipt.capabilities)
+            {
+                Err("full_access_enrollment_proposal_invalid")
+            } else {
+                *runtime
+                    .pending_full_access_enrollment
+                    .write()
+                    .map_err(|_| "full_access_enrollment_state_lock_failed")? = Some(proposal);
+                Ok("full_access_enrollment_pending_native_confirmation")
+            }
+        }
         "full_access_pause" => {
             state.full_access.lock().await.pause();
             Ok("full_access_paused")
@@ -1799,6 +1846,7 @@ mod tests {
             relay_client: RelayClient::new("http://127.0.0.1:3000/api/local-support/relay/device")
                 .unwrap(),
             pending_pairing: RwLock::new(None),
+            pending_full_access_enrollment: RwLock::new(None),
             pending_relay_approvals: RwLock::new(HashMap::new()),
             preview_contexts: RwLock::new(HashMap::new()),
             local_api_address: RwLock::new(None),

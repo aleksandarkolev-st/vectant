@@ -415,6 +415,7 @@ impl RelayControlCommand {
                     | "revoke_port"
                     | "full_access_pause"
                     | "full_access_revoke"
+                    | "full_access_enrollment_proposal"
                     | "process_visibility_pause"
             )
             || (self.action == "revoke_port" && !matches!(self.port, Some(1..=65_535)))
