@@ -23,7 +23,7 @@ export const LOCAL_CONTROL_COMMAND_ACTIONS = new Set([
 export async function enqueueLocalControlCommand(
   {
     commandId, sessionId, accountId, orgId, workspaceId, deviceFingerprint, action, port,
-    expiresAt, policyVersion = "unknown", scannerVersion = "not_applicable", actor = "browser_user",
+    proposal = null, expiresAt, policyVersion = "unknown", scannerVersion = "not_applicable", actor = "browser_user",
   },
   client = prisma,
 ) {
@@ -42,6 +42,7 @@ export async function enqueueLocalControlCommand(
     deviceFingerprint,
     action,
     port: action === "revoke_port" ? port : null,
+    proposalJson: serializeControlProposal(proposal),
     expiresAt: new Date(expiresAt),
   };
   return client.$transaction(async (tx) => {
@@ -217,10 +218,33 @@ function controlCommandEnvelope(command) {
     device_fingerprint: command.deviceFingerprint,
     action: command.action,
     port: command.port,
+    proposal: parseControlProposal(command.proposalJson),
     expires_at: command.expiresAt.toISOString(),
     lease_id: command.leaseId,
     lease_expires_at: command.leaseExpiresAt.toISOString(),
   };
+}
+
+function serializeControlProposal(value) {
+  if (value === null || value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid local control proposal.");
+  }
+  const encoded = JSON.stringify(value);
+  if (encoded.length > 16_384 || /\b(?:authorization|bearer|private[_-]?key|credential|secret)\b/i.test(encoded)) {
+    throw new Error("Local control proposal was unsafe.");
+  }
+  return encoded;
+}
+
+function parseControlProposal(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 16_384) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function controlAuditData({

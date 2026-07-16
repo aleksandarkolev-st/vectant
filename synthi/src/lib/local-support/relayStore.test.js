@@ -159,6 +159,41 @@ describe("durable local support relay store", () => {
     });
   });
 
+  it("persists a bounded metadata-only control proposal", async () => {
+    const { client } = fakeClient();
+    await enqueueLocalControlCommand({
+      commandId: "cmd_proposal_12345678",
+      sessionId: "sess_12345678",
+      accountId: "acct_123",
+      orgId: "org_123",
+      workspaceId: "wk_12345678",
+      deviceFingerprint: "sha256:3333333333333333",
+      action: "pause_session",
+      proposal: { policy_version: "policy-1", capability_count: 2 },
+      expiresAt: "2030-01-01T00:01:00.000Z",
+    }, client);
+    expect(client.localSupportControlCommand.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        proposalJson: JSON.stringify({ policy_version: "policy-1", capability_count: 2 }),
+      }),
+    });
+  });
+
+  it("rejects control proposals containing credential-like metadata", async () => {
+    const { client } = fakeClient();
+    await expect(enqueueLocalControlCommand({
+      commandId: "cmd_unsafe_proposal_123",
+      sessionId: "sess_12345678",
+      accountId: "acct_123",
+      orgId: "org_123",
+      workspaceId: "wk_12345678",
+      deviceFingerprint: "sha256:3333333333333333",
+      action: "pause_session",
+      proposal: { secret: "must-not-store" },
+      expiresAt: "2030-01-01T00:01:00.000Z",
+    }, client)).rejects.toThrow("Local control proposal was unsafe.");
+  });
+
   it("leases the oldest control command only for its exact paired device", async () => {
     const { tx, client } = fakeClient();
     const command = await leaseLocalControlCommand({

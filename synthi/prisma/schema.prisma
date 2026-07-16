@@ -770,6 +770,9 @@ model LocalSupportControlCommand {
   deviceFingerprint  String
   action             String
   port               Int?
+  // A bounded, signed-by-relay enrollment proposal. This may contain only
+  // policy and consent metadata, never local file, process, or command data.
+  proposalJson       String?
   status             String    @default("queued")
   leaseId            String?
   leaseExpiresAt     DateTime?
