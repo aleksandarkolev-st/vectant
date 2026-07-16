@@ -60,6 +60,7 @@ import {
 } from './lib/gpu-hmr-validation-proof-summary.mjs';
 import {
   analyzeGpuHmrImageEvidence,
+  mcpFrameGateSatisfied,
   mcpFrameGateSatisfiedByScreenshot,
   mcpScreenshotArgsForFrameGate,
   mcpScreenshotMetadataFromToolResult,
@@ -96,6 +97,13 @@ import {
   writeArtifactToCas,
 } from './lib/gpu-hmr-artifact-cas.mjs';
 import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-clock.mjs';
+import {
+  GPU_HMR_TEST_TIMING_PHASE_KEYS,
+  GPU_HMR_TEST_TIMING_SCHEMA,
+  GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS,
+  GpuHmrTestTimingRecorder,
+  isStableGpuHmrTimingReasonCode,
+} from './lib/gpu-hmr-test-timing-v2.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -125,6 +133,30 @@ const TARGET_PROGRESSION_PHASES = new Set([
 const TARGET_PROGRESSION_LEDGER_SCHEMA_VERSION =
   'synthi.real_rocm.target_progression_ledger.v1';
 const RUN_STARTED_MONOTONIC_NS = monotonicNowNs();
+const REAL_ROCM_TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON =
+  'real_rocm_visual_presentation_contract_not_declared';
+const REAL_ROCM_TEST_TIMING_TERMINAL_REASONS = Object.freeze({
+  checkpoint: 'real_rocm_fail_closed_checkpoint',
+  exception: 'real_rocm_execution_exception',
+  finalRefusal: 'real_rocm_proof_refused',
+  finalSuccess: 'real_rocm_terminal_phase_not_observed',
+  finalWriteException: 'real_rocm_final_result_write_exception',
+  signal: 'real_rocm_process_signal',
+});
+const REAL_ROCM_TEST_TIMING_STATIC_UNAVAILABLE_REASONS = Object.freeze({
+  split: 'real_rocm_split_boundary_not_exposed_by_compile_call',
+  load: 'real_rocm_runtime_load_boundary_not_exposed_to_validator_clock',
+  epoch_publication:
+    'real_rocm_epoch_publication_boundary_not_exposed_to_validator_clock',
+  dispatch: 'real_rocm_dispatch_boundary_not_exposed_to_validator_clock',
+  output_ready: 'real_rocm_output_ready_boundary_not_exposed_to_validator_clock',
+  retirement: 'real_rocm_retirement_boundary_not_exposed_to_validator_clock',
+});
+const REAL_ROCM_TEST_TIMING_VISUAL_UNAVAILABLE_REASONS = Object.freeze({
+  trigger_to_visible: 'real_rocm_visible_or_output_ready_signal_not_observed',
+  screenshot_capture: 'real_rocm_screenshot_capture_not_observed',
+  visual_analysis: 'real_rocm_visual_analysis_not_observed',
+});
 const FINAL_ACCEPTANCE_PRIOR_TARGET_PROGRESSION_PHASES = Object.freeze([
   'small-oracle',
   'partial-reload',
@@ -153,6 +185,411 @@ const TARGET_PROGRESSION_PHASE_ALIASES = new Map([
 
 function cleanIdentifier(value) {
   return String(value || 'repo').replace(/[^a-zA-Z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'repo';
+}
+
+function realRocmTestTimingNs(value, field) {
+  try {
+    const parsed = BigInt(String(value));
+    if (parsed < 0n || String(parsed) !== String(value)) throw new Error('non-canonical');
+    return parsed;
+  } catch {
+    throw new TypeError(`${field} must be a canonical non-negative monotonic nanosecond value`);
+  }
+}
+
+function requireRealRocmTestTimingReason(reasonCode) {
+  if (!isStableGpuHmrTimingReasonCode(reasonCode)) {
+    throw new TypeError('real ROCm timing reason code is invalid');
+  }
+  return reasonCode;
+}
+
+function requireRealRocmTestTimingPhase(phaseKey) {
+  if (!GPU_HMR_TEST_TIMING_PHASE_KEYS.includes(phaseKey) || phaseKey === 'total_wall') {
+    throw new TypeError(`real ROCm timing phase is invalid: ${phaseKey}`);
+  }
+  return phaseKey;
+}
+
+export function realRocmTestTimingVisualContract({
+  expectScreenshot = false,
+  renderPreview = false,
+} = {}) {
+  return expectScreenshot === true || renderPreview === true;
+}
+
+export function createRealRocmTestTimingV2Coordinator({
+  clock = () => process.hrtime.bigint(),
+  totalStartNs = null,
+  visualContract = false,
+} = {}) {
+  if (typeof clock !== 'function') throw new TypeError('real ROCm timing clock must be a function');
+  if (typeof visualContract !== 'boolean') {
+    throw new TypeError('real ROCm visual timing contract must be boolean');
+  }
+
+  let lastClockNs = null;
+  const readClock = () => {
+    const reading = realRocmTestTimingNs(clock(), 'clock');
+    if (lastClockNs !== null && reading < lastClockNs) {
+      throw new Error('real_rocm_timing_clock_regressed');
+    }
+    lastClockNs = reading;
+    return reading;
+  };
+  const startedNs = totalStartNs === null
+    ? readClock()
+    : realRocmTestTimingNs(totalStartNs, 'totalStartNs');
+  if (lastClockNs === null || startedNs > lastClockNs) lastClockNs = startedNs;
+
+  let sequence = 0;
+  const phaseStates = Object.fromEntries(
+    GPU_HMR_TEST_TIMING_PHASE_KEYS
+      .filter((phaseKey) => phaseKey !== 'total_wall')
+      .map((phaseKey) => [phaseKey, { transition: 'untouched' }]),
+  );
+
+  const requireTransition = (phaseKey, expected) => {
+    const normalizedPhaseKey = requireRealRocmTestTimingPhase(phaseKey);
+    const phase = phaseStates[normalizedPhaseKey];
+    if (phase.transition !== expected) {
+      throw new Error(
+        `real_rocm_timing_phase_transition_invalid:${normalizedPhaseKey}:${phase.transition}`,
+      );
+    }
+    return normalizedPhaseKey;
+  };
+  const requireVisualContractForPhase = (phaseKey) => {
+    if (GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS.includes(phaseKey) && !visualContract) {
+      throw new Error(`real_rocm_visual_timing_without_contract:${phaseKey}`);
+    }
+  };
+
+  const coordinator = {
+    visualContract,
+    totalStartNs: startedNs.toString(),
+    phaseState(phaseKey) {
+      const normalizedPhaseKey = requireRealRocmTestTimingPhase(phaseKey);
+      return phaseStates[normalizedPhaseKey].transition;
+    },
+    startPhase(phaseKey) {
+      const normalizedPhaseKey = requireTransition(phaseKey, 'untouched');
+      requireVisualContractForPhase(normalizedPhaseKey);
+      const startNs = readClock();
+      phaseStates[normalizedPhaseKey] = {
+        transition: 'started',
+        startNs,
+        startSequence: sequence++,
+      };
+      return startNs.toString();
+    },
+    finishPhase(phaseKey) {
+      const normalizedPhaseKey = requireTransition(phaseKey, 'started');
+      const current = phaseStates[normalizedPhaseKey];
+      const endNs = readClock();
+      phaseStates[normalizedPhaseKey] = {
+        transition: 'measured',
+        startNs: current.startNs,
+        endNs,
+        startSequence: current.startSequence,
+        endSequence: sequence++,
+      };
+      return {
+        startNs: current.startNs.toString(),
+        endNs: endNs.toString(),
+        durationNs: (endNs - current.startNs).toString(),
+      };
+    },
+    measurePhase(phaseKey, startNsValue, endNsValue) {
+      const normalizedPhaseKey = requireTransition(phaseKey, 'untouched');
+      requireVisualContractForPhase(normalizedPhaseKey);
+      const startNs = realRocmTestTimingNs(startNsValue, `${normalizedPhaseKey}.startNs`);
+      const endNs = realRocmTestTimingNs(endNsValue, `${normalizedPhaseKey}.endNs`);
+      if (startNs < startedNs || endNs < startNs) {
+        throw new Error(`real_rocm_timing_interval_invalid:${normalizedPhaseKey}`);
+      }
+      if (lastClockNs !== null && endNs < lastClockNs) {
+        throw new Error(`real_rocm_timing_interval_regressed:${normalizedPhaseKey}`);
+      }
+      lastClockNs = endNs;
+      phaseStates[normalizedPhaseKey] = {
+        transition: 'measured',
+        startNs,
+        endNs,
+        startSequence: sequence++,
+        endSequence: sequence++,
+      };
+      return {
+        startNs: startNs.toString(),
+        endNs: endNs.toString(),
+        durationNs: (endNs - startNs).toString(),
+      };
+    },
+    markUnavailable(phaseKey, reasonCode) {
+      const normalizedPhaseKey = requireTransition(phaseKey, 'untouched');
+      phaseStates[normalizedPhaseKey] = {
+        transition: 'unavailable',
+        reasonCode: requireRealRocmTestTimingReason(reasonCode),
+      };
+    },
+    abandonPhase(phaseKey, reasonCode) {
+      const normalizedPhaseKey = requireRealRocmTestTimingPhase(phaseKey);
+      const current = phaseStates[normalizedPhaseKey];
+      if (!['untouched', 'started'].includes(current.transition)) {
+        return false;
+      }
+      phaseStates[normalizedPhaseKey] = {
+        transition: 'unavailable',
+        reasonCode: requireRealRocmTestTimingReason(reasonCode),
+      };
+      return true;
+    },
+    snapshot({ outcome, terminalReason }) {
+      const normalizedTerminalReason = requireRealRocmTestTimingReason(terminalReason);
+      const snapshotEndNs = readClock();
+      const snapshotStates = Object.fromEntries(
+        Object.entries(phaseStates).map(([phaseKey, phase]) => [phaseKey, { ...phase }]),
+      );
+
+      for (const [phaseKey, phase] of Object.entries(snapshotStates)) {
+        const visualPhase = GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS.includes(phaseKey);
+        if (!visualContract && visualPhase) {
+          if (phase.transition !== 'untouched') {
+            throw new Error(`real_rocm_nonvisual_phase_transition_present:${phaseKey}`);
+          }
+          snapshotStates[phaseKey] = {
+            transition: 'not_applicable',
+            reasonCode: REAL_ROCM_TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+          };
+          continue;
+        }
+        if (phase.transition === 'started') {
+          snapshotStates[phaseKey] = {
+            transition: 'unavailable',
+            reasonCode: `real_rocm_phase_incomplete_at_terminal:${phaseKey}`,
+          };
+          continue;
+        }
+        if (phase.transition === 'untouched') {
+          snapshotStates[phaseKey] = {
+            transition: 'unavailable',
+            reasonCode: visualPhase
+              ? REAL_ROCM_TEST_TIMING_VISUAL_UNAVAILABLE_REASONS[phaseKey]
+              : `real_rocm_phase_not_reached_before_terminal:${phaseKey}`,
+          };
+        }
+      }
+
+      const events = [];
+      for (const [phaseKey, phase] of Object.entries(snapshotStates)) {
+        if (phase.transition !== 'measured') continue;
+        events.push({
+          phaseKey,
+          kind: 'start',
+          timestampNs: phase.startNs,
+          sequence: phase.startSequence,
+        });
+        events.push({
+          phaseKey,
+          kind: 'finish',
+          timestampNs: phase.endNs,
+          sequence: phase.endSequence,
+        });
+      }
+      events.sort((left, right) => {
+        if (left.timestampNs !== right.timestampNs) {
+          return left.timestampNs < right.timestampNs ? -1 : 1;
+        }
+        if (left.kind !== right.kind) return left.kind === 'start' ? -1 : 1;
+        return left.sequence - right.sequence;
+      });
+      const latestEventNs = events.at(-1)?.timestampNs ?? startedNs;
+      if (latestEventNs > snapshotEndNs) {
+        throw new Error('real_rocm_timing_snapshot_precedes_phase_event');
+      }
+
+      const clockReadings = [
+        startedNs,
+        ...events.map((event) => event.timestampNs),
+        snapshotEndNs,
+      ];
+      let clockIndex = 0;
+      const recorder = new GpuHmrTestTimingRecorder({
+        clock: () => clockReadings[clockIndex++],
+      });
+      for (const event of events) {
+        if (event.kind === 'start') recorder.startPhase(event.phaseKey);
+        else recorder.finishPhase(event.phaseKey);
+      }
+      for (const [phaseKey, phase] of Object.entries(snapshotStates)) {
+        if (phase.transition === 'unavailable') {
+          recorder.unavailable(phaseKey, phase.reasonCode);
+        } else if (phase.transition === 'not_applicable') {
+          recorder.notApplicable(phaseKey, phase.reasonCode);
+        }
+      }
+      const record = recorder.finalize({
+        outcome,
+        visualCapable: visualContract,
+        terminalReason: normalizedTerminalReason,
+        notApplicableReason: visualContract
+          ? null
+          : REAL_ROCM_TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+      });
+      if (clockIndex !== clockReadings.length) {
+        throw new Error('real_rocm_timing_replay_clock_not_consumed');
+      }
+      return record;
+    },
+  };
+
+  for (const [phaseKey, reasonCode] of Object.entries(
+    REAL_ROCM_TEST_TIMING_STATIC_UNAVAILABLE_REASONS,
+  )) {
+    coordinator.markUnavailable(phaseKey, reasonCode);
+  }
+  return Object.freeze(coordinator);
+}
+
+export function attachRealRocmTestTimingV2(target, testTiming) {
+  if (!target || typeof target !== 'object' || Array.isArray(target)) {
+    throw new TypeError('real ROCm timing attachment target must be an object');
+  }
+  if (
+    testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA
+    || testTiming?.authority !== 'timing_only'
+    || testTiming?.acceptedForGpuHmr !== false
+    || testTiming?.gpuHmrSuccess !== false
+  ) {
+    throw new TypeError('real ROCm timing attachment requires support-only timing v2');
+  }
+  target.testTiming = testTiming;
+  target.test_timing = testTiming;
+  return target;
+}
+
+function realRocmBootstrapResultPaths() {
+  const logDir = process.env.SYNTHI_REAL_ROCM_BOOTSTRAP_RESULTS_DIR
+    ? path.resolve(process.env.SYNTHI_REAL_ROCM_BOOTSTRAP_RESULTS_DIR)
+    : path.resolve(__dirname, '../.gpu-hmr-test-logs');
+  const retainedDir = path.join(logDir, 'real-rocm-results');
+  const retainedBaseName = `real-rocm-bootstrap-${process.pid}`;
+  return {
+    retainedDir,
+    retainedJson: path.join(retainedDir, `${retainedBaseName}.json`),
+    retainedTxt: path.join(retainedDir, `${retainedBaseName}.txt`),
+    latestJson: path.join(logDir, 'real-rocm-results.json'),
+    latestTxt: path.join(logDir, 'real-rocm-results.txt'),
+  };
+}
+
+function writeRealRocmBootstrapTerminalTimingSync({
+  kind,
+  signal = null,
+} = {}) {
+  const terminalReason = signal
+    ? REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.signal
+    : REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.exception;
+  const timingCoordinator = createRealRocmTestTimingV2Coordinator({
+    totalStartNs: RUN_STARTED_MONOTONIC_NS,
+    visualContract: false,
+  });
+  const testTiming = timingCoordinator.snapshot({
+    outcome: 'failed',
+    terminalReason,
+  });
+  const paths = realRocmBootstrapResultPaths();
+  const generatedAt = new Date().toISOString();
+  const result = attachRealRocmTestTimingV2({
+    schemaVersion: 'synthi.real_rocm.bootstrap_terminal_result.v1',
+    schema_version: 'synthi.real_rocm.bootstrap_terminal_result.v1',
+    resultState: signal
+      ? 'real_rocm_bootstrap_signal_checkpoint'
+      : 'real_rocm_bootstrap_configuration_exception',
+    result_state: signal
+      ? 'real_rocm_bootstrap_signal_checkpoint'
+      : 'real_rocm_bootstrap_configuration_exception',
+    terminalKind: kind ?? (signal ? 'signal' : 'configuration_exception'),
+    terminal_kind: kind ?? (signal ? 'signal' : 'configuration_exception'),
+    signal,
+    generatedAt,
+    generated_at: generatedAt,
+    proofAuthority: 'bootstrap_terminal_result_only_not_gpu_hmr_success',
+    proof_authority: 'bootstrap_terminal_result_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    fullRuntimeProven: false,
+    full_runtime_proven: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    resultArtifacts: {
+      retainedJson: paths.retainedJson,
+      retainedTxt: paths.retainedTxt,
+      latestJson: paths.latestJson,
+      latestTxt: paths.latestTxt,
+    },
+  }, testTiming);
+  const text = [
+    `result_state: ${result.result_state}`,
+    `terminal_kind: ${result.terminal_kind}`,
+    `signal: ${signal ?? ''}`,
+    'gpu_hmr_success: false',
+    'accepted_for_gpu_hmr: false',
+    `test_timing: ${JSON.stringify(testTiming)}`,
+    '',
+  ].join('\n');
+  mkdirSync(paths.retainedDir, { recursive: true });
+  writeFileSync(paths.retainedJson, `${JSON.stringify(result, null, 2)}\n`);
+  writeFileSync(paths.retainedTxt, text);
+  writeFileSync(paths.latestJson, `${JSON.stringify(result, null, 2)}\n`);
+  writeFileSync(paths.latestTxt, text);
+  return result;
+}
+
+const realRocmBootstrapHandlersEnabled =
+  !process.argv.includes('--self-check')
+  && !process.argv.includes('--timing-v2-self-check');
+let realRocmBootstrapUncaughtExceptionHandler = null;
+const realRocmBootstrapSignalHandlers = new Map();
+if (realRocmBootstrapHandlersEnabled) {
+  realRocmBootstrapUncaughtExceptionHandler = (error) => {
+    try {
+      writeRealRocmBootstrapTerminalTimingSync({ kind: 'configuration_exception' });
+    } catch (writeError) {
+      console.error(writeError?.stack || writeError?.message || writeError);
+    }
+    console.error(error?.stack || error?.message || error);
+    process.exitCode = 1;
+  };
+  process.once('uncaughtException', realRocmBootstrapUncaughtExceptionHandler);
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    const handler = () => {
+      try {
+        writeRealRocmBootstrapTerminalTimingSync({ kind: 'signal', signal });
+      } catch (error) {
+        console.error(error?.stack || error?.message || error);
+      } finally {
+        process.exit(signal === 'SIGINT' ? 130 : 143);
+      }
+    };
+    realRocmBootstrapSignalHandlers.set(signal, handler);
+    process.once(signal, handler);
+  }
+}
+
+function disarmRealRocmBootstrapUncaughtExceptionHandler() {
+  if (!realRocmBootstrapUncaughtExceptionHandler) return;
+  process.removeListener('uncaughtException', realRocmBootstrapUncaughtExceptionHandler);
+  realRocmBootstrapUncaughtExceptionHandler = null;
+}
+
+function disarmRealRocmBootstrapSignalHandlers() {
+  for (const [signal, handler] of realRocmBootstrapSignalHandlers) {
+    process.removeListener(signal, handler);
+  }
+  realRocmBootstrapSignalHandlers.clear();
 }
 
 function repoNameFromUrl(repoUrl) {
@@ -1032,6 +1469,7 @@ function normalizeRealRocmProfile(rawProfile, source) {
 
 function allowPackagedDefaultRealRocmProfile(env = process.env, argv = process.argv) {
   return argv.includes('--self-check')
+    || argv.includes('--timing-v2-self-check')
     || booleanFromEnv(env, 'SYNTHI_REAL_ROCM_ALLOW_DEFAULT_PROFILE', false);
 }
 
@@ -3266,7 +3704,18 @@ const report = {
   finished_monotonic_ns: null,
   duration_monotonic_ns: null,
   timingMetrics: null,
+  testTiming: null,
+  test_timing: null,
 };
+
+const realRocmTestTiming = createRealRocmTestTimingV2Coordinator({
+  totalStartNs: RUN_STARTED_MONOTONIC_NS,
+  visualContract: realRocmTestTimingVisualContract({
+    expectScreenshot: CFG.expectScreenshot,
+    renderPreview: CFG.renderPreview,
+  }),
+});
+let realRocmExecutionExceptionObserved = false;
 
 const runtimeEvidenceContext = {
   files: [],
@@ -12357,7 +12806,12 @@ function deriveCpuGpuFirewallEvidence({
   return firewall;
 }
 
-async function compileViaMcp(args, timeoutMs, phaseName) {
+async function compileViaMcp(
+  args,
+  timeoutMs,
+  phaseName,
+  { measurePrimaryHotCompile = false } = {},
+) {
   writeEmergencyPhaseCheckpoint({
     phaseName,
     stage: 'before-mcp-attach',
@@ -12373,7 +12827,17 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
   const start = Date.now();
   let compile;
   try {
-    compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
+    if (measurePrimaryHotCompile) realRocmTestTiming.startPhase('compile');
+    try {
+      compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
+    } finally {
+      if (
+        measurePrimaryHotCompile
+        && realRocmTestTiming.phaseState('compile') === 'started'
+      ) {
+        realRocmTestTiming.finishPhase('compile');
+      }
+    }
   } catch (err) {
     await capturePhaseRuntimeIdentity(identityMonitor, 'compile_error');
     const sessionLost = runtimeIdentityLostWaitResult(identityMonitor, start);
@@ -12847,8 +13311,18 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt, waitArgs = null
   return null;
 }
 
-async function captureScreenshot(label, { required = CFG.expectScreenshot, wait = null } = {}) {
+async function captureScreenshot(
+  label,
+  {
+    required = CFG.expectScreenshot,
+    wait = null,
+    timingRole = null,
+  } = {},
+) {
   if (!mcpState?.client) return null;
+  const measurePrimaryPostEditVisual =
+    timingRole === 'primary_post_edit'
+    && realRocmTestTiming.visualContract;
   const attempts = Math.max(1, CFG.screenshotAttempts);
   let lastRow = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -12861,19 +13335,51 @@ async function captureScreenshot(label, { required = CFG.expectScreenshot, wait 
       freshnessMaxMs: CFG.screenshotFreshnessMaxMs,
       frameGateTimeoutMs: CFG.frameGateTimeoutMs,
     });
+    const screenshotCaptureStartedNs = measurePrimaryPostEditVisual
+      ? monotonicNowNs()
+      : null;
     const shot = await mcpState.client.toolCallRaw(
       'synthi_screenshot',
       screenshotArgs,
       Math.max(30000, CFG.frameGateTimeoutMs + 5000),
     ).catch((e) => ({ error: e.message }));
+    const screenshotCaptureFinishedNs = measurePrimaryPostEditVisual
+      ? monotonicNowNs()
+      : null;
     const content = Array.isArray(shot?.content) ? shot.content : [];
     const imageBlock = content.find((block) => block?.type === 'image' && typeof block.data === 'string');
     if (imageBlock?.data) {
+      if (
+        measurePrimaryPostEditVisual
+        && realRocmTestTiming.phaseState('screenshot_capture') === 'untouched'
+      ) {
+        realRocmTestTiming.measurePhase(
+          'screenshot_capture',
+          screenshotCaptureStartedNs,
+          screenshotCaptureFinishedNs,
+        );
+      }
       const suffix = attempt === 1 ? '' : `-attempt-${attempt}`;
       const outPath = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}${suffix}.png`);
       const bytes = Buffer.from(imageBlock.data, 'base64');
       await writeFile(outPath, bytes);
+      const visualAnalysisStartedNs = measurePrimaryPostEditVisual
+        ? monotonicNowNs()
+        : null;
       const stats = await analyzeGpuHmrImageEvidence(bytes);
+      const visualAnalysisFinishedNs = measurePrimaryPostEditVisual
+        ? monotonicNowNs()
+        : null;
+      if (
+        measurePrimaryPostEditVisual
+        && realRocmTestTiming.phaseState('visual_analysis') === 'untouched'
+      ) {
+        realRocmTestTiming.measurePhase(
+          'visual_analysis',
+          visualAnalysisStartedNs,
+          visualAnalysisFinishedNs,
+        );
+      }
       const screenshotMetadata = mcpScreenshotMetadataFromToolResult(shot);
       const frameCaptureAfterEpochDispatch = mcpFrameGateSatisfiedByScreenshot(wait, {
         ...screenshotMetadata,
@@ -27001,6 +27507,7 @@ function emergencyCheckpointText({ checkpoint, paths }) {
     `gpu_hmr_success: false`,
     `accepted_for_gpu_hmr: false`,
     `full_runtime_proven: false`,
+    `test_timing: ${JSON.stringify(report.test_timing ?? null)}`,
     `runtime_evidence_collection: ${JSON.stringify(report.runtime_evidence_collection ?? null)}`,
     `runtime_evidence_checkpoint: ${JSON.stringify(report.runtime_evidence_checkpoint ?? null)}`,
     `current_result_checkpoint: ${JSON.stringify(checkpoint)}`,
@@ -27018,6 +27525,8 @@ function writeEmergencyRetainedCheckpointSync({
   signal = null,
   writeLatest = true,
   resultPaths = null,
+  timingOutcome = null,
+  timingReasonCode = null,
 } = {}) {
   if (!CFG.emergencyRetainedCheckpoints && !resultPaths) return null;
   const checkpointLabel = String(label ?? 'emergency-retained-checkpoint');
@@ -27090,6 +27599,16 @@ function writeEmergencyRetainedCheckpointSync({
     checkpointStatus: checkpoint.status,
     checkpoint_status: checkpoint.status,
   };
+  attachRealRocmTestTimingV2(
+    report,
+    realRocmTestTiming.snapshot({
+      outcome: timingOutcome ?? (signal ? 'failed' : 'refused'),
+      terminalReason: timingReasonCode
+        ?? (signal
+          ? REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.signal
+          : REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.checkpoint),
+    }),
+  );
   mkdirSync(RETAINED_RESULTS_DIR, { recursive: true });
   writeTextAtomicSync(paths.retainedResultsJson, JSON.stringify(report, null, 2) + '\n');
   writeTextAtomicSync(paths.retainedResultsTxt, emergencyCheckpointText({ checkpoint, paths }) + '\n');
@@ -27103,6 +27622,7 @@ function writeEmergencyRetainedCheckpointSync({
 let terminationCheckpointInstalled = false;
 function installTerminationCheckpointHandlers() {
   if (terminationCheckpointInstalled || process.argv.includes('--self-check')) return;
+  disarmRealRocmBootstrapSignalHandlers();
   terminationCheckpointInstalled = true;
   for (const signal of ['SIGTERM', 'SIGINT']) {
     process.once(signal, () => {
@@ -27111,6 +27631,9 @@ function installTerminationCheckpointHandlers() {
           label: `signal-${signal.toLowerCase()}`,
           reason: 'runner_terminated_before_final_result_write',
           signal,
+          resultPaths: retainedResultPaths(),
+          timingOutcome: 'failed',
+          timingReasonCode: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.signal,
         });
       } catch (err) {
         try {
@@ -27752,6 +28275,33 @@ async function writeResults({ checkpointLabel = 'final' } = {}) {
     checkpointStatus: resultCheckpoint.status,
     checkpoint_status: resultCheckpoint.status,
   };
+  if (
+    checkpointLabel === 'final'
+    && realRocmTestTiming.phaseState('proof_finalization') === 'started'
+  ) {
+    realRocmTestTiming.finishPhase('proof_finalization');
+  }
+  const timingOutcome = realRocmExecutionExceptionObserved
+    ? 'failed'
+    : checkpointLabel !== 'final'
+      ? 'refused'
+      : realRocmGpuHmrSuccess
+        ? 'pass'
+        : 'refused';
+  const timingTerminalReason = realRocmExecutionExceptionObserved
+    ? REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.exception
+    : checkpointLabel !== 'final'
+      ? REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.checkpoint
+      : realRocmGpuHmrSuccess
+        ? REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalSuccess
+        : REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalRefusal;
+  attachRealRocmTestTimingV2(
+    report,
+    realRocmTestTiming.snapshot({
+      outcome: timingOutcome,
+      terminalReason: timingTerminalReason,
+    }),
+  );
   await writeTextAtomic(retainedResultsJson, JSON.stringify(report, null, 2) + '\n');
   await writeTextAtomic(RESULTS_JSON, JSON.stringify(report, null, 2) + '\n');
   const lines = [
@@ -27786,6 +28336,7 @@ async function writeResults({ checkpointLabel = 'final' } = {}) {
     `gpu_vendor: ${report.gpu_vendor}`,
     `gpu_arch: ${report.gpu_arch}`,
     `duration_ms: ${report.duration_ms}`,
+    `test_timing: ${JSON.stringify(report.test_timing)}`,
     `containers: ${JSON.stringify(report.containers)}`,
     `docker: ${JSON.stringify(report.docker)}`,
     `runtime_identity: ${JSON.stringify(report.runtime_identity)}`,
@@ -27834,6 +28385,9 @@ async function writeResults({ checkpointLabel = 'final' } = {}) {
 }
 
 async function run() {
+  if (realRocmTestTiming.phaseState('cold_intake') === 'untouched') {
+    realRocmTestTiming.startPhase('cold_intake');
+  }
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
   installTerminationCheckpointHandlers();
@@ -27892,10 +28446,14 @@ async function run() {
     reason: 'before_generic_upstream_configure_build_run_lifecycle',
   });
   const buildMetadata = await prepareUpstreamBuild();
+  if (realRocmTestTiming.phaseState('cold_intake') === 'started') {
+    realRocmTestTiming.finishPhase('cold_intake');
+  }
   writeEmergencyRetainedCheckpointSync({
     label: 'after-upstream-lifecycle',
     reason: 'after_generic_upstream_lifecycle_before_source_collection',
   });
+  realRocmTestTiming.startPhase('discovery');
   const files = await collectRepoFiles(buildMetadata);
   runtimeEvidenceContext.buildMetadata = buildMetadata;
   runtimeEvidenceContext.files = files;
@@ -27965,6 +28523,7 @@ async function run() {
     buildMetadata,
     'first_real_repo_ai_split_compile',
   );
+  realRocmTestTiming.finishPhase('discovery');
 
   await createWorkspace();
   await writeFilesBatch(files);
@@ -28007,6 +28566,9 @@ async function run() {
       buildMetadata,
       'real_repo_user_source_delta_hmr',
     );
+    if (realRocmTestTiming.visualContract) {
+      realRocmTestTiming.startPhase('trigger_to_visible');
+    }
     await httpJson(
       'POST',
       `${CFG.collabUrl}/git/${CFG.slug}/write-files-batch`,
@@ -28039,16 +28601,44 @@ async function run() {
       slug: CFG.slug,
       width: CFG.width,
       height: CFG.height,
-    }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr');
+    }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr', {
+      measurePrimaryHotCompile: true,
+    });
+    if (
+      realRocmTestTiming.visualContract
+      && realRocmTestTiming.phaseState('trigger_to_visible') === 'started'
+    ) {
+      if (
+        hmrCompileResult.wait?.status === 'applied'
+        && mcpFrameGateSatisfied(hmrCompileResult.wait)
+      ) {
+        realRocmTestTiming.finishPhase('trigger_to_visible');
+      } else {
+        realRocmTestTiming.abandonPhase(
+          'trigger_to_visible',
+          REAL_ROCM_TEST_TIMING_VISUAL_UNAVAILABLE_REASONS.trigger_to_visible,
+        );
+      }
+    }
     hmrScreenshot = await captureScreenshot('post-hmr', {
       required: CFG.expectScreenshot,
       wait: hmrCompileResult.wait,
+      timingRole: 'primary_post_edit',
     });
     finishSourceDeltaExecutionPhase(primaryDeltaPhase, {
       compileResult: hmrCompileResult,
       screenshot: hmrScreenshot,
     });
   } catch (err) {
+    if (
+      realRocmTestTiming.visualContract
+      && realRocmTestTiming.phaseState('trigger_to_visible') === 'started'
+    ) {
+      realRocmTestTiming.abandonPhase(
+        'trigger_to_visible',
+        REAL_ROCM_TEST_TIMING_VISUAL_UNAVAILABLE_REASONS.trigger_to_visible,
+      );
+    }
     finishSourceDeltaExecutionPhase(primaryDeltaPhase, {
       compileResult: hmrCompileResult,
       screenshot: hmrScreenshot,
@@ -28139,7 +28729,190 @@ async function run() {
   }
 }
 
-if (process.argv.includes('--self-check')) {
+function realRocmTimingSelfCheckClock(initialNs) {
+  let currentNs = BigInt(initialNs);
+  return {
+    now: () => currentNs,
+    tick(durationNs = 1n) {
+      currentNs += BigInt(durationNs);
+      return currentNs;
+    },
+  };
+}
+
+function buildRealRocmTimingV2SelfCheckCases() {
+  const visualClock = realRocmTimingSelfCheckClock(100n);
+  const visualCoordinator = createRealRocmTestTimingV2Coordinator({
+    clock: visualClock.now,
+    totalStartNs: visualClock.now(),
+    visualContract: true,
+  });
+  visualCoordinator.startPhase('cold_intake');
+  visualClock.tick(5n);
+  visualCoordinator.finishPhase('cold_intake');
+  visualCoordinator.startPhase('discovery');
+  visualClock.tick(7n);
+  visualCoordinator.finishPhase('discovery');
+  visualCoordinator.startPhase('trigger_to_visible');
+  visualClock.tick(2n);
+  visualCoordinator.startPhase('compile');
+  visualClock.tick(11n);
+  visualCoordinator.finishPhase('compile');
+  visualClock.tick(3n);
+  visualCoordinator.finishPhase('trigger_to_visible');
+  const screenshotStartNs = visualClock.now();
+  visualClock.tick(13n);
+  visualCoordinator.measurePhase(
+    'screenshot_capture',
+    screenshotStartNs,
+    visualClock.now(),
+  );
+  const analysisStartNs = visualClock.now();
+  visualClock.tick(17n);
+  visualCoordinator.measurePhase('visual_analysis', analysisStartNs, visualClock.now());
+  visualCoordinator.startPhase('proof_finalization');
+  visualClock.tick(19n);
+  visualCoordinator.finishPhase('proof_finalization');
+  const visualPass = visualCoordinator.snapshot({
+    outcome: 'pass',
+    terminalReason: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalSuccess,
+  });
+
+  const refusalClock = realRocmTimingSelfCheckClock(1_000n);
+  const refusalCoordinator = createRealRocmTestTimingV2Coordinator({
+    clock: refusalClock.now,
+    totalStartNs: refusalClock.now(),
+    visualContract: realRocmTestTimingVisualContract({
+      expectScreenshot: false,
+      renderPreview: false,
+      profileName: 'forged-visual-profile-name',
+      projectName: 'forged-render-project-name',
+    }),
+  });
+  refusalCoordinator.startPhase('cold_intake');
+  refusalClock.tick(23n);
+  refusalCoordinator.finishPhase('cold_intake');
+  refusalCoordinator.startPhase('proof_finalization');
+  refusalClock.tick(29n);
+  refusalCoordinator.finishPhase('proof_finalization');
+  const nonvisualRefusal = refusalCoordinator.snapshot({
+    outcome: 'refused',
+    terminalReason: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalRefusal,
+  });
+
+  const exceptionClock = realRocmTimingSelfCheckClock(2_000n);
+  const exceptionCoordinator = createRealRocmTestTimingV2Coordinator({
+    clock: exceptionClock.now,
+    totalStartNs: exceptionClock.now(),
+    visualContract: true,
+  });
+  exceptionCoordinator.startPhase('cold_intake');
+  exceptionClock.tick(31n);
+  exceptionCoordinator.finishPhase('cold_intake');
+  exceptionCoordinator.startPhase('trigger_to_visible');
+  exceptionClock.tick(5n);
+  exceptionCoordinator.startPhase('compile');
+  exceptionClock.tick(37n);
+  const exception = exceptionCoordinator.snapshot({
+    outcome: 'failed',
+    terminalReason: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.exception,
+  });
+
+  const signalClock = realRocmTimingSelfCheckClock(3_000n);
+  const signalCoordinator = createRealRocmTestTimingV2Coordinator({
+    clock: signalClock.now,
+    totalStartNs: signalClock.now(),
+    visualContract: false,
+  });
+  signalCoordinator.startPhase('discovery');
+  signalClock.tick(41n);
+  const signal = signalCoordinator.snapshot({
+    outcome: 'failed',
+    terminalReason: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.signal,
+  });
+
+  const emergencyClock = realRocmTimingSelfCheckClock(4_000n);
+  const emergencyCoordinator = createRealRocmTestTimingV2Coordinator({
+    clock: emergencyClock.now,
+    totalStartNs: emergencyClock.now(),
+    visualContract: false,
+  });
+  emergencyClock.tick(43n);
+  const emergency = emergencyCoordinator.snapshot({
+    outcome: 'refused',
+    terminalReason: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.checkpoint,
+  });
+
+  let regressedIntervalRejected = false;
+  const adversarialClock = realRocmTimingSelfCheckClock(5_000n);
+  const adversarialCoordinator = createRealRocmTestTimingV2Coordinator({
+    clock: adversarialClock.now,
+    totalStartNs: adversarialClock.now(),
+    visualContract: true,
+  });
+  try {
+    adversarialCoordinator.measurePhase('screenshot_capture', 4_999n, 5_001n);
+  } catch (error) {
+    regressedIntervalRejected =
+      error?.message === 'real_rocm_timing_interval_invalid:screenshot_capture';
+  }
+
+  const proofIdentity = 'real-rocm-proof:sha256:before-support-timing';
+  const attachmentTarget = {
+    proofId: proofIdentity,
+    profileName: 'forged-visual-profile-name',
+    projectName: 'forged-render-project-name',
+    acceptedForGpuHmr: true,
+    gpuHmrSuccess: true,
+  };
+  attachRealRocmTestTimingV2(attachmentTarget, visualPass);
+  const serializedTiming = JSON.stringify(attachmentTarget.testTiming);
+  let authorityForgeryRejected = false;
+  try {
+    attachRealRocmTestTimingV2({}, {
+      ...visualPass,
+      authority: 'runtime_dispatch_authority',
+      acceptedForGpuHmr: true,
+      gpuHmrSuccess: true,
+    });
+  } catch (error) {
+    authorityForgeryRejected =
+      error?.message === 'real ROCm timing attachment requires support-only timing v2';
+  }
+
+  return {
+    schema: GPU_HMR_TEST_TIMING_SCHEMA,
+    visualPass,
+    nonvisualRefusal,
+    exception,
+    signal,
+    emergency,
+    attachment: {
+      aliasesShareRecord: attachmentTarget.testTiming === attachmentTarget.test_timing,
+      proofIdPreserved: attachmentTarget.proofId === proofIdentity,
+      acceptedForGpuHmrPreserved: attachmentTarget.acceptedForGpuHmr === true,
+      gpuHmrSuccessPreserved: attachmentTarget.gpuHmrSuccess === true,
+      timingContainsProfileOrProjectName:
+        serializedTiming.includes(attachmentTarget.profileName)
+        || serializedTiming.includes(attachmentTarget.projectName),
+    },
+    adversarial: {
+      authorityForgeryRejected,
+      regressedIntervalRejected,
+    },
+  };
+}
+
+if (process.argv.includes('--timing-v2-self-check')) {
+  try {
+    console.log(
+      `REAL_ROCM_TIMING_V2_SELF_CHECK ${JSON.stringify(buildRealRocmTimingV2SelfCheckCases())}`,
+    );
+  } catch (err) {
+    console.error(err.stack || err.message);
+    process.exitCode = 1;
+  }
+} else if (process.argv.includes('--self-check')) {
   try {
     await selfCheckRuntimeDispatchEvidence();
   } catch (err) {
@@ -28147,21 +28920,39 @@ if (process.argv.includes('--self-check')) {
     process.exitCode = 1;
   }
 } else {
+  disarmRealRocmBootstrapUncaughtExceptionHandler();
   run()
     .catch((err) => {
+      realRocmExecutionExceptionObserved = true;
       record('fatal', 'fail', err.stack || err.message);
       process.exitCode = 1;
+      try {
+        writeEmergencyRetainedCheckpointSync({
+          label: 'execution-exception',
+          reason: 'real_rocm_validation_execution_exception',
+          resultPaths: retainedResultPaths(),
+          timingOutcome: 'failed',
+          timingReasonCode: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.exception,
+        });
+      } catch (checkpointError) {
+        console.error(checkpointError?.stack || checkpointError?.message || checkpointError);
+      }
     })
     .finally(async () => {
+      if (realRocmTestTiming.phaseState('proof_finalization') === 'untouched') {
+        realRocmTestTiming.startPhase('proof_finalization');
+      }
       if (mcpState?.proc) {
         try { mcpState.proc.kill('SIGTERM'); } catch { /* ignore */ }
       }
       if (CFG.checkpointBeforeRuntimeEvidence) {
         await writeResults({ checkpointLabel: 'pre-runtime-evidence' }).catch((err) => {
+          realRocmExecutionExceptionObserved = true;
           console.error(err);
         });
       }
       await executeRuntimeAdapterInFinalizerIfNeeded().catch((err) => {
+        realRocmExecutionExceptionObserved = true;
         record('real ROCm runtime adapter finalizer execution', 'warn', err.stack || err.message);
       });
       updateRuntimeEvidenceCollectionStatus({ status: 'collecting' });
@@ -28170,9 +28961,42 @@ if (process.argv.includes('--self-check')) {
           updateRuntimeEvidenceCollectionStatus({ status: 'collected' });
         })
         .catch((err) => {
+          realRocmExecutionExceptionObserved = true;
           updateRuntimeEvidenceCollectionStatus({ status: 'collection_failed', error: err });
           record('runtime evidence collected', 'warn', err.stack || err.message);
         });
-      await writeResults({ checkpointLabel: 'final' }).catch((err) => console.error(err));
+      await writeResults({ checkpointLabel: 'final' }).catch((err) => {
+        realRocmExecutionExceptionObserved = true;
+        process.exitCode = 1;
+        console.error(err);
+        try {
+          writeEmergencyRetainedCheckpointSync({
+            label: 'final-result-write-exception',
+            reason: 'real_rocm_final_result_write_exception',
+            resultPaths: retainedResultPaths(),
+            timingOutcome: 'failed',
+            timingReasonCode:
+              REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalWriteException,
+          });
+        } catch (checkpointError) {
+          console.error(checkpointError?.stack || checkpointError?.message || checkpointError);
+        }
+      });
+    })
+    .catch((err) => {
+      realRocmExecutionExceptionObserved = true;
+      process.exitCode = 1;
+      console.error(err?.stack || err?.message || err);
+      try {
+        writeEmergencyRetainedCheckpointSync({
+          label: 'terminal-finalizer-exception',
+          reason: 'real_rocm_terminal_finalizer_exception',
+          resultPaths: retainedResultPaths(),
+          timingOutcome: 'failed',
+          timingReasonCode: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.exception,
+        });
+      } catch (checkpointError) {
+        console.error(checkpointError?.stack || checkpointError?.message || checkpointError);
+      }
     });
 }
