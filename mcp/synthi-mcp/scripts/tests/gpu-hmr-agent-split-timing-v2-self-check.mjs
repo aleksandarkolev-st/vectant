@@ -65,6 +65,11 @@ visualClock.tick(13n);
 visualLifecycle.observeOpaqueCompileRequest();
 visualLifecycle.observeRuntimeWait();
 visualClock.tick(18n);
+const visibleSignalNs = visualClock.tick(2n);
+assert.equal(
+  visualLifecycle.observePostEditVisibleOrOutputReadySignal(visibleSignalNs),
+  true,
+);
 
 const captureResult = {
   profileId: 'name_must_not_enable_visual_timing',
@@ -91,18 +96,20 @@ visualLifecycle.observeVisualCapture({
   captureEndNs,
   analysisStartNs,
   analysisEndNs,
-  postEpochVisible: true,
-  visibleEventNs: captureEndNs,
 });
 finishTerminalPhases(visualLifecycle, visualClock);
 const visualTiming = visualLifecycle.finalize({ outcome: 'pass' });
 const visualValidation = assertSupportOnlyTiming(visualTiming, 'pass');
 assert.equal(visualTiming.visualCapable, true);
 assert.equal(visualTiming.phases.trigger_to_visible.startNs, editTriggerNs.toString());
-assert.equal(visualTiming.phases.trigger_to_visible.endNs, captureEndNs.toString());
+assert.equal(visualTiming.phases.trigger_to_visible.endNs, visibleSignalNs.toString());
 assert.equal(
   visualTiming.phases.trigger_to_visible.durationNs,
-  (captureEndNs - editTriggerNs).toString(),
+  (visibleSignalNs - editTriggerNs).toString(),
+);
+assert.ok(
+  BigInt(visualTiming.phases.trigger_to_visible.endNs)
+    < BigInt(visualTiming.phases.screenshot_capture.startNs),
 );
 assert.equal(visualTiming.phases.screenshot_capture.durationNs, '19');
 assert.equal(visualTiming.phases.visual_analysis.durationNs, '23');
@@ -165,7 +172,6 @@ unavailableLifecycle.observeVisualCapture({
   captureEndNs: unavailableCaptureEndNs,
   analysisStartNs: unavailableCaptureEndNs,
   analysisEndNs: unavailableAnalysisEndNs,
-  postEpochVisible: false,
 });
 finishTerminalPhases(unavailableLifecycle, unavailableClock);
 const refusalTerminal = classifyAgentSplitTimingTerminal(
@@ -279,8 +285,10 @@ console.log(JSON.stringify({
   schema: GPU_HMR_TEST_TIMING_SCHEMA,
   cases: {
     visualPassUsesObservedContract: visualTiming.visualCapable,
-    triggerEndsAtVisibleCaptureBeforeAnalysis:
-      visualTiming.phases.trigger_to_visible.endNs === captureEndNs.toString(),
+    triggerEndsAtExplicitSignalBeforeCapture:
+      visualTiming.phases.trigger_to_visible.endNs === visibleSignalNs.toString(),
+    screenshotCannotBecomeVisibleSignal:
+      unavailableTiming.phases.trigger_to_visible.state === 'unavailable',
     missingCausalFrameUnavailable:
       unavailableTiming.phases.trigger_to_visible.state === 'unavailable',
     namesDoNotEnableVisualCapability: nameOnlyContract.observed === false,

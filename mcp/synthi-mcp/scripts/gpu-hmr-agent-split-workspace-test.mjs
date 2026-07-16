@@ -440,6 +440,22 @@ export class AgentSplitTestTimingV2Lifecycle {
     return true;
   }
 
+  observePostEditVisibleOrOutputReadySignal(signalNs) {
+    if (this.#pendingTriggerStartNs === null || this.#windows.has('trigger_to_visible')) {
+      return false;
+    }
+    const boundary = normalizeTimingBoundary(signalNs);
+    if (boundary < this.#pendingTriggerStartNs) {
+      this.markUnavailable('trigger_to_visible', TEST_TIMING_TRIGGER_REASON);
+      return false;
+    }
+    return this.recordWindow(
+      'trigger_to_visible',
+      this.#pendingTriggerStartNs,
+      boundary,
+    );
+  }
+
   observeOpaqueCompileRequest() {
     this.markUnavailable('split', TEST_TIMING_SPLIT_REASON);
     this.markUnavailable('compile', TEST_TIMING_COMPILE_REASON);
@@ -466,39 +482,9 @@ export class AgentSplitTestTimingV2Lifecycle {
     captureEndNs,
     analysisStartNs,
     analysisEndNs,
-    postEpochVisible = false,
-    visibleEventNs = captureEndNs,
   }) {
     if (!this.observeCaptureContract(contract, captureStartNs, captureEndNs)) return false;
     this.recordWindow('visual_analysis', analysisStartNs, analysisEndNs);
-    if (postEpochVisible !== true || this.#windows.has('trigger_to_visible')) return true;
-    if (this.#pendingTriggerStartNs === null) {
-      return true;
-    }
-    const visibleBoundary = normalizeTimingBoundary(visibleEventNs);
-    if (visibleBoundary < this.#pendingTriggerStartNs) {
-      this.markUnavailable('trigger_to_visible', TEST_TIMING_TRIGGER_REASON);
-      return true;
-    }
-    const triggerRecorded = this.recordWindow(
-      'trigger_to_visible',
-      this.#pendingTriggerStartNs,
-      visibleBoundary,
-    );
-    if (triggerRecorded) {
-      this.recordWindow(
-        'screenshot_capture',
-        captureStartNs,
-        captureEndNs,
-        { replace: true },
-      );
-      this.recordWindow(
-        'visual_analysis',
-        analysisStartNs,
-        analysisEndNs,
-        { replace: true },
-      );
-    }
     return true;
   }
 
@@ -10783,9 +10769,6 @@ async function assertMcpScreenshot(
       captureEndNs,
       analysisStartNs,
       analysisEndNs,
-      postEpochVisible:
-        Boolean(waitEvidence) && frameAfterGate === true && isVisibleFrame(captured),
-      visibleEventNs: captureEndNs,
     });
     return captured;
   };
