@@ -25,6 +25,8 @@ pub struct RelayControlCommand {
     pub device_fingerprint: String,
     pub action: String,
     pub port: Option<u16>,
+    #[serde(default)]
+    pub proposal: Option<Value>,
     pub expires_at: String,
     pub lease_id: String,
 }
@@ -425,9 +427,31 @@ impl RelayControlCommand {
         {
             return Err("Relay control command fields were invalid.".to_string());
         }
+        if let Some(proposal) = &self.proposal {
+            let encoded = serde_json::to_vec(proposal)
+                .map_err(|_| "Relay control proposal was invalid.".to_string())?;
+            if encoded.len() > 16_384 || control_proposal_is_sensitive(proposal) {
+                return Err("Relay control proposal was unsafe.".to_string());
+            }
+        }
         chrono::DateTime::parse_from_rfc3339(&self.expires_at)
             .map_err(|_| "Relay control command expiry was invalid.".to_string())?;
         Ok(())
+    }
+}
+
+fn control_proposal_is_sensitive(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map.iter().any(|(key, value)| {
+            let normalized = key.to_ascii_lowercase();
+            normalized.contains("token")
+                || normalized.contains("secret")
+                || normalized.contains("credential")
+                || normalized.contains("private_key")
+                || control_proposal_is_sensitive(value)
+        }),
+        Value::Array(items) => items.iter().any(control_proposal_is_sensitive),
+        _ => false,
     }
 }
 
@@ -543,10 +567,15 @@ mod tests {
             device_fingerprint: "sha256:1234567890123456".to_string(),
             action: "revoke_port".to_string(),
             port: Some(443),
+            proposal: None,
             expires_at: "2099-01-01T00:00:00Z".to_string(),
             lease_id: "11111111-1111-1111-1111-111111111111".to_string(),
         };
         assert!(command.validate().is_ok());
+
+        let mut unsafe_proposal = command.clone();
+        unsafe_proposal.proposal = Some(serde_json::json!({ "secret": "forbidden" }));
+        assert!(unsafe_proposal.validate().is_err());
 
         let mut invalid = command;
         invalid.action = "export_history".to_string();

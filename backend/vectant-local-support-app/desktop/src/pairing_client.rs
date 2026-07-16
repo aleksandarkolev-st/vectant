@@ -5,6 +5,7 @@ use serde_json::Value;
 
 const MAX_PAIRING_RESPONSE_BYTES: usize = 16 * 1024;
 const MAX_POLICY_RESPONSE_BYTES: usize = 16 * 1024;
+type FullAccessPolicyFlags = (bool, bool, bool, bool, bool, bool, bool);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ClaimedPairing {
@@ -355,9 +356,7 @@ pub fn parse_policy_status(
     })
 }
 
-fn parse_full_access_policy(
-    value: &Value,
-) -> Result<(bool, bool, bool, bool, bool, bool, bool), String> {
+fn parse_full_access_policy(value: &Value) -> Result<FullAccessPolicyFlags, String> {
     let Some(full_access) = value.get("full_access") else {
         return Ok((false, false, false, false, false, false, false));
     };

@@ -111,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
                         device_fingerprint: identity.public_identity().device_fingerprint,
                         action: "pause_session".to_string(),
                         port: None,
+                        proposal: None,
                         expires_at: "2099-01-01T00:00:00Z".to_string(),
                         lease_id,
                     },
