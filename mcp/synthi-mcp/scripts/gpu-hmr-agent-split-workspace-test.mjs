@@ -245,6 +245,7 @@ const TEST_TIMING_RETIREMENT_REASON =
 const TEST_TIMING_SUCCESS_GAP_REASON = 'phase_not_observed_before_success';
 const TEST_TIMING_SEED_ONLY_REASON = 'seed_only_terminal_path';
 const TEST_TIMING_EMERGENCY_RETIREMENT_REASON = 'emergency_retirement_not_observed';
+const TEST_TIMING_EMERGENCY_PHASE_REASON = 'phase_interrupted_by_terminal_event';
 const TEST_TIMING_PHASE_SET = new Set(GPU_HMR_TEST_TIMING_PHASE_KEYS);
 let activeAgentSplitTestTiming = null;
 let retainedAgentSplitTestTiming = null;
@@ -430,6 +431,13 @@ export class AgentSplitTestTimingV2Lifecycle {
   closeActivePhases(endNs = this.readBoundary()) {
     for (const phaseKey of [...this.#active.keys()]) {
       this.finishPhase(phaseKey, endNs);
+    }
+  }
+
+  abandonActivePhases(reasonCode = TEST_TIMING_EMERGENCY_PHASE_REASON) {
+    requireAgentSplitTimingReason(reasonCode);
+    for (const phaseKey of [...this.#active.keys()]) {
+      this.markUnavailable(phaseKey, reasonCode);
     }
   }
 
@@ -814,9 +822,50 @@ export async function finalizeAgentSplitTimingAfterResultPersistence({
   });
 }
 
-function writeResultCheckpointSync(reason = 'incremental_record') {
-  if (process.env.SYNTHI_GPU_AGENT_INCREMENTAL_RESULTS === '0') return;
-  if (writingResultCheckpoint) return;
+export function finalizeAgentSplitTimingAfterResultPersistenceSync({
+  lifecycle,
+  timingTerminal,
+  persistResults,
+  onPersistenceError = () => {},
+}) {
+  if (!(lifecycle instanceof AgentSplitTestTimingV2Lifecycle)) {
+    throw new TypeError('agent split synchronous persistence requires a timing lifecycle');
+  }
+  if (typeof persistResults !== 'function' || typeof onPersistenceError !== 'function') {
+    throw new TypeError('agent split synchronous persistence requires persistence callbacks');
+  }
+  let resolvedTerminal = timingTerminal;
+  let persistenceError = null;
+  lifecycle.beginPhase('proof_finalization');
+  try {
+    persistResults();
+  } catch (error) {
+    persistenceError = error;
+    if (resolvedTerminal?.outcome === 'pass') {
+      resolvedTerminal = Object.freeze({
+        outcome: 'failed',
+        category: 'result_persistence_failure',
+        reasonCode: 'agent_split_result_persistence_failure',
+      });
+    }
+    onPersistenceError(error);
+  } finally {
+    lifecycle.finishPhase('proof_finalization');
+  }
+  const testTiming = lifecycle.finalize({
+    outcome: resolvedTerminal.outcome,
+    terminalReason: resolvedTerminal.reasonCode,
+  });
+  return Object.freeze({
+    testTiming,
+    timingTerminal: resolvedTerminal,
+    persistenceError,
+  });
+}
+
+function writeResultCheckpointSync(reason = 'incremental_record', { force = false } = {}) {
+  if (!force && process.env.SYNTHI_GPU_AGENT_INCREMENTAL_RESULTS === '0') return false;
+  if (writingResultCheckpoint) return false;
   writingResultCheckpoint = true;
   try {
     mkdirSync(LOG_DIR, { recursive: true });
@@ -829,19 +878,29 @@ function writeResultCheckpointSync(reason = 'incremental_record') {
       ? sanitizeProofLogValue(retainedAgentSplitTimingTerminal)
       : null;
     const resultText = resultTextFromRows(sanitizedResults);
-    writeFileSync(RESULTS_JSON, `${JSON.stringify(sanitizedResults, null, 2)}\n`);
-    writeFileSync(RESULTS_TXT, resultText);
+    writeFileSync(
+      RESULTS_JSON,
+      `${JSON.stringify(sanitizedResults, null, 2)}\n`,
+      { flush: true },
+    );
+    writeFileSync(RESULTS_TXT, resultText, { flush: true });
     writeFileSync(
       path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.json`),
       `${JSON.stringify(sanitizedResults, null, 2)}\n`,
+      { flush: true },
     );
-    writeFileSync(path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.txt`), resultText);
+    writeFileSync(
+      path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.txt`),
+      resultText,
+      { flush: true },
+    );
     if (sanitizedTiming) {
       const timingJson = `${JSON.stringify(sanitizedTiming, null, 2)}\n`;
-      writeFileSync(TEST_TIMING_JSON, timingJson);
+      writeFileSync(TEST_TIMING_JSON, timingJson, { flush: true });
       writeFileSync(
         path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}-timing-v2.json`),
         timingJson,
+        { flush: true },
       );
     }
     writeFileSync(
@@ -852,9 +911,12 @@ function writeResultCheckpointSync(reason = 'incremental_record') {
         testTiming: sanitizedTiming,
         timingTerminal: sanitizedTimingTerminal,
       }), null, 2)}\n`,
+      { flush: true },
     );
+    return true;
   } catch {
     // Best-effort transport only. This checkpoint cannot authorize GPU HMR.
+    return false;
   } finally {
     writingResultCheckpoint = false;
   }
@@ -875,51 +937,75 @@ function recordEmergencyResult(kind, detail) {
   if (emergencyResultHandled) return;
   emergencyResultHandled = true;
   const timingTerminal = emergencyTimingTerminal(kind);
-  activeAgentSplitTestTiming?.closeActivePhases();
+  activeAgentSplitTestTiming?.abandonActivePhases();
   activeAgentSplitTestTiming?.markUnavailable(
     'retirement',
     TEST_TIMING_EMERGENCY_RETIREMENT_REASON,
   );
-  activeAgentSplitTestTiming?.beginPhase('proof_finalization');
   results.push({
     name: 'fatal',
     status: 'fail',
     detail: sanitizeProofLogValue(`${kind}: ${detail}`),
     ts: new Date().toISOString(),
   });
-  activeAgentSplitTestTiming?.finishPhase('proof_finalization');
   if (activeAgentSplitTestTiming && !activeAgentSplitTestTiming.isFinalized) {
-    retainAgentSplitTestTiming(
-      activeAgentSplitTestTiming.finalize({
-        outcome: timingTerminal.outcome,
-        terminalReason: timingTerminal.reasonCode,
-      }),
+    const finalizedTiming = finalizeAgentSplitTimingAfterResultPersistenceSync({
+      lifecycle: activeAgentSplitTestTiming,
       timingTerminal,
+      persistResults: () => {
+        if (!writeResultCheckpointSync(`${kind}_result`, { force: true })) {
+          throw new Error('agent split emergency result checkpoint was not persisted');
+        }
+      },
+      onPersistenceError: (error) => {
+        results.push({
+          name: 'result persistence',
+          status: 'fail',
+          detail: sanitizeProofLogValue(error?.message || String(error)),
+          ts: new Date().toISOString(),
+        });
+      },
+    });
+    retainAgentSplitTestTiming(
+      finalizedTiming.testTiming,
+      finalizedTiming.timingTerminal,
     );
   }
-  writeResultCheckpointSync(kind);
+  writeResultCheckpointSync(kind, { force: true });
 }
 
-function installEmergencyResultHandlers() {
+export function installAgentSplitEmergencyResultHandlers({
+  eventSource = process,
+  recordEmergency = recordEmergencyResult,
+  exit = (code) => process.exit(code),
+} = {}) {
+  if (
+    !eventSource
+    || typeof eventSource.once !== 'function'
+    || typeof recordEmergency !== 'function'
+    || typeof exit !== 'function'
+  ) {
+    throw new TypeError('agent split emergency handlers require an event source and callbacks');
+  }
   for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.once(signal, () => {
-      recordEmergencyResult(`signal:${signal}`, 'agent split visual proof terminated before final result');
-      process.exit(1);
+    eventSource.once(signal, () => {
+      recordEmergency(`signal:${signal}`, 'agent split visual proof terminated before final result');
+      exit(1);
     });
   }
-  process.once('uncaughtException', (err) => {
-    recordEmergencyResult(
+  eventSource.once('uncaughtException', (err) => {
+    recordEmergency(
       'uncaught_exception',
       err?.stack || err?.message || String(err),
     );
-    process.exit(1);
+    exit(1);
   });
-  process.once('unhandledRejection', (reason) => {
-    recordEmergencyResult(
+  eventSource.once('unhandledRejection', (reason) => {
+    recordEmergency(
       'unhandled_rejection',
       reason?.stack || reason?.message || String(reason),
     );
-    process.exit(1);
+    exit(1);
   });
 }
 
@@ -11637,7 +11723,7 @@ async function main() {
     return;
   }
 
-  installEmergencyResultHandlers();
+  installAgentSplitEmergencyResultHandlers();
   await runAgentSplitTerminal();
 }
 

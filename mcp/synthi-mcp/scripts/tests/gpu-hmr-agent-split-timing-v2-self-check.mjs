@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import {
   GPU_HMR_TEST_TIMING_SCHEMA,
   validateGpuHmrTestTiming,
@@ -12,6 +13,8 @@ import {
   createAgentSplitTestTimingV2Lifecycle,
   emergencyTimingTerminal,
   finalizeAgentSplitTimingAfterResultPersistence,
+  finalizeAgentSplitTimingAfterResultPersistenceSync,
+  installAgentSplitEmergencyResultHandlers,
   observedMcpVisualCaptureContract,
   tagAgentSplitTimingError,
 } from '../gpu-hmr-agent-split-workspace-test.mjs';
@@ -333,6 +336,65 @@ assert.equal(
 );
 assertSupportOnlyTiming(failedPersistenceTiming.testTiming, 'failed');
 
+const emergencyEventCases = [
+  { event: 'SIGINT', payload: null, expectedKind: 'signal:SIGINT' },
+  { event: 'SIGTERM', payload: null, expectedKind: 'signal:SIGTERM' },
+  {
+    event: 'uncaughtException',
+    payload: new Error('self-check uncaught detail'),
+    expectedKind: 'uncaught_exception',
+  },
+  {
+    event: 'unhandledRejection',
+    payload: new Error('self-check rejection detail'),
+    expectedKind: 'unhandled_rejection',
+  },
+];
+const retainedEmergencyTimings = [];
+for (const emergencyCase of emergencyEventCases) {
+  const eventSource = new EventEmitter();
+  const routedEvents = [];
+  const exitCodes = [];
+  installAgentSplitEmergencyResultHandlers({
+    eventSource,
+    recordEmergency: (kind, detail) => routedEvents.push({ kind, detail }),
+    exit: (code) => exitCodes.push(code),
+  });
+  if (emergencyCase.payload === null) eventSource.emit(emergencyCase.event);
+  else eventSource.emit(emergencyCase.event, emergencyCase.payload);
+  assert.equal(routedEvents.length, 1);
+  assert.equal(routedEvents[0].kind, emergencyCase.expectedKind);
+  assert.deepEqual(exitCodes, [1]);
+
+  const emergencyClock = controlledClock(7_000n + BigInt(retainedEmergencyTimings.length * 100));
+  const emergencyLifecycle = createAgentSplitTestTimingV2Lifecycle({
+    nowNs: emergencyClock.now,
+  });
+  emergencyLifecycle.beginPhase('discovery');
+  emergencyClock.tick(5n);
+  emergencyLifecycle.abandonActivePhases();
+  emergencyLifecycle.markUnavailable('retirement', 'emergency_retirement_not_observed');
+  let emergencyPersistedThroughNs = null;
+  const emergencyTerminalTiming = finalizeAgentSplitTimingAfterResultPersistenceSync({
+    lifecycle: emergencyLifecycle,
+    timingTerminal: emergencyTimingTerminal(emergencyCase.expectedKind),
+    persistResults: () => {
+      emergencyClock.tick(11n);
+      emergencyPersistedThroughNs = emergencyClock.now();
+    },
+  });
+  assertSupportOnlyTiming(emergencyTerminalTiming.testTiming, 'failed');
+  assert.equal(
+    emergencyTerminalTiming.testTiming.phases.discovery.reasonCode,
+    'phase_interrupted_by_terminal_event',
+  );
+  assert.ok(
+    BigInt(emergencyTerminalTiming.testTiming.phases.total_wall.endNs)
+      >= emergencyPersistedThroughNs,
+  );
+  retainedEmergencyTimings.push(emergencyTerminalTiming.testTiming);
+}
+
 console.log(JSON.stringify({
   ok: true,
   schema: GPU_HMR_TEST_TIMING_SCHEMA,
@@ -353,5 +415,7 @@ console.log(JSON.stringify({
       BigInt(persistedTiming.testTiming.phases.total_wall.endNs) >= persistedThroughNs,
     persistenceFailureRetained:
       failedPersistenceTiming.testTiming.outcome === 'failed',
+    terminalEventsRetainTiming:
+      retainedEmergencyTimings.length === emergencyEventCases.length,
   },
 }, null, 2));
