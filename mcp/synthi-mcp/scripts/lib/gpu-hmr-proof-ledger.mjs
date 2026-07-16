@@ -3563,8 +3563,14 @@ export function queryGpuHmrLedgerInvariants(input = {}, options = {}) {
         : [],
     ).sort();
     const recomputedFailures = compactStringList(failures.map((failure) => failure.code)).sort();
+    const suppliedQuerySuccess = firstPresent(
+      [suppliedQuery, 'gpuHmrSuccess'],
+      [suppliedQuery, 'gpu_hmr_success'],
+    );
     const suppliedConsistent =
-      suppliedQuery.gpuHmrSuccess === recordSuccess
+      suppliedQuerySuccess.present
+      && typeof suppliedQuerySuccess.value === 'boolean'
+      && suppliedQuerySuccess.value === recordSuccess
       && firstText(suppliedQuery.proofId, suppliedQuery.proof_id) === proofId
       && stableJson(suppliedFailures) === stableJson(recomputedFailures);
     if (!suppliedConsistent) {
@@ -3576,7 +3582,9 @@ export function queryGpuHmrLedgerInvariants(input = {}, options = {}) {
           ...failures,
           {
             code: 'supplied_ledger_query_mismatch',
-            suppliedGpuHmrSuccess: suppliedQuery.gpuHmrSuccess,
+            suppliedGpuHmrSuccess: suppliedQuerySuccess.present
+              ? suppliedQuerySuccess.value
+              : null,
             recomputedGpuHmrSuccess: recordSuccess,
           },
         ],

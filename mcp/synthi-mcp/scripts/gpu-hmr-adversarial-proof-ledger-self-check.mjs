@@ -999,6 +999,20 @@ assert.ok(conflictingQueryProofIdsResult.failedInvariants.some(
   ({ code }) => code === 'supplied_ledger_query_proof_id_alias_mismatch',
 ));
 
+const snakeCaseQueryLedger = buildGpuHmrProofLedger(baselineRecord());
+snakeCaseQueryLedger.query = {
+  schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+  proof_id: snakeCaseQueryLedger.proofId,
+  gpu_hmr_success: true,
+  failedInvariants: [],
+};
+const snakeCaseQueryResult = queryGpuHmrLedgerInvariants(snakeCaseQueryLedger);
+assert.equal(
+  snakeCaseQueryResult.gpuHmrSuccess,
+  true,
+  snakeCaseQueryResult.failedInvariants.map(({ code }) => code).join(','),
+);
+
 const missingRecordSchema = commitEraRecord();
 delete missingRecordSchema.schema_version;
 expectReject('missing exact record schema', missingRecordSchema, 'record_schema_version_missing');
