@@ -59,6 +59,11 @@ import {
   inspectImmutableColdBuildWorkerImage,
   verifyImmutableColdBuildWorkerImage,
 } from './lib/gpu-hmr-cold-build-worker-image.mjs';
+import {
+  GPU_HMR_TEST_TIMING_SCHEMA,
+  GpuHmrTestTimingRecorder,
+  validateGpuHmrTestTiming,
+} from './lib/gpu-hmr-test-timing-v2.mjs';
 
 export const ARBITRARY_COLD_PROJECT_DESCRIPTOR_SCHEMA =
   'synthi.gpu_hmr.arbitrary_cold_project_descriptor.v1';
@@ -70,6 +75,77 @@ export const ARBITRARY_COLD_PROJECT_RUN_FAILURE_SCHEMA =
   'synthi.gpu_hmr.arbitrary_cold_project_run_failure.v2';
 export const ARBITRARY_COLD_PROJECT_RUN_FAILURE_AUTHORITY =
   'runner_failure_diagnostics_only_not_cold_build_or_gpu_hmr_success';
+export const ARBITRARY_COLD_PROJECT_TIMING_VISUAL_NOT_APPLICABLE_REASON =
+  'arbitrary_cold_build_has_no_visual_observer';
+
+const ARBITRARY_COLD_PROJECT_TIMING_PHASE_UNAVAILABLE_REASON =
+  'arbitrary_cold_build_phase_boundary_not_observed';
+const ARBITRARY_COLD_PROJECT_TIMING_COMPILE_UNAVAILABLE_REASON =
+  'arbitrary_cold_build_compile_boundary_not_observed';
+const ARBITRARY_COLD_PROJECT_TIMING_OUTPUT_UNAVAILABLE_REASON =
+  'arbitrary_cold_build_output_ready_boundary_not_observed';
+const ARBITRARY_COLD_PROJECT_TIMING_SPLIT_NOT_APPLICABLE_REASON =
+  'arbitrary_cold_build_does_not_perform_split';
+const ARBITRARY_COLD_PROJECT_TIMING_RUNTIME_NOT_APPLICABLE_REASON =
+  'arbitrary_cold_build_does_not_perform_gpu_hmr_runtime_phase';
+const ARBITRARY_COLD_PROJECT_TIMING_PASS_REASON = 'arbitrary_cold_runner_passed';
+const ARBITRARY_COLD_PROJECT_TIMING_PERSISTENCE_FAILURE_REASON =
+  'arbitrary_cold_runner_terminal_persistence_failed';
+const ARBITRARY_COLD_PROJECT_TIMING_VISUAL_PHASES = Object.freeze([
+  'trigger_to_visible',
+  'screenshot_capture',
+  'visual_analysis',
+]);
+const ARBITRARY_COLD_PROJECT_TIMING_PHASE_DISPOSITIONS = Object.freeze({
+  cold_intake: Object.freeze({
+    state: 'unavailable',
+    reasonCode: ARBITRARY_COLD_PROJECT_TIMING_PHASE_UNAVAILABLE_REASON,
+  }),
+  discovery: Object.freeze({
+    state: 'unavailable',
+    reasonCode: ARBITRARY_COLD_PROJECT_TIMING_PHASE_UNAVAILABLE_REASON,
+  }),
+  split: Object.freeze({
+    state: 'not_applicable',
+    reasonCode: ARBITRARY_COLD_PROJECT_TIMING_SPLIT_NOT_APPLICABLE_REASON,
+  }),
+  compile: Object.freeze({
+    state: 'unavailable',
+    reasonCode: ARBITRARY_COLD_PROJECT_TIMING_COMPILE_UNAVAILABLE_REASON,
+  }),
+  load: Object.freeze({
+    state: 'not_applicable',
+    reasonCode: ARBITRARY_COLD_PROJECT_TIMING_RUNTIME_NOT_APPLICABLE_REASON,
+  }),
+  epoch_publication: Object.freeze({
+    state: 'not_applicable',
+    reasonCode: ARBITRARY_COLD_PROJECT_TIMING_RUNTIME_NOT_APPLICABLE_REASON,
+  }),
+  dispatch: Object.freeze({
+    state: 'not_applicable',
+    reasonCode: ARBITRARY_COLD_PROJECT_TIMING_RUNTIME_NOT_APPLICABLE_REASON,
+  }),
+  output_ready: Object.freeze({
+    state: 'unavailable',
+    reasonCode: ARBITRARY_COLD_PROJECT_TIMING_OUTPUT_UNAVAILABLE_REASON,
+  }),
+  trigger_to_visible: Object.freeze({
+    state: 'not_applicable',
+    reasonCode: ARBITRARY_COLD_PROJECT_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+  }),
+  screenshot_capture: Object.freeze({
+    state: 'not_applicable',
+    reasonCode: ARBITRARY_COLD_PROJECT_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+  }),
+  visual_analysis: Object.freeze({
+    state: 'not_applicable',
+    reasonCode: ARBITRARY_COLD_PROJECT_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+  }),
+  retirement: Object.freeze({
+    state: 'not_applicable',
+    reasonCode: ARBITRARY_COLD_PROJECT_TIMING_RUNTIME_NOT_APPLICABLE_REASON,
+  }),
+});
 
 export const DEFAULT_ARBITRARY_COLD_RUNNER_POLICY = Object.freeze({
   maxSourceEntryCount: 1_000_000,
@@ -266,6 +342,263 @@ function hasForbiddenSupportAuthority(value) {
   ));
 }
 
+function monotonicTimingClockValue(value) {
+  if (typeof value === 'bigint' && value >= 0n) return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+    return BigInt(value);
+  }
+  if (typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value)) {
+    return BigInt(value);
+  }
+  throw new Error('arbitrary_cold_runner_timing_clock_invalid');
+}
+
+function stableTimingReason(value, fallback) {
+  const candidate = String(value ?? '');
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(candidate)
+    ? candidate
+    : fallback;
+}
+
+function assertArbitraryColdProjectSupportOnlyTiming(testTiming) {
+  const validation = validateGpuHmrTestTiming(testTiming);
+  if (
+    testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA
+    || validation.valid !== true
+    || testTiming.authority !== 'timing_only'
+    || testTiming.timingOnly !== true
+    || testTiming.acceptedForGpuHmr !== false
+    || testTiming.gpuHmrSuccess !== false
+    || testTiming.visualCapable !== false
+    || hasForbiddenSupportAuthority(testTiming)
+    || ARBITRARY_COLD_PROJECT_TIMING_VISUAL_PHASES.some((phaseKey) => (
+      testTiming.phases?.[phaseKey]?.state !== 'not_applicable'
+      || testTiming.phases?.[phaseKey]?.startNs !== null
+      || testTiming.phases?.[phaseKey]?.endNs !== null
+      || testTiming.phases?.[phaseKey]?.durationNs !== null
+      || testTiming.phases?.[phaseKey]?.reasonCode
+        !== ARBITRARY_COLD_PROJECT_TIMING_VISUAL_NOT_APPLICABLE_REASON
+    ))
+  ) {
+    throw new TypeError(
+      'arbitrary cold project timing requires valid support-only nonvisual timing v2',
+    );
+  }
+  return testTiming;
+}
+
+export class ArbitraryColdProjectTimingV2Lifecycle {
+  #clock;
+  #lastClockNs;
+  #totalStartNs;
+  #proofFinalizationStartNs;
+  #proofFinalizationEndNs;
+
+  constructor({ clock = () => process.hrtime.bigint() } = {}) {
+    if (typeof clock !== 'function') {
+      throw new TypeError('arbitrary cold project timing clock must be a function');
+    }
+    this.#clock = clock;
+    this.#lastClockNs = null;
+    this.#totalStartNs = this.#readClock();
+    this.#proofFinalizationStartNs = null;
+    this.#proofFinalizationEndNs = null;
+  }
+
+  #readClock() {
+    const reading = monotonicTimingClockValue(this.#clock());
+    if (this.#lastClockNs !== null && reading < this.#lastClockNs) {
+      throw new Error('arbitrary_cold_runner_timing_clock_regressed');
+    }
+    this.#lastClockNs = reading;
+    return reading;
+  }
+
+  phaseState(phaseKey) {
+    if (phaseKey !== 'proof_finalization') {
+      throw new Error('arbitrary_cold_runner_timing_phase_not_observable');
+    }
+    if (this.#proofFinalizationEndNs !== null) return 'finished';
+    if (this.#proofFinalizationStartNs !== null) return 'started';
+    return 'untouched';
+  }
+
+  beginProofFinalization() {
+    if (this.phaseState('proof_finalization') !== 'untouched') {
+      throw new Error('arbitrary_cold_runner_timing_phase_transition_invalid');
+    }
+    this.#proofFinalizationStartNs = this.#readClock();
+    return this.#proofFinalizationStartNs.toString();
+  }
+
+  finishProofFinalization() {
+    if (this.phaseState('proof_finalization') !== 'started') {
+      throw new Error('arbitrary_cold_runner_timing_phase_transition_invalid');
+    }
+    this.#proofFinalizationEndNs = this.#readClock();
+    return this.#proofFinalizationEndNs.toString();
+  }
+
+  snapshot({ outcome, terminalReason } = {}) {
+    const totalEndNs = this.#readClock();
+    const proofEndNs = this.#proofFinalizationStartNs === null
+      ? null
+      : this.#proofFinalizationEndNs ?? totalEndNs;
+    const readings = [this.#totalStartNs];
+    if (this.#proofFinalizationStartNs !== null) {
+      readings.push(this.#proofFinalizationStartNs, proofEndNs);
+    }
+    readings.push(totalEndNs);
+    let readingIndex = 0;
+    const recorder = new GpuHmrTestTimingRecorder({
+      clock: () => readings[readingIndex++] ?? totalEndNs,
+    });
+    for (const [phaseKey, disposition] of Object.entries(
+      ARBITRARY_COLD_PROJECT_TIMING_PHASE_DISPOSITIONS,
+    )) {
+      if (disposition.state === 'not_applicable') {
+        recorder.notApplicable(phaseKey, disposition.reasonCode);
+      } else {
+        recorder.unavailable(phaseKey, disposition.reasonCode);
+      }
+    }
+    if (this.#proofFinalizationStartNs !== null) {
+      recorder.startPhase('proof_finalization');
+      recorder.finishPhase('proof_finalization');
+    }
+    const record = recorder.finalize({
+      outcome,
+      visualCapable: false,
+      terminalReason: stableTimingReason(
+        terminalReason,
+        outcome === 'pass'
+          ? ARBITRARY_COLD_PROJECT_TIMING_PASS_REASON
+          : 'arbitrary_cold_runner_failed',
+      ),
+      notApplicableReason: ARBITRARY_COLD_PROJECT_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+    });
+    assertArbitraryColdProjectSupportOnlyTiming(record);
+    return record;
+  }
+}
+
+export function createArbitraryColdProjectTimingV2Lifecycle(options) {
+  return new ArbitraryColdProjectTimingV2Lifecycle(options);
+}
+
+function setArbitraryColdProjectTestTiming(target, testTiming, { replace = false } = {}) {
+  if (!target || typeof target !== 'object' || Array.isArray(target)) {
+    throw new TypeError('arbitrary cold project timing attachment target must be an object');
+  }
+  assertArbitraryColdProjectSupportOnlyTiming(testTiming);
+  const hasCamel = Object.hasOwn(target, 'testTiming');
+  const hasSnake = Object.hasOwn(target, 'test_timing');
+  if (hasCamel !== hasSnake) {
+    throw new TypeError('arbitrary cold project timing aliases must be paired');
+  }
+  if (hasCamel) {
+    assertArbitraryColdProjectSupportOnlyTiming(target.testTiming);
+    assertArbitraryColdProjectSupportOnlyTiming(target.test_timing);
+    if (
+      stableJson(target.testTiming) !== stableJson(target.test_timing)
+      || (!replace && stableJson(target.testTiming) !== stableJson(testTiming))
+    ) {
+      throw new TypeError('arbitrary cold project timing aliases do not match');
+    }
+  }
+  target.testTiming = testTiming;
+  target.test_timing = testTiming;
+  return target;
+}
+
+export function attachArbitraryColdProjectTestTiming(target, testTiming) {
+  return setArbitraryColdProjectTestTiming(target, testTiming);
+}
+
+export function verifyTimedArbitraryColdCliResultEnvelope(envelope) {
+  if (
+    !envelope
+    || typeof envelope !== 'object'
+    || Array.isArray(envelope)
+    || !Object.hasOwn(envelope, 'testTiming')
+    || !Object.hasOwn(envelope, 'test_timing')
+    || stableJson(envelope.testTiming) !== stableJson(envelope.test_timing)
+  ) {
+    throw new Error('arbitrary_cold_runner_timed_cli_envelope_invalid');
+  }
+  try {
+    assertArbitraryColdProjectSupportOnlyTiming(envelope.testTiming);
+    assertArbitraryColdProjectSupportOnlyTiming(envelope.test_timing);
+    if (envelope.testTiming.outcome !== 'pass') {
+      throw new Error('timed CLI success must carry a pass timing outcome');
+    }
+    const proofEnvelope = { ...envelope };
+    delete proofEnvelope.testTiming;
+    delete proofEnvelope.test_timing;
+    verifyArbitraryColdCliResultEnvelope(proofEnvelope);
+  } catch {
+    throw new Error('arbitrary_cold_runner_timed_cli_envelope_invalid');
+  }
+  return envelope;
+}
+
+function timingFailureCode(error) {
+  const candidate = String(error?.message ?? '');
+  return /^[a-z0-9][a-z0-9_.:-]{0,255}$/.test(candidate)
+    ? candidate
+    : 'arbitrary_cold_runner_failed';
+}
+
+export function arbitraryColdProjectTimingOutcomeForError(error) {
+  const failureCode = timingFailureCode(error);
+  if (
+    error?.readyRefusalEvidence
+    || error?.refusalDiagnostics
+    || error?.launcherDiagnostics
+    || /(?:_invalid|_refused|_exceed_policy|_unsupported|_not_found)$/.test(failureCode)
+  ) {
+    return 'refused';
+  }
+  return 'failed';
+}
+
+function tagArbitraryColdProjectTimingError(error, testTiming) {
+  assertArbitraryColdProjectSupportOnlyTiming(testTiming);
+  let target = error instanceof Error
+    ? error
+    : new Error(timingFailureCode({ message: error }));
+  try {
+    Object.defineProperties(target, {
+      testTiming: {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: testTiming,
+      },
+      test_timing: {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: testTiming,
+      },
+    });
+  } catch {
+    const wrapped = new Error(timingFailureCode(error), { cause: error });
+    for (const key of [
+      'readyRefusalEvidence',
+      'refusalDiagnostics',
+      'launcherDiagnostics',
+      'cleanupEvidence',
+    ]) {
+      if (error?.[key]) wrapped[key] = error[key];
+    }
+    wrapped.testTiming = testTiming;
+    wrapped.test_timing = testTiming;
+    target = wrapped;
+  }
+  return target;
+}
+
 function cloneSupportFacet(value, {
   keys,
   schemaVersion,
@@ -312,11 +645,42 @@ function diagnosticsShapeAccepted(value) {
   );
 }
 
-export function createArbitraryColdProjectRunFailure(error) {
-  const failureCodeCandidate = String(error?.message ?? '');
-  const failureCode = /^[a-z0-9][a-z0-9_.:-]{0,255}$/.test(failureCodeCandidate)
-    ? failureCodeCandidate
-    : 'arbitrary_cold_runner_failed';
+export function createArbitraryColdProjectRunFailure(error, {
+  testTiming = null,
+  timingClock = null,
+} = {}) {
+  const failureCode = timingFailureCode(error);
+  let resolvedTiming = testTiming;
+  if (resolvedTiming === null) {
+    const camelTiming = error?.testTiming;
+    const snakeTiming = error?.test_timing;
+    if (camelTiming !== undefined || snakeTiming !== undefined) {
+      if (
+        camelTiming === undefined
+        || snakeTiming === undefined
+        || stableJson(camelTiming) !== stableJson(snakeTiming)
+      ) {
+        throw new Error('arbitrary_cold_runner_failure_timing_invalid');
+      }
+      resolvedTiming = camelTiming;
+    } else {
+      const lifecycle = createArbitraryColdProjectTimingV2Lifecycle(
+        typeof timingClock === 'function' ? { clock: timingClock } : undefined,
+      );
+      resolvedTiming = lifecycle.snapshot({
+        outcome: arbitraryColdProjectTimingOutcomeForError(error),
+        terminalReason: failureCode,
+      });
+    }
+  }
+  try {
+    assertArbitraryColdProjectSupportOnlyTiming(resolvedTiming);
+    if (!['refused', 'failed'].includes(resolvedTiming.outcome)) {
+      throw new Error('failure timing cannot carry a pass outcome');
+    }
+  } catch {
+    throw new Error('arbitrary_cold_runner_failure_timing_invalid');
+  }
   const readyRefusalEvidence = cloneSupportFacet(error?.readyRefusalEvidence, {
     keys: READY_REFUSAL_KEYS,
     schemaVersion: COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA,
@@ -347,6 +711,8 @@ export function createArbitraryColdProjectRunFailure(error) {
     refusalDiagnostics,
     launcherDiagnostics,
     cleanupEvidence,
+    testTiming: resolvedTiming,
+    test_timing: resolvedTiming,
     acceptedAsFailureDiagnostics: [
       readyRefusalEvidence,
       refusalDiagnostics,
@@ -368,6 +734,7 @@ export function verifyArbitraryColdProjectRunFailure(evidence) {
   const diagnostics = evidence?.refusalDiagnostics;
   const launcherDiagnostics = evidence?.launcherDiagnostics;
   const cleanup = evidence?.cleanupEvidence;
+  const testTiming = evidence?.testTiming;
   const readyClone = ready === null ? null : cloneSupportFacet(ready, {
     keys: READY_REFUSAL_KEYS,
     schemaVersion: COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA,
@@ -403,6 +770,8 @@ export function verifyArbitraryColdProjectRunFailure(evidence) {
       'refusalDiagnostics',
       'launcherDiagnostics',
       'cleanupEvidence',
+      'testTiming',
+      'test_timing',
       'acceptedAsFailureDiagnostics',
       'acceptedAsColdBuildEvidence',
       'acceptedForGpuHmr',
@@ -418,6 +787,8 @@ export function verifyArbitraryColdProjectRunFailure(evidence) {
     || (diagnostics !== null && diagnosticsClone === null)
     || (launcherDiagnostics !== null && launcherDiagnosticsClone === null)
     || (cleanup !== null && cleanupClone === null)
+    || stableJson(testTiming) !== stableJson(evidence?.test_timing)
+    || !['refused', 'failed'].includes(testTiming?.outcome)
     || evidence.acceptedAsFailureDiagnostics !== (supportCount > 0)
     || evidence.acceptedAsColdBuildEvidence !== false
     || evidence.acceptedForGpuHmr !== false
@@ -426,6 +797,12 @@ export function verifyArbitraryColdProjectRunFailure(evidence) {
     || evidence.canSatisfyDispatchProof !== false
     || recomputeEvidenceHash(evidence) !== evidence.evidenceHash
   ) {
+    throw new Error('arbitrary_cold_runner_failure_evidence_invalid');
+  }
+  try {
+    assertArbitraryColdProjectSupportOnlyTiming(testTiming);
+    assertArbitraryColdProjectSupportOnlyTiming(evidence.test_timing);
+  } catch {
     throw new Error('arbitrary_cold_runner_failure_evidence_invalid');
   }
   return evidence;
@@ -871,10 +1248,11 @@ function artifactLocatorProjection(outputs) {
   ));
 }
 
-export async function runArbitraryColdProject(descriptorInput, {
+async function executeArbitraryColdProject(descriptorInput, {
   artifactRoot,
   dockerExecutable = 'docker',
   policy = {},
+  timingLifecycle = null,
 } = {}) {
   const started = process.hrtime.bigint();
   const normalizedPolicy = normalizePolicy(policy);
@@ -1053,6 +1431,9 @@ export async function runArbitraryColdProject(descriptorInput, {
     }
     const outputEvidenceNanos = Number(process.hrtime.bigint() - outputStarted);
 
+    if (timingLifecycle?.phaseState('proof_finalization') === 'untouched') {
+      timingLifecycle.beginProofFinalization();
+    }
     const persistenceStarted = process.hrtime.bigint();
     const artifactSession = await createArtifactSessionRoot(artifactRootIdentity);
     const outputs = await persistOutputs(
@@ -1158,9 +1539,152 @@ export async function runArbitraryColdProject(descriptorInput, {
   }
 }
 
+function finishArbitraryColdProjectProofFinalization(timingLifecycle) {
+  if (timingLifecycle.phaseState('proof_finalization') === 'started') {
+    timingLifecycle.finishProofFinalization();
+  }
+}
+
+function pinArbitraryColdProjectResultTiming(result, testTiming) {
+  const pinned = PINNED_RUNS.get(result);
+  if (!pinned) throw new Error('arbitrary_cold_runner_result_invalid');
+  setArbitraryColdProjectTestTiming(result, testTiming, { replace: true });
+  PINNED_RUNS.set(result, Object.freeze({ ...pinned, testTiming }));
+  return result;
+}
+
+async function runArbitraryColdProjectWithTimingLifecycle(descriptorInput, {
+  artifactRoot,
+  dockerExecutable = 'docker',
+  policy = {},
+  persistTerminalOutcome = null,
+} = {}, timingLifecycle) {
+  if (!(timingLifecycle instanceof ArbitraryColdProjectTimingV2Lifecycle)) {
+    throw new TypeError('arbitrary cold project run requires a timing lifecycle');
+  }
+  if (persistTerminalOutcome !== null && typeof persistTerminalOutcome !== 'function') {
+    const error = new TypeError('arbitrary cold project terminal persistence must be a function');
+    const testTiming = timingLifecycle.snapshot({
+      outcome: 'refused',
+      terminalReason: 'arbitrary_cold_runner_terminal_persistence_invalid',
+    });
+    throw tagArbitraryColdProjectTimingError(error, testTiming);
+  }
+
+  let result;
+  try {
+    result = await executeArbitraryColdProject(descriptorInput, {
+      artifactRoot,
+      dockerExecutable,
+      policy,
+      timingLifecycle,
+    });
+  } catch (error) {
+    finishArbitraryColdProjectProofFinalization(timingLifecycle);
+    const testTiming = timingLifecycle.snapshot({
+      outcome: arbitraryColdProjectTimingOutcomeForError(error),
+      terminalReason: timingFailureCode(error),
+    });
+    throw tagArbitraryColdProjectTimingError(error, testTiming);
+  }
+
+  if (persistTerminalOutcome) {
+    if (timingLifecycle.phaseState('proof_finalization') === 'untouched') {
+      timingLifecycle.beginProofFinalization();
+    }
+    try {
+      await persistTerminalOutcome(result, Object.freeze({
+        stage: 'provisional',
+        outcome: 'pass',
+        timingAttached: false,
+      }));
+    } catch (error) {
+      finishArbitraryColdProjectProofFinalization(timingLifecycle);
+      const testTiming = timingLifecycle.snapshot({
+        outcome: 'failed',
+        terminalReason: ARBITRARY_COLD_PROJECT_TIMING_PERSISTENCE_FAILURE_REASON,
+      });
+      throw tagArbitraryColdProjectTimingError(error, testTiming);
+    }
+  }
+
+  finishArbitraryColdProjectProofFinalization(timingLifecycle);
+  const testTiming = timingLifecycle.snapshot({
+    outcome: 'pass',
+    terminalReason: ARBITRARY_COLD_PROJECT_TIMING_PASS_REASON,
+  });
+  try {
+    pinArbitraryColdProjectResultTiming(result, testTiming);
+    await verifyArbitraryColdProjectRun(result);
+  } catch (error) {
+    const failedTiming = timingLifecycle.snapshot({
+      outcome: 'failed',
+      terminalReason: timingFailureCode(error),
+    });
+    throw tagArbitraryColdProjectTimingError(error, failedTiming);
+  }
+
+  if (persistTerminalOutcome) {
+    try {
+      await persistTerminalOutcome(result, Object.freeze({
+        stage: 'final',
+        outcome: 'pass',
+        timingAttached: true,
+      }));
+      await verifyArbitraryColdProjectRun(result);
+    } catch (error) {
+      const failedTiming = timingLifecycle.snapshot({
+        outcome: 'failed',
+        terminalReason: ARBITRARY_COLD_PROJECT_TIMING_PERSISTENCE_FAILURE_REASON,
+      });
+      pinArbitraryColdProjectResultTiming(result, failedTiming);
+      throw tagArbitraryColdProjectTimingError(error, failedTiming);
+    }
+  }
+  return result;
+}
+
+export async function runArbitraryColdProject(descriptorInput, {
+  artifactRoot,
+  dockerExecutable = 'docker',
+  policy = {},
+  timingClock = null,
+  persistTerminalOutcome = null,
+} = {}) {
+  const timingLifecycle = createArbitraryColdProjectTimingV2Lifecycle(
+    typeof timingClock === 'function' ? { clock: timingClock } : undefined,
+  );
+  return runArbitraryColdProjectWithTimingLifecycle(descriptorInput, {
+    artifactRoot,
+    dockerExecutable,
+    policy,
+    persistTerminalOutcome,
+  }, timingLifecycle);
+}
+
 export async function verifyArbitraryColdProjectRun(result) {
   const pinned = PINNED_RUNS.get(result);
   if (!pinned) {
+    throw new Error('arbitrary_cold_runner_result_invalid');
+  }
+  if (
+    !exactKeys(result, [
+      'evidence',
+      'retainedExecutionChain',
+      'outputs',
+      'artifactSessionRoot',
+      'testTiming',
+      'test_timing',
+    ])
+    || result.testTiming !== pinned.testTiming
+    || result.test_timing !== pinned.testTiming
+    || result.testTiming?.outcome !== 'pass'
+  ) {
+    throw new Error('arbitrary_cold_runner_result_invalid');
+  }
+  try {
+    assertArbitraryColdProjectSupportOnlyTiming(result.testTiming);
+  } catch {
     throw new Error('arbitrary_cold_runner_result_invalid');
   }
   try {
@@ -1342,7 +1866,7 @@ function parseCliArguments(argv) {
   return values;
 }
 
-async function main() {
+async function main(timingLifecycle) {
   const args = parseCliArguments(process.argv.slice(2));
   const descriptorBytes = await readFile(
     requireHostPath(args['--descriptor'], 'descriptor_path'),
@@ -1356,16 +1880,23 @@ async function main() {
   } catch {
     throw new Error('arbitrary_cold_runner_descriptor_json_invalid');
   }
-  const result = await runArbitraryColdProject(descriptor, {
+  const result = await runArbitraryColdProjectWithTimingLifecycle(descriptor, {
     artifactRoot: args['--artifact-root'],
     dockerExecutable: args['--docker'] ?? 'docker',
-  });
+  }, timingLifecycle);
   await verifyArbitraryColdProjectRun(result);
   const envelope = createArbitraryColdCliResultEnvelope({
     descriptorBytesHash: contentHash(descriptorBytes),
     result,
   });
   verifyArbitraryColdCliResultEnvelope(envelope);
+  const testTiming = timingLifecycle.snapshot({
+    outcome: 'pass',
+    terminalReason: ARBITRARY_COLD_PROJECT_TIMING_PASS_REASON,
+  });
+  pinArbitraryColdProjectResultTiming(result, testTiming);
+  attachArbitraryColdProjectTestTiming(envelope, testTiming);
+  verifyTimedArbitraryColdCliResultEnvelope(envelope);
   console.log(JSON.stringify(envelope, null, 2));
 }
 
@@ -1382,10 +1913,16 @@ const directInvocation = process.argv[1]
   && await canonicalInvocationPath(process.argv[1])
     === await canonicalInvocationPath(fileURLToPath(import.meta.url));
 if (directInvocation) {
+  const timingLifecycle = createArbitraryColdProjectTimingV2Lifecycle();
   try {
-    await main();
+    await main(timingLifecycle);
   } catch (error) {
-    const failure = createArbitraryColdProjectRunFailure(error);
+    const failureCode = timingFailureCode(error);
+    const testTiming = timingLifecycle.snapshot({
+      outcome: arbitraryColdProjectTimingOutcomeForError(error),
+      terminalReason: failureCode,
+    });
+    const failure = createArbitraryColdProjectRunFailure(error, { testTiming });
     verifyArbitraryColdProjectRunFailure(failure);
     process.stderr.write(`${JSON.stringify({ failure }, null, 2)}\n`);
     process.exitCode = 1;

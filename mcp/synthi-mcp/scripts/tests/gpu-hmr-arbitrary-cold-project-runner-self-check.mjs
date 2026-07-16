@@ -22,10 +22,15 @@ import {
   ARBITRARY_COLD_PROJECT_RUN_FAILURE_AUTHORITY,
   ARBITRARY_COLD_PROJECT_RUN_FAILURE_SCHEMA,
   ARBITRARY_COLD_PROJECT_RUN_SCHEMA,
+  ARBITRARY_COLD_PROJECT_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+  attachArbitraryColdProjectTestTiming,
+  createArbitraryColdProjectRunFailure,
+  createArbitraryColdProjectTimingV2Lifecycle,
   normalizeArbitraryColdProjectDescriptor,
   runArbitraryColdProject,
   verifyArbitraryColdProjectRun,
   verifyArbitraryColdProjectRunFailure,
+  verifyTimedArbitraryColdCliResultEnvelope,
 } from '../gpu-hmr-arbitrary-cold-project-runner.mjs';
 import {
   COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
@@ -47,6 +52,10 @@ import {
   createArbitraryColdCompileSupportReceipt,
   verifyArbitraryColdCompileSupportReceipt,
 } from '../lib/gpu-hmr-arbitrary-cold-compile-support-receipt.mjs';
+import {
+  GPU_HMR_TEST_TIMING_SCHEMA,
+  validateGpuHmrTestTiming,
+} from '../lib/gpu-hmr-test-timing-v2.mjs';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'synthi-arbitrary-cold-self-check-'));
 const execFileAsync = promisify(execFile);
@@ -91,6 +100,54 @@ function resealCliLocatorBinding(envelope, outputIndex) {
   resealEvidence(envelope);
 }
 
+function proofEnvelopeFromTimed(envelope) {
+  const proofEnvelope = structuredClone(envelope);
+  delete proofEnvelope.testTiming;
+  delete proofEnvelope.test_timing;
+  return proofEnvelope;
+}
+
+function controlledClock(initialNs = 0n) {
+  let currentNs = initialNs;
+  return Object.freeze({
+    now: () => currentNs,
+    tick: (durationNs) => {
+      currentNs += BigInt(durationNs);
+      return currentNs;
+    },
+  });
+}
+
+function assertArbitraryColdTiming(testTiming, expectedOutcome) {
+  const validation = validateGpuHmrTestTiming(testTiming);
+  assert.equal(testTiming.schema, GPU_HMR_TEST_TIMING_SCHEMA);
+  assert.equal(validation.valid, true, validation.blockingGaps.join('|'));
+  assert.equal(testTiming.authority, 'timing_only');
+  assert.equal(testTiming.timingOnly, true);
+  assert.equal(testTiming.acceptedForGpuHmr, false);
+  assert.equal(testTiming.gpuHmrSuccess, false);
+  assert.equal(testTiming.outcome, expectedOutcome);
+  assert.equal(testTiming.visualCapable, false);
+  assert.equal(testTiming.phases.total_wall.state, 'measured');
+  assert.ok(
+    BigInt(testTiming.phases.total_wall.endNs)
+      >= BigInt(testTiming.phases.total_wall.startNs),
+  );
+  for (const phaseKey of ['trigger_to_visible', 'screenshot_capture', 'visual_analysis']) {
+    assert.deepEqual(testTiming.phases[phaseKey], {
+      state: 'not_applicable',
+      startNs: null,
+      endNs: null,
+      durationNs: null,
+      reasonCode: ARBITRARY_COLD_PROJECT_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+    });
+  }
+  for (const phaseKey of ['split', 'compile', 'load', 'dispatch']) {
+    assert.notEqual(testTiming.phases[phaseKey].state, 'measured');
+    assert.match(testTiming.phases[phaseKey].reasonCode, /^[A-Za-z0-9][A-Za-z0-9._:-]+$/);
+  }
+}
+
 async function runningColdContainers() {
   const { stdout } = await execFileAsync('docker', ['ps', '--format', '{{.Names}}']);
   return new Set(stdout.split(/\r?\n/).filter((name) => (
@@ -110,6 +167,75 @@ async function waitForNewColdContainer(previous, timeoutMillis = 30_000) {
 }
 
 try {
+  const lifecycleClock = controlledClock(100n);
+  const lifecycle = createArbitraryColdProjectTimingV2Lifecycle({
+    clock: lifecycleClock.now,
+  });
+  lifecycleClock.tick(5n);
+  lifecycle.beginProofFinalization();
+  lifecycleClock.tick(17n);
+  lifecycle.finishProofFinalization();
+  lifecycleClock.tick(3n);
+  const lifecyclePassTiming = lifecycle.snapshot({
+    outcome: 'pass',
+    terminalReason: 'arbitrary_cold_runner_self_check_passed',
+  });
+  assertArbitraryColdTiming(lifecyclePassTiming, 'pass');
+  assert.equal(lifecyclePassTiming.phases.proof_finalization.durationNs, '17');
+  assert.equal(lifecyclePassTiming.phases.total_wall.durationNs, '25');
+
+  const attachmentTarget = {};
+  attachArbitraryColdProjectTestTiming(attachmentTarget, lifecyclePassTiming);
+  assert.equal(attachmentTarget.testTiming, lifecyclePassTiming);
+  assert.equal(attachmentTarget.test_timing, lifecyclePassTiming);
+  for (const mutateTiming of [
+    (timing) => { timing.authority = 'gpu_hmr_success_authority'; },
+    (timing) => { timing.timingOnly = false; },
+    (timing) => { timing.acceptedForGpuHmr = true; },
+    (timing) => { timing.gpuHmrSuccess = true; },
+    (timing) => {
+      timing.phases.trigger_to_visible.reasonCode = 'forged_nonvisual_reason';
+    },
+    (timing) => {
+      timing.phases.screenshot_capture = {
+        state: 'measured',
+        startNs: '0',
+        endNs: '0',
+        durationNs: '0',
+        reasonCode: null,
+      };
+    },
+  ]) {
+    const forgedTiming = structuredClone(lifecyclePassTiming);
+    mutateTiming(forgedTiming);
+    const forgedTarget = {};
+    assert.throws(
+      () => attachArbitraryColdProjectTestTiming(forgedTarget, forgedTiming),
+      /valid support-only nonvisual timing v2/,
+    );
+    assert.equal(Object.hasOwn(forgedTarget, 'testTiming'), false);
+    assert.equal(Object.hasOwn(forgedTarget, 'test_timing'), false);
+  }
+
+  const syntheticRefusal = createArbitraryColdProjectRunFailure(
+    new Error('arbitrary_cold_runner_descriptor_shape_invalid'),
+  );
+  assertArbitraryColdTiming(syntheticRefusal.testTiming, 'refused');
+  assert.equal(verifyArbitraryColdProjectRunFailure(syntheticRefusal), syntheticRefusal);
+  const syntheticFailure = createArbitraryColdProjectRunFailure(
+    new Error('arbitrary_cold_runner_self_check_thrown_failure'),
+  );
+  assertArbitraryColdTiming(syntheticFailure.testTiming, 'failed');
+  assert.equal(verifyArbitraryColdProjectRunFailure(syntheticFailure), syntheticFailure);
+  const forgedFailureTiming = structuredClone(syntheticFailure);
+  forgedFailureTiming.testTiming.authority = 'gpu_hmr_success_authority';
+  forgedFailureTiming.test_timing.authority = 'gpu_hmr_success_authority';
+  resealEvidence(forgedFailureTiming);
+  assert.throws(
+    () => verifyArbitraryColdProjectRunFailure(forgedFailureTiming),
+    /failure_evidence_invalid/,
+  );
+
   const privateArgument = '--private-self-check-argument=not-for-retention';
   const privateEnvironmentValue = 'private-self-check-environment-value-not-for-retention';
   const sourceRoot = path.join(root, 'opaque source tree');
@@ -243,10 +369,15 @@ try {
     /resources_exceed_policy/,
   );
   const missingArtifactRoot = path.join(sourceRoot, 'must-not-be-created');
-  await assert.rejects(
-    () => runArbitraryColdProject(descriptor, { artifactRoot: missingArtifactRoot }),
-    /artifact_root_invalid/,
-  );
+  let missingArtifactRootError = null;
+  try {
+    await runArbitraryColdProject(descriptor, { artifactRoot: missingArtifactRoot });
+  } catch (error) {
+    missingArtifactRootError = error;
+  }
+  assert.match(missingArtifactRootError?.message ?? '', /artifact_root_invalid/);
+  assertArbitraryColdTiming(missingArtifactRootError.testTiming, 'refused');
+  assert.equal(missingArtifactRootError.testTiming.phases.proof_finalization.state, 'unavailable');
   await assert.rejects(() => readFile(missingArtifactRoot), /ENOENT/);
   await assert.rejects(
     () => runArbitraryColdProject(descriptor, { artifactRoot: sourceRoot }),
@@ -265,8 +396,36 @@ try {
   );
 
   const runDescriptor = structuredClone(descriptor);
+  const runTimingClock = controlledClock(1_000n);
+  const terminalPersistenceStages = [];
+  const terminalPersistencePath = path.join(root, 'terminal-result.json');
+  let provisionalPersistedThroughNs = null;
   const preexistingColdContainers = await runningColdContainers();
-  const pendingRun = runArbitraryColdProject(runDescriptor, { artifactRoot });
+  const pendingRun = runArbitraryColdProject(runDescriptor, {
+    artifactRoot,
+    timingClock: runTimingClock.now,
+    persistTerminalOutcome: async (terminalResult, persistence) => {
+      terminalPersistenceStages.push(persistence.stage);
+      if (persistence.stage === 'provisional') {
+        assert.equal(Object.hasOwn(terminalResult, 'testTiming'), false);
+        assert.equal(Object.hasOwn(terminalResult, 'test_timing'), false);
+        await writeFile(terminalPersistencePath, `${JSON.stringify({
+          stage: persistence.stage,
+          timingAttached: false,
+        })}\n`, { flush: true });
+        provisionalPersistedThroughNs = runTimingClock.tick(31n);
+      } else {
+        assert.equal(persistence.stage, 'final');
+        assertArbitraryColdTiming(terminalResult.testTiming, 'pass');
+        assert.equal(terminalResult.testTiming, terminalResult.test_timing);
+        await writeFile(terminalPersistencePath, `${JSON.stringify({
+          stage: persistence.stage,
+          timingAttached: true,
+          testTiming: terminalResult.testTiming,
+        })}\n`, { flush: true });
+      }
+    },
+  });
   runDescriptor.outputs[0].role = 'mutated_after_run_started';
   runDescriptor.resources.memoryBytes *= 2;
   runDescriptor.readOnlyInputs[0].mountPath = 'mutated after run started';
@@ -279,6 +438,17 @@ try {
   }
   const result = await pendingRun;
   assert.equal(await verifyArbitraryColdProjectRun(result), result);
+  assert.deepEqual(terminalPersistenceStages, ['provisional', 'final']);
+  assertArbitraryColdTiming(result.testTiming, 'pass');
+  assert.equal(result.testTiming, result.test_timing);
+  assert.equal(result.testTiming.phases.proof_finalization.durationNs, '31');
+  assert.ok(
+    BigInt(result.testTiming.phases.total_wall.endNs) >= provisionalPersistedThroughNs,
+  );
+  const persistedTerminal = JSON.parse(await readFile(terminalPersistencePath, 'utf8'));
+  assert.equal(persistedTerminal.stage, 'final');
+  assert.equal(persistedTerminal.timingAttached, true);
+  assertArbitraryColdTiming(persistedTerminal.testTiming, 'pass');
   assert.equal(result.evidence.schemaVersion, ARBITRARY_COLD_PROJECT_RUN_SCHEMA);
   assert.equal(result.evidence.proofAuthority, ARBITRARY_COLD_PROJECT_RUN_AUTHORITY);
   assert.equal(result.evidence.coldBuildSucceeded, true);
@@ -581,6 +751,31 @@ try {
   const cliRunnerPath = process.platform === 'win32'
     ? path.join(parsedRunnerPath.dir.toUpperCase(), parsedRunnerPath.base)
     : runnerPath;
+  const invokeRunnerFailure = async (runnerArgs) => {
+    try {
+      await execFileAsync(process.execPath, [cliRunnerPath, ...runnerArgs], {
+        encoding: 'utf8',
+        maxBuffer: 4 * 1024 * 1024,
+        timeout: 120_000,
+        windowsHide: true,
+      });
+    } catch (error) {
+      assert.equal(error.stdout, '');
+      const terminal = JSON.parse(error.stderr);
+      assert.equal(verifyArbitraryColdProjectRunFailure(terminal.failure), terminal.failure);
+      return terminal.failure;
+    }
+    assert.fail('runner failure invocation unexpectedly passed');
+  };
+  const topLevelRefusal = await invokeRunnerFailure(['--unknown', 'value']);
+  assertArbitraryColdTiming(topLevelRefusal.testTiming, 'refused');
+  assert.equal(topLevelRefusal.failureCode, 'arbitrary_cold_runner_cli_arguments_invalid');
+  const topLevelThrownFailure = await invokeRunnerFailure([
+    '--descriptor', path.join(root, 'missing-descriptor.json'),
+    '--artifact-root', cliArtifactRoot,
+  ]);
+  assertArbitraryColdTiming(topLevelThrownFailure.testTiming, 'failed');
+  assert.equal(topLevelThrownFailure.failureCode, 'arbitrary_cold_runner_failed');
   const { stdout, stderr } = await execFileAsync(process.execPath, [
     cliRunnerPath,
     '--descriptor', descriptorPath,
@@ -595,7 +790,11 @@ try {
   const cliResult = JSON.parse(stdout);
   assert.equal(cliResult.schemaVersion, ARBITRARY_COLD_CLI_RESULT_ENVELOPE_SCHEMA);
   assert.equal(cliResult.proofAuthority, ARBITRARY_COLD_CLI_RESULT_ENVELOPE_AUTHORITY);
-  assert.equal(verifyArbitraryColdCliResultEnvelope(cliResult), cliResult);
+  assert.equal(verifyTimedArbitraryColdCliResultEnvelope(cliResult), cliResult);
+  assertArbitraryColdTiming(cliResult.testTiming, 'pass');
+  assert.deepEqual(cliResult.testTiming, cliResult.test_timing);
+  const cliProofEnvelope = proofEnvelopeFromTimed(cliResult);
+  assert.equal(verifyArbitraryColdCliResultEnvelope(cliProofEnvelope), cliProofEnvelope);
   assert.equal(cliResult.outputBytesEmbedded, false);
   assert.equal(cliResult.externalAuthenticityAnchorEmbedded, false);
   assert.equal(cliResult.acceptedAsCliResultEnvelope, true);
@@ -618,14 +817,27 @@ try {
   assert.equal(cliResult.outputs.length, descriptor.outputs.length);
   assert.equal(stdout.includes(privateArgument), false);
   assert.equal(stdout.includes(privateEnvironmentValue), false);
-  const forgedCliDescriptorBinding = structuredClone(cliResult);
+  const forgedCliTimingAuthority = structuredClone(cliResult);
+  forgedCliTimingAuthority.testTiming.authority = 'gpu_hmr_success_authority';
+  forgedCliTimingAuthority.test_timing.authority = 'gpu_hmr_success_authority';
+  assert.throws(
+    () => verifyTimedArbitraryColdCliResultEnvelope(forgedCliTimingAuthority),
+    /timed_cli_envelope_invalid/,
+  );
+  const missingCliTimingAlias = structuredClone(cliResult);
+  delete missingCliTimingAlias.test_timing;
+  assert.throws(
+    () => verifyTimedArbitraryColdCliResultEnvelope(missingCliTimingAlias),
+    /timed_cli_envelope_invalid/,
+  );
+  const forgedCliDescriptorBinding = proofEnvelopeFromTimed(cliResult);
   forgedCliDescriptorBinding.descriptorHash = `sha256:${'0'.repeat(64)}`;
   resealEvidence(forgedCliDescriptorBinding);
   assert.throws(
     () => verifyArbitraryColdCliResultEnvelope(forgedCliDescriptorBinding),
     /cli_result_envelope_invalid/,
   );
-  const forgedCliSiblingEvidence = structuredClone(cliResult);
+  const forgedCliSiblingEvidence = proofEnvelopeFromTimed(cliResult);
   forgedCliSiblingEvidence.evidence.contractHash = `sha256:${'1'.repeat(64)}`;
   resealEvidence(forgedCliSiblingEvidence.evidence);
   resealEvidence(forgedCliSiblingEvidence);
@@ -633,7 +845,7 @@ try {
     () => verifyArbitraryColdCliResultEnvelope(forgedCliSiblingEvidence),
     /cli_result_envelope_invalid/,
   );
-  const forgedCliOutputAuthority = structuredClone(cliResult);
+  const forgedCliOutputAuthority = proofEnvelopeFromTimed(cliResult);
   forgedCliOutputAuthority.outputs[0].transportEvidence.runtimeAuthority = true;
   resealEvidence(forgedCliOutputAuthority);
   assert.throws(
@@ -648,7 +860,7 @@ try {
     (transport) => { transport.reasons = ['forged_transport_reason']; },
     (transport) => { transport.gaps = ['forged_transport_gap']; },
   ]) {
-    const forgedCliTransport = structuredClone(cliResult);
+    const forgedCliTransport = proofEnvelopeFromTimed(cliResult);
     mutateTransport(forgedCliTransport.outputs[0].transportEvidence);
     resealEvidence(forgedCliTransport);
     assert.throws(
@@ -656,7 +868,7 @@ try {
       /cli_result_envelope_invalid/,
     );
   }
-  const forgedCliCanonicalUri = structuredClone(cliResult);
+  const forgedCliCanonicalUri = proofEnvelopeFromTimed(cliResult);
   const canonicalLocator = forgedCliCanonicalUri.outputs[0].artifactLocator;
   canonicalLocator.artifactUri = [
     'synthi-cas://forged-namespace/sha256/',
@@ -669,7 +881,7 @@ try {
     () => verifyArbitraryColdCliResultEnvelope(forgedCliCanonicalUri),
     /cli_result_envelope_invalid/,
   );
-  const forgedCliOutputRole = structuredClone(cliResult);
+  const forgedCliOutputRole = proofEnvelopeFromTimed(cliResult);
   forgedCliOutputRole.outputs[0].artifactLocator.role = 'forged_output_role';
   resealCliLocatorBinding(forgedCliOutputRole, 0);
   assert.throws(
@@ -717,6 +929,8 @@ try {
   assert.equal(failure.schemaVersion, ARBITRARY_COLD_PROJECT_RUN_FAILURE_SCHEMA);
   assert.equal(failure.proofAuthority, ARBITRARY_COLD_PROJECT_RUN_FAILURE_AUTHORITY);
   assert.equal(verifyArbitraryColdProjectRunFailure(failure), failure);
+  assertArbitraryColdTiming(failure.testTiming, 'refused');
+  assert.deepEqual(failure.testTiming, failure.test_timing);
   assert.equal(failure.failureCode, 'cold_build_execution_driver_ready_receipt_refused');
   assert.equal(failure.acceptedAsFailureDiagnostics, true);
   assert.equal(failure.acceptedAsColdBuildEvidence, false);
