@@ -17,6 +17,7 @@ import {
 import {
   classifyReports,
   compactRow,
+  deduplicateGpuHmrTestTimingV2Rows,
   hasMeaningfulMetrics,
 } from '../gpu-hmr-timing-metrics-summary.mjs';
 
@@ -130,6 +131,16 @@ function summaryRows(report, name) {
       updatedAt: '2026-07-16T00:00:00.000Z',
     })),
   };
+}
+
+function reverseObjectKeyOrder(value) {
+  if (Array.isArray(value)) return value.map(reverseObjectKeyOrder);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .reverse()
+      .map(([key, nested]) => [key, reverseObjectKeyOrder(nested)]),
+  );
 }
 
 const external = externalProjectTimingMetrics({
@@ -515,6 +526,62 @@ for (const alias of ['testTiming', 'test_timing', 'timingV2', 'timing_v2']) {
   assert.equal(aliasSummary.rows[0].recordPath, `$.generic.nested.${alias}`);
 }
 
+const repeatedLogicalRecord = summaryRows({
+  testTiming: computePass,
+  test_timing: JSON.parse(JSON.stringify(computePass)),
+  runtimeProofArtifact: {
+    testTiming: reverseObjectKeyOrder(computePass),
+    test_timing: JSON.parse(JSON.stringify(computePass)),
+  },
+}, 'timing-v2-repeated-logical-record');
+assert.equal(repeatedLogicalRecord.classified.length, 1);
+assert.match(repeatedLogicalRecord.classified[0].recordIdentity, /^sha256:[a-f0-9]{64}$/);
+assert.equal(
+  repeatedLogicalRecord.rows[0].recordIdentity,
+  repeatedLogicalRecord.classified[0].recordIdentity,
+);
+
+const sameSummaryClock = controlledClock(50_000_000n);
+const sameSummaryRecorder = new GpuHmrTestTimingRecorder({ clock: sameSummaryClock.now });
+sameSummaryClock.tick(7_000_000n);
+const sameSummaryDistinctRecord = sameSummaryRecorder.finalize({
+  outcome: 'pass',
+  visualCapable: false,
+  terminalReason: 'timing_smoke_unavailable',
+  notApplicableReason: 'timing_smoke_not_applicable',
+});
+const sameLookingDistinctRecords = summaryRows({
+  testTiming: computePass,
+  nested: { test_timing: sameSummaryDistinctRecord },
+}, 'timing-v2-same-looking-distinct-records');
+assert.equal(sameLookingDistinctRecords.classified.length, 2);
+assert.deepEqual(
+  sameLookingDistinctRecords.rows.map((row) => row.totalWallMs),
+  [7, 7],
+);
+assert.equal(
+  new Set(sameLookingDistinctRecords.rows.map((row) => row.recordIdentity)).size,
+  2,
+);
+
+const repeatedAcrossRetainedArtifacts = deduplicateGpuHmrTestTimingV2Rows([
+  {
+    ...repeatedLogicalRecord.classified[0],
+    filePath: path.join(process.cwd(), 'tmp', 'retained-report.json'),
+  },
+  {
+    ...repeatedLogicalRecord.classified[0],
+    recordPath: '$.summary.test_timing',
+    filePath: path.join(process.cwd(), 'tmp', 'retained-summary.json'),
+  },
+  ...sameLookingDistinctRecords.classified,
+]);
+assert.equal(repeatedAcrossRetainedArtifacts.length, 2);
+assert.equal(
+  new Set(repeatedAcrossRetainedArtifacts.map((row) => row.recordIdentity)).size,
+  2,
+);
+
 const additiveSummary = summaryRows({
   timingMetrics: external,
   generic: { testTiming: visualPass },
@@ -589,6 +656,9 @@ console.log(JSON.stringify({
     'refusal_before_compile',
     'thrown_failure_partial_phase',
     'nested_aliases',
+    'logical_record_deduplication',
+    'same_summary_distinct_records',
+    'retained_copy_deduplication',
     'forged_authority',
   ],
 }, null, 2));

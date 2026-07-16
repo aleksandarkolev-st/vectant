@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -127,6 +128,48 @@ function isGpuHmrTestTimingV2Record(value) {
     );
 }
 
+function canonicalTimingRecordValue(value, ancestors = new Set()) {
+  if (value === null) return 'null';
+  if (typeof value === 'string') return `string:${JSON.stringify(value)}`;
+  if (typeof value === 'boolean') return `boolean:${value}`;
+  if (typeof value === 'number') {
+    if (Number.isNaN(value)) return 'number:NaN';
+    if (value === Number.POSITIVE_INFINITY) return 'number:+Infinity';
+    if (value === Number.NEGATIVE_INFINITY) return 'number:-Infinity';
+    if (Object.is(value, -0)) return 'number:-0';
+    return `number:${value}`;
+  }
+  if (typeof value === 'bigint') return `bigint:${value}`;
+  if (typeof value === 'undefined') return 'undefined';
+
+  if (typeof value !== 'object') {
+    return `${typeof value}:${JSON.stringify(String(value))}`;
+  }
+  if (ancestors.has(value)) {
+    throw new TypeError('gpu_hmr_test_timing_record_must_be_acyclic');
+  }
+
+  ancestors.add(value);
+  let canonical;
+  if (Array.isArray(value)) {
+    canonical = `array:[${value
+      .map((entry) => canonicalTimingRecordValue(entry, ancestors))
+      .join(',')}]`;
+  } else {
+    canonical = `object:{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalTimingRecordValue(value[key], ancestors)}`)
+      .join(',')}}`;
+  }
+  ancestors.delete(value);
+  return canonical;
+}
+
+function gpuHmrTestTimingV2RecordIdentity(record) {
+  const canonicalRecord = canonicalTimingRecordValue(record);
+  return `sha256:${createHash('sha256').update(canonicalRecord).digest('hex')}`;
+}
+
 function phaseDurationMs(phase) {
   if (phase?.durationNs === undefined || phase?.durationNs === null) return null;
   try {
@@ -141,10 +184,22 @@ function phaseDurationMs(phase) {
 
 export function discoverGpuHmrTestTimingV2Records(json) {
   if (isGpuHmrTestTimingV2Record(json)) {
-    return [{ record: json, recordPath: '$', alias: null }];
+    return [{
+      record: json,
+      recordPath: '$',
+      alias: null,
+      recordIdentity: gpuHmrTestTimingV2RecordIdentity(json),
+    }];
   }
 
   const candidates = [];
+  const discoveredIdentities = new Set();
+  const retainCandidate = (record, recordPath, alias) => {
+    const recordIdentity = gpuHmrTestTimingV2RecordIdentity(record);
+    if (discoveredIdentities.has(recordIdentity)) return;
+    discoveredIdentities.add(recordIdentity);
+    candidates.push({ record, recordPath, alias, recordIdentity });
+  };
   const visit = (value, location) => {
     if (value === null || typeof value !== 'object') return;
 
@@ -156,7 +211,7 @@ export function discoverGpuHmrTestTimingV2Records(json) {
     for (const [key, nested] of Object.entries(value)) {
       const nestedLocation = `${location}.${key}`;
       if (GPU_HMR_TEST_TIMING_ALIASES.has(key)) {
-        candidates.push({ record: nested, recordPath: nestedLocation, alias: key });
+        retainCandidate(nested, nestedLocation, key);
       } else {
         visit(nested, nestedLocation);
       }
@@ -180,7 +235,7 @@ function gpuHmrTestTimingV2Metrics(record) {
   };
 }
 
-function classifyGpuHmrTestTimingV2(record, recordPath, alias) {
+function classifyGpuHmrTestTimingV2(record, recordPath, alias, recordIdentity) {
   return {
     kind: 'gpu_hmr_test_timing_v2',
     metrics: gpuHmrTestTimingV2Metrics(record),
@@ -188,6 +243,7 @@ function classifyGpuHmrTestTimingV2(record, recordPath, alias) {
     timingValidation: validateGpuHmrTestTiming(record),
     recordPath,
     recordAlias: alias,
+    recordIdentity: recordIdentity ?? gpuHmrTestTimingV2RecordIdentity(record),
   };
 }
 
@@ -356,6 +412,7 @@ export function classifyReports(json, filePath) {
       candidate.record,
       candidate.recordPath,
       candidate.alias,
+      candidate.recordIdentity,
     ));
   }
 
@@ -367,6 +424,7 @@ export function classifyReports(json, filePath) {
       candidate.record,
       candidate.recordPath,
       candidate.alias,
+      candidate.recordIdentity,
     ));
   }
   return classified;
@@ -435,22 +493,35 @@ async function collectCandidates(options) {
     }
   }
 
-  return rows;
+  return deduplicateGpuHmrTestTimingV2Rows(rows);
+}
+
+export function deduplicateGpuHmrTestTimingV2Rows(rows) {
+  const retainedIdentities = new Set();
+  return rows.filter((row) => {
+    if (!Object.hasOwn(row, 'testTimingRecord')) return true;
+    const recordIdentity = row.recordIdentity
+      ?? gpuHmrTestTimingV2RecordIdentity(row.testTimingRecord);
+    if (retainedIdentities.has(recordIdentity)) return false;
+    retainedIdentities.add(recordIdentity);
+    return true;
+  });
 }
 
 function latestPerProfile(rows) {
   const byKey = new Map();
   for (const row of rows) {
-    const fallbackProfile = Object.hasOwn(row, 'testTimingRecord')
-      ? `${row.filePath}#${row.recordPath}`
-      : row.filePath;
+    const isTestTimingRecord = Object.hasOwn(row, 'testTimingRecord');
+    const recordIdentity = isTestTimingRecord
+      ? row.recordIdentity ?? gpuHmrTestTimingV2RecordIdentity(row.testTimingRecord)
+      : null;
+    const fallbackProfile = isTestTimingRecord ? recordIdentity : row.filePath;
     const keyParts = [
       row.metrics?.source ?? row.kind ?? 'unknown',
       row.metrics?.profileId ?? row.metrics?.projectName ?? fallbackProfile,
       row.metrics?.proofMode ?? 'unknown',
       row.metrics?.metricScope ?? row.metrics?.metric_scope ?? 'unknown_scope',
     ];
-    if (Object.hasOwn(row, 'testTimingRecord')) keyParts.push(row.recordPath);
     const key = keyParts.join('|');
 
     const existing = byKey.get(key);
@@ -519,6 +590,7 @@ function compactGpuHmrTestTimingV2Row(row) {
     phases,
     recordAlias: row.recordAlias ?? null,
     recordPath: row.recordPath ?? '$',
+    recordIdentity: row.recordIdentity ?? gpuHmrTestTimingV2RecordIdentity(record),
     updatedAt: row.updatedAt,
     filePath: path.relative(repoRoot, row.filePath),
   };
@@ -915,6 +987,49 @@ function runSelfCheck() {
     );
   }
 
+  const repeatedLogicalRecord = compactSelfCheckReport({
+    testTiming: computePass,
+    test_timing: JSON.parse(JSON.stringify(computePass)),
+    runtimeProofArtifact: {
+      testTiming: Object.fromEntries(Object.entries(computePass).reverse()),
+      test_timing: JSON.parse(JSON.stringify(computePass)),
+    },
+  }, 'v2-repeated-logical-record');
+  assertSelfCheck(
+    repeatedLogicalRecord.classified.length === 1,
+    'repeated aliases and nested copies were not deduplicated',
+  );
+  assertSelfCheck(
+    /^sha256:[a-f0-9]{64}$/.test(repeatedLogicalRecord.rows[0].recordIdentity),
+    'canonical timing record identity missing',
+  );
+
+  const sameSummaryClock = controlledSelfCheckClock(100_000_000n);
+  const sameSummaryRecorder = new GpuHmrTestTimingRecorder({ clock: sameSummaryClock.now });
+  sameSummaryClock.tick(7_000_000n);
+  const sameSummaryDistinctRecord = sameSummaryRecorder.finalize({
+    outcome: 'pass',
+    visualCapable: false,
+    terminalReason: 'summary_self_check_unavailable',
+    notApplicableReason: 'summary_self_check_not_applicable',
+  });
+  const sameLookingDistinctRecords = compactSelfCheckReport({
+    testTiming: computePass,
+    nested: { test_timing: sameSummaryDistinctRecord },
+  }, 'v2-same-looking-distinct-records');
+  assertSelfCheck(
+    sameLookingDistinctRecords.classified.length === 2,
+    'distinct records with equal summary durations were merged',
+  );
+  assertSelfCheck(
+    sameLookingDistinctRecords.rows.every((timingRow) => timingRow.totalWallMs === 7),
+    'same-looking distinct record fixture did not preserve equal summaries',
+  );
+  assertSelfCheck(
+    new Set(sameLookingDistinctRecords.rows.map((timingRow) => timingRow.recordIdentity)).size === 2,
+    'distinct timing record identities collapsed',
+  );
+
   const authorityForgery = JSON.parse(JSON.stringify(visualPass));
   authorityForgery.authority = 'gpu_hmr_success_authority';
   authorityForgery.acceptedForGpuHmr = true;
@@ -969,6 +1084,8 @@ function runSelfCheck() {
       'refusal_before_compile',
       'thrown_failure_partial_phase',
       'nested_aliases',
+      'logical_record_deduplication',
+      'same_summary_distinct_records',
       'forged_authority',
     ],
   }, null, 2));
