@@ -92,6 +92,12 @@ async fn main() -> anyhow::Result<()> {
     println!(
         "LIVE_TEST_DAEMON_READY http://{address} token={session_token} control={TEST_CONTROL_SECRET} preview_token={preview_token} preview_host={preview_host} process_identity={TEST_PROCESS_IDENTITY}"
     );
+    // Remote Windows validation runs without an interactive console. In that
+    // environment Ctrl+C can resolve as soon as the SSH command detaches, so
+    // an explicit test-only keep-alive mode makes the harness deterministic.
+    if std::env::var_os("VECTANT_TEST_DAEMON_KEEP_ALIVE").is_some() {
+        std::future::pending::<()>().await;
+    }
     tokio::signal::ctrl_c().await?;
     shutdown_cleanup(&state, "live_test_shutdown").await?;
     Ok(())
