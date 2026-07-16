@@ -151,7 +151,7 @@ pub fn plan_desktop_ipc_action(
             "/v1/approval/revoke-all/{request_id}",
             true,
         ),
-        "full_access.pause" | "full_access.revoke" | "process.visibility.pause" => {
+        "full_access.enroll" | "full_access.pause" | "full_access.revoke" | "process.visibility.pause" => {
             DesktopIpcActionPlan {
                 command,
                 daemon_method: None,

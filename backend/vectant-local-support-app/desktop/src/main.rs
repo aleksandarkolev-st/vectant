@@ -20,7 +20,8 @@ use uuid::Uuid;
 use vectant_local_support_app::audit::{AuditClass, LocalAuditStore};
 use vectant_local_support_app::desktop::{build_desktop_status_state, plan_desktop_ipc_action};
 use vectant_local_support_app::full_access::{
-    FullAccessCapability, FullAccessConsentReceipt, FullAccessPolicy,
+    authorize as authorize_full_access, FullAccessCapability, FullAccessConsentReceipt,
+    FullAccessPolicy, ReceiptBinding,
 };
 use vectant_local_support_app::http::{bind_loopback, shutdown_cleanup, AppState};
 use vectant_local_support_app::ipc::IpcRequest;
@@ -468,6 +469,9 @@ async fn local_support_ipc(
             )
             .await?;
         }
+        "full_access.enroll" => {
+            confirm_full_access_enrollment(&runtime, &app_state, &request_id).await?;
+        }
         "full_access.revoke" => {
             app_state.full_access.lock().await.revoke();
             append_control_event(
@@ -671,6 +675,28 @@ async fn desktop_status(
         );
     }
     if let Some(map) = status.as_object_mut() {
+        let enrollment = runtime
+            .pending_full_access_enrollment
+            .read()
+            .map_err(|_| "Full Access enrollment state lock failed closed.".to_string())?
+            .as_ref()
+            .map(|proposal| {
+                serde_json::json!({
+                    "support_actor": proposal.receipt.support_actor,
+                    "capabilities": proposal.receipt.capabilities.iter().map(FullAccessCapability::wire_name).collect::<Vec<_>>(),
+                    "auto_approval_enabled": proposal.receipt.auto_approval_enabled,
+                    "expires_at": proposal.receipt.expires_at,
+                })
+            });
+        if let Some(full_access) = map
+            .get_mut("full_access")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            full_access.insert(
+                "enrollment_pending".to_string(),
+                enrollment.unwrap_or(serde_json::Value::Null),
+            );
+        }
         let policy = runtime
             .cloud_policy
             .read()
@@ -692,6 +718,139 @@ async fn desktop_status(
         );
     }
     Ok(status)
+}
+
+async fn confirm_full_access_enrollment(
+    runtime: &DesktopRuntime,
+    state: &AppState,
+    confirmation_request_id: &str,
+) -> Result<(), String> {
+    let proposal = runtime
+        .pending_full_access_enrollment
+        .write()
+        .map_err(|_| "Full Access enrollment state lock failed closed.".to_string())?
+        .take()
+        .ok_or_else(|| {
+            "No Full Access enrollment proposal is awaiting local confirmation.".to_string()
+        })?;
+    let result =
+        confirm_full_access_enrollment_proposal(runtime, state, confirmation_request_id, &proposal)
+            .await;
+    if result.is_err() {
+        *runtime
+            .pending_full_access_enrollment
+            .write()
+            .map_err(|_| "Full Access enrollment state lock failed closed.".to_string())? =
+            Some(proposal);
+    }
+    result
+}
+
+async fn confirm_full_access_enrollment_proposal(
+    runtime: &DesktopRuntime,
+    state: &AppState,
+    confirmation_request_id: &str,
+    proposal: &PendingFullAccessEnrollment,
+) -> Result<(), String> {
+    let session_guard = state.session.lock().await;
+    if !session_guard.is_active() || session_guard.state().paused {
+        return Err(
+            "The local session is inactive or paused. Full Access was not enrolled.".to_string(),
+        );
+    }
+    let session = session_guard.state();
+    drop(session_guard);
+    let workspace = state.workspace.summary();
+    let now = Utc::now();
+    let cloud_policy = runtime
+        .cloud_policy
+        .read()
+        .map_err(|_| "Cloud policy lock failed closed.".to_string())?
+        .clone();
+    if proposal.receipt.local_confirmation != "pending_native_confirmation"
+        || proposal.receipt.created_at > now
+        || proposal.receipt.app_version != env!("CARGO_PKG_VERSION")
+        || proposal.receipt.auto_approval_enabled
+            && !proposal
+                .receipt
+                .capabilities
+                .contains(&FullAccessCapability::AutoApprovalEnable)
+        || !proposal.policy.organization_enabled
+        || proposal.policy.emergency_paused
+        || !proposal
+            .policy
+            .allowed_actors
+            .contains(&proposal.receipt.support_actor)
+        || !proposal
+            .policy
+            .allowed_capabilities
+            .is_superset(&proposal.receipt.capabilities)
+        || !cloud_policy.full_access_allowed()
+        || !proposal
+            .policy
+            .allowed_capabilities
+            .is_subset(&cloud_full_access_capabilities(&cloud_policy))
+        || proposal.receipt.session_id != session.session_id
+        || proposal.receipt.account_id != session.account_id
+        || proposal.receipt.organization_id != session.org_id
+        || proposal.receipt.device_fingerprint != session.device_fingerprint
+        || proposal.receipt.workspace_hash != workspace.root_hash
+        || proposal.receipt.policy_version != vectant_local_support_app::POLICY_VERSION
+        || proposal.receipt.scanner_version != vectant_local_support_app::SCANNER_VERSION
+        || proposal.receipt.policy_major != proposal.policy.policy_major
+        || proposal.receipt.reconsent_version != proposal.policy.mandatory_reconsent_version
+    {
+        return Err(
+            "The Full Access proposal no longer matches this local session or policy.".to_string(),
+        );
+    }
+    let binding = ReceiptBinding {
+        session_id: &session.session_id,
+        account_id: &session.account_id,
+        organization_id: &session.org_id,
+        actor: &proposal.receipt.support_actor,
+        device_fingerprint: &session.device_fingerprint,
+        workspace_hash: &workspace.root_hash,
+        policy_version: vectant_local_support_app::POLICY_VERSION,
+        scanner_version: vectant_local_support_app::SCANNER_VERSION,
+        app_version: &proposal.receipt.app_version,
+        policy_major: proposal.policy.policy_major,
+        reconsent_version: proposal.policy.mandatory_reconsent_version,
+        capability: FullAccessCapability::Enroll,
+    };
+    authorize_full_access(&proposal.policy, &proposal.receipt, &binding, now)
+        .map_err(|_| "The Full Access consent receipt is no longer valid.".to_string())?;
+    let graph = state
+        .workspace
+        .build_capability_graph()
+        .map_err(|_| "The workspace graph could not be rebuilt safely.".to_string())?;
+    let mut receipt = proposal.receipt.clone();
+    receipt.local_confirmation = "native_button".to_string();
+    let mut full_access = state.full_access.lock().await;
+    full_access.policy = proposal.policy.clone();
+    full_access.receipt = Some(receipt.clone());
+    full_access.graph = graph;
+    full_access.budget = Default::default();
+    full_access.process_visibility_paused = false;
+    full_access
+        .command_cancel
+        .store(false, std::sync::atomic::Ordering::Release);
+    drop(full_access);
+    let mut audit = state.audit.lock().await;
+    audit.record_full_access_consent(receipt);
+    audit.append(
+        AuditClass::Control,
+        Some(confirmation_request_id.to_string()),
+        "Full Access Support enrolled after native desktop confirmation.",
+        true,
+    );
+    if let Some(store) = &state.audit_store {
+        store
+            .persist(&audit)
+            .map_err(|_| "Full Access consent could not be persisted safely.".to_string())?;
+    }
+    drop(audit);
+    Ok(())
 }
 
 fn current_app_state(runtime: &DesktopRuntime) -> Result<AppState, String> {
@@ -1685,15 +1844,20 @@ fn app_data_root() -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        enforce_cloud_policy, policy_requires_session_disconnect, relay_release_context_allowed,
-        validate_private_target, DesktopPolicyStatus, DesktopRuntime, RelayDelivery,
+        confirm_full_access_enrollment, enforce_cloud_policy, policy_requires_session_disconnect,
+        relay_release_context_allowed, validate_private_target, DesktopPolicyStatus,
+        DesktopRuntime, PendingFullAccessEnrollment, RelayDelivery,
     };
     use crate::pairing_client::PairingClient;
     use crate::relay_client::RelayClient;
-    use std::collections::HashMap;
+    use chrono::{Duration as ChronoDuration, Utc};
+    use std::collections::{BTreeSet, HashMap};
     use std::fs;
     use std::sync::RwLock;
     use std::time::Duration;
+    use vectant_local_support_app::full_access::{
+        FullAccessCapability, FullAccessConsentReceipt, FullAccessPolicy,
+    };
     use vectant_local_support_app::http::AppState;
     use vectant_local_support_app::pair::DeviceIdentity;
     use vectant_local_support_app::session::SessionGuard;
@@ -1760,6 +1924,25 @@ mod tests {
         }
     }
 
+    fn runtime_for_test(state: AppState, policy: DesktopPolicyStatus) -> DesktopRuntime {
+        DesktopRuntime {
+            app_state: RwLock::new(state),
+            device_identity: DeviceIdentity::generate(),
+            pairing_client: PairingClient::new("http://127.0.0.1:3000/api/local-support/pairing")
+                .unwrap(),
+            cloud_policy: RwLock::new(policy),
+            available_update_version: RwLock::new(None),
+            relay_client: RelayClient::new("http://127.0.0.1:3000/api/local-support/relay/device")
+                .unwrap(),
+            pending_pairing: RwLock::new(None),
+            pending_full_access_enrollment: RwLock::new(None),
+            pending_relay_approvals: RwLock::new(HashMap::new()),
+            preview_contexts: RwLock::new(HashMap::new()),
+            local_api_address: RwLock::new(None),
+            last_synced_port_status: RwLock::new(None),
+        }
+    }
+
     #[test]
     fn preview_target_validation_accepts_only_loopback() {
         assert!(validate_private_target("127.0.0.1").is_ok());
@@ -1817,6 +2000,93 @@ mod tests {
         policy = release_policy();
         policy.update_required = true;
         assert!(policy_requires_session_disconnect(&policy));
+    }
+
+    #[tokio::test]
+    async fn native_confirmation_binds_and_consumes_a_valid_full_access_proposal() {
+        let workspace_path = std::env::temp_dir().join(format!(
+            "vectant-desktop-full-access-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&workspace_path).unwrap();
+        let workspace =
+            WorkspacePolicy::new(&workspace_path, "wk_123", Default::default()).unwrap();
+        let workspace_hash = workspace.summary().root_hash;
+        let state = AppState::new(
+            SessionGuard::new_paired(
+                "sess_12345678",
+                "acct_123",
+                "org_123",
+                "wk_123",
+                "sha256:1111111111111111",
+                Duration::from_secs(60),
+            )
+            .unwrap(),
+            workspace,
+        );
+        let mut cloud_policy = release_policy();
+        cloud_policy.full_access_enabled = true;
+        let runtime = runtime_for_test(state.clone(), cloud_policy);
+        let capabilities = BTreeSet::from([
+            FullAccessCapability::Enroll,
+            FullAccessCapability::GraphRead,
+            FullAccessCapability::GraphNodeRequest,
+        ]);
+        let now = Utc::now();
+        *runtime.pending_full_access_enrollment.write().unwrap() =
+            Some(PendingFullAccessEnrollment {
+                request_id: "proposal_12345678".to_string(),
+                policy: FullAccessPolicy {
+                    organization_enabled: true,
+                    mandatory_reconsent_version: 1,
+                    policy_major: 1,
+                    allowed_capabilities: capabilities.clone(),
+                    allowed_actors: BTreeSet::from(["support_agent".to_string()]),
+                    ..Default::default()
+                },
+                receipt: FullAccessConsentReceipt {
+                    consent_id: "consent_12345678".to_string(),
+                    session_id: "sess_12345678".to_string(),
+                    account_id: "acct_123".to_string(),
+                    organization_id: "org_123".to_string(),
+                    support_actor: "support_agent".to_string(),
+                    device_fingerprint: "sha256:1111111111111111".to_string(),
+                    workspace_hash,
+                    capabilities,
+                    auto_approval_enabled: false,
+                    policy_version: vectant_local_support_app::POLICY_VERSION.to_string(),
+                    scanner_version: vectant_local_support_app::SCANNER_VERSION.to_string(),
+                    app_version: env!("CARGO_PKG_VERSION").to_string(),
+                    policy_major: 1,
+                    reconsent_version: 1,
+                    created_at: now,
+                    expires_at: now + ChronoDuration::minutes(5),
+                    paused_at: None,
+                    revoked_at: None,
+                    local_confirmation: "pending_native_confirmation".to_string(),
+                },
+            });
+
+        confirm_full_access_enrollment(&runtime, &state, "desktop_confirmation_123")
+            .await
+            .unwrap();
+
+        assert!(state.full_access.lock().await.receipt.is_some());
+        assert!(runtime
+            .pending_full_access_enrollment
+            .read()
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            state
+                .audit
+                .lock()
+                .await
+                .full_access_consent_receipts()
+                .len(),
+            1
+        );
+        fs::remove_dir_all(workspace_path).unwrap();
     }
 
     #[tokio::test]

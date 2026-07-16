@@ -21,6 +21,7 @@ const actionButtons = {
   pauseFullAccess: document.querySelector('[data-action="pause-full-access"]'),
   pauseProcessVisibility: document.querySelector('[data-action="pause-process-visibility"]'),
   revokeFullAccess: document.querySelector('[data-action="revoke-full-access"]'),
+  confirmFullAccessEnrollment: document.querySelector('[data-action="confirm-full-access-enrollment"]'),
 };
 const workflowSummary = document.querySelector("[data-workflow-summary]");
 const pairingForm = document.querySelector("[data-pairing-form]");
@@ -176,17 +177,21 @@ function renderState(rawState) {
 
 function renderFullAccess(fullAccess) {
   const enrolled = fullAccess.enrolled;
-  setText('[data-field="full-access-title"]', enrolled ? "Full Access is enabled for this session" : "Full Access is not enrolled");
-  setText('[data-field="full-access-tag"]', enrolled ? (fullAccess.automaticDeliveryPaused ? "Automatic delivery paused" : "Locally enforced") : "Review-first mode");
+  const pending = fullAccess.enrollmentPending;
+  setText('[data-field="full-access-title"]', enrolled ? "Full Access is enabled for this session" : pending ? "Full Access is ready for local confirmation" : "Full Access is not enrolled");
+  setText('[data-field="full-access-tag"]', enrolled ? (fullAccess.automaticDeliveryPaused ? "Automatic delivery paused" : "Locally enforced") : pending ? "Confirmation required" : "Review-first mode");
   setText('[data-field="full-access-copy"]', enrolled
     ? "Approved diagnostic information can be sent automatically only within the visible scope. Sensitive files, credentials, command lines, environment variables, and process contents remain blocked."
-    : "Full Access requires a separate local confirmation. Pairing or installation alone never enrolls this mode.");
+    : pending
+      ? `Support actor ${pending.actor} requested ${pending.capabilityCount} scoped ${pending.capabilityCount === 1 ? "capability" : "capabilities"}. Confirming applies only to this paired session and expires ${pending.expiresAt}.`
+      : "Full Access requires a separate local confirmation. Pairing or installation alone never enrolls this mode.");
   setText('[data-field="full-access-graph"]', enrolled ? `${fullAccess.graphNodeCount} scrubbed nodes, no raw bodies` : "Not available");
   setText('[data-field="full-access-delivery"]', enrolled && fullAccess.autoApproval && !fullAccess.automaticDeliveryPaused ? "Enabled within policy and budget" : "Disabled or paused");
   setText('[data-field="full-access-processes"]', enrolled ? (fullAccess.processVisibilityPaused ? "Paused locally" : "Sanitized diagnostic records only") : "Not available");
   actionButtons.pauseFullAccess.disabled = !enrolled || fullAccess.automaticDeliveryPaused;
   actionButtons.pauseProcessVisibility.disabled = !enrolled || fullAccess.processVisibilityPaused;
   actionButtons.revokeFullAccess.disabled = !enrolled;
+  actionButtons.confirmFullAccessEnrollment.disabled = enrolled || !pending;
   renderLocalMutations(fullAccess.localMutations);
 }
 
@@ -399,6 +404,13 @@ function normalizeFullAccess(rawAccess) {
     processVisibilityPaused: raw.process_visibility_paused === true,
     graphNodeCount: Math.min(Math.max(Number(raw.graph_node_count) || 0, 0), 20000),
     automaticDeliveryPaused: raw.automatic_delivery_paused === true,
+    enrollmentPending: raw.enrollment_pending && typeof raw.enrollment_pending === "object"
+      ? {
+          actor: sanitizeText(raw.enrollment_pending.support_actor, "unknown support actor"),
+          capabilityCount: Math.min(Math.max(Array.isArray(raw.enrollment_pending.capabilities) ? raw.enrollment_pending.capabilities.length : 0, 0), 16),
+          expiresAt: sanitizeText(raw.enrollment_pending.expires_at, "at the proposal expiry"),
+        }
+      : null,
     localMutations: Array.isArray(raw.local_mutations)
       ? raw.local_mutations.slice(0, 64).map((mutation) => ({
           path: sanitizeText(mutation.relative_path, "workspace file"),
@@ -557,6 +569,9 @@ document.querySelectorAll("[data-action]").forEach((button) => {
     }
     if (button.dataset.action === "pause-full-access") {
       await invokeStateAction("full_access.pause", "Full Access pause needs the native desktop app.");
+    }
+    if (button.dataset.action === "confirm-full-access-enrollment") {
+      await invokeStateAction("full_access.enroll", "Full Access confirmation needs a pending native desktop proposal.");
     }
     if (button.dataset.action === "pause-process-visibility") {
       await invokeStateAction("process.visibility.pause", "Process visibility pause needs the native desktop app.");
