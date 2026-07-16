@@ -39,10 +39,23 @@ pub struct MutationTransaction {
     pub before_hash: String,
     pub after_hash: String,
     pub bytes_written: usize,
+    /// Content-free, restart-safe summary for the native desktop review.
+    /// Exact before/after bodies remain in the private recovery file and are
+    /// never serialized into relay or audit payloads.
+    #[serde(default)]
+    pub diff_summary: MutationDiffSummary,
     pub created_at: DateTime<Utc>,
     pub recovery_expires_at: DateTime<Utc>,
     #[serde(skip)]
     recovery_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MutationDiffSummary {
+    pub lines_added: usize,
+    pub lines_removed: usize,
+    pub lines_unchanged: usize,
+    pub changed: bool,
 }
 
 /// On-disk transaction metadata. Recovery content remains in the sibling backup
@@ -142,6 +155,7 @@ impl WorkspaceMutationBroker {
             before_hash: hash(&before),
             after_hash: hash(&request.replacement),
             bytes_written: request.replacement.len(),
+            diff_summary: summarize_line_diff(&before, &request.replacement),
             created_at: Utc::now(),
             recovery_expires_at: Utc::now() + self.retention,
             recovery_path: recovery_path.clone(),
@@ -352,6 +366,34 @@ fn hash(value: &str) -> String {
     digest.update(value.as_bytes());
     format!("sha256:{}", hex::encode(digest.finalize()))
 }
+
+fn summarize_line_diff(before: &str, after: &str) -> MutationDiffSummary {
+    let before_lines = before.lines().collect::<Vec<_>>();
+    let after_lines = after.lines().collect::<Vec<_>>();
+    let prefix = before_lines
+        .iter()
+        .zip(&after_lines)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let remaining_before = before_lines.len().saturating_sub(prefix);
+    let remaining_after = after_lines.len().saturating_sub(prefix);
+    let suffix = before_lines[prefix..]
+        .iter()
+        .rev()
+        .zip(after_lines[prefix..].iter().rev())
+        .take(remaining_before.min(remaining_after))
+        .take_while(|(left, right)| left == right)
+        .count();
+    let lines_removed = remaining_before.saturating_sub(suffix);
+    let lines_added = remaining_after.saturating_sub(suffix);
+    MutationDiffSummary {
+        lines_added,
+        lines_removed,
+        lines_unchanged: prefix + suffix,
+        changed: lines_added > 0 || lines_removed > 0,
+    }
+}
+
 fn write_new_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     restrict_file_permissions(path)?;
@@ -405,4 +447,22 @@ fn atomic_replace(source: &Path, target: &Path) -> std::io::Result<()> {
 #[cfg(not(windows))]
 fn atomic_replace(source: &Path, target: &Path) -> std::io::Result<()> {
     fs::rename(source, target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diff_summary_exposes_counts_without_content() {
+        let summary =
+            summarize_line_diff("same\nSECRET_REMOVED\ntail\n", "same\nSECRET_ADDED\ntail\n");
+        assert_eq!(summary.lines_added, 1);
+        assert_eq!(summary.lines_removed, 1);
+        assert_eq!(summary.lines_unchanged, 2);
+        assert!(summary.changed);
+        let serialized = serde_json::to_string(&summary).unwrap();
+        assert!(!serialized.contains("SECRET_REMOVED"));
+        assert!(!serialized.contains("SECRET_ADDED"));
+    }
 }
