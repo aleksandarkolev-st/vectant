@@ -239,6 +239,7 @@ export default function LocalSupportTransparency() {
   const [fastSupportActive, setFastSupportActive] = useState(false);
   const [revokedPorts, setRevokedPorts] = useState([]);
   const [controlActionStatus, setControlActionStatus] = useState(null);
+  const [selectedEnrollmentActor, setSelectedEnrollmentActor] = useState("");
   const [testRequestStatus, setTestRequestStatus] = useState(null);
   const [pairingState, setPairingState] = useState({
     status: "idle",
@@ -357,6 +358,13 @@ export default function LocalSupportTransparency() {
   const SessionIcon = sessionState.Icon;
   const visibleActivity = historyDeleted ? [] : activity;
   const livePolicy = policyState.policy;
+  const enrollmentActors = Array.isArray(livePolicy?.full_access?.allowed_support_actors)
+    ? livePolicy.full_access.allowed_support_actors.filter((actor) => typeof actor === "string").slice(0, 32)
+    : [];
+  const enrollmentActor = enrollmentActors.includes(selectedEnrollmentActor)
+    ? selectedEnrollmentActor
+    : enrollmentActors[0] || null;
+  const enrollmentReady = livePolicy?.full_access?.enrollment_ready === true && Boolean(enrollmentActor);
   const fastSupportEnabled = livePolicy?.mvp?.fast_support_enabled === true;
   const fastSupportTtl = formatMinutes(livePolicy?.mvp?.fast_support_ttl_minutes);
   const liveExportMetadata = {
@@ -1039,6 +1047,21 @@ export default function LocalSupportTransparency() {
               ) : (
                 <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4 text-sm text-[var(--text-muted)]">
                   Full Access is not enrolled for this session. Pairing or installation never enables it. Enrollment requires local desktop confirmation and a scoped receipt.
+                  {enrollmentReady ? (
+                    <div className="mt-4 grid gap-3">
+                      {enrollmentActors.length > 1 ? (
+                        <label className="grid gap-1 text-xs text-[var(--text-muted)]">
+                          Support actor for this enrollment
+                          <select className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-3 py-2 text-sm text-[var(--text-primary)]" value={enrollmentActor} onChange={(event) => setSelectedEnrollmentActor(event.target.value)}>
+                            {enrollmentActors.map((actor) => <option key={actor} value={actor}>{actor}</option>)}
+                          </select>
+                        </label>
+                      ) : null}
+                      <Button type="button" variant="outline" disabled={!relayControlsAvailable} onClick={() => requestLocalControlAction("full_access_enrollment_proposal", { support_actor: enrollmentActor })}>
+                        Request native enrollment confirmation
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
               )}
             </Panel>

@@ -140,6 +140,10 @@ export function publicLocalSupportPolicy(policy) {
       command_execution_enabled: fullAccess.command_execution_enabled,
       local_port_discovery_enabled: fullAccess.local_port_discovery_enabled,
       local_port_use_enabled: fullAccess.local_port_use_enabled,
+      enrollment_ready: fullAccess.enabled && isValidFullAccessEnrollment(fullAccess.enrollment),
+      allowed_support_actors: isValidFullAccessEnrollment(fullAccess.enrollment)
+        ? fullAccess.enrollment.allowed_support_actors.slice(0, 32)
+        : [],
       requires_local_consent: true,
       raw_process_fields_allowed: false,
       raw_bodies_in_graph: false,
@@ -274,12 +278,57 @@ export async function updateDurableLocalSupportPolicy(input, updatedBy, client =
 const FULL_ACCESS_FIELDS = new Set([
   "enabled", "auto_approval_enabled", "process_visibility_enabled", "workspace_mutation_enabled",
   "command_execution_enabled", "local_port_discovery_enabled", "local_port_use_enabled",
+  "enrollment",
+]);
+
+const FULL_ACCESS_ENROLLMENT_FIELDS = new Set([
+  "policy_major", "mandatory_reconsent_version", "allowed_support_actors",
+  "max_bytes_per_request", "max_bytes_per_session", "max_requests_per_minute",
+  "max_concurrent_reads", "max_process_records", "allowed_command_executables",
+  "max_command_timeout_seconds", "max_command_output_bytes", "max_command_concurrency",
+  "allowed_loopback_ports", "enrollment_ttl_seconds",
 ]);
 
 function isValidFullAccessInput(value) {
   return value && typeof value === "object" && !Array.isArray(value)
     && Object.keys(value).every((key) => FULL_ACCESS_FIELDS.has(key))
-    && Object.values(value).every((flag) => typeof flag === "boolean");
+    && Object.entries(value).every(([key, flag]) => key === "enrollment"
+      ? flag === null || isValidFullAccessEnrollment(flag)
+      : typeof flag === "boolean");
+}
+
+function isValidFullAccessEnrollment(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.keys(value).some((key) => !FULL_ACCESS_ENROLLMENT_FIELDS.has(key))) return false;
+  const actors = value.allowed_support_actors;
+  const executables = value.allowed_command_executables;
+  const ports = value.allowed_loopback_ports;
+  const numericRanges = [
+    ["policy_major", 1, 65_535], ["mandatory_reconsent_version", 1, 1_000_000],
+    ["max_bytes_per_request", 1, 262_144], ["max_bytes_per_session", 1, 67_108_864],
+    ["max_requests_per_minute", 1, 240], ["max_concurrent_reads", 1, 16],
+    ["max_process_records", 1, 256], ["max_command_timeout_seconds", 1, 300],
+    ["max_command_output_bytes", 1, 1_048_576], ["max_command_concurrency", 1, 8],
+    ["enrollment_ttl_seconds", 30, 900],
+  ];
+  return numericRanges.every(([key, min, max]) => Number.isSafeInteger(value[key]) && value[key] >= min && value[key] <= max)
+    && value.max_bytes_per_session >= value.max_bytes_per_request
+    && Array.isArray(actors) && actors.length > 0 && actors.length <= 32
+    && actors.every((actor) => safePolicyIdentifier(actor, 128))
+    && Array.isArray(executables) && executables.length <= 32
+    && executables.every(safeExecutableName)
+    && Array.isArray(ports) && ports.length <= 128
+    && ports.every((port) => Number.isSafeInteger(port) && port >= 1 && port <= 65_535);
+}
+
+function safePolicyIdentifier(value, maxLength) {
+  return typeof value === "string" && value.length > 0 && value.length <= maxLength
+    && /^[A-Za-z0-9_.:-]+$/.test(value);
+}
+
+function safeExecutableName(value) {
+  const base = typeof value === "string" && value.endsWith(".exe") ? value.slice(0, -4) : value;
+  return typeof base === "string" && base.length > 0 && base.length <= 124 && /^[A-Za-z0-9_-]+$/.test(base);
 }
 
 function normalizeStoredFullAccessPolicy(value) {
@@ -293,6 +342,7 @@ function normalizeStoredFullAccessPolicy(value) {
     commandExecution: enabled && input.command_execution_enabled === true,
     localPortDiscovery: enabled && input.local_port_discovery_enabled === true,
     localPortUse: enabled && input.local_port_use_enabled === true,
+    enrollment: enabled && isValidFullAccessEnrollment(input.enrollment) ? input.enrollment : null,
   };
 }
 
@@ -309,6 +359,7 @@ function resolveFullAccessPolicy(globalStored, scopedStored, env) {
     commandExecution: enabled && global.commandExecution && scoped.commandExecution,
     localPortDiscovery: enabled && global.localPortDiscovery && scoped.localPortDiscovery,
     localPortUse: enabled && global.localPortUse && scoped.localPortUse,
+    enrollment: enabled ? intersectEnrollmentPolicy(global.enrollment, scopedStored ? scoped.enrollment : global.enrollment) : null,
   });
 }
 
@@ -324,14 +375,15 @@ function parseStoredFullAccessPolicy(value) {
       commandExecution: parsed.commandExecution === true,
       localPortDiscovery: parsed.localPortDiscovery === true,
       localPortUse: parsed.localPortUse === true,
+      enrollment: isValidFullAccessEnrollment(parsed.enrollment) ? parsed.enrollment : null,
     };
   } catch {
     return emptyFullAccessPolicy();
   }
 }
 
-function emptyFullAccessPolicy() { return { enabled: false, autoApproval: false, processVisibility: false, workspaceMutation: false, commandExecution: false, localPortDiscovery: false, localPortUse: false }; }
-function allFullAccessAllowed() { return { enabled: true, autoApproval: true, processVisibility: true, workspaceMutation: true, commandExecution: true, localPortDiscovery: true, localPortUse: true }; }
+function emptyFullAccessPolicy() { return { enabled: false, autoApproval: false, processVisibility: false, workspaceMutation: false, commandExecution: false, localPortDiscovery: false, localPortUse: false, enrollment: null }; }
+function allFullAccessAllowed() { return { enabled: true, autoApproval: true, processVisibility: true, workspaceMutation: true, commandExecution: true, localPortDiscovery: true, localPortUse: true, enrollment: null }; }
 function normalizeFullAccessPolicy(value) {
   const policy = value && typeof value === "object" ? value : {};
   const enabled = policy.enabled === true;
@@ -343,9 +395,32 @@ function normalizeFullAccessPolicy(value) {
     command_execution_enabled: enabled && (policy.command_execution_enabled === true || policy.commandExecution === true),
     local_port_discovery_enabled: enabled && (policy.local_port_discovery_enabled === true || policy.localPortDiscovery === true),
     local_port_use_enabled: enabled && (policy.local_port_use_enabled === true || policy.localPortUse === true),
+    enrollment: enabled && isValidFullAccessEnrollment(policy.enrollment) ? policy.enrollment : null,
   };
 }
 function publicFullAccessPolicy(value) { return normalizeFullAccessPolicy(value); }
+
+function intersectEnrollmentPolicy(global, scoped) {
+  if (!isValidFullAccessEnrollment(global) || !isValidFullAccessEnrollment(scoped)
+    || global.policy_major !== scoped.policy_major) return null;
+  const result = {
+    policy_major: global.policy_major,
+    mandatory_reconsent_version: Math.max(global.mandatory_reconsent_version, scoped.mandatory_reconsent_version),
+    allowed_support_actors: global.allowed_support_actors.filter((actor) => scoped.allowed_support_actors.includes(actor)),
+    max_bytes_per_request: Math.min(global.max_bytes_per_request, scoped.max_bytes_per_request),
+    max_bytes_per_session: Math.min(global.max_bytes_per_session, scoped.max_bytes_per_session),
+    max_requests_per_minute: Math.min(global.max_requests_per_minute, scoped.max_requests_per_minute),
+    max_concurrent_reads: Math.min(global.max_concurrent_reads, scoped.max_concurrent_reads),
+    max_process_records: Math.min(global.max_process_records, scoped.max_process_records),
+    allowed_command_executables: global.allowed_command_executables.filter((item) => scoped.allowed_command_executables.includes(item)),
+    max_command_timeout_seconds: Math.min(global.max_command_timeout_seconds, scoped.max_command_timeout_seconds),
+    max_command_output_bytes: Math.min(global.max_command_output_bytes, scoped.max_command_output_bytes),
+    max_command_concurrency: Math.min(global.max_command_concurrency, scoped.max_command_concurrency),
+    allowed_loopback_ports: global.allowed_loopback_ports.filter((port) => scoped.allowed_loopback_ports.includes(port)),
+    enrollment_ttl_seconds: Math.min(global.enrollment_ttl_seconds, scoped.enrollment_ttl_seconds),
+  };
+  return isValidFullAccessEnrollment(result) ? result : null;
+}
 
 function normalizeOrgId(value) {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)

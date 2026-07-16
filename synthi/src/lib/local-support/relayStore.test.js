@@ -159,6 +159,27 @@ describe("durable local support relay store", () => {
     });
   });
 
+  it("queues a bounded Full Access enrollment proposal for native confirmation", async () => {
+    const { client } = fakeClient();
+    await enqueueLocalControlCommand({
+      commandId: "cmd_full_enroll_123",
+      sessionId: "sess_12345678",
+      accountId: "acct_123",
+      orgId: "org_123",
+      workspaceId: "wk_12345678",
+      deviceFingerprint: "sha256:3333333333333333",
+      action: "full_access_enrollment_proposal",
+      proposal: { request_id: "proposal_12345678", support_actor: "support_agent", policy: {} },
+      expiresAt: "2030-01-01T00:01:00.000Z",
+    }, client);
+    expect(client.localSupportControlCommand.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: "full_access_enrollment_proposal",
+        proposalJson: expect.stringContaining("proposal_12345678"),
+      }),
+    });
+  });
+
   it("persists a bounded metadata-only control proposal", async () => {
     const { client } = fakeClient();
     await enqueueLocalControlCommand({

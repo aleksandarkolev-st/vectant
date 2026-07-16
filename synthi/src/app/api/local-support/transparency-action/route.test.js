@@ -32,7 +32,7 @@ vi.mock("@/lib/local-support/policyStore", async () => {
   return { readDurableLocalSupportPolicy: async () => controlPlane.readLocalSupportPolicy() };
 });
 
-import { POST } from "./route";
+import { POST, buildFullAccessEnrollmentProposal } from "./route";
 
 const OLD_ENV = { ...process.env };
 
@@ -73,6 +73,46 @@ function request(body, headers = {}) {
 }
 
 describe("local support transparency action route", () => {
+  it("derives enrollment scope only from a bounded organization policy", () => {
+    const policy = {
+      full_access: {
+        enabled: true,
+        auto_approval_enabled: true,
+        command_execution_enabled: true,
+        process_visibility_enabled: true,
+        workspace_mutation_enabled: false,
+        local_port_discovery_enabled: false,
+        local_port_use_enabled: false,
+        enrollment: {
+          policy_major: 1,
+          mandatory_reconsent_version: 3,
+          allowed_support_actors: ["support_agent"],
+          max_bytes_per_request: 4096,
+          max_bytes_per_session: 16384,
+          max_requests_per_minute: 10,
+          max_concurrent_reads: 1,
+          max_process_records: 32,
+          allowed_command_executables: ["python.exe"],
+          max_command_timeout_seconds: 30,
+          max_command_output_bytes: 4096,
+          max_command_concurrency: 1,
+          allowed_loopback_ports: [],
+          enrollment_ttl_seconds: 60,
+        },
+      },
+    };
+    const proposal = buildFullAccessEnrollmentProposal(policy, "support_agent");
+    expect(proposal).toMatchObject({
+      support_actor: "support_agent",
+      policy: {
+        allowed_actors: ["support_agent"],
+        allowed_command_executables: ["python.exe"],
+        allowed_capabilities: expect.arrayContaining(["enroll", "command_execute", "process_inventory"]),
+      },
+    });
+    expect(buildFullAccessEnrollmentProposal(policy, "browser_user")).toBeNull();
+  });
+
   it("denies disconnected page-only actions instead of faking local storage changes", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     delete process.env.VECTANT_LOCAL_SUPPORT_TRANSPARENCY_STATE_JSON;

@@ -151,6 +151,18 @@ export async function POST(req) {
   }
 
   const port = decision.action === "revoke_port" ? decision.port : null;
+  let proposal = null;
+  let commandTtlSeconds = 60;
+  if (decision.action === "full_access_enrollment_proposal") {
+    proposal = buildFullAccessEnrollmentProposal(policy, bodyResult.value?.support_actor);
+    if (!proposal) {
+      return jsonNoStore(deniedBody(
+        "full_access_enrollment_policy_unavailable",
+        "Full Access enrollment is not configured with a valid bounded organization policy.",
+      ), 403);
+    }
+    commandTtlSeconds = policy.full_access.enrollment.enrollment_ttl_seconds;
+  }
   try {
     const command = await enqueueLocalControlCommand({
       commandId: `cmd_${randomUUID().replaceAll("-", "")}`,
@@ -161,7 +173,8 @@ export async function POST(req) {
       deviceFingerprint: paired.deviceFingerprint,
       action: decision.action,
       port,
-      expiresAt: new Date(Date.now() + 60_000),
+      proposal,
+      expiresAt: new Date(Date.now() + commandTtlSeconds * 1_000),
       policyVersion: decision.policy_version || policy.policy_version,
       scannerVersion: "not_applicable",
       actor: cloudAccountId,
@@ -233,7 +246,7 @@ async function forwardLocalDaemonAction(body, decision, localStatus, env = proce
   // Full Access controls are executed by the signed desktop runtime after it
   // validates a relay envelope. They intentionally have no browser-to-daemon
   // HTTP route, so a web process cannot forge a local pause or revoke.
-  if (["full_access_pause", "full_access_revoke", "process_visibility_pause"].includes(decision.action)) {
+  if (["full_access_enrollment_proposal", "full_access_pause", "full_access_revoke", "process_visibility_pause"].includes(decision.action)) {
     return null;
   }
   if (!env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER || !env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET) {
@@ -291,6 +304,51 @@ async function forwardLocalDaemonAction(body, decision, localStatus, env = proce
       },
     };
   }
+}
+
+export function buildFullAccessEnrollmentProposal(policy, requestedActor) {
+  const fullAccess = policy?.full_access && typeof policy.full_access === "object" ? policy.full_access : {};
+  const enrollment = fullAccess.enrollment && typeof fullAccess.enrollment === "object" ? fullAccess.enrollment : null;
+  if (!enrollment || !Array.isArray(enrollment.allowed_support_actors)
+    || !enrollment.allowed_support_actors.includes(requestedActor)) return null;
+  const capabilities = ["enroll", "graph_read", "graph_node_request"];
+  if (fullAccess.auto_approval_enabled === true) capabilities.push("auto_approval_enable");
+  if (fullAccess.workspace_mutation_enabled === true) capabilities.push("workspace_file_mutate", "workspace_file_revert");
+  if (fullAccess.command_execution_enabled === true) {
+    if (!Array.isArray(enrollment.allowed_command_executables) || enrollment.allowed_command_executables.length === 0) return null;
+    capabilities.push("command_execute", "command_context_read");
+  }
+  if (fullAccess.process_visibility_enabled === true) capabilities.push("process_inventory", "process_listener_metadata");
+  if (fullAccess.local_port_discovery_enabled === true) {
+    if (!Array.isArray(enrollment.allowed_loopback_ports) || enrollment.allowed_loopback_ports.length === 0) return null;
+    capabilities.push("local_port_discover");
+  }
+  if (fullAccess.local_port_use_enabled === true) {
+    if (!Array.isArray(enrollment.allowed_loopback_ports) || enrollment.allowed_loopback_ports.length === 0) return null;
+    capabilities.push("local_port_use");
+  }
+  return {
+    request_id: `enroll_${randomUUID().replaceAll("-", "")}`,
+    support_actor: requestedActor,
+    policy: {
+      organization_enabled: true,
+      emergency_paused: false,
+      mandatory_reconsent_version: enrollment.mandatory_reconsent_version,
+      policy_major: enrollment.policy_major,
+      allowed_capabilities: capabilities,
+      allowed_actors: enrollment.allowed_support_actors,
+      max_bytes_per_request: enrollment.max_bytes_per_request,
+      max_bytes_per_session: enrollment.max_bytes_per_session,
+      max_requests_per_minute: enrollment.max_requests_per_minute,
+      max_concurrent_reads: enrollment.max_concurrent_reads,
+      max_process_records: enrollment.max_process_records,
+      allowed_command_executables: enrollment.allowed_command_executables,
+      max_command_timeout_seconds: enrollment.max_command_timeout_seconds,
+      max_command_output_bytes: enrollment.max_command_output_bytes,
+      max_command_concurrency: enrollment.max_command_concurrency,
+      allowed_loopback_ports: enrollment.allowed_loopback_ports,
+    },
+  };
 }
 
 function localDaemonActionPath(action, body, requestId) {

@@ -293,6 +293,27 @@ describe("durable local support policy", () => {
     expect(upsert.mock.calls[0][0].create.fullAccessPolicyJson).toContain('"commandExecution":true');
   });
 
+  it("requires complete bounded enrollment policy and intersects organization scope", async () => {
+    const enrollment = {
+      policy_major: 1, mandatory_reconsent_version: 2, allowed_support_actors: ["support_agent"],
+      max_bytes_per_request: 4096, max_bytes_per_session: 16384, max_requests_per_minute: 10,
+      max_concurrent_reads: 1, max_process_records: 32, allowed_command_executables: ["python.exe"],
+      max_command_timeout_seconds: 30, max_command_output_bytes: 4096, max_command_concurrency: 1,
+      allowed_loopback_ports: [3000], enrollment_ttl_seconds: 60,
+    };
+    const global = {
+      id: "global", orgId: null, globalEnabled: true, orgDisabled: false, pairingDisabled: false,
+      previewDisabled: false, agentAccessDisabled: true, minAppVersion: "0.1.0", vulnerableVersionsJson: "[]", retentionDays: 30,
+      fullAccessPolicyJson: JSON.stringify({ enabled: true, autoApproval: true, processVisibility: true, workspaceMutation: false, commandExecution: true, localPortDiscovery: true, localPortUse: true, enrollment }),
+      updatedAt: new Date("2030-01-01T00:00:00.000Z"),
+    };
+    const scoped = { ...global, id: "org_org_acme", orgId: "org_acme", fullAccessPolicyJson: JSON.stringify({ enabled: true, autoApproval: false, processVisibility: true, workspaceMutation: false, commandExecution: true, localPortDiscovery: false, localPortUse: false, enrollment: { ...enrollment, max_bytes_per_request: 2048, max_bytes_per_session: 8192, allowed_loopback_ports: [] } }) };
+    const policy = await readDurableLocalSupportPolicy({}, {
+      localSupportPolicyState: { findUnique: vi.fn(async ({ where }) => where.id === "global" ? global : scoped) },
+    }, "org_acme");
+    expect(policy.full_access.enrollment).toMatchObject({ max_bytes_per_request: 2048, max_bytes_per_session: 8192, allowed_loopback_ports: [] });
+  });
+
   it("does not publish internal full access fields or permit unsafe raw data", () => {
     const projected = publicLocalSupportPolicy({
       full_access: { enabled: true, command_execution_enabled: true, raw_process_fields_allowed: true, raw_bodies_in_graph: true },

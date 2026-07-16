@@ -77,6 +77,7 @@ const TRANSPARENCY_ACTIONS = new Set([
   "resume_session",
   "disconnect_session",
   "revoke_session_approvals",
+  "full_access_enrollment_proposal",
   "full_access_pause",
   "full_access_revoke",
   "process_visibility_pause",
@@ -1098,6 +1099,18 @@ export function buildTransparencyActionDecision(input, currentState, policy = re
     return transparencyActionAllowed(action, state, {
       port,
       user_visible_message: "Port approval revoke requested. The local app must invalidate the preview host and token.",
+    });
+  }
+
+  if (action === "full_access_enrollment_proposal") {
+    if (policy.full_access?.enabled !== true) {
+      return deny("full_access_disabled_by_policy", "Full Access is disabled by organization policy.");
+    }
+    if (state.full_access.enrolled) {
+      return deny("full_access_already_enrolled", "Full Access is already enrolled for this session.");
+    }
+    return transparencyActionAllowed(action, state, {
+      user_visible_message: "Full Access enrollment request queued. The desktop app must show the scope and receive a local confirmation before it is enabled.",
     });
   }
 
