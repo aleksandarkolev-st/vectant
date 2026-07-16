@@ -157,6 +157,9 @@ const REAL_ROCM_TEST_TIMING_VISUAL_UNAVAILABLE_REASONS = Object.freeze({
   screenshot_capture: 'real_rocm_screenshot_capture_not_observed',
   visual_analysis: 'real_rocm_visual_analysis_not_observed',
 });
+const REAL_ROCM_TEST_TIMING_UNTOUCHED_REASONS = Object.freeze({
+  compile: 'real_rocm_cold_device_compile_command_not_observed',
+});
 const FINAL_ACCEPTANCE_PRIOR_TARGET_PROGRESSION_PHASES = Object.freeze([
   'small-oracle',
   'partial-reload',
@@ -375,7 +378,8 @@ export function createRealRocmTestTimingV2Coordinator({
             transition: 'unavailable',
             reasonCode: visualPhase
               ? REAL_ROCM_TEST_TIMING_VISUAL_UNAVAILABLE_REASONS[phaseKey]
-              : `real_rocm_phase_not_reached_before_terminal:${phaseKey}`,
+              : REAL_ROCM_TEST_TIMING_UNTOUCHED_REASONS[phaseKey]
+                ?? `real_rocm_phase_not_reached_before_terminal:${phaseKey}`,
           };
         }
       }
@@ -12806,11 +12810,36 @@ function deriveCpuGpuFirewallEvidence({
   return firewall;
 }
 
+async function observeRealRocmCompileCommand({
+  coordinator = realRocmTestTiming,
+  timingRole = null,
+  command,
+} = {}) {
+  if (typeof command !== 'function') {
+    throw new TypeError('real ROCm compile timing requires a command callback');
+  }
+  if (timingRole === null) return command();
+  if (timingRole !== 'cold_device_compile') {
+    throw new TypeError(`real ROCm compile timing role is invalid: ${timingRole}`);
+  }
+  if (coordinator.phaseState('compile') !== 'untouched') {
+    throw new Error('real_rocm_cold_device_compile_timing_already_observed');
+  }
+  coordinator.startPhase('compile');
+  try {
+    return await command();
+  } finally {
+    if (coordinator.phaseState('compile') === 'started') {
+      coordinator.finishPhase('compile');
+    }
+  }
+}
+
 async function compileViaMcp(
   args,
   timeoutMs,
   phaseName,
-  { measurePrimaryHotCompile = false } = {},
+  { testTimingRole = null } = {},
 ) {
   writeEmergencyPhaseCheckpoint({
     phaseName,
@@ -12827,17 +12856,10 @@ async function compileViaMcp(
   const start = Date.now();
   let compile;
   try {
-    if (measurePrimaryHotCompile) realRocmTestTiming.startPhase('compile');
-    try {
-      compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
-    } finally {
-      if (
-        measurePrimaryHotCompile
-        && realRocmTestTiming.phaseState('compile') === 'started'
-      ) {
-        realRocmTestTiming.finishPhase('compile');
-      }
-    }
+    compile = await observeRealRocmCompileCommand({
+      timingRole: testTimingRole,
+      command: () => state.client.toolCall('synthi_compile', args, timeoutMs),
+    });
   } catch (err) {
     await capturePhaseRuntimeIdentity(identityMonitor, 'compile_error');
     const sessionLost = runtimeIdentityLostWaitResult(identityMonitor, start);
@@ -28544,7 +28566,9 @@ async function run() {
     slug: CFG.slug,
     width: CFG.width,
     height: CFG.height,
-  }, CFG.firstCompileTimeoutMs, 'first_real_repo_ai_split_compile');
+  }, CFG.firstCompileTimeoutMs, 'first_real_repo_ai_split_compile', {
+    testTimingRole: 'cold_device_compile',
+  });
   await captureScreenshot('first-compile', { required: false, wait: firstCompileResult.wait });
 
   const primaryDeltaPhase = beginSourceDeltaExecutionPhase({
@@ -28601,9 +28625,7 @@ async function run() {
       slug: CFG.slug,
       width: CFG.width,
       height: CFG.height,
-    }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr', {
-      measurePrimaryHotCompile: true,
-    });
+    }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr');
     if (
       realRocmTestTiming.visualContract
       && realRocmTestTiming.phaseState('trigger_to_visible') === 'started'
@@ -28740,7 +28762,7 @@ function realRocmTimingSelfCheckClock(initialNs) {
   };
 }
 
-function buildRealRocmTimingV2SelfCheckCases() {
+async function buildRealRocmTimingV2SelfCheckCases() {
   const visualClock = realRocmTimingSelfCheckClock(100n);
   const visualCoordinator = createRealRocmTestTimingV2Coordinator({
     clock: visualClock.now,
@@ -28755,9 +28777,14 @@ function buildRealRocmTimingV2SelfCheckCases() {
   visualCoordinator.finishPhase('discovery');
   visualCoordinator.startPhase('trigger_to_visible');
   visualClock.tick(2n);
-  visualCoordinator.startPhase('compile');
-  visualClock.tick(11n);
-  visualCoordinator.finishPhase('compile');
+  await observeRealRocmCompileCommand({
+    coordinator: visualCoordinator,
+    timingRole: 'cold_device_compile',
+    command: async () => {
+      visualClock.tick(11n);
+      return { ok: true };
+    },
+  });
   visualClock.tick(3n);
   visualCoordinator.finishPhase('trigger_to_visible');
   const screenshotStartNs = visualClock.now();
@@ -28843,6 +28870,24 @@ function buildRealRocmTimingV2SelfCheckCases() {
     terminalReason: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.checkpoint,
   });
 
+  const hotOnlyClock = realRocmTimingSelfCheckClock(4_500n);
+  const hotOnlyCoordinator = createRealRocmTestTimingV2Coordinator({
+    clock: hotOnlyClock.now,
+    totalStartNs: hotOnlyClock.now(),
+    visualContract: false,
+  });
+  await observeRealRocmCompileCommand({
+    coordinator: hotOnlyCoordinator,
+    command: async () => {
+      hotOnlyClock.tick(47n);
+      return { ok: true };
+    },
+  });
+  const hotOnly = hotOnlyCoordinator.snapshot({
+    outcome: 'refused',
+    terminalReason: REAL_ROCM_TEST_TIMING_TERMINAL_REASONS.finalRefusal,
+  });
+
   let regressedIntervalRejected = false;
   const adversarialClock = realRocmTimingSelfCheckClock(5_000n);
   const adversarialCoordinator = createRealRocmTestTimingV2Coordinator({
@@ -28887,6 +28932,7 @@ function buildRealRocmTimingV2SelfCheckCases() {
     exception,
     signal,
     emergency,
+    hotOnly,
     attachment: {
       aliasesShareRecord: attachmentTarget.testTiming === attachmentTarget.test_timing,
       proofIdPreserved: attachmentTarget.proofId === proofIdentity,
@@ -28906,7 +28952,7 @@ function buildRealRocmTimingV2SelfCheckCases() {
 if (process.argv.includes('--timing-v2-self-check')) {
   try {
     console.log(
-      `REAL_ROCM_TIMING_V2_SELF_CHECK ${JSON.stringify(buildRealRocmTimingV2SelfCheckCases())}`,
+      `REAL_ROCM_TIMING_V2_SELF_CHECK ${JSON.stringify(await buildRealRocmTimingV2SelfCheckCases())}`,
     );
   } catch (err) {
     console.error(err.stack || err.message);

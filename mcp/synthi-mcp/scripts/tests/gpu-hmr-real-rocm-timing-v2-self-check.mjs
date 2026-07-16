@@ -46,6 +46,7 @@ const terminalCases = [
   ['exception', payload.exception, 'failed'],
   ['signal', payload.signal, 'failed'],
   ['emergency', payload.emergency, 'refused'],
+  ['hotOnly', payload.hotOnly, 'refused'],
 ];
 for (const [caseName, record, outcome] of terminalCases) {
   const validation = validateGpuHmrTestTiming(record);
@@ -122,6 +123,13 @@ assert.equal(
 );
 assert.equal(payload.signal.phases.total_wall.durationNs, '41');
 assert.equal(payload.emergency.phases.total_wall.durationNs, '43');
+assert.deepEqual(payload.hotOnly.phases.compile, {
+  state: 'unavailable',
+  startNs: null,
+  endNs: null,
+  durationNs: null,
+  reasonCode: 'real_rocm_cold_device_compile_command_not_observed',
+});
 
 assert.deepEqual(payload.attachment, {
   aliasesShareRecord: true,
