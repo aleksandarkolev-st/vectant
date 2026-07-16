@@ -6,8 +6,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 pub const GPU_HMR_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof.v1";
-pub const GPU_HMR_ACCEPTANCE_LEDGER_SCHEMA_VERSION: &str =
-    "synthi.gpu_hmr.acceptance_ledger.v1";
+pub const GPU_HMR_ACCEPTANCE_LEDGER_SCHEMA_VERSION: &str = "synthi.gpu_hmr.acceptance_ledger.v1";
 pub const GPU_HMR_HARDWARE_UUID_PREFIX: &str = "gpu-hardware-uuid:";
 
 pub fn normalized_gpu_hardware_uuid(value: &str) -> Option<&str> {
@@ -291,7 +290,10 @@ pub struct GpuHmrAcceptanceLedger {
     pub artifact_id_after: String,
     #[serde(rename = "loaderArtifactId", skip_serializing_if = "Option::is_none")]
     pub loader_artifact_id: Option<String>,
-    #[serde(rename = "epochPublishArtifactId", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "epochPublishArtifactId",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub epoch_publish_artifact_id: Option<String>,
     #[serde(rename = "dispatchArtifactId", skip_serializing_if = "Option::is_none")]
     pub dispatch_artifact_id: Option<String>,
@@ -317,7 +319,10 @@ pub struct GpuHmrAcceptanceLedger {
     pub process_restart_absence_evidence_present: bool,
     #[serde(rename = "firewallRoute", skip_serializing_if = "Option::is_none")]
     pub firewall_route: Option<String>,
-    #[serde(rename = "firewallEvidenceSource", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "firewallEvidenceSource",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub firewall_evidence_source: Option<String>,
     #[serde(
         rename = "firewallProcessIdBefore",
@@ -360,11 +365,7 @@ impl GpuHmrAcceptanceLedger {
                 Some(false) => {}
                 None => failed.push("process_restart_absence_evidence_missing".to_string()),
             }
-            let firewall_route = input
-                .firewall_route
-                .as_deref()
-                .unwrap_or_default()
-                .trim();
+            let firewall_route = input.firewall_route.as_deref().unwrap_or_default().trim();
             if firewall_route.is_empty() {
                 failed.push("firewall_route_missing".to_string());
             } else if firewall_route
@@ -395,7 +396,8 @@ impl GpuHmrAcceptanceLedger {
             if input.loader_artifact_id.as_deref() != Some(input.artifact_id_after.as_str()) {
                 failed.push("loader_artifact_mismatch".to_string());
             }
-            if input.epoch_publish_artifact_id.as_deref() != Some(input.artifact_id_after.as_str()) {
+            if input.epoch_publish_artifact_id.as_deref() != Some(input.artifact_id_after.as_str())
+            {
                 failed.push("epoch_publish_artifact_mismatch".to_string());
             }
             if input.dispatch_artifact_id.as_deref() != Some(input.artifact_id_after.as_str()) {
@@ -413,7 +415,13 @@ impl GpuHmrAcceptanceLedger {
             if !input.retirement_proven {
                 failed.push("epoch_retirement_unproven".to_string());
             }
-            if input.process_id.as_deref().unwrap_or_default().trim().is_empty() {
+            if input
+                .process_id
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
                 failed.push("process_identity_missing".to_string());
             }
             match input.device_identity.as_deref() {
@@ -479,7 +487,8 @@ impl GpuHmrAcceptanceLedger {
                 .as_bool()
                 .unwrap_or(false),
             process_restarted: material["processRestarted"].as_bool().unwrap_or(false),
-            process_restart_absence_evidence_present: material["processRestartAbsenceEvidencePresent"]
+            process_restart_absence_evidence_present: material
+                ["processRestartAbsenceEvidencePresent"]
                 .as_bool()
                 .unwrap_or(false),
             firewall_route: material["firewallRoute"].as_str().map(str::to_string),
@@ -899,9 +908,7 @@ mod tests {
             firewall_process_id_before: Some(42),
             firewall_process_id_after: Some(42),
             process_id: Some("pid:1".to_string()),
-            device_identity: Some(
-                "gpu-hardware-uuid:00112233445566778899aabbccddeeff".to_string(),
-            ),
+            device_identity: Some("gpu-hardware-uuid:00112233445566778899aabbccddeeff".to_string()),
         }
     }
 
