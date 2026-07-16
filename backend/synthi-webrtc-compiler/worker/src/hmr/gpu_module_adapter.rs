@@ -431,6 +431,20 @@ fn dispatch_table_hash(table: &KernelTable) -> u64 {
     hasher.finish()
 }
 
+fn dispatch_table_content_hash(table: &KernelTable) -> String {
+    let entries = dispatch_table_entries(table);
+    let mut material = Vec::new();
+    material.extend_from_slice(b"synthi.gpu_hmr.dispatch_table.v1\0");
+    material.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+    for (name, handle) in entries {
+        let name_bytes = name.as_bytes();
+        material.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+        material.extend_from_slice(name_bytes);
+        material.extend_from_slice(&handle.to_le_bytes());
+    }
+    format!("sha256:{}", sha256_hex_bytes(&material))
+}
+
 fn epoch_millis_now() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3699,6 +3713,8 @@ impl Adapter for GpuModuleAdapter {
             let retired_module_count = retired.len();
             let (dispatcher_kernels, dispatch_table_hash) =
                 active_dispatch_table(&self.module_manager);
+            let dispatch_table_content_hash =
+                dispatch_table_content_hash(self.module_manager.kernel_table());
             let changed_symbols_for_log = if expected_symbols.is_empty() {
                 "none".to_string()
             } else {
@@ -3715,7 +3731,7 @@ impl Adapter for GpuModuleAdapter {
                 }),
                 GpuLaunchDispatcherMetadata {
                     artifact_id: Some(new_artifact_id.clone()),
-                    dispatch_table_hash: Some(format!("0x{dispatch_table_hash:016x}")),
+                    dispatch_table_hash: Some(dispatch_table_content_hash),
                     changed_symbols: expected_symbols.clone(),
                     function_handle_ids: function_handle_ids
                         .split(',')
@@ -4941,6 +4957,29 @@ mod tests {
                 "shade".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn dispatch_table_content_hash_is_canonical_and_order_independent() {
+        let mut first = KernelTable::new();
+        first.insert("shade", 0x1010);
+        first.insert("trace", 0x2020);
+
+        let mut reordered = KernelTable::new();
+        reordered.insert("trace", 0x2020);
+        reordered.insert("shade", 0x1010);
+
+        let first_hash = dispatch_table_content_hash(&first);
+        assert_eq!(first_hash, dispatch_table_content_hash(&reordered));
+        assert_eq!(first_hash.len(), "sha256:".len() + 64);
+        assert!(first_hash
+            .strip_prefix("sha256:")
+            .is_some_and(|digest| digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))));
+
+        reordered.insert("trace", 0x3030);
+        assert_ne!(first_hash, dispatch_table_content_hash(&reordered));
     }
 
     #[test]
