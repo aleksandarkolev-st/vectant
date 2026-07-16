@@ -4,6 +4,10 @@ use std::collections::BTreeSet;
 
 pub const FISSION_ISLAND_SCHEMA_VERSION: &str = "synthi.gpu.fission_island.v1";
 pub const FISSION_VERIFIER_SCHEMA_VERSION: &str = "synthi.gpu.fission_verifier.v1";
+pub const FISSION_VERIFIER_EVIDENCE_SCHEMA_VERSION: &str =
+    "synthi.gpu.fission_verifier_evidence.v1";
+const FISSION_VERIFIER_EVIDENCE_AUTHORITY: &str =
+    "candidate_field_binding_only_not_gpu_hmr_or_runtime_authority";
 const ORIGINAL_HOST_ATTACHMENT_CONTRACT_SCHEMA_VERSION: &str =
     "synthi.gpu.original_host_attachment_contract.v1";
 
@@ -155,34 +159,28 @@ const LOADER_TRANSPORT_LIST_FIELDS: &[&str] = &[
 struct VerificationEvidenceCategory {
     name: &'static str,
     fields: &'static [&'static str],
-    fallback_tokens: &'static [&'static str],
 }
 
 const REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES: &[VerificationEvidenceCategory] = &[
     VerificationEvidenceCategory {
         name: "source_mapping",
         fields: &["sourceMappingEvidenceIds", "sourceMapEvidenceIds"],
-        fallback_tokens: &["source_mapping", "source_map"],
     },
     VerificationEvidenceCategory {
         name: "include_closure",
         fields: &["includeClosureEvidenceIds"],
-        fallback_tokens: &["include_closure"],
     },
     VerificationEvidenceCategory {
         name: "symbol_ownership",
         fields: &["symbolOwnershipEvidenceIds"],
-        fallback_tokens: &["symbol_ownership", "symbol_owner"],
     },
     VerificationEvidenceCategory {
         name: "dependency_closure",
         fields: &["dependencyClosureEvidenceIds"],
-        fallback_tokens: &["dependency_closure"],
     },
     VerificationEvidenceCategory {
         name: "abi_membrane",
         fields: &["abiMembraneEvidenceIds", "abiEvidenceIds"],
-        fallback_tokens: &["abi_membrane", "abi_layout"],
     },
     VerificationEvidenceCategory {
         name: "compile_recipe",
@@ -191,19 +189,53 @@ const REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES: &[VerificationEvidenceCategory]
             "compileCommandEvidenceIds",
             "compileEvidenceIds",
         ],
-        fallback_tokens: &["compile_recipe", "compile_command", "compile_invocation"],
     },
     VerificationEvidenceCategory {
         name: "loader_capability",
         fields: &["loaderCapabilityEvidenceIds", "loaderEvidenceIds"],
-        fallback_tokens: &["loader_capability", "loader_requirement", "module_load"],
     },
     VerificationEvidenceCategory {
         name: "output_oracle",
         fields: &["outputOracleEvidenceIds", "oracleEvidenceIds"],
-        fallback_tokens: &["output_oracle", "oracle_contract", "oracle_requirement"],
     },
 ];
+
+/// Materialize deterministic, content-addressed verifier records from evidence
+/// references that were already produced by a trusted compiler stage. This is
+/// deliberately not called by `verify_fission_candidate`: external candidates
+/// must carry records created at their evidence-production boundary.
+pub fn materialize_content_bound_fission_evidence(candidate: &mut Value) -> usize {
+    let records = REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES
+        .iter()
+        .flat_map(|category| {
+            let source_ids = category
+                .fields
+                .iter()
+                .flat_map(|field| evidence_id_list(candidate.get(*field)))
+                .filter(|id| canonical_source_evidence_id(id))
+                .collect::<BTreeSet<_>>();
+            source_ids
+                .into_iter()
+                .filter_map(|source_id| {
+                    content_bound_fission_evidence_record(candidate, category.name, &source_id)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let evidence_ids = records
+        .iter()
+        .filter_map(|record| record.get("evidenceId").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if let Some(object) = candidate.as_object_mut() {
+        object.insert(
+            "verifierEvidenceRecords".to_string(),
+            Value::Array(records.clone()),
+        );
+        object.insert("verifierEvidenceIds".to_string(), json!(evidence_ids));
+    }
+    records.len()
+}
 
 pub fn verify_fission_candidates(value: &Value) -> Value {
     let candidates = collect_candidates(value);
@@ -329,6 +361,9 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
     if !deterministic_verifier_evidence_present(candidate) {
         reason_codes.push("fission.deterministic_verifier_evidence_missing".to_string());
     }
+    if invalid_content_bound_fission_evidence_record_count(candidate) > 0 {
+        reason_codes.push("fission.verifier_evidence_record_invalid".to_string());
+    }
 
     for category in missing_verification_evidence_categories(candidate) {
         reason_codes.push(format!("fission.{category}_evidence_missing"));
@@ -438,6 +473,8 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "reasonCodes": reason_codes,
         "deterministicVerifierEvidenceIds": deterministic_verifier_evidence_ids(candidate),
         "nonAuthoritativeEvidenceIds": non_authoritative_evidence_ids(candidate),
+        "contentBoundVerifierEvidenceRecords": valid_content_bound_fission_evidence_records(candidate),
+        "invalidContentBoundVerifierEvidenceRecordCount": invalid_content_bound_fission_evidence_record_count(candidate),
         "verificationEvidenceCoverage": verification_evidence_coverage(candidate),
         "normalizedSourcePaths": normalized_source_paths(candidate),
         "unmappedSourceSpanPaths": unmapped_source_span_paths(candidate),
@@ -899,9 +936,13 @@ fn selected_artifact_content_addressed_and_hashed(candidate: &Value) -> bool {
 }
 
 fn generated_topology_binding_object(candidate: &Value) -> Option<&Value> {
-    ["generatedTopologyBinding", "generatedDeviceTopologyBinding", "selectedArtifactTopology"]
-        .iter()
-        .find_map(|field| candidate.get(*field).filter(|value| value.is_object()))
+    [
+        "generatedTopologyBinding",
+        "generatedDeviceTopologyBinding",
+        "selectedArtifactTopology",
+    ]
+    .iter()
+    .find_map(|field| candidate.get(*field).filter(|value| value.is_object()))
 }
 
 fn generated_topology_binding_object_valid(candidate: &Value) -> bool {
@@ -942,21 +983,22 @@ fn topology_binding_source_valid(object: &serde_json::Map<String, Value>) -> boo
         })
 }
 
-fn topology_binding_materialized_partial_artifact(
-    object: &serde_json::Map<String, Value>,
-) -> bool {
+fn topology_binding_materialized_partial_artifact(object: &serde_json::Map<String, Value>) -> bool {
     bool_true(object.get("materializedPartialArtifact"))
         || bool_true(object.get("separatelyMaterializedPartialArtifact"))
         || bool_true(object.get("contentAddressedPartialArtifact"))
 }
 
-fn topology_binding_generated_role_path(
-    object: &serde_json::Map<String, Value>,
-) -> Option<String> {
-    ["generatedRolePath", "generatedPath", "deviceTranslationUnitPath", "path"]
-        .iter()
-        .find_map(|field| object.get(*field).and_then(Value::as_str))
-        .and_then(normalized_project_path)
+fn topology_binding_generated_role_path(object: &serde_json::Map<String, Value>) -> Option<String> {
+    [
+        "generatedRolePath",
+        "generatedPath",
+        "deviceTranslationUnitPath",
+        "path",
+    ]
+    .iter()
+    .find_map(|field| object.get(*field).and_then(Value::as_str))
+    .and_then(normalized_project_path)
 }
 
 fn topology_binding_artifact_identity_matches_candidate(
@@ -981,8 +1023,7 @@ fn topology_binding_artifact_identity_matches_candidate(
         .collect();
     binding_ids.iter().any(|id| candidate_ids.contains(id))
         && binding_hashes.iter().any(|hash| {
-            canonical_sha256_digest(hash)
-                .is_some_and(|digest| candidate_hashes.contains(&digest))
+            canonical_sha256_digest(hash).is_some_and(|digest| candidate_hashes.contains(&digest))
         })
 }
 
@@ -1159,9 +1200,7 @@ fn output_oracle_resolved_contract_object(
         .and_then(Value::as_object)
 }
 
-fn output_oracle_resolved_contract_kind(
-    object: &serde_json::Map<String, Value>,
-) -> Option<String> {
+fn output_oracle_resolved_contract_kind(object: &serde_json::Map<String, Value>) -> Option<String> {
     let kind = object.get("kind").and_then(Value::as_str)?;
     let normalized = normalized_scope_text(kind);
     (!normalized.is_empty()).then_some(normalized)
@@ -1647,17 +1686,205 @@ fn deterministic_verifier_evidence_present(candidate: &Value) -> bool {
     !deterministic_verifier_evidence_ids(candidate).is_empty()
 }
 
+fn canonical_source_evidence_id(value: &str) -> bool {
+    let normalized = value.trim();
+    let Some(rest) = normalized.strip_prefix("evidence:") else {
+        return false;
+    };
+    let Some((descriptor, digest)) = rest.rsplit_once(':') else {
+        return false;
+    };
+    let descriptor_tokens = descriptor
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    !descriptor_tokens.is_empty()
+        && !descriptor_tokens
+            .iter()
+            .any(|token| matches!(token.as_str(), "ai" | "llm" | "model" | "proposal"))
+        && digest.len() == 64
+        && digest
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
+}
+
+fn evidence_subject_field(candidate: &Value, field: &str) -> Value {
+    candidate.get(field).cloned().unwrap_or(Value::Null)
+}
+
+fn verification_evidence_subject(candidate: &Value, category: &str) -> Option<Value> {
+    match category {
+        "source_mapping" => Some(json!({
+            "sourceEditId": evidence_subject_field(candidate, "sourceEditId"),
+            "sourcePaths": evidence_subject_field(candidate, "sourcePaths"),
+            "sourceSpans": evidence_subject_field(candidate, "sourceSpans"),
+            "generatedRolePath": evidence_subject_field(candidate, "generatedRolePath"),
+        })),
+        "include_closure" => Some(json!({
+            "sourcePaths": evidence_subject_field(candidate, "sourcePaths"),
+            "includeClosure": evidence_subject_field(candidate, "includeClosure"),
+            "dependencyClosureHash": evidence_subject_field(candidate, "dependencyClosureHash"),
+        })),
+        "symbol_ownership" => Some(json!({
+            "targetSymbols": evidence_subject_field(candidate, "targetSymbols"),
+            "exportedSymbolsExpected": evidence_subject_field(candidate, "exportedSymbolsExpected"),
+            "symbolIdentityMappings": evidence_subject_field(candidate, "symbolIdentityMappings"),
+        })),
+        "dependency_closure" => Some(json!({
+            "sourcePaths": evidence_subject_field(candidate, "sourcePaths"),
+            "includeClosure": evidence_subject_field(candidate, "includeClosure"),
+            "dependencyClosureHash": evidence_subject_field(candidate, "dependencyClosureHash"),
+        })),
+        "abi_membrane" => Some(json!({
+            "abiMembraneId": evidence_subject_field(candidate, "abiMembraneId"),
+        })),
+        "compile_recipe" => Some(json!({
+            "compileRecipeHash": evidence_subject_field(candidate, "compileRecipeHash"),
+            "compileCommandHash": evidence_subject_field(candidate, "compileCommandHash"),
+        })),
+        "loader_capability" => Some(json!({
+            "selectedArtifactId": evidence_subject_field(candidate, "selectedArtifactId"),
+            "artifactHash": evidence_subject_field(candidate, "artifactHash"),
+            "loaderCapabilityRequirement": evidence_subject_field(candidate, "loaderCapabilityRequirement"),
+        })),
+        "output_oracle" => Some(json!({
+            "requiredOracleId": evidence_subject_field(candidate, "requiredOracleId"),
+            "requiredOutputOracleId": evidence_subject_field(candidate, "requiredOutputOracleId"),
+            "outputOracleRequirement": evidence_subject_field(candidate, "outputOracleRequirement"),
+            "outputOracleContract": evidence_subject_field(candidate, "outputOracleContract"),
+            "resolvedOutputOracleContract": evidence_subject_field(candidate, "resolvedOutputOracleContract"),
+            "outputOracleProposal": evidence_subject_field(candidate, "outputOracleProposal"),
+        })),
+        _ => None,
+    }
+}
+
+fn category_source_evidence_ids(candidate: &Value, category: &str) -> BTreeSet<String> {
+    REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES
+        .iter()
+        .find(|definition| definition.name == category)
+        .into_iter()
+        .flat_map(|definition| definition.fields.iter())
+        .flat_map(|field| evidence_id_list(candidate.get(*field)))
+        .filter(|id| canonical_source_evidence_id(id))
+        .collect()
+}
+
+fn canonical_json_value(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(canonical_json_value).collect()),
+        Value::Object(object) => {
+            let mut canonical = serde_json::Map::new();
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort();
+            for key in keys {
+                if let Some(value) = object.get(key) {
+                    canonical.insert(key.clone(), canonical_json_value(value));
+                }
+            }
+            Value::Object(canonical)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn sha256_json_value(value: &Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(&canonical_json_value(value)).unwrap_or_default());
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+fn content_bound_fission_evidence_record(
+    candidate: &Value,
+    category: &str,
+    source_evidence_id: &str,
+) -> Option<Value> {
+    if !canonical_source_evidence_id(source_evidence_id)
+        || !category_source_evidence_ids(candidate, category).contains(source_evidence_id)
+    {
+        return None;
+    }
+    let subject = verification_evidence_subject(candidate, category)?;
+    let binding_hash = sha256_json_value(&subject);
+    let identity_material = json!({
+        "schemaVersion": FISSION_VERIFIER_EVIDENCE_SCHEMA_VERSION,
+        "authority": FISSION_VERIFIER_EVIDENCE_AUTHORITY,
+        "category": category,
+        "sourceEvidenceId": source_evidence_id,
+        "bindingHash": binding_hash,
+        "subject": subject,
+    });
+    let evidence_hash = sha256_json_value(&identity_material)
+        .strip_prefix("sha256:")
+        .unwrap_or_default()
+        .to_string();
+    Some(json!({
+        "schemaVersion": FISSION_VERIFIER_EVIDENCE_SCHEMA_VERSION,
+        "evidenceId": format!("fission-evidence:{category}:sha256:{evidence_hash}"),
+        "authority": FISSION_VERIFIER_EVIDENCE_AUTHORITY,
+        "category": category,
+        "sourceEvidenceId": source_evidence_id,
+        "bindingHash": binding_hash,
+        "subject": subject,
+        "acceptedForGpuHmr": false,
+        "gpuHmrSuccess": false,
+        "canSatisfyRuntimeProof": false,
+    }))
+}
+
+fn valid_content_bound_fission_evidence_records(candidate: &Value) -> Vec<Value> {
+    candidate
+        .get("verifierEvidenceRecords")
+        .and_then(Value::as_array)
+        .map(|records| {
+            records
+                .iter()
+                .filter_map(|record| {
+                    let category = record.get("category").and_then(Value::as_str)?;
+                    let source_evidence_id =
+                        record.get("sourceEvidenceId").and_then(Value::as_str)?;
+                    let expected = content_bound_fission_evidence_record(
+                        candidate,
+                        category,
+                        source_evidence_id,
+                    )?;
+                    (record == &expected).then_some(expected)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn invalid_content_bound_fission_evidence_record_count(candidate: &Value) -> usize {
+    let declared = candidate
+        .get("verifierEvidenceRecords")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    declared.saturating_sub(valid_content_bound_fission_evidence_records(candidate).len())
+}
+
+fn content_bound_evidence_ids_for_category(candidate: &Value, category: &str) -> Vec<String> {
+    valid_content_bound_fission_evidence_records(candidate)
+        .into_iter()
+        .filter(|record| record.get("category").and_then(Value::as_str) == Some(category))
+        .filter_map(|record| {
+            record
+                .get("evidenceId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 fn missing_verification_evidence_categories(candidate: &Value) -> Vec<&'static str> {
     REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES
         .iter()
         .filter_map(|category| {
-            if deterministic_evidence_ids_for_category(
-                candidate,
-                category.fields,
-                category.fallback_tokens,
-            )
-            .is_empty()
-            {
+            if content_bound_evidence_ids_for_category(candidate, category.name).is_empty() {
                 Some(category.name)
             } else {
                 None
@@ -1670,11 +1897,7 @@ fn verification_evidence_coverage(candidate: &Value) -> Value {
     let mut categories = Vec::new();
     let mut missing = Vec::new();
     for category in REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES {
-        let evidence_ids = deterministic_evidence_ids_for_category(
-            candidate,
-            category.fields,
-            category.fallback_tokens,
-        );
+        let evidence_ids = content_bound_evidence_ids_for_category(candidate, category.name);
         if evidence_ids.is_empty() {
             missing.push(category.name);
         }
@@ -1741,16 +1964,26 @@ fn evidence_id_matches_any_token(value: &str, tokens: &[&str]) -> bool {
 }
 
 fn deterministic_verifier_evidence_ids(candidate: &Value) -> Vec<String> {
-    string_list(candidate.get("verifierEvidenceIds"))
+    valid_content_bound_fission_evidence_records(candidate)
         .into_iter()
-        .filter(|id| is_deterministic_verifier_evidence_id(id))
+        .filter_map(|record| {
+            record
+                .get("evidenceId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
 fn non_authoritative_evidence_ids(candidate: &Value) -> Vec<String> {
+    let accepted = deterministic_verifier_evidence_ids(candidate)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     string_list(candidate.get("verifierEvidenceIds"))
         .into_iter()
-        .filter(|id| !is_deterministic_verifier_evidence_id(id))
+        .filter(|id| !accepted.contains(id))
         .collect()
 }
 
@@ -2498,9 +2731,17 @@ fn verifier_evidence_id(candidate: &Value, status: &str) -> String {
 mod tests {
     use super::*;
 
+    fn refresh_content_bound_evidence(candidate: &mut Value) {
+        assert_eq!(
+            materialize_content_bound_fission_evidence(candidate),
+            REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES.len()
+        );
+    }
+
     fn valid_candidate() -> Value {
         let artifact_digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        json!({
+        let source_evidence_id = format!("evidence:test-observation:{}", "b".repeat(64));
+        let mut candidate = json!({
             "islandId": "island:sha256:1",
             "sourceEditId": "edit:1",
             "selectedArtifactId": format!("artifact:sha256:{artifact_digest}"),
@@ -2522,7 +2763,7 @@ mod tests {
                 "sourcePaths": ["src/device.kernel"],
                 "targetSymbols": ["step"]
             },
-            "generatedTopologyEvidenceIds": ["evidence:generated-topology"],
+            "generatedTopologyEvidenceIds": [source_evidence_id.clone()],
             "targetSymbols": ["step"],
             "exportedSymbolsExpected": ["step", "helper"],
             "artifactKind": "device_partial",
@@ -2543,23 +2784,25 @@ mod tests {
                 "sessionIdSource": "runtime-session",
                 "artifactIdSource": "selected-artifact"
             },
-            "sourceMappingEvidenceIds": ["evidence:source-map"],
-            "includeClosureEvidenceIds": ["evidence:include-closure"],
-            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
-            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
-            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
-            "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
-            "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
-            "outputOracleEvidenceIds": ["evidence:output-oracle"],
-            "verifierEvidenceIds": ["evidence:source-map"],
+            "sourceMappingEvidenceIds": [source_evidence_id.clone()],
+            "includeClosureEvidenceIds": [source_evidence_id.clone()],
+            "symbolOwnershipEvidenceIds": [source_evidence_id.clone()],
+            "dependencyClosureEvidenceIds": [source_evidence_id.clone()],
+            "abiMembraneEvidenceIds": [source_evidence_id.clone()],
+            "compileRecipeEvidenceIds": [source_evidence_id.clone()],
+            "loaderCapabilityEvidenceIds": [source_evidence_id.clone()],
+            "outputOracleEvidenceIds": [source_evidence_id.clone()],
+            "verifierEvidenceIds": [source_evidence_id.clone()],
             "narrowerCandidateRejections": [
                 {
                     "scopeRank": 0,
                     "reasonCode": "fission.edit_crosses_body_boundary",
-                    "verifierEvidenceIds": ["evidence:source-map"]
+                    "verifierEvidenceIds": [source_evidence_id]
                 }
             ],
-        })
+        });
+        refresh_content_bound_evidence(&mut candidate);
+        candidate
     }
 
     fn valid_attachment_contract() -> Value {
@@ -2638,6 +2881,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("safeExportSupersetReason");
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -2728,7 +2972,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_phase_evidence_from_tagged_verifier_ids() {
+    fn rejects_phase_evidence_from_tagged_free_form_ids() {
         let mut candidate = valid_candidate();
         for field in [
             "sourceMappingEvidenceIds",
@@ -2755,11 +2999,66 @@ mod tests {
 
         let report = verify_fission_candidate(&candidate);
 
-        assert_eq!(report["status"], "pass");
+        assert_eq!(report["status"], "reject");
         assert_eq!(
             report["verificationEvidenceCoverage"]["missingCategories"],
-            json!([])
+            json!([
+                "source_mapping",
+                "include_closure",
+                "symbol_ownership",
+                "dependency_closure",
+                "abi_membrane",
+                "compile_recipe",
+                "loader_capability",
+                "output_oracle"
+            ])
         );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.deterministic_verifier_evidence_missing"));
+    }
+
+    #[test]
+    fn rejects_content_bound_phase_evidence_after_subject_mutation() {
+        let mut candidate = valid_candidate();
+        candidate["compileCommandHash"] =
+            json!("sha256:4444444444444444444444444444444444444444444444444444444444444444");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["invalidContentBoundVerifierEvidenceRecordCount"], 1);
+        assert_eq!(
+            report["verificationEvidenceCoverage"]["missingCategories"],
+            json!(["compile_recipe"])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.verifier_evidence_record_invalid"));
+    }
+
+    #[test]
+    fn rejects_content_bound_phase_evidence_with_forged_category_binding() {
+        let mut candidate = valid_candidate();
+        candidate["verifierEvidenceRecords"][0]["category"] = json!("compile_recipe");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["invalidContentBoundVerifierEvidenceRecordCount"], 1);
+        assert_eq!(
+            report["verificationEvidenceCoverage"]["missingCategories"],
+            json!(["source_mapping"])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.verifier_evidence_record_invalid"));
     }
 
     #[test]
@@ -2849,6 +3148,7 @@ mod tests {
             "selectedArtifactId": format!("artifact:sha256:{digest}"),
             "contentHash": format!("sha256:{digest}")
         });
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3022,9 +3322,15 @@ mod tests {
         let report = verify_fission_candidate(&candidate);
 
         assert_eq!(report["status"], "reject");
-        assert_eq!(report["outputOracleContract"]["requiredOracleId"], "oracle:sentinel");
+        assert_eq!(
+            report["outputOracleContract"]["requiredOracleId"],
+            "oracle:sentinel"
+        );
         assert_eq!(report["outputOracleContract"]["proposalPresent"], false);
-        assert_eq!(report["outputOracleContract"]["resolvedContractPresent"], false);
+        assert_eq!(
+            report["outputOracleContract"]["resolvedContractPresent"],
+            false
+        );
         assert!(report["reasonCodes"]
             .as_array()
             .unwrap()
@@ -3056,6 +3362,7 @@ mod tests {
                 "producer": "validation-capture"
             }
         });
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3102,6 +3409,7 @@ mod tests {
             "sessionIdSource": "runtime-session",
             "artifactIdSource": "selected-artifact"
         });
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3147,6 +3455,7 @@ mod tests {
             },
             "artifact_id": "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         });
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3185,6 +3494,7 @@ mod tests {
             "artifactId": "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "visual_ref": "validation-screenshot:fresh-frame"
         });
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3866,6 +4176,7 @@ mod tests {
         candidate["sourcePaths"] = json!(["src/device.kernel"]);
         candidate["sourceSpans"] =
             json!([{"path": ".\\src\\device.kernel", "startLine": 10, "endLine": 12}]);
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3914,6 +4225,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("narrowerCandidateRejections");
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3967,6 +4279,7 @@ mod tests {
             "include/math.h",
             {"path": ".\\include\\device.h"}
         ]);
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -4023,6 +4336,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("narrowerCandidateRejections");
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -4138,6 +4452,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("narrowerCandidateRejections");
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -4156,6 +4471,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("safeExportSupersetReason");
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -4166,6 +4482,10 @@ mod tests {
     #[test]
     fn rejects_ai_only_verifier_evidence_ids() {
         let mut candidate = valid_candidate();
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("verifierEvidenceRecords");
         candidate["verifierEvidenceIds"] = json!(["ai:fission:proposal", "llm:reasoning"]);
         candidate["aiProposalId"] = json!("ai:fission:proposal");
 
@@ -4217,10 +4537,16 @@ mod tests {
             report["aiProposalDeterministicPromotionEvidenceIds"],
             json!(["evidence:fission-promotion"])
         );
+        let deterministic_ids = report["deterministicVerifierEvidenceIds"]
+            .as_array()
+            .unwrap();
         assert_eq!(
-            report["deterministicVerifierEvidenceIds"],
-            json!(["evidence:source-map"])
+            deterministic_ids.len(),
+            REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES.len()
         );
+        assert!(deterministic_ids.iter().all(|id| id
+            .as_str()
+            .is_some_and(|id| id.starts_with("fission-evidence:"))));
     }
 
     #[test]
@@ -4273,6 +4599,7 @@ mod tests {
                 "verifierEvidenceIds": ["evidence:symbol-ownership"]
             }
         ]);
+        refresh_content_bound_evidence(&mut wide);
 
         let mut narrow = valid_candidate();
         narrow["islandId"] = json!("island:narrow");
@@ -4281,6 +4608,7 @@ mod tests {
         narrow["sourceSpans"] = json!([{"path": "src/a.device", "startLine": 20, "endLine": 24}]);
         narrow["targetSymbols"] = json!(["shade"]);
         narrow["exportedSymbolsExpected"] = json!(["shade"]);
+        refresh_content_bound_evidence(&mut narrow);
 
         let report = verify_fission_candidates(&json!([wide, narrow]));
 

@@ -2937,6 +2937,7 @@ fn stable_hash(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hmr::gpu_fission::materialize_content_bound_fission_evidence;
 
     fn gpu_compile_manifest() -> Value {
         json!({
@@ -3116,12 +3117,28 @@ mod tests {
     }
 
     fn content_addressed_fission_candidate(digest: &str) -> Value {
-        json!({
+        let source_evidence_id = format!("evidence:test-observation:{}", "b".repeat(64));
+        let mut candidate = json!({
             "islandId": "island:sha256:abc",
             "sourceEditId": "edit:abc",
             "sourcePaths": ["src/render.kernel"],
             "sourceSpans": [{"path": "src/render.kernel", "startByte": 10, "endByte": 24}],
             "generatedRolePath": ".synthi/generated/gpu/render.kernel",
+            "generatedTopologyBinding": {
+                "schemaVersion": "synthi.gpu.generated_topology_binding.v1",
+                "source": "generated_manifest_device_role_topology",
+                "generatedRolePath": ".synthi/generated/gpu/render.kernel",
+                "selectedArtifactId": format!("artifact:sha256:{digest}"),
+                "selectedArtifactHash": format!("sha256:{digest}"),
+                "artifactKind": "partial_device_artifact",
+                "replacementScope": "partial_device_artifact",
+                "materializedPartialArtifact": true,
+                "separatelyMaterializedPartialArtifact": true,
+                "contentAddressedPartialArtifact": true,
+                "sourcePaths": ["src/render.kernel"],
+                "targetSymbols": ["render_step"]
+            },
+            "generatedTopologyEvidenceIds": [source_evidence_id.clone()],
             "targetSymbols": ["render_step"],
             "exportedSymbolsExpected": ["render_step"],
             "artifactKind": "partial_device_artifact",
@@ -3147,23 +3164,28 @@ mod tests {
                 "sessionIdSource": "runtime-session",
                 "artifactIdSource": "selected-artifact"
             },
-            "sourceMappingEvidenceIds": ["evidence:source-map"],
-            "includeClosureEvidenceIds": ["evidence:include-closure"],
-            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
-            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
-            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
-            "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
-            "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
-            "outputOracleEvidenceIds": ["evidence:output-oracle"],
-            "verifierEvidenceIds": ["evidence:source-map", "evidence:abi-membrane"],
+            "sourceMappingEvidenceIds": [source_evidence_id.clone()],
+            "includeClosureEvidenceIds": [source_evidence_id.clone()],
+            "symbolOwnershipEvidenceIds": [source_evidence_id.clone()],
+            "dependencyClosureEvidenceIds": [source_evidence_id.clone()],
+            "abiMembraneEvidenceIds": [source_evidence_id.clone()],
+            "compileRecipeEvidenceIds": [source_evidence_id.clone()],
+            "loaderCapabilityEvidenceIds": [source_evidence_id.clone()],
+            "outputOracleEvidenceIds": [source_evidence_id.clone()],
+            "verifierEvidenceIds": [source_evidence_id.clone()],
             "narrowerCandidateRejections": [
                 {
                     "scopeRank": 0,
                     "reasonCode": "fission.edit_crosses_body_boundary",
-                    "verifierEvidenceIds": ["evidence:source-map"]
+                    "verifierEvidenceIds": [source_evidence_id]
                 }
             ]
-        })
+        });
+        assert_eq!(
+            materialize_content_bound_fission_evidence(&mut candidate),
+            8
+        );
+        candidate
     }
 
     #[test]
@@ -4428,48 +4450,8 @@ mod tests {
     #[test]
     fn fission_candidate_report_is_promoted_into_run_report() {
         let manifest = gpu_compile_manifest();
-        let fission_candidate = json!({
-            "islandId": "island:sha256:abc",
-            "sourceEditId": "edit:abc",
-            "sourcePaths": ["src/render.kernel"],
-            "sourceSpans": [{"path": "src/render.kernel", "startByte": 10, "endByte": 24}],
-            "generatedRolePath": ".synthi/generated/gpu/render.kernel",
-            "targetSymbols": ["render_step"],
-            "exportedSymbolsExpected": ["render_step"],
-            "artifactKind": "partial_device_artifact",
-            "includeClosure": [],
-            "dependencyClosureHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-            "abiMembraneId": "abi:membrane",
-            "compileRecipeHash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-            "compileCommandHash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-            "loaderCapabilityRequirement": {"transportClass": "content_addressed_blob"},
-            "requiredOracleId": "oracle:render-step",
-            "outputOracleProposal": {
-                "kind": "buffer_checksum",
-                "producer": "deterministic_probe",
-                "expectedHash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-                "outputTargetId": "buffer:render-step",
-                "readbackPlan": {"syncPoint": "after-dispatch"},
-                "sessionIdSource": "runtime-session",
-                "artifactIdSource": "selected-artifact"
-            },
-            "sourceMappingEvidenceIds": ["evidence:source-map"],
-            "includeClosureEvidenceIds": ["evidence:include-closure"],
-            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
-            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
-            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
-            "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
-            "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
-            "outputOracleEvidenceIds": ["evidence:output-oracle"],
-            "verifierEvidenceIds": ["evidence:source-map", "evidence:abi-membrane"],
-            "narrowerCandidateRejections": [
-                {
-                    "scopeRank": 0,
-                    "reasonCode": "fission.edit_crosses_body_boundary",
-                    "verifierEvidenceIds": ["evidence:source-map"]
-                }
-            ]
-        });
+        let digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let fission_candidate = content_addressed_fission_candidate(digest);
         let sidecar = json!({
             "compile_manifest": manifest,
             "fissionCandidate": fission_candidate,
@@ -4481,7 +4463,9 @@ mod tests {
             migrated
                 .pointer("/fissionVerifierReport/status")
                 .and_then(Value::as_str),
-            Some("pass")
+            Some("pass"),
+            "{}",
+            migrated["fissionVerifierReport"]
         );
         assert_eq!(
             migrated
@@ -4515,7 +4499,9 @@ mod tests {
             migrated
                 .pointer("/fissionReadinessReport/status")
                 .and_then(Value::as_str),
-            Some("ready")
+            Some("ready"),
+            "{}",
+            migrated["fissionReadinessReport"]
         );
         assert_eq!(
             migrated

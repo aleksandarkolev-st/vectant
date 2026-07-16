@@ -819,7 +819,9 @@ use crate::hmr::gpu_device_fast_path::{
     device_only_capability_rejection_reason, device_source_hash, mapped_generated_device_path,
     try_direct_device_body_patch,
 };
-use crate::hmr::gpu_fission::verify_fission_candidates;
+use crate::hmr::gpu_fission::{
+    materialize_content_bound_fission_evidence, verify_fission_candidates,
+};
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::gpu_proof::{
     read_proof_artifact, sha256_hex_bytes, sha256_hex_str, stable_json_hash, write_proof_artifact,
@@ -5992,6 +5994,7 @@ fn partial_fission_candidate_and_evidence(
             );
         }
     }
+    materialize_content_bound_fission_evidence(&mut candidate);
 
     let evidence = GpuHmrProofEvidenceRef {
         evidence_id: candidate_evidence_id,
