@@ -73,8 +73,8 @@ use crate::hmr::build_manifest::{
 use crate::hmr::compile_manifest::{DeviceVendor, SnapshotMode};
 use crate::hmr::device_snapshot::BufferRegistry;
 use crate::hmr::gpu_driver_loader::{
-    self, CuContext, CuDevicePtr, CuFunction, CuStream, DriverLoadError, GpuDriverHandle,
-    GpuDriverSymbolTable,
+    self, CuContext, CuDeviceGetUuidFn, CuDevicePtr, CuFunction, CuStream, DriverLoadError,
+    GpuDeviceUuid, GpuDriverHandle, GpuDriverSymbolTable,
 };
 use crate::hmr::gpu_module_manager::{
     GpuModuleManager, KernelResolution, KernelTable, ModuleManagerError, ModuleSlot,
@@ -89,15 +89,19 @@ use crate::hmr::gpu_reload_orchestrator::{
 use crate::hmr::gpu_stream_drain::{drain_context, drain_stream, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
     begin_launch_dispatcher_publication, clear_launch_dispatcher,
-    commit_launch_dispatcher_publication, current_launch_generation, launch_records_snapshot,
-    managed_buffers_snapshot, monotonic_timestamp_ns, output_oracle_records_snapshot,
-    record_hmr_runtime_identity_snapshot,
+    commit_launch_dispatcher_publication, current_dispatch_has_provisional_validation_capability,
+    current_launch_generation, dispatch_device_attestation_records_snapshot,
+    launch_records_snapshot, managed_buffers_snapshot, monotonic_timestamp_ns,
+    output_oracle_records_snapshot, record_hmr_runtime_identity_snapshot,
     record_output_buffer_checksum_with_probe_bytes_after_dispatch,
     rollback_launch_dispatcher_publication, runtime_session_id,
     synthi_gpu_launch_raw_arg_info_with_receipt, synthi_gpu_register_buffer,
-    with_dispatcher_publication_validation, GpuLaunchDispatcher, GpuLaunchDispatcherMetadata,
-    GpuLaunchRequest, LaunchArgProvenance, LaunchRecord, OutputOracleRecord, SynthiGpuLaunchArg,
-    SYNTHI_GPU_ARG_KIND_FLOATING, SYNTHI_GPU_ARG_KIND_INTEGER, SYNTHI_GPU_ARG_KIND_POINTER,
+    with_dispatcher_publication_validation, GpuDispatchAttestationError,
+    GpuDispatchDeviceAttestation, GpuDispatchDeviceObservation, GpuLaunchDispatcher,
+    GpuLaunchDispatcherMetadata, GpuLaunchRequest, LaunchArgProvenance, LaunchRecord,
+    OutputOracleRecord, SynthiGpuLaunchArg, GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY,
+    GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA, SYNTHI_GPU_ARG_KIND_FLOATING,
+    SYNTHI_GPU_ARG_KIND_INTEGER, SYNTHI_GPU_ARG_KIND_POINTER,
 };
 
 // ── Vendor + symbol table ───────────────────────────────────
@@ -265,8 +269,8 @@ struct DriverLaunchDispatcher {
     kernels: HashMap<String, u64>,
 }
 
-impl GpuLaunchDispatcher for DriverLaunchDispatcher {
-    fn dispatch(
+impl DriverLaunchDispatcher {
+    fn launch_native(
         &self,
         request: &GpuLaunchRequest,
         args: *const *const c_void,
@@ -302,6 +306,46 @@ impl GpuLaunchDispatcher for DriverLaunchDispatcher {
     }
 }
 
+impl GpuLaunchDispatcher for DriverLaunchDispatcher {
+    fn dispatch(
+        &self,
+        request: &GpuLaunchRequest,
+        args: *const *const c_void,
+    ) -> Result<(), String> {
+        self.launch_native(request, args)
+    }
+
+    fn dispatch_with_device_attestation(
+        &self,
+        request: &GpuLaunchRequest,
+        args: *const *const c_void,
+    ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+        let before =
+            match query_runtime_dispatch_device_observation(&self.symbols, request.stream_token) {
+                Ok(observation) => observation,
+                Err(error) if current_dispatch_has_provisional_validation_capability() => {
+                    return Err(
+                        GpuDispatchAttestationError::attestation_rejected_before_dispatch(error),
+                    );
+                }
+                Err(error) => {
+                    self.launch_native(request, args)
+                        .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
+                    return Ok(GpuDispatchDeviceAttestation::unavailable(
+                        request.stream_token,
+                        error,
+                    ));
+                }
+            };
+        self.launch_native(request, args)
+            .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
+        let after = query_runtime_dispatch_device_observation(&self.symbols, request.stream_token)
+            .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
+        GpuDispatchDeviceAttestation::runtime_driver_observed(request.stream_token, before, after)
+            .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)
+    }
+}
+
 // ── The adapter ─────────────────────────────────────────────
 
 /// Phase-2 scaffold. `initialize()` now attempts a real driver
@@ -321,12 +365,286 @@ struct DeviceReloadOwnership {
     hot_reload_acceptance_required: bool,
     acceptance_ledger_success: bool,
     acceptance_ledger_failures: Vec<String>,
+    verified_device_identity: Option<RuntimeHardwareDeviceIdentity>,
+    strict_device_attestation_available: bool,
+    strict_device_attestation_gaps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactLoaderTransport {
     FilesystemPath,
     RamBytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeHardwareDeviceIdentity {
+    ordinal: i32,
+    uuid_bytes: [u8; 16],
+    uuid_hex: String,
+    identity_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeStreamDeviceBinding {
+    stream_token: usize,
+    device_ordinal: i32,
+}
+
+fn query_runtime_hardware_device_identity(
+    symbols: &GpuDriverSymbolTable,
+) -> Result<RuntimeHardwareDeviceIdentity, String> {
+    let get_active_device = symbols
+        .cu_ctx_get_device
+        .ok_or_else(|| "device_identity_active_device_symbol_missing".to_string())?;
+    let get_device_uuid = symbols
+        .cu_device_get_uuid
+        .ok_or_else(|| "device_identity_uuid_symbol_missing".to_string())?;
+
+    let mut ordinal = -1_i32;
+    let active_device_code = unsafe { get_active_device(&mut ordinal) };
+    if active_device_code != 0 {
+        return Err(format!(
+            "device_identity_active_device_query_failed:{active_device_code}"
+        ));
+    }
+    if ordinal < 0 {
+        return Err("device_identity_active_device_ordinal_invalid".to_string());
+    }
+
+    let mut uuid = GpuDeviceUuid::default();
+    let uuid_code = unsafe { get_device_uuid(&mut uuid, ordinal) };
+    if uuid_code != 0 {
+        return Err(format!("device_identity_uuid_query_failed:{uuid_code}"));
+    }
+    if uuid.bytes.iter().all(|byte| *byte == 0) {
+        return Err("device_identity_uuid_all_zero".to_string());
+    }
+
+    let uuid_hex = hex::encode(uuid.bytes);
+    Ok(RuntimeHardwareDeviceIdentity {
+        ordinal,
+        uuid_bytes: uuid.bytes,
+        identity_key: format!("gpu-hardware-uuid:{uuid_hex}"),
+        uuid_hex,
+    })
+}
+
+fn query_runtime_dispatch_device_observation(
+    symbols: &GpuDriverSymbolTable,
+    stream_token: usize,
+) -> Result<GpuDispatchDeviceObservation, String> {
+    let identity = query_runtime_hardware_device_identity(symbols)?;
+    let get_stream_device = symbols
+        .cu_stream_get_device
+        .ok_or_else(|| "dispatch_stream_device_symbol_missing".to_string())?;
+    let mut stream_device_ordinal = -1_i32;
+    let code = unsafe {
+        get_stream_device(
+            stream_token as CuStream,
+            &mut stream_device_ordinal as *mut i32,
+        )
+    };
+    if code != 0 {
+        return Err(format!("dispatch_stream_device_query_failed:{code}"));
+    }
+    GpuDispatchDeviceObservation::new(identity.ordinal, identity.uuid_bytes, stream_device_ordinal)
+}
+
+fn verified_runtime_hardware_device_identity(
+    generation_baseline: Option<&RuntimeHardwareDeviceIdentity>,
+    before: &Result<RuntimeHardwareDeviceIdentity, String>,
+    after: &Result<RuntimeHardwareDeviceIdentity, String>,
+    require_generation_baseline: bool,
+) -> Result<RuntimeHardwareDeviceIdentity, String> {
+    let generation_baseline = if require_generation_baseline {
+        Some(
+            generation_baseline
+                .ok_or_else(|| "device_identity_generation_baseline_missing".to_string())?,
+        )
+    } else {
+        generation_baseline
+    };
+    let before = before.as_ref().map_err(|error| error.clone())?;
+    let after = after.as_ref().map_err(|error| error.clone())?;
+    if let Some(generation_baseline) = generation_baseline {
+        if generation_baseline.ordinal != before.ordinal {
+            return Err("device_identity_active_device_changed_since_generation".to_string());
+        }
+        if generation_baseline.uuid_hex != before.uuid_hex
+            || generation_baseline.identity_key != before.identity_key
+        {
+            return Err("device_identity_uuid_changed_since_generation".to_string());
+        }
+    }
+    if before.ordinal != after.ordinal {
+        return Err("device_identity_active_device_changed".to_string());
+    }
+    if before.uuid_hex != after.uuid_hex || before.identity_key != after.identity_key {
+        return Err("device_identity_uuid_changed".to_string());
+    }
+    Ok(after.clone())
+}
+
+fn runtime_hardware_device_identity_observation_line(
+    phase: &str,
+    generation: u64,
+    observation: &Result<RuntimeHardwareDeviceIdentity, String>,
+) -> String {
+    let (status, ordinal, uuid, identity_key, reason) = match observation {
+        Ok(identity) => (
+            "observed",
+            identity.ordinal.to_string(),
+            identity.uuid_hex.as_str(),
+            identity.identity_key.as_str(),
+            "none",
+        ),
+        Err(reason) => (
+            "refused",
+            "none".to_string(),
+            "none",
+            "none",
+            reason.as_str(),
+        ),
+    };
+    format!(
+        "[gpu-runtime-boundary] device_identity schema=synthi.gpu_hmr.runtime_device_identity.v1 event={} observation_phase={} runtime_session={} process_id=pid:{} generation={} device_ordinal={} device_uuid={} device_identity_key={} device_identity_authority=runtime_driver_active_device_uuid proof_authority=runtime_driver_active_device_uuid_evidence_only_not_gpu_hmr_success reason={} accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false can_satisfy_dispatch_proof=false",
+        status,
+        phase,
+        runtime_session_id(),
+        std::process::id(),
+        generation,
+        ordinal,
+        uuid,
+        identity_key,
+        reason,
+    )
+}
+
+fn runtime_hardware_device_identity_continuity_line(
+    observed_generation: u64,
+    generation_baseline: Option<&RuntimeHardwareDeviceIdentity>,
+    before: &Result<RuntimeHardwareDeviceIdentity, String>,
+    after: &Result<RuntimeHardwareDeviceIdentity, String>,
+    require_generation_baseline: bool,
+) -> String {
+    let verified = verified_runtime_hardware_device_identity(
+        generation_baseline,
+        before,
+        after,
+        require_generation_baseline,
+    );
+    let (status, same_device, identity_key, reason) = match &verified {
+        Ok(identity) => ("verified", "true", identity.identity_key.as_str(), "none"),
+        Err(reason) => ("refused", "false", "none", reason.as_str()),
+    };
+    let generation_baseline_key = generation_baseline
+        .map(|identity| identity.identity_key.as_str())
+        .unwrap_or("none");
+    format!(
+        "[gpu-runtime-boundary] device_identity_continuity schema=synthi.gpu_hmr.runtime_device_identity_continuity.v1 event={} observation_window=before_reload,after_drain_pre_commit runtime_session={} process_id=pid:{} observed_generation={} generation_baseline_required={} generation_baseline_device_identity_key={} same_device={} device_identity_key={} device_identity_authority=runtime_driver_active_device_uuid proof_authority=runtime_driver_active_device_uuid_continuity_evidence_only_not_gpu_hmr_success reason={} accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false can_satisfy_dispatch_proof=false",
+        status,
+        runtime_session_id(),
+        std::process::id(),
+        observed_generation,
+        require_generation_baseline,
+        generation_baseline_key,
+        same_device,
+        identity_key,
+        reason,
+    )
+}
+
+fn verify_runtime_stream_device_bindings(
+    symbols: &GpuDriverSymbolTable,
+    identity: &RuntimeHardwareDeviceIdentity,
+    affected_stream_tokens: &[usize],
+) -> Result<Vec<RuntimeStreamDeviceBinding>, String> {
+    let mut stream_tokens = affected_stream_tokens.to_vec();
+    stream_tokens.push(0);
+    stream_tokens.sort_unstable();
+    stream_tokens.dedup();
+
+    let mut bindings = Vec::with_capacity(stream_tokens.len());
+    for stream_token in stream_tokens {
+        let get_stream_device = symbols
+            .cu_stream_get_device
+            .ok_or_else(|| "stream_device_identity_symbol_missing".to_string())?;
+        let mut device_ordinal = -1_i32;
+        let code = unsafe { get_stream_device(stream_token as CuStream, &mut device_ordinal) };
+        if code != 0 {
+            return Err(format!("stream_device_identity_query_failed:{code}"));
+        }
+        if device_ordinal < 0 {
+            return Err("stream_device_identity_ordinal_invalid".to_string());
+        }
+        if device_ordinal != identity.ordinal {
+            return Err("stream_device_identity_mismatch".to_string());
+        }
+        bindings.push(RuntimeStreamDeviceBinding {
+            stream_token,
+            device_ordinal,
+        });
+    }
+    Ok(bindings)
+}
+
+fn runtime_stream_device_binding_line(
+    generation: u64,
+    identity: Option<&RuntimeHardwareDeviceIdentity>,
+    bindings: &Result<Vec<RuntimeStreamDeviceBinding>, String>,
+) -> String {
+    let (event, binding_values, reason) = match bindings {
+        Ok(bindings) => (
+            "verified",
+            bindings
+                .iter()
+                .map(|binding| format!("{}:{}", binding.stream_token, binding.device_ordinal))
+                .collect::<Vec<_>>()
+                .join(","),
+            "none",
+        ),
+        Err(reason) => ("refused", "none".to_string(), reason.as_str()),
+    };
+    format!(
+        "[gpu-runtime-boundary] stream_device_identity schema=synthi.gpu_hmr.runtime_stream_device_identity.v1 event={} runtime_session={} process_id=pid:{} generation={} active_device_ordinal={} device_identity_key={} stream_device_bindings={} device_identity_authority=runtime_driver_stream_device_binding proof_authority=runtime_driver_stream_device_binding_evidence_only_not_gpu_hmr_success reason={} accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false can_satisfy_dispatch_proof=false",
+        event,
+        runtime_session_id(),
+        std::process::id(),
+        generation,
+        identity
+            .map(|identity| identity.ordinal.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        identity
+            .map(|identity| identity.identity_key.as_str())
+            .unwrap_or("none"),
+        binding_values,
+        reason,
+    )
+}
+
+fn runtime_device_attestation_capability_line(
+    generation: u64,
+    available: bool,
+    gaps: &[String],
+) -> String {
+    let status = if available {
+        "available"
+    } else {
+        "unavailable"
+    };
+    let gap_list = if gaps.is_empty() {
+        "none".to_string()
+    } else {
+        gaps.join(",")
+    };
+    format!(
+        "[gpu-runtime-boundary] device_attestation_capability schema=synthi.gpu_hmr.device_attestation_capability.v1 status={} runtime_session={} process_id=pid:{} generation={} capability=runtime_device_and_stream_identity_attestation blocking_gaps={} proof_authority=device_attestation_capability_only_not_gpu_hmr_success accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false can_satisfy_dispatch_proof=false",
+        status,
+        runtime_session_id(),
+        std::process::id(),
+        generation,
+        gap_list,
+    )
 }
 
 impl ArtifactLoaderTransport {
@@ -1044,9 +1362,10 @@ fn replayable_arg_provenance(record: &LaunchRecord) -> bool {
         && !record.arg_provenance.is_empty()
         && record.arg_provenance.iter().all(|arg| {
             arg.value_size > 0
-                && arg.value_bytes.as_ref().is_some_and(|bytes| {
-                    !bytes.is_empty() && bytes.len() == arg.value_size
-                })
+                && arg
+                    .value_bytes
+                    .as_ref()
+                    .is_some_and(|bytes| !bytes.is_empty() && bytes.len() == arg.value_size)
         })
 }
 
@@ -1064,18 +1383,17 @@ fn latest_replayable_launch_record(
     changed_symbols: &[String],
     previous_generation: u64,
 ) -> Option<LaunchRecord> {
-    launch_records_snapshot()
-        .into_iter()
-        .rev()
-        .find(|record| {
-            record.runtime_session_id == runtime_session_id()
-                && record.dispatched
-                && record.dispatch_error.is_none()
-                && record.active_generation == previous_generation
-                && changed_symbols.iter().any(|symbol| symbol == &record.kernel_name)
-                && replayable_arg_provenance(record)
-                && replay_readback_target(record).is_some()
-        })
+    launch_records_snapshot().into_iter().rev().find(|record| {
+        record.runtime_session_id == runtime_session_id()
+            && record.dispatched
+            && record.dispatch_error.is_none()
+            && record.active_generation == previous_generation
+            && changed_symbols
+                .iter()
+                .any(|symbol| symbol == &record.kernel_name)
+            && replayable_arg_provenance(record)
+            && replay_readback_target(record).is_some()
+    })
 }
 
 fn run_runtime_output_observation_replay(
@@ -1126,10 +1444,9 @@ fn run_runtime_output_observation_replay(
         .arg_provenance
         .iter()
         .map(|arg| {
-            let bytes = arg
-                .value_bytes
-                .clone()
-                .ok_or_else(|| format!("runtime replay arg {} missing captured bytes", arg.index))?;
+            let bytes = arg.value_bytes.clone().ok_or_else(|| {
+                format!("runtime replay arg {} missing captured bytes", arg.index)
+            })?;
             if bytes.len() != arg.value_size {
                 return Err(format!(
                     "runtime replay arg {} byte length mismatch expected={} actual={}",
@@ -1546,6 +1863,89 @@ fn launch_arg_provenance_json(args: &[LaunchArgProvenance]) -> Value {
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VerifiedRuntimeDispatchDeviceIdentity {
+    runtime_session_id: String,
+    active_generation: u64,
+    dispatch_id: String,
+    dispatch_timestamp_monotonic_ns: u128,
+    stream_token: usize,
+    device_ordinal: i32,
+    stream_device_ordinal: i32,
+    device_uuid_hex: String,
+    identity_key: String,
+    authority: String,
+    host_thread_id: String,
+}
+
+fn verified_runtime_dispatch_device_identity(
+    active_generation: u64,
+    active_artifact_id: &str,
+    after_dispatch_id: &str,
+    generation_identity: &RuntimeHardwareDeviceIdentity,
+) -> Result<VerifiedRuntimeDispatchDeviceIdentity, String> {
+    let runtime_session = runtime_session_id();
+    let dispatch_record = launch_records_snapshot()
+        .into_iter()
+        .rev()
+        .find(|record| {
+            record.runtime_session_id == runtime_session
+                && record.active_generation == active_generation
+                && record.active_artifact_id.as_deref() == Some(active_artifact_id)
+                && record.dispatch_id.as_deref() == Some(after_dispatch_id)
+                && record.dispatched
+        })
+        .ok_or_else(|| "dispatch_device_attestation_launch_record_missing".to_string())?;
+    let dispatch_timestamp_monotonic_ns = dispatch_record
+        .dispatch_timestamp_monotonic_ns
+        .ok_or_else(|| "dispatch_device_attestation_launch_timestamp_missing".to_string())?;
+    let attestation_record = dispatch_device_attestation_records_snapshot()
+        .into_iter()
+        .rev()
+        .find(|record| {
+            record.runtime_session_id == runtime_session
+                && record.active_generation == active_generation
+                && record.dispatch_id == after_dispatch_id
+                && record.dispatch_timestamp_monotonic_ns == dispatch_timestamp_monotonic_ns
+        })
+        .ok_or_else(|| "dispatch_device_attestation_record_missing".to_string())?;
+    if attestation_record.attestation.stream_token() != dispatch_record.stream_token {
+        return Err("dispatch_device_attestation_stream_token_mismatch".to_string());
+    }
+    let observation = attestation_record
+        .attestation
+        .verified_observation()
+        .ok_or_else(|| {
+            attestation_record
+                .attestation
+                .blocking_gap()
+                .unwrap_or("dispatch_device_attestation_unverified")
+                .to_string()
+        })?;
+    if observation.device_ordinal() != generation_identity.ordinal {
+        return Err("dispatch_device_ordinal_generation_mismatch".to_string());
+    }
+    if observation.device_uuid() != generation_identity.uuid_bytes
+        || observation.identity_key() != generation_identity.identity_key
+    {
+        return Err("dispatch_device_uuid_generation_mismatch".to_string());
+    }
+
+    Ok(VerifiedRuntimeDispatchDeviceIdentity {
+        runtime_session_id: runtime_session.to_string(),
+        active_generation,
+        dispatch_id: after_dispatch_id.to_string(),
+        dispatch_timestamp_monotonic_ns,
+        stream_token: attestation_record.attestation.stream_token(),
+        device_ordinal: observation.device_ordinal(),
+        stream_device_ordinal: observation.stream_device_ordinal(),
+        device_uuid_hex: hex::encode(observation.device_uuid()),
+        identity_key: observation.identity_key(),
+        authority: attestation_record.attestation.authority().to_string(),
+        host_thread_id: attestation_record.attestation.host_thread_id().to_string(),
+    })
+}
+
 fn latest_accepted_output_oracle_record(
     active_generation: u64,
     active_artifact_id: &str,
@@ -1644,10 +2044,10 @@ fn runtime_acceptance_contract(
     } else {
         source_paths.to_vec()
     };
-    let fission_selected_verifier_evidence_id = capsule_metadata
-        .and_then(|metadata| metadata.selected_verifier_evidence_id.clone());
-    let fission_verifier_evidence_id = capsule_metadata
-        .and_then(|metadata| metadata.fission_verifier_evidence_id.clone());
+    let fission_selected_verifier_evidence_id =
+        capsule_metadata.and_then(|metadata| metadata.selected_verifier_evidence_id.clone());
+    let fission_verifier_evidence_id =
+        capsule_metadata.and_then(|metadata| metadata.fission_verifier_evidence_id.clone());
     let fission_deterministic_verifier_evidence_refs = capsule_metadata
         .and_then(|metadata| metadata.deterministic_verifier_evidence_refs.clone())
         .unwrap_or_default();
@@ -1655,8 +2055,8 @@ fn runtime_acceptance_contract(
         .and_then(|metadata| metadata.fission_source_paths.clone())
         .filter(|paths| !paths.is_empty())
         .unwrap_or_else(|| source_paths.clone());
-    let fission_selection_decision_hash = capsule_metadata
-        .and_then(|metadata| metadata.fission_selection_decision_hash.clone());
+    let fission_selection_decision_hash =
+        capsule_metadata.and_then(|metadata| metadata.fission_selection_decision_hash.clone());
     let fission_output_oracle_contract = capsule_metadata
         .and_then(|metadata| metadata.fission_output_oracle_contract.clone())
         .unwrap_or(Value::Null);
@@ -1883,7 +2283,7 @@ fn runtime_full_proof_line(
     loader_timestamp_monotonic_ns: u128,
     publish_timestamp_monotonic_ns: u128,
     retirement_timestamp_monotonic_ns: u128,
-    device_identity_key: &str,
+    dispatch_device_identity: &VerifiedRuntimeDispatchDeviceIdentity,
     expected_symbols: &[String],
     loader_transport: ArtifactLoaderTransport,
     reload_elapsed_ms: u64,
@@ -1928,20 +2328,34 @@ fn runtime_full_proof_line(
     if firewall_pid_before != process_id || firewall_pid_after != process_id {
         return Err("runtime_proof_process_identity_changed".to_string());
     }
-    let output_record = latest_accepted_output_oracle_record(
-        active_generation,
-        new_artifact_id,
-        after_dispatch_id,
-    )
-    .ok_or_else(|| "runtime_proof_output_oracle_record_missing".to_string())?;
-    let dispatch_record = launch_records_snapshot().into_iter().rev().find(|record| {
-        record.runtime_session_id == runtime_session_id()
-            && record.active_generation == active_generation
-            && record.active_artifact_id.as_deref() == Some(new_artifact_id)
-            && record.dispatch_id.as_deref() == Some(after_dispatch_id)
-            && record.dispatched
-    })
-    .ok_or_else(|| "runtime_proof_dispatch_record_missing".to_string())?;
+    let output_record =
+        latest_accepted_output_oracle_record(active_generation, new_artifact_id, after_dispatch_id)
+            .ok_or_else(|| "runtime_proof_output_oracle_record_missing".to_string())?;
+    let dispatch_record = launch_records_snapshot()
+        .into_iter()
+        .rev()
+        .find(|record| {
+            record.runtime_session_id == runtime_session_id()
+                && record.active_generation == active_generation
+                && record.active_artifact_id.as_deref() == Some(new_artifact_id)
+                && record.dispatch_id.as_deref() == Some(after_dispatch_id)
+                && record.dispatched
+        })
+        .ok_or_else(|| "runtime_proof_dispatch_record_missing".to_string())?;
+    let dispatch_timestamp_monotonic_ns = dispatch_record
+        .dispatch_timestamp_monotonic_ns
+        .ok_or_else(|| "runtime_proof_dispatch_timestamp_missing".to_string())?;
+    if dispatch_device_identity.runtime_session_id != runtime_session_id()
+        || dispatch_device_identity.active_generation != active_generation
+        || dispatch_device_identity.dispatch_id != after_dispatch_id
+        || dispatch_device_identity.dispatch_timestamp_monotonic_ns
+            != dispatch_timestamp_monotonic_ns
+        || dispatch_device_identity.stream_token != dispatch_record.stream_token
+        || dispatch_device_identity.device_ordinal != dispatch_device_identity.stream_device_ordinal
+        || dispatch_device_identity.authority != GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY
+    {
+        return Err("runtime_proof_dispatch_device_attestation_mismatch".to_string());
+    }
     let readback_hash = output_record
         .readback_sample_sha256
         .as_deref()
@@ -1993,6 +2407,7 @@ fn runtime_full_proof_line(
         format!("loader:{new_artifact_id}"),
         format!("epoch:{active_generation}"),
         format!("dispatch:{after_dispatch_id}"),
+        format!("dispatch-device-attestation:{after_dispatch_id}"),
         format!("oracle:{}", output_record.oracle_id),
         format!("retirement-strategy:{retirement_strategy}"),
         req.firewall_evidence
@@ -2093,15 +2508,28 @@ fn runtime_full_proof_line(
         "runtime_session_id": runtime_session_id(),
         "role": "worker-gpu-runtime",
     });
-    let device_uuid = normalized_gpu_hardware_uuid(device_identity_key)
+    let device_uuid = normalized_gpu_hardware_uuid(&dispatch_device_identity.identity_key)
         .ok_or_else(|| "runtime_proof_device_uuid_invalid".to_string())?;
     let device_identity = json!({
         "vendor": vendor.as_str(),
         "backend": vendor.proof_backend(),
         "device_uuid": device_uuid,
-        "device_identity_key": device_identity_key,
+        "device_identity_key": dispatch_device_identity.identity_key,
         "device_identity_kind": "hardware_uuid",
-        "device_identity_authority": "runtime_driver_active_device_uuid",
+        "device_identity_authority": dispatch_device_identity.authority,
+        "device_identity_continuity_verified": true,
+        "identity_observation_window": "immediately_before_native_launch,immediately_after_native_launch",
+        "generation_baseline_device_identity_key": dispatch_device_identity.identity_key,
+        "before_dispatch_device_identity_key": dispatch_device_identity.identity_key,
+        "after_dispatch_device_identity_key": dispatch_device_identity.identity_key,
+        "active_device_ordinal": dispatch_device_identity.device_ordinal,
+        "dispatch_stream_token": dispatch_record.stream_token,
+        "dispatch_stream_device_ordinal": dispatch_device_identity.stream_device_ordinal,
+        "stream_device_identity_verified": true,
+        "dispatch_device_attestation_schema": GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA,
+        "dispatch_device_attestation_dispatch_id": dispatch_device_identity.dispatch_id,
+        "dispatch_device_attestation_thread_id": dispatch_device_identity.host_thread_id,
+        "dispatch_device_uuid_hex": dispatch_device_identity.device_uuid_hex,
         "driver_library": vendor.driver_library(),
     });
     let timings = json!({
@@ -2884,6 +3312,9 @@ pub struct GpuModuleAdapter {
     /// generation. Epoch proof uses this to describe capsule lineage without
     /// relying on target-specific paths.
     active_generation_artifact_id: Option<String>,
+    /// Hardware identity attested for the currently published generation.
+    /// A hot reload must match this baseline before any module mutation.
+    active_device_identity: Option<RuntimeHardwareDeviceIdentity>,
     /// Live kernel name → CUfunction-handle-as-u64 map. Empty in
     /// Phase 2; populated when Phase 3 calls `cuModuleGetFunction`
     /// for every kernel in the manifest right after a successful
@@ -2939,6 +3370,7 @@ impl GpuModuleAdapter {
             reload_count: 0,
             active_module_handle: None,
             active_generation_artifact_id: None,
+            active_device_identity: None,
             kernel_table: HashMap::new(),
             health: AdapterHealth::Unknown,
             driver: None,
@@ -3146,6 +3578,41 @@ impl GpuModuleAdapter {
         }
     }
 
+    fn refuse_device_identity_preflight(
+        &mut self,
+        plan: GpuReloadPlan,
+        snapshot_bytes: u64,
+        dirty_buffers: u32,
+        expected_kernel_hashes: u32,
+        streams_synced: u32,
+        evidence_lines: Vec<String>,
+        reason: String,
+    ) -> AdapterReloadResult {
+        self.emit_report(GpuSwapInputs {
+            plan,
+            reason: "runtime-device-identity-preflight-refused".into(),
+            streams_synced,
+            force_drain_timeout: false,
+            snapshot_bytes,
+            snapshot_ms: 0,
+            dirty_buffers,
+            expected_kernel_hashes,
+            matched_kernel_hashes: 0,
+        });
+        for line in evidence_lines {
+            eprintln!("{line}");
+            self.last_reload_log.push(line);
+        }
+        self.phase = GpuPhase::Ready;
+        self.health = AdapterHealth::Degraded;
+        AdapterReloadResult::Failed {
+            error: format!(
+                "GPU HMR device identity preflight rejected before candidate-module mutation: {reason}"
+            ),
+            recoverable: false,
+        }
+    }
+
     fn emit_runtime_ownership_report(&mut self, ownership: &DeviceReloadOwnership, artifact: &str) {
         let label = if ownership.partial_reload {
             "gpu-hmr-partial"
@@ -3162,15 +3629,22 @@ impl GpuModuleAdapter {
         } else {
             ownership.touched_symbols.join(",")
         };
+        let device_attestation_gaps = if ownership.strict_device_attestation_gaps.is_empty() {
+            "none".to_string()
+        } else {
+            ownership.strict_device_attestation_gaps.join(",")
+        };
         let line = format!(
-            "[gpu-reload] runtime_ownership label={} partial={} artifact={} expected_symbols={} touched_symbols={} retired_modules={} replaced_primary={}",
+            "[gpu-reload] runtime_ownership label={} partial={} artifact={} expected_symbols={} touched_symbols={} retired_modules={} replaced_primary={} strict_device_attestation_available={} strict_device_attestation_gaps={}",
             label,
             ownership.partial_reload,
             artifact,
             expected,
             touched,
             ownership.retired_module_count,
-            ownership.replaced_primary
+            ownership.replaced_primary,
+            ownership.strict_device_attestation_available,
+            device_attestation_gaps,
         );
         eprintln!("{line}");
         self.last_reload_log.push(line);
@@ -3302,6 +3776,7 @@ impl Adapter for GpuModuleAdapter {
         // clone outlives this adapter.
         self.active_module_handle = None;
         self.active_generation_artifact_id = None;
+        self.active_device_identity = None;
         self.kernel_table.clear();
         self.driver = None;
         self.module_manager = GpuModuleManager::new();
@@ -3636,6 +4111,48 @@ impl Adapter for GpuModuleAdapter {
                 };
             }
         }
+        let device_identity_before = query_runtime_hardware_device_identity(&symbols);
+        let identity_observed_generation = current_launch_generation();
+        let generation_identity_baseline = self.active_device_identity.clone();
+        if !first_device_load {
+            let baseline_check = verified_runtime_hardware_device_identity(
+                generation_identity_baseline.as_ref(),
+                &device_identity_before,
+                &device_identity_before,
+                true,
+            );
+            if let Err(reason) = baseline_check {
+                let gaps = vec![reason.clone()];
+                let evidence_lines = vec![
+                    runtime_hardware_device_identity_observation_line(
+                        "before_reload",
+                        identity_observed_generation,
+                        &device_identity_before,
+                    ),
+                    runtime_hardware_device_identity_continuity_line(
+                        identity_observed_generation,
+                        generation_identity_baseline.as_ref(),
+                        &device_identity_before,
+                        &device_identity_before,
+                        true,
+                    ),
+                    runtime_device_attestation_capability_line(
+                        identity_observed_generation,
+                        false,
+                        &gaps,
+                    ),
+                ];
+                return self.refuse_device_identity_preflight(
+                    plan,
+                    snapshot_bytes,
+                    dirty_buffers,
+                    req.build_manifest.exported_symbols.len() as u32,
+                    0,
+                    evidence_lines,
+                    reason,
+                );
+            }
+        }
         let mut drain = drain_affected_streams(
             &symbols,
             &expected_symbols,
@@ -3661,6 +4178,71 @@ impl Adapter for GpuModuleAdapter {
                 error: format!("GPU drain failed: {:?}", drain.outcome),
                 recoverable: !timed_out,
             };
+        }
+
+        let device_identity_after_drain = query_runtime_hardware_device_identity(&symbols);
+        let verified_device_identity_result = verified_runtime_hardware_device_identity(
+            generation_identity_baseline.as_ref(),
+            &device_identity_before,
+            &device_identity_after_drain,
+            !first_device_load,
+        );
+        let mut device_identity_evidence_lines = vec![
+            runtime_hardware_device_identity_observation_line(
+                "before_reload",
+                identity_observed_generation,
+                &device_identity_before,
+            ),
+            runtime_hardware_device_identity_observation_line(
+                "after_drain_pre_commit",
+                identity_observed_generation,
+                &device_identity_after_drain,
+            ),
+            runtime_hardware_device_identity_continuity_line(
+                identity_observed_generation,
+                generation_identity_baseline.as_ref(),
+                &device_identity_before,
+                &device_identity_after_drain,
+                !first_device_load,
+            ),
+        ];
+        let verified_device_identity = verified_device_identity_result.as_ref().ok().cloned();
+        let verified_stream_device_bindings = verified_device_identity
+            .as_ref()
+            .map(|identity| {
+                verify_runtime_stream_device_bindings(&symbols, identity, &drain.stream_tokens)
+            })
+            .unwrap_or_else(|| Err("stream_device_identity_active_device_unattested".to_string()));
+        device_identity_evidence_lines.push(runtime_stream_device_binding_line(
+            identity_observed_generation,
+            verified_device_identity.as_ref(),
+            &verified_stream_device_bindings,
+        ));
+        let mut strict_device_attestation_gaps = Vec::new();
+        if let Err(reason) = &verified_device_identity_result {
+            strict_device_attestation_gaps.push(reason.clone());
+        }
+        if let Err(reason) = &verified_stream_device_bindings {
+            strict_device_attestation_gaps.push(reason.clone());
+        }
+        strict_device_attestation_gaps.sort();
+        strict_device_attestation_gaps.dedup();
+        let strict_device_attestation_available = strict_device_attestation_gaps.is_empty();
+        device_identity_evidence_lines.push(runtime_device_attestation_capability_line(
+            identity_observed_generation,
+            strict_device_attestation_available,
+            &strict_device_attestation_gaps,
+        ));
+        if !first_device_load && !strict_device_attestation_available {
+            return self.refuse_device_identity_preflight(
+                plan,
+                snapshot_bytes,
+                dirty_buffers,
+                req.build_manifest.exported_symbols.len() as u32,
+                drain.stream_count(),
+                device_identity_evidence_lines,
+                strict_device_attestation_gaps.join(","),
+            );
         }
 
         let module_checkpoint = self.module_manager.checkpoint();
@@ -3884,6 +4466,28 @@ impl Adapter for GpuModuleAdapter {
             let retirement_strategy = drain.retirement_strategy_for_log();
             let logical_retirement_proven =
                 logical_epoch_retirement_proven(retired_module_count, &drain);
+            let verified_dispatch_device_identity_result = match (
+                output_oracle_after_dispatch_id.as_deref(),
+                verified_device_identity.as_ref(),
+            ) {
+                (Some(after_dispatch_id), Some(generation_identity)) => {
+                    verified_runtime_dispatch_device_identity(
+                        active_generation,
+                        &new_artifact_id,
+                        after_dispatch_id,
+                        generation_identity,
+                    )
+                }
+                (None, _) => Err("dispatch_device_attestation_output_dispatch_missing".to_string()),
+                (_, None) => {
+                    Err("dispatch_device_attestation_generation_identity_missing".to_string())
+                }
+            };
+            let dispatch_device_identity_gap = verified_dispatch_device_identity_result
+                .as_ref()
+                .err()
+                .cloned();
+            let verified_dispatch_device_identity = verified_dispatch_device_identity_result.ok();
             let build_acceptance_ledger = |retirement_proven| {
                 GpuHmrAcceptanceLedger::new(GpuHmrAcceptanceLedgerInput {
                     hot_reload: !first_device_load,
@@ -3907,21 +4511,25 @@ impl Adapter for GpuModuleAdapter {
                     firewall_process_id_before: req.firewall_evidence.process_id_before,
                     firewall_process_id_after: req.firewall_evidence.process_id_after,
                     process_id: Some(format!("pid:{}", std::process::id())),
-                    device_identity: None,
+                    device_identity: verified_dispatch_device_identity
+                        .as_ref()
+                        .map(|identity| identity.identity_key.clone()),
                 })
             };
             let prepublication_acceptance_ledger =
                 build_acceptance_ledger(logical_retirement_proven);
             let prepublication_acceptance_line = prepublication_acceptance_ledger.to_log_line();
             if !first_device_load && !prepublication_acceptance_ledger.gpu_hmr_success {
+                failure_runtime_log_lines.extend(device_identity_evidence_lines.iter().cloned());
                 if let Some(line) = candidate_oracle_line.as_ref() {
                     failure_runtime_log_lines.push(line.clone());
                 }
                 eprintln!("{prepublication_acceptance_line}");
                 failure_runtime_log_lines.push(prepublication_acceptance_line.clone());
                 let validation_error = format!(
-                    "GPU HMR acceptance ledger rejected candidate before global publication: {}",
-                    prepublication_acceptance_ledger.failed_invariants.join(",")
+                    "GPU HMR acceptance ledger rejected candidate before global publication: {}; dispatch_device_identity_gap={}",
+                    prepublication_acceptance_ledger.failed_invariants.join(","),
+                    dispatch_device_identity_gap.as_deref().unwrap_or("none"),
                 );
                 let rollback_result =
                     rollback_launch_dispatcher_publication(&mut dispatcher_publication);
@@ -3975,6 +4583,10 @@ impl Adapter for GpuModuleAdapter {
             let mut runtime_log_lines = Vec::new();
             if let Some(pinned) = pinned_output_oracle_profile.as_ref() {
                 runtime_log_lines.push(pinned.evidence_line.clone());
+            }
+            for line in &device_identity_evidence_lines {
+                eprintln!("{line}");
+                runtime_log_lines.push(line.clone());
             }
             let stream_epoch_counters = drain.stream_epoch_counters_for_log(active_generation);
             let ram_transport_proven = ram_artifact_reference_provided
@@ -4209,9 +4821,12 @@ impl Adapter for GpuModuleAdapter {
             } else {
                 match (
                     output_oracle_after_dispatch_id.as_deref(),
-                    acceptance_ledger.device_identity.as_deref(),
+                    verified_dispatch_device_identity.as_ref(),
                 ) {
-                    (Some(after_dispatch_id), Some(device_identity_key)) => {
+                    (Some(after_dispatch_id), Some(dispatch_device_identity))
+                        if acceptance_ledger.device_identity.as_deref()
+                            == Some(dispatch_device_identity.identity_key.as_str()) =>
+                    {
                         runtime_full_proof_line(
                             req,
                             self.config.vendor,
@@ -4223,7 +4838,7 @@ impl Adapter for GpuModuleAdapter {
                             loader_timestamp_monotonic_ns,
                             publish_timestamp_monotonic_ns,
                             retirement_timestamp_monotonic_ns,
-                            device_identity_key,
+                            dispatch_device_identity,
                             &expected_symbols,
                             loader_transport,
                             started.elapsed().as_millis() as u64,
@@ -4239,6 +4854,9 @@ impl Adapter for GpuModuleAdapter {
                     }
                     (None, _) => Err("runtime_proof_output_dispatch_id_missing".to_string()),
                     (_, None) => Err("runtime_proof_device_identity_missing".to_string()),
+                    (_, Some(_)) => {
+                        Err("runtime_proof_device_identity_ledger_mismatch".to_string())
+                    }
                 }
             };
             let (strict_runtime_proof_line, strict_runtime_proof_gap) =
@@ -4284,6 +4902,9 @@ impl Adapter for GpuModuleAdapter {
                 acceptance_ledger_success: acceptance_ledger.gpu_hmr_success
                     && strict_runtime_proof_success,
                 acceptance_ledger_failures: final_acceptance_failures,
+                verified_device_identity: verified_device_identity.clone(),
+                strict_device_attestation_available,
+                strict_device_attestation_gaps: strict_device_attestation_gaps.clone(),
             })
         })();
 
@@ -4328,6 +4949,7 @@ impl Adapter for GpuModuleAdapter {
         match load_result {
             Ok(ownership) => {
                 self.active_module_handle = self.module_manager.primary().map(|s| s.handle);
+                self.active_device_identity = ownership.verified_device_identity.clone();
                 self.kernel_table.clear();
                 for name in self.module_manager.kernel_table().names() {
                     if let Some(handle) = self.module_manager.kernel_table().get(name) {
@@ -4364,7 +4986,11 @@ impl Adapter for GpuModuleAdapter {
                         recoverable: false,
                     }
                 } else {
-                    self.health = AdapterHealth::Healthy;
+                    self.health = if ownership.strict_device_attestation_available {
+                        AdapterHealth::Healthy
+                    } else {
+                        AdapterHealth::Degraded
+                    };
                     self.remember_device_abi(req);
                     AdapterReloadResult::Success {
                         reload_ms: started.elapsed().as_millis() as u64,
@@ -4694,6 +5320,8 @@ mod tests {
         let previous_handle = adapter.active_module_handle;
         let previous_artifact_id = adapter.active_generation_artifact_id.clone();
         let previous_swap_count = adapter.module_manager.swap_count();
+        let expected_artifact_id =
+            format!("artifact:sha256:{}", sha256_hex_bytes(b"profile-pin-after"));
         let second_request =
             request_with_artifact(&second_path, vec!["build/generated/device-stage".into()]);
         let profile_path = configured_gpu_hmr_runtime_output_oracle_profile_path();
@@ -4701,19 +5329,18 @@ mod tests {
             fs::write(&profile_path, b"{malformed-after-pin").unwrap();
         });
 
-        match adapter.reload(&second_request) {
-            AdapterReloadResult::Failed { error, recoverable } => {
-                assert!(recoverable);
-                assert!(error.contains("device_identity_missing"));
-                assert!(!error.contains("output_oracle_not_passed"));
-                assert!(error.contains("candidate rolled back"));
-            }
-            other => panic!("expected independent device identity refusal, got {other:?}"),
-        }
-        assert_eq!(current_launch_generation(), previous_generation);
-        assert_eq!(adapter.active_module_handle, previous_handle);
-        assert_eq!(adapter.active_generation_artifact_id, previous_artifact_id);
-        assert_eq!(adapter.module_manager.swap_count(), previous_swap_count);
+        assert!(matches!(
+            adapter.reload(&second_request),
+            AdapterReloadResult::Success { .. }
+        ));
+        assert_eq!(current_launch_generation(), previous_generation + 1);
+        assert_ne!(adapter.active_module_handle, previous_handle);
+        assert_ne!(adapter.active_generation_artifact_id, previous_artifact_id);
+        assert_eq!(
+            adapter.active_generation_artifact_id.as_deref(),
+            Some(expected_artifact_id.as_str())
+        );
+        assert_eq!(adapter.module_manager.swap_count(), previous_swap_count + 1);
         assert_eq!(
             fs::read(configured_gpu_hmr_runtime_output_oracle_profile_path()).unwrap(),
             b"{malformed-after-pin"
@@ -4728,11 +5355,18 @@ mod tests {
             line.contains("runtime_output_oracle_probe status=pass")
                 && line.contains("profile=test-vec-add-readback")
         }));
+        assert!(!adapter
+            .last_reload_log()
+            .iter()
+            .any(|line| line.contains("event=rolled_back")));
         assert!(adapter.last_reload_log().iter().any(|line| {
-            line.contains("dispatcher_epoch")
-                && line.contains("event=rolled_back")
-                && line.contains("reason=acceptance_ledger_rejected")
+            line.contains("\"type\":\"gpu_hmr_acceptance_ledger\"")
+                && line.contains("\"gpuHmrSuccess\":true")
         }));
+        assert!(adapter
+            .last_reload_log()
+            .iter()
+            .any(|line| line.contains("\"type\":\"gpu_hmr_proof\"")));
         let _ = install_runtime_output_oracle_profile_for_tests();
         reset_for_test();
     }
@@ -4779,23 +5413,16 @@ mod tests {
         let mut profile: serde_json::Value =
             serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
         let rejected_expected_sha256 = format!("sha256:{}", "f".repeat(64));
-        profile["expectedSha256"] =
-            serde_json::Value::String(rejected_expected_sha256.clone());
+        profile["expectedSha256"] = serde_json::Value::String(rejected_expected_sha256.clone());
         let profile_bytes = serde_json::to_vec_pretty(&profile).unwrap();
         fs::write(&profile_path, &profile_bytes).unwrap();
-        let metadata = second_request
-            .capsule_metadata
-            .as_mut()
-            .unwrap();
+        let metadata = second_request.capsule_metadata.as_mut().unwrap();
         let contract_hash = {
             let contract = metadata.fission_output_oracle_contract.as_mut().unwrap();
             contract["expected"] = serde_json::Value::String(rejected_expected_sha256);
             format!("sha256:{}", stable_json_hash(contract))
         };
-        let commitment = metadata
-            .output_oracle_profile_commitment
-            .as_mut()
-            .unwrap();
+        let commitment = metadata.output_oracle_profile_commitment.as_mut().unwrap();
         commitment.profile_bytes_sha256 = format!("sha256:{}", sha256_hex_bytes(&profile_bytes));
         commitment.fission_output_oracle_contract_sha256 = contract_hash;
 
@@ -4834,7 +5461,10 @@ mod tests {
             .into_iter()
             .find(|record| record.after_dispatch_id == candidate_launch.dispatch_id)
             .expect("candidate output record bound to validation dispatch");
-        assert_eq!(candidate_output.generation, candidate_launch.active_generation);
+        assert_eq!(
+            candidate_output.generation,
+            candidate_launch.active_generation
+        );
         assert_eq!(
             candidate_output.artifact_id.as_deref(),
             Some(candidate_artifact_id.as_str())
@@ -4910,6 +5540,19 @@ mod tests {
 
     #[test]
     fn strict_runtime_proof_builder_reports_content_binding_gap() {
+        let unreachable_dispatch_identity = VerifiedRuntimeDispatchDeviceIdentity {
+            runtime_session_id: runtime_session_id().to_string(),
+            active_generation: 2,
+            dispatch_id: "dispatch:test".to_string(),
+            dispatch_timestamp_monotonic_ns: 2,
+            stream_token: 0,
+            device_ordinal: 0,
+            stream_device_ordinal: 0,
+            device_uuid_hex: "11".repeat(16),
+            identity_key: format!("gpu-hardware-uuid:{}", "11".repeat(16)),
+            authority: GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY.to_string(),
+            host_thread_id: "unreached".to_string(),
+        };
         let error = runtime_full_proof_line(
             &dummy_request(),
             GpuVendor::Rocm,
@@ -4921,7 +5564,7 @@ mod tests {
             1,
             2,
             3,
-            "gpu-hardware-uuid:test",
+            &unreachable_dispatch_identity,
             &[],
             ArtifactLoaderTransport::FilesystemPath,
             0,
@@ -4936,6 +5579,233 @@ mod tests {
         .expect_err("filesystem transport must not produce strict runtime proof");
 
         assert_eq!(error, "runtime_proof_loader_transport_not_content_bound");
+    }
+
+    #[test]
+    fn runtime_hardware_device_identity_requires_native_nonzero_uuid_queries() {
+        let identity = query_runtime_hardware_device_identity(&stub_symbols())
+            .expect("stable native device identity");
+        assert_eq!(identity.ordinal, 0);
+        assert_eq!(identity.uuid_hex, "00112233445566778899aabbccddeeff");
+        assert_eq!(
+            identity.identity_key,
+            "gpu-hardware-uuid:00112233445566778899aabbccddeeff"
+        );
+
+        assert_eq!(
+            query_runtime_hardware_device_identity(&symbols_without_device_identity()),
+            Err("device_identity_active_device_symbol_missing".to_string())
+        );
+        assert_eq!(
+            query_runtime_hardware_device_identity(&GpuDriverSymbolTable {
+                cu_device_get_uuid: Some(zero_device_get_uuid),
+                ..stub_symbols()
+            }),
+            Err("device_identity_uuid_all_zero".to_string())
+        );
+        assert_eq!(
+            query_runtime_hardware_device_identity(&GpuDriverSymbolTable {
+                cu_ctx_get_device: Some(err_ctx_get_device),
+                ..stub_symbols()
+            }),
+            Err("device_identity_active_device_query_failed:101".to_string())
+        );
+        assert_eq!(
+            query_runtime_hardware_device_identity(&GpuDriverSymbolTable {
+                cu_device_get_uuid: Some(err_device_get_uuid),
+                ..stub_symbols()
+            }),
+            Err("device_identity_uuid_query_failed:102".to_string())
+        );
+    }
+
+    #[test]
+    fn runtime_hardware_device_identity_continuity_rejects_device_change() {
+        let before = Ok(RuntimeHardwareDeviceIdentity {
+            ordinal: 0,
+            uuid_bytes: [0x11; 16],
+            uuid_hex: "11".repeat(16),
+            identity_key: format!("gpu-hardware-uuid:{}", "11".repeat(16)),
+        });
+        let after = Ok(RuntimeHardwareDeviceIdentity {
+            ordinal: 0,
+            uuid_bytes: [0x22; 16],
+            uuid_hex: "22".repeat(16),
+            identity_key: format!("gpu-hardware-uuid:{}", "22".repeat(16)),
+        });
+        assert_eq!(
+            verified_runtime_hardware_device_identity(None, &before, &after, false),
+            Err("device_identity_uuid_changed".to_string())
+        );
+        assert_eq!(
+            verified_runtime_hardware_device_identity(None, &before, &before, true),
+            Err("device_identity_generation_baseline_missing".to_string())
+        );
+        let changed_ordinal = Ok(RuntimeHardwareDeviceIdentity {
+            ordinal: 1,
+            ..before.as_ref().unwrap().clone()
+        });
+        assert_eq!(
+            verified_runtime_hardware_device_identity(None, &before, &changed_ordinal, false),
+            Err("device_identity_active_device_changed".to_string())
+        );
+    }
+
+    #[test]
+    fn runtime_stream_device_binding_queries_default_and_nondefault_streams() {
+        let identity = query_runtime_hardware_device_identity(&stub_symbols()).unwrap();
+        let no_stream_query = GpuDriverSymbolTable {
+            cu_stream_get_device: None,
+            ..stub_symbols()
+        };
+        assert_eq!(
+            verify_runtime_stream_device_bindings(&no_stream_query, &identity, &[0x77]),
+            Err("stream_device_identity_symbol_missing".to_string())
+        );
+
+        NULL_STREAM_DEVICE_QUERY_CALLS.store(0, Ordering::SeqCst);
+        assert_eq!(
+            verify_runtime_stream_device_bindings(&stub_symbols(), &identity, &[]),
+            Ok(vec![RuntimeStreamDeviceBinding {
+                stream_token: 0,
+                device_ordinal: 0,
+            }])
+        );
+        assert_eq!(NULL_STREAM_DEVICE_QUERY_CALLS.load(Ordering::SeqCst), 1);
+
+        assert_eq!(
+            verify_runtime_stream_device_bindings(
+                &GpuDriverSymbolTable {
+                    cu_stream_get_device: Some(wrong_stream_get_device),
+                    ..stub_symbols()
+                },
+                &identity,
+                &[0x77],
+            ),
+            Err("stream_device_identity_mismatch".to_string())
+        );
+        assert_eq!(
+            verify_runtime_stream_device_bindings(
+                &GpuDriverSymbolTable {
+                    cu_stream_get_device: Some(err_stream_get_device),
+                    ..stub_symbols()
+                },
+                &identity,
+                &[0x77],
+            ),
+            Err("stream_device_identity_query_failed:103".to_string())
+        );
+    }
+
+    #[test]
+    fn driver_dispatcher_keeps_non_strict_launch_best_effort_without_device_attestation() {
+        LAUNCH_CALLS.store(0, Ordering::SeqCst);
+        let dispatcher = DriverLaunchDispatcher {
+            symbols: symbols_without_device_identity(),
+            kernels: HashMap::from([("vec_add".to_string(), 0x1234)]),
+        };
+        let request = GpuLaunchRequest {
+            kernel_name: "vec_add".to_string(),
+            grid: (1, 1, 1),
+            block: (1, 1, 1),
+            shared_bytes: 0,
+            stream_token: 0x77,
+            arg_count: 0,
+        };
+
+        let attestation = dispatcher
+            .dispatch_with_device_attestation(&request, std::ptr::null())
+            .expect("non-strict launch remains best effort");
+        assert!(attestation.verified_observation().is_none());
+        assert_eq!(
+            attestation.blocking_gap(),
+            Some("device_identity_active_device_symbol_missing")
+        );
+        assert_eq!(LAUNCH_CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn strict_provisional_dispatch_refuses_before_launch_without_device_attestation() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        LAUNCH_CALLS.store(0, Ordering::SeqCst);
+        let dispatcher = Arc::new(DriverLaunchDispatcher {
+            symbols: symbols_without_device_identity(),
+            kernels: HashMap::from([("vec_add".to_string(), 0x1234)]),
+        });
+        let mut publication = begin_launch_dispatcher_publication(
+            dispatcher,
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:strict-attestation".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let kernel = CString::new("vec_add").unwrap();
+        let dim = 1_u32;
+
+        let dispatched = with_dispatcher_publication_validation(&publication, || {
+            synthi_gpu_launch_raw(
+                std::ptr::null_mut(),
+                kernel.as_ptr(),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                0,
+                0x77,
+                std::ptr::null(),
+                0,
+            )
+        })
+        .unwrap();
+
+        assert!(!dispatched);
+        assert_eq!(LAUNCH_CALLS.load(Ordering::SeqCst), 0);
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert!(!launches[0].dispatched);
+        assert_eq!(
+            launches[0].dispatch_error.as_deref(),
+            Some("device_identity_active_device_symbol_missing")
+        );
+        rollback_launch_dispatcher_publication(&mut publication).unwrap();
+        reset_for_test();
+    }
+
+    #[test]
+    fn driver_dispatcher_launches_once_then_rejects_device_switch_attestation() {
+        LAUNCH_CALLS.store(0, Ordering::SeqCst);
+        DEVICE_SWITCH_AFTER_LAUNCH_ARMED.store(true, Ordering::SeqCst);
+        DEVICE_SWITCH_AFTER_LAUNCH_ACTIVE.store(false, Ordering::SeqCst);
+        let dispatcher = DriverLaunchDispatcher {
+            symbols: GpuDriverSymbolTable {
+                cu_device_get_uuid: Some(switching_after_native_launch_device_get_uuid),
+                cu_launch_kernel: launch_kernel_switching_device_after_launch,
+                ..stub_symbols()
+            },
+            kernels: HashMap::from([("vec_add".to_string(), 0x1234)]),
+        };
+        let request = GpuLaunchRequest {
+            kernel_name: "vec_add".to_string(),
+            grid: (1, 1, 1),
+            block: (1, 1, 1),
+            shared_bytes: 0,
+            stream_token: 0x77,
+            arg_count: 0,
+        };
+
+        assert_eq!(
+            dispatcher.dispatch_with_device_attestation(&request, std::ptr::null()),
+            Err(
+                GpuDispatchAttestationError::AttestationRejectedAfterDispatch(
+                    "dispatch_device_uuid_changed".to_string()
+                )
+            )
+        );
+        assert_eq!(LAUNCH_CALLS.load(Ordering::SeqCst), 1);
+        DEVICE_SWITCH_AFTER_LAUNCH_ACTIVE.store(false, Ordering::SeqCst);
     }
 
     #[test]
@@ -5126,6 +5996,10 @@ mod tests {
     static MODULE_LOAD_CALLS: AtomicUsize = AtomicUsize::new(0);
     static UNLOAD_CALLS: AtomicUsize = AtomicUsize::new(0);
     static MODULE_RESOLVE_OBSERVED: AtomicBool = AtomicBool::new(false);
+    static DEVICE_UUID_QUERY_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static NULL_STREAM_DEVICE_QUERY_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static DEVICE_SWITCH_AFTER_LAUNCH_ARMED: AtomicBool = AtomicBool::new(false);
+    static DEVICE_SWITCH_AFTER_LAUNCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 
     struct BlockingDispatcher {
         entered: mpsc::SyncSender<()>,
@@ -5199,6 +6073,95 @@ mod tests {
         0
     }
 
+    unsafe extern "C" fn ok_ctx_get_device(device: *mut i32) -> CuResult {
+        if !device.is_null() {
+            *device = 0;
+        }
+        0
+    }
+
+    unsafe extern "C" fn ok_device_get_uuid(uuid: *mut GpuDeviceUuid, _device: i32) -> CuResult {
+        if !uuid.is_null() {
+            (*uuid).bytes = [
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff,
+            ];
+        }
+        0
+    }
+
+    unsafe extern "C" fn zero_device_get_uuid(uuid: *mut GpuDeviceUuid, _device: i32) -> CuResult {
+        if !uuid.is_null() {
+            (*uuid).bytes = [0; 16];
+        }
+        0
+    }
+
+    unsafe extern "C" fn changing_during_hot_reload_device_get_uuid(
+        uuid: *mut GpuDeviceUuid,
+        _device: i32,
+    ) -> CuResult {
+        if !uuid.is_null() {
+            let call = DEVICE_UUID_QUERY_CALLS.fetch_add(1, Ordering::SeqCst);
+            (*uuid).bytes = [if call < 3 { 0x11 } else { 0x22 }; 16];
+        }
+        0
+    }
+
+    unsafe extern "C" fn switching_between_reload_device_get_uuid(
+        uuid: *mut GpuDeviceUuid,
+        _device: i32,
+    ) -> CuResult {
+        if !uuid.is_null() {
+            let call = DEVICE_UUID_QUERY_CALLS.fetch_add(1, Ordering::SeqCst);
+            (*uuid).bytes = [if call < 2 { 0x11 } else { 0x22 }; 16];
+        }
+        0
+    }
+
+    unsafe extern "C" fn switching_after_native_launch_device_get_uuid(
+        uuid: *mut GpuDeviceUuid,
+        _device: i32,
+    ) -> CuResult {
+        if !uuid.is_null() {
+            (*uuid).bytes = [if DEVICE_SWITCH_AFTER_LAUNCH_ACTIVE.load(Ordering::SeqCst) {
+                0x22
+            } else {
+                0x11
+            }; 16];
+        }
+        0
+    }
+
+    unsafe extern "C" fn err_ctx_get_device(_device: *mut i32) -> CuResult {
+        101
+    }
+
+    unsafe extern "C" fn err_device_get_uuid(_uuid: *mut GpuDeviceUuid, _device: i32) -> CuResult {
+        102
+    }
+
+    unsafe extern "C" fn ok_stream_get_device(stream: CuStream, device: *mut i32) -> CuResult {
+        if stream.is_null() {
+            NULL_STREAM_DEVICE_QUERY_CALLS.fetch_add(1, Ordering::SeqCst);
+        }
+        if !device.is_null() {
+            *device = 0;
+        }
+        0
+    }
+
+    unsafe extern "C" fn wrong_stream_get_device(_stream: CuStream, device: *mut i32) -> CuResult {
+        if !device.is_null() {
+            *device = 1;
+        }
+        0
+    }
+
+    unsafe extern "C" fn err_stream_get_device(_stream: CuStream, _device: *mut i32) -> CuResult {
+        103
+    }
+
     unsafe extern "C" fn ok_module_load_data(
         module: *mut CuModule,
         _image: *const c_void,
@@ -5256,6 +6219,28 @@ mod tests {
         LAUNCH_CALLS.fetch_add(1, Ordering::SeqCst);
         LAST_LAUNCH_GRID_X.store(grid_dim_x as usize, Ordering::SeqCst);
         LAST_LAUNCH_BLOCK_X.store(block_dim_x as usize, Ordering::SeqCst);
+        0
+    }
+
+    unsafe extern "C" fn launch_kernel_switching_device_after_launch(
+        _f: CuFunction,
+        grid_dim_x: u32,
+        _grid_dim_y: u32,
+        _grid_dim_z: u32,
+        block_dim_x: u32,
+        _block_dim_y: u32,
+        _block_dim_z: u32,
+        _shared_mem_bytes: u32,
+        _stream: CuStream,
+        _kernel_params: *mut *mut c_void,
+        _extra: *mut *mut c_void,
+    ) -> CuResult {
+        LAUNCH_CALLS.fetch_add(1, Ordering::SeqCst);
+        LAST_LAUNCH_GRID_X.store(grid_dim_x as usize, Ordering::SeqCst);
+        LAST_LAUNCH_BLOCK_X.store(block_dim_x as usize, Ordering::SeqCst);
+        if DEVICE_SWITCH_AFTER_LAUNCH_ARMED.swap(false, Ordering::SeqCst) {
+            DEVICE_SWITCH_AFTER_LAUNCH_ACTIVE.store(true, Ordering::SeqCst);
+        }
         0
     }
 
@@ -5354,9 +6339,9 @@ mod tests {
             cu_device_get: ok_device_get,
             cu_ctx_get_current: ok_ctx_get_current,
             cu_ctx_set_current: ok_ctx_set_current,
-            cu_ctx_get_device: None,
-            cu_device_get_uuid: None,
-            cu_stream_get_device: None,
+            cu_ctx_get_device: Some(ok_ctx_get_device),
+            cu_device_get_uuid: Some(ok_device_get_uuid),
+            cu_stream_get_device: Some(ok_stream_get_device),
             cu_module_load_data: ok_module_load_data,
             cu_module_load: ok_module_load,
             cu_module_unload: ok_module_unload,
@@ -5369,6 +6354,14 @@ mod tests {
             cu_memcpy_dtod: ok_memcpy_dtod,
             cu_memcpy_htod: ok_memcpy_htod,
             cu_memcpy_dtoh: ok_memcpy_dtoh,
+        }
+    }
+
+    fn symbols_without_device_identity() -> GpuDriverSymbolTable {
+        GpuDriverSymbolTable {
+            cu_ctx_get_device: None,
+            cu_device_get_uuid: None,
+            ..stub_symbols()
         }
     }
 
@@ -5455,6 +6448,84 @@ mod tests {
         a
     }
 
+    fn assert_cold_load_device_attestation_gap(symbols: GpuDriverSymbolTable, expected_gap: &str) {
+        reset_for_test();
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"device-attestation-cold-load").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let mut adapter = adapter_with_symbols(symbols);
+
+        let result = adapter.reload(&request_with_artifact(
+            &path,
+            vec!["device-source".to_string()],
+        ));
+        assert!(
+            matches!(result, AdapterReloadResult::Success { .. }),
+            "cold load must remain launch-capable: {result:?}"
+        );
+        assert_eq!(adapter.healthcheck(), AdapterHealth::Degraded);
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("schema=synthi.gpu_hmr.device_attestation_capability.v1")
+                && line.contains("status=unavailable")
+                && line.contains(expected_gap)
+                && line.contains("accepted_for_gpu_hmr=false")
+                && line.contains("gpu_hmr_success=false")
+        }));
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("runtime_ownership")
+                && line.contains("strict_device_attestation_available=false")
+                && line.contains(expected_gap)
+        }));
+    }
+
+    fn assert_hot_reload_device_switch_refused(
+        device_uuid_query: CuDeviceGetUuidFn,
+        expected_gap: &str,
+    ) {
+        reset_for_test();
+        DEVICE_UUID_QUERY_CALLS.store(0, Ordering::SeqCst);
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"device-switch-before").unwrap();
+        second.write_all(b"device-switch-after").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let mut adapter = adapter_with_symbols(GpuDriverSymbolTable {
+            cu_device_get_uuid: Some(device_uuid_query),
+            ..stub_symbols()
+        });
+
+        assert!(matches!(
+            adapter.reload(&request_with_artifact_and_abi(
+                &first_path,
+                vec!["device-source".to_string()],
+                "sig-v1",
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        assert_eq!(adapter.healthcheck(), AdapterHealth::Healthy);
+        let hot_reload = adapter.reload(&request_with_artifact_and_abi(
+            &second_path,
+            vec!["device-source".to_string()],
+            "sig-v1",
+        ));
+        match hot_reload {
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(!recoverable);
+                assert!(error.contains(expected_gap), "unexpected error: {error}");
+                assert!(error.contains("before candidate-module mutation"));
+            }
+            other => panic!("expected device-switch refusal, got {other:?}"),
+        }
+        assert_eq!(adapter.module_manager.swap_count(), 1);
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("schema=synthi.gpu_hmr.device_attestation_capability.v1")
+                && line.contains("status=unavailable")
+                && line.contains(expected_gap)
+                && line.contains("gpu_hmr_success=false")
+        }));
+    }
+
     fn request_with_artifact(path: &str, changed_files: Vec<String>) -> AdapterReloadRequest {
         request_with_artifact_and_abi(path, changed_files, "")
     }
@@ -5464,9 +6535,9 @@ mod tests {
         changed_files: Vec<String>,
         abi_version: &str,
     ) -> AdapterReloadRequest {
-        let commitment_inputs = fs::read(path).ok().zip(
-            fs::read(configured_gpu_hmr_runtime_output_oracle_profile_path()).ok(),
-        );
+        let commitment_inputs = fs::read(path)
+            .ok()
+            .zip(fs::read(configured_gpu_hmr_runtime_output_oracle_profile_path()).ok());
         let (source_edit_id, capsule_metadata) = commitment_inputs
             .map(|(artifact_bytes, profile_bytes)| {
                 let artifact_hash = sha256_hex_bytes(&artifact_bytes);
@@ -5477,25 +6548,21 @@ mod tests {
                     "causalOutputChangeRequired": true,
                 });
                 let metadata = ReloadCapsuleMetadata {
-                    fission_output_oracle_contract: Some(
-                        fission_output_oracle_contract.clone(),
-                    ),
-                    output_oracle_profile_commitment: Some(
-                        ReloadOutputOracleProfileCommitment {
-                            schema_version:
-                                RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.to_string(),
-                            candidate_artifact_sha256: format!("sha256:{artifact_hash}"),
-                            fission_output_oracle_contract_sha256: format!(
-                                "sha256:{}",
-                                stable_json_hash(&fission_output_oracle_contract)
-                            ),
-                            profile_bytes_sha256: format!(
-                                "sha256:{}",
-                                sha256_hex_bytes(&profile_bytes)
-                            ),
-                            edit_id: source_edit_id.clone(),
-                        },
-                    ),
+                    fission_output_oracle_contract: Some(fission_output_oracle_contract.clone()),
+                    output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
+                        schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION
+                            .to_string(),
+                        candidate_artifact_sha256: format!("sha256:{artifact_hash}"),
+                        fission_output_oracle_contract_sha256: format!(
+                            "sha256:{}",
+                            stable_json_hash(&fission_output_oracle_contract)
+                        ),
+                        profile_bytes_sha256: format!(
+                            "sha256:{}",
+                            sha256_hex_bytes(&profile_bytes)
+                        ),
+                        edit_id: source_edit_id.clone(),
+                    }),
                     ..ReloadCapsuleMetadata::default()
                 };
                 (Some(source_edit_id), Some(metadata))
@@ -5855,7 +6922,7 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"fake-cubin").unwrap();
         let path = file.path().to_string_lossy().to_string();
-        let mut a = adapter_with_symbols(stub_symbols());
+        let mut a = adapter_with_symbols(symbols_without_device_identity());
         let r = a.reload(&request_with_artifact(&path, vec!["device.cu".into()]));
         match r {
             AdapterReloadResult::Success {
@@ -5866,7 +6933,14 @@ mod tests {
         assert_eq!(a.reload_count(), 1);
         assert_eq!(a.module_manager.swap_count(), 1);
         assert_eq!(a.kernel_table.len(), 1);
-        assert_eq!(a.healthcheck(), AdapterHealth::Healthy);
+        assert_eq!(a.healthcheck(), AdapterHealth::Degraded);
+        assert!(a.last_reload_log().iter().any(|line| {
+            line.contains("device_attestation_capability")
+                && line.contains("status=unavailable")
+                && line.contains("device_identity_active_device_symbol_missing")
+                && line.contains("accepted_for_gpu_hmr=false")
+                && line.contains("gpu_hmr_success=false")
+        }));
         assert!(a
             .last_reload_log()
             .iter()
@@ -5888,6 +6962,60 @@ mod tests {
             "artifact_hash=sha256:{}",
             sha256_hex_bytes(b"fake-cubin")
         )));
+
+        let hot_reload = a.reload(&request_with_artifact(&path, vec!["device.cu".into()]));
+        match hot_reload {
+            AdapterReloadResult::Failed {
+                ref error,
+                recoverable,
+            } => {
+                assert!(!recoverable);
+                assert!(error.contains("device_identity_generation_baseline_missing"));
+                assert!(error.contains("before candidate-module mutation"));
+            }
+            other => panic!("expected strict hot-reload refusal, got {other:?}"),
+        }
+        assert_eq!(a.module_manager.swap_count(), 1);
+    }
+
+    #[test]
+    fn cold_load_reports_each_device_attestation_capability_gap_without_claiming_hmr() {
+        let _guard = runtime_boundary_test_guard();
+        assert_cold_load_device_attestation_gap(
+            GpuDriverSymbolTable {
+                cu_ctx_get_device: None,
+                ..stub_symbols()
+            },
+            "device_identity_active_device_symbol_missing",
+        );
+        assert_cold_load_device_attestation_gap(
+            GpuDriverSymbolTable {
+                cu_device_get_uuid: None,
+                ..stub_symbols()
+            },
+            "device_identity_uuid_symbol_missing",
+        );
+        assert_cold_load_device_attestation_gap(
+            GpuDriverSymbolTable {
+                cu_device_get_uuid: Some(zero_device_get_uuid),
+                ..stub_symbols()
+            },
+            "device_identity_uuid_all_zero",
+        );
+        assert_cold_load_device_attestation_gap(
+            GpuDriverSymbolTable {
+                cu_stream_get_device: None,
+                ..stub_symbols()
+            },
+            "stream_device_identity_symbol_missing",
+        );
+        assert_cold_load_device_attestation_gap(
+            GpuDriverSymbolTable {
+                cu_stream_get_device: Some(wrong_stream_get_device),
+                ..stub_symbols()
+            },
+            "stream_device_identity_mismatch",
+        );
     }
 
     #[test]
@@ -6052,7 +7180,10 @@ mod tests {
         assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), unloads_before);
         assert_eq!(current_launch_generation(), generation_before);
         assert_eq!(adapter.active_module_handle, active_handle_before);
-        assert_eq!(adapter.active_generation_artifact_id, active_artifact_before);
+        assert_eq!(
+            adapter.active_generation_artifact_id,
+            active_artifact_before
+        );
         assert_eq!(adapter.module_manager.swap_count(), swaps_before);
         assert!(adapter.last_reload_log().iter().any(|line| {
             line.contains("artifact_transport")
@@ -6224,7 +7355,7 @@ mod tests {
     }
 
     #[test]
-    fn full_runtime_proof_refuses_unattested_device_identity() {
+    fn hot_reload_refuses_missing_generation_device_identity_baseline() {
         let _guard = runtime_boundary_test_guard();
         reset_for_test();
         let mut first = tempfile::NamedTempFile::new().unwrap();
@@ -6243,58 +7374,61 @@ mod tests {
             )),
             AdapterReloadResult::Success { .. }
         ));
+        assert!(a.active_device_identity.is_some());
+        LAUNCH_CALLS.store(0, Ordering::SeqCst);
         launch_vec_add_on_stream(0x77);
-        let previous_generation = current_launch_generation();
-        let previous_handle = a.active_module_handle;
-        let previous_artifact_id = a.active_generation_artifact_id.clone();
-        let previous_swap_count = a.module_manager.swap_count();
-        let unloads_before = UNLOAD_CALLS.load(Ordering::SeqCst);
+        assert_eq!(LAUNCH_CALLS.load(Ordering::SeqCst), 1);
+        assert!(dispatch_device_attestation_records_snapshot()
+            .iter()
+            .any(|record| record.attestation.verified_observation().is_some()));
+
+        // Simulate loss of the trusted generation-owned baseline. A valid
+        // dispatch attestation alone must not recreate this authority.
+        a.active_device_identity = None;
         match a.reload(&request_with_artifact_and_abi(
             &second_path,
             vec!["device.cu".into()],
             "sig-v1",
         )) {
             AdapterReloadResult::Failed { error, recoverable } => {
-                assert!(recoverable);
-                assert!(error.contains("device_identity_missing"));
-                assert!(error.contains("candidate rolled back"));
+                assert!(!recoverable);
+                assert!(error.contains("device_identity_generation_baseline_missing"));
+                assert!(error.contains("before candidate-module mutation"));
             }
             other => panic!("expected device-identity refusal, got {other:?}"),
         }
-        assert_eq!(current_launch_generation(), previous_generation);
-        assert_eq!(a.active_module_handle, previous_handle);
-        assert_eq!(a.active_generation_artifact_id, previous_artifact_id);
-        assert_eq!(a.module_manager.swap_count(), previous_swap_count);
-        assert_eq!(
-            a.module_manager.primary().map(|slot| slot.handle),
-            previous_handle
-        );
-        assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), unloads_before + 1);
+        assert_eq!(a.module_manager.swap_count(), 1);
         assert!(!a
             .last_reload_log()
             .iter()
             .any(|line| line.contains("dispatcher_epoch event=published")));
         assert!(a.last_reload_log().iter().any(|line| {
-            line.contains("dispatcher_epoch")
-                && line.contains("event=rolled_back")
-                && line.contains("reason=acceptance_ledger_rejected")
+            line.contains("device_identity_continuity")
+                && line.contains("event=refused")
+                && line.contains("reason=device_identity_generation_baseline_missing")
         }));
-
-        let acceptance_line = a
+        assert!(!a
             .last_reload_log()
             .iter()
-            .find(|line| line.contains("\"type\":\"gpu_hmr_acceptance_ledger\""))
-            .expect("GPU HMR acceptance ledger JSON");
-        let acceptance: Value = serde_json::from_str(acceptance_line).expect("acceptance ledger");
-        assert_eq!(acceptance["gpuHmrSuccess"], json!(false));
-        assert_eq!(acceptance["deviceIdentity"], Value::Null);
-        assert!(acceptance["failedInvariants"]
-            .as_array()
-            .is_some_and(|failures| failures.contains(&json!("device_identity_missing"))));
+            .any(|line| line.contains("\"type\":\"gpu_hmr_acceptance_ledger\"")));
         assert!(!a
             .last_reload_log()
             .iter()
             .any(|line| line.contains("\"type\":\"gpu_hmr_proof\"")));
+        reset_for_test();
+    }
+
+    #[test]
+    fn hot_reload_refuses_device_switch_between_and_during_reload() {
+        let _guard = runtime_boundary_test_guard();
+        assert_hot_reload_device_switch_refused(
+            switching_between_reload_device_get_uuid,
+            "device_identity_uuid_changed_since_generation",
+        );
+        assert_hot_reload_device_switch_refused(
+            changing_during_hot_reload_device_get_uuid,
+            "device_identity_uuid_changed",
+        );
         reset_for_test();
     }
 
@@ -6334,50 +7468,35 @@ mod tests {
             AdapterReloadResult::Success { .. }
         ));
         launch_vec_add_on_stream(0x77);
-        let previous_generation = current_launch_generation();
-        let previous_handle = adapter.active_module_handle;
-        let previous_artifact_id = adapter.active_generation_artifact_id.clone();
         NESTED_LAUNCH_ARMED.store(true, Ordering::SeqCst);
-        match adapter.reload(&request_with_artifact_and_abi(
-            &second_path,
-            vec!["device.hip".into()],
-            "sig-v1",
-        )) {
-            AdapterReloadResult::Failed { error, recoverable } => {
-                assert!(recoverable);
-                assert!(error.contains("device_identity_missing"));
-                assert!(error.contains("candidate rolled back"));
-            }
-            other => panic!(
-                "expected device-identity refusal after exact oracle dispatch, got {other:?}"
-            ),
-        }
+        assert!(matches!(
+            adapter.reload(&request_with_artifact_and_abi(
+                &second_path,
+                vec!["device.hip".into()],
+                "sig-v1",
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
         assert_eq!(NESTED_LAUNCH_COUNT.load(Ordering::SeqCst), 1);
-        assert_eq!(current_launch_generation(), previous_generation);
-        assert_eq!(adapter.active_module_handle, previous_handle);
-        assert_eq!(adapter.active_generation_artifact_id, previous_artifact_id);
 
+        let active_generation = current_launch_generation();
         let launches = launch_records_snapshot()
             .into_iter()
             .filter(|record| {
-                record.active_artifact_id.as_deref() == Some(second_artifact_id.as_str())
+                record.active_generation == active_generation
+                    && record.active_artifact_id.as_deref() == Some(second_artifact_id.as_str())
                     && record.dispatched
                     && record.dispatch_error.is_none()
             })
             .collect::<Vec<_>>();
         assert_eq!(launches.len(), 2);
-        let candidate_generation = launches[0].active_generation;
-        assert!(launches
-            .iter()
-            .all(|record| record.active_generation == candidate_generation));
-        assert_ne!(candidate_generation, current_launch_generation());
         assert_eq!(launches[0].stream_token, 0);
         assert_eq!(launches[1].stream_token, 0x99);
         let output = output_oracle_records_snapshot()
             .into_iter()
             .rev()
             .find(|record| {
-                record.generation == candidate_generation
+                record.generation == active_generation
                     && record.artifact_id.as_deref() == Some(second_artifact_id.as_str())
                     && record.passed
             })
@@ -6390,11 +7509,20 @@ mod tests {
             output.after_dispatch_id.as_deref(),
             launches[1].dispatch_id.as_deref()
         );
-        assert!(adapter.last_reload_log().iter().any(|line| {
-            line.contains("dispatcher_epoch")
-                && line.contains("event=rolled_back")
-                && line.contains("reason=acceptance_ledger_rejected")
-        }));
+        let output_dispatch_id = output
+            .after_dispatch_id
+            .as_deref()
+            .expect("output dispatch id");
+        let exact_attestation = dispatch_device_attestation_records_snapshot()
+            .into_iter()
+            .rev()
+            .find(|record| record.dispatch_id == output_dispatch_id)
+            .expect("output dispatch device attestation");
+        assert_eq!(exact_attestation.attestation.stream_token(), 0);
+        assert!(exact_attestation
+            .attestation
+            .verified_observation()
+            .is_some());
         reset_for_test();
     }
 
@@ -6785,7 +7913,7 @@ mod tests {
     }
 
     #[test]
-    fn quiescent_candidate_passes_retirement_gate_before_device_attestation() {
+    fn physical_unload_failure_refuses_strict_proof_after_attested_dispatch() {
         let _guard = runtime_boundary_test_guard();
         reset_for_test();
         UNLOAD_CALLS.store(0, Ordering::SeqCst);
@@ -6796,7 +7924,7 @@ mod tests {
         second.write_all(b"second-hsaco").unwrap();
         let first_path = first.path().to_string_lossy().to_string();
         let second_path = second.path().to_string_lossy().to_string();
-        let first_artifact_id = artifact_id_for_hash(&sha256_hex_bytes(b"first-hsaco"));
+        let second_artifact_id = artifact_id_for_hash(&sha256_hex_bytes(b"second-hsaco"));
         let mut adapter = adapter_with_config_and_symbols(
             GpuModuleAdapterConfig {
                 vendor: GpuVendor::Rocm,
@@ -6822,34 +7950,39 @@ mod tests {
 
         match second_result {
             AdapterReloadResult::Failed { error, recoverable } => {
-                assert!(recoverable);
-                assert!(error.contains("device_identity_missing"));
-                assert!(!error.contains("epoch_retirement_unproven"));
-                assert!(error.contains("candidate rolled back"));
-                assert!(error.contains("candidate unload failed"));
+                assert!(!recoverable);
+                assert!(error.contains("GPU HMR acceptance ledger rejected hot reload"));
+                assert!(error.contains("epoch_retirement_unproven"));
+                assert!(error.contains("runtime_proof_retirement_not_finalized"));
+                assert!(!error.contains("device_identity_missing"));
             }
-            other => panic!("expected device-attestation rejection, got {other:?}"),
+            other => panic!("expected physical-retirement refusal, got {other:?}"),
         }
-        assert_eq!(current_launch_generation(), first_generation);
-        assert_eq!(adapter.active_module_handle, first_handle);
+        assert_eq!(current_launch_generation(), first_generation + 1);
+        assert_ne!(adapter.active_module_handle, first_handle);
         assert_eq!(
             adapter.active_module_handle,
             adapter.module_manager.primary().map(|slot| slot.handle)
         );
         assert_eq!(
             adapter.active_generation_artifact_id.as_deref(),
-            Some(first_artifact_id.as_str())
+            Some(second_artifact_id.as_str())
         );
         assert_eq!(adapter.pending_retired_modules.len(), 1);
         assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), 1);
-        assert!(!adapter
-            .last_reload_log()
-            .iter()
-            .any(|line| line.contains("dispatcher_epoch event=published")));
         assert!(adapter.last_reload_log().iter().any(|line| {
-            line.contains("dispatcher_epoch")
-                && line.contains("event=rolled_back")
-                && line.contains("reason=acceptance_ledger_rejected")
+            line.contains("dispatcher_epoch event=published")
+                && line.contains("old_generation_retired=false")
+        }));
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("dispatcher_epoch event=retirement_failed")
+                && line.contains("delayed_unload_result=failed")
+        }));
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("strict_runtime_proof")
+                && line.contains("status=refused")
+                && line.contains("gap=runtime_proof_retirement_not_finalized")
+                && line.contains("gpu_hmr_success=false")
         }));
 
         adapter
@@ -6886,11 +8019,14 @@ mod tests {
 
         match result {
             AdapterReloadResult::Failed { error, recoverable } => {
-                assert!(!recoverable);
-                assert!(error.contains("GPU HMR acceptance ledger rejected hot reload"));
+                assert!(recoverable);
+                assert!(error.contains(
+                    "GPU HMR acceptance ledger rejected candidate before global publication"
+                ));
                 assert!(error.contains("cpu_hmr_absence_evidence_missing"));
                 assert!(error.contains("full_rebuild_absence_evidence_missing"));
                 assert!(error.contains("process_restart_absence_evidence_missing"));
+                assert!(error.contains("candidate rolled back"));
             }
             other => panic!("expected missing firewall evidence rejection, got {other:?}"),
         }
@@ -6900,6 +8036,11 @@ mod tests {
                 && line.contains("cpu_hmr_absence_evidence_missing")
                 && line.contains("full_rebuild_absence_evidence_missing")
                 && line.contains("process_restart_absence_evidence_missing")
+        }));
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("dispatcher_epoch")
+                && line.contains("event=rolled_back")
+                && line.contains("reason=acceptance_ledger_rejected")
         }));
         reset_for_test();
     }
