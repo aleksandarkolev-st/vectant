@@ -22453,10 +22453,16 @@ function fullRuntimeEvidenceAuthorityFacet(row = {}) {
     outputOracle.oracleKind,
     outputOracle.oracle_kind,
   );
+  const outputOracleModalityBinding =
+    evaluateFullRuntimeOutputOracleModalityBinding(row);
   const computeOracleAccepted =
-    outputOracleKind === 'compute_oracle' && rowHasAcceptedComputeEvidence(row);
+    outputOracleModalityBinding.accepted === true
+    && outputOracleModalityBinding.modality === 'compute'
+    && rowHasAcceptedComputeEvidence(row);
   const visualOracleAccepted =
-    outputOracleKind === 'visual_oracle' && rowHasAcceptedVisualOutputOracle(row);
+    outputOracleModalityBinding.accepted === true
+    && outputOracleModalityBinding.modality === 'visual'
+    && rowHasAcceptedVisualOutputOracle(row);
   const outputOracleAccepted = computeOracleAccepted || visualOracleAccepted;
   const nativeRuntimeTrace = nativeRuntimeTraceEvidenceFacet(row);
   const nativeRuntimeAuthorityAccepted =
@@ -22471,6 +22477,14 @@ function fullRuntimeEvidenceAuthorityFacet(row = {}) {
       ledgerAccepted ? null : 'full_runtime_authority_recomputed_ledger_missing',
       row.proofChainAccepted === true ? null : 'full_runtime_authority_proof_chain_not_accepted',
       outputOracleAccepted ? null : 'full_runtime_authority_output_oracle_not_accepted',
+      ...(outputOracleModalityBinding.accepted === true
+        ? []
+        : compactStringList(
+          compactObjectList(
+            outputOracleModalityBinding.failedGates
+            ?? outputOracleModalityBinding.failed_gates,
+          ).map((failure) => failure.code),
+        )),
       nativeRuntimeTrace.accepted === true
         ? null
         : 'full_runtime_authority_native_runtime_trace_missing',
@@ -22506,6 +22520,10 @@ function fullRuntimeEvidenceAuthorityFacet(row = {}) {
     proof_chain_accepted: row.proofChainAccepted === true,
     outputOracleAccepted,
     output_oracle_accepted: outputOracleAccepted,
+    outputOracleKind,
+    output_oracle_kind: outputOracleKind,
+    outputOracleModalityBinding,
+    output_oracle_modality_binding: outputOracleModalityBinding,
     computeOracleAccepted,
     compute_oracle_accepted: computeOracleAccepted,
     visualOracleAccepted,
@@ -38276,17 +38294,134 @@ function fullRuntimeGeneralityBreakdown(rows, broadProof = {}) {
   return out;
 }
 
+export function evaluateFullRuntimeOutputOracleModalityBinding(row = {}) {
+  const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
+  const record = ledgerRecordForRow(row);
+  const outputEvent = compactObject(record.outputEvent ?? record.output_event);
+  const oracleArtifacts = compactObject(record.oracleArtifacts ?? record.oracle_artifacts);
+  const facetKind = firstText(
+    outputOracle.kind,
+    outputOracle.oracleKind,
+    outputOracle.oracle_kind,
+  );
+  const ledgerKind = firstText(
+    outputEvent.kind,
+    outputEvent.oracleKind,
+    outputEvent.oracle_kind,
+  );
+  const facetKindClassification = classifyGpuHmrOutputOracleKind(facetKind);
+  const ledgerKindClassification = classifyGpuHmrOutputOracleKind(ledgerKind);
+  const outputComputeArtifacts = firstCompactObject(
+    outputEvent.computeOracleArtifacts,
+    outputEvent.compute_oracle_artifacts,
+  );
+  const recordComputeArtifacts = firstCompactObject(
+    oracleArtifacts.computeOracleArtifacts,
+    oracleArtifacts.compute_oracle_artifacts,
+  );
+  const outputVisualArtifacts = firstCompactObject(
+    outputEvent.visualOracleArtifacts,
+    outputEvent.visual_oracle_artifacts,
+  );
+  const recordVisualArtifacts = firstCompactObject(
+    oracleArtifacts.visualOracleArtifacts,
+    oracleArtifacts.visual_oracle_artifacts,
+  );
+  const computeArtifacts = Object.keys(outputComputeArtifacts).length > 0
+    ? outputComputeArtifacts
+    : recordComputeArtifacts;
+  const visualArtifacts = Object.keys(outputVisualArtifacts).length > 0
+    ? outputVisualArtifacts
+    : recordVisualArtifacts;
+  const computeArtifactsPresent = Object.keys(computeArtifacts).length > 0;
+  const visualArtifactsPresent = Object.keys(visualArtifacts).length > 0;
+  const modality = facetKindClassification.modality;
+  const modalitiesMatch =
+    facetKindClassification.accepted === true
+    && ledgerKindClassification.accepted === true
+    && modality === ledgerKindClassification.modality;
+  const matchingLedgerArtifactsPresent = modality === 'compute'
+    ? computeArtifactsPresent
+    : modality === 'visual'
+      ? visualArtifactsPresent
+      : false;
+  const conflictingLedgerArtifactsPresent = modality === 'compute'
+    ? visualArtifactsPresent
+    : modality === 'visual'
+      ? computeArtifactsPresent
+      : false;
+  const facetEvidenceAccepted = modality === 'compute'
+    ? firstBool(outputOracle.compute?.accepted, outputOracle.compute?.fileIntegrityAccepted) === true
+    : modality === 'visual'
+      ? row.visual?.present === true && row.visual?.accepted === true
+      : false;
+  const failedGateCodes = compactStringList([
+    outputOracle.accepted === true ? null : 'output_oracle_facet_not_accepted',
+    facetKindClassification.failureCode,
+    ledgerKindClassification.failureCode === 'output_oracle_kind_missing'
+      ? 'output_oracle_ledger_kind_missing'
+      : ledgerKindClassification.failureCode === 'output_oracle_kind_unknown'
+        ? 'output_oracle_ledger_kind_unknown'
+        : null,
+    modalitiesMatch ? null : 'output_oracle_facet_ledger_modality_mismatch',
+    matchingLedgerArtifactsPresent ? null : 'output_oracle_ledger_artifact_family_missing',
+    conflictingLedgerArtifactsPresent
+      ? 'output_oracle_ledger_artifact_modality_ambiguous'
+      : null,
+    facetEvidenceAccepted ? null : 'output_oracle_facet_artifact_evidence_missing',
+  ]);
+  const accepted = failedGateCodes.length === 0;
+  const evidenceRefs = compactStringList([
+    ...evidenceRefsFromValue(outputOracle),
+    ...evidenceRefsFromValue(outputEvent),
+    firstText(row.ledger?.proofId, row.ledger?.proof_id, record.proofId, record.proof_id),
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.output_oracle_modality_binding.v1',
+    schema_version: 'synthi.gpu_hmr.output_oracle_modality_binding.v1',
+    accepted,
+    modality,
+    facetKind,
+    facet_kind: facetKind,
+    ledgerKind,
+    ledger_kind: ledgerKind,
+    facetKindClassification,
+    facet_kind_classification: facetKindClassification,
+    ledgerKindClassification,
+    ledger_kind_classification: ledgerKindClassification,
+    modalitiesMatch,
+    modalities_match: modalitiesMatch,
+    computeArtifactsPresent,
+    compute_artifacts_present: computeArtifactsPresent,
+    visualArtifactsPresent,
+    visual_artifacts_present: visualArtifactsPresent,
+    matchingLedgerArtifactsPresent,
+    matching_ledger_artifacts_present: matchingLedgerArtifactsPresent,
+    conflictingLedgerArtifactsPresent,
+    conflicting_ledger_artifacts_present: conflictingLedgerArtifactsPresent,
+    facetEvidenceAccepted,
+    facet_evidence_accepted: facetEvidenceAccepted,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failedGates: failedGateCodes.map((code) => ({ code })),
+    failed_gates: failedGateCodes.map((code) => ({ code })),
+  };
+}
+
 function rowHasAcceptedComputeEvidence(row) {
   const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
+  const binding = evaluateFullRuntimeOutputOracleModalityBinding(row);
   return firstBool(outputOracle.accepted) === true
-    && firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind)
-      === 'compute_oracle';
+    && binding.accepted === true
+    && binding.modality === 'compute';
 }
 
 function rowHasAcceptedVisualOutputOracle(row) {
   const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
+  const binding = evaluateFullRuntimeOutputOracleModalityBinding(row);
   return firstBool(outputOracle.accepted) === true
-    && firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind) === 'visual_oracle'
+    && binding.accepted === true
+    && binding.modality === 'visual'
     && rowHasAcceptedVisualEvidence(row);
 }
 
@@ -38311,10 +38446,9 @@ function rowHasAcceptedStrictFullRuntimeOutputOracle(row, oracleKind) {
 }
 
 function rowHasAcceptedOutputOracleClosure(row) {
-  const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
-  const kind = firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind);
-  if (kind === 'visual_oracle') return rowHasAcceptedVisualOutputOracle(row);
-  if (kind === 'compute_oracle') return rowHasAcceptedComputeEvidence(row);
+  const binding = evaluateFullRuntimeOutputOracleModalityBinding(row);
+  if (binding.modality === 'visual') return rowHasAcceptedVisualOutputOracle(row);
+  if (binding.modality === 'compute') return rowHasAcceptedComputeEvidence(row);
   return false;
 }
 
@@ -42148,9 +42282,13 @@ function rowHasAcceptedVisualEvidence(row) {
     || row.acceptedForGpuHmr === true
     || row.gpuHmrSuccess === true;
   if (!runtimeVisualAuthorityRequired) return true;
+  const kindClassification = classifyGpuHmrOutputOracleKind(firstText(
+    outputOracleFacet.kind,
+    outputOracleFacet.oracleKind,
+    outputOracleFacet.oracle_kind,
+  ));
   return outputOracleFacet.accepted === true
-    && firstText(outputOracleFacet.kind, outputOracleFacet.oracleKind, outputOracleFacet.oracle_kind)
-      === 'visual_oracle';
+    && kindClassification.modality === 'visual';
 }
 
 function rowVisualSemanticProbeFacet(row = {}) {
