@@ -78,7 +78,7 @@ fn ai_split_cache_key(req: &CompileRequest) -> u64 {
     // prompt/verifier contract, not just source text, so newly hardened
     // deterministic split verifiers do not reuse stale generated roles.
     const AI_SPLIT_CACHE_SCHEMA_VERSION: &str =
-        "gpu-strict-lifecycle-v17-live-update-verified-cache";
+        "gpu-strict-lifecycle-v18-intent-routed-gpu-classifier";
     calculate_hash(&(
         AI_SPLIT_CACHE_SCHEMA_VERSION,
         req.language.as_str(),
@@ -417,6 +417,10 @@ fn request_has_gpu_markers(req: &CompileRequest) -> bool {
     req.files
         .iter()
         .any(|file| text_has_gpu_markers(&file.content))
+}
+
+fn gpu_split_route_requested(req: &CompileRequest, gpu_mode: &str) -> bool {
+    req.prefer_gpu_pipeline && gpu_mode != "disabled"
 }
 
 fn normalized_request_path(path: &str) -> String {
@@ -1639,18 +1643,20 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     let split_provider = gpu_split_provider(req);
     let split_model = gpu_split_model_override(req);
     let has_gpu_markers = request_has_gpu_markers(req);
+    let gpu_route_requested = gpu_split_route_requested(req, &gpu_mode);
     let file_context = request_file_context(req);
     let arch_hint = gpu_arch_hint(req);
     let source_hash = ai_split_cache_key(req);
 
     eprintln!(
-        "[AI Split] ENTER (cache_key={}, src_len={}, files={}, gpu_mode={}, gpu_arch={}, gpu_markers={})",
+        "[AI Split] ENTER (cache_key={}, src_len={}, files={}, gpu_mode={}, gpu_arch={}, gpu_markers={}, gpu_route_requested={})",
         source_hash,
         req.source.len(),
         file_context.len(),
         gpu_mode,
         arch_hint.as_deref().unwrap_or("auto"),
-        has_gpu_markers
+        has_gpu_markers,
+        gpu_route_requested
     );
 
     let cache_entries_before_lookup = {
@@ -1757,18 +1763,18 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
 
     let backend_url = get_ai_backend_url();
 
-    // GPU sources need the 5-file kernel splitter, not the host-only
-    // universal splitter. Try it first when the request actually contains
-    // CUDA/HIP markers; fall back to the verified host splitter if the GPU
-    // endpoint rejects the source or is unavailable.
+    // Explicitly GPU-preferred requests go through the GPU endpoint. That
+    // endpoint owns full-project classification and rejects requests without
+    // GPU evidence, so this worker must not silently route unfamiliar GPU
+    // syntax through the host-only splitter.
     let verified_url = format!("{}/refactor/split/verified", backend_url);
     let split_url = format!("{}/refactor/split", backend_url);
     let gpu_split_url = format!("{}/refactor/split/gpu", backend_url);
 
     let mut raw_response: Option<serde_json::Value> = None;
-    if req.prefer_gpu_pipeline && gpu_mode != "disabled" && has_gpu_markers {
+    if gpu_route_requested {
         eprintln!(
-            "[AI Split] GPU markers detected; calling GPU split endpoint: {}",
+            "[AI Split] GPU route requested; calling classifying GPU split endpoint: {}",
             gpu_split_url
         );
         let gpu_result: Result<serde_json::Value, anyhow::Error> =
@@ -2833,6 +2839,19 @@ mod tests {
             "oroModuleLaunchKernel(fn, 1, 1, 1, 64, 1, 1, 0, stream, args, 0);"
         ));
         assert!(!text_has_gpu_markers("int main() { return 0; }"));
+    }
+
+    #[test]
+    fn gpu_split_route_uses_explicit_intent_instead_of_worker_marker_coverage() {
+        let mut req = gpu_compile_request_for_source("int main() { return 0; }");
+        assert!(!request_has_gpu_markers(&req));
+        assert!(gpu_split_route_requested(&req, "rocm"));
+
+        req.prefer_gpu_pipeline = false;
+        assert!(!gpu_split_route_requested(&req, "rocm"));
+
+        req.prefer_gpu_pipeline = true;
+        assert!(!gpu_split_route_requested(&req, "disabled"));
     }
 
     #[test]
