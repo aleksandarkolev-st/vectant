@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   GPU_HMR_TEST_TIMING_PHASE_KEYS,
   GPU_HMR_TEST_TIMING_SCHEMA,
@@ -16,6 +18,9 @@ import {
   buildManifest,
   installRandomLargeColdPathTerminalHandlers,
 } from '../gpu-hmr-random-large-project-cold-path.mjs';
+
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
+const RUNNER_PATH = path.resolve(TEST_DIR, '../gpu-hmr-random-large-project-cold-path.mjs');
 
 function advancingClock(initialNs = 0n) {
   let currentNs = initialNs;
@@ -90,6 +95,99 @@ function assertParentTiming(record, expectedOutcome, { pending = false } = {}) {
       assert.ok(phase.reasonCode.length > 0);
     }
   }
+}
+
+function isolatedRandomColdPathEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_')) delete env[key];
+  }
+  delete env.SYNTHI_GPU_HMR_UNPROFILED_SOURCE_INTAKE;
+  delete env.SYNTHI_GPU_HMR_UNPROFILED_SOURCE_INTAKE_TIMEOUT_MS;
+  return env;
+}
+
+function assertMainRejectionArtifact(
+  artifact,
+  { expectedStage, expectedDiscoveryState, forbiddenInput },
+) {
+  assert.equal(artifact.schemaVersion, 'synthi.gpu_hmr.random_large_project_cold_path.v1');
+  assert.equal(artifact.eventType, 'cold_path_main_rejected');
+  assert.equal(artifact.status, 'failed');
+  assert.equal(artifact.lifecycleState, 'failed');
+  assert.equal(artifact.acceptedForGpuHmr, false);
+  assert.equal(artifact.gpuHmrSuccess, false);
+  assert.equal(artifact.canSatisfyRuntimeProof, false);
+  assert.deepEqual(artifact.testTiming, artifact.test_timing);
+
+  const retention = artifact.mainRejectionRetention;
+  assert.deepEqual(retention, artifact.main_rejection_retention);
+  assert.equal(
+    retention.schemaVersion,
+    'synthi.gpu_hmr.random_large_project_cold_path_main_rejection.v1',
+  );
+  assert.equal(
+    retention.proofAuthority,
+    'main_promise_rejection_retention_only_not_gpu_hmr_success',
+  );
+  assert.equal(retention.terminalStage, expectedStage);
+  assert.equal(retention.reasonCode, 'random_large_cold_path_main_promise_rejected');
+  assert.equal(retention.acceptedForGpuHmr, false);
+  assert.equal(retention.gpuHmrSuccess, false);
+  assert.equal(retention.canSatisfyRuntimeProof, false);
+  assert.equal(Object.hasOwn(retention, 'error'), false);
+  assert.equal(Object.hasOwn(retention, 'message'), false);
+  assert.equal(Object.hasOwn(retention, 'stack'), false);
+
+  assert.equal(artifact.results.length, 1);
+  assert.equal(artifact.results[0].status, 'main_promise_rejected_failed_closed');
+  assert.equal(artifact.results[0].terminalStage, expectedStage);
+  assert.equal(artifact.results[0].acceptedForGpuHmr, false);
+  assert.equal(artifact.results[0].gpuHmrSuccess, false);
+  assert.equal(artifact.results[0].canSatisfyRuntimeProof, false);
+
+  const timing = artifact.testTiming;
+  const validation = validateGpuHmrTestTiming(timing);
+  assert.equal(validation.valid, true, validation.blockingGaps.join(','));
+  assert.equal(timing.schema, GPU_HMR_TEST_TIMING_SCHEMA);
+  assert.equal(timing.authority, 'timing_only');
+  assert.equal(timing.timingOnly, true);
+  assert.equal(timing.outcome, 'failed');
+  assert.equal(timing.visualCapable, false);
+  assert.equal(timing.acceptedForGpuHmr, false);
+  assert.equal(timing.gpuHmrSuccess, false);
+  assert.equal(timing.phases.discovery.state, expectedDiscoveryState);
+  if (expectedDiscoveryState === 'unavailable') {
+    assert.equal(
+      timing.phases.discovery.reasonCode,
+      'random_large_cold_path_main_promise_rejected',
+    );
+  }
+  assert.equal(timing.phases.proof_finalization.state, 'measured');
+  assert.equal(timing.phases.total_wall.state, 'measured');
+  assert.ok(BigInt(timing.phases.total_wall.durationNs) > 0n);
+  for (const phaseKey of GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS) {
+    assert.deepEqual(timing.phases[phaseKey], {
+      state: 'not_applicable',
+      startNs: null,
+      endNs: null,
+      durationNs: null,
+      reasonCode: 'random_large_cold_path_orchestrator_has_no_visual_observer',
+    });
+  }
+  for (const phase of Object.values(timing.phases)) {
+    if (phase.state === 'measured') continue;
+    assert.equal(phase.startNs, null);
+    assert.equal(phase.endNs, null);
+    assert.equal(phase.durationNs, null);
+  }
+
+  const serialized = JSON.stringify(artifact);
+  assert.doesNotMatch(
+    serialized,
+    /"(?:acceptedForGpuHmr|accepted_for_gpu_hmr|gpuHmrSuccess|gpu_hmr_success|canSatisfyRuntimeProof|can_satisfy_runtime_proof)":true/,
+  );
+  if (forbiddenInput) assert.doesNotMatch(serialized, new RegExp(forbiddenInput, 'i'));
 }
 
 const validAttachmentTiming = completeChildTiming('refused', 100n);
@@ -359,6 +457,101 @@ try {
     assert.deepEqual(reportedErrors, []);
     handlers.dispose();
   }
+
+  const mainRejectionCases = [
+    {
+      name: 'bad-args',
+      args: (outputDir) => [
+        '--unknown-timing-v2-argument',
+        '--output-dir',
+        outputDir,
+      ],
+      expectedStage: 'cli_argument_parsing',
+      expectedDiscoveryState: 'unavailable',
+      expectedError: /unknown argument: --unknown-timing-v2-argument/,
+      forbiddenInput: 'unknown-timing-v2-argument',
+    },
+    {
+      name: 'bad-source',
+      args: (outputDir) => [
+        '--source-url',
+        'https://example.invalid/generic-cold-source.git',
+        '--output-dir',
+        outputDir,
+      ],
+      expectedStage: 'source_configuration',
+      expectedDiscoveryState: 'unavailable',
+      expectedError: /requires --source-url or --repo-path plus --commit/,
+      forbiddenInput: 'generic-cold-source',
+    },
+    {
+      name: 'later-main-rejection',
+      args: (outputDir) => [
+        '--sample-pool',
+        '--dry-run',
+        '--candidate',
+        'missing-neutral-candidate',
+        '--output-dir',
+        outputDir,
+      ],
+      expectedStage: 'manifest_execution',
+      expectedDiscoveryState: 'measured',
+      expectedError: /candidate not found: missing-neutral-candidate/,
+      forbiddenInput: 'missing-neutral-candidate',
+    },
+  ];
+  for (const testCase of mainRejectionCases) {
+    const outputDir = path.join(tmpRoot, `main-rejection-${testCase.name}`);
+    const child = spawnSync(
+      process.execPath,
+      [RUNNER_PATH, ...testCase.args(outputDir)],
+      {
+        cwd: path.dirname(RUNNER_PATH),
+        encoding: 'utf8',
+        env: isolatedRandomColdPathEnv(),
+        maxBuffer: 2 * 1024 * 1024,
+        timeout: 30000,
+      },
+    );
+    assert.equal(
+      child.status,
+      1,
+      `${testCase.name} did not reject\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`,
+    );
+    assert.match(child.stderr, testCase.expectedError);
+    const retainedNames = (await readdir(outputDir))
+      .filter((name) => name.endsWith('-main-rejected.json'));
+    assert.equal(retainedNames.length, 1, `${testCase.name}: ${retainedNames.join(',')}`);
+    const artifact = JSON.parse(await readFile(path.join(outputDir, retainedNames[0]), 'utf8'));
+    assertMainRejectionArtifact(artifact, testCase);
+  }
+
+  const runnerSource = await readFile(RUNNER_PATH, 'utf8');
+  const runtimeStart = runnerSource.indexOf('function createRandomLargeColdPathMainRuntime');
+  const runtimeEnd = runnerSource.indexOf('function normalizedMainRejectionErrorName', runtimeStart);
+  assert.ok(runtimeStart >= 0 && runtimeEnd > runtimeStart);
+  const runtimeSource = runnerSource.slice(runtimeStart, runtimeEnd);
+  assert.ok(
+    runtimeSource.indexOf('createRandomLargeColdPathTimingCoordinator')
+      < runtimeSource.indexOf('options.argv'),
+    'canonical timing must be created before CLI input is read',
+  );
+  assert.ok(
+    runtimeSource.indexOf('createRandomLargeColdPathTimingCoordinator')
+      < runtimeSource.indexOf('randomLargeColdPathOutputDirFromRawInput'),
+    'canonical timing must be created before bootstrap output parsing',
+  );
+  const retentionEnd = runnerSource.indexOf('export async function buildManifest', runtimeEnd);
+  assert.ok(retentionEnd > runtimeEnd);
+  const retentionSource = runnerSource.slice(runtimeStart, retentionEnd);
+  assert.doesNotMatch(
+    retentionSource,
+    /\b(?:project|profile|fixture|target)(?:Id|Name)?\b\s*(?:===|==|!==|!=)/i,
+  );
+  assert.doesNotMatch(
+    retentionSource,
+    /\b(?:acceptedForGpuHmr|gpuHmrSuccess|canSatisfyRuntimeProof)\s*:\s*true\b/,
+  );
 } finally {
   await rm(tmpRoot, { recursive: true, force: true });
 }
@@ -368,5 +561,7 @@ console.log(JSON.stringify({
   schema: GPU_HMR_TEST_TIMING_SCHEMA,
   lifecycleStates: ['pending', ...cases.map((testCase) => testCase.lifecycleState)],
   childTimingPreserved: true,
+  rejectedMainCases: ['bad_args', 'bad_source', 'later_rejection'],
+  genericFailureRetention: true,
   proofAuthorityGranted: false,
 }, null, 2));

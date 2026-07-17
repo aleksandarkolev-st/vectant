@@ -23,6 +23,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION } from './lib/gpu-hmr-runtime-profile.mjs';
 import { writeArtifactToCas } from './lib/gpu-hmr-artifact-cas.mjs';
 import {
+  GPU_HMR_TEST_TIMING_PHASE_KEYS,
   GPU_HMR_TEST_TIMING_SCHEMA,
   GpuHmrTestTimingRecorder,
   validateGpuHmrTestTiming,
@@ -149,6 +150,12 @@ const TEST_TIMING_OUTPUT_READY_UNAVAILABLE_REASON =
   'verified_child_output_ready_not_observed_in_parent_clock_domain';
 const TEST_TIMING_SPLIT_NOT_APPLICABLE_REASON =
   'split_not_performed_by_random_large_cold_path_orchestrator';
+const TEST_TIMING_MAIN_REJECTION_REASON =
+  'random_large_cold_path_main_promise_rejected';
+const MAIN_REJECTION_RETENTION_SCHEMA =
+  'synthi.gpu_hmr.random_large_project_cold_path_main_rejection.v1';
+const MAIN_REJECTION_RETENTION_AUTHORITY =
+  'main_promise_rejection_retention_only_not_gpu_hmr_success';
 const TEST_TIMING_PARENT_UNAVAILABLE_PHASES = Object.freeze([
   'cold_intake',
   'compile',
@@ -770,25 +777,116 @@ export function attachRandomLargeColdPathTestTiming(target, testTiming) {
   return target;
 }
 
-function createRandomLargeColdPathTimingRecorder({ clock, pending = false } = {}) {
-  const recorder = new GpuHmrTestTimingRecorder(
-    typeof clock === 'function' ? { clock } : undefined,
+function createRandomLargeColdPathTimingCoordinator({ clock, pending = false } = {}) {
+  const timingClock = typeof clock === 'function' ? clock : () => process.hrtime.bigint();
+  let lastClockNs = null;
+  const readClock = () => {
+    const raw = timingClock();
+    const reading = typeof raw === 'bigint'
+      ? raw
+      : typeof raw === 'string' && /^(0|[1-9][0-9]*)$/.test(raw)
+        ? BigInt(raw)
+        : typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0
+          ? BigInt(raw)
+          : null;
+    if (reading === null || reading < 0n) {
+      throw new TypeError('random large cold-path timing clock value is invalid');
+    }
+    if (lastClockNs !== null && reading < lastClockNs) {
+      throw new TypeError('random large cold-path timing clock regressed');
+    }
+    lastClockNs = reading;
+    return reading;
+  };
+  const totalStartNs = readClock();
+  const phaseStates = Object.fromEntries(
+    GPU_HMR_TEST_TIMING_PHASE_KEYS
+      .filter((phaseKey) => phaseKey !== 'total_wall')
+      .map((phaseKey) => [phaseKey, { transition: 'untouched' }]),
   );
+  const events = [];
+  const requirePhase = (phaseKey, expectedTransition) => {
+    const state = phaseStates[phaseKey];
+    if (!state) {
+      throw new TypeError(`random large cold-path timing phase is unknown: ${phaseKey}`);
+    }
+    if (state.transition !== expectedTransition) {
+      throw new TypeError(
+        `random large cold-path timing phase transition is invalid: ${phaseKey}`,
+      );
+    }
+    return state;
+  };
+  const markReasoned = (phaseKey, transition, reasonCode) => {
+    requirePhase(phaseKey, 'untouched');
+    phaseStates[phaseKey] = { transition, reasonCode };
+  };
   const unavailableReason = pending
     ? TEST_TIMING_PENDING_REASON
     : TEST_TIMING_PARENT_PHASE_REASON;
   for (const phaseKey of TEST_TIMING_PARENT_UNAVAILABLE_PHASES) {
-    recorder.unavailable(phaseKey, unavailableReason);
+    markReasoned(phaseKey, 'unavailable', unavailableReason);
   }
-  recorder.notApplicable('split', TEST_TIMING_SPLIT_NOT_APPLICABLE_REASON);
+  markReasoned('split', 'not_applicable', TEST_TIMING_SPLIT_NOT_APPLICABLE_REASON);
   for (const phaseKey of TEST_TIMING_VISUAL_PHASES) {
-    recorder.notApplicable(phaseKey, TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON);
+    markReasoned(phaseKey, 'not_applicable', TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON);
   }
-  recorder.unavailable(
+  markReasoned(
     'output_ready',
+    'unavailable',
     pending ? TEST_TIMING_PENDING_REASON : TEST_TIMING_OUTPUT_READY_UNAVAILABLE_REASON,
   );
-  return recorder;
+  return Object.freeze({
+    phaseState(phaseKey) {
+      return phaseStates[phaseKey]?.transition ?? null;
+    },
+    startPhase(phaseKey) {
+      requirePhase(phaseKey, 'untouched');
+      const atNs = readClock();
+      phaseStates[phaseKey] = { transition: 'started', startNs: atNs };
+      events.push({ kind: 'start', phaseKey, atNs });
+      return atNs.toString();
+    },
+    finishPhase(phaseKey) {
+      requirePhase(phaseKey, 'started');
+      const atNs = readClock();
+      phaseStates[phaseKey] = { transition: 'measured' };
+      events.push({ kind: 'finish', phaseKey, atNs });
+      return atNs.toString();
+    },
+    snapshot({ outcome, terminalReason = null } = {}) {
+      const totalEndNs = readClock();
+      const clockReadings = [
+        totalStartNs,
+        ...events.map((event) => event.atNs),
+        totalEndNs,
+      ];
+      let clockIndex = 0;
+      const recorder = new GpuHmrTestTimingRecorder({
+        clock: () => clockReadings[clockIndex++],
+      });
+      for (const event of events) {
+        if (event.kind === 'start') recorder.startPhase(event.phaseKey);
+        else recorder.finishPhase(event.phaseKey);
+      }
+      for (const [phaseKey, state] of Object.entries(phaseStates)) {
+        if (state.transition === 'unavailable') {
+          recorder.unavailable(phaseKey, state.reasonCode);
+        } else if (state.transition === 'not_applicable') {
+          recorder.notApplicable(phaseKey, state.reasonCode);
+        }
+      }
+      const record = recorder.finalize({
+        outcome,
+        visualCapable: false,
+        terminalReason,
+      });
+      if (clockIndex !== clockReadings.length) {
+        throw new Error('random_large_cold_path_timing_replay_clock_not_consumed');
+      }
+      return record;
+    },
+  });
 }
 
 function resultLifecycleState(result) {
@@ -826,15 +924,15 @@ function manifestLifecycleState(results, { dryRun = false } = {}) {
   return 'completed';
 }
 
-function finalizeRandomLargeColdPathTiming(recorder, lifecycleState) {
+function finalizeRandomLargeColdPathTiming(coordinator, lifecycleState, terminalReason = null) {
   const outcome = lifecycleState === 'completed'
     ? 'pass'
     : lifecycleState === 'refused' || lifecycleState === 'pending'
       ? 'refused'
       : 'failed';
-  return recorder.finalize({
+  return coordinator.snapshot({
     outcome,
-    visualCapable: false,
+    terminalReason,
   });
 }
 
@@ -8529,6 +8627,179 @@ async function notifyManifestPersisted(callback, stage, manifest, written) {
   }));
 }
 
+function randomLargeColdPathOutputDirFromRawInput(argv = [], env = process.env) {
+  let rawOutputDir = env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_OUTPUT_DIR;
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== '--output-dir') continue;
+    rawOutputDir = argv[index + 1];
+    index += 1;
+  }
+  const outputDir = String(rawOutputDir ?? '').trim();
+  return path.resolve(outputDir || LOG_DIR);
+}
+
+function createRandomLargeColdPathMainRuntime(options = {}) {
+  const timingCoordinator = createRandomLargeColdPathTimingCoordinator({
+    clock: options.timingClock ?? null,
+  });
+  const env = options.env ?? process.env;
+  const argv = options.argv ?? process.argv.slice(2);
+  const normalizedArgv = Array.isArray(argv) ? [...argv] : [];
+  return {
+    argv: normalizedArgv,
+    timingCoordinator,
+    outputDir: randomLargeColdPathOutputDirFromRawInput(normalizedArgv, env),
+    runId: makeStamp(),
+    startedAt: new Date().toISOString(),
+    stage: 'cli_argument_parsing',
+    dryRun: false,
+  };
+}
+
+function normalizedMainRejectionErrorName(error) {
+  const normalized = String(error?.name ?? 'Error')
+    .trim()
+    .replace(/[^A-Za-z0-9_.:-]+/g, '_')
+    .slice(0, 96);
+  return normalized || 'Error';
+}
+
+function createRandomLargeColdPathMainRejectionManifest(runtime, error) {
+  const terminalStage = firstString(runtime?.stage, 'main_promise')
+    .replace(/[^A-Za-z0-9_.:-]+/g, '_')
+    .slice(0, 96);
+  const errorName = normalizedMainRejectionErrorName(error);
+  const result = {
+    candidateId: null,
+    status: 'main_promise_rejected_failed_closed',
+    lifecycleState: 'failed',
+    lifecycle_state: 'failed',
+    terminalStage,
+    terminal_stage: terminalStage,
+    reasonCode: TEST_TIMING_MAIN_REJECTION_REASON,
+    reason_code: TEST_TIMING_MAIN_REJECTION_REASON,
+    errorName,
+    error_name: errorName,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+  };
+  const manifest = createManifest({
+    runId: runtime.runId,
+    seed: null,
+    count: 1,
+    candidateId: null,
+    dryRun: runtime.dryRun === true,
+    timeoutMs: null,
+    runnerTimeoutMs: null,
+    sourceIntake: null,
+    sourceIntakeTimeoutMs: null,
+    candidates: [],
+    selected: [],
+    sourceMode: 'configuration_unresolved',
+    requireDirectSource: false,
+    samplePool: false,
+    coldBuildCommandSpec: null,
+    startedAt: runtime.startedAt,
+    finishedAt: new Date().toISOString(),
+    eventType: 'cold_path_main_rejected',
+    status: 'failed',
+    lifecycleState: 'failed',
+    results: [result],
+  });
+  const rejectionRetention = {
+    schemaVersion: MAIN_REJECTION_RETENTION_SCHEMA,
+    schema_version: MAIN_REJECTION_RETENTION_SCHEMA,
+    proofAuthority: MAIN_REJECTION_RETENTION_AUTHORITY,
+    proof_authority: MAIN_REJECTION_RETENTION_AUTHORITY,
+    terminalStage,
+    terminal_stage: terminalStage,
+    reasonCode: TEST_TIMING_MAIN_REJECTION_REASON,
+    reason_code: TEST_TIMING_MAIN_REJECTION_REASON,
+    errorName,
+    error_name: errorName,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+  manifest.mainRejectionRetention = rejectionRetention;
+  manifest.main_rejection_retention = rejectionRetention;
+  return manifest;
+}
+
+async function retainRandomLargeColdPathMainRejection(runtime, error) {
+  const coordinator = runtime?.timingCoordinator;
+  if (!coordinator || typeof coordinator.snapshot !== 'function') {
+    throw new TypeError('random large cold-path main rejection timing is unavailable');
+  }
+  if (coordinator.phaseState('proof_finalization') === 'untouched') {
+    coordinator.startPhase('proof_finalization');
+  }
+  const outputDirs = [...new Set([
+    path.resolve(runtime.outputDir ?? LOG_DIR),
+    path.join(LOG_DIR, 'main-rejections'),
+  ])];
+  const persistenceErrors = [];
+  for (const outputDir of outputDirs) {
+    const manifest = createRandomLargeColdPathMainRejectionManifest(runtime, error);
+    try {
+      let written;
+      if (coordinator.phaseState('proof_finalization') === 'started') {
+        const provisional = await writeManifest(
+          manifest,
+          outputDir,
+          { suffix: '-main-rejected' },
+        );
+        coordinator.finishPhase('proof_finalization');
+        attachRandomLargeColdPathTestTiming(
+          manifest,
+          finalizeRandomLargeColdPathTiming(
+            coordinator,
+            'failed',
+            TEST_TIMING_MAIN_REJECTION_REASON,
+          ),
+        );
+        written = await writeManifest(
+          manifest,
+          outputDir,
+          { filePath: provisional.filePath },
+        );
+      } else {
+        attachRandomLargeColdPathTestTiming(
+          manifest,
+          finalizeRandomLargeColdPathTiming(
+            coordinator,
+            'failed',
+            TEST_TIMING_MAIN_REJECTION_REASON,
+          ),
+        );
+        written = await writeManifest(
+          manifest,
+          outputDir,
+          { suffix: '-main-rejected' },
+        );
+      }
+      return {
+        manifest: {
+          ...manifest,
+          manifestPath: written.filePath,
+          manifestHash: written.hash,
+        },
+        written,
+      };
+    } catch (persistenceError) {
+      persistenceErrors.push(persistenceError);
+    }
+  }
+  throw new AggregateError(
+    persistenceErrors,
+    'random large cold-path main rejection retention failed',
+  );
+}
+
 export async function buildManifest({
   seed,
   count,
@@ -8546,16 +8817,20 @@ export async function buildManifest({
   coldBuildCommandSpec = null,
   runCandidate = runSelectedCandidate,
   timingClock = null,
+  timingCoordinator = null,
+  runId: suppliedRunId = null,
+  startedAt: suppliedStartedAt = null,
   onManifestPersisted = null,
   registerTerminalRetention = null,
 }) {
-  const timingRecorder = createRandomLargeColdPathTimingRecorder({ clock: timingClock });
-  const terminalTimingRecorder = createRandomLargeColdPathTimingRecorder({ clock: timingClock });
+  const timingRecorder = timingCoordinator
+    ?? createRandomLargeColdPathTimingCoordinator({ clock: timingClock });
+  const terminalTimingRecorder = createRandomLargeColdPathTimingCoordinator({ clock: timingClock });
   const pendingTimingRecorder = dryRun
     ? null
-    : createRandomLargeColdPathTimingRecorder({ clock: timingClock, pending: true });
-  const runId = makeStamp();
-  const startedAt = new Date().toISOString();
+    : createRandomLargeColdPathTimingCoordinator({ clock: timingClock, pending: true });
+  const runId = suppliedRunId ?? makeStamp();
+  const startedAt = suppliedStartedAt ?? new Date().toISOString();
   const results = [];
   let selected = [];
   let activeCandidate = null;
@@ -11277,17 +11552,27 @@ async function selfCheck({ workerImage = null, commandJson = null } = {}) {
   console.log('random large-project cold-path self-check passed');
 }
 
-async function main() {
-  const args = parseArgs();
+async function main(runtime = createRandomLargeColdPathMainRuntime()) {
+  runtime.stage = 'cli_argument_parsing';
+  const args = parseArgs(runtime.argv);
+  runtime.outputDir = path.resolve(
+    args.outputDir
+      ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_OUTPUT_DIR
+      ?? LOG_DIR,
+  );
   if (args.selfCheck) {
+    runtime.stage = 'self_check';
     await selfCheck({
       workerImage: args.selfCheckWorkerImage,
       commandJson: args.selfCheckCommandJson,
     });
+    runtime.stage = 'completed';
     return;
   }
+  runtime.stage = 'bootstrap_configuration';
   const seed = String(args.seed ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SEED ?? '2026-06-30-random-large-project-cold-path');
   const dryRun = Boolean(args.dryRun || process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_DRY_RUN === '1');
+  runtime.dryRun = dryRun;
   const candidateId = args.candidateId ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATE_ID ?? '';
   const timeoutMs = Number(process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_TIMEOUT_MS ?? process.env.SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS ?? 120000);
   const runnerTimeoutMs = Number(
@@ -11301,6 +11586,7 @@ async function main() {
   );
   const coldBuildCommandSpec = coldBuildCommandSpecFromArgsEnv(args);
   const requireDirectSource = directSourceRequired(args);
+  runtime.stage = 'source_configuration';
   const directCandidate = directCandidateFromInput({
     sourceUrl: args.sourceUrl ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_URL,
     repoPath: args.repoPath ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_REPO_PATH,
@@ -11362,6 +11648,7 @@ async function main() {
   });
   let manifest;
   let written;
+  runtime.stage = 'manifest_execution';
   try {
     ({ manifest, written } = await buildManifest({
       seed,
@@ -11377,11 +11664,10 @@ async function main() {
       requireDirectSource,
       samplePool: samplePoolModeRequested(args),
       coldBuildCommandSpec,
-      outputDir: path.resolve(
-        args.outputDir
-          ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_OUTPUT_DIR
-          ?? LOG_DIR,
-      ),
+      outputDir: runtime.outputDir,
+      timingCoordinator: runtime.timingCoordinator,
+      runId: runtime.runId,
+      startedAt: runtime.startedAt,
       registerTerminalRetention: (retain) => {
         retainParentTerminal = retain;
       },
@@ -11389,6 +11675,7 @@ async function main() {
   } finally {
     terminalHandlers.dispose();
   }
+  runtime.stage = 'result_reporting';
   console.log(JSON.stringify({
     ok: true,
     schemaVersion: SCHEMA,
@@ -11399,11 +11686,19 @@ async function main() {
     dryRun,
     resultStatuses: manifest.results.map((result) => result.status),
   }, null, 2));
+  runtime.stage = 'completed';
 }
 
 if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
+  const runtime = createRandomLargeColdPathMainRuntime();
+  main(runtime).catch(async (error) => {
+    try {
+      const retained = await retainRandomLargeColdPathMainRejection(runtime, error);
+      console.error(`failed timing retained: ${retained.written.filePath}`);
+    } catch (retentionError) {
+      console.error(retentionError?.stack || retentionError?.message || String(retentionError));
+    }
     console.error(error?.stack || error?.message || String(error));
-    process.exit(1);
+    process.exitCode = 1;
   });
 }
