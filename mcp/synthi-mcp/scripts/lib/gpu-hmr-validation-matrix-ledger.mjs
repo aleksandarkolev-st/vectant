@@ -46,6 +46,10 @@ import {
 import {
   verifyArbitraryColdCliResultEnvelope,
 } from './gpu-hmr-arbitrary-cold-cli-envelope.mjs';
+import {
+  evaluateColdSourceSplitCompileSupport,
+  GPU_HMR_COLD_SOURCE_SPLIT_COMPILE_SUPPORT_AUTHORITY,
+} from './gpu-hmr-cold-source-matrix-support.mjs';
 
 const coldBuildContainerCommand = coldBuildLauncherCommand;
 const coldBuildContainerEntrypoint = coldBuildLauncherEntrypoint;
@@ -91,8 +95,14 @@ const MATRIX_OUTCOME_PRIORITY = new Map([
   ['preflight_only', 50],
   ['target_progression_evidence', 45],
   ['refusal_proven', 40],
+  ['support_only', 30],
   ['unproven', 0],
 ]);
+const MATRIX_RETAINED_OUTCOMES = new Set(MATRIX_OUTCOME_PRIORITY.keys());
+
+function supportOnlyMatrixRow(row = {}) {
+  return firstText(row.matrixOutcome, row.matrix_outcome) === 'support_only';
+}
 
 const ACCEPTED_METRIC_SCOPES = new Set(['cold', 'warm', 'hot_delta_1', 'hot_delta_2']);
 const ACCEPTED_CACHE_STATES = new Set(['clean', 'compiler_cache_warm', 'pipeline_cache_warm']);
@@ -12974,6 +12984,7 @@ function rowKey(row) {
     ? row.runMode?.metricScope ?? 'unknown'
     : null;
   const targetKey = randomColdPathCanonicalTargetKey(row)
+    ?? sourceFirstComputeCanonicalTargetKey(row)
     ?? row.targetId
     ?? 'unknown';
   return [
@@ -12990,6 +13001,8 @@ function rowKey(row) {
 function canonicalTargetKey(row) {
   const randomColdKey = randomColdPathCanonicalTargetKey(row);
   if (randomColdKey) return randomColdKey;
+  const sourceFirstComputeKey = sourceFirstComputeCanonicalTargetKey(row);
+  if (sourceFirstComputeKey) return sourceFirstComputeKey;
   const sourceFirstVisualKey = sourceFirstVisualCanonicalTargetKey(row);
   if (sourceFirstVisualKey) return sourceFirstVisualKey;
   const supportedScope = firstText(
@@ -13004,7 +13017,22 @@ function canonicalTargetKey(row) {
   return firstText(row.targetId, row.profileId) ?? 'unknown';
 }
 
+function sourceFirstComputeCanonicalTargetKey(row = {}) {
+  if (!supportOnlyMatrixRow(row)) return null;
+  const outputKind = compactObject(
+    row.outputOracleKindClassification
+    ?? row.output_oracle_kind_classification,
+  );
+  if (firstText(outputKind.modality) !== 'compute') return null;
+  const sourceFirst = sourceFirstIngestionFacet(row);
+  if (firstBool(sourceFirst.accepted) !== true) return null;
+  const sourceIdentityHash = sourceFirstVisualSourceIdentityHash(row);
+  if (!contentAddressedSha256(sourceIdentityHash)) return null;
+  return `source-first-compute:${sourceIdentityHash}`;
+}
+
 function sourceFirstVisualCanonicalTargetKey(row = {}) {
+  if (supportOnlyMatrixRow(row)) return null;
   const sourceFirst = sourceFirstIngestionFacet(row);
   if (firstBool(sourceFirst.accepted) !== true) return null;
   const sourceAuthority = firstText(sourceFirst.sourceAuthority, sourceFirst.source_authority);
@@ -13037,6 +13065,7 @@ function rowAttemptKey(row) {
   const canonicalTarget = canonicalTargetKey(row);
   const canonicalProfile = (
     randomColdPathCanonicalTargetKey(row)
+    || sourceFirstComputeCanonicalTargetKey(row)
     || sourceFirstVisualCanonicalTargetKey(row)
   )
     ? 'evidence_identity_not_profile_label'
@@ -14195,6 +14224,33 @@ function sourceFirstIngestionFacet(row = {}) {
     supplied.generatedArtifacts
       ?? supplied.generated_artifacts,
   );
+  const normalizedGeneratedArtifacts = generatedArtifacts.map((entry) => ({
+    path: normalizedEvidenceRelPath(
+      entry.path
+        ?? entry.name
+        ?? entry.filename
+        ?? entry.filePath
+        ?? entry.file_path,
+    ),
+    contentHash: firstText(
+      entry.contentHash,
+      entry.content_hash,
+      entry.hash,
+      entry.sha256,
+    ),
+    content_hash: firstText(
+      entry.contentHash,
+      entry.content_hash,
+      entry.hash,
+      entry.sha256,
+    ),
+    byteLength: Number.isFinite(Number(entry.byteLength ?? entry.byte_length))
+      ? Number(entry.byteLength ?? entry.byte_length)
+      : null,
+    byte_length: Number.isFinite(Number(entry.byteLength ?? entry.byte_length))
+      ? Number(entry.byteLength ?? entry.byte_length)
+      : null,
+  })).filter((entry) => entry.path);
   const generatedArtifactPaths = compactStringList([
     ...pathListFromValue(supplied.generatedArtifactPaths ?? supplied.generated_artifact_paths),
     ...pathListFromValue(generatedArtifacts),
@@ -14429,6 +14485,8 @@ function sourceFirstIngestionFacet(row = {}) {
     preexisting_generated_artifact_hash_overlaps: preexistingGeneratedArtifactHashOverlaps,
     generatedArtifactPaths,
     generated_artifact_paths: generatedArtifactPaths,
+    generatedArtifacts: normalizedGeneratedArtifacts,
+    generated_artifacts: normalizedGeneratedArtifacts,
     generatedArtifactPathsInGeneratedNamespace,
     generated_artifact_paths_in_generated_namespace: generatedArtifactPathsInGeneratedNamespace,
     generatedArtifactHashes,
@@ -22223,6 +22281,7 @@ function targetProcessBoundaryEvidenceFacet(row = {}) {
 }
 
 function observedOutputOracleBoundaryPresent(row = {}) {
+  if (supportOnlyMatrixRow(row)) return false;
   return rowHasAcceptedComputeEvidence(row) || rowHasAcceptedVisualOutputOracle(row);
 }
 
@@ -22250,6 +22309,28 @@ function firstEventMismatch(observedEvent = {}, ledgerEvent = {}, comparisons = 
 }
 
 function nativeRuntimeTraceEvidenceFacet(row = {}) {
+  if (supportOnlyMatrixRow(row)) {
+    const failedGates = [{ code: 'support_only_row_cannot_satisfy_native_runtime_trace' }];
+    return {
+      accepted: false,
+      runtimeTracePresent: false,
+      runtime_trace_present: false,
+      targetObservedRuntimeTracePresent: false,
+      target_observed_runtime_trace_present: false,
+      dispatchBoundaryPresent: false,
+      dispatch_boundary_present: false,
+      loaderBoundaryPresent: false,
+      loader_boundary_present: false,
+      outputBoundaryPresent: false,
+      output_boundary_present: false,
+      outputOracleBoundaryPresent: false,
+      output_oracle_boundary_present: false,
+      evidenceRefs: [],
+      evidence_refs: [],
+      failedGates,
+      failed_gates: failedGates,
+    };
+  }
   const runtimeProofArtifact = compactObject(row.runtimeProofArtifact ?? row.runtime_proof_artifact);
   const runtimeTrace = compactObject({
     ...compactObject(runtimeProofArtifact.runtimeTrace ?? runtimeProofArtifact.runtime_trace),
@@ -22469,6 +22550,35 @@ function nativeRuntimeTraceEvidenceFacet(row = {}) {
 }
 
 function fullRuntimeEvidenceAuthorityFacet(row = {}) {
+  if (supportOnlyMatrixRow(row)) {
+    const failedGates = [{ code: 'support_only_row_cannot_satisfy_full_runtime_authority' }];
+    return {
+      schemaVersion: FULL_RUNTIME_EVIDENCE_AUTHORITY_SCHEMA_VERSION,
+      schema_version: FULL_RUNTIME_EVIDENCE_AUTHORITY_SCHEMA_VERSION,
+      proofAuthority: FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY,
+      proof_authority: FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY,
+      evidenceAuthority: FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY,
+      evidence_authority: FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY,
+      accepted: false,
+      authority: 'support_only_not_runtime_authority',
+      strictRuntimeArtifactAccepted: false,
+      strict_runtime_artifact_accepted: false,
+      nativeRuntimeAuthorityAccepted: false,
+      native_runtime_authority_accepted: false,
+      ledgerAccepted: false,
+      ledger_accepted: false,
+      proofChainAccepted: false,
+      proof_chain_accepted: false,
+      outputOracleAccepted: false,
+      output_oracle_accepted: false,
+      computeOracleAccepted: false,
+      compute_oracle_accepted: false,
+      visualOracleAccepted: false,
+      visual_oracle_accepted: false,
+      failedGates,
+      failed_gates: failedGates,
+    };
+  }
   const strictRuntimeArtifactAccepted = row.runtimeProofArtifact?.accepted === true;
   const ledgerAccepted =
     row.ledger?.present === true
@@ -22758,6 +22868,86 @@ function identityShortcutAcceptanceFailures(source) {
 
 function rowSafetyFailures(row, context = {}) {
   const failures = [];
+  const matrixOutcome = firstText(row.matrixOutcome, row.matrix_outcome);
+  if (!MATRIX_RETAINED_OUTCOMES.has(matrixOutcome)) {
+    failures.push({ code: 'validation_matrix_outcome_unknown_or_missing' });
+  }
+  if (matrixOutcome === 'support_only') {
+    const support = compactObject(
+      row.coldSourceSplitCompileSupport
+      ?? row.cold_source_split_compile_support,
+    );
+    const outputKind = compactObject(
+      row.outputOracleKindClassification
+      ?? row.output_oracle_kind_classification,
+    );
+    const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
+    const visual = compactObject(row.visual);
+    const visualImages = Array.isArray(visual.images) ? visual.images : [];
+    if (row.acceptedForGpuHmr !== false || row.gpuHmrSuccess !== false) {
+      failures.push({ code: 'support_only_row_cannot_claim_gpu_hmr_acceptance' });
+    }
+    if (row.proofChainAccepted !== false) {
+      failures.push({ code: 'support_only_row_cannot_claim_proof_chain_acceptance' });
+    }
+    if (row.refusalProven !== false) {
+      failures.push({ code: 'support_only_row_cannot_claim_refusal_proof' });
+    }
+    if (firstBool(row.visualProfileAccepted, row.visual_profile_accepted) !== false) {
+      failures.push({ code: 'support_only_row_cannot_claim_visual_profile_acceptance' });
+    }
+    if (support.accepted !== true) {
+      failures.push({ code: 'support_only_row_requires_accepted_cold_source_compile_support' });
+      failures.push(...compactStringList(
+        support.failedGates
+        ?? support.failed_gates,
+      ).map((code) => ({ code })));
+    }
+    if (firstText(support.proofAuthority, support.proof_authority)
+      !== GPU_HMR_COLD_SOURCE_SPLIT_COMPILE_SUPPORT_AUTHORITY) {
+      failures.push({ code: 'support_only_row_authority_invalid' });
+    }
+    if (firstBool(support.supportOnly, support.support_only) !== true) {
+      failures.push({ code: 'support_only_row_facet_not_marked_support_only' });
+    }
+    if (
+      firstBool(support.acceptedForGpuHmr, support.accepted_for_gpu_hmr) !== false
+      || firstBool(support.gpuHmrSuccess, support.gpu_hmr_success) !== false
+      || firstBool(support.canSatisfyRuntimeProof, support.can_satisfy_runtime_proof) !== false
+      || firstBool(support.canSatisfyDispatchProof, support.can_satisfy_dispatch_proof) !== false
+      || firstBool(
+        support.canSatisfyOutputOracleProof,
+        support.can_satisfy_output_oracle_proof,
+      ) !== false
+    ) {
+      failures.push({ code: 'support_only_row_facet_claimed_runtime_or_gpu_hmr_authority' });
+    }
+    if (firstText(outputKind.modality) !== 'compute' || outputKind.accepted !== true) {
+      failures.push({ code: 'support_only_row_requires_exact_compute_output_modality' });
+    }
+    if (firstBool(row.outputOracleKindAliasConflict, row.output_oracle_kind_alias_conflict) !== false) {
+      failures.push({ code: 'support_only_row_output_oracle_kind_alias_conflict' });
+    }
+    if (
+      visual.present !== false
+      || visual.accepted !== false
+      || visualImages.length > 0
+    ) {
+      failures.push({ code: 'support_only_row_cannot_carry_accepted_visual_evidence' });
+    }
+    if (firstBool(outputOracle.accepted) === true) {
+      failures.push({ code: 'support_only_row_cannot_carry_accepted_output_oracle' });
+    }
+    if (row.runtimeProofArtifact?.accepted === true || row.runtime_proof_artifact?.accepted === true) {
+      failures.push({ code: 'support_only_row_cannot_carry_accepted_runtime_proof_artifact' });
+    }
+    if (
+      row.ledger?.gpuHmrSuccess === true
+      || row.ledger?.gpu_hmr_success === true
+    ) {
+      failures.push({ code: 'support_only_row_cannot_carry_accepted_proof_ledger' });
+    }
+  }
   const testTimingV2 = compactObject(row.testTimingV2 ?? row.test_timing_v2);
   if (testTimingV2.present === true) {
     if (firstText(testTimingV2.proofAuthority, testTimingV2.proof_authority)
@@ -35111,22 +35301,70 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   };
   const metricScope = runMode.metricScope;
   const isCold = metricScope === 'cold';
-  const visual = await visualArtifactEvidence(
-    visualEvidenceArtifacts.length > 0
-      ? visualEvidenceInputsWithSharedTransport(visualEvidenceArtifacts, visualArtifacts)
-      : visualArtifacts,
-    context.repoRoot,
-    path.dirname(filePath),
-    visualMetrics,
-    runtimeVisualOracleEvidenceRequirements({
-      allowSingleFrameProof: isCold,
-      requireRuntimeVisualProofBinding: false,
-    }),
+  const outputOracleKindCamelPresent = Object.prototype.hasOwnProperty.call(
+    json,
+    'outputOracleKind',
   );
+  const outputOracleKindSnakePresent = Object.prototype.hasOwnProperty.call(
+    json,
+    'output_oracle_kind',
+  );
+  const outputOracleKindAliasConflict =
+    outputOracleKindCamelPresent
+    && outputOracleKindSnakePresent
+    && stableJson(json.outputOracleKind) !== stableJson(json.output_oracle_kind);
+  const declaredOutputOracleKind = outputOracleKindAliasConflict
+    ? null
+    : firstText(json.outputOracleKind, json.output_oracle_kind);
+  const outputOracleKindClassification = classifyGpuHmrOutputOracleKind(
+    declaredOutputOracleKind,
+  );
+  const exactColdComputeModality =
+    isCold
+    && outputOracleKindAliasConflict === false
+    && declaredOutputOracleKind === 'compute_oracle';
+  const exactColdVisualModality =
+    isCold
+    && outputOracleKindAliasConflict === false
+    && declaredOutputOracleKind === 'visual_oracle';
+  const visual = exactColdComputeModality
+    ? {
+        required: false,
+        present: false,
+        accepted: false,
+        images: [],
+        failedGates: [],
+        failed_gates: [],
+        proofAuthority: 'visual_evidence_not_requested_for_compute_cold_support',
+        proof_authority: 'visual_evidence_not_requested_for_compute_cold_support',
+      }
+    : await visualArtifactEvidence(
+        visualEvidenceArtifacts.length > 0
+          ? visualEvidenceInputsWithSharedTransport(visualEvidenceArtifacts, visualArtifacts)
+          : visualArtifacts,
+        context.repoRoot,
+        path.dirname(filePath),
+        visualMetrics,
+        runtimeVisualOracleEvidenceRequirements({
+          allowSingleFrameProof: isCold,
+          requireRuntimeVisualProofBinding: false,
+        }),
+      );
   const runtimeVisualProofBindingAccepted =
     isCold || runtimeVisualProofBindingCoverageAccepted(visual);
-  const asyncVisualProofJob = rawAsyncVisualProofJob(json);
-  const asyncVisualCasBundle = asyncVisualCasBundleFacet(json, visual);
+  const asyncVisualProofJob = exactColdComputeModality ? {} : rawAsyncVisualProofJob(json);
+  const asyncVisualCasBundle = exactColdComputeModality
+    ? {
+        present: false,
+        accepted: false,
+        rejectedNonVisualLocatorCount: 0,
+        rejected_non_visual_locator_count: 0,
+        failedGates: [],
+        failed_gates: [],
+        proofAuthority: 'visual_transport_not_requested_for_compute_cold_support',
+        proof_authority: 'visual_transport_not_requested_for_compute_cold_support',
+      }
+    : asyncVisualCasBundleFacet(json, visual);
   const proofLedger = compactObject(
     json.proofLedger
     ?? json.proof_ledger
@@ -35147,13 +35385,24 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     ?? json.outputOracle
     ?? json.output_oracle,
   );
-  const outputOracleFacet = await ledgerOutputOracleFacet(
-    ledger,
-    proofLedger,
-    visual,
-    context.repoRoot,
-    path.dirname(filePath),
-  );
+  const outputOracleFacet = exactColdComputeModality
+    ? {
+        present: false,
+        accepted: false,
+        outputOracleKind: 'compute_oracle',
+        output_oracle_kind: 'compute_oracle',
+        failedGates: [],
+        failed_gates: [],
+        proofAuthority: 'compute_cold_split_has_no_runtime_output_oracle_authority',
+        proof_authority: 'compute_cold_split_has_no_runtime_output_oracle_authority',
+      }
+    : await ledgerOutputOracleFacet(
+        ledger,
+        proofLedger,
+        visual,
+        context.repoRoot,
+        path.dirname(filePath),
+      );
   outputOracleFacet.declaredOutputOracleFacet = Object.keys(declaredOutputOracleFacet).length > 0
     ? declaredOutputOracleFacet
     : null;
@@ -35242,8 +35491,9 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   const sourceAdaptedVisualProfileAccepted =
     strictRuntimeVisualProfileProof === true
     && sourceAdaptedProfile === true;
-  const acceptedCold =
+  const acceptedColdVisual =
     isCold
+    && exactColdVisualModality
     && (
       (json.coldSplitProven === true && json.cold_split_proven === true)
       || (
@@ -35260,13 +35510,42 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && (!requiresSourceFirstIngestion || sourceFirstIngestion.accepted === true)
     && asyncVisualProofJobBindingAccepted
     && visualTransportLocatorsAccepted;
+  const coldSourceSplitCompileSupport = exactColdComputeModality
+    ? await evaluateColdSourceSplitCompileSupport(json, {
+        repoRoot: context.repoRoot,
+        baseDir: path.dirname(filePath),
+        sourceFirstFacet: sourceFirstIngestion,
+      })
+    : {
+        present: false,
+        accepted: false,
+        proofAuthority: GPU_HMR_COLD_SOURCE_SPLIT_COMPILE_SUPPORT_AUTHORITY,
+        proof_authority: GPU_HMR_COLD_SOURCE_SPLIT_COMPILE_SUPPORT_AUTHORITY,
+        acceptedForGpuHmr: false,
+        accepted_for_gpu_hmr: false,
+        gpuHmrSuccess: false,
+        gpu_hmr_success: false,
+        canSatisfyRuntimeProof: false,
+        can_satisfy_runtime_proof: false,
+        canSatisfyDispatchProof: false,
+        can_satisfy_dispatch_proof: false,
+        canSatisfyOutputOracleProof: false,
+        can_satisfy_output_oracle_proof: false,
+        failedGates: [],
+        failed_gates: [],
+      };
+  const acceptedColdComputeSupport =
+    exactColdComputeModality
+    && coldSourceSplitCompileSupport.accepted === true;
   const matrixOutcome = acceptedRuntime
     ? 'full_runtime_gpu_hmr'
     : sourceAdaptedVisualProfileAccepted
       ? 'visual_profile_accepted'
-      : acceptedCold
+      : acceptedColdVisual
         ? 'cold_split_proven'
-        : 'unproven';
+        : acceptedColdComputeSupport
+          ? 'support_only'
+          : 'unproven';
   return finalizeRow({
     artifactSchema: schema,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -35287,7 +35566,9 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     validationProfileId,
     validation_profile_id: validationProfileId,
     proofMode: 'run_mode_proof',
-    evidenceKind: isCold
+    evidenceKind: acceptedColdComputeSupport
+      ? 'cold_ai_split_compute_support'
+      : isCold
       ? genericRuntimeRunMode
         ? 'cold_runtime_initial_visual_oracle'
         : 'cold_split_visual_oracle'
@@ -35297,8 +35578,10 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       ? 'full_runtime_gpu_hmr'
       : sourceAdaptedVisualProfileAccepted
         ? 'source_adapted_run_mode_visual_profile_not_no_shim_hmr'
-        : acceptedCold
+        : acceptedColdVisual
           ? 'cold_split_visual_proof'
+          : acceptedColdComputeSupport
+            ? 'cold_ai_split_compute_support_only'
           : 'run_mode_proof_rejected',
     acceptedForGpuHmr: acceptedRuntime,
     visualProfileAccepted: sourceAdaptedVisualProfileAccepted,
@@ -35307,15 +35590,17 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     source_adapted_profile: sourceAdaptedProfile,
     gpuHmrSuccess: acceptedRuntime,
     refusalProven: false,
-    proofChainAccepted: acceptedRuntime || sourceAdaptedVisualProfileAccepted || acceptedCold,
+    proofChainAccepted: acceptedRuntime || sourceAdaptedVisualProfileAccepted || acceptedColdVisual,
     proofChain: acceptedRuntime
       ? 'embedded_runtime_proof_artifact_recomputed_ledger'
       : sourceAdaptedVisualProfileAccepted
         ? 'source_adapted_run_mode_visual_profile_not_no_shim_hmr'
-        : acceptedCold
+        : acceptedColdVisual
           ? genericRuntimeRunMode
             ? 'runtime_initial_visual_gate'
             : 'mcp_initial_split_visual_gate'
+          : acceptedColdComputeSupport
+            ? 'matrix_recomputed_cold_source_split_compile_support_only'
           : 'run_mode_proof_rejected',
     proofIds: proofIdsFrom(
       json,
@@ -35362,6 +35647,12 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     source_adaptation: sourceAdaptation,
     sourceFirstIngestion,
     source_first_ingestion: sourceFirstIngestion,
+    outputOracleKindClassification,
+    output_oracle_kind_classification: outputOracleKindClassification,
+    outputOracleKindAliasConflict,
+    output_oracle_kind_alias_conflict: outputOracleKindAliasConflict,
+    coldSourceSplitCompileSupport,
+    cold_source_split_compile_support: coldSourceSplitCompileSupport,
     visualArtifacts,
     visual_artifacts: visualArtifacts,
     visualSemanticProbes: compactObject(
@@ -35386,7 +35677,12 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     fullRebuildUsed,
     processRestarted,
     timings: compactObject(json.timings),
-    reasons: matrixOutcome === 'unproven' || sourceAdaptedVisualProfileAccepted ? compactStringList([
+    reasons: matrixOutcome === 'support_only'
+      ? [
+          'cold_ai_split_compute_support_only_not_gpu_hmr_acceptance',
+          'runtime_epoch_dispatch_and_output_oracle_proof_required',
+        ]
+      : matrixOutcome === 'unproven' || sourceAdaptedVisualProfileAccepted ? compactStringList([
       sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       runMode.accepted ? null : 'run_mode_timing_not_accepted',
       visual.accepted ? null : 'visual_artifacts_not_readable',
@@ -35418,6 +35714,11 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
         ? 'hiprt_contract_not_proven'
         : null,
       targetId === 'unknown' ? 'target_identity_not_present_in_run_mode_artifact' : null,
+      outputOracleKindAliasConflict ? 'output_oracle_kind_alias_conflict' : null,
+      isCold && declaredOutputOracleKind == null ? 'cold_output_oracle_kind_missing' : null,
+      isCold && outputOracleKindClassification.accepted !== true
+        ? outputOracleKindClassification.failureCode
+        : null,
       ...(!isCold
         ? compactStringList(runtimeTargetIdentity.failedGates ?? runtimeTargetIdentity.failed_gates)
         : []),
@@ -35431,9 +35732,15 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       ...(requiresSourceFirstIngestion ? sourceFirstIngestion.failedGates : []),
       ...(asyncVisualProofJobBindingAccepted ? [] : asyncVisualCasBundle.failedGates),
       ...(visualTransportLocatorsAccepted ? [] : asyncVisualCasBundle.failedGates),
+      ...(exactColdComputeModality ? coldSourceSplitCompileSupport.failedGates : []),
     ]) : [],
     openGaps: sourceAdaptedVisualProfileAccepted
       ? ['source_adapted_profile_not_no_shim_gpu_hmr']
+      : matrixOutcome === 'support_only'
+        ? [
+            'cold_ai_split_compute_support_only_not_gpu_hmr_acceptance',
+            'same_process_artifact_load_epoch_dispatch_and_output_oracle_required',
+          ]
       : matrixOutcome === 'unproven'
       ? compactStringList([
           'run_mode_proof_not_accepted',
@@ -35465,6 +35772,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
           ...(requiresSourceFirstIngestion ? sourceFirstIngestion.failedGates : []),
           ...(asyncVisualProofJobBindingAccepted ? [] : asyncVisualCasBundle.failedGates),
           ...(visualTransportLocatorsAccepted ? [] : asyncVisualCasBundle.failedGates),
+          ...(exactColdComputeModality ? coldSourceSplitCompileSupport.failedGates : []),
         ])
       : [],
   });
@@ -38438,6 +38746,7 @@ export function evaluateFullRuntimeOutputOracleModalityBinding(row = {}) {
 }
 
 function rowHasAcceptedComputeEvidence(row) {
+  if (supportOnlyMatrixRow(row)) return false;
   const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
   const binding = evaluateFullRuntimeOutputOracleModalityBinding(row);
   return firstBool(outputOracle.accepted) === true
@@ -42001,6 +42310,7 @@ function coverageSummary(rows, context = {}) {
   const visualProfileRows = rows.filter((row) => row.matrixOutcome === 'visual_profile_accepted');
   const refusalRows = rows.filter((row) => row.matrixOutcome === 'refusal_proven');
   const preflightRows = rows.filter((row) => row.matrixOutcome === 'preflight_only');
+  const supportOnlyRows = rows.filter(supportOnlyMatrixRow);
   const unprovenRows = rows.filter((row) => row.matrixOutcome === 'unproven');
   return {
     rowCount: rows.length,
@@ -42023,6 +42333,8 @@ function coverageSummary(rows, context = {}) {
     refusalTargets: compactStringList(refusalRows.map((row) => row.targetId)),
     preflightOnlyRows: preflightRows.length,
     preflightOnlyTargets: compactStringList(preflightRows.map((row) => row.targetId)),
+    supportOnlyRows: supportOnlyRows.length,
+    supportOnlyTargets: compactStringList(supportOnlyRows.map(canonicalTargetKey)),
     unprovenRows: unprovenRows.length,
     unprovenTargets: compactStringList(unprovenRows.map((row) => row.targetId)),
     broadLibraryAgnosticReadiness: broadLibraryAgnosticReadiness(rows, broadProof, context),
@@ -42068,26 +42380,34 @@ function rowWithEvaluatedSafety(row, context = {}) {
       || normalizedRow.gpu_hmr_success === true
       || normalizedRow.matrixOutcome === 'full_runtime_gpu_hmr'
     );
+  const safetyInvalidatesSupportOnly =
+    safetyAccepted !== true
+    && supportOnlyMatrixRow(normalizedRow);
+  const safetyInvalidatesOutcome =
+    safetyInvalidatesGpuHmr || safetyInvalidatesSupportOnly;
+  const safetyInvalidationReason = safetyInvalidatesSupportOnly
+    ? 'support_only_outcome_invalidated_by_matrix_safety'
+    : 'gpu_hmr_success_invalidated_by_matrix_safety';
   const evaluatedRow = {
     ...normalizedRow,
-    acceptedForGpuHmr: safetyInvalidatesGpuHmr ? false : normalizedRow.acceptedForGpuHmr,
-    accepted_for_gpu_hmr: safetyInvalidatesGpuHmr ? false : normalizedRow.accepted_for_gpu_hmr,
-    gpuHmrSuccess: safetyInvalidatesGpuHmr ? false : normalizedRow.gpuHmrSuccess,
-    gpu_hmr_success: safetyInvalidatesGpuHmr ? false : normalizedRow.gpu_hmr_success,
-    matrixOutcome: safetyInvalidatesGpuHmr ? 'unproven' : normalizedRow.matrixOutcome,
-    proofChainAccepted: safetyInvalidatesGpuHmr ? false : normalizedRow.proofChainAccepted,
-    proof_chain_accepted: safetyInvalidatesGpuHmr ? false : normalizedRow.proof_chain_accepted,
-    reasons: safetyInvalidatesGpuHmr
+    acceptedForGpuHmr: safetyInvalidatesOutcome ? false : normalizedRow.acceptedForGpuHmr,
+    accepted_for_gpu_hmr: safetyInvalidatesOutcome ? false : normalizedRow.accepted_for_gpu_hmr,
+    gpuHmrSuccess: safetyInvalidatesOutcome ? false : normalizedRow.gpuHmrSuccess,
+    gpu_hmr_success: safetyInvalidatesOutcome ? false : normalizedRow.gpu_hmr_success,
+    matrixOutcome: safetyInvalidatesOutcome ? 'unproven' : normalizedRow.matrixOutcome,
+    proofChainAccepted: safetyInvalidatesOutcome ? false : normalizedRow.proofChainAccepted,
+    proof_chain_accepted: safetyInvalidatesOutcome ? false : normalizedRow.proof_chain_accepted,
+    reasons: safetyInvalidatesOutcome
       ? compactStringList([
           ...(Array.isArray(normalizedRow.reasons) ? normalizedRow.reasons : []),
-          'gpu_hmr_success_invalidated_by_matrix_safety',
+          safetyInvalidationReason,
           ...safetyFailureCodes,
         ])
       : normalizedRow.reasons,
-    openGaps: safetyInvalidatesGpuHmr
+    openGaps: safetyInvalidatesOutcome
       ? compactStringList([
           ...(Array.isArray(normalizedRow.openGaps) ? normalizedRow.openGaps : []),
-          'gpu_hmr_success_invalidated_by_matrix_safety',
+          safetyInvalidationReason,
           ...safetyFailureCodes,
         ])
       : normalizedRow.openGaps,
@@ -42128,6 +42448,14 @@ function rowRefs(rows) {
     runModeCoverageSupport: row.runModeCoverageSupport,
     sourceFirstIngestion: row.sourceFirstIngestion,
     source_first_ingestion: row.sourceFirstIngestion,
+    outputOracleKindClassification:
+      row.outputOracleKindClassification ?? row.output_oracle_kind_classification,
+    output_oracle_kind_classification:
+      row.outputOracleKindClassification ?? row.output_oracle_kind_classification,
+    coldSourceSplitCompileSupport:
+      row.coldSourceSplitCompileSupport ?? row.cold_source_split_compile_support,
+    cold_source_split_compile_support:
+      row.coldSourceSplitCompileSupport ?? row.cold_source_split_compile_support,
     asyncVisualCasBundle: row.asyncVisualCasBundle,
     async_visual_cas_bundle: row.asyncVisualCasBundle,
     visualSemanticProbes: row.visualSemanticProbes ?? row.visual_semantic_probes,
@@ -42303,6 +42631,7 @@ function hipModuleScopedRuntimeCoverage(rows) {
 }
 
 function rowHasAcceptedVisualEvidence(row) {
+  if (supportOnlyMatrixRow(row)) return false;
   const visualAccepted = row.visual?.present === true && row.visual?.accepted === true;
   if (!visualAccepted) return false;
   const outputOracleFacet = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
@@ -42345,7 +42674,10 @@ function rowHasAcceptedVisualSemanticProbes(row = {}) {
 }
 
 function semanticVisualProbeCoverage(rows) {
-  const candidateRows = rows.filter((row) => rowVisualSemanticProbeFacet(row).present === true);
+  const candidateRows = rows.filter((row) =>
+    !supportOnlyMatrixRow(row)
+    && rowVisualSemanticProbeFacet(row).present === true
+  );
   const acceptedProbeRows = candidateRows.filter(rowHasAcceptedVisualSemanticProbes);
   const failedGates = compactStringList(candidateRows.flatMap((row) =>
     rowVisualSemanticProbeFacet(row).failedGates ?? rowVisualSemanticProbeFacet(row).failed_gates
@@ -42636,6 +42968,7 @@ function backendRunModeCoverage({ rows, backend, id, requirement, missingGap }) 
   const candidateSupportRows = rows.filter((row) =>
     row.backend === backend
     && !fullRuntimeRowIds.has(row.rowId)
+    && !supportOnlyMatrixRow(row)
     && row.runMode?.accepted === true
   );
   const {
@@ -42958,6 +43291,7 @@ function hiprtRunModeCoverage({ rows, id, requirement, missingGap }) {
   const supportRows = rows.filter((row) =>
     row.backend === 'hiprt'
     && !profileRowIds.has(row.rowId)
+    && !supportOnlyMatrixRow(row)
     && profileTargetKeys.has(targetKeyForCoverageRow(row))
     && (
       row.runMode?.accepted === true
@@ -44575,7 +44909,10 @@ function buildGpuHmrValidationMatrixLedgerUncached(rows, options = {}) {
     : preliminarySelectedRows.filter((row) => row.safety?.accepted === true);
   const preliminaryIncludedRows = options.includeUnproven === true
     ? preliminarySafetyAcceptedRows
-    : preliminarySafetyAcceptedRows.filter((row) => row.matrixOutcome !== 'unproven');
+    : preliminarySafetyAcceptedRows.filter((row) =>
+      MATRIX_RETAINED_OUTCOMES.has(row.matrixOutcome)
+      && row.matrixOutcome !== 'unproven'
+    );
   const preliminaryBroadProof =
     computeBroadLibraryAgnosticProof(preliminaryIncludedRows, randomColdPathFreshnessContext);
   const interimSafetyEvaluatedRows = rows.map((row) =>
@@ -44589,7 +44926,10 @@ function buildGpuHmrValidationMatrixLedgerUncached(rows, options = {}) {
     : interimSelectedRows.filter((row) => row.safety?.accepted === true);
   const interimIncludedRows = options.includeUnproven === true
     ? interimSafetyAcceptedRows
-    : interimSafetyAcceptedRows.filter((row) => row.matrixOutcome !== 'unproven');
+    : interimSafetyAcceptedRows.filter((row) =>
+      MATRIX_RETAINED_OUTCOMES.has(row.matrixOutcome)
+      && row.matrixOutcome !== 'unproven'
+    );
   const finalBroadProof =
     computeBroadLibraryAgnosticProof(interimIncludedRows, randomColdPathFreshnessContext);
   const safetyEvaluatedRows = rows.map((row) =>
@@ -44603,7 +44943,10 @@ function buildGpuHmrValidationMatrixLedgerUncached(rows, options = {}) {
     : selectedRows.filter((row) => row.safety?.accepted === true);
   const includedRows = options.includeUnproven === true
     ? safetyAcceptedRows
-    : safetyAcceptedRows.filter((row) => row.matrixOutcome !== 'unproven');
+    : safetyAcceptedRows.filter((row) =>
+      MATRIX_RETAINED_OUTCOMES.has(row.matrixOutcome)
+      && row.matrixOutcome !== 'unproven'
+    );
   const omittedInvalidatedRows = selectedRows.length - safetyAcceptedRows.length;
   const omittedUnprovenRows = safetyAcceptedRows.length - includedRows.length;
   const attemptHistory = validationAttemptHistory(safetyEvaluatedRows, selectedRows, {
