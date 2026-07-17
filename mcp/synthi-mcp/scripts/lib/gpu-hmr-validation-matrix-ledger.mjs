@@ -34,6 +34,9 @@ import {
   coldBuildOutputTmpfsOptions,
   coldBuildTmpfsOptions,
 } from './gpu-hmr-cold-build-container-contract.mjs';
+import {
+  verifyArbitraryColdCliResultEnvelope,
+} from './gpu-hmr-arbitrary-cold-cli-envelope.mjs';
 
 const coldBuildContainerCommand = coldBuildLauncherCommand;
 const coldBuildContainerEntrypoint = coldBuildLauncherEntrypoint;
@@ -352,6 +355,80 @@ const RANDOM_COLD_BUILD_OUTPUT_EVIDENCE_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_build_output_evidence.v1';
 const RANDOM_COLD_BUILD_OUTPUT_EVIDENCE_AUTHORITY =
   'runner_recomputed_output_bytes_and_cas_only_not_gpu_hmr_success';
+const RANDOM_COLD_STATIC_OUTPUT_EVIDENCE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_build_output_evidence.v2';
+const RANDOM_COLD_STATIC_OUTPUT_EVIDENCE_AUTHORITY =
+  'recomputed_collector_output_bytes_only_not_gpu_hmr_success';
+const RANDOM_COLD_STATIC_EXECUTION_ENVIRONMENT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_cold_path_arbitrary_execution_environment.v1';
+const RANDOM_COLD_STATIC_EXECUTION_ENVIRONMENT_AUTHORITY =
+  'verified_static_launcher_execution_environment_only_not_gpu_hmr_success';
+const RANDOM_COLD_STATIC_EXECUTION_TRANSPORT =
+  'static_arbitrary_cold_project_launcher';
+const RANDOM_COLD_STATIC_COMMAND_SPEC_KEYS = Object.freeze([
+  'command',
+  'args',
+  'cwd',
+  'timeoutMs',
+  'timeout_ms',
+  'envNames',
+  'env_names',
+  'envValueHashes',
+  'env_value_hashes',
+  'executionTransport',
+  'execution_transport',
+  'workerImage',
+  'worker_image',
+  'containerRuntime',
+  'container_runtime',
+  'outputs',
+  'shell',
+  'commandSpecHash',
+  'command_spec_hash',
+]);
+const RANDOM_COLD_STATIC_OUTPUT_DECLARATION_KEYS = Object.freeze([
+  'path',
+  'role',
+  'artifactKind',
+  'mediaType',
+]);
+const RANDOM_COLD_STATIC_EXECUTION_ENVIRONMENT_KEYS = Object.freeze([
+  'schemaVersion',
+  'proofAuthority',
+  'transport',
+  'isolated',
+  'inheritedHostEnvironment',
+  'baselineEnvironmentNames',
+  'declaredEnvironmentNames',
+  'sourceMountReadOnly',
+  'networkIsolated',
+  'workerImageReference',
+  'workerImageId',
+  'dockerExecutableHash',
+  'dockerExecutablePathHash',
+  'dockerInspectAccepted',
+  'dockerStateInspectAccepted',
+  'containerRemoved',
+  'sourceSnapshotRemoved',
+  'buildOutputRootRemoved',
+  'environmentFileRemoved',
+  'containerCidFileRemoved',
+  'dockerClientConfigRemoved',
+  'staticLauncherAccepted',
+  'arbitraryColdCliResultEnvelope',
+  'arbitraryColdCliResultEnvelopeHash',
+  'retainedExecutionChainHash',
+  'outputSetHash',
+  'artifactCount',
+  'artifactLocatorSetHash',
+  'sourceBindingHash',
+  'resourcePolicy',
+  'resourcePolicyHash',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+]);
 const RANDOM_COLD_BUILD_OUTPUT_MANIFEST_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_build_output_manifest.v1';
 const RANDOM_COLD_BUILD_OUTPUT_MAX_COUNT = 1024;
@@ -993,6 +1070,11 @@ function stringEvidenceList(values) {
 
 function compactObject(value) {
   return isObject(value) ? value : {};
+}
+
+function hasExactRecordKeys(value, expectedKeys) {
+  return isObject(value)
+    && stableJson(Object.keys(value).sort()) === stableJson([...expectedKeys].sort());
 }
 
 function firstCompactObject(...values) {
@@ -4247,13 +4329,176 @@ function randomColdBuildExecutionPlanFacet(raw = {}, { sourceIntake = {} } = {})
   };
 }
 
+async function randomColdStaticBuildOutputEvidenceFacet(
+  rawValue,
+  {
+    artifactRoot = null,
+    executionEnvironment = {},
+  } = {},
+) {
+  const raw = compactObject(rawValue);
+  const environment = compactObject(executionEnvironment);
+  const envelope = compactObject(environment.arbitraryColdCliResultEnvelope);
+  const failedGates = [];
+  let envelopeAccepted = false;
+  try {
+    verifyArbitraryColdCliResultEnvelope(envelope);
+    envelopeAccepted = true;
+  } catch {
+    failedGates.push('random_cold_static_output_cli_envelope_invalid');
+  }
+  const retainedChain = compactObject(envelope.retainedExecutionChain);
+  const outputReceipt = compactObject(retainedChain.outputEvidenceReceipt);
+  const retainedOutputEvidence = compactObject(outputReceipt.outputEvidence);
+  const outputs = Array.isArray(envelope.outputs) ? envelope.outputs : [];
+  const resolvedArtifactRoot = firstText(artifactRoot, defaultCasRootFromEnv());
+  const allowedRoots = resolvedArtifactRoot ? [path.resolve(resolvedArtifactRoot)] : [];
+  const casValidations = await Promise.all(outputs.map(async (output) => {
+    try {
+      return await validateArtifactCasManifest(output?.artifactLocator, {
+        allowedRoots,
+        artifactRoot: resolvedArtifactRoot,
+        requireReadableBytes: true,
+      });
+    } catch {
+      return {
+        accepted: false,
+        acceptedAsTransportEvidence: false,
+        readableContentHash: null,
+        readableByteLength: null,
+        reasons: ['artifact_cas_validation_exception'],
+      };
+    }
+  }));
+  const outputBytesAccepted = outputs.length >= 1
+    && outputs.length <= RANDOM_COLD_BUILD_OUTPUT_MAX_COUNT
+    && casValidations.length === outputs.length
+    && outputs.every((output, index) => {
+      const metadata = compactObject(output.metadata);
+      const locator = compactObject(output.artifactLocator);
+      const validation = compactObject(casValidations[index]);
+      return validation.accepted === true
+        && validation.acceptedAsTransportEvidence === true
+        && compactStringList(validation.reasons).length === 0
+        && validation.contentHash === metadata.observedContentHash
+        && validation.readableContentHash === metadata.observedContentHash
+        && validation.byteLength === metadata.observedByteLength
+        && validation.readableByteLength === metadata.observedByteLength
+        && validation.manifestHash === locator.manifestHash
+        && validation.mediaType === metadata.declaredMediaType
+        && locator.contentHash === metadata.observedContentHash
+        && locator.byteLength === metadata.observedByteLength
+        && locator.transport?.contentAddressed === true
+        && locator.transport?.manifestOnly === true
+        && locator.transport?.bytesEmbedded === false
+        && locator.acceptedForGpuHmr === false
+        && locator.gpuHmrSuccess === false;
+    });
+  if (!outputBytesAccepted) {
+    failedGates.push('random_cold_static_output_cas_bytes_invalid');
+  }
+  if (
+    raw.schemaVersion !== RANDOM_COLD_STATIC_OUTPUT_EVIDENCE_SCHEMA_VERSION
+    || raw.proofAuthority !== RANDOM_COLD_STATIC_OUTPUT_EVIDENCE_AUTHORITY
+    || stableJson(raw) !== stableJson(retainedOutputEvidence)
+  ) {
+    failedGates.push('random_cold_static_output_retained_evidence_mismatch');
+  }
+  if (
+    environment.arbitraryColdCliResultEnvelopeHash !== envelope.evidenceHash
+    || environment.retainedExecutionChainHash !== retainedChain.evidenceHash
+    || environment.outputSetHash !== envelope.evidence?.outputSetHash
+    || environment.artifactCount !== envelope.evidence?.artifactCount
+    || environment.artifactCount !== outputs.length
+    || environment.artifactLocatorSetHash !== envelope.evidence?.artifactLocatorSetHash
+  ) {
+    failedGates.push('random_cold_static_output_environment_binding_mismatch');
+  }
+  if (
+    raw.acceptedAsColdBuildOutputEvidence !== true
+    || raw.acceptedForGpuHmr !== false
+    || raw.gpuHmrSuccess !== false
+    || raw.canSatisfyRuntimeProof !== false
+    || raw.canSatisfyDispatchProof !== false
+    || environment.acceptedForGpuHmr !== false
+    || environment.gpuHmrSuccess !== false
+    || environment.canSatisfyRuntimeProof !== false
+    || environment.canSatisfyDispatchProof !== false
+  ) {
+    failedGates.push('random_cold_static_output_authority_invalid');
+  }
+  const uniqueFailedGates = compactStringList(failedGates);
+  const accepted = envelopeAccepted && outputBytesAccepted && uniqueFailedGates.length === 0;
+  const totalByteLength = outputs.reduce(
+    (sum, output) => sum + (Number.isSafeInteger(output?.metadata?.observedByteLength)
+      ? output.metadata.observedByteLength
+      : 0),
+    0,
+  );
+  const evidenceHash = stableJsonHash(raw);
+  return {
+    present: true,
+    accepted,
+    matrixRecomputed: true,
+    matrix_recomputed: true,
+    schemaVersion: RANDOM_COLD_STATIC_OUTPUT_EVIDENCE_SCHEMA_VERSION,
+    proofAuthority: RANDOM_COLD_STATIC_OUTPUT_EVIDENCE_AUTHORITY,
+    acceptedAsColdBuildOutputEvidence: accepted,
+    accepted_as_cold_build_output_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    commandSpecHash: firstText(raw.commandSpecHash, raw.command_spec_hash),
+    command_spec_hash: firstText(raw.commandSpecHash, raw.command_spec_hash),
+    sourceBindingHash: firstText(raw.sourceBindingHash, raw.source_binding_hash),
+    source_binding_hash: firstText(raw.sourceBindingHash, raw.source_binding_hash),
+    outputCount: outputs.length,
+    output_count: outputs.length,
+    totalByteLength,
+    total_byte_length: totalByteLength,
+    outputSetHash: firstText(raw.outputSetHash, raw.output_set_hash),
+    output_set_hash: firstText(raw.outputSetHash, raw.output_set_hash),
+    manifestHash: firstText(raw.outputManifestContentHash),
+    manifest_hash: firstText(raw.outputManifestContentHash),
+    cliEnvelopeAccepted: envelopeAccepted,
+    cli_envelope_accepted: envelopeAccepted,
+    readableArtifactCount: casValidations.filter((validation) => (
+      validation?.accepted === true && validation?.readableContentHash
+    )).length,
+    readable_artifact_count: casValidations.filter((validation) => (
+      validation?.accepted === true && validation?.readableContentHash
+    )).length,
+    retainedEvidenceHash: firstText(raw.evidenceHash, raw.evidence_hash),
+    retained_evidence_hash: firstText(raw.evidenceHash, raw.evidence_hash),
+    evidenceHash,
+    evidence_hash: evidenceHash,
+    failedGates: uniqueFailedGates,
+    failed_gates: uniqueFailedGates,
+  };
+}
+
 export async function randomColdBuildOutputEvidenceFacet(
   rawValue = {},
   {
     artifactRoot = null,
+    executionEnvironment = {},
   } = {},
 ) {
   const raw = compactObject(rawValue);
+  if (
+    firstText(executionEnvironment?.transport)
+      === RANDOM_COLD_STATIC_EXECUTION_TRANSPORT
+  ) {
+    return randomColdStaticBuildOutputEvidenceFacet(raw, {
+      artifactRoot,
+      executionEnvironment,
+    });
+  }
   if (Object.keys(raw).length === 0) {
     return {
       present: false,
@@ -4841,6 +5086,12 @@ export function randomColdBuildExecutionObservationFacet(
     raw.acceptedAsColdCommandExecutionEvidence,
     raw.accepted_as_cold_command_execution_evidence,
   ) === true;
+  const executionEnvironmentRaw = firstCompactObject(
+    raw.executionEnvironment,
+    raw.execution_environment,
+  );
+  const staticLauncherTransport = firstText(executionEnvironmentRaw.transport)
+    === RANDOM_COLD_STATIC_EXECUTION_TRANSPORT;
   const nestedAliasConflict = (value, pairs) => pairs.some(([camelName, snakeName]) =>
     Object.prototype.hasOwnProperty.call(value, camelName)
     && Object.prototype.hasOwnProperty.call(value, snakeName)
@@ -4867,6 +5118,9 @@ export function randomColdBuildExecutionObservationFacet(
     ['envValueHashes', 'env_value_hashes'],
     ['executionTransport', 'execution_transport'],
     ['workerImage', 'worker_image'],
+    ['containerRuntime', 'container_runtime'],
+    ['outputs', 'outputDeclarations'],
+    ['outputs', 'output_declarations'],
     ['commandSpecHash', 'command_spec_hash'],
   ];
   const canonicalCommandSpec = (value) => {
@@ -4887,6 +5141,64 @@ export function randomColdBuildExecutionObservationFacet(
       spec.execution_transport,
     );
     const specWorkerImage = firstText(spec.workerImage, spec.worker_image);
+    const specContainerRuntime = firstText(
+      spec.containerRuntime,
+      spec.container_runtime,
+    );
+    const rawOutputs = Array.isArray(spec.outputs)
+      ? spec.outputs
+      : Array.isArray(spec.outputDeclarations)
+        ? spec.outputDeclarations
+        : Array.isArray(spec.output_declarations)
+          ? spec.output_declarations
+          : [];
+    const normalizedOutputs = rawOutputs.map((rawOutput) => {
+      const output = compactObject(rawOutput);
+      return {
+        path: firstText(output.path),
+        role: firstText(output.role),
+        artifactKind: firstText(output.artifactKind),
+        mediaType: firstText(output.mediaType),
+      };
+    }).sort((left, right) => Buffer.compare(
+      Buffer.from(left.path ?? '', 'utf8'),
+      Buffer.from(right.path ?? '', 'utf8'),
+    ));
+    const staticOutputDeclarationsAccepted = rawOutputs.length >= 1
+      && rawOutputs.length <= RANDOM_COLD_BUILD_OUTPUT_MAX_COUNT
+      && rawOutputs.every((rawOutput) => (
+        hasExactRecordKeys(rawOutput, RANDOM_COLD_STATIC_OUTPUT_DECLARATION_KEYS)
+        && typeof rawOutput.path === 'string'
+        && rawOutput.path.length >= 1
+        && rawOutput.path.length <= 32768
+        && !/[\0\r\n]/.test(rawOutput.path)
+        && !path.posix.isAbsolute(rawOutput.path)
+        && !path.win32.isAbsolute(rawOutput.path)
+        && path.posix.normalize(rawOutput.path) === rawOutput.path
+        && rawOutput.path !== '..'
+        && !rawOutput.path.startsWith('../')
+        && ['role', 'artifactKind', 'mediaType'].every((field) => (
+          typeof rawOutput[field] === 'string'
+          && rawOutput[field].length >= 1
+          && rawOutput[field].length <= 32768
+          && !/[\0\r\n]/.test(rawOutput[field])
+        ))
+      ))
+      && new Set(normalizedOutputs.map((output) => output.path)).size
+        === normalizedOutputs.length;
+    const staticSeed = {
+      command: specCommand,
+      args: specArgs,
+      cwd: specCwd,
+      timeoutMs: specTimeoutMs,
+      envNames: specEnvNames,
+      envValueHashes: specEnvValueHashes,
+      executionTransport: specExecutionTransport,
+      workerImage: specWorkerImage,
+      containerRuntime: specContainerRuntime,
+      outputs: normalizedOutputs,
+      shell: false,
+    };
     return {
       raw: spec,
       aliasConflict: nestedAliasConflict(spec, commandSpecAliasPairs),
@@ -4901,6 +5213,13 @@ export function randomColdBuildExecutionObservationFacet(
         workerImage: specWorkerImage,
         shell: false,
       },
+      staticSeed,
+      staticShapeAccepted:
+        hasExactRecordKeys(spec, RANDOM_COLD_STATIC_COMMAND_SPEC_KEYS)
+        && spec.shell === false
+        && specContainerRuntime !== null
+        && /^[A-Za-z0-9_.-]+$/.test(specContainerRuntime)
+        && staticOutputDeclarationsAccepted,
       nestedHash: firstText(spec.commandSpecHash, spec.command_spec_hash),
     };
   };
@@ -4909,7 +5228,9 @@ export function randomColdBuildExecutionObservationFacet(
   );
   const commandSpecRaw = commandSpecProjection.raw;
   const commandSpecAliasConflict = commandSpecProjection.aliasConflict;
-  const commandSpecSeed = commandSpecProjection.seed;
+  const commandSpecSeed = staticLauncherTransport
+    ? commandSpecProjection.staticSeed
+    : commandSpecProjection.seed;
   const {
     command,
     args,
@@ -4925,7 +5246,9 @@ export function randomColdBuildExecutionObservationFacet(
   const commandSpecHash = firstText(raw.commandSpecHash, raw.command_spec_hash);
   const nestedCommandSpecHash = commandSpecProjection.nestedHash;
   const expectedCommandProjection = canonicalCommandSpec(expectedCommandSpec);
-  const expectedCommandSeed = expectedCommandProjection.seed;
+  const expectedCommandSeed = staticLauncherTransport
+    ? expectedCommandProjection.staticSeed
+    : expectedCommandProjection.seed;
   const expectedRecomputedCommandSpecHash = stableJsonHash(expectedCommandSeed);
   const expectedNestedCommandSpecHash = expectedCommandProjection.nestedHash;
   const sourceBindingRaw = firstCompactObject(raw.sourceBinding, raw.source_binding);
@@ -5175,10 +5498,6 @@ export function randomColdBuildExecutionObservationFacet(
   const sourceWorktreeManifestHashAfter = firstText(
     raw.sourceWorktreeManifestHashAfter,
     raw.source_worktree_manifest_hash_after,
-  );
-  const executionEnvironmentRaw = firstCompactObject(
-    raw.executionEnvironment,
-    raw.execution_environment,
   );
   const executionEnvironmentAliasConflict = nestedAliasConflict(executionEnvironmentRaw, [
     ['inheritedHostEnvironment', 'inherited_host_environment'],
@@ -5699,7 +6018,7 @@ export function randomColdBuildExecutionObservationFacet(
       workspaceCapacityPreflightRaw.can_satisfy_dispatch_proof,
     ) === true,
   };
-  const executionEnvironment = {
+  const legacyExecutionEnvironment = {
     transport: firstText(executionEnvironmentRaw.transport),
     isolated: firstBool(executionEnvironmentRaw.isolated) === true,
     inheritedHostEnvironment: firstBool(
@@ -5859,6 +6178,14 @@ export function randomColdBuildExecutionObservationFacet(
         executionEnvironmentRaw.container_removed,
       ) === true,
   };
+  const staticExecutionEnvironmentShapeAccepted = !staticLauncherTransport
+    || hasExactRecordKeys(
+      executionEnvironmentRaw,
+      RANDOM_COLD_STATIC_EXECUTION_ENVIRONMENT_KEYS,
+    );
+  const executionEnvironment = staticLauncherTransport
+    ? structuredClone(executionEnvironmentRaw)
+    : legacyExecutionEnvironment;
   const executionEnvironmentHash = firstText(
     raw.executionEnvironmentHash,
     raw.execution_environment_hash,
@@ -6114,6 +6441,13 @@ export function randomColdBuildExecutionObservationFacet(
       && Object.keys(expectedCommandProjection.raw).length > 0
       ? null
       : 'random_cold_build_command_execution_configured_command_missing',
+    !staticLauncherTransport
+      || (
+        commandSpecProjection.staticShapeAccepted === true
+        && expectedCommandProjection.staticShapeAccepted === true
+      )
+      ? null
+      : 'random_cold_build_command_execution_static_command_shape_invalid',
     expectedCommandSpecHash === expectedRecomputedCommandSpecHash
       && expectedNestedCommandSpecHash === expectedRecomputedCommandSpecHash
       ? null
@@ -6137,13 +6471,13 @@ export function randomColdBuildExecutionObservationFacet(
       && recomputedBuildOutputEvidenceHash === stableJsonHash(buildOutputEvidenceRaw)
       ? null
       : 'random_cold_build_command_execution_output_evidence_hash_mismatch',
-    firstText(
+    staticLauncherTransport || firstText(
       outputEvidenceValidation.commandSpecHash,
       outputEvidenceValidation.command_spec_hash,
     ) === recomputedCommandSpecHash
       ? null
       : 'random_cold_build_command_execution_output_command_hash_mismatch',
-    firstText(
+    staticLauncherTransport || firstText(
       outputEvidenceValidation.sourceBindingHash,
       outputEvidenceValidation.source_binding_hash,
     ) === recomputedSourceBindingHash
@@ -6246,6 +6580,7 @@ export function randomColdBuildExecutionObservationFacet(
       ? null
       : 'random_cold_build_command_execution_configured_command_substituted',
     executionEnvironment.transport === executionTransport
+      || (executionTransport === 'isolated_worker_container' && staticLauncherTransport)
       ? null
       : 'random_cold_build_command_execution_environment_transport_mismatch',
     executionEnvironment.isolated === true
@@ -6255,7 +6590,7 @@ export function randomColdBuildExecutionObservationFacet(
       ? null
       : 'random_cold_build_command_execution_environment_not_isolated',
     stableJson(executionEnvironment.baselineEnvironmentNames)
-      === stableJson(baselineEnvironmentNames)
+      === stableJson(staticLauncherTransport ? [] : baselineEnvironmentNames)
       ? null
       : 'random_cold_build_command_execution_baseline_environment_invalid',
     stableJson(executionEnvironment.declaredEnvironmentNames) === stableJson(envNames)
@@ -6264,10 +6599,53 @@ export function randomColdBuildExecutionObservationFacet(
     executionEnvironmentHash === recomputedExecutionEnvironmentHash
       ? null
       : 'random_cold_build_command_execution_environment_hash_mismatch',
+    staticExecutionEnvironmentShapeAccepted
+      ? null
+      : 'random_cold_build_command_execution_static_environment_shape_invalid',
+    !staticLauncherTransport
+      || (
+        executionEnvironment.schemaVersion
+          === RANDOM_COLD_STATIC_EXECUTION_ENVIRONMENT_SCHEMA_VERSION
+        && executionEnvironment.proofAuthority
+          === RANDOM_COLD_STATIC_EXECUTION_ENVIRONMENT_AUTHORITY
+        && executionEnvironment.staticLauncherAccepted === true
+        && executionEnvironment.arbitraryColdCliResultEnvelopeHash
+          === executionEnvironment.arbitraryColdCliResultEnvelope?.evidenceHash
+        && executionEnvironment.retainedExecutionChainHash
+          === executionEnvironment.arbitraryColdCliResultEnvelope
+            ?.retainedExecutionChain?.evidenceHash
+        && executionEnvironment.outputSetHash
+          === executionEnvironment.arbitraryColdCliResultEnvelope?.evidence?.outputSetHash
+        && executionEnvironment.artifactCount
+          === executionEnvironment.arbitraryColdCliResultEnvelope?.evidence?.artifactCount
+        && executionEnvironment.artifactLocatorSetHash
+          === executionEnvironment.arbitraryColdCliResultEnvelope?.evidence
+            ?.artifactLocatorSetHash
+        && executionEnvironment.workerImageReference
+          === executionEnvironment.arbitraryColdCliResultEnvelope
+            ?.retainedExecutionChain?.workerImageReference
+        && executionEnvironment.workerImageId
+          === executionEnvironment.arbitraryColdCliResultEnvelope?.evidence?.workerImageId
+        && executionEnvironment.sourceBindingHash === recomputedSourceBindingHash
+        && isSha256(executionEnvironment.workerImageId)
+        && isSha256(executionEnvironment.dockerExecutableHash)
+        && isSha256(executionEnvironment.dockerExecutablePathHash)
+        && isSha256(executionEnvironment.resourcePolicyHash)
+        && executionEnvironment.acceptedForGpuHmr === false
+        && executionEnvironment.gpuHmrSuccess === false
+        && executionEnvironment.canSatisfyRuntimeProof === false
+        && executionEnvironment.canSatisfyDispatchProof === false
+        && outputEvidenceValidation.cliEnvelopeAccepted === true
+        && outputEvidenceValidation.readableArtifactCount
+          === executionEnvironment.artifactCount
+        && !nestedExecutionAuthorityClaim(executionEnvironment)
+      )
+      ? null
+      : 'random_cold_build_command_execution_static_envelope_invalid',
     executionEnvironment.workerImageReference === workerImage
       ? null
       : 'random_cold_build_command_execution_worker_image_mismatch',
-    executionEnvironment.workerImageDescriptor
+    staticLauncherTransport || (executionEnvironment.workerImageDescriptor
       && executionEnvironment.workerImageDescriptorHash
         === stableJsonHash(executionEnvironment.workerImageDescriptor)
       && executionEnvironment.workerImageDescriptor.reference === workerImage
@@ -6278,10 +6656,10 @@ export function randomColdBuildExecutionObservationFacet(
       && executionEnvironment.workerImageDescriptor.repoDigestsHash
         === stableJsonHash(executionEnvironment.workerImageDescriptor.repoDigests)
       && executionEnvironment.workerImageDescriptor.operatingSystem === 'linux'
-      && Boolean(executionEnvironment.workerImageDescriptor.architecture)
+      && Boolean(executionEnvironment.workerImageDescriptor.architecture))
       ? null
       : 'random_cold_build_command_execution_worker_image_descriptor_invalid',
-    /^[a-f0-9]{32}$/.test(executionEnvironment.executionNonce ?? '')
+    staticLauncherTransport || (/^[a-f0-9]{32}$/.test(executionEnvironment.executionNonce ?? '')
       && isSha256(executionEnvironment.workerImageId)
       && isSha256(executionEnvironment.containerIdHash)
       && isSha256(executionEnvironment.containerConfigHash)
@@ -6297,13 +6675,15 @@ export function randomColdBuildExecutionObservationFacet(
       && [
         'npipe:////./pipe/dockerDesktopLinuxEngine',
         'unix:///var/run/docker.sock',
-      ].includes(executionEnvironment.dockerEndpoint)
+      ].includes(executionEnvironment.dockerEndpoint))
       ? null
       : 'random_cold_build_command_execution_container_identity_invalid',
-    executionEnvironment.containerConfigHash === recomputedContainerConfigHash
+    staticLauncherTransport
+      || executionEnvironment.containerConfigHash === recomputedContainerConfigHash
       ? null
       : 'random_cold_build_command_execution_container_config_hash_mismatch',
-    executionEnvironment.containerStateHash === recomputedContainerStateHash
+    staticLauncherTransport
+      || executionEnvironment.containerStateHash === recomputedContainerStateHash
       ? null
       : 'random_cold_build_command_execution_container_state_hash_mismatch',
     executionEnvironment.resourcePolicyHash === recomputedResourcePolicyHash
@@ -6331,7 +6711,7 @@ export function randomColdBuildExecutionObservationFacet(
         === RANDOM_COLD_BUILD_OUTPUT_MAX_COUNT
       ? null
       : 'random_cold_build_command_execution_resource_policy_invalid',
-    executionEnvironment.workspaceCapacityPreflightHash
+    staticLauncherTransport || (executionEnvironment.workspaceCapacityPreflightHash
       === recomputedWorkspaceCapacityPreflightHash
       && executionEnvironment.workspaceCapacityPreflight?.schemaVersion
         === 'synthi.gpu_hmr.cold_build_workspace_capacity_preflight.v1'
@@ -6362,10 +6742,11 @@ export function randomColdBuildExecutionObservationFacet(
         >= executionEnvironment.resourcePolicy?.workspaceBytes
           + RANDOM_COLD_BUILD_WORKSPACE_CAPACITY_RESERVE_BYTES
       && executionEnvironment.workspaceCapacityPreflight?.memoryLimitBytes
-        >= executionEnvironment.workspaceCapacityPreflight?.requiredMemoryBytes
+        >= executionEnvironment.workspaceCapacityPreflight?.requiredMemoryBytes)
       ? null
       : 'random_cold_build_command_execution_workspace_capacity_preflight_invalid',
-    executionEnvironment.buildOutputTransport === 'bounded_container_tmpfs_live_docker_cp'
+    staticLauncherTransport || (
+      executionEnvironment.buildOutputTransport === 'bounded_container_tmpfs_live_docker_cp'
       && executionEnvironment.buildOutputExtractionHash
         === recomputedBuildOutputExtractionHash
       && executionEnvironment.buildOutputExtraction?.transport
@@ -6394,15 +6775,23 @@ export function randomColdBuildExecutionObservationFacet(
       && executionEnvironment.buildOutputExtraction?.canSatisfyRuntimeProof === false
       && executionEnvironment.buildOutputExtraction?.canSatisfyDispatchProof === false
       && !nestedExecutionAuthorityClaim(executionEnvironment.buildOutputExtraction)
+    )
       ? null
       : 'random_cold_build_command_execution_output_extraction_invalid',
     executionEnvironment.transport === 'isolated_worker_container'
       ? 'random_cold_build_command_execution_legacy_container_protocol_removed'
       : null,
-    executionEnvironment.sourceMountPathHash === sourceBinding.sourceRootPathHash
+    staticLauncherTransport
+      || executionEnvironment.sourceMountPathHash === sourceBinding.sourceRootPathHash
       ? null
       : 'random_cold_build_command_execution_source_mount_binding_mismatch',
-    executionEnvironment.dockerInspectAccepted === true
+    (staticLauncherTransport
+      ? executionEnvironment.dockerInspectAccepted === true
+        && executionEnvironment.dockerStateInspectAccepted === true
+        && executionEnvironment.sourceSnapshotRemoved === true
+        && executionEnvironment.buildOutputRootRemoved === true
+        && executionEnvironment.containerRemoved === true
+      : executionEnvironment.dockerInspectAccepted === true
       && executionEnvironment.dockerStateInspectAccepted === true
       && executionEnvironment.environmentFileRemoved === true
       && executionEnvironment.containerCidFileRemoved === true
@@ -6412,10 +6801,11 @@ export function randomColdBuildExecutionObservationFacet(
       && executionEnvironment.releaseControlRootRemoved === true
       && executionEnvironment.buildOutputExtraction?.accepted === true
       && executionEnvironment.containerProtocol?.accepted === true
-      && executionEnvironment.containerRemoved === true
+      && executionEnvironment.containerRemoved === true)
       ? null
       : 'random_cold_build_command_execution_container_lifecycle_unproven',
-    executionEnvironment.containerConfig?.imageId === executionEnvironment.workerImageId
+    staticLauncherTransport || (executionEnvironment.containerConfig?.imageId
+      === executionEnvironment.workerImageId
       && executionEnvironment.containerConfig?.networkMode === 'none'
       && executionEnvironment.containerConfig?.readOnlyRootfs === true
       && executionEnvironment.containerConfig?.privileged === false
@@ -6492,10 +6882,10 @@ export function randomColdBuildExecutionObservationFacet(
       && containerReleaseMount?.type === 'bind'
       && containerReleaseMount.readWrite === false
       && containerReleaseMount.propagation === 'rprivate'
-      && containerReleaseMount.sourcePathHash === executionEnvironment.releaseControlRootHash
+      && containerReleaseMount.sourcePathHash === executionEnvironment.releaseControlRootHash)
       ? null
       : 'random_cold_build_command_execution_container_config_invalid',
-    executionEnvironment.containerState?.status === 'exited'
+    staticLauncherTransport || (executionEnvironment.containerState?.status === 'exited'
       && executionEnvironment.containerState.running === false
       && executionEnvironment.containerState.paused === false
       && executionEnvironment.containerState.restarting === false
@@ -6511,7 +6901,7 @@ export function randomColdBuildExecutionObservationFacet(
       && executionEnvironment.buildOutputExtraction?.wrapperExitCode
         === executionEnvironment.containerState.exitCode
       && processObservation.startedAt === executionEnvironment.containerState.startedAt
-      && processObservation.finishedAt === executionEnvironment.containerState.finishedAt
+      && processObservation.finishedAt === executionEnvironment.containerState.finishedAt)
       ? null
       : 'random_cold_build_command_execution_container_state_invalid',
     isSha256(sourceBinding.sourceRootPathHash)
@@ -35945,6 +36335,10 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
       artifactRoot: firstText(context.mcpRoot, context.mcp_root)
         ? path.join(firstText(context.mcpRoot, context.mcp_root), '.gpu-hmr-shared-cas')
         : defaultCasRootFromEnv(),
+      executionEnvironment: firstCompactObject(
+        randomColdBuildExecutionObservationRaw.executionEnvironment,
+        randomColdBuildExecutionObservationRaw.execution_environment,
+      ),
     });
   const randomColdBuildExecutionObservation = randomColdBuildExecutionObservationFacet(
     randomColdBuildExecutionObservationRaw,
