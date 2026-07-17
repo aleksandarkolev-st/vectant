@@ -57,8 +57,11 @@ import {
   visualEvidenceArtifactsFromVisualOracleArtifacts,
 } from './lib/gpu-hmr-validation-proof-artifact.mjs';
 import {
+  EXACT_COMMIT_GIT_BLOB_SNAPSHOT_SCHEMA_VERSION,
+  materializeExactCommitGitBlobSnapshot,
   materializeDirectSourceGitSnapshot,
   verifyDirectSourceGitIdentity,
+  verifyExactCommitGitBlobIdentity,
 } from './lib/gpu-hmr-direct-source-git-identity.mjs';
 import {
   GPU_HMR_TEST_TIMING_PHASE_KEYS,
@@ -1464,6 +1467,14 @@ function normalizeDirectSourceFiles(source, {
   const baseDir = sourceRoot || manifestDir || process.cwd();
   const normalized = entries.map((entry, index) => {
     const raw = profileObject(entry, `directSource.files[${index}]`);
+    const kind = profileString(
+      raw.kind ?? raw.fileKind ?? raw.file_kind ?? 'source',
+      `directSource.files[${index}].kind`,
+      { required: true },
+    ).toLowerCase();
+    if (!['source', 'build'].includes(kind)) {
+      throw new Error(`invalid direct source file kind ${kind}: expected source or build`);
+    }
     const workspacePath = cleanRel(profileString(
       raw.workspacePath
         ?? raw.workspace_path
@@ -1506,6 +1517,7 @@ function normalizeDirectSourceFiles(source, {
     validateDeclaredSourceHash(declaredContentHash, contentHash, `directSource.files[${index}].contentHash`);
     const evidenceRef = `evidence:agent-direct-source-file:${contentHash}`;
     return {
+      kind,
       path: workspacePath,
       name: workspacePath,
       content,
@@ -1609,6 +1621,15 @@ function normalizeDirectSourceOverride(rawManifest, {
     ?? source.immutableSourceIdentity
     ?? source.immutable_source_identity
     ?? null;
+  const declaredExactCommitGitBlobIdentity =
+    raw.exactCommitGitBlobIdentity
+    ?? raw.exact_commit_git_blob_identity
+    ?? source.exactCommitGitBlobIdentity
+    ?? source.exact_commit_git_blob_identity
+    ?? (declaredImmutableSourceIdentity?.schemaVersion
+        === EXACT_COMMIT_GIT_BLOB_SNAPSHOT_SCHEMA_VERSION
+      ? declaredImmutableSourceIdentity
+      : null);
   const sourceKind = profileString(
     raw.sourceKind
       ?? raw.source_kind
@@ -1636,6 +1657,9 @@ function normalizeDirectSourceOverride(rawManifest, {
   const entryFile = files.find((entry) => entry.path === entryPath);
   if (!entryFile) {
     throw new Error(`direct source manifest entryPath ${entryPath} is missing from source files`);
+  }
+  if (entryFile.kind !== 'source') {
+    throw new Error(`direct source manifest entryPath ${entryPath} must be selected as source`);
   }
   const declaredVisualSceneManifestHash = profileString(
     raw.visualSceneManifestHash
@@ -1683,23 +1707,58 @@ function normalizeDirectSourceOverride(rawManifest, {
     );
   }
   const manifestHash = sourceFilesManifestHash(files);
-  const immutableSourceIdentity = declaredImmutableSourceIdentity
-    ? verifyDirectSourceGitIdentity({
-        declaredIdentity: declaredImmutableSourceIdentity,
-        sourceRoot: resolvedSourceRoot,
-        requestedCommit: declaredImmutableCommit,
-        sourceManifestHash: manifestHash,
-        sourceFilePaths: files.map((entry) => entry.path),
-      })
-    : sourceAuthority === 'direct_local_git_repo_path'
-      ? verifyDirectSourceGitIdentity({
-          declaredIdentity: declaredImmutableSourceIdentity,
-          sourceRoot: resolvedSourceRoot,
-          requestedCommit: declaredImmutableCommit,
-          sourceManifestHash: manifestHash,
-          sourceFilePaths: files.map((entry) => entry.path),
-        })
-      : null;
+  let immutableSourceIdentity = null;
+  if (declaredExactCommitGitBlobIdentity) {
+    const exactFileManifest = Array.isArray(declaredExactCommitGitBlobIdentity.fileManifest)
+      ? declaredExactCommitGitBlobIdentity.fileManifest
+      : [];
+    const exactSourcePaths = exactFileManifest
+      .filter((entry) => entry?.kind === 'source')
+      .map((entry) => entry.path);
+    const exactBuildPaths = exactFileManifest
+      .filter((entry) => entry?.kind === 'build')
+      .map((entry) => entry.path);
+    immutableSourceIdentity = verifyExactCommitGitBlobIdentity({
+      declaredIdentity: declaredExactCommitGitBlobIdentity,
+      repositoryRoot: resolvedSourceRoot,
+      commitOid: declaredImmutableCommit,
+      sourceRootRelativePath:
+        declaredExactCommitGitBlobIdentity.sourceRootRelativePath
+        ?? declaredExactCommitGitBlobIdentity.source_root_relative_path
+        ?? '.',
+      sourcePaths: exactSourcePaths,
+      buildPaths: exactBuildPaths,
+      expectedPathSetHash:
+        declaredExactCommitGitBlobIdentity.pathSetHash
+        ?? declaredExactCommitGitBlobIdentity.path_set_hash,
+      expectedManifestHash:
+        declaredExactCommitGitBlobIdentity.manifestHash
+        ?? declaredExactCommitGitBlobIdentity.manifest_hash,
+    });
+    const selectedFileProjection = files.map((entry) => ({
+      kind: entry.kind,
+      path: entry.path,
+      contentHash: entry.contentHash,
+      byteLength: entry.byteLength,
+    })).sort((left, right) => left.path.localeCompare(right.path));
+    const exactFileProjection = exactFileManifest.map((entry) => ({
+      kind: entry.kind,
+      path: entry.path,
+      contentHash: entry.contentHash,
+      byteLength: entry.byteLength,
+    })).sort((left, right) => left.path.localeCompare(right.path));
+    if (stableJson(selectedFileProjection) !== stableJson(exactFileProjection)) {
+      throw new Error('direct source manifest files do not match the exact-commit Git blob snapshot');
+    }
+  } else if (declaredImmutableSourceIdentity || sourceAuthority === 'direct_local_git_repo_path') {
+    immutableSourceIdentity = verifyDirectSourceGitIdentity({
+      declaredIdentity: declaredImmutableSourceIdentity,
+      sourceRoot: resolvedSourceRoot,
+      requestedCommit: declaredImmutableCommit,
+      sourceManifestHash: manifestHash,
+      sourceFilePaths: files.map((entry) => entry.path),
+    });
+  }
   const immutableCommit = immutableSourceIdentity?.commitOid ?? declaredImmutableCommit;
   const evidenceRef = `evidence:agent-direct-source-manifest:${manifestHash}`;
   return {
@@ -1715,6 +1774,12 @@ function normalizeDirectSourceOverride(rawManifest, {
     immutable_commit: immutableCommit || null,
     immutableSourceIdentity,
     immutable_source_identity: immutableSourceIdentity,
+    exactCommitGitBlobIdentity: declaredExactCommitGitBlobIdentity
+      ? immutableSourceIdentity
+      : null,
+    exact_commit_git_blob_identity: declaredExactCommitGitBlobIdentity
+      ? immutableSourceIdentity
+      : null,
     directSourceInputChannels,
     direct_source_input_channels: directSourceInputChannels,
     entryPath,
@@ -1802,6 +1867,8 @@ function applyDirectSourceOverride(profile, override = loadDirectSourceOverride(
     immutable_commit: override.immutable_commit,
     immutableSourceIdentity: override.immutableSourceIdentity,
     immutable_source_identity: override.immutable_source_identity,
+    exactCommitGitBlobIdentity: override.exactCommitGitBlobIdentity,
+    exact_commit_git_blob_identity: override.exact_commit_git_blob_identity,
     directSourceInputChannels: override.directSourceInputChannels,
     direct_source_input_channels: override.direct_source_input_channels,
     evidenceRef: override.evidenceRef,
@@ -7117,6 +7184,10 @@ function selfCheckAgentVisualProfile() {
     mkdirSync(path.join(directLocalSelfCheckRoot, 'src'), { recursive: true });
     writeFileSync(path.join(directLocalSelfCheckRoot, 'include', 'params.hpp'), multiFileHeaderSource);
     writeFileSync(path.join(directLocalSelfCheckRoot, 'src', 'main.cpp'), multiFileEntrySource);
+    writeFileSync(
+      path.join(directLocalSelfCheckRoot, 'CMakeLists.txt'),
+      'cmake_minimum_required(VERSION 3.20)\nproject(exact_source_self_check)\n',
+    );
     for (const gitArgs of [
       ['init'],
       ['config', 'user.email', 'gpu-hmr-self-check@example.invalid'],
@@ -7169,6 +7240,53 @@ function selfCheckAgentVisualProfile() {
         files: directLocalGitSnapshot.files,
       }, {
         manifestPath: path.join(directLocalSelfCheckRoot, 'self-check-direct-local-source-manifest.json'),
+        sourceRoot: directLocalSelfCheckRoot,
+      }),
+    );
+    writeFileSync(
+      path.join(directLocalSelfCheckRoot, 'src', 'main.cpp'),
+      'int dirty_worktree_source_must_not_be_submitted = 1;\n',
+    );
+    const directLocalExactSnapshot = materializeExactCommitGitBlobSnapshot({
+      repositoryRoot: directLocalSelfCheckRoot,
+      commitOid: directLocalCommit,
+      sourceRootRelativePath: '.',
+      sourcePaths: ['include/params.hpp', 'src/main.cpp'],
+      buildPaths: ['CMakeLists.txt'],
+    });
+    const directLocalExactSourceProfile = applyDirectSourceOverride(
+      normalizeAgentVisualProfile({
+        schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+        profileId: 'self-check-direct-local-exact-source-profile',
+        profileClass: 'self_check_visual_gpu_path',
+        source: {
+          entryPath: 'src/main.cpp',
+          fixture: 'ray-light',
+        },
+        compile: {
+          width: 320,
+          height: 240,
+        },
+      }),
+      normalizeDirectSourceOverride({
+        sourceAuthority: 'direct_local_git_repo_path',
+        directSourceInputChannels: [
+          'cli_arg:source-root',
+          'cli_arg:source-entry',
+          'cli_arg:source-commit',
+          'cli_arg:source-file',
+          'cli_arg:build-file',
+        ],
+        immutableCommit: directLocalCommit,
+        immutableSourceIdentity: directLocalExactSnapshot.identity,
+        exactCommitGitBlobIdentity: directLocalExactSnapshot.identity,
+        entryPath: 'src/main.cpp',
+        files: directLocalExactSnapshot.files,
+      }, {
+        manifestPath: path.join(
+          directLocalSelfCheckRoot,
+          'self-check-direct-local-exact-source-manifest.json',
+        ),
         sourceRoot: directLocalSelfCheckRoot,
       }),
     );
@@ -7617,6 +7735,14 @@ function selfCheckAgentVisualProfile() {
       || directLocalSourceProfile.source.immutableCommit !== directLocalCommit
       || directLocalSourceProfile.source.immutableSourceIdentity?.identityHash
         !== directLocalGitIdentity.identityHash
+      || directLocalExactSourceProfile.source.immutableSourceIdentity?.identityHash
+        !== directLocalExactSnapshot.identity.identityHash
+      || directLocalExactSourceProfile.source.exactCommitGitBlobIdentity?.identityHash
+        !== directLocalExactSnapshot.identity.identityHash
+      || directLocalExactSourceProfile.source.files.length !== 3
+      || directLocalExactSourceProfile.source.files.filter((entry) => entry.kind === 'build').length !== 1
+      || directLocalExactSourceProfile.source.files.find((entry) => entry.path === 'src/main.cpp')?.content
+        !== multiFileEntrySource
       || directSourceProfile.source.files.length !== 2
       || !directSourceProfile.source.manifestHash?.startsWith('sha256:')
       || !directSourceProfile.source.evidenceRef?.startsWith('evidence:agent-direct-source-manifest:sha256:')

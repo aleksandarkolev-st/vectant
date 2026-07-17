@@ -22,7 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  materializeDirectSourceGitSnapshot,
+  materializeExactCommitGitBlobSnapshot,
 } from './lib/gpu-hmr-direct-source-git-identity.mjs';
 
 function readOption(args, name) {
@@ -35,6 +35,27 @@ function readOption(args, name) {
     }
   }
   return '';
+}
+
+function readOptions(args, name) {
+  const prefix = `${name}=`;
+  const values = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (value === name) {
+      const next = args[index + 1];
+      if (typeof next !== 'string' || !next || next.startsWith('--')) {
+        throw new Error(`${name} requires a value`);
+      }
+      values.push(next);
+      index += 1;
+    } else if (typeof value === 'string' && value.startsWith(prefix)) {
+      const inline = value.slice(prefix.length);
+      if (!inline) throw new Error(`${name} requires a value`);
+      values.push(inline);
+    }
+  }
+  return values;
 }
 
 function hasFlag(args, name) {
@@ -53,6 +74,25 @@ function sha256Hex(value) {
 
 function contentHashForText(value) {
   return `sha256:${sha256Hex(String(value ?? ''))}`;
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
+function sourceFilesManifestHash(files) {
+  const projection = files.map((entry) => ({
+    path: entry.path,
+    contentHash: entry.contentHash,
+    content_hash: entry.content_hash,
+    byteLength: entry.byteLength,
+    byte_length: entry.byte_length,
+  }));
+  return `sha256:${sha256Hex(stableJson(projection))}`;
 }
 
 function uniqueSortedStrings(values) {
@@ -268,16 +308,24 @@ function synthesizeSourceManifestFromRoot({
   sourceEntry,
   sourceAuthority,
   sourceCommit,
+  sourceRootRelativePath = '.',
+  selectedSourcePaths = [],
+  selectedBuildPaths = [],
   inputChannels = [],
 }) {
   if (!sourceRoot) throw new Error('source root is required');
   const root = realpathSync(path.resolve(sourceRoot));
   if (!existsSync(root)) throw new Error(`source root not found: ${root}`);
-  const scannedFiles = sourceFilesForRoot(root);
-  if (scannedFiles.length === 0) {
+  const explicitSourcePaths = uniqueSortedStrings(selectedSourcePaths).map(cleanRel);
+  const explicitBuildPaths = uniqueSortedStrings(selectedBuildPaths).map(cleanRel);
+  const explicitSelection = explicitSourcePaths.length > 0 || explicitBuildPaths.length > 0;
+  const scannedFiles = explicitSelection ? [] : sourceFilesForRoot(root);
+  if (!explicitSelection && scannedFiles.length === 0) {
     throw new Error(`source root ${root} contains no supported source files`);
   }
-  const entryPath = inferEntryPath(scannedFiles, sourceEntry);
+  if (explicitSelection && explicitSourcePaths.length === 0) {
+    throw new Error('exact-commit source selection requires at least one --source-file');
+  }
   const directSourceAuthority = sourceAuthority || 'direct_local_git_repo_path';
   if (!sourceCommit) {
     throw new Error('auto-scanned --source-root requires an explicit full --source-commit');
@@ -287,14 +335,40 @@ function synthesizeSourceManifestFromRoot({
     : directSourceAuthority === 'direct_source_url_commit'
       ? 'source_url_commit'
       : 'source_tree_files';
-  const immutableSnapshot = materializeDirectSourceGitSnapshot({
-    sourceRoot: root,
-    requestedCommit: sourceCommit,
-    sourceFilePaths: scannedFiles.map((file) => file.path),
+  const repositoryRoot = realpathSync(String(execFileSync(
+    'git',
+    ['-C', root, 'rev-parse', '--show-toplevel'],
+    { encoding: 'utf8', windowsHide: true },
+  )).trim());
+  const inferredSourceRootRelativePath = path.relative(repositoryRoot, root).replace(/\\/g, '/') || '.';
+  const requestedSourceRootRelativePath = sourceRootRelativePath === '.'
+    ? inferredSourceRootRelativePath
+    : cleanRel(sourceRootRelativePath);
+  const sourcePaths = explicitSelection
+    ? explicitSourcePaths
+    : scannedFiles.map((file) => file.path);
+  const immutableSnapshot = materializeExactCommitGitBlobSnapshot({
+    repositoryRoot,
+    commitOid: sourceCommit,
+    sourceRootRelativePath: requestedSourceRootRelativePath,
+    sourcePaths,
+    buildPaths: explicitBuildPaths,
   });
-  const files = immutableSnapshot.files;
-  const fileManifest = immutableSnapshot.fileManifest;
-  const manifestHash = immutableSnapshot.manifestHash;
+  const files = immutableSnapshot.files.map((entry) => ({
+    ...entry,
+    name: entry.path,
+  }));
+  const sourceFiles = files.filter((entry) => entry.kind === 'source');
+  const entryPath = inferEntryPath(sourceFiles, sourceEntry);
+  const fileManifest = files.map((entry) => ({
+    kind: entry.kind,
+    path: entry.path,
+    contentHash: entry.contentHash,
+    content_hash: entry.content_hash,
+    byteLength: entry.byteLength,
+    byte_length: entry.byte_length,
+  }));
+  const manifestHash = sourceFilesManifestHash(files);
   const immutableSourceIdentity = immutableSnapshot.identity;
   const immutableCommit = immutableSourceIdentity.commitOid;
   const directSourceInputChannels = uniqueSortedStrings(inputChannels);
@@ -373,14 +447,20 @@ function synthesizeSourceManifestFromRoot({
     source_authority: directSourceAuthority,
     sourceKind,
     source_kind: sourceKind,
-    sourceRoot: root,
-    source_root: root,
-    repoPath: root,
-    repo_path: root,
+    sourceRoot: repositoryRoot,
+    source_root: repositoryRoot,
+    repoPath: repositoryRoot,
+    repo_path: repositoryRoot,
     immutableCommit,
     immutable_commit: immutableCommit,
     immutableSourceIdentity,
     immutable_source_identity: immutableSourceIdentity,
+    exactCommitGitBlobIdentity: immutableSourceIdentity,
+    exact_commit_git_blob_identity: immutableSourceIdentity,
+    exactCommitSnapshotManifestHash: immutableSnapshot.manifestHash,
+    exact_commit_snapshot_manifest_hash: immutableSnapshot.manifestHash,
+    sourceRootRelativePath: requestedSourceRootRelativePath,
+    source_root_relative_path: requestedSourceRootRelativePath,
     directSourceInputChannels,
     direct_source_input_channels: directSourceInputChannels,
     entryInferenceEvidence,
@@ -399,14 +479,20 @@ function synthesizeSourceManifestFromRoot({
       source_authority: directSourceAuthority,
       sourceKind,
       source_kind: sourceKind,
-      sourceRoot: root,
-      source_root: root,
-      repoPath: root,
-      repo_path: root,
+      sourceRoot: repositoryRoot,
+      source_root: repositoryRoot,
+      repoPath: repositoryRoot,
+      repo_path: repositoryRoot,
       immutableCommit,
       immutable_commit: immutableCommit,
       immutableSourceIdentity,
       immutable_source_identity: immutableSourceIdentity,
+      exactCommitGitBlobIdentity: immutableSourceIdentity,
+      exact_commit_git_blob_identity: immutableSourceIdentity,
+      exactCommitSnapshotManifestHash: immutableSnapshot.manifestHash,
+      exact_commit_snapshot_manifest_hash: immutableSnapshot.manifestHash,
+      sourceRootRelativePath: requestedSourceRootRelativePath,
+      source_root_relative_path: requestedSourceRootRelativePath,
       directSourceInputChannels,
       direct_source_input_channels: directSourceInputChannels,
       entryInferenceEvidence,
@@ -439,6 +525,7 @@ function selfCheckSourceRootManifest() {
     mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
     writeFileSync(path.join(tmpRoot, 'src', 'main.cpp'), '#include "scene_config.h"\nint main(){return 0;}\n');
     writeFileSync(path.join(tmpRoot, 'src', 'scene_config.h'), '#pragma once\nconstexpr int kPixels = 16;\n');
+    writeFileSync(path.join(tmpRoot, 'CMakeLists.txt'), 'cmake_minimum_required(VERSION 3.20)\nproject(cold_source)\n');
     for (const gitArgs of [
       ['init'],
       ['config', 'user.email', 'gpu-hmr-self-check@example.invalid'],
@@ -456,11 +543,14 @@ function selfCheckSourceRootManifest() {
       encoding: 'utf8',
       windowsHide: true,
     })).trim();
+    writeFileSync(path.join(tmpRoot, 'src', 'main.cpp'), 'int dirty_worktree_must_not_reach_provider = 1;\n');
     const generated = synthesizeSourceManifestFromRoot({
       sourceRoot: tmpRoot,
       sourceEntry: 'src/main.cpp',
       sourceAuthority: 'user_source_files',
       sourceCommit,
+      selectedSourcePaths: ['src/main.cpp', 'src/scene_config.h'],
+      selectedBuildPaths: ['CMakeLists.txt'],
       inputChannels: [
         'cli_arg:source-root',
         'cli_arg:source-entry',
@@ -474,14 +564,20 @@ function selfCheckSourceRootManifest() {
     if (generated.manifest.entryPath !== 'src/main.cpp') {
       throw new Error('source-root manifest self-check failed: entry not preserved');
     }
-    if (generated.manifest.files.length !== 2) {
+    if (generated.manifest.files.length !== 3) {
       throw new Error('source-root manifest self-check failed: source file count mismatch');
     }
     if (
       generated.manifest.immutableCommit !== sourceCommit
       || generated.manifest.immutableSourceIdentity?.commitOid !== sourceCommit
+      || generated.manifest.immutableSourceIdentity?.sourceBytesOrigin !== 'git_objects_only'
+      || generated.manifest.immutableSourceIdentity?.worktreeStateInspected !== false
+      || generated.manifest.immutableSourceIdentity?.sourceFileCount !== 2
+      || generated.manifest.immutableSourceIdentity?.buildFileCount !== 1
+      || generated.manifest.files.find((entry) => entry.path === 'src/main.cpp')?.inline
+        !== '#include "scene_config.h"\nint main(){return 0;}\n'
     ) {
-      throw new Error('source-root manifest self-check failed: immutable Git identity missing');
+      throw new Error('source-root manifest self-check failed: exact-commit Git identity missing');
     }
     if (generated.manifest.acceptedForGpuHmr !== false || generated.manifest.gpuHmrSuccess !== false) {
       throw new Error('source-root manifest self-check failed: manifest claimed GPU HMR authority');
@@ -513,6 +609,8 @@ function selfCheckSourceRootManifest() {
       sourceEntry: 'src/main.cpp',
       sourceAuthority: 'user_source_files',
       sourceCommit: secondSourceCommit,
+      selectedSourcePaths: ['src/main.cpp', 'src/scene_config.h'],
+      selectedBuildPaths: ['CMakeLists.txt'],
       inputChannels: ['cli_arg:source-root', 'cli_arg:source-commit'],
     });
     if (
@@ -537,6 +635,9 @@ function resolveLauncherInputs(args, env = process.env) {
   const sourceEntryArg = readOption(args, '--source-entry');
   const sourceAuthorityArg = readOption(args, '--source-authority');
   const sourceCommitArg = readOption(args, '--source-commit');
+  const sourceRootRelativePathArg = readOption(args, '--source-subtree');
+  const sourceFileArgs = readOptions(args, '--source-file');
+  const buildFileArgs = readOptions(args, '--build-file');
   const directSourceRequested = Boolean(
     sourceManifestArg
     || sourceRootArg
@@ -544,6 +645,8 @@ function resolveLauncherInputs(args, env = process.env) {
     || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH
     || env.SYNTHI_GPU_AGENT_SOURCE_ROOT
     || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT
+    || sourceFileArgs.length > 0
+    || buildFileArgs.length > 0
   );
   const fixture = directSourceRequested && !fixtureArg
     ? ''
@@ -574,6 +677,25 @@ function resolveLauncherInputs(args, env = process.env) {
     || env.SYNTHI_GPU_AGENT_SOURCE_COMMIT
     || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_COMMIT
     || '';
+  const sourceRootRelativePath =
+    sourceRootRelativePathArg
+    || env.SYNTHI_GPU_AGENT_SOURCE_SUBTREE
+    || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_SUBTREE
+    || '.';
+  const selectedSourcePaths = sourceFileArgs.length > 0
+    ? sourceFileArgs
+    : uniqueSortedStrings(String(
+        env.SYNTHI_GPU_AGENT_SOURCE_FILES
+        || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_FILES
+        || '',
+      ).split(',').map((value) => value.trim()));
+  const selectedBuildPaths = buildFileArgs.length > 0
+    ? buildFileArgs
+    : uniqueSortedStrings(String(
+        env.SYNTHI_GPU_AGENT_BUILD_FILES
+        || env.SYNTHI_GPU_AGENT_DIRECT_BUILD_FILES
+        || '',
+      ).split(',').map((value) => value.trim()));
   const vendor = readOption(args, '--vendor') || env.SYNTHI_GPU_VENDOR || 'rocm';
 
   if (fixture && profile) {
@@ -591,6 +713,12 @@ function resolveLauncherInputs(args, env = process.env) {
   if (sourceCommit && sourceManifest) {
     throw new Error('--source-commit cannot override an existing direct source manifest');
   }
+  if ((selectedSourcePaths.length > 0 || selectedBuildPaths.length > 0) && !sourceRoot) {
+    throw new Error('--source-file/--build-file require --source-root');
+  }
+  if ((selectedSourcePaths.length > 0 || selectedBuildPaths.length > 0) && !sourceCommit) {
+    throw new Error('--source-file/--build-file require an explicit full --source-commit');
+  }
 
   return {
     fixtureArg,
@@ -600,6 +728,9 @@ function resolveLauncherInputs(args, env = process.env) {
     sourceEntryArg,
     sourceAuthorityArg,
     sourceCommitArg,
+    sourceRootRelativePathArg,
+    sourceFileArgs,
+    buildFileArgs,
     directSourceRequested,
     fixture,
     profile,
@@ -608,6 +739,9 @@ function resolveLauncherInputs(args, env = process.env) {
     sourceEntry,
     sourceAuthority,
     sourceCommit,
+    sourceRootRelativePath,
+    selectedSourcePaths,
+    selectedBuildPaths,
     vendor,
   };
 }
@@ -714,10 +848,16 @@ const {
   sourceEntry,
   sourceAuthority,
   sourceCommit,
+  sourceRootRelativePath,
+  selectedSourcePaths,
+  selectedBuildPaths,
   sourceRootArg,
   sourceEntryArg,
   sourceAuthorityArg,
   sourceCommitArg,
+  sourceRootRelativePathArg,
+  sourceFileArgs,
+  buildFileArgs,
   vendor,
 } = launcherInputs;
 let { sourceManifest } = launcherInputs;
@@ -750,12 +890,18 @@ if (!sourceManifest && sourceRoot) {
     !sourceCommitArg && (process.env.SYNTHI_GPU_AGENT_SOURCE_COMMIT || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_COMMIT)
       ? 'env:SYNTHI_GPU_AGENT_SOURCE_COMMIT'
       : null,
+    sourceRootRelativePathArg ? 'cli_arg:source-subtree' : null,
+    sourceFileArgs.length > 0 ? 'cli_arg:source-file' : null,
+    buildFileArgs.length > 0 ? 'cli_arg:build-file' : null,
   ];
   generatedSourceManifest = synthesizeSourceManifestFromRoot({
     sourceRoot,
     sourceEntry,
     sourceAuthority,
     sourceCommit,
+    sourceRootRelativePath,
+    selectedSourcePaths,
+    selectedBuildPaths,
     inputChannels: directSourceInputChannels,
   });
   sourceManifest = generatedSourceManifest.manifestPath;
