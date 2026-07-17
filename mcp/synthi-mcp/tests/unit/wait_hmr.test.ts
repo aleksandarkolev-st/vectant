@@ -565,11 +565,20 @@ describe("synthi_wait_hmr", () => {
     const body = res.structuredContent as {
       status: string;
       post_apply_terminal?: boolean;
-      detail?: { reason?: string };
+      detail?: {
+        schemaVersion?: string;
+        reasonPresent?: boolean;
+        reasonRef?: string;
+        reason?: string;
+      };
     };
     expect(body.status).toBe("rejected");
     expect(body.post_apply_terminal).toBe(true);
-    expect(body.detail?.reason).toContain("GPU kernel launch failed");
+    expect(body.detail?.schemaVersion).toBe("synthi.hmr.public_terminal_diagnostic.v1");
+    expect(body.detail?.reasonPresent).toBe(true);
+    expect(body.detail?.reasonRef).toMatch(/^hmr-terminal-reason-ref:sha256:[a-f0-9]{64}$/);
+    expect(body.detail?.reason).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain("GPU kernel launch failed");
   });
 
   it("returns a post-apply runtime rejection while waiting for frame evidence", async () => {
@@ -594,11 +603,20 @@ describe("synthi_wait_hmr", () => {
     const body = res.structuredContent as {
       status: string;
       post_apply_terminal?: boolean;
-      detail?: { reason?: string };
+      detail?: {
+        schemaVersion?: string;
+        reasonPresent?: boolean;
+        reasonRef?: string;
+        reason?: string;
+      };
     };
     expect(body.status).toBe("rejected");
     expect(body.post_apply_terminal).toBe(true);
-    expect(body.detail?.reason).toContain("post-reload device dispatch rejected");
+    expect(body.detail?.schemaVersion).toBe("synthi.hmr.public_terminal_diagnostic.v1");
+    expect(body.detail?.reasonPresent).toBe(true);
+    expect(body.detail?.reasonRef).toMatch(/^hmr-terminal-reason-ref:sha256:[a-f0-9]{64}$/);
+    expect(body.detail?.reason).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain("post-reload device dispatch rejected");
   });
 
   it("returns unvalidated GPU proof telemetry with wait_hmr when no proof state is requested", async () => {

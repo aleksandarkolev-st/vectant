@@ -45,6 +45,50 @@ function chunkWireMessage(msg: WireMessage, chunkBytes = 128): string[] {
   });
 }
 
+function terminalDiagnosticCanaries(): {
+  module: string;
+  previewId: string;
+  signedUrl: string;
+  resourceId: string;
+  bearer: string;
+  cookie: string;
+} {
+  const suffix = createHash("sha256")
+    .update("hmr-terminal-diagnostic-canary")
+    .digest("hex")
+    .slice(0, 16);
+  return {
+    module: `module-${suffix}`,
+    previewId: `preview-${suffix}`,
+    signedUrl: `https://user:password@provider.invalid/v1/resource-${suffix}?signature=synthetic`,
+    resourceId: `projects/${Number.parseInt(suffix.slice(0, 10), 16)}`,
+    bearer: `Bearer header.${suffix}.signature`,
+    cookie: `session=${suffix}`,
+  };
+}
+
+function expectProjectedTerminalDetail(
+  detail: Record<string, unknown> | undefined,
+  canaries: ReturnType<typeof terminalDiagnosticCanaries>
+): void {
+  expect(detail).toBeDefined();
+  expect(detail?.schemaVersion).toBe("synthi.hmr.public_terminal_diagnostic.v1");
+  expect(detail?.proofAuthority).toBe("terminal_diagnostic_only_not_gpu_hmr_acceptance");
+  expect(detail?.acceptedForGpuHmr).toBe(false);
+  expect(detail?.gpuHmrSuccess).toBe(false);
+  expect(detail?.moduleRef).toMatch(/^hmr-terminal-module-ref:sha256:[a-f0-9]{64}$/);
+  expect(detail?.previewRef).toMatch(/^hmr-terminal-preview-ref:sha256:[a-f0-9]{64}$/);
+  const serialized = JSON.stringify(detail);
+  for (const canary of Object.values(canaries)) {
+    expect(serialized).not.toContain(canary);
+  }
+  expect(detail).not.toHaveProperty("reason");
+  expect(detail).not.toHaveProperty("message");
+  expect(detail).not.toHaveProperty("diagnostics");
+  expect(detail).not.toHaveProperty("module");
+  expect(detail).not.toHaveProperty("preview_id");
+}
+
 describe("classifyHmrMessage (pure)", () => {
   describe("Family 1 — CandidateNotification", () => {
     it("Promoted → applied / candidate_notification", () => {
@@ -259,6 +303,91 @@ describe("HmrNormalizer — data channel subscription", () => {
 });
 
 describe("HmrNormalizer.waitForTerminal", () => {
+  it.each([
+    {
+      name: "candidate rollback",
+      message: (canaries: ReturnType<typeof terminalDiagnosticCanaries>): WireMessage => ({
+        event: "RolledBack",
+        data: {
+          module: canaries.module,
+          preview_id: canaries.previewId,
+          generation: 7,
+          reason: canaries.signedUrl,
+          provider: {
+            authorization: canaries.bearer,
+            cookie: canaries.cookie,
+            resource: canaries.resourceId,
+          },
+        },
+      }),
+    },
+    {
+      name: "rollback notification",
+      message: (canaries: ReturnType<typeof terminalDiagnosticCanaries>): WireMessage => ({
+        type: "hmr-status",
+        status: "rejected",
+        module: canaries.module,
+        preview_id: canaries.previewId,
+        reason_code: canaries.resourceId,
+        reason: canaries.signedUrl,
+        authorization: canaries.bearer,
+      }),
+    },
+    {
+      name: "compile diagnostics",
+      message: (canaries: ReturnType<typeof terminalDiagnosticCanaries>): WireMessage => ({
+        type: "compile-diagnostics",
+        module: canaries.module,
+        preview_id: canaries.previewId,
+        error_count: 1,
+        diagnostics: [{
+          message: canaries.signedUrl,
+          resource: canaries.resourceId,
+          cookie: canaries.cookie,
+        }],
+      }),
+    },
+    {
+      name: "bare rejected status",
+      message: (canaries: ReturnType<typeof terminalDiagnosticCanaries>): WireMessage => ({
+        status: "rejected",
+        module: canaries.module,
+        preview_id: canaries.previewId,
+        reason: canaries.signedUrl,
+        error: canaries.bearer,
+        cookie: canaries.cookie,
+      }),
+    },
+  ])("projects $name into safe live and retained diagnostics", async ({ message }) => {
+    const canaries = terminalDiagnosticCanaries();
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0]
+    );
+    const wait = normalizer.waitForTerminal({
+      timeoutMs: 1_000,
+      module: canaries.module,
+      previewId: canaries.previewId,
+    });
+    mockDC.emit(JSON.stringify(message(canaries)));
+
+    const live = await wait;
+    expectProjectedTerminalDetail(live.detail, canaries);
+    expect(live.retained).not.toBe(true);
+
+    const retainedSince = Date.now();
+    mockDC.emit(JSON.stringify(message(canaries)));
+    const retained = await normalizer.waitForTerminal({
+      timeoutMs: 1_000,
+      module: canaries.module,
+      previewId: canaries.previewId,
+      sinceTs: retainedSince,
+    });
+    expect(retained.retained).toBe(true);
+    expectProjectedTerminalDetail(retained.detail, canaries);
+    normalizer.dispose();
+  });
+
   it("resolves on first terminal event", async () => {
     const mockDC = dc();
     const normalizer = new HmrNormalizer(

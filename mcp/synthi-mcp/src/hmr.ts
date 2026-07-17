@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import type { RTCDataChannel } from "werift";
 import {
   classifyGpuHmrProofMessage,
@@ -85,6 +85,135 @@ export interface HmrClassification {
   status: HmrTerminalStatus;
   source: HmrTerminalSource;
   detail: Record<string, unknown>;
+  matchModuleRef: string | null;
+  matchPreviewRef: string | null;
+}
+
+const PUBLIC_TERMINAL_DIAGNOSTIC_SCHEMA = "synthi.hmr.public_terminal_diagnostic.v1";
+const PUBLIC_TERMINAL_DIAGNOSTIC_AUTHORITY = "terminal_diagnostic_only_not_gpu_hmr_acceptance";
+const terminalDiagnosticReferenceKey = randomBytes(32);
+
+function firstStringField(
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): string | null {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.length > 0) return candidate;
+  }
+  return null;
+}
+
+function firstBooleanField(
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): boolean | null {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "boolean") return candidate;
+  }
+  return null;
+}
+
+function firstNonNegativeNumberField(
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): number | null {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function terminalDiagnosticReference(kind: "module" | "preview" | "reason", value: string): string {
+  const digest = createHmac("sha256", terminalDiagnosticReferenceKey)
+    .update(kind)
+    .update("\0")
+    .update(value)
+    .digest("hex");
+  return `hmr-terminal-${kind}-ref:sha256:${digest}`;
+}
+
+function publicTerminalDiagnostic(
+  status: HmrTerminalStatus,
+  source: HmrTerminalSource,
+  rawDetail: Record<string, unknown>
+): Record<string, unknown> {
+  const module = terminalModule(rawDetail);
+  const previewId = terminalPreviewId(rawDetail);
+  const reason = firstStringField(rawDetail, [
+    "reason_code",
+    "reasonCode",
+    "reason",
+    "message",
+    "error",
+  ]);
+  const generation = firstNonNegativeNumberField(rawDetail, ["generation"]);
+  const totalReloadMs = firstNonNegativeNumberField(rawDetail, [
+    "total_reload_ms",
+    "totalReloadMs",
+  ]);
+  const errorCount = firstNonNegativeNumberField(rawDetail, ["error_count", "errorCount"]);
+  const diagnostics = Array.isArray(rawDetail.diagnostics) ? rawDetail.diagnostics.length : null;
+  const statePreserved = firstBooleanField(rawDetail, ["state_preserved", "statePreserved"]);
+  const cpuHmrUsed = firstBooleanField(rawDetail, ["cpu_hmr_used", "cpuHmrUsed"]);
+  const fullRebuildUsed = firstBooleanField(rawDetail, [
+    "full_rebuild_used",
+    "fullRebuildUsed",
+  ]);
+  const processRestarted = firstBooleanField(rawDetail, [
+    "process_restarted",
+    "processRestarted",
+  ]);
+
+  return {
+    schemaVersion: PUBLIC_TERMINAL_DIAGNOSTIC_SCHEMA,
+    proofAuthority: PUBLIC_TERMINAL_DIAGNOSTIC_AUTHORITY,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    status,
+    source,
+    reasonClass: source === "compile_diagnostics"
+      ? "compile_diagnostic"
+      : status === "rejected" || status === "discarded"
+        ? "producer_rejection"
+        : status === "full-reload-required"
+          ? "full_reload_required"
+          : "terminal_transition",
+    reasonPresent: reason !== null,
+    ...(module !== null ? { moduleRef: terminalDiagnosticReference("module", module) } : {}),
+    ...(previewId !== null
+      ? { previewRef: terminalDiagnosticReference("preview", previewId) }
+      : {}),
+    ...(reason !== null ? { reasonRef: terminalDiagnosticReference("reason", reason) } : {}),
+    ...(generation !== null ? { generation } : {}),
+    ...(totalReloadMs !== null ? { totalReloadMs } : {}),
+    ...(errorCount !== null ? { errorCount } : {}),
+    ...(diagnostics !== null ? { diagnosticCount: diagnostics } : {}),
+    ...(statePreserved !== null ? { statePreserved } : {}),
+    ...(cpuHmrUsed !== null ? { cpuHmrUsed } : {}),
+    ...(fullRebuildUsed !== null ? { fullRebuildUsed } : {}),
+    ...(processRestarted !== null ? { processRestarted } : {}),
+  };
+}
+
+function terminalClassification(
+  status: HmrTerminalStatus,
+  source: HmrTerminalSource,
+  rawDetail: Record<string, unknown>
+): HmrClassification {
+  const module = terminalModule(rawDetail);
+  const previewId = terminalPreviewId(rawDetail);
+  return {
+    status,
+    source,
+    detail: publicTerminalDiagnostic(status, source, rawDetail),
+    matchModuleRef: module === null ? null : terminalDiagnosticReference("module", module),
+    matchPreviewRef: previewId === null ? null : terminalDiagnosticReference("preview", previewId),
+  };
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {
@@ -173,11 +302,11 @@ export function classifyHmrMessage(msg: WireMessage): HmrClassification | null {
     const data = (msg.data as Record<string, unknown> | undefined) ?? {};
     switch (msg.event) {
       case "Promoted":
-        return { status: "applied", source: "candidate_notification", detail: data };
+        return terminalClassification("applied", "candidate_notification", data);
       case "RolledBack":
-        return { status: "rejected", source: "candidate_notification", detail: data };
+        return terminalClassification("rejected", "candidate_notification", data);
       case "Discarded":
-        return { status: "discarded", source: "candidate_notification", detail: data };
+        return terminalClassification("discarded", "candidate_notification", data);
       default:
         // Enqueued / Loading / HealthCheckStarted / HealthCheckCompleted /
         // PromotionDecision → non-terminal
@@ -188,7 +317,7 @@ export function classifyHmrMessage(msg: WireMessage): HmrClassification | null {
   // Family 3: {type:"hmr-status", status:"rejected"|"reload-planned", ...}
   if (msg.type === "hmr-status" && typeof msg.status === "string") {
     if (msg.status === "rejected") {
-      return { status: "rejected", source: "rollback_notification", detail: msg };
+      return terminalClassification("rejected", "rollback_notification", msg);
     }
     // "reload-planned" and any future non-terminal planner statuses
     return null;
@@ -198,7 +327,7 @@ export function classifyHmrMessage(msg: WireMessage): HmrClassification | null {
   if (msg.type === "compile-diagnostics") {
     const errorCount = msg.error_count;
     if (typeof errorCount === "number" && errorCount > 0) {
-      return { status: "compile-error", source: "compile_diagnostics", detail: msg };
+      return terminalClassification("compile-error", "compile_diagnostics", msg);
     }
     return null;
   }
@@ -208,13 +337,13 @@ export function classifyHmrMessage(msg: WireMessage): HmrClassification | null {
     switch (msg.status) {
       case "applied":
       case "state-migrated":
-        return { status: "applied", source: "hmr_status", detail: msg };
+        return terminalClassification("applied", "hmr_status", msg);
       case "rejected":
-        return { status: "rejected", source: "hmr_status", detail: msg };
+        return terminalClassification("rejected", "hmr_status", msg);
       case "compile-error":
-        return { status: "compile-error", source: "hmr_status", detail: msg };
+        return terminalClassification("compile-error", "hmr_status", msg);
       case "full-reload-required":
-        return { status: "full-reload-required", source: "hmr_status", detail: msg };
+        return terminalClassification("full-reload-required", "hmr_status", msg);
       default:
         // "done" (compile complete, NOT HMR applied),
         // "host-kv-preserved"/"host-kv-reset-schema-mismatch",
@@ -256,12 +385,19 @@ function terminalMatches(
   expectedPreviewId?: string
 ): boolean {
   if (expectedModule) {
-    const actualModule = terminalModule(cls.detail);
-    if ((cls.status === "applied" || actualModule !== null) && actualModule !== expectedModule) {
+    const actualModuleRef = cls.matchModuleRef;
+    const expectedModuleRef = terminalDiagnosticReference("module", expectedModule);
+    if (
+      (cls.status === "applied" || actualModuleRef !== null)
+      && actualModuleRef !== expectedModuleRef
+    ) {
       return false;
     }
   }
-  if (expectedPreviewId && terminalPreviewId(cls.detail) !== expectedPreviewId) {
+  if (
+    expectedPreviewId
+    && cls.matchPreviewRef !== terminalDiagnosticReference("preview", expectedPreviewId)
+  ) {
     return false;
   }
   return true;
@@ -271,6 +407,8 @@ interface RetainedHmrTerminalEvent {
   status: HmrTerminalStatus;
   source: HmrTerminalSource;
   detail: Record<string, unknown>;
+  matchModuleRef: string | null;
+  matchPreviewRef: string | null;
   observedAt: number;
   sequence: number;
 }
@@ -444,6 +582,8 @@ export class HmrNormalizer {
       status: cls.status,
       source: cls.source,
       detail: cls.detail,
+      matchModuleRef: cls.matchModuleRef,
+      matchPreviewRef: cls.matchPreviewRef,
       observedAt,
       sequence: this.terminalSequence,
     });
