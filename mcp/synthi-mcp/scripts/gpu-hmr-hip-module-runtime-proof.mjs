@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import {
+  GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
   buildGpuHmrProofLedger,
   evaluateGpuHmrProofLedger,
   queryGpuHmrLedgerInvariants,
@@ -1562,6 +1563,7 @@ function buildProofLedgerRecord({
     },
   };
   return {
+    schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     project_id: profile.targetId,
     edit_id: runMode.edit_id,
     edit_hash: runMode.edit_hash,
