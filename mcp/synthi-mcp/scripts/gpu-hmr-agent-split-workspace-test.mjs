@@ -131,6 +131,48 @@ installStdioEpipeGuard();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+export function resolveSourceFirstFreshAiSplitExecutionPolicy({
+  mode = 'validate',
+  requireFreshAiSplit = false,
+} = {}) {
+  const normalizedMode = String(mode ?? 'validate').trim().toLowerCase() || 'validate';
+  const freshAiSplitRequired = requireFreshAiSplit === true;
+  const terminalAfterColdSplit = normalizedMode === 'cold-ai-split';
+  return Object.freeze({
+    schemaVersion: 'synthi.gpu_hmr.source_first_execution_policy.v1',
+    schema_version: 'synthi.gpu_hmr.source_first_execution_policy.v1',
+    proofAuthority: 'caller_execution_policy_only_not_gpu_hmr_success',
+    proof_authority: 'caller_execution_policy_only_not_gpu_hmr_success',
+    mode: normalizedMode,
+    freshAiSplitRequired,
+    fresh_ai_split_required: freshAiSplitRequired,
+    requiresProviderCallEvidence: freshAiSplitRequired,
+    requires_provider_call_evidence: freshAiSplitRequired,
+    requiresFreshDeviceCompileEvidence: freshAiSplitRequired,
+    requires_fresh_device_compile_evidence: freshAiSplitRequired,
+    terminalAfterColdSplit,
+    terminal_after_cold_split: terminalAfterColdSplit,
+    continuesThroughHotRuntimeProof:
+      normalizedMode !== 'seed-only' && !terminalAfterColdSplit,
+    continues_through_hot_runtime_proof:
+      normalizedMode !== 'seed-only' && !terminalAfterColdSplit,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  });
+}
+
+const CONFIGURED_AGENT_MODE = String(process.env.SYNTHI_GPU_AGENT_MODE ?? 'validate')
+  .trim()
+  .toLowerCase();
+const SOURCE_FIRST_EXECUTION_POLICY = resolveSourceFirstFreshAiSplitExecutionPolicy({
+  mode: CONFIGURED_AGENT_MODE,
+  requireFreshAiSplit:
+    process.env.SYNTHI_GPU_AGENT_REQUIRE_FRESH_AI_SPLIT === '1'
+    || CONFIGURED_AGENT_MODE === 'cold-ai-split',
+});
+
 const CFG = {
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
@@ -195,7 +237,8 @@ const CFG = {
     ?? '',
   fixture: (process.env.SYNTHI_GPU_AGENT_FIXTURE ?? '').toLowerCase(),
   allowPackagedDefaultFixture: process.env.SYNTHI_GPU_AGENT_ALLOW_PACKAGED_DEFAULT_FIXTURE === '1',
-  mode: (process.env.SYNTHI_GPU_AGENT_MODE ?? 'validate').toLowerCase(),
+  mode: SOURCE_FIRST_EXECUTION_POLICY.mode,
+  requireFreshAiSplit: SOURCE_FIRST_EXECUTION_POLICY.freshAiSplitRequired,
   captureArtifacts: process.env.SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS === '1',
   visualDeltaWindowMs: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_WINDOW_MS ?? 6000),
   visualDeltaSampleIntervalMs: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_SAMPLE_INTERVAL_MS ?? 500),
@@ -11131,6 +11174,7 @@ function sourceFirstCompileCacheResultDiagnostics(result, expectedRequest) {
 
 export function buildSourceFirstInitialCompileRequest({
   mode,
+  requireFreshAiSplit,
   compileArgs,
   observedResult = null,
 } = {}) {
@@ -11141,15 +11185,19 @@ export function buildSourceFirstInitialCompileRequest({
     );
   }
   const requestMode = String(mode ?? '');
-  const coldProviderSplitRequired = requestMode === 'cold-ai-split';
+  const freshAiSplitRequired = typeof requireFreshAiSplit === 'boolean'
+    ? requireFreshAiSplit
+    : requestMode === 'cold-ai-split';
   const initialCompileArgs = {
     ...compileArgs,
-    bypass_ai_split_cache: coldProviderSplitRequired,
-    require_ai_provider_call: coldProviderSplitRequired,
+    bypass_ai_split_cache: freshAiSplitRequired,
+    require_ai_provider_call: freshAiSplitRequired,
   };
   delete initialCompileArgs.bypass_device_compile_cache;
-  if (coldProviderSplitRequired) {
+  if (freshAiSplitRequired) {
     initialCompileArgs.bypass_device_compile_cache = true;
+  } else {
+    delete initialCompileArgs.ai_provider_call_nonce;
   }
 
   const requestIntent = initialCompileArgs.source_first_request_intent;
@@ -11202,24 +11250,32 @@ export function buildSourceFirstInitialCompileRequest({
     initialCompileArgs.use_ai_split === true
       ? null
       : 'source_first_compile_cache_ai_split_not_requested',
-    initialCompileArgs.bypass_ai_split_cache === coldProviderSplitRequired
+    initialCompileArgs.bypass_ai_split_cache === freshAiSplitRequired
       ? null
       : 'source_first_compile_cache_ai_bypass_policy_mismatch',
-    initialCompileArgs.require_ai_provider_call === coldProviderSplitRequired
+    initialCompileArgs.require_ai_provider_call === freshAiSplitRequired
       ? null
       : 'source_first_compile_cache_provider_call_policy_mismatch',
-    coldProviderSplitRequired
+    freshAiSplitRequired
+      ? typeof initialCompileArgs.ai_provider_call_nonce === 'string'
+        && initialCompileArgs.ai_provider_call_nonce.startsWith('provider-call:')
+        ? null
+        : 'source_first_compile_cache_provider_call_nonce_required'
+      : initialCompileArgs.ai_provider_call_nonce == null
+        ? null
+        : 'source_first_compile_cache_provider_call_nonce_forbidden_without_fresh_requirement',
+    freshAiSplitRequired
       ? deviceBypassFieldPresent && initialCompileArgs.bypass_device_compile_cache === true
         ? null
         : 'source_first_compile_cache_device_bypass_required'
       : !deviceBypassFieldPresent
         ? null
-        : 'source_first_compile_cache_device_bypass_forbidden_outside_cold',
+        : 'source_first_compile_cache_device_bypass_forbidden_without_fresh_requirement',
   ].filter(Boolean);
   const requestBinding = {
     schemaVersion: SOURCE_FIRST_COMPILE_CACHE_REQUEST_SCHEMA_VERSION,
     mode: requestMode,
-    coldProviderSplitRequired,
+    freshAiSplitRequired,
     language: initialCompileArgs.language ?? null,
     filename,
     sourceHash,
@@ -11296,8 +11352,10 @@ export function buildSourceFirstInitialCompileRequest({
     request_binding: requestBinding,
     requestMode,
     request_mode: requestMode,
-    coldProviderSplitRequired,
-    cold_provider_split_required: coldProviderSplitRequired,
+    freshAiSplitRequired,
+    fresh_ai_split_required: freshAiSplitRequired,
+    coldProviderSplitRequired: requestMode === 'cold-ai-split' && freshAiSplitRequired,
+    cold_provider_split_required: requestMode === 'cold-ai-split' && freshAiSplitRequired,
     cacheBypassRequestsIndependent: true,
     cache_bypass_requests_independent: true,
     aiSplitCacheBypassRequestField: 'bypass_ai_split_cache',
@@ -11313,9 +11371,9 @@ export function buildSourceFirstInitialCompileRequest({
     deviceCompileCacheBypassFieldPresent: deviceBypassFieldPresent,
     device_compile_cache_bypass_field_present: deviceBypassFieldPresent,
     forcedFreshDeviceCompileRequested:
-      coldProviderSplitRequired && initialCompileArgs.bypass_device_compile_cache === true,
+      freshAiSplitRequired && initialCompileArgs.bypass_device_compile_cache === true,
     forced_fresh_device_compile_requested:
-      coldProviderSplitRequired && initialCompileArgs.bypass_device_compile_cache === true,
+      freshAiSplitRequired && initialCompileArgs.bypass_device_compile_cache === true,
     resultDiagnostics,
     result_diagnostics: resultDiagnostics,
     resultFieldsAuthoritative: false,
@@ -12684,6 +12742,7 @@ async function run() {
   }
   record('gpu vendor', 'pass', `${vendor} arch=${arch ?? 'auto'} arch_source=${CFG.gpuArchSource ?? 'missing'}`);
   record('fixture', 'pass', validationFixtureId());
+  record('source-first execution policy', 'pass', SOURCE_FIRST_EXECUTION_POLICY);
   const source = monolithicSource(vendor);
   if (ACTIVE_AGENT_PROFILE) {
     record(
@@ -12751,11 +12810,12 @@ async function run() {
   }
 
   const firstStart = await workerCheckpoint();
-  const coldProviderCallNonce = CFG.mode === 'cold-ai-split'
+  const coldProviderCallNonce = SOURCE_FIRST_EXECUTION_POLICY.requiresProviderCallEvidence
     ? `provider-call:${randomBytes(16).toString('hex')}`
     : null;
   const initialCompileRequest = buildSourceFirstInitialCompileRequest({
     mode: CFG.mode,
+    requireFreshAiSplit: CFG.requireFreshAiSplit,
     compileArgs: {
       language: ACTIVE_SOURCE_FIRST_REQUEST_INTENT.language,
       filename: entryPath,
@@ -12873,7 +12933,7 @@ async function run() {
 
   const split = await readGeneratedSplit(vendor);
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
-  const coldAiProviderCallEvidence = CFG.mode === 'cold-ai-split'
+  const coldAiProviderCallEvidence = SOURCE_FIRST_EXECUTION_POLICY.requiresProviderCallEvidence
     ? coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs)
     : null;
   if (coldAiProviderCallEvidence) {
@@ -12895,7 +12955,7 @@ async function run() {
       );
     }
   }
-  const coldDeviceCompileProvenance = CFG.mode === 'cold-ai-split'
+  const coldDeviceCompileProvenance = SOURCE_FIRST_EXECUTION_POLICY.requiresFreshDeviceCompileEvidence
     ? await readColdDeviceCompileProvenanceEvidence({
         compileProof: structuredInitialCompileProof,
         split,
@@ -12999,7 +13059,7 @@ async function run() {
     };
   }
 
-  if (CFG.mode === 'cold-ai-split') {
+  if (SOURCE_FIRST_EXECUTION_POLICY.terminalAfterColdSplit) {
     let coldAiSplitProof;
     try {
       coldAiSplitProof = coldAiSplitProofFromSeed(coldSplitProofSeed);
@@ -13474,7 +13534,7 @@ async function runAgentSplitTerminal() {
         error?.details?.blockingGaps ?? error?.message ?? String(error),
       );
     },
-    requireCompleteOnPass: CFG.mode === 'cold-ai-split',
+    requireCompleteOnPass: CFG.requireFreshAiSplit,
   });
   timingTerminal = finalizedTiming.timingTerminal;
   console.log(`test timing: ${TEST_TIMING_JSON}`);

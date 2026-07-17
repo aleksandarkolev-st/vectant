@@ -840,6 +840,29 @@ const coldAiSplitOnly = hasFlag(args, '--cold-ai-split-only');
 if (coldAiSplitOnly) {
   process.env.SYNTHI_GPU_AGENT_MODE = 'cold-ai-split';
 }
+const configuredAgentMode = String(process.env.SYNTHI_GPU_AGENT_MODE ?? 'validate')
+  .trim()
+  .toLowerCase();
+const requireFreshAiSplit = coldAiSplitOnly
+  || hasFlag(args, '--require-fresh-ai-split')
+  || process.env.SYNTHI_GPU_AGENT_REQUIRE_FRESH_AI_SPLIT === '1'
+  || configuredAgentMode === 'cold-ai-split';
+process.env.SYNTHI_GPU_AGENT_REQUIRE_FRESH_AI_SPLIT = requireFreshAiSplit ? '1' : '0';
+const sourceFirstExecutionPolicy = {
+  schemaVersion: 'synthi.gpu_hmr.source_first_execution_request.v1',
+  schema_version: 'synthi.gpu_hmr.source_first_execution_request.v1',
+  proofAuthority: 'caller_execution_request_only_not_gpu_hmr_success',
+  proof_authority: 'caller_execution_request_only_not_gpu_hmr_success',
+  mode: configuredAgentMode,
+  requireFreshAiSplit,
+  require_fresh_ai_split: requireFreshAiSplit,
+  terminalAfterColdSplit: configuredAgentMode === 'cold-ai-split',
+  terminal_after_cold_split: configuredAgentMode === 'cold-ai-split',
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+};
 const launcherInputs = resolveLauncherInputs(args);
 const {
   fixture,
@@ -912,6 +935,8 @@ if (prepareSourceManifestOnly) {
   console.log(JSON.stringify({
     manifestPath: sourceManifest || null,
     manifest: generatedSourceManifest?.manifest ?? null,
+    sourceFirstExecutionPolicy,
+    source_first_execution_policy: sourceFirstExecutionPolicy,
   }, null, 2));
   process.exit(0);
 }
