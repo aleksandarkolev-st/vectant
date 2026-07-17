@@ -68,8 +68,8 @@ VendorHint = Optional[Literal["cuda", "rocm", "ambiguous"]]
 
 
 _VENDOR_NEUTRAL_QUALIFIER_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:__global__|__device__|__host__|__forceinline__|"
-    r"__shared__|__constant__|__restrict__)(?![A-Za-z0-9_])"
+    r"(?<![A-Za-z0-9_])(?:__global__|__device__|__shared__|__constant__)"
+    r"(?![A-Za-z0-9_])"
 )
 
 # Triple-chevron launch: `kernel<<<grid, block>>>(args)` or

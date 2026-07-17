@@ -89,6 +89,22 @@ def test_global_qualifier_detected():
     assert ev.qualifier_hits >= 1
 
 
+def test_host_compiler_qualifiers_are_not_gpu_evidence():
+    source = r'''
+    #define __host__
+    #define __forceinline__ inline
+    __host__ __forceinline__ int clamp_value(int value) { return value; }
+    void copy_values(float* __restrict__ output, const float* __restrict__ input) {
+        output[0] = input[0];
+    }
+    '''
+    evidence = detect_file(source)
+    result = detect_project({"src/host_math.cpp": source})
+
+    assert evidence.qualifier_hits == 0
+    assert result.is_gpu is False
+
+
 def test_launch_chevron_detected():
     src = """
     void launch(int n, const float* a, const float* b, float* c) {
