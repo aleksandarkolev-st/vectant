@@ -206,6 +206,14 @@ const DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_SCHEMA_VERSION =
   'synthi.gpu_hmr.direct_source_runtime_contract_expectation.v1';
 const DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY =
   'direct_source_runtime_contract_expectation_only_not_gpu_hmr_success';
+const DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_SCHEMA_VERSION =
+  'synthi.gpu_hmr.direct_source_output_oracle_request.v1';
+const DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_AUTHORITY =
+  'direct_source_output_oracle_request_only_not_gpu_hmr_success';
+const DIRECT_SOURCE_OUTPUT_ORACLE_KINDS = new Set([
+  'compute_oracle',
+  'visual_oracle',
+]);
 const DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES = [
   'artifact_transport',
   'epoch_publication',
@@ -213,6 +221,186 @@ const DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES = [
   'host_identity',
   'output_oracle',
 ];
+
+function contentAddressedSha256(value) {
+  return /^sha256:[a-f0-9]{64}$/i.test(String(value ?? '').trim());
+}
+
+function normalizedDirectSourceOutputOracleKind(value, source) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return '';
+  if (!DIRECT_SOURCE_OUTPUT_ORACLE_KINDS.has(normalized)) {
+    throw new Error(
+      `${source} must be one of ${[...DIRECT_SOURCE_OUTPUT_ORACLE_KINDS].join(', ')}`,
+    );
+  }
+  return normalized;
+}
+
+function supportMaterialClaimsAuthority(value) {
+  const authorityKeys = new Set([
+    'acceptedForGpuHmr',
+    'accepted_for_gpu_hmr',
+    'gpuHmrSuccess',
+    'gpu_hmr_success',
+    'canSatisfyRuntimeProof',
+    'can_satisfy_runtime_proof',
+    'canSatisfyDispatchProof',
+    'can_satisfy_dispatch_proof',
+    'canSatisfyOutputOracleProof',
+    'can_satisfy_output_oracle_proof',
+  ]);
+  const inspect = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return false;
+    if (Array.isArray(candidate)) return candidate.some(inspect);
+    return Object.entries(candidate).some(([key, nested]) => (
+      (authorityKeys.has(key) && nested === true) || inspect(nested)
+    ));
+  };
+  return inspect(value);
+}
+
+function visualRequestMaterialFromProfile(profilePath) {
+  if (!profilePath) {
+    throw new Error(
+      'visual_oracle direct-source intent requires a profile with content-addressed visual evidence',
+    );
+  }
+  const resolvedProfilePath = path.isAbsolute(profilePath)
+    ? profilePath
+    : path.resolve(process.cwd(), profilePath);
+  if (!existsSync(resolvedProfilePath)) {
+    throw new Error(`visual oracle profile not found: ${resolvedProfilePath}`);
+  }
+  const profileText = readFileSync(resolvedProfilePath, 'utf8').replace(/^\uFEFF/, '');
+  const profile = JSON.parse(profileText);
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
+    throw new Error('visual oracle profile must be a JSON object');
+  }
+  if (supportMaterialClaimsAuthority(profile)) {
+    throw new Error('visual oracle profile material cannot claim GPU HMR or runtime proof authority');
+  }
+  const manifest = profile.visualSceneManifest
+    ?? profile.visual_scene_manifest
+    ?? profile.renderSceneManifest
+    ?? profile.render_scene_manifest;
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    throw new Error(
+      'visual_oracle direct-source intent requires a non-empty visual scene manifest',
+    );
+  }
+  if (Object.keys(manifest).length === 0) {
+    throw new Error(
+      'visual_oracle direct-source intent requires a non-empty visual scene manifest',
+    );
+  }
+  const declaredManifestHash = String(
+    profile.visualSceneManifestHash
+      ?? profile.visual_scene_manifest_hash
+      ?? profile.renderSceneManifestHash
+      ?? profile.render_scene_manifest_hash
+      ?? '',
+  ).trim().toLowerCase();
+  if (!contentAddressedSha256(declaredManifestHash)) {
+    throw new Error(
+      'visual_oracle direct-source intent requires an explicit content-addressed visual scene manifest hash',
+    );
+  }
+  const manifestHash = `sha256:${sha256Hex(stableJson(manifest))}`;
+  if (declaredManifestHash !== manifestHash) {
+    throw new Error(
+      `visual oracle scene manifest hash mismatch: declared ${declaredManifestHash} actual ${manifestHash}`,
+    );
+  }
+  const profileHash = contentHashForText(profileText);
+  return {
+    manifest,
+    manifestHash,
+    manifest_hash: manifestHash,
+    profileHash,
+    profile_hash: profileHash,
+    evidenceRef: `evidence:direct-source-visual-scene-manifest:${manifestHash}`,
+    evidence_ref: `evidence:direct-source-visual-scene-manifest:${manifestHash}`,
+  };
+}
+
+function directSourceOutputOracleRequest({ outputOracleKind, visualProfilePath }) {
+  if (!outputOracleKind) return { request: null, visualMaterial: null };
+  const visualMaterial = outputOracleKind === 'visual_oracle'
+    ? visualRequestMaterialFromProfile(visualProfilePath)
+    : null;
+  const requiredProofKinds = outputOracleKind === 'visual_oracle'
+    ? [
+        'artifact_transport',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'content_addressed_before_after_diff_images',
+        'deterministic_visual_controls',
+        'post_dispatch_frame_gate',
+        'strict_proof_ledger',
+      ]
+    : [
+        'artifact_transport',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'raw_readback_bytes',
+        'readback_schema',
+        'deterministic_slice',
+        'before_after_checksums',
+        'strict_proof_ledger',
+      ];
+  const evidenceRefs = uniqueSortedStrings([
+    visualMaterial?.manifestHash,
+    visualMaterial?.profileHash,
+    visualMaterial?.evidenceRef,
+  ]);
+  const seed = {
+    schemaVersion: DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_SCHEMA_VERSION,
+    outputOracleKind,
+    visualSceneManifestHash: visualMaterial?.manifestHash ?? null,
+    visualProfileHash: visualMaterial?.profileHash ?? null,
+    requiredProofKinds,
+    evidenceRefs,
+  };
+  const requestHash = `sha256:${sha256Hex(stableJson(seed))}`;
+  const request = {
+    schemaVersion: DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_SCHEMA_VERSION,
+    schema_version: DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_SCHEMA_VERSION,
+    proofAuthority: DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_AUTHORITY,
+    proof_authority: DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_AUTHORITY,
+    accepted: false,
+    acceptedAsRequestIntent: true,
+    accepted_as_request_intent: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    canSatisfyOutputOracleProof: false,
+    can_satisfy_output_oracle_proof: false,
+    outputOracleKind,
+    output_oracle_kind: outputOracleKind,
+    kind: outputOracleKind,
+    oracleIntent: outputOracleKind,
+    oracle_intent: outputOracleKind,
+    visualSceneManifestHash: visualMaterial?.manifestHash ?? null,
+    visual_scene_manifest_hash: visualMaterial?.manifestHash ?? null,
+    visualProfileHash: visualMaterial?.profileHash ?? null,
+    visual_profile_hash: visualMaterial?.profileHash ?? null,
+    requiredProofKinds,
+    required_proof_kinds: requiredProofKinds,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    requestHash,
+    request_hash: requestHash,
+  };
+  return { request, visualMaterial };
+}
 
 function assertInsideRoot(filePath, rootPath) {
   const rootReal = realpathSync(rootPath);
@@ -312,6 +500,8 @@ function synthesizeSourceManifestFromRoot({
   selectedSourcePaths = [],
   selectedBuildPaths = [],
   inputChannels = [],
+  outputOracleKind = '',
+  visualProfilePath = '',
 }) {
   if (!sourceRoot) throw new Error('source root is required');
   const root = realpathSync(path.resolve(sourceRoot));
@@ -372,6 +562,10 @@ function synthesizeSourceManifestFromRoot({
   const immutableSourceIdentity = immutableSnapshot.identity;
   const immutableCommit = immutableSourceIdentity.commitOid;
   const directSourceInputChannels = uniqueSortedStrings(inputChannels);
+  const {
+    request: outputOracleRequest,
+    visualMaterial: visualRequestMaterial,
+  } = directSourceOutputOracleRequest({ outputOracleKind, visualProfilePath });
   const entryInferenceEvidence = {
     schemaVersion: 'synthi.gpu_hmr.source_root_entry_inference.v1',
     schema_version: 'synthi.gpu_hmr.source_root_entry_inference.v1',
@@ -417,20 +611,24 @@ function synthesizeSourceManifestFromRoot({
     runtime_boundary_stages_required: DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES,
     declaredRuntimeBoundaryStages: [],
     declared_runtime_boundary_stages: [],
+    outputOracleKind: outputOracleRequest?.outputOracleKind ?? null,
+    output_oracle_kind: outputOracleRequest?.output_oracle_kind ?? null,
+    outputOracle: outputOracleRequest,
+    output_oracle: outputOracleRequest,
     blockingGaps: [
       'direct_source_runtime_contract_backend_missing',
       'direct_source_runtime_contract_build_metadata_missing',
       'direct_source_runtime_contract_boundary_stages_incomplete',
-      'direct_source_runtime_contract_output_oracle_missing',
+      outputOracleRequest ? null : 'direct_source_runtime_contract_output_oracle_missing',
       'direct_source_runtime_contract_declared_device_edits_missing',
-    ],
+    ].filter(Boolean),
     blocking_gaps: [
       'direct_source_runtime_contract_backend_missing',
       'direct_source_runtime_contract_build_metadata_missing',
       'direct_source_runtime_contract_boundary_stages_incomplete',
-      'direct_source_runtime_contract_output_oracle_missing',
+      outputOracleRequest ? null : 'direct_source_runtime_contract_output_oracle_missing',
       'direct_source_runtime_contract_declared_device_edits_missing',
-    ],
+    ].filter(Boolean),
   };
   const manifest = {
     schemaVersion: 'synthi.gpu_hmr.agent_split_direct_source_manifest.v1',
@@ -467,6 +665,16 @@ function synthesizeSourceManifestFromRoot({
     entry_inference_evidence: entryInferenceEvidence,
     runtimeContractExpectation,
     runtime_contract_expectation: runtimeContractExpectation,
+    outputOracleRequest,
+    output_oracle_request: outputOracleRequest,
+    outputOracleKind: outputOracleRequest?.outputOracleKind ?? null,
+    output_oracle_kind: outputOracleRequest?.output_oracle_kind ?? null,
+    visualSceneManifest: visualRequestMaterial?.manifest ?? null,
+    visual_scene_manifest: visualRequestMaterial?.manifest ?? null,
+    visualSceneManifestHash: visualRequestMaterial?.manifestHash ?? null,
+    visual_scene_manifest_hash: visualRequestMaterial?.manifest_hash ?? null,
+    visualSceneManifestEvidenceRef: visualRequestMaterial?.evidenceRef ?? null,
+    visual_scene_manifest_evidence_ref: visualRequestMaterial?.evidence_ref ?? null,
     entryPath,
     entry_path: entryPath,
     manifestHash,
@@ -499,6 +707,16 @@ function synthesizeSourceManifestFromRoot({
       entry_inference_evidence: entryInferenceEvidence,
       runtimeContractExpectation,
       runtime_contract_expectation: runtimeContractExpectation,
+      outputOracle: outputOracleRequest,
+      output_oracle: outputOracleRequest,
+      outputOracleKind: outputOracleRequest?.outputOracleKind ?? null,
+      output_oracle_kind: outputOracleRequest?.output_oracle_kind ?? null,
+      visualSceneManifest: visualRequestMaterial?.manifest ?? null,
+      visual_scene_manifest: visualRequestMaterial?.manifest ?? null,
+      visualSceneManifestHash: visualRequestMaterial?.manifestHash ?? null,
+      visual_scene_manifest_hash: visualRequestMaterial?.manifest_hash ?? null,
+      visualSceneManifestEvidenceRef: visualRequestMaterial?.evidenceRef ?? null,
+      visual_scene_manifest_evidence_ref: visualRequestMaterial?.evidence_ref ?? null,
       entryPath,
       entry_path: entryPath,
       files,
@@ -630,6 +848,28 @@ function selfCheckSourceRootManifest() {
 function resolveLauncherInputs(args, env = process.env) {
   const fixtureArg = readOption(args, '--fixture');
   const profileArg = readOption(args, '--profile');
+  const outputOracleKindArgs = readOptions(args, '--output-oracle-kind');
+  if (outputOracleKindArgs.length > 1) {
+    throw new Error('--output-oracle-kind may be provided only once');
+  }
+  const outputOracleKindArg = normalizedDirectSourceOutputOracleKind(
+    outputOracleKindArgs[0] ?? '',
+    '--output-oracle-kind',
+  );
+  const outputOracleKindEnv = normalizedDirectSourceOutputOracleKind(
+    env.SYNTHI_GPU_AGENT_OUTPUT_ORACLE_KIND ?? '',
+    'SYNTHI_GPU_AGENT_OUTPUT_ORACLE_KIND',
+  );
+  if (
+    outputOracleKindArg
+    && outputOracleKindEnv
+    && outputOracleKindArg !== outputOracleKindEnv
+  ) {
+    throw new Error(
+      '--output-oracle-kind conflicts with SYNTHI_GPU_AGENT_OUTPUT_ORACLE_KIND',
+    );
+  }
+  const outputOracleKind = outputOracleKindArg || outputOracleKindEnv;
   const sourceManifestArg = readOption(args, '--source-manifest');
   const sourceRootArg = readOption(args, '--source-root');
   const sourceEntryArg = readOption(args, '--source-entry');
@@ -719,10 +959,18 @@ function resolveLauncherInputs(args, env = process.env) {
   if ((selectedSourcePaths.length > 0 || selectedBuildPaths.length > 0) && !sourceCommit) {
     throw new Error('--source-file/--build-file require an explicit full --source-commit');
   }
+  if (outputOracleKind && !sourceRoot) {
+    throw new Error(
+      '--output-oracle-kind requires --source-root so the request can be sealed into the synthesized source manifest',
+    );
+  }
 
   return {
     fixtureArg,
     profileArg,
+    outputOracleKindArg,
+    outputOracleKindEnv,
+    outputOracleKind,
     sourceManifestArg,
     sourceRootArg,
     sourceEntryArg,
@@ -881,6 +1129,9 @@ const {
   sourceRootRelativePathArg,
   sourceFileArgs,
   buildFileArgs,
+  outputOracleKindArg,
+  outputOracleKindEnv,
+  outputOracleKind,
   vendor,
 } = launcherInputs;
 let { sourceManifest } = launcherInputs;
@@ -916,6 +1167,10 @@ if (!sourceManifest && sourceRoot) {
     sourceRootRelativePathArg ? 'cli_arg:source-subtree' : null,
     sourceFileArgs.length > 0 ? 'cli_arg:source-file' : null,
     buildFileArgs.length > 0 ? 'cli_arg:build-file' : null,
+    outputOracleKindArg ? 'cli_arg:output-oracle-kind' : null,
+    !outputOracleKindArg && outputOracleKindEnv
+      ? 'env:SYNTHI_GPU_AGENT_OUTPUT_ORACLE_KIND'
+      : null,
   ];
   generatedSourceManifest = synthesizeSourceManifestFromRoot({
     sourceRoot,
@@ -926,6 +1181,8 @@ if (!sourceManifest && sourceRoot) {
     selectedSourcePaths,
     selectedBuildPaths,
     inputChannels: directSourceInputChannels,
+    outputOracleKind,
+    visualProfilePath: profile,
   });
   sourceManifest = generatedSourceManifest.manifestPath;
   console.log(`source-root direct source manifest: ${sourceManifest}`);
