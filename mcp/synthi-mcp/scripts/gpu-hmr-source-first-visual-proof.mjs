@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Generic source-first visual GPU-HMR proof launcher.
+// Generic source-first GPU-HMR proof launcher.
 //
 // This file selects runner inputs only. It does not authorize GPU-HMR success:
 // acceptance still comes from the source-first runner, strict runtime ledger,
@@ -1204,7 +1204,11 @@ applyLauncherInputs({
   sourceManifest,
 });
 
-setDefaultEnv('SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS', '1');
+if (outputOracleKind === 'compute_oracle') {
+  process.env.SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS = '0';
+} else {
+  setDefaultEnv('SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS', '1');
+}
 setDefaultEnv('SYNTHI_SYNC_TO_GCS', '0');
 setDefaultEnv('SYNTHI_VALIDATION_AUTHLESS_WORKSPACE', '1');
 setDefaultEnv('SYNTHI_GPU_HMR_STRICT_PROOF_RETRY_TIMEOUT_MS', '240000');

@@ -12,8 +12,9 @@
 
 import { spawn, execFile, execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import {
+  constants as fsConstants,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -32,6 +33,7 @@ import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
   completeAsyncVisualProofJob,
   createAsyncVisualProofJob,
+  analyzeGpuHmrImageEvidence,
   deterministicVisualModeFromMcpEvidence,
   evaluateGpuHmrDeterministicVisualMode,
   mcpFrameAtOrAfterFrameGate,
@@ -39,6 +41,7 @@ import {
   mcpFrameGateSatisfiedByScreenshot,
   mcpScreenshotArgsForFrameGate,
   mcpScreenshotMetadataFromToolResult,
+  screenshotQualifiesAsVisualEvidence,
   visualArtifactTransportEvidence,
 } from './lib/gpu-hmr-visual-evidence.mjs';
 import {
@@ -56,6 +59,7 @@ import {
   queryGpuHmrLedgerInvariants,
 } from './lib/gpu-hmr-proof-ledger.mjs';
 import {
+  visualEvidenceArtifactsFromFiles,
   visualEvidenceArtifactsFromVisualOracleArtifacts,
 } from './lib/gpu-hmr-validation-proof-artifact.mjs';
 import {
@@ -264,10 +268,43 @@ const SOURCE_FIRST_COMPILE_CACHE_REQUEST_SCHEMA_VERSION =
   'synthi.gpu_hmr.source_first_compile_cache_request_support.v1';
 const SOURCE_FIRST_COMPILE_CACHE_REQUEST_AUTHORITY =
   'initial_compile_cache_request_support_only_not_fresh_compile_or_gpu_hmr_success';
+const COLD_SOURCE_MODALITY_BINDING_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_source_modality_binding.v1';
+const COLD_SOURCE_MODALITY_BINDING_AUTHORITY =
+  'content_bound_output_oracle_request_only_not_gpu_hmr_success';
+const COLD_SOURCE_PROFILE_REQUEST_IDENTITY_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_source_profile_request_identity.v1';
+const COLD_SOURCE_PROFILE_REQUEST_IDENTITY_AUTHORITY =
+  'profile_request_identity_binding_only_not_gpu_hmr_success';
+const COLD_SOURCE_DERIVATION_CHAIN_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_source_derivation_chain.v1';
+const COLD_SOURCE_DERIVATION_CHAIN_AUTHORITY =
+  'canonical_cold_source_derivation_chain_only_not_gpu_hmr_success';
+const DIRECT_SOURCE_MANIFEST_SCHEMA_VERSION =
+  'synthi.gpu_hmr.agent_split_direct_source_manifest.v1';
+const DIRECT_SOURCE_MANIFEST_AUTHORITY =
+  'source_root_scan_manifest_only_not_gpu_hmr_success';
+const SOURCE_ROOT_ENTRY_INFERENCE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.source_root_entry_inference.v1';
+const SOURCE_ROOT_ENTRY_INFERENCE_AUTHORITY =
+  'source_root_entry_inference_only_not_runtime_contract';
+const DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_SCHEMA_VERSION =
+  'synthi.gpu_hmr.direct_source_output_oracle_request.v1';
+const DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_AUTHORITY =
+  'direct_source_output_oracle_request_only_not_gpu_hmr_success';
 const VISUAL_SEMANTIC_PROBE_SCHEMA_VERSION =
   'synthi.gpu_hmr.visual_semantic_probe_binding.v1';
 const VISUAL_SEMANTIC_PROBE_AUTHORITY =
   'semantic_visual_probe_binding_only_not_gpu_hmr_success';
+const LIVE_MCP_COMPILE_CAPABILITY_SLOT = Symbol('liveMcpCompileCapability');
+const LIVE_COMPILE_ARTIFACT_BYTES_SLOT = Symbol('liveCompileArtifactBytes');
+const LIVE_COLD_SOURCE_CAPABILITY_SLOT = Symbol('liveColdSourceCapability');
+const liveMcpCompileInvocations = new WeakMap();
+const liveColdSourceObservations = new WeakMap();
+const COLD_DEVICE_COMPILE_COMMAND_HASH_SCOPE =
+  'explicit_preprocess_and_compile_program_args_cwd_environment_overrides_piped_input_hashes_and_stdout_artifact_transport';
+const COLD_DEVICE_COMPILER_DEPENDENCY_METHOD =
+  'compiler_preprocessed_translation_unit_sha256';
 let ACTIVE_AGENT_PROFILE = null;
 let ACTIVE_SOURCE_FIRST_REQUEST_INTENT = null;
 
@@ -2259,6 +2296,10 @@ function normalizeDirectSourceOverride(rawManifest, {
   fallbackEntryPath = 'main.cpp',
 } = {}) {
   const raw = profileObject(rawManifest, 'directSourceManifest');
+  const launcherSupport = (raw.schemaVersion ?? raw.schema_version)
+    === DIRECT_SOURCE_MANIFEST_SCHEMA_VERSION
+    ? validateColdSourceLauncherSupportManifest(raw)
+    : null;
   const manifestAcceptedForGpuHmr = raw.acceptedForGpuHmr ?? raw.accepted_for_gpu_hmr;
   const manifestGpuHmrSuccess = raw.gpuHmrSuccess ?? raw.gpu_hmr_success;
   const manifestCanSatisfyRuntimeProof =
@@ -2508,6 +2549,10 @@ function normalizeDirectSourceOverride(rawManifest, {
     visual_scene_manifest_evidence_ref: visualSceneManifest?.evidence_ref ?? null,
     runtimeContractExpectation,
     runtime_contract_expectation: runtimeContractExpectation,
+    entryInferenceEvidence: launcherSupport?.entryInferenceEvidence ?? null,
+    entry_inference_evidence: launcherSupport?.entryInferenceEvidence ?? null,
+    outputOracleRequest: launcherSupport?.outputOracleRequest ?? null,
+    output_oracle_request: launcherSupport?.outputOracleRequest ?? null,
     deviceEdits: editSpecs,
     device_edits: editSpecs,
     requireDeclaredEdits,
@@ -2582,6 +2627,10 @@ function applyDirectSourceOverride(profile, override = loadDirectSourceOverride(
     evidence_ref: override.evidence_ref,
     runtimeContractExpectation: override.runtimeContractExpectation,
     runtime_contract_expectation: override.runtime_contract_expectation,
+    entryInferenceEvidence: override.entryInferenceEvidence,
+    entry_inference_evidence: override.entry_inference_evidence,
+    outputOracle: override.outputOracleRequest,
+    output_oracle: override.output_oracle_request,
   };
   profile.sourceAuthority = override.sourceAuthority;
   profile.source_authority = override.source_authority;
@@ -3087,6 +3136,24 @@ function execText(cmd, args, timeoutMs = 10000, rejectOnError = false, options =
   });
 }
 
+function execBytes(cmd, args, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      cmd,
+      args,
+      { timeout: timeoutMs, maxBuffer: 128 * 1024 * 1024, encoding: null },
+      (err, stdout, stderr) => {
+        if (err) {
+          err.output = Buffer.isBuffer(stderr) ? stderr.toString('utf8') : String(stderr ?? '');
+          reject(err);
+          return;
+        }
+        resolve(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? ''));
+      },
+    );
+  });
+}
+
 async function dockerContainerExists(nameOrId) {
   if (!nameOrId) return false;
   const inspected = await execText('docker', ['container', 'inspect', nameOrId], 5000);
@@ -3301,6 +3368,15 @@ async function readWorkerFile(workspacePath, relPath) {
     10000,
     true,
     { trim: false },
+  );
+}
+
+async function readWorkerFileBytes(workspacePath, relPath) {
+  const full = `${workspacePath.replace(/\/+$/, '')}/${relPath.replace(/^\/+/, '')}`;
+  return execBytes(
+    'docker',
+    ['exec', CFG.workerContainer, 'sh', '-lc', `cat -- ${shQuote(full)}`],
+    10000,
   );
 }
 
@@ -5084,6 +5160,9 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
   const state = await ensureMcpAttached();
   const compileStartNs = timingBoundaryNs();
   const isColdSourceFirstCompile = options.metricScope === 'cold';
+  const liveCompileInvocationId = isColdSourceFirstCompile
+    ? `mcp-compile-invocation:${randomBytes(24).toString('hex')}`
+    : null;
   activeAgentSplitTestTiming?.observeEditTrigger(compileStartNs);
   let compile;
   let compileEndNs;
@@ -5198,7 +5277,31 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
     }
     throw error;
   }
-  return { compile, wait, waitContract, waitSummary, timingMetrics };
+  const result = { compile, wait, waitContract, waitSummary, timingMetrics };
+  if (isColdSourceFirstCompile) {
+    const compileProofObservation = initialDeviceCompileProofFromResult(result);
+    const capability = Object.freeze(Object.create(null));
+    liveMcpCompileInvocations.set(capability, {
+      invocationId: liveCompileInvocationId,
+      requestHash: `sha256:${sha256Hex(stableJson(args))}`,
+      compileResponseHash: `sha256:${sha256Hex(stableJson(compile))}`,
+      proofId: compileProofObservation.proofId,
+      proofArtifactPath: compileProofObservation.proofArtifactPath,
+      compileStartedMonotonicNs: String(compileStartNs),
+      compileCompletedMonotonicNs: String(compileEndNs),
+      waitCompletedMonotonicNs: String(waitEndNs),
+      waitStatus: wait?.status ?? null,
+      artifactObservationIssued: false,
+      coldObservationIssued: false,
+    });
+    Object.defineProperty(result, LIVE_MCP_COMPILE_CAPABILITY_SLOT, {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: capability,
+    });
+  }
+  return result;
 }
 
 function cleanRel(value) {
@@ -5415,12 +5518,121 @@ function normalizedGpuProofArtifactRelativePath(value) {
   return normalized;
 }
 
+function normalizedWorkerArtifactRelativePath(value) {
+  const raw = String(value ?? '').trim().replace(/\\/g, '/');
+  if (!raw || raw.startsWith('/') || /^[A-Za-z]:\//.test(raw)) {
+    throw new Error('cold_device_compile_artifact_file_path_invalid');
+  }
+  const parts = raw.split('/').filter(Boolean);
+  if (parts.some((part) => part === '.' || part === '..')) {
+    throw new Error('cold_device_compile_artifact_file_path_traversal');
+  }
+  return parts.join('/');
+}
+
 function isSha256Value(value) {
   return /^(?:sha256:)?[a-f0-9]{64}$/.test(String(value ?? '').trim());
 }
 
 function executableBasename(value) {
   return String(value ?? '').trim().replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
+}
+
+export function recomputeGpuCompileProofArtifactId(proofArtifact = {}) {
+  canonicalAliasShape(proofArtifact, 'coldSource.compileProofIdentity');
+  const identityMaterial = {
+    schemaVersion: proofArtifact.schemaVersion ?? proofArtifact.schema_version ?? null,
+    workspaceSlug: proofArtifact.workspaceSlug ?? proofArtifact.workspace_slug ?? null,
+    runtimeSessionId:
+      proofArtifact.runtimeSessionId ?? proofArtifact.runtime_session_id ?? null,
+    sourceEditId: proofArtifact.sourceEditId ?? proofArtifact.source_edit_id ?? null,
+    selectedArtifactId:
+      proofArtifact.selectedArtifactId ?? proofArtifact.selected_artifact_id ?? null,
+    resultState: proofArtifact.resultState ?? proofArtifact.result_state ?? null,
+    degradedState: proofArtifact.degradedState ?? proofArtifact.degraded_state ?? null,
+    degradedReason: proofArtifact.degradedReason ?? proofArtifact.degraded_reason ?? null,
+    stageResults: proofArtifact.stageResults ?? proofArtifact.stage_results ?? null,
+    evidenceRefs: proofArtifact.evidenceRefs ?? proofArtifact.evidence_refs ?? null,
+    visualEvidenceRefs:
+      proofArtifact.visualEvidenceRefs ?? proofArtifact.visual_evidence_refs ?? null,
+    createdAt: proofArtifact.createdAt ?? proofArtifact.created_at ?? null,
+  };
+  return `gpu-proof:${sha256Hex(stableJson(identityMaterial))}`;
+}
+
+function generatedDeviceSourceMaterial(split) {
+  const sourcePath = cleanRel(split?.roles?.device);
+  const sourceEntry = sourcePath
+    ? Object.entries(split?.files ?? {}).find(([filePath]) => cleanRel(filePath) === sourcePath)
+    : null;
+  const source = sourceEntry?.[1];
+  if (!sourcePath || typeof source !== 'string' || source.length === 0) {
+    throw new Error('cold_source_generated_device_source_missing');
+  }
+  return {
+    path: sourcePath,
+    contentHash: `sha256:${sha256Hex(source)}`,
+    byteLength: Buffer.byteLength(source, 'utf8'),
+  };
+}
+
+function coldCompileCommandInputBinding({
+  compileProvenance,
+  generatedSource,
+  mcpRequestHash,
+}) {
+  const canonical = canonicalAliasShape(
+    compileProvenance ?? {},
+    'coldSource.compileCommandInputs',
+  );
+  const commandSeed = {
+    schemaVersion: 'synthi.gpu_hmr.cold_compile_command_input_binding.v1',
+    mcpRequestHash,
+    generatedSourcePath: generatedSource.path,
+    generatedSourceHash: generatedSource.contentHash,
+    generatedSourceBytes: generatedSource.byteLength,
+    compilerExecutable: canonical.compilerexecutable ?? null,
+    compilerIdentity: canonical.compileridentity ?? null,
+    compilerExecutableHash: canonical.compilerexecutablehash ?? null,
+    compilerIdentityMethod: canonical.compileridentitymethod ?? null,
+    deviceCompiler: canonical.devicecompiler ?? null,
+    gpuVendor: canonical.gpuvendor ?? null,
+    gpuArch: canonical.gpuarch ?? [],
+    targetTriple: canonical.targettriple ?? null,
+    effectiveDeviceFlags: canonical.effectivedeviceflags ?? [],
+    compileCommandHashScope: canonical.compilecommandhashscope ?? null,
+    compileCommandHash: canonical.compilecommandhash ?? null,
+    preprocessorCommandHash: canonical.preprocessorcommandhash ?? null,
+    preprocessorInputHash: canonical.preprocessorinputsha256 ?? null,
+    preprocessorInputBytes: canonical.preprocessorinputbytes ?? null,
+    compiledSourceHash: canonical.compiledsourcesha256 ?? null,
+    compiledSourceBytes: canonical.compiledsourcebytes ?? null,
+  };
+  const dependencySeed = {
+    schemaVersion: 'synthi.gpu_hmr.cold_compile_dependency_input_binding.v1',
+    generatedSourcePath: generatedSource.path,
+    generatedSourceHash: generatedSource.contentHash,
+    generatedSourceBytes: generatedSource.byteLength,
+    requestSourceHash: canonical.requestsourcesha256 ?? null,
+    requestSourceBytes: canonical.requestsourcebytes ?? null,
+    transformedSourceHash: canonical.transformedsourcesha256 ?? null,
+    transformedSourceBytes: canonical.transformedsourcebytes ?? null,
+    sourceTransforms: canonical.sourcetransforms ?? [],
+    preprocessorInputHash: canonical.preprocessorinputsha256 ?? null,
+    preprocessorInputBytes: canonical.preprocessorinputbytes ?? null,
+    compiledSourceHash: canonical.compiledsourcesha256 ?? null,
+    compiledSourceBytes: canonical.compiledsourcebytes ?? null,
+    dependencyMethod: canonical.dependencymethod ?? null,
+    dependencyHash: canonical.dependencyhash ?? null,
+    sourceBytesVerifiedAfterExecution:
+      canonical.sourcebytesverifiedafterexecution ?? null,
+  };
+  return {
+    commandSeed,
+    dependencySeed,
+    commandInputBindingHash: `sha256:${sha256Hex(stableJson(commandSeed))}`,
+    dependencyInputBindingHash: `sha256:${sha256Hex(stableJson(dependencySeed))}`,
+  };
 }
 
 function coldDeviceCompileProvenanceEvidence({
@@ -5432,16 +5644,36 @@ function coldDeviceCompileProvenanceEvidence({
   expectedCompiler,
   expectedArch,
   expectedSourcePath,
+  expectedGeneratedSourceHash,
+  expectedGeneratedSourceBytes,
+  expectedMcpRequestHash,
+  syntheticArtifactBytes,
+  syntheticArtifactFilePath,
+  [LIVE_COMPILE_ARTIFACT_BYTES_SLOT]: liveArtifactObservation,
 }) {
   const artifact = proofArtifact && typeof proofArtifact === 'object' ? proofArtifact : {};
-  const stageResults = Array.isArray(artifact.stageResults) ? artifact.stageResults : [];
-  const evidenceRefs = Array.isArray(artifact.evidenceRefs) ? artifact.evidenceRefs : [];
-  const deviceStage = stageResults.find((stage) => stage?.stageId === 'device-compile') ?? null;
+  const stageResults = Array.isArray(artifact.stageResults)
+    ? artifact.stageResults
+    : Array.isArray(artifact.stage_results)
+      ? artifact.stage_results
+      : [];
+  const evidenceRefs = Array.isArray(artifact.evidenceRefs)
+    ? artifact.evidenceRefs
+    : Array.isArray(artifact.evidence_refs)
+      ? artifact.evidence_refs
+      : [];
+  const deviceStage = stageResults.find(
+    (stage) => (stage?.stageId ?? stage?.stage_id) === 'device-compile',
+  ) ?? null;
   const artifactEvidence = evidenceRefs.find((entry) => entry?.kind === 'device-artifact') ?? null;
   const compilerEvidence = evidenceRefs.find((entry) => entry?.kind === 'device-compiler-output') ?? null;
   const compileProvenance = compilerEvidence?.metadata?.compileProvenance
     ?? compilerEvidence?.metadata?.compile_provenance
     ?? null;
+  const canonicalCompileProvenance = canonicalAliasShape(
+    compileProvenance ?? {},
+    'coldSource.compileProvenance',
+  );
   const declaredVendor = String(expectedVendor ?? '').trim().toLowerCase();
   const declaredCompiler = executableBasename(expectedCompiler);
   const declaredArch = String(expectedArch ?? '').trim();
@@ -5451,19 +5683,147 @@ function coldDeviceCompileProvenanceEvidence({
   const observedVendor = String(compileProvenance?.gpuVendor ?? '').trim().toLowerCase();
   const observedArch = Array.isArray(compileProvenance?.gpuArch)
     ? compileProvenance.gpuArch.map((value) => String(value).trim()).filter(Boolean)
+    : Array.isArray(compileProvenance?.gpu_arch)
+      ? compileProvenance.gpu_arch.map((value) => String(value).trim()).filter(Boolean)
     : [];
-  const observedSourcePath = cleanRel(compileProvenance?.sourceFilename);
-  const artifactBytes = Number(artifactEvidence?.metadata?.artifactBytes ?? 0);
-  const stageEvidenceRefs = new Set(Array.isArray(deviceStage?.evidenceRefs) ? deviceStage.evidenceRefs : []);
-  const selectedArtifactId = String(artifact.selectedArtifactId ?? '').trim();
-  const blockingGaps = [
-    artifact.schemaVersion === 'synthi.gpu.hmr.proof.v1'
+  const observedSourcePath = cleanRel(
+    compileProvenance?.sourceFilename ?? compileProvenance?.source_filename,
+  );
+  const generatedSource = {
+    path: declaredSourcePath,
+    contentHash: normalizedProofContentHash(expectedGeneratedSourceHash),
+    byteLength: Number(expectedGeneratedSourceBytes),
+  };
+  const recomputedProofId = recomputeGpuCompileProofArtifactId(artifact);
+  let normalizedProofArtifactPath = null;
+  let proofArtifactPathError = null;
+  try {
+    normalizedProofArtifactPath = normalizedGpuProofArtifactRelativePath(proofArtifactPath);
+  } catch (error) {
+    proofArtifactPathError = String(error?.message ?? error);
+  }
+  const declaredArtifactBytes = Number(
+    artifactEvidence?.metadata?.artifactBytes
+      ?? artifactEvidence?.metadata?.artifact_bytes
+      ?? 0,
+  );
+  const stageEvidenceRefs = new Set(
+    Array.isArray(deviceStage?.evidenceRefs)
+      ? deviceStage.evidenceRefs
+      : Array.isArray(deviceStage?.evidence_refs)
+        ? deviceStage.evidence_refs
+        : [],
+  );
+  const selectedArtifactId = String(
+    artifact.selectedArtifactId ?? artifact.selected_artifact_id ?? '',
+  ).trim();
+  const declaredArtifactHash = normalizedProofContentHash(
+    artifactEvidence?.contentHash ?? artifactEvidence?.content_hash,
+  );
+  let artifactFilePath = null;
+  let artifactPathError = null;
+  try {
+    artifactFilePath = normalizedWorkerArtifactRelativePath(
+      artifactEvidence?.filePath ?? artifactEvidence?.file_path,
+    );
+  } catch (error) {
+    artifactPathError = String(error?.message ?? error);
+  }
+  const syntheticBytes = Buffer.isBuffer(syntheticArtifactBytes)
+    || syntheticArtifactBytes instanceof Uint8Array
+    ? Buffer.from(syntheticArtifactBytes)
+    : null;
+  const artifactObservation = liveArtifactObservation ?? (syntheticBytes ? {
+    bytes: syntheticBytes,
+    filePath: syntheticArtifactFilePath,
+    observationKind: 'synthetic_fixture_bytes',
+  } : null);
+  const observedArtifactBytes = Buffer.isBuffer(artifactObservation?.bytes)
+    ? artifactObservation.bytes
+    : null;
+  let observedArtifactFilePath = null;
+  try {
+    observedArtifactFilePath = normalizedWorkerArtifactRelativePath(
+      artifactObservation?.filePath,
+    );
+  } catch {
+    observedArtifactFilePath = null;
+  }
+  const observedArtifactHash = observedArtifactBytes
+    ? `sha256:${sha256BufferHex(observedArtifactBytes)}`
+    : null;
+  const observedArtifactByteLength = observedArtifactBytes?.length ?? 0;
+  const compileCapability = artifactObservation?.compileCapability ?? null;
+  const liveCompileInvocation = compileCapability
+    ? liveMcpCompileInvocations.get(compileCapability) ?? null
+    : null;
+  const liveObservationAccepted = artifactObservation?.observationKind === 'worker_live_read'
+    && Boolean(liveCompileInvocation)
+    && liveCompileInvocation.artifactObservationIssued === true
+    && artifactObservation?.invocationId === liveCompileInvocation?.invocationId
+    && liveCompileInvocation.requestHash === expectedMcpRequestHash
+    && liveCompileInvocation.proofId === (artifact.proofId ?? artifact.proof_id)
+    && liveCompileInvocation.proofArtifactPath === normalizedProofArtifactPath;
+  const compileInputBinding = coldCompileCommandInputBinding({
+    compileProvenance,
+    generatedSource,
+    mcpRequestHash: liveCompileInvocation?.requestHash ?? expectedMcpRequestHash ?? null,
+  });
+  const compileInvocationBindingHash = liveObservationAccepted
+    ? `sha256:${sha256Hex(stableJson({
+        invocationId: liveCompileInvocation.invocationId,
+        requestHash: liveCompileInvocation.requestHash,
+        compileResponseHash: liveCompileInvocation.compileResponseHash,
+        proofArtifactId: artifact.proofId ?? artifact.proof_id ?? null,
+        proofArtifactPath: normalizedProofArtifactPath,
+        proofArtifactIdentity: recomputedProofId,
+        generatedSourcePath: generatedSource.path,
+        generatedSourceHash: generatedSource.contentHash,
+        generatedSourceBytes: generatedSource.byteLength,
+        compileCommandInputBindingHash: compileInputBinding.commandInputBindingHash,
+        dependencyInputBindingHash: compileInputBinding.dependencyInputBindingHash,
+        artifactFilePath,
+        observedArtifactHash,
+        observedArtifactByteLength,
+      }))}`
+    : null;
+  const sourceTransforms = Array.isArray(canonicalCompileProvenance.sourcetransforms)
+    ? canonicalCompileProvenance.sourcetransforms
+    : [];
+  let transformHash = generatedSource.contentHash;
+  let transformBytes = generatedSource.byteLength;
+  const sourceTransformChainAccepted = sourceTransforms.every((transform) => {
+    const accepted = transform?.inputsha256 === transformHash
+      && Number(transform?.inputbytes) === transformBytes
+      && contentAddressedSha256(transform?.outputsha256)
+      && Number.isFinite(Number(transform?.outputbytes))
+      && Number(transform.outputbytes) > 0
+      && typeof transform?.transform === 'string'
+      && transform.transform.trim().length > 0;
+    if (accepted) {
+      transformHash = transform.outputsha256;
+      transformBytes = Number(transform.outputbytes);
+    }
+    return accepted;
+  });
+  const transformedSourceBindingAccepted = sourceTransformChainAccepted
+    && canonicalCompileProvenance.transformedsourcesha256 === transformHash
+    && Number(canonicalCompileProvenance.transformedsourcebytes) === transformBytes;
+  const verificationGaps = [
+    (artifact.schemaVersion ?? artifact.schema_version) === 'synthi.gpu.hmr.proof.v1'
       ? null
       : 'cold_device_compile_proof_schema_invalid',
-    String(artifact.proofId ?? '') === String(expectedProofId ?? '') && proofIdLooksImmutable(artifact.proofId)
+    String(artifact.proofId ?? artifact.proof_id ?? '') === String(expectedProofId ?? '')
+      && proofIdLooksImmutable(artifact.proofId ?? artifact.proof_id)
       ? null
       : 'cold_device_compile_proof_id_mismatch',
-    String(artifact.workspaceSlug ?? '') === String(expectedWorkspaceSlug ?? '')
+    recomputedProofId === (artifact.proofId ?? artifact.proof_id)
+      ? null
+      : 'cold_device_compile_proof_content_identity_mismatch',
+    proofArtifactPathError === null && normalizedProofArtifactPath
+      ? null
+      : 'cold_device_compile_proof_path_invalid',
+    String(artifact.workspaceSlug ?? artifact.workspace_slug ?? '') === String(expectedWorkspaceSlug ?? '')
       ? null
       : 'cold_device_compile_workspace_mismatch',
     deviceStage?.status === 'passed'
@@ -5472,22 +5832,40 @@ function coldDeviceCompileProvenanceEvidence({
     artifactEvidence
       ? null
       : 'cold_device_compile_artifact_evidence_missing',
-    Number.isFinite(artifactBytes) && artifactBytes > 0
+    Number.isFinite(declaredArtifactBytes) && declaredArtifactBytes > 0
       ? null
       : 'cold_device_compile_artifact_bytes_missing',
-    isSha256Value(artifactEvidence?.contentHash)
+    contentAddressedSha256(declaredArtifactHash)
       ? null
       : 'cold_device_compile_artifact_hash_invalid',
-    selectedArtifactId && artifactEvidence?.artifactUri === selectedArtifactId
+    selectedArtifactId
+      && (artifactEvidence?.artifactUri ?? artifactEvidence?.artifact_uri) === selectedArtifactId
       ? null
       : 'cold_device_compile_selected_artifact_mismatch',
-    artifactEvidence?.evidenceId && stageEvidenceRefs.has(artifactEvidence.evidenceId)
+    (artifactEvidence?.evidenceId ?? artifactEvidence?.evidence_id)
+      && stageEvidenceRefs.has(artifactEvidence.evidenceId ?? artifactEvidence.evidence_id)
       ? null
       : 'cold_device_compile_artifact_stage_binding_missing',
+    artifactPathError === null && artifactFilePath
+      ? null
+      : 'cold_device_compile_artifact_file_path_missing',
+    observedArtifactBytes && observedArtifactByteLength > 0
+      ? null
+      : 'cold_device_compile_artifact_bytes_unobserved',
+    artifactFilePath && observedArtifactFilePath === artifactFilePath
+      ? null
+      : 'cold_device_compile_artifact_observation_path_mismatch',
+    observedArtifactHash && observedArtifactHash === declaredArtifactHash
+      ? null
+      : 'cold_device_compile_artifact_observed_hash_mismatch',
+    observedArtifactByteLength === declaredArtifactBytes
+      ? null
+      : 'cold_device_compile_artifact_observed_length_mismatch',
     compilerEvidence
       ? null
       : 'cold_device_compile_compiler_evidence_missing',
-    compilerEvidence?.evidenceId && stageEvidenceRefs.has(compilerEvidence.evidenceId)
+    (compilerEvidence?.evidenceId ?? compilerEvidence?.evidence_id)
+      && stageEvidenceRefs.has(compilerEvidence.evidenceId ?? compilerEvidence.evidence_id)
       ? null
       : 'cold_device_compile_compiler_stage_binding_missing',
     compileProvenance && typeof compileProvenance === 'object'
@@ -5505,36 +5883,109 @@ function coldDeviceCompileProvenanceEvidence({
     declaredSourcePath && observedSourcePath === declaredSourcePath
       ? null
       : 'cold_device_compile_source_path_mismatch',
-    compileProvenance?.cacheHit === false
+    contentAddressedSha256(generatedSource.contentHash)
+      && Number.isFinite(generatedSource.byteLength)
+      && generatedSource.byteLength > 0
+      ? null
+      : 'cold_device_compile_generated_source_material_missing',
+    canonicalCompileProvenance.requestsourcesha256 === generatedSource.contentHash
+      && Number(canonicalCompileProvenance.requestsourcebytes) === generatedSource.byteLength
+      ? null
+      : 'cold_device_compile_generated_source_content_mismatch',
+    transformedSourceBindingAccepted
+      ? null
+      : 'cold_device_compile_source_transform_chain_mismatch',
+    canonicalCompileProvenance.compilecommandhashscope
+      === COLD_DEVICE_COMPILE_COMMAND_HASH_SCOPE
+      ? null
+      : 'cold_device_compile_command_hash_scope_mismatch',
+    (compileProvenance?.cacheHit ?? compileProvenance?.cache_hit) === false
       ? null
       : 'cold_device_compile_cache_hit_not_fresh_codegen',
-    isSha256Value(compileProvenance?.compileCommandHash)
+    isSha256Value(compileProvenance?.compileCommandHash ?? compileProvenance?.compile_command_hash)
       ? null
       : 'cold_device_compile_command_hash_invalid',
-    isSha256Value(compileProvenance?.dependencyHash)
+    isSha256Value(compileProvenance?.dependencyHash ?? compileProvenance?.dependency_hash)
       ? null
       : 'cold_device_compile_dependency_hash_invalid',
-    typeof compileProvenance?.compilerIdentity === 'string' && compileProvenance.compilerIdentity.trim()
+    canonicalCompileProvenance.dependencymethod === COLD_DEVICE_COMPILER_DEPENDENCY_METHOD
+      ? null
+      : 'cold_device_compile_dependency_method_mismatch',
+    canonicalCompileProvenance.dependencyhash
+      === canonicalCompileProvenance.compiledsourcesha256
+      && contentAddressedSha256(canonicalCompileProvenance.compiledsourcesha256)
+      && Number.isFinite(Number(canonicalCompileProvenance.compiledsourcebytes))
+      && Number(canonicalCompileProvenance.compiledsourcebytes) > 0
+      ? null
+      : 'cold_device_compile_dependency_input_mismatch',
+    contentAddressedSha256(canonicalCompileProvenance.preprocessorinputsha256)
+      && Number.isFinite(Number(canonicalCompileProvenance.preprocessorinputbytes))
+      && Number(canonicalCompileProvenance.preprocessorinputbytes) > 0
+      ? null
+      : 'cold_device_compile_preprocessor_input_missing',
+    canonicalCompileProvenance.sourcebytesverifiedafterexecution === true
+      ? null
+      : 'cold_device_compile_source_bytes_not_verified_after_execution',
+    typeof (compileProvenance?.compilerIdentity ?? compileProvenance?.compiler_identity) === 'string'
+      && String(compileProvenance?.compilerIdentity ?? compileProvenance?.compiler_identity).trim()
       ? null
       : 'cold_device_compile_compiler_identity_missing',
   ].filter(Boolean);
-  const accepted = blockingGaps.length === 0;
+  const byteObservationVerified = verificationGaps.length === 0;
+  const eligibilityGaps = [
+    liveCompileInvocation && liveCompileInvocation.requestHash !== expectedMcpRequestHash
+      ? 'cold_device_compile_mcp_request_hash_mismatch'
+      : null,
+    liveCompileInvocation
+      && liveCompileInvocation.proofId !== (artifact.proofId ?? artifact.proof_id)
+      ? 'cold_device_compile_mcp_proof_id_mismatch'
+      : null,
+    liveCompileInvocation
+      && liveCompileInvocation.proofArtifactPath !== normalizedProofArtifactPath
+      ? 'cold_device_compile_mcp_proof_path_mismatch'
+      : null,
+    liveObservationAccepted
+      ? null
+      : 'cold_device_compile_live_observation_capability_missing',
+  ].filter(Boolean);
+  const blockingGaps = [...verificationGaps, ...eligibilityGaps];
+  const accepted = byteObservationVerified && liveObservationAccepted;
   const proofSeed = {
-    proofArtifactPath,
-    proofId: artifact.proofId ?? null,
-    workspaceSlug: artifact.workspaceSlug ?? null,
+    proofArtifactPath: normalizedProofArtifactPath,
+    proofArtifactIdentity: recomputedProofId,
+    proofId: artifact.proofId ?? artifact.proof_id ?? null,
+    workspaceSlug: artifact.workspaceSlug ?? artifact.workspace_slug ?? null,
     selectedArtifactId: selectedArtifactId || null,
-    artifactHash: artifactEvidence?.contentHash ?? null,
-    artifactBytes,
+    artifactFilePath,
+    artifactHash: observedArtifactHash,
+    artifactBytes: observedArtifactByteLength,
+    declaredArtifactHash,
+    declaredArtifactBytes,
+    artifactObservationKind: artifactObservation?.observationKind ?? 'missing',
+    byteObservationVerified,
+    liveObservationAccepted,
+    compileInvocationBindingHash,
+    mcpRequestHash: liveCompileInvocation?.requestHash ?? null,
+    mcpCompileResponseHash: liveCompileInvocation?.compileResponseHash ?? null,
+    generatedSourcePath: generatedSource.path,
+    generatedSourceHash: generatedSource.contentHash,
+    generatedSourceBytes: generatedSource.byteLength,
+    compileCommandInputBindingHash: compileInputBinding.commandInputBindingHash,
+    dependencyInputBindingHash: compileInputBinding.dependencyInputBindingHash,
     compilerExecutable: observedCompilerExecutable || null,
     deviceCompiler: observedDeviceCompiler || null,
     gpuVendor: observedVendor || null,
     gpuArch: observedArch,
     sourceFilename: observedSourcePath || null,
-    compileCommandHash: compileProvenance?.compileCommandHash ?? null,
-    dependencyHash: compileProvenance?.dependencyHash ?? null,
-    compilerIdentity: compileProvenance?.compilerIdentity ?? null,
-    cacheHit: compileProvenance?.cacheHit ?? null,
+    compileCommandHash:
+      compileProvenance?.compileCommandHash ?? compileProvenance?.compile_command_hash ?? null,
+    dependencyHash:
+      compileProvenance?.dependencyHash ?? compileProvenance?.dependency_hash ?? null,
+    compilerIdentity:
+      compileProvenance?.compilerIdentity ?? compileProvenance?.compiler_identity ?? null,
+    cacheHit: compileProvenance?.cacheHit ?? compileProvenance?.cache_hit ?? null,
+    verificationGaps,
+    eligibilityGaps,
     blockingGaps,
   };
   const evidenceHash = `sha256:${sha256Hex(stableJson(proofSeed))}`;
@@ -5556,14 +6007,28 @@ function coldDeviceCompileProvenanceEvidence({
     can_satisfy_runtime_proof: false,
     canSatisfyDispatchProof: false,
     can_satisfy_dispatch_proof: false,
-    freshCompilerInvocation: compileProvenance?.cacheHit === false,
-    fresh_compiler_invocation: compileProvenance?.cacheHit === false,
-    cacheHit: compileProvenance?.cacheHit ?? null,
-    cache_hit: compileProvenance?.cacheHit ?? null,
-    proofArtifactPath,
-    proof_artifact_path: proofArtifactPath,
-    proofArtifactId: artifact.proofId ?? null,
-    proof_artifact_id: artifact.proofId ?? null,
+    byteObservationVerified,
+    byte_observation_verified: byteObservationVerified,
+    liveObservationAccepted,
+    live_observation_accepted: liveObservationAccepted,
+    syntheticOrReplayIneligible: !liveObservationAccepted,
+    synthetic_or_replay_ineligible: !liveObservationAccepted,
+    freshCompilerInvocation:
+      (compileProvenance?.cacheHit ?? compileProvenance?.cache_hit) === false,
+    fresh_compiler_invocation:
+      (compileProvenance?.cacheHit ?? compileProvenance?.cache_hit) === false,
+    cacheHit: compileProvenance?.cacheHit ?? compileProvenance?.cache_hit ?? null,
+    cache_hit: compileProvenance?.cacheHit ?? compileProvenance?.cache_hit ?? null,
+    proofArtifactPath: normalizedProofArtifactPath,
+    proof_artifact_path: normalizedProofArtifactPath,
+    proofArtifactIdentity: recomputedProofId,
+    proof_artifact_identity: recomputedProofId,
+    proofArtifactId: artifact.proofId ?? artifact.proof_id ?? null,
+    proof_artifact_id: artifact.proofId ?? artifact.proof_id ?? null,
+    selectedArtifactId: selectedArtifactId || null,
+    selected_artifact_id: selectedArtifactId || null,
+    artifactFilePath,
+    artifact_file_path: artifactFilePath,
     compilerExecutable: observedCompilerExecutable || null,
     compiler_executable: observedCompilerExecutable || null,
     deviceCompiler: observedDeviceCompiler || null,
@@ -5574,16 +6039,46 @@ function coldDeviceCompileProvenanceEvidence({
     gpu_arch: observedArch,
     sourceFilename: observedSourcePath || null,
     source_filename: observedSourcePath || null,
-    artifactHash: artifactEvidence?.contentHash ?? null,
-    artifact_hash: artifactEvidence?.contentHash ?? null,
-    artifactBytes,
-    artifact_bytes: artifactBytes,
-    compileCommandHash: compileProvenance?.compileCommandHash ?? null,
-    compile_command_hash: compileProvenance?.compileCommandHash ?? null,
-    dependencyHash: compileProvenance?.dependencyHash ?? null,
-    dependency_hash: compileProvenance?.dependencyHash ?? null,
-    compilerIdentity: compileProvenance?.compilerIdentity ?? null,
-    compiler_identity: compileProvenance?.compilerIdentity ?? null,
+    artifactHash: observedArtifactHash,
+    artifact_hash: observedArtifactHash,
+    artifactBytes: observedArtifactByteLength,
+    artifact_bytes: observedArtifactByteLength,
+    declaredArtifactHash,
+    declared_artifact_hash: declaredArtifactHash,
+    declaredArtifactBytes,
+    declared_artifact_bytes: declaredArtifactBytes,
+    compileInvocationBindingHash,
+    compile_invocation_binding_hash: compileInvocationBindingHash,
+    mcpRequestHash: liveCompileInvocation?.requestHash ?? null,
+    mcp_request_hash: liveCompileInvocation?.requestHash ?? null,
+    mcpCompileResponseHash: liveCompileInvocation?.compileResponseHash ?? null,
+    mcp_compile_response_hash: liveCompileInvocation?.compileResponseHash ?? null,
+    generatedSourcePath: generatedSource.path,
+    generated_source_path: generatedSource.path,
+    generatedSourceHash: generatedSource.contentHash,
+    generated_source_hash: generatedSource.contentHash,
+    generatedSourceBytes: generatedSource.byteLength,
+    generated_source_bytes: generatedSource.byteLength,
+    compileCommandInputBindingHash: compileInputBinding.commandInputBindingHash,
+    compile_command_input_binding_hash: compileInputBinding.commandInputBindingHash,
+    dependencyInputBindingHash: compileInputBinding.dependencyInputBindingHash,
+    dependency_input_binding_hash: compileInputBinding.dependencyInputBindingHash,
+    compileCommandHash:
+      compileProvenance?.compileCommandHash ?? compileProvenance?.compile_command_hash ?? null,
+    compile_command_hash:
+      compileProvenance?.compileCommandHash ?? compileProvenance?.compile_command_hash ?? null,
+    dependencyHash:
+      compileProvenance?.dependencyHash ?? compileProvenance?.dependency_hash ?? null,
+    dependency_hash:
+      compileProvenance?.dependencyHash ?? compileProvenance?.dependency_hash ?? null,
+    compilerIdentity:
+      compileProvenance?.compilerIdentity ?? compileProvenance?.compiler_identity ?? null,
+    compiler_identity:
+      compileProvenance?.compilerIdentity ?? compileProvenance?.compiler_identity ?? null,
+    verificationGaps,
+    verification_gaps: verificationGaps,
+    eligibilityGaps,
+    eligibility_gaps: eligibilityGaps,
     blockingGaps,
     blocking_gaps: blockingGaps,
   };
@@ -5591,19 +6086,48 @@ function coldDeviceCompileProvenanceEvidence({
 
 async function readColdDeviceCompileProvenanceEvidence({
   compileProof,
+  compileInvocationResult,
   split,
   expectedVendor,
   expectedArch,
 }) {
+  const compileCapability = compileInvocationResult?.[LIVE_MCP_COMPILE_CAPABILITY_SLOT] ?? null;
+  const liveCompileInvocation = compileCapability
+    ? liveMcpCompileInvocations.get(compileCapability) ?? null
+    : null;
+  if (!liveCompileInvocation) {
+    throw new Error('cold_device_compile_mcp_invocation_capability_missing');
+  }
+  if (liveCompileInvocation.artifactObservationIssued === true) {
+    throw new Error('cold_device_compile_mcp_invocation_capability_consumed');
+  }
   const proofArtifactPath = normalizedGpuProofArtifactRelativePath(compileProof?.proofArtifactPath);
+  if (
+    liveCompileInvocation.proofId !== compileProof?.proofId
+    || liveCompileInvocation.proofArtifactPath !== proofArtifactPath
+  ) {
+    throw new Error('cold_device_compile_mcp_proof_identity_mismatch');
+  }
   const proofArtifactRaw = await readWorkerFile(split.workspacePath, proofArtifactPath);
   const proofArtifact = JSON.parse(proofArtifactRaw);
+  canonicalAliasShape(proofArtifact, 'coldSource.liveCompileProofArtifact');
+  const evidenceRefs = Array.isArray(proofArtifact?.evidenceRefs)
+    ? proofArtifact.evidenceRefs
+    : Array.isArray(proofArtifact?.evidence_refs)
+      ? proofArtifact.evidence_refs
+      : [];
+  const artifactEvidence = evidenceRefs.find((entry) => entry?.kind === 'device-artifact') ?? null;
+  const artifactFilePath = normalizedWorkerArtifactRelativePath(
+    artifactEvidence?.filePath ?? artifactEvidence?.file_path,
+  );
+  const artifactBytes = await readWorkerFileBytes(split.workspacePath, artifactFilePath);
   const selectedDeviceRole = split.roles.deviceRoles.find((role) => role.path === split.roles.device)
     ?? split.roles.deviceRoles[0];
   const expectedCompiler = split.manifest?.gpu?.device_compiler
     ?? selectedDeviceRole?.compiler
     ?? null;
-  return coldDeviceCompileProvenanceEvidence({
+  const generatedSource = generatedDeviceSourceMaterial(split);
+  const producerMaterial = {
     proofArtifact,
     proofArtifactPath,
     expectedProofId: compileProof?.proofId,
@@ -5612,7 +6136,27 @@ async function readColdDeviceCompileProvenanceEvidence({
     expectedCompiler,
     expectedArch,
     expectedSourcePath: split.roles.device,
+    expectedGeneratedSourceHash: generatedSource.contentHash,
+    expectedGeneratedSourceBytes: generatedSource.byteLength,
+    expectedMcpRequestHash: liveCompileInvocation.requestHash,
+  };
+  liveCompileInvocation.artifactObservationIssued = true;
+  Object.defineProperty(producerMaterial, LIVE_COMPILE_ARTIFACT_BYTES_SLOT, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: Object.freeze({
+      bytes: artifactBytes,
+      filePath: artifactFilePath,
+      observationKind: 'worker_live_read',
+      compileCapability,
+      invocationId: liveCompileInvocation.invocationId,
+    }),
   });
+  return {
+    evidence: coldDeviceCompileProvenanceEvidence(producerMaterial),
+    producerMaterial,
+  };
 }
 
 function fullRuntimeGpuHmrProofFromResult(result) {
@@ -6349,6 +6893,40 @@ function generatedSplitArtifactManifest(split) {
     .sort((left, right) => left.path.localeCompare(right.path));
 }
 
+function sourceFirstIngestionProofIdentity({
+  sourceContentHash,
+  entryPath,
+  targetId,
+  initialManifestHash,
+  sourcePurityManifestHash,
+  sourcePurityInitialManifestHash,
+  gpuArch,
+  gpuArchSource,
+  generatedArtifactHashes,
+  sidecarHash,
+  compileManifestHash,
+}) {
+  const seed = {
+    sourceContentHash,
+    entryPath: cleanRel(entryPath),
+    targetId,
+    initialManifestHash,
+    sourcePurityManifestHash,
+    sourcePurityInitialManifestHash,
+    gpuArch,
+    gpuArchSource,
+    generatedArtifactHashes: Array.isArray(generatedArtifactHashes)
+      ? [...generatedArtifactHashes]
+      : [],
+    sidecarHash,
+    compileManifestHash,
+  };
+  return {
+    seed,
+    proofId: `agent-split-source-first-ingestion:sha256:${sha256Hex(stableJson(seed))}`,
+  };
+}
+
 function sourceFirstWorkspaceSourceProvenanceEvidence({
   sourceAuthority,
   sourceContentHash,
@@ -6791,6 +7369,156 @@ function directSourceRuntimeContractExpectationForProfile(
   };
 }
 
+export function coldSourceProfileRequestIdentitySnapshot(input = {}) {
+  assertColdSourceProtocolShape(input, 'coldSource.profileRequestIdentityInput');
+  const outputOracleKind = normalizedColdSourceOracleKind(
+    input.outputOracleKind ?? input.output_oracle_kind,
+  );
+  const seed = {
+    schemaVersion: COLD_SOURCE_PROFILE_REQUEST_IDENTITY_SCHEMA_VERSION,
+    profileId: String(input.profileId ?? input.profile_id ?? '').trim(),
+    profileHash: normalizedProofContentHash(input.profileHash ?? input.profile_hash),
+    profileSource: String(input.profileSource ?? input.profile_source ?? '').trim(),
+    profilePath: String(input.profilePath ?? input.profile_path ?? '').trim() || null,
+    sourceAuthority: String(input.sourceAuthority ?? input.source_authority ?? '').trim(),
+    sourceManifestHash: normalizedProofContentHash(
+      input.sourceManifestHash ?? input.source_manifest_hash,
+    ),
+    sourceContentHash: normalizedProofContentHash(
+      input.sourceContentHash ?? input.source_content_hash,
+    ),
+    entryPath: cleanRel(input.entryPath ?? input.entry_path),
+    requestIntentHash: normalizedProofContentHash(
+      input.requestIntentHash ?? input.request_intent_hash,
+    ),
+    outputOracleKind,
+    generatedSplitProfileId: String(
+      input.generatedSplitProfileId ?? input.generated_split_profile_id ?? '',
+    ).trim(),
+    generatedSplitTargetId: String(
+      input.generatedSplitTargetId ?? input.generated_split_target_id ?? '',
+    ).trim(),
+    deterministicVisualModeHash: normalizedProofContentHash(
+      input.deterministicVisualModeHash ?? input.deterministic_visual_mode_hash,
+    ),
+    visualProofHash: normalizedProofContentHash(
+      input.visualProofHash ?? input.visual_proof_hash,
+    ),
+    visualSceneManifestHash: normalizedProofContentHash(
+      input.visualSceneManifestHash ?? input.visual_scene_manifest_hash,
+    ),
+    evidenceRefs: uniqueSortedStrings(input.evidenceRefs ?? input.evidence_refs),
+  };
+  const blockingGaps = [
+    seed.profileId ? null : 'cold_source_profile_id_missing',
+    seed.profileSource ? null : 'cold_source_profile_source_missing',
+    seed.sourceAuthority ? null : 'cold_source_profile_source_authority_missing',
+    contentAddressedSha256(seed.sourceManifestHash)
+      ? null
+      : 'cold_source_profile_manifest_hash_missing',
+    contentAddressedSha256(seed.sourceContentHash)
+      ? null
+      : 'cold_source_profile_content_hash_missing',
+    seed.entryPath ? null : 'cold_source_profile_entry_path_missing',
+    contentAddressedSha256(seed.requestIntentHash)
+      ? null
+      : 'cold_source_profile_request_intent_hash_missing',
+    seed.outputOracleKind ? null : 'cold_source_profile_output_oracle_kind_missing',
+    seed.generatedSplitProfileId ? null : 'cold_source_generated_split_profile_id_missing',
+    seed.generatedSplitTargetId ? null : 'cold_source_generated_split_target_id_missing',
+    seed.profileHash === null || contentAddressedSha256(seed.profileHash)
+      ? null
+      : 'cold_source_profile_hash_invalid',
+    seed.deterministicVisualModeHash === null
+      || contentAddressedSha256(seed.deterministicVisualModeHash)
+      ? null
+      : 'cold_source_profile_deterministic_mode_hash_invalid',
+    seed.visualProofHash === null || contentAddressedSha256(seed.visualProofHash)
+      ? null
+      : 'cold_source_profile_visual_proof_hash_invalid',
+    seed.visualSceneManifestHash === null
+      || contentAddressedSha256(seed.visualSceneManifestHash)
+      ? null
+      : 'cold_source_profile_visual_scene_manifest_hash_invalid',
+  ].filter(Boolean);
+  if (blockingGaps.length > 0) {
+    throw new Error(`cold_source_profile_request_identity_invalid:${blockingGaps.join('|')}`);
+  }
+  const identityHash = `sha256:${sha256Hex(stableJson(seed))}`;
+  return {
+    ...seed,
+    schema_version: seed.schemaVersion,
+    proofAuthority: COLD_SOURCE_PROFILE_REQUEST_IDENTITY_AUTHORITY,
+    proof_authority: COLD_SOURCE_PROFILE_REQUEST_IDENTITY_AUTHORITY,
+    profile_id: seed.profileId,
+    profile_hash: seed.profileHash,
+    profile_source: seed.profileSource,
+    profile_path: seed.profilePath,
+    source_authority: seed.sourceAuthority,
+    source_manifest_hash: seed.sourceManifestHash,
+    source_content_hash: seed.sourceContentHash,
+    entry_path: seed.entryPath,
+    request_intent_hash: seed.requestIntentHash,
+    output_oracle_kind: seed.outputOracleKind,
+    generated_split_profile_id: seed.generatedSplitProfileId,
+    generated_split_target_id: seed.generatedSplitTargetId,
+    deterministic_visual_mode_hash: seed.deterministicVisualModeHash,
+    visual_proof_hash: seed.visualProofHash,
+    visual_scene_manifest_hash: seed.visualSceneManifestHash,
+    evidence_refs: seed.evidenceRefs,
+    identityHash,
+    identity_hash: identityHash,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+  };
+}
+
+function coldSourceProfileRequestIdentityForRun({
+  source,
+  entryPath,
+  requestIntent,
+  split,
+  profile,
+}) {
+  const splitIdentity = splitProofIdentity(split);
+  const profileId = profile?.profileId ?? splitIdentity.profileId;
+  return coldSourceProfileRequestIdentitySnapshot({
+    profileId,
+    profileHash: profile?.profileHash ?? null,
+    profileSource: profile ? validationProfileEvidenceSource() : 'generated_split_identity',
+    profilePath: profile?.profilePath ?? null,
+    sourceAuthority: profile?.sourceAuthority ?? 'generated_split_source',
+    sourceManifestHash: requestIntent.sourceManifestHash,
+    sourceContentHash: `sha256:${sha256Hex(source)}`,
+    entryPath,
+    requestIntentHash: requestIntent.intentHash,
+    outputOracleKind: requestIntent.outputOracleKind ?? requestIntent.oracleIntent,
+    generatedSplitProfileId: splitIdentity.profileId,
+    generatedSplitTargetId: splitIdentity.targetId,
+    deterministicVisualModeHash:
+      profile?.deterministicVisualModeHash ?? profile?.deterministic_visual_mode_hash ?? null,
+    visualProofHash:
+      profile?.visualProof?.proofHash ?? profile?.visual_proof?.proof_hash ?? null,
+    visualSceneManifestHash:
+      profile?.visualSceneManifestHash ?? profile?.visual_scene_manifest_hash ?? null,
+    evidenceRefs: [
+      profile?.profileHash,
+      profile?.source?.evidenceRef,
+      profile?.source?.evidence_ref,
+      profile?.source?.contentHash,
+      profile?.source?.content_hash,
+      requestIntent.intentHash,
+      requestIntent.sourceManifestHash,
+    ],
+  });
+}
+
 function sourceFirstIngestionEvidence({
   source,
   entryPath,
@@ -6801,8 +7529,25 @@ function sourceFirstIngestionEvidence({
   split,
   sawGpuSplit,
   splitEndpointEvidence,
+  profileRequestIdentitySnapshot = null,
 }) {
   const splitIdentity = splitProofIdentity(split);
+  const explicitProfileIdentity = profileRequestIdentitySnapshot
+    ? coldSourceProfileRequestIdentitySnapshot(profileRequestIdentitySnapshot)
+    : null;
+  if (
+    explicitProfileIdentity
+    && explicitProfileIdentity.generatedSplitProfileId !== splitIdentity.profileId
+  ) {
+    throw new Error('cold_source_profile_generated_split_profile_mismatch');
+  }
+  if (
+    explicitProfileIdentity
+    && explicitProfileIdentity.generatedSplitTargetId !== splitIdentity.targetId
+  ) {
+    throw new Error('cold_source_profile_generated_split_target_mismatch');
+  }
+  const activeProfile = explicitProfileIdentity ? null : ACTIVE_AGENT_PROFILE;
   const sourceContentHash = `sha256:${sha256Hex(source)}`;
   const initialFiles = sourceFirstInitialFileManifest(initialCompileArgs?.files);
   const initialFilePaths = initialFiles.map((entry) => entry.path);
@@ -6812,7 +7557,8 @@ function sourceFirstIngestionEvidence({
   const initialSourceHashMatches = initialSourceEntry?.contentHash === sourceContentHash;
   const preexistingGeneratedArtifactPaths = initialFilePaths
     .filter(sourceFirstPreexistingGeneratedArtifactPath);
-  const generatedArtifacts = generatedSplitArtifactManifest(split);
+  const generatedSplitArtifacts = generatedSplitArtifactManifest(split);
+  const generatedArtifacts = generatedSplitArtifacts;
   const generatedArtifactHashes = generatedArtifacts
     .map((entry) => entry.contentHash)
     .filter(Boolean);
@@ -6895,12 +7641,14 @@ function sourceFirstIngestionEvidence({
   const sourcePurityCoversInitialManifest =
     sourcePurityFileSetMatchesInitialManifest
     && normalizedSourcePurityFiles.every((purityEntry) => purityEntry.accepted === true);
-  const sourceTreeManifestHash =
-    ACTIVE_AGENT_PROFILE?.source?.manifestHash
-    ?? ACTIVE_AGENT_PROFILE?.source?.manifest_hash
+  const sourceTreeManifestHash = explicitProfileIdentity?.sourceManifestHash
+    ?? activeProfile?.source?.manifestHash
+    ?? activeProfile?.source?.manifest_hash
     ?? initialManifestHash;
   const sourceTreeManifestHashMatches = sourceTreeManifestHash === initialManifestHash;
-  const sourceAuthority = ACTIVE_AGENT_PROFILE?.sourceAuthority ?? 'builtin_fixture_source';
+  const sourceAuthority = explicitProfileIdentity?.sourceAuthority
+    ?? activeProfile?.sourceAuthority
+    ?? 'builtin_fixture_source';
   const workspaceSourceProvenance = sourceFirstWorkspaceSourceProvenanceEvidence({
     sourceAuthority,
     sourceContentHash,
@@ -6908,27 +7656,34 @@ function sourceFirstIngestionEvidence({
     initialManifestHash,
     initialFiles,
   });
-  const directSourceContext = directSourceContextFromProfile(ACTIVE_AGENT_PROFILE);
-  const directSourceInputEvidence = directSourceInputEvidenceForProfile(ACTIVE_AGENT_PROFILE);
-  const directSourceRuntimeContractExpectation =
-    directSourceRuntimeContractExpectationForProfile(
-      ACTIVE_AGENT_PROFILE,
-      directSourceInputEvidence,
-    );
+  const directSourceContext = explicitProfileIdentity
+    ? null
+    : directSourceContextFromProfile(activeProfile);
+  const directSourceInputEvidence = explicitProfileIdentity
+    ? null
+    : directSourceInputEvidenceForProfile(activeProfile);
+  const directSourceRuntimeContractExpectation = explicitProfileIdentity
+    ? null
+    : directSourceRuntimeContractExpectationForProfile(
+        activeProfile,
+        directSourceInputEvidence,
+      );
   const gpuSplitLogObserved = sawGpuSplit?.matched === true;
   const gpuSplitEndpointObserved = splitEndpointEvidence?.observed === true;
   const generatedArtifactPathsInGeneratedNamespace =
-    generatedArtifacts.length > 0
-    && generatedArtifacts.every((entry) => sourceFirstPreexistingGeneratedArtifactPath(entry.path));
+    generatedSplitArtifacts.length > 0
+    && generatedSplitArtifacts.every(
+      (entry) => sourceFirstPreexistingGeneratedArtifactPath(entry.path),
+    );
   const generatedArtifactBoundaryProven =
     gpuSplitEndpointObserved
     && preexistingGeneratedArtifactPaths.length === 0
     && preexistingGeneratedArtifactHashOverlaps.length === 0
     && generatedArtifactPathsInGeneratedNamespace
-    && generatedArtifacts.length > 0;
+    && generatedSplitArtifacts.length > 0;
   const gpuArch = explicitGpuArch(initialCompileArgs?.gpu_arch);
   const gpuArchSource = initialCompileArgs?.gpu_arch_source ?? null;
-  const seed = {
+  const proofIdentity = sourceFirstIngestionProofIdentity({
     sourceContentHash,
     entryPath: normalizedEntryPath,
     targetId: splitIdentity.targetId,
@@ -6940,22 +7695,26 @@ function sourceFirstIngestionEvidence({
     generatedArtifactHashes,
     sidecarHash,
     compileManifestHash,
-  };
-  const proofId = `agent-split-source-first-ingestion:sha256:${sha256Hex(stableJson(seed))}`;
+  });
+  const proofId = proofIdentity.proofId;
+  const sourceFirstProfileId = explicitProfileIdentity?.profileId
+    ?? (activeProfile || CFG.fixture ? validationProfileId() : splitIdentity.profileId);
   const evidenceRefs = [
     proofId,
     sourceContentHash,
-    ACTIVE_AGENT_PROFILE?.profileHash,
-    ACTIVE_AGENT_PROFILE?.source?.evidenceRef,
-    ACTIVE_AGENT_PROFILE?.source?.evidence_ref,
-    ACTIVE_AGENT_PROFILE?.source?.contentHash,
-    ACTIVE_AGENT_PROFILE?.source?.content_hash,
+    explicitProfileIdentity?.identityHash,
+    ...(explicitProfileIdentity?.evidenceRefs ?? []),
+    activeProfile?.profileHash,
+    activeProfile?.source?.evidenceRef,
+    activeProfile?.source?.evidence_ref,
+    activeProfile?.source?.contentHash,
+    activeProfile?.source?.content_hash,
     directSourceInputEvidence?.evidenceHash,
     directSourceInputEvidence?.evidence_hash,
     directSourceRuntimeContractExpectation?.evidenceRef,
     directSourceRuntimeContractExpectation?.evidence_ref,
-    ...(Array.isArray(ACTIVE_AGENT_PROFILE?.source?.files)
-      ? ACTIVE_AGENT_PROFILE.source.files.map((entry) => entry.evidenceRef ?? entry.evidence_ref)
+    ...(Array.isArray(activeProfile?.source?.files)
+      ? activeProfile.source.files.map((entry) => entry.evidenceRef ?? entry.evidence_ref)
       : []),
     initialManifestHash,
     sourcePurityManifestHash,
@@ -7000,6 +7759,8 @@ function sourceFirstIngestionEvidence({
     can_satisfy_runtime_proof: false,
     sourceAuthority,
     source_authority: sourceAuthority,
+    profileRequestIdentity: explicitProfileIdentity,
+    profile_request_identity: explicitProfileIdentity,
     sourceKind: directSourceContext?.sourceKind ?? null,
     source_kind: directSourceContext?.source_kind ?? null,
     sourceUrl: directSourceContext?.sourceUrl ?? null,
@@ -7157,10 +7918,10 @@ function sourceFirstIngestionEvidence({
     compile_manifest_hash: compileManifestHash,
     targetId: splitIdentity.targetId,
     target_id: splitIdentity.target_id,
-    profileId: validationProfileId(),
-    profile_id: validationProfileId(),
-    validationProfileId: validationProfileId(),
-    validation_profile_id: validationProfileId(),
+    profileId: sourceFirstProfileId,
+    profile_id: sourceFirstProfileId,
+    validationProfileId: sourceFirstProfileId,
+    validation_profile_id: sourceFirstProfileId,
     evidenceRefs: [...new Set([
       ...evidenceRefs,
       workspaceSourceProvenance?.evidenceRef,
@@ -10851,87 +11612,528 @@ async function writeRunModeProofArtifact(name, proof) {
   return writeJsonArtifact(name, withProofId);
 }
 
-function coldAiSplitProofFromSeed(coldSplitProofSeed) {
-  if (!coldSplitProofSeed) {
-    throw new Error('cold AI split proof requires captured visual output artifacts');
+function normalizedColdSourceOracleKind(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized === 'visual_oracle' || normalized === 'compute_oracle'
+    ? normalized
+    : null;
+}
+
+function coldSourceAliasValue(value, camelKey, snakeKey, label) {
+  if (!value || typeof value !== 'object') {
+    throw new Error(`cold_source_protocol_field_missing:${label}`);
   }
-  const providerCallEvidence =
-    coldSplitProofSeed.coldAiProviderCallEvidence
-    ?? coldSplitProofSeed.cold_ai_provider_call_evidence;
-  if (providerCallEvidence?.acceptedAsColdAiProviderCallEvidence !== true) {
-    throw new Error('cold AI split proof requires an observed AI provider call');
+  const camelPresent = Object.hasOwn(value, camelKey);
+  const snakePresent = Object.hasOwn(value, snakeKey);
+  if (!camelPresent && !snakePresent) {
+    throw new Error(`cold_source_protocol_field_missing:${label}`);
   }
-  const deviceCompileProvenance =
-    coldSplitProofSeed.coldDeviceCompileProvenance
-    ?? coldSplitProofSeed.cold_device_compile_provenance;
-  if (deviceCompileProvenance?.acceptedAsFreshDeviceCompileEvidence !== true) {
-    throw new Error('cold AI split proof requires fresh device compiler provenance');
+  return camelPresent ? value[camelKey] : value[snakeKey];
+}
+
+function assertCanonicalColdEvidence(label, supplied, recomputed) {
+  const suppliedCanonical = canonicalColdProtocolShape(supplied, `${label}.supplied`);
+  const recomputedCanonical = canonicalColdProtocolShape(recomputed, `${label}.recomputed`);
+  if (stableJson(suppliedCanonical) !== stableJson(recomputedCanonical)) {
+    throw new Error(`cold_source_canonical_evidence_mismatch:${label}`);
   }
-  const visualArtifacts =
-    coldSplitProofSeed.visualArtifacts
-    ?? coldSplitProofSeed.visual_artifacts;
-  const visualMetrics =
-    coldSplitProofSeed.visualMetrics
-    ?? coldSplitProofSeed.visual_metrics;
-  const visualSample =
-    coldSplitProofSeed.coldSingleFrameVisual
-    ?? coldSplitProofSeed.cold_single_frame_visual;
-  const transport =
-    visualArtifacts?.visualArtifactTransportEvidence
-    ?? visualArtifacts?.visual_artifact_transport_evidence;
-  const locators =
-    visualArtifacts?.artifactCasLocators
-    ?? visualArtifacts?.artifact_cas_locators;
-  const afterImageHash =
-    visualArtifacts?.afterImageHash
-    ?? visualArtifacts?.after_image_hash;
-  const locatorBoundToFrame = Array.isArray(locators)
-    && locators.some((locator) =>
-      (locator?.contentHash ?? locator?.content_hash) === afterImageHash
-      && locator?.role === 'after_frame'
-      && locator?.mediaType === 'image/png'
-    );
-  const transportBoundToFrame = Array.isArray(transport?.entries)
-    && transport.entries.some((entry) => entry?.contentHash === afterImageHash);
-  const visiblePixelCount = Number(
-    visualMetrics?.visiblePixelCount
-    ?? visualMetrics?.visible_pixel_count
-    ?? visualSample?.visiblePixels
-    ?? 0,
-  );
-  const visualBlockingGaps = [
-    coldSplitProofSeed.coldSplitProven === true
-      || coldSplitProofSeed.cold_split_proven === true
-      ? null
-      : 'cold_ai_split_not_proven',
-    /^sha256:[a-f0-9]{64}$/.test(String(afterImageHash ?? ''))
-      ? null
-      : 'cold_ai_split_visual_hash_missing',
-    Array.isArray(locators) && locators.length > 0
-      ? null
-      : 'cold_ai_split_visual_cas_locator_missing',
-    locatorBoundToFrame && transportBoundToFrame
-      ? null
-      : 'cold_ai_split_visual_cas_binding_mismatch',
-    transport?.accepted === true && transport?.acceptedAsTransportEvidence === true
-      ? null
-      : 'cold_ai_split_visual_transport_unproven',
-    Number(visualSample?.width) >= 320
-      && Number(visualSample?.height) >= 240
-      && Number(visualSample?.bytes) > 512
-      && visiblePixelCount > 500
-      ? null
-      : 'cold_ai_split_visual_frame_blank_or_invalid',
-  ].filter(Boolean);
-  if (visualBlockingGaps.length > 0) {
-    throw new Error(`cold AI split visual proof rejected: ${visualBlockingGaps.join('|')}`);
-  }
+}
+
+function coldSourceTimingMetricsFromProducer(value, expectedSourceHash) {
+  assertColdSourceProtocolShape(value, 'coldSource.timingMetrics');
+  const timings = value?.timings && typeof value.timings === 'object'
+    ? value.timings
+    : {};
+  const deviceCompileWallTime = Number(timings.device_compile_wall_time);
+  const runtimeProbeTime = Number(timings.runtime_probe_time);
+  const totalValidatorWallTime = Number(timings.total_validator_wall_time);
+  const accepted =
+    (value?.schemaVersion ?? value?.schema_version)
+      === 'synthi.gpu.hmr.runner_timing_metrics.v1'
+    && (value?.metricClock ?? value?.metric_clock) === 'monotonic_ns'
+    && (value?.metricScope ?? value?.metric_scope) === 'cold'
+    && (value?.cacheState ?? value?.cache_state) === 'clean'
+    && (value?.editHash ?? value?.edit_hash) === expectedSourceHash
+    && (value?.editKind ?? value?.edit_kind) === 'cold_split'
+    && (value?.differentEdit ?? value?.different_edit ?? false) === false
+    && [deviceCompileWallTime, runtimeProbeTime, totalValidatorWallTime]
+      .every((metric) => Number.isFinite(metric) && metric >= 0)
+    && totalValidatorWallTime >= deviceCompileWallTime
+    && totalValidatorWallTime >= runtimeProbeTime;
+  if (!accepted) throw new Error('cold_source_timing_metrics_invalid');
+  const seed = {
+    schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
+    metricClock: 'monotonic_ns',
+    metricScope: 'cold',
+    cacheState: 'clean',
+    editId: value.editId ?? value.edit_id ?? null,
+    editHash: expectedSourceHash,
+    editKind: 'cold_split',
+    differentEdit: false,
+    timings: {
+      device_compile_wall_time: deviceCompileWallTime,
+      runtime_probe_time: runtimeProbeTime,
+      total_validator_wall_time: totalValidatorWallTime,
+    },
+  };
+  const evidenceHash = `sha256:${sha256Hex(stableJson(seed))}`;
   return {
-    ...coldSplitProofSeed,
-    proofAuthority: 'cold_ai_split_visual_output_only_not_gpu_hmr_acceptance',
-    proof_authority: 'cold_ai_split_visual_output_only_not_gpu_hmr_acceptance',
-    acceptedAsColdAiSplitEvidence: true,
-    accepted_as_cold_ai_split_evidence: true,
+    ...seed,
+    schema_version: seed.schemaVersion,
+    metric_clock: seed.metricClock,
+    metric_scope: seed.metricScope,
+    cache_state: seed.cacheState,
+    edit_id: seed.editId,
+    edit_hash: seed.editHash,
+    edit_kind: seed.editKind,
+    different_edit: false,
+    evidenceHash,
+    evidence_hash: evidenceHash,
+  };
+}
+
+function coldSourceLiveObservationBindingSeed(producerEvidence) {
+  return {
+    schemaVersion: COLD_SOURCE_DERIVATION_CHAIN_SCHEMA_VERSION,
+    profileRequestIdentityHash: producerEvidence.profileRequestIdentity.identityHash,
+    requestIntentHash: producerEvidence.requestIntent.intentHash,
+    initialCompileRequestIdentity:
+      producerEvidence.initialCompileRequestSupport.requestIdentity,
+    mcpRequestHash: producerEvidence.expectedMcpRequestHash,
+    sourceFirstProofId: producerEvidence.sourceFirstIngestion.proofId,
+    sourceContentHash: producerEvidence.sourceFirstIngestion.sourceContentHash,
+    sourceManifestHash: producerEvidence.requestIntent.sourceManifestHash,
+    generatedDeviceSourcePath: producerEvidence.generatedDeviceSource.path,
+    generatedDeviceSourceHash: producerEvidence.generatedDeviceSource.contentHash,
+    generatedDeviceSourceBytes: producerEvidence.generatedDeviceSource.byteLength,
+    generatedArtifactManifestHash: producerEvidence.generatedArtifactManifestHash,
+    generatedArtifactHashes: producerEvidence.generatedArtifactHashes,
+    sidecarHash: producerEvidence.sourceFirstIngestion.sidecarHash,
+    compileManifestHash: producerEvidence.sourceFirstIngestion.compileManifestHash,
+    providerCallReceiptHash: producerEvidence.providerCallEvidence.providerCallReceiptHash,
+    providerCallProducerReceiptHash:
+      producerEvidence.providerCallEvidence.providerCallProducerReceiptHash,
+    providerCallRequestHash: producerEvidence.providerCallEvidence.providerCallRequestHash,
+    providerCallResponseHash: producerEvidence.providerCallEvidence.providerCallResponseHash,
+    providerCallChallengeHash: producerEvidence.providerCallEvidence.providerCallChallengeHash,
+    providerCallEvidenceHash: producerEvidence.providerCallEvidence.evidenceHash,
+    compileEvidenceHash: producerEvidence.deviceCompileProvenance.evidenceHash,
+    compileProofArtifactId: producerEvidence.deviceCompileProvenance.proofArtifactId,
+    compileProofArtifactIdentity:
+      producerEvidence.deviceCompileProvenance.proofArtifactIdentity,
+    compileProofArtifactPath: producerEvidence.deviceCompileProvenance.proofArtifactPath,
+    compileArtifactHash: producerEvidence.deviceCompileProvenance.artifactHash,
+    compileArtifactBytes: producerEvidence.deviceCompileProvenance.artifactBytes,
+    compileArtifactFilePath: producerEvidence.deviceCompileProvenance.artifactFilePath,
+    compileCommandHash: producerEvidence.deviceCompileProvenance.compileCommandHash,
+    compileDependencyHash: producerEvidence.deviceCompileProvenance.dependencyHash,
+    compileCommandInputBindingHash:
+      producerEvidence.deviceCompileProvenance.compileCommandInputBindingHash,
+    compileDependencyInputBindingHash:
+      producerEvidence.deviceCompileProvenance.dependencyInputBindingHash,
+    compileInvocationBindingHash:
+      producerEvidence.deviceCompileProvenance.compileInvocationBindingHash,
+    compileResponseHash:
+      producerEvidence.deviceCompileProvenance.mcpCompileResponseHash,
+    timingEvidenceHash: producerEvidence.timingMetrics.evidenceHash,
+    outputOracleKind: producerEvidence.requestIntent.outputOracleKind,
+  };
+}
+
+function coldSourceDeclaredModalityMaterialHash(coldSplitProofSeed, outputOracleKind) {
+  const visualKeys = [
+    'coldSingleFrameVisual',
+    'cold_single_frame_visual',
+    'visualArtifacts',
+    'visual_artifacts',
+    'visualMetrics',
+    'visual_metrics',
+  ];
+  if (outputOracleKind === 'compute_oracle') {
+    if (visualKeys.some((key) => Object.hasOwn(coldSplitProofSeed, key))) {
+      throw new Error('cold_source_compute_visual_material_forbidden');
+    }
+    return `sha256:${sha256Hex(stableJson({
+      schemaVersion: 'synthi.gpu_hmr.cold_source_compute_modality_material.v1',
+      outputOracleKind,
+      visualCaptureRequired: false,
+    }))}`;
+  }
+  const visualMaterial = {
+    sample: coldSourceAliasValue(
+      coldSplitProofSeed,
+      'coldSingleFrameVisual',
+      'cold_single_frame_visual',
+      'coldSingleFrameVisual',
+    ),
+    artifacts: coldSourceAliasValue(
+      coldSplitProofSeed,
+      'visualArtifacts',
+      'visual_artifacts',
+      'visualArtifacts',
+    ),
+    metrics: coldSourceAliasValue(
+      coldSplitProofSeed,
+      'visualMetrics',
+      'visual_metrics',
+      'visualMetrics',
+    ),
+  };
+  const canonical = canonicalColdProtocolShape(
+    visualMaterial,
+    'coldSource.declaredVisualMaterial',
+  );
+  return `sha256:${sha256Hex(stableJson({
+    schemaVersion: 'synthi.gpu_hmr.cold_source_visual_modality_material.v1',
+    outputOracleKind,
+    canonical,
+  }))}`;
+}
+
+function coldSourceFinalObservationBindingSeed({
+  producerEvidence,
+  modalityBinding,
+  coldSplitProofSeed,
+}) {
+  return {
+    schemaVersion: 'synthi.gpu_hmr.cold_source_final_observation_binding.v1',
+    derivationChainHash: producerEvidence.derivationChainHash,
+    requestedModalityBindingHash: modalityBinding.bindingHash,
+    timingEvidenceHash: producerEvidence.timingMetrics.evidenceHash,
+    outputOracleKind: modalityBinding.outputOracleKind,
+    modalityMaterialHash: coldSourceDeclaredModalityMaterialHash(
+      coldSplitProofSeed,
+      modalityBinding.outputOracleKind,
+    ),
+  };
+}
+
+async function issueColdSourceLiveObservationCapability(
+  producerMaterial,
+  coldSplitProofSeed,
+) {
+  if (producerMaterial[LIVE_COLD_SOURCE_CAPABILITY_SLOT]) {
+    throw new Error('cold_source_live_observation_already_issued');
+  }
+  const observed = recomputeColdSourceProducerEvidence(producerMaterial);
+  const modalityBinding = coldSourceModalityBinding(coldSplitProofSeed, observed);
+  if (
+    observed.providerCallEvidence.canonicalProviderReceiptVerified !== true
+    || observed.deviceCompileProvenance.byteObservationVerified !== true
+    || observed.liveObservationEligible !== true
+  ) {
+    throw new Error('cold_source_live_observation_prerequisites_missing');
+  }
+  const artifactObservation = producerMaterial.compileProducerMaterial
+    ?.[LIVE_COMPILE_ARTIFACT_BYTES_SLOT] ?? null;
+  const compileCapability = artifactObservation?.compileCapability ?? null;
+  const compileInvocation = compileCapability
+    ? liveMcpCompileInvocations.get(compileCapability) ?? null
+    : null;
+  if (!compileInvocation || compileInvocation.coldObservationIssued === true) {
+    throw new Error('cold_source_compile_capability_consumed_or_missing');
+  }
+  const capability = Object.freeze(Object.create(null));
+  const bindingSeed = coldSourceFinalObservationBindingSeed({
+    producerEvidence: observed,
+    modalityBinding,
+    coldSplitProofSeed,
+  });
+  const bindingHash = `sha256:${sha256Hex(stableJson(bindingSeed))}`;
+  compileInvocation.coldObservationIssued = true;
+  liveColdSourceObservations.set(capability, {
+    bindingHash,
+    compileCapability,
+    consumed: false,
+  });
+  Object.defineProperty(producerMaterial, LIVE_COLD_SOURCE_CAPABILITY_SLOT, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: capability,
+  });
+}
+
+function consumeColdSourceLiveObservationCapability({
+  producerMaterial,
+  producerEvidence,
+  modalityBinding,
+  coldSplitProofSeed,
+}) {
+  const capability = producerMaterial[LIVE_COLD_SOURCE_CAPABILITY_SLOT] ?? null;
+  if (!capability) return false;
+  const observation = liveColdSourceObservations.get(capability) ?? null;
+  if (!observation || observation.consumed === true) {
+    throw new Error('cold_source_live_observation_capability_consumed_or_missing');
+  }
+  const bindingSeed = coldSourceFinalObservationBindingSeed({
+    producerEvidence,
+    modalityBinding,
+    coldSplitProofSeed,
+  });
+  const expectedBindingHash = `sha256:${sha256Hex(stableJson(bindingSeed))}`;
+  if (observation.bindingHash !== expectedBindingHash) {
+    throw new Error('cold_source_live_observation_binding_mismatch');
+  }
+  const compileInvocation = liveMcpCompileInvocations.get(
+    observation.compileCapability,
+  ) ?? null;
+  if (!compileInvocation || compileInvocation.coldObservationIssued !== true) {
+    throw new Error('cold_source_compile_capability_consumed_or_missing');
+  }
+  observation.consumed = true;
+  liveColdSourceObservations.delete(capability);
+  liveMcpCompileInvocations.delete(observation.compileCapability);
+  return true;
+}
+
+export function recomputeColdSourceProducerEvidence(producerMaterial = {}) {
+  if (!producerMaterial || typeof producerMaterial !== 'object' || Array.isArray(producerMaterial)) {
+    throw new Error('cold_source_producer_material_invalid');
+  }
+  const {
+    source,
+    entryPath,
+    initialCompileArgs,
+    split,
+    typedOracleIntent = {},
+    declaredSourceManifestHash = '',
+    compileProducerMaterial,
+    profileRequestIdentitySnapshot,
+  } = producerMaterial;
+  if (
+    typeof source !== 'string'
+    || !source
+    || !initialCompileArgs
+    || !split
+    || !profileRequestIdentitySnapshot
+  ) {
+    throw new Error('cold_source_producer_material_incomplete');
+  }
+  const producerEnvelope = { ...producerMaterial };
+  for (const key of [
+    'source',
+    'entryPath',
+    'initialCompileArgs',
+    'split',
+    'typedOracleIntent',
+    'declaredSourceManifestHash',
+    'compileProducerMaterial',
+    'profileRequestIdentitySnapshot',
+    'timingMetrics',
+    'visual',
+  ]) {
+    delete producerEnvelope[key];
+  }
+  if (coldSourceEnvelopeClaimsProofAuthority(producerEnvelope)) {
+    throw new Error('cold_source_authority_claim_rejected:coldSource.producerEnvelope');
+  }
+  const initialCompileEnvelope = { ...initialCompileArgs };
+  delete initialCompileEnvelope.source_first_request_intent;
+  if (
+    coldSourceEnvelopeClaimsProofAuthority(initialCompileEnvelope)
+    || coldSourceEnvelopeClaimsProofAuthority(typedOracleIntent)
+  ) {
+    throw new Error('cold_source_authority_claim_rejected:coldSource.requestEnvelope');
+  }
+  assertColdSourceProtocolShape(initialCompileArgs, 'coldSource.initialCompileArgs');
+  assertColdSourceProtocolShape(typedOracleIntent, 'coldSource.typedOracleIntent');
+  assertColdSourceProtocolShape(split.sidecar ?? {}, 'coldSource.split.sidecar');
+  assertColdSourceProtocolShape(split.manifest ?? {}, 'coldSource.split.manifest');
+  canonicalAliasShape(
+    compileProducerMaterial?.proofArtifact ?? {},
+    'coldSource.compileProofArtifact',
+  );
+
+  const suppliedRequestIntent = initialCompileArgs.source_first_request_intent;
+  const requestIntent = deriveSourceFirstRequestIntent({
+    entryPath,
+    files: initialCompileArgs.files,
+    declaredSourceManifestHash,
+    typedOracleIntent,
+  });
+  assertCanonicalColdEvidence(
+    'source_first_request_intent',
+    suppliedRequestIntent,
+    requestIntent,
+  );
+  const profileRequestIdentity = coldSourceProfileRequestIdentitySnapshot(
+    profileRequestIdentitySnapshot,
+  );
+  assertCanonicalColdEvidence(
+    'profile_request_identity',
+    profileRequestIdentitySnapshot,
+    profileRequestIdentity,
+  );
+  const splitIdentity = splitProofIdentity(split);
+  const expectedSourceContentHash = `sha256:${sha256Hex(source)}`;
+  const intentOutputOracleKind = normalizedColdSourceOracleKind(
+    requestIntent.outputOracleKind ?? requestIntent.oracleIntent,
+  );
+  if (
+    profileRequestIdentity.entryPath !== cleanRel(entryPath)
+    || profileRequestIdentity.requestIntentHash !== requestIntent.intentHash
+    || profileRequestIdentity.sourceManifestHash !== requestIntent.sourceManifestHash
+    || profileRequestIdentity.sourceContentHash !== expectedSourceContentHash
+    || profileRequestIdentity.outputOracleKind !== intentOutputOracleKind
+    || profileRequestIdentity.generatedSplitProfileId !== splitIdentity.profileId
+    || profileRequestIdentity.generatedSplitTargetId !== splitIdentity.targetId
+  ) {
+    throw new Error('cold_source_profile_request_identity_binding_mismatch');
+  }
+  const canonicalInitialCompileArgs = {
+    ...initialCompileArgs,
+    source_first_request_intent: requestIntent,
+  };
+  const initialCompileRequest = buildSourceFirstInitialCompileRequest({
+    mode: 'cold-ai-split',
+    requireFreshAiSplit: true,
+    compileArgs: canonicalInitialCompileArgs,
+  });
+  if (initialCompileRequest.requestSupport.acceptedAsRequestSupport !== true) {
+    throw new Error(
+      `cold_source_compile_request_rejected:${initialCompileRequest.requestSupport.blockingGaps.join('|')}`,
+    );
+  }
+
+  const generatedDeviceSource = generatedDeviceSourceMaterial(split);
+  const expectedMcpRequestHash = `sha256:${sha256Hex(stableJson(
+    initialCompileRequest.initialCompileArgs,
+  ))}`;
+  const compileCandidate = coldDeviceCompileProvenanceEvidence({
+    ...(compileProducerMaterial ?? {}),
+    [LIVE_COMPILE_ARTIFACT_BYTES_SLOT]:
+      compileProducerMaterial?.[LIVE_COMPILE_ARTIFACT_BYTES_SLOT],
+    expectedGeneratedSourceHash: generatedDeviceSource.contentHash,
+    expectedGeneratedSourceBytes: generatedDeviceSource.byteLength,
+    expectedMcpRequestHash,
+  });
+  if (compileCandidate.byteObservationVerified !== true) {
+    throw new Error(
+      `cold_source_compile_evidence_rejected:${compileCandidate.verificationGaps.join('|')}`,
+    );
+  }
+  const sourcePurityEvidence = sourceFirstSeedSourcePurityEvidence({
+    source,
+    entryPath,
+    files: initialCompileRequest.initialCompileArgs.files,
+  });
+  const splitEndpointEvidence = gpuSplitEndpointEvidenceFromSidecar(split);
+  const sourceFirstIngestion = sourceFirstIngestionEvidence({
+    source,
+    entryPath,
+    sourcePurityEvidence,
+    initialCompileArgs: initialCompileRequest.initialCompileArgs,
+    initialCompileCacheRequestSupport: initialCompileRequest.requestSupport,
+    initialCompileResult: null,
+    split,
+    sawGpuSplit: { matched: false },
+    splitEndpointEvidence,
+    profileRequestIdentitySnapshot: profileRequestIdentity,
+  });
+  if (sourceFirstIngestion.accepted !== true) {
+    throw new Error(
+      `cold_source_ingestion_rejected:${sourceFirstIngestion.failedGates.join('|')}`,
+    );
+  }
+  const sourceProofIdentity = sourceFirstIngestionProofIdentity({
+    sourceContentHash: sourceFirstIngestion.sourceContentHash,
+    entryPath: sourceFirstIngestion.entryPath,
+    targetId: sourceFirstIngestion.targetId,
+    initialManifestHash: sourceFirstIngestion.initialManifestHash,
+    sourcePurityManifestHash: sourceFirstIngestion.sourcePurityManifestHash,
+    sourcePurityInitialManifestHash: sourceFirstIngestion.sourcePurityInitialManifestHash,
+    gpuArch: sourceFirstIngestion.gpuArch,
+    gpuArchSource: sourceFirstIngestion.gpuArchSource,
+    generatedArtifactHashes: sourceFirstIngestion.generatedArtifactHashes,
+    sidecarHash: sourceFirstIngestion.sidecarHash,
+    compileManifestHash: sourceFirstIngestion.compileManifestHash,
+  });
+  if (sourceProofIdentity.proofId !== sourceFirstIngestion.proofId) {
+    throw new Error('cold_source_ingestion_proof_id_recompute_mismatch');
+  }
+  if (
+    sourceFirstIngestion.sourceTreeManifestHash !== profileRequestIdentity.sourceManifestHash
+    || sourceFirstIngestion.initialManifestHash !== profileRequestIdentity.sourceManifestHash
+  ) {
+    throw new Error('cold_source_profile_manifest_replay_mismatch');
+  }
+  const generatedArtifactManifest = [
+    ...generatedSplitArtifactManifest(split).map((entry) => ({
+      ...entry,
+      producer: 'generated_split_bytes',
+    })),
+    {
+      path: compileCandidate.artifactFilePath,
+      contentHash: compileCandidate.artifactHash,
+      content_hash: compileCandidate.artifactHash,
+      byteLength: compileCandidate.artifactBytes,
+      byte_length: compileCandidate.artifactBytes,
+      producer: 'content_identified_worker_compile_proof',
+      proofArtifactIdentity: compileCandidate.proofArtifactIdentity,
+      proof_artifact_identity: compileCandidate.proofArtifactIdentity,
+      byteObservationVerified: compileCandidate.byteObservationVerified,
+      byte_observation_verified: compileCandidate.byteObservationVerified,
+    },
+  ].sort((left, right) => left.path.localeCompare(right.path));
+  const generatedArtifactManifestHash = `sha256:${sha256Hex(stableJson(
+    generatedArtifactManifest,
+  ))}`;
+  const generatedArtifactHashes = uniqueSortedStrings(
+    generatedArtifactManifest.map((entry) => entry.contentHash),
+  );
+  const compiledArtifactManifestEntry = generatedArtifactManifest.find((entry) => (
+    entry.producer === 'content_identified_worker_compile_proof'
+    && entry.contentHash === compileCandidate.artifactHash
+    && entry.byteObservationVerified === true
+    && entry.proofArtifactIdentity === compileCandidate.proofArtifactId
+  ));
+  if (
+    !generatedArtifactHashes.every(contentAddressedSha256)
+    || !compiledArtifactManifestEntry
+  ) {
+    throw new Error('cold_source_compile_artifact_not_generated');
+  }
+
+  const providerCandidate = coldAiProviderCallEvidenceFromSplit(
+    split,
+    initialCompileRequest.initialCompileArgs,
+  );
+  if (providerCandidate.accepted !== true) {
+    throw new Error(
+      `cold_source_provider_receipt_rejected:${providerCandidate.blockingGaps.join('|')}`,
+    );
+  }
+  const timingMetrics = coldSourceTimingMetricsFromProducer(
+    producerMaterial.timingMetrics,
+    sourceFirstIngestion.sourceContentHash,
+  );
+  const provisionalEvidence = {
+    requestIntent,
+    profileRequestIdentity,
+    initialCompileRequestSupport: initialCompileRequest.requestSupport,
+    sourceFirstIngestion,
+    providerCallEvidence: providerCandidate,
+    deviceCompileProvenance: compileCandidate,
+    generatedArtifactHashes,
+    generatedArtifactManifest,
+    generatedArtifactManifestHash,
+    generatedDeviceSource,
+    expectedMcpRequestHash,
+    timingMetrics,
+  };
+  const derivationChainSeed = coldSourceLiveObservationBindingSeed(provisionalEvidence);
+  const derivationChainHash = `sha256:${sha256Hex(stableJson(derivationChainSeed))}`;
+  const derivationChain = {
+    ...derivationChainSeed,
+    schema_version: derivationChainSeed.schemaVersion,
+    proofAuthority: COLD_SOURCE_DERIVATION_CHAIN_AUTHORITY,
+    proof_authority: COLD_SOURCE_DERIVATION_CHAIN_AUTHORITY,
+    derivationChainHash,
+    derivation_chain_hash: derivationChainHash,
+    accepted: true,
+    acceptedAsCanonicalDerivationChain: true,
+    accepted_as_canonical_derivation_chain: true,
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
@@ -10940,6 +12142,665 @@ function coldAiSplitProofFromSeed(coldSplitProofSeed) {
     can_satisfy_runtime_proof: false,
     canSatisfyDispatchProof: false,
     can_satisfy_dispatch_proof: false,
+  };
+  const liveObservationEligible = compileCandidate.liveObservationAccepted === true;
+  const providerCallEvidence = {
+    ...providerCandidate,
+    canonicalProviderReceiptVerified: true,
+    canonical_provider_receipt_verified: true,
+    liveObservationAccepted: liveObservationEligible,
+    live_observation_accepted: liveObservationEligible,
+    syntheticOrReplayIneligible: !liveObservationEligible,
+    synthetic_or_replay_ineligible: !liveObservationEligible,
+    accepted: liveObservationEligible,
+    acceptedAsColdAiProviderCallEvidence: liveObservationEligible,
+    accepted_as_cold_ai_provider_call_evidence: liveObservationEligible,
+    acceptedAsColdAiSplitEvidence: false,
+    accepted_as_cold_ai_split_evidence: false,
+  };
+  const deviceCompileProvenance = {
+    ...compileCandidate,
+    liveColdSourceObservationAccepted: false,
+    live_cold_source_observation_accepted: false,
+    syntheticOrReplayIneligible: !liveObservationEligible,
+    synthetic_or_replay_ineligible: !liveObservationEligible,
+    accepted: liveObservationEligible,
+    acceptedAsFreshDeviceCompileEvidence: liveObservationEligible,
+    accepted_as_fresh_device_compile_evidence: liveObservationEligible,
+  };
+  const profileId = profileRequestIdentity.profileId;
+  const runModeIdentity = {
+    backend: backendForSplit(split),
+    ...splitIdentity,
+    generatedSplitProfileId: splitIdentity.profileId,
+    generated_split_profile_id: splitIdentity.profile_id,
+    profileId,
+    profile_id: profileId,
+    validationProfileId: profileId,
+    validation_profile_id: profileId,
+    validationProfileSource: profileRequestIdentity.profileSource,
+    validation_profile_source: profileRequestIdentity.profileSource,
+    validationProfileHash: profileRequestIdentity.profileHash,
+    validation_profile_hash: profileRequestIdentity.profileHash,
+    validationProfileSourceContentHash: profileRequestIdentity.sourceContentHash,
+    validation_profile_source_content_hash: profileRequestIdentity.sourceContentHash,
+    validationProfileDeterministicModeHash:
+      profileRequestIdentity.deterministicVisualModeHash,
+    validation_profile_deterministic_mode_hash:
+      profileRequestIdentity.deterministicVisualModeHash,
+    validationProfileVisualProofHash: profileRequestIdentity.visualProofHash,
+    validation_profile_visual_proof_hash: profileRequestIdentity.visualProofHash,
+    validationProfileVisualSceneManifestHash:
+      profileRequestIdentity.visualSceneManifestHash,
+    validation_profile_visual_scene_manifest_hash:
+      profileRequestIdentity.visualSceneManifestHash,
+    validationProfilePath: profileRequestIdentity.profilePath,
+    validation_profile_path: profileRequestIdentity.profilePath,
+    profileRequestIdentityHash: profileRequestIdentity.identityHash,
+    profile_request_identity_hash: profileRequestIdentity.identityHash,
+  };
+  return {
+    requestIntent,
+    profileRequestIdentity,
+    initialCompileRequestSupport: initialCompileRequest.requestSupport,
+    sourceFirstIngestion,
+    providerCallEvidence,
+    deviceCompileProvenance,
+    generatedArtifactHashes,
+    generatedArtifactManifest,
+    generatedArtifactManifestHash,
+    generatedDeviceSource,
+    expectedMcpRequestHash,
+    timingMetrics,
+    splitIdentity,
+    derivationChainSeed,
+    derivationChainHash,
+    derivationChain,
+    liveObservationEligible,
+    liveObservationAccepted: false,
+    backend: runModeIdentity.backend,
+    runModeIdentity,
+  };
+}
+
+function coldSourceModalityBinding(coldSplitProofSeed, producerEvidence) {
+  const unvalidatedEnvelope = { ...coldSplitProofSeed };
+  for (const key of [
+    'sourceFirstIngestion',
+    'source_first_ingestion',
+    'coldAiProviderCallEvidence',
+    'cold_ai_provider_call_evidence',
+    'coldDeviceCompileProvenance',
+    'cold_device_compile_provenance',
+    'coldSingleFrameVisual',
+    'cold_single_frame_visual',
+    'visualArtifacts',
+    'visual_artifacts',
+    'visualMetrics',
+    'visual_metrics',
+  ]) {
+    delete unvalidatedEnvelope[key];
+  }
+  if (coldSourceEnvelopeClaimsProofAuthority(unvalidatedEnvelope)) {
+    throw new Error('cold_source_authority_claim_rejected:coldSplitProofSeed.envelope');
+  }
+  assertColdSourceProtocolShape(coldSplitProofSeed, 'coldSplitProofSeed');
+  const sourceFirstIngestion = coldSourceAliasValue(
+    coldSplitProofSeed,
+    'sourceFirstIngestion',
+    'source_first_ingestion',
+    'sourceFirstIngestion',
+  );
+  const providerCallEvidence = coldSourceAliasValue(
+    coldSplitProofSeed,
+    'coldAiProviderCallEvidence',
+    'cold_ai_provider_call_evidence',
+    'coldAiProviderCallEvidence',
+  );
+  const deviceCompileProvenance = coldSourceAliasValue(
+    coldSplitProofSeed,
+    'coldDeviceCompileProvenance',
+    'cold_device_compile_provenance',
+    'coldDeviceCompileProvenance',
+  );
+  const suppliedGeneratedArtifactHashes = uniqueSortedStrings(coldSourceAliasValue(
+    coldSplitProofSeed,
+    'generatedArtifactHashes',
+    'generated_artifact_hashes',
+    'generatedArtifactHashes',
+  ));
+  assertCanonicalColdEvidence(
+    'source_first_ingestion',
+    sourceFirstIngestion,
+    producerEvidence.sourceFirstIngestion,
+  );
+  assertCanonicalColdEvidence(
+    'provider_call_evidence',
+    providerCallEvidence,
+    producerEvidence.providerCallEvidence,
+  );
+  assertCanonicalColdEvidence(
+    'device_compile_provenance',
+    deviceCompileProvenance,
+    producerEvidence.deviceCompileProvenance,
+  );
+  if (
+    stableJson(suppliedGeneratedArtifactHashes)
+    !== stableJson(producerEvidence.generatedArtifactHashes)
+  ) {
+    throw new Error('cold_source_generated_artifact_hashes_mismatch');
+  }
+  if (!suppliedGeneratedArtifactHashes.includes(deviceCompileProvenance.artifactHash)) {
+    throw new Error('cold_source_compile_artifact_not_in_generated_artifact_hashes');
+  }
+
+  const requestedOutputOracleKind = normalizedColdSourceOracleKind(coldSourceAliasValue(
+    coldSplitProofSeed,
+    'outputOracleKind',
+    'output_oracle_kind',
+    'outputOracleKind',
+  ));
+  const requestIntent = producerEvidence.requestIntent;
+  const intentOutputOracleKind = normalizedColdSourceOracleKind(
+    requestIntent.outputOracleKind ?? requestIntent.oracleIntent,
+  );
+  if (!requestedOutputOracleKind || requestedOutputOracleKind !== intentOutputOracleKind) {
+    throw new Error('cold_ai_split_output_oracle_kind_mismatch');
+  }
+  const sourceManifestHash = requestIntent.sourceManifestHash;
+  if (
+    sourceManifestHash !== sourceFirstIngestion.sourceTreeManifestHash
+    || sourceManifestHash !== sourceFirstIngestion.initialManifestHash
+  ) {
+    throw new Error('cold_source_manifest_binding_mismatch');
+  }
+  const seed = {
+    schemaVersion: COLD_SOURCE_MODALITY_BINDING_SCHEMA_VERSION,
+    outputOracleKind: requestedOutputOracleKind,
+    sourceFirstProofId: sourceFirstIngestion.proofId,
+    profileRequestIdentityHash: producerEvidence.profileRequestIdentity.identityHash,
+    sourceContentHash: sourceFirstIngestion.sourceContentHash,
+    sourceManifestHash,
+    initialManifestHash: sourceFirstIngestion.initialManifestHash,
+    sourcePurityManifestHash: sourceFirstIngestion.sourcePurityManifestHash,
+    requestIntentHash: requestIntent.intentHash,
+    initialCompileRequestIdentity:
+      producerEvidence.initialCompileRequestSupport.requestIdentity,
+    mcpRequestHash: producerEvidence.expectedMcpRequestHash,
+    derivationChainHash: producerEvidence.derivationChainHash,
+    generatedArtifactHashes: producerEvidence.generatedArtifactHashes,
+    generatedArtifactManifestHash: producerEvidence.generatedArtifactManifestHash,
+    generatedDeviceSourceHash: producerEvidence.generatedDeviceSource.contentHash,
+    sidecarHash: sourceFirstIngestion.sidecarHash,
+    compileManifestHash: sourceFirstIngestion.compileManifestHash,
+    providerCallReceiptHash: providerCallEvidence.providerCallReceiptHash,
+    providerCallRequestHash: providerCallEvidence.providerCallRequestHash,
+    providerCallResponseHash: providerCallEvidence.providerCallResponseHash,
+    providerCallChallengeHash: providerCallEvidence.providerCallChallengeHash,
+    providerCallEvidenceHash: providerCallEvidence.evidenceHash,
+    deviceCompileArtifactHash: deviceCompileProvenance.artifactHash,
+    deviceCompileEvidenceHash: deviceCompileProvenance.evidenceHash,
+    deviceCompileProofArtifactId: deviceCompileProvenance.proofArtifactId,
+    deviceCompileProofArtifactPath: deviceCompileProvenance.proofArtifactPath,
+    deviceCompileProofArtifactIdentity: deviceCompileProvenance.proofArtifactIdentity,
+    deviceCompileCommandHash: deviceCompileProvenance.compileCommandHash,
+    deviceCompileDependencyHash: deviceCompileProvenance.dependencyHash,
+    deviceCompileCommandInputBindingHash:
+      deviceCompileProvenance.compileCommandInputBindingHash,
+    deviceCompileDependencyInputBindingHash:
+      deviceCompileProvenance.dependencyInputBindingHash,
+    timingEvidenceHash: producerEvidence.timingMetrics.evidenceHash,
+  };
+  const bindingHash = `sha256:${sha256Hex(stableJson(seed))}`;
+  return {
+    ...seed,
+    schema_version: seed.schemaVersion,
+    proofAuthority: COLD_SOURCE_MODALITY_BINDING_AUTHORITY,
+    proof_authority: COLD_SOURCE_MODALITY_BINDING_AUTHORITY,
+    accepted: true,
+    acceptedAsRequestedModalityBinding: true,
+    accepted_as_requested_modality_binding: true,
+    output_oracle_kind: seed.outputOracleKind,
+    source_first_proof_id: seed.sourceFirstProofId,
+    profile_request_identity_hash: seed.profileRequestIdentityHash,
+    source_content_hash: seed.sourceContentHash,
+    source_manifest_hash: seed.sourceManifestHash,
+    initial_manifest_hash: seed.initialManifestHash,
+    source_purity_manifest_hash: seed.sourcePurityManifestHash,
+    request_intent_hash: seed.requestIntentHash,
+    initial_compile_request_identity: seed.initialCompileRequestIdentity,
+    mcp_request_hash: seed.mcpRequestHash,
+    derivation_chain_hash: seed.derivationChainHash,
+    generated_artifact_hashes: seed.generatedArtifactHashes,
+    generated_artifact_manifest_hash: seed.generatedArtifactManifestHash,
+    generated_device_source_hash: seed.generatedDeviceSourceHash,
+    sidecar_hash: seed.sidecarHash,
+    compile_manifest_hash: seed.compileManifestHash,
+    provider_call_receipt_hash: seed.providerCallReceiptHash,
+    provider_call_request_hash: seed.providerCallRequestHash,
+    provider_call_response_hash: seed.providerCallResponseHash,
+    provider_call_challenge_hash: seed.providerCallChallengeHash,
+    provider_call_evidence_hash: seed.providerCallEvidenceHash,
+    device_compile_artifact_hash: seed.deviceCompileArtifactHash,
+    device_compile_evidence_hash: seed.deviceCompileEvidenceHash,
+    device_compile_proof_artifact_id: seed.deviceCompileProofArtifactId,
+    device_compile_proof_artifact_path: seed.deviceCompileProofArtifactPath,
+    device_compile_proof_artifact_identity: seed.deviceCompileProofArtifactIdentity,
+    device_compile_command_hash: seed.deviceCompileCommandHash,
+    device_compile_dependency_hash: seed.deviceCompileDependencyHash,
+    device_compile_command_input_binding_hash:
+      seed.deviceCompileCommandInputBindingHash,
+    device_compile_dependency_input_binding_hash:
+      seed.deviceCompileDependencyInputBindingHash,
+    timing_evidence_hash: seed.timingEvidenceHash,
+    bindingHash,
+    binding_hash: bindingHash,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    canSatisfyOutputOracleProof: false,
+    can_satisfy_output_oracle_proof: false,
+  };
+}
+
+export async function captureSourceFirstVisualEvidence({ requestIntent, capture, stage = null } = {}) {
+  canonicalColdProtocolShape(requestIntent, `sourceFirst.capture.${stage ?? 'unknown'}`);
+  const rawDeclaredKinds = uniqueSortedStrings([
+    requestIntent?.outputOracleKind,
+    requestIntent?.output_oracle_kind,
+    requestIntent?.oracleIntent,
+    requestIntent?.oracle_intent,
+  ]);
+  const declaredKinds = rawDeclaredKinds.map(normalizedColdSourceOracleKind);
+  if (declaredKinds.some((kind) => kind === null)) {
+    throw new Error('source_first_capture_modality_invalid');
+  }
+  if (new Set(declaredKinds).size > 1) {
+    throw new Error('source_first_capture_modality_alias_conflict');
+  }
+  const outputOracleKind = declaredKinds[0] ?? null;
+  if (outputOracleKind === 'compute_oracle') return null;
+  if (outputOracleKind !== 'visual_oracle') {
+    throw new Error(
+      `source-first ${stage ?? 'capture'} requires an explicit content-bound output oracle kind`,
+    );
+  }
+  return typeof capture === 'function' ? capture() : null;
+}
+
+export const captureColdSourceVisualEvidence = captureSourceFirstVisualEvidence;
+
+function normalizedFilesystemIdentityPath(value) {
+  const resolved = path.resolve(String(value ?? '')).replace(/^\\\\\?\\/, '');
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function filesystemStatIdentity(value) {
+  return {
+    dev: String(value?.dev ?? ''),
+    ino: String(value?.ino ?? ''),
+    mode: String(value?.mode ?? ''),
+    size: String(value?.size ?? ''),
+    mtimeNs: String(value?.mtimeNs ?? ''),
+    ctimeNs: String(value?.ctimeNs ?? ''),
+  };
+}
+
+function sameFilesystemStatIdentity(left, right) {
+  return stableJson(filesystemStatIdentity(left)) === stableJson(filesystemStatIdentity(right));
+}
+
+function sameFilesystemObjectIdentity(left, right) {
+  return (process.platform === 'win32'
+    || String(left?.dev ?? '') === String(right?.dev ?? ''))
+    && String(left?.ino ?? '') === String(right?.ino ?? '')
+    && String(left?.size ?? '') === String(right?.size ?? '');
+}
+
+async function assertColdVisualPathHasNoLinkTraversal(rootReal, candidatePath) {
+  const relative = path.relative(rootReal, candidatePath);
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('cold_ai_split_visual_path_outside_allowed_roots');
+  }
+  let current = rootReal;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const entryStat = await lstat(current, { bigint: true });
+    if (entryStat.isSymbolicLink()) {
+      throw new Error('cold_ai_split_visual_link_or_reparse_traversal');
+    }
+    const resolvedEntry = await realpath(current);
+    if (
+      normalizedFilesystemIdentityPath(resolvedEntry)
+      !== normalizedFilesystemIdentityPath(current)
+    ) {
+      throw new Error('cold_ai_split_visual_link_or_reparse_traversal');
+    }
+  }
+}
+
+async function immutableColdVisualFrame(imagePath, allowedRoots) {
+  const requestedPath = path.resolve(String(imagePath ?? ''));
+  let selectedRoot = null;
+  let selectedPath = null;
+  for (const root of uniqueSortedStrings(allowedRoots)) {
+    const rootPath = path.resolve(root);
+    const relative = path.relative(rootPath, requestedPath);
+    if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) continue;
+    const rootReal = await realpath(rootPath);
+    selectedRoot = rootReal;
+    selectedPath = path.join(rootReal, relative);
+    break;
+  }
+  if (!selectedRoot || !selectedPath) {
+    throw new Error('cold_ai_split_visual_path_outside_allowed_roots');
+  }
+  await assertColdVisualPathHasNoLinkTraversal(selectedRoot, selectedPath);
+  const realBefore = await realpath(selectedPath);
+  if (
+    normalizedFilesystemIdentityPath(realBefore)
+    !== normalizedFilesystemIdentityPath(selectedPath)
+  ) {
+    throw new Error('cold_ai_split_visual_link_or_reparse_traversal');
+  }
+  const noFollow = Number.isInteger(fsConstants.O_NOFOLLOW) ? fsConstants.O_NOFOLLOW : 0;
+  const handle = await open(selectedPath, fsConstants.O_RDONLY | noFollow);
+  let bytes;
+  let handleBefore;
+  let handleAfter;
+  try {
+    handleBefore = await handle.stat({ bigint: true });
+    if (!handleBefore.isFile()) throw new Error('cold_ai_split_visual_not_regular_file');
+    const pathBefore = await lstat(selectedPath, { bigint: true });
+    if (!sameFilesystemObjectIdentity(handleBefore, pathBefore)) {
+      throw new Error('cold_ai_split_visual_handle_path_identity_mismatch');
+    }
+    bytes = await handle.readFile();
+    handleAfter = await handle.stat({ bigint: true });
+    if (!sameFilesystemStatIdentity(handleBefore, handleAfter)) {
+      throw new Error('cold_ai_split_visual_changed_during_read');
+    }
+  } finally {
+    await handle.close();
+  }
+  await assertColdVisualPathHasNoLinkTraversal(selectedRoot, selectedPath);
+  const realAfter = await realpath(selectedPath);
+  const pathAfter = await lstat(selectedPath, { bigint: true });
+  if (
+    normalizedFilesystemIdentityPath(realAfter)
+      !== normalizedFilesystemIdentityPath(realBefore)
+    || !sameFilesystemObjectIdentity(handleAfter, pathAfter)
+  ) {
+    throw new Error('cold_ai_split_visual_path_retargeted_after_read');
+  }
+  if (Number(handleAfter.size) !== bytes.length) {
+    throw new Error('cold_ai_split_visual_read_length_mismatch');
+  }
+  const fileIdentityHash = `sha256:${sha256Hex(stableJson({
+    path: normalizedFilesystemIdentityPath(realAfter),
+    stat: filesystemStatIdentity(handleAfter),
+  }))}`;
+  return {
+    bytes,
+    path: realAfter,
+    fileIdentityHash,
+  };
+}
+
+async function coldVisualImageEvidenceFromImmutableFrame(imagePath, allowedRoots) {
+  const frame = await immutableColdVisualFrame(imagePath, allowedRoots);
+  const digest = `sha256:${sha256BufferHex(frame.bytes)}`;
+  const image = await analyzeGpuHmrImageEvidence(frame.bytes);
+  const acceptedAsImageEvidence = screenshotQualifiesAsVisualEvidence({
+    path: frame.path,
+    ...image,
+  });
+  return {
+    path: frame.path,
+    bytes: frame.bytes.length,
+    contentHash: digest,
+    evidenceId: `evidence:visual-artifact:${digest}`,
+    width: image.width,
+    height: image.height,
+    visiblePixels: image.visible_pixels,
+    visible_pixels: image.visible_pixels,
+    meanLuma: image.mean_luma,
+    mean_luma: image.mean_luma,
+    lumaStddev: image.luma_stddev,
+    luma_stddev: image.luma_stddev,
+    rgbSpanMean: image.rgb_span_mean,
+    rgb_span_mean: image.rgb_span_mean,
+    uniqueColorSampleCount: image.unique_color_sample_count,
+    unique_color_sample_count: image.unique_color_sample_count,
+    visualQuality: image.visual_quality,
+    visual_quality: image.visual_quality,
+    acceptedAsVisualEvidence: acceptedAsImageEvidence,
+    accepted_as_visual_evidence: acceptedAsImageEvidence,
+    acceptedAsImageEvidence,
+    accepted_as_image_evidence: acceptedAsImageEvidence,
+    acceptedAsRuntimeVisualProof: false,
+    accepted_as_runtime_visual_proof: false,
+    immutableSingleRead: true,
+    immutable_single_read: true,
+    fileIdentityHash: frame.fileIdentityHash,
+    file_identity_hash: frame.fileIdentityHash,
+    kind: 'visual-artifact',
+    producerSubsystem: 'mcp.agent_split_cold_source',
+  };
+}
+
+async function verifiedColdVisualEvidence(coldSplitProofSeed, visualProducerMaterial = {}) {
+  const visualArtifacts = coldSourceAliasValue(
+    coldSplitProofSeed,
+    'visualArtifacts',
+    'visual_artifacts',
+    'visualArtifacts',
+  );
+  const visualMetrics = coldSourceAliasValue(
+    coldSplitProofSeed,
+    'visualMetrics',
+    'visual_metrics',
+    'visualMetrics',
+  );
+  const visualSample = coldSourceAliasValue(
+    coldSplitProofSeed,
+    'coldSingleFrameVisual',
+    'cold_single_frame_visual',
+    'coldSingleFrameVisual',
+  );
+  assertColdSourceProtocolShape(visualArtifacts, 'coldVisual.artifacts');
+  assertColdSourceProtocolShape(visualMetrics, 'coldVisual.metrics');
+  assertColdSourceProtocolShape(visualSample, 'coldVisual.sample');
+  const afterImage = visualArtifacts.afterImage ?? visualArtifacts.after_image;
+  const declaredHash = visualArtifacts.afterImageHash ?? visualArtifacts.after_image_hash;
+  const locators = visualArtifacts.artifactCasLocators
+    ?? visualArtifacts.artifact_cas_locators;
+  const suppliedTransport = visualArtifacts.visualArtifactTransportEvidence
+    ?? visualArtifacts.visual_artifact_transport_evidence;
+  const visualArtifactEnvelope = { ...visualArtifacts };
+  for (const key of [
+    'artifactCasLocators',
+    'artifact_cas_locators',
+    'visualArtifactTransportEvidence',
+    'visual_artifact_transport_evidence',
+    'byteVerifiedVisualArtifact',
+    'byte_verified_visual_artifact',
+  ]) {
+    delete visualArtifactEnvelope[key];
+  }
+  if (coldSourceEnvelopeClaimsProofAuthority(visualArtifactEnvelope)) {
+    throw new Error('cold_source_authority_claim_rejected:coldVisual.artifactEnvelope');
+  }
+  if (!afterImage || !contentAddressedSha256(declaredHash)) {
+    throw new Error('cold_ai_split_visual_hash_missing');
+  }
+  const imageEvidence = await coldVisualImageEvidenceFromImmutableFrame(
+    afterImage,
+    visualProducerMaterial.allowedRoots,
+  );
+  if (
+    imageEvidence?.contentHash !== declaredHash
+    || imageEvidence?.acceptedAsImageEvidence !== true
+  ) {
+    throw new Error('cold_ai_split_visual_png_hash_or_bytes_invalid');
+  }
+  const transport = await visualArtifactTransportEvidence({
+    artifactCasLocators: locators,
+  }, {
+    artifactRoot: visualProducerMaterial.casRoot,
+    allowedRoots: visualProducerMaterial.allowedRoots,
+    requireReadableBytes: true,
+  });
+  if (transport.accepted !== true || transport.acceptedAsTransportEvidence !== true) {
+    throw new Error('cold_ai_split_visual_cas_bytes_unproven');
+  }
+  assertCanonicalColdEvidence('visual_transport', suppliedTransport, transport);
+  const locatorBoundToFrame = Array.isArray(locators)
+    && locators.some((locator) => (
+      (locator?.contentHash ?? locator?.content_hash) === declaredHash
+      && locator?.role === 'after_frame'
+      && (locator?.mediaType ?? locator?.media_type) === 'image/png'
+    ));
+  if (!locatorBoundToFrame) {
+    throw new Error('cold_ai_split_visual_cas_binding_mismatch');
+  }
+  const suppliedVisiblePixels = Number(
+    visualMetrics.visiblePixelCount ?? visualMetrics.visible_pixel_count,
+  );
+  const suppliedMeanLuma = Number(
+    visualMetrics.meanLuma8bit ?? visualMetrics.mean_luma_8bit,
+  );
+  const suppliedSampleMeanLuma = Number(
+    visualSample.meanLuma ?? visualSample.mean_luma,
+  );
+  if (
+    Number(visualSample.width) !== imageEvidence.width
+    || Number(visualSample.height) !== imageEvidence.height
+    || Number(visualSample.bytes) !== imageEvidence.bytes
+    || Number(visualSample.visiblePixels) !== imageEvidence.visiblePixels
+    || suppliedVisiblePixels !== imageEvidence.visiblePixels
+    || !Number.isFinite(suppliedMeanLuma)
+    || !Number.isFinite(suppliedSampleMeanLuma)
+    || Math.abs(suppliedMeanLuma - imageEvidence.meanLuma) > 1e-6
+    || Math.abs(suppliedSampleMeanLuma - imageEvidence.meanLuma) > 1e-6
+  ) {
+    throw new Error('cold_ai_split_visual_metrics_recompute_mismatch');
+  }
+  return {
+    sample: {
+      width: imageEvidence.width,
+      height: imageEvidence.height,
+      bytes: imageEvidence.bytes,
+      visiblePixels: imageEvidence.visiblePixels,
+      visible_pixels: imageEvidence.visiblePixels,
+      meanLuma: imageEvidence.meanLuma,
+      mean_luma: imageEvidence.meanLuma,
+    },
+    visualArtifacts: {
+      afterImage: imageEvidence.path,
+      after_image: imageEvidence.path,
+      afterImageHash: imageEvidence.contentHash,
+      after_image_hash: imageEvidence.contentHash,
+      artifactCasLocators: locators,
+      artifact_cas_locators: locators,
+      visualArtifactTransportEvidence: transport,
+      visual_artifact_transport_evidence: transport,
+      byteVerifiedVisualArtifact: imageEvidence,
+      byte_verified_visual_artifact: imageEvidence,
+    },
+    visualMetrics: {
+      visiblePixelCount: imageEvidence.visiblePixels,
+      visible_pixel_count: imageEvidence.visiblePixels,
+      meanLuma8bit: imageEvidence.meanLuma,
+      mean_luma_8bit: imageEvidence.meanLuma,
+    },
+  };
+}
+
+export async function coldAiSplitProofFromSeed(coldSplitProofSeed, producerMaterial = {}) {
+  if (!coldSplitProofSeed) {
+    throw new Error('cold AI split proof requires source-first evidence');
+  }
+  const issuedCapability = producerMaterial?.[LIVE_COLD_SOURCE_CAPABILITY_SLOT] ?? null;
+  if (issuedCapability && !liveColdSourceObservations.has(issuedCapability)) {
+    throw new Error('cold_source_live_observation_capability_consumed_or_missing');
+  }
+  const producerEvidence = recomputeColdSourceProducerEvidence(producerMaterial);
+  const modalityBinding = coldSourceModalityBinding(coldSplitProofSeed, producerEvidence);
+  const outputOracleKind = modalityBinding.outputOracleKind;
+  const visual = outputOracleKind === 'visual_oracle'
+    ? await verifiedColdVisualEvidence(coldSplitProofSeed, producerMaterial.visual)
+    : null;
+  const acceptedAsColdAiSplitEvidence = consumeColdSourceLiveObservationCapability({
+    producerMaterial,
+    producerEvidence,
+    modalityBinding,
+    coldSplitProofSeed,
+  });
+  return {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+    schema_version: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+    proofAuthority: outputOracleKind === 'visual_oracle'
+      ? 'cold_ai_split_visual_output_only_not_gpu_hmr_acceptance'
+      : 'cold_ai_split_source_provenance_only_not_gpu_hmr_acceptance',
+    proof_authority: outputOracleKind === 'visual_oracle'
+      ? 'cold_ai_split_visual_output_only_not_gpu_hmr_acceptance'
+      : 'cold_ai_split_source_provenance_only_not_gpu_hmr_acceptance',
+    outputOracleKind,
+    output_oracle_kind: outputOracleKind,
+    ...producerEvidence.runModeIdentity,
+    coldSplitProven: acceptedAsColdAiSplitEvidence,
+    cold_split_proven: acceptedAsColdAiSplitEvidence,
+    canonicalColdSourceMaterialVerified: true,
+    canonical_cold_source_material_verified: true,
+    liveObservationAccepted: acceptedAsColdAiSplitEvidence,
+    live_observation_accepted: acceptedAsColdAiSplitEvidence,
+    syntheticOrReplayIneligible: !acceptedAsColdAiSplitEvidence,
+    synthetic_or_replay_ineligible: !acceptedAsColdAiSplitEvidence,
+    generatedArtifactHashes: producerEvidence.generatedArtifactHashes,
+    generated_artifact_hashes: producerEvidence.generatedArtifactHashes,
+    sourceFirstIngestion: producerEvidence.sourceFirstIngestion,
+    source_first_ingestion: producerEvidence.sourceFirstIngestion,
+    coldAiProviderCallEvidence: producerEvidence.providerCallEvidence,
+    cold_ai_provider_call_evidence: producerEvidence.providerCallEvidence,
+    coldDeviceCompileProvenance: producerEvidence.deviceCompileProvenance,
+    cold_device_compile_provenance: producerEvidence.deviceCompileProvenance,
+    runMode: producerEvidence.timingMetrics,
+    run_mode: producerEvidence.timingMetrics,
+    timingMetrics: producerEvidence.timingMetrics,
+    timing_metrics: producerEvidence.timingMetrics,
+    requestedModalityBinding: modalityBinding,
+    requested_modality_binding: modalityBinding,
+    coldSourceDerivationChain: producerEvidence.derivationChain,
+    cold_source_derivation_chain: producerEvidence.derivationChain,
+    ...(visual ? {
+      coldSingleFrameVisual: visual.sample,
+      cold_single_frame_visual: visual.sample,
+      visualArtifacts: visual.visualArtifacts,
+      visual_artifacts: visual.visualArtifacts,
+      visualMetrics: visual.visualMetrics,
+      visual_metrics: visual.visualMetrics,
+    } : {
+      validationMatrixEligibility: 'not_counted_until_cold_source_modality_ingestion',
+      validation_matrix_eligibility: 'not_counted_until_cold_source_modality_ingestion',
+    }),
+    acceptedAsColdAiSplitEvidence,
+    accepted_as_cold_ai_split_evidence: acceptedAsColdAiSplitEvidence,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    canSatisfyOutputOracleProof: false,
+    can_satisfy_output_oracle_proof: false,
   };
 }
 
@@ -10953,7 +12814,7 @@ function orderedJsonHash(values) {
   return `sha256:${sha256Hex(JSON.stringify(values))}`;
 }
 
-function providerCallRequestHash(binding) {
+export function providerCallRequestHash(binding) {
   return orderedJsonHash([
     binding?.schema_version,
     binding?.nonce,
@@ -10971,28 +12832,50 @@ function providerCallRequestHash(binding) {
   ]);
 }
 
-function providerCallReceiptHash(receipt) {
+export function providerCallProducerReceiptHash(receipt) {
+  const canonical = canonicalAliasShape(receipt ?? {}, 'providerCallProducerReceiptHash');
   return orderedJsonHash([
     PROVIDER_CALL_RECEIPT_SCHEMA_VERSION,
     PROVIDER_CALL_RECEIPT_AUTHORITY,
-    receipt?.request_nonce,
-    receipt?.request_hash,
-    receipt?.response_hash,
-    receipt?.challenge_hash,
-    receipt?.provider,
-    receipt?.requested_model,
-    receipt?.actual_model,
-    receipt?.request_mode,
-    receipt?.provider_model_status,
-    String(receipt?.fallback_model ?? ''),
-    receipt?.fallback_used,
-    String(receipt?.provider_model_alias_resolved_to ?? ''),
-    receipt?.provider_shutdown_or_deprecation_detected,
-    receipt?.model_availability_checked_at,
-    receipt?.started_monotonic_ns,
-    receipt?.completed_monotonic_ns,
-    receipt?.started_unix_ns,
-    receipt?.completed_unix_ns,
+    canonical.requestnonce,
+    canonical.requesthash,
+    canonical.responsehash,
+    canonical.challengehash,
+    canonical.provider,
+    canonical.requestedmodel,
+    canonical.actualmodel,
+    canonical.requestmode,
+    canonical.providermodelstatus,
+    String(canonical.fallbackmodel ?? ''),
+    canonical.fallbackused,
+    String(canonical.providermodelaliasresolvedto ?? ''),
+    canonical.providershutdownordeprecationdetected,
+    canonical.modelavailabilitycheckedat,
+    canonical.startedmonotonicns,
+    canonical.completedmonotonicns,
+    canonical.startedunixns,
+    canonical.completedunixns,
+  ]);
+}
+
+export function providerCallReceiptHash(receipt) {
+  const canonical = canonicalAliasShape(receipt ?? {}, 'providerCallReceiptHash');
+  return orderedJsonHash([
+    'synthi.ai.provider_call_receipt.canonical_acceptance_binding.v1',
+    providerCallProducerReceiptHash(receipt),
+    canonical.accepted,
+    canonical.providercallused,
+    canonical.challengeechoverified,
+    canonical.hardinfrafailure,
+  ]);
+}
+
+export function providerCallChallengeHash(challenge) {
+  return orderedJsonHash([
+    PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION,
+    challenge?.request_nonce,
+    challenge?.request_hash,
+    challenge?.prompt_payload_hash,
   ]);
 }
 
@@ -11002,7 +12885,7 @@ function providerCallNormalizedPath(value) {
   return normalized.replace(/^\/+/, '');
 }
 
-function providerCallFileManifestFromCompileArgs(initialCompileArgs) {
+export function providerCallFileManifestFromCompileArgs(initialCompileArgs) {
   const files = new Map();
   const primary = providerCallNormalizedPath(initialCompileArgs?.filename);
   if (primary) files.set(primary, String(initialCompileArgs?.source ?? ''));
@@ -11033,6 +12916,32 @@ function validProviderAvailabilityTimestamp(value) {
   return text.length > 0 && Number.isFinite(Date.parse(text));
 }
 
+const COLD_SOURCE_SUPPORT_PROOF_AUTHORITY_BY_SCHEMA = new Map([
+  [SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION, SOURCE_FIRST_REQUEST_INTENT_AUTHORITY],
+  [SOURCE_FIRST_COMPILE_CACHE_REQUEST_SCHEMA_VERSION, SOURCE_FIRST_COMPILE_CACHE_REQUEST_AUTHORITY],
+  [COLD_SOURCE_MODALITY_BINDING_SCHEMA_VERSION, COLD_SOURCE_MODALITY_BINDING_AUTHORITY],
+  [COLD_SOURCE_PROFILE_REQUEST_IDENTITY_SCHEMA_VERSION, COLD_SOURCE_PROFILE_REQUEST_IDENTITY_AUTHORITY],
+  [COLD_SOURCE_DERIVATION_CHAIN_SCHEMA_VERSION, COLD_SOURCE_DERIVATION_CHAIN_AUTHORITY],
+  [DIRECT_SOURCE_MANIFEST_SCHEMA_VERSION, DIRECT_SOURCE_MANIFEST_AUTHORITY],
+  [SOURCE_ROOT_ENTRY_INFERENCE_SCHEMA_VERSION, SOURCE_ROOT_ENTRY_INFERENCE_AUTHORITY],
+  [DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_SCHEMA_VERSION, DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_AUTHORITY],
+  [
+    'synthi.gpu_hmr.exact_commit_git_blob_snapshot.v1',
+    'exact_commit_source_build_git_blob_snapshot_support_only_not_gpu_hmr_runtime_or_dispatch_authority',
+  ],
+  [PROVIDER_CALL_RECEIPT_SCHEMA_VERSION, PROVIDER_CALL_RECEIPT_AUTHORITY],
+  [DIRECT_SOURCE_INPUT_SCHEMA_VERSION, DIRECT_SOURCE_INPUT_AUTHORITY],
+  [DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_SCHEMA_VERSION, DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY],
+  ['synthi.cas.artifact_locator.v1', 'transport_integrity_only'],
+  ['synthi.gpu.hmr.agent_split_source_first_ingestion.v1', 'source_first_ingestion_provenance_only_not_runtime_proof'],
+  ['synthi.gpu_hmr.artifact_transport_evidence.v1', 'transport_integrity_only'],
+  ['synthi.gpu_hmr.cold_ai_provider_call.v1', 'observed_ai_split_provider_call_only_not_gpu_hmr_success'],
+  ['synthi.gpu_hmr.cold_device_compile_provenance.v1', 'fresh_device_compile_provenance_only_not_gpu_hmr_runtime_acceptance'],
+  ['synthi.gpu_hmr.shared_artifact_addressing.v1', 'shared_artifact_addressing_only'],
+  ['synthi.gpu_hmr.source_first_workspace_source_provenance.v1', 'workspace_source_tree_provenance_only_not_gpu_hmr_success'],
+  ['synthi.gpu_hmr.visual_artifact_transport_evidence.v1', 'transport_integrity_only_not_visual_or_ledger_proof'],
+]);
+
 function supportEvidenceClaimsAuthority(value) {
   if (Array.isArray(value)) return value.some(supportEvidenceClaimsAuthority);
   if (!value || typeof value !== 'object') return false;
@@ -11041,13 +12950,203 @@ function supportEvidenceClaimsAuthority(value) {
     'gpuhmrsuccess',
     'cansatisfyruntimeproof',
     'cansatisfydispatchproof',
+    'cansatisfyoutputoracleproof',
+    'fullruntimeproven',
+    'strictruntimeproofaccepted',
+    'runtimeproofaccepted',
+    'dispatchproofaccepted',
+    'outputproofaccepted',
+    'outputoracleproofaccepted',
+    'runtimeauthority',
+    'dispatchauthority',
+    'outputauthority',
+    'outputoracleauthority',
+    'runtimeproofauthority',
+    'dispatchproofauthority',
+    'outputproofauthority',
+    'gpuhmracceptanceauthority',
   ]);
   return Object.entries(value).some(([key, nested]) => {
     const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
-    if (authorityKeys.has(normalizedKey) && nested !== undefined && nested !== false) {
+    if (normalizedKey === 'proofauthority') {
+      const authority = String(nested ?? '').trim();
+      const schemaVersion = String(
+        value.schemaVersion ?? value.schema_version ?? '',
+      ).trim();
+      return COLD_SOURCE_SUPPORT_PROOF_AUTHORITY_BY_SCHEMA.get(schemaVersion) !== authority;
+    }
+    const authorityShaped = /^(?:gpu|gpuhmr|runtime|dispatch|output|outputoracle|acceptance).*authority$/
+      .test(normalizedKey);
+    const successShaped = /^(?:gpu|gpuhmr|hmr|runtime|dispatch|output|outputoracle|proof|acceptance).*success$/
+      .test(normalizedKey);
+    if (authorityKeys.has(normalizedKey) && nested !== false) {
       return true;
     }
+    if ((authorityShaped || successShaped) && nested !== false) return true;
     return supportEvidenceClaimsAuthority(nested);
+  });
+}
+
+function canonicalAliasShape(value, pathLabel = '$', seen = new WeakSet()) {
+  if (Array.isArray(value)) {
+    return value.map((entry, index) => canonicalAliasShape(entry, `${pathLabel}[${index}]`, seen));
+  }
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) throw new Error(`cold_source_protocol_cycle:${pathLabel}`);
+  seen.add(value);
+  const canonical = {};
+  const sourceKeys = new Map();
+  for (const [key, nested] of Object.entries(value)) {
+    const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    const nestedCanonical = canonicalAliasShape(nested, `${pathLabel}.${key}`, seen);
+    if (Object.hasOwn(canonical, normalizedKey)) {
+      if (stableJson(canonical[normalizedKey]) !== stableJson(nestedCanonical)) {
+        const firstKey = sourceKeys.get(normalizedKey);
+        throw new Error(
+          `cold_source_alias_conflict:${pathLabel}.${firstKey}|${pathLabel}.${key}`,
+        );
+      }
+    } else {
+      canonical[normalizedKey] = nestedCanonical;
+      sourceKeys.set(normalizedKey, key);
+    }
+  }
+  seen.delete(value);
+  return canonical;
+}
+
+function assertColdSourceProtocolShape(value, label) {
+  canonicalColdProtocolShape(value, label);
+}
+
+function canonicalColdProtocolShape(value, label) {
+  const canonical = canonicalAliasShape(value, label);
+  if (supportEvidenceClaimsAuthority(value)) {
+    throw new Error(`cold_source_authority_claim_rejected:${label}`);
+  }
+  return canonical;
+}
+
+function exactLauncherSupportFacet(value, {
+  label,
+  schemaVersion,
+  proofAuthority,
+  accepted,
+  acceptedField = null,
+} = {}) {
+  const canonical = canonicalColdProtocolShape(value, label);
+  const blockingGaps = [
+    canonical.schemaversion === schemaVersion
+      ? null
+      : `${label}_schema_invalid`,
+    canonical.proofauthority === proofAuthority
+      ? null
+      : `${label}_authority_invalid`,
+    canonical.acceptedforgpuhmr === false
+      ? null
+      : `${label}_gpu_hmr_authority_not_false`,
+    canonical.gpuhmrsuccess === false
+      ? null
+      : `${label}_gpu_hmr_success_not_false`,
+    canonical.cansatisfyruntimeproof === false
+      ? null
+      : `${label}_runtime_authority_not_false`,
+    canonical.cansatisfydispatchproof === undefined
+      || canonical.cansatisfydispatchproof === false
+      ? null
+      : `${label}_dispatch_authority_not_false`,
+    accepted === undefined || canonical.accepted === accepted
+      ? null
+      : `${label}_accepted_state_invalid`,
+    !acceptedField || canonical[acceptedField] === true
+      ? null
+      : `${label}_${acceptedField}_missing`,
+  ].filter(Boolean);
+  if (blockingGaps.length > 0) {
+    throw new Error(`cold_source_launcher_support_invalid:${blockingGaps.join('|')}`);
+  }
+  return canonical;
+}
+
+export function validateColdSourceLauncherSupportManifest(rawManifest = {}) {
+  const canonicalManifest = canonicalColdProtocolShape(
+    rawManifest,
+    'coldSource.launcherManifest',
+  );
+  exactLauncherSupportFacet(rawManifest, {
+    label: 'direct_source_manifest',
+    schemaVersion: DIRECT_SOURCE_MANIFEST_SCHEMA_VERSION,
+    proofAuthority: DIRECT_SOURCE_MANIFEST_AUTHORITY,
+  });
+  const rawSource = rawManifest.source && typeof rawManifest.source === 'object'
+    ? rawManifest.source
+    : {};
+  const entryInference = rawManifest.entryInferenceEvidence
+    ?? rawManifest.entry_inference_evidence
+    ?? rawSource.entryInferenceEvidence
+    ?? rawSource.entry_inference_evidence;
+  const runtimeExpectation = rawManifest.runtimeContractExpectation
+    ?? rawManifest.runtime_contract_expectation
+    ?? rawSource.runtimeContractExpectation
+    ?? rawSource.runtime_contract_expectation;
+  const outputOracleRequest = rawManifest.outputOracleRequest
+    ?? rawManifest.output_oracle_request
+    ?? runtimeExpectation?.outputOracle
+    ?? runtimeExpectation?.output_oracle
+    ?? rawSource.outputOracle
+    ?? rawSource.output_oracle;
+  if (!entryInference || !outputOracleRequest) {
+    throw new Error('cold_source_launcher_support_invalid:launcher_support_facet_missing');
+  }
+  exactLauncherSupportFacet(entryInference, {
+    label: 'source_root_entry_inference',
+    schemaVersion: SOURCE_ROOT_ENTRY_INFERENCE_SCHEMA_VERSION,
+    proofAuthority: SOURCE_ROOT_ENTRY_INFERENCE_AUTHORITY,
+    accepted: true,
+  });
+  exactLauncherSupportFacet(outputOracleRequest, {
+    label: 'direct_source_output_oracle_request',
+    schemaVersion: DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_SCHEMA_VERSION,
+    proofAuthority: DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_AUTHORITY,
+    accepted: false,
+    acceptedField: 'acceptedasrequestintent',
+  });
+  const duplicateEntryInference = [
+    rawManifest.entryInferenceEvidence ?? rawManifest.entry_inference_evidence,
+    rawSource.entryInferenceEvidence ?? rawSource.entry_inference_evidence,
+    runtimeExpectation?.entryInferenceEvidence
+      ?? runtimeExpectation?.entry_inference_evidence,
+  ].filter(Boolean).map((entry) => canonicalAliasShape(entry, 'launcher.entryInference'));
+  const duplicateOutputRequests = [
+    rawManifest.outputOracleRequest ?? rawManifest.output_oracle_request,
+    rawSource.outputOracle ?? rawSource.output_oracle,
+    runtimeExpectation?.outputOracle ?? runtimeExpectation?.output_oracle,
+  ].filter(Boolean).map((entry) => canonicalAliasShape(entry, 'launcher.outputOracle'));
+  for (const [label, candidates] of [
+    ['source_root_entry_inference', duplicateEntryInference],
+    ['direct_source_output_oracle_request', duplicateOutputRequests],
+  ]) {
+    if (new Set(candidates.map(stableJson)).size > 1) {
+      throw new Error(`cold_source_launcher_support_invalid:${label}_duplicate_mismatch`);
+    }
+  }
+  return {
+    entryInferenceEvidence: entryInference,
+    outputOracleRequest,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+}
+
+function coldSourceEnvelopeClaimsProofAuthority(value) {
+  if (Array.isArray(value)) return value.some(coldSourceEnvelopeClaimsProofAuthority);
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, nested]) => {
+    const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    return (normalizedKey === 'proofauthority' && nested !== false)
+      || coldSourceEnvelopeClaimsProofAuthority(nested);
   });
 }
 
@@ -11378,6 +13477,9 @@ export function buildSourceFirstInitialCompileRequest({
 function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
   const provenance = split?.sidecar?.model_provenance;
   const receipt = split?.sidecar?.provider_call_receipt;
+  const canonicalReceipt = receipt
+    ? canonicalColdProtocolShape(receipt, 'coldSource.providerReceipt')
+    : {};
   const binding = receipt?.request_binding;
   const expectedFileManifest = providerCallFileManifestFromCompileArgs(initialCompileArgs);
   const expectedNonce = String(initialCompileArgs?.ai_provider_call_nonce ?? '');
@@ -11388,7 +13490,7 @@ function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
   const expectedModel = String(initialCompileArgs?.ai_model ?? '').trim();
   const expectedSourceHash = `sha256:${sha256Hex(initialCompileArgs?.source ?? '')}`;
   const providerCallUsed = provenance?.provider_call_used === true
-    && receipt?.provider_call_used === true;
+    && canonicalReceipt.providercallused === true;
   const provider = String(receipt?.provider ?? '').trim().toLowerCase();
   const requestedModel = String(receipt?.requested_model ?? '').trim();
   const actualModel = String(receipt?.actual_model ?? '').trim();
@@ -11397,17 +13499,15 @@ function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
   const fallbackUsed = receipt?.fallback_used;
   const aliasResolvedTo = String(receipt?.provider_model_alias_resolved_to ?? '').trim();
   const shutdownOrDeprecationDetected = receipt?.provider_shutdown_or_deprecation_detected;
-  const hardInfraFailure = receipt?.hard_infra_failure;
+  const hardInfraFailure = canonicalReceipt.hardinfrafailure;
   const computedRequestHash = binding ? providerCallRequestHash(binding) : '';
-  const computedReceiptHash = receipt ? providerCallReceiptHash(receipt) : '';
+  const computedProducerReceiptHash = receipt
+    ? providerCallProducerReceiptHash(receipt)
+    : '';
+  const computedCanonicalReceiptHash = receipt ? providerCallReceiptHash(receipt) : '';
   const challenge = receipt?.challenge;
   const computedChallengeHash = challenge
-    ? orderedJsonHash([
-        PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION,
-        challenge?.request_nonce,
-        challenge?.request_hash,
-        challenge?.prompt_payload_hash,
-      ])
+    ? providerCallChallengeHash(challenge)
     : '';
   const sha256Pattern = /^sha256:[a-f0-9]{64}$/;
   const blockingGaps = [
@@ -11427,7 +13527,9 @@ function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
     receipt?.proof_authority === PROVIDER_CALL_RECEIPT_AUTHORITY
       ? null
       : 'cold_ai_split_provider_receipt_authority_invalid',
-    receipt?.accepted === true ? null : 'cold_ai_split_provider_receipt_not_accepted',
+    canonicalReceipt.accepted === true
+      ? null
+      : 'cold_ai_split_provider_receipt_not_accepted',
     providerCallUsed ? null : 'cold_ai_split_provider_call_not_observed',
     binding?.schema_version === PROVIDER_CALL_REQUEST_SCHEMA_VERSION
       ? null
@@ -11485,11 +13587,11 @@ function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
       && receipt?.challenge_hash === computedChallengeHash
       ? null
       : 'cold_ai_split_provider_challenge_binding_mismatch',
-    receipt?.challenge_echo_verified === true
+    canonicalReceipt.challengeechoverified === true
       ? null
       : 'cold_ai_split_provider_challenge_echo_unproven',
-    receipt?.receipt_hash === computedReceiptHash
-      && receipt?.call_id === `provider-call:${computedReceiptHash}`
+    receipt?.receipt_hash === computedProducerReceiptHash
+      && receipt?.call_id === `provider-call:${computedProducerReceiptHash}`
       ? null
       : 'cold_ai_split_provider_receipt_hash_mismatch',
     provider ? null : 'cold_ai_split_provider_identity_missing',
@@ -11558,7 +13660,8 @@ function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
     providerShutdownOrDeprecationDetected: shutdownOrDeprecationDetected,
     hardInfraFailure: hardInfraFailure === true,
     providerCallId: receipt?.call_id ?? null,
-    providerCallReceiptHash: receipt?.receipt_hash ?? null,
+    providerCallReceiptHash: computedCanonicalReceiptHash || null,
+    providerCallProducerReceiptHash: receipt?.receipt_hash ?? null,
     providerCallRequestHash: receipt?.request_hash ?? null,
     providerCallResponseHash: receipt?.response_hash ?? null,
     providerCallChallengeHash: receipt?.challenge_hash ?? null,
@@ -11586,6 +13689,7 @@ function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
     hard_infra_failure: seed.hardInfraFailure,
     provider_call_id: seed.providerCallId,
     provider_call_receipt_hash: seed.providerCallReceiptHash,
+    provider_call_producer_receipt_hash: seed.providerCallProducerReceiptHash,
     provider_call_request_hash: seed.providerCallRequestHash,
     provider_call_response_hash: seed.providerCallResponseHash,
     provider_call_challenge_hash: seed.providerCallChallengeHash,
@@ -11630,12 +13734,7 @@ function selfCheckProviderCallReceipt(initialCompileArgs) {
     request_hash: requestHash,
     prompt_payload_hash: `sha256:${'5'.repeat(64)}`,
   };
-  challenge.challenge_hash = orderedJsonHash([
-    challenge.schema_version,
-    challenge.request_nonce,
-    challenge.request_hash,
-    challenge.prompt_payload_hash,
-  ]);
+  challenge.challenge_hash = providerCallChallengeHash(challenge);
   const receipt = {
     schema_version: PROVIDER_CALL_RECEIPT_SCHEMA_VERSION,
     proof_authority: PROVIDER_CALL_RECEIPT_AUTHORITY,
@@ -11668,125 +13767,114 @@ function selfCheckProviderCallReceipt(initialCompileArgs) {
     can_satisfy_runtime_proof: false,
     can_satisfy_dispatch_proof: false,
   };
-  receipt.receipt_hash = providerCallReceiptHash(receipt);
+  receipt.receipt_hash = providerCallProducerReceiptHash(receipt);
   receipt.call_id = `provider-call:${receipt.receipt_hash}`;
   return receipt;
 }
 
-function selfCheckColdAiSplitProof() {
-  const selfCheckSource = '__global__ void self_check(float* out) { out[0] = 1.0f; }';
-  const selfCheckInitialCompileArgs = {
-    language: 'cpp',
-    filename: 'src/main.hip',
-    source: selfCheckSource,
-    files: [{ path: 'src/main.hip', name: 'src/main.hip', content: selfCheckSource }],
-    gpu_arch: 'gfx1201',
-    use_ai_split: true,
-    bypass_ai_split_cache: true,
-    require_ai_provider_call: true,
-    ai_provider_call_nonce: 'provider-call:0123456789abcdef0123456789abcdef',
-    ai_provider: 'self_check_provider',
-    ai_model: 'self-check-model',
+async function selfCheckColdAiSplitProof() {
+  const source = '__global__ void entry(float* out) { out[0] = 1.0f; }';
+  const entryPath = 'src/entry.hip';
+  const generatedPath = '.synthi/generated/gpu/device.hip';
+  const generatedSource = '__global__ void generated_entry(float* out) { out[0] = 1.0f; }';
+  const files = [{ path: entryPath, name: entryPath, content: source }];
+  const typedOracleIntent = {
+    outputOracleKind: 'compute_oracle',
+    runtimeExpectationHash: `sha256:${'5'.repeat(64)}`,
   };
-  const providerCallReceipt = selfCheckProviderCallReceipt(selfCheckInitialCompileArgs);
-  const selfCheckSplit = {
-    sidecar: {
-      model_provenance: {
-        provider_call_used: true,
-        provider: 'self_check_provider',
-        requested_model: 'self-check-model',
-        actual_model: 'self-check-model',
-        provider_model_status: 'available',
-        fallback_model: null,
-        fallback_used: false,
-        provider_model_alias_resolved_to: null,
-        provider_shutdown_or_deprecation_detected: false,
-        request_mode: 'split',
-        model_availability_checked_at: '2026-07-15T00:00:00+00:00',
-        hard_infra_failure: false,
-      },
-      provider_call_receipt: providerCallReceipt,
+  const requestIntent = deriveSourceFirstRequestIntent({
+    entryPath,
+    files,
+    typedOracleIntent,
+  });
+  const initialCompileArgs = buildSourceFirstInitialCompileRequest({
+    mode: 'cold-ai-split',
+    requireFreshAiSplit: true,
+    compileArgs: {
+      language: requestIntent.language,
+      filename: entryPath,
+      source,
+      files,
+      is_gui: false,
+      source_first_request_intent: requestIntent,
+      use_ai_split: true,
+      user_requested_ai: true,
+      prefer_gpu_pipeline: true,
+      ai_provider_call_nonce: 'provider-call:0123456789abcdef0123456789abcdef',
+      ai_provider: 'self_check_provider',
+      ai_model: 'self-check-model',
+      gpu_mode: 'rocm',
+      gpu_arch: 'gfx1201',
+      gpu_arch_source: 'self_check',
+      slug: 'self-check-cold-ai',
+    },
+  }).initialCompileArgs;
+  const providerCallReceipt = selfCheckProviderCallReceipt(initialCompileArgs);
+  const modelProvenance = {
+    provider_call_used: true,
+    provider: 'self_check_provider',
+    requested_model: 'self-check-model',
+    actual_model: 'self-check-model',
+    provider_model_status: 'available',
+    fallback_model: null,
+    fallback_used: false,
+    provider_model_alias_resolved_to: null,
+    provider_shutdown_or_deprecation_detected: false,
+    request_mode: 'split',
+    model_availability_checked_at: '2026-07-15T00:00:00+00:00',
+    hard_infra_failure: false,
+  };
+  const sidecar = {
+    model_provenance: modelProvenance,
+    provider_call_receipt: providerCallReceipt,
+  };
+  const manifest = {
+    profile_id: `profile:self-check:${'1'.repeat(32)}`,
+    target_id: `target:self-check:${'2'.repeat(32)}`,
+    module_files: { device: generatedPath },
+    gpu: {
+      vendor: 'rocm',
+      device_compiler: 'hipcc',
+      device_roles: [{ id: 'device', path: generatedPath, compiler: 'hipcc', arch: ['gfx1201'] }],
     },
   };
-  const providerEvidence = coldAiProviderCallEvidenceFromSplit(
-    selfCheckSplit,
-    selfCheckInitialCompileArgs,
+  const split = {
+    files: { [generatedPath]: generatedSource },
+    roles: {
+      device: generatedPath,
+      allPaths: [generatedPath],
+      deviceRoles: [{ id: 'device', path: generatedPath, compiler: 'hipcc', arch: ['gfx1201'] }],
+    },
+    manifest,
+    sidecar,
+    sidecarRaw: stableJson(sidecar),
+  };
+  const compiledArtifactPath = '.synthi/generated/gpu/device.bin';
+  const syntheticArtifactRoot = mkdtempSync(path.join(os.tmpdir(), 'cold-source-compile-bytes-'));
+  const syntheticArtifactHostPath = path.join(
+    syntheticArtifactRoot,
+    ...compiledArtifactPath.split('/'),
   );
-  const evidenceWithProviderMutation = ({
-    receiptChanges = {},
-    provenanceChanges = {},
-    compileArgChanges = {},
-  } = {}) => {
-    const mutatedReceipt = {
-      ...providerCallReceipt,
-      ...receiptChanges,
-    };
-    mutatedReceipt.receipt_hash = providerCallReceiptHash(mutatedReceipt);
-    mutatedReceipt.call_id = `provider-call:${mutatedReceipt.receipt_hash}`;
-    return coldAiProviderCallEvidenceFromSplit({
-      sidecar: {
-        model_provenance: {
-          ...selfCheckSplit.sidecar.model_provenance,
-          ...provenanceChanges,
-        },
-        provider_call_receipt: mutatedReceipt,
-      },
-    }, {
-      ...selfCheckInitialCompileArgs,
-      ...compileArgChanges,
-    });
-  };
-  const substitutedActualModelEvidence = evidenceWithProviderMutation({
-    receiptChanges: { actual_model: 'substituted-model' },
-    provenanceChanges: { actual_model: 'substituted-model' },
-  });
-  const fallbackModelEvidence = evidenceWithProviderMutation({
-    receiptChanges: {
-      actual_model: 'fallback-model',
-      fallback_model: 'fallback-model',
-      fallback_used: true,
-    },
-    provenanceChanges: {
-      actual_model: 'fallback-model',
-      fallback_model: 'fallback-model',
-      fallback_used: true,
-    },
-  });
-  const deprecatedModelEvidence = evidenceWithProviderMutation({
-    receiptChanges: {
-      provider_model_status: 'deprecated',
-      provider_shutdown_or_deprecation_detected: true,
-    },
-    provenanceChanges: {
-      provider_model_status: 'deprecated',
-      provider_shutdown_or_deprecation_detected: true,
-    },
-  });
-  const aliasResolutionEvidence = evidenceWithProviderMutation({
-    receiptChanges: { provider_model_alias_resolved_to: 'resolved-model' },
-    provenanceChanges: { provider_model_alias_resolved_to: 'resolved-model' },
-  });
-  const callerDidNotRequireProviderEvidence = evidenceWithProviderMutation({
-    compileArgChanges: {
-      bypass_ai_split_cache: false,
-      require_ai_provider_call: false,
-    },
-  });
-  const nestedAuthorityEvidence = evidenceWithProviderMutation({
-    receiptChanges: {
-      request_binding: {
-        ...providerCallReceipt.request_binding,
-        gpuHmrSuccess: true,
-      },
-    },
-  });
-  const selfCheckCompileProofId = `gpu-proof:${'a'.repeat(64)}`;
-  const selfCheckArtifactId = `device:sha256:${'b'.repeat(64)}`;
-  const selfCheckCompileProofArtifact = {
+  mkdirSync(path.dirname(syntheticArtifactHostPath), { recursive: true });
+  writeFileSync(syntheticArtifactHostPath, Buffer.from('self-check-compiled-device-artifact'));
+  const syntheticArtifactBytes = readFileSync(syntheticArtifactHostPath);
+  const artifactHash = `sha256:${sha256BufferHex(syntheticArtifactBytes)}`;
+  const artifactId = `device:${artifactHash}`;
+  const generatedSourceHash = `sha256:${sha256Hex(generatedSource)}`;
+  const generatedSourceBytes = Buffer.byteLength(generatedSource, 'utf8');
+  const preprocessorInputHash = `sha256:${sha256Hex('self-check-preprocessor-input')}`;
+  const compilerInputHash = `sha256:${sha256Hex('self-check-compiler-input')}`;
+  const proofArtifact = {
     schemaVersion: 'synthi.gpu.hmr.proof.v1',
-    proofId: selfCheckCompileProofId,
+    proofId: null,
     workspaceSlug: 'self-check-cold-ai',
-    selectedArtifactId: selfCheckArtifactId,
+    runtimeSessionId: 'runtime-session:self-check-cold-ai',
+    sourceEditId: 'source-edit:self-check-cold-ai',
+    selectedArtifactId: artifactId,
+    resultState: 'gpu-hmr-compile-proven',
+    degradedState: null,
+    degradedReason: null,
+    createdAt: '2026-07-17T00:00:00.000Z',
     stageResults: [{
       stageId: 'device-compile',
       status: 'passed',
@@ -11796,9 +13884,10 @@ function selfCheckColdAiSplitProof() {
       {
         evidenceId: 'evidence:self-check-device-artifact',
         kind: 'device-artifact',
-        contentHash: `sha256:${'b'.repeat(64)}`,
-        artifactUri: selfCheckArtifactId,
-        metadata: { artifactBytes: 4096 },
+        contentHash: artifactHash,
+        artifactUri: artifactId,
+        filePath: compiledArtifactPath,
+        metadata: { artifactBytes: syntheticArtifactBytes.length },
       },
       {
         evidenceId: 'evidence:self-check-device-compiler',
@@ -11807,267 +13896,243 @@ function selfCheckColdAiSplitProof() {
           compileProvenance: {
             compilerExecutable: '/opt/rocm/bin/hipcc',
             compilerIdentity: 'hipcc:sha256:self-check',
+            compilerExecutableHash: `sha256:${'e'.repeat(64)}`,
+            compilerIdentityMethod: 'held_compiler_driver_entry_file_sha256+version_output',
             deviceCompiler: 'hipcc',
             gpuVendor: 'rocm',
             gpuArch: ['gfx1201'],
-            sourceFilename: 'src/main.hip',
-            compileCommandHash: 'c'.repeat(64),
-            dependencyHash: 'd'.repeat(64),
+            targetTriple: 'amdgcn-amd-amdhsa',
+            effectiveDeviceFlags: [],
+            sourceFilename: generatedPath,
+            compileCommandHash: `sha256:${'c'.repeat(64)}`,
+            compileCommandHashScope: COLD_DEVICE_COMPILE_COMMAND_HASH_SCOPE,
+            preprocessorCommandHash: `sha256:${'b'.repeat(64)}`,
+            requestSourceSha256: generatedSourceHash,
+            requestSourceBytes: generatedSourceBytes,
+            transformedSourceSha256: generatedSourceHash,
+            transformedSourceBytes: generatedSourceBytes,
+            sourceTransforms: [],
+            preprocessorInputSha256: preprocessorInputHash,
+            preprocessorInputBytes: Buffer.byteLength('self-check-preprocessor-input'),
+            compiledSourceSha256: compilerInputHash,
+            compiledSourceBytes: Buffer.byteLength('self-check-compiler-input'),
+            dependencyHash: compilerInputHash,
+            dependencyMethod: COLD_DEVICE_COMPILER_DEPENDENCY_METHOD,
+            sourceBytesVerifiedAfterExecution: true,
             cacheHit: false,
           },
         },
       },
     ],
+    visualEvidenceRefs: [],
   };
-  const freshDeviceCompileEvidence = coldDeviceCompileProvenanceEvidence({
-    proofArtifact: selfCheckCompileProofArtifact,
+  const proofId = recomputeGpuCompileProofArtifactId(proofArtifact);
+  proofArtifact.proofId = proofId;
+  const compileProducerMaterial = {
+    proofArtifact,
     proofArtifactPath: '.synthi/gpu-hmr/proofs/self-check-cold-ai.json',
-    expectedProofId: selfCheckCompileProofId,
+    expectedProofId: proofId,
     expectedWorkspaceSlug: 'self-check-cold-ai',
     expectedVendor: 'rocm',
     expectedCompiler: 'hipcc',
     expectedArch: 'gfx1201',
-    expectedSourcePath: 'src/main.hip',
+    expectedSourcePath: generatedPath,
+    syntheticArtifactBytes,
+    syntheticArtifactFilePath: compiledArtifactPath,
+  };
+  const producerMaterial = {
+    source,
+    entryPath,
+    initialCompileArgs,
+    split,
+    typedOracleIntent,
+    compileProducerMaterial,
+    profileRequestIdentitySnapshot: coldSourceProfileRequestIdentitySnapshot({
+      profileId: manifest.profile_id,
+      profileHash: `sha256:${'3'.repeat(64)}`,
+      profileSource: 'self_check_profile_material',
+      sourceAuthority: 'self_check_source_material',
+      sourceManifestHash: requestIntent.sourceManifestHash,
+      sourceContentHash: `sha256:${sha256Hex(source)}`,
+      entryPath,
+      requestIntentHash: requestIntent.intentHash,
+      outputOracleKind: 'compute_oracle',
+      generatedSplitProfileId: manifest.profile_id,
+      generatedSplitTargetId: manifest.target_id,
+      evidenceRefs: [requestIntent.intentHash, requestIntent.sourceManifestHash],
+    }),
+    timingMetrics: {
+      schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
+      metricClock: 'monotonic_ns',
+      metricScope: 'cold',
+      cacheState: 'clean',
+      editId: 'initial-ai-split',
+      editHash: `sha256:${sha256Hex(source)}`,
+      editKind: 'cold_split',
+      differentEdit: false,
+      timings: {
+        device_compile_wall_time: 10,
+        runtime_probe_time: 20,
+        total_validator_wall_time: 30,
+      },
+    },
+  };
+  const liveProducerMaterial = structuredClone(producerMaterial);
+  delete liveProducerMaterial.compileProducerMaterial.syntheticArtifactBytes;
+  delete liveProducerMaterial.compileProducerMaterial.syntheticArtifactFilePath;
+  const liveCompileCapability = Object.freeze(Object.create(null));
+  const liveInvocationId = `self-check-live-compile:${randomBytes(12).toString('hex')}`;
+  const liveMcpRequestHash = `sha256:${sha256Hex(stableJson(
+    liveProducerMaterial.initialCompileArgs,
+  ))}`;
+  liveMcpCompileInvocations.set(liveCompileCapability, {
+    invocationId: liveInvocationId,
+    requestHash: liveMcpRequestHash,
+    compileResponseHash: `sha256:${sha256Hex('self-check-live-compile-response')}`,
+    proofId,
+    proofArtifactPath: compileProducerMaterial.proofArtifactPath,
+    compileStartedMonotonicNs: '100',
+    compileCompletedMonotonicNs: '200',
+    waitCompletedMonotonicNs: '300',
+    waitStatus: 'rejected',
+    artifactObservationIssued: true,
+    coldObservationIssued: false,
   });
-  const cachedCompileProofArtifact = JSON.parse(JSON.stringify(selfCheckCompileProofArtifact));
-  cachedCompileProofArtifact.evidenceRefs[1].metadata.compileProvenance.cacheHit = true;
-  const cachedDeviceCompileEvidence = coldDeviceCompileProvenanceEvidence({
-    proofArtifact: cachedCompileProofArtifact,
-    proofArtifactPath: '.synthi/gpu-hmr/proofs/self-check-cached.json',
-    expectedProofId: selfCheckCompileProofId,
-    expectedWorkspaceSlug: 'self-check-cold-ai',
-    expectedVendor: 'rocm',
-    expectedCompiler: 'hipcc',
-    expectedArch: 'gfx1201',
-    expectedSourcePath: 'src/main.hip',
+  Object.defineProperty(
+    liveProducerMaterial.compileProducerMaterial,
+    LIVE_COMPILE_ARTIFACT_BYTES_SLOT,
+    {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: Object.freeze({
+        bytes: syntheticArtifactBytes,
+        filePath: compiledArtifactPath,
+        observationKind: 'worker_live_read',
+        compileCapability: liveCompileCapability,
+        invocationId: liveInvocationId,
+      }),
+    },
+  );
+  const liveRecomputed = recomputeColdSourceProducerEvidence(liveProducerMaterial);
+  const liveSeed = {
+    outputOracleKind: 'compute_oracle',
+    generatedArtifactHashes: liveRecomputed.generatedArtifactHashes,
+    sourceFirstIngestion: liveRecomputed.sourceFirstIngestion,
+    coldAiProviderCallEvidence: liveRecomputed.providerCallEvidence,
+    coldDeviceCompileProvenance: liveRecomputed.deviceCompileProvenance,
+  };
+  await issueColdSourceLiveObservationCapability(liveProducerMaterial, liveSeed);
+  let duplicateIssuanceRejected = false;
+  try {
+    await issueColdSourceLiveObservationCapability(liveProducerMaterial, liveSeed);
+  } catch (error) {
+    duplicateIssuanceRejected = String(error?.message ?? '')
+      .includes('live_observation_already_issued');
+  }
+  const originalTotalValidatorWallTime =
+    liveProducerMaterial.timingMetrics.timings.total_validator_wall_time;
+  liveProducerMaterial.timingMetrics.timings.total_validator_wall_time += 1;
+  let timingRebindRejected = false;
+  try {
+    await coldAiSplitProofFromSeed(liveSeed, liveProducerMaterial);
+  } catch (error) {
+    timingRebindRejected = String(error?.message ?? '')
+      .includes('live_observation_binding_mismatch');
+  }
+  liveProducerMaterial.timingMetrics.timings.total_validator_wall_time =
+    originalTotalValidatorWallTime;
+  let modalityRebindRejected = false;
+  try {
+    await coldAiSplitProofFromSeed({
+      ...liveSeed,
+      outputOracleKind: 'visual_oracle',
+    }, liveProducerMaterial);
+  } catch (error) {
+    modalityRebindRejected = String(error?.message ?? '')
+      .includes('output_oracle_kind_mismatch');
+  }
+  const liveProof = await coldAiSplitProofFromSeed(liveSeed, liveProducerMaterial);
+  let liveReplayRejected = false;
+  try {
+    await coldAiSplitProofFromSeed(liveSeed, liveProducerMaterial);
+  } catch (error) {
+    liveReplayRejected = String(error?.message ?? '')
+      .includes('capability_consumed_or_missing');
+  }
+  const recomputed = recomputeColdSourceProducerEvidence(producerMaterial);
+  const seed = {
+    outputOracleKind: 'compute_oracle',
+    generatedArtifactHashes: recomputed.generatedArtifactHashes,
+    sourceFirstIngestion: recomputed.sourceFirstIngestion,
+    coldAiProviderCallEvidence: recomputed.providerCallEvidence,
+    coldDeviceCompileProvenance: recomputed.deviceCompileProvenance,
+  };
+  const proof = await coldAiSplitProofFromSeed(seed, producerMaterial);
+
+  const cachedProofArtifact = structuredClone(proofArtifact);
+  cachedProofArtifact.evidenceRefs[1].metadata.compileProvenance.cacheHit = true;
+  const cachedCompile = coldDeviceCompileProvenanceEvidence({
+    ...compileProducerMaterial,
+    proofArtifact: cachedProofArtifact,
   });
-  const wrongArchCompileEvidence = coldDeviceCompileProvenanceEvidence({
-    proofArtifact: selfCheckCompileProofArtifact,
-    proofArtifactPath: '.synthi/gpu-hmr/proofs/self-check-wrong-arch.json',
-    expectedProofId: selfCheckCompileProofId,
-    expectedWorkspaceSlug: 'self-check-cold-ai',
-    expectedVendor: 'rocm',
-    expectedCompiler: 'hipcc',
-    expectedArch: 'gfx9999',
-    expectedSourcePath: 'src/main.hip',
-  });
-  let unsafeCompileProofPathRejected = false;
+  const substitutedReceipt = {
+    ...providerCallReceipt,
+    actual_model: 'substituted-model',
+  };
+  substitutedReceipt.receipt_hash = providerCallProducerReceiptHash(substitutedReceipt);
+  substitutedReceipt.call_id = `provider-call:${substitutedReceipt.receipt_hash}`;
+  const substitutedProvider = coldAiProviderCallEvidenceFromSplit({
+    sidecar: {
+      model_provenance: { ...modelProvenance, actual_model: 'substituted-model' },
+      provider_call_receipt: substitutedReceipt,
+    },
+  }, initialCompileArgs);
+  let authorityRejected = false;
+  try {
+    await coldAiSplitProofFromSeed({
+      ...seed,
+      nested: { strictRuntimeProofAccepted: 'yes' },
+    }, producerMaterial);
+  } catch (error) {
+    authorityRejected = String(error?.message ?? '').includes('authority_claim_rejected');
+  }
+  let unsafePathRejected = false;
   try {
     normalizedGpuProofArtifactRelativePath('../outside/proof.json');
   } catch (error) {
-    unsafeCompileProofPathRejected = String(error?.message ?? '').includes('unsafe traversal');
+    unsafePathRejected = String(error?.message ?? '').includes('unsafe traversal');
   }
-  const proof = coldAiSplitProofFromSeed({
-    coldSplitProven: true,
-    coldSingleFrameVisual: {
-      width: 640,
-      height: 480,
-      bytes: 4096,
-      visiblePixels: 1000,
-    },
-    visualArtifacts: {
-      afterImageHash: `sha256:${'6'.repeat(64)}`,
-      artifactCasLocators: [{
-        schemaVersion: 'synthi.cas.artifact_locator.v1',
-        contentHash: `sha256:${'6'.repeat(64)}`,
-        role: 'after_frame',
-        mediaType: 'image/png',
-      }],
-      visualArtifactTransportEvidence: {
-        accepted: true,
-        acceptedAsTransportEvidence: true,
-        entries: [{ contentHash: `sha256:${'6'.repeat(64)}` }],
-      },
-    },
-    visualMetrics: { visiblePixelCount: 1000 },
-    coldAiProviderCallEvidence: providerEvidence,
-    coldDeviceCompileProvenance: freshDeviceCompileEvidence,
-  });
-  let missingVisualRejected = false;
-  try {
-    coldAiSplitProofFromSeed(null);
-  } catch (error) {
-    missingVisualRejected = String(error?.message ?? '').includes('captured visual output');
-  }
-  let missingProviderRejected = false;
-  try {
-    coldAiSplitProofFromSeed({
-      coldSplitProven: true,
-      visualArtifacts: { beforeImage: 'cas:sha256:self-check' },
-    });
-  } catch (error) {
-    missingProviderRejected = String(error?.message ?? '').includes('observed AI provider call');
-  }
-  let missingFreshCompileRejected = false;
-  try {
-    coldAiSplitProofFromSeed({
-      coldSplitProven: true,
-      coldAiProviderCallEvidence: providerEvidence,
-      visualArtifacts: { beforeImage: 'cas:sha256:self-check' },
-    });
-  } catch (error) {
-    missingFreshCompileRejected = String(error?.message ?? '').includes('fresh device compiler provenance');
-  }
-  let forgedVisualRejected = false;
-  try {
-    coldAiSplitProofFromSeed({
-      coldSplitProven: true,
-      coldSingleFrameVisual: {
-        width: 640,
-        height: 480,
-        bytes: 4096,
-        visiblePixels: 0,
-      },
-      visualArtifacts: {
-        afterImageHash: `sha256:${'6'.repeat(64)}`,
-        artifactCasLocators: [{
-          schemaVersion: 'synthi.cas.artifact_locator.v1',
-          contentHash: `sha256:${'6'.repeat(64)}`,
-          role: 'after_frame',
-          mediaType: 'image/png',
-        }],
-        visualArtifactTransportEvidence: {
-          accepted: true,
-          acceptedAsTransportEvidence: true,
-          entries: [{ contentHash: `sha256:${'6'.repeat(64)}` }],
-        },
-      },
-      visualMetrics: { visiblePixelCount: 0 },
-      coldAiProviderCallEvidence: providerEvidence,
-      coldDeviceCompileProvenance: freshDeviceCompileEvidence,
-    });
-  } catch (error) {
-    forgedVisualRejected = String(error?.message ?? '').includes('blank_or_invalid');
-  }
-  const forgedReceiptEvidence = coldAiProviderCallEvidenceFromSplit({
-    sidecar: {
-      model_provenance: {
-        provider_call_used: true,
-        provider: 'self_check_provider',
-        requested_model: 'self-check-model',
-        actual_model: 'self-check-model',
-        provider_model_status: 'available',
-        request_mode: 'split',
-        model_availability_checked_at: '2026-07-15T00:00:00+00:00',
-        hard_infra_failure: false,
-      },
-      provider_call_receipt: {
-        ...providerCallReceipt,
-        response_hash: `sha256:${'9'.repeat(64)}`,
-      },
-    },
-  }, selfCheckInitialCompileArgs);
-  const forgedChallengeEvidence = coldAiProviderCallEvidenceFromSplit({
-    sidecar: {
-      model_provenance: selfCheckSplit.sidecar.model_provenance,
-      provider_call_receipt: {
-        ...providerCallReceipt,
-        challenge: {
-          ...providerCallReceipt.challenge,
-          prompt_payload_hash: `sha256:${'8'.repeat(64)}`,
-        },
-      },
-    },
-  }, selfCheckInitialCompileArgs);
-  const typedAuthorityEvidence = coldAiProviderCallEvidenceFromSplit({
-    sidecar: {
-      model_provenance: selfCheckSplit.sidecar.model_provenance,
-      provider_call_receipt: {
-        ...providerCallReceipt,
-        gpuHmrSuccess: 'true',
-      },
-    },
-  }, selfCheckInitialCompileArgs);
-  const replayedNonceEvidence = coldAiProviderCallEvidenceFromSplit(
-    selfCheckSplit,
-    {
-      ...selfCheckInitialCompileArgs,
-      ai_provider_call_nonce: 'provider-call:fedcba9876543210fedcba9876543210',
-    },
-  );
-  const substitutedProviderEvidence = coldAiProviderCallEvidenceFromSplit(
-    selfCheckSplit,
-    {
-      ...selfCheckInitialCompileArgs,
-      ai_provider: 'substituted_provider',
-    },
-  );
-  const changedSource = `${selfCheckSource}\n// changed submission`;
-  const replayedSourceEvidence = coldAiProviderCallEvidenceFromSplit(
-    selfCheckSplit,
-    {
-      ...selfCheckInitialCompileArgs,
-      source: changedSource,
-      files: [{ path: 'src/main.hip', name: 'src/main.hip', content: changedSource }],
-    },
-  );
   if (
-    proof.acceptedAsColdAiSplitEvidence !== true
+    proof.acceptedAsColdAiSplitEvidence !== false
+    || proof.syntheticOrReplayIneligible !== true
     || proof.acceptedForGpuHmr !== false
     || proof.gpuHmrSuccess !== false
     || proof.canSatisfyRuntimeProof !== false
-    || proof.canSatisfyDispatchProof !== false
-    || !missingVisualRejected
-    || !missingProviderRejected
-    || !missingFreshCompileRejected
-    || !forgedVisualRejected
-    || freshDeviceCompileEvidence.accepted !== true
-    || freshDeviceCompileEvidence.acceptedForGpuHmr !== false
-    || freshDeviceCompileEvidence.gpuHmrSuccess !== false
-    || freshDeviceCompileEvidence.canSatisfyRuntimeProof !== false
-    || freshDeviceCompileEvidence.canSatisfyDispatchProof !== false
-    || cachedDeviceCompileEvidence.accepted !== false
-    || !cachedDeviceCompileEvidence.blockingGaps.includes('cold_device_compile_cache_hit_not_fresh_codegen')
-    || wrongArchCompileEvidence.accepted !== false
-    || !wrongArchCompileEvidence.blockingGaps.includes('cold_device_compile_arch_mismatch')
-    || !unsafeCompileProofPathRejected
-    || providerEvidence.accepted !== true
-    || providerEvidence.acceptedForGpuHmr !== false
-    || providerEvidence.gpuHmrSuccess !== false
-    || substitutedActualModelEvidence.accepted !== false
-    || !substitutedActualModelEvidence.blockingGaps.includes(
-      'cold_ai_split_actual_model_not_exact_requested_model'
-    )
-    || fallbackModelEvidence.accepted !== false
-    || !fallbackModelEvidence.blockingGaps.includes('cold_ai_split_provider_fallback_used')
-    || deprecatedModelEvidence.accepted !== false
-    || !deprecatedModelEvidence.blockingGaps.includes('cold_ai_split_provider_model_not_available')
-    || !deprecatedModelEvidence.blockingGaps.includes(
-      'cold_ai_split_provider_shutdown_or_deprecation_detected'
-    )
-    || aliasResolutionEvidence.accepted !== false
-    || !aliasResolutionEvidence.blockingGaps.includes(
-      'cold_ai_split_provider_alias_resolution_not_allowed'
-    )
-    || callerDidNotRequireProviderEvidence.accepted !== false
-    || !callerDidNotRequireProviderEvidence.blockingGaps.includes(
-      'cold_ai_split_provider_request_cache_bypass_not_required'
-    )
-    || !callerDidNotRequireProviderEvidence.blockingGaps.includes(
-      'cold_ai_split_provider_request_call_not_required'
-    )
-    || nestedAuthorityEvidence.accepted !== false
-    || !nestedAuthorityEvidence.blockingGaps.includes(
-      'cold_ai_split_provider_receipt_claims_gpu_authority'
-    )
-    || forgedReceiptEvidence.accepted !== false
-    || !forgedReceiptEvidence.blockingGaps.includes('cold_ai_split_provider_receipt_hash_mismatch')
-    || forgedChallengeEvidence.accepted !== false
-    || !forgedChallengeEvidence.blockingGaps.includes('cold_ai_split_provider_challenge_binding_mismatch')
-    || typedAuthorityEvidence.accepted !== false
-    || !typedAuthorityEvidence.blockingGaps.includes('cold_ai_split_provider_receipt_claims_gpu_authority')
-    || replayedNonceEvidence.accepted !== false
-    || substitutedProviderEvidence.accepted !== false
-    || !substitutedProviderEvidence.blockingGaps.includes(
-      'cold_ai_split_provider_request_provider_mismatch'
-    )
-    || !replayedNonceEvidence.blockingGaps.includes('cold_ai_split_provider_request_nonce_not_caller_bound')
-    || replayedSourceEvidence.accepted !== false
-    || !replayedSourceEvidence.blockingGaps.includes('cold_ai_split_provider_request_source_hash_mismatch')
-    || !replayedSourceEvidence.blockingGaps.includes('cold_ai_split_provider_request_file_manifest_mismatch')
+    || proof.validationMatrixEligibility !== 'not_counted_until_cold_source_modality_ingestion'
+    || recomputed.providerCallEvidence.accepted !== false
+    || recomputed.providerCallEvidence.canonicalProviderReceiptVerified !== true
+    || recomputed.deviceCompileProvenance.accepted !== false
+    || recomputed.deviceCompileProvenance.byteObservationVerified !== true
+    || cachedCompile.accepted !== false
+    || !cachedCompile.blockingGaps.includes('cold_device_compile_cache_hit_not_fresh_codegen')
+    || substitutedProvider.accepted !== false
+    || !substitutedProvider.blockingGaps.includes('cold_ai_split_actual_model_not_exact_requested_model')
+    || !authorityRejected
+    || !unsafePathRejected
+    || !duplicateIssuanceRejected
+    || !timingRebindRejected
+    || !modalityRebindRejected
+    || liveProof.acceptedAsColdAiSplitEvidence !== true
+    || liveProof.acceptedForGpuHmr !== false
+    || liveProof.gpuHmrSuccess !== false
+    || liveProof.canSatisfyRuntimeProof !== false
+    || liveProof.canSatisfyDispatchProof !== false
+    || !liveReplayRejected
   ) {
     throw new Error('cold AI split proof authority self-check failed');
   }
+  rmSync(syntheticArtifactRoot, { recursive: true, force: true });
   console.log('cold AI split proof authority self-check passed');
 }
 
@@ -12246,6 +14311,13 @@ async function singleFrameVisualArtifactsFromShot(shot, artifactName = 'single-f
     throw new Error('single-frame visual proof requires saved screenshot data');
   }
   const image = await writeImageArtifact(artifactName, sample.imageData);
+  const [byteVerifiedVisualArtifact] = await visualEvidenceArtifactsFromFiles([image.path]);
+  if (
+    byteVerifiedVisualArtifact?.contentHash !== image.hash
+    || byteVerifiedVisualArtifact?.acceptedAsImageEvidence !== true
+  ) {
+    throw new Error('single-frame visual proof PNG bytes failed image verification');
+  }
   const bytes = Buffer.from(sample.imageData, 'base64');
   const casRoot = path.join(ARTIFACT_DIR, 'cas');
   const locator = await writeArtifactToCas(bytes, {
@@ -12264,7 +14336,7 @@ async function singleFrameVisualArtifactsFromShot(shot, artifactName = 'single-f
     artifactCasLocators: [locator],
   }, {
     artifactRoot: casRoot,
-    allowedRoots: [casRoot],
+    allowedRoots: [ARTIFACT_DIR],
     requireReadableBytes: true,
   });
   const visualArtifacts = {
@@ -12272,21 +14344,30 @@ async function singleFrameVisualArtifactsFromShot(shot, artifactName = 'single-f
     afterImageHash: image.hash,
     artifactCasLocators: [locator],
     visualArtifactTransportEvidence: transportEvidence,
+    byteVerifiedVisualArtifact,
   };
   const visualArtifactsSnake = {
     after_image: image.path,
     after_image_hash: image.hash,
     artifact_cas_locators: [locator],
     visual_artifact_transport_evidence: transportEvidence,
+    byte_verified_visual_artifact: byteVerifiedVisualArtifact,
   };
   const visualMetrics = {
-    visiblePixelCount: sample.visiblePixels ?? null,
-    visible_pixel_count: sample.visiblePixels ?? null,
-    meanLuma8bit: sample.meanLuma ?? null,
-    mean_luma_8bit: sample.meanLuma ?? null,
+    visiblePixelCount: byteVerifiedVisualArtifact.visiblePixels,
+    visible_pixel_count: byteVerifiedVisualArtifact.visiblePixels,
+    meanLuma8bit: byteVerifiedVisualArtifact.meanLuma,
+    mean_luma_8bit: byteVerifiedVisualArtifact.meanLuma,
   };
   return {
-    sample: withoutImageData(sample),
+    sample: {
+      ...withoutImageData(sample),
+      width: byteVerifiedVisualArtifact.width,
+      height: byteVerifiedVisualArtifact.height,
+      bytes: byteVerifiedVisualArtifact.bytes,
+      visiblePixels: byteVerifiedVisualArtifact.visiblePixels,
+      meanLuma: byteVerifiedVisualArtifact.meanLuma,
+    },
     visualArtifacts,
     visual_artifacts: visualArtifactsSnake,
     visualMetrics,
@@ -12895,13 +14976,17 @@ async function run() {
   const initialFrameGateObserved = Boolean(
     mcpScreenshotArgsForFrameGate(initialCompileResult.wait).after_frame_gate,
   );
-  const baselineShot = CFG.captureArtifacts
-    ? await assertMcpScreenshot(
-        'mcp screenshot before hmr',
-        'before-hmr',
-        initialFrameGateObserved ? initialCompileResult.wait : null,
-      )
-    : null;
+  const baselineShot = await captureColdSourceVisualEvidence({
+    requestIntent: ACTIVE_SOURCE_FIRST_REQUEST_INTENT,
+    stage: 'cold',
+    capture: CFG.captureArtifacts
+      ? () => assertMcpScreenshot(
+          'mcp screenshot before hmr',
+          'before-hmr',
+          initialFrameGateObserved ? initialCompileResult.wait : null,
+        )
+      : null,
+  });
 
   const split = await readGeneratedSplit(vendor);
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
@@ -12927,14 +15012,16 @@ async function run() {
       );
     }
   }
-  const coldDeviceCompileProvenance = SOURCE_FIRST_EXECUTION_POLICY.requiresFreshDeviceCompileEvidence
+  const coldDeviceCompileVerification = SOURCE_FIRST_EXECUTION_POLICY.requiresFreshDeviceCompileEvidence
     ? await readColdDeviceCompileProvenanceEvidence({
         compileProof: structuredInitialCompileProof,
+        compileInvocationResult: initialCompileResult,
         split,
         expectedVendor: vendor,
         expectedArch: CFG.gpuArch,
       })
     : null;
+  const coldDeviceCompileProvenance = coldDeviceCompileVerification?.evidence ?? null;
   if (coldDeviceCompileProvenance) {
     const compileProvenancePath = await writeJsonArtifact(
       'cold-device-compile-provenance',
@@ -12965,17 +15052,30 @@ async function run() {
       'agent_split_endpoint_evidence_refused',
     );
   }
-  const sourceFirstIngestion = sourceFirstIngestionEvidence({
+  const coldSourceProducerMaterial = {
     source,
     entryPath,
-    sourcePurityEvidence,
     initialCompileArgs,
-    initialCompileCacheRequestSupport,
-    initialCompileResult,
     split,
-    sawGpuSplit,
-    splitEndpointEvidence,
-  });
+    typedOracleIntent: sourceFirstTypedOracleIntentForProfile(ACTIVE_AGENT_PROFILE),
+    declaredSourceManifestHash:
+      ACTIVE_AGENT_PROFILE?.source?.manifestHash
+      ?? ACTIVE_AGENT_PROFILE?.source?.manifest_hash
+      ?? '',
+    compileProducerMaterial: coldDeviceCompileVerification?.producerMaterial,
+    profileRequestIdentitySnapshot: coldSourceProfileRequestIdentityForRun({
+      source,
+      entryPath,
+      requestIntent: ACTIVE_SOURCE_FIRST_REQUEST_INTENT,
+      split,
+      profile: ACTIVE_AGENT_PROFILE,
+    }),
+    timingMetrics: initialCompileResult.timingMetrics,
+  };
+  const recomputedColdSourceEvidence = recomputeColdSourceProducerEvidence(
+    coldSourceProducerMaterial,
+  );
+  const sourceFirstIngestion = recomputedColdSourceEvidence.sourceFirstIngestion;
   record(
     'source-first AI split provenance-only evidence',
     sourceFirstIngestion.accepted ? 'pass' : 'fail',
@@ -12994,34 +15094,45 @@ async function run() {
   record('generated split granularity artifact', 'pass', granularityPath);
   await persistGeneratedSplitToWorkspace(split, granularity);
 
-  let coldSplitProofSeed = null;
+  const requestedColdOutputOracleKind = normalizedColdSourceOracleKind(
+    ACTIVE_SOURCE_FIRST_REQUEST_INTENT?.outputOracleKind
+      ?? ACTIVE_SOURCE_FIRST_REQUEST_INTENT?.output_oracle_kind
+      ?? ACTIVE_SOURCE_FIRST_REQUEST_INTENT?.oracleIntent
+      ?? ACTIVE_SOURCE_FIRST_REQUEST_INTENT?.oracle_intent,
+  );
+  let coldSplitProofSeed = {
+    coldSplitProven: true,
+    cold_split_proven: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    outputOracleKind: requestedColdOutputOracleKind,
+    output_oracle_kind: requestedColdOutputOracleKind,
+    generatedArtifactHashes: recomputedColdSourceEvidence.generatedArtifactHashes,
+    generated_artifact_hashes: recomputedColdSourceEvidence.generatedArtifactHashes,
+    sourceFirstIngestion,
+    source_first_ingestion: sourceFirstIngestion,
+    coldAiProviderCallEvidence: recomputedColdSourceEvidence.providerCallEvidence,
+    cold_ai_provider_call_evidence: recomputedColdSourceEvidence.providerCallEvidence,
+    coldDeviceCompileProvenance: recomputedColdSourceEvidence.deviceCompileProvenance,
+    cold_device_compile_provenance: recomputedColdSourceEvidence.deviceCompileProvenance,
+  };
   let hotDelta1RunModeCoverageSupport = null;
   if (CFG.captureArtifacts && baselineShot) {
     const coldVisual = await singleFrameVisualArtifactsFromShot(baselineShot, 'cold-split-frame');
     coldSplitProofSeed = {
-      ...runModeProofIdentity(split),
-      coldSplitProven: true,
-      cold_split_proven: true,
-      acceptedForGpuHmr: false,
-      accepted_for_gpu_hmr: false,
-      gpuHmrSuccess: false,
-      gpu_hmr_success: false,
-      cpuHmrUsed: false,
-      cpu_hmr_used: false,
-      fullRebuildUsed: false,
-      full_rebuild_used: false,
-      processRestarted: false,
-      process_restarted: false,
-      runMode: initialCompileResult.timingMetrics,
-      run_mode: initialCompileResult.timingMetrics,
-      timingMetrics: initialCompileResult.timingMetrics,
-      timing_metrics: initialCompileResult.timingMetrics,
-      sourceFirstIngestion,
-      source_first_ingestion: sourceFirstIngestion,
-      coldAiProviderCallEvidence,
-      cold_ai_provider_call_evidence: coldAiProviderCallEvidence,
-      coldDeviceCompileProvenance,
-      cold_device_compile_provenance: coldDeviceCompileProvenance,
+      ...coldSplitProofSeed,
       coldSingleFrameVisual: coldVisual.sample,
       cold_single_frame_visual: coldVisual.sample,
       visualArtifacts: coldVisual.visualArtifacts,
@@ -13029,27 +15140,55 @@ async function run() {
       visualMetrics: coldVisual.visualMetrics,
       visual_metrics: coldVisual.visual_metrics,
     };
+    coldSourceProducerMaterial.visual = {
+      allowedRoots: [ARTIFACT_DIR],
+      casRoot: path.join(ARTIFACT_DIR, 'cas'),
+    };
+  }
+
+  let coldAiSplitProof;
+  try {
+    await issueColdSourceLiveObservationCapability(
+      coldSourceProducerMaterial,
+      coldSplitProofSeed,
+    );
+    coldAiSplitProof = await coldAiSplitProofFromSeed(
+      coldSplitProofSeed,
+      coldSourceProducerMaterial,
+    );
+  } catch (error) {
+    const visualColdProofRequested = requestedColdOutputOracleKind === 'visual_oracle';
+    throw tagAgentSplitTimingError(error, {
+      outcome: 'refused',
+      category: 'proof_refusal',
+      reasonCode: visualColdProofRequested
+        ? 'agent_split_cold_visual_proof_refused'
+        : 'agent_split_cold_source_proof_refused',
+    });
   }
 
   if (SOURCE_FIRST_EXECUTION_POLICY.terminalAfterColdSplit) {
-    let coldAiSplitProof;
-    try {
-      coldAiSplitProof = coldAiSplitProofFromSeed(coldSplitProofSeed);
-    } catch (error) {
-      throw tagAgentSplitTimingError(error, {
-        outcome: 'refused',
-        category: 'proof_refusal',
-        reasonCode: 'agent_split_cold_visual_proof_refused',
-      });
-    }
     const coldPath = await writeRunModeProofArtifact(
       'run-mode-cold-ai-split',
       coldAiSplitProof,
     );
-    record('cold AI split visual proof artifact', 'pass', coldPath);
+    record(
+      requestedColdOutputOracleKind === 'visual_oracle'
+        ? 'cold AI split visual proof artifact'
+        : 'cold AI split source proof artifact',
+      'pass',
+      coldPath,
+    );
     await writeResults();
     console.log(`url: ${CFG.frontendUrl}/workspace/${CFG.slug}`);
     return;
+  }
+  if (requestedColdOutputOracleKind === 'compute_oracle') {
+    const coldPath = await writeRunModeProofArtifact(
+      'run-mode-cold-split',
+      coldAiSplitProof,
+    );
+    record('cold AI split source evidence artifact (matrix ingestion pending)', 'pass', coldPath);
   }
 
   const hotDelta1Edit = deviceEditForRun(split.files[split.roles.device], {
@@ -13106,18 +15245,24 @@ async function run() {
     );
   }
 
-  const afterShot = await assertMcpScreenshot(
-    'mcp screenshot after hmr',
-    'after-hmr',
-    generatedDeviceResult.wait,
-    CFG.captureArtifacts && baselineShot
-      ? {
-          minVisibleSamples: CFG.visualDeltaMinSamples,
-          captureWindowMs: CFG.visualDeltaWindowMs,
-          sampleIntervalMs: CFG.visualDeltaSampleIntervalMs,
-        }
-      : {},
-  );
+  const afterShot = await captureSourceFirstVisualEvidence({
+    requestIntent: ACTIVE_SOURCE_FIRST_REQUEST_INTENT,
+    stage: 'hot_delta_1_after',
+    capture: CFG.captureArtifacts
+      ? () => assertMcpScreenshot(
+          'mcp screenshot after hmr',
+          'after-hmr',
+          generatedDeviceResult.wait,
+          baselineShot
+            ? {
+                minVisibleSamples: CFG.visualDeltaMinSamples,
+                captureWindowMs: CFG.visualDeltaWindowMs,
+                sampleIntervalMs: CFG.visualDeltaSampleIntervalMs,
+              }
+            : {},
+        )
+      : null,
+  });
   let visualDelta = null;
   if (CFG.captureArtifacts && baselineShot) {
     visualDelta = await assertVisualDelta(baselineShot, afterShot);
@@ -13171,7 +15316,7 @@ async function run() {
     });
     if (coldSplitProofSeed && hotDelta1RunModeCoverageSupport) {
       const coldPath = await writeRunModeProofArtifact('run-mode-cold-split', {
-        ...coldSplitProofSeed,
+        ...coldAiSplitProof,
         runModeCoverageSupport: hotDelta1RunModeCoverageSupport,
         run_mode_coverage_support: hotDelta1RunModeCoverageSupport,
       });
@@ -13218,18 +15363,22 @@ async function run() {
   if (hotDelta2Device === generatedDeviceResult.editedDevice) {
     throw new Error('hot delta 2 edit generator did not produce a distinct device source');
   }
-  const hotDelta2BaselineShot = CFG.captureArtifacts
-    ? await assertMcpScreenshot(
-        'mcp screenshot before hmr hot delta 2',
-        'before-hmr-2',
-        null,
-        {
-          minVisibleSamples: CFG.visualDeltaMinSamples,
-          captureWindowMs: CFG.visualDeltaWindowMs,
-          sampleIntervalMs: CFG.visualDeltaSampleIntervalMs,
-        },
-      )
-    : null;
+  const hotDelta2BaselineShot = await captureSourceFirstVisualEvidence({
+    requestIntent: ACTIVE_SOURCE_FIRST_REQUEST_INTENT,
+    stage: 'hot_delta_2_before',
+    capture: CFG.captureArtifacts
+      ? () => assertMcpScreenshot(
+          'mcp screenshot before hmr hot delta 2',
+          'before-hmr-2',
+          null,
+          {
+            minVisibleSamples: CFG.visualDeltaMinSamples,
+            captureWindowMs: CFG.visualDeltaWindowMs,
+            sampleIntervalMs: CFG.visualDeltaSampleIntervalMs,
+          },
+        )
+      : null,
+  });
   const hotDelta2EditHash = deviceEditHash({
     selectedPath: split.roles.device,
     beforeSource: split.files[split.roles.device],
@@ -13274,18 +15423,24 @@ async function run() {
       'agent_split_hot_delta_2_runtime_refused',
     );
   }
-  const afterHotDelta2Shot = await assertMcpScreenshot(
-    'mcp screenshot after hmr hot delta 2',
-    'after-hmr-2',
-    hotDelta2Result.wait,
-    CFG.captureArtifacts && afterShot
-      ? {
-          minVisibleSamples: CFG.visualDeltaMinSamples,
-          captureWindowMs: CFG.visualDeltaWindowMs,
-          sampleIntervalMs: CFG.visualDeltaSampleIntervalMs,
-        }
-      : {},
-  );
+  const afterHotDelta2Shot = await captureSourceFirstVisualEvidence({
+    requestIntent: ACTIVE_SOURCE_FIRST_REQUEST_INTENT,
+    stage: 'hot_delta_2_after',
+    capture: CFG.captureArtifacts
+      ? () => assertMcpScreenshot(
+          'mcp screenshot after hmr hot delta 2',
+          'after-hmr-2',
+          hotDelta2Result.wait,
+          afterShot
+            ? {
+                minVisibleSamples: CFG.visualDeltaMinSamples,
+                captureWindowMs: CFG.visualDeltaWindowMs,
+                sampleIntervalMs: CFG.visualDeltaSampleIntervalMs,
+              }
+            : {},
+        )
+      : null,
+  });
   if (CFG.captureArtifacts && hotDelta2BaselineShot) {
     const hotDelta2VisualDelta = await assertVisualDelta(
       hotDelta2BaselineShot,
@@ -13521,7 +15676,7 @@ export async function main() {
       selfCheckRunModeVisualLedgerClockDomain();
       await selfCheckProofFinalizationRetry();
       selfCheckRequestedProofStateGate();
-      selfCheckColdAiSplitProof();
+      await selfCheckColdAiSplitProof();
       selfCheckMcpStartupCleanup();
       await selfCheckHttpWorkspaceTimeoutDiagnostics();
     } catch (err) {
