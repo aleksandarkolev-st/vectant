@@ -202,11 +202,16 @@ const CFG = {
 };
 
 const AGENT_VISUAL_PROFILE_SCHEMA_VERSION = 'synthi.gpu_hmr.agent_split_visual_profile.v1';
+const SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.source_first_request_intent.v1';
+const SOURCE_FIRST_REQUEST_INTENT_AUTHORITY =
+  'source_manifest_bound_request_hints_only_not_gpu_hmr_success';
 const VISUAL_SEMANTIC_PROBE_SCHEMA_VERSION =
   'synthi.gpu_hmr.visual_semantic_probe_binding.v1';
 const VISUAL_SEMANTIC_PROBE_AUTHORITY =
   'semantic_visual_probe_binding_only_not_gpu_hmr_success';
 let ACTIVE_AGENT_PROFILE = null;
+let ACTIVE_SOURCE_FIRST_REQUEST_INTENT = null;
 
 const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
 const RESULTS_BASENAME = CFG.mode === 'seed-only'
@@ -1295,6 +1300,373 @@ function sourceFilesManifestHash(files) {
   return `sha256:${sha256Hex(stableJson(files.map(sourceFileHashEntry)))}`;
 }
 
+const SOURCE_FIRST_LANGUAGE_BY_EXTENSION = new Map([
+  ['.c', 'c'],
+  ['.cc', 'cpp'],
+  ['.cpp', 'cpp'],
+  ['.cxx', 'cpp'],
+  ['.c++', 'cpp'],
+  ['.hh', 'cpp'],
+  ['.hpp', 'cpp'],
+  ['.hxx', 'cpp'],
+  ['.h++', 'cpp'],
+  ['.hip', 'hip'],
+  ['.cu', 'cuda'],
+  ['.cuh', 'cuda'],
+  ['.cl', 'opencl'],
+  ['.opencl', 'opencl'],
+  ['.wgsl', 'wgsl'],
+  ['.glsl', 'glsl'],
+  ['.vert', 'glsl'],
+  ['.frag', 'glsl'],
+  ['.comp', 'glsl'],
+  ['.geom', 'glsl'],
+  ['.tesc', 'glsl'],
+  ['.tese', 'glsl'],
+  ['.rs', 'rust'],
+  ['.zig', 'zig'],
+]);
+const SOURCE_FIRST_LANGUAGE_NEUTRAL_EXTENSIONS = new Set([
+  '.h',
+  '.inc',
+  '.inl',
+  '.ipp',
+  '.tpp',
+]);
+
+function sourceFirstRequestIntentError(reasonCode, detail) {
+  const error = new Error(`${reasonCode}: ${detail}`);
+  error.code = reasonCode;
+  error.reasonCode = reasonCode;
+  error.reason_code = reasonCode;
+  error.blockingGaps = [reasonCode];
+  error.blocking_gaps = [reasonCode];
+  return error;
+}
+
+function normalizedSourceFirstIntentFile(entry, index) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_file_invalid',
+      `files[${index}] must be an object`,
+    );
+  }
+  const filePath = cleanRel(entry.path ?? entry.name ?? entry.filename);
+  if (!filePath || filePath.startsWith('../') || filePath.includes('/../')) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_file_path_invalid',
+      `files[${index}] must have a safe relative path`,
+    );
+  }
+  const kind = String(entry.kind ?? entry.fileKind ?? entry.file_kind ?? 'source')
+    .trim()
+    .toLowerCase();
+  if (kind !== 'source' && kind !== 'build') {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_file_kind_invalid',
+      `files[${index}] kind must be source or build`,
+    );
+  }
+  if (typeof entry.content !== 'string') {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_file_content_missing',
+      `files[${index}] must carry exact source-manifest text`,
+    );
+  }
+  const contentHash = sourceContentHash(entry.content);
+  const declaredContentHash = String(
+    entry.contentHash ?? entry.content_hash ?? entry.sha256 ?? '',
+  ).trim().toLowerCase();
+  if (declaredContentHash && declaredContentHash !== contentHash) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_file_hash_mismatch',
+      `${filePath} content does not match its declared hash`,
+    );
+  }
+  const byteLength = Buffer.byteLength(entry.content, 'utf8');
+  const declaredByteLength = entry.byteLength ?? entry.byte_length;
+  if (
+    declaredByteLength !== undefined
+    && (!Number.isInteger(Number(declaredByteLength)) || Number(declaredByteLength) !== byteLength)
+  ) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_file_length_mismatch',
+      `${filePath} bytes do not match its declared length`,
+    );
+  }
+  return {
+    kind,
+    path: filePath,
+    contentHash,
+    content_hash: contentHash,
+    byteLength,
+    byte_length: byteLength,
+  };
+}
+
+function sourceFirstOracleRequestHint(typedOracleIntent = {}) {
+  const typed = typedOracleIntent && typeof typedOracleIntent === 'object'
+    && !Array.isArray(typedOracleIntent)
+    ? typedOracleIntent
+    : {};
+  if (supportEvidenceClaimsAuthority(typed)) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_claimed_authority',
+      'typed oracle intent must remain request-hint evidence only',
+    );
+  }
+  const outputOracleKind = String(
+    typed.outputOracleKind
+      ?? typed.output_oracle_kind
+      ?? typed.kind
+      ?? '',
+  ).trim().toLowerCase();
+  if (outputOracleKind && !['visual_oracle', 'compute_oracle'].includes(outputOracleKind)) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_oracle_unknown',
+      `unsupported typed output oracle kind ${outputOracleKind}`,
+    );
+  }
+  const hashEntries = [
+    ['visualSceneManifestHash', typed.visualSceneManifestHash ?? typed.visual_scene_manifest_hash],
+    ['visualProofHash', typed.visualProofHash ?? typed.visual_proof_hash],
+    [
+      'deterministicVisualModeHash',
+      typed.deterministicVisualModeHash ?? typed.deterministic_visual_mode_hash,
+    ],
+    ['runtimeExpectationHash', typed.runtimeExpectationHash ?? typed.runtime_expectation_hash],
+  ];
+  const hashes = {};
+  for (const [field, value] of hashEntries) {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (normalized && !contentAddressedSha256(normalized)) {
+      throw sourceFirstRequestIntentError(
+        'source_first_request_intent_oracle_hash_invalid',
+        `${field} must be a content-addressed sha256 value`,
+      );
+    }
+    hashes[field] = normalized || null;
+  }
+  const visualDeclared = outputOracleKind === 'visual_oracle'
+    || typed.visualIntentDeclared === true
+    || typed.visual_intent_declared === true
+    || Boolean(hashes.visualSceneManifestHash);
+  const computeDeclared = outputOracleKind === 'compute_oracle';
+  if (visualDeclared && computeDeclared) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_oracle_mixed',
+      'visual and compute request intents cannot both be selected',
+    );
+  }
+  if (
+    visualDeclared
+    && !hashes.visualSceneManifestHash
+    && !hashes.visualProofHash
+    && !hashes.deterministicVisualModeHash
+    && !hashes.runtimeExpectationHash
+  ) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_visual_evidence_missing',
+      'visual mode requires typed, content-addressed oracle or profile evidence',
+    );
+  }
+  const evidenceRefs = uniqueSortedStrings([
+    ...(Array.isArray(typed.evidenceRefs) ? typed.evidenceRefs : []),
+    ...(Array.isArray(typed.evidence_refs) ? typed.evidence_refs : []),
+    typed.visualSceneManifestEvidenceRef,
+    typed.visual_scene_manifest_evidence_ref,
+    typed.runtimeExpectationEvidenceRef,
+    typed.runtime_expectation_evidence_ref,
+    ...Object.values(hashes),
+  ]);
+  return {
+    oracleIntent: visualDeclared
+      ? 'visual_oracle'
+      : computeDeclared
+        ? 'compute_oracle'
+        : 'non_visual_unspecified',
+    isGui: visualDeclared,
+    outputOracleKind: outputOracleKind || null,
+    hashes,
+    evidenceRefs,
+  };
+}
+
+export function deriveSourceFirstRequestIntent({
+  entryPath,
+  files,
+  declaredSourceManifestHash = '',
+  typedOracleIntent = {},
+} = {}) {
+  const normalizedEntryPath = cleanRel(entryPath);
+  if (!normalizedEntryPath) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_entry_missing',
+      'entryPath is required',
+    );
+  }
+  if (!Array.isArray(files) || files.length === 0) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_manifest_missing',
+      'at least one exact source-manifest file is required',
+    );
+  }
+  const normalizedFiles = files
+    .map(normalizedSourceFirstIntentFile)
+    .sort((left, right) => left.path.localeCompare(right.path));
+  const uniquePaths = new Set(normalizedFiles.map((entry) => entry.path));
+  if (uniquePaths.size !== normalizedFiles.length) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_manifest_duplicate_path',
+      'source manifest contains duplicate paths',
+    );
+  }
+  const entryFile = normalizedFiles.find((entry) => entry.path === normalizedEntryPath);
+  if (!entryFile || entryFile.kind !== 'source') {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_entry_not_source',
+      `${normalizedEntryPath} is not a selected source file`,
+    );
+  }
+  const sourceManifestHash = sourceFilesManifestHash(normalizedFiles);
+  const declaredManifestHash = String(declaredSourceManifestHash ?? '').trim().toLowerCase();
+  if (declaredManifestHash && !contentAddressedSha256(declaredManifestHash)) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_manifest_hash_invalid',
+      'declared source manifest hash must be content-addressed sha256',
+    );
+  }
+  if (declaredManifestHash && declaredManifestHash !== sourceManifestHash) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_manifest_hash_mismatch',
+      'declared source manifest hash does not match exact file bytes',
+    );
+  }
+
+  const sourceLanguageEvidence = [];
+  const languageNeutralSourcePaths = [];
+  const unknownSourcePaths = [];
+  for (const file of normalizedFiles.filter((entry) => entry.kind === 'source')) {
+    const extension = path.extname(file.path).toLowerCase();
+    const language = SOURCE_FIRST_LANGUAGE_BY_EXTENSION.get(extension);
+    if (language) {
+      sourceLanguageEvidence.push({ path: file.path, extension, language });
+    } else if (SOURCE_FIRST_LANGUAGE_NEUTRAL_EXTENSIONS.has(extension)) {
+      languageNeutralSourcePaths.push(file.path);
+    } else {
+      unknownSourcePaths.push(file.path);
+    }
+  }
+  if (unknownSourcePaths.length > 0) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_language_unknown',
+      `language is unknown for ${unknownSourcePaths.join(',')}`,
+    );
+  }
+  const languages = uniqueSortedStrings(sourceLanguageEvidence.map((entry) => entry.language));
+  if (languages.length !== 1) {
+    throw sourceFirstRequestIntentError(
+      languages.length === 0
+        ? 'source_first_request_intent_language_unknown'
+        : 'source_first_request_intent_language_mixed',
+      languages.length === 0
+        ? 'source manifest has no language-bearing source file'
+        : `source manifest spans incompatible request languages: ${languages.join(',')}`,
+    );
+  }
+  const entryLanguage = SOURCE_FIRST_LANGUAGE_BY_EXTENSION.get(
+    path.extname(normalizedEntryPath).toLowerCase(),
+  );
+  if (entryLanguage !== languages[0]) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_entry_language_ambiguous',
+      `${normalizedEntryPath} does not establish the selected request language`,
+    );
+  }
+
+  const oracle = sourceFirstOracleRequestHint(typedOracleIntent);
+  const sourceFiles = normalizedFiles.filter((entry) => entry.kind === 'source');
+  const buildFiles = normalizedFiles.filter((entry) => entry.kind === 'build');
+  const buildMetadataHash = buildFiles.length > 0
+    ? `sha256:${sha256Hex(stableJson(buildFiles.map(sourceFileHashEntry)))}`
+    : null;
+  const seed = {
+    schemaVersion: SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION,
+    entryPath: normalizedEntryPath,
+    sourceManifestHash,
+    sourcePaths: sourceFiles.map((entry) => entry.path),
+    buildPaths: buildFiles.map((entry) => entry.path),
+    buildMetadataHash,
+    language: languages[0],
+    sourceLanguageEvidence,
+    languageNeutralSourcePaths,
+    oracleIntent: oracle.oracleIntent,
+    isGui: oracle.isGui,
+    oracleEvidenceHashes: oracle.hashes,
+    oracleEvidenceRefs: oracle.evidenceRefs,
+  };
+  const intentHash = `sha256:${sha256Hex(stableJson(seed))}`;
+  const evidenceRefs = uniqueSortedStrings([
+    `evidence:source-first-request-intent:${intentHash}`,
+    `evidence:source-first-request-manifest:${sourceManifestHash}`,
+    buildMetadataHash,
+    ...oracle.evidenceRefs,
+  ]);
+  return {
+    schemaVersion: SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION,
+    schema_version: SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION,
+    proofAuthority: SOURCE_FIRST_REQUEST_INTENT_AUTHORITY,
+    proof_authority: SOURCE_FIRST_REQUEST_INTENT_AUTHORITY,
+    acceptedAsRequestHints: true,
+    accepted_as_request_hints: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    language: languages[0],
+    languageSource: 'exact_source_manifest_file_extensions',
+    language_source: 'exact_source_manifest_file_extensions',
+    isGui: oracle.isGui,
+    is_gui: oracle.isGui,
+    uiMode: oracle.isGui ? 'typed_visual_oracle' : 'non_visual_request_hint',
+    ui_mode: oracle.isGui ? 'typed_visual_oracle' : 'non_visual_request_hint',
+    oracleIntent: oracle.oracleIntent,
+    oracle_intent: oracle.oracleIntent,
+    outputOracleKind: oracle.outputOracleKind,
+    output_oracle_kind: oracle.outputOracleKind,
+    entryPath: normalizedEntryPath,
+    entry_path: normalizedEntryPath,
+    sourceManifestHash,
+    source_manifest_hash: sourceManifestHash,
+    declaredSourceManifestHash: declaredManifestHash || null,
+    declared_source_manifest_hash: declaredManifestHash || null,
+    sourceManifestHashVerified: true,
+    source_manifest_hash_verified: true,
+    sourceLanguageEvidence,
+    source_language_evidence: sourceLanguageEvidence,
+    languageNeutralSourcePaths,
+    language_neutral_source_paths: languageNeutralSourcePaths,
+    sourcePaths: sourceFiles.map((entry) => entry.path),
+    source_paths: sourceFiles.map((entry) => entry.path),
+    buildMetadataPaths: buildFiles.map((entry) => entry.path),
+    build_metadata_paths: buildFiles.map((entry) => entry.path),
+    buildMetadataHash,
+    build_metadata_hash: buildMetadataHash,
+    oracleEvidenceHashes: oracle.hashes,
+    oracle_evidence_hashes: oracle.hashes,
+    intentHash,
+    intent_hash: intentHash,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    blockingGaps: [],
+    blocking_gaps: [],
+  };
+}
+
 function normalizeAgentProfileSourceFiles(source, profileDir) {
   const entries = profileArray(
     source.files
@@ -1893,6 +2265,8 @@ function applyDirectSourceOverride(profile, override = loadDirectSourceOverride(
     profile.visual_scene_manifest_hash = override.visual_scene_manifest_hash;
     profile.visualSceneManifestEvidenceRef = override.visualSceneManifestEvidenceRef;
     profile.visual_scene_manifest_evidence_ref = override.visual_scene_manifest_evidence_ref;
+    profile.visualRequestIntentDeclared = true;
+    profile.visual_request_intent_declared = true;
   } else {
     profile.visualSceneManifest = null;
     profile.visual_scene_manifest = null;
@@ -1900,6 +2274,10 @@ function applyDirectSourceOverride(profile, override = loadDirectSourceOverride(
     profile.visual_scene_manifest_hash = null;
     profile.visualSceneManifestEvidenceRef = null;
     profile.visual_scene_manifest_evidence_ref = null;
+    profile.visualRequestIntentDeclared = Boolean(
+      profile.visualProofDeclared === true && profile.deterministicVisualModeDeclared === true
+    );
+    profile.visual_request_intent_declared = profile.visualRequestIntentDeclared;
   }
   refreshAgentProfileHash(profile);
   return profile;
@@ -1943,6 +2321,9 @@ function agentProfileHash(profile) {
     deviceEdits: profile.deviceEdits,
     deterministicVisualMode: profile.deterministicVisualMode,
     visualProof: profile.visualProof,
+    visualProofDeclared: profile.visualProofDeclared === true,
+    deterministicVisualModeDeclared: profile.deterministicVisualModeDeclared === true,
+    visualRequestIntentDeclared: profile.visualRequestIntentDeclared === true,
     visualSceneManifest: profile.visualSceneManifest ?? null,
     visualSceneManifestHash: profile.visualSceneManifestHash ?? null,
   }))}`;
@@ -2000,7 +2381,9 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
   validateDeclaredSourceHash(declaredSourceContentHash, actualSourceContentHash, 'source.contentHash');
   const sourceFilesHashEntries = sourceFiles.map(sourceFileHashEntry);
   const sourceFilesHash = sourceFiles.length > 0 ? sourceFilesManifestHash(sourceFiles) : null;
-  const visualProof = normalizeAgentVisualProof(raw.visualProof ?? raw.visual_proof);
+  const visualProofDeclaration = raw.visualProof ?? raw.visual_proof;
+  const visualProofDeclared = visualProofDeclaration !== undefined;
+  const visualProof = normalizeAgentVisualProof(visualProofDeclaration);
   const declaredVisualSceneManifestHash = profileString(
     raw.visualSceneManifestHash
       ?? raw.visual_scene_manifest_hash
@@ -2015,8 +2398,14 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
       ?? raw.render_scene_manifest,
     declaredVisualSceneManifestHash,
   );
-  const deterministicVisualMode =
-    profileObject(raw.deterministicVisualMode ?? raw.deterministic_visual_mode, 'deterministicVisualMode', {});
+  const deterministicVisualModeDeclaration =
+    raw.deterministicVisualMode ?? raw.deterministic_visual_mode;
+  const deterministicVisualModeDeclared = deterministicVisualModeDeclaration !== undefined;
+  const deterministicVisualMode = profileObject(
+    deterministicVisualModeDeclaration,
+    'deterministicVisualMode',
+    {},
+  );
   const deterministicVisualModeHash = `sha256:${sha256Hex(stableJson(deterministicVisualMode))}`;
   const normalized = {
     schemaVersion,
@@ -2101,6 +2490,16 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
     deterministic_visual_mode_hash: deterministicVisualModeHash,
     visualProof,
     visual_proof: visualProof,
+    visualProofDeclared,
+    visual_proof_declared: visualProofDeclared,
+    deterministicVisualModeDeclared,
+    deterministic_visual_mode_declared: deterministicVisualModeDeclared,
+    visualRequestIntentDeclared: Boolean(
+      visualSceneManifest || (visualProofDeclared && deterministicVisualModeDeclared)
+    ),
+    visual_request_intent_declared: Boolean(
+      visualSceneManifest || (visualProofDeclared && deterministicVisualModeDeclared)
+    ),
     visualSceneManifest: visualSceneManifest?.manifest ?? null,
     visual_scene_manifest: visualSceneManifest?.manifest ?? null,
     visualSceneManifestHash: visualSceneManifest?.manifestHash ?? null,
@@ -2179,6 +2578,72 @@ function sourceFilesForInitialCompile(entryPath, sourceText) {
     name: entryPath,
     content: sourceText,
   }];
+}
+
+function sourceFirstTypedOracleIntentForProfile(profile = ACTIVE_AGENT_PROFILE) {
+  const source = profile?.source && typeof profile.source === 'object' ? profile.source : {};
+  const runtimeExpectation = source.runtimeContractExpectation
+    ?? source.runtime_contract_expectation
+    ?? source.directSourceRuntimeContractExpectation
+    ?? source.direct_source_runtime_contract_expectation
+    ?? {};
+  if (supportEvidenceClaimsAuthority(runtimeExpectation)) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_claimed_authority',
+      'runtime contract expectation cannot authorize request intent',
+    );
+  }
+  const outputOracle = runtimeExpectation?.outputOracle
+    ?? runtimeExpectation?.output_oracle
+    ?? source.outputOracle
+    ?? source.output_oracle
+    ?? {};
+  const outputOracleKind = runtimeExpectation?.outputOracleKind
+    ?? runtimeExpectation?.output_oracle_kind
+    ?? outputOracle?.kind
+    ?? outputOracle?.oracleKind
+    ?? outputOracle?.oracle_kind
+    ?? null;
+  const runtimeExpectationHash = runtimeExpectation
+    && typeof runtimeExpectation === 'object'
+    && !Array.isArray(runtimeExpectation)
+    && Object.keys(runtimeExpectation).length > 0
+    ? `sha256:${sha256Hex(stableJson(runtimeExpectation))}`
+    : null;
+  return {
+    outputOracleKind,
+    visualIntentDeclared:
+      profile?.visualRequestIntentDeclared === true
+      || profile?.visual_request_intent_declared === true,
+    visualSceneManifestHash:
+      profile?.visualSceneManifestHash
+      ?? profile?.visual_scene_manifest_hash
+      ?? null,
+    visualSceneManifestEvidenceRef:
+      profile?.visualSceneManifestEvidenceRef
+      ?? profile?.visual_scene_manifest_evidence_ref
+      ?? null,
+    visualProofHash: profile?.visualProofDeclared === true
+      ? profile?.visualProof?.proofHash ?? profile?.visual_proof?.proof_hash ?? null
+      : null,
+    deterministicVisualModeHash: profile?.deterministicVisualModeDeclared === true
+      ? profile?.deterministicVisualModeHash
+        ?? profile?.deterministic_visual_mode_hash
+        ?? null
+      : null,
+    runtimeExpectationHash,
+    evidenceRefs: uniqueSortedStrings([
+      profile?.source?.evidenceRef,
+      profile?.source?.evidence_ref,
+      profile?.visualSceneManifestEvidenceRef,
+      profile?.visual_scene_manifest_evidence_ref,
+      runtimeExpectationHash,
+    ]),
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
 }
 
 function validationProfileId() {
@@ -6242,6 +6707,10 @@ function sourceFirstIngestionEvidence({
     gpu_arch_source: gpuArchSource,
     initialCompileContract: {
       language: initialCompileArgs?.language ?? null,
+      isGui: initialCompileArgs?.is_gui === true,
+      is_gui: initialCompileArgs?.is_gui === true,
+      sourceFirstRequestIntent: initialCompileArgs?.source_first_request_intent ?? {},
+      source_first_request_intent: initialCompileArgs?.source_first_request_intent ?? {},
       filename: cleanRel(initialCompileArgs?.filename),
       initialFileCount: initialFiles.length,
       initial_file_count: initialFiles.length,
@@ -6282,6 +6751,8 @@ function sourceFirstIngestionEvidence({
     },
     initial_compile_contract: {
       language: initialCompileArgs?.language ?? null,
+      is_gui: initialCompileArgs?.is_gui === true,
+      source_first_request_intent: initialCompileArgs?.source_first_request_intent ?? {},
       filename: cleanRel(initialCompileArgs?.filename),
       initial_file_count: initialFiles.length,
       initial_manifest_hash: initialManifestHash,
@@ -8701,6 +9172,12 @@ async function persistGeneratedSplitToWorkspace(split, granularity = null) {
 }
 
 async function compileGeneratedDevice(split, editedDevice, options = {}) {
+  if (!ACTIVE_SOURCE_FIRST_REQUEST_INTENT?.acceptedAsRequestHints) {
+    throw sourceFirstRequestIntentError(
+      'source_first_request_intent_missing',
+      'deterministic device compile requires the retained source-first request intent',
+    );
+  }
   const previousDevice = split.files[split.roles.device];
   const sourceBaselineProof = sourceBaselineProofFromSidecar(
     split.sidecarRaw,
@@ -8730,11 +9207,11 @@ async function compileGeneratedDevice(split, editedDevice, options = {}) {
     files: [{ path: split.roles.device, content: editedDevice }],
   });
   const result = await compileViaMcp({
-    language: 'cpp',
+    language: ACTIVE_SOURCE_FIRST_REQUEST_INTENT.language,
     filename: split.roles.device,
     source: editedDevice,
     files: additionalFiles,
-    is_gui: true,
+    is_gui: ACTIVE_SOURCE_FIRST_REQUEST_INTENT.isGui,
     use_ai_split: false,
     user_requested_deterministic: true,
     prefer_gpu_pipeline: true,
@@ -11576,6 +12053,28 @@ async function run() {
   });
   const renderWidth = validationProfileWidth();
   const renderHeight = validationProfileHeight();
+  const requestIntentFiles = Array.isArray(ACTIVE_AGENT_PROFILE?.source?.files)
+    && ACTIVE_AGENT_PROFILE.source.files.length > 0
+    ? ACTIVE_AGENT_PROFILE.source.files
+    : initialSourceFiles;
+  try {
+    ACTIVE_SOURCE_FIRST_REQUEST_INTENT = deriveSourceFirstRequestIntent({
+      entryPath,
+      files: requestIntentFiles,
+      declaredSourceManifestHash:
+        ACTIVE_AGENT_PROFILE?.source?.manifestHash
+        ?? ACTIVE_AGENT_PROFILE?.source?.manifest_hash
+        ?? '',
+      typedOracleIntent: sourceFirstTypedOracleIntentForProfile(ACTIVE_AGENT_PROFILE),
+    });
+  } catch (error) {
+    throw tagAgentSplitTimingError(error, {
+      outcome: 'refused',
+      category: 'source_first_request_intent_refusal',
+      reasonCode: error?.reasonCode ?? 'source_first_request_intent_refused',
+    });
+  }
+  record('source-first request intent', 'pass', ACTIVE_SOURCE_FIRST_REQUEST_INTENT);
 
   const workspace = await createWorkspace({
     name: `Synthi GPU Agent Split (${vendor})`,
@@ -11607,11 +12106,12 @@ async function run() {
     ? `provider-call:${randomBytes(16).toString('hex')}`
     : null;
   const initialCompileArgs = {
-    language: 'cpp',
+    language: ACTIVE_SOURCE_FIRST_REQUEST_INTENT.language,
     filename: entryPath,
     source,
     files: initialSourceFiles,
-    is_gui: true,
+    is_gui: ACTIVE_SOURCE_FIRST_REQUEST_INTENT.isGui,
+    source_first_request_intent: ACTIVE_SOURCE_FIRST_REQUEST_INTENT,
     use_ai_split: true,
     bypass_ai_split_cache: CFG.mode === 'cold-ai-split',
     require_ai_provider_call: CFG.mode === 'cold-ai-split',
