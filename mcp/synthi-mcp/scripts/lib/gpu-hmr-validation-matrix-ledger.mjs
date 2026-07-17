@@ -17,6 +17,7 @@ import {
   casRelativePathForHash,
   collectArtifactLocators,
   defaultCasRootFromEnv,
+  GPU_HMR_ARTIFACT_CAS_MANIFEST_SCHEMA_VERSION,
   validateArtifactCasManifest,
 } from './gpu-hmr-artifact-cas.mjs';
 import {
@@ -358,8 +359,30 @@ const RANDOM_COLD_BUILD_EXECUTION_OBSERVATION_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_build_execution_observation.v1';
 const RANDOM_COLD_BUILD_EXECUTION_OBSERVATION_AUTHORITY =
   'explicit_cold_build_process_observation_only_not_gpu_hmr_success';
+const RANDOM_COLD_COMPILE_RECEIPT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_compile_receipt.v1';
+const RANDOM_COLD_COMPILE_RECEIPT_AUTHORITY =
+  'matrix_recomputed_trusted_build_graph_and_artifact_receipt_only_not_gpu_hmr_success';
 const RANDOM_COLD_BUILD_EXECUTION_LIFECYCLE_AUTHORITY =
   'explicit_cold_build_command_lifecycle_only_not_gpu_hmr_success';
+const RANDOM_COLD_BUILD_OUTPUT_EVIDENCE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_build_output_evidence.v1';
+const RANDOM_COLD_BUILD_OUTPUT_EVIDENCE_AUTHORITY =
+  'runner_recomputed_output_bytes_and_cas_only_not_gpu_hmr_success';
+const RANDOM_COLD_BUILD_OUTPUT_MANIFEST_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_build_output_manifest.v1';
+const RANDOM_COLD_BUILD_OUTPUT_MAX_COUNT = 1024;
+const RANDOM_COLD_BUILD_OUTPUT_MAX_BYTES = 512 * 1024 * 1024;
+const RANDOM_COLD_BUILD_OUTPUT_MANIFEST_MAX_BYTES = 1024 * 1024;
+const RANDOM_COLD_BUILD_MIN_MEMORY_BYTES = 1024 * 1024 * 1024;
+const RANDOM_COLD_BUILD_MAX_MEMORY_BYTES = 256 * 1024 * 1024 * 1024;
+const RANDOM_COLD_BUILD_MIN_NANO_CPUS = 250_000_000;
+const RANDOM_COLD_BUILD_MAX_NANO_CPUS = 256_000_000_000;
+const RANDOM_COLD_BUILD_MIN_WORKSPACE_BYTES = 512 * 1024 * 1024;
+const RANDOM_COLD_BUILD_MAX_WORKSPACE_BYTES = 256 * 1024 * 1024 * 1024;
+const RANDOM_COLD_BUILD_MIN_WORKSPACE_ENTRY_COUNT = 1024;
+const RANDOM_COLD_BUILD_MAX_WORKSPACE_ENTRY_COUNT = 10_000_000;
+const RANDOM_COLD_BUILD_WORKSPACE_CAPACITY_RESERVE_BYTES = 1024 * 1024 * 1024;
 const RANDOM_COLD_BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY =
   'build_metadata_semantic_tokens_only_not_runtime_authority';
 const LARGE_ROCM_ML_RANDOM_COLD_ROCM_BACKEND_CANDIDATES = new Set([
@@ -4241,7 +4264,471 @@ function randomColdBuildExecutionPlanFacet(raw = {}, { sourceIntake = {} } = {})
   };
 }
 
-function randomColdBuildExecutionObservationFacet(
+export async function randomColdBuildOutputEvidenceFacet(
+  rawValue = {},
+  {
+    artifactRoot = null,
+  } = {},
+) {
+  const raw = compactObject(rawValue);
+  if (Object.keys(raw).length === 0) {
+    return {
+      present: false,
+      accepted: false,
+      acceptedAsColdBuildOutputEvidence: false,
+      accepted_as_cold_build_output_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      failedGates: ['random_cold_build_output_evidence_missing'],
+      failed_gates: ['random_cold_build_output_evidence_missing'],
+    };
+  }
+
+  const aliasedValueConflict = (value, pairs) => pairs.some(([camelName, snakeName]) =>
+    Object.prototype.hasOwnProperty.call(value, camelName)
+    && Object.prototype.hasOwnProperty.call(value, snakeName)
+    && stableJson(value[camelName]) !== stableJson(value[snakeName]));
+  const aliasConflict = aliasedValueConflict(raw, [
+    ['schemaVersion', 'schema_version'],
+    ['proofAuthority', 'proof_authority'],
+    ['acceptedAsColdBuildOutputEvidence', 'accepted_as_cold_build_output_evidence'],
+    ['acceptedForGpuHmr', 'accepted_for_gpu_hmr'],
+    ['gpuHmrSuccess', 'gpu_hmr_success'],
+    ['canSatisfyRuntimeProof', 'can_satisfy_runtime_proof'],
+    ['canSatisfyDispatchProof', 'can_satisfy_dispatch_proof'],
+    ['commandSpecHash', 'command_spec_hash'],
+    ['sourceBindingHash', 'source_binding_hash'],
+    ['outputCount', 'output_count'],
+    ['totalByteLength', 'total_byte_length'],
+    ['outputSetHash', 'output_set_hash'],
+    ['manifestHash', 'manifest_hash'],
+    ['manifestCasLocator', 'manifest_cas_locator'],
+    ['blockingGaps', 'blocking_gaps'],
+  ]);
+  const schemaVersion = firstText(raw.schemaVersion, raw.schema_version);
+  const proofAuthority = firstText(raw.proofAuthority, raw.proof_authority);
+  const commandSpecHash = normalizeSha256(firstText(
+    raw.commandSpecHash,
+    raw.command_spec_hash,
+  ));
+  const sourceBindingHash = normalizeSha256(firstText(
+    raw.sourceBindingHash,
+    raw.source_binding_hash,
+  ));
+  const outputCount = finiteNumber(raw.outputCount ?? raw.output_count);
+  const totalByteLength = finiteNumber(raw.totalByteLength ?? raw.total_byte_length);
+  const outputSetHash = normalizeSha256(firstText(raw.outputSetHash, raw.output_set_hash));
+  const manifestHash = normalizeSha256(firstText(raw.manifestHash, raw.manifest_hash));
+  const manifestCasLocator = firstCompactObject(
+    raw.manifestCasLocator,
+    raw.manifest_cas_locator,
+  );
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(raw.blockingGaps) ? raw.blockingGaps : []),
+    ...(Array.isArray(raw.blocking_gaps) ? raw.blocking_gaps : []),
+  ]);
+  const outputsRaw = Array.isArray(raw.outputs) ? raw.outputs : [];
+  const nestedAuthorityClaim = (value) => {
+    if (Array.isArray(value)) return value.some(nestedAuthorityClaim);
+    if (!value || typeof value !== 'object') return false;
+    return Object.entries(value).some(([key, entry]) => {
+      const normalizedKey = key.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+      if (
+        [
+          'acceptedforgpuhmr',
+          'gpuhmrsuccess',
+          'cansatisfyruntimeproof',
+          'cansatisfydispatchproof',
+        ].includes(normalizedKey)
+        && entry === true
+      ) {
+        return true;
+      }
+      return nestedAuthorityClaim(entry);
+    });
+  };
+  const canonicalOutput = (entry) => {
+    const output = compactObject(entry);
+    return {
+      raw: output,
+      path: firstText(output.path, output.relativePath, output.relative_path)?.replace(/\\/g, '/')
+        ?? null,
+      role: firstText(output.role),
+      artifactKind: firstText(output.artifactKind, output.artifact_kind, 'cold_build_output'),
+      mediaType: firstText(output.mediaType, output.media_type, 'application/octet-stream'),
+      contentHash: normalizeSha256(firstText(output.contentHash, output.content_hash)),
+      byteLength: finiteNumber(output.byteLength ?? output.byte_length),
+      artifactCasLocator: firstCompactObject(
+        output.artifactCasLocator,
+        output.artifact_cas_locator,
+      ),
+      aliasConflict: aliasedValueConflict(output, [
+        ['path', 'relativePath'],
+        ['path', 'relative_path'],
+        ['relativePath', 'relative_path'],
+        ['artifactKind', 'artifact_kind'],
+        ['mediaType', 'media_type'],
+        ['contentHash', 'content_hash'],
+        ['byteLength', 'byte_length'],
+        ['artifactCasLocator', 'artifact_cas_locator'],
+      ]),
+    };
+  };
+  const outputs = outputsRaw.map(canonicalOutput);
+  const outputEntryShapeValid = (output) => {
+    const normalizedPath = output.path ? path.posix.normalize(output.path) : null;
+    return output.path
+      && normalizedPath === output.path
+      && normalizedPath !== '.'
+      && !normalizedPath.startsWith('../')
+      && !path.posix.isAbsolute(normalizedPath)
+      && !path.win32.isAbsolute(normalizedPath)
+      && !/[\0\r\n]/.test(normalizedPath)
+      && output.role
+      && output.role.length <= 160
+      && /^[A-Za-z0-9._:-]+$/.test(output.role)
+      && /^sha256:[a-f0-9]{64}$/.test(output.contentHash ?? '')
+      && Number.isSafeInteger(output.byteLength)
+      && output.byteLength >= 1;
+  };
+  const portablePathKey = (value) => String(value ?? '').normalize('NFC').toLowerCase();
+  const outputPathKeys = outputs.map((output) => portablePathKey(output.path));
+  const recomputedTotalByteLength = outputs.reduce(
+    (sum, output) => sum + (Number.isSafeInteger(output.byteLength) ? output.byteLength : 0),
+    0,
+  );
+  const outputPreflightAccepted =
+    Number.isSafeInteger(outputCount)
+    && outputCount === outputs.length
+    && outputCount >= 1
+    && outputCount <= RANDOM_COLD_BUILD_OUTPUT_MAX_COUNT
+    && outputs.every(outputEntryShapeValid)
+    && new Set(outputPathKeys).size === outputPathKeys.length
+    && Number.isSafeInteger(totalByteLength)
+    && totalByteLength >= 1
+    && totalByteLength === recomputedTotalByteLength
+    && totalByteLength <= RANDOM_COLD_BUILD_OUTPUT_MAX_BYTES;
+  const manifestDeclaredByteLength = finiteNumber(manifestCasLocator.byteLength);
+  const manifestPreflightAccepted =
+    Number.isSafeInteger(manifestDeclaredByteLength)
+    && manifestDeclaredByteLength >= 1
+    && manifestDeclaredByteLength <= RANDOM_COLD_BUILD_OUTPUT_MANIFEST_MAX_BYTES;
+  const resolvedArtifactRoot = firstText(artifactRoot, defaultCasRootFromEnv());
+  const allowedRoots = resolvedArtifactRoot ? [path.resolve(resolvedArtifactRoot)] : [];
+  const validateLocator = async (locator) => {
+    try {
+      return await validateArtifactCasManifest(locator, {
+        allowedRoots,
+        artifactRoot: resolvedArtifactRoot,
+        requireReadableBytes: true,
+      });
+    } catch (error) {
+      return {
+        accepted: false,
+        acceptedAsTransportEvidence: false,
+        acceptedForGpuHmr: false,
+        gpuHmrSuccess: false,
+        manifestHash: null,
+        contentHash: null,
+        byteLength: null,
+        mediaType: null,
+        localPath: null,
+        reasons: ['artifact_cas_validation_exception'],
+        details: { message: String(error?.message ?? error) },
+      };
+    }
+  };
+  const refusedCasValidation = (reason) => ({
+    accepted: false,
+    acceptedAsTransportEvidence: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    manifestHash: null,
+    contentHash: null,
+    byteLength: null,
+    mediaType: null,
+    localPath: null,
+    reasons: [reason],
+    gaps: [],
+  });
+  const boundedMap = async (values, concurrency, mapper) => {
+    const mapped = new Array(values.length);
+    let nextIndex = 0;
+    const workers = Array.from(
+      { length: Math.min(concurrency, values.length) },
+      async () => {
+        while (nextIndex < values.length) {
+          const index = nextIndex;
+          nextIndex += 1;
+          mapped[index] = await mapper(values[index], index);
+        }
+      },
+    );
+    await Promise.all(workers);
+    return mapped;
+  };
+  const manifestCasValidation = outputPreflightAccepted && manifestPreflightAccepted
+    ? await validateLocator(manifestCasLocator)
+    : refusedCasValidation('cold_build_output_manifest_preflight_failed');
+  const outputCasValidations = outputPreflightAccepted && manifestPreflightAccepted
+    ? await boundedMap(
+      outputs,
+      8,
+      (output) => validateLocator(output.artifactCasLocator),
+    )
+    : outputs.map(() => refusedCasValidation('cold_build_output_preflight_failed'));
+
+  let manifestRecord = null;
+  let manifestBytesHash = null;
+  if (manifestCasValidation.accepted === true && manifestCasValidation.localPath) {
+    try {
+      const bytes = await fs.readFile(manifestCasValidation.localPath);
+      manifestBytesHash = sha256BufferHash(bytes);
+      manifestRecord = JSON.parse(bytes.toString('utf8'));
+    } catch {
+      manifestRecord = null;
+    }
+  }
+  const manifestOutputs = Array.isArray(manifestRecord?.outputs)
+    ? manifestRecord.outputs.map(canonicalOutput)
+    : [];
+  const outputProjection = (output) => ({
+    path: output.path,
+    role: output.role,
+    artifactKind: output.artifactKind,
+    mediaType: output.mediaType,
+    contentHash: output.contentHash,
+    byteLength: output.byteLength,
+  });
+  const sortedOutputProjection = outputs
+    .map(outputProjection)
+    .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+  const sortedManifestOutputProjection = manifestOutputs
+    .map(outputProjection)
+    .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+  const verifiedOutputSet = outputs.map((output, index) => ({
+    ...outputProjection(output),
+    casManifestHash: firstText(outputCasValidations[index]?.manifestHash),
+  })).sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+  const recomputedOutputSetHash = stableJsonHash(verifiedOutputSet);
+  const expectedSessionNamespace = sourceBindingHash?.slice(
+    'sha256:'.length,
+    'sha256:'.length + 24,
+  ) ?? null;
+  const locatorMatchesOutput = (output, validation) => {
+    const locator = output.artifactCasLocator;
+    const storage = compactObject(locator.storage);
+    return validation?.accepted === true
+      && validation.acceptedAsTransportEvidence === true
+      && validation.contentHash === output.contentHash
+      && validation.readableContentHash === output.contentHash
+      && validation.byteLength === output.byteLength
+      && validation.readableByteLength === output.byteLength
+      && validation.mediaType === output.mediaType
+      && validation.manifestHash === firstText(locator.manifestHash)
+      && compactStringList(validation.gaps).length === 0
+      && firstText(locator.role) === output.role
+      && firstText(locator.artifactKind, locator.artifact_kind) === output.artifactKind
+      && firstText(locator.sessionNamespace, locator.session_namespace) === expectedSessionNamespace
+      && firstText(locator.producer?.name) === 'cold_build_output_collector'
+      && firstText(locator.producer?.kind) === 'runner'
+      && firstText(locator.producerSubsystem, locator.producer_subsystem) === 'gpu_hmr_cold_build'
+      && firstText(locator.transport?.kind) === 'cas_shared_volume'
+      && locator.transport?.contentAddressed === true
+      && locator.transport?.manifestOnly === true
+      && locator.transport?.bytesEmbedded === false
+      && firstText(storage.localPath) === null
+      && firstText(storage.relativePath) === casRelativePathForHash(output.contentHash)
+      && firstText(locator.proofAuthority, locator.proof_authority) === 'transport_integrity_only'
+      && firstBool(locator.acceptedForGpuHmr, locator.accepted_for_gpu_hmr) === false
+      && firstBool(locator.gpuHmrSuccess, locator.gpu_hmr_success) === false;
+  };
+  const manifestStorage = compactObject(manifestCasLocator.storage);
+  const manifestLocatorIntegrityMatches =
+    manifestCasValidation.accepted === true
+    && manifestCasValidation.acceptedAsTransportEvidence === true
+    && manifestCasValidation.contentHash === manifestHash
+    && manifestCasValidation.readableContentHash === manifestHash
+    && manifestCasValidation.byteLength === manifestCasValidation.readableByteLength
+    && manifestCasValidation.manifestHash === firstText(manifestCasLocator.manifestHash)
+    && compactStringList(manifestCasValidation.gaps).length === 0
+    && manifestCasValidation.mediaType === 'application/json'
+    && firstText(manifestCasLocator.role) === 'cold_build_output_manifest'
+    && firstText(manifestCasLocator.artifactKind, manifestCasLocator.artifact_kind)
+      === 'cold_build_output_manifest'
+    && firstText(
+      manifestCasLocator.sessionNamespace,
+      manifestCasLocator.session_namespace,
+    ) === expectedSessionNamespace
+    && firstText(manifestCasLocator.producer?.name) === 'cold_build_output_collector'
+    && firstText(manifestCasLocator.producer?.kind) === 'runner'
+    && firstText(
+      manifestCasLocator.producerSubsystem,
+      manifestCasLocator.producer_subsystem,
+    ) === 'gpu_hmr_cold_build'
+    && firstText(manifestCasLocator.transport?.kind) === 'cas_shared_volume'
+    && manifestCasLocator.transport?.contentAddressed === true
+    && manifestCasLocator.transport?.manifestOnly === true
+    && manifestCasLocator.transport?.bytesEmbedded === false
+    && firstText(manifestStorage.localPath) === null
+    && firstText(manifestStorage.relativePath) === casRelativePathForHash(manifestHash)
+    && firstText(manifestCasLocator.proofAuthority, manifestCasLocator.proof_authority)
+      === 'transport_integrity_only'
+    && firstBool(
+      manifestCasLocator.acceptedForGpuHmr,
+      manifestCasLocator.accepted_for_gpu_hmr,
+    ) === false
+    && firstBool(
+      manifestCasLocator.gpuHmrSuccess,
+      manifestCasLocator.gpu_hmr_success,
+    ) === false;
+  const manifestOutputPathKeys = manifestOutputs.map((output) => portablePathKey(output.path));
+  const failedGates = compactStringList([
+    aliasConflict
+      || outputs.some((output) => output.aliasConflict)
+      || manifestOutputs.some((output) => output.aliasConflict)
+      ? 'random_cold_build_output_evidence_alias_conflict'
+      : null,
+    schemaVersion === RANDOM_COLD_BUILD_OUTPUT_EVIDENCE_SCHEMA_VERSION
+      ? null
+      : 'random_cold_build_output_evidence_schema_invalid',
+    proofAuthority === RANDOM_COLD_BUILD_OUTPUT_EVIDENCE_AUTHORITY
+      ? null
+      : 'random_cold_build_output_evidence_authority_invalid',
+    firstBool(raw.accepted) === true
+      ? null
+      : 'random_cold_build_output_evidence_acceptance_missing',
+    firstBool(
+      raw.acceptedAsColdBuildOutputEvidence,
+      raw.accepted_as_cold_build_output_evidence,
+    ) === true
+      ? null
+      : 'random_cold_build_output_evidence_support_acceptance_missing',
+    firstBool(raw.acceptedForGpuHmr, raw.accepted_for_gpu_hmr) === false
+      ? null
+      : 'random_cold_build_output_evidence_claimed_gpu_hmr_acceptance',
+    firstBool(raw.gpuHmrSuccess, raw.gpu_hmr_success) === false
+      ? null
+      : 'random_cold_build_output_evidence_claimed_gpu_hmr_success',
+    firstBool(raw.canSatisfyRuntimeProof, raw.can_satisfy_runtime_proof) === false
+      ? null
+      : 'random_cold_build_output_evidence_claimed_runtime_authority',
+    firstBool(raw.canSatisfyDispatchProof, raw.can_satisfy_dispatch_proof) === false
+      ? null
+      : 'random_cold_build_output_evidence_claimed_dispatch_authority',
+    nestedAuthorityClaim(raw)
+      ? 'random_cold_build_output_evidence_nested_authority_claim'
+      : null,
+    blockingGaps.length === 0
+      ? null
+      : 'random_cold_build_output_evidence_blocking_gaps_present',
+    /^sha256:[a-f0-9]{64}$/.test(commandSpecHash ?? '')
+      ? null
+      : 'random_cold_build_output_evidence_command_hash_invalid',
+    /^sha256:[a-f0-9]{64}$/.test(sourceBindingHash ?? '')
+      ? null
+      : 'random_cold_build_output_evidence_source_hash_invalid',
+    Number.isSafeInteger(outputCount)
+      && outputCount === outputs.length
+      && outputCount >= 1
+      && outputCount <= RANDOM_COLD_BUILD_OUTPUT_MAX_COUNT
+      ? null
+      : 'random_cold_build_output_evidence_output_count_invalid',
+    outputs.every(outputEntryShapeValid)
+      ? null
+      : 'random_cold_build_output_evidence_output_entry_invalid',
+    new Set(outputPathKeys).size === outputPathKeys.length
+      ? null
+      : 'random_cold_build_output_evidence_output_path_collision',
+    new Set(manifestOutputPathKeys).size === manifestOutputPathKeys.length
+      ? null
+      : 'random_cold_build_output_evidence_manifest_path_collision',
+    Number.isSafeInteger(totalByteLength)
+      && totalByteLength >= 1
+      && totalByteLength === recomputedTotalByteLength
+      && totalByteLength <= RANDOM_COLD_BUILD_OUTPUT_MAX_BYTES
+      ? null
+      : 'random_cold_build_output_evidence_total_bytes_invalid',
+    manifestPreflightAccepted
+      ? null
+      : 'random_cold_build_output_evidence_manifest_size_invalid',
+    outputCasValidations.length === outputs.length
+      && outputs.every((output, index) => locatorMatchesOutput(output, outputCasValidations[index]))
+      ? null
+      : 'random_cold_build_output_evidence_output_cas_invalid',
+    manifestLocatorIntegrityMatches
+      ? null
+      : 'random_cold_build_output_evidence_manifest_cas_invalid',
+    manifestRecord && typeof manifestRecord === 'object' && !Array.isArray(manifestRecord)
+      ? null
+      : 'random_cold_build_output_evidence_manifest_unreadable',
+    manifestRecord?.schemaVersion === RANDOM_COLD_BUILD_OUTPUT_MANIFEST_SCHEMA_VERSION
+      ? null
+      : 'random_cold_build_output_evidence_manifest_schema_invalid',
+    manifestRecord?.commandSpecHash === commandSpecHash
+      ? null
+      : 'random_cold_build_output_evidence_manifest_command_hash_mismatch',
+    manifestRecord?.sourceBindingHash === sourceBindingHash
+      ? null
+      : 'random_cold_build_output_evidence_manifest_source_hash_mismatch',
+    nestedAuthorityClaim(manifestRecord)
+      ? 'random_cold_build_output_evidence_manifest_authority_claim'
+      : null,
+    stableJson(sortedManifestOutputProjection) === stableJson(sortedOutputProjection)
+      ? null
+      : 'random_cold_build_output_evidence_manifest_outputs_mismatch',
+    manifestBytesHash === manifestHash
+      ? null
+      : 'random_cold_build_output_evidence_manifest_hash_mismatch',
+    recomputedOutputSetHash === outputSetHash
+      ? null
+      : 'random_cold_build_output_evidence_output_set_hash_mismatch',
+  ]);
+  const evidenceHash = stableJsonHash(raw);
+  const accepted = failedGates.length === 0;
+  return {
+    present: true,
+    accepted,
+    matrixRecomputed: true,
+    matrix_recomputed: true,
+    schemaVersion: RANDOM_COLD_BUILD_OUTPUT_EVIDENCE_SCHEMA_VERSION,
+    proofAuthority: RANDOM_COLD_BUILD_OUTPUT_EVIDENCE_AUTHORITY,
+    acceptedAsColdBuildOutputEvidence: accepted,
+    accepted_as_cold_build_output_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    commandSpecHash,
+    command_spec_hash: commandSpecHash,
+    sourceBindingHash,
+    source_binding_hash: sourceBindingHash,
+    outputCount: outputs.length,
+    output_count: outputs.length,
+    totalByteLength: recomputedTotalByteLength,
+    total_byte_length: recomputedTotalByteLength,
+    outputSetHash: recomputedOutputSetHash,
+    output_set_hash: recomputedOutputSetHash,
+    manifestHash: manifestBytesHash,
+    manifest_hash: manifestBytesHash,
+    evidenceHash,
+    evidence_hash: evidenceHash,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+export function randomColdBuildExecutionObservationFacet(
   rawValue = {},
   {
     sourceIntake = {},
@@ -4253,6 +4740,7 @@ function randomColdBuildExecutionObservationFacet(
     expectedCommandSpecHash = null,
     expectedCommandConfigured = false,
     expectedCommandAliasConflict = false,
+    buildOutputEvidenceValidation = {},
   } = {},
 ) {
   const raw = compactObject(rawValue);
@@ -4264,6 +4752,8 @@ function randomColdBuildExecutionObservationFacet(
       accepted_as_support_evidence: false,
       acceptedAsColdBuildExecutionEvidence: false,
       accepted_as_cold_build_execution_evidence: false,
+      acceptedAsColdCommandExecutionEvidence: false,
+      accepted_as_cold_command_execution_evidence: false,
       acceptedForGpuHmr: false,
       accepted_for_gpu_hmr: false,
       gpuHmrSuccess: false,
@@ -4274,6 +4764,8 @@ function randomColdBuildExecutionObservationFacet(
       can_satisfy_dispatch_proof: false,
       observedBuildExecution: false,
       observed_build_execution: false,
+      observedCommandExecution: false,
+      observed_command_execution: false,
       blockingGaps: [],
       blocking_gaps: [],
       failedGates: [],
@@ -4288,12 +4780,16 @@ function randomColdBuildExecutionObservationFacet(
     ['schemaVersion', 'schema_version'],
     ['proofAuthority', 'proof_authority'],
     ['acceptedAsColdBuildExecutionEvidence', 'accepted_as_cold_build_execution_evidence'],
+    ['acceptedAsColdCommandExecutionEvidence', 'accepted_as_cold_command_execution_evidence'],
     ['acceptedAsSupportEvidence', 'accepted_as_support_evidence'],
     ['acceptedForGpuHmr', 'accepted_for_gpu_hmr'],
     ['gpuHmrSuccess', 'gpu_hmr_success'],
     ['canSatisfyRuntimeProof', 'can_satisfy_runtime_proof'],
     ['canSatisfyDispatchProof', 'can_satisfy_dispatch_proof'],
     ['observedBuildExecution', 'observed_build_execution'],
+    ['observedCommandExecution', 'observed_command_execution'],
+    ['observedCompileGraph', 'observed_compile_graph'],
+    ['observedDeviceArtifactBuild', 'observed_device_artifact_build'],
     ['targetNameIndependent', 'target_name_independent'],
     ['projectNameWhitelist', 'project_name_whitelist'],
     ['specificTargetIdsAllowed', 'specific_target_ids_allowed'],
@@ -4308,8 +4804,11 @@ function randomColdBuildExecutionObservationFacet(
     ['commitPreserved', 'commit_preserved'],
     ['sourceWorktreeCleanAfter', 'source_worktree_clean_after'],
     ['sourceWorktreeStatusAfterHash', 'source_worktree_status_after_hash'],
+    ['sourceWorktreeManifestHashAfter', 'source_worktree_manifest_hash_after'],
     ['executionEnvironment', 'execution_environment'],
     ['executionEnvironmentHash', 'execution_environment_hash'],
+    ['buildOutputEvidence', 'build_output_evidence'],
+    ['buildOutputEvidenceHash', 'build_output_evidence_hash'],
     ['wrapperEvents', 'wrapper_events'],
     ['wrapperExecutionId', 'wrapper_execution_id'],
     ['wrapperStartedAt', 'wrapper_started_at'],
@@ -4334,6 +4833,18 @@ function randomColdBuildExecutionObservationFacet(
     raw.observedBuildExecution,
     raw.observed_build_execution,
   ) === true;
+  const observedCommandExecution = firstBool(
+    raw.observedCommandExecution,
+    raw.observed_command_execution,
+  ) === true;
+  const observedCompileGraph = firstBool(
+    raw.observedCompileGraph,
+    raw.observed_compile_graph,
+  ) === true;
+  const observedDeviceArtifactBuild = firstBool(
+    raw.observedDeviceArtifactBuild,
+    raw.observed_device_artifact_build,
+  ) === true;
   const declaredRecordAccepted = firstBool(raw.accepted) === true;
   const declaredSupportAccepted = firstBool(
     raw.acceptedAsSupportEvidence,
@@ -4343,14 +4854,30 @@ function randomColdBuildExecutionObservationFacet(
     raw.acceptedAsColdBuildExecutionEvidence,
     raw.accepted_as_cold_build_execution_evidence,
   ) === true;
-  const declaredAccepted =
-    declaredRecordAccepted
-    && declaredSupportAccepted
-    && declaredColdBuildAccepted;
+  const declaredCommandAccepted = firstBool(
+    raw.acceptedAsColdCommandExecutionEvidence,
+    raw.accepted_as_cold_command_execution_evidence,
+  ) === true;
   const nestedAliasConflict = (value, pairs) => pairs.some(([camelName, snakeName]) =>
     Object.prototype.hasOwnProperty.call(value, camelName)
     && Object.prototype.hasOwnProperty.call(value, snakeName)
     && stableJson(value[camelName]) !== stableJson(value[snakeName]));
+  const nestedExecutionAuthorityClaim = (value) => {
+    if (Array.isArray(value)) return value.some(nestedExecutionAuthorityClaim);
+    if (!value || typeof value !== 'object') return false;
+    return Object.entries(value).some(([key, entry]) => {
+      const normalizedKey = key.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+      return (
+        [
+          'acceptedforgpuhmr',
+          'gpuhmrsuccess',
+          'cansatisfyruntimeproof',
+          'cansatisfydispatchproof',
+        ].includes(normalizedKey)
+        && entry === true
+      ) || nestedExecutionAuthorityClaim(entry);
+    });
+  };
   const commandSpecAliasPairs = [
     ['timeoutMs', 'timeout_ms'],
     ['envNames', 'env_names'],
@@ -4427,12 +4954,100 @@ function randomColdBuildExecutionObservationFacet(
     ['sourceIntakeFacetHash', 'source_intake_facet_hash'],
     ['coldBuildExecutionPlanHash', 'cold_build_execution_plan_hash'],
     ['directSourceIdentityHash', 'direct_source_identity_hash'],
+    ['submittedSourceRootPathHash', 'submitted_source_root_path_hash'],
     ['sourceRootPathHash', 'source_root_path_hash'],
+    ['sourceSnapshotBinding', 'source_snapshot_binding'],
+    ['sourceSnapshotBindingHash', 'source_snapshot_binding_hash'],
+    ['gitExecutableHash', 'git_executable_hash'],
+    ['gitExecutablePathHash', 'git_executable_path_hash'],
     ['repoRelativeCwd', 'repo_relative_cwd'],
     ['observedCommitBefore', 'observed_commit_before'],
     ['sourceWorktreeCleanBefore', 'source_worktree_clean_before'],
     ['sourceWorktreeStatusHash', 'source_worktree_status_hash'],
+    ['sourceWorktreeVerificationScope', 'source_worktree_verification_scope'],
+    ['sourceWorktreeCheckedEntryCount', 'source_worktree_checked_entry_count'],
+    ['sourceWorktreeIntegrityCapturedBefore', 'source_worktree_integrity_captured_before'],
+    ['sourceWorktreeManifestHashBefore', 'source_worktree_manifest_hash_before'],
   ]);
+  const sourceSnapshotBindingRaw = firstCompactObject(
+    sourceBindingRaw.sourceSnapshotBinding,
+    sourceBindingRaw.source_snapshot_binding,
+  );
+  const sourceSnapshotBindingAliasConflict = nestedAliasConflict(sourceSnapshotBindingRaw, [
+    ['immutableCommit', 'immutable_commit'],
+    ['sourceListingHash', 'source_listing_hash'],
+    ['snapshotRootPathHash', 'snapshot_root_path_hash'],
+    ['repoRelativeCwd', 'repo_relative_cwd'],
+    ['entryCount', 'entry_count'],
+    ['directoryCount', 'directory_count'],
+    ['symlinkCount', 'symlink_count'],
+    ['objectFormat', 'object_format'],
+    ['treeEntryCount', 'tree_entry_count'],
+    ['treeManifestHash', 'tree_manifest_hash'],
+    ['materializationMode', 'materialization_mode'],
+    ['permissionPolicy', 'permission_policy'],
+    ['hostExecutableModeVerified', 'host_executable_mode_verified'],
+    ['gitExecutableHash', 'git_executable_hash'],
+    ['gitExecutablePathHash', 'git_executable_path_hash'],
+  ]);
+  const sourceSnapshotBinding = {
+    immutableCommit: firstText(
+      sourceSnapshotBindingRaw.immutableCommit,
+      sourceSnapshotBindingRaw.immutable_commit,
+    )?.toLowerCase() ?? null,
+    sourceListingHash: firstText(
+      sourceSnapshotBindingRaw.sourceListingHash,
+      sourceSnapshotBindingRaw.source_listing_hash,
+    ),
+    snapshotRootPathHash: firstText(
+      sourceSnapshotBindingRaw.snapshotRootPathHash,
+      sourceSnapshotBindingRaw.snapshot_root_path_hash,
+    ),
+    repoRelativeCwd: firstText(
+      sourceSnapshotBindingRaw.repoRelativeCwd,
+      sourceSnapshotBindingRaw.repo_relative_cwd,
+    ),
+    entryCount: finiteNumber(
+      sourceSnapshotBindingRaw.entryCount ?? sourceSnapshotBindingRaw.entry_count,
+    ),
+    directoryCount: finiteNumber(
+      sourceSnapshotBindingRaw.directoryCount ?? sourceSnapshotBindingRaw.directory_count,
+    ),
+    symlinkCount: finiteNumber(
+      sourceSnapshotBindingRaw.symlinkCount ?? sourceSnapshotBindingRaw.symlink_count,
+    ),
+    objectFormat: firstText(
+      sourceSnapshotBindingRaw.objectFormat,
+      sourceSnapshotBindingRaw.object_format,
+    ),
+    treeEntryCount: finiteNumber(
+      sourceSnapshotBindingRaw.treeEntryCount ?? sourceSnapshotBindingRaw.tree_entry_count,
+    ),
+    treeManifestHash: firstText(
+      sourceSnapshotBindingRaw.treeManifestHash,
+      sourceSnapshotBindingRaw.tree_manifest_hash,
+    ),
+    materializationMode: firstText(
+      sourceSnapshotBindingRaw.materializationMode,
+      sourceSnapshotBindingRaw.materialization_mode,
+    ),
+    permissionPolicy: firstText(
+      sourceSnapshotBindingRaw.permissionPolicy,
+      sourceSnapshotBindingRaw.permission_policy,
+    ),
+    hostExecutableModeVerified: firstBool(
+      sourceSnapshotBindingRaw.hostExecutableModeVerified,
+      sourceSnapshotBindingRaw.host_executable_mode_verified,
+    ) === true,
+    gitExecutableHash: firstText(
+      sourceSnapshotBindingRaw.gitExecutableHash,
+      sourceSnapshotBindingRaw.git_executable_hash,
+    ),
+    gitExecutablePathHash: firstText(
+      sourceSnapshotBindingRaw.gitExecutablePathHash,
+      sourceSnapshotBindingRaw.git_executable_path_hash,
+    ),
+  };
   const sourceBinding = {
     candidateId: firstText(sourceBindingRaw.candidateId, sourceBindingRaw.candidate_id),
     candidateSource: firstText(
@@ -4459,9 +5074,28 @@ function randomColdBuildExecutionObservationFacet(
       sourceBindingRaw.directSourceIdentityHash,
       sourceBindingRaw.direct_source_identity_hash,
     ),
+    submittedSourceRootPathHash: firstText(
+      sourceBindingRaw.submittedSourceRootPathHash,
+      sourceBindingRaw.submitted_source_root_path_hash,
+    ),
     sourceRootPathHash: firstText(
       sourceBindingRaw.sourceRootPathHash,
       sourceBindingRaw.source_root_path_hash,
+    ),
+    sourceSnapshotBinding: Object.keys(sourceSnapshotBindingRaw).length > 0
+      ? sourceSnapshotBinding
+      : null,
+    sourceSnapshotBindingHash: firstText(
+      sourceBindingRaw.sourceSnapshotBindingHash,
+      sourceBindingRaw.source_snapshot_binding_hash,
+    ),
+    gitExecutableHash: firstText(
+      sourceBindingRaw.gitExecutableHash,
+      sourceBindingRaw.git_executable_hash,
+    ),
+    gitExecutablePathHash: firstText(
+      sourceBindingRaw.gitExecutablePathHash,
+      sourceBindingRaw.git_executable_path_hash,
     ),
     repoRelativeCwd: firstText(
       sourceBindingRaw.repoRelativeCwd,
@@ -4479,6 +5113,22 @@ function randomColdBuildExecutionObservationFacet(
     sourceWorktreeStatusHash: firstText(
       sourceBindingRaw.sourceWorktreeStatusHash,
       sourceBindingRaw.source_worktree_status_hash,
+    ),
+    sourceWorktreeVerificationScope: firstText(
+      sourceBindingRaw.sourceWorktreeVerificationScope,
+      sourceBindingRaw.source_worktree_verification_scope,
+    ),
+    sourceWorktreeCheckedEntryCount: finiteNumber(
+      sourceBindingRaw.sourceWorktreeCheckedEntryCount
+      ?? sourceBindingRaw.source_worktree_checked_entry_count,
+    ),
+    sourceWorktreeIntegrityCapturedBefore: firstBool(
+      sourceBindingRaw.sourceWorktreeIntegrityCapturedBefore,
+      sourceBindingRaw.source_worktree_integrity_captured_before,
+    ) === true,
+    sourceWorktreeManifestHashBefore: firstText(
+      sourceBindingRaw.sourceWorktreeManifestHashBefore,
+      sourceBindingRaw.source_worktree_manifest_hash_before,
     ),
   };
   const recomputedSourceBindingHash = stableJsonHash(sourceBinding);
@@ -4539,6 +5189,10 @@ function randomColdBuildExecutionObservationFacet(
     raw.sourceWorktreeStatusAfterHash,
     raw.source_worktree_status_after_hash,
   );
+  const sourceWorktreeManifestHashAfter = firstText(
+    raw.sourceWorktreeManifestHashAfter,
+    raw.source_worktree_manifest_hash_after,
+  );
   const executionEnvironmentRaw = firstCompactObject(
     raw.executionEnvironment,
     raw.execution_environment,
@@ -4550,55 +5204,517 @@ function randomColdBuildExecutionObservationFacet(
     ['sourceMountReadOnly', 'source_mount_read_only'],
     ['networkIsolated', 'network_isolated'],
     ['workerImageReference', 'worker_image_reference'],
+    ['executionNonce', 'execution_nonce'],
     ['workerImageId', 'worker_image_id'],
+    ['workerImageDescriptor', 'worker_image_descriptor'],
+    ['workerImageDescriptorHash', 'worker_image_descriptor_hash'],
     ['containerIdHash', 'container_id_hash'],
     ['containerConfig', 'container_config'],
     ['containerConfigHash', 'container_config_hash'],
+    ['containerState', 'container_state'],
+    ['containerStateHash', 'container_state_hash'],
     ['sourceMountPathHash', 'source_mount_path_hash'],
+    ['sourceSnapshotRemoved', 'source_snapshot_removed'],
     ['buildOutputRootHash', 'build_output_root_hash'],
+    ['buildOutputRootRemoved', 'build_output_root_removed'],
+    ['buildOutputTransport', 'build_output_transport'],
+    ['buildOutputExtraction', 'build_output_extraction'],
+    ['buildOutputExtractionHash', 'build_output_extraction_hash'],
+    ['containerProtocol', 'container_protocol'],
+    ['containerProtocolHash', 'container_protocol_hash'],
+    ['releaseControlRootHash', 'release_control_root_hash'],
+    ['releaseControlRootRemoved', 'release_control_root_removed'],
+    ['workspaceCapacityPreflight', 'workspace_capacity_preflight'],
+    ['workspaceCapacityPreflightHash', 'workspace_capacity_preflight_hash'],
+    ['resourcePolicy', 'resource_policy'],
+    ['resourcePolicyHash', 'resource_policy_hash'],
+    ['dockerExecutableHash', 'docker_executable_hash'],
+    ['dockerExecutablePathHash', 'docker_executable_path_hash'],
+    ['dockerEndpoint', 'docker_endpoint'],
+    ['dockerClientConfigRemoved', 'docker_client_config_removed'],
     ['dockerInspectAccepted', 'docker_inspect_accepted'],
+    ['dockerStateInspectAccepted', 'docker_state_inspect_accepted'],
+    ['environmentFileRemoved', 'environment_file_removed'],
+    ['containerCidFileRemoved', 'container_cid_file_removed'],
     ['containerRemoved', 'container_removed'],
   ]);
+  const workerImageDescriptorRaw = firstCompactObject(
+    executionEnvironmentRaw.workerImageDescriptor,
+    executionEnvironmentRaw.worker_image_descriptor,
+  );
+  const workerImageDescriptorAliasConflict = nestedAliasConflict(workerImageDescriptorRaw, [
+    ['imageId', 'image_id'],
+    ['referenceMatchesImage', 'reference_matches_image'],
+    ['repoDigests', 'repo_digests'],
+    ['repoDigestsHash', 'repo_digests_hash'],
+    ['operatingSystem', 'operating_system'],
+  ]);
+  const workerImageDescriptor = {
+    reference: firstText(workerImageDescriptorRaw.reference),
+    imageId: firstText(workerImageDescriptorRaw.imageId, workerImageDescriptorRaw.image_id),
+    referenceMatchesImage: firstBool(
+      workerImageDescriptorRaw.referenceMatchesImage,
+      workerImageDescriptorRaw.reference_matches_image,
+    ) === true,
+    repoDigests: compactStringList([
+      ...(Array.isArray(workerImageDescriptorRaw.repoDigests)
+        ? workerImageDescriptorRaw.repoDigests
+        : []),
+      ...(Array.isArray(workerImageDescriptorRaw.repo_digests)
+        ? workerImageDescriptorRaw.repo_digests
+        : []),
+    ]).sort(),
+    repoDigestsHash: firstText(
+      workerImageDescriptorRaw.repoDigestsHash,
+      workerImageDescriptorRaw.repo_digests_hash,
+    ),
+    operatingSystem: firstText(
+      workerImageDescriptorRaw.operatingSystem,
+      workerImageDescriptorRaw.operating_system,
+    ),
+    architecture: firstText(workerImageDescriptorRaw.architecture),
+  };
   const containerConfigRaw = firstCompactObject(
     executionEnvironmentRaw.containerConfig,
     executionEnvironmentRaw.container_config,
   );
+  const containerConfigAliasConflict = nestedAliasConflict(containerConfigRaw, [
+    ['imageId', 'image_id'],
+    ['networkMode', 'network_mode'],
+    ['readOnlyRootfs', 'read_only_rootfs'],
+    ['capAdd', 'cap_add'],
+    ['capDrop', 'cap_drop'],
+    ['securityOpt', 'security_opt'],
+    ['pidsLimit', 'pids_limit'],
+    ['memoryBytes', 'memory_bytes'],
+    ['memorySwapBytes', 'memory_swap_bytes'],
+    ['nanoCpus', 'nano_cpus'],
+    ['ipcMode', 'ipc_mode'],
+    ['autoRemove', 'auto_remove'],
+    ['usernsMode', 'userns_mode'],
+    ['deviceCount', 'device_count'],
+    ['deviceRequestCount', 'device_request_count'],
+    ['tmpfsMounts', 'tmpfs_mounts'],
+    ['tmpfsOptions', 'tmpfs_options'],
+    ['workingDirectory', 'working_directory'],
+    ['healthcheckDisabled', 'healthcheck_disabled'],
+    ['declaredVolumePaths', 'declared_volume_paths'],
+    ['environmentNames', 'environment_names'],
+    ['environmentValueHashes', 'environment_value_hashes'],
+  ]);
+  const containerMountAliasConflict = compactObjectList(containerConfigRaw.mounts)
+    .some((mount) => nestedAliasConflict(mount, [
+      ['readWrite', 'read_write'],
+      ['sourcePathHash', 'source_path_hash'],
+    ]));
   const containerConfig = {
     imageId: firstText(containerConfigRaw.imageId, containerConfigRaw.image_id),
     networkMode: firstText(containerConfigRaw.networkMode, containerConfigRaw.network_mode),
     readOnlyRootfs:
       firstBool(containerConfigRaw.readOnlyRootfs, containerConfigRaw.read_only_rootfs) === true,
+    privileged: firstBool(containerConfigRaw.privileged) === true,
     capDrop: compactStringList([
       ...(Array.isArray(containerConfigRaw.capDrop) ? containerConfigRaw.capDrop : []),
       ...(Array.isArray(containerConfigRaw.cap_drop) ? containerConfigRaw.cap_drop : []),
+    ]).sort(),
+    capAdd: compactStringList([
+      ...(Array.isArray(containerConfigRaw.capAdd) ? containerConfigRaw.capAdd : []),
+      ...(Array.isArray(containerConfigRaw.cap_add) ? containerConfigRaw.cap_add : []),
     ]).sort(),
     securityOpt: compactStringList([
       ...(Array.isArray(containerConfigRaw.securityOpt) ? containerConfigRaw.securityOpt : []),
       ...(Array.isArray(containerConfigRaw.security_opt) ? containerConfigRaw.security_opt : []),
     ]).sort(),
     pidsLimit: finiteNumber(containerConfigRaw.pidsLimit ?? containerConfigRaw.pids_limit),
+    memoryBytes: finiteNumber(containerConfigRaw.memoryBytes ?? containerConfigRaw.memory_bytes),
+    memorySwapBytes: finiteNumber(
+      containerConfigRaw.memorySwapBytes ?? containerConfigRaw.memory_swap_bytes,
+    ),
+    nanoCpus: finiteNumber(containerConfigRaw.nanoCpus ?? containerConfigRaw.nano_cpus),
+    ulimits: compactObjectList(containerConfigRaw.ulimits)
+      .map((limit) => ({
+        name: firstText(limit.name),
+        soft: finiteNumber(limit.soft),
+        hard: finiteNumber(limit.hard),
+      }))
+      .filter((limit) => limit.name)
+      .sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
     ipcMode: firstText(containerConfigRaw.ipcMode, containerConfigRaw.ipc_mode),
+    autoRemove: firstBool(containerConfigRaw.autoRemove, containerConfigRaw.auto_remove) === true,
+    usernsMode: firstText(containerConfigRaw.usernsMode, containerConfigRaw.userns_mode),
+    deviceCount: finiteNumber(containerConfigRaw.deviceCount ?? containerConfigRaw.device_count),
+    deviceRequestCount: finiteNumber(
+      containerConfigRaw.deviceRequestCount ?? containerConfigRaw.device_request_count,
+    ),
     tmpfsMounts: compactStringList([
       ...(Array.isArray(containerConfigRaw.tmpfsMounts) ? containerConfigRaw.tmpfsMounts : []),
       ...(Array.isArray(containerConfigRaw.tmpfs_mounts) ? containerConfigRaw.tmpfs_mounts : []),
     ]).sort(),
+    tmpfsOptions: compactObject(
+      containerConfigRaw.tmpfsOptions ?? containerConfigRaw.tmpfs_options,
+    ),
     workingDirectory: firstText(
       containerConfigRaw.workingDirectory,
       containerConfigRaw.working_directory,
     ),
+    user: firstText(containerConfigRaw.user),
+    healthcheckDisabled: firstBool(
+      containerConfigRaw.healthcheckDisabled,
+      containerConfigRaw.healthcheck_disabled,
+    ) === true,
+    declaredVolumePaths: compactStringList([
+      ...(Array.isArray(containerConfigRaw.declaredVolumePaths)
+        ? containerConfigRaw.declaredVolumePaths
+        : []),
+      ...(Array.isArray(containerConfigRaw.declared_volume_paths)
+        ? containerConfigRaw.declared_volume_paths
+        : []),
+    ]).sort(),
     entrypoint: Array.isArray(containerConfigRaw.entrypoint)
       ? containerConfigRaw.entrypoint.filter((entry) => typeof entry === 'string')
       : [],
     command: Array.isArray(containerConfigRaw.command)
       ? containerConfigRaw.command.filter((entry) => typeof entry === 'string')
       : [],
+    environmentNames: compactStringList([
+      ...(Array.isArray(containerConfigRaw.environmentNames)
+        ? containerConfigRaw.environmentNames
+        : []),
+      ...(Array.isArray(containerConfigRaw.environment_names)
+        ? containerConfigRaw.environment_names
+        : []),
+    ]).sort(),
+    environmentValueHashes: compactObject(
+      containerConfigRaw.environmentValueHashes
+      ?? containerConfigRaw.environment_value_hashes,
+    ),
+    labels: compactObject(containerConfigRaw.labels),
     mounts: compactObjectList(containerConfigRaw.mounts)
       .map((mount) => ({
         type: firstText(mount.type),
         destination: firstText(mount.destination),
         readWrite: firstBool(mount.readWrite, mount.read_write) === true,
+        propagation: firstText(mount.propagation),
+        sourcePathHash: firstText(mount.sourcePathHash, mount.source_path_hash),
       }))
       .sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
+  };
+  const containerStateRaw = firstCompactObject(
+    executionEnvironmentRaw.containerState,
+    executionEnvironmentRaw.container_state,
+  );
+  const containerStateAliasConflict = nestedAliasConflict(containerStateRaw, [
+    ['oomKilled', 'oom_killed'],
+    ['exitCode', 'exit_code'],
+    ['startedAt', 'started_at'],
+    ['finishedAt', 'finished_at'],
+  ]);
+  const containerState = {
+    status: firstText(containerStateRaw.status),
+    running: firstBool(containerStateRaw.running) === true,
+    paused: firstBool(containerStateRaw.paused) === true,
+    restarting: firstBool(containerStateRaw.restarting) === true,
+    oomKilled: firstBool(containerStateRaw.oomKilled, containerStateRaw.oom_killed) === true,
+    dead: firstBool(containerStateRaw.dead) === true,
+    pid: finiteNumber(containerStateRaw.pid),
+    exitCode: finiteNumber(containerStateRaw.exitCode ?? containerStateRaw.exit_code),
+    error: firstText(containerStateRaw.error),
+    startedAt: firstText(containerStateRaw.startedAt, containerStateRaw.started_at),
+    finishedAt: firstText(containerStateRaw.finishedAt, containerStateRaw.finished_at),
+  };
+  const resourcePolicyRaw = firstCompactObject(
+    executionEnvironmentRaw.resourcePolicy,
+    executionEnvironmentRaw.resource_policy,
+  );
+  const resourcePolicyAliasConflict = nestedAliasConflict(resourcePolicyRaw, [
+    ['memoryBytes', 'memory_bytes'],
+    ['memorySwapBytes', 'memory_swap_bytes'],
+    ['nanoCpus', 'nano_cpus'],
+    ['workspaceBytes', 'workspace_bytes'],
+    ['workspaceEntryCount', 'workspace_entry_count'],
+    ['manifestOutputBytes', 'manifest_output_bytes'],
+    ['manifestOutputCount', 'manifest_output_count'],
+  ]);
+  const resourcePolicy = {
+    memoryBytes: finiteNumber(resourcePolicyRaw.memoryBytes ?? resourcePolicyRaw.memory_bytes),
+    memorySwapBytes: finiteNumber(
+      resourcePolicyRaw.memorySwapBytes ?? resourcePolicyRaw.memory_swap_bytes,
+    ),
+    nanoCpus: finiteNumber(resourcePolicyRaw.nanoCpus ?? resourcePolicyRaw.nano_cpus),
+    workspaceBytes: finiteNumber(
+      resourcePolicyRaw.workspaceBytes ?? resourcePolicyRaw.workspace_bytes,
+    ),
+    workspaceEntryCount: finiteNumber(
+      resourcePolicyRaw.workspaceEntryCount ?? resourcePolicyRaw.workspace_entry_count,
+    ),
+    manifestOutputBytes: finiteNumber(
+      resourcePolicyRaw.manifestOutputBytes ?? resourcePolicyRaw.manifest_output_bytes,
+    ),
+    manifestOutputCount: finiteNumber(
+      resourcePolicyRaw.manifestOutputCount ?? resourcePolicyRaw.manifest_output_count,
+    ),
+  };
+  const buildOutputExtractionRaw = firstCompactObject(
+    executionEnvironmentRaw.buildOutputExtraction,
+    executionEnvironmentRaw.build_output_extraction,
+  );
+  const buildOutputExtractionAliasConflict = nestedAliasConflict(buildOutputExtractionRaw, [
+    ['readyCopyAttempts', 'ready_copy_attempts'],
+    ['readyObserved', 'ready_observed'],
+    ['readyCopyStdoutHash', 'ready_copy_stdout_hash'],
+    ['readyCopyStderrHash', 'ready_copy_stderr_hash'],
+    ['pauseAccepted', 'pause_accepted'],
+    ['pausedStateObserved', 'paused_state_observed'],
+    ['outputCopyAccepted', 'output_copy_accepted'],
+    ['outputCopyStdoutHash', 'output_copy_stdout_hash'],
+    ['outputCopyStderrHash', 'output_copy_stderr_hash'],
+    ['statusCopyAccepted', 'status_copy_accepted'],
+    ['statusCopyStdoutHash', 'status_copy_stdout_hash'],
+    ['statusCopyStderrHash', 'status_copy_stderr_hash'],
+    ['wrapperExitCode', 'wrapper_exit_code'],
+    ['releaseWritten', 'release_written'],
+    ['unpauseAccepted', 'unpause_accepted'],
+    ['acceptedForGpuHmr', 'accepted_for_gpu_hmr'],
+    ['gpuHmrSuccess', 'gpu_hmr_success'],
+    ['canSatisfyRuntimeProof', 'can_satisfy_runtime_proof'],
+    ['canSatisfyDispatchProof', 'can_satisfy_dispatch_proof'],
+  ]);
+  const buildOutputExtraction = {
+    transport: firstText(buildOutputExtractionRaw.transport),
+    accepted: firstBool(buildOutputExtractionRaw.accepted) === true,
+    readyCopyAttempts: finiteNumber(
+      buildOutputExtractionRaw.readyCopyAttempts
+      ?? buildOutputExtractionRaw.ready_copy_attempts,
+    ),
+    readyObserved: firstBool(
+      buildOutputExtractionRaw.readyObserved,
+      buildOutputExtractionRaw.ready_observed,
+    ) === true,
+    readyCopyStdoutHash: firstText(
+      buildOutputExtractionRaw.readyCopyStdoutHash,
+      buildOutputExtractionRaw.ready_copy_stdout_hash,
+    ),
+    readyCopyStderrHash: firstText(
+      buildOutputExtractionRaw.readyCopyStderrHash,
+      buildOutputExtractionRaw.ready_copy_stderr_hash,
+    ),
+    pauseAccepted: firstBool(
+      buildOutputExtractionRaw.pauseAccepted,
+      buildOutputExtractionRaw.pause_accepted,
+    ) === true,
+    pausedStateObserved: firstBool(
+      buildOutputExtractionRaw.pausedStateObserved,
+      buildOutputExtractionRaw.paused_state_observed,
+    ) === true,
+    outputCopyAccepted: firstBool(
+      buildOutputExtractionRaw.outputCopyAccepted,
+      buildOutputExtractionRaw.output_copy_accepted,
+    ) === true,
+    outputCopyStdoutHash: firstText(
+      buildOutputExtractionRaw.outputCopyStdoutHash,
+      buildOutputExtractionRaw.output_copy_stdout_hash,
+    ),
+    outputCopyStderrHash: firstText(
+      buildOutputExtractionRaw.outputCopyStderrHash,
+      buildOutputExtractionRaw.output_copy_stderr_hash,
+    ),
+    statusCopyAccepted: firstBool(
+      buildOutputExtractionRaw.statusCopyAccepted,
+      buildOutputExtractionRaw.status_copy_accepted,
+    ) === true,
+    statusCopyStdoutHash: firstText(
+      buildOutputExtractionRaw.statusCopyStdoutHash,
+      buildOutputExtractionRaw.status_copy_stdout_hash,
+    ),
+    statusCopyStderrHash: firstText(
+      buildOutputExtractionRaw.statusCopyStderrHash,
+      buildOutputExtractionRaw.status_copy_stderr_hash,
+    ),
+    wrapperExitCode: finiteNumber(
+      buildOutputExtractionRaw.wrapperExitCode ?? buildOutputExtractionRaw.wrapper_exit_code,
+    ),
+    releaseWritten: firstBool(
+      buildOutputExtractionRaw.releaseWritten,
+      buildOutputExtractionRaw.release_written,
+    ) === true,
+    unpauseAccepted: firstBool(
+      buildOutputExtractionRaw.unpauseAccepted,
+      buildOutputExtractionRaw.unpause_accepted,
+    ) === true,
+    acceptedForGpuHmr: firstBool(
+      buildOutputExtractionRaw.acceptedForGpuHmr,
+      buildOutputExtractionRaw.accepted_for_gpu_hmr,
+    ) === true,
+    gpuHmrSuccess: firstBool(
+      buildOutputExtractionRaw.gpuHmrSuccess,
+      buildOutputExtractionRaw.gpu_hmr_success,
+    ) === true,
+    canSatisfyRuntimeProof: firstBool(
+      buildOutputExtractionRaw.canSatisfyRuntimeProof,
+      buildOutputExtractionRaw.can_satisfy_runtime_proof,
+    ) === true,
+    canSatisfyDispatchProof: firstBool(
+      buildOutputExtractionRaw.canSatisfyDispatchProof,
+      buildOutputExtractionRaw.can_satisfy_dispatch_proof,
+    ) === true,
+  };
+  const containerProtocolRaw = firstCompactObject(
+    executionEnvironmentRaw.containerProtocol,
+    executionEnvironmentRaw.container_protocol,
+  );
+  const containerProtocolAliasConflict = nestedAliasConflict(containerProtocolRaw, [
+    ['schemaVersion', 'schema_version'],
+    ['proofAuthority', 'proof_authority'],
+    ['wrapperExecutable', 'wrapper_executable'],
+    ['wrapperScriptHash', 'wrapper_script_hash'],
+    ['privilegeDropExecutable', 'privilege_drop_executable'],
+    ['sleepExecutable', 'sleep_executable'],
+    ['commandUid', 'command_uid'],
+    ['commandGid', 'command_gid'],
+    ['workspaceByteLimit', 'workspace_byte_limit'],
+    ['workspaceEntryLimit', 'workspace_entry_limit'],
+    ['controlTmpfsBytes', 'control_tmpfs_bytes'],
+    ['tmpBytes', 'tmp_bytes'],
+    ['sourceBindReadOnly', 'source_bind_read_only'],
+    ['releaseBindReadOnly', 'release_bind_read_only'],
+    ['writableBindCount', 'writable_bind_count'],
+    ['acceptedForGpuHmr', 'accepted_for_gpu_hmr'],
+    ['gpuHmrSuccess', 'gpu_hmr_success'],
+    ['canSatisfyRuntimeProof', 'can_satisfy_runtime_proof'],
+    ['canSatisfyDispatchProof', 'can_satisfy_dispatch_proof'],
+  ]);
+  const containerProtocol = {
+    schemaVersion: firstText(containerProtocolRaw.schemaVersion, containerProtocolRaw.schema_version),
+    proofAuthority: firstText(
+      containerProtocolRaw.proofAuthority,
+      containerProtocolRaw.proof_authority,
+    ),
+    accepted: firstBool(containerProtocolRaw.accepted) === true,
+    wrapperExecutable: firstText(
+      containerProtocolRaw.wrapperExecutable,
+      containerProtocolRaw.wrapper_executable,
+    ),
+    wrapperScriptHash: firstText(
+      containerProtocolRaw.wrapperScriptHash,
+      containerProtocolRaw.wrapper_script_hash,
+    ),
+    privilegeDropExecutable: firstText(
+      containerProtocolRaw.privilegeDropExecutable,
+      containerProtocolRaw.privilege_drop_executable,
+    ),
+    sleepExecutable: firstText(
+      containerProtocolRaw.sleepExecutable,
+      containerProtocolRaw.sleep_executable,
+    ),
+    commandUid: finiteNumber(containerProtocolRaw.commandUid ?? containerProtocolRaw.command_uid),
+    commandGid: finiteNumber(containerProtocolRaw.commandGid ?? containerProtocolRaw.command_gid),
+    workspaceByteLimit: finiteNumber(
+      containerProtocolRaw.workspaceByteLimit ?? containerProtocolRaw.workspace_byte_limit,
+    ),
+    workspaceEntryLimit: finiteNumber(
+      containerProtocolRaw.workspaceEntryLimit ?? containerProtocolRaw.workspace_entry_limit,
+    ),
+    controlTmpfsBytes: finiteNumber(
+      containerProtocolRaw.controlTmpfsBytes ?? containerProtocolRaw.control_tmpfs_bytes,
+    ),
+    tmpBytes: finiteNumber(containerProtocolRaw.tmpBytes ?? containerProtocolRaw.tmp_bytes),
+    sourceBindReadOnly: firstBool(
+      containerProtocolRaw.sourceBindReadOnly,
+      containerProtocolRaw.source_bind_read_only,
+    ) === true,
+    releaseBindReadOnly: firstBool(
+      containerProtocolRaw.releaseBindReadOnly,
+      containerProtocolRaw.release_bind_read_only,
+    ) === true,
+    writableBindCount: finiteNumber(
+      containerProtocolRaw.writableBindCount ?? containerProtocolRaw.writable_bind_count,
+    ),
+    acceptedForGpuHmr: firstBool(
+      containerProtocolRaw.acceptedForGpuHmr,
+      containerProtocolRaw.accepted_for_gpu_hmr,
+    ) === true,
+    gpuHmrSuccess: firstBool(
+      containerProtocolRaw.gpuHmrSuccess,
+      containerProtocolRaw.gpu_hmr_success,
+    ) === true,
+    canSatisfyRuntimeProof: firstBool(
+      containerProtocolRaw.canSatisfyRuntimeProof,
+      containerProtocolRaw.can_satisfy_runtime_proof,
+    ) === true,
+    canSatisfyDispatchProof: firstBool(
+      containerProtocolRaw.canSatisfyDispatchProof,
+      containerProtocolRaw.can_satisfy_dispatch_proof,
+    ) === true,
+  };
+  const workspaceCapacityPreflightRaw = firstCompactObject(
+    executionEnvironmentRaw.workspaceCapacityPreflight,
+    executionEnvironmentRaw.workspace_capacity_preflight,
+  );
+  const workspaceCapacityPreflightAliasConflict = nestedAliasConflict(
+    workspaceCapacityPreflightRaw,
+    [
+      ['acceptedForGpuHmr', 'accepted_for_gpu_hmr'],
+      ['gpuHmrSuccess', 'gpu_hmr_success'],
+      ['canSatisfyRuntimeProof', 'can_satisfy_runtime_proof'],
+      ['canSatisfyDispatchProof', 'can_satisfy_dispatch_proof'],
+      ['availableBytes', 'available_bytes'],
+      ['requiredAvailableBytes', 'required_available_bytes'],
+      ['workspaceByteLimit', 'workspace_byte_limit'],
+      ['workspaceEntryLimit', 'workspace_entry_limit'],
+      ['memoryLimitBytes', 'memory_limit_bytes'],
+      ['requiredMemoryBytes', 'required_memory_bytes'],
+    ],
+  );
+  const workspaceCapacityPreflight = {
+    schemaVersion: firstText(
+      workspaceCapacityPreflightRaw.schemaVersion,
+      workspaceCapacityPreflightRaw.schema_version,
+    ),
+    proofAuthority: firstText(
+      workspaceCapacityPreflightRaw.proofAuthority,
+      workspaceCapacityPreflightRaw.proof_authority,
+    ),
+    accepted: firstBool(workspaceCapacityPreflightRaw.accepted) === true,
+    availableBytes: finiteNumber(
+      workspaceCapacityPreflightRaw.availableBytes
+      ?? workspaceCapacityPreflightRaw.available_bytes,
+    ),
+    requiredAvailableBytes: finiteNumber(
+      workspaceCapacityPreflightRaw.requiredAvailableBytes
+      ?? workspaceCapacityPreflightRaw.required_available_bytes,
+    ),
+    workspaceByteLimit: finiteNumber(
+      workspaceCapacityPreflightRaw.workspaceByteLimit
+      ?? workspaceCapacityPreflightRaw.workspace_byte_limit,
+    ),
+    workspaceEntryLimit: finiteNumber(
+      workspaceCapacityPreflightRaw.workspaceEntryLimit
+      ?? workspaceCapacityPreflightRaw.workspace_entry_limit,
+    ),
+    memoryLimitBytes: finiteNumber(
+      workspaceCapacityPreflightRaw.memoryLimitBytes
+      ?? workspaceCapacityPreflightRaw.memory_limit_bytes,
+    ),
+    requiredMemoryBytes: finiteNumber(
+      workspaceCapacityPreflightRaw.requiredMemoryBytes
+      ?? workspaceCapacityPreflightRaw.required_memory_bytes,
+    ),
+    acceptedForGpuHmr: firstBool(
+      workspaceCapacityPreflightRaw.acceptedForGpuHmr,
+      workspaceCapacityPreflightRaw.accepted_for_gpu_hmr,
+    ) === true,
+    gpuHmrSuccess: firstBool(
+      workspaceCapacityPreflightRaw.gpuHmrSuccess,
+      workspaceCapacityPreflightRaw.gpu_hmr_success,
+    ) === true,
+    canSatisfyRuntimeProof: firstBool(
+      workspaceCapacityPreflightRaw.canSatisfyRuntimeProof,
+      workspaceCapacityPreflightRaw.can_satisfy_runtime_proof,
+    ) === true,
+    canSatisfyDispatchProof: firstBool(
+      workspaceCapacityPreflightRaw.canSatisfyDispatchProof,
+      workspaceCapacityPreflightRaw.can_satisfy_dispatch_proof,
+    ) === true,
   };
   const executionEnvironment = {
     transport: firstText(executionEnvironmentRaw.transport),
@@ -4635,9 +5751,20 @@ function randomColdBuildExecutionObservationFacet(
       executionEnvironmentRaw.workerImageReference,
       executionEnvironmentRaw.worker_image_reference,
     ),
+    executionNonce: firstText(
+      executionEnvironmentRaw.executionNonce,
+      executionEnvironmentRaw.execution_nonce,
+    ),
     workerImageId: firstText(
       executionEnvironmentRaw.workerImageId,
       executionEnvironmentRaw.worker_image_id,
+    ),
+    workerImageDescriptor: Object.keys(workerImageDescriptorRaw).length > 0
+      ? workerImageDescriptor
+      : null,
+    workerImageDescriptorHash: firstText(
+      executionEnvironmentRaw.workerImageDescriptorHash,
+      executionEnvironmentRaw.worker_image_descriptor_hash,
     ),
     containerIdHash: firstText(
       executionEnvironmentRaw.containerIdHash,
@@ -4648,18 +5775,100 @@ function randomColdBuildExecutionObservationFacet(
       executionEnvironmentRaw.containerConfigHash,
       executionEnvironmentRaw.container_config_hash,
     ),
+    containerState: Object.keys(containerStateRaw).length > 0 ? containerState : null,
+    containerStateHash: firstText(
+      executionEnvironmentRaw.containerStateHash,
+      executionEnvironmentRaw.container_state_hash,
+    ),
     sourceMountPathHash: firstText(
       executionEnvironmentRaw.sourceMountPathHash,
       executionEnvironmentRaw.source_mount_path_hash,
     ),
+    sourceSnapshotRemoved: firstBool(
+      executionEnvironmentRaw.sourceSnapshotRemoved,
+      executionEnvironmentRaw.source_snapshot_removed,
+    ) === true,
     buildOutputRootHash: firstText(
       executionEnvironmentRaw.buildOutputRootHash,
       executionEnvironmentRaw.build_output_root_hash,
     ),
+    buildOutputRootRemoved: firstBool(
+      executionEnvironmentRaw.buildOutputRootRemoved,
+      executionEnvironmentRaw.build_output_root_removed,
+    ) === true,
+    buildOutputTransport: firstText(
+      executionEnvironmentRaw.buildOutputTransport,
+      executionEnvironmentRaw.build_output_transport,
+    ),
+    buildOutputExtraction: Object.keys(buildOutputExtractionRaw).length > 0
+      ? buildOutputExtraction
+      : null,
+    buildOutputExtractionHash: firstText(
+      executionEnvironmentRaw.buildOutputExtractionHash,
+      executionEnvironmentRaw.build_output_extraction_hash,
+    ),
+    containerProtocol: Object.keys(containerProtocolRaw).length > 0
+      ? containerProtocol
+      : null,
+    containerProtocolHash: firstText(
+      executionEnvironmentRaw.containerProtocolHash,
+      executionEnvironmentRaw.container_protocol_hash,
+    ),
+    releaseControlRootHash: firstText(
+      executionEnvironmentRaw.releaseControlRootHash,
+      executionEnvironmentRaw.release_control_root_hash,
+    ),
+    releaseControlRootRemoved: firstBool(
+      executionEnvironmentRaw.releaseControlRootRemoved,
+      executionEnvironmentRaw.release_control_root_removed,
+    ) === true,
+    workspaceCapacityPreflight: Object.keys(workspaceCapacityPreflightRaw).length > 0
+      ? workspaceCapacityPreflight
+      : null,
+    workspaceCapacityPreflightHash: firstText(
+      executionEnvironmentRaw.workspaceCapacityPreflightHash,
+      executionEnvironmentRaw.workspace_capacity_preflight_hash,
+    ),
+    resourcePolicy: Object.keys(resourcePolicyRaw).length > 0 ? resourcePolicy : null,
+    resourcePolicyHash: firstText(
+      executionEnvironmentRaw.resourcePolicyHash,
+      executionEnvironmentRaw.resource_policy_hash,
+    ),
+    dockerExecutableHash: firstText(
+      executionEnvironmentRaw.dockerExecutableHash,
+      executionEnvironmentRaw.docker_executable_hash,
+    ),
+    dockerExecutablePathHash: firstText(
+      executionEnvironmentRaw.dockerExecutablePathHash,
+      executionEnvironmentRaw.docker_executable_path_hash,
+    ),
+    dockerEndpoint: firstText(
+      executionEnvironmentRaw.dockerEndpoint,
+      executionEnvironmentRaw.docker_endpoint,
+    ),
+    dockerClientConfigRemoved: firstBool(
+      executionEnvironmentRaw.dockerClientConfigRemoved,
+      executionEnvironmentRaw.docker_client_config_removed,
+    ) === true,
     dockerInspectAccepted:
       firstBool(
         executionEnvironmentRaw.dockerInspectAccepted,
         executionEnvironmentRaw.docker_inspect_accepted,
+      ) === true,
+    dockerStateInspectAccepted:
+      firstBool(
+        executionEnvironmentRaw.dockerStateInspectAccepted,
+        executionEnvironmentRaw.docker_state_inspect_accepted,
+      ) === true,
+    environmentFileRemoved:
+      firstBool(
+        executionEnvironmentRaw.environmentFileRemoved,
+        executionEnvironmentRaw.environment_file_removed,
+      ) === true,
+    containerCidFileRemoved:
+      firstBool(
+        executionEnvironmentRaw.containerCidFileRemoved,
+        executionEnvironmentRaw.container_cid_file_removed,
       ) === true,
     containerRemoved:
       firstBool(
@@ -4673,6 +5882,21 @@ function randomColdBuildExecutionObservationFacet(
   );
   const recomputedContainerConfigHash = executionEnvironment.containerConfig
     ? stableJsonHash(executionEnvironment.containerConfig)
+    : null;
+  const recomputedContainerStateHash = executionEnvironment.containerState
+    ? stableJsonHash(executionEnvironment.containerState)
+    : null;
+  const recomputedResourcePolicyHash = executionEnvironment.resourcePolicy
+    ? stableJsonHash(executionEnvironment.resourcePolicy)
+    : null;
+  const recomputedBuildOutputExtractionHash = executionEnvironment.buildOutputExtraction
+    ? stableJsonHash(executionEnvironment.buildOutputExtraction)
+    : null;
+  const recomputedContainerProtocolHash = executionEnvironment.containerProtocol
+    ? stableJsonHash(executionEnvironment.containerProtocol)
+    : null;
+  const recomputedWorkspaceCapacityPreflightHash = executionEnvironment.workspaceCapacityPreflight
+    ? stableJsonHash(executionEnvironment.workspaceCapacityPreflight)
     : null;
   const recomputedExecutionEnvironmentHash = stableJsonHash(executionEnvironment);
   const wrapperStartedAt = firstText(raw.wrapperStartedAt, raw.wrapper_started_at);
@@ -4701,6 +5925,19 @@ function randomColdBuildExecutionObservationFacet(
     raw.wrapperEventStreamHash,
     raw.wrapper_event_stream_hash,
   );
+  const buildOutputEvidenceRaw = firstCompactObject(
+    raw.buildOutputEvidence,
+    raw.build_output_evidence,
+  );
+  const declaredBuildOutputEvidenceHash = firstText(
+    raw.buildOutputEvidenceHash,
+    raw.build_output_evidence_hash,
+  );
+  const outputEvidenceValidation = compactObject(buildOutputEvidenceValidation);
+  const recomputedBuildOutputEvidenceHash = firstText(
+    outputEvidenceValidation.evidenceHash,
+    outputEvidenceValidation.evidence_hash,
+  );
   const canonicalObservationSeed = {
     schemaVersion: RANDOM_COLD_BUILD_EXECUTION_OBSERVATION_SCHEMA_VERSION,
     commandSpecHash: recomputedCommandSpecHash,
@@ -4709,7 +5946,9 @@ function randomColdBuildExecutionObservationFacet(
     observedCommitAfter,
     sourceWorktreeCleanAfter,
     sourceWorktreeStatusAfterHash,
+    sourceWorktreeManifestHashAfter,
     executionEnvironmentHash: recomputedExecutionEnvironmentHash,
+    buildOutputEvidenceHash: recomputedBuildOutputEvidenceHash,
     wrapperStartedAt,
     wrapperExecutionId: canonicalWrapperExecutionId,
     wrapperEventStreamHash: canonicalWrapperEventStreamHash,
@@ -4753,11 +5992,13 @@ function randomColdBuildExecutionObservationFacet(
     ['schemaVersion', 'schema_version'],
     ['proofAuthority', 'proof_authority'],
     ['acceptedAsColdBuildExecutionEvidence', 'accepted_as_cold_build_execution_evidence'],
+    ['acceptedAsColdCommandExecutionEvidence', 'accepted_as_cold_command_execution_evidence'],
     ['acceptedForGpuHmr', 'accepted_for_gpu_hmr'],
     ['gpuHmrSuccess', 'gpu_hmr_success'],
     ['canSatisfyRuntimeProof', 'can_satisfy_runtime_proof'],
     ['canSatisfyDispatchProof', 'can_satisfy_dispatch_proof'],
     ['observedBuildExecution', 'observed_build_execution'],
+    ['observedCommandExecution', 'observed_command_execution'],
     ['commandSpecHash', 'command_spec_hash'],
     ['buildExitCodeText', 'build_exit_code_text'],
     ['runExitCodeText', 'run_exit_code_text'],
@@ -4792,11 +6033,50 @@ function randomColdBuildExecutionObservationFacet(
   const expectedContainerWorkingDirectory = cwd === '.'
     ? '/workspace/source'
     : `/workspace/source/${cwd}`;
+  const baselineEnvironmentValueHashes = {
+    HOME: sha256BufferHash(Buffer.from('/tmp/synthi-home')),
+    SYNTHI_COLD_BUILD_COMMAND_SPEC_HASH: sha256BufferHash(Buffer.from(
+      recomputedCommandSpecHash,
+    )),
+    SYNTHI_COLD_BUILD_OUTPUT_MANIFEST: sha256BufferHash(Buffer.from(
+      '/workspace/build/synthi-cold-build-output-manifest.json',
+    )),
+    SYNTHI_COLD_BUILD_OUTPUT_ROOT: sha256BufferHash(Buffer.from('/workspace/build')),
+    SYNTHI_COLD_BUILD_SOURCE_BINDING_HASH: sha256BufferHash(Buffer.from(
+      recomputedSourceBindingHash,
+    )),
+    SYNTHI_COLD_BUILD_SOURCE_ROOT: sha256BufferHash(Buffer.from('/workspace/source')),
+    TMPDIR: sha256BufferHash(Buffer.from('/tmp')),
+  };
+  const baselineEnvironmentNames = Object.keys(baselineEnvironmentValueHashes).sort();
+  const expectedContainerEnvironmentValueHashes = {
+    ...baselineEnvironmentValueHashes,
+    ...envValueHashes,
+  };
+  const expectedContainerLabels = {
+    'synthi.cold_build.execution_nonce': executionEnvironment.executionNonce,
+    'synthi.cold_build.command_spec_hash': recomputedCommandSpecHash,
+    'synthi.cold_build.source_binding_hash': recomputedSourceBindingHash,
+  };
+  const recomputedWorkerImageReferenceMatches = workerImage?.startsWith('sha256:')
+    ? workerImage.toLowerCase() === executionEnvironment.workerImageId?.toLowerCase()
+    : executionEnvironment.workerImageDescriptor?.repoDigests
+      ?.some((digest) => digest.toLowerCase() === workerImage?.toLowerCase()) === true;
   const containerSourceMount = executionEnvironment.containerConfig?.mounts?.find(
     (mount) => mount.destination === '/workspace/source',
   );
-  const containerOutputMount = executionEnvironment.containerConfig?.mounts?.find(
-    (mount) => mount.destination === '/workspace/build',
+  const containerReleaseMount = executionEnvironment.containerConfig?.mounts?.find(
+    (mount) => mount.destination === '/synthi-release',
+  );
+  const containerBindMounts = executionEnvironment.containerConfig?.mounts
+    ?.filter((mount) => mount.type === 'bind') ?? [];
+  const containerWritableBindMounts = containerBindMounts
+    .filter((mount) => mount.readWrite === true);
+  const containerStartedAtMs = Date.parse(
+    executionEnvironment.containerState?.startedAt ?? '',
+  );
+  const containerFinishedAtMs = Date.parse(
+    executionEnvironment.containerState?.finishedAt ?? '',
   );
   const lifecycleDiagnosticGaps = compactStringList([
     lifecycleAliasConflict
@@ -4806,11 +6086,17 @@ function randomColdBuildExecutionObservationFacet(
       ? null
       : 'random_cold_build_command_execution_lifecycle_authority_invalid',
     firstBool(
-      upstreamLifecycleFailure.acceptedAsColdBuildExecutionEvidence,
-      upstreamLifecycleFailure.accepted_as_cold_build_execution_evidence,
+      upstreamLifecycleRaw.acceptedAsColdCommandExecutionEvidence,
+      upstreamLifecycleRaw.accepted_as_cold_command_execution_evidence,
     ) === true
       ? null
-      : 'random_cold_build_command_execution_lifecycle_acceptance_missing',
+      : 'random_cold_build_command_execution_lifecycle_command_acceptance_missing',
+    firstBool(
+      upstreamLifecycleRaw.acceptedAsColdBuildExecutionEvidence,
+      upstreamLifecycleRaw.accepted_as_cold_build_execution_evidence,
+    ) === false
+      ? null
+      : 'random_cold_build_command_execution_lifecycle_claimed_build_authority',
     runtimeClosureLifecycleBuildSucceeded(upstreamLifecycleFailure)
       ? null
       : 'random_cold_build_command_execution_lifecycle_build_not_successful',
@@ -4828,8 +6114,17 @@ function randomColdBuildExecutionObservationFacet(
       || expectedCommandAliasConflict
       || expectedCommandProjection.aliasConflict
       || sourceBindingAliasConflict
+      || sourceSnapshotBindingAliasConflict
       || processObservationAliasConflict
       || executionEnvironmentAliasConflict
+      || workerImageDescriptorAliasConflict
+      || containerConfigAliasConflict
+      || containerMountAliasConflict
+      || containerStateAliasConflict
+      || resourcePolicyAliasConflict
+      || buildOutputExtractionAliasConflict
+      || containerProtocolAliasConflict
+      || workspaceCapacityPreflightAliasConflict
       ? 'random_cold_build_command_execution_alias_conflict'
       : null,
     expectedCommandConfigured === true
@@ -4840,24 +6135,55 @@ function randomColdBuildExecutionObservationFacet(
       && expectedNestedCommandSpecHash === expectedRecomputedCommandSpecHash
       ? null
       : 'random_cold_build_command_execution_configured_command_hash_mismatch',
-    blockingGaps.length === 0
+    blockingGaps.every((gap) => [
+      'cold_build_graph_observer_missing',
+      'cold_compile_receipt_missing',
+      'cold_device_artifact_build_unproven',
+    ].includes(gap))
       ? null
-      : 'random_cold_build_command_execution_blocking_gaps_present',
+      : 'random_cold_build_command_execution_unexpected_blocking_gap_present',
+    Object.keys(buildOutputEvidenceRaw).length > 0
+      && outputEvidenceValidation.present === true
+      ? null
+      : 'random_cold_build_command_execution_output_evidence_missing',
+    outputEvidenceValidation.accepted === true
+      && outputEvidenceValidation.matrixRecomputed === true
+      ? null
+      : 'random_cold_build_command_execution_output_evidence_invalid',
+    declaredBuildOutputEvidenceHash === recomputedBuildOutputEvidenceHash
+      && recomputedBuildOutputEvidenceHash === stableJsonHash(buildOutputEvidenceRaw)
+      ? null
+      : 'random_cold_build_command_execution_output_evidence_hash_mismatch',
+    firstText(
+      outputEvidenceValidation.commandSpecHash,
+      outputEvidenceValidation.command_spec_hash,
+    ) === recomputedCommandSpecHash
+      ? null
+      : 'random_cold_build_command_execution_output_command_hash_mismatch',
+    firstText(
+      outputEvidenceValidation.sourceBindingHash,
+      outputEvidenceValidation.source_binding_hash,
+    ) === recomputedSourceBindingHash
+      ? null
+      : 'random_cold_build_command_execution_output_source_hash_mismatch',
+    ...compactStringList(
+      outputEvidenceValidation.failedGates ?? outputEvidenceValidation.failed_gates,
+    ),
     schemaVersion !== RANDOM_COLD_BUILD_EXECUTION_OBSERVATION_SCHEMA_VERSION
       ? 'random_cold_build_command_execution_schema_invalid'
       : null,
     proofAuthority !== RANDOM_COLD_BUILD_EXECUTION_OBSERVATION_AUTHORITY
       ? 'random_cold_build_command_execution_authority_invalid'
       : null,
-    declaredRecordAccepted
+    declaredRecordAccepted === false
       ? null
-      : 'random_cold_build_command_execution_record_acceptance_missing',
+      : 'random_cold_build_command_execution_claimed_record_acceptance_without_receipt',
     declaredSupportAccepted
       ? null
       : 'random_cold_build_command_execution_support_acceptance_missing',
-    declaredColdBuildAccepted
+    declaredColdBuildAccepted === false
       ? null
-      : 'random_cold_build_command_execution_cold_acceptance_missing',
+      : 'random_cold_build_command_execution_claimed_cold_acceptance_without_receipt',
     acceptedForGpuHmr === true
       ? 'random_cold_build_command_execution_claimed_gpu_hmr_acceptance'
       : null,
@@ -4886,6 +6212,7 @@ function randomColdBuildExecutionObservationFacet(
       : 'random_cold_build_command_execution_command_invalid',
     Array.isArray(commandSpecRaw.args)
       && args.length === commandSpecRaw.args.length
+      && args.length >= 1
       && args.length <= 256
       && args.every((value) => value.length <= 32768 && !value.includes('\0'))
       ? null
@@ -4918,10 +6245,13 @@ function randomColdBuildExecutionObservationFacet(
       && /^(?:sha256:[0-9a-f]{64}|[^@\s]+@sha256:[0-9a-f]{64})$/i.test(workerImage)
       ? null
       : 'random_cold_build_command_execution_worker_image_invalid',
-    envNames.length <= 128
+    envNames.length === 0
       && envNames.length === Object.keys(envValueHashes).length
       && envNames.every((name) =>
-        /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && isSha256(envValueHashes[name])
+        /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)
+        && !/(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|AUTHORIZATION)/i.test(name)
+        && !baselineEnvironmentNames.includes(name)
+        && isSha256(envValueHashes[name])
       )
       ? null
       : 'random_cold_build_command_execution_env_hashes_invalid',
@@ -4941,10 +6271,8 @@ function randomColdBuildExecutionObservationFacet(
       && executionEnvironment.networkIsolated === true
       ? null
       : 'random_cold_build_command_execution_environment_not_isolated',
-    executionEnvironment.baselineEnvironmentNames.length <= 32
-      && executionEnvironment.baselineEnvironmentNames.every((name) =>
-        /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)
-      )
+    stableJson(executionEnvironment.baselineEnvironmentNames)
+      === stableJson(baselineEnvironmentNames)
       ? null
       : 'random_cold_build_command_execution_baseline_environment_invalid',
     stableJson(executionEnvironment.declaredEnvironmentNames) === stableJson(envNames)
@@ -4956,47 +6284,326 @@ function randomColdBuildExecutionObservationFacet(
     executionEnvironment.workerImageReference === workerImage
       ? null
       : 'random_cold_build_command_execution_worker_image_mismatch',
-    isSha256(executionEnvironment.workerImageId)
+    executionEnvironment.workerImageDescriptor
+      && executionEnvironment.workerImageDescriptorHash
+        === stableJsonHash(executionEnvironment.workerImageDescriptor)
+      && executionEnvironment.workerImageDescriptor.reference === workerImage
+      && executionEnvironment.workerImageDescriptor.imageId === executionEnvironment.workerImageId
+      && executionEnvironment.workerImageDescriptor.referenceMatchesImage
+        === recomputedWorkerImageReferenceMatches
+      && recomputedWorkerImageReferenceMatches === true
+      && executionEnvironment.workerImageDescriptor.repoDigestsHash
+        === stableJsonHash(executionEnvironment.workerImageDescriptor.repoDigests)
+      && executionEnvironment.workerImageDescriptor.operatingSystem === 'linux'
+      && Boolean(executionEnvironment.workerImageDescriptor.architecture)
+      ? null
+      : 'random_cold_build_command_execution_worker_image_descriptor_invalid',
+    /^[a-f0-9]{32}$/.test(executionEnvironment.executionNonce ?? '')
+      && isSha256(executionEnvironment.workerImageId)
       && isSha256(executionEnvironment.containerIdHash)
       && isSha256(executionEnvironment.containerConfigHash)
+      && isSha256(executionEnvironment.containerStateHash)
       && isSha256(executionEnvironment.buildOutputRootHash)
+      && isSha256(executionEnvironment.buildOutputExtractionHash)
+      && isSha256(executionEnvironment.containerProtocolHash)
+      && isSha256(executionEnvironment.releaseControlRootHash)
+      && isSha256(executionEnvironment.workspaceCapacityPreflightHash)
+      && isSha256(executionEnvironment.resourcePolicyHash)
+      && isSha256(executionEnvironment.dockerExecutableHash)
+      && isSha256(executionEnvironment.dockerExecutablePathHash)
+      && [
+        'npipe:////./pipe/dockerDesktopLinuxEngine',
+        'unix:///var/run/docker.sock',
+      ].includes(executionEnvironment.dockerEndpoint)
       ? null
       : 'random_cold_build_command_execution_container_identity_invalid',
     executionEnvironment.containerConfigHash === recomputedContainerConfigHash
       ? null
       : 'random_cold_build_command_execution_container_config_hash_mismatch',
+    executionEnvironment.containerStateHash === recomputedContainerStateHash
+      ? null
+      : 'random_cold_build_command_execution_container_state_hash_mismatch',
+    executionEnvironment.resourcePolicyHash === recomputedResourcePolicyHash
+      && executionEnvironment.resourcePolicy?.memoryBytes >= RANDOM_COLD_BUILD_MIN_MEMORY_BYTES
+      && executionEnvironment.resourcePolicy?.memoryBytes <= RANDOM_COLD_BUILD_MAX_MEMORY_BYTES
+      && executionEnvironment.resourcePolicy?.memorySwapBytes
+        === executionEnvironment.resourcePolicy?.memoryBytes
+      && executionEnvironment.resourcePolicy?.nanoCpus >= RANDOM_COLD_BUILD_MIN_NANO_CPUS
+      && executionEnvironment.resourcePolicy?.nanoCpus <= RANDOM_COLD_BUILD_MAX_NANO_CPUS
+      && executionEnvironment.resourcePolicy?.workspaceBytes
+        >= RANDOM_COLD_BUILD_MIN_WORKSPACE_BYTES
+      && executionEnvironment.resourcePolicy?.workspaceBytes
+        <= RANDOM_COLD_BUILD_MAX_WORKSPACE_BYTES
+      && Number.isInteger(executionEnvironment.resourcePolicy?.workspaceEntryCount)
+      && executionEnvironment.resourcePolicy?.workspaceEntryCount
+        >= RANDOM_COLD_BUILD_MIN_WORKSPACE_ENTRY_COUNT
+      && executionEnvironment.resourcePolicy?.workspaceEntryCount
+        <= RANDOM_COLD_BUILD_MAX_WORKSPACE_ENTRY_COUNT
+      && executionEnvironment.resourcePolicy?.memoryBytes
+        >= executionEnvironment.resourcePolicy?.workspaceBytes
+          + RANDOM_COLD_BUILD_WORKSPACE_CAPACITY_RESERVE_BYTES
+      && executionEnvironment.resourcePolicy?.manifestOutputBytes
+        === RANDOM_COLD_BUILD_OUTPUT_MAX_BYTES
+      && executionEnvironment.resourcePolicy?.manifestOutputCount
+        === RANDOM_COLD_BUILD_OUTPUT_MAX_COUNT
+      ? null
+      : 'random_cold_build_command_execution_resource_policy_invalid',
+    executionEnvironment.workspaceCapacityPreflightHash
+      === recomputedWorkspaceCapacityPreflightHash
+      && executionEnvironment.workspaceCapacityPreflight?.schemaVersion
+        === 'synthi.gpu_hmr.cold_build_workspace_capacity_preflight.v1'
+      && executionEnvironment.workspaceCapacityPreflight?.proofAuthority
+        === 'host_filesystem_capacity_preflight_only_not_gpu_hmr_success'
+      && executionEnvironment.workspaceCapacityPreflight?.accepted === true
+      && executionEnvironment.workspaceCapacityPreflight?.acceptedForGpuHmr === false
+      && executionEnvironment.workspaceCapacityPreflight?.gpuHmrSuccess === false
+      && executionEnvironment.workspaceCapacityPreflight?.canSatisfyRuntimeProof === false
+      && executionEnvironment.workspaceCapacityPreflight?.canSatisfyDispatchProof === false
+      && !nestedExecutionAuthorityClaim(executionEnvironment.workspaceCapacityPreflight)
+      && Number.isSafeInteger(executionEnvironment.workspaceCapacityPreflight?.availableBytes)
+      && Number.isSafeInteger(
+        executionEnvironment.workspaceCapacityPreflight?.requiredAvailableBytes,
+      )
+      && executionEnvironment.workspaceCapacityPreflight?.availableBytes
+        >= executionEnvironment.workspaceCapacityPreflight?.requiredAvailableBytes
+      && executionEnvironment.workspaceCapacityPreflight?.requiredAvailableBytes
+        >= executionEnvironment.resourcePolicy?.workspaceBytes
+          + RANDOM_COLD_BUILD_WORKSPACE_CAPACITY_RESERVE_BYTES
+      && executionEnvironment.workspaceCapacityPreflight?.workspaceByteLimit
+        === executionEnvironment.resourcePolicy?.workspaceBytes
+      && executionEnvironment.workspaceCapacityPreflight?.workspaceEntryLimit
+        === executionEnvironment.resourcePolicy?.workspaceEntryCount
+      && executionEnvironment.workspaceCapacityPreflight?.memoryLimitBytes
+        === executionEnvironment.resourcePolicy?.memoryBytes
+      && executionEnvironment.workspaceCapacityPreflight?.requiredMemoryBytes
+        >= executionEnvironment.resourcePolicy?.workspaceBytes
+          + RANDOM_COLD_BUILD_WORKSPACE_CAPACITY_RESERVE_BYTES
+      && executionEnvironment.workspaceCapacityPreflight?.memoryLimitBytes
+        >= executionEnvironment.workspaceCapacityPreflight?.requiredMemoryBytes
+      ? null
+      : 'random_cold_build_command_execution_workspace_capacity_preflight_invalid',
+    executionEnvironment.buildOutputTransport === 'bounded_container_tmpfs_live_docker_cp'
+      && executionEnvironment.buildOutputExtractionHash
+        === recomputedBuildOutputExtractionHash
+      && executionEnvironment.buildOutputExtraction?.transport
+        === 'bounded_container_tmpfs_live_docker_cp'
+      && executionEnvironment.buildOutputExtraction?.accepted === true
+      && Number.isInteger(executionEnvironment.buildOutputExtraction?.readyCopyAttempts)
+      && executionEnvironment.buildOutputExtraction?.readyCopyAttempts >= 1
+      && executionEnvironment.buildOutputExtraction?.readyObserved === true
+      && isSha256(executionEnvironment.buildOutputExtraction?.readyCopyStdoutHash)
+      && isSha256(executionEnvironment.buildOutputExtraction?.readyCopyStderrHash)
+      && executionEnvironment.buildOutputExtraction?.pauseAccepted === true
+      && executionEnvironment.buildOutputExtraction?.pausedStateObserved === true
+      && executionEnvironment.buildOutputExtraction?.outputCopyAccepted === true
+      && isSha256(executionEnvironment.buildOutputExtraction?.outputCopyStdoutHash)
+      && isSha256(executionEnvironment.buildOutputExtraction?.outputCopyStderrHash)
+      && executionEnvironment.buildOutputExtraction?.statusCopyAccepted === true
+      && isSha256(executionEnvironment.buildOutputExtraction?.statusCopyStdoutHash)
+      && isSha256(executionEnvironment.buildOutputExtraction?.statusCopyStderrHash)
+      && Number.isInteger(executionEnvironment.buildOutputExtraction?.wrapperExitCode)
+      && executionEnvironment.buildOutputExtraction?.wrapperExitCode >= 0
+      && executionEnvironment.buildOutputExtraction?.wrapperExitCode <= 255
+      && executionEnvironment.buildOutputExtraction?.releaseWritten === true
+      && executionEnvironment.buildOutputExtraction?.unpauseAccepted === true
+      && executionEnvironment.buildOutputExtraction?.acceptedForGpuHmr === false
+      && executionEnvironment.buildOutputExtraction?.gpuHmrSuccess === false
+      && executionEnvironment.buildOutputExtraction?.canSatisfyRuntimeProof === false
+      && executionEnvironment.buildOutputExtraction?.canSatisfyDispatchProof === false
+      && !nestedExecutionAuthorityClaim(executionEnvironment.buildOutputExtraction)
+      ? null
+      : 'random_cold_build_command_execution_output_extraction_invalid',
+    executionEnvironment.containerProtocolHash === recomputedContainerProtocolHash
+      && executionEnvironment.containerProtocol?.schemaVersion
+        === COLD_BUILD_CONTAINER_PROTOCOL_SCHEMA
+      && executionEnvironment.containerProtocol?.proofAuthority
+        === COLD_BUILD_CONTAINER_PROTOCOL_AUTHORITY
+      && executionEnvironment.containerProtocol?.accepted === true
+      && executionEnvironment.containerProtocol?.wrapperExecutable
+        === COLD_BUILD_CONTAINER_WRAPPER_EXECUTABLE
+      && executionEnvironment.containerProtocol?.wrapperScriptHash
+        === sha256BufferHash(Buffer.from(COLD_BUILD_CONTAINER_WRAPPER_SCRIPT))
+      && executionEnvironment.containerProtocol?.privilegeDropExecutable
+        === COLD_BUILD_CONTAINER_PRIVILEGE_DROP_EXECUTABLE
+      && executionEnvironment.containerProtocol?.sleepExecutable
+        === COLD_BUILD_CONTAINER_SLEEP_EXECUTABLE
+      && executionEnvironment.containerProtocol?.commandUid === COLD_BUILD_CONTAINER_COMMAND_UID
+      && executionEnvironment.containerProtocol?.commandGid === COLD_BUILD_CONTAINER_COMMAND_GID
+      && executionEnvironment.containerProtocol?.workspaceByteLimit
+        === executionEnvironment.resourcePolicy?.workspaceBytes
+      && executionEnvironment.containerProtocol?.workspaceEntryLimit
+        === executionEnvironment.resourcePolicy?.workspaceEntryCount
+      && executionEnvironment.containerProtocol?.controlTmpfsBytes
+        === COLD_BUILD_CONTAINER_CONTROL_TMPFS_BYTES
+      && executionEnvironment.containerProtocol?.tmpBytes === COLD_BUILD_CONTAINER_TMP_BYTES
+      && executionEnvironment.containerProtocol?.sourceBindReadOnly === true
+      && executionEnvironment.containerProtocol?.releaseBindReadOnly === true
+      && executionEnvironment.containerProtocol?.writableBindCount === 0
+      && executionEnvironment.containerProtocol?.acceptedForGpuHmr === false
+      && executionEnvironment.containerProtocol?.gpuHmrSuccess === false
+      && executionEnvironment.containerProtocol?.canSatisfyRuntimeProof === false
+      && executionEnvironment.containerProtocol?.canSatisfyDispatchProof === false
+      && !nestedExecutionAuthorityClaim(executionEnvironment.containerProtocol)
+      ? null
+      : 'random_cold_build_command_execution_container_protocol_invalid',
     executionEnvironment.sourceMountPathHash === sourceBinding.sourceRootPathHash
       ? null
       : 'random_cold_build_command_execution_source_mount_binding_mismatch',
     executionEnvironment.dockerInspectAccepted === true
+      && executionEnvironment.dockerStateInspectAccepted === true
+      && executionEnvironment.environmentFileRemoved === true
+      && executionEnvironment.containerCidFileRemoved === true
+      && executionEnvironment.dockerClientConfigRemoved === true
+      && executionEnvironment.sourceSnapshotRemoved === true
+      && executionEnvironment.buildOutputRootRemoved === true
+      && executionEnvironment.releaseControlRootRemoved === true
+      && executionEnvironment.buildOutputExtraction?.accepted === true
+      && executionEnvironment.containerProtocol?.accepted === true
       && executionEnvironment.containerRemoved === true
       ? null
       : 'random_cold_build_command_execution_container_lifecycle_unproven',
     executionEnvironment.containerConfig?.imageId === executionEnvironment.workerImageId
       && executionEnvironment.containerConfig?.networkMode === 'none'
       && executionEnvironment.containerConfig?.readOnlyRootfs === true
-      && executionEnvironment.containerConfig?.capDrop?.includes('ALL')
-      && executionEnvironment.containerConfig?.securityOpt?.some(
-        (value) => value.startsWith('no-new-privileges'),
-      )
+      && executionEnvironment.containerConfig?.privileged === false
+      && stableJson(executionEnvironment.containerConfig?.capDrop) === stableJson(['ALL'])
+      && stableJson(executionEnvironment.containerConfig?.capAdd)
+        === stableJson(['SETGID', 'SETUID'])
+      && executionEnvironment.containerConfig?.securityOpt?.length === 1
+      && ['no-new-privileges', 'no-new-privileges:true', 'no-new-privileges=true']
+        .includes(executionEnvironment.containerConfig.securityOpt[0])
       && executionEnvironment.containerConfig?.pidsLimit === 1024
+      && executionEnvironment.containerConfig?.memoryBytes
+        === executionEnvironment.resourcePolicy?.memoryBytes
+      && executionEnvironment.containerConfig?.memorySwapBytes
+        === executionEnvironment.resourcePolicy?.memorySwapBytes
+      && executionEnvironment.containerConfig?.nanoCpus
+        === executionEnvironment.resourcePolicy?.nanoCpus
+      && stableJson(executionEnvironment.containerConfig?.ulimits) === stableJson([
+        { name: 'core', soft: 0, hard: 0 },
+        { name: 'nofile', soft: 4096, hard: 4096 },
+        {
+          name: 'fsize',
+          soft: executionEnvironment.resourcePolicy?.workspaceBytes,
+          hard: executionEnvironment.resourcePolicy?.workspaceBytes,
+        },
+      ].sort((left, right) => stableJson(left).localeCompare(stableJson(right))))
       && executionEnvironment.containerConfig?.ipcMode === 'private'
-      && executionEnvironment.containerConfig?.tmpfsMounts?.includes('/tmp')
+      && executionEnvironment.containerConfig?.autoRemove === false
+      && executionEnvironment.containerConfig?.usernsMode === null
+      && executionEnvironment.containerConfig?.deviceCount === 0
+      && executionEnvironment.containerConfig?.deviceRequestCount === 0
+      && stableJson(executionEnvironment.containerConfig?.tmpfsMounts)
+        === stableJson(['/synthi-control', '/tmp', '/workspace/build'])
+      && stableJson(executionEnvironment.containerConfig?.tmpfsOptions?.['/tmp'])
+        === stableJson(coldBuildTmpfsOptions())
+      && stableJson(executionEnvironment.containerConfig?.tmpfsOptions?.['/workspace/build'])
+        === stableJson(coldBuildOutputTmpfsOptions(
+          executionEnvironment.resourcePolicy?.workspaceBytes,
+          executionEnvironment.resourcePolicy?.workspaceEntryCount,
+        ))
+      && stableJson(executionEnvironment.containerConfig?.tmpfsOptions?.['/synthi-control'])
+        === stableJson(coldBuildControlTmpfsOptions())
       && executionEnvironment.containerConfig?.workingDirectory
         === expectedContainerWorkingDirectory
+      && executionEnvironment.containerConfig?.user === '0:0'
+      && executionEnvironment.containerConfig?.healthcheckDisabled === true
+      && executionEnvironment.containerConfig?.declaredVolumePaths?.length === 0
       && stableJson(executionEnvironment.containerConfig?.entrypoint)
-        === stableJson([command])
+        === stableJson(coldBuildContainerEntrypoint())
       && stableJson(executionEnvironment.containerConfig?.command)
-        === stableJson(args)
+        === stableJson(coldBuildContainerCommand(command, args))
+      && Object.entries(expectedContainerEnvironmentValueHashes).every(
+        ([name, valueHash]) =>
+          executionEnvironment.containerConfig?.environmentValueHashes?.[name] === valueHash,
+      )
+      && executionEnvironment.containerConfig?.environmentNames?.every((name) =>
+        /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)
+        && !/(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|AUTHORIZATION)/i.test(name)
+      )
+      && executionEnvironment.containerConfig?.environmentNames?.length
+        === Object.keys(
+          executionEnvironment.containerConfig?.environmentValueHashes ?? {},
+        ).length
+      && Object.values(
+        executionEnvironment.containerConfig?.environmentValueHashes ?? {},
+      ).every(isSha256)
+      && stableJson(executionEnvironment.containerConfig?.labels)
+        === stableJson(expectedContainerLabels)
+      && containerBindMounts.length === 2
+      && containerWritableBindMounts.length === 0
       && containerSourceMount?.type === 'bind'
       && containerSourceMount.readWrite === false
-      && containerOutputMount?.type === 'bind'
-      && containerOutputMount.readWrite === true
+      && containerSourceMount.propagation === 'rprivate'
+      && containerSourceMount.sourcePathHash === sourceBinding.sourceRootPathHash
+      && containerReleaseMount?.type === 'bind'
+      && containerReleaseMount.readWrite === false
+      && containerReleaseMount.propagation === 'rprivate'
+      && containerReleaseMount.sourcePathHash === executionEnvironment.releaseControlRootHash
       ? null
       : 'random_cold_build_command_execution_container_config_invalid',
+    executionEnvironment.containerState?.status === 'exited'
+      && executionEnvironment.containerState.running === false
+      && executionEnvironment.containerState.paused === false
+      && executionEnvironment.containerState.restarting === false
+      && executionEnvironment.containerState.oomKilled === false
+      && executionEnvironment.containerState.dead === false
+      && Number.isInteger(executionEnvironment.containerState.exitCode)
+      && executionEnvironment.containerState.error === null
+      && Number.isFinite(containerStartedAtMs)
+      && containerStartedAtMs > 0
+      && Number.isFinite(containerFinishedAtMs)
+      && containerFinishedAtMs >= containerStartedAtMs
+      && processObservation.exitCode === executionEnvironment.containerState.exitCode
+      && executionEnvironment.buildOutputExtraction?.wrapperExitCode
+        === executionEnvironment.containerState.exitCode
+      && processObservation.startedAt === executionEnvironment.containerState.startedAt
+      && processObservation.finishedAt === executionEnvironment.containerState.finishedAt
+      ? null
+      : 'random_cold_build_command_execution_container_state_invalid',
     isSha256(sourceBinding.sourceRootPathHash)
       ? null
       : 'random_cold_build_command_execution_source_root_hash_invalid',
+    isSha256(sourceBinding.submittedSourceRootPathHash)
+      && isSha256(sourceBinding.gitExecutableHash)
+      && isSha256(sourceBinding.gitExecutablePathHash)
+      ? null
+      : 'random_cold_build_command_execution_source_tool_identity_invalid',
+    sourceBinding.sourceSnapshotBinding
+      && sourceBinding.sourceSnapshotBindingHash
+        === stableJsonHash(sourceBinding.sourceSnapshotBinding)
+      && sourceBinding.sourceSnapshotBinding.immutableCommit === sourceBinding.immutableCommit
+      && sourceBinding.sourceSnapshotBinding.sourceListingHash === sourceBinding.sourceListingHash
+      && sourceBinding.sourceSnapshotBinding.snapshotRootPathHash
+        === sourceBinding.sourceRootPathHash
+      && sourceBinding.sourceSnapshotBinding.repoRelativeCwd === sourceBinding.repoRelativeCwd
+      && Number.isInteger(sourceBinding.sourceSnapshotBinding.entryCount)
+      && sourceBinding.sourceSnapshotBinding.entryCount >= 1
+      && Number.isInteger(sourceBinding.sourceSnapshotBinding.directoryCount)
+      && sourceBinding.sourceSnapshotBinding.directoryCount >= 0
+      && Number.isInteger(sourceBinding.sourceSnapshotBinding.symlinkCount)
+      && sourceBinding.sourceSnapshotBinding.symlinkCount >= 0
+      && sourceBinding.sourceSnapshotBinding.symlinkCount
+        <= sourceBinding.sourceSnapshotBinding.entryCount
+      && ['sha1', 'sha256'].includes(sourceBinding.sourceSnapshotBinding.objectFormat)
+      && Number.isInteger(sourceBinding.sourceSnapshotBinding.treeEntryCount)
+      && sourceBinding.sourceSnapshotBinding.treeEntryCount >= 1
+      && sourceBinding.sourceSnapshotBinding.treeEntryCount
+        === sourceBinding.sourceSnapshotBinding.entryCount
+      && isSha256(sourceBinding.sourceSnapshotBinding.treeManifestHash)
+      && sourceBinding.sourceSnapshotBinding.materializationMode === 'raw_git_blob_batch'
+      && [
+        'git_mode_files_host_owner_cleanup_posix_read_only_bind',
+        'git_mode_manifest_bound_windows_bind_projection',
+      ].includes(sourceBinding.sourceSnapshotBinding.permissionPolicy)
+      && sourceBinding.sourceSnapshotBinding.hostExecutableModeVerified
+        === (sourceBinding.sourceSnapshotBinding.permissionPolicy
+          === 'git_mode_files_host_owner_cleanup_posix_read_only_bind')
+      && sourceBinding.sourceSnapshotBinding.gitExecutableHash === sourceBinding.gitExecutableHash
+      && sourceBinding.sourceSnapshotBinding.gitExecutablePathHash
+        === sourceBinding.gitExecutablePathHash
+      ? null
+      : 'random_cold_build_command_execution_source_snapshot_binding_invalid',
     expectedCandidateId && sourceBinding.candidateId === expectedCandidateId
       ? null
       : 'random_cold_build_command_execution_candidate_id_mismatch',
@@ -5033,6 +6640,12 @@ function randomColdBuildExecutionObservationFacet(
       : 'random_cold_build_command_execution_source_binding_hash_mismatch',
     sourceBinding.sourceWorktreeCleanBefore === true
       && sourceBinding.sourceWorktreeStatusHash === sha256BufferHash(Buffer.from(''))
+      && sourceBinding.sourceWorktreeVerificationScope
+        === 'tracked_path_raw_bytes_stability_only'
+      && sourceBinding.sourceWorktreeCheckedEntryCount
+        === sourceBinding.sourceSnapshotBinding?.treeEntryCount
+      && sourceBinding.sourceWorktreeIntegrityCapturedBefore === true
+      && isSha256(sourceBinding.sourceWorktreeManifestHashBefore)
       ? null
       : 'random_cold_build_command_execution_source_worktree_not_clean',
     processObservation.processStarted
@@ -5083,18 +6696,52 @@ function randomColdBuildExecutionObservationFacet(
     facetHash === canonicalObservationHash
       ? null
       : 'random_cold_build_command_execution_facet_hash_mismatch',
-    observedBuildExecution ? null : 'random_cold_build_command_execution_not_observed',
+    observedCommandExecution
+      ? null
+      : 'random_cold_build_command_execution_not_observed',
+    observedBuildExecution === false
+      ? null
+      : 'random_cold_build_command_execution_claimed_build_observation_without_receipt',
+    observedCompileGraph === false
+      ? null
+      : 'random_cold_build_command_execution_claimed_compile_graph_without_receipt',
+    observedDeviceArtifactBuild === false
+      ? null
+      : 'random_cold_build_command_execution_claimed_device_artifact_without_receipt',
     firstBool(raw.commitPreserved, raw.commit_preserved) === true
       ? null
       : 'random_cold_build_command_execution_commit_not_preserved',
     sourceWorktreeCleanAfter === true
       && sourceWorktreeStatusAfterHash === sha256BufferHash(Buffer.from(''))
+      && sourceWorktreeManifestHashAfter === sourceBinding.sourceWorktreeManifestHashBefore
       ? null
       : 'random_cold_build_command_execution_source_worktree_changed',
     ...lifecycleDiagnosticGaps,
     ...suppliedFailedGates,
+    'random_cold_build_graph_observer_missing',
+    'random_cold_compile_receipt_missing',
+    'random_cold_device_artifact_build_unproven',
   ]);
-  const accepted = failedGates.length === 0 && declaredAccepted;
+  const commandOnlyGates = new Set([
+    'cold_build_graph_observer_missing',
+    'cold_compile_receipt_missing',
+    'cold_device_artifact_build_unproven',
+    'random_cold_build_graph_observer_missing',
+    'random_cold_compile_receipt_missing',
+    'random_cold_device_artifact_build_unproven',
+  ]);
+  const commandSupportFailedGates = failedGates.filter((gate) => !commandOnlyGates.has(gate));
+  const commandSupportAccepted =
+    declaredCommandAccepted
+    && declaredSupportAccepted
+    && declaredRecordAccepted === false
+    && declaredColdBuildAccepted === false
+    && observedCommandExecution
+    && observedBuildExecution === false
+    && observedCompileGraph === false
+    && observedDeviceArtifactBuild === false
+    && commandSupportFailedGates.length === 0;
+  const accepted = false;
   return {
     ...raw,
     present: true,
@@ -5103,10 +6750,12 @@ function randomColdBuildExecutionObservationFacet(
     proofAuthority,
     proof_authority: proofAuthority,
     accepted,
-    acceptedAsSupportEvidence: accepted,
-    accepted_as_support_evidence: accepted,
-    acceptedAsColdBuildExecutionEvidence: accepted,
-    accepted_as_cold_build_execution_evidence: accepted,
+    acceptedAsSupportEvidence: commandSupportAccepted,
+    accepted_as_support_evidence: commandSupportAccepted,
+    acceptedAsColdCommandExecutionEvidence: commandSupportAccepted,
+    accepted_as_cold_command_execution_evidence: commandSupportAccepted,
+    acceptedAsColdBuildExecutionEvidence: false,
+    accepted_as_cold_build_execution_evidence: false,
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
@@ -5117,6 +6766,12 @@ function randomColdBuildExecutionObservationFacet(
     can_satisfy_dispatch_proof: false,
     observedBuildExecution,
     observed_build_execution: observedBuildExecution,
+    observedCommandExecution,
+    observed_command_execution: observedCommandExecution,
+    observedCompileGraph,
+    observed_compile_graph: observedCompileGraph,
+    observedDeviceArtifactBuild,
+    observed_device_artifact_build: observedDeviceArtifactBuild,
     commandSpec: commandSpecSeed,
     command_spec: commandSpecSeed,
     commandSpecHash: recomputedCommandSpecHash,
@@ -5135,10 +6790,16 @@ function randomColdBuildExecutionObservationFacet(
     source_worktree_clean_after: sourceWorktreeCleanAfter,
     sourceWorktreeStatusAfterHash,
     source_worktree_status_after_hash: sourceWorktreeStatusAfterHash,
+    sourceWorktreeManifestHashAfter,
+    source_worktree_manifest_hash_after: sourceWorktreeManifestHashAfter,
     executionEnvironment,
     execution_environment: executionEnvironment,
     executionEnvironmentHash: recomputedExecutionEnvironmentHash,
     execution_environment_hash: recomputedExecutionEnvironmentHash,
+    buildOutputEvidence: outputEvidenceValidation,
+    build_output_evidence: outputEvidenceValidation,
+    buildOutputEvidenceHash: recomputedBuildOutputEvidenceHash,
+    build_output_evidence_hash: recomputedBuildOutputEvidenceHash,
     wrapperEvents: canonicalWrapperEvents,
     wrapper_events: canonicalWrapperEvents,
     wrapperExecutionId: canonicalWrapperExecutionId,
@@ -5159,6 +6820,8 @@ function randomColdBuildExecutionObservationFacet(
     blocking_gaps: blockingGaps,
     failedGates,
     failed_gates: failedGates,
+    commandSupportFailedGates,
+    command_support_failed_gates: commandSupportFailedGates,
   };
 }
 
@@ -33524,11 +35187,7 @@ function randomColdImportedRuntimeClosureSourceColdPathFacet(coldRow = {}, conte
           sourceEvidenceProvenance.failedGates
           ?? sourceEvidenceProvenance.failed_gates,
         )),
-    coldBuildExecutionObservation.present === true
-      && coldBuildExecutionObservation.accepted === true
-      && coldBuildExecutionObservation.matrixRecomputed === true
-      ? null
-      : 'random_cold_imported_runtime_closure_cold_build_execution_observation_required',
+    'random_cold_imported_runtime_closure_trusted_build_observer_required',
     ...(coldBuildExecutionObservation.present === true
       && coldBuildExecutionObservation.accepted !== true
       ? compactStringList(
@@ -34325,6 +35984,15 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
       && Object.keys(resultColdBuildCommandSpec).length > 0
       && stableJson(resultColdBuildCommandSpec) !== stableJson(rootColdBuildCommandSpec))
     || expectedColdBuildCommandHashes.length > 1;
+  const randomColdBuildOutputEvidenceValidation =
+    await randomColdBuildOutputEvidenceFacet(firstCompactObject(
+      randomColdBuildExecutionObservationRaw.buildOutputEvidence,
+      randomColdBuildExecutionObservationRaw.build_output_evidence,
+    ), {
+      artifactRoot: firstText(context.mcpRoot, context.mcp_root)
+        ? path.join(firstText(context.mcpRoot, context.mcp_root), '.gpu-hmr-shared-cas')
+        : defaultCasRootFromEnv(),
+    });
   const randomColdBuildExecutionObservation = randomColdBuildExecutionObservationFacet(
     randomColdBuildExecutionObservationRaw,
     {
@@ -34346,6 +36014,7 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
           candidate.cold_build_command_configured,
         ) === true,
       expectedCommandAliasConflict: expectedColdBuildCommandAliasConflict,
+      buildOutputEvidenceValidation: randomColdBuildOutputEvidenceValidation,
     },
   );
   const dryRun = randomLargeProjectColdPath.dryRun === true;
@@ -35091,6 +36760,23 @@ function cloneJsonLike(value) {
   if (value === null || value === undefined) return value;
   if (typeof structuredClone === 'function') return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
+}
+
+function jsonContainsSchemaVersion(value, schemaVersion) {
+  const pending = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (Array.isArray(current)) {
+      for (const entry of current) pending.push(entry);
+      continue;
+    }
+    if (!current || typeof current !== 'object') continue;
+    if (firstText(current.schemaVersion, current.schema_version, current.schema) === schemaVersion) {
+      return true;
+    }
+    for (const entry of Object.values(current)) pending.push(entry);
+  }
+  return false;
 }
 
 function classifiedJsonArtifactCacheKey({
@@ -37132,6 +38818,12 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
   });
 }
 
+function randomColdBuildRowsForBroadReadiness() {
+  // Serialized rows cannot establish compilation. A later trusted observer must
+  // recompute process events and artifact bytes before this gate can admit rows.
+  return [];
+}
+
 function largeRocmMlRandomColdDomainTokenMatches(value) {
   const text = String(value ?? '').trim().toLowerCase();
   if (!text) return [];
@@ -38432,6 +40124,87 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
   };
 }
 
+function randomColdCompileReceiptBroadReadinessPredicate() {
+  const predicate = {
+    schemaVersion: 'synthi.gpu_hmr.random_cold_compile_receipt_predicate.v1',
+    schema_version: 'synthi.gpu_hmr.random_cold_compile_receipt_predicate.v1',
+    authority: 'matrix_static_predicate_not_project_or_build_system_whitelist',
+    acceptanceImplementationState: 'trusted_build_observer_required',
+    acceptance_implementation_state: 'trusted_build_observer_required',
+    serializedReceiptAccepted: false,
+    serialized_receipt_accepted: false,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    targetNameWhitelist: [],
+    target_name_whitelist: [],
+    buildSystemWhitelist: [],
+    build_system_whitelist: [],
+    artifactExtensionWhitelist: [],
+    artifact_extension_whitelist: [],
+    requiredCompileReceiptSchema: RANDOM_COLD_COMPILE_RECEIPT_SCHEMA_VERSION,
+    required_compile_receipt_schema: RANDOM_COLD_COMPILE_RECEIPT_SCHEMA_VERSION,
+    requiredCompileReceiptAuthority: RANDOM_COLD_COMPILE_RECEIPT_AUTHORITY,
+    required_compile_receipt_authority: RANDOM_COLD_COMPILE_RECEIPT_AUTHORITY,
+    minimumDistinctSourceIdentityCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    minimum_distinct_source_identity_count: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    minimumDistinctSourceContentOnlyIdentityCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    minimum_distinct_source_content_only_identity_count:
+      BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    requiredSignals: [
+      'matrix_recomputed_build_execution_observation',
+      'trusted_build_graph_observer_receipt',
+      'source_binding_hash_matches_observation',
+      'source_listing_hash_matches_cold_intake',
+      'source_intake_facet_hash_matches_cold_intake',
+      'immutable_commit_matches_cold_intake',
+      'compiler_invocation_manifest_hash_observed',
+      'device_artifact_manifest_hash_observed',
+      'nonempty_device_executable_bytes_observed',
+      'no_gpu_hmr_runtime_or_dispatch_authority_claims',
+    ],
+    required_signals: [
+      'matrix_recomputed_build_execution_observation',
+      'trusted_build_graph_observer_receipt',
+      'source_binding_hash_matches_observation',
+      'source_listing_hash_matches_cold_intake',
+      'source_intake_facet_hash_matches_cold_intake',
+      'immutable_commit_matches_cold_intake',
+      'compiler_invocation_manifest_hash_observed',
+      'device_artifact_manifest_hash_observed',
+      'nonempty_device_executable_bytes_observed',
+      'no_gpu_hmr_runtime_or_dispatch_authority_claims',
+    ],
+    ignoredForAcceptance: [
+      'target_id_value',
+      'candidate_id_value',
+      'repository_name',
+      'profile_id_value',
+      'build_system_name',
+      'compiler_executable_name',
+      'artifact_file_extension',
+      'self_reported_build_success',
+    ],
+    ignored_for_acceptance: [
+      'target_id_value',
+      'candidate_id_value',
+      'repository_name',
+      'profile_id_value',
+      'build_system_name',
+      'compiler_executable_name',
+      'artifact_file_extension',
+      'self_reported_build_success',
+    ],
+  };
+  const predicateHash = stableJsonHash(predicate);
+  return {
+    ...predicate,
+    predicateHash,
+    predicate_hash: predicateHash,
+  };
+}
+
 function computeBroadLibraryAgnosticProof(rows, context = {}) {
   const fullRuntimeCandidateRows = rows.filter(acceptedFullRuntimeRow);
   const fullRuntimeRows = broadReadinessFreshRows(
@@ -38453,6 +40226,11 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     requireLargeSourceTree: false,
     ...context,
   });
+  const randomColdBuildRows = randomColdBuildRowsForBroadReadiness(rows, context);
+  const randomColdBuildCandidateRows = randomColdBuildRowsForBroadReadiness(rows, {
+    requireLargeSourceTree: false,
+    ...context,
+  });
   const largeRocmMlRandomColdPathRows =
     largeRocmMlRandomColdSourceRowsForBroadReadiness(rows, context);
   const largeRocmMlRandomColdPathCandidateRows =
@@ -38463,6 +40241,8 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
   const randomColdPathSelectionPredicate = randomColdPathBroadReadinessPredicate(context);
   const randomColdPathCandidateSelectionPredicate =
     randomColdPathBroadReadinessPredicate({ requireLargeSourceTree: false, ...context });
+  const randomColdCompileReceiptSelectionPredicate =
+    randomColdCompileReceiptBroadReadinessPredicate();
   const randomColdPathFreshnessGaps =
     randomColdPathBroadReadinessFreshnessGaps(rows, context);
   const sourceFirstVisualCandidateRows = sourceFirstVisualRowsForBroadReadiness(rows, context);
@@ -38523,6 +40303,18 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
   const randomColdPathCandidateRowIds = compactStringList(
     randomColdPathCandidateRows.map((row) => row.rowId),
   );
+  const randomColdBuildTargets = compactStringList(
+    randomColdBuildRows.map((row) => row.targetId),
+  );
+  const randomColdBuildRowIds = compactStringList(
+    randomColdBuildRows.map((row) => row.rowId),
+  );
+  const randomColdBuildDistinctSourceIdentityHashes =
+    randomColdPathDistinctSourceIdentityHashList(randomColdBuildRows);
+  const randomColdBuildDistinctSourceContentOnlyIdentityHashes =
+    randomColdPathDistinctSourceContentOnlyIdentityHashList(randomColdBuildRows);
+  const randomColdBuildCandidateDistinctSourceIdentityHashes =
+    randomColdPathDistinctSourceIdentityHashList(randomColdBuildCandidateRows);
   const largeRocmMlRandomColdPathTargets = compactStringList(
     largeRocmMlRandomColdPathRows.map((row) => row.targetId),
   );
@@ -38591,6 +40383,19 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
           : randomColdPathRows.length >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
             ? 'broad_acceptance_requires_distinct_random_large_project_cold_sources'
             : 'broad_acceptance_requires_more_random_large_project_cold_paths',
+    randomColdBuildDistinctSourceIdentityHashes.length
+      >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
+      && randomColdBuildDistinctSourceContentOnlyIdentityHashes.length
+        >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
+      ? null
+      : randomColdBuildCandidateRows.length === 0
+        ? 'broad_acceptance_requires_trusted_random_large_project_cold_compile_receipts'
+        : randomColdBuildRows.length === 0
+          ? 'broad_acceptance_requires_large_random_project_cold_compile_receipts'
+          : randomColdBuildDistinctSourceIdentityHashes.length
+              >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
+            ? 'broad_acceptance_requires_distinct_random_project_cold_compile_content'
+            : 'broad_acceptance_requires_more_random_project_cold_compile_receipts',
     largeRocmMlRandomColdPathDistinctSourceIdentityHashes.length
       >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT
       && largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes.length
@@ -38632,6 +40437,7 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     ...compactStringList(refusalRowsForReadiness.map((row) => row.rowId)),
     ...randomColdPathRowIds,
     ...randomColdPathCandidateRowIds,
+    ...randomColdBuildRowIds,
     ...largeRocmMlRandomColdPathRowIds,
     ...largeRocmMlRandomColdPathCandidateRowIds,
     ...sourceFirstVisualRowIds,
@@ -38675,6 +40481,13 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
       randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes,
     randomColdPathCandidateTargets,
     randomColdPathCandidateRowIds,
+    randomColdBuildTargets,
+    randomColdBuildRowIds,
+    randomColdBuildDistinctSourceIdentityHashes,
+    randomColdBuildDistinctSourceContentOnlyIdentityHashes,
+    randomColdBuildCandidateDistinctSourceIdentityHashes,
+    randomColdCompileReceiptSelectionPredicateHash:
+      randomColdCompileReceiptSelectionPredicate.predicateHash,
     largeRocmMlRandomColdPathTargets,
     largeRocmMlRandomColdPathRowIds,
     largeRocmMlRandomColdPathDistinctSourceIdentityHashes,
@@ -38825,6 +40638,39 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     random_cold_path_row_ids: randomColdPathRowIds,
     randomColdPathTargets,
     random_cold_path_targets: randomColdPathTargets,
+    randomColdBuildRows: randomColdBuildRows.length,
+    random_cold_build_rows: randomColdBuildRows.length,
+    randomColdBuildRowIds,
+    random_cold_build_row_ids: randomColdBuildRowIds,
+    randomColdBuildTargets,
+    random_cold_build_targets: randomColdBuildTargets,
+    randomColdBuildDistinctSourceIdentityCount:
+      randomColdBuildDistinctSourceIdentityHashes.length,
+    random_cold_build_distinct_source_identity_count:
+      randomColdBuildDistinctSourceIdentityHashes.length,
+    randomColdBuildDistinctSourceIdentityHashes,
+    random_cold_build_distinct_source_identity_hashes:
+      randomColdBuildDistinctSourceIdentityHashes,
+    randomColdBuildDistinctSourceContentOnlyIdentityCount:
+      randomColdBuildDistinctSourceContentOnlyIdentityHashes.length,
+    random_cold_build_distinct_source_content_only_identity_count:
+      randomColdBuildDistinctSourceContentOnlyIdentityHashes.length,
+    randomColdBuildDistinctSourceContentOnlyIdentityHashes,
+    random_cold_build_distinct_source_content_only_identity_hashes:
+      randomColdBuildDistinctSourceContentOnlyIdentityHashes,
+    randomColdBuildCandidateRows: randomColdBuildCandidateRows.length,
+    random_cold_build_candidate_rows: randomColdBuildCandidateRows.length,
+    randomColdBuildCandidateDistinctSourceIdentityCount:
+      randomColdBuildCandidateDistinctSourceIdentityHashes.length,
+    random_cold_build_candidate_distinct_source_identity_count:
+      randomColdBuildCandidateDistinctSourceIdentityHashes.length,
+    randomColdCompileReceiptSelectionPredicate,
+    random_cold_compile_receipt_selection_predicate:
+      randomColdCompileReceiptSelectionPredicate,
+    randomColdCompileReceiptSelectionTargetNameIndependent:
+      randomColdCompileReceiptSelectionPredicate.targetNameIndependent === true,
+    random_cold_compile_receipt_selection_target_name_independent:
+      randomColdCompileReceiptSelectionPredicate.targetNameIndependent === true,
     largeRocmMlRandomColdPathRows: largeRocmMlRandomColdPathRows.length,
     large_rocm_ml_random_cold_path_rows: largeRocmMlRandomColdPathRows.length,
     largeRocmMlRandomColdPathRowIds,
@@ -38923,6 +40769,8 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     minimum_adversarial_refusal_count: BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT,
     minimumRandomColdPathCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
     minimum_random_cold_path_count: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    minimumRandomColdBuildReceiptCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    minimum_random_cold_build_receipt_count: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
     minimumRandomColdPathDistinctSourceIdentityCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
     minimum_random_cold_path_distinct_source_identity_count:
       BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
@@ -39092,6 +40940,18 @@ function broadLibraryAgnosticReadiness(
     randomColdPathDistinctSourceContentIdentityHashList(randomColdPathCandidateRows);
   const randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes =
     randomColdPathDistinctSourceContentOnlyIdentityHashList(randomColdPathCandidateRows);
+  const randomColdBuildRowCount = finiteNumber(
+    broadProof.randomColdBuildRows
+    ?? broadProof.random_cold_build_rows,
+  ) ?? 0;
+  const randomColdBuildDistinctSourceIdentityHashes = compactStringList(
+    broadProof.randomColdBuildDistinctSourceIdentityHashes
+    ?? broadProof.random_cold_build_distinct_source_identity_hashes,
+  );
+  const randomColdBuildDistinctSourceContentOnlyIdentityHashes = compactStringList(
+    broadProof.randomColdBuildDistinctSourceContentOnlyIdentityHashes
+    ?? broadProof.random_cold_build_distinct_source_content_only_identity_hashes,
+  );
   const largeRocmMlRandomColdPathTargets = compactStringList(
     largeRocmMlRandomColdPathRows.map((row) => row.targetId),
   );
@@ -39237,6 +41097,22 @@ function broadLibraryAgnosticReadiness(
     refusalTargetCount: refusalTargets.length,
     randomColdPathRowCount: randomColdPathRows.length,
     random_cold_path_row_count: randomColdPathRows.length,
+    randomColdBuildRowCount,
+    random_cold_build_row_count: randomColdBuildRowCount,
+    randomColdBuildDistinctSourceIdentityCount:
+      randomColdBuildDistinctSourceIdentityHashes.length,
+    random_cold_build_distinct_source_identity_count:
+      randomColdBuildDistinctSourceIdentityHashes.length,
+    randomColdBuildDistinctSourceIdentityHashes,
+    random_cold_build_distinct_source_identity_hashes:
+      randomColdBuildDistinctSourceIdentityHashes,
+    randomColdBuildDistinctSourceContentOnlyIdentityCount:
+      randomColdBuildDistinctSourceContentOnlyIdentityHashes.length,
+    random_cold_build_distinct_source_content_only_identity_count:
+      randomColdBuildDistinctSourceContentOnlyIdentityHashes.length,
+    randomColdBuildDistinctSourceContentOnlyIdentityHashes,
+    random_cold_build_distinct_source_content_only_identity_hashes:
+      randomColdBuildDistinctSourceContentOnlyIdentityHashes,
     randomColdPathDistinctSourceIdentityCount: randomColdPathDistinctSourceIdentityHashes.length,
     random_cold_path_distinct_source_identity_count: randomColdPathDistinctSourceIdentityHashes.length,
     randomColdPathDistinctSourceIdentityHashes,
@@ -41048,10 +42924,9 @@ function runtimeClosureRowSignals(row = {}) {
     ?? row.coldBuildExecutionObservation
     ?? row.cold_build_execution_observation
   );
-  const coldBuildExecutionObservationAccepted =
-    coldBuildExecutionObservation.present === true
-    && coldBuildExecutionObservation.accepted === true
-    && coldBuildExecutionObservation.matrixRecomputed === true;
+  // Serialized command observations are never compile authority. This remains
+  // hard-false until a trusted observer recomputes process and artifact bytes.
+  const coldBuildExecutionObservationAccepted = false;
   const runtimeChain = compactObject(
     row.realRocmRuntimeChain
     ?? row.real_rocm_runtime_chain
@@ -42072,7 +43947,13 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
       mcpRoot,
       contentHash: artifact.contentHash,
     });
-    const cachedRows = cachedClassifiedJsonArtifactRows(cacheKey);
+    const dependsOnExternalCasBytes = jsonContainsSchemaVersion(
+      artifact.json,
+      GPU_HMR_ARTIFACT_CAS_MANIFEST_SCHEMA_VERSION,
+    );
+    const cachedRows = dependsOnExternalCasBytes
+      ? null
+      : cachedClassifiedJsonArtifactRows(cacheKey);
     if (cachedRows) {
       rows.push(...cachedRows);
       continue;
@@ -42091,7 +43972,9 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
             test_timing_v2: testTimingV2,
           }
         : row);
-    rememberClassifiedJsonArtifactRows(cacheKey, classifiedRows);
+    if (!dependsOnExternalCasBytes) {
+      rememberClassifiedJsonArtifactRows(cacheKey, classifiedRows);
+    }
     rows.push(...classifiedRows);
   }
   const ledger = buildGpuHmrValidationMatrixLedger(rows, {

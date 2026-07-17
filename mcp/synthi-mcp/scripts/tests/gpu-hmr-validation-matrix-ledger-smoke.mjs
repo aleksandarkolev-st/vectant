@@ -43,6 +43,19 @@ import {
   writeArtifactToCas,
 } from '../lib/gpu-hmr-artifact-cas.mjs';
 import {
+  COLD_BUILD_CONTAINER_COMMAND_GID,
+  COLD_BUILD_CONTAINER_COMMAND_UID,
+  COLD_BUILD_CONTAINER_CONTROL_TMPFS_BYTES,
+  COLD_BUILD_CONTAINER_PROTOCOL_AUTHORITY,
+  COLD_BUILD_CONTAINER_PROTOCOL_SCHEMA,
+  COLD_BUILD_CONTAINER_TMP_BYTES,
+  coldBuildControlTmpfsOptions,
+  coldBuildLauncherCommand,
+  coldBuildLauncherEntrypoint,
+  coldBuildOutputTmpfsOptions,
+  coldBuildTmpfsOptions,
+} from '../lib/gpu-hmr-cold-build-container-contract.mjs';
+import {
   buildComputeOracleArtifactsFromByteEvidence,
   buildRuntimeBoundaryRunModeProof,
 } from '../lib/gpu-hmr-runtime-boundary-proof-adapter.mjs';
@@ -54,6 +67,20 @@ import {
 import {
   buildGpuHmrValidationProofSummary,
 } from '../lib/gpu-hmr-validation-proof-summary.mjs';
+
+const REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE = Object.freeze({
+  removed: 'unsafe_legacy_cold_container_wrapper',
+});
+const COLD_BUILD_CONTAINER_PRIVILEGE_DROP_EXECUTABLE =
+  REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE;
+const COLD_BUILD_CONTAINER_SLEEP_EXECUTABLE =
+  REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE;
+const COLD_BUILD_CONTAINER_WRAPPER_EXECUTABLE =
+  REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE;
+const COLD_BUILD_CONTAINER_WRAPPER_SCRIPT =
+  REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE;
+const coldBuildContainerCommand = coldBuildLauncherCommand;
+const coldBuildContainerEntrypoint = coldBuildLauncherEntrypoint;
 
 const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
 
@@ -2415,7 +2442,7 @@ function randomColdBuildCommandSpecFixture({
   };
 }
 
-function randomColdBuildExecutionObservationFixture({
+async function randomColdBuildExecutionObservationFixture({
   candidateId = 'direct-random-arbitrary-cold',
   candidateSource = 'direct_source_url_commit',
   immutableCommit = '1111111111111111111111111111111111111111',
@@ -2431,6 +2458,7 @@ function randomColdBuildExecutionObservationFixture({
   finishedAt = '2026-07-01T10:00:01.000Z',
   executionTransport = 'isolated_worker_container',
   commandSpec: suppliedCommandSpec = null,
+  containerConfigOverrides = {},
   executionEnvironmentOverrides = {},
   overrides = {},
 } = {}) {
@@ -2445,6 +2473,23 @@ function randomColdBuildExecutionObservationFixture({
   const effectiveCwd = commandSpec.cwd;
   const effectiveTimeoutMs = commandSpec.timeoutMs;
   const effectiveExecutionTransport = commandSpec.executionTransport;
+  const sourceSnapshotBinding = {
+    immutableCommit,
+    sourceListingHash: sourceIntakeEvidence.sourceListingHash,
+    snapshotRootPathHash: hashValue(`${candidateId}:materialized-source-root`),
+    repoRelativeCwd: effectiveCwd,
+    entryCount: 3,
+    directoryCount: 1,
+    symlinkCount: 0,
+    objectFormat: 'sha1',
+    treeEntryCount: 3,
+    treeManifestHash: hashValue(`${candidateId}:tree-manifest`),
+    materializationMode: 'raw_git_blob_batch',
+    permissionPolicy: 'git_mode_manifest_bound_windows_bind_projection',
+    hostExecutableModeVerified: false,
+    gitExecutableHash: hashValue('git-executable'),
+    gitExecutablePathHash: hashValue('git-executable-path'),
+  };
   const sourceBinding = {
     candidateId,
     candidateSource,
@@ -2453,11 +2498,20 @@ function randomColdBuildExecutionObservationFixture({
     sourceIntakeFacetHash: sourceIntakeEvidence.facetHash,
     coldBuildExecutionPlanHash: sourceIntakeEvidence.coldBuildExecutionPlan?.planHash,
     directSourceIdentityHash: directInputEvidence.sourceIdentityHash ?? null,
+    submittedSourceRootPathHash: hashValue(`${candidateId}:submitted-source-root`),
     sourceRootPathHash: hashValue(`${candidateId}:materialized-source-root`),
+    sourceSnapshotBinding,
+    sourceSnapshotBindingHash: contentHashFor(sourceSnapshotBinding),
+    gitExecutableHash: sourceSnapshotBinding.gitExecutableHash,
+    gitExecutablePathHash: sourceSnapshotBinding.gitExecutablePathHash,
     repoRelativeCwd: effectiveCwd,
     observedCommitBefore: immutableCommit,
     sourceWorktreeCleanBefore: true,
     sourceWorktreeStatusHash: hashValue(''),
+    sourceWorktreeVerificationScope: 'tracked_path_raw_bytes_stability_only',
+    sourceWorktreeCheckedEntryCount: 3,
+    sourceWorktreeIntegrityCapturedBefore: true,
+    sourceWorktreeManifestHashBefore: hashValue(`${candidateId}:tracked-worktree-manifest`),
   };
   const sourceBindingHash = contentHashFor(sourceBinding);
   const wrapperStartedAt = startedAt;
@@ -2490,37 +2544,207 @@ function randomColdBuildExecutionObservationFixture({
   const workerImageId = commandSpec.workerImage?.includes('@sha256:')
     ? commandSpec.workerImage.slice(commandSpec.workerImage.indexOf('@') + 1)
     : hashValue(commandSpec.workerImage ?? 'missing-worker-image');
+  const buildOutputRootHash = hashValue(`${candidateId}:build-output-root`);
+  const releaseControlRootHash = hashValue(`${candidateId}:release-control-root`);
+  const executionNonce = sha256Hex(`${candidateId}:cold-build-execution`).slice(0, 32);
+  const baselineEnvironmentNames = [
+    'HOME',
+    'SYNTHI_COLD_BUILD_COMMAND_SPEC_HASH',
+    'SYNTHI_COLD_BUILD_OUTPUT_MANIFEST',
+    'SYNTHI_COLD_BUILD_OUTPUT_ROOT',
+    'SYNTHI_COLD_BUILD_SOURCE_BINDING_HASH',
+    'SYNTHI_COLD_BUILD_SOURCE_ROOT',
+    'TMPDIR',
+  ];
+  const environmentValueHashes = {
+    HOME: hashValue('/tmp/synthi-home'),
+    SYNTHI_COLD_BUILD_COMMAND_SPEC_HASH: hashValue(commandSpecHash),
+    SYNTHI_COLD_BUILD_OUTPUT_MANIFEST: hashValue(
+      '/workspace/build/synthi-cold-build-output-manifest.json',
+    ),
+    SYNTHI_COLD_BUILD_OUTPUT_ROOT: hashValue('/workspace/build'),
+    SYNTHI_COLD_BUILD_SOURCE_BINDING_HASH: hashValue(sourceBindingHash),
+    SYNTHI_COLD_BUILD_SOURCE_ROOT: hashValue('/workspace/source'),
+    TMPDIR: hashValue('/tmp'),
+  };
+  const coldBuildManifestOutputBytes = 512 * 1024 * 1024;
+  const coldBuildWorkspaceBytes = 8 * 1024 * 1024 * 1024;
+  const coldBuildWorkspaceEntryCount = 1_000_000;
+  const resourcePolicy = {
+    memoryBytes: 16 * 1024 * 1024 * 1024,
+    memorySwapBytes: 16 * 1024 * 1024 * 1024,
+    nanoCpus: 4_000_000_000,
+    workspaceBytes: coldBuildWorkspaceBytes,
+    workspaceEntryCount: coldBuildWorkspaceEntryCount,
+    manifestOutputBytes: coldBuildManifestOutputBytes,
+    manifestOutputCount: 1024,
+  };
   const containerConfig = {
     imageId: workerImageId,
     networkMode: 'none',
     readOnlyRootfs: true,
+    privileged: false,
     capDrop: ['ALL'],
+    capAdd: ['SETGID', 'SETUID'],
     securityOpt: ['no-new-privileges'],
     pidsLimit: 1024,
+    memoryBytes: resourcePolicy.memoryBytes,
+    memorySwapBytes: resourcePolicy.memorySwapBytes,
+    nanoCpus: resourcePolicy.nanoCpus,
+    ulimits: [
+      { name: 'core', soft: 0, hard: 0 },
+      { name: 'nofile', soft: 4096, hard: 4096 },
+      {
+        name: 'fsize',
+        soft: coldBuildWorkspaceBytes,
+        hard: coldBuildWorkspaceBytes,
+      },
+    ],
     ipcMode: 'private',
-    tmpfsMounts: ['/tmp'],
+    autoRemove: false,
+    usernsMode: null,
+    deviceCount: 0,
+    deviceRequestCount: 0,
+    tmpfsMounts: ['/synthi-control', '/tmp', '/workspace/build'],
+    tmpfsOptions: {
+      '/tmp': coldBuildTmpfsOptions(),
+      '/workspace/build': coldBuildOutputTmpfsOptions(
+        coldBuildWorkspaceBytes,
+        coldBuildWorkspaceEntryCount,
+      ),
+      '/synthi-control': coldBuildControlTmpfsOptions(),
+    },
     workingDirectory: effectiveCwd === '.'
       ? '/workspace/source'
       : `/workspace/source/${effectiveCwd}`,
-    entrypoint: [commandSpec.command],
-    command: commandSpec.args,
+    user: '0:0',
+    healthcheckDisabled: true,
+    declaredVolumePaths: [],
+    entrypoint: coldBuildContainerEntrypoint(),
+    command: coldBuildContainerCommand(commandSpec.command, commandSpec.args),
+    environmentNames: baselineEnvironmentNames,
+    environmentValueHashes,
+    labels: {
+      'synthi.cold_build.execution_nonce': executionNonce,
+      'synthi.cold_build.command_spec_hash': commandSpecHash,
+      'synthi.cold_build.source_binding_hash': sourceBindingHash,
+    },
     mounts: [
-      { type: 'bind', destination: '/workspace/build', readWrite: true },
-      { type: 'bind', destination: '/workspace/source', readWrite: false },
+      {
+        type: 'bind',
+        destination: '/workspace/source',
+        readWrite: false,
+        propagation: 'rprivate',
+        sourcePathHash: sourceBinding.sourceRootPathHash,
+      },
+      {
+        type: 'bind',
+        destination: '/synthi-release',
+        readWrite: false,
+        propagation: 'rprivate',
+        sourcePathHash: releaseControlRootHash,
+      },
     ].sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
+    ...containerConfigOverrides,
+  };
+  const containerState = {
+    status: 'exited',
+    running: false,
+    paused: false,
+    restarting: false,
+    oomKilled: false,
+    dead: false,
+    pid: 0,
+    exitCode: 0,
+    error: null,
+    startedAt,
+    finishedAt,
+  };
+  const buildOutputExtraction = {
+    transport: 'bounded_container_tmpfs_live_docker_cp',
+    accepted: true,
+    readyCopyAttempts: 2,
+    readyObserved: true,
+    readyCopyStdoutHash: hashValue(''),
+    readyCopyStderrHash: hashValue(''),
+    pauseAccepted: true,
+    pausedStateObserved: true,
+    outputCopyAccepted: true,
+    outputCopyStdoutHash: hashValue(''),
+    outputCopyStderrHash: hashValue(''),
+    statusCopyAccepted: true,
+    statusCopyStdoutHash: hashValue(''),
+    statusCopyStderrHash: hashValue(''),
+    wrapperExitCode: 0,
+    releaseWritten: true,
+    unpauseAccepted: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  const containerProtocol = {
+    schemaVersion: COLD_BUILD_CONTAINER_PROTOCOL_SCHEMA,
+    proofAuthority: COLD_BUILD_CONTAINER_PROTOCOL_AUTHORITY,
+    accepted: true,
+    wrapperExecutable: COLD_BUILD_CONTAINER_WRAPPER_EXECUTABLE,
+    wrapperScriptHash: hashValue(COLD_BUILD_CONTAINER_WRAPPER_SCRIPT),
+    privilegeDropExecutable: COLD_BUILD_CONTAINER_PRIVILEGE_DROP_EXECUTABLE,
+    sleepExecutable: COLD_BUILD_CONTAINER_SLEEP_EXECUTABLE,
+    commandUid: COLD_BUILD_CONTAINER_COMMAND_UID,
+    commandGid: COLD_BUILD_CONTAINER_COMMAND_GID,
+    workspaceByteLimit: coldBuildWorkspaceBytes,
+    workspaceEntryLimit: coldBuildWorkspaceEntryCount,
+    controlTmpfsBytes: COLD_BUILD_CONTAINER_CONTROL_TMPFS_BYTES,
+    tmpBytes: COLD_BUILD_CONTAINER_TMP_BYTES,
+    sourceBindReadOnly: true,
+    releaseBindReadOnly: true,
+    writableBindCount: 0,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  const workspaceCapacityPreflight = {
+    schemaVersion: 'synthi.gpu_hmr.cold_build_workspace_capacity_preflight.v1',
+    proofAuthority: 'host_filesystem_capacity_preflight_only_not_gpu_hmr_success',
+    accepted: true,
+    availableBytes: 32 * 1024 * 1024 * 1024,
+    requiredAvailableBytes: coldBuildWorkspaceBytes + (1024 * 1024 * 1024),
+    workspaceByteLimit: coldBuildWorkspaceBytes,
+    workspaceEntryLimit: coldBuildWorkspaceEntryCount,
+    memoryLimitBytes: resourcePolicy.memoryBytes,
+    requiredMemoryBytes: coldBuildWorkspaceBytes + (1024 * 1024 * 1024),
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
   };
   const executionEnvironment = {
     transport: effectiveExecutionTransport,
     isolated: effectiveExecutionTransport === 'isolated_worker_container',
     inheritedHostEnvironment: false,
-    baselineEnvironmentNames: ['HOME', 'TMPDIR'],
+    baselineEnvironmentNames,
     declaredEnvironmentNames: [],
     sourceMountReadOnly: effectiveExecutionTransport === 'isolated_worker_container',
     networkIsolated: effectiveExecutionTransport === 'isolated_worker_container',
     workerImageReference: commandSpec.workerImage,
+    executionNonce,
     workerImageId: effectiveExecutionTransport === 'isolated_worker_container'
       ? workerImageId
       : null,
+    workerImageDescriptor: effectiveExecutionTransport === 'isolated_worker_container'
+      ? {
+          reference: commandSpec.workerImage,
+          imageId: workerImageId,
+          referenceMatchesImage: true,
+          repoDigests: [commandSpec.workerImage],
+          repoDigestsHash: contentHashFor([commandSpec.workerImage]),
+          operatingSystem: 'linux',
+          architecture: 'amd64',
+        }
+      : null,
+    workerImageDescriptorHash: null,
     containerIdHash: effectiveExecutionTransport === 'isolated_worker_container'
       ? hashValue(`${candidateId}:container-id`)
       : null,
@@ -2530,21 +2754,78 @@ function randomColdBuildExecutionObservationFixture({
     containerConfigHash: effectiveExecutionTransport === 'isolated_worker_container'
       ? contentHashFor(containerConfig)
       : null,
-    sourceMountPathHash: sourceBinding.sourceRootPathHash,
-    buildOutputRootHash: effectiveExecutionTransport === 'isolated_worker_container'
-      ? hashValue(`${candidateId}:build-output-root`)
+    containerState: effectiveExecutionTransport === 'isolated_worker_container'
+      ? containerState
       : null,
+    containerStateHash: effectiveExecutionTransport === 'isolated_worker_container'
+      ? contentHashFor(containerState)
+      : null,
+    sourceMountPathHash: sourceBinding.sourceRootPathHash,
+    sourceSnapshotRemoved: effectiveExecutionTransport === 'isolated_worker_container',
+    buildOutputRootHash: effectiveExecutionTransport === 'isolated_worker_container'
+      ? buildOutputRootHash
+      : null,
+    buildOutputRootRemoved: effectiveExecutionTransport === 'isolated_worker_container',
+    buildOutputTransport: effectiveExecutionTransport === 'isolated_worker_container'
+      ? 'bounded_container_tmpfs_live_docker_cp'
+      : null,
+    buildOutputExtraction: effectiveExecutionTransport === 'isolated_worker_container'
+      ? buildOutputExtraction
+      : null,
+    buildOutputExtractionHash: effectiveExecutionTransport === 'isolated_worker_container'
+      ? contentHashFor(buildOutputExtraction)
+      : null,
+    containerProtocol: effectiveExecutionTransport === 'isolated_worker_container'
+      ? containerProtocol
+      : null,
+    containerProtocolHash: effectiveExecutionTransport === 'isolated_worker_container'
+      ? contentHashFor(containerProtocol)
+      : null,
+    releaseControlRootHash: effectiveExecutionTransport === 'isolated_worker_container'
+      ? releaseControlRootHash
+      : null,
+    releaseControlRootRemoved: effectiveExecutionTransport === 'isolated_worker_container',
+    workspaceCapacityPreflight: effectiveExecutionTransport === 'isolated_worker_container'
+      ? workspaceCapacityPreflight
+      : null,
+    workspaceCapacityPreflightHash: effectiveExecutionTransport === 'isolated_worker_container'
+      ? contentHashFor(workspaceCapacityPreflight)
+      : null,
+    resourcePolicy: effectiveExecutionTransport === 'isolated_worker_container'
+      ? resourcePolicy
+      : null,
+    resourcePolicyHash: effectiveExecutionTransport === 'isolated_worker_container'
+      ? contentHashFor(resourcePolicy)
+      : null,
+    dockerExecutableHash: effectiveExecutionTransport === 'isolated_worker_container'
+      ? hashValue('docker-executable')
+      : null,
+    dockerExecutablePathHash: effectiveExecutionTransport === 'isolated_worker_container'
+      ? hashValue('docker-executable-path')
+      : null,
+    dockerEndpoint: effectiveExecutionTransport === 'isolated_worker_container'
+      ? process.platform === 'win32'
+        ? 'npipe:////./pipe/dockerDesktopLinuxEngine'
+        : 'unix:///var/run/docker.sock'
+      : null,
+    dockerClientConfigRemoved: effectiveExecutionTransport === 'isolated_worker_container',
     dockerInspectAccepted: effectiveExecutionTransport === 'isolated_worker_container',
+    dockerStateInspectAccepted: effectiveExecutionTransport === 'isolated_worker_container',
+    environmentFileRemoved: effectiveExecutionTransport === 'isolated_worker_container',
+    containerCidFileRemoved: effectiveExecutionTransport === 'isolated_worker_container',
     containerRemoved: effectiveExecutionTransport === 'isolated_worker_container',
     ...executionEnvironmentOverrides,
   };
+  executionEnvironment.workerImageDescriptorHash = executionEnvironment.workerImageDescriptor
+    ? contentHashFor(executionEnvironment.workerImageDescriptor)
+    : null;
   const executionEnvironmentHash = contentHashFor(executionEnvironment);
   const lifecycleSeed = {
     schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
     schema_version: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
     proofAuthority: 'explicit_cold_build_command_lifecycle_only_not_gpu_hmr_success',
     proof_authority: 'explicit_cold_build_command_lifecycle_only_not_gpu_hmr_success',
-    status: 'explicit_cold_build_command_succeeded_support_only',
+    status: 'explicit_cold_build_command_succeeded_compile_unproven',
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
@@ -2553,12 +2834,16 @@ function randomColdBuildExecutionObservationFixture({
     can_satisfy_runtime_proof: false,
     canSatisfyDispatchProof: false,
     can_satisfy_dispatch_proof: false,
-    acceptedAsColdBuildExecutionEvidence: true,
-    accepted_as_cold_build_execution_evidence: true,
-    acceptedAsRefusalEvidence: false,
-    accepted_as_refusal_evidence: false,
-    observedBuildExecution: true,
-    observed_build_execution: true,
+    acceptedAsColdBuildExecutionEvidence: false,
+    accepted_as_cold_build_execution_evidence: false,
+    acceptedAsColdCommandExecutionEvidence: true,
+    accepted_as_cold_command_execution_evidence: true,
+    acceptedAsRefusalEvidence: true,
+    accepted_as_refusal_evidence: true,
+    observedCommandExecution: true,
+    observed_command_execution: true,
+    observedBuildExecution: false,
+    observed_build_execution: false,
     candidateId,
     candidate_id: candidateId,
     commandSpecHash,
@@ -2598,6 +2883,75 @@ function randomColdBuildExecutionObservationFixture({
     facetHash: lifecycleHash,
     facet_hash: lifecycleHash,
   };
+  const outputBytes = Buffer.from(`${candidateId}:cold-build-output\n`);
+  const outputLocator = await writeArtifactToCas(outputBytes, {
+    artifactRoot: path.join(mcpRoot, '.gpu-hmr-shared-cas'),
+    artifactKind: 'cold_build_self_check',
+    mediaType: 'text/plain',
+    producer: { name: 'cold_build_output_collector', kind: 'runner' },
+    producerSubsystem: 'gpu_hmr_cold_build',
+    sessionNamespace: sourceBindingHash.slice(7, 31),
+    role: 'self_check_output',
+    transportKind: 'cas_shared_volume',
+    portable: true,
+  });
+  const outputManifest = {
+    schemaVersion: 'synthi.gpu_hmr.cold_build_output_manifest.v1',
+    commandSpecHash,
+    sourceBindingHash,
+    outputs: [{
+      path: 'build-output.txt',
+      role: 'self_check_output',
+      artifactKind: 'cold_build_self_check',
+      mediaType: 'text/plain',
+      contentHash: `sha256:${sha256BufferHex(outputBytes)}`,
+      byteLength: outputBytes.byteLength,
+    }],
+  };
+  const outputManifestBytes = Buffer.from(`${JSON.stringify(outputManifest, null, 2)}\n`);
+  const outputManifestLocator = await writeArtifactToCas(outputManifestBytes, {
+    artifactRoot: path.join(mcpRoot, '.gpu-hmr-shared-cas'),
+    artifactKind: 'cold_build_output_manifest',
+    mediaType: 'application/json',
+    producer: { name: 'cold_build_output_collector', kind: 'runner' },
+    producerSubsystem: 'gpu_hmr_cold_build',
+    sessionNamespace: sourceBindingHash.slice(7, 31),
+    role: 'cold_build_output_manifest',
+    transportKind: 'cas_shared_volume',
+    portable: true,
+  });
+  const retainedOutput = {
+    ...outputManifest.outputs[0],
+    artifactCasLocator: outputLocator,
+  };
+  const buildOutputEvidence = {
+    schemaVersion: 'synthi.gpu_hmr.cold_build_output_evidence.v1',
+    proofAuthority: 'runner_recomputed_output_bytes_and_cas_only_not_gpu_hmr_success',
+    accepted: true,
+    acceptedAsColdBuildOutputEvidence: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+    commandSpecHash,
+    sourceBindingHash,
+    outputCount: 1,
+    totalByteLength: outputBytes.byteLength,
+    outputSetHash: contentHashFor([{
+      path: retainedOutput.path,
+      role: retainedOutput.role,
+      artifactKind: retainedOutput.artifactKind,
+      mediaType: retainedOutput.mediaType,
+      contentHash: retainedOutput.contentHash,
+      byteLength: retainedOutput.byteLength,
+      casManifestHash: outputLocator.manifestHash,
+    }]),
+    manifestHash: `sha256:${sha256BufferHex(outputManifestBytes)}`,
+    manifestCasLocator: outputManifestLocator,
+    outputs: [retainedOutput],
+    blockingGaps: [],
+  };
+  const buildOutputEvidenceHash = contentHashFor(buildOutputEvidence);
   const observationSeed = {
     schemaVersion: 'synthi.gpu_hmr.cold_build_execution_observation.v1',
     commandSpecHash,
@@ -2606,7 +2960,9 @@ function randomColdBuildExecutionObservationFixture({
     observedCommitAfter: immutableCommit,
     sourceWorktreeCleanAfter: true,
     sourceWorktreeStatusAfterHash: hashValue(''),
+    sourceWorktreeManifestHashAfter: sourceBinding.sourceWorktreeManifestHashBefore,
     executionEnvironmentHash,
+    buildOutputEvidenceHash,
     wrapperStartedAt,
     wrapperExecutionId,
     wrapperEventStreamHash,
@@ -2617,12 +2973,14 @@ function randomColdBuildExecutionObservationFixture({
     schema_version: 'synthi.gpu_hmr.cold_build_execution_observation.v1',
     proofAuthority: 'explicit_cold_build_process_observation_only_not_gpu_hmr_success',
     proof_authority: 'explicit_cold_build_process_observation_only_not_gpu_hmr_success',
-    status: 'explicit_cold_build_command_succeeded_support_only',
-    accepted: true,
+    status: 'explicit_cold_build_command_succeeded_compile_unproven',
+    accepted: false,
     acceptedAsSupportEvidence: true,
     accepted_as_support_evidence: true,
-    acceptedAsColdBuildExecutionEvidence: true,
-    accepted_as_cold_build_execution_evidence: true,
+    acceptedAsColdBuildExecutionEvidence: false,
+    accepted_as_cold_build_execution_evidence: false,
+    acceptedAsColdCommandExecutionEvidence: true,
+    accepted_as_cold_command_execution_evidence: true,
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
@@ -2631,8 +2989,14 @@ function randomColdBuildExecutionObservationFixture({
     can_satisfy_runtime_proof: false,
     canSatisfyDispatchProof: false,
     can_satisfy_dispatch_proof: false,
-    observedBuildExecution: true,
-    observed_build_execution: true,
+    observedCommandExecution: true,
+    observed_command_execution: true,
+    observedBuildExecution: false,
+    observed_build_execution: false,
+    observedCompileGraph: false,
+    observed_compile_graph: false,
+    observedDeviceArtifactBuild: false,
+    observed_device_artifact_build: false,
     targetNameIndependent: true,
     target_name_independent: true,
     projectNameWhitelist: [],
@@ -2663,10 +3027,16 @@ function randomColdBuildExecutionObservationFixture({
     source_worktree_clean_after: true,
     sourceWorktreeStatusAfterHash: hashValue(''),
     source_worktree_status_after_hash: hashValue(''),
+    sourceWorktreeManifestHashAfter: sourceBinding.sourceWorktreeManifestHashBefore,
+    source_worktree_manifest_hash_after: sourceBinding.sourceWorktreeManifestHashBefore,
     executionEnvironment,
     execution_environment: executionEnvironment,
     executionEnvironmentHash,
     execution_environment_hash: executionEnvironmentHash,
+    buildOutputEvidence,
+    build_output_evidence: buildOutputEvidence,
+    buildOutputEvidenceHash,
+    build_output_evidence_hash: buildOutputEvidenceHash,
     wrapperEvents,
     wrapper_events: wrapperEvents,
     wrapperExecutionId,
@@ -2679,8 +3049,16 @@ function randomColdBuildExecutionObservationFixture({
     upstream_lifecycle_failure: upstreamLifecycleFailure,
     observationHash,
     observation_hash: observationHash,
-    blockingGaps: [],
-    blocking_gaps: [],
+    blockingGaps: [
+      'cold_build_graph_observer_missing',
+      'cold_compile_receipt_missing',
+      'cold_device_artifact_build_unproven',
+    ],
+    blocking_gaps: [
+      'cold_build_graph_observer_missing',
+      'cold_compile_receipt_missing',
+      'cold_device_artifact_build_unproven',
+    ],
     facetHash: observationHash,
     facet_hash: observationHash,
   };
@@ -4873,11 +5251,15 @@ const fileBackedRawReadbackHash = hashBuffer(fileBackedRawReadbackBytes);
 const fileBackedDeterministicSliceBytes = fileBackedRawReadbackBytes.subarray(0, 16);
 const fileBackedDeterministicSliceHash = hashBuffer(fileBackedDeterministicSliceBytes);
 const fileBackedEpoch = 'epoch:file-backed';
+const fileBackedPreviousEpoch = 'epoch:file-backed:previous';
+const fileBackedActiveGeneration = 2;
+const fileBackedPreviousGeneration = 1;
 const fileBackedDispatchId = 'dispatch:file-backed';
 const fileBackedOutputTargetId = 'output-target:file-backed';
 const fileBackedDispatchTableEntryId = `file_backed_kernel:${fileBackedEpoch}`;
 const fileBackedRuntimeSession = 'session:file-backed';
 const fileBackedProcessId = 'pid:1001';
+const fileBackedStream = 'stream:file-backed';
 const fileBackedBoundaryLines = [
   `[gpu-runtime-boundary] artifact_transport artifact_hash=${fileBackedArtifactAfterHash} epoch=${fileBackedEpoch} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} selected_loader_transport=in_memory_code_object transport_class=in_memory memory_resident=true timestamp_monotonic_ns=100`,
   `[gpu-runtime-boundary] dispatcher_epoch epoch=${fileBackedEpoch} artifact_hash=${fileBackedArtifactAfterHash} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} dispatch_table_entry_id=${fileBackedDispatchTableEntryId} host_identity_previous_generation=1 host_identity_active_generation=2 timestamp_monotonic_ns=200`,
@@ -4889,6 +5271,7 @@ const fileBackedBoundaryLines = [
   `[gpu-runtime-boundary] host_identity role=stream_context ptr=0x3001 aux=7 generation=1 runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} device_uuid=device:file-backed context_id=context:file-backed queue_id=queue:file-backed timestamp_monotonic_ns=350`,
   `[gpu-runtime-boundary] host_identity role=stream_context ptr=0x3001 aux=7 generation=2 runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} device_uuid=device:file-backed context_id=context:file-backed queue_id=queue:file-backed timestamp_monotonic_ns=360`,
   `[gpu-runtime-boundary] output_oracle after_dispatch_id=${fileBackedDispatchId} output_target_id=${fileBackedOutputTargetId} raw_readback_hash=${fileBackedRawReadbackHash} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} dispatch_table_entry_id=${fileBackedDispatchTableEntryId} timestamp_monotonic_ns=400`,
+  `[gpu-runtime-boundary] retirement_receipt event_id=file-backed-retirement-receipt old_artifact_hash=${fileBackedArtifactBeforeHash} epoch=${fileBackedPreviousEpoch} previous_generation=${fileBackedPreviousGeneration} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} stream=${fileBackedStream} retirement_proof=stream_event_proven retirement_result=retired_after_quiescent timestamp_monotonic_ns=500`,
 ];
 const fileBackedRuntimeBoundaryTargetEnvironment =
   runtimeBoundaryTargetEnvironmentFixture('random-cold-file-backed-import', {
@@ -4960,6 +5343,12 @@ const fileBackedRuntimeBoundaryEvents = [
     eventId: 'file-backed-epoch-publication',
     artifactHash: fileBackedArtifactAfterHash,
     epoch: fileBackedEpoch,
+    previousEpoch: fileBackedPreviousEpoch,
+    activeGeneration: fileBackedActiveGeneration,
+    previousGeneration: fileBackedPreviousGeneration,
+    streamEpochCounters: {
+      [fileBackedStream]: fileBackedActiveGeneration,
+    },
     processId: fileBackedProcessId,
     runtimeSession: fileBackedRuntimeSession,
     dispatchTableEntryId: fileBackedDispatchTableEntryId,
@@ -4977,7 +5366,7 @@ const fileBackedRuntimeBoundaryEvents = [
     epoch: fileBackedEpoch,
     processId: fileBackedProcessId,
     runtimeSession: fileBackedRuntimeSession,
-    stream: 'stream:file-backed',
+    stream: fileBackedStream,
     dispatchTableEntryId: fileBackedDispatchTableEntryId,
     dispatchTableEntry: fileBackedDispatchTableEntryId,
     timestampMonotonicNs: 300,
@@ -4993,7 +5382,7 @@ const fileBackedRuntimeBoundaryEvents = [
     runtimeSession: fileBackedRuntimeSession,
     deviceUuid: 'device:file-backed',
     contextId: 'context:file-backed',
-    stream: 'stream:file-backed',
+    stream: fileBackedStream,
     timestampMonotonicNs: 310,
     evidenceRefs: [
       'worker-log:host_identity:runner_process',
@@ -5018,6 +5407,23 @@ const fileBackedRuntimeBoundaryEvents = [
     oracleKind: 'buffer_checksum',
     timestampMonotonicNs: 400,
     evidenceRefs: [`worker-log:output_oracle:${fileBackedRuntimeSession}:${fileBackedDispatchId}`],
+  },
+  {
+    kind: 'retirement_receipt',
+    eventId: 'file-backed-retirement-receipt',
+    oldArtifactHash: fileBackedArtifactBeforeHash,
+    epoch: fileBackedPreviousEpoch,
+    previousGeneration: fileBackedPreviousGeneration,
+    processId: fileBackedProcessId,
+    runtimeSession: fileBackedRuntimeSession,
+    deviceUuid: 'device:file-backed',
+    stream: fileBackedStream,
+    retirementProof: 'stream_event_proven',
+    retirementResult: 'retired_after_quiescent',
+    retirementStrategy: 'epoch_fence',
+    retirementFenceIds: ['file-backed-runtime-boundary:fence:retire'],
+    timestampMonotonicNs: 500,
+    evidenceRefs: ['file-backed-runtime-boundary:retirement-receipt'],
   },
 ];
 await fs.mkdir(path.dirname(fileBackedRawReadbackPath), { recursive: true });
@@ -5248,7 +5654,7 @@ const fileBackedAcceptedColdBuildLifecycle = {
   buildLogTail: 'upstream build skipped after configure_status=0 post_configure_status=0 build_status=0',
   build_log_tail: 'upstream build skipped after configure_status=0 post_configure_status=0 build_status=0',
 };
-const fileBackedAcceptedColdBuildObservation = randomColdBuildExecutionObservationFixture({
+const fileBackedAcceptedColdBuildObservation = await randomColdBuildExecutionObservationFixture({
   candidateId: fileBackedColdBaseResult.candidateId,
   candidateSource: fileBackedColdBaseResult.candidateSource,
   immutableCommit: fileBackedColdBaseResult.immutableCommit,
@@ -5477,54 +5883,17 @@ assert.equal(
   })(),
   true,
 );
-assert.equal(fileBackedImportedRuntimeClosureRow?.acceptedForGpuHmr, true);
-assert.equal(fileBackedImportedRuntimeClosureRow.gpuHmrSuccess, true);
-assert.equal(fileBackedImportedRuntimeClosureRow.matrixOutcome, 'full_runtime_gpu_hmr');
-assert.equal(
-  fileBackedImportedRuntimeClosureRow.acceptanceScope,
-  'rocm_hip_declared_runtime_profile',
-);
-assert.equal(
-  fileBackedImportedRuntimeClosureRow.randomColdImportedRuntimeClosureSourceColdPath.accepted,
-  true,
-  stableJson(fileBackedImportedRuntimeClosureRow.randomColdImportedRuntimeClosureSourceColdPath),
-);
-assert.equal(
-  fileBackedImportedRuntimeClosureRow.randomColdImportedRuntimeClosureSourceColdPath.acceptedForGpuHmr,
-  false,
-);
-assert.equal(
-  fileBackedImportedRuntimeClosureRow.randomColdImportedRuntimeClosureSourceColdPath.gpuHmrSuccess,
-  false,
-);
-assert.equal(
-  fileBackedImportedRuntimeClosureRow.randomColdImportedRuntimeClosureSourceColdPath.canSatisfyRuntimeProof,
-  false,
-);
-assert.equal(fileBackedImportedRuntimeClosureRow.runtimeProofArtifact.accepted, true);
-assert.equal(fileBackedImportedRuntimeClosureRow.ledger.gpuHmrSuccess, true);
-assert.equal(fileBackedImportedRuntimeClosureRow.runtimeChain.accepted, true);
-assert.equal(fileBackedImportedRuntimeClosureRow.outputOracleFacet.accepted, true);
-assert.equal(fileBackedImportedRuntimeClosureRow.outputOracleFacet.kind, 'compute_oracle');
-assert.equal(fileBackedImportedRuntimeClosureRow.realRocmFirewall.accepted, true);
-assert.equal(fileBackedImportedRuntimeClosureRow.realRocmSameProcessRuntimeOracleGate.accepted, true);
-assert.equal(
-  fileBackedImportedRuntimeClosureRow.targetId,
-  'generic-random-large-runtime-bridge-project',
-);
-assert.equal(
-  fileBackedImportedRuntimeClosureRow.safety.accepted,
-  true,
-  stableJson(fileBackedImportedRuntimeClosureRow.safety),
-);
+assert.equal(fileBackedImportedRuntimeClosureRow, undefined);
 const fileBackedAdapterImportCoverage = new Map(
   fileBackedAdapterImportLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
 );
 const fileBackedAdapterImportRuntimeClosure =
   fileBackedAdapterImportCoverage.get('large_arbitrary_project_runtime_closure');
-assert.equal(fileBackedAdapterImportRuntimeClosure?.status, 'accepted');
-assert.deepEqual(fileBackedAdapterImportRuntimeClosure.openGaps, []);
-assert.equal(fileBackedAdapterImportRuntimeClosure.completeClosureRowCount, 1);
+assert.equal(fileBackedAdapterImportRuntimeClosure?.status, 'refused');
+assert.ok(fileBackedAdapterImportRuntimeClosure.openGaps.includes(
+  'large_arbitrary_project_cold_build_execution_required',
+));
+assert.equal(fileBackedAdapterImportRuntimeClosure.completeClosureRowCount, 0);
 assert.equal(fileBackedAdapterImportRuntimeClosure.acceptedForGpuHmr, false);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gpuHmrSuccess, false);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.artifact_transport.observed, true);
@@ -5532,10 +5901,10 @@ assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.epoch_publicatio
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.dispatch_trace.observed, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.host_identity.observed, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.output_or_visual_oracle.observed, true);
-assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.cold_build_execution.accepted, true);
-assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.cold_build_execution.observed, true);
-assert.equal(fileBackedAdapterImportRuntimeClosure.coldBuildExecutionAcceptedCount, 2);
-assert.equal(fileBackedAdapterImportRuntimeClosure.coldBuildExecutionObservedCount, 2);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.cold_build_execution.accepted, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.cold_build_execution.observed, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.coldBuildExecutionAcceptedCount, 0);
+assert.equal(fileBackedAdapterImportRuntimeClosure.coldBuildExecutionObservedCount, 0);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.runtime_adapter_or_app_hook_contract.accepted, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.appHookPlanRuntimeManifestBindingAcceptedCount, 1);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.artifact_transport.accepted, true);
@@ -5554,7 +5923,8 @@ assert.equal(
   true,
   stableJson(fileBackedAdapterImportRow.randomColdImportedOutputOracleFacet),
 );
-assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.strict_runtime_ledger.accepted, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.strict_runtime_ledger.accepted, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.strict_runtime_ledger.observed, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.cpu_gpu_firewall.accepted, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.same_process_runtime_oracle.accepted, true);
 assert.equal(
@@ -5562,7 +5932,7 @@ assert.equal(
   true,
   stableJson(fileBackedAdapterImportRow.realRocmRuntimeChain),
 );
-assert.equal(fileBackedAdapterImportRuntimeClosure.matrixRuntimeIngestionRequired, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.matrixRuntimeIngestionRequired, true);
 assert.equal(fileBackedAdapterImportRow.realRocmFirewall.accepted, true);
 assert.equal(fileBackedAdapterImportRow.realRocmFirewall.cpuHmrUsed, false);
 assert.equal(fileBackedAdapterImportRow.realRocmFirewall.fullRebuildUsed, false);
@@ -6592,7 +6962,7 @@ const explicitColdBuildCommandManifest = randomColdPathManifest({
   coldBuildCommandSpec: explicitColdBuildCommandSpec,
 });
 const explicitColdBuildCommandResult = explicitColdBuildCommandManifest.results[0];
-const explicitColdBuildObservation = randomColdBuildExecutionObservationFixture({
+const explicitColdBuildObservation = await randomColdBuildExecutionObservationFixture({
   candidateId: explicitColdBuildCandidateId,
   candidateSource: explicitColdBuildCommandResult.candidateSource,
   immutableCommit: explicitColdBuildCommit,
@@ -6616,7 +6986,17 @@ const explicitColdBuildCommandLedger = await collectGpuHmrValidationMatrixLedger
 const explicitColdBuildCommandRow = explicitColdBuildCommandLedger.rows.find(
   (row) => row.targetId === explicitColdBuildCandidateId,
 );
-assert.equal(explicitColdBuildCommandRow?.randomColdBuildExecutionObservation?.accepted, true);
+assert.equal(explicitColdBuildCommandRow?.randomColdBuildExecutionObservation?.accepted, false);
+assert.equal(
+  explicitColdBuildCommandRow.randomColdBuildExecutionObservation
+    .acceptedAsColdCommandExecutionEvidence,
+  true,
+);
+assert.equal(
+  explicitColdBuildCommandRow.randomColdBuildExecutionObservation
+    .acceptedAsColdBuildExecutionEvidence,
+  false,
+);
 assert.equal(
   explicitColdBuildCommandRow.randomColdBuildExecutionObservation.matrixRecomputed,
   true,
@@ -6641,23 +7021,160 @@ assert.equal(
 );
 assert.ok(explicitColdBuildCommandRow.openGaps.includes('strict_runtime_ledger_missing'));
 assert.ok(explicitColdBuildCommandRow.openGaps.includes('output_oracle_unproven'));
+assert.ok(explicitColdBuildCommandRow.openGaps.includes('cold_compile_receipt_missing'));
 const explicitColdBuildCommandClosure = explicitColdBuildCommandLedger.summary.planCoverage
   .find((entry) => entry.id === 'large_arbitrary_project_runtime_closure');
-assert.equal(explicitColdBuildCommandClosure.coldBuildExecutionAcceptedCount, 1);
-assert.equal(explicitColdBuildCommandClosure.coldBuildExecutionObservedCount, 1);
-assert.equal(explicitColdBuildCommandClosure.gateCoverage.cold_build_execution.accepted, true);
-assert.equal(explicitColdBuildCommandClosure.gateCoverage.cold_build_execution.observed, true);
+assert.equal(explicitColdBuildCommandClosure.coldBuildExecutionAcceptedCount, 0);
+assert.equal(explicitColdBuildCommandClosure.coldBuildExecutionObservedCount, 0);
+assert.equal(explicitColdBuildCommandClosure.gateCoverage.cold_build_execution.accepted, false);
+assert.equal(explicitColdBuildCommandClosure.gateCoverage.cold_build_execution.observed, false);
 assert.equal(
   explicitColdBuildCommandClosure.openGaps.includes(
     'large_arbitrary_project_cold_build_execution_required',
   ),
-  false,
+  true,
 );
 assert.ok(explicitColdBuildCommandClosure.openGaps.includes(
   'large_arbitrary_project_output_or_visual_oracle_required',
 ));
 assert.equal(explicitColdBuildCommandClosure.acceptedForGpuHmr, false);
 assert.equal(explicitColdBuildCommandClosure.gpuHmrSuccess, false);
+
+const hardenedColdBuildReceiptDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-hardened-container-receipts',
+);
+const invalidContainerState = {
+  status: 'exited',
+  running: false,
+  paused: false,
+  restarting: false,
+  oomKilled: false,
+  dead: false,
+  pid: 0,
+  exitCode: 0,
+  error: null,
+  startedAt: '0001-01-01T00:00:00Z',
+  finishedAt: '0001-01-01T00:00:00Z',
+};
+const hardenedReceiptCases = [
+  {
+    candidateId: 'direct-random-forged-container-state',
+    observationOptions: {
+      executionEnvironmentOverrides: {
+        containerState: invalidContainerState,
+        containerStateHash: contentHashFor(invalidContainerState),
+      },
+    },
+    expectedGate: 'random_cold_build_command_execution_container_state_invalid',
+  },
+  {
+    candidateId: 'direct-random-forged-container-mount',
+    observationOptions: {
+      containerConfigOverrides: {
+        mounts: [
+          {
+            type: 'bind',
+            destination: '/workspace/build',
+            readWrite: true,
+            sourcePathHash: hashValue('unbound-output-root'),
+          },
+          {
+            type: 'bind',
+            destination: '/workspace/source',
+            readWrite: false,
+            sourcePathHash: hashValue('unbound-source-root'),
+          },
+        ].sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
+      },
+    },
+    expectedGate: 'random_cold_build_command_execution_container_config_invalid',
+  },
+  {
+    candidateId: 'direct-random-leaked-container-env-file',
+    observationOptions: {
+      executionEnvironmentOverrides: { environmentFileRemoved: false },
+    },
+    expectedGate: 'random_cold_build_command_execution_container_lifecycle_unproven',
+  },
+  {
+    candidateId: 'direct-random-unbounded-container-memory',
+    observationOptions: {
+      containerConfigOverrides: { memoryBytes: 0, memorySwapBytes: 0 },
+    },
+    expectedGate: 'random_cold_build_command_execution_container_config_invalid',
+  },
+  {
+    candidateId: 'direct-random-forged-tmpfs-extraction',
+    observationOptions: {
+      executionEnvironmentOverrides: {
+        buildOutputExtraction: {
+          transport: 'bounded_container_tmpfs_live_docker_cp',
+          accepted: false,
+          readyCopyAttempts: 1,
+          readyObserved: true,
+          readyCopyStdoutHash: hashValue(''),
+          readyCopyStderrHash: hashValue(''),
+          pauseAccepted: false,
+          pausedStateObserved: false,
+          outputCopyAccepted: false,
+          outputCopyStdoutHash: hashValue(''),
+          outputCopyStderrHash: hashValue(''),
+          statusCopyAccepted: false,
+          statusCopyStdoutHash: hashValue(''),
+          statusCopyStderrHash: hashValue(''),
+          wrapperExitCode: null,
+          releaseWritten: true,
+          unpauseAccepted: true,
+          acceptedForGpuHmr: false,
+          gpuHmrSuccess: false,
+          canSatisfyRuntimeProof: false,
+          canSatisfyDispatchProof: false,
+        },
+      },
+    },
+    expectedGate: 'random_cold_build_command_execution_output_extraction_invalid',
+  },
+];
+for (const receiptCase of hardenedReceiptCases) {
+  const immutableCommit = sha256Hex(`${receiptCase.candidateId}:commit`).slice(0, 40);
+  const manifest = randomColdPathManifest({
+    candidateId: receiptCase.candidateId,
+    sourceUrl: `https://example.invalid/arbitrary/${receiptCase.candidateId}.git`,
+    immutableCommit,
+    coldBuildCommandSpec: randomColdBuildCommandSpecFixture(),
+  });
+  const result = manifest.results[0];
+  const observation = await randomColdBuildExecutionObservationFixture({
+    candidateId: receiptCase.candidateId,
+    candidateSource: result.candidateSource,
+    immutableCommit,
+    sourceIntakeEvidence: result.sourceIntakeEvidence,
+    directInputEvidence: result.directInputEvidence,
+    commandSpec: result.coldBuildCommandSpec,
+    ...receiptCase.observationOptions,
+  });
+  result.coldBuildExecutionObservation = observation;
+  result.cold_build_execution_observation = observation;
+  await writeJson(
+    path.join(hardenedColdBuildReceiptDir, `${receiptCase.candidateId}.json`),
+    manifest,
+  );
+}
+const hardenedColdBuildReceiptLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [hardenedColdBuildReceiptDir],
+});
+for (const receiptCase of hardenedReceiptCases) {
+  const row = hardenedColdBuildReceiptLedger.rows.find(
+    (entry) => entry.targetId === receiptCase.candidateId,
+  );
+  assert.equal(row?.randomColdBuildExecutionObservation?.accepted, false);
+  assert.ok(row.randomColdBuildExecutionObservation.failedGates.includes(
+    receiptCase.expectedGate,
+  ));
+}
 
 const hostProcessColdBuildDir = path.join(
   tmpRoot,
@@ -6672,7 +7189,7 @@ const hostProcessColdBuildManifest = randomColdPathManifest({
   }),
 });
 const hostProcessColdBuildResult = hostProcessColdBuildManifest.results[0];
-const hostProcessColdBuildObservation = randomColdBuildExecutionObservationFixture({
+const hostProcessColdBuildObservation = await randomColdBuildExecutionObservationFixture({
   candidateId: hostProcessColdBuildResult.candidateId,
   candidateSource: hostProcessColdBuildResult.candidateSource,
   immutableCommit: hostProcessColdBuildResult.immutableCommit,
@@ -6791,7 +7308,7 @@ const forgedColdBuildObservationManifest = randomColdPathManifest({
   coldBuildCommandSpec: randomColdBuildCommandSpecFixture(),
 });
 const forgedColdBuildObservationResult = forgedColdBuildObservationManifest.results[0];
-const forgedColdBuildObservation = randomColdBuildExecutionObservationFixture({
+const forgedColdBuildObservation = await randomColdBuildExecutionObservationFixture({
   candidateId: forgedColdBuildObservationResult.candidateId,
   candidateSource: forgedColdBuildObservationResult.candidateSource,
   immutableCommit: forgedColdBuildObservationResult.immutableCommit,
@@ -6851,7 +7368,7 @@ const blockedColdBuildObservationRow = blockedColdBuildObservationLedger.rows.fi
 );
 assert.equal(blockedColdBuildObservationRow.randomColdBuildExecutionObservation.accepted, false);
 assert.ok(blockedColdBuildObservationRow.randomColdBuildExecutionObservation.failedGates.includes(
-  'random_cold_build_command_execution_blocking_gaps_present',
+  'random_cold_build_command_execution_unexpected_blocking_gap_present',
 ));
 
 const conflictingColdBuildObservationDir = path.join(
@@ -20633,7 +21150,7 @@ assert.equal(
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.accepted,
-  true,
+  false,
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness
@@ -20647,7 +21164,7 @@ assert.equal(
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.matrixGeneralizationAccepted,
-  true,
+  false,
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.rowLocalBroadRuntimeProofRequired,
@@ -20656,7 +21173,7 @@ assert.equal(
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .accepted,
-  true,
+  false,
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.acceptanceBoundary,
@@ -20724,7 +21241,7 @@ assert.equal(
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .matrixGeneralizationRuntimeRows,
-  4,
+  0,
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadRuntimeRows,
@@ -20732,19 +21249,19 @@ assert.equal(
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadRuntimeRowsMissing,
-  false,
+  true,
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.rowLocalBroadRuntimeRowsMissing,
   true,
 );
 assert.ok(
-  !broadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('row_local_broad_runtime_rows_missing'),
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.matrixGeneralizationRuntimeRows,
-  4,
+  0,
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
@@ -20754,6 +21271,20 @@ assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness
     .randomColdPathDistinctSourceIdentityCount,
   5,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdBuildRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdBuildDistinctSourceIdentityCount,
+  0,
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps.includes(
+    'broad_acceptance_requires_trusted_random_large_project_cold_compile_receipts',
+  ),
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.sourceFirstVisualRowCount,
@@ -20806,6 +21337,36 @@ assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathDistinctSourceIdentityCount,
   5,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdBuildRows,
+  0,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdCompileReceiptSelectionTargetNameIndependent,
+  true,
+);
+assert.deepEqual(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdCompileReceiptSelectionPredicate.projectNameWhitelist,
+  [],
+);
+assert.deepEqual(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdCompileReceiptSelectionPredicate.buildSystemWhitelist,
+  [],
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdCompileReceiptSelectionPredicate.acceptanceImplementationState,
+  'trusted_build_observer_required',
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdCompileReceiptSelectionPredicate.serializedReceiptAccepted,
+  false,
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
