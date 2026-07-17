@@ -87,6 +87,22 @@ This project is a CUDA vector-add demo.
 '''
 
 
+def test_portable_gpu_source_extensions_are_preserved_for_split_context():
+    for path in (
+        "kernels/update.cl",
+        "shaders/update.opencl",
+        "shaders/render.wgsl",
+        "shaders/render.glsl",
+        "shaders/render.comp",
+        "shaders/render.hlsl",
+        "shaders/render.slang",
+        "web/runtime.ts",
+    ):
+        assert kernel_splitter._looks_like_source_file(path)
+
+    assert not kernel_splitter._looks_like_source_file("docs/gpu-notes.md")
+
+
 def test_parses_clean_response():
     parsed = parse_kernel_split_response(SAMPLE_RAW)
     assert "device.cu" in parsed["files"]

@@ -137,6 +137,58 @@ def test_hip_include_detected():
     assert ev.hip_include_hits == 1
 
 
+def test_opencl_kernel_detected():
+    src = """
+    __kernel void update(__global float* output) {
+        output[get_global_id(0)] = 1.0f;
+    }
+    """
+    ev = detect_file(src)
+    assert ev.opencl_hits >= 3
+
+
+def test_portable_shader_and_runtime_markers_are_detected():
+    cases = {
+        "shader.wgsl": (
+            "@compute @workgroup_size(8) fn main() {}",
+            "webgpu_wgsl",
+        ),
+        "shader.comp": (
+            "#version 450\nlayout(local_size_x=8) in; void main() { uint x = gl_GlobalInvocationID.x; }",
+            "glsl",
+        ),
+        "shader.hlsl": (
+            "[numthreads(8,1,1)] void main(uint3 id: SV_DispatchThreadID) {}",
+            "hlsl",
+        ),
+        "queue.cpp": (
+            "#include <sycl/sycl.hpp>\nvoid run() { sycl::queue queue; }",
+            "sycl",
+        ),
+        "vulkan.cpp": (
+            "void build() { vkCreateShaderModule(device, &info, nullptr, &module); }",
+            "vulkan",
+        ),
+        "webgpu.ts": (
+            "const module = device.createShaderModule({ code });",
+            "webgpu",
+        ),
+    }
+    for path, (source, backend_hint) in cases.items():
+        result = detect_project({path: source})
+        assert result.is_gpu is True
+        assert backend_hint in result.backend_hints
+
+
+def test_portable_gpu_markers_in_comments_and_strings_are_ignored():
+    source = """
+    // __kernel void old_kernel(__global float* output) {}
+    const char* shader = "@compute get_global_id(0) vkCmdDispatch()";
+    int main() { return 0; }
+    """
+    assert detect_project({"main.cpp": source}).is_gpu is False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Project-level + vendor hint
 # ─────────────────────────────────────────────────────────────────────────────
@@ -206,7 +258,18 @@ def test_to_dict_shape():
     r = detect_project(files).to_dict()
     assert r["is_gpu"] is True
     assert r["vendor_hint"] == "cuda"
+    assert r["backend_hints"] == ["cuda", "cuda_or_hip"]
     assert "device.cu" in r["per_file"]
     # main.cpp had no evidence, so it's excluded from per_file in the
     # serialized form (keeps the response shape tight for the prompt).
     assert "main.cpp" not in r["per_file"]
+
+
+def test_opencl_project_is_vendor_neutral_and_backend_typed():
+    result = detect_project({
+        "kernel.cl": "__kernel void k(__global float* output) { output[get_global_id(0)] = 1.0f; }",
+    })
+    assert result.is_gpu is True
+    assert result.vendor_hint == "ambiguous"
+    assert result.backend_hints == ("opencl",)
+    assert result.to_dict()["backend_hints"] == ["opencl"]

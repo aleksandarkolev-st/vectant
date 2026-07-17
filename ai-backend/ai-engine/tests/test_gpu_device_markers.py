@@ -31,3 +31,17 @@ def test_source_device_file_detection_uses_generic_device_macro():
     assert "include/device_callbacks.h" in verifier_source_device_files(source_files)
     assert "include/host_only.h" not in repair_source_device_files(source_files)
     assert "include/host_only.h" not in verifier_source_device_files(source_files)
+
+
+def test_gpu_device_marker_detects_portable_backend_syntax():
+    sources = [
+        "__kernel void k(__global float* out) { out[get_global_id(0)] = 1.0f; }",
+        "@compute @workgroup_size(8) fn main() {}",
+        "layout(local_size_x=8) in; void main() { uint x = gl_GlobalInvocationID.x; }",
+        "[numthreads(8,1,1)] void main(uint3 id: SV_DispatchThreadID) {}",
+        "void run() { sycl::queue queue; }",
+        "void build() { vkCreateShaderModule(device, &info, 0, &module); }",
+        "const module = device.createShaderModule({ code });",
+    ]
+    for source in sources:
+        assert has_gpu_device_marker(mask_comments_for_parsing(source))
