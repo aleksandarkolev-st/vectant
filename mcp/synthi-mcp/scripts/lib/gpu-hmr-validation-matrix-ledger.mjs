@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
+import { evaluateGpuHmrAcceptanceContract } from './gpu-hmr-acceptance-contract.mjs';
 import { classifyGpuHmrFissionProof } from './gpu-hmr-runtime-proof.mjs';
 import { runtimeProofArtifactStrictGate } from './gpu-hmr-proof-strict-gates.mjs';
 import { computeOracleArtifactsFromFiles } from './gpu-hmr-validation-proof-artifact.mjs';
@@ -15260,6 +15261,129 @@ function ledgerRecordForRow(row = {}) {
   return compactObject(row.ledger?.record ?? row.proofLedger?.records?.[0] ?? row.proof_ledger?.records?.[0]);
 }
 
+function runtimeIdentityAuthorityFacet({
+  ledger = {},
+  ledgerRecord = {},
+  contract = {},
+  recomputedLedger = null,
+} = {}) {
+  const ledgerObject = compactObject(ledger);
+  const record = compactObject(ledgerRecord ?? ledgerObject.record);
+  const contractObject = compactObject(contract);
+  const suppliedLedgerFailures = Array.isArray(ledgerObject.failedInvariants)
+    ? ledgerObject.failedInvariants
+    : Array.isArray(ledgerObject.failed_invariants)
+      ? ledgerObject.failed_invariants
+      : null;
+  const ledgerProjectId = firstText(record.projectId, record.project_id);
+  const ledgerProofId = firstText(ledgerObject.proofId, ledgerObject.proof_id);
+  const recordProofId = firstText(record.proofId, record.proof_id);
+  const ledgerClaimsStrictAuthority =
+    ledgerObject.present === true
+    && ledgerObject.source === 'recomputed_ledger'
+    && firstBool(ledgerObject.gpuHmrSuccess, ledgerObject.gpu_hmr_success) === true
+    && suppliedLedgerFailures !== null
+    && suppliedLedgerFailures.length === 0;
+  const recomputed = recomputedLedger === null ? null : compactObject(recomputedLedger);
+  const recomputedRecord = compactObject(recomputed?.record);
+  const recomputedFailures = recomputed === null
+    ? null
+    : Array.isArray(recomputed.failedInvariants)
+      ? recomputed.failedInvariants
+      : Array.isArray(recomputed.failed_invariants)
+        ? recomputed.failed_invariants
+        : null;
+  const recomputedProjectId = recomputed === null
+    ? null
+    : firstText(recomputedRecord.projectId, recomputedRecord.project_id);
+  const recomputedProofId = recomputed === null
+    ? null
+    : firstText(recomputedRecord.proofId, recomputedRecord.proof_id, recomputed.proofId, recomputed.proof_id);
+  const recomputedLedgerAccepted = recomputed === null || (
+    firstBool(recomputed.gpuHmrSuccess, recomputed.gpu_hmr_success) === true
+    && recomputedFailures !== null
+    && recomputedFailures.length === 0
+    && Boolean(recomputedProjectId)
+    && recomputedProjectId === ledgerProjectId
+    && Boolean(recomputedProofId)
+    && recomputedProofId === recordProofId
+  );
+  const ledgerProofIdentityBound =
+    Boolean(ledgerProofId)
+    && Boolean(recordProofId)
+    && ledgerProofId === recordProofId;
+  const ledgerIdentityAccepted =
+    ledgerClaimsStrictAuthority
+    && Boolean(ledgerProjectId)
+    && ledgerProofIdentityBound
+    && recomputedLedgerAccepted;
+
+  const contractEvaluation = Object.keys(contractObject).length > 0
+    ? evaluateGpuHmrAcceptanceContract(contractObject)
+    : null;
+  const contractProjectId = firstText(
+    contractEvaluation?.contract?.project_id,
+    contractObject.projectId,
+    contractObject.project_id,
+  );
+  const contractIdentityAccepted =
+    contractEvaluation?.accepted === true
+    && Boolean(contractProjectId);
+  const contractProjectBoundToLedger =
+    !contractProjectId
+    || !ledgerProjectId
+    || contractProjectId === ledgerProjectId;
+  const authorityConflict = !contractProjectBoundToLedger
+    || Boolean(recomputedProjectId && ledgerProjectId && recomputedProjectId !== ledgerProjectId);
+  const authoritativeRuntimeIdentity = authorityConflict
+    ? null
+    : ledgerIdentityAccepted
+      ? ledgerProjectId
+      : contractIdentityAccepted
+        ? contractProjectId
+        : null;
+  const authoritySources = compactStringList([
+    ledgerIdentityAccepted ? 'recomputed_strict_ledger' : null,
+    contractIdentityAccepted && contractProjectBoundToLedger
+      ? 'recomputed_acceptance_contract'
+      : null,
+  ]);
+
+  return {
+    accepted: Boolean(authoritativeRuntimeIdentity),
+    authoritativeRuntimeIdentity,
+    authoritative_runtime_identity: authoritativeRuntimeIdentity,
+    authoritySources,
+    authority_sources: authoritySources,
+    authorityConflict,
+    authority_conflict: authorityConflict,
+    ledgerIdentityAccepted,
+    ledger_identity_accepted: ledgerIdentityAccepted,
+    ledgerClaimsStrictAuthority,
+    ledger_claims_strict_authority: ledgerClaimsStrictAuthority,
+    ledgerProofIdentityBound,
+    ledger_proof_identity_bound: ledgerProofIdentityBound,
+    recomputedLedgerAccepted,
+    recomputed_ledger_accepted: recomputedLedgerAccepted,
+    ledgerProjectId,
+    ledger_project_id: ledgerProjectId,
+    recomputedProjectId,
+    recomputed_project_id: recomputedProjectId,
+    ledgerProofId,
+    ledger_proof_id: ledgerProofId,
+    recordProofId,
+    record_proof_id: recordProofId,
+    recomputedProofId,
+    recomputed_proof_id: recomputedProofId,
+    contractIdentityAccepted,
+    contract_identity_accepted: contractIdentityAccepted,
+    contractProjectId,
+    contract_project_id: contractProjectId,
+    contractProjectBoundToLedger,
+    contract_project_bound_to_ledger: contractProjectBoundToLedger,
+  };
+}
+
 function fullRuntimeCoverageIdentity(row = {}) {
   const record = ledgerRecordForRow(row);
   const chain = compactObject(row.realRocmRuntimeChain ?? row.real_rocm_runtime_chain);
@@ -15300,7 +15424,8 @@ function fullRuntimeCoverageIdentity(row = {}) {
   };
 }
 
-function fullRuntimeRowIdentityBindingFacet(row = {}) {
+function fullRuntimeRowIdentityBindingFacet(row = {}, { recomputedLedger = null } = {}) {
+  const ledger = compactObject(row.ledger);
   const record = ledgerRecordForRow(row);
   const rowTargetId = firstText(row.targetId, row.target_id, row.projectId, row.project_id);
   const rowProfileId = firstText(
@@ -15320,8 +15445,14 @@ function fullRuntimeRowIdentityBindingFacet(row = {}) {
   );
   const acceptanceContract = compactObject(row.acceptanceContract ?? row.acceptance_contract);
   const contractProjectId = firstText(acceptanceContract.projectId, acceptanceContract.project_id);
+  const runtimeIdentityAuthority = runtimeIdentityAuthorityFacet({
+    ledger,
+    ledgerRecord: record,
+    contract: acceptanceContract,
+    recomputedLedger,
+  });
+  const authoritativeRuntimeIdentity = runtimeIdentityAuthority.authoritativeRuntimeIdentity;
   const validationProfile = compactObject(row.validationProfileEvidence ?? row.validation_profile_evidence);
-  const validationProfileBinding = compactObject(validationProfile.binding);
   const validationProfileId = firstText(validationProfile.profileId, validationProfile.profile_id);
   const validationProfileProofIds = compactStringList(
     validationProfile.proofIds ?? validationProfile.proof_ids,
@@ -15331,22 +15462,51 @@ function fullRuntimeRowIdentityBindingFacet(row = {}) {
   );
   const sourceFirst = compactObject(row.sourceFirstIngestion ?? row.source_first_ingestion);
   const sourceFirstTargetId = firstText(sourceFirst.targetId, sourceFirst.target_id);
+  const runtimeTargetIdentity = compactObject(
+    row.runtimeTargetIdentity ?? row.runtime_target_identity,
+  );
+  const runtimeTargetIdentityPresent = Object.keys(runtimeTargetIdentity).length > 0;
+  const runtimeTargetIdentityAccepted = firstBool(
+    runtimeTargetIdentity.acceptedAsRuntimeTargetIdentity,
+    runtimeTargetIdentity.accepted_as_runtime_target_identity,
+    runtimeTargetIdentity.accepted,
+  ) === true;
+  const suppliedRuntimeTargetId = firstText(
+    runtimeTargetIdentity.targetId,
+    runtimeTargetIdentity.target_id,
+  );
+  const suppliedProjectIdentityAlias = firstText(
+    runtimeTargetIdentity.projectIdentityAlias,
+    runtimeTargetIdentity.project_identity_alias,
+  );
   const requiredStrictProofIds = compactStringList([ledgerProofId, runtimeProofId]);
   const directlyBoundRuntimeIdentities = compactStringList([
-    recordProjectId,
-    contractProjectId,
+    authoritativeRuntimeIdentity,
   ]);
   const targetDirectlyBoundToLedger =
-    Boolean(rowTargetId)
-    && directlyBoundRuntimeIdentities.includes(rowTargetId);
-  const contractProjectBoundToLedger =
-    !contractProjectId
-    || !recordProjectId
-    || contractProjectId === recordProjectId;
+    runtimeIdentityAuthority.ledgerIdentityAccepted === true
+    && Boolean(rowTargetId)
+    && rowTargetId === authoritativeRuntimeIdentity;
+  const contractProjectBoundToLedger = runtimeIdentityAuthority.contractProjectBoundToLedger;
   const sourceFirstTargetBoundToRow =
     sourceFirst.accepted === true
     && Boolean(rowTargetId)
     && sourceFirstTargetId === rowTargetId;
+  const sourceFirstTargetBoundToAuthoritativeRuntimeIdentity =
+    sourceFirst.accepted === true
+    && Boolean(sourceFirstTargetId)
+    && sourceFirstTargetId === authoritativeRuntimeIdentity;
+  const suppliedRuntimeTargetIdentityBound =
+    !runtimeTargetIdentityPresent
+    || (
+      runtimeTargetIdentityAccepted
+      && Boolean(suppliedRuntimeTargetId)
+      && suppliedRuntimeTargetId === authoritativeRuntimeIdentity
+      && (
+        !suppliedProjectIdentityAlias
+        || suppliedProjectIdentityAlias === authoritativeRuntimeIdentity
+      )
+    );
   const validationProfileProofIdsBindStrictRuntime =
     requiredStrictProofIds.length > 0
     && requiredStrictProofIds.every((proofId) => validationProfileProofIds.includes(proofId));
@@ -15358,19 +15518,26 @@ function fullRuntimeRowIdentityBindingFacet(row = {}) {
     || !rowProfileId
     || validationProfileId === rowProfileId;
   const sourceFirstAliasBoundToLedger =
-    sourceFirstTargetBoundToRow
-    && validationProfile.accepted === true
-    && validationProfileProofIdsBindStrictRuntime
-    && validationProfileTargetBoundToEvidenceRefs
-    && validationProfileProfileBoundToRow;
-  const rowTargetBoundToLedger =
-    targetDirectlyBoundToLedger
-    || sourceFirstAliasBoundToLedger;
+    sourceFirstTargetBoundToAuthoritativeRuntimeIdentity
+    && runtimeIdentityAuthority.ledgerIdentityAccepted === true;
+  const rowTargetBoundToLedger = targetDirectlyBoundToLedger;
   const failedGates = compactStringList([
     rowTargetId ? null : 'full_runtime_row_target_id_missing',
     recordProjectId ? null : 'full_runtime_ledger_project_id_missing',
+    runtimeIdentityAuthority.ledgerIdentityAccepted
+      ? null
+      : 'full_runtime_authoritative_runtime_identity_not_recomputed_from_strict_ledger',
+    runtimeIdentityAuthority.authorityConflict
+      ? 'full_runtime_authoritative_runtime_identity_conflict'
+      : null,
     contractProjectBoundToLedger ? null : 'full_runtime_contract_project_not_bound_to_ledger_record',
     rowTargetBoundToLedger ? null : 'gpu_hmr_success_requires_row_target_bound_to_ledger_record',
+    sourceFirst.accepted === true && !sourceFirstTargetBoundToAuthoritativeRuntimeIdentity
+      ? 'gpu_hmr_success_requires_source_first_target_bound_to_authoritative_runtime_identity'
+      : null,
+    suppliedRuntimeTargetIdentityBound
+      ? null
+      : 'gpu_hmr_success_requires_runtime_target_identity_bound_to_authoritative_runtime_identity',
   ]);
   return {
     accepted: failedGates.length === 0,
@@ -15385,6 +15552,10 @@ function fullRuntimeRowIdentityBindingFacet(row = {}) {
     record_edit_id: recordEditId,
     contractProjectId,
     contract_project_id: contractProjectId,
+    authoritativeRuntimeIdentity,
+    authoritative_runtime_identity: authoritativeRuntimeIdentity,
+    runtimeIdentityAuthority,
+    runtime_identity_authority: runtimeIdentityAuthority,
     ledgerProofId,
     ledger_proof_id: ledgerProofId,
     runtimeProofId,
@@ -15399,12 +15570,23 @@ function fullRuntimeRowIdentityBindingFacet(row = {}) {
     source_first_alias_bound_to_ledger: sourceFirstAliasBoundToLedger,
     sourceFirstTargetBoundToRow,
     source_first_target_bound_to_row: sourceFirstTargetBoundToRow,
+    sourceFirstTargetBoundToAuthoritativeRuntimeIdentity,
+    source_first_target_bound_to_authoritative_runtime_identity:
+      sourceFirstTargetBoundToAuthoritativeRuntimeIdentity,
+    suppliedRuntimeTargetIdentityBound,
+    supplied_runtime_target_identity_bound: suppliedRuntimeTargetIdentityBound,
+    suppliedRuntimeTargetId,
+    supplied_runtime_target_id: suppliedRuntimeTargetId,
+    suppliedProjectIdentityAlias,
+    supplied_project_identity_alias: suppliedProjectIdentityAlias,
     validationProfileProofIdsBindStrictRuntime,
     validation_profile_proof_ids_bind_strict_runtime: validationProfileProofIdsBindStrictRuntime,
     validationProfileTargetBoundToEvidenceRefs,
     validation_profile_target_bound_to_evidence_refs: validationProfileTargetBoundToEvidenceRefs,
     validationProfileProfileBoundToRow,
     validation_profile_profile_bound_to_row: validationProfileProfileBoundToRow,
+    validationProfileRuntimeIdentityAuthority: false,
+    validation_profile_runtime_identity_authority: false,
     contractProjectBoundToLedger,
     contract_project_bound_to_ledger: contractProjectBoundToLedger,
     failedGates: failedGates.map((code) => ({ code })),
@@ -21728,7 +21910,7 @@ function fullRuntimeLedgerAuthorityFailures(row) {
   const rowBackend = valueFieldText(row.backend);
   const recordBackend = valueFieldText(record.backend);
   const recomputed = Object.keys(record).length > 0
-    ? queryGpuHmrLedgerInvariants({ records: [record] }, ledgerInvariantOverlayOptionsFromRow(row))
+    ? queryGpuHmrLedgerInvariants(record, ledgerInvariantOverlayOptionsFromRow(row))
     : null;
   const proofIds = compactStringList(row.proofIds ?? row.proof_ids);
   if (ledger.present !== true) {
@@ -21767,7 +21949,9 @@ function fullRuntimeLedgerAuthorityFailures(row) {
       recordBackend,
     });
   }
-  const effectiveRowIdentityBinding = fullRuntimeRowIdentityBindingFacet(row);
+  const effectiveRowIdentityBinding = fullRuntimeRowIdentityBindingFacet(row, {
+    recomputedLedger: recomputed,
+  });
   if (effectiveRowIdentityBinding.accepted !== true) {
     failures.push(...compactObjectList(effectiveRowIdentityBinding.failedGates));
   }
@@ -24820,32 +25004,38 @@ function runtimeTargetIdentityFacet({
     : [projectIdentityAliases];
   const labelList = Array.isArray(diagnosticLabels) ? diagnosticLabels : [diagnosticLabels];
   const projectIdentityAlias = firstText(...aliasList);
-  const ledgerProjectId = firstText(
-    ledgerObject.record?.projectId,
-    ledgerObject.record?.project_id,
-    ledgerRecordObject.projectId,
-    ledgerRecordObject.project_id,
-  );
-  const contractProjectId = firstText(contractObject.project_id, contractObject.projectId);
   const diagnosticTargetLabel = firstText(...labelList);
-  const identitySource = projectIdentityAlias
-    ? 'project_identity_alias'
-    : ledgerProjectId
+  const runtimeIdentityAuthority = runtimeIdentityAuthorityFacet({
+    ledger: ledgerObject,
+    ledgerRecord: ledgerRecordObject,
+    contract: contractObject,
+  });
+  const ledgerProjectId = runtimeIdentityAuthority.ledgerProjectId;
+  const contractProjectId = runtimeIdentityAuthority.contractProjectId;
+  const authoritativeRuntimeIdentity =
+    runtimeIdentityAuthority.authoritativeRuntimeIdentity;
+  const projectIdentityAliasMatchesAuthoritative =
+    !projectIdentityAlias
+    || (
+      Boolean(authoritativeRuntimeIdentity)
+      && projectIdentityAlias === authoritativeRuntimeIdentity
+    );
+  const identitySource = runtimeIdentityAuthority.ledgerIdentityAccepted
     ? 'ledger_project_id'
-    : contractProjectId
+    : runtimeIdentityAuthority.contractIdentityAccepted
+      && runtimeIdentityAuthority.authorityConflict !== true
       ? 'contract_project_id'
-      : diagnosticTargetLabel
-        ? 'diagnostic_label_fallback'
-        : 'unknown';
-  const acceptedAsRuntimeTargetIdentity = [
-    'project_identity_alias',
-    'ledger_project_id',
-    'contract_project_id',
-  ].includes(identitySource);
+      : projectIdentityAlias
+        ? 'project_identity_alias'
+        : diagnosticTargetLabel
+          ? 'diagnostic_label_fallback'
+          : 'unknown';
+  const acceptedAsRuntimeTargetIdentity =
+    runtimeIdentityAuthority.accepted === true
+    && projectIdentityAliasMatchesAuthoritative;
   const targetId = firstText(
+    authoritativeRuntimeIdentity,
     projectIdentityAlias,
-    ledgerProjectId,
-    contractProjectId,
     diagnosticTargetLabel,
     'unknown',
   );
@@ -24853,6 +25043,12 @@ function runtimeTargetIdentityFacet({
     acceptedAsRuntimeTargetIdentity
       ? null
       : 'runtime_target_identity_missing_runtime_project_identity',
+    runtimeIdentityAuthority.authorityConflict
+      ? 'runtime_target_identity_authoritative_sources_conflict'
+      : null,
+    projectIdentityAliasMatchesAuthoritative
+      ? null
+      : 'runtime_target_identity_project_alias_not_bound_to_authoritative_runtime_identity',
     identitySource === 'diagnostic_label_fallback'
       ? 'runtime_target_identity_diagnostic_label_not_acceptance_authority'
       : null,
@@ -24864,10 +25060,17 @@ function runtimeTargetIdentityFacet({
     proof_authority: 'ledger_or_contract_project_identity_preferred_not_target_label',
     targetId,
     target_id: targetId,
+    authoritativeRuntimeIdentity,
+    authoritative_runtime_identity: authoritativeRuntimeIdentity,
+    runtimeIdentityAuthority,
+    runtime_identity_authority: runtimeIdentityAuthority,
     identitySource,
     identity_source: identitySource,
     projectIdentityAlias: projectIdentityAlias ?? null,
     project_identity_alias: projectIdentityAlias ?? null,
+    projectIdentityAliasMatchesAuthoritative,
+    project_identity_alias_matches_authoritative:
+      projectIdentityAliasMatchesAuthoritative,
     ledgerProjectId: ledgerProjectId ?? null,
     ledger_project_id: ledgerProjectId ?? null,
     contractProjectId: contractProjectId ?? null,
@@ -38044,10 +38247,15 @@ function scopedFullRuntimePartitionRows(fullRuntimeRows, broadProof = {}) {
 }
 
 function acceptedFullRuntimeRow(row) {
+  const record = ledgerRecordForRow(row);
+  const authoritativeRuntimeIdentity = firstText(record.projectId, record.project_id);
+  const rowTargetId = firstText(row.targetId, row.target_id, row.projectId, row.project_id);
   return row.matrixOutcome === 'full_runtime_gpu_hmr'
     && row.acceptedForGpuHmr === true
     && row.proofChainAccepted === true
-    && row.safety?.accepted === true;
+    && row.safety?.accepted === true
+    && Boolean(authoritativeRuntimeIdentity)
+    && rowTargetId === authoritativeRuntimeIdentity;
 }
 
 function fullRuntimeScopeBreakdown(rows) {
@@ -38166,26 +38374,20 @@ function sourceFirstVisualSourceIdentityHashList(rows = []) {
   )))];
 }
 
-function sourceFirstVisualRuntimeTargetIdentityHash(row = {}) {
-  const runtimeTargetIdentity = compactObject(
-    row.runtimeTargetIdentity ?? row.runtime_target_identity,
-  );
-  const accepted = firstBool(
-    runtimeTargetIdentity.acceptedAsRuntimeTargetIdentity,
-    runtimeTargetIdentity.accepted_as_runtime_target_identity,
-    runtimeTargetIdentity.accepted,
-  ) === true;
-  const targetId = firstText(runtimeTargetIdentity.targetId, runtimeTargetIdentity.target_id);
-  if (!accepted || !targetId) return null;
+export function recomputeGpuHmrValidationMatrixRuntimeTargetIdentityHash(row = {}) {
+  if (!acceptedFullRuntimeRow(row)) return null;
+  const record = ledgerRecordForRow(row);
+  const targetId = firstText(record.projectId, record.project_id);
+  if (!targetId) return null;
   return stableJsonHash({
     backend: firstText(row.backend, row.backendFamily, row.backend_family),
     acceptanceScope: firstText(row.acceptanceScope, row.acceptance_scope),
     runtimeTargetId: targetId,
-    identitySource: firstText(
-      runtimeTargetIdentity.identitySource,
-      runtimeTargetIdentity.identity_source,
-    ),
   });
+}
+
+function sourceFirstVisualRuntimeTargetIdentityHash(row = {}) {
+  return recomputeGpuHmrValidationMatrixRuntimeTargetIdentityHash(row);
 }
 
 function sourceFirstVisualRuntimeTargetIdentityHashList(rows = []) {
