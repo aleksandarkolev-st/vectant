@@ -348,6 +348,10 @@ pub struct GpuHmrAcceptanceLedger {
 
 impl GpuHmrAcceptanceLedger {
     pub fn new(input: GpuHmrAcceptanceLedgerInput) -> Self {
+        Self::from_input_at(input, now_rfc3339())
+    }
+
+    fn from_input_at(input: GpuHmrAcceptanceLedgerInput, created_at: String) -> Self {
         let mut failed = Vec::new();
         if input.hot_reload {
             match input.cpu_hmr_used {
@@ -433,7 +437,6 @@ impl GpuHmrAcceptanceLedger {
             }
         }
         let gpu_hmr_success = input.hot_reload && failed.is_empty();
-        let created_at = now_rfc3339();
         let material = json!({
             "schemaVersion": GPU_HMR_ACCEPTANCE_LEDGER_SCHEMA_VERSION,
             "hotReload": input.hot_reload,
@@ -511,6 +514,48 @@ impl GpuHmrAcceptanceLedger {
                 .unwrap_or_default()
                 .to_string(),
         }
+    }
+
+    /// Recomputes every invariant and the content-addressed ledger identity.
+    /// Serialized success fields are never accepted as authority by themselves.
+    pub fn validate_contract(&self) -> bool {
+        if chrono::DateTime::parse_from_rfc3339(&self.created_at).is_err() {
+            return false;
+        }
+        let recomputed = Self::from_input_at(
+            GpuHmrAcceptanceLedgerInput {
+                hot_reload: self.hot_reload,
+                artifact_id_after: self.artifact_id_after.clone(),
+                loader_artifact_id: self.loader_artifact_id.clone(),
+                epoch_publish_artifact_id: self.epoch_publish_artifact_id.clone(),
+                dispatch_artifact_id: self.dispatch_artifact_id.clone(),
+                output_artifact_id: self.output_artifact_id.clone(),
+                output_oracle_passed: self.output_oracle_passed,
+                output_after_dispatch: self.output_after_dispatch,
+                retirement_proven: self.retirement_proven,
+                cpu_hmr_used: self
+                    .cpu_hmr_absence_evidence_present
+                    .then_some(self.cpu_hmr_used),
+                full_rebuild_used: self
+                    .full_rebuild_absence_evidence_present
+                    .then_some(self.full_rebuild_used),
+                process_restarted: self
+                    .process_restart_absence_evidence_present
+                    .then_some(self.process_restarted),
+                firewall_route: self.firewall_route.clone(),
+                firewall_evidence_source: self.firewall_evidence_source.clone(),
+                firewall_process_id_before: self.firewall_process_id_before,
+                firewall_process_id_after: self.firewall_process_id_after,
+                process_id: self.process_id.clone(),
+                device_identity: self.device_identity.clone(),
+            },
+            self.created_at.clone(),
+        );
+        recomputed == *self
+    }
+
+    pub fn is_verified_success(&self) -> bool {
+        self.gpu_hmr_success && self.validate_contract()
     }
 
     pub fn to_log_line(&self) -> String {
@@ -916,6 +961,8 @@ mod tests {
     fn acceptance_ledger_accepts_full_hot_reload_event_chain() {
         let ledger = GpuHmrAcceptanceLedger::new(accepted_ledger_input());
         assert!(ledger.gpu_hmr_success);
+        assert!(ledger.validate_contract());
+        assert!(ledger.is_verified_success());
         assert!(ledger.failed_invariants.is_empty());
         let value: serde_json::Value = serde_json::from_str(&ledger.to_log_line()).unwrap();
         assert_eq!(value["type"], "gpu_hmr_acceptance_ledger");
@@ -930,6 +977,26 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_ledger_rejects_serialized_success_flag_forgery() {
+        let ledger = GpuHmrAcceptanceLedger::new(accepted_ledger_input());
+        let mut forged: GpuHmrAcceptanceLedger =
+            serde_json::from_value(serde_json::to_value(&ledger).unwrap()).unwrap();
+        forged.output_oracle_passed = false;
+        assert!(!forged.validate_contract());
+        assert!(!forged.is_verified_success());
+
+        let mut refused_input = accepted_ledger_input();
+        refused_input.output_oracle_passed = false;
+        let mut forged_refusal = GpuHmrAcceptanceLedger::new(refused_input);
+        assert!(forged_refusal.validate_contract());
+        assert!(!forged_refusal.gpu_hmr_success);
+        forged_refusal.gpu_hmr_success = true;
+        forged_refusal.failed_invariants.clear();
+        assert!(!forged_refusal.validate_contract());
+        assert!(!forged_refusal.is_verified_success());
+    }
+
+    #[test]
     fn acceptance_ledger_rejects_missing_firewall_evidence() {
         let mut input = accepted_ledger_input();
         input.cpu_hmr_used = None;
@@ -940,6 +1007,7 @@ mod tests {
         input.firewall_process_id_before = None;
         input.firewall_process_id_after = None;
         let ledger = GpuHmrAcceptanceLedger::new(input);
+        assert!(ledger.validate_contract());
         assert!(!ledger.gpu_hmr_success);
         assert!(ledger
             .failed_invariants
