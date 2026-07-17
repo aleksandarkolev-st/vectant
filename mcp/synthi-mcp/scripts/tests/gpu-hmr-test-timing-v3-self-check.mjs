@@ -3,6 +3,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
+  GPU_HMR_TEST_TIMING_V3_ABSENT_ARTIFACT_KIND,
+  GPU_HMR_TEST_TIMING_V3_ABSENT_ARTIFACT_REASON,
   GPU_HMR_TEST_TIMING_V3_COMPUTE_VISUAL_REASON,
   GPU_HMR_TEST_TIMING_V3_DERIVED_INTERVAL_REASON,
   GPU_HMR_TEST_TIMING_V3_EXTERNAL_PERSISTENCE_REASON,
@@ -13,16 +15,24 @@ import {
   GPU_HMR_TEST_TIMING_V3_PHASES,
   GPU_HMR_TEST_TIMING_V3_SCHEMA,
   assertValidGpuHmrTestTimingV3,
+  beginGpuHmrTestTimingV3SessionAttempt,
   captureGpuHmrTestTimingV3ClockReading,
+  createGpuHmrTestTimingV3AbsentArtifactBinding,
   createGpuHmrTestTimingV3ClockCapability,
   createGpuHmrTestTimingV3ClockSourceManifest,
   createGpuHmrTestTimingV3PersistenceOperation,
   createGpuHmrTestTimingV3PersistenceReceipt,
   createGpuHmrTestTimingV3Recorder,
+  createGpuHmrTestTimingV3Session,
   createGpuHmrTestTimingV3TestClockCapability,
   deriveGpuHmrTestTimingV3Summary,
   getGpuHmrTestTimingV3ClockSourceManifest,
+  finishGpuHmrTestTimingV3SessionAttempt,
+  markGpuHmrTestTimingV3SessionPhaseNotApplicable,
+  markGpuHmrTestTimingV3SessionPhaseUnavailable,
+  markGpuHmrTestTimingV3SessionPresentationComplete,
   prepareGpuHmrTestTimingV3Persistence,
+  sealGpuHmrTestTimingV3Session,
   validateGpuHmrTestTimingV3,
   validateGpuHmrTestTimingV3ClockSourceManifest,
   validateGpuHmrTestTimingV3PersistenceReceipt,
@@ -66,6 +76,32 @@ function binding(manifest, overrides = {}) {
     clockSourceIdentityHash: manifest.clockSourceIdentityHash,
     clockDomainId: manifest.clockDomainId,
     ...overrides,
+  };
+}
+
+function deferredBinding(manifest, overrides = {}) {
+  const value = binding(manifest, overrides);
+  delete value.outcome;
+  delete value.artifactHash;
+  delete value.proofLedgerId;
+  delete value.runtimeProofId;
+  return value;
+}
+
+function terminalBinding(overrides = {}) {
+  return {
+    outcome: 'completed',
+    artifactHash: hash('3'),
+    proofLedgerId: `proof-ledger:${hash('4')}`,
+    runtimeProofId: `runtime-proof:${hash('5')}`,
+    ...overrides,
+  };
+}
+
+function completedDeferredBinding(runBinding, terminal) {
+  return {
+    ...structuredClone(runBinding),
+    ...structuredClone(terminal),
   };
 }
 
@@ -132,6 +168,40 @@ function attempt(recorder, clock, phaseKey, duration = 10n, result = 'completed'
     result,
     evidenceRefs: [`evidence:${phaseKey}:${suffix}:end`],
   });
+}
+
+function sessionRecorder(sessionCapability) {
+  return {
+    beginAttempt: (phaseKey, options) => beginGpuHmrTestTimingV3SessionAttempt(
+      sessionCapability,
+      phaseKey,
+      options,
+    ),
+    finishAttempt: (attemptCapability, options) => finishGpuHmrTestTimingV3SessionAttempt(
+      sessionCapability,
+      attemptCapability,
+      options,
+    ),
+    markNotApplicable: (phaseKey, reasonCode, evidenceRefs) => (
+      markGpuHmrTestTimingV3SessionPhaseNotApplicable(
+        sessionCapability,
+        phaseKey,
+        reasonCode,
+        evidenceRefs,
+      )
+    ),
+    markUnavailable: (phaseKey, reasonCode, evidenceRefs) => (
+      markGpuHmrTestTimingV3SessionPhaseUnavailable(
+        sessionCapability,
+        phaseKey,
+        reasonCode,
+        evidenceRefs,
+      )
+    ),
+    markPresentationComplete: (options) => (
+      markGpuHmrTestTimingV3SessionPresentationComplete(sessionCapability, options)
+    ),
+  };
 }
 
 function completeRecord({
@@ -220,6 +290,125 @@ function completeRecord({
   attempt(recorder, clock, 'cleanup', 79n);
   clock.tick(83n);
   return recorder.finalize();
+}
+
+function recordCompletedSessionPhases(recorder, clock, modality, {
+  markPresentation = true,
+} = {}) {
+  attempt(recorder, clock, 'discovery', 11n);
+  attempt(recorder, clock, 'provider_availability', 13n);
+  attempt(recorder, clock, 'ai_split', 17n);
+  attempt(recorder, clock, 'compile', 19n);
+  attempt(recorder, clock, 'artifact_load', 23n);
+  attempt(recorder, clock, 'epoch_publish', 29n);
+  attempt(recorder, clock, 'dispatch', 31n);
+  attempt(recorder, clock, 'output_ready', 37n);
+  if (modality === 'visual') {
+    if (markPresentation) {
+      clock.tick(5n);
+      recorder.markPresentationComplete({
+        source: 'source:session-presentation-complete',
+        evidenceRefs: ['evidence:session-presentation-complete'],
+      });
+    }
+    clock.tick(7n);
+    attempt(recorder, clock, 'visual_capture', 41n);
+    attempt(recorder, clock, 'visual_analysis', 43n);
+  } else {
+    for (const phaseKey of ['visual_capture', 'visual_analysis']) {
+      recorder.markNotApplicable(
+        phaseKey,
+        GPU_HMR_TEST_TIMING_V3_COMPUTE_VISUAL_REASON,
+        [`evidence:session:${phaseKey}:compute-modality`],
+      );
+    }
+  }
+  attempt(recorder, clock, 'oracle_analysis', 47n);
+  attempt(recorder, clock, 'retirement', 53n);
+  attempt(recorder, clock, 'proof_finalization', 59n);
+  attempt(recorder, clock, 'cleanup', 61n);
+  clock.tick(67n);
+}
+
+function sealPreArtifactSession({
+  clockFixture,
+  runBinding,
+  outcome,
+  compileFailures = 0,
+}) {
+  const capabilities = createGpuHmrTestTimingV3Session({
+    clockCapability: clockFixture.capability,
+    binding: runBinding,
+    totalSource: `source:session:${outcome}:validator`,
+    totalEvidenceRefs: [`evidence:session:${outcome}:total`],
+  });
+  const recorder = sessionRecorder(capabilities.sessionCapability);
+  attempt(recorder, clockFixture.clock, 'discovery', 11n);
+  for (const phaseKey of ['provider_availability', 'ai_split']) {
+    recorder.markUnavailable(
+      phaseKey,
+      'required_boundary_not_observed',
+      [`evidence:session:${outcome}:${phaseKey}`],
+    );
+  }
+  if (compileFailures === 0) {
+    recorder.markUnavailable(
+      'compile',
+      'required_boundary_not_observed',
+      [`evidence:session:${outcome}:compile`],
+    );
+  } else {
+    for (let index = 1; index <= compileFailures; index += 1) {
+      attempt(
+        recorder,
+        clockFixture.clock,
+        'compile',
+        BigInt(12 + index),
+        'failed',
+        String(index),
+      );
+    }
+  }
+  for (const phaseKey of [
+    'artifact_load',
+    'epoch_publish',
+    'dispatch',
+    'output_ready',
+    'oracle_analysis',
+    'retirement',
+  ]) {
+    recorder.markUnavailable(
+      phaseKey,
+      'required_boundary_not_observed',
+      [`evidence:session:${outcome}:${phaseKey}`],
+    );
+  }
+  for (const phaseKey of ['visual_capture', 'visual_analysis']) {
+    recorder.markNotApplicable(
+      phaseKey,
+      GPU_HMR_TEST_TIMING_V3_COMPUTE_VISUAL_REASON,
+      [`evidence:session:${outcome}:${phaseKey}`],
+    );
+  }
+  attempt(
+    recorder,
+    clockFixture.clock,
+    'proof_finalization',
+    17n,
+    outcome === 'failed' ? 'failed' : 'completed',
+  );
+  attempt(recorder, clockFixture.clock, 'cleanup', 19n);
+  clockFixture.clock.tick(23n);
+  const terminal = terminalBinding({
+    outcome,
+    artifactHash: createGpuHmrTestTimingV3AbsentArtifactBinding(),
+    proofLedgerId: null,
+    runtimeProofId: null,
+  });
+  return {
+    record: sealGpuHmrTestTimingV3Session(capabilities.sealCapability, terminal),
+    terminal,
+  };
 }
 
 function phase(record, phaseKey) {
@@ -562,6 +751,470 @@ assert.equal(failedRecord.summary.phaseFailedAttemptCount.compile, 2);
 assert.equal(failedRecord.summary.phaseDurationNs.compile, '36');
 assert.equal(phase(failedRecord, 'proof_finalization').attempts[0].result, 'failed');
 assert.equal(failedRecord.summary.phaseFailedAttemptCount.proof_finalization, 1);
+
+const liveClockFixture = testClockFixture(controlledClock(5_000_000n), {
+  clockDomainId: 'clock-domain:test:live-session',
+  clockSourceIdentityHash: hash('1'),
+  runtimeSessionId: 'runtime-session:test:live-session',
+  processIdentity: 'process:test:live-session',
+  evidenceRefs: ['evidence:clock-source:live-session'],
+});
+const liveRunBinding = deferredBinding(liveClockFixture.manifest, {
+  runMode: 'cold',
+  splitMode: 'fresh_ai',
+  modality: 'compute',
+  editId: 'edit:test:live-session',
+  editHash: hash('2'),
+});
+const trustedLiveRunBinding = structuredClone(liveRunBinding);
+assert.throws(
+  () => createGpuHmrTestTimingV3Session({
+    clockCapability: liveClockFixture.capability,
+    binding: binding(liveClockFixture.manifest, {
+      modality: 'compute',
+      editId: 'edit:test:eager-terminal-binding',
+    }),
+    totalSource: 'source:eager-terminal-binding:validator',
+    totalEvidenceRefs: ['evidence:eager-terminal-binding:total'],
+  }),
+  (error) => error.code === 'timing_v3_session_options_invalid'
+    && error.details.gaps.includes('binding_field_unexpected:outcome')
+    && error.details.gaps.includes('binding_field_unexpected:artifactHash')
+    && error.details.gaps.includes('binding_field_unexpected:proofLedgerId')
+    && error.details.gaps.includes('binding_field_unexpected:runtimeProofId'),
+);
+const liveCapabilities = createGpuHmrTestTimingV3Session({
+  clockCapability: liveClockFixture.capability,
+  binding: liveRunBinding,
+  totalSource: 'source:live-session:validator',
+  totalEvidenceRefs: ['evidence:live-session:total'],
+});
+assert.deepEqual(Object.keys(liveCapabilities.sessionCapability), []);
+assert.deepEqual(Object.keys(liveCapabilities.sealCapability), []);
+assert.equal(Object.getPrototypeOf(liveCapabilities.sessionCapability), null);
+assert.equal(Object.getPrototypeOf(liveCapabilities.sealCapability), null);
+assert.ok(Object.isFrozen(liveCapabilities.sessionCapability));
+assert.ok(Object.isFrozen(liveCapabilities.sealCapability));
+assert.throws(
+  () => beginGpuHmrTestTimingV3SessionAttempt(
+    structuredClone(liveCapabilities.sessionCapability),
+    'discovery',
+    { source: 'source:cloned-session', evidenceRefs: ['evidence:cloned-session'] },
+  ),
+  /timing_v3_session_capability_invalid/,
+);
+assert.throws(
+  () => sealGpuHmrTestTimingV3Session(
+    structuredClone(liveCapabilities.sealCapability),
+    terminalBinding(),
+  ),
+  /timing_v3_session_seal_capability_invalid/,
+);
+liveRunBinding.runMode = 'warm';
+liveRunBinding.modality = 'visual';
+liveRunBinding.editId = 'edit:test:relabel-attempt';
+liveRunBinding.runtimeSessionId = 'runtime-session:test:relabel-attempt';
+const liveRecorder = sessionRecorder(liveCapabilities.sessionCapability);
+recordCompletedSessionPhases(liveRecorder, liveClockFixture.clock, 'compute');
+const liveTerminal = terminalBinding({
+  artifactHash: hash('3'),
+  proofLedgerId: `proof-ledger:${hash('4')}`,
+  runtimeProofId: `runtime-proof:${hash('5')}`,
+});
+const liveRecord = sealGpuHmrTestTimingV3Session(
+  liveCapabilities.sealCapability,
+  liveTerminal,
+);
+const liveExpectedBinding = completedDeferredBinding(
+  trustedLiveRunBinding,
+  liveTerminal,
+);
+const liveOptions = validationOptions(liveExpectedBinding, liveClockFixture.manifest);
+const liveValidation = validateGpuHmrTestTimingV3(liveRecord, liveOptions);
+assert.equal(liveValidation.valid, true, liveValidation.gaps.join(', '));
+assert.equal(liveRecord.binding.runMode, 'cold');
+assert.equal(liveRecord.binding.modality, 'compute');
+assert.equal(liveRecord.binding.editId, 'edit:test:live-session');
+assert.equal(
+  liveRecord.binding.runtimeSessionId,
+  liveClockFixture.manifest.runtimeSessionId,
+);
+assert.equal(liveRecord.firstVisibleBoundary, null);
+assert.equal(
+  liveRecord.firstOutputReadyBoundary.monotonicNs,
+  phase(liveRecord, 'output_ready').attempts[0].endNs,
+);
+assert.equal(
+  phase(liveRecord, 'durable_persistence').reasonCode,
+  GPU_HMR_TEST_TIMING_V3_EXTERNAL_PERSISTENCE_REASON,
+);
+assert.equal(liveRecord.authority, 'timing_measurement_only_not_gpu_hmr_acceptance');
+assert.equal(liveRecord.timingOnly, true);
+assert.equal(liveRecord.acceptedForGpuHmr, false);
+assert.equal(liveRecord.gpuHmrSuccess, false);
+assert.throws(
+  () => sealGpuHmrTestTimingV3Session(liveCapabilities.sealCapability, liveTerminal),
+  /timing_v3_session_seal_consumed/,
+);
+assert.throws(
+  () => liveRecorder.markUnavailable(
+    'discovery',
+    'replay_after_seal',
+    ['evidence:replay-after-seal'],
+  ),
+  /timing_v3_session_consumed/,
+);
+
+const absentArtifact = createGpuHmrTestTimingV3AbsentArtifactBinding();
+assert.deepEqual(absentArtifact, {
+  kind: GPU_HMR_TEST_TIMING_V3_ABSENT_ARTIFACT_KIND,
+  reasonCode: GPU_HMR_TEST_TIMING_V3_ABSENT_ARTIFACT_REASON,
+});
+assert.ok(Object.isFrozen(absentArtifact));
+assert.throws(
+  () => createGpuHmrTestTimingV3AbsentArtifactBinding('forged_reason'),
+  /timing_v3_absent_artifact_options_forbidden/,
+);
+
+const liveRefusalClockFixture = testClockFixture(controlledClock(5_500_000n), {
+  clockDomainId: 'clock-domain:test:live-refusal',
+  clockSourceIdentityHash: hash('6'),
+  runtimeSessionId: 'runtime-session:test:live-refusal',
+  processIdentity: 'process:test:live-refusal',
+  evidenceRefs: ['evidence:clock-source:live-refusal'],
+});
+const liveRefusalRunBinding = deferredBinding(liveRefusalClockFixture.manifest, {
+  runMode: 'refusal',
+  splitMode: 'not_applicable',
+  modality: 'compute',
+  editId: 'edit:test:live-refusal',
+  editHash: hash('7'),
+});
+const liveRefusalResult = sealPreArtifactSession({
+  clockFixture: liveRefusalClockFixture,
+  runBinding: liveRefusalRunBinding,
+  outcome: 'refused',
+});
+const liveRefusalOptions = validationOptions(
+  completedDeferredBinding(liveRefusalRunBinding, liveRefusalResult.terminal),
+  liveRefusalClockFixture.manifest,
+);
+const liveRefusalValidation = validateGpuHmrTestTimingV3(
+  liveRefusalResult.record,
+  liveRefusalOptions,
+);
+assert.equal(
+  liveRefusalValidation.valid,
+  true,
+  liveRefusalValidation.gaps.join(', '),
+);
+assert.deepEqual(liveRefusalResult.record.binding.artifactHash, absentArtifact);
+assert.equal(phase(liveRefusalResult.record, 'compile').disposition, 'unavailable');
+assert.equal(phase(liveRefusalResult.record, 'artifact_load').attempts.length, 0);
+
+const liveFailureClockFixture = testClockFixture(controlledClock(6_000_000n), {
+  clockDomainId: 'clock-domain:test:live-failure',
+  clockSourceIdentityHash: hash('8'),
+  runtimeSessionId: 'runtime-session:test:live-failure',
+  processIdentity: 'process:test:live-failure',
+  evidenceRefs: ['evidence:clock-source:live-failure'],
+});
+const liveFailureRunBinding = deferredBinding(liveFailureClockFixture.manifest, {
+  runMode: 'warm',
+  splitMode: 'reused_ai',
+  modality: 'compute',
+  editId: 'edit:test:live-failure',
+  editHash: hash('9'),
+});
+const liveFailureResult = sealPreArtifactSession({
+  clockFixture: liveFailureClockFixture,
+  runBinding: liveFailureRunBinding,
+  outcome: 'failed',
+  compileFailures: 2,
+});
+const liveFailureOptions = validationOptions(
+  completedDeferredBinding(liveFailureRunBinding, liveFailureResult.terminal),
+  liveFailureClockFixture.manifest,
+);
+const liveFailureValidation = validateGpuHmrTestTimingV3(
+  liveFailureResult.record,
+  liveFailureOptions,
+);
+assert.equal(
+  liveFailureValidation.valid,
+  true,
+  liveFailureValidation.gaps.join(', '),
+);
+assert.deepEqual(
+  phase(liveFailureResult.record, 'compile').attempts.map((entry) => entry.result),
+  ['failed', 'failed'],
+);
+assert.deepEqual(liveFailureResult.record.binding.artifactHash, absentArtifact);
+
+const timestampRunBinding = deferredBinding(liveFailureClockFixture.manifest, {
+  runMode: 'warm',
+  splitMode: 'reused_ai',
+  modality: 'compute',
+  editId: 'edit:test:timestamp-injection',
+  editHash: hash('a'),
+});
+const timestampCapabilities = createGpuHmrTestTimingV3Session({
+  clockCapability: liveFailureClockFixture.capability,
+  binding: timestampRunBinding,
+  totalSource: 'source:timestamp-injection:validator',
+  totalEvidenceRefs: ['evidence:timestamp-injection:total'],
+});
+assert.throws(
+  () => beginGpuHmrTestTimingV3SessionAttempt(
+    timestampCapabilities.sessionCapability,
+    'discovery',
+    {
+      source: 'source:timestamp-injection',
+      evidenceRefs: ['evidence:timestamp-injection'],
+      startNs: '1',
+    },
+  ),
+  /timing_v3_attempt_begin_invalid/,
+);
+const timestampAttempt = beginGpuHmrTestTimingV3SessionAttempt(
+  timestampCapabilities.sessionCapability,
+  'discovery',
+  {
+    source: 'source:timestamp-intrinsic',
+    evidenceRefs: ['evidence:timestamp-intrinsic:start'],
+  },
+);
+assert.deepEqual(Object.keys(timestampAttempt), []);
+assert.equal(Object.getPrototypeOf(timestampAttempt), null);
+assert.ok(Object.isFrozen(timestampAttempt));
+assert.throws(
+  () => finishGpuHmrTestTimingV3SessionAttempt(
+    timestampCapabilities.sessionCapability,
+    structuredClone(timestampAttempt),
+    { result: 'completed', evidenceRefs: [], endNs: '2' },
+  ),
+  /timing_v3_session_attempt_capability_invalid/,
+);
+assert.throws(
+  () => finishGpuHmrTestTimingV3SessionAttempt(
+    timestampCapabilities.sessionCapability,
+    timestampAttempt,
+    { result: 'completed', evidenceRefs: [], endNs: '2' },
+  ),
+  /timing_v3_attempt_finish_invalid/,
+);
+liveFailureClockFixture.clock.tick(7n);
+const intrinsicAttempt = finishGpuHmrTestTimingV3SessionAttempt(
+  timestampCapabilities.sessionCapability,
+  timestampAttempt,
+  { result: 'completed', evidenceRefs: ['evidence:timestamp-intrinsic:end'] },
+);
+assert.equal(intrinsicAttempt.durationNs, '7');
+assert.notEqual(intrinsicAttempt.startNs, '1');
+assert.notEqual(intrinsicAttempt.endNs, '2');
+assert.throws(
+  () => finishGpuHmrTestTimingV3SessionAttempt(
+    timestampCapabilities.sessionCapability,
+    timestampAttempt,
+    { result: 'completed', evidenceRefs: [] },
+  ),
+  /timing_v3_session_attempt_consumed/,
+);
+
+const boundaryRunBinding = deferredBinding(liveFailureClockFixture.manifest, {
+  runMode: 'warm',
+  splitMode: 'reused_ai',
+  modality: 'visual',
+  editId: 'edit:test:boundary-injection',
+  editHash: hash('b'),
+});
+const boundaryCapabilities = createGpuHmrTestTimingV3Session({
+  clockCapability: liveFailureClockFixture.capability,
+  binding: boundaryRunBinding,
+  totalSource: 'source:boundary-injection:validator',
+  totalEvidenceRefs: ['evidence:boundary-injection:total'],
+});
+const boundaryRecorder = sessionRecorder(boundaryCapabilities.sessionCapability);
+attempt(boundaryRecorder, liveFailureClockFixture.clock, 'output_ready', 5n);
+assert.throws(
+  () => markGpuHmrTestTimingV3SessionPresentationComplete(
+    boundaryCapabilities.sessionCapability,
+    {
+      source: 'source:boundary-injection',
+      evidenceRefs: ['evidence:boundary-injection'],
+      monotonicNs: '2',
+    },
+  ),
+  /timing_v3_first_visible_invalid/,
+);
+liveFailureClockFixture.clock.tick(3n);
+boundaryRecorder.markPresentationComplete({
+  source: 'source:boundary-intrinsic',
+  evidenceRefs: ['evidence:boundary-intrinsic'],
+});
+
+const crossSessionA = createGpuHmrTestTimingV3Session({
+  clockCapability: liveFailureClockFixture.capability,
+  binding: timestampRunBinding,
+  totalSource: 'source:cross-session:a',
+  totalEvidenceRefs: ['evidence:cross-session:a'],
+});
+const crossSessionB = createGpuHmrTestTimingV3Session({
+  clockCapability: liveFailureClockFixture.capability,
+  binding: timestampRunBinding,
+  totalSource: 'source:cross-session:b',
+  totalEvidenceRefs: ['evidence:cross-session:b'],
+});
+const crossAttemptA = beginGpuHmrTestTimingV3SessionAttempt(
+  crossSessionA.sessionCapability,
+  'discovery',
+  { source: 'source:cross-session:a', evidenceRefs: ['evidence:cross-session:a'] },
+);
+const crossAttemptB = beginGpuHmrTestTimingV3SessionAttempt(
+  crossSessionB.sessionCapability,
+  'discovery',
+  { source: 'source:cross-session:b', evidenceRefs: ['evidence:cross-session:b'] },
+);
+assert.throws(
+  () => finishGpuHmrTestTimingV3SessionAttempt(
+    crossSessionB.sessionCapability,
+    crossAttemptA,
+    { result: 'completed', evidenceRefs: [] },
+  ),
+  /timing_v3_session_attempt_mismatch/,
+);
+liveFailureClockFixture.clock.tick(5n);
+finishGpuHmrTestTimingV3SessionAttempt(
+  crossSessionA.sessionCapability,
+  crossAttemptA,
+  { result: 'completed', evidenceRefs: [] },
+);
+liveFailureClockFixture.clock.tick(5n);
+finishGpuHmrTestTimingV3SessionAttempt(
+  crossSessionB.sessionCapability,
+  crossAttemptB,
+  { result: 'completed', evidenceRefs: [] },
+);
+
+const missingTerminalCapabilities = createGpuHmrTestTimingV3Session({
+  clockCapability: liveFailureClockFixture.capability,
+  binding: timestampRunBinding,
+  totalSource: 'source:missing-terminal:validator',
+  totalEvidenceRefs: ['evidence:missing-terminal:total'],
+});
+assert.throws(
+  () => sealGpuHmrTestTimingV3Session(missingTerminalCapabilities.sealCapability, {
+    outcome: 'failed',
+    artifactHash: createGpuHmrTestTimingV3AbsentArtifactBinding(),
+    proofLedgerId: null,
+  }),
+  (error) => error.code === 'timing_v3_session_terminal_binding_invalid'
+    && error.details.gaps.includes('terminal_binding_field_missing:runtimeProofId'),
+);
+assert.throws(
+  () => sealGpuHmrTestTimingV3Session(
+    missingTerminalCapabilities.sealCapability,
+    terminalBinding({ outcome: 'failed' }),
+  ),
+  /timing_v3_session_seal_consumed/,
+);
+assert.throws(
+  () => beginGpuHmrTestTimingV3SessionAttempt(
+    missingTerminalCapabilities.sessionCapability,
+    'discovery',
+    { source: 'source:after-failed-seal', evidenceRefs: ['evidence:after-failed-seal'] },
+  ),
+  /timing_v3_session_consumed/,
+);
+
+const relabelCapabilities = createGpuHmrTestTimingV3Session({
+  clockCapability: liveFailureClockFixture.capability,
+  binding: timestampRunBinding,
+  totalSource: 'source:seal-relabel:validator',
+  totalEvidenceRefs: ['evidence:seal-relabel:total'],
+});
+assert.throws(
+  () => sealGpuHmrTestTimingV3Session(relabelCapabilities.sealCapability, {
+    ...terminalBinding({ outcome: 'failed' }),
+    runMode: 'refusal',
+  }),
+  (error) => error.code === 'timing_v3_session_terminal_binding_invalid'
+    && error.details.gaps.includes('terminal_binding_field_unexpected:runMode'),
+);
+
+const completedAbsenceCapabilities = createGpuHmrTestTimingV3Session({
+  clockCapability: liveFailureClockFixture.capability,
+  binding: timestampRunBinding,
+  totalSource: 'source:completed-absence:validator',
+  totalEvidenceRefs: ['evidence:completed-absence:total'],
+});
+assert.throws(
+  () => sealGpuHmrTestTimingV3Session(
+    completedAbsenceCapabilities.sealCapability,
+    terminalBinding({ artifactHash: createGpuHmrTestTimingV3AbsentArtifactBinding() }),
+  ),
+  (error) => error.code === 'timing_v3_session_terminal_binding_invalid'
+    && error.details.gaps.includes('terminal_binding_completed_artifact_hash_required'),
+);
+const forgedCompletedAbsence = structuredClone(liveRecord);
+forgedCompletedAbsence.binding.artifactHash = createGpuHmrTestTimingV3AbsentArtifactBinding();
+const forgedCompletedAbsenceBinding = structuredClone(liveExpectedBinding);
+forgedCompletedAbsenceBinding.artifactHash = createGpuHmrTestTimingV3AbsentArtifactBinding();
+assertRejected(
+  forgedCompletedAbsence,
+  validationOptions(forgedCompletedAbsenceBinding, liveClockFixture.manifest),
+  'completed_artifact_absence_forbidden',
+);
+const forgedAbsenceAfterCompile = structuredClone(liveRecord);
+forgedAbsenceAfterCompile.outcome = 'failed';
+forgedAbsenceAfterCompile.binding.outcome = 'failed';
+forgedAbsenceAfterCompile.binding.artifactHash = createGpuHmrTestTimingV3AbsentArtifactBinding();
+forgedAbsenceAfterCompile.binding.proofLedgerId = null;
+forgedAbsenceAfterCompile.binding.runtimeProofId = null;
+assertRejected(
+  forgedAbsenceAfterCompile,
+  validationOptions(forgedAbsenceAfterCompile.binding, liveClockFixture.manifest),
+  'absent_artifact_after_completed_compile',
+);
+
+const missingVisibleClockFixture = testClockFixture(controlledClock(6_500_000n), {
+  clockDomainId: 'clock-domain:test:missing-visible',
+  clockSourceIdentityHash: hash('b'),
+  runtimeSessionId: 'runtime-session:test:missing-visible',
+  processIdentity: 'process:test:missing-visible',
+  evidenceRefs: ['evidence:clock-source:missing-visible'],
+});
+const missingVisibleRunBinding = deferredBinding(missingVisibleClockFixture.manifest, {
+  runMode: 'cold',
+  splitMode: 'fresh_ai',
+  modality: 'visual',
+  editId: 'edit:test:missing-visible',
+  editHash: hash('c'),
+});
+const missingVisibleCapabilities = createGpuHmrTestTimingV3Session({
+  clockCapability: missingVisibleClockFixture.capability,
+  binding: missingVisibleRunBinding,
+  totalSource: 'source:missing-visible:validator',
+  totalEvidenceRefs: ['evidence:missing-visible:total'],
+});
+recordCompletedSessionPhases(
+  sessionRecorder(missingVisibleCapabilities.sessionCapability),
+  missingVisibleClockFixture.clock,
+  'visual',
+  { markPresentation: false },
+);
+assert.throws(
+  () => sealGpuHmrTestTimingV3Session(
+    missingVisibleCapabilities.sealCapability,
+    terminalBinding({
+      artifactHash: hash('d'),
+      proofLedgerId: `proof-ledger:${hash('e')}`,
+      runtimeProofId: `runtime-proof:${hash('f')}`,
+    }),
+  ),
+  (error) => error.code === 'timing_v3_record_invalid'
+    && error.details.gaps.includes('first_visible_boundary_required'),
+);
 
 assert.throws(
   () => prepareGpuHmrTestTimingV3Persistence(visual, visualOptions),
