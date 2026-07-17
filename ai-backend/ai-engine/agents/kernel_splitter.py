@@ -1088,7 +1088,12 @@ _DEVICE_PRESERVATION_PER_FILE_MAX_CHARS = 8000
 
 
 def _looks_like_source_file(name: str) -> bool:
-    return bool(re.search(r"\.(?:h|hpp|hh|cpp|cc|cxx|cu|hip)$", name.replace("\\", "/"), re.I))
+    return bool(re.search(
+        r"\.(?:h|hpp|hh|cpp|cc|cxx|cu|cuh|hip|cl|opencl|wgsl|glsl|vert|frag|"
+        r"geom|comp|tesc|tese|hlsl|metal|slang|js|jsx|ts|tsx)$",
+        name.replace("\\", "/"),
+        re.I,
+    ))
 
 
 def _has_gpu_device_marker(source: str) -> bool:
