@@ -649,7 +649,7 @@ describe("synthi_wait_hmr", () => {
         degradedState: "gpu-hmr-dispatch-unobserved",
         degradedReason: "runtime_dispatch_not_observed",
         label: "gpu-hmr-partial",
-        proofId: "gpu-proof:abc",
+        proofId: "gpu-proof:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         proofArtifactPath: ".synthi/gpu-hmr/proofs/gpu-proof_abc.json",
       });
       return { status: "applied", source: "hmr_status", elapsedMs: 10 };
@@ -664,7 +664,6 @@ describe("synthi_wait_hmr", () => {
       gpu_proof_telemetry?: {
         resultState?: string;
         degradedState?: string;
-        proofId?: string | null;
         proofRef?: string | null;
         proofIdPresent?: boolean;
         proofArtifactPresent?: boolean;
@@ -687,7 +686,7 @@ describe("synthi_wait_hmr", () => {
     expect(body.gpu_proof).toBeUndefined();
     expect(body.gpu_proof_telemetry?.resultState).toBe("gpu-hmr-symbol-bound");
     expect(body.gpu_proof_telemetry?.degradedState).toBe("gpu-hmr-dispatch-unobserved");
-    expect(body.gpu_proof_telemetry?.proofId).toBeNull();
+    expect(body.gpu_proof_telemetry).not.toHaveProperty("proofId");
     expect(body.gpu_proof_telemetry?.proofRef).toMatch(
       /^gpu-proof-identity-ref:sha256:[a-f0-9]{64}$/
     );
@@ -773,9 +772,10 @@ describe("synthi_wait_hmr", () => {
       issueTimes.push(Date.now());
       return issueFrameGateToken(input);
     });
-    session.setFrameAdvance(1, Date.now());
+    const frameClockBase = Date.now();
+    session.setFrameAdvance(1, frameClockBase);
     const fake = installFakeAttached(async () => {
-      setTimeout(() => session.setFrameAdvance(2, Date.now() + budget + 100), 5);
+      setTimeout(() => session.setFrameAdvance(2, frameClockBase + budget + 5), 5);
       setTimeout(
         () =>
           fake.feedHmr({
@@ -784,8 +784,9 @@ describe("synthi_wait_hmr", () => {
             proofLedger: ledger,
             runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
           }),
-        25
+        budget + 30
       );
+      setTimeout(() => session.setFrameAdvance(3, Date.now()), budget + 50);
       return { status: "applied", source: "hmr_status", elapsedMs: 10 };
     });
 
@@ -813,6 +814,9 @@ describe("synthi_wait_hmr", () => {
         capture_binding_ready?: boolean;
         evidence_binding_hash?: string;
         evidence_binding_schema_version?: string;
+        runtime_proof_ref?: string;
+        capture_reacquired_after_proof?: boolean;
+        proof_observed_at_ms?: number;
       };
     };
     expect(body.gpu_proof_validation?.satisfied).toBe(true);
@@ -826,6 +830,7 @@ describe("synthi_wait_hmr", () => {
       output_after_dispatch_ref: expect.stringMatching(/^gpu-frame-dispatch-ref:sha256:[a-f0-9]{64}$/),
       runtime_session_ref: expect.stringMatching(/^gpu-frame-runtime-session-ref:sha256:[a-f0-9]{64}$/),
       device_ref: expect.stringMatching(/^gpu-frame-device-ref:sha256:[a-f0-9]{64}$/),
+      frame_observed_at_ms: expect.any(Number),
       accepted_for_gpu_hmr: false,
       gpu_hmr_success: false,
     });
@@ -833,6 +838,10 @@ describe("synthi_wait_hmr", () => {
     expect(issueInputs[0]?.evidence_binding).not.toHaveProperty("process_id");
     expect(issueInputs[0]?.evidence_binding).not.toHaveProperty("runtime_session_id");
     expect(issueInputs[0]?.evidence_binding).not.toHaveProperty("device_id");
+    expect(issueInputs[0]?.frame_seq).toBe(3);
+    expect(issueInputs[0]?.ts_ms).toBeGreaterThanOrEqual(
+      body.gpu_proof_telemetry?.observedAt ?? Infinity
+    );
     expect(issueTimes[0]).toBeGreaterThanOrEqual(body.gpu_proof_telemetry?.observedAt ?? Infinity);
     expect(body.frame_gate.status).toBe("satisfied");
     expect(body.frame_gate.runtime_binding_status).toBe("bound");
@@ -841,6 +850,14 @@ describe("synthi_wait_hmr", () => {
       "synthi.gpu_hmr.frame_gate_runtime_binding.v1"
     );
     expect(body.frame_gate.evidence_binding_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(body.frame_gate.runtime_proof_ref).toMatch(
+      /^gpu-frame-runtime-proof-ref:sha256:[a-f0-9]{64}$/
+    );
+    expect(body.frame_gate).not.toHaveProperty("runtime_proof_id");
+    expect(body.frame_gate.capture_reacquired_after_proof).toBe(true);
+    expect(body.frame_gate.proof_observed_at_ms).toBe(
+      body.gpu_proof_telemetry?.observedAt
+    );
     expect(body.frame_gate.gate_token).toMatch(/^frame-gate:/);
     const consumed = session.consumeFrameGateToken({
       token: body.frame_gate.gate_token!,
@@ -875,7 +892,7 @@ describe("synthi_wait_hmr", () => {
     });
 
     const res = await waitHmrTool({
-      timeoutMs: 500,
+      timeoutMs: Math.max(1_000, budget + 500),
       requireGpuFullRuntimeProof: true,
     });
 

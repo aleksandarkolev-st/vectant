@@ -60,7 +60,6 @@ interface RawGpuHmrProofTelemetry {
 
 export interface GpuHmrProofTelemetry {
   schemaVersion: typeof GPU_HMR_PROOF_SCHEMA_VERSION | null;
-  proofId: string | null;
   proofRef: string | null;
   proofIdPresent: boolean;
   proofArtifactPresent: boolean;
@@ -891,7 +890,6 @@ export function classifyGpuHmrProofMessage(
     schemaVersion: rawProof.schemaVersion === GPU_HMR_PROOF_SCHEMA_VERSION
       ? GPU_HMR_PROOF_SCHEMA_VERSION
       : null,
-    proofId: immutableProofId(proofId),
     proofRef: proofIdentityRef("identity", proofId),
     proofIdPresent: proofId !== null,
     proofArtifactPresent: rawProof.proofArtifactPath !== null,

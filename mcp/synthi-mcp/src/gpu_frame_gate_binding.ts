@@ -24,6 +24,7 @@ export interface GpuHmrFrameGateBindingResult {
 export interface BuildGpuHmrFrameGateBindingInput {
   proof: GpuHmrProofTelemetry | null;
   hmrObservedAtMs: number;
+  frameObservedAtMs: number;
   proofMatchScope?: Readonly<Record<string, unknown>>;
 }
 
@@ -553,6 +554,7 @@ export function buildGpuHmrFrameGateEvidenceBinding(
     };
   }
   const hmrObservedAtMs = finiteNumber(input.hmrObservedAtMs);
+  const frameObservedAtMs = finiteNumber(input.frameObservedAtMs);
   if (
     hmrObservedAtMs === null
     || hmrObservedAtMs < 0
@@ -564,11 +566,22 @@ export function buildGpuHmrFrameGateEvidenceBinding(
       failures: [{ code: "runtime_binding_proof_observation_order_invalid" }],
     };
   }
+  if (
+    frameObservedAtMs === null
+    || frameObservedAtMs < proof.observedAt
+  ) {
+    return {
+      accepted: false,
+      binding: null,
+      failures: [{ code: "runtime_binding_frame_observation_order_invalid" }],
+    };
+  }
   const binding = deepFreeze({
     schema_version: GPU_HMR_FRAME_GATE_RUNTIME_BINDING_SCHEMA_VERSION,
     proof_authority: GPU_HMR_FRAME_GATE_RUNTIME_BINDING_AUTHORITY,
     ...seed.binding,
     hmr_observed_at_ms: hmrObservedAtMs,
+    frame_observed_at_ms: frameObservedAtMs,
     proof_match_scope: proofScopeProjection(input.proofMatchScope),
   });
   return { accepted: true, binding, failures: [] };

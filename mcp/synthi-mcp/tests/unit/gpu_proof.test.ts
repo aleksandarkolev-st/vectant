@@ -483,7 +483,7 @@ describe("GPU HMR proof-state validation", () => {
 
     expect(proof?.schemaVersion).toBe("synthi.gpu.hmr.proof.v1");
     expect(proof?.source).toBe("gpu-proof-state");
-    expect(proof?.proofId).toBeNull();
+    expect(proof).not.toHaveProperty("proofId");
     expect(proof?.proofRef).toMatch(/^gpu-proof-identity-ref:sha256:[a-f0-9]{64}$/);
     expect(proof?.proofIdPresent).toBe(true);
     expect(proof?.proofArtifactPresent).toBe(true);
@@ -1844,6 +1844,7 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
     const result = buildGpuHmrFrameGateEvidenceBinding({
       proof,
       hmrObservedAtMs: 900,
+      frameObservedAtMs: 1_100,
       proofMatchScope: {
         module: "user-selected-module",
         preview_id: "preview-session",
@@ -1860,6 +1861,7 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
       proof_ledger_ref: expect.stringMatching(/^gpu-frame-proof-ledger-ref:sha256:[a-f0-9]{64}$/),
       runtime_proof_state: "gpu-hmr-full-runtime-proven",
       runtime_proof_accepted: true,
+      frame_observed_at_ms: 1_100,
       artifact_after_hash: HASH_B,
       published_epoch_ref: expect.stringMatching(/^gpu-frame-epoch-ref:sha256:[a-f0-9]{64}$/),
       dispatch_ref: expect.stringMatching(/^gpu-frame-dispatch-ref:sha256:[a-f0-9]{64}$/),
@@ -1897,6 +1899,7 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
       const result = buildGpuHmrFrameGateEvidenceBinding({
         proof: frameGateProof(frameGateProofLedger({ projectId, editId })),
         hmrObservedAtMs: 900,
+        frameObservedAtMs: 1_100,
       });
       expect(result.accepted, `${projectId}:${editId}`).toBe(true);
     }
@@ -1943,6 +1946,7 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
     const result = buildGpuHmrFrameGateEvidenceBinding({
       proof,
       hmrObservedAtMs: 900,
+      frameObservedAtMs: 1_100,
     });
 
     expect(result.accepted).toBe(false);
@@ -1954,12 +1958,27 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
     const result = buildGpuHmrFrameGateEvidenceBinding({
       proof: frameGateProof(frameGateProofLedger(), 1_000),
       hmrObservedAtMs: 1_001,
+      frameObservedAtMs: 1_100,
     });
 
     expect(result.accepted).toBe(false);
     expect(result.binding).toBeNull();
     expect(result.failures.map((failure) => failure.code)).toContain(
       "runtime_binding_proof_observation_order_invalid"
+    );
+  });
+
+  it("refuses a frame observation captured before the accepted proof", () => {
+    const result = buildGpuHmrFrameGateEvidenceBinding({
+      proof: frameGateProof(frameGateProofLedger(), 1_000),
+      hmrObservedAtMs: 900,
+      frameObservedAtMs: 999,
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.binding).toBeNull();
+    expect(result.failures.map((failure) => failure.code)).toContain(
+      "runtime_binding_frame_observation_order_invalid"
     );
   });
 
@@ -1970,6 +1989,7 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
     const inputWithForgedValidation = {
       proof,
       hmrObservedAtMs: 900,
+      frameObservedAtMs: 1_100,
       validation: {
         requiredState: "gpu-hmr-full-runtime-proven",
         satisfied: true,
@@ -2014,6 +2034,7 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
     const result = buildGpuHmrFrameGateEvidenceBinding({
       proof,
       hmrObservedAtMs: 900,
+      frameObservedAtMs: 1_100,
     });
 
     expect(result.accepted).toBe(false);
@@ -2027,6 +2048,7 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
     const result = buildGpuHmrFrameGateEvidenceBinding({
       proof: frameGateProof(),
       hmrObservedAtMs: -1,
+      frameObservedAtMs: 1_100,
     });
 
     expect(result.accepted).toBe(false);
@@ -2048,6 +2070,7 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
       const result = buildGpuHmrFrameGateEvidenceBinding({
         proof: frameGateProof(ledger),
         hmrObservedAtMs: 900,
+        frameObservedAtMs: 1_100,
       });
       expect(result.accepted).toBe(false);
       expect(result.binding).toBeNull();

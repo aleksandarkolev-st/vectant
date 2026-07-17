@@ -82,7 +82,7 @@ function terminalEventFromGpuProof(
     elapsedMs,
     detail: {
       terminal_equivalent: "gpu_hmr_full_runtime_proof",
-      proofId: proof.proofId,
+      proofRef: proof.proofRef,
       resultState: proof.resultState,
       source: proof.source,
     },
@@ -115,7 +115,6 @@ function gpuProofPayload(proof: GpuHmrProofTelemetry | null): Record<string, unk
   if (proof === null) return null;
   return {
     schemaVersion: proof.schemaVersion,
-    proofId: proof.proofId,
     proofRef: proof.proofRef,
     proofIdPresent: proof.proofIdPresent,
     proofArtifactPresent: proof.proofArtifactPresent,
@@ -174,7 +173,6 @@ function proofWaitDecisionPayload(
     result_rank: validation.resultRank,
     effective_result_rank: validation.effectiveResultRank,
     required_rank: validation.requiredRank,
-    proof_id: proof?.proofId ?? null,
     proof_ref: proof?.proofRef ?? null,
     proof_artifact_present: proof?.proofArtifactPresent ?? false,
     hmr_observed_at: hmrObservedAt,
@@ -261,6 +259,7 @@ function issueFrameGateCaptureToken(input: {
     const bindingResult = buildGpuHmrFrameGateEvidenceBinding({
       proof: input.proof,
       hmrObservedAtMs: input.hmrObservedAtMs,
+      frameObservedAtMs: input.observation.ts_ms,
       proofMatchScope: {
         module: input.proofMatchOpts.module ?? null,
         preview_id: input.proofMatchOpts.previewId ?? null,
@@ -293,7 +292,7 @@ function issueFrameGateCaptureToken(input: {
     input.frameGate["runtime_binding_status"] = "bound";
     input.frameGate["evidence_binding_hash"] = gateToken.evidence_binding_hash;
     input.frameGate["evidence_binding_schema_version"] = evidenceBinding["schema_version"];
-    input.frameGate["runtime_proof_id"] = evidenceBinding["runtime_proof_id"];
+    input.frameGate["runtime_proof_ref"] = evidenceBinding["runtime_proof_ref"];
     input.frameGate["capture_binding_authority"] =
       "runtime_bound_frame_gate_token_only_not_gpu_hmr_success";
   } else {
@@ -761,6 +760,43 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
           wait_contract: waitContract,
           ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
         }, latestGpuProof, requiredProofState);
+      }
+    }
+
+    const requiresFullRuntimeFrameBinding = requiredProofState !== null
+      && gpuHmrProofStateRank(requiredProofState)
+        >= gpuHmrProofStateRank("gpu-hmr-full-runtime-proven");
+    if (
+      result.status === "applied"
+      && requiresFullRuntimeFrameBinding
+      && frameGate !== undefined
+      && frameGateObservation !== null
+      && latestGpuProof !== null
+      && frameGateObservation.ts_ms < latestGpuProof.observedAt
+    ) {
+      const remaining = Math.max(0, timeoutMs - (Date.now() - start));
+      const minFrameObservedAt = Math.max(
+        latestGpuProof.observedAt,
+        (hmrObservedAtForFrameGate ?? latestGpuProof.observedAt) + session.pipelineBudgetMs(),
+      );
+      const postProofObservation = session.frameSeqGateEnabled()
+        ? await session.awaitFrameAdvanceAtOrAfter(minFrameObservedAt, remaining)
+        : await waitForDecodedFrameAtOrAfter(attached, minFrameObservedAt, remaining);
+      if (postProofObservation === null) {
+        frameGate["runtime_binding_status"] = "unavailable";
+        frameGate["capture_binding_ready"] = false;
+        frameGate["runtime_binding_failure_codes"] = [
+          "post_proof_frame_observation_missing",
+        ];
+        frameGate["capture_binding_authority"] =
+          "pre_proof_frame_observation_not_gpu_hmr_visual_proof";
+        frameGateObservation = null;
+      } else {
+        frameGateObservation = postProofObservation;
+        frameGate["frame_seq"] = postProofObservation.frame_seq;
+        frameGate["ts_ms"] = postProofObservation.ts_ms;
+        frameGate["capture_reacquired_after_proof"] = true;
+        frameGate["proof_observed_at_ms"] = latestGpuProof.observedAt;
       }
     }
 
