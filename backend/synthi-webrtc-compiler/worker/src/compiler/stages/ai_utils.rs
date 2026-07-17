@@ -155,15 +155,42 @@ fn ai_http_timeout() -> std::time::Duration {
 /// request because the AI engine retries verifier-rejected splits before
 /// returning. Its client-side timeout therefore needs to cover the whole
 /// verifier-gated endpoint budget, not just one Gemini call.
-fn ai_http_timeout_for_url(url: &str) -> std::time::Duration {
-    if url.ends_with("/refactor/split/route") {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AiEndpointRole {
+    SplitRoute,
+    GpuSplit,
+    VerifiedSplit,
+    Split,
+    DiffPatch,
+    GpuDiffPatch,
+    Heal,
+    ManifestHeal,
+}
+
+impl AiEndpointRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SplitRoute => "split_route",
+            Self::GpuSplit => "gpu_split",
+            Self::VerifiedSplit => "verified_split",
+            Self::Split => "split",
+            Self::DiffPatch => "diff_patch",
+            Self::GpuDiffPatch => "gpu_diff_patch",
+            Self::Heal => "heal",
+            Self::ManifestHeal => "manifest_heal",
+        }
+    }
+}
+
+fn ai_http_timeout_for_role(role: AiEndpointRole) -> std::time::Duration {
+    if role == AiEndpointRole::SplitRoute {
         let secs = std::env::var("SYNTHI_AI_SPLIT_ROUTE_TIMEOUT_SECS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_SPLIT_ROUTE_CLASSIFIER_TIMEOUT_SECS);
         return std::time::Duration::from_secs(secs);
     }
-    if url.ends_with("/refactor/split/gpu") {
+    if role == AiEndpointRole::GpuSplit {
         let secs = std::env::var("SYNTHI_AI_GPU_SPLIT_HTTP_TIMEOUT_SECS")
             .or_else(|_| std::env::var("SYNTHI_AI_HTTP_TIMEOUT_SECS"))
             .ok()
@@ -182,19 +209,15 @@ fn default_gpu_split_http_timeout_secs() -> u64 {
 fn summarize_ai_error_body(body: &str) -> String {
     let trimmed = body.trim();
     if trimmed.is_empty() {
-        return "<empty response body>".to_string();
+        return "upstream_response_body_empty".to_string();
     }
-    let summary = serde_json::from_str::<serde_json::Value>(trimmed)
+    serde_json::from_str::<serde_json::Value>(trimmed)
         .ok()
         .and_then(|json| {
             let detail = json.get("detail").unwrap_or(&json);
             summarize_ai_error_json(detail)
         })
-        .unwrap_or_else(|| trimmed.to_string());
-    redact_sensitive_ai_text(&summary)
-        .chars()
-        .take(1200)
-        .collect()
+        .unwrap_or_else(|| "unstructured_upstream_error_redacted".to_string())
 }
 
 fn push_summary_part(parts: &mut Vec<String>, part: impl Into<String>) {
@@ -204,80 +227,133 @@ fn push_summary_part(parts: &mut Vec<String>, part: impl Into<String>) {
     }
 }
 
-fn redact_until_delimiter(input: &str, marker: &str, replacement: &str) -> String {
-    let mut output = String::new();
-    let mut search_from = 0;
-    let lower = input.to_lowercase();
-    let marker_lower = marker.to_lowercase();
-    while let Some(relative_start) = lower[search_from..].find(&marker_lower) {
-        let start = search_from + relative_start;
-        let value_start = start + marker.len();
-        let mut end = value_start;
-        for (offset, ch) in input[value_start..].char_indices() {
-            if ch.is_whitespace() || matches!(ch, '"' | '\'' | ',' | '\\' | '}' | ']' | ')') {
-                break;
-            }
-            end = value_start + offset + ch.len_utf8();
-        }
-        output.push_str(&input[search_from..start]);
-        output.push_str(replacement);
-        search_from = end;
+fn stable_diagnostic_token(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 128 {
+        return None;
     }
-    output.push_str(&input[search_from..]);
-    output
+    let mut chars = value.chars();
+    if !chars.next().is_some_and(|ch| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+    chars
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '-'))
+        .then_some(value)
 }
 
-fn redact_google_api_keys(input: &str) -> String {
-    let mut output = String::new();
-    let mut search_from = 0;
-    while let Some(relative_start) = input[search_from..].find("AIza") {
-        let start = search_from + relative_start;
-        let mut end = start;
-        for (offset, ch) in input[start..].char_indices() {
-            if offset == 0 || ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-                end = start + offset + ch.len_utf8();
-                continue;
-            }
-            break;
-        }
-        output.push_str(&input[search_from..start]);
-        if end - start >= 20 {
-            output.push_str("[REDACTED_GOOGLE_API_KEY]");
-        } else {
-            output.push_str(&input[start..end]);
-        }
-        search_from = end;
+fn provider_diagnostic_summary(value: &serde_json::Value) -> Option<String> {
+    let object = value.as_object()?;
+    const ALLOWED_KEYS: [&str; 11] = [
+        "schemaVersion",
+        "reasonCode",
+        "errorClass",
+        "httpStatus",
+        "retryable",
+        "endpointRole",
+        "proofAuthority",
+        "acceptedForGpuHmr",
+        "gpuHmrSuccess",
+        "canSatisfyRuntimeProof",
+        "diagnosticId",
+    ];
+    if object.get("schemaVersion").and_then(|value| value.as_str())
+        != Some("synthi.ai.provider_diagnostic.v1")
+    {
+        return None;
     }
-    output.push_str(&input[search_from..]);
-    output
-}
+    let required_tokens_present = [
+        "reasonCode",
+        "errorClass",
+        "endpointRole",
+        "diagnosticId",
+    ]
+    .iter()
+    .all(|key| {
+        object
+            .get(*key)
+            .and_then(|value| value.as_str())
+            .and_then(stable_diagnostic_token)
+            .is_some()
+    });
+    let http_status_valid = object.get("httpStatus").is_some_and(|value| {
+        value.is_null()
+            || value
+                .as_u64()
+                .is_some_and(|status| (100..=599).contains(&status))
+    });
+    if object.len() != ALLOWED_KEYS.len()
+        || !ALLOWED_KEYS.iter().all(|key| object.contains_key(*key))
+        || !required_tokens_present
+        || !http_status_valid
+        || !object.get("retryable").is_some_and(|value| value.is_boolean())
+        || object.get("proofAuthority").and_then(|value| value.as_str())
+        != Some("provider_failure_diagnostic_only")
+        || object
+            .get("acceptedForGpuHmr")
+            .and_then(|value| value.as_bool())
+            != Some(false)
+        || object
+            .get("gpuHmrSuccess")
+            .and_then(|value| value.as_bool())
+            != Some(false)
+        || object
+            .get("canSatisfyRuntimeProof")
+            .and_then(|value| value.as_bool())
+            != Some(false)
+    {
+        return Some("provider_diagnostic_rejected".to_string());
+    }
 
-fn redact_sensitive_ai_text(input: &str) -> String {
-    let mut redacted = input.to_string();
-    for (marker, replacement) in [
-        ("api_key:", "api_key:[REDACTED]"),
-        ("api_key=", "api_key=[REDACTED]"),
-        ("apikey:", "apikey:[REDACTED]"),
-        ("GOOGLE_API_KEY=", "GOOGLE_API_KEY=[REDACTED]"),
-        ("GEMINI_API_KEY=", "GEMINI_API_KEY=[REDACTED]"),
-        ("OPENAI_API_KEY=", "OPENAI_API_KEY=[REDACTED]"),
-        ("ANTHROPIC_API_KEY=", "ANTHROPIC_API_KEY=[REDACTED]"),
-        ("Authorization: Bearer ", "Authorization: Bearer [REDACTED]"),
-        ("Bearer ", "Bearer [REDACTED]"),
+    let mut parts = vec!["provider_diagnostic".to_string()];
+    for key in [
+        "reasonCode",
+        "errorClass",
+        "endpointRole",
+        "diagnosticId",
     ] {
-        redacted = redact_until_delimiter(&redacted, marker, replacement);
+        if let Some(value) = object
+            .get(key)
+            .and_then(|value| value.as_str())
+            .and_then(stable_diagnostic_token)
+        {
+            push_summary_part(&mut parts, format!("{key}={value}"));
+        }
     }
-    redact_google_api_keys(&redacted)
+    if let Some(status) = object
+        .get("httpStatus")
+        .and_then(|value| value.as_u64())
+        .filter(|status| (100..=599).contains(status))
+    {
+        push_summary_part(&mut parts, format!("httpStatus={status}"));
+    }
+    if let Some(retryable) = object.get("retryable").and_then(|value| value.as_bool()) {
+        push_summary_part(&mut parts, format!("retryable={retryable}"));
+    }
+    Some(parts.join(" "))
+}
+
+fn stable_reason_codes(value: Option<&serde_json::Value>) -> Vec<&str> {
+    value
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .filter_map(stable_diagnostic_token)
+        .take(8)
+        .collect()
 }
 
 fn summarize_ai_error_json(value: &serde_json::Value) -> Option<String> {
+    if let Some(summary) = provider_diagnostic_summary(value) {
+        return Some(summary);
+    }
     match value {
-        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::String(raw) => serde_json::from_str::<serde_json::Value>(raw)
+            .ok()
+            .and_then(|value| provider_diagnostic_summary(&value))
+            .or_else(|| Some("unstructured_error_detail_redacted".to_string())),
         serde_json::Value::Object(_) => {
             let mut parts = Vec::new();
-            if let Some(message) = value.get("message").and_then(|v| v.as_str()) {
-                push_summary_part(&mut parts, message);
-            }
             if let Some(violations) = value
                 .get("verification")
                 .and_then(|v| v.get("violations"))
@@ -287,67 +363,64 @@ fn summarize_ai_error_json(value: &serde_json::Value) -> Option<String> {
                     let rule = violation
                         .get("rule")
                         .and_then(|v| v.as_str())
+                        .and_then(stable_diagnostic_token)
                         .unwrap_or("verifier_violation");
-                    let message = violation
+                    push_summary_part(&mut parts, format!("verification.rule={rule}"));
+                    if let Some(summary) = violation
                         .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    push_summary_part(&mut parts, format!("{}: {}", rule, message));
+                        .and_then(|value| value.as_str())
+                        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                        .and_then(|value| provider_diagnostic_summary(&value))
+                    {
+                        push_summary_part(&mut parts, summary);
+                    }
                 }
             }
-            if let Some(reason_codes) = value
-                .get("source_context_report")
-                .and_then(|v| v.get("graphicsBackend"))
-                .and_then(|v| v.get("reasonCodes"))
-                .and_then(|v| v.as_array())
-            {
-                let codes: Vec<&str> = reason_codes
-                    .iter()
-                    .filter_map(|v| v.as_str())
-                    .take(8)
-                    .collect();
-                if !codes.is_empty() {
-                    push_summary_part(
-                        &mut parts,
-                        format!("graphicsBackend.reasonCodes={}", codes.join(",")),
-                    );
-                }
+            let reason_codes = stable_reason_codes(
+                value
+                    .get("source_context_report")
+                    .and_then(|v| v.get("graphicsBackend"))
+                    .and_then(|v| v.get("reasonCodes")),
+            );
+            if !reason_codes.is_empty() {
+                push_summary_part(
+                    &mut parts,
+                    format!("graphicsBackend.reasonCodes={}", reason_codes.join(",")),
+                );
             }
-            if let Some(reason_codes) = value
-                .get("source_context_report")
-                .and_then(|v| v.get("buildMetadata"))
+            let reason_codes = stable_reason_codes(
+                value
+                    .get("source_context_report")
+                    .and_then(|v| v.get("buildMetadata"))
                 .and_then(|v| v.get("targetResolution"))
-                .and_then(|v| v.get("reasonCodes"))
-                .and_then(|v| v.as_array())
+                .and_then(|v| v.get("reasonCodes")),
+            );
+            if !reason_codes.is_empty() {
+                push_summary_part(
+                    &mut parts,
+                    format!("targetResolution.reasonCodes={}", reason_codes.join(",")),
+                );
+            }
+            if let Some(reason_code) = value
+                .get("provider_preflight")
+                .and_then(|value| value.get("reasonCode"))
+                .and_then(|value| value.as_str())
+                .and_then(stable_diagnostic_token)
             {
-                let codes: Vec<&str> = reason_codes
-                    .iter()
-                    .filter_map(|v| v.as_str())
-                    .take(8)
-                    .collect();
-                if !codes.is_empty() {
-                    push_summary_part(
-                        &mut parts,
-                        format!("targetResolution.reasonCodes={}", codes.join(",")),
-                    );
-                }
+                push_summary_part(
+                    &mut parts,
+                    format!("provider_preflight.reasonCode={reason_code}"),
+                );
             }
             if let Some(model) = value
                 .get("provider_model")
                 .or_else(|| value.get("model_provenance"))
             {
-                let requested = model
-                    .get("requested_model")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unspecified");
                 let status = model
                     .get("provider_model_status")
                     .and_then(|v| v.as_str())
+                    .and_then(stable_diagnostic_token)
                     .unwrap_or("unknown");
-                let actual = model
-                    .get("actual_model")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unresolved");
                 let hard_failure = model
                     .get("hard_infra_failure")
                     .and_then(|v| v.as_bool())
@@ -355,18 +428,38 @@ fn summarize_ai_error_json(value: &serde_json::Value) -> Option<String> {
                 push_summary_part(
                     &mut parts,
                     format!(
-                        "model requested={} actual={} provider_status={} hard_infra_failure={}",
-                        requested, actual, status, hard_failure
+                        "model provider_status={} hard_infra_failure={}",
+                        status, hard_failure
                     ),
                 );
             }
             if parts.is_empty() {
-                Some(value.to_string())
+                Some("structured_error_detail_redacted".to_string())
             } else {
                 Some(parts.join(" | "))
             }
         }
-        _ => Some(value.to_string()),
+        _ => Some("non_object_error_detail_redacted".to_string()),
+    }
+}
+
+fn summarize_ai_transport_error(error: &reqwest::Error) -> String {
+    let kind = if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_request() {
+        "request"
+    } else {
+        "transport"
+    };
+    match error.status() {
+        Some(status) => format!("transport_kind={kind} http_status={status}"),
+        None => format!("transport_kind={kind}"),
     }
 }
 
@@ -374,24 +467,38 @@ async fn post_ai_json(
     client: &reqwest::Client,
     url: &str,
     payload: &serde_json::Value,
+    role: AiEndpointRole,
 ) -> Result<serde_json::Value> {
     let resp = add_ai_auth(client.post(url))
         .json(payload)
-        .timeout(ai_http_timeout_for_url(url))
+        .timeout(ai_http_timeout_for_role(role))
         .send()
-        .await?;
+        .await
+        .map_err(|error| {
+            anyhow!(
+                "AI endpoint role={} request failed: {}",
+                role.as_str(),
+                summarize_ai_transport_error(&error)
+            )
+        })?;
     let status = resp.status();
-    let body = resp.text().await?;
+    let body = resp.text().await.map_err(|error| {
+        anyhow!(
+            "AI endpoint role={} response read failed: {}",
+            role.as_str(),
+            summarize_ai_transport_error(&error)
+        )
+    })?;
     if !status.is_success() {
         return Err(anyhow!(
-            "AI endpoint {} failed with HTTP status {}: {}",
-            url,
+            "AI endpoint role={} failed with HTTP status {}: {}",
+            role.as_str(),
             status,
             summarize_ai_error_body(&body)
         ));
     }
     serde_json::from_str::<serde_json::Value>(&body)
-        .map_err(|e| anyhow!("AI endpoint {} returned invalid JSON body: {}", url, e))
+        .map_err(|_| anyhow!("AI endpoint role={} returned invalid JSON", role.as_str()))
 }
 
 fn text_has_gpu_markers(source: &str) -> bool {
@@ -1915,10 +2022,15 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         SplitRouteIntent::Gpu => (true, None),
         SplitRouteIntent::Classify => {
             eprintln!(
-                "[AI Split] auto route; calling provider-free classifier endpoint: {}",
-                route_url
+                "[AI Split] auto route; calling provider-free classifier role={}",
+                AiEndpointRole::SplitRoute.as_str()
             );
-            let classification = post_ai_json(&client, &route_url, &payload)
+            let classification = post_ai_json(
+                &client,
+                &route_url,
+                &payload,
+                AiEndpointRole::SplitRoute,
+            )
                 .await
                 .context("automatic split route classification failed")?;
             let gpu_route = validate_split_route_classification(&classification, &file_context)
@@ -1990,11 +2102,20 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     let mut raw_response: Option<serde_json::Value> = None;
     if gpu_route_requested {
         eprintln!(
-            "[AI Split] GPU route requested; calling classifying GPU split endpoint: {}",
-            gpu_split_url
+            "[AI Split] GPU route requested; calling classifying GPU split role={}",
+            AiEndpointRole::GpuSplit.as_str()
         );
         let gpu_result: Result<serde_json::Value, anyhow::Error> =
-            async { post_ai_json(&client, &gpu_split_url, &payload).await }.await;
+            async {
+                post_ai_json(
+                    &client,
+                    &gpu_split_url,
+                    &payload,
+                    AiEndpointRole::GpuSplit,
+                )
+                .await
+            }
+            .await;
         match gpu_result {
             Ok(json) if json.get("result").and_then(|r| r.as_str()).is_some() => {
                 eprintln!("[AI Split] GPU split endpoint returned a 5-file split");
@@ -2025,11 +2146,20 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         // Try verified endpoint first; fall back to unverified if it times out.
         // Both return {"result": "<json>", "lang": "..."} — same parser handles both.
         eprintln!(
-            "[AI Split] Calling VERIFIED AI split endpoint: {}",
-            verified_url
+            "[AI Split] Calling verified AI split role={}",
+            AiEndpointRole::VerifiedSplit.as_str()
         );
         let verified_result: Result<serde_json::Value, anyhow::Error> =
-            async { post_ai_json(&client, &verified_url, &payload).await }.await;
+            async {
+                post_ai_json(
+                    &client,
+                    &verified_url,
+                    &payload,
+                    AiEndpointRole::VerifiedSplit,
+                )
+                .await
+            }
+            .await;
 
         match verified_result {
             Ok(json) if json.get("result").and_then(|r| r.as_str()).is_some() => json,
@@ -2038,14 +2168,14 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                     "[AI Split] Verified returned no result field: {:?}, trying unverified",
                     json.to_string().chars().take(200).collect::<String>()
                 );
-                post_ai_json(&client, &split_url, &payload).await?
+                post_ai_json(&client, &split_url, &payload, AiEndpointRole::Split).await?
             }
             Err(e) => {
                 eprintln!(
                     "[AI Split] Verified endpoint failed ({}), trying unverified",
                     e
                 );
-                post_ai_json(&client, &split_url, &payload).await?
+                post_ai_json(&client, &split_url, &payload, AiEndpointRole::Split).await?
             }
         }
     };
@@ -2356,8 +2486,8 @@ pub async fn perform_ai_diff_patch(
     let url = format!("{}/refactor/diff_patch", backend_url);
 
     eprintln!(
-        "[AI DiffPatch] Calling {} with diff ({} bytes), arch={} chars, host_runner={} bytes",
-        url,
+        "[AI DiffPatch] Calling role={} with diff ({} bytes), arch={} chars, host_runner={} bytes",
+        AiEndpointRole::DiffPatch.as_str(),
         diff.len(),
         architecture.map(|s| s.len()).unwrap_or(0),
         host_runner_content.len(),
@@ -2377,17 +2507,7 @@ pub async fn perform_ai_diff_patch(
         "architecture": architecture.unwrap_or(""),
     });
 
-    let res: serde_json::Value = add_ai_auth(client.post(&url))
-        .json(&payload)
-        // Unified AI HTTP timeout — see `ai_http_timeout` at the top of
-        // this file. The previous hardcoded 60s tripped on a live 63s
-        // Gemini response and fell through to Tier 3 full re-split
-        // while the correct diff was already in flight.
-        .timeout(ai_http_timeout())
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
+    let res = post_ai_json(&client, &url, &payload, AiEndpointRole::DiffPatch).await?;
 
     let elapsed = res
         .get("elapsed_seconds")
@@ -2397,14 +2517,8 @@ pub async fn perform_ai_diff_patch(
     // Response shape: {"edits": [...], "elapsed_seconds": f64}
     // Extra fields are ignored by serde (EditList uses #[serde(default)]
     // and only pulls the `edits` array).
-    let edit_list: crate::hmr::edit_applier::EditList = serde_json::from_value(res.clone())
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "[AI DiffPatch] failed to parse edit list from response: {} (raw: {})",
-                e,
-                res.to_string().chars().take(300).collect::<String>()
-            )
-        })?;
+    let edit_list: crate::hmr::edit_applier::EditList = serde_json::from_value(res)
+        .map_err(|_| anyhow::anyhow!("[AI DiffPatch] response schema validation failed"))?;
 
     eprintln!(
         "[AI DiffPatch] Completed in {:.2}s with {} edit(s)",
@@ -2524,8 +2638,8 @@ pub async fn perform_gpu_ai_diff_patch(
 
     let delta_model = gpu_delta_model_override();
     eprintln!(
-        "[GPU AI Delta] Calling {} with diff={} bytes arch={} chars device={} bytes hint={} model={}",
-        url,
+        "[GPU AI Delta] Calling role={} with diff={} bytes arch={} chars device={} bytes hint={} model={}",
+        AiEndpointRole::GpuDiffPatch.as_str(),
         diff.len(),
         architecture.map(|s| s.len()).unwrap_or(0),
         device_content.len(),
@@ -2550,15 +2664,16 @@ pub async fn perform_gpu_ai_diff_patch(
         payload["model"] = serde_json::Value::String(model.clone());
     }
 
-    let res = post_ai_json(&client, &url, &payload).await?;
+    let res = post_ai_json(
+        &client,
+        &url,
+        &payload,
+        AiEndpointRole::GpuDiffPatch,
+    )
+    .await?;
 
-    let parsed: GpuDiffPatchResponse = serde_json::from_value(res.clone()).map_err(|e| {
-        anyhow::anyhow!(
-            "[GPU AI Delta] failed to parse GPU diff response: {} (raw: {})",
-            e,
-            res.to_string().chars().take(300).collect::<String>()
-        )
-    })?;
+    let parsed: GpuDiffPatchResponse = serde_json::from_value(res)
+        .map_err(|_| anyhow::anyhow!("[GPU AI Delta] response schema validation failed"))?;
     let model_provenance = gpu_diff_patch_model_provenance(&parsed);
     if model_provenance_hard_infra_failure(model_provenance.as_ref()) {
         let summary = model_provenance
@@ -2653,16 +2768,7 @@ pub async fn perform_ai_heal(
         "architecture": architecture.unwrap_or(""),
     });
 
-    let res = add_ai_auth(client.post(&url))
-        .json(&payload)
-        // Unified AI HTTP timeout — see `ai_http_timeout` at the top of
-        // this file. Heal sends the broken module + g++ errors back to
-        // the AI for repair (pro model). Typical 3-6s.
-        .timeout(ai_http_timeout())
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
+    let res = post_ai_json(&client, &url, &payload, AiEndpointRole::Heal).await?;
 
     let elapsed = res
         .get("elapsed_seconds")
@@ -2968,8 +3074,8 @@ pub async fn perform_ai_heal_manifest(
     let url = format!("{}/refactor/heal/manifest", backend_url);
 
     eprintln!(
-        "[ManifestHeal] POST {} ({} symbols, failed_module={}, source_excerpt={} bytes)",
-        url,
+        "[ManifestHeal] Calling role={} ({} symbols, failed_module={}, source_excerpt={} bytes)",
+        AiEndpointRole::ManifestHeal.as_str(),
         undefined_symbols.len(),
         failed_module,
         source_excerpt.len(),
@@ -2983,18 +3089,7 @@ pub async fn perform_ai_heal_manifest(
         "architecture": architecture.unwrap_or(""),
     });
 
-    let res: serde_json::Value = add_ai_auth(client.post(&url))
-        .json(&payload)
-        // Unified AI HTTP timeout — see `ai_http_timeout` at the top of
-        // this file. Manifest heal output is tiny (~100-300 tokens of
-        // JSON) so this is normally 1-2s; the generous ceiling covers
-        // degraded-service tail latencies.
-        .timeout(ai_http_timeout())
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<serde_json::Value>()
-        .await?;
+    let res = post_ai_json(&client, &url, &payload, AiEndpointRole::ManifestHeal).await?;
 
     let updated_manifest = res
         .get("updated_manifest")
@@ -3015,14 +3110,13 @@ pub async fn perform_ai_heal_manifest(
         .unwrap_or(0.0);
 
     eprintln!(
-        "[ManifestHeal] {} in {:.2}s — notes: {}",
+        "[ManifestHeal] {} in {:.2}s",
         if unchanged {
             "UNCHANGED (no fix inferred)"
         } else {
             "UPDATED"
         },
         elapsed,
-        notes.chars().take(120).collect::<String>(),
     );
 
     Ok(ManifestHealResult {
@@ -3269,9 +3363,9 @@ mod tests {
 
         let summary = summarize_ai_error_body(&body);
 
-        assert!(summary.contains("GPU delta provider failed"));
         assert!(summary.contains("provider_status=shutdown"));
         assert!(summary.contains("hard_infra_failure=true"));
+        assert!(!summary.contains("GPU delta provider failed"));
     }
 
     #[test]
@@ -3291,24 +3385,39 @@ mod tests {
 
         let summary = summarize_ai_error_body(&body);
 
-        assert!(summary.contains("GPU split AI provider failed before verification"));
-        assert!(summary.contains("ai_provider_timeout"));
-        assert!(summary.contains("TimeoutError"));
+        assert_eq!(summary, "verification.rule=ai_provider_timeout");
+        assert!(!summary.contains("TimeoutError"));
+        assert!(!summary.contains("GPU split AI provider failed before verification"));
     }
 
     #[test]
     fn summarizes_ai_provider_auth_failure_without_secrets() {
-        let raw_key = "AIzaSyProviderSuspendedFixtureKey000000000";
+        let generated_resource = format!("projects/{}", 8_000_000_000_u64 + 123_456_789);
+        let configured_url = format!(
+            "https://user:password@provider.invalid/v1/{generated_resource}/models/demo?key=secret&signature=signed"
+        );
+        let raw_key = "synthetic-secret-value";
+        let jwt = "header.payload.signature";
+        let diagnostic = json!({
+            "schemaVersion": "synthi.ai.provider_diagnostic.v1",
+            "reasonCode": "ai_provider_account_suspended",
+            "errorClass": "PermissionDenied",
+            "httpStatus": 403,
+            "retryable": false,
+            "endpointRole": "split_generation",
+            "proofAuthority": "provider_failure_diagnostic_only",
+            "acceptedForGpuHmr": false,
+            "gpuHmrSuccess": false,
+            "canSatisfyRuntimeProof": false,
+            "diagnosticId": format!("provider-diagnostic:sha256:{}", "a".repeat(64)),
+        });
         let body = json!({
             "detail": {
-                "message": "GPU split AI provider failed before verification",
+                "message": format!("provider failure at {configured_url}"),
                 "provider_preflight": {
                     "ok": false,
                     "reasonCode": "ai_provider_account_suspended",
-                    "message": format!(
-                        "PermissionDenied: Consumer api_key:{} has been suspended. Authorization: Bearer eyJhbGciOiJIUzI1Ni.payload.signature",
-                        raw_key
-                    ),
+                    "message": format!("resource={generated_resource} api_key={raw_key} Bearer {jwt}"),
                     "accepted_for_gpu_hmr": false,
                     "gpu_hmr_success": false
                 },
@@ -3317,10 +3426,7 @@ mod tests {
                     "violations": [
                         {
                             "rule": "ai_provider_account_suspended",
-                            "message": format!(
-                                "PermissionDenied: Consumer api_key:{} has been suspended. reason=CONSUMER_SUSPENDED Authorization: Bearer eyJhbGciOiJIUzI1Ni.payload.signature",
-                                raw_key
-                            )
+                            "message": diagnostic.to_string()
                         }
                     ]
                 }
@@ -3330,13 +3436,15 @@ mod tests {
 
         let summary = summarize_ai_error_body(&body);
 
-        assert!(summary.contains("GPU split AI provider failed before verification"));
-        assert!(summary.contains("ai_provider_account_suspended"));
-        assert!(summary.contains("CONSUMER_SUSPENDED"));
-        assert!(summary.contains("api_key:[REDACTED]"));
-        assert!(summary.contains("Bearer [REDACTED]"));
+        assert!(summary.contains("reasonCode=ai_provider_account_suspended"));
+        assert!(summary.contains("endpointRole=split_generation"));
+        assert!(summary.contains("httpStatus=403"));
         assert!(!summary.contains(raw_key));
-        assert!(!summary.contains("payload.signature"));
+        assert!(!summary.contains(jwt));
+        assert!(!summary.contains(&generated_resource));
+        assert!(!summary.contains("provider.invalid"));
+        assert!(!summary.contains("signed"));
+        assert!(!summary.contains("password"));
     }
 
     #[test]
@@ -3371,7 +3479,6 @@ mod tests {
 
         let summary = summarize_ai_error_body(&body);
 
-        assert!(summary.contains("GPU split unsupported for this project shape"));
         assert!(summary.contains("unsupported.graphics_backend_vulkan"));
         assert!(summary.contains("unsupported_project_shape"));
         assert!(summary.len() < 1200);
@@ -3414,7 +3521,46 @@ mod tests {
     fn summarizes_ai_error_body_string_detail() {
         let summary = summarize_ai_error_body(r#"{"detail":"bad split"}"#);
 
-        assert_eq!(summary, "bad split");
+        assert_eq!(summary, "unstructured_error_detail_redacted");
+    }
+
+    #[test]
+    fn rejects_provider_diagnostics_with_unknown_or_authoritative_fields() {
+        let sensitive = "https://provider.invalid/private?signature=synthetic";
+        let body = json!({
+            "detail": {
+                "schemaVersion": "synthi.ai.provider_diagnostic.v1",
+                "reasonCode": "ai_provider_error",
+                "errorClass": "ProviderError",
+                "httpStatus": null,
+                "retryable": false,
+                "endpointRole": "provider_operation",
+                "proofAuthority": "provider_failure_diagnostic_only",
+                "acceptedForGpuHmr": false,
+                "gpuHmrSuccess": true,
+                "canSatisfyRuntimeProof": false,
+                "diagnosticId": format!("provider-diagnostic:sha256:{}", "b".repeat(64)),
+                "rawMessage": sensitive,
+            }
+        })
+        .to_string();
+
+        let summary = summarize_ai_error_body(&body);
+
+        assert_eq!(summary, "provider_diagnostic_rejected");
+        assert!(!summary.contains(sensitive));
+        assert!(!summary.contains("provider.invalid"));
+    }
+
+    #[test]
+    fn does_not_retain_unstructured_upstream_response_bytes() {
+        let sensitive = "Basic dXNlcjpwYXNz Cookie=session-secret projects/8123456789";
+
+        let summary = summarize_ai_error_body(sensitive);
+
+        assert_eq!(summary, "unstructured_upstream_error_redacted");
+        assert!(!summary.contains("session-secret"));
+        assert!(!summary.contains("8123456789"));
     }
 
     #[test]
