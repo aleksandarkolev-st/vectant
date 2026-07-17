@@ -323,6 +323,93 @@ describe("synthi_compile", () => {
     expect(p["slug"]).toBe("counter");
   });
 
+  it("forwards a bounded support-only source-first request intent unchanged", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const intent = {
+      schemaVersion: "synthi.gpu_hmr.source_first_request_intent.v1",
+      proofAuthority: "source_first_request_intent_only_not_runtime_proof",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+      canSatisfyDispatchProof: false,
+      sourcePaths: ["src/main.cpp"],
+      evidence: { intentHash: "sha256:0123456789abcdef" },
+    };
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      source_first_request_intent: intent,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]!.parsed["source_first_request_intent"]).toEqual(intent);
+    expect(fake.sent[0]!.raw).toContain('"source_first_request_intent"');
+  });
+
+  it.each([null, [], "intent", 1])(
+    "rejects a non-object source-first request intent (%j)",
+    async (sourceFirstRequestIntent) => {
+      const fake = installFakeAttached();
+      session.setWireState("running");
+
+      const res = await compileTool({
+        language: "cpp",
+        source: "int main(){return 0;}",
+        source_first_request_intent: sourceFirstRequestIntent,
+      });
+
+      expect(res.isError).toBe(true);
+      expect((res.structuredContent as { field?: string }).field).toBe(
+        "source_first_request_intent",
+      );
+      expect(fake.sent).toHaveLength(0);
+    },
+  );
+
+  it("rejects an oversized source-first request intent", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      source_first_request_intent: { metadata: "x".repeat(64 * 1024) },
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { field?: string; reason?: string }).field).toBe(
+      "source_first_request_intent",
+    );
+    expect((res.structuredContent as { reason?: string }).reason).toContain("exceeds 65536 bytes");
+    expect(fake.sent).toHaveLength(0);
+  });
+
+  it.each([
+    { gpuHmrSuccess: true },
+    { nested: { can_satisfy_runtime_proof: true } },
+    { nested: { dispatchAuthority: true } },
+    { nested: { runtime_authority: "accepted" } },
+  ])("rejects source-first authority claims (%j)", async (sourceFirstRequestIntent) => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      source_first_request_intent: sourceFirstRequestIntent,
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { field?: string; reason?: string }).field).toBe(
+      "source_first_request_intent",
+    );
+    expect((res.structuredContent as { reason?: string }).reason).toContain("authority claim");
+    expect(fake.sent).toHaveLength(0);
+  });
+
   it("emits an input event with payload metadata", async () => {
     installFakeAttached();
     session.setWireState("running");

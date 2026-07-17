@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
 #[derive(Debug, Deserialize)]
@@ -139,6 +139,10 @@ pub struct CompileRequest {
     /// Same JSON shape as `.synthi_split_meta.json::compile_manifest`.
     #[serde(default, alias = "manifest")]
     pub compile_manifest: Option<serde_json::Value>,
+    /// Source-first request metadata forwarded across the compile wire.
+    /// This wire-only field is not interpreted as compile or runtime authority.
+    #[serde(default, deserialize_with = "deserialize_optional_json_object")]
+    pub source_first_request_intent: Option<serde_json::Value>,
     /// Target platform for execution: "native" (default), "react-native-emulator", etc.
     #[serde(default)]
     pub target: Option<String>,
@@ -152,6 +156,20 @@ pub struct CompileRequest {
 
 fn default_prefer_gpu_pipeline() -> bool {
     true
+}
+
+fn deserialize_optional_json_object<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.is_object() {
+        Ok(Some(value))
+    } else {
+        Err(D::Error::custom("expected a JSON object"))
+    }
 }
 
 #[cfg(test)]

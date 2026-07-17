@@ -363,6 +363,11 @@ const TOOLS = [
           type: "object",
           description: "Alias for compile_manifest.",
         },
+        source_first_request_intent: {
+          type: "object",
+          description:
+            "Bounded source-first request metadata forwarded unchanged to the worker. This field is support-only and cannot select compilation/runtime behavior or claim GPU HMR, runtime, or dispatch authority.",
+        },
         target: {
           type: "string",
           description: "Target platform. Default 'native'; mobile uses 'react-native-emulator'.",

@@ -15,6 +15,94 @@ interface FileRef {
   bytes?: number;
 }
 
+const SOURCE_FIRST_REQUEST_INTENT_MAX_BYTES = 64 * 1024;
+const SOURCE_FIRST_REQUEST_INTENT_MAX_DEPTH = 32;
+const SOURCE_FIRST_AUTHORITY_CLAIM_KEYS = new Set([
+  "acceptedforgpuhmr",
+  "gpuhmrsuccess",
+  "cansatisfyruntimeproof",
+  "cansatisfydispatchproof",
+  "runtimeauthority",
+  "dispatchauthority",
+  "fullruntimeproven",
+  "dispatchproven",
+]);
+
+function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function normalizedIntentKey(key: string): string {
+  return key.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+}
+
+function validateJsonIntentValue(
+  value: unknown,
+  ancestors: Set<object>,
+  depth: number,
+): string | undefined {
+  if (depth > SOURCE_FIRST_REQUEST_INTENT_MAX_DEPTH) return "maximum nesting depth exceeded";
+  if (value === null || typeof value === "string" || typeof value === "boolean") return undefined;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? undefined : "non-finite number";
+  }
+  if (typeof value !== "object") return `non-JSON ${typeof value} value`;
+  if (ancestors.has(value)) return "cyclic object graph";
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const reason = validateJsonIntentValue(item, ancestors, depth + 1);
+        if (reason) return reason;
+      }
+      return undefined;
+    }
+    if (!isPlainJsonObject(value)) return "non-plain object";
+    if (Object.getOwnPropertySymbols(value).length > 0) return "symbol-keyed property";
+
+    for (const [key, child] of Object.entries(value)) {
+      if (SOURCE_FIRST_AUTHORITY_CLAIM_KEYS.has(normalizedIntentKey(key)) && child !== false) {
+        return `authority claim at ${key}`;
+      }
+      const reason = validateJsonIntentValue(child, ancestors, depth + 1);
+      if (reason) return reason;
+    }
+    return undefined;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function validateSourceFirstRequestIntent(
+  value: unknown,
+): { accepted: true; value: Record<string, unknown> } | { accepted: false; reason: string } {
+  if (!isPlainJsonObject(value)) {
+    return { accepted: false, reason: "expected a plain JSON object" };
+  }
+  const invalidReason = validateJsonIntentValue(value, new Set(), 0);
+  if (invalidReason) return { accepted: false, reason: invalidReason };
+
+  let encoded: string | undefined;
+  try {
+    encoded = JSON.stringify(value);
+  } catch {
+    return { accepted: false, reason: "object is not JSON serializable" };
+  }
+  if (typeof encoded !== "string") {
+    return { accepted: false, reason: "object is not JSON serializable" };
+  }
+  if (Buffer.byteLength(encoded, "utf8") > SOURCE_FIRST_REQUEST_INTENT_MAX_BYTES) {
+    return {
+      accepted: false,
+      reason: `encoded object exceeds ${SOURCE_FIRST_REQUEST_INTENT_MAX_BYTES} bytes`,
+    };
+  }
+  return { accepted: true, value };
+}
+
 function computeContentHash(
   source: string,
   files: Array<{ name: string; content: string }>,
@@ -90,6 +178,7 @@ interface RawArgs {
   gpu_arch?: unknown;
   compile_manifest?: unknown;
   manifest?: unknown;
+  source_first_request_intent?: unknown;
   target?: unknown;
   project_root?: unknown;
   slug?: unknown;
@@ -267,6 +356,18 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       });
     }
     payload["compile_manifest"] = compileManifest;
+  }
+  if (a.source_first_request_intent !== undefined) {
+    const requestIntent = validateSourceFirstRequestIntent(a.source_first_request_intent);
+    if (!requestIntent.accepted) {
+      return errorResponse("invalid_args", {
+        field: "source_first_request_intent",
+        expected:
+          `plain JSON object no larger than ${SOURCE_FIRST_REQUEST_INTENT_MAX_BYTES} UTF-8 bytes without GPU HMR/runtime/dispatch authority claims`,
+        reason: requestIntent.reason,
+      });
+    }
+    payload["source_first_request_intent"] = requestIntent.value;
   }
   if (typeof a.target === "string") payload["target"] = a.target;
   if (typeof a.project_root === "string") payload["project_root"] = a.project_root;
