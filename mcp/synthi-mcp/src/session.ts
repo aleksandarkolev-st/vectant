@@ -7,6 +7,10 @@ import { SessionChannels } from "./channels.js";
 import { projectPublicHmrEvent } from "./hmr.js";
 import { eventLog } from "./events/index.js";
 import type { SessionState as WireSessionState } from "./events/index.js";
+import {
+  projectPublicWorkerDiagnostic,
+  publicWorkerReference,
+} from "./events/public_worker_diagnostic.js";
 import { locateEngine } from "./locate/index.js";
 import { scanForInjection } from "./security/injection.js";
 import { resolvePipelineBudgetMs } from "./protocol/index.js";
@@ -206,7 +210,8 @@ function evidenceBindingHash(binding: FrameGateEvidenceBinding): string {
 }
 
 export interface WarmingProgress {
-  stage: string;
+  stage: "reported" | "unknown";
+  stage_ref?: string;
   stage_progress_pct: number;
   estimated_ready_at?: number;
 }
@@ -234,6 +239,20 @@ interface ProducerViewport {
 
 function finitePositiveNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function nonNegativeFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function publicFrameTimingInterval(raw: Record<string, unknown> | undefined): FrameTimingSnapshot["interval_ms"] {
+  if (raw === undefined) return {};
+  const projected: FrameTimingSnapshot["interval_ms"] = {};
+  for (const key of ["mean", "min", "p50", "p95", "p99", "max"] as const) {
+    const value = nonNegativeFiniteNumber(raw[key]);
+    if (value !== null) projected[key] = value;
+  }
+  return projected;
 }
 
 function parseProducerViewport(msg: Record<string, unknown>): ProducerViewport | null {
@@ -336,6 +355,7 @@ class SessionManager {
     }
     this.warmingProgress = {
       stage: progress.stage,
+      ...(progress.stage_ref !== undefined ? { stage_ref: progress.stage_ref } : {}),
       stage_progress_pct: Math.max(0, Math.min(100, Math.floor(progress.stage_progress_pct))),
       ...(progress.estimated_ready_at !== undefined
         ? { estimated_ready_at: progress.estimated_ready_at }
@@ -744,20 +764,30 @@ class SessionManager {
           ? (rawState as typeof KNOWN_STATES[number])
           : "unknown";
         const warming = msg["warming_progress"] as Record<string, unknown> | undefined;
+        let publicWarming: WarmingProgress | null = null;
         if (warming && typeof warming === "object") {
-          this.setWarmingProgress({
-            stage: typeof warming["stage"] === "string" ? (warming["stage"] as string) : "unknown",
-            stage_progress_pct: typeof warming["stage_progress_pct"] === "number"
-              ? (warming["stage_progress_pct"] as number)
-              : 0,
-            ...(typeof warming["estimated_ready_at"] === "number"
-              ? { estimated_ready_at: warming["estimated_ready_at"] as number }
+          const rawStage = typeof warming["stage"] === "string" && warming["stage"].length > 0
+            ? warming["stage"]
+            : null;
+          const rawProgress = warming["stage_progress_pct"];
+          const rawEstimate = warming["estimated_ready_at"];
+          publicWarming = {
+            stage: rawStage === null ? "unknown" : "reported",
+            ...(rawStage !== null
+              ? { stage_ref: publicWorkerReference("stage", rawStage) }
               : {}),
-          });
+            stage_progress_pct: typeof rawProgress === "number" && Number.isFinite(rawProgress)
+              ? rawProgress
+              : 0,
+            ...(typeof rawEstimate === "number" && Number.isFinite(rawEstimate) && rawEstimate >= 0
+              ? { estimated_ready_at: rawEstimate }
+              : {}),
+          };
+          this.setWarmingProgress(publicWarming);
         } else {
           this.setWarmingProgress(null);
         }
-        this.setWireState(mapped, warming ? { warming_progress: warming } : undefined);
+        this.setWireState(mapped, publicWarming ? { warming_progress: publicWarming } : undefined);
         return;
       }
 
@@ -784,7 +814,9 @@ class SessionManager {
         eventLog.push({
           kind: "security",
           code: mapped,
-          ...(detail !== undefined ? { detail } : {}),
+          ...(detail !== undefined
+            ? { detail: projectPublicWorkerDiagnostic("security", msg) }
+            : {}),
         });
         return;
       }
@@ -800,15 +832,14 @@ class SessionManager {
       // snapshot synchronously.
       if (msgType === "frame-timing") {
         const interval = msg["interval_ms"] as Record<string, unknown> | undefined;
-        const sampleCount = typeof msg["sample_count"] === "number" ? (msg["sample_count"] as number) : 0;
-        const totalFrames = typeof msg["total_frames"] === "number" ? (msg["total_frames"] as number) : 0;
-        const budget = typeof msg["pipeline_budget_estimate_ms"] === "number"
-          ? (msg["pipeline_budget_estimate_ms"] as number)
-          : 0;
+        const publicInterval = publicFrameTimingInterval(interval);
+        const sampleCount = nonNegativeFiniteNumber(msg["sample_count"]) ?? 0;
+        const totalFrames = nonNegativeFiniteNumber(msg["total_frames"]) ?? 0;
+        const budget = nonNegativeFiniteNumber(msg["pipeline_budget_estimate_ms"]) ?? 0;
         this.setFrameTimingSnapshot({
           total_frames: totalFrames,
           sample_count: sampleCount,
-          interval_ms: (interval as { mean?: number; min?: number; p50?: number; p95?: number; p99?: number; max?: number }) ?? {},
+          interval_ms: publicInterval,
           pipeline_budget_estimate_ms: budget,
         });
         eventLog.push({
@@ -819,7 +850,7 @@ class SessionManager {
             kind: "frame_timing",
             total_frames: totalFrames,
             sample_count: sampleCount,
-            ...(interval !== undefined ? { interval_ms: interval } : {}),
+            ...(Object.keys(publicInterval).length > 0 ? { interval_ms: publicInterval } : {}),
             pipeline_budget_estimate_ms: budget,
           },
         });
@@ -843,13 +874,16 @@ class SessionManager {
         else if (rawKind === "key" || rawKind === "keyboard") mapped = "keyboard";
         else mapped = "other";
         const peerId = typeof msg["peer_id"] === "string" ? (msg["peer_id"] as string) : undefined;
-        const ts = typeof msg["ts_ms"] === "number" ? (msg["ts_ms"] as number) : Date.now();
+        const ts = nonNegativeFiniteNumber(msg["ts_ms"]) ?? Date.now();
         const detail = msg["detail"] as Record<string, unknown> | undefined;
+        const peerRef = peerId === undefined ? undefined : publicWorkerReference("peer", peerId);
         humanActions.record({
           kind: mapped,
           ts,
-          ...(peerId !== undefined ? { source_peer_id: peerId } : {}),
-          ...(detail !== undefined ? { detail } : {}),
+          ...(peerRef !== undefined ? { source_peer_id: peerRef } : {}),
+          ...(detail !== undefined
+            ? { detail: projectPublicWorkerDiagnostic("human_action", msg) }
+            : {}),
         });
         // Also mirror into the event log as an `input` event with
         // source-attribution, so event-log consumers see it without
@@ -859,7 +893,7 @@ class SessionManager {
           action: "human:" + mapped,
           payload: {
             kind: mapped,
-            ...(peerId !== undefined ? { peer_id: peerId } : {}),
+            ...(peerRef !== undefined ? { peer_ref: peerRef } : {}),
             source: "human",
           },
         });
@@ -875,7 +909,7 @@ class SessionManager {
         eventLog.push({
           kind: "console",
           level: "info",
-          message: `[guest_registered] pid=${msg["root_pid"]} binary=${msg["binary_path"]}`,
+          message: "[guest_registered] worker reported guest registration",
           source: "worker_build_log",
         });
         return;
@@ -896,7 +930,7 @@ class SessionManager {
           eventLog.push({
             kind: "input",
             action: "ack",
-            payload: { dispatch_id: did, accepted, ...(reason !== undefined ? { reason } : {}) },
+            payload: projectPublicWorkerDiagnostic("input_ack", msg),
           });
         }
         return;
@@ -913,9 +947,13 @@ class SessionManager {
             op === "release" ? "released" :
             op === "force-release" ? "force_released" :
             "queued",
-          ...(leaseId !== undefined ? { lease_id: leaseId } : {}),
-          ...(owner !== undefined ? { owner } : {}),
-          payload: msg,
+          ...(leaseId !== undefined
+            ? { lease_id: publicWorkerReference("lease", leaseId) }
+            : {}),
+          ...(owner !== undefined
+            ? { owner: publicWorkerReference("owner", owner) }
+            : {}),
+          payload: projectPublicWorkerDiagnostic("input_lease_result", msg),
         });
         return;
       }
@@ -924,7 +962,7 @@ class SessionManager {
         eventLog.push({
           kind: "input",
           action: "rejected",
-          payload: msg,
+          payload: projectPublicWorkerDiagnostic("input_rejected", msg),
         });
         return;
       }
@@ -1014,7 +1052,15 @@ class SessionManager {
             eventLog.push({
               kind: "security",
               code: "injection_suspected",
-              detail: { matches, source: "build-log" },
+              detail: {
+                schemaVersion: "synthi.worker.public_injection_diagnostic.v1",
+                proofAuthority: "injection_diagnostic_only_not_gpu_hmr_acceptance",
+                acceptedForGpuHmr: false,
+                gpuHmrSuccess: false,
+                source: "worker_hmr_wire",
+                matchCount: matches.length,
+                matchLabels: [...new Set(matches.map((match) => match.label))].sort(),
+              },
             });
           }
         }
