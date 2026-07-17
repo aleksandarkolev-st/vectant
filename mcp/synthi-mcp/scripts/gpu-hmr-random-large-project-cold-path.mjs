@@ -40,6 +40,10 @@ import {
   verifyArbitraryColdProjectRun,
   verifyArbitraryColdProjectRunFailure,
 } from './gpu-hmr-arbitrary-cold-project-runner.mjs';
+import {
+  createArbitraryColdCliResultEnvelope,
+  verifyArbitraryColdCliResultEnvelope,
+} from './lib/gpu-hmr-arbitrary-cold-cli-envelope.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MCP_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -3659,6 +3663,11 @@ async function runStaticArbitraryColdBuildProcess({
     const artifactLocatorProjection = projectStaticArbitraryColdArtifactLocators(run.outputs, {
       expectedLocatorSetHash: run.evidence.artifactLocatorSetHash,
     });
+    const arbitraryColdCliResultEnvelope = createArbitraryColdCliResultEnvelope({
+      descriptorBytesHash: contentHash(stableJson(descriptor)),
+      result: run,
+    });
+    verifyArbitraryColdCliResultEnvelope(arbitraryColdCliResultEnvelope);
     const executionEnvironment = {
       schemaVersion: ARBITRARY_COLD_EXECUTION_ENVIRONMENT_SCHEMA,
       proofAuthority: ARBITRARY_COLD_EXECUTION_ENVIRONMENT_AUTHORITY,
@@ -3685,14 +3694,12 @@ async function runStaticArbitraryColdBuildProcess({
       containerCidFileRemoved: null,
       dockerClientConfigRemoved: null,
       staticLauncherAccepted: true,
-      arbitraryColdRunEvidence: run.evidence,
-      arbitraryColdRetainedExecutionChain: retainedChain,
+      arbitraryColdCliResultEnvelope,
+      arbitraryColdCliResultEnvelopeHash: arbitraryColdCliResultEnvelope.evidenceHash,
       retainedExecutionChainHash: retainedChain.evidenceHash,
       outputSetHash: run.evidence.outputSetHash,
       artifactCount: run.evidence.artifactCount,
       artifactLocatorSetHash: artifactLocatorProjection.artifactLocatorSetHash,
-      artifactLocatorProjectionHash: artifactLocatorProjection.artifactLocatorProjectionHash,
-      artifactLocators: artifactLocatorProjection.artifactLocators,
       sourceBindingHash,
       resourcePolicy,
       resourcePolicyHash: contentHash(stableJson(resourcePolicy)),
@@ -3759,6 +3766,12 @@ async function runStaticArbitraryColdBuildProcess({
         containerCidFileRemoved: null,
         dockerClientConfigRemoved: null,
         staticLauncherAccepted: false,
+        arbitraryColdCliResultEnvelope: null,
+        arbitraryColdCliResultEnvelopeHash: null,
+        retainedExecutionChainHash: null,
+        outputSetHash: null,
+        artifactCount: 0,
+        artifactLocatorSetHash: null,
         arbitraryColdRunFailure: failure,
         sourceBindingHash,
         resourcePolicy,
@@ -11316,6 +11329,15 @@ async function selfCheck({ workerImage = null, commandJson = null } = {}) {
       coldBuildCommandSpec: liveSelfCheckSpec,
     });
     const liveObservation = liveSelfCheckManifest.results[0]?.coldBuildExecutionObservation;
+    const liveCliEnvelope = liveObservation?.executionEnvironment
+      ?.arbitraryColdCliResultEnvelope;
+    let liveCliEnvelopeAccepted = false;
+    try {
+      verifyArbitraryColdCliResultEnvelope(liveCliEnvelope);
+      liveCliEnvelopeAccepted = true;
+    } catch {
+      liveCliEnvelopeAccepted = false;
+    }
     if (
       liveObservation?.accepted !== false
       || liveObservation?.acceptedAsColdCommandExecutionEvidence !== true
@@ -11337,6 +11359,18 @@ async function selfCheck({ workerImage = null, commandJson = null } = {}) {
       || !liveObservation?.executionEnvironment?.workerImageId?.startsWith('sha256:')
       || !liveObservation?.executionEnvironment?.retainedExecutionChainHash
         ?.startsWith('sha256:')
+      || liveCliEnvelopeAccepted !== true
+      || liveObservation?.executionEnvironment?.arbitraryColdCliResultEnvelopeHash
+        !== liveCliEnvelope?.evidenceHash
+      || Object.hasOwn(
+        liveObservation?.executionEnvironment ?? {},
+        'arbitraryColdRunEvidence',
+      )
+      || Object.hasOwn(
+        liveObservation?.executionEnvironment ?? {},
+        'arbitraryColdRetainedExecutionChain',
+      )
+      || Object.hasOwn(liveObservation?.executionEnvironment ?? {}, 'artifactLocators')
       || liveObservation?.buildOutputEvidence?.acceptedAsColdBuildOutputEvidence !== true
       || liveObservation?.processObservation?.exitCode !== 0
       || liveObservation?.processObservation?.processStarted !== true
