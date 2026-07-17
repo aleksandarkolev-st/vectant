@@ -24,6 +24,35 @@ def test_source_context_records_included_and_dropped_reasons():
     assert report["deterministicContextComplete"] is True
 
 
+def test_source_context_includes_generic_opencl_sidecars_with_existing_path_guards():
+    files = {
+        "src/main.cpp": "int main(){ return 0; }",
+        "src/gpu/constants.cl": "#define WORK_GROUP_WIDTH 16",
+        "kernels/helpers.opencl": "float scale_value(float value) { return value * 2.0f; }",
+        "docs/examples/ignored.cl": "DOCS_OPENCL_SENTINEL",
+        "vendor/runtime/ignored.opencl": "VENDOR_OPENCL_SENTINEL",
+        "src/gpu/ignored.opencl.bak": "FAKE_SUFFIX_SENTINEL",
+        "src/gpu/ignored.txt": "__kernel void fake_kernel() {}",
+    }
+
+    prompt, report = build_project_source_context(files, focus="src/main.cpp")
+    included_reasons = {item["path"]: item["includeReason"] for item in report["included"]}
+    dropped_reasons = {item["path"]: item["dropReason"] for item in report["dropped"]}
+
+    assert included_reasons["src/gpu/constants.cl"] == "transitive_source_context"
+    assert included_reasons["kernels/helpers.opencl"] == "source_context"
+    assert dropped_reasons["docs/examples/ignored.cl"] == "docs_tests_examples"
+    assert dropped_reasons["vendor/runtime/ignored.opencl"] == "vendor_dependency"
+    assert dropped_reasons["src/gpu/ignored.opencl.bak"] == "unsupported_file_type"
+    assert dropped_reasons["src/gpu/ignored.txt"] == "unsupported_file_type"
+    assert "WORK_GROUP_WIDTH" in prompt
+    assert "scale_value" in prompt
+    assert "DOCS_OPENCL_SENTINEL" not in prompt
+    assert "VENDOR_OPENCL_SENTINEL" not in prompt
+    assert "FAKE_SUFFIX_SENTINEL" not in prompt
+    assert "fake_kernel" not in prompt
+
+
 def test_source_context_treats_macro_wrapped_runtime_kernels_as_gpu_context():
     files = {
         "CMakeLists.txt": """
@@ -177,6 +206,33 @@ def test_source_context_marks_critical_budget_drop():
     assert report["deterministicContextComplete"] is False
     assert report["criticalDropped"]
     assert report["criticalDropped"][0]["dropReason"] == "prompt_budget_exclusion"
+
+
+def test_opencl_kernel_budget_drop_remains_fail_closed():
+    files = {
+        "src/main.cpp": "int main(){ return 0; }",
+        "src/kernels/update.cl": """
+        __kernel void update(__global float* values) {
+          values[get_global_id(0)] += 1.0f;
+        }
+        """,
+    }
+
+    _prompt, report = build_project_source_context(
+        files,
+        focus="src/main.cpp",
+        max_chars=90,
+        per_file_max_chars=1000,
+    )
+
+    assert {item["path"] for item in report["included"]} == {"src/main.cpp"}
+    assert any(
+        item["path"] == "src/kernels/update.cl"
+        and item["reason"] == "kernel_declaration"
+        and item["dropReason"] == "prompt_budget_exclusion"
+        for item in report["criticalDropped"]
+    )
+    assert report["deterministicContextComplete"] is False
 
 
 def test_source_context_promotes_launch_site_for_focused_kernel_under_budget_pressure():
@@ -613,6 +669,56 @@ def test_selected_target_context_drops_unrelated_device_translation_units():
     assert dropped["HIP-Basic/matrix_multiplication/main.hip"] == "unrelated_target_device_source"
     assert report["deviceTuTopology"]["deviceTranslationUnitCount"] == 1
     assert report["deviceTuTopology"]["deviceTranslationUnits"][0]["path"] == "HIP-Basic/saxpy/main.hip"
+
+
+def test_selected_target_context_drops_unrelated_opencl_sidecars():
+    files = {
+        "src/main.cpp": "int main(){ return 0; }",
+        "src/kernels/owned.cl": "__kernel void owned(__global float* out) { out[0] = 1.0f; }",
+        "tools/kernels/unrelated.opencl": "__kernel void unrelated(__global float* out) { out[0] = 2.0f; }",
+        ".cmake/api/v1/reply/codemodel-v2-debug.json": """
+        {
+          "kind": "codemodel",
+          "configurations": [
+            {
+              "name": "Debug",
+              "targets": [
+                {"name": "app", "id": "app::@root", "jsonFile": "target-app-Debug.json"},
+                {"name": "tool", "id": "tool::@root", "jsonFile": "target-tool-Debug.json"}
+              ]
+            }
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-app-Debug.json": """
+        {
+          "name": "app",
+          "id": "app::@root",
+          "type": "EXECUTABLE",
+          "sources": [
+            {"path": "src/main.cpp"},
+            {"path": "src/kernels/owned.cl"}
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-tool-Debug.json": """
+        {
+          "name": "tool",
+          "id": "tool::@root",
+          "type": "EXECUTABLE",
+          "sources": [{"path": "tools/kernels/unrelated.opencl"}]
+        }
+        """,
+    }
+
+    prompt, report = build_project_source_context(files, focus="src/main.cpp")
+    included_paths = {item["path"] for item in report["included"]}
+    dropped_reasons = {item["path"]: item["dropReason"] for item in report["dropped"]}
+
+    assert "src/kernels/owned.cl" in included_paths
+    assert dropped_reasons["tools/kernels/unrelated.opencl"] == "unrelated_target_device_source"
+    assert "void owned" in prompt
+    assert "void unrelated" not in prompt
 
 
 def test_selected_target_context_drops_unrelated_runtime_object_launch_sources():

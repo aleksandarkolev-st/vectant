@@ -18,7 +18,7 @@ SOURCE_CONTEXT_SCHEMA_VERSION = "synthi.gpu.source_context.v1"
 DEFAULT_CONTEXT_MAX_CHARS = 70000
 DEFAULT_CONTEXT_PER_FILE_MAX_CHARS = 3000
 
-_SOURCE_EXT_RE = re.compile(r"\.(?:h|hpp|hh|hxx|cpp|cc|cxx|c|cu|cuh|hip)$", re.I)
+_SOURCE_EXT_RE = re.compile(r"\.(?:h|hpp|hh|hxx|cpp|cc|cxx|c|cu|cuh|hip|cl|opencl)$", re.I)
 _STATE_RE = re.compile(r"\b(?:struct|class)\s+[A-Za-z_][A-Za-z0-9_]*(?:State|Context)\b")
 _RENDER_RE = re.compile(
     r"\b(?:glfw|SDL_|SDL2|raylib|InitWindow|BeginDrawing|ImGui|Vk[A-Z]|vk[A-Z]|gl[A-Z])\b",
