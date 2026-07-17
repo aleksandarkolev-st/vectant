@@ -1702,7 +1702,9 @@ async fn device_artifact_cache_key(
     cache_update_str(&mut hasher, "artifact_schema", DEVICE_ARTIFACT_CACHE_SCHEMA);
     cache_update_str(&mut hasher, "artifact_kind", "device_sidecar");
     cache_update_str(&mut hasher, "compiler_exe", compiler_exe);
-    let Some(compiler_identity) = device_compiler_identity_evidence(compiler_exe).await? else {
+    let Some(compiler_identity) =
+        device_compiler_identity_evidence(workspace_dir, compiler_exe).await?
+    else {
         return Ok(None);
     };
     cache_update_str(
@@ -1777,7 +1779,7 @@ async fn device_compile_proof_metadata(
 ) -> Result<DeviceCompileProofMetadata> {
     let compiler_identity = match cache_key {
         Some(cache_key) => Some(cache_key.compiler_identity.clone()),
-        None => device_compiler_identity_evidence(compiler_exe).await?,
+        None => device_compiler_identity_evidence(workspace_dir, compiler_exe).await?,
     };
     if artifact_cache_bypassed && compiler_identity.is_none() {
         anyhow::bail!(
@@ -2540,16 +2542,39 @@ pub(crate) struct DeviceCompilerExecutableSnapshot {
 }
 
 #[cfg(feature = "gpu-hmr")]
-async fn device_compiler_identity_evidence(
+fn device_compiler_path_resolution_command(
+    workspace_dir: &Path,
     compiler_exe: &str,
-) -> Result<Option<DeviceCompilerIdentityEvidence>> {
+) -> tokio::process::Command {
     let mut resolve_cmd = crate::infra::utils::system_command("sh");
     resolve_cmd
+        .current_dir(workspace_dir)
         .arg("-lc")
         .arg("resolved=$(command -v -- \"$1\") || exit 1; case \"$resolved\" in /*) printf '%s\\n' \"$resolved\" ;; *) exit 2 ;; esac")
         .arg("synthi-device-compiler-resolve")
         .arg(compiler_exe)
         .kill_on_drop(true);
+    resolve_cmd
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_compiler_version_command(
+    workspace_dir: &Path,
+    execution_path: &str,
+) -> tokio::process::Command {
+    let mut cmd = device_compiler_command(execution_path, true);
+    cmd.current_dir(workspace_dir)
+        .arg("--version")
+        .kill_on_drop(true);
+    cmd
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn device_compiler_identity_evidence(
+    workspace_dir: &Path,
+    compiler_exe: &str,
+) -> Result<Option<DeviceCompilerIdentityEvidence>> {
+    let mut resolve_cmd = device_compiler_path_resolution_command(workspace_dir, compiler_exe);
     let resolved_out = match timeout(Duration::from_secs(5), resolve_cmd.output()).await {
         Ok(Ok(out)) if out.status.success() => out,
         Ok(Ok(out)) => {
@@ -2647,8 +2672,7 @@ async fn device_compiler_identity_evidence(
     // The Linux path names the already-open executable description, so the
     // version probe and later compile cannot be redirected by replacing the
     // workspace or PATH entry after measurement.
-    let mut cmd = device_compiler_command(&execution_path, false);
-    cmd.arg("--version").kill_on_drop(true);
+    let mut cmd = device_compiler_version_command(workspace_dir, &execution_path);
     let out = match timeout(Duration::from_secs(5), cmd.output()).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => {
@@ -5151,6 +5175,20 @@ extern "C" __global__ void apply(float* out) { *out = 1.0f; }
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
+    fn device_compiler_identity_probes_use_the_workspace_directory() {
+        let workspace = tempfile::tempdir().unwrap();
+        let resolution = device_compiler_path_resolution_command(workspace.path(), "hipcc");
+        assert_eq!(
+            resolution.as_std().get_current_dir(),
+            Some(workspace.path())
+        );
+
+        let version = device_compiler_version_command(workspace.path(), "/opt/rocm/bin/hipcc");
+        assert_eq!(version.as_std().get_current_dir(), Some(workspace.path()));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
     fn requested_cold_device_compile_requires_complete_outcome() {
         let tmp = tempfile::tempdir().unwrap();
         let artifact_path = tmp.path().join("device.hsaco");
@@ -5256,7 +5294,7 @@ extern "C" __global__ void apply(float* out) { *out = 1.0f; }
             .await
             .unwrap();
 
-        let evidence = device_compiler_identity_evidence(&compiler.to_string_lossy())
+        let evidence = device_compiler_identity_evidence(tmp.path(), &compiler.to_string_lossy())
             .await
             .unwrap();
         assert!(evidence.is_none());
@@ -5297,6 +5335,8 @@ static int copy_stream(FILE *input, FILE *output) {
 
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        if (environ && environ[0]) return 89;
+        if (access("dependency.h", R_OK) != 0) return 90;
         puts("synthi-test-compiler 1.0");
         return 0;
     }
