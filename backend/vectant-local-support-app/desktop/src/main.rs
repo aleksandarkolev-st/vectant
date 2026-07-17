@@ -70,6 +70,7 @@ struct PendingFullAccessEnrollment {
 #[derive(Clone, serde::Serialize)]
 struct ProcessVisibilitySnapshot {
     state: String,
+    delivery_state: String,
     collected_at: DateTime<Utc>,
     records: Vec<vectant_local_support_app::full_access::SanitizedProcessRecord>,
 }
@@ -866,11 +867,13 @@ async fn refresh_process_visibility(
     ) {
         Ok(records) => ProcessVisibilitySnapshot {
             state: "available".to_string(),
+            delivery_state: "local_only_not_sent".to_string(),
             collected_at,
             records,
         },
         Err(_) => ProcessVisibilitySnapshot {
             state: "unavailable".to_string(),
+            delivery_state: "not_collected".to_string(),
             collected_at,
             records: Vec::new(),
         },

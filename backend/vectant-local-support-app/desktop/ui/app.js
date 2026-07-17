@@ -196,7 +196,7 @@ function renderFullAccess(fullAccess) {
     : fullAccess.processVisibilityPaused
       ? "Process visibility is paused locally. No process records can be collected or released."
       : processReview?.state === "available"
-        ? `${processReview.records.length} sanitized process record${processReview.records.length === 1 ? "" : "s"} reviewed locally at ${processReview.collectedAt}. Command lines, environments, paths, and PIDs remain hidden.`
+        ? `${processReview.records.length} sanitized process record${processReview.records.length === 1 ? "" : "s"} reviewed locally at ${processReview.collectedAt}. Delivery status: ${processReview.deliveryState === "local_only_not_sent" ? "local review only — not sent to Vectant" : "not released"}. Command lines, environments, paths, and PIDs remain hidden.`
         : processReview?.state === "unavailable"
           ? "Process data is unavailable under current OS permissions. No process state was guessed or sent."
           : "Review process visibility to collect a fresh local-only sanitized snapshot.");
@@ -462,6 +462,7 @@ function normalizeFullAccess(rawAccess) {
     processVisibility: raw.process_visibility && typeof raw.process_visibility === "object"
       ? {
           state: raw.process_visibility.state === "available" ? "available" : raw.process_visibility.state === "unavailable" ? "unavailable" : "unknown",
+          deliveryState: raw.process_visibility.delivery_state === "local_only_not_sent" ? "local_only_not_sent" : "not_released",
           collectedAt: sanitizeText(raw.process_visibility.collected_at, "an unknown time"),
           records: Array.isArray(raw.process_visibility.records)
             ? raw.process_visibility.records.slice(0, 256).map((record) => ({
