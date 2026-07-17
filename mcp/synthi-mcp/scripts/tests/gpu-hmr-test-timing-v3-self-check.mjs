@@ -16,6 +16,7 @@ import {
   GPU_HMR_TEST_TIMING_V3_SCHEMA,
   assertValidGpuHmrTestTimingV3,
   beginGpuHmrTestTimingV3SessionAttempt,
+  bindGpuHmrTestTimingV3Session,
   captureGpuHmrTestTimingV3ClockReading,
   createGpuHmrTestTimingV3AbsentArtifactBinding,
   createGpuHmrTestTimingV3ClockCapability,
@@ -86,6 +87,18 @@ function deferredBinding(manifest, overrides = {}) {
   delete value.proofLedgerId;
   delete value.runtimeProofId;
   return value;
+}
+
+function sessionBindingMetadata(overrides = {}) {
+  return {
+    runMode: 'cold',
+    splitMode: 'fresh_ai',
+    modality: 'visual',
+    sourceManifestHash: hash('1'),
+    editId: 'edit:test:1',
+    editHash: hash('2'),
+    ...overrides,
+  };
 }
 
 function terminalBinding(overrides = {}) {
@@ -294,8 +307,9 @@ function completeRecord({
 
 function recordCompletedSessionPhases(recorder, clock, modality, {
   markPresentation = true,
+  discoveryAlreadyRecorded = false,
 } = {}) {
-  attempt(recorder, clock, 'discovery', 11n);
+  if (!discoveryAlreadyRecorded) attempt(recorder, clock, 'discovery', 11n);
   attempt(recorder, clock, 'provider_availability', 13n);
   attempt(recorder, clock, 'ai_split', 17n);
   attempt(recorder, clock, 'compile', 19n);
@@ -864,6 +878,264 @@ assert.throws(
   ),
   /timing_v3_session_consumed/,
 );
+
+const unboundSealClockFixture = testClockFixture(controlledClock(5_250_000n), {
+  clockDomainId: 'clock-domain:test:unbound-seal',
+  clockSourceIdentityHash: hash('6'),
+  runtimeSessionId: 'runtime-session:test:unbound-seal',
+  processIdentity: 'process:test:unbound-seal',
+  evidenceRefs: ['evidence:clock-source:unbound-seal'],
+});
+const unboundSealCapabilities = createGpuHmrTestTimingV3Session({
+  clockCapability: unboundSealClockFixture.capability,
+  totalSource: 'source:unbound-seal:validator',
+  totalEvidenceRefs: ['evidence:unbound-seal:total'],
+});
+assert.throws(
+  () => sealGpuHmrTestTimingV3Session(
+    unboundSealCapabilities.sealCapability,
+    terminalBinding({ outcome: 'failed' }),
+  ),
+  /timing_v3_session_binding_required/,
+);
+assert.throws(
+  () => bindGpuHmrTestTimingV3Session(
+    unboundSealCapabilities.sessionCapability,
+    sessionBindingMetadata({ modality: 'compute' }),
+  ),
+  /timing_v3_session_consumed/,
+);
+
+const lateBindingClockFixture = testClockFixture(controlledClock(5_300_000n), {
+  clockDomainId: 'clock-domain:test:late-binding',
+  clockSourceIdentityHash: hash('7'),
+  runtimeSessionId: 'runtime-session:test:late-binding',
+  processIdentity: 'process:test:late-binding',
+  evidenceRefs: ['evidence:clock-source:late-binding'],
+});
+const lateBindingCapabilities = createGpuHmrTestTimingV3Session({
+  clockCapability: lateBindingClockFixture.capability,
+  totalSource: 'source:late-binding:validator',
+  totalEvidenceRefs: ['evidence:late-binding:total'],
+});
+const lateBindingRecorder = sessionRecorder(lateBindingCapabilities.sessionCapability);
+lateBindingClockFixture.clock.tick(3n);
+const lateDiscoveryAttempt = lateBindingRecorder.beginAttempt('discovery', {
+  source: 'source:late-binding:discovery',
+  evidenceRefs: ['evidence:late-binding:discovery:start'],
+});
+lateBindingClockFixture.clock.tick(11n);
+const lateDiscovery = lateBindingRecorder.finishAttempt(lateDiscoveryAttempt, {
+  result: 'completed',
+  evidenceRefs: ['evidence:late-binding:discovery:end'],
+});
+const lateMetadata = sessionBindingMetadata({
+  runMode: 'cold',
+  splitMode: 'fresh_ai',
+  modality: 'compute',
+  sourceManifestHash: hash('8'),
+  editId: 'edit:test:late-binding',
+  editHash: hash('9'),
+});
+const trustedLateMetadata = structuredClone(lateMetadata);
+assert.throws(
+  () => bindGpuHmrTestTimingV3Session(
+    lateBindingCapabilities.sessionCapability,
+    {
+      ...lateMetadata,
+      outputReadyNs: '1',
+      presentationNs: '2',
+      clockDomainId: 'clock-domain:remote',
+    },
+  ),
+  (error) => error.code === 'timing_v3_session_binding_invalid'
+    && error.details.gaps.includes('session_binding_field_unexpected:outputReadyNs')
+    && error.details.gaps.includes('session_binding_field_unexpected:presentationNs')
+    && error.details.gaps.includes('session_binding_field_unexpected:clockDomainId'),
+);
+recordCompletedSessionPhases(
+  lateBindingRecorder,
+  lateBindingClockFixture.clock,
+  'compute',
+  { discoveryAlreadyRecorded: true },
+);
+const boundLateBinding = bindGpuHmrTestTimingV3Session(
+  lateBindingCapabilities.sessionCapability,
+  lateMetadata,
+);
+assert.ok(Object.isFrozen(boundLateBinding));
+assert.equal(boundLateBinding.runtimeSessionId, lateBindingClockFixture.manifest.runtimeSessionId);
+assert.equal(boundLateBinding.processIdentity, lateBindingClockFixture.manifest.processIdentity);
+assert.equal(boundLateBinding.clockSourceManifestId, lateBindingClockFixture.manifest.manifestId);
+assert.equal(boundLateBinding.clockDomainId, lateBindingClockFixture.manifest.clockDomainId);
+lateMetadata.runMode = 'warm';
+lateMetadata.modality = 'visual';
+lateMetadata.sourceManifestHash = hash('a');
+lateMetadata.editId = 'edit:test:late-binding-mutated';
+assert.throws(
+  () => bindGpuHmrTestTimingV3Session(
+    lateBindingCapabilities.sessionCapability,
+    trustedLateMetadata,
+  ),
+  /timing_v3_session_binding_already_bound/,
+);
+assert.throws(
+  () => bindGpuHmrTestTimingV3Session(
+    lateBindingCapabilities.sessionCapability,
+    {
+      ...trustedLateMetadata,
+      modality: 'visual',
+      sourceManifestHash: hash('a'),
+    },
+  ),
+  (error) => error.code === 'timing_v3_session_binding_conflict'
+    && error.details.gaps.includes('session_binding_conflict:modality')
+    && error.details.gaps.includes('session_binding_conflict:sourceManifestHash'),
+);
+const lateTerminal = terminalBinding({
+  artifactHash: hash('b'),
+  proofLedgerId: `proof-ledger:${hash('c')}`,
+  runtimeProofId: `runtime-proof:${hash('d')}`,
+});
+const lateRecord = sealGpuHmrTestTimingV3Session(
+  lateBindingCapabilities.sealCapability,
+  lateTerminal,
+);
+const expectedLateRunBinding = deferredBinding(
+  lateBindingClockFixture.manifest,
+  trustedLateMetadata,
+);
+const expectedLateBinding = completedDeferredBinding(
+  expectedLateRunBinding,
+  lateTerminal,
+);
+const lateValidation = validateGpuHmrTestTimingV3(
+  lateRecord,
+  validationOptions(expectedLateBinding, lateBindingClockFixture.manifest),
+);
+assert.equal(lateValidation.valid, true, lateValidation.gaps.join(', '));
+assert.equal(lateRecord.binding.runMode, trustedLateMetadata.runMode);
+assert.equal(lateRecord.binding.modality, trustedLateMetadata.modality);
+assert.equal(lateRecord.binding.sourceManifestHash, trustedLateMetadata.sourceManifestHash);
+assert.equal(lateRecord.binding.editId, trustedLateMetadata.editId);
+assert.equal(lateRecord.firstVisibleBoundary, null);
+assert.equal(lateRecord.summary.firstVisibleNs, null);
+assert.equal(
+  lateRecord.firstOutputReadyBoundary.monotonicNs,
+  phase(lateRecord, 'output_ready').attempts[0].endNs,
+);
+assert.notEqual(lateRecord.firstOutputReadyBoundary.monotonicNs, '1');
+assert.equal(lateDiscovery.startNs, (5_300_000n + 3n).toString());
+assert.equal(
+  phase(lateRecord, 'total_validator_wall').attempts[0].startNs,
+  '5300000',
+);
+
+const noLocalVisibleClockFixture = testClockFixture(controlledClock(5_400_000n), {
+  clockDomainId: 'clock-domain:test:no-local-visible',
+  clockSourceIdentityHash: hash('e'),
+  runtimeSessionId: 'runtime-session:test:no-local-visible',
+  processIdentity: 'process:test:no-local-visible',
+  evidenceRefs: ['evidence:clock-source:no-local-visible'],
+});
+const noLocalVisibleCapabilities = createGpuHmrTestTimingV3Session({
+  clockCapability: noLocalVisibleClockFixture.capability,
+  totalSource: 'source:no-local-visible:validator',
+  totalEvidenceRefs: ['evidence:no-local-visible:total'],
+});
+const noLocalVisibleRecorder = sessionRecorder(
+  noLocalVisibleCapabilities.sessionCapability,
+);
+attempt(noLocalVisibleRecorder, noLocalVisibleClockFixture.clock, 'discovery', 5n);
+const noLocalVisibleMetadata = sessionBindingMetadata({
+  runMode: 'warm',
+  splitMode: 'reused_ai',
+  modality: 'visual',
+  sourceManifestHash: hash('f'),
+  editId: 'edit:test:no-local-visible',
+  editHash: hash('0'),
+});
+assert.throws(
+  () => bindGpuHmrTestTimingV3Session(
+    noLocalVisibleCapabilities.sessionCapability,
+    {
+      ...noLocalVisibleMetadata,
+      firstVisibleBoundary: {
+        kind: 'post_dispatch_presentation_complete',
+        monotonicNs: '1',
+        clockDomainId: noLocalVisibleClockFixture.manifest.clockDomainId,
+        source: 'source:remote-presentation',
+        evidenceRefs: ['evidence:remote-presentation'],
+      },
+    },
+  ),
+  (error) => error.code === 'timing_v3_session_binding_invalid'
+    && error.details.gaps.includes('session_binding_field_unexpected:firstVisibleBoundary'),
+);
+bindGpuHmrTestTimingV3Session(
+  noLocalVisibleCapabilities.sessionCapability,
+  noLocalVisibleMetadata,
+);
+for (const phaseKey of [
+  'provider_availability',
+  'ai_split',
+  'compile',
+  'artifact_load',
+  'epoch_publish',
+  'dispatch',
+  'output_ready',
+  'oracle_analysis',
+  'visual_capture',
+  'visual_analysis',
+  'retirement',
+]) {
+  noLocalVisibleRecorder.markUnavailable(
+    phaseKey,
+    'required_boundary_not_observed',
+    [`evidence:no-local-visible:${phaseKey}`],
+  );
+}
+attempt(
+  noLocalVisibleRecorder,
+  noLocalVisibleClockFixture.clock,
+  'proof_finalization',
+  7n,
+  'failed',
+);
+attempt(noLocalVisibleRecorder, noLocalVisibleClockFixture.clock, 'cleanup', 11n);
+noLocalVisibleClockFixture.clock.tick(13n);
+const noLocalVisibleTerminal = terminalBinding({
+  outcome: 'failed',
+  artifactHash: createGpuHmrTestTimingV3AbsentArtifactBinding(),
+  proofLedgerId: null,
+  runtimeProofId: null,
+});
+const noLocalVisibleRecord = sealGpuHmrTestTimingV3Session(
+  noLocalVisibleCapabilities.sealCapability,
+  noLocalVisibleTerminal,
+);
+const expectedNoLocalVisibleBinding = completedDeferredBinding(
+  deferredBinding(noLocalVisibleClockFixture.manifest, noLocalVisibleMetadata),
+  noLocalVisibleTerminal,
+);
+const noLocalVisibleValidation = validateGpuHmrTestTimingV3(
+  noLocalVisibleRecord,
+  validationOptions(
+    expectedNoLocalVisibleBinding,
+    noLocalVisibleClockFixture.manifest,
+  ),
+);
+assert.equal(
+  noLocalVisibleValidation.valid,
+  true,
+  noLocalVisibleValidation.gaps.join(', '),
+);
+assert.equal(noLocalVisibleRecord.firstVisibleBoundary, null);
+assert.equal(noLocalVisibleRecord.firstOutputReadyBoundary, null);
+assert.equal(noLocalVisibleRecord.summary.firstVisibleNs, null);
+assert.equal(noLocalVisibleRecord.summary.timeToFirstVisibleNs, null);
+assert.equal(noLocalVisibleRecord.summary.firstOutputReadyNs, null);
+assert.equal(noLocalVisibleRecord.summary.timeToFirstOutputReadyNs, null);
 
 const absentArtifact = createGpuHmrTestTimingV3AbsentArtifactBinding();
 assert.deepEqual(absentArtifact, {

@@ -150,6 +150,16 @@ const DEFERRED_BINDING_KEYS = Object.freeze(BINDING_KEYS.filter((field) => ![
   'proofLedgerId',
   'runtimeProofId',
 ].includes(field)));
+const SESSION_CLOCK_BINDING_KEYS = Object.freeze([
+  'runtimeSessionId',
+  'processIdentity',
+  'clockSourceManifestId',
+  'clockSourceIdentityHash',
+  'clockDomainId',
+]);
+const SESSION_METADATA_BINDING_KEYS = Object.freeze(
+  DEFERRED_BINDING_KEYS.filter((field) => !SESSION_CLOCK_BINDING_KEYS.includes(field)),
+);
 const TERMINAL_BINDING_KEYS = Object.freeze([
   'outcome',
   'artifactHash',
@@ -204,6 +214,11 @@ const VALIDATION_OPTION_KEYS = Object.freeze([
 const RECORDER_OPTION_KEYS = Object.freeze([
   'clockCapability',
   'binding',
+  'totalSource',
+  'totalEvidenceRefs',
+]);
+const UNBOUND_SESSION_OPTION_KEYS = Object.freeze([
+  'clockCapability',
   'totalSource',
   'totalEvidenceRefs',
 ]);
@@ -344,6 +359,7 @@ const TIMING_SESSION_DATA = new WeakMap();
 const TIMING_SESSION_SEAL_DATA = new WeakMap();
 const TIMING_SESSION_ATTEMPT_DATA = new WeakMap();
 const DEFERRED_RECORDER_CONSTRUCTION_CAPABILITY = Object.freeze(Object.create(null));
+const DEFERRED_RECORDER_BIND = Symbol('gpuHmrTestTimingV3DeferredRecorderBind');
 const DEFERRED_RECORDER_SEAL = Symbol('gpuHmrTestTimingV3DeferredRecorderSeal');
 const SUCCESS_CLAIM_KEYS = new Set([
   'acceptedforgpuhmr',
@@ -661,8 +677,7 @@ export function createGpuHmrTestTimingV3AbsentArtifactBinding() {
   });
 }
 
-function validateDeferredBinding(binding, scope, gaps) {
-  if (!exactKeys(binding, DEFERRED_BINDING_KEYS, scope, gaps)) return null;
+function validateSessionMetadataBindingFields(binding, scope, gaps) {
   if (!RUN_MODE_SET.has(binding.runMode)) pushGap(gaps, `${scope}_run_mode_invalid`);
   if (!SPLIT_MODE_SET.has(binding.splitMode)) pushGap(gaps, `${scope}_split_mode_invalid`);
   if (!MODALITY_SET.has(binding.modality)) pushGap(gaps, `${scope}_modality_invalid`);
@@ -672,6 +687,17 @@ function validateDeferredBinding(binding, scope, gaps) {
     }
   }
   if (!stableId(binding.editId)) pushGap(gaps, `${scope}_edit_id_invalid`);
+}
+
+function validateSessionMetadataBinding(binding, scope, gaps) {
+  if (!exactKeys(binding, SESSION_METADATA_BINDING_KEYS, scope, gaps)) return null;
+  validateSessionMetadataBindingFields(binding, scope, gaps);
+  return binding;
+}
+
+function validateDeferredBinding(binding, scope, gaps) {
+  if (!exactKeys(binding, DEFERRED_BINDING_KEYS, scope, gaps)) return null;
+  validateSessionMetadataBindingFields(binding, scope, gaps);
   for (const field of ['runtimeSessionId', 'processIdentity', 'clockDomainId']) {
     if (!stableId(binding[field])) pushGap(gaps, `${scope}_${field}_invalid`);
   }
@@ -1937,13 +1963,24 @@ export class GpuHmrTestTimingV3Recorder {
   constructor(options, constructionCapability) {
     const gaps = [];
     const deferred = constructionCapability === DEFERRED_RECORDER_CONSTRUCTION_CAPABILITY;
+    let sessionBindingProvided = false;
     const optionsErrorCode = deferred
       ? 'timing_v3_session_options_invalid'
       : 'timing_v3_recorder_options_invalid';
     if (!deferred && arguments.length !== 1) {
       pushGap(gaps, 'recorder_construction_capability_invalid');
     }
-    if (!exactKeys(options, RECORDER_OPTION_KEYS, 'recorder_options', gaps)) {
+    if (deferred) {
+      try {
+        sessionBindingProvided = isObject(options) && Object.hasOwn(options, 'binding');
+      } catch {
+        pushGap(gaps, 'recorder_options_material_invalid');
+      }
+    }
+    const optionKeys = deferred && !sessionBindingProvided
+      ? UNBOUND_SESSION_OPTION_KEYS
+      : RECORDER_OPTION_KEYS;
+    if (!exactKeys(options, optionKeys, 'recorder_options', gaps)) {
       throw new GpuHmrTestTimingV3Error(optionsErrorCode, { gaps });
     }
     let capabilityData = null;
@@ -1952,14 +1989,17 @@ export class GpuHmrTestTimingV3Recorder {
     } catch {
       pushGap(gaps, 'clock_capability_invalid');
     }
-    if (deferred) validateDeferredBinding(options.binding, 'binding', gaps);
-    else validateBinding(options.binding, 'binding', gaps);
+    if (deferred) {
+      if (sessionBindingProvided) validateDeferredBinding(options.binding, 'binding', gaps);
+    } else {
+      validateBinding(options.binding, 'binding', gaps);
+    }
     const clockValidation = validateGpuHmrTestTimingV3ClockSourceManifest(
       capabilityData?.manifest,
     );
     if (!clockValidation.valid) {
       pushGap(gaps, 'trusted_clock_source_manifest_invalid');
-    } else {
+    } else if (!deferred || sessionBindingProvided) {
       const manifest = capabilityData.manifest;
       for (const [field, value] of [
         ['clockSourceManifestId', manifest.manifestId],
@@ -1979,8 +2019,10 @@ export class GpuHmrTestTimingV3Recorder {
     this.#clockCapability = options.clockCapability;
     this.#clockSourceManifest = capabilityData.manifest;
     this.#clockDomainId = capabilityData.manifest.clockDomainId;
-    this.#binding = structuredClone(options.binding);
-    this.#modality = options.binding.modality;
+    this.#binding = sessionBindingProvided || !deferred
+      ? structuredClone(options.binding)
+      : null;
+    this.#modality = this.#binding?.modality ?? null;
     this.#outcome = deferred ? null : options.binding.outcome;
     this.#totalSource = options.totalSource;
     this.#totalEvidenceRefs = [...options.totalEvidenceRefs];
@@ -2152,11 +2194,7 @@ export class GpuHmrTestTimingV3Recorder {
     state.active = false;
     state.attempts.push(attempt);
     this.#activeTokens.delete(active.tokenId);
-    if (
-      this.#modality === 'compute'
-      && active.phase === 'output_ready'
-      && attempt.result === 'completed'
-    ) {
+    if (active.phase === 'output_ready' && attempt.result === 'completed') {
       this.#firstOutputReadyBoundary = {
         kind: 'post_dispatch_output_ready',
         monotonicNs: attempt.endNs,
@@ -2201,7 +2239,7 @@ export class GpuHmrTestTimingV3Recorder {
     if (this.#firstVisibleBoundary !== null) {
       throw new GpuHmrTestTimingV3Error('timing_v3_first_visible_already_recorded');
     }
-    if (this.#modality !== 'visual') {
+    if (this.#modality === 'compute') {
       throw new GpuHmrTestTimingV3Error('timing_v3_first_visible_visual_only');
     }
     const gaps = [];
@@ -2231,6 +2269,51 @@ export class GpuHmrTestTimingV3Recorder {
     };
   }
 
+  [DEFERRED_RECORDER_BIND](bindingMetadata) {
+    if (!this.#deferred) {
+      throw new GpuHmrTestTimingV3Error('timing_v3_session_recorder_invalid');
+    }
+    if (this.#finalized) throw new GpuHmrTestTimingV3Error('timing_v3_recorder_finalized');
+    const gaps = [];
+    if (arguments.length !== 1) pushGap(gaps, 'session_binding_argument_count_invalid');
+    validateSessionMetadataBinding(bindingMetadata, 'session_binding', gaps);
+    if (gaps.length > 0) {
+      throw new GpuHmrTestTimingV3Error('timing_v3_session_binding_invalid', { gaps });
+    }
+    if (this.#binding !== null) {
+      const conflictingFields = SESSION_METADATA_BINDING_KEYS.filter((field) => (
+        !bindingValuesEqual(this.#binding[field], bindingMetadata[field])
+      ));
+      if (conflictingFields.length === 0) {
+        throw new GpuHmrTestTimingV3Error('timing_v3_session_binding_already_bound');
+      }
+      throw new GpuHmrTestTimingV3Error('timing_v3_session_binding_conflict', {
+        gaps: conflictingFields.map((field) => `session_binding_conflict:${field}`),
+      });
+    }
+    if (bindingMetadata.modality === 'compute' && this.#firstVisibleBoundary !== null) {
+      throw new GpuHmrTestTimingV3Error('timing_v3_session_binding_invalid', {
+        gaps: ['compute_binding_conflicts_with_local_presentation'],
+      });
+    }
+    const manifest = this.#clockSourceManifest;
+    const completedBinding = {
+      ...structuredClone(bindingMetadata),
+      runtimeSessionId: manifest.runtimeSessionId,
+      processIdentity: manifest.processIdentity,
+      clockSourceManifestId: manifest.manifestId,
+      clockSourceIdentityHash: manifest.clockSourceIdentityHash,
+      clockDomainId: manifest.clockDomainId,
+    };
+    validateDeferredBinding(completedBinding, 'completed_session_binding', gaps);
+    if (gaps.length > 0) {
+      throw new GpuHmrTestTimingV3Error('timing_v3_session_binding_invalid', { gaps });
+    }
+    this.#binding = completedBinding;
+    this.#modality = completedBinding.modality;
+    return deepFreeze(structuredClone(completedBinding));
+  }
+
   finalize() {
     if (this.#deferred) {
       throw new GpuHmrTestTimingV3Error('timing_v3_session_seal_required');
@@ -2248,6 +2331,9 @@ export class GpuHmrTestTimingV3Recorder {
       throw new GpuHmrTestTimingV3Error('timing_v3_session_recorder_invalid');
     }
     if (this.#finalized) throw new GpuHmrTestTimingV3Error('timing_v3_recorder_finalized');
+    if (this.#binding === null) {
+      throw new GpuHmrTestTimingV3Error('timing_v3_session_binding_required');
+    }
     const gaps = [];
     if (arguments.length !== 1) pushGap(gaps, 'terminal_binding_argument_count_invalid');
     validateTerminalBinding(terminalBinding, 'terminal_binding', gaps);
@@ -2359,7 +2445,7 @@ export class GpuHmrTestTimingV3Recorder {
     const firstVisibleNs = this.#firstVisibleBoundary
       ? BigInt(this.#firstVisibleBoundary.monotonicNs)
       : null;
-    const firstOutputReadyNs = this.#firstOutputReadyBoundary
+    const firstOutputReadyNs = this.#modality === 'compute' && this.#firstOutputReadyBoundary
       ? BigInt(this.#firstOutputReadyBoundary.monotonicNs)
       : null;
     const summary = deriveSummaryFromParsed(parsed, firstVisibleNs, firstOutputReadyNs);
@@ -2385,7 +2471,7 @@ export class GpuHmrTestTimingV3Recorder {
       firstVisibleBoundary: this.#firstVisibleBoundary
         ? structuredClone(this.#firstVisibleBoundary)
         : null,
-      firstOutputReadyBoundary: this.#firstOutputReadyBoundary
+      firstOutputReadyBoundary: this.#modality === 'compute' && this.#firstOutputReadyBoundary
         ? structuredClone(this.#firstOutputReadyBoundary)
         : null,
       summary,
@@ -2453,6 +2539,17 @@ export function createGpuHmrTestTimingV3Session(options) {
     consumed: false,
   });
   return deepFreeze({ sessionCapability, sealCapability });
+}
+
+export function bindGpuHmrTestTimingV3Session(sessionCapability, bindingMetadata) {
+  if (arguments.length !== 2) {
+    throw new GpuHmrTestTimingV3Error('timing_v3_session_binding_invalid', {
+      gaps: ['session_binding_argument_count_invalid'],
+    });
+  }
+  return requireActiveTimingSession(sessionCapability).recorder[
+    DEFERRED_RECORDER_BIND
+  ](bindingMetadata);
 }
 
 export function beginGpuHmrTestTimingV3SessionAttempt(sessionCapability, phase, options) {
