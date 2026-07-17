@@ -104,6 +104,17 @@ import {
   GpuHmrTestTimingRecorder,
   isStableGpuHmrTimingReasonCode,
 } from './lib/gpu-hmr-test-timing-v2.mjs';
+import {
+  executeRuntimeBoundaryAppHookCommand,
+  normalizeRuntimeBoundaryAppHook,
+  runtimeBoundaryAppHookClaimsAuthority,
+  runtimeBoundaryAppHookDeclaredEventManifestPath,
+  runtimeBoundaryAppHookDeclaredResultPath,
+  runtimeBoundaryAppHookEventManifestPathSource,
+  runtimeBoundaryAppHookWorkerDirectory,
+  runtimeBoundaryAppHookWorkerPath,
+  transportRuntimeBoundaryAppHookArtifact,
+} from './lib/gpu-hmr-runtime-boundary-app-hook.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1153,16 +1164,6 @@ function normalizeRealRocmProofObligations(rawObligations) {
   };
 }
 
-function normalizeRuntimeAdapterRelativePath(value, field) {
-  const raw = optionalProfileString(value, field).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-  if (!raw || raw === '.') return '';
-  const parts = raw.split('/');
-  if (parts.some((part) => !part || part === '.' || part === '..')) {
-    throw new Error(`invalid real ROCm profile ${field}: expected relative path without traversal`);
-  }
-  return raw;
-}
-
 const REAL_ROCM_RUNTIME_ADAPTER_TEMPLATE_COMMANDS = new Map([
   ['runtime_boundary_log_harvest_v1', `
 boundary_tmp="$(mktemp 2>/dev/null || true)"
@@ -1312,9 +1313,6 @@ function runtimeAdapterTemplateCommand(template) {
 function normalizeRealRocmRuntimeAdapter(rawAdapter) {
   const declared = rawAdapter !== undefined && rawAdapter !== null;
   const adapter = objectOrEmpty(rawAdapter, 'runtimeAdapter');
-  const enabled = declared
-    ? optionalProfileBoolean(adapter.enabled, 'runtimeAdapter.enabled') ?? true
-    : false;
   const template = optionalProfileString(
     adapter.template ?? adapter.adapterTemplate ?? adapter.adapter_template,
     'runtimeAdapter.template',
@@ -1323,102 +1321,24 @@ function normalizeRealRocmRuntimeAdapter(rawAdapter) {
     adapter.command ?? adapter.shellCommand ?? adapter.shell_command,
     'runtimeAdapter.command',
   ) || runtimeAdapterTemplateCommand(template);
-  if (enabled && !command) {
-    throw new Error('real ROCm runtimeAdapter.enabled=true requires runtimeAdapter.command or runtimeAdapter.template');
-  }
-  const workingDirectory = normalizeRuntimeAdapterRelativePath(
-    adapter.workingDirectory
-      ?? adapter.working_directory
-      ?? adapter.cwd,
-    'runtimeAdapter.workingDirectory',
+  return normalizeRuntimeBoundaryAppHook(
+    {
+      ...adapter,
+      command,
+      template: template || undefined,
+    },
+    {
+      declared,
+      schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_adapter.v1',
+      proofAuthority: 'profile_declared_adapter_not_gpu_hmr_success',
+      errorPrefix: 'invalid real ROCm profile',
+      fieldPrefix: 'runtimeAdapter',
+      missingCommandMessage:
+        'real ROCm runtimeAdapter.enabled=true requires runtimeAdapter.command or runtimeAdapter.template',
+      unsupportedRunWhenMessage: (runWhen) =>
+        `unsupported real ROCm runtimeAdapter.runWhen: ${runWhen}`,
+    },
   );
-  const resultPath = normalizeRuntimeAdapterRelativePath(
-    adapter.resultPath
-      ?? adapter.result_path
-      ?? adapter.adapterResultPath
-      ?? adapter.adapter_result_path,
-    'runtimeAdapter.resultPath',
-  );
-  const eventManifestPath = normalizeRuntimeAdapterRelativePath(
-    adapter.eventManifestPath
-      ?? adapter.event_manifest_path
-      ?? adapter.runtimeBoundaryEventManifestPath
-      ?? adapter.runtime_boundary_event_manifest_path
-      ?? adapter.boundaryEventManifestPath
-      ?? adapter.boundary_event_manifest_path,
-    'runtimeAdapter.eventManifestPath',
-  );
-  const timeoutMs = optionalProfileNumber(
-    adapter.timeoutMs ?? adapter.timeout_ms,
-    'runtimeAdapter.timeoutMs',
-  );
-  const runWhen = optionalProfileString(
-    adapter.runWhen ?? adapter.run_when,
-    'runtimeAdapter.runWhen',
-  ) || 'after_upstream_run';
-  const allowedRunWhen = new Set([
-    'after_upstream_run',
-    'after_configure_success',
-    'after_build_attempt',
-    'after_lifecycle_attempt',
-  ]);
-  if (!allowedRunWhen.has(runWhen)) {
-    throw new Error(`unsupported real ROCm runtimeAdapter.runWhen: ${runWhen}`);
-  }
-  const requiresSuccessfulBuild =
-    optionalProfileBoolean(
-      adapter.requiresSuccessfulBuild ?? adapter.requires_successful_build,
-      'runtimeAdapter.requiresSuccessfulBuild',
-    ) ?? (runWhen === 'after_upstream_run');
-  const requiresSuccessfulRun =
-    optionalProfileBoolean(
-      adapter.requiresSuccessfulRun ?? adapter.requires_successful_run,
-      'runtimeAdapter.requiresSuccessfulRun',
-    ) ?? false;
-  const appendRunLog =
-    optionalProfileBoolean(
-      adapter.appendRunLog ?? adapter.append_run_log,
-      'runtimeAdapter.appendRunLog',
-    ) ?? true;
-  const evidenceRefs = optionalProfileStringList(
-    adapter.evidenceRefs ?? adapter.evidence_refs ?? adapter.evidenceRef ?? adapter.evidence_ref,
-    'runtimeAdapter.evidenceRefs',
-  );
-  const commandHash = command
-    ? `sha256:${createHash('sha256').update(command).digest('hex')}`
-    : null;
-  return {
-    schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_adapter.v1',
-    schema_version: 'synthi.gpu_hmr.real_rocm_runtime_adapter.v1',
-    declared,
-    enabled,
-    proofAuthority: 'profile_declared_adapter_not_gpu_hmr_success',
-    proof_authority: 'profile_declared_adapter_not_gpu_hmr_success',
-    command,
-    commandHash,
-    command_hash: commandHash,
-    template: template || null,
-    adapterTemplate: template || null,
-    adapter_template: template || null,
-    workingDirectory,
-    working_directory: workingDirectory,
-    resultPath,
-    result_path: resultPath,
-    eventManifestPath,
-    event_manifest_path: eventManifestPath,
-    timeoutMs: timeoutMs !== null ? Math.max(1000, Math.trunc(timeoutMs)) : 300000,
-    timeout_ms: timeoutMs !== null ? Math.max(1000, Math.trunc(timeoutMs)) : 300000,
-    runWhen,
-    run_when: runWhen,
-    requiresSuccessfulBuild,
-    requires_successful_build: requiresSuccessfulBuild,
-    requiresSuccessfulRun,
-    requires_successful_run: requiresSuccessfulRun,
-    appendRunLog,
-    append_run_log: appendRunLog,
-    evidenceRefs,
-    evidence_refs: evidenceRefs,
-  };
 }
 
 function normalizeRealRocmProfile(rawProfile, source) {
@@ -4243,14 +4163,7 @@ function runtimeProfileAdapterStrictSummary(result = {}) {
 }
 
 function runtimeProfileAdapterResultClaimsRuntimeAuthority(result = {}) {
-  return result?.acceptedForGpuHmr === true
-    || result?.accepted_for_gpu_hmr === true
-    || result?.gpuHmrSuccess === true
-    || result?.gpu_hmr_success === true
-    || result?.canSatisfyRuntimeProof === true
-    || result?.can_satisfy_runtime_proof === true
-    || result?.canSatisfyDispatchProof === true
-    || result?.can_satisfy_dispatch_proof === true;
+  return runtimeBoundaryAppHookClaimsAuthority(result);
 }
 
 function runtimeProfileAdapterEventManifestBoundaryInput(parsed) {
@@ -5736,58 +5649,43 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
 }
 
 function runtimeAdapterWorkerDirectory(adapter = CFG.runtimeAdapter) {
-  const relative = adapter?.workingDirectory || CFG.buildSubdir || '';
-  return relative ? `${CFG.workerRepoPath}/${relative}` : CFG.workerRepoPath;
+  return runtimeBoundaryAppHookWorkerDirectory(
+    adapter,
+    CFG.workerRepoPath,
+    CFG.buildSubdir || '',
+  );
 }
 
 function runtimeAdapterDeclaredResultPath(adapter = CFG.runtimeAdapter) {
-  return CFG.runtimeProfileAdapterResultPath || adapter?.resultPath || '';
+  return runtimeBoundaryAppHookDeclaredResultPath(
+    adapter,
+    CFG.runtimeProfileAdapterResultPath || '',
+  );
 }
 
 function runtimeAdapterDeclaredEventManifestPath(adapter = CFG.runtimeAdapter) {
-  const explicit = String(adapter?.eventManifestPath ?? adapter?.event_manifest_path ?? '')
-    .trim()
-    .replace(/\\/g, '/')
-    .replace(/^\/+|\/+$/g, '');
-  if (explicit && explicit !== '.') return explicit;
-  const resultPath = String(runtimeAdapterDeclaredResultPath(adapter) ?? '')
-    .trim()
-    .replace(/\\/g, '/')
-    .replace(/^\/+|\/+$/g, '');
-  if (!resultPath || resultPath === '.') return '';
-  const parts = resultPath.split('/');
-  if (parts.some((part) => !part || part === '.' || part === '..')) return '';
-  const fileName = parts.pop();
-  const dot = fileName.lastIndexOf('.');
-  const stem = dot > 0 ? fileName.slice(0, dot) : fileName;
-  const ext = dot > 0 ? fileName.slice(dot) : '.json';
-  const derivedName = `${stem}-runtime-boundary-events${ext}`;
-  return [...parts, derivedName].join('/');
+  return runtimeBoundaryAppHookDeclaredEventManifestPath(
+    adapter,
+    CFG.runtimeProfileAdapterResultPath || '',
+  );
 }
 
 function runtimeAdapterEventManifestPathSource(adapter = CFG.runtimeAdapter) {
-  const explicit = String(adapter?.eventManifestPath ?? adapter?.event_manifest_path ?? '').trim();
-  if (explicit && explicit !== '.') return 'declared';
-  return runtimeAdapterDeclaredEventManifestPath(adapter) ? 'derived_from_result_path' : 'none';
+  return runtimeBoundaryAppHookEventManifestPathSource(
+    adapter,
+    CFG.runtimeProfileAdapterResultPath || '',
+  );
 }
 
 function runtimeAdapterWorkerResultPath(rawPath = runtimeAdapterDeclaredResultPath()) {
-  const normalized = String(rawPath ?? '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-  if (!normalized || normalized === '.') return '';
-  const parts = normalized.split('/');
-  if (parts.some((part) => !part || part === '.' || part === '..')) return '';
-  return `${CFG.workerRepoPath}/${normalized}`;
+  return runtimeBoundaryAppHookWorkerPath(CFG.workerRepoPath, rawPath);
 }
 
 function runtimeAdapterWorkerEventManifestPath(adapter = CFG.runtimeAdapter) {
-  const normalized = String(runtimeAdapterDeclaredEventManifestPath(adapter))
-    .trim()
-    .replace(/\\/g, '/')
-    .replace(/^\/+|\/+$/g, '');
-  if (!normalized || normalized === '.') return '';
-  const parts = normalized.split('/');
-  if (parts.some((part) => !part || part === '.' || part === '..')) return '';
-  return `${CFG.workerRepoPath}/${normalized}`;
+  return runtimeBoundaryAppHookWorkerPath(
+    CFG.workerRepoPath,
+    runtimeAdapterDeclaredEventManifestPath(adapter),
+  );
 }
 
 function runtimeBoundaryLinesFromRunLog(runLog = '') {
@@ -6489,93 +6387,80 @@ function refreshRuntimeAdapterExecutionFromResultBridge(bridge = report.real_roc
   return refreshed;
 }
 
+function runtimeBoundaryAppHookWorkerContext(access) {
+  return {
+    available: access?.available === true && Boolean(access.workerContainer),
+    reason: access?.reason ?? null,
+    workerContainer: access?.workerContainer ?? null,
+    executeShell: (script, timeoutMs) => execText(
+      'docker',
+      ['exec', access.workerContainer, 'sh', '-lc', script],
+      timeoutMs,
+      false,
+    ),
+    readText: (workerPath, timeoutMs = 30000) => execText(
+      'docker',
+      ['exec', access.workerContainer, 'sh', '-lc', `cat ${shQuote(workerPath)} 2>/dev/null || true`],
+      timeoutMs,
+      false,
+    ),
+    existsNonEmpty: async (workerPath, timeoutMs = 30000) =>
+      (await execText(
+        'docker',
+        [
+          'exec',
+          access.workerContainer,
+          'sh',
+          '-lc',
+          `[ -s ${shQuote(workerPath)} ] && printf 1 || printf 0`,
+        ],
+        timeoutMs,
+        false,
+      ) ?? '').trim() === '1',
+    copyToHost: (workerPath, hostPath, timeoutMs = 120000) => execText(
+      'docker',
+      ['cp', `${access.workerContainer}:${workerPath}`, hostPath],
+      timeoutMs,
+      true,
+    ),
+  };
+}
+
 async function transportRuntimeAdapterResultFromWorker(access) {
   if (!report.evidence || typeof report.evidence !== 'object' || Array.isArray(report.evidence)) {
     report.evidence = {};
   }
   const adapter = CFG.runtimeAdapter ?? normalizeRealRocmRuntimeAdapter(null);
   const declaredPath = runtimeAdapterDeclaredResultPath();
-  const hostPath = resolveRepoBoundEvidencePath(declaredPath);
-  const workerPath = runtimeAdapterWorkerResultPath(declaredPath);
-  const facet = {
+  const facet = await transportRuntimeBoundaryAppHookArtifact({
+    kind: 'result',
+    adapter,
+    declaredPath,
+    workerRepoRoot: CFG.workerRepoPath,
+    hostRepoRoot: REPO_ROOT,
+    allowedHostRoots: [REPO_ROOT],
+    workerContext: runtimeBoundaryAppHookWorkerContext(access),
+    required: adapter.declared === true && adapter.enabled === true,
     schemaVersion: 'synthi.real_rocm.runtime_adapter_result_transport.v1',
-    schema_version: 'synthi.real_rocm.runtime_adapter_result_transport.v1',
     proofAuthority: 'runtime_adapter_result_transport_only_not_gpu_hmr_success',
-    proof_authority: 'runtime_adapter_result_transport_only_not_gpu_hmr_success',
-    declared: Boolean(declaredPath),
-    adapterTemplate: adapter.template ?? null,
-    adapter_template: adapter.template ?? null,
-    adapterCommandHash: adapter.commandHash ?? null,
-    adapter_command_hash: adapter.commandHash ?? null,
-    declaredPath: declaredPath || null,
-    declared_path: declaredPath || null,
-    hostPath: hostPath ? path.relative(REPO_ROOT, hostPath).replace(/\\/g, '/') : null,
-    host_path: hostPath ? path.relative(REPO_ROOT, hostPath).replace(/\\/g, '/') : null,
-    workerPath: workerPath || null,
-    worker_path: workerPath || null,
-    acceptedForGpuHmr: false,
-    accepted_for_gpu_hmr: false,
-    gpuHmrSuccess: false,
-    gpu_hmr_success: false,
-    canSatisfyRuntimeProof: false,
-    can_satisfy_runtime_proof: false,
-    copied: false,
-    byteLength: 0,
-    byte_length: 0,
-    rawSha256: null,
-    raw_sha256: null,
-    blockingGaps: [],
-    blocking_gaps: [],
-    evidenceRefs: [],
-    evidence_refs: [],
-  };
-  if (!declaredPath) {
-    facet.status = 'runtime_adapter_result_transport_not_declared';
-  } else if (!hostPath) {
-    facet.status = 'runtime_adapter_result_transport_refused';
-    facet.blockingGaps.push('runtime_adapter_result_transport_path_outside_repo');
-  } else if (!workerPath) {
-    facet.status = 'runtime_adapter_result_transport_refused';
-    facet.blockingGaps.push('runtime_adapter_result_transport_worker_path_invalid');
-  } else if (!access?.available || !access.workerContainer) {
-    facet.status = 'runtime_adapter_result_transport_refused';
-    facet.blockingGaps.push('runtime_adapter_result_transport_worker_unavailable');
-  } else {
-    const exists = (await execText(
-      'docker',
-      ['exec', access.workerContainer, 'sh', '-lc', `[ -s ${shQuote(workerPath)} ] && printf 1 || printf 0`],
-      30000,
-      false,
-    ) ?? '').trim() === '1';
-    if (!exists) {
-      facet.status = 'runtime_adapter_result_transport_refused';
-      facet.blockingGaps.push('runtime_adapter_result_transport_worker_file_missing');
-    } else {
-      await mkdir(path.dirname(hostPath), { recursive: true });
-      await execText('docker', ['cp', `${access.workerContainer}:${workerPath}`, hostPath], 120000, true);
-      const bytes = await readFile(hostPath);
-      const rawSha256 = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-      facet.status = 'runtime_adapter_result_transport_copied';
-      facet.copied = true;
-      facet.byteLength = bytes.length;
-      facet.byte_length = bytes.length;
-      facet.rawSha256 = rawSha256;
-      facet.raw_sha256 = rawSha256;
-      facet.evidenceRefs.push(rawSha256);
-      facet.evidence_refs.push(rawSha256);
-      if (adapter.template) {
-        facet.evidenceRefs.push(`runtime-adapter-template:${adapter.template}`);
-        facet.evidence_refs.push(`runtime-adapter-template:${adapter.template}`);
-      }
-      if (adapter.commandHash) {
-        facet.evidenceRefs.push(`runtime-adapter-command:${adapter.commandHash}`);
-        facet.evidence_refs.push(`runtime-adapter-command:${adapter.commandHash}`);
-      }
-    }
-  }
-  facet.accepted = facet.declared !== true || (facet.copied === true && facet.blockingGaps.length === 0);
-  facet.blocking_gaps = facet.blockingGaps;
-  facet.evidence_refs = facet.evidenceRefs;
+    gapPrefix: 'runtime_adapter_result_transport',
+    statusNames: {
+      notDeclared: 'runtime_adapter_result_transport_not_declared',
+      refused: 'runtime_adapter_result_transport_refused',
+      missing: 'runtime_adapter_result_transport_refused',
+      copied: 'runtime_adapter_result_transport_copied',
+    },
+    gapNames: {
+      pathMissing: 'runtime_adapter_result_transport_path_missing',
+      pathOutside: 'runtime_adapter_result_transport_path_outside_repo',
+      workerPathInvalid: 'runtime_adapter_result_transport_worker_path_invalid',
+      workerUnavailable: 'runtime_adapter_result_transport_worker_unavailable',
+      workerFileMissing: 'runtime_adapter_result_transport_worker_file_missing',
+      copiedBytesMissing: 'runtime_adapter_result_transport_copied_bytes_missing',
+      payloadInvalid: 'runtime_adapter_result_transport_payload_invalid',
+      authorityClaimed: 'runtime_adapter_result_transport_claimed_runtime_authority',
+    },
+  });
   report.real_rocm_runtime_adapter_result_transport = facet;
   report.realRocmRuntimeAdapterResultTransport = facet;
   report.runtime_adapter_result_transport = facet;
@@ -6596,91 +6481,38 @@ async function transportRuntimeAdapterEventManifestFromWorker(access) {
   const adapter = CFG.runtimeAdapter ?? normalizeRealRocmRuntimeAdapter(null);
   const declaredPath = runtimeAdapterDeclaredEventManifestPath(adapter);
   const pathSource = runtimeAdapterEventManifestPathSource(adapter);
-  const hostPath = resolveRepoBoundEvidencePath(declaredPath);
-  const workerPath = runtimeAdapterWorkerEventManifestPath(adapter);
-  const facet = {
+  const facet = await transportRuntimeBoundaryAppHookArtifact({
+    kind: 'event_manifest',
+    adapter,
+    declaredPath,
+    workerRepoRoot: CFG.workerRepoPath,
+    hostRepoRoot: REPO_ROOT,
+    allowedHostRoots: [REPO_ROOT],
+    workerContext: runtimeBoundaryAppHookWorkerContext(access),
+    required: false,
     schemaVersion: 'synthi.real_rocm.runtime_adapter_event_manifest_transport.v1',
-    schema_version: 'synthi.real_rocm.runtime_adapter_event_manifest_transport.v1',
     proofAuthority: 'runtime_adapter_event_manifest_transport_only_not_gpu_hmr_success',
-    proof_authority: 'runtime_adapter_event_manifest_transport_only_not_gpu_hmr_success',
-    declared: Boolean(declaredPath),
-    pathSource,
-    path_source: pathSource,
-    adapterTemplate: adapter.template ?? null,
-    adapter_template: adapter.template ?? null,
-    adapterCommandHash: adapter.commandHash ?? null,
-    adapter_command_hash: adapter.commandHash ?? null,
-    declaredPath: declaredPath || null,
-    declared_path: declaredPath || null,
-    hostPath: hostPath ? path.relative(REPO_ROOT, hostPath).replace(/\\/g, '/') : null,
-    host_path: hostPath ? path.relative(REPO_ROOT, hostPath).replace(/\\/g, '/') : null,
-    workerPath: workerPath || null,
-    worker_path: workerPath || null,
-    acceptedForGpuHmr: false,
-    accepted_for_gpu_hmr: false,
-    gpuHmrSuccess: false,
-    gpu_hmr_success: false,
-    canSatisfyRuntimeProof: false,
-    can_satisfy_runtime_proof: false,
-    canSatisfyDispatchProof: false,
-    can_satisfy_dispatch_proof: false,
-    copied: false,
-    byteLength: 0,
-    byte_length: 0,
-    rawSha256: null,
-    raw_sha256: null,
-    blockingGaps: [],
-    blocking_gaps: [],
-    evidenceRefs: [],
-    evidence_refs: [],
-  };
-  if (!declaredPath) {
-    facet.status = 'runtime_adapter_event_manifest_transport_not_declared';
-  } else if (!hostPath) {
-    facet.status = 'runtime_adapter_event_manifest_transport_refused';
-    facet.blockingGaps.push('runtime_adapter_event_manifest_transport_path_outside_repo');
-  } else if (!workerPath) {
-    facet.status = 'runtime_adapter_event_manifest_transport_refused';
-    facet.blockingGaps.push('runtime_adapter_event_manifest_transport_worker_path_invalid');
-  } else if (!access?.available || !access.workerContainer) {
-    facet.status = 'runtime_adapter_event_manifest_transport_refused';
-    facet.blockingGaps.push('runtime_adapter_event_manifest_transport_worker_unavailable');
-  } else {
-    const exists = (await execText(
-      'docker',
-      ['exec', access.workerContainer, 'sh', '-lc', `[ -s ${shQuote(workerPath)} ] && printf 1 || printf 0`],
-      30000,
-      false,
-    ) ?? '').trim() === '1';
-    if (!exists) {
-      facet.status = 'runtime_adapter_event_manifest_transport_missing';
-      facet.blockingGaps.push('runtime_adapter_event_manifest_transport_worker_file_missing');
-    } else {
-      await mkdir(path.dirname(hostPath), { recursive: true });
-      await execText('docker', ['cp', `${access.workerContainer}:${workerPath}`, hostPath], 120000, true);
-      const bytes = await readFile(hostPath);
-      const rawSha256 = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-      facet.status = 'runtime_adapter_event_manifest_transport_copied';
-      facet.copied = true;
-      facet.byteLength = bytes.length;
-      facet.byte_length = bytes.length;
-      facet.rawSha256 = rawSha256;
-      facet.raw_sha256 = rawSha256;
-      facet.evidenceRefs.push(rawSha256);
-      facet.evidence_refs.push(rawSha256);
-      if (adapter.template) {
-        facet.evidenceRefs.push(`runtime-adapter-template:${adapter.template}`);
-        facet.evidence_refs.push(`runtime-adapter-template:${adapter.template}`);
-      }
-      if (adapter.commandHash) {
-        facet.evidenceRefs.push(`runtime-adapter-command:${adapter.commandHash}`);
-        facet.evidence_refs.push(`runtime-adapter-command:${adapter.commandHash}`);
-      }
-    }
-  }
-  facet.accepted = facet.declared !== true || (facet.copied === true && facet.blockingGaps.length === 0);
-  facet.blocking_gaps = facet.blockingGaps;
-  facet.evidence_refs = facet.evidenceRefs;
+    gapPrefix: 'runtime_adapter_event_manifest_transport',
+    statusNames: {
+      notDeclared: 'runtime_adapter_event_manifest_transport_not_declared',
+      refused: 'runtime_adapter_event_manifest_transport_refused',
+      missing: 'runtime_adapter_event_manifest_transport_missing',
+      copied: 'runtime_adapter_event_manifest_transport_copied',
+    },
+    gapNames: {
+      pathMissing: 'runtime_adapter_event_manifest_transport_path_missing',
+      pathOutside: 'runtime_adapter_event_manifest_transport_path_outside_repo',
+      workerPathInvalid: 'runtime_adapter_event_manifest_transport_worker_path_invalid',
+      workerUnavailable: 'runtime_adapter_event_manifest_transport_worker_unavailable',
+      workerFileMissing: 'runtime_adapter_event_manifest_transport_worker_file_missing',
+      copiedBytesMissing: 'runtime_adapter_event_manifest_transport_copied_bytes_missing',
+      payloadInvalid: 'runtime_adapter_event_manifest_transport_payload_invalid',
+      authorityClaimed:
+        'runtime_adapter_event_manifest_transport_claimed_runtime_authority',
+    },
+  });
+  facet.pathSource = pathSource;
+  facet.path_source = pathSource;
   report.real_rocm_runtime_adapter_event_manifest_transport = facet;
   report.realRocmRuntimeAdapterEventManifestTransport = facet;
   report.runtime_adapter_event_manifest_transport = facet;
@@ -6787,103 +6619,42 @@ async function executeRuntimeAdapter() {
     );
     return facet;
   }
+
   const runtimeAdapterId = cleanIdentifier(`${CFG.realRocmProfile.id}-runtime-adapter`);
-  const commandHash = adapter.commandHash || `sha256:${createHash('sha256').update(adapter.command).digest('hex')}`;
-  const workingDirectory = runtimeAdapterWorkerDirectory(adapter);
-  const adapterResultPath = runtimeAdapterDeclaredResultPath(adapter);
-  const adapterWorkerResultPath = runtimeAdapterWorkerResultPath(adapterResultPath);
-  const adapterWorkerEventManifestPath = runtimeAdapterWorkerEventManifestPath(adapter);
-  const timeoutSeconds = Math.max(1, Math.ceil(Number(adapter.timeoutMs ?? 300000) / 1000));
   const runLogPath = `${CFG.workerTempDir}/run.log`;
   const adapterLogPath = adapter.appendRunLog === false
     ? `${CFG.workerTempDir}/runtime-adapter.log`
     : runLogPath;
-  const script = `
-set +e
-runtime_session="pid$$-${CFG.slug}"
-adapter_started=$(date +%s%3N)
-adapter_status=started
-adapter_exit_code=0
-adapter_skip_reason=none
-mkdir -p ${shQuote(CFG.workerTempDir)}
-touch ${shQuote(runLogPath)}
-printf '\\n[synthi-runtime-adapter] id=%s status=started command_hash=%s cwd=%s runtime_session=%s result_path=%s\\n' ${shQuote(runtimeAdapterId)} ${shQuote(commandHash)} ${shQuote(workingDirectory)} "$runtime_session" ${shQuote(adapterResultPath || 'none')} >> ${shQuote(adapterLogPath)}
-if [ ! -d ${shQuote(workingDirectory)} ]; then
-  adapter_status=failed
-  adapter_exit_code=127
-  adapter_skip_reason=runtime_adapter_working_directory_missing
-  printf '[synthi-runtime-adapter] id=%s status=failed exit_code=127 reason=runtime_adapter_working_directory_missing cwd=%s\\n' ${shQuote(runtimeAdapterId)} ${shQuote(workingDirectory)} >> ${shQuote(adapterLogPath)}
-else
-  (
-    cd ${shQuote(workingDirectory)}
-    export SYNTHI_GPU_HMR_RUNTIME_ADAPTER=1
-    export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_ID=${shQuote(runtimeAdapterId)}
-    export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_COMMAND_HASH=${shQuote(commandHash)}
-    export SYNTHI_REAL_ROCM_RUNTIME_SESSION="$runtime_session"
-    export SYNTHI_REAL_ROCM_PROFILE_ID=${shQuote(CFG.realRocmProfile.id)}
-    export SYNTHI_REAL_ROCM_WORKER_REPO_PATH=${shQuote(CFG.workerRepoPath)}
-    export SYNTHI_REAL_ROCM_BUILD_DIR=${shQuote(`${CFG.workerRepoPath}/${CFG.buildSubdir}/build`)}
-    export SYNTHI_REAL_ROCM_TARGET=${shQuote(CFG.targetName)}
-    export SYNTHI_REAL_ROCM_SLUG=${shQuote(CFG.slug)}
-    export SYNTHI_REAL_ROCM_UPSTREAM_RUN_COMMAND=${shQuote(CFG.upstreamRunCommand)}
-    export SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER_PATH=${shQuote(CFG.nativeLaunchObserverPath)}
-    export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RUN_LOG_PATH=${shQuote(runLogPath)}
-    export SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE_PATH=${shQuote(WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH)}
-    export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH=${shQuote(adapterWorkerResultPath)}
-    export SYNTHI_GPU_HMR_RUNTIME_ADAPTER_RESULT_PATH=${shQuote(adapterWorkerResultPath)}
-    export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH=${shQuote(adapterWorkerEventManifestPath)}
-    export SYNTHI_GPU_HMR_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH=${shQuote(adapterWorkerEventManifestPath)}
-    if [ -n ${shQuote(adapterWorkerResultPath)} ]; then
-      mkdir -p "$(dirname ${shQuote(adapterWorkerResultPath)})"
-    fi
-    if command -v timeout >/dev/null 2>&1; then
-      timeout ${timeoutSeconds} sh -lc ${shQuote(adapter.command)}
-    else
-      sh -lc ${shQuote(adapter.command)}
-    fi
-  ) >> ${shQuote(adapterLogPath)} 2>&1
-  adapter_exit_code=$?
-  if [ "$adapter_exit_code" = "0" ]; then
-    adapter_status=pass
-  else
-    adapter_status=failed
-    adapter_skip_reason=runtime_adapter_command_failed
-  fi
-fi
-adapter_finished=$(date +%s%3N)
-adapter_elapsed_ms=$((adapter_finished-adapter_started))
-printf '[synthi-runtime-adapter] id=%s status=%s exit_code=%s skip_reason=%s elapsed_ms=%s command_hash=%s\\n' ${shQuote(runtimeAdapterId)} "$adapter_status" "$adapter_exit_code" "$adapter_skip_reason" "$adapter_elapsed_ms" ${shQuote(commandHash)} >> ${shQuote(adapterLogPath)}
-printf 'runtime_adapter_status=%s\\nruntime_adapter_exit_code=%s\\nruntime_adapter_skip_reason=%s\\nruntime_adapter_ms=%s\\n' "$adapter_status" "$adapter_exit_code" "$adapter_skip_reason" "$adapter_elapsed_ms"
-exit 0
-`;
-  const timings = await execText(
-    'docker',
-    ['exec', access.workerContainer, 'sh', '-lc', script],
-    Number(adapter.timeoutMs ?? 300000) + 30000,
-    false,
-  ) ?? [
-    'runtime_adapter_status=failed',
-    'runtime_adapter_exit_code=timeout',
-    'runtime_adapter_skip_reason=runtime_adapter_execution_unavailable',
-    'runtime_adapter_ms=0',
-  ].join('\n');
-  const runLog = await execText(
-    'docker',
-    ['exec', access.workerContainer, 'sh', '-lc', `cat ${shQuote(runLogPath)} 2>/dev/null || true`],
-    30000,
-    false,
-  ) ?? '';
-  const adapterOnlyLog = adapter.appendRunLog === false
-    ? await execText(
-      'docker',
-      ['exec', access.workerContainer, 'sh', '-lc', `cat ${shQuote(adapterLogPath)} 2>/dev/null || true`],
-      30000,
-      false,
-    ) ?? ''
-    : '';
-  report.logs.upstream_run = compactStringList([runLog, adapterOnlyLog]).join('\n');
+  const executionAttempt = await executeRuntimeBoundaryAppHookCommand({
+    adapter,
+    workerContext: runtimeBoundaryAppHookWorkerContext(access),
+    workerRepoRoot: CFG.workerRepoPath,
+    defaultWorkingDirectory: CFG.buildSubdir || '',
+    workerTempDir: CFG.workerTempDir,
+    runLogPath,
+    adapterLogPath,
+    identity: runtimeAdapterId,
+    sessionSuffix: CFG.slug,
+    resultPathOverride: CFG.runtimeProfileAdapterResultPath || '',
+    environment: {
+      SYNTHI_REAL_ROCM_PROFILE_ID: CFG.realRocmProfile.id,
+      SYNTHI_REAL_ROCM_WORKER_REPO_PATH: CFG.workerRepoPath,
+      SYNTHI_REAL_ROCM_BUILD_DIR: `${CFG.workerRepoPath}/${CFG.buildSubdir}/build`,
+      SYNTHI_REAL_ROCM_TARGET: CFG.targetName,
+      SYNTHI_REAL_ROCM_SLUG: CFG.slug,
+      SYNTHI_REAL_ROCM_UPSTREAM_RUN_COMMAND: CFG.upstreamRunCommand,
+      SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER_PATH: CFG.nativeLaunchObserverPath,
+      SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RUN_LOG_PATH: runLogPath,
+      SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE_PATH:
+        WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH,
+    },
+  });
+  report.logs.upstream_run = compactStringList([
+    executionAttempt.runLog,
+    executionAttempt.adapterOnlyLog,
+  ]).join('\n');
   const facet = runtimeAdapterExecutionFacet({
-    timings,
+    timings: executionAttempt.timings,
     runLog: report.logs.upstream_run,
   });
   await transportRuntimeAdapterResultFromWorker(access);
