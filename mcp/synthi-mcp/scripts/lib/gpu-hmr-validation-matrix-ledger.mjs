@@ -28,12 +28,6 @@ import {
   validateGpuHmrTestTiming,
 } from './gpu-hmr-test-timing-v2.mjs';
 import {
-  COLD_BUILD_CONTAINER_COMMAND_GID,
-  COLD_BUILD_CONTAINER_COMMAND_UID,
-  COLD_BUILD_CONTAINER_CONTROL_TMPFS_BYTES,
-  COLD_BUILD_CONTAINER_PROTOCOL_AUTHORITY,
-  COLD_BUILD_CONTAINER_PROTOCOL_SCHEMA,
-  COLD_BUILD_CONTAINER_TMP_BYTES,
   coldBuildLauncherCommand,
   coldBuildLauncherEntrypoint,
   coldBuildControlTmpfsOptions,
@@ -41,17 +35,6 @@ import {
   coldBuildTmpfsOptions,
 } from './gpu-hmr-cold-build-container-contract.mjs';
 
-const REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE = Object.freeze({
-  removed: 'unsafe_legacy_cold_container_wrapper',
-});
-const COLD_BUILD_CONTAINER_PRIVILEGE_DROP_EXECUTABLE =
-  REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE;
-const COLD_BUILD_CONTAINER_SLEEP_EXECUTABLE =
-  REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE;
-const COLD_BUILD_CONTAINER_WRAPPER_EXECUTABLE =
-  REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE;
-const COLD_BUILD_CONTAINER_WRAPPER_SCRIPT =
-  REMOVED_LEGACY_COLD_CONTAINER_PRIMITIVE;
 const coldBuildContainerCommand = coldBuildLauncherCommand;
 const coldBuildContainerEntrypoint = coldBuildLauncherEntrypoint;
 
@@ -6413,39 +6396,9 @@ export function randomColdBuildExecutionObservationFacet(
       && !nestedExecutionAuthorityClaim(executionEnvironment.buildOutputExtraction)
       ? null
       : 'random_cold_build_command_execution_output_extraction_invalid',
-    executionEnvironment.containerProtocolHash === recomputedContainerProtocolHash
-      && executionEnvironment.containerProtocol?.schemaVersion
-        === COLD_BUILD_CONTAINER_PROTOCOL_SCHEMA
-      && executionEnvironment.containerProtocol?.proofAuthority
-        === COLD_BUILD_CONTAINER_PROTOCOL_AUTHORITY
-      && executionEnvironment.containerProtocol?.accepted === true
-      && executionEnvironment.containerProtocol?.wrapperExecutable
-        === COLD_BUILD_CONTAINER_WRAPPER_EXECUTABLE
-      && executionEnvironment.containerProtocol?.wrapperScriptHash
-        === sha256BufferHash(Buffer.from(COLD_BUILD_CONTAINER_WRAPPER_SCRIPT))
-      && executionEnvironment.containerProtocol?.privilegeDropExecutable
-        === COLD_BUILD_CONTAINER_PRIVILEGE_DROP_EXECUTABLE
-      && executionEnvironment.containerProtocol?.sleepExecutable
-        === COLD_BUILD_CONTAINER_SLEEP_EXECUTABLE
-      && executionEnvironment.containerProtocol?.commandUid === COLD_BUILD_CONTAINER_COMMAND_UID
-      && executionEnvironment.containerProtocol?.commandGid === COLD_BUILD_CONTAINER_COMMAND_GID
-      && executionEnvironment.containerProtocol?.workspaceByteLimit
-        === executionEnvironment.resourcePolicy?.workspaceBytes
-      && executionEnvironment.containerProtocol?.workspaceEntryLimit
-        === executionEnvironment.resourcePolicy?.workspaceEntryCount
-      && executionEnvironment.containerProtocol?.controlTmpfsBytes
-        === COLD_BUILD_CONTAINER_CONTROL_TMPFS_BYTES
-      && executionEnvironment.containerProtocol?.tmpBytes === COLD_BUILD_CONTAINER_TMP_BYTES
-      && executionEnvironment.containerProtocol?.sourceBindReadOnly === true
-      && executionEnvironment.containerProtocol?.releaseBindReadOnly === true
-      && executionEnvironment.containerProtocol?.writableBindCount === 0
-      && executionEnvironment.containerProtocol?.acceptedForGpuHmr === false
-      && executionEnvironment.containerProtocol?.gpuHmrSuccess === false
-      && executionEnvironment.containerProtocol?.canSatisfyRuntimeProof === false
-      && executionEnvironment.containerProtocol?.canSatisfyDispatchProof === false
-      && !nestedExecutionAuthorityClaim(executionEnvironment.containerProtocol)
-      ? null
-      : 'random_cold_build_command_execution_container_protocol_invalid',
+    executionEnvironment.transport === 'isolated_worker_container'
+      ? 'random_cold_build_command_execution_legacy_container_protocol_removed'
+      : null,
     executionEnvironment.sourceMountPathHash === sourceBinding.sourceRootPathHash
       ? null
       : 'random_cold_build_command_execution_source_mount_binding_mismatch',

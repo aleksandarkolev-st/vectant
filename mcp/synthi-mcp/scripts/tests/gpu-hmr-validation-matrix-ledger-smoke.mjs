@@ -6990,7 +6990,7 @@ assert.equal(explicitColdBuildCommandRow?.randomColdBuildExecutionObservation?.a
 assert.equal(
   explicitColdBuildCommandRow.randomColdBuildExecutionObservation
     .acceptedAsColdCommandExecutionEvidence,
-  true,
+  false,
 );
 assert.equal(
   explicitColdBuildCommandRow.randomColdBuildExecutionObservation
@@ -7017,7 +7017,12 @@ assert.equal(
 assert.equal(explicitColdBuildCommandRow.randomColdBuildCommandExecution, undefined);
 assert.equal(
   explicitColdBuildCommandRow.openGaps.includes('build_command_execution_not_observed'),
-  false,
+  true,
+);
+assert.ok(
+  explicitColdBuildCommandRow.randomColdBuildExecutionObservation.failedGates.includes(
+    'random_cold_build_command_execution_legacy_container_protocol_removed',
+  ),
 );
 assert.ok(explicitColdBuildCommandRow.openGaps.includes('strict_runtime_ledger_missing'));
 assert.ok(explicitColdBuildCommandRow.openGaps.includes('output_oracle_unproven'));
