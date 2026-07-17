@@ -327,6 +327,93 @@ describe("HmrNormalizer — data channel subscription", () => {
     );
     normalizer.dispose();
   });
+
+  it("drops malformed typed chunks instead of forwarding them as wire events", () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0]
+    );
+    const seen: WireMessage[] = [];
+    normalizer.onMessage((msg) => seen.push(msg));
+    mockDC.emit(JSON.stringify({
+      type: "structured-json-chunk",
+      chunkId: "malformed",
+      data: "Bearer synthetic.secret.value",
+    }));
+    expect(seen).toEqual([]);
+    normalizer.dispose();
+  });
+
+  it("rejects oversized declarations and non-canonical base64", () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0]
+    );
+    const seen: WireMessage[] = [];
+    normalizer.onMessage((msg) => seen.push(msg));
+    const frame = JSON.parse(chunkWireMessage({ status: "applied" })[0]!) as WireMessage;
+    mockDC.emit(JSON.stringify({ ...frame, byteLength: 16 * 1024 * 1024 + 1 }));
+    mockDC.emit(JSON.stringify({ ...frame, data: "not/canonical===" }));
+    expect(seen).toEqual([]);
+    normalizer.dispose();
+  });
+
+  it("accepts an idempotent duplicate and rejects a conflicting duplicate", () => {
+    const acceptedDc = dc();
+    const accepted = new HmrNormalizer(
+      acceptedDc as unknown as ConstructorParameters<typeof HmrNormalizer>[0]
+    );
+    const acceptedSeen: WireMessage[] = [];
+    accepted.onMessage((msg) => acceptedSeen.push(msg));
+    const acceptedChunks = chunkWireMessage({ status: "applied", padding: "x".repeat(512) }, 64);
+    acceptedDc.emit(acceptedChunks[0]!);
+    acceptedDc.emit(acceptedChunks[0]!);
+    for (const chunk of acceptedChunks.slice(1)) acceptedDc.emit(chunk);
+    expect(acceptedSeen).toHaveLength(1);
+    accepted.dispose();
+
+    const rejectedDc = dc();
+    const rejected = new HmrNormalizer(
+      rejectedDc as unknown as ConstructorParameters<typeof HmrNormalizer>[0]
+    );
+    const rejectedSeen: WireMessage[] = [];
+    rejected.onMessage((msg) => rejectedSeen.push(msg));
+    const rejectedChunks = chunkWireMessage({ status: "applied", padding: "y".repeat(512) }, 64);
+    const conflict = JSON.parse(rejectedChunks[0]!) as WireMessage;
+    const originalBytes = Buffer.from(conflict.data as string, "base64");
+    originalBytes[0] = originalBytes[0] === 0x7b ? 0x5b : 0x7b;
+    conflict.data = originalBytes.toString("base64");
+    rejectedDc.emit(rejectedChunks[0]!);
+    rejectedDc.emit(JSON.stringify(conflict));
+    for (const chunk of rejectedChunks.slice(1)) rejectedDc.emit(chunk);
+    expect(rejectedSeen).toEqual([]);
+    rejected.dispose();
+  });
+
+  it("expires and zeroes incomplete chunk buffers without later traffic", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T00:00:00.000Z"));
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0]
+    );
+    try {
+      const chunks = chunkWireMessage({ status: "applied", padding: "z".repeat(512) }, 64);
+      mockDC.emit(chunks[0]!);
+      const internals = normalizer as unknown as {
+        structuredJsonChunks: Map<string, { chunks: Map<number, Buffer> }>;
+      };
+      expect(internals.structuredJsonChunks.size).toBe(1);
+      const retainedPart = [...internals.structuredJsonChunks.values()][0]!.chunks.get(0)!;
+      expect(retainedPart.some((byte) => byte !== 0)).toBe(true);
+      vi.advanceTimersByTime(120_001);
+      expect(internals.structuredJsonChunks.size).toBe(0);
+      expect(retainedPart.every((byte) => byte === 0)).toBe(true);
+    } finally {
+      normalizer.dispose();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("HmrNormalizer.waitForTerminal", () => {

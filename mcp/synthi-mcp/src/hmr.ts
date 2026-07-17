@@ -65,7 +65,7 @@ interface StructuredJsonChunk {
   byteLength: number;
   index: number;
   total: number;
-  data: string;
+  data: Buffer;
 }
 
 interface StructuredJsonChunkBuffer {
@@ -73,13 +73,20 @@ interface StructuredJsonChunkBuffer {
   byteLength: number;
   total: number;
   chunks: Map<number, Buffer>;
+  receivedBytes: number;
   createdAt: number;
   lastSeenAt: number;
 }
 
 const STRUCTURED_JSON_CHUNK_TYPE = "structured-json-chunk";
+const STRUCTURED_JSON_CHUNK_SCHEMA = "synthi.build_log.structured_json_chunk.v1";
+const STRUCTURED_JSON_CHUNK_ENCODING = "base64:utf8";
 const STRUCTURED_JSON_CHUNK_BUFFER_LIMIT = 32;
 const STRUCTURED_JSON_CHUNK_TTL_MS = 120_000;
+const STRUCTURED_JSON_CHUNK_ID_MAX_CHARS = 160;
+const STRUCTURED_JSON_CHUNK_MAX_BYTES = 16 * 1024 * 1024;
+const STRUCTURED_JSON_CHUNK_MAX_PART_BYTES = 64 * 1024;
+const STRUCTURED_JSON_CHUNK_MAX_PARTS = 4096;
 
 export interface HmrClassification {
   status: HmrTerminalStatus;
@@ -449,6 +456,7 @@ export class HmrNormalizer {
   private readonly unbind: () => void;
   private latestProof: GpuHmrProofTelemetry | null = null;
   private readonly structuredJsonChunks = new Map<string, StructuredJsonChunkBuffer>();
+  private structuredJsonChunkExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly proofHistory: GpuHmrProofTelemetry[] = [];
   private readonly terminalHistory: RetainedHmrTerminalEvent[] = [];
   private terminalSequence = 0;
@@ -489,13 +497,26 @@ export class HmrNormalizer {
   private expandStructuredJsonChunk(parsed: WireMessage, observedAt: number): WireMessage[] {
     const chunk = this.parseStructuredJsonChunk(parsed);
     if (chunk === null) return [parsed];
+    this.pruneStructuredJsonChunks(observedAt);
+    if (chunk === "invalid") {
+      this.scheduleStructuredJsonChunkExpiry();
+      return [];
+    }
 
     const existing = this.structuredJsonChunks.get(chunk.chunkId);
+    if (existing === undefined) {
+      while (this.structuredJsonChunks.size >= STRUCTURED_JSON_CHUNK_BUFFER_LIMIT) {
+        const oldest = this.oldestStructuredJsonChunkId();
+        if (oldest === null) break;
+        this.discardStructuredJsonChunkBuffer(oldest);
+      }
+    }
     const buffer = existing ?? {
       sha256: chunk.sha256,
       byteLength: chunk.byteLength,
       total: chunk.total,
       chunks: new Map<number, Buffer>(),
+      receivedBytes: 0,
       createdAt: observedAt,
       lastSeenAt: observedAt,
     };
@@ -504,39 +525,80 @@ export class HmrNormalizer {
       || buffer.byteLength !== chunk.byteLength
       || buffer.total !== chunk.total
     ) {
-      this.structuredJsonChunks.delete(chunk.chunkId);
+      chunk.data.fill(0);
+      this.discardStructuredJsonChunkBuffer(chunk.chunkId);
+      this.scheduleStructuredJsonChunkExpiry();
       return [];
     }
 
-    buffer.chunks.set(chunk.index, Buffer.from(chunk.data, "base64"));
+    const duplicate = buffer.chunks.get(chunk.index);
+    if (duplicate !== undefined) {
+      const matches = duplicate.equals(chunk.data);
+      chunk.data.fill(0);
+      if (!matches) this.discardStructuredJsonChunkBuffer(chunk.chunkId);
+      this.scheduleStructuredJsonChunkExpiry();
+      return [];
+    }
+    if (buffer.receivedBytes + chunk.data.byteLength > buffer.byteLength) {
+      chunk.data.fill(0);
+      this.discardStructuredJsonChunkBuffer(chunk.chunkId);
+      this.scheduleStructuredJsonChunkExpiry();
+      return [];
+    }
+
+    buffer.chunks.set(chunk.index, chunk.data);
+    buffer.receivedBytes += chunk.data.byteLength;
     buffer.lastSeenAt = observedAt;
     this.structuredJsonChunks.set(chunk.chunkId, buffer);
-    this.pruneStructuredJsonChunks(observedAt);
-    if (buffer.chunks.size < buffer.total) return [];
+    if (buffer.chunks.size < buffer.total) {
+      this.scheduleStructuredJsonChunkExpiry();
+      return [];
+    }
+    if (buffer.receivedBytes !== buffer.byteLength) {
+      this.discardStructuredJsonChunkBuffer(chunk.chunkId);
+      this.scheduleStructuredJsonChunkExpiry();
+      return [];
+    }
 
     const parts: Buffer[] = [];
     for (let index = 0; index < buffer.total; index += 1) {
       const part = buffer.chunks.get(index);
-      if (part === undefined) return [];
+      if (part === undefined) {
+        this.discardStructuredJsonChunkBuffer(chunk.chunkId);
+        this.scheduleStructuredJsonChunkExpiry();
+        return [];
+      }
       parts.push(part);
     }
     this.structuredJsonChunks.delete(chunk.chunkId);
-    const body = Buffer.concat(parts);
-    const actualHash = `sha256:${createHash("sha256").update(body).digest("hex")}`;
-    if (body.byteLength !== buffer.byteLength || actualHash !== buffer.sha256) return [];
-    return parseWireMessages(body.toString("utf8"));
+    this.scheduleStructuredJsonChunkExpiry();
+    const body = Buffer.concat(parts, buffer.byteLength);
+    try {
+      const actualHash = `sha256:${createHash("sha256").update(body).digest("hex")}`;
+      if (body.byteLength !== buffer.byteLength || actualHash !== buffer.sha256) return [];
+      return parseWireMessages(body.toString("utf8"));
+    } finally {
+      body.fill(0);
+      for (const part of parts) part.fill(0);
+    }
   }
 
-  private parseStructuredJsonChunk(parsed: WireMessage): StructuredJsonChunk | null {
+  private parseStructuredJsonChunk(parsed: WireMessage): StructuredJsonChunk | "invalid" | null {
     if (parsed.type !== STRUCTURED_JSON_CHUNK_TYPE) return null;
-    const chunkId = typeof parsed.chunkId === "string" && parsed.chunkId.trim()
-      ? parsed.chunkId.trim()
+    const chunkId = typeof parsed.chunkId === "string"
+      && parsed.chunkId.length > 0
+      && parsed.chunkId.length <= STRUCTURED_JSON_CHUNK_ID_MAX_CHARS
+      && /^[a-z0-9._:-]+$/i.test(parsed.chunkId)
+      ? parsed.chunkId
       : null;
+    const schemaVersion = parsed.schemaVersion === STRUCTURED_JSON_CHUNK_SCHEMA;
+    const encoding = parsed.encoding === STRUCTURED_JSON_CHUNK_ENCODING;
     const sha256 = typeof parsed.sha256 === "string" && /^sha256:[a-f0-9]{64}$/i.test(parsed.sha256)
       ? parsed.sha256.toLowerCase()
       : null;
     const byteLength = typeof parsed.byteLength === "number" && Number.isInteger(parsed.byteLength)
       && parsed.byteLength > 0
+      && parsed.byteLength <= STRUCTURED_JSON_CHUNK_MAX_BYTES
       ? parsed.byteLength
       : null;
     const index = typeof parsed.index === "number" && Number.isInteger(parsed.index)
@@ -545,36 +607,106 @@ export class HmrNormalizer {
       : null;
     const total = typeof parsed.total === "number" && Number.isInteger(parsed.total)
       && parsed.total > 0
-      && parsed.total <= 4096
+      && parsed.total <= STRUCTURED_JSON_CHUNK_MAX_PARTS
       ? parsed.total
       : null;
-    const data = typeof parsed.data === "string" && parsed.data.trim() ? parsed.data : null;
+    const data = typeof parsed.data === "string"
+      ? this.decodeStructuredJsonChunkData(parsed.data)
+      : null;
     if (
       chunkId === null
+      || !schemaVersion
+      || !encoding
       || sha256 === null
       || byteLength === null
       || index === null
       || total === null
       || data === null
       || index >= total
+      || data.byteLength > byteLength
     ) {
-      return null;
+      data?.fill(0);
+      return "invalid";
     }
     return { chunkId, sha256, byteLength, index, total, data };
   }
 
+  private decodeStructuredJsonChunkData(data: string): Buffer | null {
+    if (
+      data.length === 0
+      || data.length > Math.ceil(STRUCTURED_JSON_CHUNK_MAX_PART_BYTES / 3) * 4
+      || data.length % 4 !== 0
+      || !/^(?:[a-z0-9+/]{4})*(?:[a-z0-9+/]{2}==|[a-z0-9+/]{3}=)?$/i.test(data)
+    ) {
+      return null;
+    }
+    const decoded = Buffer.from(data, "base64");
+    if (
+      decoded.byteLength === 0
+      || decoded.byteLength > STRUCTURED_JSON_CHUNK_MAX_PART_BYTES
+      || decoded.toString("base64") !== data
+    ) {
+      decoded.fill(0);
+      return null;
+    }
+    return decoded;
+  }
+
   private pruneStructuredJsonChunks(now: number): void {
     for (const [chunkId, buffer] of this.structuredJsonChunks) {
-      if (now - buffer.lastSeenAt > STRUCTURED_JSON_CHUNK_TTL_MS) {
-        this.structuredJsonChunks.delete(chunkId);
+      if (
+        now - buffer.lastSeenAt >= STRUCTURED_JSON_CHUNK_TTL_MS
+        || now - buffer.createdAt >= STRUCTURED_JSON_CHUNK_TTL_MS
+      ) {
+        this.discardStructuredJsonChunkBuffer(chunkId);
       }
     }
     while (this.structuredJsonChunks.size > STRUCTURED_JSON_CHUNK_BUFFER_LIMIT) {
-      const oldest = [...this.structuredJsonChunks.entries()]
-        .sort((a, b) => a[1].createdAt - b[1].createdAt)[0]?.[0];
-      if (oldest === undefined) break;
-      this.structuredJsonChunks.delete(oldest);
+      const oldest = this.oldestStructuredJsonChunkId();
+      if (oldest === null) break;
+      this.discardStructuredJsonChunkBuffer(oldest);
     }
+  }
+
+  private oldestStructuredJsonChunkId(): string | null {
+    let oldest: { chunkId: string; createdAt: number } | null = null;
+    for (const [chunkId, buffer] of this.structuredJsonChunks) {
+      if (oldest === null || buffer.createdAt < oldest.createdAt) {
+        oldest = { chunkId, createdAt: buffer.createdAt };
+      }
+    }
+    return oldest?.chunkId ?? null;
+  }
+
+  private discardStructuredJsonChunkBuffer(chunkId: string): void {
+    const buffer = this.structuredJsonChunks.get(chunkId);
+    if (buffer === undefined) return;
+    this.structuredJsonChunks.delete(chunkId);
+    for (const part of buffer.chunks.values()) part.fill(0);
+    buffer.chunks.clear();
+    buffer.receivedBytes = 0;
+  }
+
+  private scheduleStructuredJsonChunkExpiry(): void {
+    if (this.structuredJsonChunkExpiryTimer !== null) {
+      clearTimeout(this.structuredJsonChunkExpiryTimer);
+      this.structuredJsonChunkExpiryTimer = null;
+    }
+    let expiresAt: number | null = null;
+    for (const buffer of this.structuredJsonChunks.values()) {
+      const candidate = Math.min(
+        buffer.createdAt + STRUCTURED_JSON_CHUNK_TTL_MS,
+        buffer.lastSeenAt + STRUCTURED_JSON_CHUNK_TTL_MS
+      );
+      if (expiresAt === null || candidate < expiresAt) expiresAt = candidate;
+    }
+    if (expiresAt === null) return;
+    this.structuredJsonChunkExpiryTimer = setTimeout(() => {
+      this.structuredJsonChunkExpiryTimer = null;
+      this.pruneStructuredJsonChunks(Date.now());
+      this.scheduleStructuredJsonChunkExpiry();
+    }, Math.max(1, expiresAt - Date.now()));
+    this.structuredJsonChunkExpiryTimer.unref?.();
   }
 
   onMessage(cb: MessageHandler): () => void {
@@ -698,6 +830,13 @@ export class HmrNormalizer {
 
   dispose(): void {
     this.listeners.clear();
+    if (this.structuredJsonChunkExpiryTimer !== null) {
+      clearTimeout(this.structuredJsonChunkExpiryTimer);
+      this.structuredJsonChunkExpiryTimer = null;
+    }
+    for (const chunkId of [...this.structuredJsonChunks.keys()]) {
+      this.discardStructuredJsonChunkBuffer(chunkId);
+    }
     this.unbind();
   }
 }
