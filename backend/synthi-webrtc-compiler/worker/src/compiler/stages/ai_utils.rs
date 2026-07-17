@@ -64,11 +64,7 @@ fn gpu_delta_model_override() -> Option<String> {
 }
 
 fn ai_split_cache_key(req: &CompileRequest) -> u64 {
-    let gpu_mode = req
-        .gpu_mode
-        .as_deref()
-        .unwrap_or("auto")
-        .to_ascii_lowercase();
+    let gpu_mode = normalized_gpu_mode(req);
     let split_provider = gpu_split_provider(req);
     let split_model = gpu_split_model_override(req);
     let has_gpu_markers = request_has_gpu_markers(req);
@@ -78,7 +74,7 @@ fn ai_split_cache_key(req: &CompileRequest) -> u64 {
     // prompt/verifier contract, not just source text, so newly hardened
     // deterministic split verifiers do not reuse stale generated roles.
     const AI_SPLIT_CACHE_SCHEMA_VERSION: &str =
-        "gpu-strict-lifecycle-v18-intent-routed-gpu-classifier";
+        "gpu-strict-lifecycle-v19-evidence-bound-auto-route";
     calculate_hash(&(
         AI_SPLIT_CACHE_SCHEMA_VERSION,
         req.language.as_str(),
@@ -141,6 +137,7 @@ fn add_ai_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
 /// model or degraded service requires more headroom, or set it lower to
 /// fail fast in CI.
 const DEFAULT_AI_HTTP_TIMEOUT_SECS: u64 = 180;
+const DEFAULT_SPLIT_ROUTE_CLASSIFIER_TIMEOUT_SECS: u64 = 15;
 const GPU_SPLIT_MAX_PROVIDER_ATTEMPTS: u64 = 3;
 const GPU_SPLIT_VERIFIER_OVERHEAD_SECS: u64 = 90;
 
@@ -159,6 +156,13 @@ fn ai_http_timeout() -> std::time::Duration {
 /// returning. Its client-side timeout therefore needs to cover the whole
 /// verifier-gated endpoint budget, not just one Gemini call.
 fn ai_http_timeout_for_url(url: &str) -> std::time::Duration {
+    if url.ends_with("/refactor/split/route") {
+        let secs = std::env::var("SYNTHI_AI_SPLIT_ROUTE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_SPLIT_ROUTE_CLASSIFIER_TIMEOUT_SECS);
+        return std::time::Duration::from_secs(secs);
+    }
     if url.ends_with("/refactor/split/gpu") {
         let secs = std::env::var("SYNTHI_AI_GPU_SPLIT_HTTP_TIMEOUT_SECS")
             .or_else(|_| std::env::var("SYNTHI_AI_HTTP_TIMEOUT_SECS"))
@@ -419,8 +423,207 @@ fn request_has_gpu_markers(req: &CompileRequest) -> bool {
         .any(|file| text_has_gpu_markers(&file.content))
 }
 
-fn gpu_split_route_requested(req: &CompileRequest, gpu_mode: &str) -> bool {
-    req.prefer_gpu_pipeline && gpu_mode != "disabled"
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SplitRouteIntent {
+    Host,
+    Gpu,
+    Classify,
+}
+
+impl SplitRouteIntent {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Gpu => "gpu",
+            Self::Classify => "classify",
+        }
+    }
+}
+
+fn normalized_gpu_mode(req: &CompileRequest) -> String {
+    req.gpu_mode
+        .as_deref()
+        .unwrap_or("auto")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn split_route_intent(req: &CompileRequest) -> Result<SplitRouteIntent> {
+    if !req.prefer_gpu_pipeline {
+        return Ok(SplitRouteIntent::Host);
+    }
+    match normalized_gpu_mode(req).as_str() {
+        "disabled" => Ok(SplitRouteIntent::Host),
+        "auto" | "" => Ok(SplitRouteIntent::Classify),
+        "cuda" | "rocm" | "hip" => Ok(SplitRouteIntent::Gpu),
+        unsupported => anyhow::bail!(
+            "unsupported GPU split mode '{}'; expected auto, disabled, cuda, rocm, or hip",
+            unsupported
+        ),
+    }
+}
+
+const SPLIT_ROUTE_CLASSIFICATION_SCHEMA: &str =
+    "synthi.gpu_hmr.split_route_classification.v1";
+const SPLIT_ROUTE_CLASSIFICATION_AUTHORITY: &str =
+    "static_project_classification_only_not_gpu_hmr_success";
+
+fn matching_alias<'a>(
+    value: &'a serde_json::Value,
+    camel: &str,
+    snake: &str,
+) -> Result<&'a serde_json::Value> {
+    let camel_value = value
+        .get(camel)
+        .ok_or_else(|| anyhow!("split route classification missing field {}", camel))?;
+    let snake_value = value
+        .get(snake)
+        .ok_or_else(|| anyhow!("split route classification missing field {}", snake))?;
+    if camel_value != snake_value {
+        anyhow::bail!(
+            "split route classification alias conflict for {} and {}",
+            camel,
+            snake
+        );
+    }
+    Ok(camel_value)
+}
+
+fn canonical_json_sha256(value: &serde_json::Value) -> Result<String> {
+    let serialized = serde_json::to_string(value)
+        .context("failed to serialize split route classification binding")?;
+    Ok(format!("sha256:{}", sha256_hex_str(&serialized)))
+}
+
+fn expected_split_route_source_manifest(
+    file_context: &[(String, String)],
+) -> serde_json::Value {
+    let mut files = file_context.to_vec();
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    serde_json::Value::Array(
+        files
+            .into_iter()
+            .map(|(path, content)| {
+                serde_json::json!({
+                    "path": path,
+                    "content_hash": format!("sha256:{}", sha256_hex_str(&content)),
+                    "byte_length": content.len(),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn validate_split_route_classification(
+    classification: &serde_json::Value,
+    file_context: &[(String, String)],
+) -> Result<bool> {
+    if !classification.is_object() {
+        anyhow::bail!("split route classification must be an object");
+    }
+    if value_has_gpu_authority_claim(classification) {
+        anyhow::bail!("split route classification contains a GPU authority claim");
+    }
+
+    let schema = matching_alias(classification, "schemaVersion", "schema_version")?
+        .as_str()
+        .unwrap_or_default();
+    if schema != SPLIT_ROUTE_CLASSIFICATION_SCHEMA {
+        anyhow::bail!("unsupported split route classification schema '{}'", schema);
+    }
+    let authority = matching_alias(classification, "proofAuthority", "proof_authority")?
+        .as_str()
+        .unwrap_or_default();
+    if authority != SPLIT_ROUTE_CLASSIFICATION_AUTHORITY {
+        anyhow::bail!("invalid split route classification authority '{}'", authority);
+    }
+
+    for (camel, snake) in [
+        ("acceptedForGpuHmr", "accepted_for_gpu_hmr"),
+        ("gpuHmrSuccess", "gpu_hmr_success"),
+        ("canSatisfyRuntimeProof", "can_satisfy_runtime_proof"),
+        ("canSatisfyDispatchProof", "can_satisfy_dispatch_proof"),
+    ] {
+        if matching_alias(classification, camel, snake)?.as_bool() != Some(false) {
+            anyhow::bail!(
+                "split route classification field {} must remain false",
+                camel
+            );
+        }
+    }
+
+    let expected_manifest = expected_split_route_source_manifest(file_context);
+    let source_manifest = matching_alias(classification, "sourceManifest", "source_manifest")?;
+    if source_manifest != &expected_manifest {
+        anyhow::bail!("split route classification source manifest mismatch");
+    }
+    let expected_manifest_hash = canonical_json_sha256(&expected_manifest)?;
+    let source_manifest_hash =
+        matching_alias(classification, "sourceManifestHash", "source_manifest_hash")?
+            .as_str()
+            .unwrap_or_default();
+    if source_manifest_hash != expected_manifest_hash {
+        anyhow::bail!("split route classification source manifest hash mismatch");
+    }
+    let source_file_count =
+        matching_alias(classification, "sourceFileCount", "source_file_count")?
+            .as_u64();
+    if source_file_count != Some(file_context.len() as u64) {
+        anyhow::bail!("split route classification source file count mismatch");
+    }
+
+    let selected_route = matching_alias(classification, "selectedRoute", "selected_route")?
+        .as_str()
+        .unwrap_or_default();
+    let is_gpu = classification
+        .get("detection")
+        .and_then(|value| value.get("is_gpu"))
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| anyhow!("split route classification missing detection.is_gpu"))?;
+    let gpu_route = match selected_route {
+        "gpu_split" if is_gpu => true,
+        "host_split" if !is_gpu => false,
+        "gpu_split" | "host_split" => {
+            anyhow::bail!("split route classification route conflicts with detection")
+        }
+        unsupported => anyhow::bail!(
+            "unsupported split route classification route '{}'",
+            unsupported
+        ),
+    };
+    let expected_reason = if gpu_route {
+        "static_gpu_evidence_detected"
+    } else {
+        "static_gpu_evidence_not_detected"
+    };
+    let reason = matching_alias(classification, "reasonCode", "reason_code")?
+        .as_str()
+        .unwrap_or_default();
+    if reason != expected_reason {
+        anyhow::bail!("split route classification reason does not match route");
+    }
+
+    let receipt_payload = serde_json::json!({
+        "schema_version": schema,
+        "proof_authority": authority,
+        "selected_route": selected_route,
+        "reason_code": reason,
+        "source_manifest_hash": source_manifest_hash,
+        "detection": classification.get("detection").cloned().unwrap_or_default(),
+    });
+    let expected_classification_id = format!(
+        "gpu-split-route-classification:{}",
+        canonical_json_sha256(&receipt_payload)?
+    );
+    let classification_id =
+        matching_alias(classification, "classificationId", "classification_id")?
+            .as_str()
+            .unwrap_or_default();
+    if classification_id != expected_classification_id {
+        anyhow::bail!("split route classification id mismatch");
+    }
+
+    Ok(gpu_route)
 }
 
 fn normalized_request_path(path: &str) -> String {
@@ -1635,28 +1838,24 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // architecture cache, which handles all edit kinds language-agnostically.
     // perform_ai_split is only called for first-compile splits and Tier 3
     // fallbacks — both of those want correct full splits, not cheap deltas.
-    let gpu_mode = req
-        .gpu_mode
-        .as_deref()
-        .unwrap_or("auto")
-        .to_ascii_lowercase();
+    let gpu_mode = normalized_gpu_mode(req);
+    let route_intent = split_route_intent(req)?;
     let split_provider = gpu_split_provider(req);
     let split_model = gpu_split_model_override(req);
     let has_gpu_markers = request_has_gpu_markers(req);
-    let gpu_route_requested = gpu_split_route_requested(req, &gpu_mode);
     let file_context = request_file_context(req);
     let arch_hint = gpu_arch_hint(req);
     let source_hash = ai_split_cache_key(req);
 
     eprintln!(
-        "[AI Split] ENTER (cache_key={}, src_len={}, files={}, gpu_mode={}, gpu_arch={}, gpu_markers={}, gpu_route_requested={})",
+        "[AI Split] ENTER (cache_key={}, src_len={}, files={}, gpu_mode={}, gpu_arch={}, gpu_markers={}, split_route_intent={})",
         source_hash,
         req.source.len(),
         file_context.len(),
         gpu_mode,
         arch_hint.as_deref().unwrap_or("auto"),
         has_gpu_markers,
-        gpu_route_requested
+        route_intent.label()
     );
 
     let cache_entries_before_lookup = {
@@ -1687,22 +1886,8 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // It expects a VerifiedAiRequest: { code, lang, mode?, verify?, auto_repair?, ... }
     // and returns { result: "<raw LLM JSON string>", lang, verified, ... }.
     // The LLM JSON inside "result" is: { core: {filename, content}, gui: {...}, shared: {...} }
-    eprintln!("[AI Split] Level 3 → full AI split via /refactor/split/verified");
+    eprintln!("[AI Split] Level 3 → full AI split after evidence-based routing");
     let client = reqwest::Client::new();
-    let gpu_target_prompt = if req.prefer_gpu_pipeline {
-        let live_update_contract = " The generated split must preserve the real runtime update loop: every source update-path GPU kernel launch must be represented by a synthi_gpu_launch boundary in the generated host/core path, and every source host-visible device-to-host/readback copy must remain on the generated render/update path. Do not stub, fake, preview, synthesize, or replace GPU output with host-side approximations. If this cannot be preserved, report the split as unsupported instead of returning compiling-but-nonlive code.";
-        let base = match gpu_mode.as_str() {
-            "cuda" => Some(format!("GPU target preference: emit CUDA/NVIDIA-compatible GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI.{live_update_contract}")),
-            "rocm" | "hip" => Some(format!("GPU target preference: emit ROCm/HIP-compatible GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI.{live_update_contract}")),
-            _ => Some(format!("GPU target preference: emit GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI.{live_update_contract}")),
-        };
-        base.map(|text| match arch_hint.as_deref() {
-            Some(arch) => format!("{text} Target device architecture: {arch}. The compile manifest gpu.arch must use this architecture."),
-            None => text,
-        })
-    } else {
-        None
-    };
     let mut payload = serde_json::json!({
         "code": req.source,
         "lang": req.language,
@@ -1719,6 +1904,47 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             }))
             .collect::<Vec<_>>()
     });
+    let backend_url = get_ai_backend_url();
+    let route_url = format!("{}/refactor/split/route", backend_url);
+    let verified_url = format!("{}/refactor/split/verified", backend_url);
+    let split_url = format!("{}/refactor/split", backend_url);
+    let gpu_split_url = format!("{}/refactor/split/gpu", backend_url);
+
+    let (gpu_route_requested, split_route_classification) = match route_intent {
+        SplitRouteIntent::Host => (false, None),
+        SplitRouteIntent::Gpu => (true, None),
+        SplitRouteIntent::Classify => {
+            eprintln!(
+                "[AI Split] auto route; calling provider-free classifier endpoint: {}",
+                route_url
+            );
+            let classification = post_ai_json(&client, &route_url, &payload)
+                .await
+                .context("automatic split route classification failed")?;
+            let gpu_route = validate_split_route_classification(&classification, &file_context)
+                .context("automatic split route classification was refused")?;
+            eprintln!(
+                "[AI Split] auto route classified as {}",
+                if gpu_route { "gpu_split" } else { "host_split" }
+            );
+            (gpu_route, Some(classification))
+        }
+    };
+
+    let gpu_target_prompt = if gpu_route_requested {
+        let live_update_contract = " The generated split must preserve the real runtime update loop: every source update-path GPU kernel launch must be represented by a synthi_gpu_launch boundary in the generated host/core path, and every source host-visible device-to-host/readback copy must remain on the generated render/update path. Do not stub, fake, preview, synthesize, or replace GPU output with host-side approximations. If this cannot be preserved, report the split as unsupported instead of returning compiling-but-nonlive code.";
+        let text = match gpu_mode.as_str() {
+            "cuda" => format!("GPU target preference: emit CUDA/NVIDIA-compatible GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI.{live_update_contract}"),
+            "rocm" | "hip" => format!("GPU target preference: emit ROCm/HIP-compatible GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI.{live_update_contract}"),
+            _ => format!("GPU target preference: emit GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI.{live_update_contract}"),
+        };
+        Some(match arch_hint.as_deref() {
+            Some(arch) => format!("{text} Target device architecture: {arch}. The compile manifest gpu.arch must use this architecture."),
+            None => text,
+        })
+    } else {
+        None
+    };
     payload["provider"] = serde_json::Value::String(split_provider.clone());
     payload["require_provider_call"] = serde_json::Value::Bool(req.require_ai_provider_call);
     if let Some(arch) = &arch_hint {
@@ -1760,16 +1986,6 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     } else {
         None
     };
-
-    let backend_url = get_ai_backend_url();
-
-    // Explicitly GPU-preferred requests go through the GPU endpoint. That
-    // endpoint owns full-project classification and rejects requests without
-    // GPU evidence, so this worker must not silently route unfamiliar GPU
-    // syntax through the host-only splitter.
-    let verified_url = format!("{}/refactor/split/verified", backend_url);
-    let split_url = format!("{}/refactor/split", backend_url);
-    let gpu_split_url = format!("{}/refactor/split/gpu", backend_url);
 
     let mut raw_response: Option<serde_json::Value> = None;
     if gpu_route_requested {
@@ -1929,6 +2145,14 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         },
         cache_entries_before_lookup,
     );
+    if let Some(classification) = split_route_classification {
+        if let Some(obj) = res.as_object_mut() {
+            obj.insert(
+                "_synthi_split_route_classification".to_string(),
+                classification,
+            );
+        }
+    }
     if let Some(arch) = raw_response.get("architecture").and_then(|v| v.as_str()) {
         if !arch.is_empty() {
             eprintln!(
@@ -2841,17 +3065,152 @@ mod tests {
         assert!(!text_has_gpu_markers("int main() { return 0; }"));
     }
 
+    fn split_route_classification_response(
+        file_context: &[(String, String)],
+        is_gpu: bool,
+    ) -> serde_json::Value {
+        let source_manifest = expected_split_route_source_manifest(file_context);
+        let source_manifest_hash = canonical_json_sha256(&source_manifest).unwrap();
+        let selected_route = if is_gpu { "gpu_split" } else { "host_split" };
+        let reason_code = if is_gpu {
+            "static_gpu_evidence_detected"
+        } else {
+            "static_gpu_evidence_not_detected"
+        };
+        let detection = json!({
+            "is_gpu": is_gpu,
+            "vendor_hint": if is_gpu { "rocm" } else { "unknown" },
+            "backend_hints": if is_gpu { json!(["hip"]) } else { json!([]) },
+            "per_file": {},
+        });
+        let receipt_payload = json!({
+            "schema_version": SPLIT_ROUTE_CLASSIFICATION_SCHEMA,
+            "proof_authority": SPLIT_ROUTE_CLASSIFICATION_AUTHORITY,
+            "selected_route": selected_route,
+            "reason_code": reason_code,
+            "source_manifest_hash": source_manifest_hash,
+            "detection": detection,
+        });
+        let classification_id = format!(
+            "gpu-split-route-classification:{}",
+            canonical_json_sha256(&receipt_payload).unwrap()
+        );
+        json!({
+            "schemaVersion": SPLIT_ROUTE_CLASSIFICATION_SCHEMA,
+            "schema_version": SPLIT_ROUTE_CLASSIFICATION_SCHEMA,
+            "classificationId": classification_id,
+            "classification_id": classification_id,
+            "proofAuthority": SPLIT_ROUTE_CLASSIFICATION_AUTHORITY,
+            "proof_authority": SPLIT_ROUTE_CLASSIFICATION_AUTHORITY,
+            "selectedRoute": selected_route,
+            "selected_route": selected_route,
+            "reasonCode": reason_code,
+            "reason_code": reason_code,
+            "sourceManifestHash": source_manifest_hash,
+            "source_manifest_hash": source_manifest_hash,
+            "sourceFileCount": file_context.len(),
+            "source_file_count": file_context.len(),
+            "sourceManifest": source_manifest,
+            "source_manifest": source_manifest,
+            "detection": detection,
+            "acceptedForGpuHmr": false,
+            "accepted_for_gpu_hmr": false,
+            "gpuHmrSuccess": false,
+            "gpu_hmr_success": false,
+            "canSatisfyRuntimeProof": false,
+            "can_satisfy_runtime_proof": false,
+            "canSatisfyDispatchProof": false,
+            "can_satisfy_dispatch_proof": false,
+        })
+    }
+
     #[test]
-    fn gpu_split_route_uses_explicit_intent_instead_of_worker_marker_coverage() {
+    fn split_route_intent_distinguishes_explicit_auto_and_disabled_modes() {
         let mut req = gpu_compile_request_for_source("int main() { return 0; }");
         assert!(!request_has_gpu_markers(&req));
-        assert!(gpu_split_route_requested(&req, "rocm"));
 
+        req.gpu_mode = None;
+        assert_eq!(split_route_intent(&req).unwrap(), SplitRouteIntent::Classify);
+        req.gpu_mode = Some(" auto ".to_string());
+        assert_eq!(split_route_intent(&req).unwrap(), SplitRouteIntent::Classify);
+        req.gpu_mode = Some("ROCM".to_string());
+        assert_eq!(split_route_intent(&req).unwrap(), SplitRouteIntent::Gpu);
+        req.gpu_mode = Some("hip".to_string());
+        assert_eq!(split_route_intent(&req).unwrap(), SplitRouteIntent::Gpu);
+        req.gpu_mode = Some("disabled".to_string());
+        assert_eq!(split_route_intent(&req).unwrap(), SplitRouteIntent::Host);
+
+        req.gpu_mode = Some("rocm".to_string());
         req.prefer_gpu_pipeline = false;
-        assert!(!gpu_split_route_requested(&req, "rocm"));
+        assert_eq!(split_route_intent(&req).unwrap(), SplitRouteIntent::Host);
 
         req.prefer_gpu_pipeline = true;
-        assert!(!gpu_split_route_requested(&req, "disabled"));
+        req.gpu_mode = Some("project-special-mode".to_string());
+        assert!(split_route_intent(&req)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported GPU split mode"));
+    }
+
+    #[test]
+    fn split_route_classification_is_content_bound_and_non_authoritative() {
+        let files = vec![
+            (
+                "CMakeLists.txt".to_string(),
+                "enable_language(HIP)\n".to_string(),
+            ),
+            ("src/main.cpp".to_string(), "int main() {}\n".to_string()),
+        ];
+        assert_eq!(
+            canonical_json_sha256(&expected_split_route_source_manifest(&files)).unwrap(),
+            "sha256:e1206f1846aa8352cd77958d1f26b489b8c9e4018d17e8590f0912d8102c2f25"
+        );
+        let classification = split_route_classification_response(&files, true);
+        assert!(validate_split_route_classification(&classification, &files).unwrap());
+
+        let changed_files = vec![
+            (
+                "CMakeLists.txt".to_string(),
+                "enable_language(HIP)\n".to_string(),
+            ),
+            ("src/main.cpp".to_string(), "int main() { return 1; }\n".to_string()),
+        ];
+        assert!(validate_split_route_classification(&classification, &changed_files)
+            .unwrap_err()
+            .to_string()
+            .contains("source manifest mismatch"));
+
+        let mut forged_authority = classification.clone();
+        forged_authority["gpuHmrSuccess"] = json!(true);
+        forged_authority["gpu_hmr_success"] = json!(true);
+        assert!(validate_split_route_classification(&forged_authority, &files)
+            .unwrap_err()
+            .to_string()
+            .contains("GPU authority claim"));
+
+        let mut nested_authority = classification.clone();
+        nested_authority["detection"]["diagnostics"] = json!({
+            "canSatisfyRuntimeProof": true,
+        });
+        assert!(validate_split_route_classification(&nested_authority, &files)
+            .unwrap_err()
+            .to_string()
+            .contains("GPU authority claim"));
+
+        let mut conflicting_route = classification.clone();
+        conflicting_route["detection"]["is_gpu"] = json!(false);
+        assert!(validate_split_route_classification(&conflicting_route, &files)
+            .unwrap_err()
+            .to_string()
+            .contains("route conflicts with detection"));
+
+        let mut stale_id = classification;
+        stale_id["classificationId"] = json!("gpu-split-route-classification:sha256:stale");
+        stale_id["classification_id"] = json!("gpu-split-route-classification:sha256:stale");
+        assert!(validate_split_route_classification(&stale_id, &files)
+            .unwrap_err()
+            .to_string()
+            .contains("classification id mismatch"));
     }
 
     #[test]
