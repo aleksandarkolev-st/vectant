@@ -86,6 +86,7 @@ const STAGE_ALIASES = Object.freeze({
     'epoch_publish',
     'epoch_swap',
     'publish_epoch',
+    'dispatcher_epoch',
   ]),
   dispatch_trace: new Set([
     'dispatch_trace',
@@ -106,6 +107,30 @@ const STAGE_ALIASES = Object.freeze({
     'readback_oracle',
   ]),
 });
+
+const RETIREMENT_RECEIPT_EVENT_TYPE = 'retirement_receipt';
+const RETIREMENT_RECEIPT_ALIASES = new Set([
+  'retirement_receipt',
+  'runtime_boundary_retirement_receipt',
+  'epoch_retirement_receipt',
+  'generation_retirement_receipt',
+  'retirement_event',
+  'runtime_boundary_retirement_event',
+]);
+const RETIREMENT_RECEIPT_ACTIONS = new Set([
+  'retired',
+  'retirement_receipt',
+  'old_generation_retired',
+]);
+const SUCCESSFUL_RETIREMENT_PROOFS = new Set([
+  'stream_event_proven',
+  'queue_idle_proven',
+  'frame_boundary_proven',
+  'no_retirement_required',
+]);
+const SUCCESSFUL_RETIREMENT_RESULTS = new Set([
+  'retired_after_quiescent',
+]);
 
 const STAGE_BOUNDARY_LINE_TOKENS = Object.freeze({
   artifact_transport: 'artifact_transport',
@@ -362,6 +387,34 @@ function positiveNumber(...values) {
 function positiveInteger(...values) {
   const numeric = firstFiniteNumber(...values);
   return Number.isInteger(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function generationInteger(...values) {
+  for (const value of values) {
+    if (Number.isInteger(value) && value >= 0) return value;
+    if (typeof value !== 'string') continue;
+    const match = /^(?:(?:epoch|generation)[:-])?(0|[1-9][0-9]*)$/i.exec(value.trim());
+    if (!match) continue;
+    const numeric = Number(match[1]);
+    if (Number.isSafeInteger(numeric)) return numeric;
+  }
+  return null;
+}
+
+function normalizeStreamEpochCounters(...values) {
+  for (const value of values) {
+    const object = objectOrNull(value);
+    if (!object) continue;
+    const entries = Object.entries(object)
+      .map(([streamId, generation]) => [streamId.trim(), generationInteger(generation)])
+      .filter(([streamId, generation]) => streamId && generation !== null);
+    if (entries.length > 0) return Object.fromEntries(entries);
+  }
+  return {};
+}
+
+function normalizedEnumText(...values) {
+  return firstText(...values)?.toLowerCase().replace(/-/g, '_') ?? null;
 }
 
 function normalizeSwapchainSize(...values) {
@@ -1029,12 +1082,24 @@ function canonicalStage(kind) {
   return null;
 }
 
+function canonicalBoundaryEventType(kind, event) {
+  if (RETIREMENT_RECEIPT_ALIASES.has(kind)) return RETIREMENT_RECEIPT_EVENT_TYPE;
+  const stage = canonicalStage(kind);
+  const action = normalizedEnumText(event?.event, event?.action, event?.eventAction, event?.event_action);
+  if (stage === 'epoch_publication' && RETIREMENT_RECEIPT_ACTIONS.has(action)) {
+    return RETIREMENT_RECEIPT_EVENT_TYPE;
+  }
+  return stage;
+}
+
 export function normalizeRuntimeBoundaryEvents(events = []) {
   return (Array.isArray(events) ? events : [])
     .map((event, index) => ({ event: objectOrNull(event), index }))
     .filter(({ event }) => event)
     .map(({ event, index }) => {
-      const stage = canonicalStage(eventKind(event));
+      const kind = eventKind(event);
+      const eventType = canonicalBoundaryEventType(kind, event);
+      const stage = REQUIRED_BOUNDARY_STAGES.includes(eventType) ? eventType : null;
       const lineHash = sha256Stable(event);
       const artifactHash = normalizeSha256(firstText(
         event.artifactHash,
@@ -1046,9 +1111,62 @@ export function normalizeRuntimeBoundaryEvents(events = []) {
         event.publishedArtifactHash,
         event.published_artifact_hash,
       ));
+      const oldArtifactHash = normalizeSha256(firstText(
+        event.oldArtifactHash,
+        event.old_artifact_hash,
+        event.retiredArtifactHash,
+        event.retired_artifact_hash,
+        event.previousArtifactHash,
+        event.previous_artifact_hash,
+        eventType === RETIREMENT_RECEIPT_EVENT_TYPE ? artifactHash : null,
+      ));
+      const epoch = firstText(
+        event.epoch,
+        event.epochId,
+        event.epoch_id,
+        event.generation,
+        eventType === RETIREMENT_RECEIPT_EVENT_TYPE ? event.previousEpoch : null,
+        eventType === RETIREMENT_RECEIPT_EVENT_TYPE ? event.previous_epoch : null,
+      );
+      const previousEpoch = firstText(
+        event.previousEpoch,
+        event.previous_epoch,
+        event.retiredEpoch,
+        event.retired_epoch,
+        event.previousGeneration,
+        event.previous_generation,
+      );
+      const activeGeneration = generationInteger(
+        event.activeGeneration,
+        event.active_generation,
+        event.candidateGeneration,
+        event.candidate_generation,
+        eventType === 'epoch_publication' ? event.generation : null,
+        eventType === 'epoch_publication' ? epoch : null,
+      );
+      const previousGeneration = generationInteger(
+        event.previousGeneration,
+        event.previous_generation,
+        event.retiredGeneration,
+        event.retired_generation,
+        previousEpoch,
+        eventType === RETIREMENT_RECEIPT_EVENT_TYPE ? event.generation : null,
+        eventType === RETIREMENT_RECEIPT_EVENT_TYPE ? epoch : null,
+      );
+      const retirementFenceIds = compactStringList([
+        ...(Array.isArray(event.retirementFenceIds) ? event.retirementFenceIds : []),
+        ...(Array.isArray(event.retirement_fence_ids) ? event.retirement_fence_ids : []),
+        event.retirementFenceId,
+        event.retirement_fence_id,
+        event.fenceId,
+        event.fence_id,
+      ]);
       return {
         index,
         raw: event,
+        kind,
+        eventType,
+        event_type: eventType,
         stage,
         lineHash,
         line_hash: lineHash,
@@ -1060,7 +1178,23 @@ export function normalizeRuntimeBoundaryEvents(events = []) {
         artifact_hash: artifactHash,
         artifactId: firstText(event.artifactId, event.artifact_id) ?? artifactIdFromHash(artifactHash),
         artifact_id: firstText(event.artifactId, event.artifact_id) ?? artifactIdFromHash(artifactHash),
-        epoch: firstText(event.epoch, event.epochId, event.epoch_id, event.generation),
+        oldArtifactHash,
+        old_artifact_hash: oldArtifactHash,
+        epoch,
+        previousEpoch,
+        previous_epoch: previousEpoch,
+        activeGeneration,
+        active_generation: activeGeneration,
+        previousGeneration,
+        previous_generation: previousGeneration,
+        streamEpochCounters: normalizeStreamEpochCounters(
+          event.streamEpochCounters,
+          event.stream_epoch_counters,
+        ),
+        stream_epoch_counters: normalizeStreamEpochCounters(
+          event.streamEpochCounters,
+          event.stream_epoch_counters,
+        ),
         dispatchId: firstText(event.dispatchId, event.dispatch_id, event.afterDispatchId, event.after_dispatch_id),
         dispatch_id: firstText(event.dispatchId, event.dispatch_id, event.afterDispatchId, event.after_dispatch_id),
         afterDispatchId: firstText(event.afterDispatchId, event.after_dispatch_id, event.dispatchId, event.dispatch_id),
@@ -1079,6 +1213,10 @@ export function normalizeRuntimeBoundaryEvents(events = []) {
           event.stream,
           event.streamId,
           event.stream_id,
+          event.dispatchStream,
+          event.dispatch_stream,
+          event.dispatchStreamId,
+          event.dispatch_stream_id,
           event.queue,
           event.queueId,
           event.queue_id,
@@ -1089,6 +1227,10 @@ export function normalizeRuntimeBoundaryEvents(events = []) {
           event.stream,
           event.streamId,
           event.stream_id,
+          event.dispatchStream,
+          event.dispatch_stream,
+          event.dispatchStreamId,
+          event.dispatch_stream_id,
           event.queue,
           event.queueId,
           event.queue_id,
@@ -1145,6 +1287,38 @@ export function normalizeRuntimeBoundaryEvents(events = []) {
           event.timestampNs,
           event.timestamp_ns,
         ),
+        retirementProof: normalizedEnumText(
+          event.retirementProof,
+          event.retirement_proof,
+          event.proof,
+        ),
+        retirement_proof: normalizedEnumText(
+          event.retirementProof,
+          event.retirement_proof,
+          event.proof,
+        ),
+        retirementResult: normalizedEnumText(
+          event.retirementResult,
+          event.retirement_result,
+          event.result,
+          event.status,
+        ),
+        retirement_result: normalizedEnumText(
+          event.retirementResult,
+          event.retirement_result,
+          event.result,
+          event.status,
+        ),
+        retirementStrategy: normalizedEnumText(
+          event.retirementStrategy,
+          event.retirement_strategy,
+        ),
+        retirement_strategy: normalizedEnumText(
+          event.retirementStrategy,
+          event.retirement_strategy,
+        ),
+        retirementFenceIds,
+        retirement_fence_ids: retirementFenceIds,
         evidenceRefs: eventEvidenceRefs(event),
         evidence_refs: eventEvidenceRefs(event),
       };
@@ -1202,7 +1376,11 @@ function canonicalBoundaryLineFields(event) {
   addLineField(fields, 'event_id', event.eventId);
   addLineField(fields, 'artifact_hash', event.artifactHash);
   addLineField(fields, 'artifact_id', event.artifactId);
+  addLineField(fields, 'old_artifact_hash', event.oldArtifactHash);
   addLineField(fields, 'epoch', event.epoch);
+  addLineField(fields, 'previous_epoch', event.previousEpoch);
+  addLineField(fields, 'active_generation', event.activeGeneration);
+  addLineField(fields, 'previous_generation', event.previousGeneration);
   addLineField(fields, 'dispatch_id', event.dispatchId);
   addLineField(fields, 'after_dispatch_id', event.afterDispatchId);
   addLineField(fields, 'process_id', event.processId);
@@ -1228,13 +1406,19 @@ function canonicalBoundaryLineFields(event) {
   }
   addLineField(fields, 'timestamp_monotonic_ns', event.timestampMonotonicNs);
   addLineField(fields, 'timestamp_ns', event.timestampMonotonicNs);
+  addLineField(fields, 'retirement_proof', event.retirementProof);
+  addLineField(fields, 'retirement_result', event.retirementResult);
+  addLineField(fields, 'retirement_strategy', event.retirementStrategy);
   return fields;
 }
 
 export function materializeRuntimeBoundaryEventLines(events = []) {
   const normalizedEvents = normalizeRuntimeBoundaryEvents(events);
   const materializedEvents = normalizedEvents.map((event) => {
-    const token = STAGE_BOUNDARY_LINE_TOKENS[event.stage] ?? eventKind(event.raw) ?? 'unknown_event';
+    const token = STAGE_BOUNDARY_LINE_TOKENS[event.stage]
+      ?? (event.eventType === RETIREMENT_RECEIPT_EVENT_TYPE
+        ? RETIREMENT_RECEIPT_EVENT_TYPE
+        : eventKind(event.raw) ?? 'unknown_event');
     const fields = canonicalBoundaryLineFields(event);
     const orderedFields = Object.fromEntries(
       Object.entries(fields).sort(([left], [right]) => left.localeCompare(right)),
@@ -1250,6 +1434,8 @@ export function materializeRuntimeBoundaryEventLines(events = []) {
       source_event_index: event.index,
       sourceEventHash: event.lineHash,
       source_event_hash: event.lineHash,
+      eventType: event.eventType,
+      event_type: event.eventType,
       stage: event.stage,
       token,
       boundaryLine: line,
@@ -1267,7 +1453,7 @@ export function materializeRuntimeBoundaryEventLines(events = []) {
   const failedGates = [
     normalizedEvents.length > 0 ? null : 'runtime_boundary_materialization_events_missing',
     ...materializedEvents.flatMap((entry) => [
-      entry.stage ? null : 'runtime_boundary_materialization_stage_unknown',
+      entry.eventType ? null : 'runtime_boundary_materialization_stage_unknown',
       entry.fieldCount > 0 ? null : 'runtime_boundary_materialization_fields_missing',
     ]),
   ].filter(Boolean);
@@ -1332,6 +1518,10 @@ function boundaryEventsByStage(events) {
   return map;
 }
 
+function retirementReceiptEvents(events) {
+  return events.filter((event) => event.eventType === RETIREMENT_RECEIPT_EVENT_TYPE);
+}
+
 function runtimeBoundaryFieldFailures(stage, event) {
   if (!event) return [`runtime_boundary_stage_${stage}_missing`];
   const failures = [];
@@ -1344,7 +1534,23 @@ function runtimeBoundaryFieldFailures(stage, event) {
   }
   if (stage !== 'host_identity' && !event.artifactHash) failures.push(`${stage}_artifact_hash_missing`);
   if (stage !== 'host_identity' && !event.artifactId) failures.push(`${stage}_artifact_identity_missing`);
-  if (stage === 'epoch_publication' && !event.epoch) failures.push('epoch_publication_epoch_missing');
+  if (stage === 'epoch_publication') {
+    if (!event.epoch) failures.push('epoch_publication_epoch_missing');
+    if (!event.previousEpoch) failures.push('epoch_publication_previous_epoch_missing');
+    if (!Number.isInteger(event.activeGeneration)) {
+      failures.push('epoch_publication_active_generation_missing');
+    }
+    if (!Number.isInteger(event.previousGeneration)) {
+      failures.push('epoch_publication_previous_generation_missing');
+    }
+    if (
+      Number.isInteger(event.activeGeneration)
+      && Number.isInteger(event.previousGeneration)
+      && event.activeGeneration <= event.previousGeneration
+    ) {
+      failures.push('epoch_publication_generation_transition_not_forward');
+    }
+  }
   if (stage === 'dispatch_trace') {
     if (!event.epoch) failures.push('dispatch_trace_epoch_missing');
     if (!event.dispatchId) failures.push('dispatch_trace_dispatch_id_missing');
@@ -1373,13 +1579,74 @@ function runtimeBoundaryFieldFailures(stage, event) {
   return failures;
 }
 
+function runtimeBoundaryRetirementFailures(event) {
+  if (!event) return ['runtime_boundary_retirement_receipt_missing'];
+  const failures = [];
+  if (event.successAuthorityClaimed) failures.push('runtime_boundary_event_claims_success_authority');
+  if (!event.eventId) failures.push('runtime_boundary_retirement_event_id_missing');
+  if (!event.oldArtifactHash) failures.push('runtime_boundary_retirement_old_artifact_hash_missing');
+  if (!event.epoch) failures.push('runtime_boundary_retirement_epoch_missing');
+  if (!Number.isInteger(event.previousGeneration)) {
+    failures.push('runtime_boundary_retirement_previous_generation_missing');
+  }
+  if (!event.processId) failures.push('runtime_boundary_retirement_process_id_missing');
+  if (!event.runtimeSessionId) failures.push('runtime_boundary_retirement_runtime_session_missing');
+  if (!event.queueOrStream) failures.push('runtime_boundary_retirement_dispatch_stream_missing');
+  if (event.evidenceRefs.length === 0) failures.push('runtime_boundary_retirement_evidence_refs_missing');
+  if (event.timestampMonotonicNs === null) failures.push('runtime_boundary_retirement_timestamp_missing');
+  if (!event.retirementProof) {
+    failures.push('runtime_boundary_retirement_proof_missing');
+  } else if (!SUCCESSFUL_RETIREMENT_PROOFS.has(event.retirementProof)) {
+    failures.push('runtime_boundary_retirement_proof_not_successful');
+  }
+  if (!event.retirementResult) {
+    failures.push('runtime_boundary_retirement_result_missing');
+  } else if (!SUCCESSFUL_RETIREMENT_RESULTS.has(event.retirementResult)) {
+    failures.push('runtime_boundary_retirement_result_not_successful');
+  }
+  return failures;
+}
+
+function runtimeBoundaryLegacySyntheticRetirementFailures(
+  retirement,
+  publication,
+  dispatch,
+  output,
+) {
+  if (!retirement || !dispatch || !output) return [];
+  const syntheticEventId = dispatch.runtimeSessionId && dispatch.dispatchId
+    ? `runtime-boundary:${dispatch.runtimeSessionId}:${dispatch.dispatchId}:retire`
+    : null;
+  const syntheticFenceId = dispatch.queueOrStream
+    ? `runtime-boundary:retirement:${dispatch.queueOrStream}`
+    : null;
+  const eventIdMatches = syntheticEventId !== null && retirement.eventId === syntheticEventId;
+  const fenceIdMatches = syntheticFenceId !== null
+    && retirement.retirementFenceIds.includes(syntheticFenceId);
+  const timestampMatches = output.timestampMonotonicNs !== null
+    && retirement.timestampMonotonicNs === output.timestampMonotonicNs + 1;
+  const generationPairMatches = publication?.previousGeneration === 1
+    && publication?.activeGeneration === 2;
+  const signatureMatches = [
+    eventIdMatches,
+    fenceIdMatches,
+    timestampMatches,
+    generationPairMatches,
+  ].filter(Boolean).length;
+  return (eventIdMatches || fenceIdMatches) && signatureMatches >= 2
+    ? ['runtime_boundary_retirement_receipt_legacy_synthetic']
+    : [];
+}
+
 export function buildRuntimeBoundaryStageEvidence(events = []) {
   const normalizedEvents = normalizeRuntimeBoundaryEvents(events);
   const eventMap = boundaryEventByStage(normalizedEvents);
   const eventGroups = boundaryEventsByStage(normalizedEvents);
+  const retirementReceipts = retirementReceiptEvents(normalizedEvents);
+  const retirementReceipt = retirementReceipts[0] ?? null;
   const failedGates = [];
   for (const event of normalizedEvents) {
-    if (!event.stage) failedGates.push('runtime_boundary_event_stage_unknown');
+    if (!event.eventType) failedGates.push('runtime_boundary_event_stage_unknown');
     if (event.successAuthorityClaimed) failedGates.push('runtime_boundary_event_claims_success_authority');
     if (event.evidenceRefs.length === 0) failedGates.push('runtime_boundary_event_evidence_refs_missing');
   }
@@ -1389,6 +1656,10 @@ export function buildRuntimeBoundaryStageEvidence(events = []) {
     }
     failedGates.push(...runtimeBoundaryFieldFailures(stage, eventMap.get(stage)));
   }
+  if (retirementReceipts.length > 1) {
+    failedGates.push('runtime_boundary_retirement_receipt_duplicate');
+  }
+  failedGates.push(...runtimeBoundaryRetirementFailures(retirementReceipt));
   const runtimeSessions = compactStringList(normalizedEvents.map((event) => event.runtimeSessionId));
   if (runtimeSessions.length > 1) failedGates.push('runtime_boundary_session_mismatch');
   const processIds = compactStringList(normalizedEvents.map((event) => event.processId));
@@ -1416,6 +1687,62 @@ export function buildRuntimeBoundaryStageEvidence(events = []) {
   if (dispatchId && afterDispatchId && dispatchId !== afterDispatchId) {
     failedGates.push('runtime_boundary_output_dispatch_id_mismatch');
   }
+  const previousEpoch = eventMap.get('epoch_publication')?.previousEpoch;
+  const previousGeneration = eventMap.get('epoch_publication')?.previousGeneration;
+  const activeGeneration = eventMap.get('epoch_publication')?.activeGeneration;
+  const dispatchStream = eventMap.get('dispatch_trace')?.queueOrStream;
+  const streamEpochCounter = dispatchStream
+    ? eventMap.get('epoch_publication')?.streamEpochCounters?.[dispatchStream]
+    : null;
+  if (dispatchStream && !Number.isInteger(streamEpochCounter)) {
+    failedGates.push('runtime_boundary_epoch_stream_counter_missing');
+  }
+  if (
+    Number.isInteger(streamEpochCounter)
+    && Number.isInteger(activeGeneration)
+    && streamEpochCounter !== activeGeneration
+  ) {
+    failedGates.push('runtime_boundary_epoch_stream_counter_generation_mismatch');
+  }
+  failedGates.push(...runtimeBoundaryLegacySyntheticRetirementFailures(
+    retirementReceipt,
+    eventMap.get('epoch_publication'),
+    eventMap.get('dispatch_trace'),
+    eventMap.get('output_oracle'),
+  ));
+  if (retirementReceipt) {
+    if (
+      retirementReceipt.runtimeSessionId
+      && eventMap.get('dispatch_trace')?.runtimeSessionId
+      && retirementReceipt.runtimeSessionId !== eventMap.get('dispatch_trace').runtimeSessionId
+    ) {
+      failedGates.push('runtime_boundary_retirement_session_mismatch');
+    }
+    if (
+      retirementReceipt.processId
+      && eventMap.get('host_identity')?.processId
+      && retirementReceipt.processId !== eventMap.get('host_identity').processId
+    ) {
+      failedGates.push('runtime_boundary_retirement_process_mismatch');
+    }
+    if (
+      retirementReceipt.queueOrStream
+      && dispatchStream
+      && retirementReceipt.queueOrStream !== dispatchStream
+    ) {
+      failedGates.push('runtime_boundary_retirement_stream_mismatch');
+    }
+    if (retirementReceipt.epoch && previousEpoch && retirementReceipt.epoch !== previousEpoch) {
+      failedGates.push('runtime_boundary_retirement_epoch_mismatch');
+    }
+    if (
+      Number.isInteger(retirementReceipt.previousGeneration)
+      && Number.isInteger(previousGeneration)
+      && retirementReceipt.previousGeneration !== previousGeneration
+    ) {
+      failedGates.push('runtime_boundary_retirement_generation_mismatch');
+    }
+  }
   const loadTs = eventMap.get('artifact_transport')?.timestampMonotonicNs;
   const publishTs = eventMap.get('epoch_publication')?.timestampMonotonicNs;
   const dispatchTs = eventMap.get('dispatch_trace')?.timestampMonotonicNs;
@@ -1428,6 +1755,10 @@ export function buildRuntimeBoundaryStageEvidence(events = []) {
   }
   if (dispatchTs !== null && outputTs !== null && outputTs < dispatchTs) {
     failedGates.push('runtime_boundary_output_precedes_dispatch');
+  }
+  const retirementTs = retirementReceipt?.timestampMonotonicNs ?? null;
+  if (outputTs !== null && retirementTs !== null && retirementTs <= outputTs) {
+    failedGates.push('runtime_boundary_retirement_not_after_output');
   }
   return {
     schemaVersion: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION,
@@ -1445,6 +1776,10 @@ export function buildRuntimeBoundaryStageEvidence(events = []) {
     normalized_events: normalizedEvents,
     stageEvents: Object.fromEntries(REQUIRED_BOUNDARY_STAGES.map((stage) => [stage, eventMap.get(stage) ?? null])),
     stage_events: Object.fromEntries(REQUIRED_BOUNDARY_STAGES.map((stage) => [stage, eventMap.get(stage) ?? null])),
+    retirementReceipt,
+    retirement_receipt: retirementReceipt,
+    retirementEvent: retirementReceipt,
+    retirement_event: retirementReceipt,
     boundaryLineHashes: normalizedEvents.map((event) => event.lineHash),
     boundary_line_hashes: normalizedEvents.map((event) => event.lineHash),
     artifactHashAfter: afterArtifactHashes[0] ?? null,
@@ -1947,6 +2282,7 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
 }
 
 function buildRuntimeBoundaryInputStageBindingEvidence(inputEvidence, stageEvidence) {
+  const retirementReceipt = stageEvidence.retirementReceipt;
   const failedGates = [
     stageEvidence.artifactHashAfter ? null : 'runtime_boundary_observed_artifact_hash_after_missing',
     inputEvidence.artifactHashAfter
@@ -1958,6 +2294,11 @@ function buildRuntimeBoundaryInputStageBindingEvidence(inputEvidence, stageEvide
       && stageEvidence.artifactHashAfter
       && inputEvidence.artifactHashBefore === stageEvidence.artifactHashAfter
       ? 'runtime_boundary_observed_artifact_matches_before_hash'
+      : null,
+    retirementReceipt?.oldArtifactHash
+      && inputEvidence.artifactHashBefore
+      && retirementReceipt.oldArtifactHash !== inputEvidence.artifactHashBefore
+      ? 'runtime_boundary_retirement_old_artifact_hash_mismatch'
       : null,
   ].filter(Boolean);
   return {
@@ -1974,6 +2315,8 @@ function buildRuntimeBoundaryInputStageBindingEvidence(inputEvidence, stageEvide
     input_artifact_hash_after: inputEvidence.artifactHashAfter,
     observedArtifactHashAfter: stageEvidence.artifactHashAfter,
     observed_artifact_hash_after: stageEvidence.artifactHashAfter,
+    observedRetirementArtifactHash: retirementReceipt?.oldArtifactHash ?? null,
+    observed_retirement_artifact_hash: retirementReceipt?.oldArtifactHash ?? null,
     failedGates,
     failed_gates: failedGates,
   };
@@ -2045,6 +2388,20 @@ function runtimeBoundaryEvidenceRefs(stageEvidence) {
   ]);
 }
 
+function retirementStrategyFromReceipt(receipt) {
+  const explicit = normalizedEnumText(receipt?.retirementStrategy);
+  if ([
+    'epoch_fence',
+    'conservative_drain_fallback',
+    'no_retirement_required',
+  ].includes(explicit)) {
+    return explicit;
+  }
+  if (receipt?.retirementProof === 'queue_idle_proven') return 'conservative_drain_fallback';
+  if (receipt?.retirementProof === 'no_retirement_required') return 'no_retirement_required';
+  return 'epoch_fence';
+}
+
 function buildBoundaryProofComponents(input, stageEvidence) {
   const stages = stageEvidence.stageEvents;
   const artifactTransport = stages.artifact_transport;
@@ -2052,21 +2409,38 @@ function buildBoundaryProofComponents(input, stageEvidence) {
   const dispatch = stages.dispatch_trace;
   const host = stages.host_identity;
   const output = stages.output_oracle;
+  const retirement = stageEvidence.retirementReceipt;
   const backend = firstText(input.backend);
   let visualOracleArtifacts = visualOracleArtifactsFromInput(input, output);
   const oracleMode = visualOracleArtifacts ? 'visual' : 'compute';
   const artifactAfterHash = normalizeSha256(firstText(input.artifactHashAfter, input.artifact_hash_after));
   const artifactBeforeHash = normalizeSha256(firstText(input.artifactHashBefore, input.artifact_hash_before));
   const artifactAfterId = artifactIdFromHash(artifactAfterHash);
-  const artifactBeforeId = artifactIdFromHash(artifactBeforeHash) ?? 'no-old-generation';
+  const artifactBeforeId = artifactIdFromHash(artifactBeforeHash);
   const runtimeSessionId = dispatch?.runtimeSessionId ?? epoch?.runtimeSessionId ?? artifactTransport?.runtimeSessionId;
   const processId = host?.processId ?? dispatch?.processId ?? output?.processId;
-  const streamId = dispatch?.queueOrStream ?? host?.queueOrStream ?? 'stream-runtime-boundary';
+  const streamId = dispatch?.queueOrStream ?? host?.queueOrStream;
   const outputTargetId = output?.outputTargetId ?? firstText(input.outputTargetId, input.output_target_id) ?? 'runtime-output-target';
   const visualTargetIdentity = output?.swapchainOrFramebufferIdentity
     ?? firstText(input.swapchainOrFramebufferIdentity, input.swapchain_or_framebuffer_identity)
     ?? outputTargetId;
   const dispatchId = dispatch?.dispatchId;
+  const previousGeneration = epoch.previousGeneration;
+  const activeGeneration = epoch.activeGeneration;
+  const retirementFenceIds = [...retirement.retirementFenceIds];
+  const retirementEvidenceRefs = [...retirement.evidenceRefs];
+  const retirementStrategy = retirementStrategyFromReceipt(retirement);
+  const retirementProven =
+    SUCCESSFUL_RETIREMENT_PROOFS.has(retirement.retirementProof)
+    && SUCCESSFUL_RETIREMENT_RESULTS.has(retirement.retirementResult)
+    && retirement.oldArtifactHash === artifactBeforeHash
+    && retirement.epoch === epoch.previousEpoch
+    && retirement.previousGeneration === previousGeneration
+    && retirement.processId === processId
+    && retirement.runtimeSessionId === runtimeSessionId
+    && retirement.queueOrStream === streamId
+    && retirement.evidenceRefs.length > 0
+    && retirement.timestampMonotonicNs > output.timestampMonotonicNs;
   const entryPoint = firstText(
     input.entryPoint,
     input.entry_point,
@@ -2185,24 +2559,43 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     resultState: 'gpu-hmr-epoch-swap-proven',
     published: true,
     activeEpoch: epoch.epoch,
-    oldGenerationRetired: true,
-    streamOrderingProven: true,
-    retirementStrategy: firstText(input.retirementStrategy, input.retirement_strategy) ?? 'stream_event',
+    previousEpoch: epoch.previousEpoch,
+    activeGeneration,
+    previousGeneration,
+    oldGenerationRetired: retirementProven,
+    streamOrderingProven: retirementProven,
+    retirementTracked: Boolean(retirement.eventId),
+    retirementStrategy,
+    delayedUnloadResult: retirement.retirementResult,
     streamIds: [streamId],
+    streamScope: 'stream',
     eventId: epoch.eventId ?? `${evidencePrefix}:epoch`,
     processId,
-    retirementEventId: firstText(input.retirementEventId, input.retirement_event_id) ?? `${evidencePrefix}:retire`,
-    retirementTimestampMonotonicNs: output.timestampMonotonicNs + 1,
-    retirementFenceIds: [`runtime-boundary:retirement:${streamId}`],
+    runtimeSessionId,
+    retirementEventId: retirement.eventId,
+    retirementEpoch: retirement.epoch,
+    retirementPreviousGeneration: retirement.previousGeneration,
+    retirementProof: retirement.retirementProof,
+    retirementResult: retirement.retirementResult,
+    retirementArtifactHash: retirement.oldArtifactHash,
+    retirementProcessId: retirement.processId,
+    retirementRuntimeSessionId: retirement.runtimeSessionId,
+    retirementDispatchStream: retirement.queueOrStream,
+    retirementTimestampMonotonicNs: retirement.timestampMonotonicNs,
+    retirementFenceIds,
+    retirementEvidenceRefs,
     epochGenerationGraph: {
       schemaVersion: 'synthi.gpu.epoch_graph.v1',
       runtimeSessionIds: [runtimeSessionId],
-      retirementState: 'retired',
-      nodes: [{ id: 'generation:1', generation: 1 }, { id: 'generation:2', generation: 2 }],
+      retirementState: retirementProven ? 'retired' : 'pending',
+      nodes: [
+        { id: `generation:${previousGeneration}`, generation: previousGeneration },
+        { id: `generation:${activeGeneration}`, generation: activeGeneration },
+      ],
       edges: [{
         kind: 'publish',
-        from: 'generation:1',
-        to: 'generation:2',
+        from: `generation:${previousGeneration}`,
+        to: `generation:${activeGeneration}`,
         runtimeSession: runtimeSessionId,
         publishTimestamp: epoch.timestampMonotonicNs,
         oldArtifactId: artifactBeforeId,
@@ -2215,23 +2608,36 @@ function buildBoundaryProofComponents(input, stageEvidence) {
         proofHash: sha256Stable(boundaryRefs),
         changedSymbols: [entryPoint],
         functionHandleIds: [`function:${entryPoint}`],
-        streamEpochCounters: { [streamId]: 2 },
+        streamEpochCounters: { ...epoch.streamEpochCounters },
         dispatchTableHashBefore,
         dispatchTableHashAfter,
         dispatchTableHash: dispatchTableHashAfter,
         changedEntries: 1,
-        retirementFenceIds: [`runtime-boundary:retirement:${streamId}`],
-        delayedUnloadResult: 'retired',
-        retirementStrategy: 'stream_event',
+        retirementFenceIds,
+        delayedUnloadResult: retirement.retirementResult,
+        retirementStrategy,
       }, {
         kind: 'retire',
-        from: 'generation:1',
-        to: 'generation:2',
+        id: retirement.eventId,
+        eventId: retirement.eventId,
+        from: `generation:${previousGeneration}`,
+        to: `generation:${activeGeneration}`,
+        epoch: retirement.epoch,
+        previousGeneration: retirement.previousGeneration,
+        artifactHash: retirement.oldArtifactHash,
+        oldArtifactHash: retirement.oldArtifactHash,
+        proof: retirement.retirementProof,
+        result: retirement.retirementResult,
+        processId: retirement.processId,
         runtimeSession: runtimeSessionId,
+        dispatchStream: retirement.queueOrStream,
+        timestampMonotonicNs: retirement.timestampMonotonicNs,
+        retirementFenceIds,
+        evidenceRefs: retirementEvidenceRefs,
       }],
       latestPublication: {
-        previousGeneration: 1,
-        activeGeneration: 2,
+        previousGeneration,
+        activeGeneration,
         publishTimestamp: epoch.timestampMonotonicNs,
         oldArtifactId: artifactBeforeId,
         newArtifactId: artifactAfterId,
@@ -2243,17 +2649,17 @@ function buildBoundaryProofComponents(input, stageEvidence) {
         proofHash: sha256Stable(boundaryRefs),
         changedSymbols: [entryPoint],
         functionHandleIds: [`function:${entryPoint}`],
-        streamEpochCounters: { [streamId]: 2 },
+        streamEpochCounters: { ...epoch.streamEpochCounters },
         dispatchTableHashBefore,
         dispatchTableHashAfter,
         dispatchTableHash: dispatchTableHashAfter,
         changedEntries: 1,
-        retirementFenceIds: [`runtime-boundary:retirement:${streamId}`],
-        delayedUnloadResult: 'retired',
-        retirementStrategy: 'stream_event',
+        retirementFenceIds,
+        delayedUnloadResult: retirement.retirementResult,
+        retirementStrategy,
       },
     },
-    evidenceRefs: epoch.evidenceRefs,
+    evidenceRefs: compactStringList([...epoch.evidenceRefs, ...retirementEvidenceRefs]),
   };
   const artifactTransportProof = {
     schemaVersion: 'synthi.gpu.hmr.proof.v1',
@@ -2296,7 +2702,7 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     epochProof,
     abiProven: true,
     epochSwapProven: true,
-    streamOrderingProven: true,
+    streamOrderingProven: retirementProven,
     replacementScopeProven: true,
     runtimeTouchedSymbolsMatch: true,
     runtimeArtifactMatchesSelected: true,

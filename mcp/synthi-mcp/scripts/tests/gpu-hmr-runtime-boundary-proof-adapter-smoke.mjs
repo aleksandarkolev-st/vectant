@@ -175,8 +175,33 @@ function boundaryEvents(overrides = {}) {
   const processId = overrides.processId ?? 'pid-1';
   const deviceUuid = overrides.deviceUuid ?? 'device-1';
   const artifactHash = overrides.artifactHash ?? HASH_B;
+  const oldArtifactHash = overrides.oldArtifactHash ?? HASH_A;
   const epoch = overrides.epoch ?? 'epoch-7';
+  const previousEpoch = overrides.previousEpoch ?? 'epoch-6';
+  const activeGeneration = overrides.activeGeneration ?? 7;
+  const previousGeneration = overrides.previousGeneration ?? 6;
   const dispatchId = overrides.dispatchId ?? 'dispatch-1';
+  const stream = overrides.stream ?? 'stream-1';
+  const retirementReceipt = overrides.retirementReceipt === null
+    ? null
+    : {
+        kind: 'retirement_receipt',
+        eventId: 'retire-1',
+        oldArtifactHash,
+        epoch: previousEpoch,
+        previousGeneration,
+        processId,
+        runtimeSession: session,
+        deviceUuid,
+        stream,
+        retirementProof: 'stream_event_proven',
+        retirementResult: 'retired_after_quiescent',
+        retirementStrategy: 'epoch_fence',
+        retirementFenceIds: ['runtime-receipt:fence:retire-1'],
+        timestampMonotonicNs: 500,
+        evidenceRefs: ['runtime-receipt:retirement:retire-1'],
+        ...(overrides.retirementReceipt ?? {}),
+      };
   return [
     {
       kind: 'artifact_transport',
@@ -194,6 +219,10 @@ function boundaryEvents(overrides = {}) {
       eventId: 'publish-1',
       artifactHash,
       epoch,
+      previousEpoch,
+      activeGeneration,
+      previousGeneration,
+      streamEpochCounters: { [stream]: activeGeneration },
       processId,
       runtimeSession: session,
       deviceUuid,
@@ -212,7 +241,7 @@ function boundaryEvents(overrides = {}) {
       processId,
       runtimeSession: session,
       deviceUuid,
-      stream: 'stream-1',
+      stream,
       dispatchTableEntry: 'generic_kernel:epoch-7',
       timestampMonotonicNs: 300,
       evidenceRefs: [
@@ -228,7 +257,7 @@ function boundaryEvents(overrides = {}) {
       runtimeSession: session,
       deviceUuid,
       contextId: 'ctx-1',
-      stream: 'stream-1',
+      stream,
       timestampMonotonicNs: 310,
       evidenceRefs: [
         'worker-log:host_identity:runner_process',
@@ -255,6 +284,7 @@ function boundaryEvents(overrides = {}) {
       evidenceRefs: [`worker-log:output_oracle:${session}:${dispatchId}`],
       ...(overrides.outputOracle ?? {}),
     },
+    retirementReceipt,
   ].filter(Boolean);
 }
 
@@ -419,9 +449,23 @@ function assertVisualCaptureRefused(result, expectedFailure) {
 
 const stageEvidence = buildRuntimeBoundaryStageEvidence(boundaryEvents());
 assert.equal(stageEvidence.accepted, true, stageEvidence.failedGates.join(','));
-assert.equal(stageEvidence.normalizedEvents.length, 5);
+assert.equal(stageEvidence.normalizedEvents.length, 6);
+assert.equal(Object.keys(stageEvidence.stageEvents).length, 5);
+assert.equal(stageEvidence.retirementReceipt.eventType, 'retirement_receipt');
 assert.equal(stageEvidence.gpuHmrSuccess, false);
 assert.equal(buildRuntimeBoundaryInputEvidence(adapterInput()).accepted, true);
+
+const dispatcherRetirementEvidence = buildRuntimeBoundaryStageEvidence(
+  boundaryEvents().map((event) => event.kind === 'retirement_receipt'
+    ? { ...event, kind: 'dispatcher_epoch', event: 'retired' }
+    : event),
+);
+assert.equal(
+  dispatcherRetirementEvidence.accepted,
+  true,
+  dispatcherRetirementEvidence.failedGates.join(','),
+);
+assert.equal(dispatcherRetirementEvidence.retirementReceipt.eventType, 'retirement_receipt');
 
 const materializedLines = materializeRuntimeBoundaryEventLines(boundaryEvents({
   epochPublication: {
@@ -434,13 +478,14 @@ const materializedLines = materializeRuntimeBoundaryEventLines(boundaryEvents({
 assert.equal(materializedLines.accepted, true, materializedLines.failedGates.join(','));
 assert.equal(materializedLines.gpuHmrSuccess, false);
 assert.equal(materializedLines.canSatisfyRuntimeProof, false);
-assert.equal(materializedLines.runtimeBoundaryLines.length, 5);
-assert.equal(materializedLines.boundaryLineHashes.length, 5);
+assert.equal(materializedLines.runtimeBoundaryLines.length, 6);
+assert.equal(materializedLines.boundaryLineHashes.length, 6);
 assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] artifact_transport ')));
 assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] dispatcher_epoch ')));
 assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] synthi_gpu_launch ')));
 assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] host_identity ')));
 assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] output_oracle ')));
+assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] retirement_receipt ')));
 assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('host_identity_previous_generation=1')));
 assert.ok(materializedLines.bindingHash.startsWith('sha256:'));
 
@@ -453,6 +498,43 @@ assert.equal(accepted.runtimeProofArtifact.gpuHmrSuccess, true);
 assert.equal(accepted.strictGate.status, 'pass', accepted.strictGate.detail);
 assert.equal(accepted.runtimeProofArtifact.proofLedgerQuery.gpuHmrSuccess, true);
 assert.equal(accepted.runtimeProofArtifact.acceptanceContractEvaluation.accepted, true);
+assert.deepEqual(
+  accepted.components.epochProof.epochGenerationGraph.nodes,
+  [
+    { id: 'generation:6', generation: 6 },
+    { id: 'generation:7', generation: 7 },
+  ],
+);
+assert.deepEqual(
+  accepted.components.epochProof.retirementFenceIds,
+  ['runtime-receipt:fence:retire-1'],
+);
+assert.equal(accepted.components.epochProof.retirementTimestampMonotonicNs, 500);
+assert.equal(accepted.components.epochProof.retirementProof, 'stream_event_proven');
+assert.equal(accepted.components.epochProof.retirementResult, 'retired_after_quiescent');
+assert.equal(accepted.runtimeProofArtifact.proofFacets.epoch.retirementEpoch, 'epoch-6');
+assert.equal(
+  accepted.runtimeProofArtifact.proofFacets.epoch.retirementProof,
+  'stream_event_proven',
+);
+assert.equal(
+  accepted.runtimeProofArtifact.proofFacets.epoch.retirementResult,
+  'retired_after_quiescent',
+);
+const acceptedLedgerRecord = accepted.runtimeProofArtifact.derivedProofLedgerRecord;
+assert.equal(acceptedLedgerRecord.retirement_event.epoch, 'epoch-6');
+assert.equal(acceptedLedgerRecord.retirement_event.artifact_hash, `artifact:${HASH_A}`);
+assert.equal(acceptedLedgerRecord.retirement_event.proof, 'stream_event_proven');
+assert.equal(acceptedLedgerRecord.retirement_event.result, 'retired_after_quiescent');
+assert.equal(acceptedLedgerRecord.retirement_event.process_id, 'pid-1');
+assert.equal(acceptedLedgerRecord.retirement_event.runtime_session_id, 'runtime-session-1');
+assert.equal(acceptedLedgerRecord.retirement_event.dispatch_stream, 'stream-1');
+assert.equal(acceptedLedgerRecord.retirement_event.timestamp_monotonic_ns, 500);
+assert.equal(Object.hasOwn(acceptedLedgerRecord.retirement_event, 'status'), false);
+assert.deepEqual(
+  acceptedLedgerRecord.retirement_event.evidence_refs,
+  ['runtime-receipt:retirement:retire-1'],
+);
 
 const runModeProof = buildRuntimeBoundaryRunModeProof(adapterInput());
 assert.equal(runModeProof.schemaVersion, 'synthi.gpu.hmr.runtime_run_mode_proof.v1');
@@ -745,6 +827,168 @@ assert.equal(visualMissingFramebuffer.accepted, false);
 assert.ok(
   visualMissingFramebuffer.failedGates.includes('output_oracle_visual_framebuffer_identity_missing'),
   visualMissingFramebuffer.failedGates.join(','),
+);
+
+const missingRetirementReceipt = buildRuntimeBoundaryProofAdapter({
+  ...adapterInput(),
+  projectId: 'retirement-proof-approved-project',
+  targetId: 'retirement-proof-approved-target',
+  profileName: 'retirement-proof-approved-profile',
+  runtimeBoundaryEvents: boundaryEvents({ retirementReceipt: null }),
+  retirementEventId: 'runtime-boundary:runtime-session-1:dispatch-1:retire',
+  retirementTimestampMonotonicNs: 401,
+  retirementFenceIds: ['runtime-boundary:retirement:stream-1'],
+  retirementProof: 'stream_event_proven',
+  retirementResult: 'retired_after_quiescent',
+  oldGenerationRetired: true,
+  streamOrderingProven: true,
+});
+assert.equal(missingRetirementReceipt.accepted, false);
+assert.equal(missingRetirementReceipt.runtimeProofArtifact, null);
+assert.ok(
+  missingRetirementReceipt.failedGates.includes('runtime_boundary_retirement_receipt_missing'),
+  missingRetirementReceipt.failedGates.join(','),
+);
+
+const syntheticLookingRetirementReceipt = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: {
+    retirementReceipt: {
+      eventId: 'runtime-boundary:runtime-session-1:dispatch-1:retire',
+      retirementFenceIds: ['runtime-boundary:retirement:stream-1'],
+      timestampMonotonicNs: 401,
+      evidenceRefs: ['runtime-boundary:retirement:stream-1'],
+      oldGenerationRetired: true,
+      streamOrderingProven: true,
+    },
+  },
+}));
+assert.equal(syntheticLookingRetirementReceipt.accepted, false);
+assert.equal(syntheticLookingRetirementReceipt.runtimeProofArtifact, null);
+assert.ok(
+  syntheticLookingRetirementReceipt.failedGates.includes(
+    'runtime_boundary_retirement_receipt_legacy_synthetic',
+  ),
+  syntheticLookingRetirementReceipt.failedGates.join(','),
+);
+
+const untypedRetirementEvent = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { retirementReceipt: { kind: 'retire' } },
+}));
+assert.equal(untypedRetirementEvent.accepted, false);
+assert.equal(untypedRetirementEvent.runtimeProofArtifact, null);
+assert.ok(
+  untypedRetirementEvent.failedGates.includes('runtime_boundary_retirement_receipt_missing'),
+  untypedRetirementEvent.failedGates.join(','),
+);
+
+const wrongRetirementArtifact = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { retirementReceipt: { oldArtifactHash: HASH_C } },
+}));
+assert.equal(wrongRetirementArtifact.accepted, false);
+assert.ok(
+  wrongRetirementArtifact.failedGates.includes(
+    'runtime_boundary_retirement_old_artifact_hash_mismatch',
+  ),
+  wrongRetirementArtifact.failedGates.join(','),
+);
+
+const wrongRetirementEpoch = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { retirementReceipt: { epoch: 'epoch-5' } },
+}));
+assert.equal(wrongRetirementEpoch.accepted, false);
+assert.ok(
+  wrongRetirementEpoch.failedGates.includes('runtime_boundary_retirement_epoch_mismatch'),
+  wrongRetirementEpoch.failedGates.join(','),
+);
+
+const wrongRetirementGeneration = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { retirementReceipt: { previousGeneration: 5 } },
+}));
+assert.equal(wrongRetirementGeneration.accepted, false);
+assert.ok(
+  wrongRetirementGeneration.failedGates.includes('runtime_boundary_retirement_generation_mismatch'),
+  wrongRetirementGeneration.failedGates.join(','),
+);
+
+const wrongRetirementSession = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { retirementReceipt: { runtimeSession: 'runtime-session-stale' } },
+}));
+assert.equal(wrongRetirementSession.accepted, false);
+assert.ok(
+  wrongRetirementSession.failedGates.includes('runtime_boundary_retirement_session_mismatch'),
+  wrongRetirementSession.failedGates.join(','),
+);
+
+const wrongRetirementProcess = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { retirementReceipt: { processId: 'pid-stale' } },
+}));
+assert.equal(wrongRetirementProcess.accepted, false);
+assert.ok(
+  wrongRetirementProcess.failedGates.includes('runtime_boundary_retirement_process_mismatch'),
+  wrongRetirementProcess.failedGates.join(','),
+);
+
+const wrongRetirementStream = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { retirementReceipt: { stream: 'stream-stale' } },
+}));
+assert.equal(wrongRetirementStream.accepted, false);
+assert.ok(
+  wrongRetirementStream.failedGates.includes('runtime_boundary_retirement_stream_mismatch'),
+  wrongRetirementStream.failedGates.join(','),
+);
+
+const preOutputRetirement = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { retirementReceipt: { timestampMonotonicNs: 400 } },
+}));
+assert.equal(preOutputRetirement.accepted, false);
+assert.ok(
+  preOutputRetirement.failedGates.includes('runtime_boundary_retirement_not_after_output'),
+  preOutputRetirement.failedGates.join(','),
+);
+
+const failedRetirementProof = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { retirementReceipt: { retirementProof: 'unproven' } },
+}));
+assert.equal(failedRetirementProof.accepted, false);
+assert.ok(
+  failedRetirementProof.failedGates.includes('runtime_boundary_retirement_proof_not_successful'),
+  failedRetirementProof.failedGates.join(','),
+);
+
+const failedRetirementResult = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { retirementReceipt: { retirementResult: 'retirement_failed' } },
+}));
+assert.equal(failedRetirementResult.accepted, false);
+assert.ok(
+  failedRetirementResult.failedGates.includes('runtime_boundary_retirement_result_not_successful'),
+  failedRetirementResult.failedGates.join(','),
+);
+
+const retirementWithoutEvidence = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { retirementReceipt: { evidenceRefs: [] } },
+}));
+assert.equal(retirementWithoutEvidence.accepted, false);
+assert.ok(
+  retirementWithoutEvidence.failedGates.includes('runtime_boundary_retirement_evidence_refs_missing'),
+  retirementWithoutEvidence.failedGates.join(','),
+);
+
+const forgedRetirementAuthority = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { retirementReceipt: { acceptedForGpuHmr: true } },
+}));
+assert.equal(forgedRetirementAuthority.accepted, false);
+assert.ok(
+  forgedRetirementAuthority.failedGates.includes('runtime_boundary_event_claims_success_authority'),
+  forgedRetirementAuthority.failedGates.join(','),
+);
+
+const missingExplicitStreamCounter = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { epochPublication: { streamEpochCounters: {} } },
+}));
+assert.equal(missingExplicitStreamCounter.accepted, false);
+assert.ok(
+  missingExplicitStreamCounter.failedGates.includes('runtime_boundary_epoch_stream_counter_missing'),
+  missingExplicitStreamCounter.failedGates.join(','),
 );
 
 const missingOutput = buildRuntimeBoundaryProofAdapter({

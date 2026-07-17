@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import {
+  GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
   buildGpuHmrProofLedger,
   normalizeGpuHmrProofLedgerRecord,
   queryGpuHmrLedgerInvariants,
@@ -740,6 +741,7 @@ function proofFacetsSnapshot(input = {}, visualEvidenceArtifacts = []) {
   const epochGenerationGraphValid =
     epochProof?.epochGenerationGraphValid === true
     || epochProof?.generationGraphValid === true;
+  const retirement = latestRetirementFromEpochProof(epochProof) ?? {};
   const visualArtifacts = compactObjects(visualEvidenceArtifacts).map((artifact) => ({
     path: artifact.path ?? artifact.filePath ?? artifact.file_path ?? null,
     label: artifact.label ?? null,
@@ -846,6 +848,50 @@ function proofFacetsSnapshot(input = {}, visualEvidenceArtifacts = []) {
       retirementStrategy: epochProof.retirementStrategy ?? null,
       oldGenerationRetired: epochProof.oldGenerationRetired === true,
       retirementFenceIds: compactStringList(epochProof.retirementFenceIds),
+      retirementEpoch: firstStringOrFiniteNumber(
+        epochProof.retirementEpoch,
+        epochProof.retirement_epoch,
+        retirement.epoch,
+        retirement.epoch_id,
+      ),
+      retirementProof: firstString(
+        epochProof.retirementProof,
+        epochProof.retirement_proof,
+        retirement.proof,
+        retirement.retirementProof,
+        retirement.retirement_proof,
+      ),
+      retirementResult: firstString(
+        epochProof.retirementResult,
+        epochProof.retirement_result,
+        retirement.result,
+        retirement.retirementResult,
+        retirement.retirement_result,
+      ),
+      retirementArtifactHash: firstString(
+        epochProof.retirementArtifactHash,
+        epochProof.retirement_artifact_hash,
+        retirement.oldArtifactHash,
+        retirement.old_artifact_hash,
+        retirement.artifactHash,
+        retirement.artifact_hash,
+      ),
+      retirementTimestampMonotonicNs: latestTimestamp(
+        epochProof.retirementTimestampMonotonicNs,
+        epochProof.retirement_timestamp_monotonic_ns,
+        retirement.timestampMonotonicNs,
+        retirement.timestamp_monotonic_ns,
+      ),
+      retirementEvidenceRefs: compactStringList([
+        ...(Array.isArray(epochProof.retirementEvidenceRefs)
+          ? epochProof.retirementEvidenceRefs
+          : []),
+        ...(Array.isArray(epochProof.retirement_evidence_refs)
+          ? epochProof.retirement_evidence_refs
+          : []),
+        ...(Array.isArray(retirement.evidenceRefs) ? retirement.evidenceRefs : []),
+        ...(Array.isArray(retirement.evidence_refs) ? retirement.evidence_refs : []),
+      ]),
       evidenceRefs: compactStringList(epochProof.evidenceRefs),
     } : null,
     output: outputProof ? {
@@ -2673,6 +2719,43 @@ function evaluateProofLedgerSourceConsistency(explicitRecord, derivedRecord) {
     ['output_event_epoch', [['outputEvent', 'epoch']]],
     ['output_event_process_id', [['outputEvent', 'process_id'], ['outputEvent', 'processId']]],
     ['output_event_passed', [['outputEvent', 'passed']]],
+    ['retirement_event_id', [['retirementEvent', 'id']]],
+    ['retirement_event_epoch', [['retirementEvent', 'epoch']]],
+    ['retirement_event_artifact_hash', [
+      ['retirementEvent', 'artifact_hash'],
+      ['retirementEvent', 'artifactHash'],
+    ]],
+    ['retirement_event_proof', [
+      ['retirementEvent', 'proof'],
+      ['retirementEvent', 'retirement_proof'],
+      ['retirementEvent', 'retirementProof'],
+    ]],
+    ['retirement_event_result', [
+      ['retirementEvent', 'result'],
+      ['retirementEvent', 'retirement_result'],
+      ['retirementEvent', 'retirementResult'],
+      ['retirementEvent', 'status'],
+    ]],
+    ['retirement_event_process_id', [
+      ['retirementEvent', 'process_id'],
+      ['retirementEvent', 'processId'],
+    ]],
+    ['retirement_event_runtime_session_id', [
+      ['retirementEvent', 'runtime_session_id'],
+      ['retirementEvent', 'runtimeSessionId'],
+    ]],
+    ['retirement_event_dispatch_stream', [
+      ['retirementEvent', 'dispatch_stream'],
+      ['retirementEvent', 'dispatchStream'],
+    ]],
+    ['retirement_event_timestamp', [
+      ['retirementEvent', 'timestamp_monotonic_ns'],
+      ['retirementEvent', 'timestampMonotonicNs'],
+    ]],
+    ['retirement_event_evidence_refs', [
+      ['retirementEvent', 'evidence_refs'],
+      ['retirementEvent', 'evidenceRefs'],
+    ]],
     ['output_oracle_target', [['outputOracleTarget']]],
     ['process_identity_process_id', [['processIdentity', 'process_id'], ['processIdentity', 'processId']]],
     ['device_identity_device_uuid', [['deviceIdentity', 'device_uuid'], ['deviceIdentity', 'deviceUuid']]],
@@ -3029,8 +3112,47 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
     ?? objectOrNull(validationContext?.timings)
     ?? timingMetrics
     ?? {};
+  const retirementEpoch = firstStringOrFiniteNumber(
+    epochProof?.retirementEpoch,
+    epochProof?.retirement_epoch,
+    retirement.epoch,
+    retirement.epoch_id,
+  );
+  const retirementProof = firstString(
+    epochProof?.retirementProof,
+    epochProof?.retirement_proof,
+    retirement.proof,
+    retirement.retirementProof,
+    retirement.retirement_proof,
+  );
+  const retirementResult = firstString(
+    epochProof?.retirementResult,
+    epochProof?.retirement_result,
+    retirement.result,
+    retirement.retirementResult,
+    retirement.retirement_result,
+  );
+  const retirementArtifactHash = firstArtifactId(
+    epochProof?.retirementArtifactHash,
+    epochProof?.retirement_artifact_hash,
+    retirement.oldArtifactHash,
+    retirement.old_artifact_hash,
+    retirement.artifactHash,
+    retirement.artifact_hash,
+  );
+  const retirementEvidenceRefs = compactStringList([
+    ...(Array.isArray(epochProof?.retirementEvidenceRefs)
+      ? epochProof.retirementEvidenceRefs
+      : []),
+    ...(Array.isArray(epochProof?.retirement_evidence_refs)
+      ? epochProof.retirement_evidence_refs
+      : []),
+    ...(Array.isArray(retirement.evidenceRefs) ? retirement.evidenceRefs : []),
+    ...(Array.isArray(retirement.evidence_refs) ? retirement.evidence_refs : []),
+  ]);
 
   const record = {
+    schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     project_id: input.workspaceSlug
       ?? validationContext?.workspaceSlug
       ?? validationContext?.workspace_slug
@@ -3131,23 +3253,42 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
       id: firstString(
         epochProof?.retirementEventId,
         epochProof?.retirement_event_id,
-        ...(Array.isArray(epochProof?.retirementFenceIds) ? epochProof.retirementFenceIds : []),
-        ...(Array.isArray(epochProof?.retirement_fence_ids) ? epochProof.retirement_fence_ids : []),
         retirement.id,
         retirement.eventId,
         retirement.event_id,
         retirement.retirementEventId,
         retirement.retirement_event_id,
       ),
-      epoch,
-      status: epochProof?.oldGenerationRetired === true
-        ? firstString(
-            epochProof?.delayedUnloadResult,
-            epochProof?.delayed_unload_result,
-            retirement.status,
-            'retired',
-          )
-        : null,
+      epoch: retirementEpoch,
+      artifact_hash: retirementArtifactHash,
+      proof: retirementProof,
+      result: retirementResult,
+      process_id: firstString(
+        epochProof?.retirementProcessId,
+        epochProof?.retirement_process_id,
+        retirement.processId,
+        retirement.process_id,
+      ),
+      runtime_session_id: firstString(
+        epochProof?.retirementRuntimeSessionId,
+        epochProof?.retirement_runtime_session_id,
+        retirement.runtimeSessionId,
+        retirement.runtime_session_id,
+        retirement.runtimeSession,
+        retirement.runtime_session,
+      ),
+      dispatch_stream: firstString(
+        epochProof?.retirementDispatchStream,
+        epochProof?.retirement_dispatch_stream,
+        retirement.dispatchStream,
+        retirement.dispatch_stream,
+        retirement.queueOrStream,
+        retirement.queue_or_stream,
+        retirement.stream,
+        retirement.streamId,
+        retirement.stream_id,
+      ),
+      evidence_refs: retirementEvidenceRefs,
       timestamp_monotonic_ns: latestTimestamp(
         epochProof?.retirementTimestamp,
         epochProof?.retirement_timestamp,
@@ -3165,13 +3306,6 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
         retirement.retirement_timestamp_monotonic_ns,
         retirement.retirementEventTimestampMonotonicNs,
         retirement.retirement_event_timestamp_monotonic_ns,
-        outputTimestamp && (
-          epochProof?.oldGenerationRetired === true
-          && String(epochProof?.delayedUnloadResult ?? epochProof?.delayed_unload_result ?? '')
-            .toLowerCase() === 'not_required'
-        )
-          ? outputTimestamp
-          : null,
       ),
     },
     process_identity: {
@@ -3248,6 +3382,7 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
       ...(Array.isArray(acceptanceContract?.evidenceRefs) ? acceptanceContract.evidenceRefs : []),
       ...(Array.isArray(artifactTransportProof?.evidenceRefs) ? artifactTransportProof.evidenceRefs : []),
       ...(Array.isArray(epochProof?.evidenceRefs) ? epochProof.evidenceRefs : []),
+      ...retirementEvidenceRefs,
       ...(Array.isArray(dispatchProof?.evidenceRefs) ? dispatchProof.evidenceRefs : []),
       ...(Array.isArray(outputProof?.evidenceRefs) ? outputProof.evidenceRefs : []),
       ...(Array.isArray(hostPreservationProof?.evidenceRefs) ? hostPreservationProof.evidenceRefs : []),
