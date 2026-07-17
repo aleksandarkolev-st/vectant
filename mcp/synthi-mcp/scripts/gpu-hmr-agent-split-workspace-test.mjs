@@ -12302,7 +12302,7 @@ async function runAgentSplitTerminal() {
   if (timingTerminal.outcome !== 'pass') process.exitCode = 1;
 }
 
-async function main() {
+export async function main() {
   if (process.argv.includes('--self-check')) {
     try {
       selfCheckAgentVisualProfile();

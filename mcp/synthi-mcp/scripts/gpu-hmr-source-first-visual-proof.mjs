@@ -927,4 +927,8 @@ setDefaultEnv('SYNTHI_VALIDATION_AUTHLESS_WORKSPACE', '1');
 setDefaultEnv('SYNTHI_GPU_HMR_STRICT_PROOF_RETRY_TIMEOUT_MS', '240000');
 setDefaultEnv('SYNTHI_GPU_VENDOR', vendor);
 
-await import('./gpu-hmr-agent-split-workspace-test.mjs');
+const agentSplitRunner = await import('./gpu-hmr-agent-split-workspace-test.mjs');
+if (typeof agentSplitRunner.main !== 'function') {
+  throw new Error('source-first visual proof child runner does not export main()');
+}
+await agentSplitRunner.main();
