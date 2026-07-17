@@ -78,6 +78,9 @@ import {
   deriveGpuHmrTestTimingModality,
   isStableGpuHmrTimingReasonCode,
 } from './lib/gpu-hmr-test-timing-v2.mjs';
+import {
+  gpuHmrSourceExtensionMetadata,
+} from './lib/gpu-hmr-source-extension-registry.mjs';
 
 let stdioPipeClosed = false;
 
@@ -1673,40 +1676,6 @@ function sourceFilesManifestHash(files) {
   return `sha256:${sha256Hex(stableJson(files.map(sourceFileHashEntry)))}`;
 }
 
-const SOURCE_FIRST_LANGUAGE_BY_EXTENSION = new Map([
-  ['.c', 'c'],
-  ['.cc', 'cpp'],
-  ['.cpp', 'cpp'],
-  ['.cxx', 'cpp'],
-  ['.c++', 'cpp'],
-  ['.hh', 'cpp'],
-  ['.hpp', 'cpp'],
-  ['.hxx', 'cpp'],
-  ['.h++', 'cpp'],
-  ['.hip', 'hip'],
-  ['.cu', 'cuda'],
-  ['.cuh', 'cuda'],
-  ['.cl', 'opencl'],
-  ['.opencl', 'opencl'],
-  ['.wgsl', 'wgsl'],
-  ['.glsl', 'glsl'],
-  ['.vert', 'glsl'],
-  ['.frag', 'glsl'],
-  ['.comp', 'glsl'],
-  ['.geom', 'glsl'],
-  ['.tesc', 'glsl'],
-  ['.tese', 'glsl'],
-  ['.rs', 'rust'],
-  ['.zig', 'zig'],
-]);
-const SOURCE_FIRST_LANGUAGE_NEUTRAL_EXTENSIONS = new Set([
-  '.h',
-  '.inc',
-  '.inl',
-  '.ipp',
-  '.tpp',
-]);
-
 function sourceFirstRequestIntentError(reasonCode, detail) {
   const error = new Error(`${reasonCode}: ${detail}`);
   error.code = reasonCode;
@@ -1920,11 +1889,14 @@ export function deriveSourceFirstRequestIntent({
   const languageNeutralSourcePaths = [];
   const unknownSourcePaths = [];
   for (const file of normalizedFiles.filter((entry) => entry.kind === 'source')) {
-    const extension = path.extname(file.path).toLowerCase();
-    const language = SOURCE_FIRST_LANGUAGE_BY_EXTENSION.get(extension);
-    if (language) {
-      sourceLanguageEvidence.push({ path: file.path, extension, language });
-    } else if (SOURCE_FIRST_LANGUAGE_NEUTRAL_EXTENSIONS.has(extension)) {
+    const extensionMetadata = gpuHmrSourceExtensionMetadata(file.path);
+    if (extensionMetadata?.requestLanguage) {
+      sourceLanguageEvidence.push({
+        path: file.path,
+        extension: extensionMetadata.extension,
+        language: extensionMetadata.requestLanguage,
+      });
+    } else if (extensionMetadata?.role === 'neutral_context') {
       languageNeutralSourcePaths.push(file.path);
     } else {
       unknownSourcePaths.push(file.path);

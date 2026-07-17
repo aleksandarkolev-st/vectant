@@ -24,6 +24,11 @@ import { fileURLToPath } from 'node:url';
 import {
   materializeExactCommitGitBlobSnapshot,
 } from './lib/gpu-hmr-direct-source-git-identity.mjs';
+import {
+  gpuHmrSourceExtensionMetadata,
+  isGpuHmrAutomaticEntryCandidate,
+  isGpuHmrSourcePath,
+} from './lib/gpu-hmr-source-extension-registry.mjs';
 
 function readOption(args, name) {
   const prefix = `${name}=`;
@@ -118,51 +123,6 @@ function numericEnv(name, fallback) {
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
-
-const SOURCE_EXTENSIONS = new Set([
-  '.c',
-  '.cc',
-  '.cl',
-  '.comp',
-  '.cpp',
-  '.cu',
-  '.cuh',
-  '.cxx',
-  '.frag',
-  '.glsl',
-  '.h',
-  '.hh',
-  '.hip',
-  '.hpp',
-  '.hlsl',
-  '.hxx',
-  '.inc',
-  '.inl',
-  '.metal',
-  '.rs',
-  '.slang',
-  '.vert',
-  '.wgsl',
-]);
-
-const ENTRY_EXTENSIONS = new Set([
-  '.c',
-  '.cc',
-  '.cl',
-  '.comp',
-  '.cpp',
-  '.cu',
-  '.cxx',
-  '.frag',
-  '.glsl',
-  '.hip',
-  '.hlsl',
-  '.metal',
-  '.rs',
-  '.slang',
-  '.vert',
-  '.wgsl',
-]);
 
 const IGNORED_SOURCE_DIRS = new Set([
   '.cache',
@@ -427,8 +387,7 @@ function sourceFilesForRoot(sourceRoot) {
         continue;
       }
       if (!entry.isFile()) continue;
-      const ext = path.extname(entry.name).toLowerCase();
-      if (!SOURCE_EXTENSIONS.has(ext)) continue;
+      if (!isGpuHmrSourcePath(entry.name)) continue;
       assertInsideRoot(fullPath, root);
       const stat = statSync(fullPath);
       if (stat.size > maxFileBytes) {
@@ -478,7 +437,9 @@ function inferEntryPath(files, requestedEntry) {
   if (byPriority) return byPriority;
   const mainCandidates = files.filter((file) => {
     const base = path.posix.basename(file.path).toLowerCase();
-    return /^main\.(c|cc|cl|comp|cpp|cu|cxx|frag|glsl|hip|hlsl|metal|rs|slang|vert|wgsl)$/.test(base);
+    const extensionMetadata = gpuHmrSourceExtensionMetadata(base);
+    return extensionMetadata?.automaticEntryCandidate === true
+      && base === `main${extensionMetadata.extension}`;
   });
   if (mainCandidates.length === 1) return mainCandidates[0].path;
   if (mainCandidates.length > 1) {
@@ -486,7 +447,7 @@ function inferEntryPath(files, requestedEntry) {
       `source root has multiple main entry candidates (${mainCandidates.map((file) => file.path).join(', ')}); provide --source-entry or --source-manifest`,
     );
   }
-  const entryCandidates = files.filter((file) => ENTRY_EXTENSIONS.has(path.extname(file.path).toLowerCase()));
+  const entryCandidates = files.filter((file) => isGpuHmrAutomaticEntryCandidate(file.path));
   if (entryCandidates.length === 1) return entryCandidates[0].path;
   throw new Error('source root entry is ambiguous; provide --source-entry or --source-manifest');
 }
@@ -743,7 +704,47 @@ function selfCheckSourceRootManifest() {
     mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
     writeFileSync(path.join(tmpRoot, 'src', 'main.cpp'), '#include "scene_config.h"\nint main(){return 0;}\n');
     writeFileSync(path.join(tmpRoot, 'src', 'scene_config.h'), '#pragma once\nconstexpr int kPixels = 16;\n');
+    for (const fileName of [
+      'alternate.C++',
+      'context.H++',
+      'kernel.GEOM',
+      'kernel.HLSL',
+      'kernel.METAL',
+      'kernel.OPENCL',
+      'kernel.SLANG',
+      'kernel.TESC',
+      'kernel.TESE',
+      'template.IPP',
+      'template.TPP',
+      'tool.ZIG',
+    ]) {
+      writeFileSync(path.join(tmpRoot, 'src', fileName), `${fileName}\n`);
+    }
+    writeFileSync(path.join(tmpRoot, 'src', 'ignored.opaque'), 'unknown extension\n');
     writeFileSync(path.join(tmpRoot, 'CMakeLists.txt'), 'cmake_minimum_required(VERSION 3.20)\nproject(cold_source)\n');
+    const scannedPaths = sourceFilesForRoot(tmpRoot).map((entry) => entry.path);
+    const expectedRegistryPaths = [
+      'src/alternate.C++',
+      'src/context.H++',
+      'src/kernel.GEOM',
+      'src/kernel.HLSL',
+      'src/kernel.METAL',
+      'src/kernel.OPENCL',
+      'src/kernel.SLANG',
+      'src/kernel.TESC',
+      'src/kernel.TESE',
+      'src/template.IPP',
+      'src/template.TPP',
+      'src/tool.ZIG',
+    ];
+    if (
+      expectedRegistryPaths.some((filePath) => !scannedPaths.includes(filePath))
+      || scannedPaths.includes('src/ignored.opaque')
+      || scannedPaths.includes('CMakeLists.txt')
+      || scannedPaths.join('\n') !== [...scannedPaths].sort((left, right) => left.localeCompare(right)).join('\n')
+    ) {
+      throw new Error('source-root manifest self-check failed: extension registry scan mismatch');
+    }
     for (const gitArgs of [
       ['init'],
       ['config', 'user.email', 'gpu-hmr-self-check@example.invalid'],
