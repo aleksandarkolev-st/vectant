@@ -189,6 +189,37 @@ def test_portable_gpu_markers_in_comments_and_strings_are_ignored():
     assert detect_project({"main.cpp": source}).is_gpu is False
 
 
+def test_cmake_gpu_language_declarations_are_detected():
+    cases = {
+        "enable_language(HIP)": ("rocm", "hip", "hip_build_hits"),
+        "project(app LANGUAGES CXX CUDA)": ("cuda", "cuda", "cuda_build_hits"),
+        "set(CMAKE_HIP_ARCHITECTURES gfx1201)": ("rocm", "hip", "hip_build_hits"),
+        (
+            "set_source_files_properties(kernel.cpp PROPERTIES LANGUAGE CUDA)"
+        ): ("cuda", "cuda", "cuda_build_hits"),
+    }
+    for declaration, (vendor, backend, evidence_field) in cases.items():
+        result = detect_project({"CMakeLists.txt": declaration})
+        serialized = result.to_dict()
+        assert result.is_gpu is True
+        assert result.vendor_hint == vendor
+        assert backend in result.backend_hints
+        assert serialized["per_file"]["CMakeLists.txt"][evidence_field] > 0
+
+
+def test_cmake_gpu_words_without_language_declaration_are_ignored():
+    cmake = r'''
+    # enable_language(HIP)
+    #[[ project(app LANGUAGES CUDA) ]]
+    set(DOC "enable_language(HIP)")
+    set(BRACKET_DOC [[set(CMAKE_CUDA_ARCHITECTURES 90)]])
+    include(CheckLanguage)
+    check_language(HIP)
+    set(MY_CMAKE_HIP_ARCHITECTURES gfx1201)
+    '''
+    assert detect_project({"cmake/Probe.cmake": cmake}).is_gpu is False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Project-level + vendor hint
 # ─────────────────────────────────────────────────────────────────────────────
