@@ -17,7 +17,7 @@ DEVICE_ANNOTATION_MACRO_PATTERN = (
 DEVICE_ANNOTATION_MACRO_RE = re.compile(rf"\b{DEVICE_ANNOTATION_MACRO_PATTERN}\b")
 
 GPU_DEVICE_MARKER_RE = re.compile(
-    rf"\b(?:"
+    rf"(?<![A-Za-z0-9_])(?:"
     rf"__(?:global|device|constant|managed|host)__"
     rf"|__(?:kernel|global|local|constant|private|generic)\b"
     rf"|GLOBAL_KERNEL_SIGNATURE\s*\("
