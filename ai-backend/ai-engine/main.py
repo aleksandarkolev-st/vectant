@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Union, Tuple
+import hashlib
 import re
 import requests
 import json
@@ -2131,7 +2132,7 @@ from agents.gpu_healer import (  # noqa: E402
 )
 
 
-def _file_map_from_request(req: AnalyzeAiRequest) -> dict[str, str]:
+def _file_map_from_request(req: Union[AnalyzeRequest, AnalyzeAiRequest]) -> dict[str, str]:
     files = {}
     for f in req.files or []:
         path = getattr(f, "path", None) or getattr(f, "name", None) or "input.cpp"
@@ -2139,6 +2140,86 @@ def _file_map_from_request(req: AnalyzeAiRequest) -> dict[str, str]:
     if req.code:
         files.setdefault(req.focus or "input.cpp", req.code)
     return files
+
+
+_SPLIT_ROUTE_CLASSIFICATION_SCHEMA = "synthi.gpu_hmr.split_route_classification.v1"
+_SPLIT_ROUTE_CLASSIFICATION_AUTHORITY = (
+    "static_project_classification_only_not_gpu_hmr_success"
+)
+
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _build_split_route_classification(req: AnalyzeRequest) -> dict[str, Any]:
+    file_map = _file_map_from_request(req)
+    detection = _detect_gpu_project(file_map)
+    source_manifest = [
+        {
+            "path": path,
+            "content_hash": f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}",
+            "byte_length": len(content.encode("utf-8")),
+        }
+        for path, content in sorted(file_map.items())
+    ]
+    source_manifest_hash = _canonical_sha256(source_manifest)
+    selected_route = "gpu_split" if detection.is_gpu else "host_split"
+    reason_code = (
+        "static_gpu_evidence_detected"
+        if detection.is_gpu
+        else "static_gpu_evidence_not_detected"
+    )
+    receipt_payload = {
+        "schema_version": _SPLIT_ROUTE_CLASSIFICATION_SCHEMA,
+        "proof_authority": _SPLIT_ROUTE_CLASSIFICATION_AUTHORITY,
+        "selected_route": selected_route,
+        "reason_code": reason_code,
+        "source_manifest_hash": source_manifest_hash,
+        "detection": detection.to_dict(),
+    }
+    classification_id = (
+        "gpu-split-route-classification:" + _canonical_sha256(receipt_payload)
+    )
+    return {
+        "schemaVersion": _SPLIT_ROUTE_CLASSIFICATION_SCHEMA,
+        "schema_version": _SPLIT_ROUTE_CLASSIFICATION_SCHEMA,
+        "classificationId": classification_id,
+        "classification_id": classification_id,
+        "proofAuthority": _SPLIT_ROUTE_CLASSIFICATION_AUTHORITY,
+        "proof_authority": _SPLIT_ROUTE_CLASSIFICATION_AUTHORITY,
+        "selectedRoute": selected_route,
+        "selected_route": selected_route,
+        "reasonCode": reason_code,
+        "reason_code": reason_code,
+        "sourceManifestHash": source_manifest_hash,
+        "source_manifest_hash": source_manifest_hash,
+        "sourceFileCount": len(source_manifest),
+        "source_file_count": len(source_manifest),
+        "sourceManifest": source_manifest,
+        "source_manifest": source_manifest,
+        "detection": detection.to_dict(),
+        "acceptedForGpuHmr": False,
+        "accepted_for_gpu_hmr": False,
+        "gpuHmrSuccess": False,
+        "gpu_hmr_success": False,
+        "canSatisfyRuntimeProof": False,
+        "can_satisfy_runtime_proof": False,
+        "canSatisfyDispatchProof": False,
+        "can_satisfy_dispatch_proof": False,
+    }
+
+
+@app.post("/refactor/split/route")
+async def classify_refactor_split_route(req: AnalyzeRequest):
+    """Classify split routing from source evidence without invoking an AI provider."""
+    return _build_split_route_classification(req)
 
 
 _DEVICE_MAPPING_LOCAL_INCLUDE_RE = re.compile(
