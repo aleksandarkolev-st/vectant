@@ -106,8 +106,16 @@ PROVIDER_CALL_REQUEST_SCHEMA_VERSION = "synthi.ai.provider_call_request.v2"
 PROVIDER_CALL_RECEIPT_SCHEMA_VERSION = "synthi.ai.provider_call_receipt.v1"
 PROVIDER_CALL_RECEIPT_AUTHORITY = "request_bound_provider_call_only_not_gpu_hmr_success"
 PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION = "synthi.ai.provider_call_challenge.v1"
-_PROVIDER_CALL_STATUS_VALUES = {"available", "deprecated", "unknown", "private_alias"}
+_PROVIDER_AUTHORITY_CLAIM_KEYS = {
+    "acceptedforgpuhmr",
+    "gpuhmrsuccess",
+    "cansatisfyruntimeproof",
+    "cansatisfydispatchproof",
+}
 _PROVIDER_CALL_NONCE_RE = re.compile(r"^provider-call:[0-9a-f]{32}$")
+_PROVIDER_AVAILABILITY_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
 _PROVIDER_CALL_CHALLENGE_RE = re.compile(
     r"<synthi_provider_call_challenge>\s*(\{.*?\})\s*</synthi_provider_call_challenge>",
     re.DOTALL,
@@ -250,6 +258,61 @@ def _validate_provider_call_challenge_echo(raw_response: str, challenge: Mapping
         raise ValueError("provider response did not echo the exact fresh-call challenge")
 
 
+def _contains_provider_authority_claim(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized_key in _PROVIDER_AUTHORITY_CLAIM_KEYS and nested is not False:
+                return True
+            if _contains_provider_authority_claim(nested):
+                return True
+        return False
+    if isinstance(value, (list, tuple)):
+        return any(_contains_provider_authority_claim(item) for item in value)
+    return False
+
+
+def _provider_response_contains_authority_claim(raw_response: str) -> bool:
+    response_without_challenge = _PROVIDER_CALL_CHALLENGE_RE.sub("", raw_response).strip()
+    for candidate in (raw_response, response_without_challenge):
+        try:
+            decoded_response = json.loads(candidate)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if _contains_provider_authority_claim(decoded_response):
+            return True
+
+    for pattern in (
+        _JSON_BLOCK_RE,
+        _MANIFEST_BLOCK_RE,
+        _KERNEL_HASHES_BLOCK_RE,
+        _LAUNCH_GRAPH_BLOCK_RE,
+    ):
+        for match in pattern.finditer(raw_response):
+            try:
+                decoded_block = json.loads(match.group("body").strip())
+            except json.JSONDecodeError:
+                continue
+            if _contains_provider_authority_claim(decoded_block):
+                return True
+    return False
+
+
+def _valid_provider_availability_timestamp(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    timestamp = value.strip()
+    if not _PROVIDER_AVAILABILITY_TIMESTAMP_RE.fullmatch(timestamp):
+        return False
+    if timestamp.endswith("Z"):
+        timestamp = f"{timestamp[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
 def _provider_call_receipt(
     *,
     request_binding: Mapping[str, Any],
@@ -262,20 +325,38 @@ def _provider_call_receipt(
     started_unix_ns: int,
     completed_unix_ns: int,
 ) -> dict:
-    provider = str(provider_metadata.get("provider") or "").strip().lower()
-    requested_model = str(provider_metadata.get("requested_model") or "").strip()
-    actual_model = str(provider_metadata.get("actual_model") or "").strip()
-    request_mode = str(provider_metadata.get("request_mode") or "").strip().lower()
-    provider_status = str(provider_metadata.get("provider_model_status") or "").strip().lower()
-    fallback_model = str(provider_metadata.get("fallback_model") or "").strip()
+    provider_value = provider_metadata.get("provider")
+    provider = provider_value.strip().lower() if isinstance(provider_value, str) else ""
+    requested_model_value = provider_metadata.get("requested_model")
+    requested_model = (
+        requested_model_value.strip() if isinstance(requested_model_value, str) else ""
+    )
+    actual_model_value = provider_metadata.get("actual_model")
+    actual_model = actual_model_value.strip() if isinstance(actual_model_value, str) else ""
+    request_mode_value = provider_metadata.get("request_mode")
+    request_mode = (
+        request_mode_value.strip().lower() if isinstance(request_mode_value, str) else ""
+    )
+    provider_status_value = provider_metadata.get("provider_model_status")
+    provider_status = (
+        provider_status_value.strip() if isinstance(provider_status_value, str) else ""
+    )
+    fallback_model_value = provider_metadata.get("fallback_model")
+    fallback_model = (
+        fallback_model_value.strip() if isinstance(fallback_model_value, str) else ""
+    )
     fallback_used = provider_metadata.get("fallback_used")
-    alias_resolved_to = str(
-        provider_metadata.get("provider_model_alias_resolved_to") or ""
-    ).strip()
+    alias_resolved_to_value = provider_metadata.get("provider_model_alias_resolved_to")
+    alias_resolved_to = (
+        alias_resolved_to_value.strip()
+        if isinstance(alias_resolved_to_value, str)
+        else ""
+    )
     shutdown_or_deprecation_detected = provider_metadata.get(
         "provider_shutdown_or_deprecation_detected"
     )
-    checked_at = str(provider_metadata.get("model_availability_checked_at") or "").strip()
+    checked_at_value = provider_metadata.get("model_availability_checked_at")
+    checked_at = checked_at_value.strip() if isinstance(checked_at_value, str) else ""
     hard_infra_failure = provider_metadata.get("hard_infra_failure")
     if not provider or provider.lower() == "deterministic_static_splitter":
         raise ValueError("provider call receipt requires a non-deterministic provider identity")
@@ -283,20 +364,32 @@ def _provider_call_receipt(
         raise ValueError("provider call receipt provider does not match request binding")
     if requested_model != request_binding.get("requested_model"):
         raise ValueError("provider call receipt requested model does not match request binding")
-    if not actual_model:
-        raise ValueError("provider call receipt requires an actual model identity")
+    if actual_model != requested_model:
+        raise ValueError("provider call receipt actual model must exactly match requested model")
     if request_mode != "split":
         raise ValueError("provider call receipt requires request_mode=split")
-    if provider_status not in _PROVIDER_CALL_STATUS_VALUES:
-        raise ValueError("provider call receipt has invalid provider model status")
-    if not isinstance(fallback_used, bool):
-        raise ValueError("provider call receipt requires explicit fallback state")
-    if not isinstance(shutdown_or_deprecation_detected, bool):
-        raise ValueError("provider call receipt requires explicit model lifecycle state")
-    if not checked_at:
-        raise ValueError("provider call receipt requires model availability timestamp")
-    if not isinstance(hard_infra_failure, bool) or hard_infra_failure:
+    if provider_status != "available":
+        raise ValueError("provider call receipt requires provider model status=available")
+    if fallback_used is not False:
+        raise ValueError("provider call receipt requires fallback_used=false")
+    if fallback_model_value is not None and (
+        not isinstance(fallback_model_value, str) or fallback_model
+    ):
+        raise ValueError("provider call receipt does not permit a fallback model")
+    if alias_resolved_to_value is not None and (
+        not isinstance(alias_resolved_to_value, str) or alias_resolved_to
+    ):
+        raise ValueError("provider call receipt does not permit model alias resolution")
+    if shutdown_or_deprecation_detected is not False:
+        raise ValueError("provider call receipt requires model lifecycle state=false")
+    if not _valid_provider_availability_timestamp(checked_at_value):
+        raise ValueError("provider call receipt requires a valid model availability timestamp")
+    if hard_infra_failure is not False:
         raise ValueError("provider call receipt requires explicit non-failed infrastructure state")
+    if _contains_provider_authority_claim(provider_metadata):
+        raise ValueError("provider metadata claims GPU HMR, runtime, or dispatch authority")
+    if _provider_response_contains_authority_claim(raw_response):
+        raise ValueError("provider response claims GPU HMR, runtime, or dispatch authority")
     if completed_monotonic_ns <= started_monotonic_ns:
         raise ValueError("provider call receipt monotonic interval is invalid")
     _validate_provider_call_challenge_echo(raw_response, challenge)

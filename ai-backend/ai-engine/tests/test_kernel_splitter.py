@@ -793,6 +793,74 @@ def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provide
     assert required_provider.called is True
 
 
+def _provider_receipt_fixture(response_prefix='{"files":{"device.hip":"kernel"}}'):
+    request, request_hash = kernel_splitter.provider_call_request_binding(
+        nonce="provider-call:fedcba9876543210fedcba9876543210",
+        user_code="__global__ void kernel(float* out) { out[0] = 1.0f; }",
+        lang="cpp",
+        files=[{
+            "name": "src/main.hip",
+            "content": "__global__ void kernel(float* out) { out[0] = 1.0f; }",
+        }],
+        focus="src/main.hip",
+        provider="generic-provider",
+        model="model-under-test",
+        gpu_arch_hint="gfx1201",
+        extra_instructions="preserve output",
+    )
+    challenge, _ = kernel_splitter._provider_call_challenge(
+        request_binding=request,
+        request_hash=request_hash,
+        prompt_payload="prompt-under-test",
+    )
+    challenge_json = json.dumps(
+        challenge,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    raw_response = (
+        response_prefix
+        + f"<synthi_provider_call_challenge>{challenge_json}"
+        + "</synthi_provider_call_challenge>"
+    )
+    return request, request_hash, challenge, raw_response
+
+
+def _exact_provider_metadata(**updates):
+    metadata = {
+        "provider": "generic-provider",
+        "requested_model": "model-under-test",
+        "actual_model": "model-under-test",
+        "request_mode": "split",
+        "provider_model_status": "available",
+        "fallback_model": None,
+        "fallback_used": False,
+        "provider_model_alias_resolved_to": None,
+        "provider_shutdown_or_deprecation_detected": False,
+        "model_availability_checked_at": "2026-07-15T00:00:00+00:00",
+        "hard_infra_failure": False,
+    }
+    metadata.update(updates)
+    return metadata
+
+
+def _issue_provider_receipt(provider_metadata, response_prefix=None):
+    fixture_args = () if response_prefix is None else (response_prefix,)
+    request, request_hash, challenge, raw_response = _provider_receipt_fixture(*fixture_args)
+    return kernel_splitter._provider_call_receipt(
+        request_binding=request,
+        request_hash=request_hash,
+        challenge=challenge,
+        raw_response=raw_response,
+        provider_metadata=provider_metadata,
+        started_monotonic_ns=100,
+        completed_monotonic_ns=200,
+        started_unix_ns=1_700_000_000_000_000_000,
+        completed_unix_ns=1_700_000_000_000_000_100,
+    )
+
+
 def test_provider_call_receipt_binds_request_response_and_provider_metadata():
     request, request_hash = kernel_splitter.provider_call_request_binding(
         nonce="provider-call:fedcba9876543210fedcba9876543210",
@@ -831,7 +899,7 @@ def test_provider_call_receipt_binds_request_response_and_provider_metadata():
         provider_metadata={
             "provider": "generic-provider",
             "requested_model": "model-under-test",
-            "actual_model": "model-under-test-v2",
+            "actual_model": "model-under-test",
             "request_mode": "split",
             "provider_model_status": "available",
             "fallback_model": None,
@@ -904,7 +972,7 @@ def test_provider_call_receipt_binds_request_response_and_provider_metadata():
             provider_metadata={
                 "provider": "substituted-provider",
                 "requested_model": "model-under-test",
-                "actual_model": "model-under-test-v2",
+                "actual_model": "model-under-test",
                 "request_mode": "split",
                 "provider_model_status": "available",
                 "fallback_model": None,
@@ -929,7 +997,7 @@ def test_provider_call_receipt_binds_request_response_and_provider_metadata():
             provider_metadata={
                 "provider": "generic-provider",
                 "requested_model": "model-under-test",
-                "actual_model": "model-under-test-v2",
+                "actual_model": "model-under-test",
                 "request_mode": "split",
                 "provider_model_status": "available",
                 "fallback_model": None,
@@ -944,6 +1012,71 @@ def test_provider_call_receipt_binds_request_response_and_provider_metadata():
             started_unix_ns=1_700_000_000_000_000_000,
             completed_unix_ns=1_700_000_000_000_000_100,
         )
+
+
+@pytest.mark.parametrize(
+    ("metadata_updates", "error_match"),
+    [
+        ({"actual_model": "substituted-model"}, "exactly match requested model"),
+        ({"fallback_used": True}, "fallback_used=false"),
+        ({"fallback_model": "fallback-model"}, "fallback model"),
+        ({"provider_model_status": "deprecated"}, "status=available"),
+        ({"provider_model_status": "unknown"}, "status=available"),
+        ({"provider_model_status": "private_alias"}, "status=available"),
+        ({"provider_model_alias_resolved_to": "resolved-model"}, "alias resolution"),
+        ({"provider_shutdown_or_deprecation_detected": True}, "lifecycle state=false"),
+        ({"model_availability_checked_at": "not-a-timestamp"}, "valid model availability"),
+        ({"hard_infra_failure": True}, "non-failed infrastructure"),
+    ],
+)
+def test_provider_call_receipt_requires_exact_requested_model_execution(
+    metadata_updates,
+    error_match,
+):
+    with pytest.raises(ValueError, match=error_match):
+        _issue_provider_receipt(_exact_provider_metadata(**metadata_updates))
+
+
+@pytest.mark.parametrize(
+    ("provider_metadata", "response_prefix", "error_match"),
+    [
+        (
+            _exact_provider_metadata(
+                diagnostics={"nested": {"acceptedForGpuHmr": True}},
+            ),
+            None,
+            "provider metadata claims",
+        ),
+        (
+            _exact_provider_metadata(),
+            '{"support":{"nested":{"canSatisfyDispatchProof":"true"}}}',
+            "provider response claims",
+        ),
+    ],
+)
+def test_provider_call_receipt_rejects_nested_authority_claims(
+    provider_metadata,
+    response_prefix,
+    error_match,
+):
+    with pytest.raises(ValueError, match=error_match):
+        _issue_provider_receipt(provider_metadata, response_prefix)
+
+
+def test_provider_call_receipt_accepts_only_support_authority():
+    receipt = _issue_provider_receipt(_exact_provider_metadata())
+
+    assert receipt["actual_model"] == receipt["requested_model"] == "model-under-test"
+    assert receipt["provider_model_status"] == "available"
+    assert receipt["fallback_used"] is False
+    assert receipt["fallback_model"] is None
+    assert receipt["provider_model_alias_resolved_to"] is None
+    assert receipt["provider_shutdown_or_deprecation_detected"] is False
+    assert receipt["hard_infra_failure"] is False
+    assert receipt["accepted_for_gpu_hmr"] is False
+    assert receipt["gpu_hmr_success"] is False
+    assert receipt["can_satisfy_runtime_proof"] is False
+    assert receipt["can_satisfy_dispatch_proof"] is False
 
 
 def test_required_provider_call_echoes_fresh_challenge_through_split_parser():
