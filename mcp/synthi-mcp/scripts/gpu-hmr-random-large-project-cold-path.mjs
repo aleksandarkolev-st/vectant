@@ -21,7 +21,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION } from './lib/gpu-hmr-runtime-profile.mjs';
-import { writeArtifactToCas } from './lib/gpu-hmr-artifact-cas.mjs';
+import {
+  CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION,
+  GPU_HMR_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION,
+  GPU_HMR_SHARED_ARTIFACT_ADDRESSING_SCHEMA_VERSION,
+  writeArtifactToCas,
+} from './lib/gpu-hmr-artifact-cas.mjs';
 import {
   GPU_HMR_TEST_TIMING_PHASE_KEYS,
   GPU_HMR_TEST_TIMING_SCHEMA,
@@ -79,6 +84,10 @@ const ARBITRARY_COLD_EXECUTION_ENVIRONMENT_SCHEMA =
   'synthi.gpu_hmr.random_cold_path_arbitrary_execution_environment.v1';
 const ARBITRARY_COLD_EXECUTION_ENVIRONMENT_AUTHORITY =
   'verified_static_launcher_execution_environment_only_not_gpu_hmr_success';
+const ARBITRARY_COLD_ARTIFACT_LOCATOR_PROJECTION_SCHEMA =
+  'synthi.gpu_hmr.random_cold_path_artifact_locator_projection.v1';
+const ARBITRARY_COLD_ARTIFACT_LOCATOR_PROJECTION_AUTHORITY =
+  'content_addressed_artifact_locator_projection_only_not_gpu_hmr_success';
 const MAX_COLD_BUILD_OUTPUT_COUNT = 1024;
 const MAX_COLD_BUILD_OUTPUT_BYTES = 512 * 1024 * 1024;
 const MIN_COLD_BUILD_MEMORY_BYTES = 1024 * 1024 * 1024;
@@ -3353,6 +3362,250 @@ function arbitraryColdFailureDiagnostics(failure) {
   return { stdout, stderr };
 }
 
+function projectJsonSafeEvidenceValue(value) {
+  if (
+    Buffer.isBuffer(value)
+    || value instanceof ArrayBuffer
+    || ArrayBuffer.isView(value)
+  ) {
+    throw new Error('arbitrary_cold_artifact_projection_embedded_bytes_refused');
+  }
+  if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) {
+    if (typeof value === 'string' && value.startsWith('data:')) {
+      throw new Error('arbitrary_cold_artifact_projection_embedded_bytes_refused');
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => projectJsonSafeEvidenceValue(entry));
+  }
+  if (!value || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new Error('arbitrary_cold_artifact_projection_non_json_value_refused');
+  }
+  const projected = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    if (
+      ['base64', 'base64payload', 'buffer', 'bytes', 'data', 'payload', 'rawbytes']
+        .includes(normalizedKey)
+    ) {
+      throw new Error('arbitrary_cold_artifact_projection_embedded_bytes_refused');
+    }
+    projected[key] = projectJsonSafeEvidenceValue(entry);
+  }
+  return projected;
+}
+
+function projectColdBuildOutputMetadata(metadata) {
+  const projected = {
+    path: metadata?.path,
+    declaredRole: metadata?.declaredRole,
+    declaredArtifactKind: metadata?.declaredArtifactKind,
+    declaredMediaType: metadata?.declaredMediaType,
+    declaredContentHash: metadata?.declaredContentHash,
+    declaredByteLength: metadata?.declaredByteLength,
+    observedContentHash: metadata?.observedContentHash,
+    observedByteLength: metadata?.observedByteLength,
+    mode: metadata?.mode,
+    metadataAuthority: metadata?.metadataAuthority,
+  };
+  if (stableJson(projected) !== stableJson(metadata)) {
+    throw new Error('arbitrary_cold_artifact_projection_metadata_shape_refused');
+  }
+  projectJsonSafeEvidenceValue(projected);
+  return projected;
+}
+
+function projectSharedArtifactAddressing(sharedStorage) {
+  const projected = {
+    schemaVersion: sharedStorage?.schemaVersion,
+    addressing: sharedStorage?.addressing,
+    contentHash: sharedStorage?.contentHash,
+    relativePath: sharedStorage?.relativePath,
+    mountCount: sharedStorage?.mountCount,
+    mountRoles: projectJsonSafeEvidenceValue(sharedStorage?.mountRoles),
+    mounts: projectJsonSafeEvidenceValue(sharedStorage?.mounts),
+    manifestOnly: sharedStorage?.manifestOnly,
+    acceptedForGpuHmr: sharedStorage?.acceptedForGpuHmr,
+    gpuHmrSuccess: sharedStorage?.gpuHmrSuccess,
+    proofAuthority: sharedStorage?.proofAuthority,
+  };
+  if (stableJson(projected) !== stableJson(sharedStorage)) {
+    throw new Error('arbitrary_cold_artifact_projection_shared_storage_shape_refused');
+  }
+  if (
+    projected.schemaVersion !== GPU_HMR_SHARED_ARTIFACT_ADDRESSING_SCHEMA_VERSION
+    || projected.manifestOnly !== true
+    || projected.acceptedForGpuHmr !== false
+    || projected.gpuHmrSuccess !== false
+    || projected.proofAuthority !== 'shared_artifact_addressing_only'
+  ) {
+    throw new Error('arbitrary_cold_artifact_projection_shared_storage_refused');
+  }
+  return projected;
+}
+
+function projectArtifactCasLocator(locator) {
+  const projected = {
+    schemaVersion: locator?.schemaVersion,
+    artifactId: locator?.artifactId,
+    contentHash: locator?.contentHash,
+    artifactKind: locator?.artifactKind,
+    byteLength: locator?.byteLength,
+    mediaType: locator?.mediaType,
+    role: locator?.role,
+    producer: projectJsonSafeEvidenceValue(locator?.producer),
+    producerSubsystem: locator?.producerSubsystem,
+    sessionNamespace: locator?.sessionNamespace,
+    artifactUri: locator?.artifactUri,
+    transport: projectJsonSafeEvidenceValue(locator?.transport),
+    proofAuthority: locator?.proofAuthority,
+    acceptedForGpuHmr: locator?.acceptedForGpuHmr,
+    gpuHmrSuccess: locator?.gpuHmrSuccess,
+  };
+  if (Object.hasOwn(locator ?? {}, 'storage')) {
+    projected.storage = projectJsonSafeEvidenceValue(locator.storage);
+  }
+  if (Object.hasOwn(locator ?? {}, 'sharedStorage')) {
+    projected.sharedStorage = projectSharedArtifactAddressing(locator.sharedStorage);
+  }
+  if (Object.hasOwn(locator ?? {}, 'shared_storage')) {
+    projected.shared_storage = projectSharedArtifactAddressing(locator.shared_storage);
+  }
+  projected.manifestHash = locator?.manifestHash;
+  if (
+    stableJson(projected) !== stableJson(locator)
+    || projected.schemaVersion !== CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION
+    || projected.transport?.contentAddressed !== true
+    || projected.transport?.manifestOnly !== true
+    || projected.transport?.bytesEmbedded !== false
+    || projected.acceptedForGpuHmr !== false
+    || projected.gpuHmrSuccess !== false
+    || projected.proofAuthority !== 'transport_integrity_only'
+    || projected.manifestHash
+      !== contentHash(stableJson({ ...projected, manifestHash: undefined }))
+  ) {
+    throw new Error('arbitrary_cold_artifact_projection_locator_shape_refused');
+  }
+  return projected;
+}
+
+function projectArtifactTransportEvidence(transportEvidence) {
+  const projected = {};
+  for (const key of [
+    'schemaVersion',
+    'accepted',
+    'acceptedAsTransportEvidence',
+    'acceptedForGpuHmr',
+    'gpuHmrSuccess',
+    'proofAuthority',
+    'manifestHash',
+    'contentHash',
+    'artifactId',
+    'artifactUri',
+    'transportKind',
+    'byteLength',
+    'mediaType',
+    'reasons',
+    'gaps',
+    'sharedStorage',
+    'shared_storage',
+    'sharedMountCount',
+    'shared_mount_count',
+    'sharedMountRoles',
+    'shared_mount_roles',
+    'localPath',
+    'local_path',
+    'resolvedFromRelativePath',
+    'resolved_from_relative_path',
+    'readableByteLength',
+    'readableContentHash',
+  ]) {
+    if (Object.hasOwn(transportEvidence ?? {}, key)) {
+      projected[key] = projectJsonSafeEvidenceValue(transportEvidence[key]);
+    }
+  }
+  if (
+    projected.schemaVersion !== GPU_HMR_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION
+    || projected.proofAuthority !== 'transport_integrity_only'
+    || projected.accepted !== true
+    || projected.acceptedAsTransportEvidence !== true
+    || projected.acceptedForGpuHmr !== false
+    || projected.gpuHmrSuccess !== false
+  ) {
+    throw new Error('arbitrary_cold_artifact_projection_transport_evidence_refused');
+  }
+  return projected;
+}
+
+function artifactLocatorIdentityProjection(artifactLocators) {
+  return artifactLocators.map((entry) => ({
+    path: entry.metadata.path,
+    contentHash: entry.metadata.observedContentHash,
+    byteLength: entry.metadata.observedByteLength,
+    artifactId: entry.artifactLocator.artifactId,
+    manifestHash: entry.artifactLocator.manifestHash,
+    transportKind: entry.artifactLocator.transport.kind,
+  })).sort((left, right) => Buffer.compare(
+    Buffer.from(left.path, 'utf8'),
+    Buffer.from(right.path, 'utf8'),
+  ));
+}
+
+export function projectStaticArbitraryColdArtifactLocators(
+  outputs,
+  { expectedLocatorSetHash = null } = {},
+) {
+  if (!Array.isArray(outputs) || outputs.length < 1) {
+    throw new Error('arbitrary_cold_artifact_projection_outputs_invalid');
+  }
+  const artifactLocators = outputs.map((output) => {
+    const metadata = projectColdBuildOutputMetadata(output?.metadata);
+    const artifactLocator = projectArtifactCasLocator(output?.artifactLocator);
+    const transportEvidence = projectArtifactTransportEvidence(output?.transportEvidence);
+    if (
+      metadata.observedContentHash !== artifactLocator.contentHash
+      || metadata.observedByteLength !== artifactLocator.byteLength
+      || transportEvidence.manifestHash !== artifactLocator.manifestHash
+      || transportEvidence.contentHash !== artifactLocator.contentHash
+      || transportEvidence.byteLength !== artifactLocator.byteLength
+      || transportEvidence.artifactId !== artifactLocator.artifactId
+    ) {
+      throw new Error('arbitrary_cold_artifact_projection_identity_mismatch');
+    }
+    const base = {
+      schemaVersion: ARBITRARY_COLD_ARTIFACT_LOCATOR_PROJECTION_SCHEMA,
+      proofAuthority: ARBITRARY_COLD_ARTIFACT_LOCATOR_PROJECTION_AUTHORITY,
+      metadata,
+      artifactLocator,
+      transportEvidence,
+      transportEvidenceProjectionHash: contentHash(stableJson(transportEvidence)),
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+      canSatisfyDispatchProof: false,
+    };
+    return {
+      ...base,
+      projectionHash: contentHash(stableJson(base)),
+    };
+  }).sort((left, right) => Buffer.compare(
+    Buffer.from(left.metadata.path, 'utf8'),
+    Buffer.from(right.metadata.path, 'utf8'),
+  ));
+  const artifactLocatorSetHash = contentHash(stableJson(
+    artifactLocatorIdentityProjection(artifactLocators),
+  ));
+  if (expectedLocatorSetHash !== null && artifactLocatorSetHash !== expectedLocatorSetHash) {
+    throw new Error('arbitrary_cold_artifact_projection_set_hash_mismatch');
+  }
+  return {
+    artifactLocators,
+    artifactLocatorSetHash,
+    artifactLocatorProjectionHash: contentHash(stableJson(artifactLocators)),
+  };
+}
+
 async function runStaticArbitraryColdBuildProcess({
   spec,
   resolvedRepo,
@@ -3403,6 +3656,9 @@ async function runStaticArbitraryColdBuildProcess({
     const driverEvidence = driverReceipt.driverEvidence;
     const outputEvidence = outputReceipt.outputEvidence;
     const cleanup = driverEvidence.cleanup;
+    const artifactLocatorProjection = projectStaticArbitraryColdArtifactLocators(run.outputs, {
+      expectedLocatorSetHash: run.evidence.artifactLocatorSetHash,
+    });
     const executionEnvironment = {
       schemaVersion: ARBITRARY_COLD_EXECUTION_ENVIRONMENT_SCHEMA,
       proofAuthority: ARBITRARY_COLD_EXECUTION_ENVIRONMENT_AUTHORITY,
@@ -3434,7 +3690,9 @@ async function runStaticArbitraryColdBuildProcess({
       retainedExecutionChainHash: retainedChain.evidenceHash,
       outputSetHash: run.evidence.outputSetHash,
       artifactCount: run.evidence.artifactCount,
-      artifactLocators: run.outputs,
+      artifactLocatorSetHash: artifactLocatorProjection.artifactLocatorSetHash,
+      artifactLocatorProjectionHash: artifactLocatorProjection.artifactLocatorProjectionHash,
+      artifactLocators: artifactLocatorProjection.artifactLocators,
       sourceBindingHash,
       resourcePolicy,
       resourcePolicyHash: contentHash(stableJson(resourcePolicy)),
