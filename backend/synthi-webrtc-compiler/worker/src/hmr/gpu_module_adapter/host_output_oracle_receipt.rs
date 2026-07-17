@@ -985,6 +985,7 @@ mod tests {
     use crate::hmr::adapter_trait::{
         ReloadOutputOracleProfileCommitment, ReloadOutputOracleProofContext,
     };
+    use crate::runtime::gpu_runtime_boundary::dispatcher_commit_receipt_for_test;
 
     fn receipt_test_guard() -> std::sync::MutexGuard<'static, ()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1097,7 +1098,7 @@ mod tests {
         binding: &HostOutputOracleRequestBinding,
         provisional: &HostVerifiedComputeReadbackReceipt,
     ) -> Result<HostVerifiedComputeReadbackReceipt, String> {
-        let commit = DispatcherCommitReceipt::for_test(
+        let commit = dispatcher_commit_receipt_for_test(
             format!("dispatcher-publication:sha256:{}", "4".repeat(64)),
             provisional.generation().saturating_sub(1),
             provisional.generation(),
@@ -1218,7 +1219,7 @@ mod tests {
         let bytes = vec![7u8; 256];
         let (binding, launch, _) = fixture("request-publication", &bytes);
         let provisional = record_fixture(&binding, &launch, &bytes).unwrap();
-        let forged_commit = DispatcherCommitReceipt::for_test(
+        let forged_commit = dispatcher_commit_receipt_for_test(
             format!("dispatcher-publication:sha256:{}", "5".repeat(64)),
             6,
             7,

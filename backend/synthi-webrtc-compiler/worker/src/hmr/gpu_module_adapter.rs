@@ -93,19 +93,18 @@ use crate::hmr::gpu_stream_drain::{drain_context, drain_stream, DrainOutcome, Dr
 use crate::runtime::gpu_runtime_boundary::output_oracle_records_snapshot;
 use crate::runtime::gpu_runtime_boundary::{
     begin_launch_dispatcher_publication, clear_launch_dispatcher,
-    commit_launch_dispatcher_publication, current_dispatch_has_provisional_validation_capability,
-    current_launch_generation, dispatch_device_attestation_records_snapshot,
+    commit_launch_dispatcher_publication, current_launch_generation,
+    dispatch_device_attestation_records_snapshot,
     dispatch_device_attestation_rejection_records_snapshot, launch_records_snapshot,
     managed_buffers_snapshot, monotonic_timestamp_ns, record_hmr_runtime_identity_snapshot,
     record_output_buffer_checksum_with_probe_bytes_after_dispatch,
     rollback_launch_dispatcher_publication, runtime_session_id,
     synthi_gpu_launch_raw_arg_info_with_receipt, synthi_gpu_register_buffer,
-    with_dispatcher_publication_validation, DispatcherCommitReceipt, GpuDispatchAttestationError,
-    GpuDispatchDeviceAttestation, GpuDispatchDeviceObservation, GpuLaunchDispatcher,
-    GpuLaunchDispatcherMetadata, GpuLaunchRequest, LaunchArgProvenance, LaunchRecord,
-    SynthiGpuLaunchArg, GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY,
-    GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA, SYNTHI_GPU_ARG_KIND_FLOATING,
-    SYNTHI_GPU_ARG_KIND_INTEGER, SYNTHI_GPU_ARG_KIND_POINTER,
+    with_dispatcher_publication_validation, DispatcherCommitReceipt, GpuDispatchDeviceAttestation,
+    GpuDispatchDeviceObservation, GpuLaunchDispatcher, GpuLaunchDispatcherMetadata,
+    GpuLaunchRequest, LaunchArgProvenance, LaunchRecord, SynthiGpuLaunchArg,
+    GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY, GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA,
+    SYNTHI_GPU_ARG_KIND_FLOATING, SYNTHI_GPU_ARG_KIND_INTEGER, SYNTHI_GPU_ARG_KIND_POINTER,
 };
 
 // ── Vendor + symbol table ───────────────────────────────────
@@ -323,30 +322,31 @@ impl GpuLaunchDispatcher for DriverLaunchDispatcher {
         &self,
         request: &GpuLaunchRequest,
         args: *const *const c_void,
-    ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+    ) -> Result<GpuDispatchDeviceAttestation, String> {
         let before =
+            query_runtime_dispatch_device_observation(&self.symbols, request.stream_token)?;
+        self.launch_native(request, args)?;
+        let after =
             match query_runtime_dispatch_device_observation(&self.symbols, request.stream_token) {
                 Ok(observation) => observation,
-                Err(error) if current_dispatch_has_provisional_validation_capability() => {
-                    return Err(
-                        GpuDispatchAttestationError::attestation_rejected_before_dispatch(error),
-                    );
-                }
                 Err(error) => {
-                    self.launch_native(request, args)
-                        .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
                     return Ok(GpuDispatchDeviceAttestation::unavailable(
                         request.stream_token,
                         error,
                     ));
                 }
             };
-        self.launch_native(request, args)
-            .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
-        let after = query_runtime_dispatch_device_observation(&self.symbols, request.stream_token)
-            .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
-        GpuDispatchDeviceAttestation::runtime_driver_observed(request.stream_token, before, after)
-            .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)
+        match GpuDispatchDeviceAttestation::runtime_driver_observed(
+            request.stream_token,
+            before,
+            after,
+        ) {
+            Ok(attestation) => Ok(attestation),
+            Err(error) => Ok(GpuDispatchDeviceAttestation::unavailable(
+                request.stream_token,
+                error,
+            )),
+        }
     }
 }
 
@@ -2468,11 +2468,6 @@ fn verified_runtime_dispatch_device_identity(
                                 .unwrap_or_default()
                 })
             {
-                if !rejection.native_dispatch_occurred {
-                    return Err(
-                        "dispatch_device_attestation_rejection_dispatch_state_mismatch".to_string(),
-                    );
-                }
                 return Err(rejection.error);
             }
             return Err("dispatch_device_attestation_record_missing".to_string());
@@ -5959,9 +5954,9 @@ mod tests {
         CuContext, CuDevicePtr, CuFunction, CuModule, CuResult, CuStream,
     };
     use crate::runtime::gpu_runtime_boundary::{
-        current_launch_generation, install_launch_dispatcher_with_metadata, reset_for_test,
-        synthi_gpu_launch_raw, synthi_gpu_register_buffer,
-        test_guard_for_test as runtime_boundary_test_guard,
+        current_launch_generation, dispatcher_commit_receipt_for_test,
+        install_launch_dispatcher_with_metadata, reset_for_test, synthi_gpu_launch_raw,
+        synthi_gpu_register_buffer, test_guard_for_test as runtime_boundary_test_guard,
     };
     use std::ffi::{c_void, CString};
     use std::io::Write;
@@ -6212,6 +6207,36 @@ mod tests {
             uuid_query_error,
             Err("device_identity_uuid_query_failed:102".to_string())
         );
+    }
+
+    #[test]
+    fn dispatch_device_observation_failure_before_launch_prevents_native_dispatch() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        LAUNCH_CALLS.store(0, Ordering::SeqCst);
+        let dispatcher = DriverLaunchDispatcher {
+            symbols: GpuDriverSymbolTable {
+                cu_stream_get_device: Some(err_stream_get_device),
+                ..stub_symbols()
+            },
+            kernels: std::collections::HashMap::from([("vec_add".to_string(), 0x1000)]),
+        };
+        let request = GpuLaunchRequest {
+            kernel_name: "vec_add".to_string(),
+            grid: (1, 1, 1),
+            block: (1, 1, 1),
+            shared_bytes: 0,
+            stream_token: 0x77,
+            arg_count: 0,
+        };
+
+        let error = dispatcher
+            .dispatch_with_device_attestation(&request, std::ptr::null())
+            .expect_err("pre-dispatch observation failure must reject the launch");
+
+        assert_eq!(error, "dispatch_stream_device_query_failed:103");
+        assert_eq!(LAUNCH_CALLS.load(Ordering::SeqCst), 0);
+        reset_for_test();
     }
 
     #[test]
@@ -6515,8 +6540,14 @@ mod tests {
 
     #[test]
     fn strict_runtime_proof_builder_reports_content_binding_gap() {
-        let unreachable_commit =
-            DispatcherCommitReceipt::for_test("publication:test", 1, 2, "registration:test", 2, 3);
+        let unreachable_commit = dispatcher_commit_receipt_for_test(
+            "publication:test".to_string(),
+            1,
+            2,
+            "registration:test".to_string(),
+            2,
+            3,
+        );
         let unreachable_dispatch_identity = VerifiedRuntimeDispatchDeviceIdentity {
             runtime_session_id: runtime_session_id().to_string(),
             active_generation: 2,
@@ -8485,13 +8516,26 @@ mod tests {
             .after_dispatch_id
             .as_deref()
             .expect("output bound to exact dispatch");
-        let attestation = dispatch_device_attestation_rejection_records_snapshot()
+        let launch = launch_records_snapshot()
+            .into_iter()
+            .rev()
+            .find(|record| record.dispatch_id.as_deref() == Some(dispatch_id))
+            .expect("exact native launch record");
+        assert!(launch.dispatched);
+        assert!(launch.dispatch_error.is_none());
+        let attestation = dispatch_device_attestation_records_snapshot()
             .into_iter()
             .rev()
             .find(|record| record.dispatch_id == dispatch_id)
             .expect("exact dispatch attestation record");
-        assert!(attestation.native_dispatch_occurred);
-        assert_eq!(attestation.error, "dispatch_device_uuid_changed");
+        assert!(attestation.attestation.verified_observation().is_none());
+        assert_eq!(
+            attestation.attestation.blocking_gap(),
+            Some("dispatch_device_uuid_changed")
+        );
+        assert!(!dispatch_device_attestation_rejection_records_snapshot()
+            .into_iter()
+            .any(|record| record.dispatch_id == dispatch_id));
         assert!(!adapter
             .last_reload_log()
             .iter()
