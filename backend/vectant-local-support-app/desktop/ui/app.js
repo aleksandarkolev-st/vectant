@@ -23,6 +23,7 @@ const actionButtons = {
   reviewProcessVisibility: document.querySelector('[data-action="review-process-visibility"]'),
   revokeFullAccess: document.querySelector('[data-action="revoke-full-access"]'),
   confirmFullAccessEnrollment: document.querySelector('[data-action="confirm-full-access-enrollment"]'),
+  revertMutation: document.querySelector('[data-action="revert-mutation"]'),
 };
 const workflowSummary = document.querySelector("[data-workflow-summary]");
 const pairingForm = document.querySelector("[data-pairing-form]");
@@ -56,7 +57,7 @@ const fallbackState = {
   approvals: [],
   ports: [],
   activity: [],
-  fullAccess: { enrolled: false, autoApproval: false, processVisibilityPaused: false, graphNodeCount: 0, automaticDeliveryPaused: false, localMutations: [] },
+  fullAccess: { enrolled: false, autoApproval: false, processVisibilityPaused: false, graphNodeCount: 0, automaticDeliveryPaused: false, localMutations: [], mutationReview: null },
   updatePolicy: {
     available: false,
     enabled: false,
@@ -205,7 +206,7 @@ function renderFullAccess(fullAccess) {
   actionButtons.revokeFullAccess.disabled = !enrolled;
   actionButtons.confirmFullAccessEnrollment.disabled = enrolled || !pending;
   renderProcessVisibility(processReview);
-  renderLocalMutations(fullAccess.localMutations);
+  renderLocalMutations(fullAccess.localMutations, fullAccess.mutationReview);
 }
 
 function renderProcessVisibility(review) {
@@ -220,21 +221,49 @@ function renderProcessVisibility(review) {
   }
 }
 
-function renderLocalMutations(mutations) {
+function renderLocalMutations(mutations, review) {
   const list = document.querySelector('[data-field="full-access-mutations"]');
   const count = Array.isArray(mutations) ? mutations.length : 0;
   setText('[data-field="full-access-mutations-title"]', count ? `${count} reversible workspace change${count === 1 ? "" : "s"}` : "No reversible workspace changes");
   setText('[data-field="full-access-mutations-tag"]', count ? "Local-only summary" : "Content stays local");
   setText('[data-field="full-access-mutations-copy"]', count
-    ? "These are local transaction summaries. File bodies, unified diff text, and recovery content never cross the desktop boundary."
+    ? "Review an exact diff only in this native window. File bodies, unified diff text, and recovery content never cross the desktop boundary."
     : "When a scoped Full Access mutation occurs, this desktop view records its file and line-change count. File bodies are not sent through the relay or stored in activity history.");
   if (!list) return;
   list.replaceChildren();
   for (const mutation of mutations || []) {
     const item = document.createElement("li");
-    item.textContent = `${mutation.path}: +${mutation.added} / -${mutation.removed}, reversible until ${mutation.reversibleUntil}`;
+    const summary = document.createElement("span");
+    summary.textContent = `${mutation.path}: +${mutation.added} / -${mutation.removed}, reversible until ${mutation.reversibleUntil}. `;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.action = "review-mutation";
+    button.dataset.transactionId = mutation.transactionId;
+    button.textContent = "Review exact diff";
+    item.append(summary, button);
     list.append(item);
   }
+  const reviewPanel = document.querySelector('[data-mutation-review]');
+  const revertButton = actionButtons.revertMutation;
+  if (!reviewPanel) return;
+  reviewPanel.hidden = !review;
+  if (!review) {
+    if (revertButton) revertButton.disabled = true;
+    return;
+  }
+  setText('[data-field="mutation-review-title"]', `${review.path}: exact local diff`);
+  setText('[data-field="mutation-review-copy"]', `+${review.added} / -${review.removed}. This preview is rebuilt from the protected recovery copy and current file; it is unavailable if the file changes.`);
+  setText('[data-field="mutation-review-diff"]', review.diff);
+  if (revertButton) {
+    revertButton.disabled = !fullAccessCanRevert();
+    revertButton.dataset.transactionId = review.transactionId;
+  }
+}
+
+function fullAccessCanRevert() {
+  return renderedState?.connected === true
+    && renderedState?.paused !== true
+    && renderedState?.fullAccess?.enrolled === true;
 }
 
 function renderUpdatePolicy(policy) {
@@ -452,12 +481,30 @@ function normalizeFullAccess(rawAccess) {
       : null,
     localMutations: Array.isArray(raw.local_mutations)
       ? raw.local_mutations.slice(0, 64).map((mutation) => ({
+          transactionId: sanitizeText(mutation.transaction_id, ""),
           path: sanitizeText(mutation.relative_path, "workspace file"),
           added: Math.min(Math.max(Number(mutation.lines_added) || 0, 0), 262144),
           removed: Math.min(Math.max(Number(mutation.lines_removed) || 0, 0), 262144),
           reversibleUntil: sanitizeText(mutation.reversible_until, "retention window"),
         }))
       : [],
+    mutationReview: normalizeMutationReview(raw.mutation_review),
+  };
+}
+
+function normalizeMutationReview(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const diff = typeof raw.unified_diff === "string" && raw.unified_diff.length <= 540000
+    ? raw.unified_diff
+    : "";
+  const transactionId = sanitizeText(raw.transaction_id, "");
+  if (!diff || !transactionId) return null;
+  return {
+    transactionId,
+    path: sanitizeText(raw.relative_path, "workspace file"),
+    added: Math.min(Math.max(Number(raw.lines_added) || 0, 0), 262144),
+    removed: Math.min(Math.max(Number(raw.lines_removed) || 0, 0), 262144),
+    diff,
   };
 }
 
@@ -617,6 +664,12 @@ document.querySelectorAll("[data-action]").forEach((button) => {
     }
     if (button.dataset.action === "review-process-visibility") {
       await invokeStateAction("process.visibility.review", "Process visibility review needs the native desktop app.");
+    }
+    if (button.dataset.action === "review-mutation") {
+      await invokeStateAction("mutation.review", "Exact mutation review needs the native desktop app.", { transaction_id: button.dataset.transactionId || "" });
+    }
+    if (button.dataset.action === "revert-mutation") {
+      await invokeStateAction("mutation.revert", "Reverting a workspace mutation needs the native desktop app.", { transaction_id: button.dataset.transactionId || "" });
     }
     if (button.dataset.action === "revoke-full-access") {
       await invokeStateAction("full_access.revoke", "Full Access revocation needs the native desktop app.");

@@ -33,6 +33,8 @@ const ALLOWED_IPC_COMMANDS: &[&str] = &[
     "full_access.pause",
     "full_access.revoke",
     "full_access.enroll",
+    "mutation.review",
+    "mutation.revert",
     "process.visibility.pause",
     "process.visibility.review",
     "history.export",

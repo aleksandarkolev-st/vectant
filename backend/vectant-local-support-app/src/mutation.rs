@@ -67,6 +67,20 @@ pub struct LocalMutationSummary {
     pub reversible_until: DateTime<Utc>,
 }
 
+/// Exact mutation evidence available only to the native desktop renderer on
+/// explicit user request. It is rebuilt from the protected recovery copy and
+/// the still-current workspace file; it is intentionally neither journaled
+/// nor returned by the loopback HTTP API.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalMutationReview {
+    pub transaction_id: String,
+    pub relative_path: String,
+    pub lines_added: usize,
+    pub lines_removed: usize,
+    pub reversible_until: DateTime<Utc>,
+    pub unified_diff: String,
+}
+
 /// On-disk transaction metadata. Recovery content remains in the sibling backup
 /// file; the journal intentionally records hashes and identifiers only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,6 +256,72 @@ impl WorkspaceMutationBroker {
             .collect::<Vec<_>>();
         summaries.sort_by_key(|summary| std::cmp::Reverse(summary.reversible_until));
         summaries
+    }
+
+    /// Reconstruct an exact, bounded unified diff only while the transaction
+    /// still names the file's current post-mutation contents. If another
+    /// local writer changed the file, fail closed rather than presenting a
+    /// misleading preview.
+    pub fn local_review(&self, transaction_id: &str) -> Result<LocalMutationReview, MutationError> {
+        self.ensure_storage()?;
+        if !safe_id(transaction_id) {
+            return Err(MutationError::InvalidRequest);
+        }
+        let transaction = self
+            .transactions
+            .get(transaction_id)
+            .ok_or(MutationError::RecoveryUnavailable)?;
+        if transaction.recovery_expires_at < Utc::now() {
+            return Err(MutationError::RecoveryUnavailable);
+        }
+        let before = fs::read_to_string(&transaction.recovery_path)
+            .map_err(|_| MutationError::RecoveryUnavailable)?;
+        let target = resolve_relative(self.workspace.root(), &transaction.relative_path)
+            .map_err(|_| MutationError::TargetDenied)?;
+        let after = fs::read_to_string(target).map_err(|_| MutationError::Conflict)?;
+        if hash(&before) != transaction.before_hash || hash(&after) != transaction.after_hash {
+            return Err(MutationError::Conflict);
+        }
+        if !self
+            .scanner
+            .try_scan(&before)
+            .map_err(|_| MutationError::ScannerDenied)?
+            .findings
+            .is_empty()
+            || !self
+                .scanner
+                .try_scan(&after)
+                .map_err(|_| MutationError::ScannerDenied)?
+                .findings
+                .is_empty()
+        {
+            return Err(MutationError::ScannerDenied);
+        }
+        Ok(LocalMutationReview {
+            transaction_id: transaction.transaction_id.clone(),
+            relative_path: transaction.relative_path.clone(),
+            lines_added: transaction.diff_summary.lines_added,
+            lines_removed: transaction.diff_summary.lines_removed,
+            reversible_until: transaction.recovery_expires_at,
+            unified_diff: unified_diff(&transaction.relative_path, &before, &after),
+        })
+    }
+
+    /// Revert using a current hash computed inside the broker. The broker
+    /// reads the file again before replacing it, so a concurrent change still
+    /// produces a conflict instead of a blind restore.
+    pub fn revert_locally(
+        &mut self,
+        transaction_id: &str,
+    ) -> Result<MutationTransaction, MutationError> {
+        let transaction = self
+            .transactions
+            .get(transaction_id)
+            .ok_or(MutationError::RecoveryUnavailable)?;
+        let target = resolve_relative(self.workspace.root(), &transaction.relative_path)
+            .map_err(|_| MutationError::TargetDenied)?;
+        let current = fs::read_to_string(target).map_err(|_| MutationError::Conflict)?;
+        self.revert(transaction_id, &hash(&current))
     }
 
     fn recovery_directory(&self) -> Result<PathBuf, MutationError> {
@@ -421,6 +501,52 @@ fn summarize_line_diff(before: &str, after: &str) -> MutationDiffSummary {
     }
 }
 
+/// Produces a conventional single-hunk unified diff. The common prefix and
+/// suffix are omitted, but every changed line is retained exactly. The input
+/// size is already bounded by the mutation broker, making this linear-time
+/// construction safe for the native review surface.
+fn unified_diff(relative_path: &str, before: &str, after: &str) -> String {
+    let before_lines = before.lines().collect::<Vec<_>>();
+    let after_lines = after.lines().collect::<Vec<_>>();
+    let prefix = before_lines
+        .iter()
+        .zip(&after_lines)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let suffix = before_lines[prefix..]
+        .iter()
+        .rev()
+        .zip(after_lines[prefix..].iter().rev())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let before_end = before_lines.len().saturating_sub(suffix);
+    let after_end = after_lines.len().saturating_sub(suffix);
+    let removed = &before_lines[prefix..before_end];
+    let added = &after_lines[prefix..after_end];
+    let old_start = if removed.is_empty() {
+        prefix
+    } else {
+        prefix + 1
+    };
+    let new_start = if added.is_empty() { prefix } else { prefix + 1 };
+    let mut diff = format!(
+        "--- a/{relative_path}\n+++ b/{relative_path}\n@@ -{old_start},{} +{new_start},{} @@\n",
+        removed.len(),
+        added.len()
+    );
+    for line in removed {
+        diff.push('-');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    for line in added {
+        diff.push('+');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    diff
+}
+
 fn write_new_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     restrict_file_permissions(path)?;
@@ -507,5 +633,14 @@ mod tests {
         assert!(serialized.contains("lines_added"));
         assert!(!serialized.contains("SECRET_REMOVED"));
         assert!(!serialized.contains("SECRET_ADDED"));
+    }
+
+    #[test]
+    fn unified_diff_keeps_exact_changed_lines_without_unchanged_content() {
+        let diff = unified_diff("src/example.rs", "same\nold\ntail\n", "same\nnew\ntail\n");
+        assert!(diff.contains("--- a/src/example.rs\n+++ b/src/example.rs"));
+        assert!(diff.contains("-old\n+new\n"));
+        assert!(!diff.contains("same\n"));
+        assert!(!diff.contains("tail\n"));
     }
 }

@@ -154,6 +154,8 @@ pub fn plan_desktop_ipc_action(
         "full_access.enroll"
         | "full_access.pause"
         | "full_access.revoke"
+        | "mutation.review"
+        | "mutation.revert"
         | "process.visibility.pause"
         | "process.visibility.review" => DesktopIpcActionPlan {
             command,

@@ -128,6 +128,13 @@ fn workspace_mutation_is_graph_bound_atomic_and_revertible() {
         fs::read_to_string(root.path().join("src/lib.rs")).unwrap(),
         "pub fn changed() {}\n"
     );
+    let review = broker.local_review(&transaction.transaction_id).unwrap();
+    assert_eq!(review.relative_path, "src/lib.rs");
+    assert!(review.unified_diff.contains("-pub fn original() {}"));
+    assert!(review.unified_diff.contains("+pub fn changed() {}"));
+    assert!(!serde_json::to_string(&broker.local_summaries())
+        .unwrap()
+        .contains("pub fn changed"));
     let fresh_graph = WorkspacePolicy::new(root.path(), "wk_mutation", SecretScanner::default())
         .unwrap()
         .build_capability_graph()
@@ -135,9 +142,7 @@ fn workspace_mutation_is_graph_bound_atomic_and_revertible() {
     assert!(!serde_json::to_string(&fresh_graph)
         .unwrap()
         .contains(".vectant-local-support"));
-    assert!(broker
-        .revert(&transaction.transaction_id, &transaction.after_hash)
-        .is_ok());
+    assert!(broker.revert_locally(&transaction.transaction_id).is_ok());
     assert_eq!(
         fs::read_to_string(root.path().join("src/lib.rs")).unwrap(),
         "pub fn original() {}\n"

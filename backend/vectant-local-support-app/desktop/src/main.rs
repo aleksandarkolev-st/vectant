@@ -25,6 +25,7 @@ use vectant_local_support_app::full_access::{
 };
 use vectant_local_support_app::http::{bind_loopback, shutdown_cleanup, AppState};
 use vectant_local_support_app::ipc::IpcRequest;
+use vectant_local_support_app::mutation::LocalMutationReview;
 use vectant_local_support_app::pair::{DeviceIdentity, DeviceIdentityStore};
 use vectant_local_support_app::port_adapter::{
     detect_loopback_listener, native_listener_identity_matches,
@@ -45,6 +46,7 @@ struct DesktopRuntime {
     pending_pairing: RwLock<Option<ClaimedPairing>>,
     pending_full_access_enrollment: RwLock<Option<PendingFullAccessEnrollment>>,
     process_visibility_snapshot: RwLock<Option<ProcessVisibilitySnapshot>>,
+    mutation_review: RwLock<Option<LocalMutationReview>>,
     pending_relay_approvals: RwLock<HashMap<String, PendingRelayApproval>>,
     preview_contexts: RwLock<HashMap<u16, PreviewContext>>,
     local_api_address: RwLock<Option<SocketAddr>>,
@@ -113,6 +115,7 @@ async fn local_support_ipc(
                     "Session paused by the local desktop user.",
                 )
                 .await?;
+                clear_mutation_review(&runtime)?;
             }
         }
         "session.resume" => {
@@ -147,6 +150,7 @@ async fn local_support_ipc(
                 .map_err(|_| "Preview state lock failed closed.".to_string())?
                 .clear();
             clear_process_visibility_snapshot(&runtime)?;
+            clear_mutation_review(&runtime)?;
         }
         "workspace.pick" => {
             let Some(path) = rfd::FileDialog::new()
@@ -176,6 +180,7 @@ async fn local_support_ipc(
                 .pending_pairing
                 .write()
                 .map_err(|_| "Pairing state lock failed closed.".to_string())? = None;
+            clear_mutation_review(&runtime)?;
             runtime
                 .pending_relay_approvals
                 .write()
@@ -465,6 +470,7 @@ async fn local_support_ipc(
                 .map_err(|_| "Preview state lock failed closed.".to_string())?
                 .clear();
             clear_process_visibility_snapshot(&runtime)?;
+            clear_mutation_review(&runtime)?;
             append_control_event(
                 &app_state,
                 &request_id,
@@ -475,6 +481,7 @@ async fn local_support_ipc(
         "full_access.pause" => {
             app_state.full_access.lock().await.pause();
             clear_process_visibility_snapshot(&runtime)?;
+            clear_mutation_review(&runtime)?;
             append_control_event(
                 &app_state,
                 &request_id,
@@ -488,6 +495,7 @@ async fn local_support_ipc(
         "full_access.revoke" => {
             app_state.full_access.lock().await.revoke();
             clear_process_visibility_snapshot(&runtime)?;
+            clear_mutation_review(&runtime)?;
             append_control_event(
                 &app_state,
                 &request_id,
@@ -509,6 +517,55 @@ async fn local_support_ipc(
         }
         "process.visibility.review" => {
             refresh_process_visibility(&runtime, &app_state, &request_id).await?;
+        }
+        "mutation.review" => {
+            let transaction_id = required_safe_id(&payload, "transaction_id")?;
+            authorize_local_mutation_capability(
+                &app_state,
+                FullAccessCapability::WorkspaceFileMutate,
+            )
+            .await?;
+            let review = app_state
+                .mutation_broker
+                .lock()
+                .await
+                .local_review(transaction_id)
+                .map_err(|_| "The local diff is unavailable because the transaction expired or the file changed.".to_string())?;
+            *runtime
+                .mutation_review
+                .write()
+                .map_err(|_| "Mutation review state lock failed closed.".to_string())? =
+                Some(review);
+        }
+        "mutation.revert" => {
+            let transaction_id = required_safe_id(&payload, "transaction_id")?;
+            authorize_local_mutation_capability(
+                &app_state,
+                FullAccessCapability::WorkspaceFileRevert,
+            )
+            .await?;
+            let confirmed = rfd::MessageDialog::new()
+                .set_title("Revert workspace change?")
+                .set_description("This restores the selected file from the protected local recovery copy. The change will be audited locally.")
+                .set_buttons(rfd::MessageButtons::YesNo)
+                .set_level(rfd::MessageLevel::Warning)
+                .show();
+            if !matches!(confirmed, rfd::MessageDialogResult::Yes) {
+                return desktop_status(&runtime, &app_state).await;
+            }
+            let transaction = app_state
+                .mutation_broker
+                .lock()
+                .await
+                .revert_locally(transaction_id)
+                .map_err(|_| "The workspace file changed or its recovery copy is unavailable; nothing was reverted.".to_string())?;
+            clear_mutation_review(&runtime)?;
+            append_mutation_event(
+                &app_state,
+                &request_id,
+                &format!("Reverted Full Access transaction {} for {} after local confirmation and current-hash verification.", transaction.transaction_id, transaction.relative_path),
+            )
+            .await?;
         }
         "history.export" => {
             let Some(path) = rfd::FileDialog::new()
@@ -724,6 +781,16 @@ async fn desktop_status(
                 serde_json::to_value(process_visibility)
                     .map_err(|_| "Process visibility state could not be sanitized.".to_string())?,
             );
+            let review = runtime
+                .mutation_review
+                .read()
+                .map_err(|_| "Mutation review state lock failed closed.".to_string())?
+                .clone();
+            full_access.insert(
+                "mutation_review".to_string(),
+                serde_json::to_value(review)
+                    .map_err(|_| "Mutation review state could not be sanitized.".to_string())?,
+            );
         }
         let policy = runtime
             .cloud_policy
@@ -827,6 +894,67 @@ fn clear_process_visibility_snapshot(runtime: &DesktopRuntime) -> Result<(), Str
         .write()
         .map_err(|_| "Process visibility state lock failed closed.".to_string())? = None;
     Ok(())
+}
+
+fn clear_mutation_review(runtime: &DesktopRuntime) -> Result<(), String> {
+    *runtime
+        .mutation_review
+        .write()
+        .map_err(|_| "Mutation review state lock failed closed.".to_string())? = None;
+    Ok(())
+}
+
+fn required_safe_id<'a>(payload: &'a serde_json::Value, field: &str) -> Result<&'a str, String> {
+    let value = payload
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("{field} is required."))?;
+    if value.len() < 3
+        || value.len() > 128
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        return Err(format!("{field} is invalid."));
+    }
+    Ok(value)
+}
+
+async fn authorize_local_mutation_capability(
+    state: &AppState,
+    capability: FullAccessCapability,
+) -> Result<(), String> {
+    let session_guard = state.session.lock().await;
+    if !session_guard.is_active() || session_guard.state().paused {
+        return Err("The local session is inactive or paused. Nothing was reverted.".to_string());
+    }
+    let session = session_guard.state();
+    drop(session_guard);
+    let workspace = state.workspace.summary();
+    let full_access = state.full_access.lock().await;
+    let receipt = full_access
+        .receipt
+        .clone()
+        .ok_or_else(|| "Full Access is not enrolled for this session.".to_string())?;
+    let policy = full_access.policy.clone();
+    drop(full_access);
+    let binding = ReceiptBinding {
+        session_id: &session.session_id,
+        account_id: &session.account_id,
+        organization_id: &session.org_id,
+        actor: &receipt.support_actor,
+        device_fingerprint: &session.device_fingerprint,
+        workspace_hash: &workspace.root_hash,
+        policy_version: vectant_local_support_app::POLICY_VERSION,
+        scanner_version: vectant_local_support_app::SCANNER_VERSION,
+        app_version: env!("CARGO_PKG_VERSION"),
+        policy_major: policy.policy_major,
+        reconsent_version: policy.mandatory_reconsent_version,
+        capability,
+    };
+    authorize_full_access(&policy, &receipt, &binding, Utc::now()).map_err(|_| {
+        "The active Full Access receipt does not allow this mutation action.".to_string()
+    })
 }
 
 async fn confirm_full_access_enrollment(
@@ -1086,6 +1214,26 @@ async fn append_control_event(
     Ok(())
 }
 
+async fn append_mutation_event(
+    state: &AppState,
+    request_id: &str,
+    summary: &str,
+) -> Result<(), String> {
+    let mut audit = state.audit.lock().await;
+    audit.append(
+        AuditClass::Mutation,
+        Some(request_id.to_string()),
+        summary,
+        true,
+    );
+    if let Some(store) = &state.audit_store {
+        store.persist(&audit).map_err(|_| {
+            "Local activity could not be persisted. The action was denied.".to_string()
+        })?;
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let identity = DeviceIdentityStore::new(device_identity_path()?).load_or_create()?;
     let device_fingerprint = identity.public_identity().device_fingerprint;
@@ -1103,6 +1251,7 @@ fn main() -> anyhow::Result<()> {
         pending_pairing: RwLock::new(None),
         pending_full_access_enrollment: RwLock::new(None),
         process_visibility_snapshot: RwLock::new(None),
+        mutation_review: RwLock::new(None),
         pending_relay_approvals: RwLock::new(HashMap::new()),
         preview_contexts: RwLock::new(HashMap::new()),
         local_api_address: RwLock::new(None),
@@ -2066,6 +2215,7 @@ mod tests {
             pending_pairing: RwLock::new(None),
             pending_full_access_enrollment: RwLock::new(None),
             process_visibility_snapshot: RwLock::new(None),
+            mutation_review: RwLock::new(None),
             pending_relay_approvals: RwLock::new(HashMap::new()),
             preview_contexts: RwLock::new(HashMap::new()),
             local_api_address: RwLock::new(None),
@@ -2256,6 +2406,7 @@ mod tests {
             pending_pairing: RwLock::new(None),
             pending_full_access_enrollment: RwLock::new(None),
             process_visibility_snapshot: RwLock::new(None),
+            mutation_review: RwLock::new(None),
             pending_relay_approvals: RwLock::new(HashMap::new()),
             preview_contexts: RwLock::new(HashMap::new()),
             local_api_address: RwLock::new(None),

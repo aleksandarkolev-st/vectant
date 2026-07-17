@@ -123,6 +123,20 @@
           </div>
           <p class="copy" data-field="full-access-mutations-copy">When a scoped Full Access mutation occurs, this desktop view records its file and line-change count. File bodies are not sent through the relay or stored in activity history.</p>
           <ul class="tight-list" data-field="full-access-mutations" aria-live="polite"></ul>
+          <div class="mutation-review" hidden data-mutation-review>
+            <div class="panel-head">
+              <div>
+                <p class="label">Local-only exact diff</p>
+                <h3 data-field="mutation-review-title">No change selected</h3>
+              </div>
+              <span class="tag">Never sent</span>
+            </div>
+            <p class="hint" data-field="mutation-review-copy"></p>
+            <pre class="approval-content" dir="ltr" data-field="mutation-review-diff"></pre>
+            <div class="control-row">
+              <button type="button" data-action="revert-mutation">Revert this local change</button>
+            </div>
+          </div>
         </article>
       </section>
 
