@@ -11385,6 +11385,112 @@ async function selfCheck({ workerImage = null, commandJson = null } = {}) {
         })}`,
       );
     }
+    const {
+      randomColdBuildExecutionObservationFacet,
+      randomColdBuildOutputEvidenceFacet,
+    } = await import('./lib/gpu-hmr-validation-matrix-ledger.mjs');
+    const liveResult = liveSelfCheckManifest.results[0];
+    const matrixOutputEvidence = await randomColdBuildOutputEvidenceFacet(
+      liveObservation.buildOutputEvidence,
+      {
+        artifactRoot: COLD_BUILD_CAS_DIR,
+        executionEnvironment: liveObservation.executionEnvironment,
+      },
+    );
+    const matrixObservationOptions = {
+      sourceIntake: liveResult.sourceIntakeEvidence,
+      directInputEvidence: liveResult.directInputEvidence,
+      candidateId: liveResult.candidateId,
+      candidateSource: liveResult.candidateSource,
+      expectedCommandSpec: liveResult.coldBuildCommandSpec,
+      expectedCommandSpecHash: liveResult.coldBuildCommandDescriptorHash,
+      expectedCommandConfigured: true,
+      buildOutputEvidenceValidation: matrixOutputEvidence,
+    };
+    const matrixObservation = randomColdBuildExecutionObservationFacet(
+      liveObservation,
+      matrixObservationOptions,
+    );
+    if (
+      matrixOutputEvidence.accepted !== true
+      || matrixOutputEvidence.matrixRecomputed !== true
+      || matrixOutputEvidence.readableArtifactCount !== 1
+      || matrixObservation.acceptedAsColdCommandExecutionEvidence !== true
+      || matrixObservation.acceptedAsColdBuildExecutionEvidence !== false
+      || matrixObservation.acceptedForGpuHmr !== false
+      || matrixObservation.gpuHmrSuccess !== false
+      || matrixObservation.canSatisfyRuntimeProof !== false
+      || matrixObservation.canSatisfyDispatchProof !== false
+      || matrixObservation.commandSupportFailedGates.length !== 0
+    ) {
+      throw new Error('static cold-build matrix recomputation self-check failed');
+    }
+    const forgedEnvironment = structuredClone(liveObservation.executionEnvironment);
+    forgedEnvironment.projectSpecificSuccess = false;
+    const forgedEnvironmentObservation = structuredClone(liveObservation);
+    forgedEnvironmentObservation.executionEnvironment = forgedEnvironment;
+    forgedEnvironmentObservation.execution_environment = structuredClone(forgedEnvironment);
+    forgedEnvironmentObservation.executionEnvironmentHash = contentHash(stableJson(
+      forgedEnvironment,
+    ));
+    forgedEnvironmentObservation.execution_environment_hash =
+      forgedEnvironmentObservation.executionEnvironmentHash;
+    const forgedEnvironmentMatrixObservation = randomColdBuildExecutionObservationFacet(
+      forgedEnvironmentObservation,
+      matrixObservationOptions,
+    );
+    if (
+      forgedEnvironmentMatrixObservation.acceptedAsColdCommandExecutionEvidence !== false
+      || !forgedEnvironmentMatrixObservation.commandSupportFailedGates.includes(
+        'random_cold_build_command_execution_static_environment_shape_invalid',
+      )
+    ) {
+      throw new Error('static cold-build matrix accepted an undeclared environment field');
+    }
+    const replayedWorkerEnvironment = structuredClone(liveObservation.executionEnvironment);
+    replayedWorkerEnvironment.workerImageId = `sha256:${'0'.repeat(64)}`;
+    const replayedWorkerObservation = structuredClone(liveObservation);
+    replayedWorkerObservation.executionEnvironment = replayedWorkerEnvironment;
+    replayedWorkerObservation.execution_environment = structuredClone(
+      replayedWorkerEnvironment,
+    );
+    replayedWorkerObservation.executionEnvironmentHash = contentHash(stableJson(
+      replayedWorkerEnvironment,
+    ));
+    replayedWorkerObservation.execution_environment_hash =
+      replayedWorkerObservation.executionEnvironmentHash;
+    const replayedWorkerMatrixObservation = randomColdBuildExecutionObservationFacet(
+      replayedWorkerObservation,
+      matrixObservationOptions,
+    );
+    if (
+      replayedWorkerMatrixObservation.acceptedAsColdCommandExecutionEvidence !== false
+      || !replayedWorkerMatrixObservation.commandSupportFailedGates.includes(
+        'random_cold_build_command_execution_static_envelope_invalid',
+      )
+    ) {
+      throw new Error('static cold-build matrix accepted a replayed worker identity');
+    }
+    const emptyCasRoot = await mkdtemp(path.join(os.tmpdir(), 'synthi-empty-cold-cas-'));
+    try {
+      const missingCasOutputEvidence = await randomColdBuildOutputEvidenceFacet(
+        liveObservation.buildOutputEvidence,
+        {
+          artifactRoot: emptyCasRoot,
+          executionEnvironment: liveObservation.executionEnvironment,
+        },
+      );
+      if (
+        missingCasOutputEvidence.accepted !== false
+        || !missingCasOutputEvidence.failedGates.includes(
+          'random_cold_static_output_cas_bytes_invalid',
+        )
+      ) {
+        throw new Error('static cold-build matrix accepted missing CAS bytes');
+      }
+    } finally {
+      await rm(emptyCasRoot, { recursive: true, force: true });
+    }
   }
   let credentialEnvironmentRejected = false;
   try {
