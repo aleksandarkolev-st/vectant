@@ -4529,6 +4529,222 @@ function initialDeviceCompileProofFromResult(result) {
   };
 }
 
+function normalizedGpuProofArtifactRelativePath(value) {
+  const raw = String(value ?? '').trim().replace(/\\/g, '/');
+  if (!raw || raw.startsWith('/') || /^[A-Za-z]:\//.test(raw)) {
+    throw new Error('GPU proof artifact path must be workspace-relative');
+  }
+  const parts = raw.split('/').filter(Boolean);
+  if (parts.some((part) => part === '.' || part === '..')) {
+    throw new Error('GPU proof artifact path contains unsafe traversal');
+  }
+  const normalized = parts.join('/');
+  if (!normalized.startsWith('.synthi/gpu-hmr/')) {
+    throw new Error('GPU proof artifact path is outside the generated proof namespace');
+  }
+  return normalized;
+}
+
+function isSha256Value(value) {
+  return /^(?:sha256:)?[a-f0-9]{64}$/.test(String(value ?? '').trim());
+}
+
+function executableBasename(value) {
+  return String(value ?? '').trim().replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
+}
+
+function coldDeviceCompileProvenanceEvidence({
+  proofArtifact,
+  proofArtifactPath,
+  expectedProofId,
+  expectedWorkspaceSlug,
+  expectedVendor,
+  expectedCompiler,
+  expectedArch,
+  expectedSourcePath,
+}) {
+  const artifact = proofArtifact && typeof proofArtifact === 'object' ? proofArtifact : {};
+  const stageResults = Array.isArray(artifact.stageResults) ? artifact.stageResults : [];
+  const evidenceRefs = Array.isArray(artifact.evidenceRefs) ? artifact.evidenceRefs : [];
+  const deviceStage = stageResults.find((stage) => stage?.stageId === 'device-compile') ?? null;
+  const artifactEvidence = evidenceRefs.find((entry) => entry?.kind === 'device-artifact') ?? null;
+  const compilerEvidence = evidenceRefs.find((entry) => entry?.kind === 'device-compiler-output') ?? null;
+  const compileProvenance = compilerEvidence?.metadata?.compileProvenance
+    ?? compilerEvidence?.metadata?.compile_provenance
+    ?? null;
+  const declaredVendor = String(expectedVendor ?? '').trim().toLowerCase();
+  const declaredCompiler = executableBasename(expectedCompiler);
+  const declaredArch = String(expectedArch ?? '').trim();
+  const declaredSourcePath = cleanRel(expectedSourcePath);
+  const observedCompilerExecutable = executableBasename(compileProvenance?.compilerExecutable);
+  const observedDeviceCompiler = executableBasename(compileProvenance?.deviceCompiler);
+  const observedVendor = String(compileProvenance?.gpuVendor ?? '').trim().toLowerCase();
+  const observedArch = Array.isArray(compileProvenance?.gpuArch)
+    ? compileProvenance.gpuArch.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+  const observedSourcePath = cleanRel(compileProvenance?.sourceFilename);
+  const artifactBytes = Number(artifactEvidence?.metadata?.artifactBytes ?? 0);
+  const stageEvidenceRefs = new Set(Array.isArray(deviceStage?.evidenceRefs) ? deviceStage.evidenceRefs : []);
+  const selectedArtifactId = String(artifact.selectedArtifactId ?? '').trim();
+  const blockingGaps = [
+    artifact.schemaVersion === 'synthi.gpu.hmr.proof.v1'
+      ? null
+      : 'cold_device_compile_proof_schema_invalid',
+    String(artifact.proofId ?? '') === String(expectedProofId ?? '') && proofIdLooksImmutable(artifact.proofId)
+      ? null
+      : 'cold_device_compile_proof_id_mismatch',
+    String(artifact.workspaceSlug ?? '') === String(expectedWorkspaceSlug ?? '')
+      ? null
+      : 'cold_device_compile_workspace_mismatch',
+    deviceStage?.status === 'passed'
+      ? null
+      : 'cold_device_compile_stage_not_passed',
+    artifactEvidence
+      ? null
+      : 'cold_device_compile_artifact_evidence_missing',
+    Number.isFinite(artifactBytes) && artifactBytes > 0
+      ? null
+      : 'cold_device_compile_artifact_bytes_missing',
+    isSha256Value(artifactEvidence?.contentHash)
+      ? null
+      : 'cold_device_compile_artifact_hash_invalid',
+    selectedArtifactId && artifactEvidence?.artifactUri === selectedArtifactId
+      ? null
+      : 'cold_device_compile_selected_artifact_mismatch',
+    artifactEvidence?.evidenceId && stageEvidenceRefs.has(artifactEvidence.evidenceId)
+      ? null
+      : 'cold_device_compile_artifact_stage_binding_missing',
+    compilerEvidence
+      ? null
+      : 'cold_device_compile_compiler_evidence_missing',
+    compilerEvidence?.evidenceId && stageEvidenceRefs.has(compilerEvidence.evidenceId)
+      ? null
+      : 'cold_device_compile_compiler_stage_binding_missing',
+    compileProvenance && typeof compileProvenance === 'object'
+      ? null
+      : 'cold_device_compile_provenance_missing',
+    declaredCompiler && observedCompilerExecutable === declaredCompiler && observedDeviceCompiler === declaredCompiler
+      ? null
+      : 'cold_device_compile_compiler_mismatch',
+    declaredVendor && observedVendor === declaredVendor
+      ? null
+      : 'cold_device_compile_vendor_mismatch',
+    declaredArch && observedArch.includes(declaredArch)
+      ? null
+      : 'cold_device_compile_arch_mismatch',
+    declaredSourcePath && observedSourcePath === declaredSourcePath
+      ? null
+      : 'cold_device_compile_source_path_mismatch',
+    compileProvenance?.cacheHit === false
+      ? null
+      : 'cold_device_compile_cache_hit_not_fresh_codegen',
+    isSha256Value(compileProvenance?.compileCommandHash)
+      ? null
+      : 'cold_device_compile_command_hash_invalid',
+    isSha256Value(compileProvenance?.dependencyHash)
+      ? null
+      : 'cold_device_compile_dependency_hash_invalid',
+    typeof compileProvenance?.compilerIdentity === 'string' && compileProvenance.compilerIdentity.trim()
+      ? null
+      : 'cold_device_compile_compiler_identity_missing',
+  ].filter(Boolean);
+  const accepted = blockingGaps.length === 0;
+  const proofSeed = {
+    proofArtifactPath,
+    proofId: artifact.proofId ?? null,
+    workspaceSlug: artifact.workspaceSlug ?? null,
+    selectedArtifactId: selectedArtifactId || null,
+    artifactHash: artifactEvidence?.contentHash ?? null,
+    artifactBytes,
+    compilerExecutable: observedCompilerExecutable || null,
+    deviceCompiler: observedDeviceCompiler || null,
+    gpuVendor: observedVendor || null,
+    gpuArch: observedArch,
+    sourceFilename: observedSourcePath || null,
+    compileCommandHash: compileProvenance?.compileCommandHash ?? null,
+    dependencyHash: compileProvenance?.dependencyHash ?? null,
+    compilerIdentity: compileProvenance?.compilerIdentity ?? null,
+    cacheHit: compileProvenance?.cacheHit ?? null,
+    blockingGaps,
+  };
+  const evidenceHash = `sha256:${sha256Hex(stableJson(proofSeed))}`;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.cold_device_compile_provenance.v1',
+    schema_version: 'synthi.gpu_hmr.cold_device_compile_provenance.v1',
+    evidenceHash,
+    evidence_hash: evidenceHash,
+    proofAuthority: 'fresh_device_compile_provenance_only_not_gpu_hmr_runtime_acceptance',
+    proof_authority: 'fresh_device_compile_provenance_only_not_gpu_hmr_runtime_acceptance',
+    accepted,
+    acceptedAsFreshDeviceCompileEvidence: accepted,
+    accepted_as_fresh_device_compile_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    freshCompilerInvocation: compileProvenance?.cacheHit === false,
+    fresh_compiler_invocation: compileProvenance?.cacheHit === false,
+    cacheHit: compileProvenance?.cacheHit ?? null,
+    cache_hit: compileProvenance?.cacheHit ?? null,
+    proofArtifactPath,
+    proof_artifact_path: proofArtifactPath,
+    proofArtifactId: artifact.proofId ?? null,
+    proof_artifact_id: artifact.proofId ?? null,
+    compilerExecutable: observedCompilerExecutable || null,
+    compiler_executable: observedCompilerExecutable || null,
+    deviceCompiler: observedDeviceCompiler || null,
+    device_compiler: observedDeviceCompiler || null,
+    gpuVendor: observedVendor || null,
+    gpu_vendor: observedVendor || null,
+    gpuArch: observedArch,
+    gpu_arch: observedArch,
+    sourceFilename: observedSourcePath || null,
+    source_filename: observedSourcePath || null,
+    artifactHash: artifactEvidence?.contentHash ?? null,
+    artifact_hash: artifactEvidence?.contentHash ?? null,
+    artifactBytes,
+    artifact_bytes: artifactBytes,
+    compileCommandHash: compileProvenance?.compileCommandHash ?? null,
+    compile_command_hash: compileProvenance?.compileCommandHash ?? null,
+    dependencyHash: compileProvenance?.dependencyHash ?? null,
+    dependency_hash: compileProvenance?.dependencyHash ?? null,
+    compilerIdentity: compileProvenance?.compilerIdentity ?? null,
+    compiler_identity: compileProvenance?.compilerIdentity ?? null,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+}
+
+async function readColdDeviceCompileProvenanceEvidence({
+  compileProof,
+  split,
+  expectedVendor,
+  expectedArch,
+}) {
+  const proofArtifactPath = normalizedGpuProofArtifactRelativePath(compileProof?.proofArtifactPath);
+  const proofArtifactRaw = await readWorkerFile(split.workspacePath, proofArtifactPath);
+  const proofArtifact = JSON.parse(proofArtifactRaw);
+  const selectedDeviceRole = split.roles.deviceRoles.find((role) => role.path === split.roles.device)
+    ?? split.roles.deviceRoles[0];
+  const expectedCompiler = split.manifest?.gpu?.device_compiler
+    ?? selectedDeviceRole?.compiler
+    ?? null;
+  return coldDeviceCompileProvenanceEvidence({
+    proofArtifact,
+    proofArtifactPath,
+    expectedProofId: compileProof?.proofId,
+    expectedWorkspaceSlug: CFG.slug,
+    expectedVendor,
+    expectedCompiler,
+    expectedArch,
+    expectedSourcePath: split.roles.device,
+  });
+}
+
 function fullRuntimeGpuHmrProofFromResult(result) {
   const wait = result?.wait && typeof result.wait === 'object' ? result.wait : {};
   const validation = proofValidationObject(wait);
@@ -9688,6 +9904,12 @@ function coldAiSplitProofFromSeed(coldSplitProofSeed) {
   if (providerCallEvidence?.acceptedAsColdAiProviderCallEvidence !== true) {
     throw new Error('cold AI split proof requires an observed AI provider call');
   }
+  const deviceCompileProvenance =
+    coldSplitProofSeed.coldDeviceCompileProvenance
+    ?? coldSplitProofSeed.cold_device_compile_provenance;
+  if (deviceCompileProvenance?.acceptedAsFreshDeviceCompileEvidence !== true) {
+    throw new Error('cold AI split proof requires fresh device compiler provenance');
+  }
   const visualArtifacts =
     coldSplitProofSeed.visualArtifacts
     ?? coldSplitProofSeed.visual_artifacts;
@@ -10182,6 +10404,83 @@ function selfCheckColdAiSplitProof() {
     selfCheckSplit,
     selfCheckInitialCompileArgs,
   );
+  const selfCheckCompileProofId = `gpu-proof:${'a'.repeat(64)}`;
+  const selfCheckArtifactId = `device:sha256:${'b'.repeat(64)}`;
+  const selfCheckCompileProofArtifact = {
+    schemaVersion: 'synthi.gpu.hmr.proof.v1',
+    proofId: selfCheckCompileProofId,
+    workspaceSlug: 'self-check-cold-ai',
+    selectedArtifactId: selfCheckArtifactId,
+    stageResults: [{
+      stageId: 'device-compile',
+      status: 'passed',
+      evidenceRefs: ['evidence:self-check-device-artifact', 'evidence:self-check-device-compiler'],
+    }],
+    evidenceRefs: [
+      {
+        evidenceId: 'evidence:self-check-device-artifact',
+        kind: 'device-artifact',
+        contentHash: `sha256:${'b'.repeat(64)}`,
+        artifactUri: selfCheckArtifactId,
+        metadata: { artifactBytes: 4096 },
+      },
+      {
+        evidenceId: 'evidence:self-check-device-compiler',
+        kind: 'device-compiler-output',
+        metadata: {
+          compileProvenance: {
+            compilerExecutable: '/opt/rocm/bin/hipcc',
+            compilerIdentity: 'hipcc:sha256:self-check',
+            deviceCompiler: 'hipcc',
+            gpuVendor: 'rocm',
+            gpuArch: ['gfx1201'],
+            sourceFilename: 'src/main.hip',
+            compileCommandHash: 'c'.repeat(64),
+            dependencyHash: 'd'.repeat(64),
+            cacheHit: false,
+          },
+        },
+      },
+    ],
+  };
+  const freshDeviceCompileEvidence = coldDeviceCompileProvenanceEvidence({
+    proofArtifact: selfCheckCompileProofArtifact,
+    proofArtifactPath: '.synthi/gpu-hmr/proofs/self-check-cold-ai.json',
+    expectedProofId: selfCheckCompileProofId,
+    expectedWorkspaceSlug: 'self-check-cold-ai',
+    expectedVendor: 'rocm',
+    expectedCompiler: 'hipcc',
+    expectedArch: 'gfx1201',
+    expectedSourcePath: 'src/main.hip',
+  });
+  const cachedCompileProofArtifact = JSON.parse(JSON.stringify(selfCheckCompileProofArtifact));
+  cachedCompileProofArtifact.evidenceRefs[1].metadata.compileProvenance.cacheHit = true;
+  const cachedDeviceCompileEvidence = coldDeviceCompileProvenanceEvidence({
+    proofArtifact: cachedCompileProofArtifact,
+    proofArtifactPath: '.synthi/gpu-hmr/proofs/self-check-cached.json',
+    expectedProofId: selfCheckCompileProofId,
+    expectedWorkspaceSlug: 'self-check-cold-ai',
+    expectedVendor: 'rocm',
+    expectedCompiler: 'hipcc',
+    expectedArch: 'gfx1201',
+    expectedSourcePath: 'src/main.hip',
+  });
+  const wrongArchCompileEvidence = coldDeviceCompileProvenanceEvidence({
+    proofArtifact: selfCheckCompileProofArtifact,
+    proofArtifactPath: '.synthi/gpu-hmr/proofs/self-check-wrong-arch.json',
+    expectedProofId: selfCheckCompileProofId,
+    expectedWorkspaceSlug: 'self-check-cold-ai',
+    expectedVendor: 'rocm',
+    expectedCompiler: 'hipcc',
+    expectedArch: 'gfx9999',
+    expectedSourcePath: 'src/main.hip',
+  });
+  let unsafeCompileProofPathRejected = false;
+  try {
+    normalizedGpuProofArtifactRelativePath('../outside/proof.json');
+  } catch (error) {
+    unsafeCompileProofPathRejected = String(error?.message ?? '').includes('unsafe traversal');
+  }
   const proof = coldAiSplitProofFromSeed({
     coldSplitProven: true,
     coldSingleFrameVisual: {
@@ -10206,6 +10505,7 @@ function selfCheckColdAiSplitProof() {
     },
     visualMetrics: { visiblePixelCount: 1000 },
     coldAiProviderCallEvidence: providerEvidence,
+    coldDeviceCompileProvenance: freshDeviceCompileEvidence,
   });
   let missingVisualRejected = false;
   try {
@@ -10221,6 +10521,16 @@ function selfCheckColdAiSplitProof() {
     });
   } catch (error) {
     missingProviderRejected = String(error?.message ?? '').includes('observed AI provider call');
+  }
+  let missingFreshCompileRejected = false;
+  try {
+    coldAiSplitProofFromSeed({
+      coldSplitProven: true,
+      coldAiProviderCallEvidence: providerEvidence,
+      visualArtifacts: { beforeImage: 'cas:sha256:self-check' },
+    });
+  } catch (error) {
+    missingFreshCompileRejected = String(error?.message ?? '').includes('fresh device compiler provenance');
   }
   let forgedVisualRejected = false;
   try {
@@ -10248,6 +10558,7 @@ function selfCheckColdAiSplitProof() {
       },
       visualMetrics: { visiblePixelCount: 0 },
       coldAiProviderCallEvidence: providerEvidence,
+      coldDeviceCompileProvenance: freshDeviceCompileEvidence,
     });
   } catch (error) {
     forgedVisualRejected = String(error?.message ?? '').includes('blank_or_invalid');
@@ -10322,7 +10633,18 @@ function selfCheckColdAiSplitProof() {
     || proof.canSatisfyDispatchProof !== false
     || !missingVisualRejected
     || !missingProviderRejected
+    || !missingFreshCompileRejected
     || !forgedVisualRejected
+    || freshDeviceCompileEvidence.accepted !== true
+    || freshDeviceCompileEvidence.acceptedForGpuHmr !== false
+    || freshDeviceCompileEvidence.gpuHmrSuccess !== false
+    || freshDeviceCompileEvidence.canSatisfyRuntimeProof !== false
+    || freshDeviceCompileEvidence.canSatisfyDispatchProof !== false
+    || cachedDeviceCompileEvidence.accepted !== false
+    || !cachedDeviceCompileEvidence.blockingGaps.includes('cold_device_compile_cache_hit_not_fresh_codegen')
+    || wrongArchCompileEvidence.accepted !== false
+    || !wrongArchCompileEvidence.blockingGaps.includes('cold_device_compile_arch_mismatch')
+    || !unsafeCompileProofPathRejected
     || providerEvidence.accepted !== true
     || providerEvidence.acceptedForGpuHmr !== false
     || providerEvidence.gpuHmrSuccess !== false
@@ -11163,6 +11485,32 @@ async function run() {
       );
     }
   }
+  const coldDeviceCompileProvenance = CFG.mode === 'cold-ai-split'
+    ? await readColdDeviceCompileProvenanceEvidence({
+        compileProof: structuredInitialCompileProof,
+        split,
+        expectedVendor: vendor,
+        expectedArch: CFG.gpuArch,
+      })
+    : null;
+  if (coldDeviceCompileProvenance) {
+    const compileProvenancePath = await writeJsonArtifact(
+      'cold-device-compile-provenance',
+      coldDeviceCompileProvenance,
+    );
+    record(
+      'cold fresh device compile provenance',
+      coldDeviceCompileProvenance.accepted ? 'pass' : 'fail',
+      coldDeviceCompileProvenance.accepted
+        ? `${coldDeviceCompileProvenance.evidenceHash} artifact=${compileProvenancePath}`
+        : coldDeviceCompileProvenance.blockingGaps.join('|'),
+    );
+    if (!coldDeviceCompileProvenance.accepted) {
+      throw new Error(
+        `cold fresh device compile provenance rejected: ${coldDeviceCompileProvenance.blockingGaps.join('|')}`,
+      );
+    }
+  }
   const splitEndpointEvidence = gpuSplitEndpointEvidenceFromSidecar(split);
   record(
     'worker used GPU split endpoint',
@@ -11229,6 +11577,8 @@ async function run() {
       source_first_ingestion: sourceFirstIngestion,
       coldAiProviderCallEvidence,
       cold_ai_provider_call_evidence: coldAiProviderCallEvidence,
+      coldDeviceCompileProvenance,
+      cold_device_compile_provenance: coldDeviceCompileProvenance,
       coldSingleFrameVisual: coldVisual.sample,
       cold_single_frame_visual: coldVisual.sample,
       visualArtifacts: coldVisual.visualArtifacts,
