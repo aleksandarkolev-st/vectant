@@ -124,6 +124,81 @@ describe("synthi_compile", () => {
     }
   });
 
+  it("forwards an explicit device compile cache bypass without granting authority", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      bypass_device_compile_cache: true,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]!.parsed["bypass_device_compile_cache"]).toBe(true);
+    expect(fake.sent[0]!.parsed["bypass_ai_split_cache"]).toBeUndefined();
+
+    const input = eventLog.query({ kind: "input" })[0] as {
+      payload: Record<string, unknown>;
+    };
+    expect(input.payload["bypass_device_compile_cache"]).toBe(true);
+  });
+
+  it("preserves explicit false and omits the device compile cache field by default", async () => {
+    const explicitFalse = installFakeAttached();
+    session.setWireState("running");
+    const falseRes = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      bypass_device_compile_cache: false,
+    });
+
+    expect(falseRes.isError).toBeUndefined();
+    expect(explicitFalse.sent[0]!.parsed["bypass_device_compile_cache"]).toBe(false);
+    const falseInput = eventLog.query({ kind: "input" })[0] as {
+      payload: Record<string, unknown>;
+    };
+    expect(falseInput.payload["bypass_device_compile_cache"]).toBe(false);
+
+    session._resetForTests();
+    eventLog._resetForTests();
+    const defaultRequest = installFakeAttached();
+    session.setWireState("running");
+    const defaultRes = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+    });
+
+    expect(defaultRes.isError).toBeUndefined();
+    expect(defaultRequest.sent[0]!.parsed).not.toHaveProperty("bypass_device_compile_cache");
+    const defaultInput = eventLog.query({ kind: "input" })[0] as {
+      payload: Record<string, unknown>;
+    };
+    expect(defaultInput.payload).not.toHaveProperty("bypass_device_compile_cache");
+  });
+
+  it.each(["true", 1, null, {}])(
+    "rejects a non-boolean device compile cache bypass (%j)",
+    async (bypassDeviceCompileCache) => {
+      const fake = installFakeAttached();
+      session.setWireState("running");
+      const res = await compileTool({
+        language: "cpp",
+        source: "int main(){return 0;}",
+        bypass_device_compile_cache: bypassDeviceCompileCache,
+      });
+
+      expect(res.isError).toBe(true);
+      expect((res.structuredContent as { field?: string; expected?: string }).field).toBe(
+        "bypass_device_compile_cache",
+      );
+      expect((res.structuredContent as { expected?: string }).expected).toBe("boolean");
+      expect(fake.sent).toHaveLength(0);
+      session._resetForTests();
+      eventLog._resetForTests();
+    },
+  );
+
   it("forwards request-bound provider proof fields and a backend routing hint", async () => {
     const fake = installFakeAttached();
     session.setWireState("running");

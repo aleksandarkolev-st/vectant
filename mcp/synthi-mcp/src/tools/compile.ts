@@ -62,6 +62,7 @@ interface RawArgs {
   height?: unknown;
   use_ai_split?: unknown;
   bypass_ai_split_cache?: unknown;
+  bypass_device_compile_cache?: unknown;
   force_ai_split?: unknown;
   force_fresh_ai_split?: unknown;
   require_fresh_ai_split?: unknown;
@@ -159,6 +160,15 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       });
     }
   }
+  if (
+    a.bypass_device_compile_cache !== undefined
+    && typeof a.bypass_device_compile_cache !== "boolean"
+  ) {
+    return errorResponse("invalid_args", {
+      field: "bypass_device_compile_cache",
+      expected: "boolean",
+    });
+  }
 
   const gate = checkInputGate();
   if (gate) return errorResponse(gate.error, gate);
@@ -187,6 +197,9 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     a.bypass_ai_split_cache ?? a.force_ai_split ?? a.force_fresh_ai_split ?? a.require_fresh_ai_split;
   if (typeof bypassAiSplitCache === "boolean") {
     payload["bypass_ai_split_cache"] = bypassAiSplitCache;
+  }
+  if (typeof a.bypass_device_compile_cache === "boolean") {
+    payload["bypass_device_compile_cache"] = a.bypass_device_compile_cache;
   }
   const requireAiProviderCall =
     a.require_ai_provider_call ?? a.require_provider_call ?? a.force_ai_provider_call;
@@ -282,6 +295,9 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       use_ai_split: Boolean(payload["use_ai_split"]),
       bypass_ai_split_cache:
         typeof bypassAiSplitCache === "boolean" ? bypassAiSplitCache : undefined,
+      ...(typeof a.bypass_device_compile_cache === "boolean"
+        ? { bypass_device_compile_cache: a.bypass_device_compile_cache }
+        : {}),
       require_ai_provider_call:
         typeof requireAiProviderCall === "boolean" ? requireAiProviderCall : undefined,
       ...(typeof aiProvider === "string" ? { ai_provider: aiProvider.trim().toLowerCase() } : {}),
