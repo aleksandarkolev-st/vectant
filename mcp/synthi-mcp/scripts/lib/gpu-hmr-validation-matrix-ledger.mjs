@@ -44569,14 +44569,13 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
     enabled: options.includeUnproven === true,
   });
   includedRows.sort((a, b) => rowKey(a).localeCompare(rowKey(b)));
-  const querySummary = queryGpuHmrValidationMatrixLedger({
-    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  const querySummary = coverageSummary(includedRows, {
+    attemptHistory,
     generatedAt,
     generated_at: generatedAt,
-    rows: includedRows,
-    attemptHistory,
-    attempt_history: attemptHistory,
-  }).summary;
+    enforceRandomColdPathFreshness: Boolean(generatedAt),
+    enforce_random_cold_path_freshness: Boolean(generatedAt),
+  });
   const summary = {
     ...querySummary,
     includeInvalidated: options.includeInvalidated === true,
