@@ -1936,26 +1936,16 @@ export function deriveSourceFirstRequestIntent({
       `language is unknown for ${unknownSourcePaths.join(',')}`,
     );
   }
-  const languages = uniqueSortedStrings(sourceLanguageEvidence.map((entry) => entry.language));
-  if (languages.length !== 1) {
-    throw sourceFirstRequestIntentError(
-      languages.length === 0
-        ? 'source_first_request_intent_language_unknown'
-        : 'source_first_request_intent_language_mixed',
-      languages.length === 0
-        ? 'source manifest has no language-bearing source file'
-        : `source manifest spans incompatible request languages: ${languages.join(',')}`,
-    );
-  }
-  const entryLanguage = SOURCE_FIRST_LANGUAGE_BY_EXTENSION.get(
-    path.extname(normalizedEntryPath).toLowerCase(),
+  const entryLanguageEvidence = sourceLanguageEvidence.find(
+    (entry) => entry.path === normalizedEntryPath,
   );
-  if (entryLanguage !== languages[0]) {
+  if (!entryLanguageEvidence) {
     throw sourceFirstRequestIntentError(
       'source_first_request_intent_entry_language_ambiguous',
       `${normalizedEntryPath} does not establish the selected request language`,
     );
   }
+  const entryLanguage = entryLanguageEvidence.language;
 
   const oracle = sourceFirstOracleRequestHint(typedOracleIntent);
   const sourceFiles = normalizedFiles.filter((entry) => entry.kind === 'source');
@@ -1970,7 +1960,7 @@ export function deriveSourceFirstRequestIntent({
     sourcePaths: sourceFiles.map((entry) => entry.path),
     buildPaths: buildFiles.map((entry) => entry.path),
     buildMetadataHash,
-    language: languages[0],
+    language: entryLanguage,
     sourceLanguageEvidence,
     languageNeutralSourcePaths,
     oracleIntent: oracle.oracleIntent,
@@ -2000,9 +1990,9 @@ export function deriveSourceFirstRequestIntent({
     can_satisfy_runtime_proof: false,
     canSatisfyDispatchProof: false,
     can_satisfy_dispatch_proof: false,
-    language: languages[0],
-    languageSource: 'exact_source_manifest_file_extensions',
-    language_source: 'exact_source_manifest_file_extensions',
+    language: entryLanguage,
+    languageSource: 'exact_source_manifest_entry_extension',
+    language_source: 'exact_source_manifest_entry_extension',
     isGui: oracle.isGui,
     is_gui: oracle.isGui,
     uiMode: oracle.isGui ? 'typed_visual_oracle' : 'non_visual_request_hint',

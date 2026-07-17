@@ -80,13 +80,62 @@ assert.equal(visualIntent.uiMode, 'typed_visual_oracle');
 assert.equal(visualIntent.oracleIntent, 'visual_oracle');
 assert.ok(visualIntent.evidenceRefs.includes(visualSceneManifestHash));
 
+const mixedFiles = [
+  source('src/entry.cpp', 'int main() { return 0; }\n'),
+  source('src/kernel.cu', 'extern "C" __global__ void kernel() {}\n'),
+  source('src/program.cl', 'typedef float scalar_t;\n'),
+  source('include/shared.h', '#pragma once\n'),
+];
+const mixedIntent = deriveSourceFirstRequestIntent({
+  entryPath: 'src/entry.cpp',
+  files: mixedFiles,
+});
+assert.equal(mixedIntent.language, 'cpp');
+assert.equal(mixedIntent.languageSource, 'exact_source_manifest_entry_extension');
+assert.deepEqual(mixedIntent.sourceLanguageEvidence, [
+  { path: 'src/entry.cpp', extension: '.cpp', language: 'cpp' },
+  { path: 'src/kernel.cu', extension: '.cu', language: 'cuda' },
+  { path: 'src/program.cl', extension: '.cl', language: 'opencl' },
+]);
+assert.equal(mixedIntent.acceptedForGpuHmr, false);
+assert.equal(mixedIntent.gpuHmrSuccess, false);
+
+const reorderedMixedIntent = deriveSourceFirstRequestIntent({
+  entryPath: 'src/entry.cpp',
+  files: [...mixedFiles].reverse(),
+});
+assert.equal(reorderedMixedIntent.sourceManifestHash, mixedIntent.sourceManifestHash);
+assert.equal(reorderedMixedIntent.intentHash, mixedIntent.intentHash);
+assert.deepEqual(reorderedMixedIntent.sourceLanguageEvidence, mixedIntent.sourceLanguageEvidence);
+
+const switchedMixedIntent = deriveSourceFirstRequestIntent({
+  entryPath: 'src/program.cl',
+  files: mixedFiles,
+});
+assert.equal(switchedMixedIntent.language, 'opencl');
+assert.equal(switchedMixedIntent.sourceManifestHash, mixedIntent.sourceManifestHash);
+assert.notEqual(switchedMixedIntent.intentHash, mixedIntent.intentHash);
+
 expectRefusal(() => deriveSourceFirstRequestIntent({
   entryPath: 'src/entry.cpp',
   files: [
     source('src/entry.cpp', 'int main() { return 0; }\n'),
-    source('src/program.cl', 'typedef float scalar_t;\n'),
+    source('src/opaque.source', 'opaque source text\n'),
   ],
-}), 'source_first_request_intent_language_mixed');
+}), 'source_first_request_intent_language_unknown');
+
+expectRefusal(() => deriveSourceFirstRequestIntent({
+  entryPath: 'include/entry.h',
+  files: [
+    source('include/entry.h', '#pragma once\n'),
+    source('src/entry.cpp', 'int main() { return 0; }\n'),
+  ],
+}), 'source_first_request_intent_entry_language_ambiguous');
+
+expectRefusal(() => deriveSourceFirstRequestIntent({
+  entryPath: 'src/missing.cpp',
+  files: [source('src/entry.cpp', 'int main() { return 0; }\n')],
+}), 'source_first_request_intent_entry_not_source');
 
 expectRefusal(() => deriveSourceFirstRequestIntent({
   entryPath: 'src/entry.source',

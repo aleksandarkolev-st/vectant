@@ -233,4 +233,94 @@ const changedRequest = buildSourceFirstInitialCompileRequest({
 assert.equal(changedRequest.requestSupport.accepted, true);
 assert.notEqual(changedRequest.requestSupport.requestIdentity, cold.requestSupport.requestIdentity);
 
+const mixedFiles = [
+  source('src/entry.cpp', 'int main() { return 0; }\n'),
+  source('src/kernel.cu', 'extern "C" __global__ void kernel() {}\n'),
+  source('src/program.cl', 'typedef float scalar_t;\n'),
+  source('include/shared.h', '#pragma once\n'),
+  build('CMakeLists.txt', 'cmake_minimum_required(VERSION 3.24)\n'),
+];
+const mixedCppIntent = deriveSourceFirstRequestIntent({
+  entryPath: 'src/entry.cpp',
+  files: mixedFiles,
+  typedOracleIntent: {
+    outputOracleKind: 'compute_oracle',
+    runtimeExpectationHash: hash('mixed-compute-output-contract'),
+  },
+});
+const mixedCppRequest = buildSourceFirstInitialCompileRequest({
+  mode: 'cold-ai-split',
+  compileArgs: compileArgsFor(mixedCppIntent, mixedFiles),
+});
+assert.equal(mixedCppIntent.language, 'cpp');
+assert.equal(mixedCppRequest.requestSupport.accepted, true);
+assert.equal(mixedCppRequest.requestSupport.acceptedForGpuHmr, false);
+assert.equal(mixedCppRequest.requestSupport.gpuHmrSuccess, false);
+
+const changedSecondaryFiles = mixedFiles.map((file) => (
+  file.path === 'src/kernel.cu'
+    ? { ...file, content: 'extern "C" __global__ void kernel() { int changed = 1; }\n' }
+    : file
+));
+const changedSecondaryIntent = deriveSourceFirstRequestIntent({
+  entryPath: 'src/entry.cpp',
+  files: changedSecondaryFiles,
+  typedOracleIntent: {
+    outputOracleKind: 'compute_oracle',
+    runtimeExpectationHash: hash('mixed-compute-output-contract'),
+  },
+});
+const changedSecondaryRequest = buildSourceFirstInitialCompileRequest({
+  mode: 'cold-ai-split',
+  compileArgs: compileArgsFor(changedSecondaryIntent, changedSecondaryFiles),
+});
+assert.notEqual(changedSecondaryIntent.sourceManifestHash, mixedCppIntent.sourceManifestHash);
+assert.notEqual(changedSecondaryIntent.intentHash, mixedCppIntent.intentHash);
+assert.notEqual(
+  changedSecondaryRequest.requestSupport.requestIdentity,
+  mixedCppRequest.requestSupport.requestIdentity,
+);
+assert.equal(changedSecondaryIntent.acceptedForGpuHmr, false);
+assert.equal(changedSecondaryRequest.requestSupport.canSatisfyRuntimeProof, false);
+
+const reorderedMixedFiles = [...mixedFiles].reverse();
+const reorderedMixedIntent = deriveSourceFirstRequestIntent({
+  entryPath: 'src/entry.cpp',
+  files: reorderedMixedFiles,
+  typedOracleIntent: {
+    outputOracleKind: 'compute_oracle',
+    runtimeExpectationHash: hash('mixed-compute-output-contract'),
+  },
+});
+const reorderedMixedRequest = buildSourceFirstInitialCompileRequest({
+  mode: 'cold-ai-split',
+  compileArgs: compileArgsFor(reorderedMixedIntent, reorderedMixedFiles),
+});
+assert.equal(reorderedMixedIntent.intentHash, mixedCppIntent.intentHash);
+assert.deepEqual(reorderedMixedIntent.sourceLanguageEvidence, mixedCppIntent.sourceLanguageEvidence);
+assert.equal(
+  reorderedMixedRequest.requestSupport.requestIdentity,
+  mixedCppRequest.requestSupport.requestIdentity,
+);
+
+const mixedOpenClIntent = deriveSourceFirstRequestIntent({
+  entryPath: 'src/program.cl',
+  files: mixedFiles,
+  typedOracleIntent: {
+    outputOracleKind: 'compute_oracle',
+    runtimeExpectationHash: hash('mixed-compute-output-contract'),
+  },
+});
+const mixedOpenClRequest = buildSourceFirstInitialCompileRequest({
+  mode: 'cold-ai-split',
+  compileArgs: compileArgsFor(mixedOpenClIntent, mixedFiles),
+});
+assert.equal(mixedOpenClIntent.language, 'opencl');
+assert.equal(mixedOpenClRequest.requestSupport.accepted, true);
+assert.notEqual(mixedOpenClIntent.intentHash, mixedCppIntent.intentHash);
+assert.notEqual(
+  mixedOpenClRequest.requestSupport.requestIdentity,
+  mixedCppRequest.requestSupport.requestIdentity,
+);
+
 console.log('gpu-hmr source-first cold compile cache request self-check passed');
