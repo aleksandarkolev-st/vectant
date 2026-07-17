@@ -3993,7 +3993,11 @@ function selfCheck() {
   console.log('[ok] WebGPU runtime visual proof self-check passed');
 }
 
-async function main() {
+export async function main() {
+  if (process.argv.includes('--wrapper-self-check')) {
+    console.log('[ok] WebGPU runtime visual wrapper main executed');
+    return;
+  }
   if (process.argv.includes('--self-check')) {
     await loadWebgpuRuntimeVisualDependencies();
     selfCheck();
