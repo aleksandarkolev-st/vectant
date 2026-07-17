@@ -1555,6 +1555,7 @@ function computeProofLedgerMaterials(scope, {
     output_change_expected: true,
   };
   const proofLedger = buildGpuHmrProofLedger({
+    schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     project_id: projectId,
     edit_id: `source-edit:${scope}`,
     backend,
