@@ -2,6 +2,10 @@ export const GPU_HMR_TEST_TIMING_SCHEMA = 'synthi.gpu_hmr.test_timing.v2';
 export const GPU_HMR_TEST_TIMING_SCHEMA_VERSION = GPU_HMR_TEST_TIMING_SCHEMA;
 export const GPU_HMR_TEST_TIMING_AUTHORITY = 'timing_only';
 export const GPU_HMR_TEST_TIMING_CLOCK = 'monotonic_ns';
+export const GPU_HMR_TEST_TIMING_VISUAL_MODALITY = 'visual';
+export const GPU_HMR_TEST_TIMING_COMPUTE_ONLY_MODALITY = 'compute_only';
+export const GPU_HMR_TEST_TIMING_COMPUTE_ONLY_REASON =
+  'compute_only_test_has_no_visual_contract';
 
 export const GPU_HMR_TEST_TIMING_PHASE_KEYS = Object.freeze([
   'cold_intake',
@@ -93,6 +97,72 @@ function defaultClock() {
 
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function canonicalDeclaredOracleModality(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized || normalized === 'non_visual_unspecified') return null;
+  if (normalized === 'visual' || normalized === 'visual_oracle') {
+    return GPU_HMR_TEST_TIMING_VISUAL_MODALITY;
+  }
+  if (
+    normalized === 'compute'
+    || normalized === 'compute_only'
+    || normalized === 'compute_oracle'
+  ) {
+    return GPU_HMR_TEST_TIMING_COMPUTE_ONLY_MODALITY;
+  }
+  throw new GpuHmrTestTimingError('timing_oracle_modality_invalid', {
+    declaredKind: normalized,
+  });
+}
+
+export function deriveGpuHmrTestTimingModality(declaredOracle) {
+  if (!isObject(declaredOracle)) {
+    throw new GpuHmrTestTimingError('timing_oracle_declaration_invalid');
+  }
+
+  const declarations = [declaredOracle];
+  for (const nested of [
+    declaredOracle.outputOracle,
+    declaredOracle.output_oracle,
+    declaredOracle.oracle,
+  ]) {
+    if (isObject(nested)) declarations.push(nested);
+  }
+
+  const modalities = new Set();
+  for (const declaration of declarations) {
+    for (const field of [
+      'oracleIntent',
+      'oracle_intent',
+      'outputOracleKind',
+      'output_oracle_kind',
+      'oracleKind',
+      'oracle_kind',
+      'kind',
+    ]) {
+      if (!Object.hasOwn(declaration, field)) continue;
+      const modality = canonicalDeclaredOracleModality(declaration[field]);
+      if (modality !== null) modalities.add(modality);
+    }
+  }
+
+  if (modalities.size === 0) {
+    throw new GpuHmrTestTimingError('timing_oracle_modality_undeclared');
+  }
+  if (modalities.size !== 1) {
+    throw new GpuHmrTestTimingError('timing_oracle_modality_conflict');
+  }
+
+  const [modality] = modalities;
+  return Object.freeze({
+    modality,
+    visualCapable: modality === GPU_HMR_TEST_TIMING_VISUAL_MODALITY,
+    notApplicableReason: modality === GPU_HMR_TEST_TIMING_COMPUTE_ONLY_MODALITY
+      ? GPU_HMR_TEST_TIMING_COMPUTE_ONLY_REASON
+      : null,
+  });
 }
 
 function pushGap(gaps, gap) {

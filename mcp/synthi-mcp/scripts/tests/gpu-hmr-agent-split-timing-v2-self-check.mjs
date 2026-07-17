@@ -3,7 +3,10 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import {
+  GPU_HMR_TEST_TIMING_COMPUTE_ONLY_REASON,
   GPU_HMR_TEST_TIMING_SCHEMA,
+  assertCompleteGpuHmrTestTiming,
+  deriveGpuHmrTestTimingModality,
   validateGpuHmrTestTiming,
 } from '../lib/gpu-hmr-test-timing-v2.mjs';
 import {
@@ -18,6 +21,9 @@ import {
   observedMcpVisualCaptureContract,
   tagAgentSplitTimingError,
 } from '../gpu-hmr-agent-split-workspace-test.mjs';
+
+const VISUAL_ORACLE_REQUEST = Object.freeze({ oracleIntent: 'visual_oracle' });
+const COMPUTE_ORACLE_REQUEST = Object.freeze({ oracleIntent: 'compute_oracle' });
 
 function controlledClock(initialNs = 0n) {
   let currentNs = initialNs;
@@ -40,6 +46,29 @@ function finishTerminalPhases(lifecycle, clock) {
   lifecycle.finishPhase('proof_finalization');
 }
 
+function createCompleteComputeLifecycle(clock) {
+  const lifecycle = createAgentSplitTestTimingV2Lifecycle({
+    nowNs: clock.now,
+    declaredOracleRequest: COMPUTE_ORACLE_REQUEST,
+  });
+  for (const phaseKey of [
+    'cold_intake',
+    'discovery',
+    'split',
+    'compile',
+    'load',
+    'epoch_publication',
+    'dispatch',
+    'output_ready',
+    'retirement',
+  ]) {
+    lifecycle.beginPhase(phaseKey);
+    clock.tick(2n);
+    lifecycle.finishPhase(phaseKey);
+  }
+  return lifecycle;
+}
+
 function assertSupportOnlyTiming(record, outcome) {
   const validation = validateGpuHmrTestTiming(record);
   assert.equal(record.schema, GPU_HMR_TEST_TIMING_SCHEMA);
@@ -53,8 +82,34 @@ function assertSupportOnlyTiming(record, outcome) {
   return validation;
 }
 
+assert.deepEqual(deriveGpuHmrTestTimingModality(VISUAL_ORACLE_REQUEST), {
+  modality: 'visual',
+  visualCapable: true,
+  notApplicableReason: null,
+});
+assert.deepEqual(deriveGpuHmrTestTimingModality(COMPUTE_ORACLE_REQUEST), {
+  modality: 'compute_only',
+  visualCapable: false,
+  notApplicableReason: GPU_HMR_TEST_TIMING_COMPUTE_ONLY_REASON,
+});
+assert.throws(
+  () => deriveGpuHmrTestTimingModality({ observed: true, image: 'screenshot-success' }),
+  /timing_oracle_modality_undeclared/,
+);
+assert.throws(
+  () => deriveGpuHmrTestTimingModality({
+    oracleIntent: 'visual_oracle',
+    outputOracleKind: 'compute_oracle',
+  }),
+  /timing_oracle_modality_conflict/,
+);
+
 const visualClock = controlledClock(1_000n);
-const visualLifecycle = createAgentSplitTestTimingV2Lifecycle({ nowNs: visualClock.now });
+const visualLifecycle = createAgentSplitTestTimingV2Lifecycle({
+  nowNs: visualClock.now,
+  declaredOracleRequest: VISUAL_ORACLE_REQUEST,
+});
+assert.equal(visualLifecycle.timingModality, 'visual');
 visualLifecycle.beginPhase('cold_intake');
 visualClock.tick(5n);
 visualLifecycle.beginPhase('discovery');
@@ -164,6 +219,7 @@ for (const [field, forgedValue] of [
 const unavailableClock = controlledClock(2_000n);
 const unavailableLifecycle = createAgentSplitTestTimingV2Lifecycle({
   nowNs: unavailableClock.now,
+  declaredOracleRequest: VISUAL_ORACLE_REQUEST,
 });
 const unavailableTriggerNs = unavailableClock.tick(2n);
 unavailableLifecycle.observeEditTrigger(unavailableTriggerNs);
@@ -210,6 +266,61 @@ const nameOnlyContract = observedMcpVisualCaptureContract({
 });
 assert.equal(nameOnlyContract.observed, false);
 
+const undeclaredCaptureClock = controlledClock(2_500n);
+const undeclaredCaptureLifecycle = createAgentSplitTestTimingV2Lifecycle({
+  nowNs: undeclaredCaptureClock.now,
+});
+assert.throws(
+  () => undeclaredCaptureLifecycle.observeCaptureContract(
+    captureContract,
+    undeclaredCaptureClock.tick(1n),
+    undeclaredCaptureClock.tick(1n),
+  ),
+  /agent_split_timing_modality_not_declared_before_execution/,
+);
+assert.equal(undeclaredCaptureLifecycle.timingModality, null);
+assert.throws(
+  () => undeclaredCaptureLifecycle.markNotApplicable(
+    'trigger_to_visible',
+    GPU_HMR_TEST_TIMING_COMPUTE_ONLY_REASON,
+  ),
+  /requires_declared_compute_only/,
+);
+
+const computeCaptureClock = controlledClock(2_600n);
+const computeCaptureLifecycle = createAgentSplitTestTimingV2Lifecycle({
+  nowNs: computeCaptureClock.now,
+  declaredOracleRequest: COMPUTE_ORACLE_REQUEST,
+});
+assert.throws(
+  () => computeCaptureLifecycle.markNotApplicable(
+    'trigger_to_visible',
+    'capture_happened_to_be_missing',
+  ),
+  /requires_declared_compute_only/,
+);
+assert.equal(
+  computeCaptureLifecycle.observeCaptureContract(
+    captureContract,
+    computeCaptureClock.tick(1n),
+    computeCaptureClock.tick(1n),
+  ),
+  false,
+);
+finishTerminalPhases(computeCaptureLifecycle, computeCaptureClock);
+const computeCaptureTiming = computeCaptureLifecycle.finalize({
+  outcome: 'refused',
+  terminalReason: 'compute_capture_self_check_refused',
+});
+assert.equal(computeCaptureTiming.visualCapable, false);
+for (const phaseKey of ['trigger_to_visible', 'screenshot_capture', 'visual_analysis']) {
+  assert.equal(computeCaptureTiming.phases[phaseKey].state, 'not_applicable');
+  assert.equal(
+    computeCaptureTiming.phases[phaseKey].reasonCode,
+    GPU_HMR_TEST_TIMING_COMPUTE_ONLY_REASON,
+  );
+}
+
 const providerTerminal = classifyAgentSplitTimingTerminal(
   tagAgentSplitTimingError(new Error('provider secret must not be retained'), {
     outcome: 'failed',
@@ -241,7 +352,10 @@ for (const [name, terminal] of [
   ['emergency', emergencyTerminal],
 ]) {
   const clock = controlledClock(3_000n);
-  const lifecycle = createAgentSplitTestTimingV2Lifecycle({ nowNs: clock.now });
+  const lifecycle = createAgentSplitTestTimingV2Lifecycle({
+    nowNs: clock.now,
+    ...(name === 'provider' ? { declaredOracleRequest: VISUAL_ORACLE_REQUEST } : {}),
+  });
   if (name === 'provider') {
     clock.tick(7n);
     lifecycle.observeOpaqueCompileRequest();
@@ -259,13 +373,10 @@ for (const [name, terminal] of [
     terminalReason: terminal.reasonCode,
   });
   assertSupportOnlyTiming(timing, 'failed');
-  assert.equal(timing.visualCapable, false);
+  assert.equal(timing.visualCapable, true);
   for (const phaseKey of ['trigger_to_visible', 'screenshot_capture', 'visual_analysis']) {
-    assert.equal(timing.phases[phaseKey].state, 'not_applicable');
-    assert.equal(
-      timing.phases[phaseKey].reasonCode,
-      'visual_capture_contract_not_observed',
-    );
+    assert.equal(timing.phases[phaseKey].state, 'unavailable');
+    assert.notEqual(timing.phases[phaseKey].reasonCode, GPU_HMR_TEST_TIMING_COMPUTE_ONLY_REASON);
   }
   const checkpoint = buildAgentSplitResultCheckpoint({
     reason: `${name}_terminal`,
@@ -287,6 +398,7 @@ for (const [name, terminal] of [
 const persistenceClock = controlledClock(5_000n);
 const persistenceLifecycle = createAgentSplitTestTimingV2Lifecycle({
   nowNs: persistenceClock.now,
+  declaredOracleRequest: COMPUTE_ORACLE_REQUEST,
 });
 persistenceLifecycle.markUnavailable(
   'retirement',
@@ -304,6 +416,8 @@ const persistedTiming = await finalizeAgentSplitTimingAfterResultPersistence({
 assertSupportOnlyTiming(persistedTiming.testTiming, 'pass');
 assert.equal(persistedTiming.persistenceError, null);
 assert.equal(persistedTiming.testTiming.phases.proof_finalization.durationNs, '31');
+assert.equal(persistedTiming.resultCheckpoint.testTiming, persistedTiming.testTiming);
+assert.equal(persistedTiming.resultCheckpoint.test_timing, persistedTiming.testTiming);
 assert.ok(
   BigInt(persistedTiming.testTiming.phases.total_wall.endNs) >= persistedThroughNs,
 );
@@ -311,6 +425,7 @@ assert.ok(
 const persistenceFailureClock = controlledClock(6_000n);
 const persistenceFailureLifecycle = createAgentSplitTestTimingV2Lifecycle({
   nowNs: persistenceFailureClock.now,
+  declaredOracleRequest: COMPUTE_ORACLE_REQUEST,
 });
 persistenceFailureLifecycle.markUnavailable(
   'retirement',
@@ -335,6 +450,161 @@ assert.equal(
   'agent_split_result_persistence_failure',
 );
 assertSupportOnlyTiming(failedPersistenceTiming.testTiming, 'failed');
+assert.equal(
+  failedPersistenceTiming.resultCheckpoint.testTiming,
+  failedPersistenceTiming.testTiming,
+);
+
+const completePassClock = controlledClock(6_500n);
+const completePassLifecycle = createCompleteComputeLifecycle(completePassClock);
+let attachedCompletePass = null;
+const completePassTiming = await finalizeAgentSplitTimingAfterResultPersistence({
+  lifecycle: completePassLifecycle,
+  timingTerminal: classifyAgentSplitTimingTerminal(),
+  persistResults: async () => {
+    completePassClock.tick(5n);
+  },
+  persistAttachedResult: async (bundle) => {
+    attachedCompletePass = bundle;
+  },
+  requireCompleteOnPass: true,
+});
+assert.equal(completePassTiming.timingTerminal.outcome, 'pass');
+assert.equal(completePassTiming.persistenceError, null);
+assert.equal(completePassTiming.timingValidationError, null);
+assertCompleteGpuHmrTestTiming(completePassTiming.testTiming);
+assert.equal(attachedCompletePass.testTiming, completePassTiming.testTiming);
+assert.equal(attachedCompletePass.resultCheckpoint.testTiming, completePassTiming.testTiming);
+assert.equal(attachedCompletePass.resultCheckpoint.acceptedForGpuHmr, false);
+assert.equal(attachedCompletePass.resultCheckpoint.gpuHmrSuccess, false);
+
+const visualTriggerRequiredClock = controlledClock(6_600n);
+const visualTriggerRequiredLifecycle = createAgentSplitTestTimingV2Lifecycle({
+  nowNs: visualTriggerRequiredClock.now,
+  declaredOracleRequest: VISUAL_ORACLE_REQUEST,
+});
+const triggerlessCaptureStartNs = visualTriggerRequiredClock.tick(2n);
+const triggerlessCaptureEndNs = visualTriggerRequiredClock.tick(3n);
+visualTriggerRequiredLifecycle.observeVisualCapture({
+  contract: captureContract,
+  captureStartNs: triggerlessCaptureStartNs,
+  captureEndNs: triggerlessCaptureEndNs,
+  analysisStartNs: triggerlessCaptureEndNs,
+  analysisEndNs: visualTriggerRequiredClock.tick(4n),
+});
+visualTriggerRequiredLifecycle.markUnavailable(
+  'retirement',
+  'runtime_retirement_boundary_not_observed_in_validator_clock',
+);
+const visualTriggerRequiredTiming = await finalizeAgentSplitTimingAfterResultPersistence({
+  lifecycle: visualTriggerRequiredLifecycle,
+  timingTerminal: classifyAgentSplitTimingTerminal(),
+  persistResults: async () => {
+    visualTriggerRequiredClock.tick(2n);
+  },
+});
+assert.equal(visualTriggerRequiredTiming.timingTerminal.outcome, 'failed');
+assert.equal(
+  visualTriggerRequiredTiming.timingValidationError?.code,
+  'agent_split_visual_trigger_to_visible_incomplete',
+);
+assert.equal(
+  visualTriggerRequiredTiming.testTiming.phases.trigger_to_visible.state,
+  'unavailable',
+);
+
+const incompleteColdClock = controlledClock(6_700n);
+const incompleteColdLifecycle = createAgentSplitTestTimingV2Lifecycle({
+  nowNs: incompleteColdClock.now,
+  declaredOracleRequest: VISUAL_ORACLE_REQUEST,
+});
+incompleteColdLifecycle.markUnavailable(
+  'retirement',
+  'runtime_retirement_boundary_not_observed_in_validator_clock',
+);
+let incompleteColdValidationObserved = false;
+let attachedIncompleteCold = null;
+const incompleteColdTiming = await finalizeAgentSplitTimingAfterResultPersistence({
+  lifecycle: incompleteColdLifecycle,
+  timingTerminal: classifyAgentSplitTimingTerminal(),
+  persistResults: async () => {
+    incompleteColdClock.tick(3n);
+  },
+  persistAttachedResult: async (bundle) => {
+    attachedIncompleteCold = bundle;
+  },
+  onTimingValidationError: () => {
+    incompleteColdValidationObserved = true;
+  },
+  requireCompleteOnPass: true,
+});
+assert.equal(incompleteColdValidationObserved, true);
+assert.equal(incompleteColdTiming.timingTerminal.outcome, 'failed');
+assert.equal(incompleteColdTiming.timingTerminal.category, 'timing_validation_failure');
+assert.equal(incompleteColdTiming.testTiming.outcome, 'failed');
+assert.ok(incompleteColdTiming.timingValidationError);
+assert.equal(validateGpuHmrTestTiming(incompleteColdTiming.testTiming).complete, false);
+assert.equal(attachedIncompleteCold.testTiming, incompleteColdTiming.testTiming);
+assert.equal(
+  attachedIncompleteCold.resultCheckpoint.testTimingTerminal.category,
+  'timing_validation_failure',
+);
+
+const attachedRefusalClock = controlledClock(6_800n);
+const attachedRefusalLifecycle = createAgentSplitTestTimingV2Lifecycle({
+  nowNs: attachedRefusalClock.now,
+  declaredOracleRequest: VISUAL_ORACLE_REQUEST,
+});
+attachedRefusalLifecycle.markUnavailable(
+  'retirement',
+  'runtime_retirement_boundary_not_observed_in_validator_clock',
+);
+let attachedRefusalBundle = null;
+const attachedRefusalTiming = await finalizeAgentSplitTimingAfterResultPersistence({
+  lifecycle: attachedRefusalLifecycle,
+  timingTerminal: refusalTerminal,
+  persistResults: async () => {
+    attachedRefusalClock.tick(2n);
+  },
+  persistAttachedResult: async (bundle) => {
+    attachedRefusalBundle = bundle;
+  },
+  requireCompleteOnPass: true,
+});
+assert.equal(attachedRefusalTiming.timingTerminal.outcome, 'refused');
+assert.equal(attachedRefusalTiming.testTiming.outcome, 'refused');
+assert.equal(attachedRefusalBundle.testTiming, attachedRefusalTiming.testTiming);
+assert.equal(attachedRefusalBundle.resultCheckpoint.testTiming, attachedRefusalTiming.testTiming);
+
+const attachedWriteFailureClock = controlledClock(6_900n);
+const attachedWriteFailureLifecycle = createCompleteComputeLifecycle(attachedWriteFailureClock);
+let attachedWriteAttempts = 0;
+let attachedWriteErrorsObserved = 0;
+const attachedWriteFailureTiming = await finalizeAgentSplitTimingAfterResultPersistence({
+  lifecycle: attachedWriteFailureLifecycle,
+  timingTerminal: classifyAgentSplitTimingTerminal(),
+  persistResults: async () => {
+    attachedWriteFailureClock.tick(4n);
+  },
+  persistAttachedResult: async () => {
+    attachedWriteAttempts += 1;
+    throw new Error(`self-check attached write failure ${attachedWriteAttempts}`);
+  },
+  onPersistenceError: () => {
+    attachedWriteErrorsObserved += 1;
+  },
+  requireCompleteOnPass: true,
+});
+assert.equal(attachedWriteAttempts, 2);
+assert.equal(attachedWriteErrorsObserved, 2);
+assert.equal(attachedWriteFailureTiming.timingTerminal.outcome, 'failed');
+assert.equal(attachedWriteFailureTiming.testTiming.outcome, 'failed');
+assert.ok(attachedWriteFailureTiming.attachmentPersistenceError);
+assert.ok(attachedWriteFailureTiming.attachmentRetryError);
+assert.equal(
+  attachedWriteFailureTiming.resultCheckpoint.testTiming,
+  attachedWriteFailureTiming.testTiming,
+);
 
 const emergencyEventCases = [
   { event: 'SIGINT', payload: null, expectedKind: 'signal:SIGINT' },
@@ -375,12 +645,16 @@ for (const emergencyCase of emergencyEventCases) {
   emergencyLifecycle.abandonActivePhases();
   emergencyLifecycle.markUnavailable('retirement', 'emergency_retirement_not_observed');
   let emergencyPersistedThroughNs = null;
+  let emergencyAttachedBundle = null;
   const emergencyTerminalTiming = finalizeAgentSplitTimingAfterResultPersistenceSync({
     lifecycle: emergencyLifecycle,
     timingTerminal: emergencyTimingTerminal(emergencyCase.expectedKind),
     persistResults: () => {
       emergencyClock.tick(11n);
       emergencyPersistedThroughNs = emergencyClock.now();
+    },
+    persistAttachedResult: (bundle) => {
+      emergencyAttachedBundle = bundle;
     },
   });
   assertSupportOnlyTiming(emergencyTerminalTiming.testTiming, 'failed');
@@ -392,6 +666,11 @@ for (const emergencyCase of emergencyEventCases) {
     BigInt(emergencyTerminalTiming.testTiming.phases.total_wall.endNs)
       >= emergencyPersistedThroughNs,
   );
+  assert.equal(emergencyAttachedBundle.testTiming, emergencyTerminalTiming.testTiming);
+  assert.equal(
+    emergencyAttachedBundle.resultCheckpoint.testTiming,
+    emergencyTerminalTiming.testTiming,
+  );
   retainedEmergencyTimings.push(emergencyTerminalTiming.testTiming);
 }
 
@@ -399,11 +678,14 @@ console.log(JSON.stringify({
   ok: true,
   schema: GPU_HMR_TEST_TIMING_SCHEMA,
   cases: {
-    visualPassUsesObservedContract: visualTiming.visualCapable,
+    visualModalityUsesDeclaredOracle:
+      visualLifecycle.timingModality === 'visual' && visualTiming.visualCapable,
+    computeOnlyUsesStableNotApplicableReason:
+      computeCaptureTiming.phases.trigger_to_visible.reasonCode
+        === GPU_HMR_TEST_TIMING_COMPUTE_ONLY_REASON,
     triggerEndsAtExplicitSignalBeforeCapture:
       visualTiming.phases.trigger_to_visible.endNs === visibleSignalNs.toString(),
-    screenshotCannotBecomeVisibleSignal:
-      unavailableTiming.phases.trigger_to_visible.state === 'unavailable',
+    screenshotCannotDeclareModality: undeclaredCaptureLifecycle.timingModality === null,
     missingCausalFrameUnavailable:
       unavailableTiming.phases.trigger_to_visible.state === 'unavailable',
     namesDoNotEnableVisualCapability: nameOnlyContract.observed === false,
@@ -415,6 +697,17 @@ console.log(JSON.stringify({
       BigInt(persistedTiming.testTiming.phases.total_wall.endNs) >= persistedThroughNs,
     persistenceFailureRetained:
       failedPersistenceTiming.testTiming.outcome === 'failed',
+    completePassAttached:
+      completePassTiming.resultCheckpoint.testTiming === completePassTiming.testTiming,
+    visualPassRequiresMeasuredTrigger:
+      visualTriggerRequiredTiming.timingTerminal.outcome === 'failed',
+    incompleteColdPassRejected:
+      incompleteColdTiming.timingTerminal.category === 'timing_validation_failure',
+    ordinaryRefusalAttached:
+      attachedRefusalBundle.testTiming === attachedRefusalTiming.testTiming,
+    attachedWriteFailureNotSwallowed:
+      attachedWriteFailureTiming.timingTerminal.outcome === 'failed'
+        && attachedWriteFailureTiming.attachmentPersistenceError !== null,
     terminalEventsRetainTiming:
       retainedEmergencyTimings.length === emergencyEventCases.length,
   },

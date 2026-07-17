@@ -19,6 +19,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -34,6 +35,7 @@ import {
   deterministicVisualModeFromMcpEvidence,
   evaluateGpuHmrDeterministicVisualMode,
   mcpFrameAtOrAfterFrameGate,
+  mcpFrameGateSatisfied,
   mcpFrameGateSatisfiedByScreenshot,
   mcpScreenshotArgsForFrameGate,
   mcpScreenshotMetadataFromToolResult,
@@ -64,10 +66,16 @@ import {
   verifyExactCommitGitBlobIdentity,
 } from './lib/gpu-hmr-direct-source-git-identity.mjs';
 import {
+  GPU_HMR_TEST_TIMING_COMPUTE_ONLY_MODALITY,
+  GPU_HMR_TEST_TIMING_COMPUTE_ONLY_REASON,
   GPU_HMR_TEST_TIMING_PHASE_KEYS,
   GPU_HMR_TEST_TIMING_SCHEMA,
+  GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS,
+  GPU_HMR_TEST_TIMING_VISUAL_MODALITY,
   GpuHmrTestTimingRecorder,
+  assertCompleteGpuHmrTestTiming,
   assertValidGpuHmrTestTiming,
+  deriveGpuHmrTestTimingModality,
   isStableGpuHmrTimingReasonCode,
 } from './lib/gpu-hmr-test-timing-v2.mjs';
 
@@ -241,7 +249,8 @@ const COMPILE_TERMINAL_DIAGNOSTIC_SCHEMA_VERSION =
   'synthi.gpu_hmr.compile_terminal_diagnostic.v1';
 const COMPILE_TERMINAL_DIAGNOSTIC_MAX_CHARS = 4000;
 const AGENT_SPLIT_TIMING_ERROR = Symbol('agent_split_timing_error');
-const TEST_TIMING_VISUAL_NOT_OBSERVED_REASON = 'visual_capture_contract_not_observed';
+const TEST_TIMING_MODALITY_UNDECLARED_REASON =
+  'output_oracle_timing_modality_not_declared_before_execution';
 const TEST_TIMING_VISUAL_CAPTURE_REASON = 'visual_screenshot_capture_not_observed';
 const TEST_TIMING_VISUAL_ANALYSIS_REASON = 'visual_analysis_not_observed';
 const TEST_TIMING_TRIGGER_REASON = 'first_post_epoch_visible_frame_not_observed';
@@ -259,9 +268,9 @@ const TEST_TIMING_SEED_ONLY_REASON = 'seed_only_terminal_path';
 const TEST_TIMING_EMERGENCY_RETIREMENT_REASON = 'emergency_retirement_not_observed';
 const TEST_TIMING_EMERGENCY_PHASE_REASON = 'phase_interrupted_by_terminal_event';
 const TEST_TIMING_PHASE_SET = new Set(GPU_HMR_TEST_TIMING_PHASE_KEYS);
+const TEST_TIMING_VISUAL_PHASE_SET = new Set(GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS);
 let activeAgentSplitTestTiming = null;
-let retainedAgentSplitTestTiming = null;
-let retainedAgentSplitTimingTerminal = null;
+let retainedAgentSplitTimingBundle = null;
 let writingResultCheckpoint = false;
 
 function timingBoundaryNs() {
@@ -324,8 +333,10 @@ export class AgentSplitTestTimingV2Lifecycle {
   #reasoned;
   #active;
   #pendingTriggerStartNs;
-  #captureContractObserved;
+  #timingModality;
+  #executionObserved;
   #runtimeWaitObserved;
+  #preparedRecords;
   #record;
 
   constructor(options = {}) {
@@ -340,9 +351,17 @@ export class AgentSplitTestTimingV2Lifecycle {
     this.#reasoned = new Map();
     this.#active = new Map();
     this.#pendingTriggerStartNs = null;
-    this.#captureContractObserved = false;
+    this.#timingModality = null;
+    this.#executionObserved = false;
     this.#runtimeWaitObserved = false;
+    this.#preparedRecords = new WeakSet();
     this.#record = null;
+
+    const declaredOracle = options.declaredOracleContract
+      ?? options.declaredOracleRequest
+      ?? options.oracleContract
+      ?? options.oracleRequest;
+    if (declaredOracle !== undefined) this.declareOracleContract(declaredOracle);
   }
 
   get isFinalized() {
@@ -353,8 +372,56 @@ export class AgentSplitTestTimingV2Lifecycle {
     return this.#record;
   }
 
+  get timingModality() {
+    return this.#timingModality;
+  }
+
+  get executionObserved() {
+    return this.#executionObserved;
+  }
+
   get visualCapable() {
-    return this.#captureContractObserved;
+    if (this.#timingModality === null) return null;
+    return this.#timingModality === GPU_HMR_TEST_TIMING_VISUAL_MODALITY;
+  }
+
+  declareOracleContract(declaredOracle) {
+    if (this.isFinalized) {
+      throw new Error('agent_split_timing_lifecycle_finalized');
+    }
+    if (this.#executionObserved) {
+      const error = new Error('agent_split_timing_modality_declared_after_execution');
+      error.code = 'agent_split_timing_modality_declared_after_execution';
+      error.reasonCode = 'agent_split_timing_modality_declared_after_execution';
+      throw error;
+    }
+    let derived;
+    try {
+      derived = deriveGpuHmrTestTimingModality(declaredOracle);
+    } catch (cause) {
+      const error = new Error(cause?.code ?? 'agent_split_timing_modality_invalid', { cause });
+      error.code = cause?.code ?? 'agent_split_timing_modality_invalid';
+      error.reasonCode = 'agent_split_timing_modality_refused';
+      throw error;
+    }
+    if (this.#timingModality !== null && this.#timingModality !== derived.modality) {
+      const error = new Error('agent_split_timing_modality_redeclared');
+      error.code = 'agent_split_timing_modality_redeclared';
+      error.reasonCode = 'agent_split_timing_modality_redeclared';
+      throw error;
+    }
+    this.#timingModality = derived.modality;
+    return derived;
+  }
+
+  #observeExecution() {
+    if (this.#timingModality === null) {
+      const error = new Error('agent_split_timing_modality_not_declared_before_execution');
+      error.code = 'agent_split_timing_modality_not_declared_before_execution';
+      error.reasonCode = 'agent_split_timing_modality_not_declared_before_execution';
+      throw error;
+    }
+    this.#executionObserved = true;
   }
 
   readBoundary() {
@@ -432,6 +499,15 @@ export class AgentSplitTestTimingV2Lifecycle {
   markNotApplicable(phaseKey, reasonCode) {
     requireAgentSplitTimingPhase(phaseKey);
     requireAgentSplitTimingReason(reasonCode);
+    if (
+      TEST_TIMING_VISUAL_PHASE_SET.has(phaseKey)
+      && (
+        this.#timingModality !== GPU_HMR_TEST_TIMING_COMPUTE_ONLY_MODALITY
+        || reasonCode !== GPU_HMR_TEST_TIMING_COMPUTE_ONLY_REASON
+      )
+    ) {
+      throw new Error('agent_split_visual_timing_not_applicable_requires_declared_compute_only');
+    }
     if (this.isFinalized || this.#windows.has(phaseKey) || this.#reasoned.has(phaseKey)) {
       return false;
     }
@@ -454,6 +530,8 @@ export class AgentSplitTestTimingV2Lifecycle {
   }
 
   observeEditTrigger(startNs) {
+    this.#observeExecution();
+    if (this.#timingModality !== GPU_HMR_TEST_TIMING_VISUAL_MODALITY) return false;
     const boundary = normalizeTimingBoundary(startNs);
     if (boundary < this.#totalStartNs || this.#windows.has('trigger_to_visible')) return false;
     this.#pendingTriggerStartNs = boundary;
@@ -461,6 +539,8 @@ export class AgentSplitTestTimingV2Lifecycle {
   }
 
   observePostEditVisibleOrOutputReadySignal(signalNs) {
+    this.#observeExecution();
+    if (this.#timingModality !== GPU_HMR_TEST_TIMING_VISUAL_MODALITY) return false;
     if (this.#pendingTriggerStartNs === null || this.#windows.has('trigger_to_visible')) {
       return false;
     }
@@ -477,11 +557,13 @@ export class AgentSplitTestTimingV2Lifecycle {
   }
 
   observeOpaqueCompileRequest() {
+    this.#observeExecution();
     this.markUnavailable('split', TEST_TIMING_SPLIT_REASON);
     this.markUnavailable('compile', TEST_TIMING_COMPILE_REASON);
   }
 
   observeRuntimeWait() {
+    this.#observeExecution();
     this.#runtimeWaitObserved = true;
     this.markUnavailable('load', TEST_TIMING_LOAD_REASON);
     this.markUnavailable('epoch_publication', TEST_TIMING_EPOCH_REASON);
@@ -490,8 +572,9 @@ export class AgentSplitTestTimingV2Lifecycle {
   }
 
   observeCaptureContract(contract, captureStartNs, captureEndNs) {
+    this.#observeExecution();
+    if (this.#timingModality !== GPU_HMR_TEST_TIMING_VISUAL_MODALITY) return false;
     if (contract?.observed !== true) return false;
-    this.#captureContractObserved = true;
     this.recordWindow('screenshot_capture', captureStartNs, captureEndNs);
     return true;
   }
@@ -521,7 +604,7 @@ export class AgentSplitTestTimingV2Lifecycle {
     }
   }
 
-  finalize({ outcome, terminalReason = null } = {}) {
+  prepareFinalization({ outcome, terminalReason = null } = {}) {
     if (this.#record) return this.#record;
     const finalReason = terminalReason ?? (
       outcome === 'pass' ? TEST_TIMING_SUCCESS_GAP_REASON : 'agent_split_runtime_failure'
@@ -529,7 +612,15 @@ export class AgentSplitTestTimingV2Lifecycle {
     requireAgentSplitTimingReason(finalReason);
     this.closeActivePhases();
 
-    if (this.#captureContractObserved) {
+    if (this.#timingModality === GPU_HMR_TEST_TIMING_COMPUTE_ONLY_MODALITY) {
+      for (const phaseKey of [
+        'trigger_to_visible',
+        'screenshot_capture',
+        'visual_analysis',
+      ]) {
+        this.markNotApplicable(phaseKey, GPU_HMR_TEST_TIMING_COMPUTE_ONLY_REASON);
+      }
+    } else if (this.#timingModality === GPU_HMR_TEST_TIMING_VISUAL_MODALITY) {
       if (!this.#windows.has('trigger_to_visible') && !this.#reasoned.has('trigger_to_visible')) {
         this.markUnavailable(
           'trigger_to_visible',
@@ -544,9 +635,16 @@ export class AgentSplitTestTimingV2Lifecycle {
       if (!this.#windows.has('visual_analysis') && !this.#reasoned.has('visual_analysis')) {
         this.markUnavailable('visual_analysis', TEST_TIMING_VISUAL_ANALYSIS_REASON);
       }
+    } else {
+      for (const phaseKey of [
+        'trigger_to_visible',
+        'screenshot_capture',
+        'visual_analysis',
+      ]) {
+        this.markUnavailable(phaseKey, TEST_TIMING_MODALITY_UNDECLARED_REASON);
+      }
     }
     if (this.#runtimeWaitObserved) {
-      this.observeRuntimeWait();
       if (!this.#windows.has('output_ready') && !this.#reasoned.has('output_ready')) {
         this.markUnavailable('output_ready', TEST_TIMING_OUTPUT_REASON);
       }
@@ -585,19 +683,38 @@ export class AgentSplitTestTimingV2Lifecycle {
       if (event.kind === 'start') recorder.startPhase(event.phaseKey);
       else recorder.finishPhase(event.phaseKey);
     }
-    this.#record = recorder.finalize({
+    const visualCapable = this.#timingModality !== GPU_HMR_TEST_TIMING_COMPUTE_ONLY_MODALITY;
+    const preparedRecord = recorder.finalize({
       outcome,
-      visualCapable: this.#captureContractObserved,
+      visualCapable,
       terminalReason: finalReason,
-      notApplicableReason: this.#captureContractObserved
-        ? null
-        : TEST_TIMING_VISUAL_NOT_OBSERVED_REASON,
+      notApplicableReason: visualCapable ? null : GPU_HMR_TEST_TIMING_COMPUTE_ONLY_REASON,
     });
     if (readingIndex !== readings.length) {
       throw new Error('agent_split_timing_boundary_replay_incomplete');
     }
-    assertValidGpuHmrTestTiming(this.#record);
+    assertValidGpuHmrTestTiming(preparedRecord);
+    this.#preparedRecords.add(preparedRecord);
+    return preparedRecord;
+  }
+
+  commitFinalization(preparedRecord) {
+    if (this.#record) {
+      if (preparedRecord !== this.#record) {
+        throw new Error('agent_split_timing_lifecycle_already_committed');
+      }
+      return this.#record;
+    }
+    if (!this.#preparedRecords.has(preparedRecord)) {
+      throw new TypeError('agent split timing commit requires a prepared record');
+    }
+    this.#record = preparedRecord;
     return this.#record;
+  }
+
+  finalize(options = {}) {
+    if (this.#record) return this.#record;
+    return this.commitFinalization(this.prepareFinalization(options));
   }
 }
 
@@ -787,50 +904,188 @@ export function buildAgentSplitResultCheckpoint({
   return checkpoint;
 }
 
-function retainAgentSplitTestTiming(testTiming, timingTerminal) {
-  retainedAgentSplitTestTiming = testTiming;
-  retainedAgentSplitTimingTerminal = timingTerminal;
-  return testTiming;
+function resultPersistenceFailureTerminal() {
+  return Object.freeze({
+    outcome: 'failed',
+    category: 'result_persistence_failure',
+    reasonCode: 'agent_split_result_persistence_failure',
+  });
+}
+
+function timingValidationFailureTerminal() {
+  return Object.freeze({
+    outcome: 'failed',
+    category: 'timing_validation_failure',
+    reasonCode: 'agent_split_timing_v2_incomplete',
+  });
+}
+
+function prepareAgentSplitTimingRetentionBundle({
+  testTiming,
+  timingTerminal,
+  reason = 'terminal_timing_v2',
+  rows = results,
+  slug = CFG.slug,
+  updatedAt = new Date().toISOString(),
+}) {
+  if (!timingTerminal || timingTerminal.outcome !== testTiming?.outcome) {
+    throw new TypeError('agent split timing retention requires matching timing and terminal outcomes');
+  }
+  const resultCheckpoint = Object.freeze(buildAgentSplitResultCheckpoint({
+    reason,
+    rows,
+    testTiming,
+    timingTerminal,
+    slug,
+    updatedAt,
+  }));
+  return Object.freeze({ testTiming, timingTerminal, resultCheckpoint });
+}
+
+function retainPreparedAgentSplitTimingBundle(bundle) {
+  retainedAgentSplitTimingBundle = bundle;
+  return bundle;
+}
+
+export function retainAndAttachAgentSplitTestTimingV2(options) {
+  return retainPreparedAgentSplitTimingBundle(
+    prepareAgentSplitTimingRetentionBundle(options),
+  );
+}
+
+function notifyTimingPersistenceError(callback, error) {
+  try {
+    callback(error);
+  } catch {
+    // Error reporting cannot prevent terminal timing retention.
+  }
+}
+
+function prepareAgentSplitTerminalTiming(lifecycle, timingTerminal, requireCompleteOnPass) {
+  let resolvedTerminal = timingTerminal;
+  let timingValidationError = null;
+  let testTiming = lifecycle.prepareFinalization({
+    outcome: resolvedTerminal.outcome,
+    terminalReason: resolvedTerminal.reasonCode,
+  });
+  if (resolvedTerminal.outcome === 'pass') {
+    if (requireCompleteOnPass) {
+      try {
+        assertCompleteGpuHmrTestTiming(testTiming);
+      } catch (error) {
+        timingValidationError = error;
+      }
+    } else if (
+      testTiming.visualCapable === true
+      && lifecycle.executionObserved
+      && testTiming.phases.trigger_to_visible.state !== 'measured'
+    ) {
+      timingValidationError = new Error('agent_split_visual_trigger_to_visible_incomplete');
+      timingValidationError.code = 'agent_split_visual_trigger_to_visible_incomplete';
+      timingValidationError.details = Object.freeze({
+        blockingGaps: Object.freeze(['visual_phase_not_measured:trigger_to_visible']),
+      });
+    }
+    if (timingValidationError) {
+      resolvedTerminal = timingValidationFailureTerminal();
+      testTiming = lifecycle.prepareFinalization({
+        outcome: resolvedTerminal.outcome,
+        terminalReason: resolvedTerminal.reasonCode,
+      });
+    }
+  }
+  return { testTiming, timingTerminal: resolvedTerminal, timingValidationError };
 }
 
 export async function finalizeAgentSplitTimingAfterResultPersistence({
   lifecycle,
   timingTerminal,
   persistResults,
+  persistAttachedResult = null,
   onPersistenceError = () => {},
+  onTimingValidationError = () => {},
+  requireCompleteOnPass = false,
+  attachmentReason = 'terminal_timing_v2',
 }) {
   if (!(lifecycle instanceof AgentSplitTestTimingV2Lifecycle)) {
     throw new TypeError('agent split timing persistence requires a timing lifecycle');
   }
-  if (typeof persistResults !== 'function' || typeof onPersistenceError !== 'function') {
+  if (
+    typeof persistResults !== 'function'
+    || (persistAttachedResult !== null && typeof persistAttachedResult !== 'function')
+    || typeof onPersistenceError !== 'function'
+    || typeof onTimingValidationError !== 'function'
+  ) {
     throw new TypeError('agent split timing persistence requires persistence callbacks');
   }
   let resolvedTerminal = timingTerminal;
   let persistenceError = null;
+  let attachmentPersistenceError = null;
+  let attachmentRetryError = null;
   lifecycle.beginPhase('proof_finalization');
   try {
     await persistResults();
   } catch (error) {
     persistenceError = error;
     if (resolvedTerminal?.outcome === 'pass') {
-      resolvedTerminal = Object.freeze({
-        outcome: 'failed',
-        category: 'result_persistence_failure',
-        reasonCode: 'agent_split_result_persistence_failure',
-      });
+      resolvedTerminal = resultPersistenceFailureTerminal();
     }
-    onPersistenceError(error);
+    notifyTimingPersistenceError(onPersistenceError, error);
   } finally {
     lifecycle.finishPhase('proof_finalization');
   }
-  const testTiming = lifecycle.finalize({
-    outcome: resolvedTerminal.outcome,
-    terminalReason: resolvedTerminal.reasonCode,
+  const prepared = prepareAgentSplitTerminalTiming(
+    lifecycle,
+    resolvedTerminal,
+    requireCompleteOnPass === true,
+  );
+  resolvedTerminal = prepared.timingTerminal;
+  if (prepared.timingValidationError) {
+    notifyTimingPersistenceError(onTimingValidationError, prepared.timingValidationError);
+  }
+  let timingBundle = prepareAgentSplitTimingRetentionBundle({
+    testTiming: prepared.testTiming,
+    timingTerminal: resolvedTerminal,
+    reason: attachmentReason,
   });
+  if (persistAttachedResult) {
+    try {
+      await persistAttachedResult(timingBundle);
+    } catch (error) {
+      attachmentPersistenceError = error;
+      if (persistenceError === null) persistenceError = error;
+      notifyTimingPersistenceError(onPersistenceError, error);
+      if (resolvedTerminal.outcome === 'pass') {
+        resolvedTerminal = resultPersistenceFailureTerminal();
+        const failedTiming = lifecycle.prepareFinalization({
+          outcome: resolvedTerminal.outcome,
+          terminalReason: resolvedTerminal.reasonCode,
+        });
+        timingBundle = prepareAgentSplitTimingRetentionBundle({
+          testTiming: failedTiming,
+          timingTerminal: resolvedTerminal,
+          reason: attachmentReason,
+        });
+        try {
+          await persistAttachedResult(timingBundle);
+        } catch (retryError) {
+          attachmentRetryError = retryError;
+          notifyTimingPersistenceError(onPersistenceError, retryError);
+        }
+      }
+    }
+  }
+  const testTiming = lifecycle.commitFinalization(timingBundle.testTiming);
+  retainPreparedAgentSplitTimingBundle(timingBundle);
   return Object.freeze({
     testTiming,
     timingTerminal: resolvedTerminal,
     persistenceError,
+    attachmentPersistenceError,
+    attachmentRetryError,
+    timingValidationError: prepared.timingValidationError,
+    resultCheckpoint: timingBundle.resultCheckpoint,
+    timingBundle,
   });
 }
 
@@ -838,84 +1093,149 @@ export function finalizeAgentSplitTimingAfterResultPersistenceSync({
   lifecycle,
   timingTerminal,
   persistResults,
+  persistAttachedResult = null,
   onPersistenceError = () => {},
+  onTimingValidationError = () => {},
+  requireCompleteOnPass = false,
+  attachmentReason = 'terminal_timing_v2',
 }) {
   if (!(lifecycle instanceof AgentSplitTestTimingV2Lifecycle)) {
     throw new TypeError('agent split synchronous persistence requires a timing lifecycle');
   }
-  if (typeof persistResults !== 'function' || typeof onPersistenceError !== 'function') {
+  if (
+    typeof persistResults !== 'function'
+    || (persistAttachedResult !== null && typeof persistAttachedResult !== 'function')
+    || typeof onPersistenceError !== 'function'
+    || typeof onTimingValidationError !== 'function'
+  ) {
     throw new TypeError('agent split synchronous persistence requires persistence callbacks');
   }
   let resolvedTerminal = timingTerminal;
   let persistenceError = null;
+  let attachmentPersistenceError = null;
+  let attachmentRetryError = null;
   lifecycle.beginPhase('proof_finalization');
   try {
     persistResults();
   } catch (error) {
     persistenceError = error;
     if (resolvedTerminal?.outcome === 'pass') {
-      resolvedTerminal = Object.freeze({
-        outcome: 'failed',
-        category: 'result_persistence_failure',
-        reasonCode: 'agent_split_result_persistence_failure',
-      });
+      resolvedTerminal = resultPersistenceFailureTerminal();
     }
-    onPersistenceError(error);
+    notifyTimingPersistenceError(onPersistenceError, error);
   } finally {
     lifecycle.finishPhase('proof_finalization');
   }
-  const testTiming = lifecycle.finalize({
-    outcome: resolvedTerminal.outcome,
-    terminalReason: resolvedTerminal.reasonCode,
+  const prepared = prepareAgentSplitTerminalTiming(
+    lifecycle,
+    resolvedTerminal,
+    requireCompleteOnPass === true,
+  );
+  resolvedTerminal = prepared.timingTerminal;
+  if (prepared.timingValidationError) {
+    notifyTimingPersistenceError(onTimingValidationError, prepared.timingValidationError);
+  }
+  let timingBundle = prepareAgentSplitTimingRetentionBundle({
+    testTiming: prepared.testTiming,
+    timingTerminal: resolvedTerminal,
+    reason: attachmentReason,
   });
+  if (persistAttachedResult) {
+    try {
+      persistAttachedResult(timingBundle);
+    } catch (error) {
+      attachmentPersistenceError = error;
+      if (persistenceError === null) persistenceError = error;
+      notifyTimingPersistenceError(onPersistenceError, error);
+      if (resolvedTerminal.outcome === 'pass') {
+        resolvedTerminal = resultPersistenceFailureTerminal();
+        const failedTiming = lifecycle.prepareFinalization({
+          outcome: resolvedTerminal.outcome,
+          terminalReason: resolvedTerminal.reasonCode,
+        });
+        timingBundle = prepareAgentSplitTimingRetentionBundle({
+          testTiming: failedTiming,
+          timingTerminal: resolvedTerminal,
+          reason: attachmentReason,
+        });
+        try {
+          persistAttachedResult(timingBundle);
+        } catch (retryError) {
+          attachmentRetryError = retryError;
+          notifyTimingPersistenceError(onPersistenceError, retryError);
+        }
+      }
+    }
+  }
+  const testTiming = lifecycle.commitFinalization(timingBundle.testTiming);
+  retainPreparedAgentSplitTimingBundle(timingBundle);
   return Object.freeze({
     testTiming,
     timingTerminal: resolvedTerminal,
     persistenceError,
+    attachmentPersistenceError,
+    attachmentRetryError,
+    timingValidationError: prepared.timingValidationError,
+    resultCheckpoint: timingBundle.resultCheckpoint,
+    timingBundle,
   });
 }
 
-function writeResultCheckpointSync(reason = 'incremental_record', { force = false } = {}) {
+function atomicWriteFileSync(filePath, data) {
+  const tempPath = `${filePath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+  try {
+    writeFileSync(tempPath, data, { flush: true });
+    renameSync(tempPath, filePath);
+  } catch (error) {
+    rmSync(tempPath, { force: true });
+    throw error;
+  }
+}
+
+function writeResultCheckpointSync(
+  reason = 'incremental_record',
+  { force = false, timingBundle = null, throwOnError = false } = {},
+) {
   if (!force && process.env.SYNTHI_GPU_AGENT_INCREMENTAL_RESULTS === '0') return false;
-  if (writingResultCheckpoint) return false;
+  if (writingResultCheckpoint) {
+    if (throwOnError) throw new Error('agent split result checkpoint write is already active');
+    return false;
+  }
   writingResultCheckpoint = true;
   try {
     mkdirSync(LOG_DIR, { recursive: true });
     mkdirSync(ARTIFACT_DIR, { recursive: true });
+    const retainedBundle = timingBundle ?? retainedAgentSplitTimingBundle;
     const sanitizedResults = sanitizeProofLogValue(results);
-    const sanitizedTiming = retainedAgentSplitTestTiming
-      ? sanitizeProofLogValue(retainedAgentSplitTestTiming)
+    const sanitizedTiming = retainedBundle?.testTiming
+      ? sanitizeProofLogValue(retainedBundle.testTiming)
       : null;
-    const sanitizedTimingTerminal = retainedAgentSplitTimingTerminal
-      ? sanitizeProofLogValue(retainedAgentSplitTimingTerminal)
+    const sanitizedTimingTerminal = retainedBundle?.timingTerminal
+      ? sanitizeProofLogValue(retainedBundle.timingTerminal)
       : null;
     const resultText = resultTextFromRows(sanitizedResults);
-    writeFileSync(
+    atomicWriteFileSync(
       RESULTS_JSON,
       `${JSON.stringify(sanitizedResults, null, 2)}\n`,
-      { flush: true },
     );
-    writeFileSync(RESULTS_TXT, resultText, { flush: true });
-    writeFileSync(
+    atomicWriteFileSync(RESULTS_TXT, resultText);
+    atomicWriteFileSync(
       path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.json`),
       `${JSON.stringify(sanitizedResults, null, 2)}\n`,
-      { flush: true },
     );
-    writeFileSync(
+    atomicWriteFileSync(
       path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.txt`),
       resultText,
-      { flush: true },
     );
     if (sanitizedTiming) {
       const timingJson = `${JSON.stringify(sanitizedTiming, null, 2)}\n`;
-      writeFileSync(TEST_TIMING_JSON, timingJson, { flush: true });
-      writeFileSync(
+      atomicWriteFileSync(TEST_TIMING_JSON, timingJson);
+      atomicWriteFileSync(
         path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}-timing-v2.json`),
         timingJson,
-        { flush: true },
       );
     }
-    writeFileSync(
+    atomicWriteFileSync(
       path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}-checkpoint.json`),
       `${JSON.stringify(buildAgentSplitResultCheckpoint({
         reason,
@@ -923,11 +1243,10 @@ function writeResultCheckpointSync(reason = 'incremental_record', { force = fals
         testTiming: sanitizedTiming,
         timingTerminal: sanitizedTimingTerminal,
       }), null, 2)}\n`,
-      { flush: true },
     );
     return true;
-  } catch {
-    // Best-effort transport only. This checkpoint cannot authorize GPU HMR.
+  } catch (error) {
+    if (throwOnError) throw error;
     return false;
   } finally {
     writingResultCheckpoint = false;
@@ -961,12 +1280,21 @@ function recordEmergencyResult(kind, detail) {
     ts: new Date().toISOString(),
   });
   if (activeAgentSplitTestTiming && !activeAgentSplitTestTiming.isFinalized) {
-    const finalizedTiming = finalizeAgentSplitTimingAfterResultPersistenceSync({
+    finalizeAgentSplitTimingAfterResultPersistenceSync({
       lifecycle: activeAgentSplitTestTiming,
       timingTerminal,
       persistResults: () => {
         if (!writeResultCheckpointSync(`${kind}_result`, { force: true })) {
           throw new Error('agent split emergency result checkpoint was not persisted');
+        }
+      },
+      persistAttachedResult: (timingBundle) => {
+        if (!writeResultCheckpointSync(kind, {
+          force: true,
+          timingBundle,
+          throwOnError: true,
+        })) {
+          throw new Error('agent split emergency timing checkpoint was not persisted');
         }
       },
       onPersistenceError: (error) => {
@@ -977,13 +1305,11 @@ function recordEmergencyResult(kind, detail) {
           ts: new Date().toISOString(),
         });
       },
+      attachmentReason: kind,
     });
-    retainAgentSplitTestTiming(
-      finalizedTiming.testTiming,
-      finalizedTiming.timingTerminal,
-    );
+  } else {
+    writeResultCheckpointSync(kind, { force: true });
   }
-  writeResultCheckpointSync(kind, { force: true });
 }
 
 export function installAgentSplitEmergencyResultHandlers({
@@ -4788,6 +5114,9 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
   if (isColdSourceFirstCompile) activeAgentSplitTestTiming?.observeRuntimeWait();
   const { wait, retryEvidence } = await waitHmrWithStrictProofRetry(state, waitContract, timeoutMs, options);
   const waitEndNs = timingBoundaryNs();
+  if (mcpFrameGateSatisfied(wait)) {
+    activeAgentSplitTestTiming?.observePostEditVisibleOrOutputReadySignal(waitEndNs);
+  }
   const timingMetrics = {
     schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
     metricClock: 'monotonic_ns',
@@ -12386,6 +12715,7 @@ async function run() {
         ?? '',
       typedOracleIntent: sourceFirstTypedOracleIntentForProfile(ACTIVE_AGENT_PROFILE),
     });
+    activeAgentSplitTestTiming?.declareOracleContract(ACTIVE_SOURCE_FIRST_REQUEST_INTENT);
   } catch (error) {
     throw tagAgentSplitTimingError(error, {
       outcome: 'refused',
@@ -13125,13 +13455,28 @@ async function runAgentSplitTerminal() {
     lifecycle: activeAgentSplitTestTiming,
     timingTerminal,
     persistResults: writeResults,
+    persistAttachedResult: async (timingBundle) => {
+      if (!writeResultCheckpointSync('terminal_timing_v2', {
+        force: true,
+        timingBundle,
+        throwOnError: true,
+      })) {
+        throw new Error('agent split terminal timing checkpoint was not persisted');
+      }
+    },
     onPersistenceError: (error) => {
       record('result persistence', 'fail', error?.message || String(error));
     },
+    onTimingValidationError: (error) => {
+      record(
+        'timing-v2 completeness',
+        'fail',
+        error?.details?.blockingGaps ?? error?.message ?? String(error),
+      );
+    },
+    requireCompleteOnPass: CFG.mode === 'cold-ai-split',
   });
   timingTerminal = finalizedTiming.timingTerminal;
-  retainAgentSplitTestTiming(finalizedTiming.testTiming, timingTerminal);
-  writeResultCheckpointSync('terminal_timing_v2');
   console.log(`test timing: ${TEST_TIMING_JSON}`);
   if (timingTerminal.outcome !== 'pass') process.exitCode = 1;
 }
