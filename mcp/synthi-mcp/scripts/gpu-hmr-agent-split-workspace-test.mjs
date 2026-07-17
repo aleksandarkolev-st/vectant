@@ -8731,16 +8731,14 @@ async function selfCheckSemanticVisualProbeEvidence() {
       sceneId: 'semantic-probe-self-check-scene',
       semanticProbes: [
         {
-          id: 'self-check-material-gem',
-          probeClass: 'diamond_specular_material',
+          id: 'self-check-region-a',
+          probeClass: 'material_response',
           region: [0, 0, 4, 8],
-          expected: 'material response changes on gem facets',
         },
         {
-          id: 'self-check-light-shadow',
-          probeClass: 'caustic_lighting_response',
+          id: 'self-check-region-b',
+          probeClass: 'lighting_response',
           region: [4, 0, 4, 8],
-          expected: 'lighting response changes on shadow edge',
         },
       ],
     };
@@ -8795,6 +8793,42 @@ async function selfCheckSemanticVisualProbeEvidence() {
       )
     ) {
       throw new Error(`semantic visual probe self-check failed: ${JSON.stringify(semantic)}`);
+    }
+    const labelOnlySceneManifest = {
+      schemaVersion: 'synthi.gpu_hmr.visual_scene_manifest.v1',
+      semanticProbes: [
+        {
+          id: 'material-diamond-specular-region',
+          description: 'material reflection response',
+          region: [0, 0, 4, 8],
+        },
+        {
+          id: 'lighting-caustic-shadow-region',
+          description: 'lighting response',
+          region: [4, 0, 4, 8],
+        },
+      ],
+    };
+    const labelOnlyManifestHash = `sha256:${sha256Hex(stableJson(labelOnlySceneManifest))}`;
+    ACTIVE_AGENT_PROFILE = {
+      ...ACTIVE_AGENT_PROFILE,
+      visualSceneManifest: labelOnlySceneManifest,
+      visual_scene_manifest: labelOnlySceneManifest,
+      visualSceneManifestHash: labelOnlyManifestHash,
+      visual_scene_manifest_hash: labelOnlyManifestHash,
+    };
+    const labelOnlyEvidence = await semanticVisualProbeEvidenceFromDelta({
+      visualArtifacts: {
+        beforeImage: before.path,
+        beforeImageHash: before.hash,
+        afterImage: after.path,
+        afterImageHash: after.hash,
+        diffImage: diff.path,
+        diffImageHash: diff.hash,
+      },
+    });
+    if (labelOnlyEvidence !== null) {
+      throw new Error('semantic visual probe vocabulary-only declaration was accepted');
     }
     console.log('semantic visual probe self-check passed');
   } finally {
@@ -10077,26 +10111,11 @@ function normalizeSemanticProbeClassToken(value) {
   ].includes(text)) {
     return text;
   }
-  if (/(material|specular|reflection|reflectance|refraction|roughness|metal|glass|gem|diamond|surface|sparkle|glint|highlight|faceted|facet)/.test(text)) {
-    return 'material_response';
-  }
-  if (/(light|lighting|illumination|shadow|caustic|emissive|exposure|direct_lighting|bounce|contrast|key_light|rim_light|area_light)/.test(text)) {
-    return 'lighting_response';
-  }
-  if (/(geometry|silhouette|edge|normal|depth|parallax|occlusion)/.test(text)) {
-    return 'geometry_response';
-  }
-  if (/(color|tone|albedo|hue|temperature|white_balance)/.test(text)) {
-    return 'color_response';
-  }
-  if (/(temporal|stability|convergence|accumulation)/.test(text)) {
-    return 'temporal_stability';
-  }
   return null;
 }
 
-function semanticProbeClassFromDeclaration(rawProbe, index) {
-  const explicit = normalizeSemanticProbeClassToken(
+function semanticProbeClassFromDeclaration(rawProbe) {
+  return normalizeSemanticProbeClassToken(
     rawProbe?.probeClass
       ?? rawProbe?.probe_class
       ?? rawProbe?.semanticClass
@@ -10104,15 +10123,6 @@ function semanticProbeClassFromDeclaration(rawProbe, index) {
       ?? rawProbe?.kind
       ?? rawProbe?.type,
   );
-  if (explicit) return explicit;
-  const inferred = normalizeSemanticProbeClassToken([
-    rawProbe?.id,
-    rawProbe?.probeId,
-    rawProbe?.probe_id,
-    rawProbe?.expected,
-    rawProbe?.description,
-  ].map((value) => String(value ?? '').toLowerCase()).join(' '));
-  return inferred ?? (index === 0 ? 'material_response' : null);
 }
 
 function resolveVisualArtifactPath(filePath) {
@@ -10265,7 +10275,7 @@ async function semanticVisualProbeEvidenceFromDelta(visualDelta) {
   for (const [index, rawProbe] of declaredProbes.entries()) {
     const declaredRegion = semanticProbeRegion(rawProbe);
     const region = clampProbeRegion(declaredRegion, before);
-    const probeClass = semanticProbeClassFromDeclaration(rawProbe, index);
+    const probeClass = semanticProbeClassFromDeclaration(rawProbe);
     if (!region || !probeClass) continue;
     const beforeRegionHash = `sha256:${sha256BufferHex(semanticRegionBuffer(before, region))}`;
     const afterRegionHash = `sha256:${sha256BufferHex(semanticRegionBuffer(after, region))}`;
