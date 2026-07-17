@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agents.abi_stamper import mask_comments_for_parsing
 from agents.gpu_device_mapping import extract_kernel_region_records
-from agents.gpu_device_markers import GPU_DEVICE_MARKER_RE
+from agents.gpu_device_markers import has_gpu_device_marker
 from agents.launch_graph_extractor import extract_launch_graph
 from gpu_hmr.canonical import canonical_hash
 
@@ -37,10 +37,6 @@ _BACKEND_PATTERNS = {
         r"\b(?:vulkan/vulkan\.h|GLFW_INCLUDE_VULKAN|Vk[A-Z][A-Za-z0-9_]*|vk[A-Z][A-Za-z0-9_]*|VK_[A-Z0-9_]+)\b"
     ),
 }
-_KERNEL_DECL_RE = re.compile(
-    GPU_DEVICE_MARKER_RE.pattern,
-    GPU_DEVICE_MARKER_RE.flags,
-)
 _GPU_RUNTIME_LAUNCH_API_RE = re.compile(
     r"\b(?:"
     r"oroModuleLaunchKernel"
@@ -168,11 +164,11 @@ def _reason_and_priority(
     base = normalized.rsplit("/", 1)[-1]
     if base == "CMakeLists.txt" or normalized.endswith("/CMakeLists.txt"):
         return (1, "build_metadata")
-    if normalized.lower().endswith((".cu", ".cuh", ".hip")) and _KERNEL_DECL_RE.search(parsed_source):
+    if normalized.lower().endswith((".cu", ".cuh", ".hip")) and has_gpu_device_marker(parsed_source):
         return (2, "device_translation_unit")
     if _has_runtime_launch_boundary(parsed_source):
         return (2, "runtime_launch_boundary")
-    if looks_like_source_file(normalized) and _KERNEL_DECL_RE.search(parsed_source):
+    if looks_like_source_file(normalized) and has_gpu_device_marker(parsed_source):
         if "/kernels/" in normalized:
             return (3, "kernel_declaration")
         return (4, "kernel_declaration")
@@ -826,7 +822,7 @@ def build_source_context_report(
         parsed_source = mask_comments_for_parsing(source or "")
         is_device_like_source = (
             normalize_path(path).lower().endswith((".cu", ".cuh", ".hip"))
-            or _KERNEL_DECL_RE.search(parsed_source) is not None
+            or has_gpu_device_marker(parsed_source)
             or ("<<<" in parsed_source and ">>>" in parsed_source)
             or _has_source_launch_site(path, parsed_source)
         )
@@ -887,7 +883,7 @@ def build_source_context_report(
         or (
             item.get("path") == normalize_path(focus or "")
             and normalize_path(item.get("path") or "").lower().endswith((".cu", ".cuh", ".hip"))
-            and _KERNEL_DECL_RE.search(
+            and has_gpu_device_marker(
                 mask_comments_for_parsing(normalized_files.get(item.get("path") or "", "") or "")
             )
         )

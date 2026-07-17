@@ -51,7 +51,7 @@ from agents.gpu_deterministic_split import (
     DeterministicGpuSplitUnsupported,
     try_build_deterministic_gpu_split,
 )
-from agents.gpu_device_markers import GPU_DEVICE_MARKER_RE as _GPU_DEVICE_MARKER_RE
+from agents.gpu_device_markers import has_gpu_device_marker
 from agents.gpu_split_repair import (
     REPAIR_SCHEMA_VERSION,
     canonicalize_source_backed_device_roles,
@@ -1098,7 +1098,7 @@ def _looks_like_source_file(name: str) -> bool:
 
 def _has_gpu_device_marker(source: str) -> bool:
     code = mask_comments_for_parsing(source or "")
-    return bool(_GPU_DEVICE_MARKER_RE.search(code) or ("<<<" in code and ">>>" in code))
+    return bool(has_gpu_device_marker(code) or ("<<<" in code and ">>>" in code))
 
 
 def _extract_embedded_source_object(value: str) -> Optional[str]:

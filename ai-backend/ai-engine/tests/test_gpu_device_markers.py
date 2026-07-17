@@ -17,6 +17,39 @@ def test_gpu_device_marker_detects_project_defined_device_macros():
     assert "ignored" not in masked
 
 
+def test_gpu_device_marker_rejects_host_words_and_platform_constants():
+    source = """
+    int membership = 1;
+    int shipping_cost = 2;
+    int gpu_count = 3;
+    constexpr int GPU_COUNT = 4;
+    constexpr int CUDA_VERSION = 12000;
+    constexpr int HIP_VERSION = 700200000;
+    constexpr int OPENCL_TARGET_VERSION = 300;
+    constexpr int SHADER_COUNT = 5;
+    constexpr int DEVICE_COUNT = 6;
+    constexpr int KERNEL_VERSION = 7;
+    const char* text = "PROJECT_DEVICE_API void fake_kernel();";
+    #define __host__
+    __host__ int host_only(int value) { return value; }
+    """
+
+    assert not has_gpu_device_marker(mask_comments_for_parsing(source))
+
+
+def test_gpu_device_marker_requires_macro_declaration_or_concrete_definition():
+    source = """
+    #define PROJECT_DEVICE_API __device__
+    #define PROJECT_GPU_API PROJECT_DEVICE_API
+    #define DEVICE_COUNT 4
+    #define KERNEL_VERSION 7
+    PROJECT_GPU_API
+    int transform(int value);
+    """
+
+    assert has_gpu_device_marker(mask_comments_for_parsing(source))
+
+
 def test_source_device_file_detection_uses_generic_device_macro():
     source_files = {
         "include/device_callbacks.h": (

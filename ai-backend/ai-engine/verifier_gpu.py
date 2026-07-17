@@ -52,7 +52,7 @@ from agents.launch_graph_extractor import extract_launch_graph
 from agents.abi_stamper import mask_comments_for_parsing, normalize_param_list
 from agents.gpu_device_markers import (
     DEVICE_ANNOTATION_MACRO_PATTERN,
-    GPU_DEVICE_MARKER_RE,
+    has_gpu_device_marker,
 )
 
 
@@ -1731,7 +1731,7 @@ def _is_source_device_file(path: str, source: str) -> bool:
         return True
     if not normalized.endswith((".cuh", ".hpp", ".hh", ".h")):
         return False
-    return bool(GPU_DEVICE_MARKER_RE.search(masked))
+    return has_gpu_device_marker(masked)
 
 
 def _render_backends_in_sources(sources: Iterable[str]) -> Set[str]:
@@ -1747,7 +1747,7 @@ def _source_device_identifiers(source_device_sources: Mapping[str, str]) -> Set[
     identifiers: Set[str] = set()
     for source in source_device_sources.values():
         masked = mask_comments_for_parsing(source)
-        if not GPU_DEVICE_MARKER_RE.search(masked):
+        if not has_gpu_device_marker(masked):
             continue
         identifiers.update(_SOURCE_DEVICE_IDENTIFIER_RE.findall(masked))
     return identifiers
