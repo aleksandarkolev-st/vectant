@@ -15,6 +15,13 @@ import {
   buildRuntimeBoundaryProofAdapter,
   materializeRuntimeBoundaryEventLines,
 } from './lib/gpu-hmr-runtime-boundary-proof-adapter.mjs';
+import {
+  GPU_HMR_TEST_TIMING_PHASE_KEYS,
+  GPU_HMR_TEST_TIMING_SCHEMA,
+  GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS,
+  GpuHmrTestTimingRecorder,
+  validateGpuHmrTestTiming,
+} from './lib/gpu-hmr-test-timing-v2.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,6 +33,24 @@ const RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_SCHEMA =
   'synthi.gpu_hmr.runtime_profile_boundary_adapter_proof.v1';
 const RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_AUTHORITY =
   'runtime_profile_generic_runtime_boundary_adapter_not_success_authority';
+const RUNTIME_PROFILE_FAILURE_SCHEMA = 'synthi.gpu_hmr.runtime_profile_failure.v1';
+const RUNTIME_PROFILE_FAILURE_AUTHORITY =
+  'runtime_profile_failure_diagnostics_only_not_gpu_hmr_success';
+const RUNTIME_PROFILE_TIMING_CHILD_PHASE_UNAVAILABLE =
+  'runtime_profile_child_phase_boundary_not_observed_by_parent';
+const RUNTIME_PROFILE_TIMING_RESULT_ONLY_PHASE_UNAVAILABLE =
+  'runtime_profile_parent_phase_boundary_not_observed_by_result_writer';
+const RUNTIME_PROFILE_TIMING_VISUAL_UNAVAILABLE =
+  'runtime_profile_causal_child_visual_boundary_not_observed_by_parent';
+const RUNTIME_PROFILE_TIMING_VISUAL_NOT_APPLICABLE =
+  'runtime_profile_has_no_visual_oracle_contract_or_evidence';
+const RUNTIME_PROFILE_TIMING_SPLIT_NOT_APPLICABLE =
+  'runtime_profile_runner_does_not_perform_source_split';
+const RUNTIME_PROFILE_TIMING_PERSISTENCE_CHECKPOINT_SCHEMA =
+  'synthi.gpu_hmr.runtime_profile_timing_persistence_checkpoint.v1';
+const RUNTIME_PROFILE_TIMING_PERSISTENCE_CHECKPOINT_AUTHORITY =
+  'result_persistence_checkpoint_only_not_gpu_hmr_success';
+const RUNTIME_PROFILE_TIMING_SCOPES = new WeakMap();
 
 const ADAPTERS = new Map([
   ['hiprt-path-tracer', {
@@ -137,6 +162,265 @@ function claimsGpuHmrAuthority(value) {
     || firstBool(object.gpuHmrSuccess, object.gpu_hmr_success) === true
     || firstBool(object.canSatisfyRuntimeProof, object.can_satisfy_runtime_proof) === true
     || firstBool(object.canSatisfyDispatchProof, object.can_satisfy_dispatch_proof) === true;
+}
+
+function timingAlias(source, camelKey, snakeKey, scope, { required = false } = {}) {
+  const object = objectOrNull(source);
+  const hasCamel = object ? Object.hasOwn(object, camelKey) : false;
+  const hasSnake = object ? Object.hasOwn(object, snakeKey) : false;
+  if (!hasCamel && !hasSnake && !required) return null;
+  if (
+    !hasCamel
+    || !hasSnake
+    || stableJson(object[camelKey]) !== stableJson(object[snakeKey])
+  ) {
+    throw new Error(`${scope}_aliases_invalid`);
+  }
+  return object[camelKey];
+}
+
+function assertSupportOnlyTestTiming(testTiming, scope = 'runtime_profile_test_timing') {
+  const validation = validateGpuHmrTestTiming(testTiming);
+  if (
+    testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA
+    || validation.valid !== true
+    || testTiming.authority !== 'timing_only'
+    || testTiming.timingOnly !== true
+    || testTiming.acceptedForGpuHmr !== false
+    || testTiming.gpuHmrSuccess !== false
+  ) {
+    throw new Error(`${scope}_invalid`);
+  }
+  return testTiming;
+}
+
+function createRuntimeProfileTimingRecorder({
+  clock = () => process.hrtime.bigint(),
+  scope = 'run',
+} = {}) {
+  if (!['run', 'result_only', 'top_level'].includes(scope)) {
+    throw new TypeError('runtime_profile_timing_scope_invalid');
+  }
+  const recorder = new GpuHmrTestTimingRecorder({ clock });
+  const parentObserved = new Set(
+    scope === 'run'
+      ? ['cold_intake', 'discovery', 'proof_finalization']
+      : ['proof_finalization'],
+  );
+  for (const phaseKey of GPU_HMR_TEST_TIMING_PHASE_KEYS) {
+    if (
+      phaseKey === 'total_wall'
+      || parentObserved.has(phaseKey)
+      || GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS.includes(phaseKey)
+    ) {
+      continue;
+    }
+    if (phaseKey === 'split') {
+      recorder.notApplicable(phaseKey, RUNTIME_PROFILE_TIMING_SPLIT_NOT_APPLICABLE);
+    } else {
+      recorder.unavailable(
+        phaseKey,
+        scope === 'run'
+          ? RUNTIME_PROFILE_TIMING_CHILD_PHASE_UNAVAILABLE
+          : RUNTIME_PROFILE_TIMING_RESULT_ONLY_PHASE_UNAVAILABLE,
+      );
+    }
+  }
+  RUNTIME_PROFILE_TIMING_SCOPES.set(recorder, scope);
+  return recorder;
+}
+
+function proofVisualEvidencePresent(proof) {
+  const source = objectOrNull(proof) ?? {};
+  const runtimeProofArtifact = firstObject(
+    source.runtimeProofArtifact,
+    source.runtime_proof_artifact,
+    source.strictRuntimeProofArtifact,
+    source.strict_runtime_proof_artifact,
+  ) ?? {};
+  return Boolean(firstObject(
+    source.visualOracleArtifacts,
+    source.visual_oracle_artifacts,
+    runtimeProofArtifact.visualOracleArtifacts,
+    runtimeProofArtifact.visual_oracle_artifacts,
+  )) || firstArray(
+    source.visualEvidenceArtifacts,
+    source.visual_evidence_artifacts,
+    runtimeProofArtifact.visualEvidenceArtifacts,
+    runtimeProofArtifact.visual_evidence_artifacts,
+  ).length > 0;
+}
+
+function runtimeProfileVisualCapable(profile, proof, childTestTiming = null) {
+  return Boolean(
+    objectOrNull(profile?.deterministicVisualMode)
+    || proofVisualEvidencePresent(proof)
+    || childTestTiming?.visualCapable === true
+  );
+}
+
+function childTestTimingFromProof(proof) {
+  const source = objectOrNull(proof) ?? {};
+  const runtimeProofArtifact = firstObject(
+    source.runtimeProofArtifact,
+    source.runtime_proof_artifact,
+    source.strictRuntimeProofArtifact,
+    source.strict_runtime_proof_artifact,
+  );
+  const carriers = [
+    ['proof', source],
+    ['runtime_proof_artifact', runtimeProofArtifact],
+  ];
+  const acceptedRecords = [];
+  const blockingGaps = [];
+  let present = false;
+  for (const [carrierName, carrier] of carriers) {
+    if (!carrier) continue;
+    const hasCamel = Object.hasOwn(carrier, 'testTiming');
+    const hasSnake = Object.hasOwn(carrier, 'test_timing');
+    if (!hasCamel && !hasSnake) continue;
+    present = true;
+    if (!hasCamel || !hasSnake) {
+      blockingGaps.push(`runtime_profile_child_timing_alias_missing:${carrierName}`);
+      continue;
+    }
+    if (stableJson(carrier.testTiming) !== stableJson(carrier.test_timing)) {
+      blockingGaps.push(`runtime_profile_child_timing_alias_conflict:${carrierName}`);
+      continue;
+    }
+    const validation = validateGpuHmrTestTiming(carrier.testTiming);
+    if (
+      validation.valid !== true
+      || carrier.testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA
+      || carrier.testTiming?.authority !== 'timing_only'
+      || carrier.testTiming?.timingOnly !== true
+      || carrier.testTiming?.acceptedForGpuHmr !== false
+      || carrier.testTiming?.gpuHmrSuccess !== false
+    ) {
+      blockingGaps.push(`runtime_profile_child_timing_invalid:${carrierName}`);
+      continue;
+    }
+    acceptedRecords.push(carrier.testTiming);
+  }
+  if (
+    acceptedRecords.length > 1
+    && acceptedRecords.some((record) => stableJson(record) !== stableJson(acceptedRecords[0]))
+  ) {
+    blockingGaps.push('runtime_profile_child_timing_carrier_conflict');
+  }
+  const accepted = present && blockingGaps.length === 0 && acceptedRecords.length > 0;
+  return {
+    present,
+    accepted,
+    testTiming: accepted ? acceptedRecords[0] : null,
+    blockingGaps: [...new Set(blockingGaps)],
+  };
+}
+
+function timingOutcome({
+  runnerSucceeded,
+  strictRuntimeProofAccepted,
+  blockingGaps,
+  persistenceFailed = false,
+}) {
+  if (!runnerSucceeded || persistenceFailed) return 'failed';
+  if (strictRuntimeProofAccepted && blockingGaps.length === 0) return 'pass';
+  return 'refused';
+}
+
+function finalizeRuntimeProfileTiming(recorder, {
+  outcome,
+  visualCapable,
+  terminalReason,
+}) {
+  if (!RUNTIME_PROFILE_TIMING_SCOPES.has(recorder) || recorder.isFinalized) {
+    throw new Error('runtime_profile_timing_recorder_invalid');
+  }
+  if (visualCapable) {
+    for (const phaseKey of GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS) {
+      recorder.unavailable(phaseKey, RUNTIME_PROFILE_TIMING_VISUAL_UNAVAILABLE);
+    }
+  }
+  const testTiming = recorder.finalize({
+    outcome,
+    visualCapable,
+    terminalReason,
+    notApplicableReason: RUNTIME_PROFILE_TIMING_VISUAL_NOT_APPLICABLE,
+  });
+  return assertSupportOnlyTestTiming(testTiming);
+}
+
+function ensureRuntimeProfilePhaseStarted(recorder, phaseKey) {
+  try {
+    recorder.startPhase(phaseKey);
+    return 'started';
+  } catch (error) {
+    if (
+      error?.code === 'timing_phase_transition_invalid'
+      && ['started', 'finished'].includes(error?.details?.actualTransition)
+    ) {
+      return error.details.actualTransition;
+    }
+    throw error;
+  }
+}
+
+function attachRuntimeProfileTiming(target, testTiming, childTestTiming = null) {
+  if (!objectOrNull(target)) throw new TypeError('runtime_profile_timing_target_invalid');
+  assertSupportOnlyTestTiming(testTiming);
+  const existing = timingAlias(
+    target,
+    'testTiming',
+    'test_timing',
+    'runtime_profile_test_timing',
+  );
+  if (existing && stableJson(existing) !== stableJson(testTiming)) {
+    throw new Error('runtime_profile_test_timing_aliases_invalid');
+  }
+  target.testTiming = testTiming;
+  target.test_timing = testTiming;
+  if (childTestTiming !== null) {
+    assertSupportOnlyTestTiming(childTestTiming, 'runtime_profile_child_test_timing');
+    const existingChild = timingAlias(
+      target,
+      'childTestTiming',
+      'child_test_timing',
+      'runtime_profile_child_test_timing',
+    );
+    if (existingChild && stableJson(existingChild) !== stableJson(childTestTiming)) {
+      throw new Error('runtime_profile_child_test_timing_aliases_invalid');
+    }
+    target.childTestTiming = childTestTiming;
+    target.child_test_timing = childTestTiming;
+  }
+  return target;
+}
+
+function syntheticSupportOnlyTestTiming({
+  outcome = 'pass',
+  visualCapable = false,
+} = {}) {
+  let nowNs = 0n;
+  const recorder = new GpuHmrTestTimingRecorder({
+    clock: () => {
+      nowNs += 10n;
+      return nowNs;
+    },
+  });
+  for (const phaseKey of GPU_HMR_TEST_TIMING_PHASE_KEYS) {
+    if (phaseKey === 'total_wall') continue;
+    if (!visualCapable && GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS.includes(phaseKey)) {
+      recorder.notApplicable(phaseKey, RUNTIME_PROFILE_TIMING_VISUAL_NOT_APPLICABLE);
+    } else {
+      recorder.unavailable(phaseKey, 'synthetic_child_phase_not_observed');
+    }
+  }
+  return assertSupportOnlyTestTiming(recorder.finalize({
+    outcome,
+    visualCapable,
+    terminalReason: `synthetic_child_${outcome}`,
+    notApplicableReason: RUNTIME_PROFILE_TIMING_VISUAL_NOT_APPLICABLE,
+  }));
 }
 
 function adapterForProfile(profile) {
@@ -828,11 +1112,18 @@ async function writeRuntimeProfileAdapterResult({
   startedAt,
   finishedAt,
   spawnResult,
+  timingRecorder = null,
 }) {
+  const recorder = timingRecorder ?? createRuntimeProfileTimingRecorder({ scope: 'result_only' });
+  if (!RUNTIME_PROFILE_TIMING_SCOPES.has(recorder) || recorder.isFinalized) {
+    throw new TypeError('runtime_profile_result_timing_recorder_invalid');
+  }
+  recorder.startPhase('proof_finalization');
   const combinedOutput = `${spawnResult.stdout ?? ''}\n${spawnResult.stderr ?? ''}`;
   const rawProofPath = proofPathFromRunnerOutput(combinedOutput);
   const proofPath = resolveProofPath(rawProofPath);
   const proofRead = await readJsonIfPresent(proofPath);
+  const childTiming = childTestTimingFromProof(proofRead.value);
   const proofSummary = summarizeProofArtifact(proofRead.value ?? {});
   const lineMaterialization =
     proofRead.value?.runtimeBoundaryLineMaterialization
@@ -851,12 +1142,13 @@ async function writeRuntimeProfileAdapterResult({
     lineMaterialization?.runtime_boundary_line_hashes,
   );
   const runnerSucceeded = spawnResult.exitCode === 0;
-  const strictRuntimeProofAccepted =
+  let strictRuntimeProofAccepted =
     proofSummary.strictRuntimeProofArtifactPresent === true
     && proofSummary.gpuHmrSuccess === true
     && proofSummary.fullRuntimeProven === true
     && proofSummary.strictRuntimeProofGateAccepted === true
-    && proofSummary.limitationsPresent !== true;
+    && proofSummary.limitationsPresent !== true
+    && childTiming.blockingGaps.length === 0;
   const blockingGaps = [
     runnerSucceeded ? null : 'runtime_profile_adapter_runner_failed',
     rawProofPath ? null : 'runtime_profile_adapter_proof_path_missing',
@@ -878,6 +1170,7 @@ async function writeRuntimeProfileAdapterResult({
       ? 'runtime_profile_adapter_strict_gate_rejected'
       : null,
     proofSummary.limitationsPresent ? 'runtime_profile_adapter_limitations_present' : null,
+    ...childTiming.blockingGaps,
   ].filter(Boolean);
   const result = {
     schemaVersion: 'synthi.gpu_hmr.runtime_profile_adapter_result.v1',
@@ -972,6 +1265,12 @@ async function writeRuntimeProfileAdapterResult({
     ...proofSummary,
     strictRuntimeProofAccepted,
     strict_runtime_proof_accepted: strictRuntimeProofAccepted,
+    childTestTimingPresent: childTiming.present,
+    child_test_timing_present: childTiming.present,
+    childTestTimingAccepted: childTiming.accepted,
+    child_test_timing_accepted: childTiming.accepted,
+    childTestTimingBlockingGaps: childTiming.blockingGaps,
+    child_test_timing_blocking_gaps: childTiming.blockingGaps,
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
@@ -988,14 +1287,70 @@ async function writeRuntimeProfileAdapterResult({
     stdout_tail: String(spawnResult.stdout ?? '').slice(-4000),
     stderrTail: String(spawnResult.stderr ?? '').slice(-4000),
     stderr_tail: String(spawnResult.stderr ?? '').slice(-4000),
+    timingPersistenceCheckpoint: {
+      schemaVersion: RUNTIME_PROFILE_TIMING_PERSISTENCE_CHECKPOINT_SCHEMA,
+      proofAuthority: RUNTIME_PROFILE_TIMING_PERSISTENCE_CHECKPOINT_AUTHORITY,
+      attempted: Boolean(resultPath),
+      persistedBeforeTimingFinalization: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+      canSatisfyDispatchProof: false,
+    },
   };
+  result.timing_persistence_checkpoint = result.timingPersistenceCheckpoint;
+  let persistenceError = null;
+  if (resultPath) {
+    try {
+      await fs.mkdir(path.dirname(resultPath), { recursive: true });
+      await fs.writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`);
+      result.timingPersistenceCheckpoint.persistedBeforeTimingFinalization = true;
+    } catch (error) {
+      persistenceError = error;
+      blockingGaps.push('runtime_profile_result_persistence_failed');
+      strictRuntimeProofAccepted = false;
+      result.strictRuntimeProofAccepted = false;
+      result.strict_runtime_proof_accepted = false;
+    }
+  }
+  recorder.finishPhase('proof_finalization');
+  const outcome = timingOutcome({
+    runnerSucceeded,
+    strictRuntimeProofAccepted,
+    blockingGaps,
+    persistenceFailed: persistenceError !== null,
+  });
+  const visualCapable = runtimeProfileVisualCapable(
+    profile,
+    proofRead.value,
+    childTiming.accepted ? childTiming.testTiming : null,
+  );
+  const testTiming = finalizeRuntimeProfileTiming(recorder, {
+    outcome,
+    visualCapable,
+    terminalReason: `runtime_profile_${outcome}`,
+  });
+  attachRuntimeProfileTiming(
+    result,
+    testTiming,
+    childTiming.accepted ? childTiming.testTiming : null,
+  );
+  result.timingOutcome = outcome;
+  result.timing_outcome = outcome;
+  result.resultPersistenceError = persistenceError
+    ? (persistenceError?.message ?? String(persistenceError))
+    : null;
+  result.result_persistence_error = result.resultPersistenceError;
   const resultHash = `sha256:${sha256Text(stableJson(result))}`;
   result.resultHash = resultHash;
   result.result_hash = resultHash;
-  if (resultPath) {
-    await fs.mkdir(path.dirname(resultPath), { recursive: true });
-    await fs.writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`);
-    console.log(`runtime_profile_result=${resultPath}`);
+  if (resultPath && persistenceError === null) {
+    try {
+      await fs.writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`);
+      console.log(`runtime_profile_result=${resultPath}`);
+    } catch (error) {
+      console.error(`runtime_profile_result_final_persistence_failed=${error?.message ?? String(error)}`);
+    }
   }
   return result;
 }
@@ -1038,6 +1393,107 @@ async function defaultPackagedRuntimeProfilePath() {
   return first;
 }
 
+function rawResultPathHint(argv, env = process.env) {
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === '--result-path') return argv[index + 1] ?? '';
+  }
+  return env.SYNTHI_GPU_HMR_RUNTIME_RESULT_PATH
+    || env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_RESULT_PATH
+    || '';
+}
+
+function safeFailureResultPath(rawPath) {
+  try {
+    return resolveResultPath(rawPath);
+  } catch {
+    return null;
+  }
+}
+
+async function createRuntimeProfileTopLevelFailure(error, {
+  timingRecorder = null,
+  resultPath = null,
+  profile = null,
+} = {}) {
+  const recorder = timingRecorder ?? createRuntimeProfileTimingRecorder({ scope: 'top_level' });
+  if (!RUNTIME_PROFILE_TIMING_SCOPES.has(recorder) || recorder.isFinalized) {
+    throw new TypeError('runtime_profile_failure_timing_recorder_invalid');
+  }
+  const proofFinalizationState = ensureRuntimeProfilePhaseStarted(
+    recorder,
+    'proof_finalization',
+  );
+  const failure = {
+    schemaVersion: RUNTIME_PROFILE_FAILURE_SCHEMA,
+    schema_version: RUNTIME_PROFILE_FAILURE_SCHEMA,
+    proofAuthority: RUNTIME_PROFILE_FAILURE_AUTHORITY,
+    proof_authority: RUNTIME_PROFILE_FAILURE_AUTHORITY,
+    failureCode: 'runtime_profile_top_level_exception',
+    failure_code: 'runtime_profile_top_level_exception',
+    errorName: compactString(error?.name) ?? 'Error',
+    error_name: compactString(error?.name) ?? 'Error',
+    profileId: compactString(profile?.id),
+    profile_id: compactString(profile?.id),
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    blockingGaps: ['runtime_profile_top_level_exception'],
+    blocking_gaps: ['runtime_profile_top_level_exception'],
+    timingPersistenceCheckpoint: {
+      schemaVersion: RUNTIME_PROFILE_TIMING_PERSISTENCE_CHECKPOINT_SCHEMA,
+      proofAuthority: RUNTIME_PROFILE_TIMING_PERSISTENCE_CHECKPOINT_AUTHORITY,
+      attempted: Boolean(resultPath),
+      persistedBeforeTimingFinalization: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+      canSatisfyDispatchProof: false,
+    },
+  };
+  failure.timing_persistence_checkpoint = failure.timingPersistenceCheckpoint;
+  let persistenceError = null;
+  if (resultPath) {
+    try {
+      await fs.mkdir(path.dirname(resultPath), { recursive: true });
+      await fs.writeFile(resultPath, `${JSON.stringify(failure, null, 2)}\n`);
+      failure.timingPersistenceCheckpoint.persistedBeforeTimingFinalization = true;
+    } catch (writeError) {
+      persistenceError = writeError;
+      failure.blockingGaps.push('runtime_profile_failure_persistence_failed');
+      failure.blocking_gaps = failure.blockingGaps;
+    }
+  }
+  if (proofFinalizationState !== 'finished') recorder.finishPhase('proof_finalization');
+  const testTiming = finalizeRuntimeProfileTiming(recorder, {
+    outcome: 'failed',
+    visualCapable: runtimeProfileVisualCapable(profile, null),
+    terminalReason: 'runtime_profile_failed',
+  });
+  attachRuntimeProfileTiming(failure, testTiming);
+  failure.resultPersistenceError = persistenceError
+    ? (persistenceError?.message ?? String(persistenceError))
+    : null;
+  failure.result_persistence_error = failure.resultPersistenceError;
+  const evidenceHash = `sha256:${sha256Text(stableJson(failure))}`;
+  failure.evidenceHash = evidenceHash;
+  failure.evidence_hash = evidenceHash;
+  if (resultPath && persistenceError === null) {
+    try {
+      await fs.writeFile(resultPath, `${JSON.stringify(failure, null, 2)}\n`);
+    } catch (writeError) {
+      console.error(
+        `runtime_profile_failure_final_persistence_failed=${writeError?.message ?? String(writeError)}`,
+      );
+    }
+  }
+  return failure;
+}
+
 function explicitRuntimeProfileSource(env) {
   if (env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON?.trim()) return 'explicit_profile_json';
   if (env.SYNTHI_HIPRT_WARM_PROFILE_JSON?.trim()) return 'explicit_hiprt_profile_json';
@@ -1048,6 +1504,28 @@ function explicitRuntimeProfileSource(env) {
 
 async function selfCheck() {
   const checks = [];
+  const passTimingRecorder = createRuntimeProfileTimingRecorder({ scope: 'result_only' });
+  passTimingRecorder.startPhase('proof_finalization');
+  passTimingRecorder.finishPhase('proof_finalization');
+  const passTiming = finalizeRuntimeProfileTiming(passTimingRecorder, {
+    outcome: 'pass',
+    visualCapable: false,
+    terminalReason: 'runtime_profile_pass',
+  });
+  const passTimingValidation = validateGpuHmrTestTiming(passTiming);
+  checks.push({
+    name: 'runtime-profile-pass-timing-is-canonical-support-only',
+    ok:
+      passTimingValidation.valid === true
+      && passTiming.outcome === 'pass'
+      && passTiming.clock === 'monotonic_ns'
+      && passTiming.authority === 'timing_only'
+      && passTiming.acceptedForGpuHmr === false
+      && passTiming.gpuHmrSuccess === false
+      && passTiming.phases.proof_finalization.state === 'measured'
+      && GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS.every((phaseKey) =>
+        passTiming.phases[phaseKey].state === 'not_applicable'),
+  });
   const packagedProfiles = await discoverPackagedRuntimeProfiles();
   const defaultProfile = normalizeRuntimeProofProfile(await loadPackagedProfile(await defaultPackagedRuntimeProfilePath()));
   checks.push({
@@ -1135,6 +1613,14 @@ async function selfCheck() {
     resultSmokeEnv,
     resultSmokeAdapter.runnerArgs ?? [],
   );
+  const retainedChildTiming = syntheticSupportOnlyTestTiming({
+    outcome: 'pass',
+    visualCapable: false,
+  });
+  const resultSmokeProof = JSON.parse(await fs.readFile(resultSmokeProofPath, 'utf8'));
+  resultSmokeProof.testTiming = retainedChildTiming;
+  resultSmokeProof.test_timing = retainedChildTiming;
+  await fs.writeFile(resultSmokeProofPath, `${JSON.stringify(resultSmokeProof, null, 2)}\n`);
   const resultSmokeFinishedAt = new Date().toISOString();
   const resultSmokeArtifact = await writeRuntimeProfileAdapterResult({
     profile: resultSmoke,
@@ -1143,6 +1629,151 @@ async function selfCheck() {
     startedAt: resultSmokeStartedAt,
     finishedAt: resultSmokeFinishedAt,
     spawnResult: resultSmokeSpawn,
+  });
+  const resultSmokeTimingValidation = validateGpuHmrTestTiming(resultSmokeArtifact.testTiming);
+  checks.push({
+    name: 'runtime-profile-refusal-retains-parent-and-child-timing',
+    ok:
+      resultSmokeTimingValidation.valid === true
+      && resultSmokeArtifact.testTiming === resultSmokeArtifact.test_timing
+      && resultSmokeArtifact.testTiming.outcome === 'refused'
+      && resultSmokeArtifact.testTiming.visualCapable === true
+      && GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS.every((phaseKey) =>
+        resultSmokeArtifact.testTiming.phases[phaseKey].state === 'unavailable')
+      && resultSmokeArtifact.childTestTimingAccepted === true
+      && resultSmokeArtifact.childTestTiming === resultSmokeArtifact.child_test_timing
+      && stableJson(resultSmokeArtifact.childTestTiming) === stableJson(retainedChildTiming)
+      && resultSmokeArtifact.timingPersistenceCheckpoint.persistedBeforeTimingFinalization === true
+      && BigInt(resultSmokeArtifact.testTiming.phases.total_wall.endNs)
+        >= BigInt(resultSmokeArtifact.testTiming.phases.proof_finalization.endNs),
+    resultPath: path.relative(REPO_ROOT, resultSmokePath).replace(/\\/g, '/'),
+  });
+
+  const nonvisualFailureProfile = normalizeRuntimeProofProfile({
+    ...resultSmoke,
+    id: 'runtime-profile-timing-nonvisual-failure',
+    deterministicVisualMode: null,
+  });
+  const nonvisualFailureAdapter = adapterForProfile(nonvisualFailureProfile);
+  const childFailureResultPath = path.join(resultSmokeDir, 'child-failure-result.json');
+  const childFailureResult = await writeRuntimeProfileAdapterResult({
+    profile: nonvisualFailureProfile,
+    adapter: nonvisualFailureAdapter,
+    resultPath: childFailureResultPath,
+    startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    spawnResult: {
+      exitCode: 7,
+      signal: null,
+      stdout: '',
+      stderr: 'synthetic child failure without proof artifact',
+    },
+  });
+  checks.push({
+    name: 'runtime-profile-child-failure-retains-failed-timing',
+    ok:
+      validateGpuHmrTestTiming(childFailureResult.testTiming).valid === true
+      && childFailureResult.testTiming === childFailureResult.test_timing
+      && childFailureResult.testTiming.outcome === 'failed'
+      && childFailureResult.testTiming.visualCapable === false
+      && childFailureResult.blockingGaps.includes('runtime_profile_adapter_runner_failed')
+      && GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS.every((phaseKey) =>
+        childFailureResult.testTiming.phases[phaseKey].state === 'not_applicable'),
+    resultPath: path.relative(REPO_ROOT, childFailureResultPath).replace(/\\/g, '/'),
+  });
+
+  const forgedTimingProofPath = path.join(resultSmokeDir, 'forged-child-timing-proof.json');
+  const forgedChildTiming = structuredClone(retainedChildTiming);
+  forgedChildTiming.authority = 'gpu_hmr_success_authority';
+  await fs.writeFile(forgedTimingProofPath, `${JSON.stringify({
+    schemaVersion: 'synthi.gpu_hmr.runtime_profile_timing_alias_forgery.v1',
+    testTiming: retainedChildTiming,
+    test_timing: forgedChildTiming,
+  }, null, 2)}\n`);
+  const forgedTimingResultPath = path.join(resultSmokeDir, 'forged-child-timing-result.json');
+  const forgedTimingResult = await writeRuntimeProfileAdapterResult({
+    profile: nonvisualFailureProfile,
+    adapter: nonvisualFailureAdapter,
+    resultPath: forgedTimingResultPath,
+    startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    spawnResult: {
+      exitCode: 0,
+      signal: null,
+      stdout: `proof_json=${forgedTimingProofPath}\n`,
+      stderr: '',
+    },
+  });
+  checks.push({
+    name: 'runtime-profile-forged-child-timing-alias-refuses',
+    ok:
+      validateGpuHmrTestTiming(forgedTimingResult.testTiming).valid === true
+      && forgedTimingResult.testTiming.outcome === 'refused'
+      && forgedTimingResult.childTestTimingPresent === true
+      && forgedTimingResult.childTestTimingAccepted === false
+      && !Object.hasOwn(forgedTimingResult, 'childTestTiming')
+      && forgedTimingResult.blockingGaps.includes(
+        'runtime_profile_child_timing_alias_conflict:proof',
+      ),
+    resultPath: path.relative(REPO_ROOT, forgedTimingResultPath).replace(/\\/g, '/'),
+  });
+
+  const authorityTimingProofPath = path.join(resultSmokeDir, 'authority-child-timing-proof.json');
+  await fs.writeFile(authorityTimingProofPath, `${JSON.stringify({
+    schemaVersion: 'synthi.gpu_hmr.runtime_profile_timing_authority_forgery.v1',
+    testTiming: forgedChildTiming,
+    test_timing: forgedChildTiming,
+  }, null, 2)}\n`);
+  const authorityTimingResultPath = path.join(resultSmokeDir, 'authority-child-timing-result.json');
+  const authorityTimingResult = await writeRuntimeProfileAdapterResult({
+    profile: nonvisualFailureProfile,
+    adapter: nonvisualFailureAdapter,
+    resultPath: authorityTimingResultPath,
+    startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    spawnResult: {
+      exitCode: 0,
+      signal: null,
+      stdout: `proof_json=${authorityTimingProofPath}\n`,
+      stderr: '',
+    },
+  });
+  checks.push({
+    name: 'runtime-profile-authority-claiming-child-timing-refuses',
+    ok:
+      authorityTimingResult.testTiming.outcome === 'refused'
+      && authorityTimingResult.childTestTimingPresent === true
+      && authorityTimingResult.childTestTimingAccepted === false
+      && authorityTimingResult.blockingGaps.includes(
+        'runtime_profile_child_timing_invalid:proof',
+      ),
+    resultPath: path.relative(REPO_ROOT, authorityTimingResultPath).replace(/\\/g, '/'),
+  });
+
+  const topLevelFailurePath = path.join(resultSmokeDir, 'top-level-failure-result.json');
+  const interruptedTopLevelRecorder = createRuntimeProfileTimingRecorder({
+    scope: 'top_level',
+  });
+  interruptedTopLevelRecorder.startPhase('proof_finalization');
+  const topLevelFailure = await createRuntimeProfileTopLevelFailure(
+    new Error('synthetic runtime profile top-level failure'),
+    {
+      timingRecorder: interruptedTopLevelRecorder,
+      resultPath: topLevelFailurePath,
+      profile: nonvisualFailureProfile,
+    },
+  );
+  checks.push({
+    name: 'runtime-profile-top-level-exception-retains-failed-timing',
+    ok:
+      validateGpuHmrTestTiming(topLevelFailure.testTiming).valid === true
+      && topLevelFailure.testTiming === topLevelFailure.test_timing
+      && topLevelFailure.testTiming.outcome === 'failed'
+      && topLevelFailure.testTiming.visualCapable === false
+      && topLevelFailure.timingPersistenceCheckpoint.persistedBeforeTimingFinalization === true
+      && GPU_HMR_TEST_TIMING_VISUAL_PHASE_KEYS.every((phaseKey) =>
+        topLevelFailure.testTiming.phases[phaseKey].state === 'not_applicable'),
+    resultPath: path.relative(REPO_ROOT, topLevelFailurePath).replace(/\\/g, '/'),
   });
   const runtimeBoundaryDir = path.join(
     REPO_ROOT,
@@ -1482,12 +2113,22 @@ async function selfCheck() {
   if (failed.length > 0) process.exitCode = 1;
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+async function main({
+  argv = process.argv.slice(2),
+  timingRecorder = null,
+  executionContext = {},
+} = {}) {
+  const args = parseArgs(argv);
   if (args.selfCheck) {
     await selfCheck();
     return;
   }
+
+  const recorder = timingRecorder ?? createRuntimeProfileTimingRecorder({ scope: 'run' });
+  if (RUNTIME_PROFILE_TIMING_SCOPES.get(recorder) !== 'run' || recorder.isFinalized) {
+    throw new TypeError('runtime_profile_main_timing_recorder_invalid');
+  }
+  recorder.startPhase('cold_intake');
 
   const envForLoad = { ...process.env };
   if (args.profilePath) envForLoad.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH = args.profilePath;
@@ -1505,6 +2146,7 @@ async function main() {
     profileSelectionSource = 'packaged_default_opt_in';
   }
   const profile = loadRuntimeProofProfileFromEnv(envForLoad, REPO_ROOT);
+  executionContext.profile = profile;
   profile.profileSelection = {
     schemaVersion: 'synthi.gpu_hmr.runtime_profile_selection.v1',
     source: profileSelectionSource,
@@ -1518,6 +2160,8 @@ async function main() {
   } else if (process.env.SYNTHI_GPU_HMR_RUNTIME_MODE) {
     profile.runtime.mode = process.env.SYNTHI_GPU_HMR_RUNTIME_MODE;
   }
+  recorder.finishPhase('cold_intake');
+  recorder.startPhase('discovery');
   const adapter = adapterForProfile(profile);
   const env = envForAdapter(profile, adapter);
   const resultPath = resolveResultPath(
@@ -1525,6 +2169,8 @@ async function main() {
       || process.env.SYNTHI_GPU_HMR_RUNTIME_RESULT_PATH
       || process.env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_RESULT_PATH,
   );
+  executionContext.resultPath = resultPath;
+  recorder.finishPhase('discovery');
 
   const startedAt = new Date().toISOString();
   let spawnResult;
@@ -1538,18 +2184,42 @@ async function main() {
     throw new Error(`unsupported adapter runner kind: ${adapter.runnerKind}`);
   }
   const finishedAt = new Date().toISOString();
-  await writeRuntimeProfileAdapterResult({
+  const result = await writeRuntimeProfileAdapterResult({
     profile,
     adapter,
     resultPath,
     startedAt,
     finishedAt,
     spawnResult,
+    timingRecorder: recorder,
   });
   process.exitCode = spawnResult.exitCode;
+  return result;
 }
 
-main().catch((err) => {
-  console.error(err?.stack ?? err?.message ?? String(err));
-  process.exitCode = 1;
-});
+const directInvocation = process.argv[1]
+  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (directInvocation) {
+  const argv = process.argv.slice(2);
+  const executionContext = {
+    profile: null,
+    resultPath: safeFailureResultPath(rawResultPathHint(argv)),
+  };
+  const timingRecorder = createRuntimeProfileTimingRecorder({ scope: 'run' });
+  try {
+    await main({ argv, timingRecorder, executionContext });
+  } catch (err) {
+    console.error(err?.stack ?? err?.message ?? String(err));
+    try {
+      const failure = await createRuntimeProfileTopLevelFailure(err, {
+        timingRecorder,
+        resultPath: executionContext.resultPath,
+        profile: executionContext.profile,
+      });
+      console.error(JSON.stringify(failure, null, 2));
+    } catch (failureError) {
+      console.error(failureError?.stack ?? failureError?.message ?? String(failureError));
+    }
+    process.exitCode = 1;
+  }
+}
