@@ -19,6 +19,10 @@ import {
   stableJson,
 } from './gpu-hmr-artifact-cas.mjs';
 import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
+import {
+  classifyGpuHmrOutputOracleKind,
+  isGpuHmrVisualOutputOracleKind,
+} from './gpu-hmr-output-oracle-kind.mjs';
 
 export const GPU_HMR_STRICT_PROOF_GATES_SCHEMA_VERSION =
   'synthi.gpu_hmr.strict_proof_gates.v1';
@@ -1196,11 +1200,17 @@ function visualArtifactEntriesFromValue(value) {
 function recordClaimsVisualOutput(record) {
   const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
   const kind = normalizedText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind) ?? '';
-  return kind.includes('visual')
-    || kind.includes('render')
-    || kind.includes('frame')
-    || kind.includes('pixel')
+  return isGpuHmrVisualOutputOracleKind(kind)
     || visualArtifactsPresent(record);
+}
+
+function outputOracleKindDeclarationFailures(proofLedger) {
+  return compactStrings(ledgerRecords(proofLedger).map((record) => {
+    const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
+    return classifyGpuHmrOutputOracleKind(
+      normalizedText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind),
+    ).failureCode;
+  }));
 }
 
 function visualOracleDeclarationFailures(proofLedger, options = {}) {
@@ -1525,10 +1535,7 @@ function recordRequiresDeterministicVisualMode(record) {
   const kind = normalizedText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind) ?? '';
   const computeOnlyOutput = computeOnlyOutputTargetVerified(record);
   return (!computeOnlyOutput && VISUAL_OR_ENGINE_BACKENDS.has(backend))
-    || kind.includes('visual')
-    || kind.includes('render')
-    || kind.includes('frame')
-    || kind.includes('pixel')
+    || isGpuHmrVisualOutputOracleKind(kind)
     || visualArtifactsPresent(record);
 }
 
@@ -1662,6 +1669,7 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       ) {
         failures.push('proof_ledger_query_mismatch');
       }
+      failures.push(...outputOracleKindDeclarationFailures(proofLedger));
       failures.push(...visualOracleDeclarationFailures(proofLedger, options));
       failures.push(...computeOracleDeclarationFailures(proofLedger, options));
     }

@@ -20,6 +20,10 @@ import {
   classifyGpuHmrFullRuntimeProof,
   classifyGpuHmrHostPreservationProof,
 } from './gpu-hmr-runtime-proof.mjs';
+import {
+  classifyGpuHmrOutputOracleKind,
+  isGpuHmrVisualOutputOracleKind,
+} from './gpu-hmr-output-oracle-kind.mjs';
 
 export const RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION =
   'synthi.gpu_hmr.runtime_boundary_proof_adapter.v1';
@@ -467,29 +471,12 @@ function eventEvidenceRefs(event) {
 }
 
 function isVisualOracleKind(kind) {
-  const normalized = String(kind ?? '').trim().toLowerCase();
-  return normalized === 'visual_oracle'
-    || normalized === 'render_target_hash'
-    || normalized === 'accumulation_buffer_hash'
-    || normalized === 'selected_pixels'
-    || normalized === 'selected_pixel_values'
-    || normalized.includes('visual')
-    || normalized.includes('render')
-    || normalized.includes('frame')
-    || normalized.includes('pixel');
+  return isGpuHmrVisualOutputOracleKind(kind);
 }
 
 function acceptedVisualOracleKind(kind) {
-  const normalized = String(kind ?? '').trim().toLowerCase();
-  if ([
-    'render_target_hash',
-    'accumulation_buffer_hash',
-    'selected_pixels',
-    'selected_pixel_values',
-  ].includes(normalized)) {
-    return normalized;
-  }
-  return 'render_target_hash';
+  const classification = classifyGpuHmrOutputOracleKind(kind);
+  return classification.modality === 'visual' ? classification.kind : null;
 }
 
 function visualRoleHash(source, role) {
@@ -1566,6 +1553,10 @@ function runtimeBoundaryFieldFailures(stage, event) {
     if (!event.epoch) failures.push('output_oracle_epoch_missing');
     if (!event.afterDispatchId) failures.push('output_oracle_after_dispatch_id_missing');
     if (!event.outputTargetId) failures.push('output_oracle_target_missing');
+    const oracleKindClassification = classifyGpuHmrOutputOracleKind(event.oracleKind);
+    if (oracleKindClassification.accepted !== true) {
+      failures.push(oracleKindClassification.failureCode);
+    }
     if (isVisualOracleKind(event.oracleKind)) {
       if (!event.cameraStateHash) failures.push('output_oracle_visual_camera_state_hash_missing');
       if (!event.swapchainOrFramebufferIdentity) {
@@ -2198,9 +2189,17 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
   const computeOracleArtifacts = computeOracleArtifactsFromInput(input);
   const visualOracleArtifacts = visualOracleArtifactsFromInput(input, outputEventForInput);
   const visualEvidenceArtifacts = visualEvidenceArtifactsFromInput(input);
+  const observedOracleKindClassification = classifyGpuHmrOutputOracleKind(
+    outputEventForInput?.oracleKind,
+  );
+  const requestedOracleKind = firstText(input.oracleKind, input.oracle_kind);
+  const requestedOracleKindClassification = requestedOracleKind
+    ? classifyGpuHmrOutputOracleKind(requestedOracleKind)
+    : null;
   const visualOracleRequested =
     Boolean(visualOracleArtifacts)
-    || isVisualOracleKind(firstText(input.oracleKind, input.oracle_kind, outputEventForInput?.oracleKind));
+    || observedOracleKindClassification.modality === 'visual'
+    || requestedOracleKindClassification?.modality === 'visual';
   const oracleVerificationFailures = visualOracleRequested
     ? [
         ...visualOracleVerificationFailures(visualOracleArtifacts),
@@ -2212,6 +2211,23 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
     editId ? null : 'runtime_boundary_edit_id_missing',
     targetId ? null : 'runtime_boundary_target_id_missing',
     backend ? null : 'runtime_boundary_backend_missing',
+    observedOracleKindClassification.accepted === true
+      ? null
+      : observedOracleKindClassification.failureCode,
+    requestedOracleKindClassification === null || requestedOracleKindClassification.accepted === true
+      ? null
+      : 'runtime_boundary_requested_output_oracle_kind_unknown',
+    requestedOracleKindClassification?.accepted === true
+      && observedOracleKindClassification.accepted === true
+      && requestedOracleKindClassification.modality !== observedOracleKindClassification.modality
+      ? 'runtime_boundary_output_oracle_kind_modality_mismatch'
+      : null,
+    visualOracleArtifacts && observedOracleKindClassification.modality === 'compute'
+      ? 'runtime_boundary_output_oracle_artifact_modality_mismatch'
+      : null,
+    computeOracleArtifacts && observedOracleKindClassification.modality === 'visual'
+      ? 'runtime_boundary_output_oracle_artifact_modality_mismatch'
+      : null,
     sourcePaths.length > 0 ? null : 'runtime_boundary_source_paths_missing',
     sourceManifestHash ? null : 'runtime_boundary_source_manifest_hash_missing',
     sourceManifestHash && sourceManifestHashVerified
@@ -2270,8 +2286,8 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
     targetId,
     target_id: targetId,
     backend,
-    oracleKind: visualOracleRequested ? 'visual' : 'compute',
-    oracle_kind: visualOracleRequested ? 'visual' : 'compute',
+    oracleKind: observedOracleKindClassification.topLevelKind,
+    oracle_kind: observedOracleKindClassification.topLevelKind,
     computeOracleEvidenceRefs: computeOracleEvidenceRefs(computeOracleArtifacts),
     compute_oracle_evidence_refs: computeOracleEvidenceRefs(computeOracleArtifacts),
     visualOracleEvidenceRefs: visualOracleEvidenceRefs(visualOracleArtifacts),
@@ -2412,7 +2428,11 @@ function buildBoundaryProofComponents(input, stageEvidence) {
   const retirement = stageEvidence.retirementReceipt;
   const backend = firstText(input.backend);
   let visualOracleArtifacts = visualOracleArtifactsFromInput(input, output);
-  const oracleMode = visualOracleArtifacts ? 'visual' : 'compute';
+  const oracleKindClassification = classifyGpuHmrOutputOracleKind(output?.oracleKind);
+  if (oracleKindClassification.accepted !== true) {
+    throw new Error(`runtime boundary output oracle kind rejected: ${oracleKindClassification.failureCode}`);
+  }
+  const oracleMode = oracleKindClassification.modality;
   const artifactAfterHash = normalizeSha256(firstText(input.artifactHashAfter, input.artifact_hash_after));
   const artifactBeforeHash = normalizeSha256(firstText(input.artifactHashBefore, input.artifact_hash_before));
   const artifactAfterId = artifactIdFromHash(artifactAfterHash);
@@ -2746,7 +2766,7 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     : null;
   const outputOracleKind = oracleMode === 'visual'
     ? acceptedVisualOracleKind(output.oracleKind)
-    : (output?.oracleKind === 'output_oracle' ? 'buffer_checksum' : output?.oracleKind);
+    : oracleKindClassification.kind;
   const outputOracleExpected = oracleMode === 'visual'
     ? visualOracleArtifacts.after_image_hash
     : computeOracleArtifacts.checksum_after;

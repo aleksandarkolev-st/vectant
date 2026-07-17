@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
 import { evaluateGpuHmrDeterministicVisualMode } from './gpu-hmr-visual-evidence.mjs';
+import {
+  classifyGpuHmrOutputOracleKind,
+  isGpuHmrVisualOutputOracleKind,
+} from './gpu-hmr-output-oracle-kind.mjs';
 
 export const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION = 'synthi.gpu.hmr.proof_ledger.v1';
 export const GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE =
@@ -548,10 +552,7 @@ function outputKind(outputEvent) {
 
 function isVisualOutput(outputEvent) {
   const kind = outputKind(outputEvent);
-  return kind.includes('visual')
-    || kind.includes('render')
-    || kind.includes('frame')
-    || kind.includes('pixel')
+  return isGpuHmrVisualOutputOracleKind(kind)
     || asObject(outputEvent.visual_oracle_artifacts ?? outputEvent.visualOracleArtifacts).after_image;
 }
 
@@ -2858,6 +2859,14 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
   }
   if (!outputId) addFailure(failures, 'output_event_id_missing');
   if (record.outputEvent.passed !== true) addFailure(failures, 'output_oracle_not_passed');
+  const outputOracleKindClassification = classifyGpuHmrOutputOracleKind(
+    outputKind(record.outputEvent),
+  );
+  if (outputOracleKindClassification.accepted !== true) {
+    addFailure(failures, outputOracleKindClassification.failureCode, {
+      outputOracleKind: outputOracleKindClassification.kind,
+    });
+  }
   const outputArtifactHash = eventArtifactHash(record.outputEvent);
   if (!outputArtifactHash) {
     addFailure(failures, 'output_artifact_hash_missing');

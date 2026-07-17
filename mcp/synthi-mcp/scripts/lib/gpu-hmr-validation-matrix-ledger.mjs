@@ -3,7 +3,15 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
-import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
+import {
+  GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+  buildGpuHmrProofLedger,
+  queryGpuHmrLedgerInvariants,
+} from './gpu-hmr-proof-ledger.mjs';
+import {
+  classifyGpuHmrOutputOracleKind,
+  isGpuHmrVisualOutputOracleKind,
+} from './gpu-hmr-output-oracle-kind.mjs';
 import { evaluateGpuHmrAcceptanceContract } from './gpu-hmr-acceptance-contract.mjs';
 import { classifyGpuHmrFissionProof } from './gpu-hmr-runtime-proof.mjs';
 import { runtimeProofArtifactStrictGate } from './gpu-hmr-proof-strict-gates.mjs';
@@ -31563,10 +31571,7 @@ function ledgerRecordHasVisualOutput(record) {
     outputOracleArtifacts.visual_oracle_artifacts,
     outputOracleArtifacts.visualOracleArtifacts,
   );
-  return kind.includes('visual')
-    || kind.includes('render')
-    || kind.includes('frame')
-    || kind.includes('pixel')
+  return isGpuHmrVisualOutputOracleKind(kind)
     || Object.keys(visualArtifacts).length > 0;
 }
 
@@ -32272,6 +32277,7 @@ function genericOutputOracleSelfCheckRecord(computeOracleArtifacts) {
   const processId = 'pid:generic-output-oracle-self-check';
   const runtimeSessionId = 'runtime-session:generic-output-oracle-self-check';
   return {
+    schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     project_id: 'generic-output-oracle-self-check',
     edit_id: 'generic-output-oracle-edit',
     backend: 'hip',
@@ -32411,7 +32417,7 @@ export async function selfCheckGenericOutputOracleLedger() {
     output_change_expected: true,
   };
   const record = genericOutputOracleSelfCheckRecord(computeOracleArtifacts);
-  const proofLedger = { records: [record] };
+  const proofLedger = buildGpuHmrProofLedger(record);
   const ledgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
   assertGenericOutputOracleSelfCheck(
     ledgerQuery.gpuHmrSuccess === true && ledgerQuery.failedInvariants.length === 0,
@@ -32450,7 +32456,7 @@ export async function selfCheckGenericOutputOracleLedger() {
     raw_readback_hash: `sha256:${'0'.repeat(64)}`,
   };
   const forgedRecord = genericOutputOracleSelfCheckRecord(forgedArtifacts);
-  const forgedProofLedger = { records: [forgedRecord] };
+  const forgedProofLedger = buildGpuHmrProofLedger(forgedRecord);
   const forgedLedgerQuery = queryGpuHmrLedgerInvariants(forgedProofLedger);
   const forgedFacet = await ledgerOutputOracleFacet(
     {
@@ -35521,13 +35527,13 @@ async function randomLargeProjectColdPathRows(json, filePath, context) {
 
 function runtimeClosureAcceptanceScopeForBackend(backend, outputOracleFacet = {}) {
   const normalizedBackend = valueFieldText(backend);
-  const oracleKind = firstText(
+  const oracleKind = classifyGpuHmrOutputOracleKind(firstText(
     outputOracleFacet.kind,
     outputOracleFacet.oracleKind,
     outputOracleFacet.oracle_kind,
-  );
-  const computeOracle = oracleKind === 'compute_oracle';
-  const visualOracle = oracleKind === 'visual_oracle' || oracleKind === 'runtime_visual_oracle';
+  ));
+  const computeOracle = oracleKind.modality === 'compute';
+  const visualOracle = oracleKind.modality === 'visual';
   if (normalizedBackend === 'hip') {
     return computeOracle || visualOracle ? 'rocm_hip_declared_runtime_profile' : null;
   }

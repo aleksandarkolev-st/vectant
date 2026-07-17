@@ -26,6 +26,9 @@ import {
   adversarialPreflightStrictGate,
 } from './gpu-hmr-proof-strict-gates.mjs';
 import {
+  isGpuHmrVisualOutputOracleKind,
+} from './gpu-hmr-output-oracle-kind.mjs';
+import {
   CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION,
   collectArtifactLocators,
   defaultCasRootFromEnv,
@@ -1894,10 +1897,7 @@ function outputProofRequiresVisualEvidence(outputProof, visualEvidenceRefs, visu
     || proof.render_visual_evidence_required === true
     || proof.visualFrameObserved === true
     || proof.visual_frame_observed === true
-    || kind.includes('visual')
-    || kind.includes('render')
-    || kind.includes('frame')
-    || kind.includes('pixel')
+    || isGpuHmrVisualOutputOracleKind(kind)
     || visualOracleArtifactsFromOutputProof(proof) !== null
     || primaryVisualRefs.length > 0
     || primaryVisualArtifacts.length > 0;
