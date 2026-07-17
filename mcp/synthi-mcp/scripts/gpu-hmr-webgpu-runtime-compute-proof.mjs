@@ -21,6 +21,12 @@ import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates
 import {
   webGpuRuntimeComputeTimingMetrics,
 } from './lib/gpu-hmr-timing-metrics.mjs';
+import {
+  GPU_HMR_TEST_TIMING_PHASE_KEYS,
+  GPU_HMR_TEST_TIMING_SCHEMA,
+  GpuHmrTestTimingRecorder,
+  validateGpuHmrTestTiming,
+} from './lib/gpu-hmr-test-timing-v2.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -58,6 +64,29 @@ const WEBGPU_LAUNCH_ARGS = Object.freeze([
 ]);
 const NUMERIC_DATA_TYPES = new Set(['float32', 'uint32', 'int32']);
 const WEBGPU_COMPUTE_OUTPUT_TARGET_ID = 'webgpu-compute-readback-buffer';
+const TEST_TIMING_SPLIT_NOT_APPLICABLE_REASON =
+  'split_not_performed_by_webgpu_runtime_compute_producer';
+const TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON = 'compute_only_test_has_no_visual_contract';
+const TEST_TIMING_BROWSER_CLOCK_GAP_REASON =
+  'browser_phase_not_delimited_in_node_monotonic_clock';
+const TEST_TIMING_OUTPUT_READY_GAP_REASON =
+  'output_ready_boundary_not_delimited_in_node_monotonic_clock';
+const TEST_TIMING_RETIREMENT_GAP_REASON =
+  'retirement_boundary_not_delimited_in_node_monotonic_clock';
+const TEST_TIMING_TERMINAL_PASS_REASON = 'webgpu_runtime_compute_completed';
+const TEST_TIMING_TERMINAL_REFUSAL_REASON = 'webgpu_runtime_compute_refused';
+const TEST_TIMING_TERMINAL_FAILURE_REASON = 'webgpu_runtime_compute_failed';
+const TEST_TIMING_BROWSER_PHASES = Object.freeze([
+  'compile',
+  'load',
+  'epoch_publication',
+  'dispatch',
+]);
+const TEST_TIMING_VISUAL_PHASES = Object.freeze([
+  'trigger_to_visible',
+  'screenshot_capture',
+  'visual_analysis',
+]);
 
 const CFG = {
   slug: process.env.SLUG ?? `webgpu-runtime-compute-${nowSlugDate()}`,
@@ -81,6 +110,98 @@ function stableJson(value) {
   return `{${Object.keys(value).sort().map((key) =>
     `${JSON.stringify(key)}:${stableJson(value[key])}`
   ).join(',')}}`;
+}
+
+export function createWebgpuRuntimeComputeTimingV2Recorder(options = {}) {
+  const recorder = new GpuHmrTestTimingRecorder(options);
+  recorder.notApplicable('split', TEST_TIMING_SPLIT_NOT_APPLICABLE_REASON);
+  for (const phaseKey of TEST_TIMING_BROWSER_PHASES) {
+    recorder.unavailable(phaseKey, TEST_TIMING_BROWSER_CLOCK_GAP_REASON);
+  }
+  recorder.unavailable('output_ready', TEST_TIMING_OUTPUT_READY_GAP_REASON);
+  recorder.unavailable('retirement', TEST_TIMING_RETIREMENT_GAP_REASON);
+  for (const phaseKey of TEST_TIMING_VISUAL_PHASES) {
+    recorder.notApplicable(phaseKey, TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON);
+  }
+  return recorder;
+}
+
+export async function measureWebgpuRuntimeComputeTimingPhase(recorder, phaseKey, operation) {
+  recorder.startPhase(phaseKey);
+  try {
+    return await operation();
+  } finally {
+    recorder.finishPhase(phaseKey);
+  }
+}
+
+export function finalizeWebgpuRuntimeComputeTimingV2({
+  recorder,
+  outcome,
+  terminalReason,
+}) {
+  if (recorder.isFinalized) return recorder.record;
+  const record = recorder.finalize({
+    outcome,
+    visualCapable: false,
+    terminalReason,
+    notApplicableReason: TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+  });
+  const validation = validateGpuHmrTestTiming(record);
+  if (
+    record.schema !== GPU_HMR_TEST_TIMING_SCHEMA
+    || validation.valid !== true
+    || record.authority !== 'timing_only'
+    || record.timingOnly !== true
+    || record.acceptedForGpuHmr !== false
+    || record.gpuHmrSuccess !== false
+    || GPU_HMR_TEST_TIMING_PHASE_KEYS.some((phaseKey) => !record.phases?.[phaseKey])
+  ) {
+    throw new TypeError(
+      `invalid WebGPU compute timing-v2 record: ${validation.validationGaps.join(',')}`,
+    );
+  }
+  return record;
+}
+
+export function attachWebgpuRuntimeComputeTestTiming(target, testTiming) {
+  if (!target || typeof target !== 'object' || Array.isArray(target)) {
+    throw new TypeError('WebGPU compute timing attachment target must be an object');
+  }
+  const validation = validateGpuHmrTestTiming(testTiming);
+  if (
+    testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA
+    || validation.valid !== true
+    || testTiming.acceptedForGpuHmr !== false
+    || testTiming.gpuHmrSuccess !== false
+  ) {
+    throw new TypeError('WebGPU compute timing attachment requires valid support-only timing-v2');
+  }
+  const existingCamel = target.testTiming;
+  const existingSnake = target.test_timing;
+  if (
+    (existingCamel && stableJson(existingCamel) !== stableJson(testTiming))
+    || (existingSnake && stableJson(existingSnake) !== stableJson(testTiming))
+    || (existingCamel && existingSnake && stableJson(existingCamel) !== stableJson(existingSnake))
+  ) {
+    throw new TypeError('WebGPU compute timing aliases conflict');
+  }
+  target.testTiming = testTiming;
+  target.test_timing = testTiming;
+  return target;
+}
+
+function webgpuRuntimeComputeTimingOutcome(error) {
+  const message = String(error?.message ?? error ?? '');
+  return /(?:unsupported|unavailable|missing|not found|returned null)/iu.test(message)
+    ? 'refused'
+    : 'failed';
+}
+
+function webgpuRuntimeComputeTimingReason(outcome) {
+  return outcome === 'refused'
+    ? TEST_TIMING_TERMINAL_REFUSAL_REASON
+    : TEST_TIMING_TERMINAL_FAILURE_REASON;
 }
 
 function sha256Bytes(value) {
@@ -1841,18 +1962,35 @@ function buildNegativeRefusal({ profile }) {
   };
 }
 
-async function main() {
+function declaredNegativeRefusalTestTiming() {
+  const recorder = createWebgpuRuntimeComputeTimingV2Recorder();
+  return finalizeWebgpuRuntimeComputeTimingV2({
+    recorder,
+    outcome: 'refused',
+    terminalReason: 'webgpu_runtime_compute_negative_edit_refused_before_runtime',
+  });
+}
+
+async function main(testTimingRecorder) {
   const totalStart = process.hrtime.bigint();
   const staticStart = process.hrtime.bigint();
-  const profile = await loadProfile(CFG.profilePath);
+  const profile = await measureWebgpuRuntimeComputeTimingPhase(
+    testTimingRecorder,
+    'cold_intake',
+    () => loadProfile(CFG.profilePath),
+  );
   const staticEnd = process.hrtime.bigint();
   const modelStart = process.hrtime.bigint();
   const modelCheckedAt = new Date().toISOString();
-  const provenance = modelProvenance({
-    checkedAt: modelCheckedAt,
-    splitModel: CFG.splitModel,
-    gpuDeltaModel: CFG.gpuDeltaModel,
-  });
+  const provenance = await measureWebgpuRuntimeComputeTimingPhase(
+    testTimingRecorder,
+    'discovery',
+    async () => modelProvenance({
+      checkedAt: modelCheckedAt,
+      splitModel: CFG.splitModel,
+      gpuDeltaModel: CFG.gpuDeltaModel,
+    }),
+  );
   const modelEnd = process.hrtime.bigint();
   const runtimeStart = process.hrtime.bigint();
   const browserRun = await runBrowserCompute(profile);
@@ -1877,6 +2015,7 @@ async function main() {
     sourceAfter: browserRun.processIdentityAfter?.source ?? null,
     failedGates: sameProcess === true ? [] : ['browser_process_identity_changed_or_missing'],
   };
+  testTimingRecorder.startPhase('proof_finalization');
   const oracleStart = process.hrtime.bigint();
   const runSlug = safeSlug(`${CFG.slug}-${profile.targetId}`);
   const outDir = path.join(ARTIFACT_DIR, runSlug);
@@ -1995,6 +2134,12 @@ async function main() {
     noHardcodedProjectBranch: true,
     noShimApplied: true,
   };
+  if (proofMaterial.negativeEditRefusal) {
+    attachWebgpuRuntimeComputeTestTiming(
+      proofMaterial.negativeEditRefusal,
+      declaredNegativeRefusalTestTiming(),
+    );
+  }
   proofMaterial.proofId = `webgpu-runtime-compute-proof:${sha256Text(stableJson({
     schema: proofMaterial.schema,
     profile: proofMaterial.profile,
@@ -2021,6 +2166,23 @@ async function main() {
     path.join(outDir, `${runSlug}-run-mode-proof.json`),
     `${JSON.stringify(proofMaterial.runModeProof, null, 2)}\n`,
   );
+  testTimingRecorder.finishPhase('proof_finalization');
+  const testTiming = finalizeWebgpuRuntimeComputeTimingV2({
+    recorder: testTimingRecorder,
+    outcome: accepted ? 'pass' : 'refused',
+    terminalReason: accepted
+      ? TEST_TIMING_TERMINAL_PASS_REASON
+      : TEST_TIMING_TERMINAL_REFUSAL_REASON,
+  });
+  attachWebgpuRuntimeComputeTestTiming(proofMaterial, testTiming);
+  attachWebgpuRuntimeComputeTestTiming(runtimeProofArtifact, testTiming);
+  attachWebgpuRuntimeComputeTestTiming(proofMaterial.runModeProof, testTiming);
+  await writeFile(runtimeProofArtifactPath, `${JSON.stringify(runtimeProofArtifact, null, 2)}\n`);
+  await writeFile(proofPath, `${JSON.stringify(proofMaterial, null, 2)}\n`);
+  await writeFile(
+    path.join(outDir, `${runSlug}-run-mode-proof.json`),
+    `${JSON.stringify(proofMaterial.runModeProof, null, 2)}\n`,
+  );
   console.log(JSON.stringify({
     proofId: proofMaterial.proofId,
     gpuHmrSuccess: proofMaterial.gpuHmrSuccess,
@@ -2034,6 +2196,8 @@ async function main() {
     contractAccepted: contractEvaluation.accepted,
     computeOracleAccepted: oracleValidation.accepted,
     nativeWebGpuApiAccepted: nativeApiEvidence.accepted,
+    testTiming,
+    test_timing: testTiming,
     timings: {
       totalValidatorWallTimeNs: timings.total_validator_wall_time,
       dispatchToOutputProofTimeNs: timings.dispatch_to_output_proof_time,
@@ -2170,11 +2334,58 @@ async function selfCheck() {
   if (evaluation.gpuHmrSuccess || !evaluation.failedInvariants.some((gate) => gate.code === 'compute_oracle_artifacts_missing')) {
     throw new Error('self-check failed to reject missing compute raw readback artifacts');
   }
+  let timingClock = 0n;
+  const timingRecorder = createWebgpuRuntimeComputeTimingV2Recorder({
+    clock: () => {
+      timingClock += 10n;
+      return timingClock;
+    },
+  });
+  await measureWebgpuRuntimeComputeTimingPhase(timingRecorder, 'cold_intake', async () => {});
+  await measureWebgpuRuntimeComputeTimingPhase(timingRecorder, 'discovery', async () => {});
+  await measureWebgpuRuntimeComputeTimingPhase(timingRecorder, 'proof_finalization', async () => {});
+  const testTiming = finalizeWebgpuRuntimeComputeTimingV2({
+    recorder: timingRecorder,
+    outcome: 'pass',
+    terminalReason: TEST_TIMING_TERMINAL_PASS_REASON,
+  });
+  const timingValidation = validateGpuHmrTestTiming(testTiming);
+  if (
+    timingValidation.valid !== true
+    || testTiming.phases.cold_intake.state !== 'measured'
+    || testTiming.phases.discovery.state !== 'measured'
+    || testTiming.phases.proof_finalization.state !== 'measured'
+    || testTiming.phases.compile.state !== 'unavailable'
+    || testTiming.phases.trigger_to_visible.state !== 'not_applicable'
+    || testTiming.phases.trigger_to_visible.reasonCode
+      !== TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON
+  ) {
+    throw new Error(`self-check failed timing-v2 semantics: ${timingValidation.blockingGaps.join(',')}`);
+  }
+  const timedTarget = {};
+  attachWebgpuRuntimeComputeTestTiming(timedTarget, testTiming);
+  if (stableJson(timedTarget.testTiming) !== stableJson(timedTarget.test_timing)) {
+    throw new Error('self-check failed timing-v2 alias attachment');
+  }
+  let forgedTimingRejected = false;
+  try {
+    attachWebgpuRuntimeComputeTestTiming({}, {
+      ...testTiming,
+      acceptedForGpuHmr: true,
+    });
+  } catch {
+    forgedTimingRejected = true;
+  }
+  if (!forgedTimingRejected) {
+    throw new Error('self-check failed to reject timing authority forgery');
+  }
   console.log(JSON.stringify({
     ok: true,
     supportedScope: supported.scope,
     supportedUint32Scope: supportedUint32.scope,
     forgedLedgerFailedGate: 'compute_oracle_artifacts_missing',
+    timingSchema: testTiming.schema,
+    timingAuthorityForgeryRejected: forgedTimingRejected,
   }, null, 2));
 }
 
@@ -2184,8 +2395,28 @@ if (process.argv.includes('--self-check')) {
     process.exitCode = 1;
   });
 } else {
-  main().catch((error) => {
-    console.error(error);
+  const testTimingRecorder = createWebgpuRuntimeComputeTimingV2Recorder();
+  main(testTimingRecorder).catch((error) => {
+    const outcome = webgpuRuntimeComputeTimingOutcome(error);
+    let testTiming = null;
+    try {
+      testTiming = finalizeWebgpuRuntimeComputeTimingV2({
+        recorder: testTimingRecorder,
+        outcome,
+        terminalReason: webgpuRuntimeComputeTimingReason(outcome),
+      });
+    } catch (timingError) {
+      console.error(timingError);
+    }
+    console.error(JSON.stringify({
+      schemaVersion: 'synthi.gpu_hmr.webgpu_runtime_compute_failure.v1',
+      error: String(error?.message ?? error),
+      outcome,
+      testTiming,
+      test_timing: testTiming,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+    }, null, 2));
     process.exitCode = 1;
   });
 }
