@@ -12,10 +12,8 @@ import {
 } from "./shared.js";
 import {
   GPU_HMR_PROOF_STATES,
-  classifyGpuHmrProofMessage,
   gpuHmrProofMatches,
   gpuHmrProofStateRank,
-  gpuHmrFullRuntimeProofMaterials,
   type GpuHmrProofMatchOpts,
   type GpuHmrProofValidation,
   isKnownGpuHmrProofState,
@@ -118,11 +116,11 @@ function gpuProofPayload(proof: GpuHmrProofTelemetry | null): Record<string, unk
   return {
     schemaVersion: proof.schemaVersion,
     proofId: proof.proofId,
-    proofArtifactPath: proof.proofArtifactPath,
+    proofRef: proof.proofRef,
+    proofIdPresent: proof.proofIdPresent,
+    proofArtifactPresent: proof.proofArtifactPresent,
     resultState: proof.resultState,
     degradedState: proof.degradedState,
-    degradedReason: proof.degradedReason,
-    label: proof.label,
     source: proof.source,
     observedAt: proof.observedAt,
   };
@@ -177,7 +175,8 @@ function proofWaitDecisionPayload(
     effective_result_rank: validation.effectiveResultRank,
     required_rank: validation.requiredRank,
     proof_id: proof?.proofId ?? null,
-    proof_artifact_path: proof?.proofArtifactPath ?? null,
+    proof_ref: proof?.proofRef ?? null,
+    proof_artifact_present: proof?.proofArtifactPresent ?? false,
     hmr_observed_at: hmrObservedAt,
     proof_observed_at: proof?.observedAt ?? null,
     elapsed_ms: elapsedMs,
@@ -365,17 +364,6 @@ function responseWithGpuProofValidation(
   }
   if (proof !== null) {
     payload.gpu_proof = gpuProofPayload(proof);
-    if (gpuHmrProofStateRank(requiredState) >= gpuHmrProofStateRank("gpu-hmr-full-runtime-proven")) {
-      const materials = gpuHmrFullRuntimeProofMaterials(proof);
-      if (materials.proofLedger !== null) {
-        payload.proofLedger = materials.proofLedger;
-        payload.proof_ledger = materials.proofLedger;
-      }
-      if (materials.runtimeProofArtifact !== null) {
-        payload.runtimeProofArtifact = materials.runtimeProofArtifact;
-        payload.runtime_proof_artifact = materials.runtimeProofArtifact;
-      }
-    }
   }
   return jsonResponse(payload);
 }
@@ -416,7 +404,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     required_gpu_proof_state: requiredProofState,
     require_gpu_full_runtime_proof: a.requireGpuFullRuntimeProof === true,
   };
-  let unsubscribePostApply: (() => void) | null = null;
+  const unsubscribePostApply: Array<() => void> = [];
 
   try {
     const start = Date.now();
@@ -455,12 +443,17 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         requiredProofState
       );
     };
-    unsubscribePostApply = attached.channels.hmr.onMessage((msg) => {
-      const proof = classifyGpuHmrProofMessage(msg);
-      if (gpuHmrProofMatches(proof, proofMatchOpts)) {
-        latestGpuProof = proof;
-        notifyRequiredProof?.();
-      }
+    const proofChannel = attached.channels.hmr as typeof attached.channels.hmr & {
+      onGpuProof: (
+        opts: GpuHmrProofMatchOpts,
+        cb: (proof: GpuHmrProofTelemetry) => void
+      ) => () => void;
+    };
+    unsubscribePostApply.push(proofChannel.onGpuProof(proofMatchOpts, (proof) => {
+      latestGpuProof = proof;
+      notifyRequiredProof?.();
+    }));
+    unsubscribePostApply.push(attached.channels.hmr.onMessage((msg) => {
       const cls = classifyHmrMessage(msg);
       if (!cls) return;
       if (cls.status === "applied") {
@@ -471,7 +464,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       postApplyTerminal = cls;
       notifyPostApplyTerminal?.();
       notifyRequiredProof?.();
-    });
+    }));
 
     const waitForPostApplyTerminal = (
       timeoutMs: number
@@ -808,6 +801,6 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
   } catch (err) {
     return errorFromException("wait_hmr_failed", err);
   } finally {
-    unsubscribePostApply?.();
+    for (const unsubscribe of unsubscribePostApply) unsubscribe();
   }
 }

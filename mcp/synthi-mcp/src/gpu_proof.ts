@@ -1,8 +1,13 @@
+import { createHmac, randomBytes } from "node:crypto";
 import {
   embeddedGpuHmrProofLedger,
   queryGpuHmrLedgerInvariants,
   type GpuHmrLedgerValidation,
 } from "./gpu_proof_ledger.js";
+import {
+  deriveGpuHmrFrameGateSeed,
+  type GpuHmrFrameGateSeed,
+} from "./gpu_frame_gate_binding.js";
 import {
   evaluateGpuHmrAcceptanceContract,
   evaluateGpuHmrAcceptanceContractConsistency,
@@ -40,17 +45,33 @@ export const GPU_HMR_DEGRADED_STATES = [
   "gpu-hmr-fission-unverified",
 ] as const;
 
-export interface GpuHmrProofTelemetry {
+type GpuHmrDegradedState = (typeof GPU_HMR_DEGRADED_STATES)[number];
+
+interface RawGpuHmrProofTelemetry {
   schemaVersion: string | null;
   proofId: string | null;
   proofArtifactPath: string | null;
   resultState: string;
   degradedState: string | null;
-  degradedReason: string | null;
-  label: string | null;
   source: "gpu_hmr_proof" | "gpu-proof-state";
   observedAt: number;
   raw: Record<string, unknown>;
+}
+
+export interface GpuHmrProofTelemetry {
+  schemaVersion: typeof GPU_HMR_PROOF_SCHEMA_VERSION | null;
+  proofId: string | null;
+  proofRef: string | null;
+  proofIdPresent: boolean;
+  proofArtifactPresent: boolean;
+  resultState: GpuHmrProofState | "unknown";
+  degradedState: GpuHmrDegradedState | "unknown" | null;
+  source: "gpu_hmr_proof" | "gpu-proof-state";
+  observedAt: number;
+  moduleRef: string | null;
+  previewRef: string | null;
+  decisions: Readonly<Record<GpuHmrProofState, GpuHmrProofValidation>>;
+  frameGateSeed: GpuHmrFrameGateSeed;
 }
 
 export interface GpuHmrProofValidation {
@@ -71,7 +92,7 @@ export interface GpuHmrRuntimeProofArtifactValidation {
   present: boolean;
   accepted: boolean;
   source: string | null;
-  failedGates: Array<{ code: string }>;
+  failedGates: ReadonlyArray<{ code: string }>;
 }
 
 export interface GpuHmrProofMatchOpts {
@@ -127,6 +148,31 @@ const IMMUTABLE_PROOF_ID_PATTERNS = [
   /^gpu-runtime-proof:sha256:[a-f0-9]{64}$/i,
   /^gpu-ledger-proof:sha256:[a-f0-9]{64}$/i,
 ];
+
+const proofReferenceKey = randomBytes(32);
+
+function proofIdentityRef(kind: string, value: string | null): string | null {
+  if (value === null) return null;
+  const digest = createHmac("sha256", proofReferenceKey)
+    .update(kind)
+    .update("\0")
+    .update(value)
+    .digest("hex");
+  return `gpu-proof-${kind}-ref:sha256:${digest}`;
+}
+
+function immutableProofId(value: string | null): string | null {
+  if (value === null) return null;
+  return IMMUTABLE_PROOF_ID_PATTERNS.some((pattern) => pattern.test(value)) ? value : null;
+}
+
+function deepFreeze<T>(value: T): Readonly<T> {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
+    Object.freeze(value);
+  }
+  return value;
+}
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
@@ -465,24 +511,6 @@ function runtimeProofArtifactCandidate(
   return null;
 }
 
-export function gpuHmrFullRuntimeProofMaterials(
-  proof: GpuHmrProofTelemetry | null
-): {
-  proofLedger: Record<string, unknown> | null;
-  runtimeProofArtifact: Record<string, unknown> | null;
-} {
-  if (proof === null) {
-    return {
-      proofLedger: null,
-      runtimeProofArtifact: null,
-    };
-  }
-  return {
-    proofLedger: embeddedGpuHmrProofLedger(proof.raw),
-    runtimeProofArtifact: runtimeProofArtifactCandidate(proof.raw)?.artifact ?? null,
-  };
-}
-
 function validateRuntimeProofArtifactAcceptance(
   raw: Record<string, unknown>,
   expectedProofLedger: Record<string, unknown> | null = null,
@@ -713,7 +741,7 @@ function validateRuntimeProofArtifactAcceptance(
 }
 
 function lowerStateProofMaterialFailure(
-  proof: GpuHmrProofTelemetry,
+  proof: RawGpuHmrProofTelemetry,
   requiredState: string
 ): string | null {
   const requiredStages = LOWER_STATE_STAGE_REQUIREMENTS.get(requiredState);
@@ -738,15 +766,6 @@ function lowerStateProofMaterialFailure(
   return null;
 }
 
-export function gpuHmrProofModule(proof: GpuHmrProofTelemetry | null): string | null {
-  return proof ? nestedString(proof.raw, "module") : null;
-}
-
-export function gpuHmrProofPreviewId(proof: GpuHmrProofTelemetry | null): string | null {
-  if (!proof) return null;
-  return nestedString(proof.raw, "preview_id") ?? nestedString(proof.raw, "previewId");
-}
-
 export function gpuHmrProofMatches(
   proof: GpuHmrProofTelemetry | null,
   opts: GpuHmrProofMatchOpts = {}
@@ -756,11 +775,11 @@ export function gpuHmrProofMatches(
     return false;
   }
   const expectedModule = opts.module?.trim();
-  if (expectedModule && gpuHmrProofModule(proof) !== expectedModule) {
+  if (expectedModule && proof.moduleRef !== proofIdentityRef("module", expectedModule)) {
     return false;
   }
   const expectedPreviewId = opts.previewId?.trim();
-  if (expectedPreviewId && gpuHmrProofPreviewId(proof) !== expectedPreviewId) {
+  if (expectedPreviewId && proof.previewRef !== proofIdentityRef("preview", expectedPreviewId)) {
     return false;
   }
   return true;
@@ -780,6 +799,54 @@ export function gpuHmrDegradedStateRankCap(value: unknown): number | null {
   return DEGRADED_STATE_RANK_CAPS.get(value) ?? 0;
 }
 
+function sanitizeGpuHmrProofValidation(
+  validation: GpuHmrProofValidation
+): GpuHmrProofValidation {
+  const proofLedgerValidation = validation.proofLedgerValidation === undefined
+    ? undefined
+    : validation.proofLedgerValidation === null
+      ? null
+      : {
+          schemaVersion: validation.proofLedgerValidation.schemaVersion,
+          proofId: immutableProofId(validation.proofLedgerValidation.proofId),
+          gpuHmrSuccess: validation.proofLedgerValidation.gpuHmrSuccess,
+          failedInvariants: [...new Set(
+            validation.proofLedgerValidation.failedInvariants.map((failure) => failure.code)
+          )].sort().map((code) => ({ code })),
+        };
+  const runtimeProofArtifactValidation = validation.runtimeProofArtifactValidation === undefined
+    ? undefined
+    : validation.runtimeProofArtifactValidation === null
+      ? null
+      : {
+          present: validation.runtimeProofArtifactValidation.present,
+          accepted: validation.runtimeProofArtifactValidation.accepted,
+          source: validation.runtimeProofArtifactValidation.source,
+          failedGates: [...new Set(
+            validation.runtimeProofArtifactValidation.failedGates.map((failure) => failure.code)
+          )].sort().map((code) => ({ code })),
+        };
+  return deepFreeze({
+    requiredState: validation.requiredState,
+    requiredRank: validation.requiredRank,
+    resultState: isKnownGpuHmrProofState(validation.resultState)
+      ? validation.resultState
+      : validation.resultState === null ? null : "unknown",
+    resultRank: validation.resultRank,
+    effectiveResultRank: validation.effectiveResultRank,
+    degradedState: validation.degradedState === null
+      ? null
+      : GPU_HMR_DEGRADED_STATES.includes(validation.degradedState as GpuHmrDegradedState)
+        ? validation.degradedState
+        : "unknown",
+    degradedStateRankCap: validation.degradedStateRankCap,
+    satisfied: validation.satisfied,
+    ...(validation.reason !== undefined ? { reason: validation.reason } : {}),
+    ...(proofLedgerValidation !== undefined ? { proofLedgerValidation } : {}),
+    ...(runtimeProofArtifactValidation !== undefined ? { runtimeProofArtifactValidation } : {}),
+  }) as GpuHmrProofValidation;
+}
+
 export function classifyGpuHmrProofMessage(
   msg: Record<string, unknown>,
   observedAt = Date.now()
@@ -795,22 +862,62 @@ export function classifyGpuHmrProofMessage(
   const resultState = stringOrNull(msg.resultState ?? msg.result_state);
   if (resultState === null) return null;
 
-  return {
+  const rawProof: RawGpuHmrProofTelemetry = {
     schemaVersion: stringOrNull(msg.schemaVersion ?? msg.schema_version),
     proofId: stringOrNull(msg.proofId ?? msg.proof_id),
     proofArtifactPath: stringOrNull(msg.proofArtifactPath ?? msg.proof_artifact_path),
     resultState,
     degradedState: stringOrNull(msg.degradedState ?? msg.degraded_state),
-    degradedReason: stringOrNull(msg.degradedReason ?? msg.degraded_reason),
-    label: stringOrNull(msg.label),
     source,
     observedAt,
     raw: msg,
   };
+  const rawDecisions = Object.fromEntries(
+    GPU_HMR_PROOF_STATES.map((requiredState) => [
+      requiredState,
+      validateRawGpuHmrProofState(rawProof, requiredState),
+    ])
+  ) as Record<GpuHmrProofState, GpuHmrProofValidation>;
+  const decisions = Object.fromEntries(
+    GPU_HMR_PROOF_STATES.map((requiredState) => [
+      requiredState,
+      sanitizeGpuHmrProofValidation(rawDecisions[requiredState]),
+    ])
+  ) as Record<GpuHmrProofState, GpuHmrProofValidation>;
+  const proofId = rawProof.proofId;
+  const module = nestedString(msg, "module");
+  const previewId = nestedString(msg, "preview_id") ?? nestedString(msg, "previewId");
+  return deepFreeze({
+    schemaVersion: rawProof.schemaVersion === GPU_HMR_PROOF_SCHEMA_VERSION
+      ? GPU_HMR_PROOF_SCHEMA_VERSION
+      : null,
+    proofId: immutableProofId(proofId),
+    proofRef: proofIdentityRef("identity", proofId),
+    proofIdPresent: proofId !== null,
+    proofArtifactPresent: rawProof.proofArtifactPath !== null,
+    resultState: isKnownGpuHmrProofState(resultState) ? resultState : "unknown",
+    degradedState: rawProof.degradedState === null
+      ? null
+      : GPU_HMR_DEGRADED_STATES.includes(rawProof.degradedState as GpuHmrDegradedState)
+        ? rawProof.degradedState as GpuHmrDegradedState
+        : "unknown",
+    source,
+    observedAt,
+    moduleRef: proofIdentityRef("module", module),
+    previewRef: proofIdentityRef("preview", previewId),
+    decisions,
+    frameGateSeed: deriveGpuHmrFrameGateSeed({
+      rawProof: msg,
+      resultState,
+      proofId,
+      observedAt,
+      fullRuntimeValidation: rawDecisions["gpu-hmr-full-runtime-proven"],
+    }),
+  }) as GpuHmrProofTelemetry;
 }
 
-export function validateGpuHmrProofState(
-  proof: GpuHmrProofTelemetry | null,
+function validateRawGpuHmrProofState(
+  proof: RawGpuHmrProofTelemetry | null,
   requiredState: string
 ): GpuHmrProofValidation {
   const requiredRank = gpuHmrProofStateRank(requiredState);
@@ -928,4 +1035,38 @@ export function validateGpuHmrProofState(
       ? { reason: reason ?? proofMaterialReason ?? ledgerReason ?? runtimeArtifactReason }
       : {}),
   };
+}
+
+export function validateGpuHmrProofState(
+  proof: GpuHmrProofTelemetry | null,
+  requiredState: string
+): GpuHmrProofValidation {
+  const requiredRank = gpuHmrProofStateRank(requiredState);
+  if (requiredRank === 0) {
+    return deepFreeze({
+      requiredState,
+      requiredRank,
+      resultState: proof?.resultState ?? null,
+      resultRank: gpuHmrProofStateRank(proof?.resultState),
+      effectiveResultRank: gpuHmrProofStateRank(proof?.resultState),
+      degradedState: proof?.degradedState ?? null,
+      degradedStateRankCap: gpuHmrDegradedStateRankCap(proof?.degradedState),
+      satisfied: false,
+      reason: "unknown_required_proof_state",
+    }) as GpuHmrProofValidation;
+  }
+  if (proof === null) {
+    return deepFreeze({
+      requiredState,
+      requiredRank,
+      resultState: null,
+      resultRank: 0,
+      effectiveResultRank: 0,
+      degradedState: null,
+      degradedStateRankCap: null,
+      satisfied: false,
+      reason: "proof_state_missing",
+    }) as GpuHmrProofValidation;
+  }
+  return proof.decisions[requiredState as GpuHmrProofState];
 }

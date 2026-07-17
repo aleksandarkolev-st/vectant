@@ -453,6 +453,10 @@ interface WaitForTerminalOpts {
 
 export class HmrNormalizer {
   private readonly listeners = new Set<MessageHandler>();
+  private readonly proofListeners = new Set<{
+    opts: GpuHmrProofMatchOpts;
+    cb: (proof: GpuHmrProofTelemetry) => void;
+  }>();
   private readonly unbind: () => void;
   private latestProof: GpuHmrProofTelemetry | null = null;
   private readonly structuredJsonChunks = new Map<string, StructuredJsonChunkBuffer>();
@@ -716,6 +720,17 @@ export class HmrNormalizer {
     };
   }
 
+  onGpuProof(
+    opts: GpuHmrProofMatchOpts,
+    cb: (proof: GpuHmrProofTelemetry) => void
+  ): () => void {
+    const listener = { opts: { ...opts }, cb };
+    this.proofListeners.add(listener);
+    return (): void => {
+      this.proofListeners.delete(listener);
+    };
+  }
+
   latestGpuProof(opts: GpuHmrProofMatchOpts = {}): GpuHmrProofTelemetry | null {
     if (Object.keys(opts).length === 0) return this.latestProof;
     for (const proof of this.proofHistory.slice().reverse()) {
@@ -729,6 +744,9 @@ export class HmrNormalizer {
     this.proofHistory.push(proof);
     while (this.proofHistory.length > HmrNormalizer.PROOF_HISTORY_LIMIT) {
       this.proofHistory.shift();
+    }
+    for (const listener of this.proofListeners) {
+      if (gpuHmrProofMatches(proof, listener.opts)) listener.cb(proof);
     }
   }
 
@@ -830,6 +848,7 @@ export class HmrNormalizer {
 
   dispose(): void {
     this.listeners.clear();
+    this.proofListeners.clear();
     if (this.structuredJsonChunkExpiryTimer !== null) {
       clearTimeout(this.structuredJsonChunkExpiryTimer);
       this.structuredJsonChunkExpiryTimer = null;

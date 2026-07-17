@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  GPU_HMR_PROOF_STATES,
   classifyGpuHmrProofMessage,
   gpuHmrDegradedStateRankCap,
   gpuHmrProofStateRank,
@@ -49,6 +50,7 @@ function timingMetrics() {
 
 function proofLedger(overrides: Record<string, unknown> = {}) {
   const record = {
+    schemaVersion: "synthi.gpu.hmr.proof_ledger.v1",
     project_id: "generic-gpu-project",
     edit_id: "gpu-edit",
     backend: "hip",
@@ -481,9 +483,16 @@ describe("GPU HMR proof-state validation", () => {
 
     expect(proof?.schemaVersion).toBe("synthi.gpu.hmr.proof.v1");
     expect(proof?.source).toBe("gpu-proof-state");
-    expect(proof?.proofId).toBe("gpu-proof:abc");
-    expect(proof?.proofArtifactPath).toBe(".synthi/gpu-hmr/proofs/gpu-proof_abc.json");
+    expect(proof?.proofId).toBeNull();
+    expect(proof?.proofRef).toMatch(/^gpu-proof-identity-ref:sha256:[a-f0-9]{64}$/);
+    expect(proof?.proofIdPresent).toBe(true);
+    expect(proof?.proofArtifactPresent).toBe(true);
     expect(proof?.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof).not.toHaveProperty("proofArtifactPath");
+    expect(proof).not.toHaveProperty("degradedReason");
+    expect(proof).not.toHaveProperty("label");
+    expect(proof).not.toHaveProperty("raw");
+    expect(Object.isFrozen(proof)).toBe(true);
   });
 
   it("parses JSON proof log telemetry", () => {
@@ -495,6 +504,28 @@ describe("GPU HMR proof-state validation", () => {
 
     expect(proof?.source).toBe("gpu_hmr_proof");
     expect(proof?.resultState).toBe("gpu-hmr-compile-proven");
+  });
+
+  it("retains immutable decisions instead of mutable raw proof material", () => {
+    const ledger = proofLedger();
+    const raw: Record<string, any> = {
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(ledger),
+    };
+    const proof = classifyGpuHmrProofMessage(raw);
+
+    expect(validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven").satisfied).toBe(true);
+    raw.resultState = "gpu-hmr-compile-proven";
+    raw.proofLedger.records[0].artifact_after_hash = HASH_A;
+    raw.runtimeProofArtifact.gpuHmrSuccess = false;
+
+    expect(validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven").satisfied).toBe(true);
+    expect(Object.keys(proof?.decisions ?? {})).toEqual(GPU_HMR_PROOF_STATES);
+    expect(Object.isFrozen(proof?.decisions)).toBe(true);
+    expect(Object.isFrozen(proof?.decisions["gpu-hmr-full-runtime-proven"])).toBe(true);
+    expect(proof).not.toHaveProperty("raw");
   });
 
   it("orders proof states by the declared proof ladder", () => {
@@ -1502,6 +1533,7 @@ describe("GPU HMR proof-state validation", () => {
 
     const baseRecord = (proofLedger().records[0] as Record<string, any>);
     const topLevelPolicyQuery = queryGpuHmrLedgerInvariants({
+      schemaVersion: "synthi.gpu.hmr.proof_ledger.v1",
       model_policy: customModelPolicy,
       records: [
         {
@@ -1824,17 +1856,16 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
     expect(result.binding).toMatchObject({
       schema_version: "synthi.gpu_hmr.frame_gate_runtime_binding.v1",
       proof_authority: "validated_runtime_tuple_for_visual_capture_gate_only_not_gpu_hmr_success",
-      runtime_proof_id: "gpu-runtime-proof:fixture",
+      runtime_proof_ref: expect.stringMatching(/^gpu-frame-runtime-proof-ref:sha256:[a-f0-9]{64}$/),
+      proof_ledger_ref: expect.stringMatching(/^gpu-frame-proof-ledger-ref:sha256:[a-f0-9]{64}$/),
       runtime_proof_state: "gpu-hmr-full-runtime-proven",
       runtime_proof_accepted: true,
       artifact_after_hash: HASH_B,
-      published_epoch: "epoch-2",
-      dispatch_id: "dispatch-1",
-      output_after_dispatch_id: "dispatch-1",
-      output_target_id: "output-target-1",
-      process_id: "pid-1",
-      runtime_session_id: "runtime-session-1",
-      device_id: "device-1",
+      published_epoch_ref: expect.stringMatching(/^gpu-frame-epoch-ref:sha256:[a-f0-9]{64}$/),
+      dispatch_ref: expect.stringMatching(/^gpu-frame-dispatch-ref:sha256:[a-f0-9]{64}$/),
+      output_after_dispatch_ref: expect.stringMatching(/^gpu-frame-dispatch-ref:sha256:[a-f0-9]{64}$/),
+      runtime_session_ref: expect.stringMatching(/^gpu-frame-runtime-session-ref:sha256:[a-f0-9]{64}$/),
+      device_ref: expect.stringMatching(/^gpu-frame-device-ref:sha256:[a-f0-9]{64}$/),
       metric_clock: "monotonic_ns",
       accepted_for_gpu_hmr: false,
       gpu_hmr_success: false,
@@ -1845,6 +1876,12 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
     expect(result.binding).not.toHaveProperty("backend");
     expect(result.binding).not.toHaveProperty("kernel_name");
     expect(result.binding).not.toHaveProperty("fixture");
+    expect(result.binding).not.toHaveProperty("runtime_proof_id");
+    expect(result.binding).not.toHaveProperty("dispatch_id");
+    expect(result.binding).not.toHaveProperty("output_target_id");
+    expect(result.binding).not.toHaveProperty("process_id");
+    expect(result.binding).not.toHaveProperty("runtime_session_id");
+    expect(result.binding).not.toHaveProperty("device_id");
     expect(Object.isFrozen(result.binding)).toBe(true);
     expect(Object.isFrozen(result.binding?.["dispatch_timestamp"])).toBe(true);
     expect(Object.isFrozen(result.binding?.["proof_match_scope"])).toBe(true);

@@ -1,10 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import type { GpuHmrProofTelemetry, GpuHmrProofValidation } from "./gpu_proof.js";
 import {
-  gpuHmrFullRuntimeProofMaterials,
-  validateGpuHmrProofState,
-  type GpuHmrProofTelemetry,
-} from "./gpu_proof.js";
-import { queryGpuHmrLedgerInvariants } from "./gpu_proof_ledger.js";
+  embeddedGpuHmrProofLedger,
+  queryGpuHmrLedgerInvariants,
+} from "./gpu_proof_ledger.js";
 
 export const GPU_HMR_FRAME_GATE_RUNTIME_BINDING_SCHEMA_VERSION =
   "synthi.gpu_hmr.frame_gate_runtime_binding.v1";
@@ -27,6 +26,23 @@ export interface BuildGpuHmrFrameGateBindingInput {
   hmrObservedAtMs: number;
   proofMatchScope?: Readonly<Record<string, unknown>>;
 }
+
+export interface GpuHmrFrameGateSeed {
+  schemaVersion: "synthi.gpu_hmr.frame_gate_seed.v1";
+  accepted: boolean;
+  binding: Readonly<Record<string, unknown>> | null;
+  failures: ReadonlyArray<{ code: string }>;
+}
+
+export interface DeriveGpuHmrFrameGateSeedInput {
+  rawProof: Record<string, unknown>;
+  resultState: string;
+  proofId: string | null;
+  observedAt: number;
+  fullRuntimeValidation: GpuHmrProofValidation;
+}
+
+const frameGateReferenceKey = randomBytes(32);
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -77,6 +93,16 @@ function stableJson(value: unknown): string {
 
 function sha256(value: unknown): string {
   return `sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`;
+}
+
+function identityRef(kind: string, value: string | null): string | null {
+  if (value === null) return null;
+  const digest = createHmac("sha256", frameGateReferenceKey)
+    .update(kind)
+    .update("\0")
+    .update(value)
+    .digest("hex");
+  return `gpu-frame-${kind}-ref:sha256:${digest}`;
 }
 
 function canonicalSha256(value: unknown): string | null {
@@ -206,11 +232,34 @@ function latestLedgerRecord(ledger: Record<string, unknown>): Record<string, unk
   return null;
 }
 
+const RUNTIME_PROOF_ARTIFACT_KEYS = [
+  "runtimeProofArtifact",
+  "runtime_proof_artifact",
+  "validationRuntimeProofArtifact",
+  "validation_runtime_proof_artifact",
+  "gpuHmrRuntimeProofArtifact",
+  "gpu_hmr_runtime_proof_artifact",
+  "gpuRuntimeProofArtifact",
+  "gpu_runtime_proof_artifact",
+] as const;
+
+function runtimeProofArtifact(raw: Record<string, unknown>): Record<string, unknown> | null {
+  for (const key of RUNTIME_PROOF_ARTIFACT_KEYS) {
+    if (isObject(raw[key])) return raw[key];
+  }
+  for (const nestedKey of ["data", "detail"] as const) {
+    if (!isObject(raw[nestedKey])) continue;
+    const nested = runtimeProofArtifact(raw[nestedKey]);
+    if (nested !== null) return nested;
+  }
+  return null;
+}
+
 function proofScopeProjection(scope: Readonly<Record<string, unknown>> | undefined): Record<string, unknown> {
   const source = asObject(scope);
   return {
-    module: firstText(source["module"]),
-    preview_id: firstText(source["preview_id"], source["previewId"]),
+    module_ref: identityRef("module", firstText(source["module"])),
+    preview_ref: identityRef("preview", firstText(source["preview_id"], source["previewId"])),
     proof_since_ts_ms: finiteNumber(source["proof_since_ts_ms"] ?? source["proofSinceTsMs"]),
   };
 }
@@ -225,18 +274,29 @@ function deepFreeze<T>(value: T): Readonly<T> {
   return value;
 }
 
-export function buildGpuHmrFrameGateEvidenceBinding(
-  input: BuildGpuHmrFrameGateBindingInput,
-): GpuHmrFrameGateBindingResult {
+function seedResult(
+  failures: GpuHmrFrameGateBindingFailure[],
+  binding: Readonly<Record<string, unknown>> | null = null,
+): GpuHmrFrameGateSeed {
+  const safeFailures = [...new Set(failures.map((failure) => failure.code))]
+    .sort()
+    .map((code) => Object.freeze({ code }));
+  return deepFreeze({
+    schemaVersion: "synthi.gpu_hmr.frame_gate_seed.v1" as const,
+    accepted: safeFailures.length === 0 && binding !== null,
+    binding: safeFailures.length === 0 ? binding : null,
+    failures: safeFailures,
+  });
+}
+
+export function deriveGpuHmrFrameGateSeed(
+  input: DeriveGpuHmrFrameGateSeedInput,
+): GpuHmrFrameGateSeed {
   const failures: GpuHmrFrameGateBindingFailure[] = [];
-  const proof = input.proof;
-  if (proof === null) {
-    return { accepted: false, binding: null, failures: [{ code: "gpu_proof_missing" }] };
-  }
-  const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+  const validation = input.fullRuntimeValidation;
   if (
     validation.requiredState !== "gpu-hmr-full-runtime-proven"
-    || proof.resultState !== "gpu-hmr-full-runtime-proven"
+    || input.resultState !== "gpu-hmr-full-runtime-proven"
     || validation.satisfied !== true
   ) {
     failures.push({ code: "full_runtime_proof_not_accepted" });
@@ -248,22 +308,21 @@ export function buildGpuHmrFrameGateEvidenceBinding(
     failures.push({ code: "runtime_proof_artifact_not_accepted" });
   }
 
-  const materials = gpuHmrFullRuntimeProofMaterials(proof);
-  const ledger = asObject(materials.proofLedger);
-  const runtimeProofArtifact = asObject(materials.runtimeProofArtifact);
+  const ledger = asObject(embeddedGpuHmrProofLedger(input.rawProof));
+  const runtimeProofArtifactValue = asObject(runtimeProofArtifact(input.rawProof));
   const runtimeArtifactLedger = asObject(
-    runtimeProofArtifact["proofLedger"] ?? runtimeProofArtifact["proof_ledger"],
+    runtimeProofArtifactValue["proofLedger"] ?? runtimeProofArtifactValue["proof_ledger"],
   );
   const record = latestLedgerRecord(ledger);
   if (Object.keys(ledger).length === 0) failures.push({ code: "proof_ledger_missing" });
-  if (Object.keys(runtimeProofArtifact).length === 0) {
+  if (Object.keys(runtimeProofArtifactValue).length === 0) {
     failures.push({ code: "runtime_proof_artifact_missing" });
   }
   if (Object.keys(runtimeArtifactLedger).length === 0) {
     failures.push({ code: "runtime_artifact_proof_ledger_missing" });
   }
   if (record === null) failures.push({ code: "proof_ledger_record_missing" });
-  if (record === null) return { accepted: false, binding: null, failures };
+  if (record === null) return seedResult(failures);
 
   const loaderEvent = asObject(record["loader_event"] ?? record["loaderEvent"]);
   const epochPublishEvent = asObject(
@@ -323,9 +382,9 @@ export function buildGpuHmrFrameGateEvidenceBinding(
   }
 
   const runtimeProofId = firstText(
-    runtimeProofArtifact["proofId"],
-    runtimeProofArtifact["proof_id"],
-    proof.proofId,
+    runtimeProofArtifactValue["proofId"],
+    runtimeProofArtifactValue["proof_id"],
+    input.proofId,
   );
   const proofLedgerId = firstText(validation.proofLedgerValidation?.proofId);
   const runtimeArtifactLedgerValidation = Object.keys(runtimeArtifactLedger).length > 0
@@ -371,8 +430,7 @@ export function buildGpuHmrFrameGateEvidenceBinding(
     failures.push({ code: "runtime_device_identity_not_unique", deviceIds });
   }
   const deviceId = deviceIds[0] ?? null;
-  const proofObservedAtMs = finiteNumber(proof.observedAt);
-  const hmrObservedAtMs = finiteNumber(input.hmrObservedAtMs);
+  const proofObservedAtMs = finiteNumber(input.observedAt);
 
   const requiredValues: Array<[string, unknown]> = [
     ["runtime_proof_id", runtimeProofId],
@@ -395,7 +453,6 @@ export function buildGpuHmrFrameGateEvidenceBinding(
     ["device_id", deviceId],
     ["metric_clock", metricClock],
     ["runtime_proof_observed_at_ms", proofObservedAtMs],
-    ["hmr_observed_at_ms", hmrObservedAtMs],
   ];
   const missingFields = requiredValues
     .filter(([, value]) => value === null || value === undefined || value === "")
@@ -429,60 +486,90 @@ export function buildGpuHmrFrameGateEvidenceBinding(
   }
   if (
     proofObservedAtMs === null
-    || hmrObservedAtMs === null
     || proofObservedAtMs < 0
-    || hmrObservedAtMs < 0
-    || proofObservedAtMs < hmrObservedAtMs
   ) {
-    failures.push({ code: "runtime_binding_proof_observation_order_invalid" });
+    failures.push({ code: "runtime_binding_proof_observation_invalid" });
   }
   if (
-    runtimeProofArtifact["fullRuntimeProven"] !== true
-    && runtimeProofArtifact["full_runtime_proven"] !== true
+    runtimeProofArtifactValue["fullRuntimeProven"] !== true
+    && runtimeProofArtifactValue["full_runtime_proven"] !== true
   ) {
     failures.push({ code: "runtime_proof_artifact_full_runtime_missing" });
   }
   if (
-    runtimeProofArtifact["gpuHmrSuccess"] !== true
-    && runtimeProofArtifact["gpu_hmr_success"] !== true
+    runtimeProofArtifactValue["gpuHmrSuccess"] !== true
+    && runtimeProofArtifactValue["gpu_hmr_success"] !== true
   ) {
     failures.push({ code: "runtime_proof_artifact_success_missing" });
   }
-  if (failures.length > 0) return { accepted: false, binding: null, failures };
+  if (failures.length > 0) return seedResult(failures);
 
   const binding = deepFreeze({
-    schema_version: GPU_HMR_FRAME_GATE_RUNTIME_BINDING_SCHEMA_VERSION,
-    proof_authority: GPU_HMR_FRAME_GATE_RUNTIME_BINDING_AUTHORITY,
-    runtime_proof_id: runtimeProofId,
-    proof_ledger_id: proofLedgerId,
-    runtime_proof_state: proof.resultState,
+    runtime_proof_ref: identityRef("runtime-proof", runtimeProofId),
+    proof_ledger_ref: identityRef("proof-ledger", proofLedgerId),
+    runtime_proof_state: input.resultState,
     runtime_proof_accepted: true,
     runtime_proof_observed_at_ms: proofObservedAtMs,
-    hmr_observed_at_ms: hmrObservedAtMs,
     artifact_after_hash: artifactAfterHash,
-    epoch_publish_event_id: epochPublishEventId,
-    published_epoch: publishedEpoch,
-    dispatch_id: dispatchId,
-    dispatch_epoch: dispatchEpoch,
+    epoch_publish_event_ref: identityRef("epoch-event", epochPublishEventId),
+    published_epoch_ref: identityRef("epoch", publishedEpoch),
+    dispatch_ref: identityRef("dispatch", dispatchId),
+    dispatch_epoch_ref: identityRef("epoch", dispatchEpoch),
     dispatch_artifact_hash: dispatchArtifactHash,
     dispatch_timestamp: dispatchTimestamp,
-    output_event_id: outputEventId,
-    output_after_dispatch_id: outputDispatchId,
-    output_epoch: outputEpoch,
+    output_event_ref: identityRef("output-event", outputEventId),
+    output_after_dispatch_ref: identityRef("dispatch", outputDispatchId),
+    output_epoch_ref: identityRef("epoch", outputEpoch),
     output_artifact_hash: outputArtifactHash,
-    output_target_id: targetId,
     output_target_hash: sha256(target),
     output_timestamp: outputTimestamp,
-    process_id: processIds[0],
     process_identity_hash: sha256(processIdentity),
-    runtime_session_id: runtimeSessions[0],
-    device_id: deviceId,
+    runtime_session_ref: identityRef("runtime-session", runtimeSessions[0] ?? null),
+    device_ref: identityRef("device", deviceId),
     metric_clock: metricClock,
-    proof_match_scope: proofScopeProjection(input.proofMatchScope),
     accepted_for_gpu_hmr: false,
     gpu_hmr_success: false,
     can_satisfy_runtime_proof: false,
     can_satisfy_dispatch_proof: false,
+  });
+  return seedResult([], binding);
+}
+
+export function buildGpuHmrFrameGateEvidenceBinding(
+  input: BuildGpuHmrFrameGateBindingInput,
+): GpuHmrFrameGateBindingResult {
+  const proof = input.proof;
+  if (proof === null) {
+    return { accepted: false, binding: null, failures: [{ code: "gpu_proof_missing" }] };
+  }
+  const seed = proof.frameGateSeed;
+  if (!seed.accepted || seed.binding === null) {
+    return {
+      accepted: false,
+      binding: null,
+      failures: seed.failures.length > 0
+        ? seed.failures.map((failure) => ({ code: failure.code }))
+        : [{ code: "frame_gate_seed_not_accepted" }],
+    };
+  }
+  const hmrObservedAtMs = finiteNumber(input.hmrObservedAtMs);
+  if (
+    hmrObservedAtMs === null
+    || hmrObservedAtMs < 0
+    || proof.observedAt < hmrObservedAtMs
+  ) {
+    return {
+      accepted: false,
+      binding: null,
+      failures: [{ code: "runtime_binding_proof_observation_order_invalid" }],
+    };
+  }
+  const binding = deepFreeze({
+    schema_version: GPU_HMR_FRAME_GATE_RUNTIME_BINDING_SCHEMA_VERSION,
+    proof_authority: GPU_HMR_FRAME_GATE_RUNTIME_BINDING_AUTHORITY,
+    ...seed.binding,
+    hmr_observed_at_ms: hmrObservedAtMs,
+    proof_match_scope: proofScopeProjection(input.proofMatchScope),
   });
   return { accepted: true, binding, failures: [] };
 }

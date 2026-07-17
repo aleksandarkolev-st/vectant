@@ -328,6 +328,34 @@ describe("HmrNormalizer — data channel subscription", () => {
     normalizer.dispose();
   });
 
+  it("publishes only frozen matched proof snapshots to proof listeners", () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0]
+    );
+    let received: ReturnType<typeof normalizer.latestGpuProof> = null;
+    normalizer.onGpuProof({ module: "device" }, (proof) => {
+      received = proof;
+    });
+    normalizer.onMessage((message) => {
+      message.resultState = "gpu-hmr-compile-proven";
+      message.module = "mutated-after-ingestion";
+    });
+
+    mockDC.emit(JSON.stringify({
+      status: "gpu-proof-state",
+      module: "device",
+      resultState: "gpu-hmr-full-runtime-proven",
+    }));
+
+    expect(received?.resultState).toBe("gpu-hmr-full-runtime-proven");
+    expect(received).not.toHaveProperty("raw");
+    expect(Object.isFrozen(received)).toBe(true);
+    expect(normalizer.latestGpuProof({ module: "device" })).toBe(received);
+    expect(normalizer.latestGpuProof({ module: "mutated-after-ingestion" })).toBeNull();
+    normalizer.dispose();
+  });
+
   it("drops malformed typed chunks instead of forwarding them as wire events", () => {
     const mockDC = dc();
     const normalizer = new HmrNormalizer(
@@ -694,7 +722,8 @@ describe("HmrNormalizer.waitForTerminal", () => {
       module: "device",
     });
     expect(proof?.resultState).toBe("gpu-hmr-full-runtime-proven");
-    expect(proof?.raw.module).toBe("device");
+    expect(proof?.moduleRef).toMatch(/^gpu-proof-module-ref:sha256:[a-f0-9]{64}$/);
+    expect(proof).not.toHaveProperty("raw");
     normalizer.dispose();
   });
 });
