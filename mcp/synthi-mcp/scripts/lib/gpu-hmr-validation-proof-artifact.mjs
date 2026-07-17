@@ -4260,6 +4260,10 @@ async function resolveComputeArtifactCasPaths(source, options = {}) {
   return out;
 }
 
+export {
+  verifyComputeOracleArtifactBundle,
+} from './gpu-hmr-compute-oracle-artifact-bundle.mjs';
+
 export async function computeOracleArtifactsFromFiles(computeArtifacts = null, options = {}) {
   const source = objectOrNull(computeArtifacts);
   if (!source) return null;
