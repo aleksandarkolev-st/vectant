@@ -1813,8 +1813,12 @@ async function selfCheck() {
       eventId: 'publish-1',
       artifactHash: hashB,
       epoch: 'epoch-7',
+      previousEpoch: 'epoch-6',
+      activeGeneration: 2,
+      previousGeneration: 1,
       processId: 'pid-1',
       runtimeSession: 'runtime-session-1',
+      streamEpochCounters: { 'stream-1': 2 },
       timestampMonotonicNs: 200,
       dispatchTableHashBefore: hashD,
       dispatchTableHashAfter: hashE,
@@ -1870,6 +1874,23 @@ async function selfCheck() {
       oracleKind: 'buffer_checksum',
       timestampMonotonicNs: 400,
       evidenceRefs: ['worker-log:output_oracle:runtime-session-1:dispatch-1'],
+    },
+    {
+      kind: 'retirement_receipt',
+      eventId: 'retire-1',
+      oldArtifactHash: hashA,
+      epoch: 'epoch-6',
+      previousGeneration: 1,
+      processId: 'pid-1',
+      runtimeSession: 'runtime-session-1',
+      deviceUuid: 'device-1',
+      stream: 'stream-1',
+      retirementProof: 'stream_event_proven',
+      retirementResult: 'retired_after_quiescent',
+      retirementStrategy: 'epoch_fence',
+      retirementFenceIds: ['runtime-receipt:fence:retire-1'],
+      timestampMonotonicNs: 500,
+      evidenceRefs: ['runtime-receipt:retirement:retire-1'],
     },
   ];
   const runtimeBoundaryManifestPath = path.join(runtimeBoundaryDir, 'runtime-boundary-events.json');
@@ -1981,8 +2002,8 @@ async function selfCheck() {
       && runtimeBoundaryResult.runtimeBoundaryProofAdapterAccepted === true
       && runtimeBoundaryResult.runtimeBoundaryLineMaterializationAccepted === true
       && runtimeBoundaryResult.runtimeBoundaryLineMaterializationHash?.startsWith('sha256:')
-      && runtimeBoundaryResult.runtimeBoundaryLines?.length === 5
-      && runtimeBoundaryResult.adapterRuntimeBoundaryLines?.length === 5
+      && runtimeBoundaryResult.runtimeBoundaryLines?.length === 6
+      && runtimeBoundaryResult.adapterRuntimeBoundaryLines?.length === 6
       && runtimeBoundarySpawn.proof?.strictRuntimeArtifactProduced === true
       && runtimeBoundarySpawn.proof?.canSatisfyRuntimeProof === false
       && runtimeBoundarySpawn.proof?.runtimeBoundaryProofAdapter?.adapterProofCanSatisfyRuntimeProof === true
