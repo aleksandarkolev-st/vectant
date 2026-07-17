@@ -206,6 +206,10 @@ const SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION =
   'synthi.gpu_hmr.source_first_request_intent.v1';
 const SOURCE_FIRST_REQUEST_INTENT_AUTHORITY =
   'source_manifest_bound_request_hints_only_not_gpu_hmr_success';
+const SOURCE_FIRST_COMPILE_CACHE_REQUEST_SCHEMA_VERSION =
+  'synthi.gpu_hmr.source_first_compile_cache_request_support.v1';
+const SOURCE_FIRST_COMPILE_CACHE_REQUEST_AUTHORITY =
+  'initial_compile_cache_request_support_only_not_fresh_compile_or_gpu_hmr_success';
 const VISUAL_SEMANTIC_PROBE_SCHEMA_VERSION =
   'synthi.gpu_hmr.visual_semantic_probe_binding.v1';
 const VISUAL_SEMANTIC_PROBE_AUTHORITY =
@@ -6458,6 +6462,7 @@ function sourceFirstIngestionEvidence({
   entryPath,
   sourcePurityEvidence,
   initialCompileArgs,
+  initialCompileCacheRequestSupport,
   initialCompileResult,
   split,
   sawGpuSplit,
@@ -6705,12 +6710,16 @@ function sourceFirstIngestionEvidence({
     gpu_arch: gpuArch,
     gpuArchSource,
     gpu_arch_source: gpuArchSource,
+    initialCompileCacheRequestSupport: initialCompileCacheRequestSupport ?? {},
+    initial_compile_cache_request_support: initialCompileCacheRequestSupport ?? {},
     initialCompileContract: {
       language: initialCompileArgs?.language ?? null,
       isGui: initialCompileArgs?.is_gui === true,
       is_gui: initialCompileArgs?.is_gui === true,
       sourceFirstRequestIntent: initialCompileArgs?.source_first_request_intent ?? {},
       source_first_request_intent: initialCompileArgs?.source_first_request_intent ?? {},
+      compileCacheRequestSupport: initialCompileCacheRequestSupport ?? {},
+      compile_cache_request_support: initialCompileCacheRequestSupport ?? {},
       filename: cleanRel(initialCompileArgs?.filename),
       initialFileCount: initialFiles.length,
       initial_file_count: initialFiles.length,
@@ -6753,6 +6762,7 @@ function sourceFirstIngestionEvidence({
       language: initialCompileArgs?.language ?? null,
       is_gui: initialCompileArgs?.is_gui === true,
       source_first_request_intent: initialCompileArgs?.source_first_request_intent ?? {},
+      compile_cache_request_support: initialCompileCacheRequestSupport ?? {},
       filename: cleanRel(initialCompileArgs?.filename),
       initial_file_count: initialFiles.length,
       initial_manifest_hash: initialManifestHash,
@@ -10697,6 +10707,315 @@ function supportEvidenceClaimsAuthority(value) {
   });
 }
 
+function sourceFirstCompileCacheResultDiagnostics(result, expectedRequest) {
+  const observed = [];
+  const freshnessClaimPaths = [];
+  const invalidBypassPaths = [];
+  const seen = new WeakSet();
+  const freshnessKeys = new Set([
+    'acceptedasfreshdevicecompileevidence',
+    'cachebypasshonored',
+    'devicecompilecachebypasshonored',
+    'devicecompilefreshnessproven',
+    'forcedfreshdevicecompile',
+    'freshcompilerinvocation',
+    'freshdevicecompile',
+  ]);
+  const bypassKeys = new Set([
+    'bypassaisplitcache',
+    'bypassdevicecompilecache',
+  ]);
+
+  const visit = (value, valuePath) => {
+    if (!value || typeof value !== 'object') return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    for (const [key, nested] of Object.entries(value)) {
+      const fieldPath = `${valuePath}.${key}`;
+      const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+      if (bypassKeys.has(normalizedKey)) {
+        observed.push({
+          path: fieldPath,
+          field: normalizedKey,
+          value: typeof nested === 'boolean' ? nested : null,
+          valueType: typeof nested,
+        });
+        if (typeof nested !== 'boolean') invalidBypassPaths.push(fieldPath);
+      }
+      if (freshnessKeys.has(normalizedKey) && nested === true) {
+        freshnessClaimPaths.push(fieldPath);
+      }
+      visit(nested, fieldPath);
+    }
+  };
+  visit(result, '$');
+
+  const expectedAiBypass = expectedRequest?.bypassAiSplitCacheRequested === true;
+  const expectedDeviceBypass = expectedRequest?.bypassDeviceCompileCacheRequested === true;
+  const mismatchedEchoPaths = observed
+    .filter((entry) => entry.valueType === 'boolean')
+    .filter((entry) => (
+      entry.field === 'bypassaisplitcache'
+        ? entry.value !== expectedAiBypass
+        : entry.value !== expectedDeviceBypass
+    ))
+    .map((entry) => entry.path);
+  const authorityClaimed = supportEvidenceClaimsAuthority(result);
+  const blockingGaps = [
+    invalidBypassPaths.length > 0
+      ? 'source_first_compile_cache_result_bypass_type_invalid'
+      : null,
+    mismatchedEchoPaths.length > 0
+      ? 'source_first_compile_cache_result_bypass_echo_mismatch'
+      : null,
+    freshnessClaimPaths.length > 0
+      ? 'source_first_compile_cache_result_freshness_claim_not_authoritative'
+      : null,
+    authorityClaimed
+      ? 'source_first_compile_cache_result_claimed_gpu_authority'
+      : null,
+  ].filter(Boolean);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.source_first_compile_cache_result_diagnostics.v1',
+    schema_version: 'synthi.gpu_hmr.source_first_compile_cache_result_diagnostics.v1',
+    resultPresent: Boolean(result && typeof result === 'object'),
+    result_present: Boolean(result && typeof result === 'object'),
+    accepted: blockingGaps.length === 0,
+    observedBypassFields: observed,
+    observed_bypass_fields: observed,
+    invalidBypassPaths,
+    invalid_bypass_paths: invalidBypassPaths,
+    mismatchedEchoPaths,
+    mismatched_echo_paths: mismatchedEchoPaths,
+    freshnessClaimPaths,
+    freshness_claim_paths: freshnessClaimPaths,
+    authorityClaimed,
+    authority_claimed: authorityClaimed,
+    resultFieldsAuthoritative: false,
+    result_fields_authoritative: false,
+    acceptedAsFreshDeviceCompileEvidence: false,
+    accepted_as_fresh_device_compile_evidence: false,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+}
+
+export function buildSourceFirstInitialCompileRequest({
+  mode,
+  compileArgs,
+  observedResult = null,
+} = {}) {
+  if (!compileArgs || typeof compileArgs !== 'object' || Array.isArray(compileArgs)) {
+    throw sourceFirstRequestIntentError(
+      'source_first_compile_cache_request_invalid',
+      'compileArgs must be an object',
+    );
+  }
+  const requestMode = String(mode ?? '');
+  const coldProviderSplitRequired = requestMode === 'cold-ai-split';
+  const initialCompileArgs = {
+    ...compileArgs,
+    bypass_ai_split_cache: coldProviderSplitRequired,
+    require_ai_provider_call: coldProviderSplitRequired,
+  };
+  delete initialCompileArgs.bypass_device_compile_cache;
+  if (coldProviderSplitRequired) {
+    initialCompileArgs.bypass_device_compile_cache = true;
+  }
+
+  const requestIntent = initialCompileArgs.source_first_request_intent;
+  const initialFiles = sourceFirstInitialFileManifest(initialCompileArgs.files)
+    .sort((left, right) => left.path.localeCompare(right.path));
+  const initialCompileManifestHash = initialFiles.length > 0
+    ? `sha256:${sha256Hex(stableJson(initialFiles))}`
+    : null;
+  const recomputedSourceManifestHash = initialFiles.length > 0
+    ? sourceFilesManifestHash(initialFiles)
+    : null;
+  const filename = cleanRel(initialCompileArgs.filename);
+  const sourceHash = typeof initialCompileArgs.source === 'string'
+    ? `sha256:${sha256Hex(initialCompileArgs.source)}`
+    : null;
+  const initialSource = initialFiles.find((entry) => entry.path === filename) ?? null;
+  const deviceBypassFieldPresent = Object.hasOwn(
+    initialCompileArgs,
+    'bypass_device_compile_cache',
+  );
+  const requestBlockingGaps = [
+    requestIntent?.schemaVersion === SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION
+      && requestIntent?.proofAuthority === SOURCE_FIRST_REQUEST_INTENT_AUTHORITY
+      && requestIntent?.acceptedAsRequestHints === true
+      && !supportEvidenceClaimsAuthority(requestIntent)
+      ? null
+      : 'source_first_compile_cache_request_intent_invalid',
+    contentAddressedSha256(requestIntent?.intentHash)
+      ? null
+      : 'source_first_compile_cache_request_intent_hash_invalid',
+    contentAddressedSha256(requestIntent?.sourceManifestHash)
+      ? null
+      : 'source_first_compile_cache_source_manifest_hash_invalid',
+    recomputedSourceManifestHash === requestIntent?.sourceManifestHash
+      ? null
+      : 'source_first_compile_cache_source_manifest_hash_mismatch',
+    initialFiles.length > 0 && contentAddressedSha256(initialCompileManifestHash)
+      ? null
+      : 'source_first_compile_cache_initial_manifest_missing',
+    filename
+      && requestIntent?.entryPath === filename
+      && initialSource
+      && initialSource.contentHash === sourceHash
+      ? null
+      : 'source_first_compile_cache_entry_source_mismatch',
+    initialCompileArgs.language === requestIntent?.language
+      && initialCompileArgs.is_gui === requestIntent?.isGui
+      ? null
+      : 'source_first_compile_cache_request_intent_context_mismatch',
+    initialCompileArgs.use_ai_split === true
+      ? null
+      : 'source_first_compile_cache_ai_split_not_requested',
+    initialCompileArgs.bypass_ai_split_cache === coldProviderSplitRequired
+      ? null
+      : 'source_first_compile_cache_ai_bypass_policy_mismatch',
+    initialCompileArgs.require_ai_provider_call === coldProviderSplitRequired
+      ? null
+      : 'source_first_compile_cache_provider_call_policy_mismatch',
+    coldProviderSplitRequired
+      ? deviceBypassFieldPresent && initialCompileArgs.bypass_device_compile_cache === true
+        ? null
+        : 'source_first_compile_cache_device_bypass_required'
+      : !deviceBypassFieldPresent
+        ? null
+        : 'source_first_compile_cache_device_bypass_forbidden_outside_cold',
+  ].filter(Boolean);
+  const requestBinding = {
+    schemaVersion: SOURCE_FIRST_COMPILE_CACHE_REQUEST_SCHEMA_VERSION,
+    mode: requestMode,
+    coldProviderSplitRequired,
+    language: initialCompileArgs.language ?? null,
+    filename,
+    sourceHash,
+    initialCompileManifestHash,
+    recomputedSourceManifestHash,
+    initialFileCount: initialFiles.length,
+    sourceFirstRequestIntentHash: requestIntent?.intentHash ?? null,
+    sourceManifestHash: requestIntent?.sourceManifestHash ?? null,
+    isGui: initialCompileArgs.is_gui === true,
+    useAiSplit: initialCompileArgs.use_ai_split === true,
+    aiSplitCacheBypassRequestField: 'bypass_ai_split_cache',
+    bypassAiSplitCacheRequested: initialCompileArgs.bypass_ai_split_cache === true,
+    requireAiProviderCall: initialCompileArgs.require_ai_provider_call === true,
+    deviceCompileCacheBypassRequestField: 'bypass_device_compile_cache',
+    deviceCompileCacheBypassFieldPresent: deviceBypassFieldPresent,
+    bypassDeviceCompileCacheRequested:
+      initialCompileArgs.bypass_device_compile_cache === true,
+    aiProviderCallNonce: initialCompileArgs.ai_provider_call_nonce ?? null,
+    aiProvider: initialCompileArgs.ai_provider ?? null,
+    aiModel: initialCompileArgs.ai_model ?? null,
+    userRequestedAi: initialCompileArgs.user_requested_ai === true,
+    preferGpuPipeline: initialCompileArgs.prefer_gpu_pipeline === true,
+    gpuMode: initialCompileArgs.gpu_mode ?? null,
+    gpuArch: initialCompileArgs.gpu_arch ?? null,
+    gpuArchSource: initialCompileArgs.gpu_arch_source ?? null,
+    workspaceSlug: initialCompileArgs.slug ?? null,
+    width: initialCompileArgs.width ?? null,
+    height: initialCompileArgs.height ?? null,
+  };
+  const requestIdentity =
+    `source-first-initial-compile-request:sha256:${sha256Hex(stableJson(requestBinding))}`;
+  const expectedRequest = {
+    bypassAiSplitCacheRequested: initialCompileArgs.bypass_ai_split_cache === true,
+    bypassDeviceCompileCacheRequested:
+      initialCompileArgs.bypass_device_compile_cache === true,
+  };
+  const resultDiagnostics = sourceFirstCompileCacheResultDiagnostics(
+    observedResult,
+    expectedRequest,
+  );
+  const blockingGaps = [
+    ...requestBlockingGaps,
+    ...resultDiagnostics.blockingGaps,
+  ];
+  const acceptedAsRequestSupport = requestBlockingGaps.length === 0;
+  const accepted = blockingGaps.length === 0;
+  const evidenceSeed = {
+    requestIdentity,
+    requestBlockingGaps,
+    resultDiagnostics: {
+      accepted: resultDiagnostics.accepted,
+      observedBypassFields: resultDiagnostics.observedBypassFields,
+      invalidBypassPaths: resultDiagnostics.invalidBypassPaths,
+      mismatchedEchoPaths: resultDiagnostics.mismatchedEchoPaths,
+      freshnessClaimPaths: resultDiagnostics.freshnessClaimPaths,
+      authorityClaimed: resultDiagnostics.authorityClaimed,
+      blockingGaps: resultDiagnostics.blockingGaps,
+    },
+  };
+  const evidenceHash = `sha256:${sha256Hex(stableJson(evidenceSeed))}`;
+  const requestSupport = {
+    schemaVersion: SOURCE_FIRST_COMPILE_CACHE_REQUEST_SCHEMA_VERSION,
+    schema_version: SOURCE_FIRST_COMPILE_CACHE_REQUEST_SCHEMA_VERSION,
+    proofAuthority: SOURCE_FIRST_COMPILE_CACHE_REQUEST_AUTHORITY,
+    proof_authority: SOURCE_FIRST_COMPILE_CACHE_REQUEST_AUTHORITY,
+    accepted,
+    acceptedAsRequestSupport,
+    accepted_as_request_support: acceptedAsRequestSupport,
+    requestIdentity,
+    request_identity: requestIdentity,
+    evidenceHash,
+    evidence_hash: evidenceHash,
+    requestBinding,
+    request_binding: requestBinding,
+    requestMode,
+    request_mode: requestMode,
+    coldProviderSplitRequired,
+    cold_provider_split_required: coldProviderSplitRequired,
+    cacheBypassRequestsIndependent: true,
+    cache_bypass_requests_independent: true,
+    aiSplitCacheBypassRequestField: 'bypass_ai_split_cache',
+    ai_split_cache_bypass_request_field: 'bypass_ai_split_cache',
+    bypassAiSplitCacheRequested: initialCompileArgs.bypass_ai_split_cache === true,
+    bypass_ai_split_cache_requested: initialCompileArgs.bypass_ai_split_cache === true,
+    deviceCompileCacheBypassRequestField: 'bypass_device_compile_cache',
+    device_compile_cache_bypass_request_field: 'bypass_device_compile_cache',
+    bypassDeviceCompileCacheRequested:
+      initialCompileArgs.bypass_device_compile_cache === true,
+    bypass_device_compile_cache_requested:
+      initialCompileArgs.bypass_device_compile_cache === true,
+    deviceCompileCacheBypassFieldPresent: deviceBypassFieldPresent,
+    device_compile_cache_bypass_field_present: deviceBypassFieldPresent,
+    forcedFreshDeviceCompileRequested:
+      coldProviderSplitRequired && initialCompileArgs.bypass_device_compile_cache === true,
+    forced_fresh_device_compile_requested:
+      coldProviderSplitRequired && initialCompileArgs.bypass_device_compile_cache === true,
+    resultDiagnostics,
+    result_diagnostics: resultDiagnostics,
+    resultFieldsAuthoritative: false,
+    result_fields_authoritative: false,
+    timingFieldsIncludedInRequestIdentity: false,
+    timing_fields_included_in_request_identity: false,
+    deviceCompileFreshnessProven: false,
+    device_compile_freshness_proven: false,
+    acceptedAsFreshDeviceCompileEvidence: false,
+    accepted_as_fresh_device_compile_evidence: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+  return {
+    initialCompileArgs,
+    initial_compile_args: initialCompileArgs,
+    requestSupport,
+    request_support: requestSupport,
+  };
+}
+
 function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
   const provenance = split?.sidecar?.model_provenance;
   const receipt = split?.sidecar?.provider_call_receipt;
@@ -12105,28 +12424,42 @@ async function run() {
   const coldProviderCallNonce = CFG.mode === 'cold-ai-split'
     ? `provider-call:${randomBytes(16).toString('hex')}`
     : null;
-  const initialCompileArgs = {
-    language: ACTIVE_SOURCE_FIRST_REQUEST_INTENT.language,
-    filename: entryPath,
-    source,
-    files: initialSourceFiles,
-    is_gui: ACTIVE_SOURCE_FIRST_REQUEST_INTENT.isGui,
-    source_first_request_intent: ACTIVE_SOURCE_FIRST_REQUEST_INTENT,
-    use_ai_split: true,
-    bypass_ai_split_cache: CFG.mode === 'cold-ai-split',
-    require_ai_provider_call: CFG.mode === 'cold-ai-split',
-    ai_provider_call_nonce: coldProviderCallNonce,
-    ai_provider: CFG.gpuSplitProvider,
-    ai_model: CFG.gpuSplitModel,
-    user_requested_ai: true,
-    prefer_gpu_pipeline: true,
-    gpu_mode: vendor,
-    gpu_arch: CFG.gpuArch,
-    gpu_arch_source: CFG.gpuArchSource,
-    slug: CFG.slug,
-    width: renderWidth,
-    height: renderHeight,
-  };
+  const initialCompileRequest = buildSourceFirstInitialCompileRequest({
+    mode: CFG.mode,
+    compileArgs: {
+      language: ACTIVE_SOURCE_FIRST_REQUEST_INTENT.language,
+      filename: entryPath,
+      source,
+      files: initialSourceFiles,
+      is_gui: ACTIVE_SOURCE_FIRST_REQUEST_INTENT.isGui,
+      source_first_request_intent: ACTIVE_SOURCE_FIRST_REQUEST_INTENT,
+      use_ai_split: true,
+      ai_provider_call_nonce: coldProviderCallNonce,
+      ai_provider: CFG.gpuSplitProvider,
+      ai_model: CFG.gpuSplitModel,
+      user_requested_ai: true,
+      prefer_gpu_pipeline: true,
+      gpu_mode: vendor,
+      gpu_arch: CFG.gpuArch,
+      gpu_arch_source: CFG.gpuArchSource,
+      slug: CFG.slug,
+      width: renderWidth,
+      height: renderHeight,
+    },
+  });
+  const initialCompileArgs = initialCompileRequest.initialCompileArgs;
+  const initialCompileCacheRequestSupport = initialCompileRequest.requestSupport;
+  record(
+    'initial compile cache request support',
+    initialCompileCacheRequestSupport.accepted ? 'pass' : 'fail',
+    initialCompileCacheRequestSupport,
+  );
+  if (!initialCompileCacheRequestSupport.accepted) {
+    throw agentSplitRefusalError(
+      `initial compile cache request support rejected: ${initialCompileCacheRequestSupport.blockingGaps.join('|')}`,
+      'agent_split_initial_compile_cache_request_refused',
+    );
+  }
   let initialCompileResult = null;
   try {
     initialCompileResult = await compileViaMcp(initialCompileArgs, CFG.hmrTimeoutMs, {
@@ -12275,6 +12608,7 @@ async function run() {
     entryPath,
     sourcePurityEvidence,
     initialCompileArgs,
+    initialCompileCacheRequestSupport,
     initialCompileResult,
     split,
     sawGpuSplit,
