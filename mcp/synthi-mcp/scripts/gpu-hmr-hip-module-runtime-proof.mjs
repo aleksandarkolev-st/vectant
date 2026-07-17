@@ -22,6 +22,12 @@ import {
 import {
   runtimeProofArtifactStrictGate,
 } from './lib/gpu-hmr-proof-strict-gates.mjs';
+import {
+  GPU_HMR_TEST_TIMING_PHASE_KEYS,
+  GPU_HMR_TEST_TIMING_SCHEMA,
+  GpuHmrTestTimingRecorder,
+  validateGpuHmrTestTiming,
+} from './lib/gpu-hmr-test-timing-v2.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,6 +43,28 @@ const MODEL_AVAILABILITY_SOURCE = 'https://ai.google.dev/gemini-api/docs/depreca
 const LEGACY_SUPPORTED_SCOPE = 'explicit-hip-module-float32-readback';
 const DECLARED_CONTRACT_SCOPE = 'explicit-hip-module-declared-readback';
 const SUPPORTED_SCOPES = new Set([LEGACY_SUPPORTED_SCOPE, DECLARED_CONTRACT_SCOPE]);
+const TEST_TIMING_SPLIT_NOT_APPLICABLE_REASON =
+  'split_not_performed_by_hip_module_runtime_producer';
+const TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON = 'compute_only_test_has_no_visual_contract';
+const TEST_TIMING_CHILD_CLOCK_GAP_REASON =
+  'hip_probe_phase_not_bound_to_validator_monotonic_clock';
+const TEST_TIMING_OUTPUT_READY_GAP_REASON =
+  'output_ready_boundary_not_bound_to_validator_monotonic_clock';
+const TEST_TIMING_RETIREMENT_GAP_REASON =
+  'retirement_boundary_not_bound_to_validator_monotonic_clock';
+const TEST_TIMING_TERMINAL_PASS_REASON = 'hip_module_runtime_completed';
+const TEST_TIMING_TERMINAL_REFUSAL_REASON = 'hip_module_runtime_refused';
+const TEST_TIMING_TERMINAL_FAILURE_REASON = 'hip_module_runtime_failed';
+const TEST_TIMING_CHILD_PHASES = Object.freeze([
+  'load',
+  'epoch_publication',
+  'dispatch',
+]);
+const TEST_TIMING_VISUAL_PHASES = Object.freeze([
+  'trigger_to_visible',
+  'screenshot_capture',
+  'visual_analysis',
+]);
 
 const MODEL_REGISTRY = Object.freeze({
   'gemini-3.5-flash': {
@@ -81,6 +109,92 @@ function stableJson(value) {
   return `{${Object.keys(value).sort().map((key) =>
     `${JSON.stringify(key)}:${stableJson(value[key])}`
   ).join(',')}}`;
+}
+
+export function createHipModuleRuntimeTimingV2Recorder(options = {}) {
+  const recorder = new GpuHmrTestTimingRecorder(options);
+  recorder.notApplicable('split', TEST_TIMING_SPLIT_NOT_APPLICABLE_REASON);
+  for (const phaseKey of TEST_TIMING_CHILD_PHASES) {
+    recorder.unavailable(phaseKey, TEST_TIMING_CHILD_CLOCK_GAP_REASON);
+  }
+  recorder.unavailable('output_ready', TEST_TIMING_OUTPUT_READY_GAP_REASON);
+  recorder.unavailable('retirement', TEST_TIMING_RETIREMENT_GAP_REASON);
+  for (const phaseKey of TEST_TIMING_VISUAL_PHASES) {
+    recorder.notApplicable(phaseKey, TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON);
+  }
+  return recorder;
+}
+
+export async function measureHipModuleRuntimeTimingPhase(recorder, phaseKey, operation) {
+  recorder.startPhase(phaseKey);
+  try {
+    return await operation();
+  } finally {
+    recorder.finishPhase(phaseKey);
+  }
+}
+
+export function finalizeHipModuleRuntimeTimingV2({ recorder, outcome, terminalReason }) {
+  if (recorder.isFinalized) return recorder.record;
+  const record = recorder.finalize({
+    outcome,
+    visualCapable: false,
+    terminalReason,
+    notApplicableReason: TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+  });
+  const validation = validateGpuHmrTestTiming(record);
+  if (
+    record.schema !== GPU_HMR_TEST_TIMING_SCHEMA
+    || validation.valid !== true
+    || record.authority !== 'timing_only'
+    || record.timingOnly !== true
+    || record.acceptedForGpuHmr !== false
+    || record.gpuHmrSuccess !== false
+    || GPU_HMR_TEST_TIMING_PHASE_KEYS.some((phaseKey) => !record.phases?.[phaseKey])
+  ) {
+    throw new TypeError(`invalid HIP module timing-v2 record: ${validation.validationGaps.join(',')}`);
+  }
+  return record;
+}
+
+export function attachHipModuleRuntimeTestTiming(target, testTiming) {
+  if (!target || typeof target !== 'object' || Array.isArray(target)) {
+    throw new TypeError('HIP module timing attachment target must be an object');
+  }
+  const validation = validateGpuHmrTestTiming(testTiming);
+  if (
+    testTiming?.schema !== GPU_HMR_TEST_TIMING_SCHEMA
+    || validation.valid !== true
+    || testTiming.acceptedForGpuHmr !== false
+    || testTiming.gpuHmrSuccess !== false
+  ) {
+    throw new TypeError('HIP module timing attachment requires valid support-only timing-v2');
+  }
+  const existingCamel = target.testTiming;
+  const existingSnake = target.test_timing;
+  if (
+    (existingCamel && stableJson(existingCamel) !== stableJson(testTiming))
+    || (existingSnake && stableJson(existingSnake) !== stableJson(testTiming))
+    || (existingCamel && existingSnake && stableJson(existingCamel) !== stableJson(existingSnake))
+  ) {
+    throw new TypeError('HIP module timing aliases conflict');
+  }
+  target.testTiming = testTiming;
+  target.test_timing = testTiming;
+  return target;
+}
+
+function hipModuleRuntimeTimingOutcome(error) {
+  const message = String(error?.message ?? error ?? '');
+  return /(?:unsupported|unavailable|missing|requires|does not match|not found)/iu.test(message)
+    ? 'refused'
+    : 'failed';
+}
+
+function hipModuleRuntimeTimingReason(outcome) {
+  return outcome === 'refused'
+    ? TEST_TIMING_TERMINAL_REFUSAL_REASON
+    : TEST_TIMING_TERMINAL_FAILURE_REASON;
 }
 
 function sha256Bytes(value) {
@@ -1915,6 +2029,15 @@ function buildNegativeRefusal({ profile }) {
   };
 }
 
+function declaredHipModuleNegativeRefusalTestTiming() {
+  const recorder = createHipModuleRuntimeTimingV2Recorder();
+  return finalizeHipModuleRuntimeTimingV2({
+    recorder,
+    outcome: 'refused',
+    terminalReason: 'hip_module_negative_edit_refused_before_runtime',
+  });
+}
+
 function buildSyntheticRuntimeProofFixture(profile) {
   const runMode = runModeMetadata(profile);
   const compiled = {
@@ -2211,46 +2334,110 @@ async function selfCheck() {
         && gate.failures.some((failure) => failure === 'proof_ledger_recomputed_query_rejected');
     })(),
   });
+  let timingClock = 0n;
+  const timingRecorder = createHipModuleRuntimeTimingV2Recorder({
+    clock: () => {
+      timingClock += 10n;
+      return timingClock;
+    },
+  });
+  await measureHipModuleRuntimeTimingPhase(timingRecorder, 'cold_intake', async () => {});
+  await measureHipModuleRuntimeTimingPhase(timingRecorder, 'discovery', async () => {});
+  await measureHipModuleRuntimeTimingPhase(timingRecorder, 'compile', async () => {});
+  await measureHipModuleRuntimeTimingPhase(timingRecorder, 'proof_finalization', async () => {});
+  const testTiming = finalizeHipModuleRuntimeTimingV2({
+    recorder: timingRecorder,
+    outcome: 'pass',
+    terminalReason: TEST_TIMING_TERMINAL_PASS_REASON,
+  });
+  const timingValidation = validateGpuHmrTestTiming(testTiming);
+  checks.push({
+    name: 'timing-v2-preserves-measured-and-typed-gap-semantics',
+    ok:
+      timingValidation.valid === true
+      && testTiming.phases.cold_intake.state === 'measured'
+      && testTiming.phases.discovery.state === 'measured'
+      && testTiming.phases.compile.state === 'measured'
+      && testTiming.phases.proof_finalization.state === 'measured'
+      && testTiming.phases.load.state === 'unavailable'
+      && testTiming.phases.trigger_to_visible.state === 'not_applicable'
+      && testTiming.phases.trigger_to_visible.reasonCode
+        === TEST_TIMING_VISUAL_NOT_APPLICABLE_REASON,
+    detail: timingValidation,
+  });
+  const timedTarget = {};
+  attachHipModuleRuntimeTestTiming(timedTarget, testTiming);
+  checks.push({
+    name: 'timing-v2-aliases-are-identical',
+    ok: stableJson(timedTarget.testTiming) === stableJson(timedTarget.test_timing),
+  });
+  let timingAuthorityForgeryRejected = false;
+  try {
+    attachHipModuleRuntimeTestTiming({}, {
+      ...testTiming,
+      acceptedForGpuHmr: true,
+    });
+  } catch {
+    timingAuthorityForgeryRejected = true;
+  }
+  checks.push({
+    name: 'timing-v2-cannot-claim-gpu-hmr-authority',
+    ok: timingAuthorityForgeryRejected,
+  });
   const failed = checks.filter((check) => !check.ok);
   console.log(JSON.stringify({
     schema: 'synthi.gpu_hmr.hip_module_runtime_self_check.v1',
     checks,
+    timingSchema: testTiming.schema,
+    timingAuthorityForgeryRejected,
     passed: failed.length === 0,
   }, null, 2));
   if (failed.length > 0) process.exitCode = 1;
 }
 
-async function main() {
-  if (process.argv.includes('--self-check')) {
-    await selfCheck();
-    return;
-  }
+async function main(testTimingRecorder) {
   const totalStart = process.hrtime.bigint();
   const staticStart = process.hrtime.bigint();
-  const profile = await loadProfile(CFG.profilePath);
-  if (!isSupportedScope(profile.validationScope)) {
-    throw new Error(`unsupported HIP module validation scope: ${profile.validationScope}`);
-  }
-  if (profile.abi.signatureValidation?.matched !== true) {
-    throw new Error(`HIP module profile ABI does not match source signatures: ${profile.abi.signatureValidation?.blockingGaps?.join(',') || 'unknown_gap'}`);
-  }
-  if (!isGfxArch(profile.compile.gpuArch)) {
-    throw new Error('HIP module runtime proof requires explicit gfx* GPU arch evidence; set compile.gpuArch, SYNTHI_HIP_MODULE_GPU_ARCH, or SYNTHI_GPU_ARCH');
-  }
+  const profile = await measureHipModuleRuntimeTimingPhase(
+    testTimingRecorder,
+    'cold_intake',
+    async () => {
+      const loaded = await loadProfile(CFG.profilePath);
+      if (!isSupportedScope(loaded.validationScope)) {
+        throw new Error(`unsupported HIP module validation scope: ${loaded.validationScope}`);
+      }
+      if (loaded.abi.signatureValidation?.matched !== true) {
+        throw new Error(`HIP module profile ABI does not match source signatures: ${loaded.abi.signatureValidation?.blockingGaps?.join(',') || 'unknown_gap'}`);
+      }
+      if (!isGfxArch(loaded.compile.gpuArch)) {
+        throw new Error('HIP module runtime proof requires explicit gfx* GPU arch evidence; set compile.gpuArch, SYNTHI_HIP_MODULE_GPU_ARCH, or SYNTHI_GPU_ARCH');
+      }
+      return loaded;
+    },
+  );
   const staticEnd = process.hrtime.bigint();
   const modelStart = process.hrtime.bigint();
   const modelCheckedAt = new Date().toISOString();
-  const provenance = modelProvenance({
-    checkedAt: modelCheckedAt,
-    splitModel: CFG.splitModel,
-    gpuDeltaModel: CFG.gpuDeltaModel,
-  });
+  const provenance = await measureHipModuleRuntimeTimingPhase(
+    testTimingRecorder,
+    'discovery',
+    async () => modelProvenance({
+      checkedAt: modelCheckedAt,
+      splitModel: CFG.splitModel,
+      gpuDeltaModel: CFG.gpuDeltaModel,
+    }),
+  );
   const modelEnd = process.hrtime.bigint();
   const runSlug = safeSlug(`${CFG.slug}-${profile.targetId}`);
   const outDir = path.join(ARTIFACT_DIR, runSlug);
   await mkdir(outDir, { recursive: true });
-  const compiled = await compileRuntimeArtifacts({ profile, outDir });
+  const compiled = await measureHipModuleRuntimeTimingPhase(
+    testTimingRecorder,
+    'compile',
+    () => compileRuntimeArtifacts({ profile, outDir }),
+  );
   const runtime = await runHipProbe({ profile, compiled, outDir });
+  testTimingRecorder.startPhase('proof_finalization');
   const oracleStart = process.hrtime.bigint();
   const oracleArtifacts = await writeComputeOracleArtifacts({
     outDir,
@@ -2402,6 +2589,12 @@ async function main() {
       ],
     },
   };
+  if (proofMaterial.negativeEditRefusal) {
+    attachHipModuleRuntimeTestTiming(
+      proofMaterial.negativeEditRefusal,
+      declaredHipModuleNegativeRefusalTestTiming(),
+    );
+  }
   proofMaterial.proofId = `hip-module-runtime-proof:${sha256Text(stableJson({
     schema: proofMaterial.schema,
     profile: proofMaterial.profile,
@@ -2428,6 +2621,23 @@ async function main() {
     path.join(outDir, `${runSlug}-run-mode-proof.json`),
     `${JSON.stringify(proofMaterial.runModeProof, null, 2)}\n`,
   );
+  testTimingRecorder.finishPhase('proof_finalization');
+  const testTiming = finalizeHipModuleRuntimeTimingV2({
+    recorder: testTimingRecorder,
+    outcome: accepted ? 'pass' : 'refused',
+    terminalReason: accepted
+      ? TEST_TIMING_TERMINAL_PASS_REASON
+      : TEST_TIMING_TERMINAL_REFUSAL_REASON,
+  });
+  attachHipModuleRuntimeTestTiming(proofMaterial, testTiming);
+  attachHipModuleRuntimeTestTiming(runtimeProofArtifact, testTiming);
+  attachHipModuleRuntimeTestTiming(proofMaterial.runModeProof, testTiming);
+  await writeFile(runtimeProofArtifactPath, `${JSON.stringify(runtimeProofArtifact, null, 2)}\n`);
+  await writeFile(proofPath, `${JSON.stringify(proofMaterial, null, 2)}\n`);
+  await writeFile(
+    path.join(outDir, `${runSlug}-run-mode-proof.json`),
+    `${JSON.stringify(proofMaterial.runModeProof, null, 2)}\n`,
+  );
   console.log(JSON.stringify({
     proofId: proofMaterial.proofId,
     gpuHmrSuccess: proofMaterial.gpuHmrSuccess,
@@ -2441,6 +2651,8 @@ async function main() {
     contractAccepted: contractEvaluation.accepted,
     computeOracleAccepted: oracleValidation.accepted,
     nativeHipApiAccepted: nativeApiEvidence.accepted,
+    testTiming,
+    test_timing: testTiming,
     timings: {
       totalValidatorWallTimeNs: timings.total_validator_wall_time,
       dispatchToOutputProofTimeNs: timings.dispatch_to_output_proof_time,
@@ -2449,7 +2661,34 @@ async function main() {
   if (!accepted) process.exitCode = 1;
 }
 
-main().catch((error) => {
-  console.error(error.stack || error.message);
-  process.exitCode = 1;
-});
+if (process.argv.includes('--self-check')) {
+  selfCheck().catch((error) => {
+    console.error(error.stack || error.message);
+    process.exitCode = 1;
+  });
+} else {
+  const testTimingRecorder = createHipModuleRuntimeTimingV2Recorder();
+  main(testTimingRecorder).catch((error) => {
+    const outcome = hipModuleRuntimeTimingOutcome(error);
+    let testTiming = null;
+    try {
+      testTiming = finalizeHipModuleRuntimeTimingV2({
+        recorder: testTimingRecorder,
+        outcome,
+        terminalReason: hipModuleRuntimeTimingReason(outcome),
+      });
+    } catch (timingError) {
+      console.error(timingError.stack || timingError.message);
+    }
+    console.error(JSON.stringify({
+      schemaVersion: 'synthi.gpu_hmr.hip_module_runtime_failure.v1',
+      error: String(error?.message ?? error),
+      outcome,
+      testTiming,
+      test_timing: testTiming,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+    }, null, 2));
+    process.exitCode = 1;
+  });
+}
