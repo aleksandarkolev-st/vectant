@@ -10071,17 +10071,27 @@ function validProviderCallInterval(receipt) {
   }
 }
 
+function validProviderAvailabilityTimestamp(value) {
+  const text = String(value ?? '').trim();
+  return text.length > 0 && Number.isFinite(Date.parse(text));
+}
+
 function supportEvidenceClaimsAuthority(value) {
-  return [
-    'accepted_for_gpu_hmr',
-    'acceptedForGpuHmr',
-    'gpu_hmr_success',
-    'gpuHmrSuccess',
-    'can_satisfy_runtime_proof',
-    'canSatisfyRuntimeProof',
-    'can_satisfy_dispatch_proof',
-    'canSatisfyDispatchProof',
-  ].some((key) => value?.[key] !== undefined && value?.[key] !== false);
+  if (Array.isArray(value)) return value.some(supportEvidenceClaimsAuthority);
+  if (!value || typeof value !== 'object') return false;
+  const authorityKeys = new Set([
+    'acceptedforgpuhmr',
+    'gpuhmrsuccess',
+    'cansatisfyruntimeproof',
+    'cansatisfydispatchproof',
+  ]);
+  return Object.entries(value).some(([key, nested]) => {
+    const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    if (authorityKeys.has(normalizedKey) && nested !== undefined && nested !== false) {
+      return true;
+    }
+    return supportEvidenceClaimsAuthority(nested);
+  });
 }
 
 function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
@@ -10119,8 +10129,16 @@ function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
       ])
     : '';
   const sha256Pattern = /^sha256:[a-f0-9]{64}$/;
-  const allowedProviderStatuses = new Set(['available', 'deprecated', 'unknown', 'private_alias']);
   const blockingGaps = [
+    initialCompileArgs?.use_ai_split === true
+      ? null
+      : 'cold_ai_split_provider_request_ai_split_not_required',
+    initialCompileArgs?.bypass_ai_split_cache === true
+      ? null
+      : 'cold_ai_split_provider_request_cache_bypass_not_required',
+    initialCompileArgs?.require_ai_provider_call === true
+      ? null
+      : 'cold_ai_split_provider_request_call_not_required',
     receipt ? null : 'cold_ai_split_provider_receipt_missing',
     receipt?.schema_version === PROVIDER_CALL_RECEIPT_SCHEMA_VERSION
       ? null
@@ -10196,23 +10214,29 @@ function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
     provider ? null : 'cold_ai_split_provider_identity_missing',
     requestedModel ? null : 'cold_ai_split_requested_model_missing',
     actualModel ? null : 'cold_ai_split_actual_model_missing',
+    expectedModel && requestedModel === expectedModel && actualModel === expectedModel
+      ? null
+      : 'cold_ai_split_actual_model_not_exact_requested_model',
     provider.toLowerCase() !== 'deterministic_static_splitter'
       ? null
       : 'cold_ai_split_deterministic_splitter_not_provider_call',
-    allowedProviderStatuses.has(providerStatus)
+    providerStatus === 'available'
       ? null
-      : 'cold_ai_split_provider_model_status_invalid',
-    typeof fallbackUsed === 'boolean'
+      : 'cold_ai_split_provider_model_not_available',
+    fallbackUsed === false && !fallbackModel
       ? null
-      : 'cold_ai_split_provider_fallback_state_missing',
-    typeof shutdownOrDeprecationDetected === 'boolean'
+      : 'cold_ai_split_provider_fallback_used',
+    !aliasResolvedTo
       ? null
-      : 'cold_ai_split_provider_lifecycle_state_missing',
+      : 'cold_ai_split_provider_alias_resolution_not_allowed',
+    shutdownOrDeprecationDetected === false
+      ? null
+      : 'cold_ai_split_provider_shutdown_or_deprecation_detected',
     hardInfraFailure === false ? null : 'cold_ai_split_provider_hard_infra_failure',
     receipt?.request_mode === 'split' ? null : 'cold_ai_split_provider_request_mode_invalid',
-    String(receipt?.model_availability_checked_at ?? '').trim()
+    validProviderAvailabilityTimestamp(receipt?.model_availability_checked_at)
       ? null
-      : 'cold_ai_split_provider_availability_timestamp_missing',
+      : 'cold_ai_split_provider_availability_timestamp_invalid',
     validProviderCallInterval(receipt) ? null : 'cold_ai_split_provider_interval_invalid',
     provenance?.provider === provider
       && provenance?.requested_model === requestedModel
@@ -10376,6 +10400,9 @@ function selfCheckColdAiSplitProof() {
     source: selfCheckSource,
     files: [{ path: 'src/main.hip', name: 'src/main.hip', content: selfCheckSource }],
     gpu_arch: 'gfx1201',
+    use_ai_split: true,
+    bypass_ai_split_cache: true,
+    require_ai_provider_call: true,
     ai_provider_call_nonce: 'provider-call:0123456789abcdef0123456789abcdef',
     ai_provider: 'self_check_provider',
     ai_model: 'self-check-model',
@@ -10404,6 +10431,74 @@ function selfCheckColdAiSplitProof() {
     selfCheckSplit,
     selfCheckInitialCompileArgs,
   );
+  const evidenceWithProviderMutation = ({
+    receiptChanges = {},
+    provenanceChanges = {},
+    compileArgChanges = {},
+  } = {}) => {
+    const mutatedReceipt = {
+      ...providerCallReceipt,
+      ...receiptChanges,
+    };
+    mutatedReceipt.receipt_hash = providerCallReceiptHash(mutatedReceipt);
+    mutatedReceipt.call_id = `provider-call:${mutatedReceipt.receipt_hash}`;
+    return coldAiProviderCallEvidenceFromSplit({
+      sidecar: {
+        model_provenance: {
+          ...selfCheckSplit.sidecar.model_provenance,
+          ...provenanceChanges,
+        },
+        provider_call_receipt: mutatedReceipt,
+      },
+    }, {
+      ...selfCheckInitialCompileArgs,
+      ...compileArgChanges,
+    });
+  };
+  const substitutedActualModelEvidence = evidenceWithProviderMutation({
+    receiptChanges: { actual_model: 'substituted-model' },
+    provenanceChanges: { actual_model: 'substituted-model' },
+  });
+  const fallbackModelEvidence = evidenceWithProviderMutation({
+    receiptChanges: {
+      actual_model: 'fallback-model',
+      fallback_model: 'fallback-model',
+      fallback_used: true,
+    },
+    provenanceChanges: {
+      actual_model: 'fallback-model',
+      fallback_model: 'fallback-model',
+      fallback_used: true,
+    },
+  });
+  const deprecatedModelEvidence = evidenceWithProviderMutation({
+    receiptChanges: {
+      provider_model_status: 'deprecated',
+      provider_shutdown_or_deprecation_detected: true,
+    },
+    provenanceChanges: {
+      provider_model_status: 'deprecated',
+      provider_shutdown_or_deprecation_detected: true,
+    },
+  });
+  const aliasResolutionEvidence = evidenceWithProviderMutation({
+    receiptChanges: { provider_model_alias_resolved_to: 'resolved-model' },
+    provenanceChanges: { provider_model_alias_resolved_to: 'resolved-model' },
+  });
+  const callerDidNotRequireProviderEvidence = evidenceWithProviderMutation({
+    compileArgChanges: {
+      bypass_ai_split_cache: false,
+      require_ai_provider_call: false,
+    },
+  });
+  const nestedAuthorityEvidence = evidenceWithProviderMutation({
+    receiptChanges: {
+      request_binding: {
+        ...providerCallReceipt.request_binding,
+        gpuHmrSuccess: true,
+      },
+    },
+  });
   const selfCheckCompileProofId = `gpu-proof:${'a'.repeat(64)}`;
   const selfCheckArtifactId = `device:sha256:${'b'.repeat(64)}`;
   const selfCheckCompileProofArtifact = {
@@ -10648,6 +10743,32 @@ function selfCheckColdAiSplitProof() {
     || providerEvidence.accepted !== true
     || providerEvidence.acceptedForGpuHmr !== false
     || providerEvidence.gpuHmrSuccess !== false
+    || substitutedActualModelEvidence.accepted !== false
+    || !substitutedActualModelEvidence.blockingGaps.includes(
+      'cold_ai_split_actual_model_not_exact_requested_model'
+    )
+    || fallbackModelEvidence.accepted !== false
+    || !fallbackModelEvidence.blockingGaps.includes('cold_ai_split_provider_fallback_used')
+    || deprecatedModelEvidence.accepted !== false
+    || !deprecatedModelEvidence.blockingGaps.includes('cold_ai_split_provider_model_not_available')
+    || !deprecatedModelEvidence.blockingGaps.includes(
+      'cold_ai_split_provider_shutdown_or_deprecation_detected'
+    )
+    || aliasResolutionEvidence.accepted !== false
+    || !aliasResolutionEvidence.blockingGaps.includes(
+      'cold_ai_split_provider_alias_resolution_not_allowed'
+    )
+    || callerDidNotRequireProviderEvidence.accepted !== false
+    || !callerDidNotRequireProviderEvidence.blockingGaps.includes(
+      'cold_ai_split_provider_request_cache_bypass_not_required'
+    )
+    || !callerDidNotRequireProviderEvidence.blockingGaps.includes(
+      'cold_ai_split_provider_request_call_not_required'
+    )
+    || nestedAuthorityEvidence.accepted !== false
+    || !nestedAuthorityEvidence.blockingGaps.includes(
+      'cold_ai_split_provider_receipt_claims_gpu_authority'
+    )
     || forgedReceiptEvidence.accepted !== false
     || !forgedReceiptEvidence.blockingGaps.includes('cold_ai_split_provider_receipt_hash_mismatch')
     || forgedChallengeEvidence.accepted !== false
