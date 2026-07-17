@@ -563,6 +563,1132 @@ fn compile_request_content_sha256(req: &CompileRequest) -> String {
     )
 }
 
+const SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.source_first_request_intent.v1";
+const SOURCE_FIRST_REQUEST_INTENT_AUTHORITY: &str =
+    "source_manifest_bound_request_hints_only_not_gpu_hmr_success";
+const SOURCE_FIRST_REQUEST_INTENT_BINDING_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.source_first_request_intent_worker_binding.v1";
+const SOURCE_FIRST_REQUEST_INTENT_BINDING_AUTHORITY: &str =
+    "validated_source_manifest_request_binding_only_not_runtime_proof";
+const SOURCE_FIRST_EXTENSION_REGISTRY_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.source_extension_registry.v1";
+
+#[derive(Debug, Clone)]
+struct ValidatedSourceFirstRequestIntent {
+    record: serde_json::Value,
+    intent_hash: String,
+    source_manifest_hash: String,
+    entry_path: String,
+    language: String,
+    source_paths: Vec<String>,
+    build_metadata_paths: Vec<String>,
+    build_metadata_hash: Option<String>,
+    oracle_intent: String,
+    output_oracle_kind: Option<String>,
+    is_gui: bool,
+    oracle_evidence_hashes: serde_json::Value,
+    oracle_evidence_refs: Vec<String>,
+}
+
+fn source_first_intent_error(reason_code: &str, detail: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!("{reason_code}: {detail}")
+}
+
+fn source_first_stable_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {
+            serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+        }
+        serde_json::Value::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(source_first_stable_json)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        serde_json::Value::Object(map) => {
+            let mut keys = map.keys().collect::<Vec<_>>();
+            keys.sort();
+            let fields = keys
+                .into_iter()
+                .map(|key| {
+                    let encoded_key =
+                        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string());
+                    let encoded_value =
+                        source_first_stable_json(map.get(key).unwrap_or(&serde_json::Value::Null));
+                    format!("{encoded_key}:{encoded_value}")
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{fields}}}")
+        }
+    }
+}
+
+fn source_first_stable_sha256(value: &serde_json::Value) -> String {
+    format!(
+        "sha256:{}",
+        sha256_hex_str(&source_first_stable_json(value))
+    )
+}
+
+fn exact_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    })
+}
+
+fn required_intent_alias<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    camel: &str,
+    snake: &str,
+) -> Result<&'a serde_json::Value> {
+    let camel_value = object.get(camel).ok_or_else(|| {
+        source_first_intent_error(
+            "source_first_request_intent_field_missing",
+            format!("missing {camel}"),
+        )
+    })?;
+    let snake_value = object.get(snake).ok_or_else(|| {
+        source_first_intent_error(
+            "source_first_request_intent_field_missing",
+            format!("missing {snake}"),
+        )
+    })?;
+    if camel_value != snake_value {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_alias_conflict",
+            format!("{camel} and {snake} disagree"),
+        ));
+    }
+    Ok(camel_value)
+}
+
+fn required_intent_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str> {
+    value
+        .as_str()
+        .filter(|text| !text.is_empty() && *text == text.trim())
+        .ok_or_else(|| {
+            source_first_intent_error(
+                "source_first_request_intent_field_invalid",
+                format!("{field} must be a non-empty canonical string"),
+            )
+        })
+}
+
+fn required_intent_bool(value: &serde_json::Value, field: &str, expected: bool) -> Result<()> {
+    if value.as_bool() != Some(expected) {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_authority_invalid",
+            format!("{field} must be the boolean {expected}"),
+        ));
+    }
+    Ok(())
+}
+
+fn exact_source_first_path(value: &str, field: &str) -> Result<String> {
+    let rel = compile_request_relpath(value).map_err(|error| {
+        source_first_intent_error(
+            "source_first_request_intent_path_invalid",
+            format!("{field}: {error}"),
+        )
+    })?;
+    let normalized = rel.to_string_lossy().replace('\\', "/");
+    if normalized != value {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_path_invalid",
+            format!("{field} must use its canonical workspace-relative form"),
+        ));
+    }
+    Ok(normalized)
+}
+
+fn intent_string_array(value: &serde_json::Value, field: &str) -> Result<Vec<String>> {
+    let items = value.as_array().ok_or_else(|| {
+        source_first_intent_error(
+            "source_first_request_intent_field_invalid",
+            format!("{field} must be an array"),
+        )
+    })?;
+    let mut result = Vec::with_capacity(items.len());
+    let mut unique = BTreeSet::new();
+    for (index, item) in items.iter().enumerate() {
+        let text = required_intent_string(item, &format!("{field}[{index}]"))?.to_string();
+        if !unique.insert(text.clone()) {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_duplicate_value",
+                format!("{field} contains duplicate {text}"),
+            ));
+        }
+        result.push(text);
+    }
+    Ok(result)
+}
+
+fn intent_path_array(value: &serde_json::Value, field: &str) -> Result<Vec<String>> {
+    intent_string_array(value, field)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| exact_source_first_path(&path, &format!("{field}[{index}]")))
+        .collect()
+}
+
+fn source_first_file_hash_entry(path: &str, content: &str) -> serde_json::Value {
+    let content_hash = format!("sha256:{}", sha256_hex_str(content));
+    let byte_length = content.len() as u64;
+    serde_json::json!({
+        "path": path,
+        "contentHash": content_hash,
+        "content_hash": content_hash,
+        "byteLength": byte_length,
+        "byte_length": byte_length,
+    })
+}
+
+fn validate_oracle_evidence_hashes(value: &serde_json::Value) -> Result<()> {
+    const HASH_FIELDS: [&str; 4] = [
+        "visualSceneManifestHash",
+        "visualProofHash",
+        "deterministicVisualModeHash",
+        "runtimeExpectationHash",
+    ];
+    let object = value.as_object().ok_or_else(|| {
+        source_first_intent_error(
+            "source_first_request_intent_oracle_hashes_invalid",
+            "oracleEvidenceHashes must be an object",
+        )
+    })?;
+    let actual = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected = HASH_FIELDS.into_iter().collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_oracle_hashes_invalid",
+            "oracleEvidenceHashes has missing or unknown fields",
+        ));
+    }
+    for field in HASH_FIELDS {
+        let field_value = object.get(field).unwrap_or(&serde_json::Value::Null);
+        if field_value.is_null() {
+            continue;
+        }
+        let hash = required_intent_string(field_value, field)?;
+        if !exact_sha256(hash) {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_oracle_hash_invalid",
+                format!("{field} must be an exact lowercase sha256 address"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceFirstExtensionRole {
+    TranslationUnit,
+    LanguageContext,
+    NeutralContext,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SourceFirstExtensionMetadata {
+    extension: &'static str,
+    role: SourceFirstExtensionRole,
+    request_language: Option<&'static str>,
+    automatic_entry_candidate: bool,
+    can_establish_gpu_capability: bool,
+}
+
+const SOURCE_FIRST_EXTENSION_REGISTRY: &[SourceFirstExtensionMetadata] = &[
+    SourceFirstExtensionMetadata {
+        extension: ".c",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("c"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".c++",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("cpp"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".cc",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("cpp"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".cl",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("opencl"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".comp",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("glsl"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".cpp",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("cpp"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".cu",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("cuda"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".cuh",
+        role: SourceFirstExtensionRole::LanguageContext,
+        request_language: Some("cuda"),
+        automatic_entry_candidate: false,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".cxx",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("cpp"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".frag",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("glsl"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".geom",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("glsl"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".glsl",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("glsl"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".h",
+        role: SourceFirstExtensionRole::NeutralContext,
+        request_language: None,
+        automatic_entry_candidate: false,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".h++",
+        role: SourceFirstExtensionRole::LanguageContext,
+        request_language: Some("cpp"),
+        automatic_entry_candidate: false,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".hh",
+        role: SourceFirstExtensionRole::LanguageContext,
+        request_language: Some("cpp"),
+        automatic_entry_candidate: false,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".hip",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("hip"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".hlsl",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("hlsl"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".hpp",
+        role: SourceFirstExtensionRole::LanguageContext,
+        request_language: Some("cpp"),
+        automatic_entry_candidate: false,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".hxx",
+        role: SourceFirstExtensionRole::LanguageContext,
+        request_language: Some("cpp"),
+        automatic_entry_candidate: false,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".inc",
+        role: SourceFirstExtensionRole::NeutralContext,
+        request_language: None,
+        automatic_entry_candidate: false,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".inl",
+        role: SourceFirstExtensionRole::NeutralContext,
+        request_language: None,
+        automatic_entry_candidate: false,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".ipp",
+        role: SourceFirstExtensionRole::NeutralContext,
+        request_language: None,
+        automatic_entry_candidate: false,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".metal",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("metal"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".opencl",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("opencl"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".rs",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("rust"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".slang",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("slang"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".tesc",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("glsl"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".tese",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("glsl"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".tpp",
+        role: SourceFirstExtensionRole::NeutralContext,
+        request_language: None,
+        automatic_entry_candidate: false,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".vert",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("glsl"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".wgsl",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("wgsl"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+    SourceFirstExtensionMetadata {
+        extension: ".zig",
+        role: SourceFirstExtensionRole::TranslationUnit,
+        request_language: Some("zig"),
+        automatic_entry_candidate: true,
+        can_establish_gpu_capability: false,
+    },
+];
+
+fn normalize_gpu_hmr_source_extension(value: &str) -> String {
+    let normalized = value.trim().replace('\\', "/");
+    let Some(basename) = normalized
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+    else {
+        return String::new();
+    };
+    if normalized == basename && basename.starts_with('.') && !basename[1..].contains('.') {
+        return basename.to_ascii_lowercase();
+    }
+    basename
+        .rfind('.')
+        .filter(|index| *index > 0)
+        .map(|index| basename[index..].to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn gpu_hmr_source_extension_metadata(value: &str) -> Option<&'static SourceFirstExtensionMetadata> {
+    let extension = normalize_gpu_hmr_source_extension(value);
+    SOURCE_FIRST_EXTENSION_REGISTRY
+        .iter()
+        .find(|metadata| metadata.extension == extension && !metadata.can_establish_gpu_capability)
+}
+
+fn validate_source_language_evidence(
+    value: &serde_json::Value,
+    source_paths: &[String],
+    neutral_paths: &[String],
+    entry_path: &str,
+    language: &str,
+) -> Result<()> {
+    let entries = value.as_array().ok_or_else(|| {
+        source_first_intent_error(
+            "source_first_request_intent_language_evidence_invalid",
+            "sourceLanguageEvidence must be an array",
+        )
+    })?;
+    let source_set = source_paths.iter().cloned().collect::<BTreeSet<_>>();
+    let neutral_set = neutral_paths.iter().cloned().collect::<BTreeSet<_>>();
+    if !neutral_set.is_subset(&source_set) {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_language_evidence_invalid",
+            "language-neutral paths must be declared source paths",
+        ));
+    }
+    for path in source_paths {
+        if gpu_hmr_source_extension_metadata(path).is_none() {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("source path {path} has an unknown protocol extension"),
+            ));
+        }
+    }
+    for path in neutral_paths {
+        let metadata = gpu_hmr_source_extension_metadata(path).ok_or_else(|| {
+            source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("neutral path {path} has an unknown protocol extension"),
+            )
+        })?;
+        if metadata.role != SourceFirstExtensionRole::NeutralContext
+            || metadata.request_language.is_some()
+            || metadata.automatic_entry_candidate
+        {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("neutral path {path} is not registry neutral_context"),
+            ));
+        }
+    }
+
+    let expected_keys = ["extension", "language", "path"]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut evidence_paths = BTreeSet::new();
+    let mut entry_language = None;
+    for (index, entry) in entries.iter().enumerate() {
+        let object = entry.as_object().ok_or_else(|| {
+            source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("sourceLanguageEvidence[{index}] must be an object"),
+            )
+        })?;
+        let actual_keys = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+        if actual_keys != expected_keys {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("sourceLanguageEvidence[{index}] has missing or unknown fields"),
+            ));
+        }
+        let path = exact_source_first_path(
+            required_intent_string(
+                object.get("path").unwrap_or(&serde_json::Value::Null),
+                "sourceLanguageEvidence.path",
+            )?,
+            "sourceLanguageEvidence.path",
+        )?;
+        let extension = required_intent_string(
+            object.get("extension").unwrap_or(&serde_json::Value::Null),
+            "sourceLanguageEvidence.extension",
+        )?;
+        let evidence_language = required_intent_string(
+            object.get("language").unwrap_or(&serde_json::Value::Null),
+            "sourceLanguageEvidence.language",
+        )?;
+        if !source_set.contains(&path) || neutral_set.contains(&path) {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("language evidence path {path} is not a typed source path"),
+            ));
+        }
+        let metadata = gpu_hmr_source_extension_metadata(&path).ok_or_else(|| {
+            source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("language evidence path {path} has an unknown protocol extension"),
+            )
+        })?;
+        if extension != metadata.extension {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!(
+                    "language evidence extension {extension} does not match canonical path suffix {} for {path}",
+                    metadata.extension
+                ),
+            ));
+        }
+        if metadata.request_language != Some(evidence_language) {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!(
+                    "language evidence {evidence_language} does not match registry language for {path}"
+                ),
+            ));
+        }
+        if !evidence_paths.insert(path.clone()) {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("duplicate language evidence path {path}"),
+            ));
+        }
+        if path == entry_path {
+            entry_language = Some(evidence_language.to_string());
+        }
+    }
+    let classified_paths = evidence_paths
+        .union(&neutral_set)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let entry_metadata = gpu_hmr_source_extension_metadata(entry_path).ok_or_else(|| {
+        source_first_intent_error(
+            "source_first_request_intent_language_evidence_invalid",
+            format!("entry path {entry_path} has an unknown protocol extension"),
+        )
+    })?;
+    if entry_metadata.role != SourceFirstExtensionRole::TranslationUnit
+        || !entry_metadata.automatic_entry_candidate
+        || entry_metadata.request_language != Some(language)
+    {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_language_evidence_invalid",
+            format!("entry path {entry_path} is not an automatic translation-unit candidate"),
+        ));
+    }
+    if classified_paths != source_set || entry_language.as_deref() != Some(language) {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_language_evidence_invalid",
+            "language evidence must classify every source path and bind the entry language",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_source_first_request_intent(
+    req: &CompileRequest,
+) -> Result<Option<ValidatedSourceFirstRequestIntent>> {
+    let Some(record) = req.source_first_request_intent.as_ref() else {
+        return Ok(None);
+    };
+    let object = record.as_object().ok_or_else(|| {
+        source_first_intent_error(
+            "source_first_request_intent_invalid",
+            "request intent must be an object",
+        )
+    })?;
+
+    const ALLOWED_FIELDS: [&str; 51] = [
+        "schemaVersion",
+        "schema_version",
+        "proofAuthority",
+        "proof_authority",
+        "acceptedAsRequestHints",
+        "accepted_as_request_hints",
+        "acceptedForGpuHmr",
+        "accepted_for_gpu_hmr",
+        "gpuHmrSuccess",
+        "gpu_hmr_success",
+        "canSatisfyRuntimeProof",
+        "can_satisfy_runtime_proof",
+        "canSatisfyDispatchProof",
+        "can_satisfy_dispatch_proof",
+        "language",
+        "languageSource",
+        "language_source",
+        "isGui",
+        "is_gui",
+        "uiMode",
+        "ui_mode",
+        "oracleIntent",
+        "oracle_intent",
+        "outputOracleKind",
+        "output_oracle_kind",
+        "entryPath",
+        "entry_path",
+        "sourceManifestHash",
+        "source_manifest_hash",
+        "declaredSourceManifestHash",
+        "declared_source_manifest_hash",
+        "sourceManifestHashVerified",
+        "source_manifest_hash_verified",
+        "sourceLanguageEvidence",
+        "source_language_evidence",
+        "languageNeutralSourcePaths",
+        "language_neutral_source_paths",
+        "sourcePaths",
+        "source_paths",
+        "buildMetadataPaths",
+        "build_metadata_paths",
+        "buildMetadataHash",
+        "build_metadata_hash",
+        "oracleEvidenceHashes",
+        "oracle_evidence_hashes",
+        "intentHash",
+        "intent_hash",
+        "evidenceRefs",
+        "evidence_refs",
+        "blockingGaps",
+        "blocking_gaps",
+    ];
+    let allowed = ALLOWED_FIELDS.into_iter().collect::<BTreeSet<_>>();
+    if let Some(unknown) = object.keys().find(|key| !allowed.contains(key.as_str())) {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_field_unknown",
+            format!("unknown field {unknown}"),
+        ));
+    }
+
+    let schema = required_intent_string(
+        required_intent_alias(object, "schemaVersion", "schema_version")?,
+        "schemaVersion",
+    )?;
+    if schema != SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_schema_invalid",
+            format!("unsupported schema {schema}"),
+        ));
+    }
+    let authority = required_intent_string(
+        required_intent_alias(object, "proofAuthority", "proof_authority")?,
+        "proofAuthority",
+    )?;
+    if authority != SOURCE_FIRST_REQUEST_INTENT_AUTHORITY {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_authority_invalid",
+            "proofAuthority is not the support-only request authority",
+        ));
+    }
+    for (camel, snake, expected) in [
+        ("acceptedAsRequestHints", "accepted_as_request_hints", true),
+        ("acceptedForGpuHmr", "accepted_for_gpu_hmr", false),
+        ("gpuHmrSuccess", "gpu_hmr_success", false),
+        ("canSatisfyRuntimeProof", "can_satisfy_runtime_proof", false),
+        (
+            "canSatisfyDispatchProof",
+            "can_satisfy_dispatch_proof",
+            false,
+        ),
+        (
+            "sourceManifestHashVerified",
+            "source_manifest_hash_verified",
+            true,
+        ),
+    ] {
+        required_intent_bool(
+            required_intent_alias(object, camel, snake)?,
+            camel,
+            expected,
+        )?;
+    }
+    let blocking_gaps = required_intent_alias(object, "blockingGaps", "blocking_gaps")?
+        .as_array()
+        .ok_or_else(|| {
+            source_first_intent_error(
+                "source_first_request_intent_field_invalid",
+                "blockingGaps must be an empty array",
+            )
+        })?;
+    if !blocking_gaps.is_empty() {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_blocking_gap_present",
+            "request intent contains blocking gaps",
+        ));
+    }
+
+    let language = required_intent_string(
+        object.get("language").unwrap_or(&serde_json::Value::Null),
+        "language",
+    )?
+    .to_string();
+    if req.language != language {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_language_mismatch",
+            "request language does not match the intent entry language",
+        ));
+    }
+    let language_source = required_intent_string(
+        required_intent_alias(object, "languageSource", "language_source")?,
+        "languageSource",
+    )?;
+    if language_source != "exact_source_manifest_entry_extension" {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_language_source_invalid",
+            "languageSource must identify exact entry-extension evidence",
+        ));
+    }
+
+    let entry_path = exact_source_first_path(
+        required_intent_string(
+            required_intent_alias(object, "entryPath", "entry_path")?,
+            "entryPath",
+        )?,
+        "entryPath",
+    )?;
+    let request_entry_path = normalized_request_filename(&req.filename).ok_or_else(|| {
+        source_first_intent_error(
+            "source_first_request_intent_entry_mismatch",
+            "compile request filename is not a safe relative path",
+        )
+    })?;
+    if entry_path != request_entry_path {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_entry_mismatch",
+            "compile request filename does not match entryPath",
+        ));
+    }
+
+    let source_paths = intent_path_array(
+        required_intent_alias(object, "sourcePaths", "source_paths")?,
+        "sourcePaths",
+    )?;
+    let build_metadata_paths = intent_path_array(
+        required_intent_alias(object, "buildMetadataPaths", "build_metadata_paths")?,
+        "buildMetadataPaths",
+    )?;
+    if source_paths.is_empty() || !source_paths.iter().any(|path| path == &entry_path) {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_entry_not_source",
+            "entryPath must be one of the declared source paths",
+        ));
+    }
+    let source_set = source_paths.iter().cloned().collect::<BTreeSet<_>>();
+    let build_set = build_metadata_paths
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !source_set.is_disjoint(&build_set) {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_duplicate_path",
+            "a path cannot be both source and build metadata",
+        ));
+    }
+
+    let mut request_files = BTreeMap::new();
+    let mut request_file_order = Vec::with_capacity(req.files.len());
+    for file in &req.files {
+        let path = exact_source_first_path(&file.name, "CompileRequest.files.name")?;
+        if request_files
+            .insert(path.clone(), file.content.as_str())
+            .is_some()
+        {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_request_duplicate_path",
+                format!("CompileRequest.files repeats {path}"),
+            ));
+        }
+        request_file_order.push(path);
+    }
+    let declared_set = source_set
+        .union(&build_set)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let request_set = request_files.keys().cloned().collect::<BTreeSet<_>>();
+    if request_set != declared_set {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_request_manifest_mismatch",
+            "CompileRequest.files must contain exactly every declared source/build path",
+        ));
+    }
+    let entry_bytes = request_files.get(&entry_path).copied().ok_or_else(|| {
+        source_first_intent_error(
+            "source_first_request_intent_entry_missing",
+            "entryPath bytes are absent from CompileRequest.files",
+        )
+    })?;
+    if req.source != entry_bytes {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_entry_bytes_mismatch",
+            "CompileRequest.source does not match the entry file bytes",
+        ));
+    }
+
+    let projected_source_paths = request_file_order
+        .iter()
+        .filter(|path| source_set.contains(*path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let projected_build_paths = request_file_order
+        .iter()
+        .filter(|path| build_set.contains(*path))
+        .cloned()
+        .collect::<Vec<_>>();
+    if projected_source_paths != source_paths || projected_build_paths != build_metadata_paths {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_request_manifest_order_mismatch",
+            "declared source/build path order does not match the exact request manifest",
+        ));
+    }
+
+    let manifest_entries = request_file_order
+        .iter()
+        .map(|path| source_first_file_hash_entry(path, request_files[path]))
+        .collect::<Vec<_>>();
+    let source_manifest_hash =
+        source_first_stable_sha256(&serde_json::Value::Array(manifest_entries));
+    let declared_source_manifest_hash = required_intent_string(
+        required_intent_alias(object, "sourceManifestHash", "source_manifest_hash")?,
+        "sourceManifestHash",
+    )?;
+    if !exact_sha256(declared_source_manifest_hash)
+        || declared_source_manifest_hash != source_manifest_hash
+    {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_manifest_hash_mismatch",
+            "sourceManifestHash does not match the exact request file bytes",
+        ));
+    }
+    let optional_declared_manifest = required_intent_alias(
+        object,
+        "declaredSourceManifestHash",
+        "declared_source_manifest_hash",
+    )?;
+    if !optional_declared_manifest.is_null() {
+        let declared =
+            required_intent_string(optional_declared_manifest, "declaredSourceManifestHash")?;
+        if !exact_sha256(declared) || declared != source_manifest_hash {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_declared_manifest_hash_mismatch",
+                "declaredSourceManifestHash does not match the request bytes",
+            ));
+        }
+    }
+
+    let build_entries = build_metadata_paths
+        .iter()
+        .map(|path| source_first_file_hash_entry(path, request_files[path]))
+        .collect::<Vec<_>>();
+    let recomputed_build_hash = (!build_entries.is_empty())
+        .then(|| source_first_stable_sha256(&serde_json::Value::Array(build_entries)));
+    let declared_build_hash =
+        required_intent_alias(object, "buildMetadataHash", "build_metadata_hash")?;
+    match (
+        declared_build_hash.as_str(),
+        recomputed_build_hash.as_deref(),
+    ) {
+        (Some(declared), Some(recomputed)) if exact_sha256(declared) && declared == recomputed => {}
+        (None, None) if declared_build_hash.is_null() => {}
+        _ => {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_build_hash_mismatch",
+                "buildMetadataHash does not match exact build file bytes",
+            ));
+        }
+    }
+
+    let neutral_paths = intent_path_array(
+        required_intent_alias(
+            object,
+            "languageNeutralSourcePaths",
+            "language_neutral_source_paths",
+        )?,
+        "languageNeutralSourcePaths",
+    )?;
+    let language_evidence =
+        required_intent_alias(object, "sourceLanguageEvidence", "source_language_evidence")?;
+    validate_source_language_evidence(
+        language_evidence,
+        &source_paths,
+        &neutral_paths,
+        &entry_path,
+        &language,
+    )?;
+
+    let is_gui_value = required_intent_alias(object, "isGui", "is_gui")?;
+    let is_gui = is_gui_value.as_bool().ok_or_else(|| {
+        source_first_intent_error(
+            "source_first_request_intent_field_invalid",
+            "isGui must be a boolean",
+        )
+    })?;
+    if req.is_gui != is_gui {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_gui_mismatch",
+            "CompileRequest.is_gui does not match isGui",
+        ));
+    }
+    let oracle_intent = required_intent_string(
+        required_intent_alias(object, "oracleIntent", "oracle_intent")?,
+        "oracleIntent",
+    )?
+    .to_string();
+    let output_kind_value =
+        required_intent_alias(object, "outputOracleKind", "output_oracle_kind")?;
+    let output_oracle_kind = if output_kind_value.is_null() {
+        None
+    } else {
+        Some(required_intent_string(output_kind_value, "outputOracleKind")?.to_string())
+    };
+    let ui_mode = required_intent_string(
+        required_intent_alias(object, "uiMode", "ui_mode")?,
+        "uiMode",
+    )?;
+    let expected_oracle = match oracle_intent.as_str() {
+        "visual_oracle" => (true, Some("visual_oracle"), "typed_visual_oracle"),
+        "compute_oracle" => (false, Some("compute_oracle"), "non_visual_request_hint"),
+        "non_visual_unspecified" => (false, None, "non_visual_request_hint"),
+        _ => {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_oracle_invalid",
+                format!("unknown oracleIntent {oracle_intent}"),
+            ));
+        }
+    };
+    if is_gui != expected_oracle.0
+        || output_oracle_kind.as_deref() != expected_oracle.1
+        || ui_mode != expected_oracle.2
+    {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_oracle_mismatch",
+            "oracleIntent, outputOracleKind, isGui, and uiMode disagree",
+        ));
+    }
+
+    let oracle_evidence_hashes =
+        required_intent_alias(object, "oracleEvidenceHashes", "oracle_evidence_hashes")?;
+    validate_oracle_evidence_hashes(oracle_evidence_hashes)?;
+    if oracle_intent == "visual_oracle"
+        && oracle_evidence_hashes
+            .as_object()
+            .is_none_or(|hashes| hashes.values().all(serde_json::Value::is_null))
+    {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_visual_evidence_missing",
+            "visual request intent requires a content-addressed evidence hash",
+        ));
+    }
+
+    let intent_hash = required_intent_string(
+        required_intent_alias(object, "intentHash", "intent_hash")?,
+        "intentHash",
+    )?
+    .to_string();
+    if !exact_sha256(&intent_hash) {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_hash_invalid",
+            "intentHash must be an exact lowercase sha256 address",
+        ));
+    }
+    let evidence_refs = intent_string_array(
+        required_intent_alias(object, "evidenceRefs", "evidence_refs")?,
+        "evidenceRefs",
+    )?;
+    let mut sorted_evidence_refs = evidence_refs.clone();
+    sorted_evidence_refs.sort();
+    if evidence_refs != sorted_evidence_refs {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_evidence_refs_invalid",
+            "evidenceRefs must be unique and sorted",
+        ));
+    }
+    let intent_evidence_ref = format!("evidence:source-first-request-intent:{intent_hash}");
+    let manifest_evidence_ref =
+        format!("evidence:source-first-request-manifest:{source_manifest_hash}");
+    let mandatory_refs = [
+        Some(intent_evidence_ref.as_str()),
+        Some(manifest_evidence_ref.as_str()),
+        recomputed_build_hash.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<BTreeSet<_>>();
+    if !mandatory_refs
+        .iter()
+        .all(|required| evidence_refs.iter().any(|value| value == required))
+    {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_evidence_refs_invalid",
+            "evidenceRefs is missing a content-bound request reference",
+        ));
+    }
+    let oracle_evidence_refs = evidence_refs
+        .iter()
+        .filter(|value| !mandatory_refs.contains(value.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let seed = serde_json::json!({
+        "schemaVersion": SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION,
+        "entryPath": entry_path,
+        "sourceManifestHash": source_manifest_hash,
+        "sourcePaths": source_paths,
+        "buildPaths": build_metadata_paths,
+        "buildMetadataHash": recomputed_build_hash,
+        "language": language,
+        "sourceLanguageEvidence": language_evidence,
+        "languageNeutralSourcePaths": neutral_paths,
+        "oracleIntent": oracle_intent,
+        "isGui": is_gui,
+        "oracleEvidenceHashes": oracle_evidence_hashes,
+        "oracleEvidenceRefs": oracle_evidence_refs,
+    });
+    let recomputed_intent_hash = source_first_stable_sha256(&seed);
+    if intent_hash != recomputed_intent_hash {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_hash_mismatch",
+            "intentHash does not match the canonical protocol seed",
+        ));
+    }
+
+    Ok(Some(ValidatedSourceFirstRequestIntent {
+        record: record.clone(),
+        intent_hash,
+        source_manifest_hash,
+        entry_path,
+        language,
+        source_paths,
+        build_metadata_paths,
+        build_metadata_hash: recomputed_build_hash,
+        oracle_intent,
+        output_oracle_kind,
+        is_gui,
+        oracle_evidence_hashes: oracle_evidence_hashes.clone(),
+        oracle_evidence_refs,
+    }))
+}
+
 fn is_editing_adapted_module_or_device(
     filename: &str,
     status: &AdaptedProjectStatus,
@@ -7238,13 +8364,14 @@ async fn enforce_device_hmr_publication_gates(
     Ok(())
 }
 
-async fn write_device_hmr_proof_artifact(
+async fn write_device_hmr_proof_artifact_with_intent(
     workspace: &Path,
     workspace_slug: Option<&str>,
     session_id: &str,
     source_edit_id: &str,
     outcome: &DeviceCompileOutcome,
     sources: Option<&DeviceCompileSources>,
+    source_first_request_intent: Option<&ValidatedSourceFirstRequestIntent>,
     proof: &GpuHmrProofTelemetry,
 ) -> Result<DeviceHmrProofArtifactReceipt> {
     let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -7465,6 +8592,56 @@ async fn write_device_hmr_proof_artifact(
         },
     ];
 
+    let source_first_request_intent_evidence = source_first_request_intent.map(|intent| {
+        let binding_metadata = metadata_with_fission_run_binding(
+            serde_json::json!({
+                "schemaVersion": SOURCE_FIRST_REQUEST_INTENT_BINDING_SCHEMA_VERSION,
+                "proofAuthority": SOURCE_FIRST_REQUEST_INTENT_BINDING_AUTHORITY,
+                "sourceExtensionRegistrySchemaVersion": SOURCE_FIRST_EXTENSION_REGISTRY_SCHEMA_VERSION,
+                "sourceExtensionRegistryCanEstablishGpuCapability": false,
+                "acceptedAsRequestHints": true,
+                "acceptedForGpuHmr": false,
+                "gpuHmrSuccess": false,
+                "canSatisfyRuntimeProof": false,
+                "canSatisfyDispatchProof": false,
+                "requestIntent": &intent.record,
+                "intentHash": &intent.intent_hash,
+                "sourceManifestHash": &intent.source_manifest_hash,
+                "entryPath": &intent.entry_path,
+                "language": &intent.language,
+                "sourcePaths": &intent.source_paths,
+                "buildMetadataPaths": &intent.build_metadata_paths,
+                "buildMetadataHash": &intent.build_metadata_hash,
+                "oracleIntent": &intent.oracle_intent,
+                "outputOracleKind": &intent.output_oracle_kind,
+                "isGui": intent.is_gui,
+                "oracleEvidenceHashes": &intent.oracle_evidence_hashes,
+                "oracleEvidenceRefs": &intent.oracle_evidence_refs,
+                "runtimeSessionId": &runtime_session_id,
+                "sourceEditId": &source_edit_id,
+                "selectedArtifactId": &selected_artifact_id,
+                "selectedArtifactHash": format!("sha256:{artifact_hash}"),
+            }),
+            &fission_run_binding,
+        );
+        let binding_hash = canonical_fission_json_hash(&binding_metadata);
+        GpuHmrProofEvidenceRef {
+            evidence_id: format!("evidence:source-first-request-intent-binding:{binding_hash}"),
+            kind: "source-first-request-intent-binding-support".to_string(),
+            content_hash: format!("sha256:{binding_hash}"),
+            producer_subsystem: "worker.source_first_request_intent_validator".to_string(),
+            timestamp: created_at.clone(),
+            session_id: Some(runtime_session_id.clone()),
+            file_path: None,
+            artifact_uri: Some(selected_artifact_id.clone()),
+            summary: format!(
+                "Validated support-only source-first request intent {} against source manifest {}",
+                intent.intent_hash, intent.source_manifest_hash
+            ),
+            metadata: Some(binding_metadata),
+        }
+    });
+
     if let Some(reason) = outcome.fallback_reason.as_deref() {
         let fallback_hash = sha256_hex_str(reason);
         evidence_refs.push(GpuHmrProofEvidenceRef {
@@ -7541,6 +8718,9 @@ async fn write_device_hmr_proof_artifact(
     if let Some(fission_stage) = fission_stage {
         stage_results.insert(0, fission_stage);
     }
+    if let Some(source_first_request_intent_evidence) = source_first_request_intent_evidence {
+        evidence_refs.push(source_first_request_intent_evidence);
+    }
 
     let fission_registry =
         generated_fission
@@ -7582,6 +8762,29 @@ async fn write_device_hmr_proof_artifact(
         artifact,
         fission_registry,
     })
+}
+
+#[cfg(test)]
+async fn write_device_hmr_proof_artifact(
+    workspace: &Path,
+    workspace_slug: Option<&str>,
+    session_id: &str,
+    source_edit_id: &str,
+    outcome: &DeviceCompileOutcome,
+    sources: Option<&DeviceCompileSources>,
+    proof: &GpuHmrProofTelemetry,
+) -> Result<DeviceHmrProofArtifactReceipt> {
+    write_device_hmr_proof_artifact_with_intent(
+        workspace,
+        workspace_slug,
+        session_id,
+        source_edit_id,
+        outcome,
+        sources,
+        None,
+        proof,
+    )
+    .await
 }
 
 fn device_reload_kernel_symbols(source: &str, outcome: &DeviceCompileOutcome) -> Vec<String> {
@@ -9899,6 +11102,7 @@ async fn handle_compile_request_inner(
             file_ref_summary.count, file_ref_summary.bytes
         );
     }
+    let validated_source_first_request_intent = validate_source_first_request_intent(&req)?;
     sync_compile_request_workspace(ctx, &req).await?;
 
     // ============================================================
@@ -13338,13 +14542,14 @@ async fn handle_compile_request_inner(
     if let Some(ref out) = device_compile_outcome {
         let source_edit_id = format!("source-edit:sha256:{source_edit_sha256}");
         let proof = device_hmr_proof_telemetry(out);
-        let proof_artifact = write_device_hmr_proof_artifact(
+        let proof_artifact = write_device_hmr_proof_artifact_with_intent(
             &ctx.workspace_path,
             req.slug.as_deref(),
             &session_id,
             &source_edit_id,
             out,
             device_source_content.as_ref(),
+            validated_source_first_request_intent.as_ref(),
             &proof,
         )
         .await?;
@@ -15545,6 +16750,112 @@ mod gpu_host_contract_tests {
             .unwrap();
 
         assert_eq!(artifact.source_edit_id, FIXTURE_SOURCE_EDIT_ID);
+    }
+
+    #[tokio::test]
+    async fn device_hmr_proof_artifact_retains_support_only_source_intent_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact_path = temp.path().join("device.hsaco");
+        let artifact_bytes = b"source-intent-bound-device-artifact";
+        tokio::fs::write(&artifact_path, artifact_bytes)
+            .await
+            .unwrap();
+        let mut outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        outcome.artifact_path = artifact_path;
+        let proof = device_hmr_proof_telemetry(&outcome);
+        let request = compile_request_with_source_first_intent();
+        let intent = validate_source_first_request_intent(&request)
+            .unwrap()
+            .unwrap();
+
+        let written = write_device_hmr_proof_artifact_with_intent(
+            temp.path(),
+            Some("workspace"),
+            "runtime-session",
+            FIXTURE_SOURCE_EDIT_ID,
+            &outcome,
+            None,
+            Some(&intent),
+            &proof,
+        )
+        .await
+        .unwrap();
+        let artifact = crate::hmr::gpu_proof::read_proof_artifact(&written.path)
+            .await
+            .unwrap();
+        let evidence = artifact
+            .evidence_refs
+            .iter()
+            .find(|entry| entry.kind == "source-first-request-intent-binding-support")
+            .expect("support-only request intent evidence");
+        let metadata = evidence.metadata.as_ref().expect("binding metadata");
+        let selected_artifact_hash = format!("sha256:{}", sha256_hex_bytes(artifact_bytes));
+        let selected_artifact_id = format!("artifact:{selected_artifact_hash}");
+
+        assert_eq!(
+            metadata
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_str),
+            Some(SOURCE_FIRST_REQUEST_INTENT_BINDING_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            metadata
+                .get("proofAuthority")
+                .and_then(serde_json::Value::as_str),
+            Some(SOURCE_FIRST_REQUEST_INTENT_BINDING_AUTHORITY)
+        );
+        assert_eq!(
+            metadata
+                .get("sourceExtensionRegistrySchemaVersion")
+                .and_then(serde_json::Value::as_str),
+            Some(SOURCE_FIRST_EXTENSION_REGISTRY_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            metadata
+                .get("sourceExtensionRegistryCanEstablishGpuCapability")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        for field in [
+            "acceptedForGpuHmr",
+            "gpuHmrSuccess",
+            "canSatisfyRuntimeProof",
+            "canSatisfyDispatchProof",
+        ] {
+            assert_eq!(
+                metadata.get(field).and_then(serde_json::Value::as_bool),
+                Some(false),
+                "{field} must remain non-authoritative"
+            );
+        }
+        assert_eq!(
+            metadata
+                .get("runtimeSessionId")
+                .and_then(serde_json::Value::as_str),
+            Some("runtime-session:runtime-session")
+        );
+        assert_eq!(
+            metadata
+                .get("sourceEditId")
+                .and_then(serde_json::Value::as_str),
+            Some(FIXTURE_SOURCE_EDIT_ID)
+        );
+        assert_eq!(
+            metadata
+                .get("selectedArtifactId")
+                .and_then(serde_json::Value::as_str),
+            Some(selected_artifact_id.as_str())
+        );
+        assert_eq!(
+            metadata
+                .get("selectedArtifactHash")
+                .and_then(serde_json::Value::as_str),
+            Some(selected_artifact_hash.as_str())
+        );
+        assert!(artifact
+            .stage_results
+            .iter()
+            .all(|stage| !stage.stage_id.contains("source-first-request-intent")));
     }
 
     #[tokio::test]
@@ -19274,10 +20585,379 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             gpu_mode: None,
             gpu_arch: None,
             compile_manifest: None,
+            source_first_request_intent: None,
             target: None,
             project_root: None,
             slug: None,
         }
+    }
+
+    fn source_first_request_intent_fixture() -> serde_json::Value {
+        let source_manifest_hash =
+            "sha256:c11fe4886d728717b396face762e8134311cf627452d3766b28b435fecbb46d9";
+        let build_metadata_hash =
+            "sha256:4495fa6134402b03ddf0a2f46fab755ab97a6faabd327c102d5a27a04e58bb23";
+        let intent_hash = "sha256:78f90db616b5f30a035799853d82c1345549d48ef7302767bfa7b3ff0a504be8";
+        let evidence_refs = serde_json::json!([
+            "evidence:fixture-output",
+            "evidence:source-first-request-intent:sha256:78f90db616b5f30a035799853d82c1345549d48ef7302767bfa7b3ff0a504be8",
+            "evidence:source-first-request-manifest:sha256:c11fe4886d728717b396face762e8134311cf627452d3766b28b435fecbb46d9",
+            "sha256:4495fa6134402b03ddf0a2f46fab755ab97a6faabd327c102d5a27a04e58bb23"
+        ]);
+        let language_evidence = serde_json::json!([{
+            "path": "src/main.cpp",
+            "extension": ".cpp",
+            "language": "cpp"
+        }]);
+        let oracle_hashes = serde_json::json!({
+            "visualSceneManifestHash": null,
+            "visualProofHash": null,
+            "deterministicVisualModeHash": null,
+            "runtimeExpectationHash": null
+        });
+        serde_json::json!({
+            "schemaVersion": SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION,
+            "schema_version": SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION,
+            "proofAuthority": SOURCE_FIRST_REQUEST_INTENT_AUTHORITY,
+            "proof_authority": SOURCE_FIRST_REQUEST_INTENT_AUTHORITY,
+            "acceptedAsRequestHints": true,
+            "accepted_as_request_hints": true,
+            "acceptedForGpuHmr": false,
+            "accepted_for_gpu_hmr": false,
+            "gpuHmrSuccess": false,
+            "gpu_hmr_success": false,
+            "canSatisfyRuntimeProof": false,
+            "can_satisfy_runtime_proof": false,
+            "canSatisfyDispatchProof": false,
+            "can_satisfy_dispatch_proof": false,
+            "language": "cpp",
+            "languageSource": "exact_source_manifest_entry_extension",
+            "language_source": "exact_source_manifest_entry_extension",
+            "isGui": false,
+            "is_gui": false,
+            "uiMode": "non_visual_request_hint",
+            "ui_mode": "non_visual_request_hint",
+            "oracleIntent": "compute_oracle",
+            "oracle_intent": "compute_oracle",
+            "outputOracleKind": "compute_oracle",
+            "output_oracle_kind": "compute_oracle",
+            "entryPath": "src/main.cpp",
+            "entry_path": "src/main.cpp",
+            "sourceManifestHash": source_manifest_hash,
+            "source_manifest_hash": source_manifest_hash,
+            "declaredSourceManifestHash": null,
+            "declared_source_manifest_hash": null,
+            "sourceManifestHashVerified": true,
+            "source_manifest_hash_verified": true,
+            "sourceLanguageEvidence": language_evidence,
+            "source_language_evidence": language_evidence,
+            "languageNeutralSourcePaths": ["include/config.h"],
+            "language_neutral_source_paths": ["include/config.h"],
+            "sourcePaths": ["include/config.h", "src/main.cpp"],
+            "source_paths": ["include/config.h", "src/main.cpp"],
+            "buildMetadataPaths": ["CMakeLists.txt"],
+            "build_metadata_paths": ["CMakeLists.txt"],
+            "buildMetadataHash": build_metadata_hash,
+            "build_metadata_hash": build_metadata_hash,
+            "oracleEvidenceHashes": oracle_hashes,
+            "oracle_evidence_hashes": oracle_hashes,
+            "intentHash": intent_hash,
+            "intent_hash": intent_hash,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+            "blockingGaps": [],
+            "blocking_gaps": []
+        })
+    }
+
+    fn compile_request_with_source_first_intent() -> CompileRequest {
+        let mut request = compile_request_with_file_refs(Vec::new());
+        request.files = vec![
+            FileEntry {
+                name: "CMakeLists.txt".to_string(),
+                content: "cmake_minimum_required(VERSION 3.20)\n".to_string(),
+            },
+            FileEntry {
+                name: "include/config.h".to_string(),
+                content: "#pragma once\n#define VALUE 7\n".to_string(),
+            },
+            FileEntry {
+                name: "src/main.cpp".to_string(),
+                content: "int main(){return 0;}\n".to_string(),
+            },
+        ];
+        request.source_first_request_intent = Some(source_first_request_intent_fixture());
+        request
+    }
+
+    fn set_intent_aliases(
+        intent: &mut serde_json::Value,
+        camel: &str,
+        snake: &str,
+        value: serde_json::Value,
+    ) {
+        let object = intent.as_object_mut().expect("intent object");
+        object.insert(camel.to_string(), value.clone());
+        object.insert(snake.to_string(), value);
+    }
+
+    #[test]
+    fn source_first_request_intent_binds_exact_js_canonical_manifest() {
+        let request = compile_request_with_source_first_intent();
+
+        let validated = validate_source_first_request_intent(&request)
+            .expect("current producer intent must validate")
+            .expect("validated intent");
+
+        assert_eq!(
+            validated.source_manifest_hash,
+            "sha256:c11fe4886d728717b396face762e8134311cf627452d3766b28b435fecbb46d9"
+        );
+        assert_eq!(
+            validated.intent_hash,
+            "sha256:78f90db616b5f30a035799853d82c1345549d48ef7302767bfa7b3ff0a504be8"
+        );
+        assert_eq!(validated.entry_path, request.filename);
+        assert_eq!(validated.language, request.language);
+        assert!(!validated.is_gui);
+    }
+
+    #[test]
+    fn source_language_registry_accepts_mixed_case_path_suffix() {
+        let source_paths = vec!["SRC/MAIN.CPP".to_string()];
+        let evidence = serde_json::json!([{
+            "path": "SRC/MAIN.CPP",
+            "extension": ".cpp",
+            "language": "cpp"
+        }]);
+
+        validate_source_language_evidence(&evidence, &source_paths, &[], "SRC/MAIN.CPP", "cpp")
+            .expect("mixed-case path suffix must normalize through the protocol registry");
+    }
+
+    #[test]
+    fn source_language_registry_rejects_fake_extension() {
+        let source_paths = vec!["src/main.cpp".to_string()];
+        let evidence = serde_json::json!([{
+            "path": "src/main.cpp",
+            "extension": ".cu",
+            "language": "cpp"
+        }]);
+
+        let error =
+            validate_source_language_evidence(&evidence, &source_paths, &[], "src/main.cpp", "cpp")
+                .unwrap_err()
+                .to_string();
+
+        assert!(error.contains("does not match canonical path suffix"));
+    }
+
+    #[test]
+    fn source_language_registry_rejects_fake_language() {
+        let source_paths = vec!["src/main.cpp".to_string()];
+        let evidence = serde_json::json!([{
+            "path": "src/main.cpp",
+            "extension": ".cpp",
+            "language": "cuda"
+        }]);
+
+        let error =
+            validate_source_language_evidence(&evidence, &source_paths, &[], "src/main.cpp", "cpp")
+                .unwrap_err()
+                .to_string();
+
+        assert!(error.contains("does not match registry language"));
+    }
+
+    #[test]
+    fn source_language_registry_rejects_language_context_as_neutral() {
+        let source_paths = vec!["include/context.hpp".to_string()];
+        let neutral_paths = vec!["include/context.hpp".to_string()];
+
+        let error = validate_source_language_evidence(
+            &serde_json::json!([]),
+            &source_paths,
+            &neutral_paths,
+            "include/context.hpp",
+            "cpp",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("is not registry neutral_context"));
+    }
+
+    #[test]
+    fn source_language_registry_rejects_unknown_suffix() {
+        let source_paths = vec!["src/main.unknown_gpu_source".to_string()];
+        let evidence = serde_json::json!([{
+            "path": "src/main.unknown_gpu_source",
+            "extension": ".unknown_gpu_source",
+            "language": "cpp"
+        }]);
+
+        let error = validate_source_language_evidence(
+            &evidence,
+            &source_paths,
+            &[],
+            "src/main.unknown_gpu_source",
+            "cpp",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("unknown protocol extension"));
+    }
+
+    #[test]
+    fn source_language_registry_rejects_non_translation_unit_entry() {
+        let source_paths = vec!["include/context.hpp".to_string()];
+        let evidence = serde_json::json!([{
+            "path": "include/context.hpp",
+            "extension": ".hpp",
+            "language": "cpp"
+        }]);
+
+        let error = validate_source_language_evidence(
+            &evidence,
+            &source_paths,
+            &[],
+            "include/context.hpp",
+            "cpp",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("is not an automatic translation-unit candidate"));
+    }
+
+    #[test]
+    fn source_first_request_intent_rejects_replays_alias_conflicts_and_authority_claims() {
+        let mut changed_bytes = compile_request_with_source_first_intent();
+        changed_bytes.files[1]
+            .content
+            .push_str("#define REPLAY 1\n");
+        let changed_bytes_error = validate_source_first_request_intent(&changed_bytes)
+            .unwrap_err()
+            .to_string();
+        assert!(changed_bytes_error.contains("manifest_hash_mismatch"));
+
+        let mut alias_conflict = compile_request_with_source_first_intent();
+        alias_conflict
+            .source_first_request_intent
+            .as_mut()
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "entry_path".to_string(),
+                serde_json::json!("src/replayed.cpp"),
+            );
+        let alias_error = validate_source_first_request_intent(&alias_conflict)
+            .unwrap_err()
+            .to_string();
+        assert!(alias_error.contains("alias_conflict"));
+
+        let mut authority_claim = compile_request_with_source_first_intent();
+        set_intent_aliases(
+            authority_claim
+                .source_first_request_intent
+                .as_mut()
+                .unwrap(),
+            "acceptedForGpuHmr",
+            "accepted_for_gpu_hmr",
+            serde_json::json!(true),
+        );
+        let authority_error = validate_source_first_request_intent(&authority_claim)
+            .unwrap_err()
+            .to_string();
+        assert!(authority_error.contains("authority_invalid"));
+
+        let mut malformed_false = compile_request_with_source_first_intent();
+        set_intent_aliases(
+            malformed_false
+                .source_first_request_intent
+                .as_mut()
+                .unwrap(),
+            "canSatisfyRuntimeProof",
+            "can_satisfy_runtime_proof",
+            serde_json::json!("false"),
+        );
+        let malformed_error = validate_source_first_request_intent(&malformed_false)
+            .unwrap_err()
+            .to_string();
+        assert!(malformed_error.contains("authority_invalid"));
+
+        let mut omitted_path = compile_request_with_source_first_intent();
+        omitted_path.files.remove(0);
+        let omitted_error = validate_source_first_request_intent(&omitted_path)
+            .unwrap_err()
+            .to_string();
+        assert!(omitted_error.contains("request_manifest_mismatch"));
+
+        let mut extra_path = compile_request_with_source_first_intent();
+        extra_path.files.push(FileEntry {
+            name: "src/extra.cpp".to_string(),
+            content: "void extra() {}\n".to_string(),
+        });
+        let extra_error = validate_source_first_request_intent(&extra_path)
+            .unwrap_err()
+            .to_string();
+        assert!(extra_error.contains("request_manifest_mismatch"));
+
+        let mut language_replay = compile_request_with_source_first_intent();
+        language_replay.language = "rust".to_string();
+        let language_error = validate_source_first_request_intent(&language_replay)
+            .unwrap_err()
+            .to_string();
+        assert!(language_error.contains("language_mismatch"));
+
+        let mut unsafe_path = compile_request_with_source_first_intent();
+        set_intent_aliases(
+            unsafe_path.source_first_request_intent.as_mut().unwrap(),
+            "entryPath",
+            "entry_path",
+            serde_json::json!("../src/main.cpp"),
+        );
+        let unsafe_path_error = validate_source_first_request_intent(&unsafe_path)
+            .unwrap_err()
+            .to_string();
+        assert!(unsafe_path_error.contains("path_invalid"));
+
+        let mut duplicate_request_path = compile_request_with_source_first_intent();
+        duplicate_request_path.files.push(FileEntry {
+            name: "include/config.h".to_string(),
+            content: "#pragma once\n#define VALUE 7\n".to_string(),
+        });
+        let duplicate_error = validate_source_first_request_intent(&duplicate_request_path)
+            .unwrap_err()
+            .to_string();
+        assert!(duplicate_error.contains("request_duplicate_path"));
+
+        let mut hash_replay = compile_request_with_source_first_intent();
+        let replay_hash = format!("sha256:{}", "f".repeat(64));
+        let replay_evidence = serde_json::json!([
+            "evidence:fixture-output",
+            format!("evidence:source-first-request-intent:{replay_hash}"),
+            "evidence:source-first-request-manifest:sha256:c11fe4886d728717b396face762e8134311cf627452d3766b28b435fecbb46d9",
+            "sha256:4495fa6134402b03ddf0a2f46fab755ab97a6faabd327c102d5a27a04e58bb23"
+        ]);
+        set_intent_aliases(
+            hash_replay.source_first_request_intent.as_mut().unwrap(),
+            "intentHash",
+            "intent_hash",
+            serde_json::json!(replay_hash),
+        );
+        set_intent_aliases(
+            hash_replay.source_first_request_intent.as_mut().unwrap(),
+            "evidenceRefs",
+            "evidence_refs",
+            replay_evidence,
+        );
+        let hash_error = validate_source_first_request_intent(&hash_replay)
+            .unwrap_err()
+            .to_string();
+        assert!(hash_error.contains("hash_mismatch"));
     }
 
     #[test]
