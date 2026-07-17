@@ -4,6 +4,7 @@ import {
   classifyHmrMessage,
   HmrNormalizer,
   parseWireMessages,
+  projectPublicHmrEvent,
   type WireMessage,
 } from "../../src/hmr.js";
 
@@ -90,6 +91,32 @@ function expectProjectedTerminalDetail(
 }
 
 describe("classifyHmrMessage (pure)", () => {
+  it("projects terminal and non-terminal wire messages without retaining raw fields", () => {
+    const canaries = terminalDiagnosticCanaries();
+    const terminal = projectPublicHmrEvent({
+      status: "rejected",
+      module: canaries.module,
+      preview_id: canaries.previewId,
+      reason: canaries.signedUrl,
+      authorization: canaries.bearer,
+    });
+    expect(terminal.status).toBe("rejected");
+    expect(terminal.source).toBe("hmr_status");
+    expectProjectedTerminalDetail(terminal.diagnostic, canaries);
+
+    const intermediate = projectPublicHmrEvent({
+      type: "compile-start",
+      module: canaries.module,
+      preview_id: canaries.previewId,
+      stdout: canaries.signedUrl,
+      headers: { authorization: canaries.bearer, cookie: canaries.cookie },
+    });
+    expect(intermediate.status).toBe("intermediate");
+    expect(intermediate.source).toBe("wire_message");
+    expect(intermediate.diagnostic.reasonClass).toBe("nonterminal_transition");
+    expectProjectedTerminalDetail(intermediate.diagnostic, canaries);
+  });
+
   describe("Family 1 — CandidateNotification", () => {
     it("Promoted → applied / candidate_notification", () => {
       const result = classifyHmrMessage({

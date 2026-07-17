@@ -4,6 +4,7 @@ import { SignalingClient } from "./signaling.js";
 import { Peer } from "./peer.js";
 import { FrameSink } from "./frames.js";
 import { SessionChannels } from "./channels.js";
+import { projectPublicHmrEvent } from "./hmr.js";
 import { eventLog } from "./events/index.js";
 import type { SessionState as WireSessionState } from "./events/index.js";
 import { locateEngine } from "./locate/index.js";
@@ -707,7 +708,6 @@ class SessionManager {
       const status = typeof msg["status"] === "string" ? (msg["status"] as string) : undefined;
       const evType = typeof msg["event"] === "string" ? (msg["event"] as string) : undefined;
       const msgType = typeof msg["type"] === "string" ? (msg["type"] as string) : undefined;
-      const label = status ?? evType ?? msgType ?? "unknown";
 
       if (msgType === "run-gui-start") {
         const viewport = parseProducerViewport(msg);
@@ -959,18 +959,14 @@ class SessionManager {
         void snapshotFrame();
       }
 
-      // Only tap terminal events to the log — intermediate ones flood the
-      // ring. Classification happens in the normalizer; we mirror a short
-      // label for observability without re-parsing.
-      const isTerminal = status === "applied" || status === "rejected" ||
-        status === "compile-error" || status === "full-reload-required" ||
-        status === "state-migrated" || evType === "Promoted" || evType === "RolledBack" ||
-        evType === "Discarded";
+      // Keep HMR observability compact. Raw producer fields remain transient
+      // for protocol handling and never enter the retained event log.
+      const publicHmrEvent = projectPublicHmrEvent(msg);
       eventLog.push({
         kind: "hmr",
-        status: isTerminal ? (label as "applied") : "intermediate",
-        source: msgType ?? "build-log",
-        raw: msg,
+        status: publicHmrEvent.status,
+        source: publicHmrEvent.source,
+        diagnostic: publicHmrEvent.diagnostic,
       });
 
       // Structural-change verdict on every `applied` / `Promoted` —

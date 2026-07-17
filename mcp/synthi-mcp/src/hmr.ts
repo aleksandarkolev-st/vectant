@@ -89,6 +89,12 @@ export interface HmrClassification {
   matchPreviewRef: string | null;
 }
 
+export interface PublicHmrEventProjection {
+  status: HmrTerminalStatus | "intermediate";
+  source: HmrTerminalSource | "wire_message";
+  diagnostic: Record<string, unknown>;
+}
+
 const PUBLIC_TERMINAL_DIAGNOSTIC_SCHEMA = "synthi.hmr.public_terminal_diagnostic.v1";
 const PUBLIC_TERMINAL_DIAGNOSTIC_AUTHORITY = "terminal_diagnostic_only_not_gpu_hmr_acceptance";
 const terminalDiagnosticReferenceKey = randomBytes(32);
@@ -138,8 +144,8 @@ function terminalDiagnosticReference(kind: "module" | "preview" | "reason", valu
 }
 
 function publicTerminalDiagnostic(
-  status: HmrTerminalStatus,
-  source: HmrTerminalSource,
+  status: HmrTerminalStatus | "intermediate",
+  source: HmrTerminalSource | "wire_message",
   rawDetail: Record<string, unknown>
 ): Record<string, unknown> {
   const module = terminalModule(rawDetail);
@@ -176,13 +182,15 @@ function publicTerminalDiagnostic(
     gpuHmrSuccess: false,
     status,
     source,
-    reasonClass: source === "compile_diagnostics"
-      ? "compile_diagnostic"
-      : status === "rejected" || status === "discarded"
-        ? "producer_rejection"
-        : status === "full-reload-required"
-          ? "full_reload_required"
-          : "terminal_transition",
+    reasonClass: status === "intermediate"
+      ? "nonterminal_transition"
+      : source === "compile_diagnostics"
+        ? "compile_diagnostic"
+        : status === "rejected" || status === "discarded"
+          ? "producer_rejection"
+          : status === "full-reload-required"
+            ? "full_reload_required"
+            : "terminal_transition",
     reasonPresent: reason !== null,
     ...(module !== null ? { moduleRef: terminalDiagnosticReference("module", module) } : {}),
     ...(previewId !== null
@@ -353,6 +361,22 @@ export function classifyHmrMessage(msg: WireMessage): HmrClassification | null {
   }
 
   return null;
+}
+
+export function projectPublicHmrEvent(msg: WireMessage): PublicHmrEventProjection {
+  const classification = classifyHmrMessage(msg);
+  if (classification !== null) {
+    return {
+      status: classification.status,
+      source: classification.source,
+      diagnostic: classification.detail,
+    };
+  }
+  return {
+    status: "intermediate",
+    source: "wire_message",
+    diagnostic: publicTerminalDiagnostic("intermediate", "wire_message", msg),
+  };
 }
 
 type MessageHandler = (msg: WireMessage) => void;
