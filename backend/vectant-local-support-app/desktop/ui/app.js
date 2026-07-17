@@ -216,7 +216,10 @@ function renderProcessVisibility(review) {
   if (review?.state !== "available") return;
   for (const record of review.records) {
     const item = document.createElement("li");
-    item.textContent = `${record.name} (${record.category}) — included because ${record.reason}. Identity is locally hashed; PID, path, command line, and environment are hidden.`;
+    const listener = record.loopbackPorts.length
+      ? `Associated loopback listener${record.loopbackPorts.length === 1 ? "" : "s"}: ${record.loopbackPorts.map((port) => `:${port}`).join(", ")} (${record.bindAddress}).`
+      : "No eligible loopback listener is associated with this record.";
+    item.textContent = `${record.name} (${record.category}) — included because ${record.reason}. ${listener} Freshness ${record.freshnessMs} ms. Identity is locally hashed; PID, path, command line, and environment are hidden.`;
     list.append(item);
   }
 }
@@ -466,6 +469,14 @@ function normalizeFullAccess(rawAccess) {
                 name: sanitizeText(record.executable_name, "process"),
                 category: sanitizeText(record.category, "unknown"),
                 reason: sanitizeText(record.inclusion_reason, "local policy"),
+                loopbackPorts: Array.isArray(record.loopback_ports)
+                  ? record.loopback_ports
+                    .map((port) => Number(port))
+                    .filter((port) => Number.isInteger(port) && port > 0 && port <= 65535)
+                    .slice(0, 64)
+                  : [],
+                bindAddress: sanitizeText(record.bind_address_class, "hidden address class"),
+                freshnessMs: Math.min(Math.max(Number(record.freshness_ms) || 0, 0), 300000),
               }))
             : [],
         }
