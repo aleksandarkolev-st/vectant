@@ -880,7 +880,7 @@ async fn refresh_process_visibility(
         .process_visibility_snapshot
         .write()
         .map_err(|_| "Process visibility state lock failed closed.".to_string())? = Some(snapshot);
-    append_control_event(
+    append_process_event(
         state,
         request_id,
         &format!("Collected {count} sanitized process visibility record(s) locally; command lines, environments, raw paths, and PIDs were excluded."),
@@ -1222,6 +1222,26 @@ async fn append_mutation_event(
     let mut audit = state.audit.lock().await;
     audit.append(
         AuditClass::Mutation,
+        Some(request_id.to_string()),
+        summary,
+        true,
+    );
+    if let Some(store) = &state.audit_store {
+        store.persist(&audit).map_err(|_| {
+            "Local activity could not be persisted. The action was denied.".to_string()
+        })?;
+    }
+    Ok(())
+}
+
+async fn append_process_event(
+    state: &AppState,
+    request_id: &str,
+    summary: &str,
+) -> Result<(), String> {
+    let mut audit = state.audit.lock().await;
+    audit.append(
+        AuditClass::Process,
         Some(request_id.to_string()),
         summary,
         true,
