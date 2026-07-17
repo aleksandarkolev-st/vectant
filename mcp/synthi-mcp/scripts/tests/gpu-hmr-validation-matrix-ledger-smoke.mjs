@@ -28,6 +28,7 @@ import {
   buildGpuHmrProofLedger,
   buildGpuHmrRunModeCoverageSupport,
   evaluateGpuHmrProofLedger,
+  GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
   queryGpuHmrLedgerInvariants,
 } from '../lib/gpu-hmr-proof-ledger.mjs';
 import {
@@ -1227,6 +1228,7 @@ function runtimeProofMaterials(scope, options = {}) {
   const deterministicVisualMode = deterministicMode(scope);
   const visualArtifacts = visualOracleArtifacts(scope, visualRoot);
   const proofLedger = buildGpuHmrProofLedger({
+    schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     project_id: projectId,
     edit_id: `source-edit:${scope}`,
     backend: 'hip',
