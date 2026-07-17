@@ -42,6 +42,11 @@ function stableJson(value) {
   )).join(',')}}`;
 }
 
+function refreshLocatorManifestHash(locator) {
+  locator.manifestHash = sha256(stableJson({ ...locator, manifestHash: undefined }));
+  return locator;
+}
+
 async function launcherManifestRoundTrip() {
   const sourceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpu-hmr-launcher-round-trip-'));
   let generatedManifestPath = null;
@@ -310,6 +315,19 @@ async function canonicalFixture(outputOracleKind, artifactRoot) {
   await mkdir(path.dirname(materializedArtifactPath), { recursive: true });
   await writeFile(materializedArtifactPath, compiledArtifactBytes);
   const observedCompiledArtifactBytes = await readFile(materializedArtifactPath);
+  const compiledArtifactCasRoot = path.join(artifactRoot, 'compiled-artifact-cas');
+  const compiledArtifactCasLocator = await writeArtifactToCas(
+    observedCompiledArtifactBytes,
+    {
+      artifactRoot: compiledArtifactCasRoot,
+      mediaType: 'application/octet-stream',
+      artifactKind: 'compiled_device_artifact',
+      role: 'compiled_device_artifact',
+      sessionNamespace: 'cold-source-modality-self-check',
+      producer: { name: 'focused_self_check', kind: 'cold_compile_observer' },
+      producerSubsystem: 'cold_source_modality_self_check',
+    },
+  );
   const artifactHash = sha256(observedCompiledArtifactBytes);
   const artifactId = `device:${artifactHash}`;
   const generatedSourceHash = sha256(generatedSource);
@@ -396,8 +414,10 @@ async function canonicalFixture(outputOracleKind, artifactRoot) {
       expectedCompiler: 'hipcc',
       expectedArch: 'gfx1201',
       expectedSourcePath: generatedPath,
+      compiledArtifactCasLocator,
       syntheticArtifactBytes: observedCompiledArtifactBytes,
       syntheticArtifactFilePath: compiledArtifactPath,
+      syntheticArtifactCasRoot: compiledArtifactCasRoot,
     },
     timingMetrics: {
       schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
@@ -614,6 +634,79 @@ assert.equal(
 );
 assert.equal(computeProof.coldSourceDerivationChain.acceptedForGpuHmr, false);
 assert.equal(computeProof.coldSourceDerivationChain.gpuHmrSuccess, false);
+assert.equal(
+  computeProof.coldDeviceCompileProvenance.compiledArtifactCasLocator.role,
+  'compiled_device_artifact',
+);
+assert.equal(
+  computeProof.coldDeviceCompileProvenance.compiledArtifactCasLocator.mediaType,
+  'application/octet-stream',
+);
+assert.equal(
+  computeProof.coldDeviceCompileProvenance.compiledArtifactCasLocator.contentHash,
+  computeProof.coldDeviceCompileProvenance.artifactHash,
+);
+assert.equal(
+  computeProof.coldDeviceCompileProvenance.compiledArtifactCasLocator.byteLength,
+  computeProof.coldDeviceCompileProvenance.artifactBytes,
+);
+assert.equal(
+  computeProof.coldDeviceCompileProvenance.compiledArtifactCasLocator.acceptedForGpuHmr,
+  false,
+);
+assert.equal(
+  computeProof.coldDeviceCompileProvenance.compiledArtifactCasLocator.gpuHmrSuccess,
+  false,
+);
+assert.equal(
+  computeProof.coldDeviceCompileProvenance.compiledArtifactCasBinding.accepted,
+  true,
+);
+assert.equal(
+  computeProof.coldSourceDerivationChain.compileArtifactCasManifestHash,
+  computeProof.coldDeviceCompileProvenance.compiledArtifactCasLocator.manifestHash,
+);
+assert.equal(
+  computeProof.coldSourceDerivationChain.compileArtifactCasBindingHash,
+  computeProof.coldDeviceCompileProvenance.compiledArtifactCasBindingHash,
+);
+assert.equal(
+  computeProof.coldSourceDerivationChain.compileArtifactCasRole,
+  'compiled_device_artifact',
+);
+assert.equal(
+  computeProof.coldSourceDerivationChain.compileArtifactCasMediaType,
+  'application/octet-stream',
+);
+assert.equal(
+  computeProof.coldSourceDerivationChain.compileArtifactCasContentHash,
+  computeProof.coldDeviceCompileProvenance.artifactHash,
+);
+assert.equal(
+  computeProof.coldSourceDerivationChain.compileArtifactCasByteLength,
+  computeProof.coldDeviceCompileProvenance.artifactBytes,
+);
+const providerProtocolSnapshot = computeProof.coldAiProviderCallEvidence.providerProtocolSnapshot;
+assert.equal(
+  providerProtocolSnapshot.schemaVersion,
+  'synthi.gpu_hmr.cold_provider_protocol_snapshot.v1',
+);
+assert.equal(providerProtocolSnapshot.canonicalJson, stableJson(providerProtocolSnapshot.material));
+assert.equal(providerProtocolSnapshot.materialHash, sha256(providerProtocolSnapshot.canonicalJson));
+assert.equal(providerProtocolSnapshot.acceptedForGpuHmr, false);
+assert.equal(providerProtocolSnapshot.gpuHmrSuccess, false);
+assert.equal(
+  computeProof.coldSourceDerivationChain.providerProtocolMaterialHash,
+  providerProtocolSnapshot.materialHash,
+);
+assert.equal(
+  computeProof.requestedModalityBinding.providerProtocolMaterialHash,
+  providerProtocolSnapshot.materialHash,
+);
+assert.doesNotMatch(
+  providerProtocolSnapshot.canonicalJson,
+  /opaque-(?:prompt|response|instructions)|api[_-]?key|authorization|bearer|password|secret/i,
+);
 
 const canonicalReceipt = compute.producerMaterial.split.sidecar.provider_call_receipt;
 const canonicalReceiptHash = providerCallReceiptHash(canonicalReceipt);
@@ -658,6 +751,46 @@ const conflictingReceiptAliases = {
 assert.throws(
   () => providerCallReceiptHash(conflictingReceiptAliases),
   /cold_source_alias_conflict/,
+);
+
+const receiptSnapshotMutation = structuredClone(compute.seed);
+const mutatedSnapshot = receiptSnapshotMutation.coldAiProviderCallEvidence
+  .providerProtocolSnapshot;
+mutatedSnapshot.material.receipt.responseHash = sha256('forged-snapshot-response');
+mutatedSnapshot.canonicalJson = stableJson(mutatedSnapshot.material);
+mutatedSnapshot.canonical_json = mutatedSnapshot.canonicalJson;
+mutatedSnapshot.materialHash = sha256(mutatedSnapshot.canonicalJson);
+mutatedSnapshot.material_hash = mutatedSnapshot.materialHash;
+receiptSnapshotMutation.coldAiProviderCallEvidence.providerProtocolMaterialHash =
+  mutatedSnapshot.materialHash;
+receiptSnapshotMutation.coldAiProviderCallEvidence.provider_protocol_material_hash =
+  mutatedSnapshot.materialHash;
+await assert.rejects(
+  coldAiSplitProofFromSeed(receiptSnapshotMutation, compute.producerMaterial),
+  /canonical_evidence_mismatch:provider_call_evidence/,
+);
+
+const receiptSnapshotHashMutation = structuredClone(compute.seed);
+const forgedProviderMaterialHash = sha256('forged-provider-protocol-material');
+const hashMutatedSnapshot = receiptSnapshotHashMutation.coldAiProviderCallEvidence
+  .providerProtocolSnapshot;
+hashMutatedSnapshot.materialHash = forgedProviderMaterialHash;
+hashMutatedSnapshot.material_hash = forgedProviderMaterialHash;
+receiptSnapshotHashMutation.coldAiProviderCallEvidence.providerProtocolMaterialHash =
+  forgedProviderMaterialHash;
+receiptSnapshotHashMutation.coldAiProviderCallEvidence.provider_protocol_material_hash =
+  forgedProviderMaterialHash;
+await assert.rejects(
+  coldAiSplitProofFromSeed(receiptSnapshotHashMutation, compute.producerMaterial),
+  /canonical_evidence_mismatch:provider_call_evidence/,
+);
+
+const providerSnapshotAuthorityInjection = structuredClone(compute.producerMaterial);
+providerSnapshotAuthorityInjection.split.sidecar.provider_call_receipt.request_binding
+  .runtime_authority = 'forged';
+assert.throws(
+  () => recomputeColdSourceProducerEvidence(providerSnapshotAuthorityInjection),
+  /cold_source_authority_claim_rejected/,
 );
 
 const staleIntent = structuredClone(compute.producerMaterial);
@@ -731,6 +864,65 @@ assert.throws(
   () => recomputeColdSourceProducerEvidence(compileLengthMismatch),
   /artifact_observed_length_mismatch|compile_evidence_rejected/,
 );
+
+for (const [label, mutateLocator, expectedError] of [
+  [
+    'role',
+    (locator) => { locator.role = 'forged_compiled_role'; },
+    /artifact_cas_role_mismatch|compile_evidence_rejected/,
+  ],
+  [
+    'content hash',
+    (locator) => { locator.contentHash = sha256('forged-cas-content'); },
+    /artifact_cas_content_hash_mismatch|compile_evidence_rejected/,
+  ],
+  [
+    'media type',
+    (locator) => { locator.mediaType = 'application/forged'; },
+    /artifact_cas_media_type_mismatch|compile_evidence_rejected/,
+  ],
+  [
+    'byte length',
+    (locator) => { locator.byteLength += 1; },
+    /artifact_cas_byte_length_mismatch|compile_evidence_rejected/,
+  ],
+  [
+    'local path',
+    (locator) => {
+      locator.storage.localPath = path.join(os.tmpdir(), 'forged-cas-root', 'artifact.bin');
+    },
+    /artifact_cas_local_path_mismatch|compile_evidence_rejected/,
+  ],
+]) {
+  const forgedLocatorProducer = structuredClone(compute.producerMaterial);
+  const locator = forgedLocatorProducer.compileProducerMaterial.compiledArtifactCasLocator;
+  mutateLocator(locator);
+  refreshLocatorManifestHash(locator);
+  assert.throws(
+    () => recomputeColdSourceProducerEvidence(forgedLocatorProducer),
+    expectedError,
+    label,
+  );
+}
+
+const forgedLocatorManifestHash = structuredClone(compute.producerMaterial);
+forgedLocatorManifestHash.compileProducerMaterial.compiledArtifactCasLocator.manifestHash =
+  sha256('forged-cas-manifest');
+assert.throws(
+  () => recomputeColdSourceProducerEvidence(forgedLocatorManifestHash),
+  /artifact_cas_manifest_hash_mismatch|compile_evidence_rejected/,
+);
+
+const locatorAuthorityClaim = structuredClone(compute.producerMaterial);
+locatorAuthorityClaim.compileProducerMaterial.compiledArtifactCasLocator.acceptedForGpuHmr = true;
+refreshLocatorManifestHash(
+  locatorAuthorityClaim.compileProducerMaterial.compiledArtifactCasLocator,
+);
+assert.throws(
+  () => recomputeColdSourceProducerEvidence(locatorAuthorityClaim),
+  /cold_source_authority_claim_rejected|artifact_cas_gpu_hmr_authority_not_false/,
+);
+
 const generatedSourceContentSplice = structuredClone(compute.producerMaterial);
 const generatedSourcePath = generatedSourceContentSplice.split.roles.device;
 generatedSourceContentSplice.split.files[generatedSourcePath] += '\n// spliced generated bytes';

@@ -45,6 +45,8 @@ import {
   visualArtifactTransportEvidence,
 } from './lib/gpu-hmr-visual-evidence.mjs';
 import {
+  casRelativePathForHash,
+  validateArtifactCasManifest,
   writeArtifactToCas,
 } from './lib/gpu-hmr-artifact-cas.mjs';
 import {
@@ -280,6 +282,16 @@ const COLD_SOURCE_DERIVATION_CHAIN_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_source_derivation_chain.v1';
 const COLD_SOURCE_DERIVATION_CHAIN_AUTHORITY =
   'canonical_cold_source_derivation_chain_only_not_gpu_hmr_success';
+const COLD_COMPILED_ARTIFACT_CAS_BINDING_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_compiled_device_artifact_cas_binding.v1';
+const COLD_COMPILED_ARTIFACT_CAS_BINDING_AUTHORITY =
+  'compiled_device_artifact_cas_binding_only_not_gpu_hmr_success';
+const COLD_COMPILED_ARTIFACT_CAS_ROLE = 'compiled_device_artifact';
+const COLD_COMPILED_ARTIFACT_CAS_MEDIA_TYPE = 'application/octet-stream';
+const COLD_PROVIDER_PROTOCOL_SNAPSHOT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_provider_protocol_snapshot.v1';
+const COLD_PROVIDER_PROTOCOL_SNAPSHOT_AUTHORITY =
+  'canonical_provider_protocol_snapshot_only_not_gpu_hmr_success';
 const DIRECT_SOURCE_MANIFEST_SCHEMA_VERSION =
   'synthi.gpu_hmr.agent_split_direct_source_manifest.v1';
 const DIRECT_SOURCE_MANIFEST_AUTHORITY =
@@ -5576,6 +5588,126 @@ function generatedDeviceSourceMaterial(split) {
   };
 }
 
+function coldCompiledArtifactCasManifestHash(locator) {
+  return `sha256:${sha256Hex(stableJson({
+    ...(locator && typeof locator === 'object' ? locator : {}),
+    manifestHash: undefined,
+  }))}`;
+}
+
+function coldCompiledArtifactCasBinding({
+  locator,
+  observedArtifactHash,
+  observedArtifactBytes,
+  expectedCasRoot,
+}) {
+  const canonical = canonicalColdProtocolShape(
+    locator ?? {},
+    'coldSource.compiledArtifactCasLocator',
+  );
+  const contentHash = normalizedProofContentHash(observedArtifactHash);
+  const byteLength = Number(observedArtifactBytes);
+  const relativePath = contentAddressedSha256(contentHash)
+    ? casRelativePathForHash(contentHash)
+    : null;
+  const casRoot = typeof expectedCasRoot === 'string' && expectedCasRoot.trim()
+    ? path.resolve(expectedCasRoot)
+    : null;
+  const expectedLocalPath = casRoot && relativePath
+    ? path.join(casRoot, ...relativePath.split('/'))
+    : null;
+  const declaredLocalPath = typeof canonical.storage?.localpath === 'string'
+    && canonical.storage.localpath.trim()
+    ? path.resolve(canonical.storage.localpath)
+    : null;
+  const recomputedManifestHash = coldCompiledArtifactCasManifestHash(locator);
+  const blockingGaps = [
+    locator && typeof locator === 'object' && !Array.isArray(locator)
+      ? null
+      : 'cold_device_compile_artifact_cas_locator_missing',
+    canonical.schemaversion === 'synthi.cas.artifact_locator.v1'
+      ? null
+      : 'cold_device_compile_artifact_cas_schema_invalid',
+    canonical.proofauthority === 'transport_integrity_only'
+      ? null
+      : 'cold_device_compile_artifact_cas_authority_invalid',
+    canonical.acceptedforgpuhmr === false
+      ? null
+      : 'cold_device_compile_artifact_cas_gpu_hmr_authority_not_false',
+    canonical.gpuhmrsuccess === false
+      ? null
+      : 'cold_device_compile_artifact_cas_gpu_hmr_success_not_false',
+    canonical.role === COLD_COMPILED_ARTIFACT_CAS_ROLE
+      ? null
+      : 'cold_device_compile_artifact_cas_role_mismatch',
+    canonical.mediatype === COLD_COMPILED_ARTIFACT_CAS_MEDIA_TYPE
+      ? null
+      : 'cold_device_compile_artifact_cas_media_type_mismatch',
+    canonical.artifactkind === COLD_COMPILED_ARTIFACT_CAS_ROLE
+      ? null
+      : 'cold_device_compile_artifact_cas_kind_mismatch',
+    canonical.contenthash === contentHash && contentAddressedSha256(contentHash)
+      ? null
+      : 'cold_device_compile_artifact_cas_content_hash_mismatch',
+    Number.isSafeInteger(byteLength)
+      && byteLength > 0
+      && canonical.bytelength === byteLength
+      ? null
+      : 'cold_device_compile_artifact_cas_byte_length_mismatch',
+    canonical.manifesthash === recomputedManifestHash
+      && contentAddressedSha256(recomputedManifestHash)
+      && !Object.hasOwn(locator ?? {}, 'manifest_hash')
+      ? null
+      : 'cold_device_compile_artifact_cas_manifest_hash_mismatch',
+    relativePath && canonical.storage?.relativepath === relativePath
+      ? null
+      : 'cold_device_compile_artifact_cas_relative_path_mismatch',
+    casRoot && expectedLocalPath && declaredLocalPath
+      && normalizedFilesystemIdentityPath(declaredLocalPath)
+        === normalizedFilesystemIdentityPath(expectedLocalPath)
+      ? null
+      : 'cold_device_compile_artifact_cas_local_path_mismatch',
+    canonical.transport?.contentaddressed === true
+      && canonical.transport?.manifestonly === true
+      && canonical.transport?.bytesembedded === false
+      ? null
+      : 'cold_device_compile_artifact_cas_transport_shape_invalid',
+  ].filter(Boolean);
+  const seed = {
+    schemaVersion: COLD_COMPILED_ARTIFACT_CAS_BINDING_SCHEMA_VERSION,
+    role: COLD_COMPILED_ARTIFACT_CAS_ROLE,
+    mediaType: COLD_COMPILED_ARTIFACT_CAS_MEDIA_TYPE,
+    contentHash,
+    byteLength,
+    locatorManifestHash: canonical.manifesthash ?? null,
+    recomputedLocatorManifestHash: recomputedManifestHash,
+    storageRelativePath: canonical.storage?.relativepath ?? null,
+    storageLocalPath: declaredLocalPath,
+    blockingGaps,
+  };
+  const bindingHash = `sha256:${sha256Hex(stableJson(seed))}`;
+  return {
+    ...seed,
+    schema_version: seed.schemaVersion,
+    proofAuthority: COLD_COMPILED_ARTIFACT_CAS_BINDING_AUTHORITY,
+    proof_authority: COLD_COMPILED_ARTIFACT_CAS_BINDING_AUTHORITY,
+    bindingHash,
+    binding_hash: bindingHash,
+    accepted: blockingGaps.length === 0,
+    acceptedAsTransportSupport: blockingGaps.length === 0,
+    accepted_as_transport_support: blockingGaps.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    blocking_gaps: blockingGaps,
+  };
+}
+
 function coldCompileCommandInputBinding({
   compileProvenance,
   generatedSource,
@@ -5647,8 +5779,10 @@ function coldDeviceCompileProvenanceEvidence({
   expectedGeneratedSourceHash,
   expectedGeneratedSourceBytes,
   expectedMcpRequestHash,
+  compiledArtifactCasLocator,
   syntheticArtifactBytes,
   syntheticArtifactFilePath,
+  syntheticArtifactCasRoot,
   [LIVE_COMPILE_ARTIFACT_BYTES_SLOT]: liveArtifactObservation,
 }) {
   const artifact = proofArtifact && typeof proofArtifact === 'object' ? proofArtifact : {};
@@ -5736,6 +5870,7 @@ function coldDeviceCompileProvenanceEvidence({
   const artifactObservation = liveArtifactObservation ?? (syntheticBytes ? {
     bytes: syntheticBytes,
     filePath: syntheticArtifactFilePath,
+    casRoot: syntheticArtifactCasRoot,
     observationKind: 'synthetic_fixture_bytes',
   } : null);
   const observedArtifactBytes = Buffer.isBuffer(artifactObservation?.bytes)
@@ -5753,6 +5888,12 @@ function coldDeviceCompileProvenanceEvidence({
     ? `sha256:${sha256BufferHex(observedArtifactBytes)}`
     : null;
   const observedArtifactByteLength = observedArtifactBytes?.length ?? 0;
+  const compiledArtifactCasBinding = coldCompiledArtifactCasBinding({
+    locator: compiledArtifactCasLocator,
+    observedArtifactHash,
+    observedArtifactBytes: observedArtifactByteLength,
+    expectedCasRoot: artifactObservation?.casRoot,
+  });
   const compileCapability = artifactObservation?.compileCapability ?? null;
   const liveCompileInvocation = compileCapability
     ? liveMcpCompileInvocations.get(compileCapability) ?? null
@@ -5930,6 +6071,7 @@ function coldDeviceCompileProvenanceEvidence({
       && String(compileProvenance?.compilerIdentity ?? compileProvenance?.compiler_identity).trim()
       ? null
       : 'cold_device_compile_compiler_identity_missing',
+    ...compiledArtifactCasBinding.blockingGaps,
   ].filter(Boolean);
   const byteObservationVerified = verificationGaps.length === 0;
   const eligibilityGaps = [
@@ -5964,6 +6106,14 @@ function coldDeviceCompileProvenanceEvidence({
     artifactObservationKind: artifactObservation?.observationKind ?? 'missing',
     byteObservationVerified,
     liveObservationAccepted,
+    compiledArtifactCasLocator,
+    compiledArtifactCasBinding,
+    compiledArtifactCasBindingHash: compiledArtifactCasBinding.bindingHash,
+    compiledArtifactCasRole: compiledArtifactCasBinding.role,
+    compiledArtifactCasMediaType: compiledArtifactCasBinding.mediaType,
+    compiledArtifactCasContentHash: compiledArtifactCasBinding.contentHash,
+    compiledArtifactCasByteLength: compiledArtifactCasBinding.byteLength,
+    compiledArtifactCasManifestHash: compiledArtifactCasBinding.locatorManifestHash,
     compileInvocationBindingHash,
     mcpRequestHash: liveCompileInvocation?.requestHash ?? null,
     mcpCompileResponseHash: liveCompileInvocation?.compileResponseHash ?? null,
@@ -6043,6 +6193,22 @@ function coldDeviceCompileProvenanceEvidence({
     artifact_hash: observedArtifactHash,
     artifactBytes: observedArtifactByteLength,
     artifact_bytes: observedArtifactByteLength,
+    compiledArtifactCasLocator,
+    compiled_artifact_cas_locator: compiledArtifactCasLocator,
+    compiledArtifactCasBinding,
+    compiled_artifact_cas_binding: compiledArtifactCasBinding,
+    compiledArtifactCasBindingHash: compiledArtifactCasBinding.bindingHash,
+    compiled_artifact_cas_binding_hash: compiledArtifactCasBinding.bindingHash,
+    compiledArtifactCasRole: compiledArtifactCasBinding.role,
+    compiled_artifact_cas_role: compiledArtifactCasBinding.role,
+    compiledArtifactCasMediaType: compiledArtifactCasBinding.mediaType,
+    compiled_artifact_cas_media_type: compiledArtifactCasBinding.mediaType,
+    compiledArtifactCasContentHash: compiledArtifactCasBinding.contentHash,
+    compiled_artifact_cas_content_hash: compiledArtifactCasBinding.contentHash,
+    compiledArtifactCasByteLength: compiledArtifactCasBinding.byteLength,
+    compiled_artifact_cas_byte_length: compiledArtifactCasBinding.byteLength,
+    compiledArtifactCasManifestHash: compiledArtifactCasBinding.locatorManifestHash,
+    compiled_artifact_cas_manifest_hash: compiledArtifactCasBinding.locatorManifestHash,
     declaredArtifactHash,
     declared_artifact_hash: declaredArtifactHash,
     declaredArtifactBytes,
@@ -6121,6 +6287,44 @@ async function readColdDeviceCompileProvenanceEvidence({
     artifactEvidence?.filePath ?? artifactEvidence?.file_path,
   );
   const artifactBytes = await readWorkerFileBytes(split.workspacePath, artifactFilePath);
+  const compiledArtifactCasRoot = path.join(ARTIFACT_DIR, 'cas');
+  const compiledArtifactCasLocator = await writeArtifactToCas(artifactBytes, {
+    artifactRoot: compiledArtifactCasRoot,
+    mediaType: COLD_COMPILED_ARTIFACT_CAS_MEDIA_TYPE,
+    artifactKind: COLD_COMPILED_ARTIFACT_CAS_ROLE,
+    role: COLD_COMPILED_ARTIFACT_CAS_ROLE,
+    sessionNamespace: CFG.slug,
+    producer: {
+      name: 'agent_split_cold_compile_observer',
+      kind: 'cold_compile_observer',
+    },
+    producerSubsystem: 'agent_split_cold_source',
+  });
+  const compiledArtifactCasValidation = await validateArtifactCasManifest(
+    compiledArtifactCasLocator,
+    {
+      artifactRoot: compiledArtifactCasRoot,
+      allowedRoots: [ARTIFACT_DIR, compiledArtifactCasRoot],
+      requireReadableBytes: true,
+    },
+  );
+  const compiledArtifactCasBinding = coldCompiledArtifactCasBinding({
+    locator: compiledArtifactCasLocator,
+    observedArtifactHash: `sha256:${sha256BufferHex(artifactBytes)}`,
+    observedArtifactBytes: artifactBytes.length,
+    expectedCasRoot: compiledArtifactCasRoot,
+  });
+  if (
+    compiledArtifactCasValidation.accepted !== true
+    || compiledArtifactCasValidation.acceptedAsTransportEvidence !== true
+    || compiledArtifactCasBinding.accepted !== true
+  ) {
+    throw new Error([
+      'cold_device_compile_artifact_cas_write_validation_failed',
+      ...compiledArtifactCasValidation.reasons,
+      ...compiledArtifactCasBinding.blockingGaps,
+    ].join(':'));
+  }
   const selectedDeviceRole = split.roles.deviceRoles.find((role) => role.path === split.roles.device)
     ?? split.roles.deviceRoles[0];
   const expectedCompiler = split.manifest?.gpu?.device_compiler
@@ -6139,6 +6343,7 @@ async function readColdDeviceCompileProvenanceEvidence({
     expectedGeneratedSourceHash: generatedSource.contentHash,
     expectedGeneratedSourceBytes: generatedSource.byteLength,
     expectedMcpRequestHash: liveCompileInvocation.requestHash,
+    compiledArtifactCasLocator,
   };
   liveCompileInvocation.artifactObservationIssued = true;
   Object.defineProperty(producerMaterial, LIVE_COMPILE_ARTIFACT_BYTES_SLOT, {
@@ -6148,6 +6353,7 @@ async function readColdDeviceCompileProvenanceEvidence({
     value: Object.freeze({
       bytes: artifactBytes,
       filePath: artifactFilePath,
+      casRoot: compiledArtifactCasRoot,
       observationKind: 'worker_live_read',
       compileCapability,
       invocationId: liveCompileInvocation.invocationId,
@@ -11716,6 +11922,8 @@ function coldSourceLiveObservationBindingSeed(producerEvidence) {
     providerCallRequestHash: producerEvidence.providerCallEvidence.providerCallRequestHash,
     providerCallResponseHash: producerEvidence.providerCallEvidence.providerCallResponseHash,
     providerCallChallengeHash: producerEvidence.providerCallEvidence.providerCallChallengeHash,
+    providerProtocolMaterialHash:
+      producerEvidence.providerCallEvidence.providerProtocolMaterialHash,
     providerCallEvidenceHash: producerEvidence.providerCallEvidence.evidenceHash,
     compileEvidenceHash: producerEvidence.deviceCompileProvenance.evidenceHash,
     compileProofArtifactId: producerEvidence.deviceCompileProvenance.proofArtifactId,
@@ -11725,6 +11933,18 @@ function coldSourceLiveObservationBindingSeed(producerEvidence) {
     compileArtifactHash: producerEvidence.deviceCompileProvenance.artifactHash,
     compileArtifactBytes: producerEvidence.deviceCompileProvenance.artifactBytes,
     compileArtifactFilePath: producerEvidence.deviceCompileProvenance.artifactFilePath,
+    compileArtifactCasRole:
+      producerEvidence.deviceCompileProvenance.compiledArtifactCasRole,
+    compileArtifactCasMediaType:
+      producerEvidence.deviceCompileProvenance.compiledArtifactCasMediaType,
+    compileArtifactCasContentHash:
+      producerEvidence.deviceCompileProvenance.compiledArtifactCasContentHash,
+    compileArtifactCasByteLength:
+      producerEvidence.deviceCompileProvenance.compiledArtifactCasByteLength,
+    compileArtifactCasManifestHash:
+      producerEvidence.deviceCompileProvenance.compiledArtifactCasManifestHash,
+    compileArtifactCasBindingHash:
+      producerEvidence.deviceCompileProvenance.compiledArtifactCasBindingHash,
     compileCommandHash: producerEvidence.deviceCompileProvenance.compileCommandHash,
     compileDependencyHash: producerEvidence.deviceCompileProvenance.dependencyHash,
     compileCommandInputBindingHash:
@@ -12074,6 +12294,12 @@ export function recomputeColdSourceProducerEvidence(producerMaterial = {}) {
       proof_artifact_identity: compileCandidate.proofArtifactIdentity,
       byteObservationVerified: compileCandidate.byteObservationVerified,
       byte_observation_verified: compileCandidate.byteObservationVerified,
+      artifactCasRole: compileCandidate.compiledArtifactCasRole,
+      artifact_cas_role: compileCandidate.compiledArtifactCasRole,
+      artifactCasManifestHash: compileCandidate.compiledArtifactCasManifestHash,
+      artifact_cas_manifest_hash: compileCandidate.compiledArtifactCasManifestHash,
+      artifactCasBindingHash: compileCandidate.compiledArtifactCasBindingHash,
+      artifact_cas_binding_hash: compileCandidate.compiledArtifactCasBindingHash,
     },
   ].sort((left, right) => left.path.localeCompare(right.path));
   const generatedArtifactManifestHash = `sha256:${sha256Hex(stableJson(
@@ -12337,6 +12563,7 @@ function coldSourceModalityBinding(coldSplitProofSeed, producerEvidence) {
     providerCallRequestHash: providerCallEvidence.providerCallRequestHash,
     providerCallResponseHash: providerCallEvidence.providerCallResponseHash,
     providerCallChallengeHash: providerCallEvidence.providerCallChallengeHash,
+    providerProtocolMaterialHash: providerCallEvidence.providerProtocolMaterialHash,
     providerCallEvidenceHash: providerCallEvidence.evidenceHash,
     deviceCompileArtifactHash: deviceCompileProvenance.artifactHash,
     deviceCompileEvidenceHash: deviceCompileProvenance.evidenceHash,
@@ -12349,6 +12576,10 @@ function coldSourceModalityBinding(coldSplitProofSeed, producerEvidence) {
       deviceCompileProvenance.compileCommandInputBindingHash,
     deviceCompileDependencyInputBindingHash:
       deviceCompileProvenance.dependencyInputBindingHash,
+    deviceCompileArtifactCasManifestHash:
+      deviceCompileProvenance.compiledArtifactCasManifestHash,
+    deviceCompileArtifactCasBindingHash:
+      deviceCompileProvenance.compiledArtifactCasBindingHash,
     timingEvidenceHash: producerEvidence.timingMetrics.evidenceHash,
   };
   const bindingHash = `sha256:${sha256Hex(stableJson(seed))}`;
@@ -12380,6 +12611,7 @@ function coldSourceModalityBinding(coldSplitProofSeed, producerEvidence) {
     provider_call_request_hash: seed.providerCallRequestHash,
     provider_call_response_hash: seed.providerCallResponseHash,
     provider_call_challenge_hash: seed.providerCallChallengeHash,
+    provider_protocol_material_hash: seed.providerProtocolMaterialHash,
     provider_call_evidence_hash: seed.providerCallEvidenceHash,
     device_compile_artifact_hash: seed.deviceCompileArtifactHash,
     device_compile_evidence_hash: seed.deviceCompileEvidenceHash,
@@ -12392,6 +12624,10 @@ function coldSourceModalityBinding(coldSplitProofSeed, producerEvidence) {
       seed.deviceCompileCommandInputBindingHash,
     device_compile_dependency_input_binding_hash:
       seed.deviceCompileDependencyInputBindingHash,
+    device_compile_artifact_cas_manifest_hash:
+      seed.deviceCompileArtifactCasManifestHash,
+    device_compile_artifact_cas_binding_hash:
+      seed.deviceCompileArtifactCasBindingHash,
     timing_evidence_hash: seed.timingEvidenceHash,
     bindingHash,
     binding_hash: bindingHash,
@@ -12879,6 +13115,105 @@ export function providerCallChallengeHash(challenge) {
   ]);
 }
 
+function canonicalProviderProtocolSnapshot(receipt) {
+  const canonicalReceipt = canonicalColdProtocolShape(
+    receipt ?? {},
+    'coldSource.providerProtocolSnapshot.receipt',
+  );
+  const request = canonicalReceipt.requestbinding
+    && typeof canonicalReceipt.requestbinding === 'object'
+    ? canonicalReceipt.requestbinding
+    : {};
+  const challenge = canonicalReceipt.challenge
+    && typeof canonicalReceipt.challenge === 'object'
+    ? canonicalReceipt.challenge
+    : {};
+  const material = {
+    schemaVersion: 'synthi.ai.provider_call_protocol_material.v1',
+    request: {
+      schemaVersion: request.schemaversion ?? null,
+      nonce: request.nonce ?? null,
+      requestHash: canonicalReceipt.requesthash ?? null,
+      mode: request.mode ?? null,
+      requestMode: request.requestmode ?? null,
+      language: request.language ?? null,
+      focus: request.focus ?? null,
+      requestedProvider: request.requestedprovider ?? null,
+      requestedModel: request.requestedmodel ?? null,
+      gpuArch: request.gpuarch ?? null,
+      sourceHash: request.sourcehash ?? null,
+      fileManifestHash: request.filemanifesthash ?? null,
+      fileCount: request.filecount ?? null,
+      extraInstructionsHash: request.extrainstructionshash ?? null,
+    },
+    challenge: {
+      schemaVersion: challenge.schemaversion ?? null,
+      requestNonce: challenge.requestnonce ?? null,
+      requestHash: challenge.requesthash ?? null,
+      promptPayloadHash: challenge.promptpayloadhash ?? null,
+      challengeHash: challenge.challengehash ?? null,
+    },
+    receipt: {
+      schemaVersion: canonicalReceipt.schemaversion ?? null,
+      proofAuthority: canonicalReceipt.proofauthority ?? null,
+      accepted: canonicalReceipt.accepted ?? null,
+      providerCallUsed: canonicalReceipt.providercallused ?? null,
+      requestNonce: canonicalReceipt.requestnonce ?? null,
+      requestHash: canonicalReceipt.requesthash ?? null,
+      responseHash: canonicalReceipt.responsehash ?? null,
+      challengeHash: canonicalReceipt.challengehash ?? null,
+      challengeEchoVerified: canonicalReceipt.challengeechoverified ?? null,
+      provider: canonicalReceipt.provider ?? null,
+      requestedModel: canonicalReceipt.requestedmodel ?? null,
+      actualModel: canonicalReceipt.actualmodel ?? null,
+      requestMode: canonicalReceipt.requestmode ?? null,
+      providerModelStatus: canonicalReceipt.providermodelstatus ?? null,
+      fallbackModel: canonicalReceipt.fallbackmodel ?? null,
+      fallbackUsed: canonicalReceipt.fallbackused ?? null,
+      providerModelAliasResolvedTo:
+        canonicalReceipt.providermodelaliasresolvedto ?? null,
+      providerShutdownOrDeprecationDetected:
+        canonicalReceipt.providershutdownordeprecationdetected ?? null,
+      modelAvailabilityCheckedAt:
+        canonicalReceipt.modelavailabilitycheckedat ?? null,
+      hardInfraFailure: canonicalReceipt.hardinfrafailure ?? null,
+      startedMonotonicNs: canonicalReceipt.startedmonotonicns ?? null,
+      completedMonotonicNs: canonicalReceipt.completedmonotonicns ?? null,
+      startedUnixNs: canonicalReceipt.startedunixns ?? null,
+      completedUnixNs: canonicalReceipt.completedunixns ?? null,
+      acceptedForGpuHmr: canonicalReceipt.acceptedforgpuhmr ?? null,
+      gpuHmrSuccess: canonicalReceipt.gpuhmrsuccess ?? null,
+      canSatisfyRuntimeProof: canonicalReceipt.cansatisfyruntimeproof ?? null,
+      canSatisfyDispatchProof: canonicalReceipt.cansatisfydispatchproof ?? null,
+      receiptHash: canonicalReceipt.receipthash ?? null,
+      callId: canonicalReceipt.callid ?? null,
+    },
+  };
+  const canonicalJson = stableJson(material);
+  const materialHash = `sha256:${sha256Hex(canonicalJson)}`;
+  return {
+    schemaVersion: COLD_PROVIDER_PROTOCOL_SNAPSHOT_SCHEMA_VERSION,
+    schema_version: COLD_PROVIDER_PROTOCOL_SNAPSHOT_SCHEMA_VERSION,
+    proofAuthority: COLD_PROVIDER_PROTOCOL_SNAPSHOT_AUTHORITY,
+    proof_authority: COLD_PROVIDER_PROTOCOL_SNAPSHOT_AUTHORITY,
+    material,
+    canonicalJson,
+    canonical_json: canonicalJson,
+    materialHash,
+    material_hash: materialHash,
+    acceptedAsCanonicalProviderProtocolSnapshot: true,
+    accepted_as_canonical_provider_protocol_snapshot: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+  };
+}
+
 function providerCallNormalizedPath(value) {
   let normalized = String(value ?? '').replace(/\\/g, '/').trim();
   while (normalized.startsWith('./')) normalized = normalized.slice(2);
@@ -12922,6 +13257,8 @@ const COLD_SOURCE_SUPPORT_PROOF_AUTHORITY_BY_SCHEMA = new Map([
   [COLD_SOURCE_MODALITY_BINDING_SCHEMA_VERSION, COLD_SOURCE_MODALITY_BINDING_AUTHORITY],
   [COLD_SOURCE_PROFILE_REQUEST_IDENTITY_SCHEMA_VERSION, COLD_SOURCE_PROFILE_REQUEST_IDENTITY_AUTHORITY],
   [COLD_SOURCE_DERIVATION_CHAIN_SCHEMA_VERSION, COLD_SOURCE_DERIVATION_CHAIN_AUTHORITY],
+  [COLD_COMPILED_ARTIFACT_CAS_BINDING_SCHEMA_VERSION, COLD_COMPILED_ARTIFACT_CAS_BINDING_AUTHORITY],
+  [COLD_PROVIDER_PROTOCOL_SNAPSHOT_SCHEMA_VERSION, COLD_PROVIDER_PROTOCOL_SNAPSHOT_AUTHORITY],
   [DIRECT_SOURCE_MANIFEST_SCHEMA_VERSION, DIRECT_SOURCE_MANIFEST_AUTHORITY],
   [SOURCE_ROOT_ENTRY_INFERENCE_SCHEMA_VERSION, SOURCE_ROOT_ENTRY_INFERENCE_AUTHORITY],
   [DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_SCHEMA_VERSION, DIRECT_SOURCE_OUTPUT_ORACLE_REQUEST_AUTHORITY],
@@ -13509,6 +13846,7 @@ function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
   const computedChallengeHash = challenge
     ? providerCallChallengeHash(challenge)
     : '';
+  const providerProtocolSnapshot = canonicalProviderProtocolSnapshot(receipt);
   const sha256Pattern = /^sha256:[a-f0-9]{64}$/;
   const blockingGaps = [
     initialCompileArgs?.use_ai_split === true
@@ -13642,6 +13980,20 @@ function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
       && !supportEvidenceClaimsAuthority(provenance)
       ? null
       : 'cold_ai_split_provider_receipt_claims_gpu_authority',
+    contentAddressedSha256(providerProtocolSnapshot.materialHash)
+      && providerProtocolSnapshot.canonicalJson
+        === stableJson(providerProtocolSnapshot.material)
+      && providerProtocolSnapshot.material.request.requestHash === computedRequestHash
+      && providerProtocolSnapshot.material.challenge.challengeHash === computedChallengeHash
+      && providerProtocolSnapshot.material.receipt.receiptHash === computedProducerReceiptHash
+      && providerProtocolSnapshot.material.receipt.responseHash === receipt?.response_hash
+      && providerProtocolSnapshot.material.receipt.acceptedForGpuHmr === false
+      && providerProtocolSnapshot.material.receipt.gpuHmrSuccess === false
+      && providerProtocolSnapshot.material.receipt.canSatisfyRuntimeProof === false
+      && providerProtocolSnapshot.material.receipt.canSatisfyDispatchProof === false
+      && !supportEvidenceClaimsAuthority(providerProtocolSnapshot)
+      ? null
+      : 'cold_ai_split_provider_protocol_snapshot_invalid',
   ].filter(Boolean);
   const accepted = blockingGaps.length === 0;
   const seed = {
@@ -13666,6 +14018,8 @@ function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
     providerCallResponseHash: receipt?.response_hash ?? null,
     providerCallChallengeHash: receipt?.challenge_hash ?? null,
     providerCallNonce: receipt?.request_nonce ?? null,
+    providerProtocolSnapshot,
+    providerProtocolMaterialHash: providerProtocolSnapshot.materialHash,
     blockingGaps,
   };
   const evidenceHash = `sha256:${sha256Hex(stableJson(seed))}`;
@@ -13694,6 +14048,10 @@ function coldAiProviderCallEvidenceFromSplit(split, initialCompileArgs) {
     provider_call_response_hash: seed.providerCallResponseHash,
     provider_call_challenge_hash: seed.providerCallChallengeHash,
     provider_call_nonce: seed.providerCallNonce,
+    providerProtocolSnapshot: seed.providerProtocolSnapshot,
+    provider_protocol_snapshot: seed.providerProtocolSnapshot,
+    providerProtocolMaterialHash: seed.providerProtocolMaterialHash,
+    provider_protocol_material_hash: seed.providerProtocolMaterialHash,
     blocking_gaps: blockingGaps,
     evidenceHash,
     evidence_hash: evidenceHash,
@@ -13858,6 +14216,16 @@ async function selfCheckColdAiSplitProof() {
   mkdirSync(path.dirname(syntheticArtifactHostPath), { recursive: true });
   writeFileSync(syntheticArtifactHostPath, Buffer.from('self-check-compiled-device-artifact'));
   const syntheticArtifactBytes = readFileSync(syntheticArtifactHostPath);
+  const syntheticArtifactCasRoot = path.join(syntheticArtifactRoot, 'cas');
+  const compiledArtifactCasLocator = await writeArtifactToCas(syntheticArtifactBytes, {
+    artifactRoot: syntheticArtifactCasRoot,
+    mediaType: COLD_COMPILED_ARTIFACT_CAS_MEDIA_TYPE,
+    artifactKind: COLD_COMPILED_ARTIFACT_CAS_ROLE,
+    role: COLD_COMPILED_ARTIFACT_CAS_ROLE,
+    sessionNamespace: 'self-check-cold-ai',
+    producer: { name: 'cold_compile_self_check', kind: 'cold_compile_observer' },
+    producerSubsystem: 'cold_source_self_check',
+  });
   const artifactHash = `sha256:${sha256BufferHex(syntheticArtifactBytes)}`;
   const artifactId = `device:${artifactHash}`;
   const generatedSourceHash = `sha256:${sha256Hex(generatedSource)}`;
@@ -13937,8 +14305,10 @@ async function selfCheckColdAiSplitProof() {
     expectedCompiler: 'hipcc',
     expectedArch: 'gfx1201',
     expectedSourcePath: generatedPath,
+    compiledArtifactCasLocator,
     syntheticArtifactBytes,
     syntheticArtifactFilePath: compiledArtifactPath,
+    syntheticArtifactCasRoot,
   };
   const producerMaterial = {
     source,
@@ -14008,6 +14378,7 @@ async function selfCheckColdAiSplitProof() {
       value: Object.freeze({
         bytes: syntheticArtifactBytes,
         filePath: compiledArtifactPath,
+        casRoot: syntheticArtifactCasRoot,
         observationKind: 'worker_live_read',
         compileCapability: liveCompileCapability,
         invocationId: liveInvocationId,
@@ -14112,8 +14483,13 @@ async function selfCheckColdAiSplitProof() {
     || proof.validationMatrixEligibility !== 'not_counted_until_cold_source_modality_ingestion'
     || recomputed.providerCallEvidence.accepted !== false
     || recomputed.providerCallEvidence.canonicalProviderReceiptVerified !== true
+    || recomputed.providerCallEvidence.providerProtocolSnapshot?.materialHash
+      !== recomputed.providerCallEvidence.providerProtocolMaterialHash
     || recomputed.deviceCompileProvenance.accepted !== false
     || recomputed.deviceCompileProvenance.byteObservationVerified !== true
+    || recomputed.deviceCompileProvenance.compiledArtifactCasBinding?.accepted !== true
+    || recomputed.deviceCompileProvenance.compiledArtifactCasRole
+      !== COLD_COMPILED_ARTIFACT_CAS_ROLE
     || cachedCompile.accepted !== false
     || !cachedCompile.blockingGaps.includes('cold_device_compile_cache_hit_not_fresh_codegen')
     || substitutedProvider.accepted !== false
@@ -14128,6 +14504,10 @@ async function selfCheckColdAiSplitProof() {
     || liveProof.gpuHmrSuccess !== false
     || liveProof.canSatisfyRuntimeProof !== false
     || liveProof.canSatisfyDispatchProof !== false
+    || liveProof.coldSourceDerivationChain.compileArtifactCasManifestHash
+      !== liveProof.coldDeviceCompileProvenance.compiledArtifactCasManifestHash
+    || liveProof.coldSourceDerivationChain.providerProtocolMaterialHash
+      !== liveProof.coldAiProviderCallEvidence.providerProtocolMaterialHash
     || !liveReplayRejected
   ) {
     throw new Error('cold AI split proof authority self-check failed');
