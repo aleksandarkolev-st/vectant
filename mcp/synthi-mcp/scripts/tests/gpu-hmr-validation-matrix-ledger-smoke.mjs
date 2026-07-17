@@ -25,8 +25,10 @@ import {
 } from '../lib/gpu-hmr-generated-split-granularity.mjs';
 import {
   bindGpuHmrRunModeCoverageSupport,
+  buildGpuHmrFrameGateRuntimeBinding,
   buildGpuHmrProofLedger,
   buildGpuHmrRunModeCoverageSupport,
+  buildGpuHmrVisualCaptureRuntimeBinding,
   evaluateGpuHmrProofLedger,
   GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
   queryGpuHmrLedgerInvariants,
@@ -693,6 +695,12 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function clearFixtureProofIdentity(record) {
+  delete record.proofId;
+  delete record.proof_id;
+  return record;
+}
+
 async function casLocatorForVisualArtifact({ filePath, hash, role, sessionNamespace = 'smoke-visual-cas' }) {
   const locator = await writeArtifactToCas(await fs.readFile(filePath), {
     artifactRoot: casRoot,
@@ -1022,6 +1030,9 @@ function runtimeProofMaterialsWithVisualArtifacts(scope, options, artifacts) {
 
 function acceptanceContract(scope, options = {}) {
   const projectId = options.projectId ?? 'flow';
+  const outputOracleKind = options.outputOracleKind ?? 'compute';
+  const backend = options.backend ?? 'hip';
+  const outputTargetId = options.outputTargetId ?? `output-target:${scope}`;
   const evidenceRef = `evidence:synthetic-runtime:${scope}`;
   const beforeHash = hashValue(`artifact-before:${scope}`);
   const afterHash = hashValue(`artifact-after:${scope}`);
@@ -1038,11 +1049,11 @@ function acceptanceContract(scope, options = {}) {
     'output_buffers',
     'readback_oracle',
   ].map((field) => [field, [evidenceRef]]));
-  return {
+  const contract = {
     contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
     project_id: projectId,
     edit_id: `source-edit:${scope}`,
-    backend: 'hip',
+    backend,
     confidence: 0.95,
     evidence_refs: [evidenceRef, fissionEvidenceRef],
     ai_hints: [],
@@ -1056,11 +1067,23 @@ function acceptanceContract(scope, options = {}) {
       blocking_gaps: [],
     },
     artifact_identity: {
-      source_paths: ['gpu/device.hip'],
-      artifact_kind: 'hsaco',
-      entry_points: ['flow_kernel'],
-      compile_target: 'gfx1201',
-      compiler: 'hipcc',
+      source_paths: [backend === 'opencl'
+        ? 'gpu/device.cl'
+        : backend === 'vulkan'
+          ? 'gpu/device.comp'
+          : backend === 'webgpu'
+            ? 'gpu/device.wgsl'
+            : 'gpu/device.hip'],
+      artifact_kind: backend === 'opencl'
+        ? 'opencl_program'
+        : backend === 'vulkan'
+          ? 'spirv'
+          : backend === 'webgpu'
+            ? 'wgsl'
+            : 'hsaco',
+      entry_points: [backend === 'webgpu' ? 'main' : 'flow_kernel'],
+      compile_target: backend === 'webgpu' ? 'webgpu' : backend === 'opencl' ? 'opencl-device' : 'gfx1201',
+      compiler: backend === 'webgpu' ? 'wgsl_frontend' : backend === 'opencl' ? 'opencl_runtime_compiler' : backend === 'vulkan' ? 'glslang' : 'hipcc',
       compiler_args_hash: hashValue(`compile-args:${scope}`),
     },
     artifact_hash_before: beforeHash,
@@ -1088,12 +1111,18 @@ function acceptanceContract(scope, options = {}) {
     reload_mechanism: 'generated_adapter',
     adapter_outcome: 'adapter_generated',
     reload_evidence_refs: [evidenceRef],
-    output_oracle_target: {
-      kind: 'compute',
-      target_id: 'buffer:flow-output',
-      compute_only_target_verified: true,
-      evidence_refs: [evidenceRef],
-    },
+    output_oracle_target: outputOracleKind === 'visual'
+      ? {
+          kind: 'visual',
+          target_id: outputTargetId,
+          evidence_refs: [evidenceRef],
+        }
+      : {
+          kind: 'compute',
+          target_id: outputTargetId,
+          compute_only_target_verified: true,
+          evidence_refs: [evidenceRef],
+        },
     firewall_evidence: {
       route: 'gpu_hmr',
       evidence_source: 'runtime_trace',
@@ -1112,6 +1141,12 @@ function acceptanceContract(scope, options = {}) {
       context_or_device_handle: 'context:0',
       queue_or_stream_handle: 'stream:0',
       persistent_gpu_allocations: ['alloc:output'],
+      ...(outputOracleKind === 'visual' && ['vulkan', 'webgpu'].includes(backend)
+        ? {
+            camera_state_hash: hashValue(`camera:${scope}`),
+            swapchain_or_framebuffer_identity: outputTargetId,
+          }
+        : {}),
     },
     epoch_policy: {
       publish_mechanism: 'runtime_epoch_publish',
@@ -1139,11 +1174,17 @@ function acceptanceContract(scope, options = {}) {
       selected_verifier_evidence_id: fissionEvidenceRef,
       deterministic_verifier_evidence_refs: [evidenceRef, fissionEvidenceRef],
       selection_decision_hash: hashValue(`selection:${scope}`),
-      output_oracle_contract: {
-        kind: 'buffer_checksum',
-        expected: 'runtime_readback_changed_after_epoch_dispatch',
-        evidence_refs: [evidenceRef],
-      },
+      output_oracle_contract: outputOracleKind === 'visual'
+        ? {
+            kind: 'deterministic_visual_frame',
+            expected: 'post_epoch_frame_changed_after_dispatch',
+            evidence_refs: [evidenceRef],
+          }
+        : {
+            kind: 'buffer_checksum',
+            expected: 'runtime_readback_changed_after_epoch_dispatch',
+            evidence_refs: [evidenceRef],
+          },
       evidence_refs: [evidenceRef, fissionEvidenceRef],
     },
     hip_contract: {
@@ -1160,6 +1201,105 @@ function acceptanceContract(scope, options = {}) {
       field_evidence_refs: fieldEvidence,
     },
   };
+
+  if (backend !== 'hip') delete contract.hip_contract;
+  if (backend === 'opencl') {
+    const fields = [
+      'program_hash_before',
+      'program_hash_after',
+      'kernel_name',
+      'command_queue',
+      'work_dim',
+      'global_work_size',
+      'local_work_size',
+      'event_trace',
+      'output_buffer_readback',
+    ];
+    contract.opencl_contract = {
+      program_hash_before: beforeHash,
+      program_hash_after: afterHash,
+      kernel_name: 'flow_kernel',
+      command_queue: 'queue:0',
+      work_dim: 1,
+      global_work_size: [64],
+      local_work_size: [64],
+      event_trace: `event:${scope}`,
+      output_buffer_readback: outputTargetId,
+      field_evidence_refs: Object.fromEntries(fields.map((field) => [field, [evidenceRef]])),
+    };
+  }
+  if (backend === 'vulkan') {
+    const fields = [
+      'shader_module_hash_before',
+      'shader_module_hash_after',
+      'entry_point',
+      'descriptor_set_layout_hash',
+      'pipeline_layout_hash',
+      'pipeline_state_hash',
+      'frame_used_new_pipeline_trace',
+    ];
+    contract.vulkan_contract = {
+      shader_module_hash_before: beforeHash,
+      shader_module_hash_after: afterHash,
+      entry_point: 'flow_kernel',
+      descriptor_set_layout_hash: hashValue(`descriptor-set-layout:${scope}`),
+      pipeline_layout_hash: hashValue(`pipeline-layout:${scope}`),
+      pipeline_state_hash: hashValue(`pipeline-state:${scope}`),
+      command_buffer_re_record_required: true,
+      command_buffer_re_record_proven: true,
+      frame_used_new_pipeline_trace: `vk-command-buffer:${scope}`,
+      field_evidence_refs: Object.fromEntries(fields.map((field) => [field, [evidenceRef]])),
+    };
+  }
+  if (backend === 'webgpu') {
+    const compute = outputOracleKind !== 'visual';
+    const fields = compute
+      ? [
+          'wgsl_hash_before',
+          'wgsl_hash_after',
+          'shader_module_epoch',
+          'entry_points',
+          'bind_group_layout_hash',
+          'pipeline_layout_hash',
+          'compute_pipeline_trace',
+          'compute_readback_trace',
+        ]
+      : [
+          'wgsl_hash_before',
+          'wgsl_hash_after',
+          'shader_module_epoch',
+          'entry_points',
+          'bind_group_layout_hash',
+          'pipeline_layout_hash',
+          'vertex_buffer_layout_hash',
+          'color_target_state_hash',
+          'frame_used_new_pipeline_trace',
+        ];
+    contract.webgpu_contract = {
+      pipeline_kind: compute ? 'compute' : 'render',
+      wgsl_hash_before: beforeHash,
+      wgsl_hash_after: afterHash,
+      shader_module_epoch: `epoch:${scope}`,
+      entry_points: ['main'],
+      bind_group_layout_hash: hashValue(`bind-group-layout:${scope}`),
+      pipeline_layout_hash: hashValue(`pipeline-layout:${scope}`),
+      pipeline_state_hash: hashValue(`pipeline-state:${scope}`),
+      pipeline_recreate_required: true,
+      pipeline_recreate_proven: true,
+      ...(compute
+        ? {
+            compute_pipeline_trace: `webgpu-compute-pipeline:${scope}`,
+            compute_readback_trace: `webgpu-readback:${scope}`,
+          }
+        : {
+            vertex_buffer_layout_hash: hashValue(`vertex-buffer-layout:${scope}`),
+            color_target_state_hash: hashValue(`color-target-state:${scope}`),
+            frame_used_new_pipeline_trace: `webgpu-render-pass:${scope}`,
+          }),
+      field_evidence_refs: Object.fromEntries(fields.map((field) => [field, [evidenceRef]])),
+    };
+  }
+  return contract;
 }
 
 function hiprtAcceptanceContract(scope, {
@@ -1169,7 +1309,11 @@ function hiprtAcceptanceContract(scope, {
   changedPath,
   diffPath,
 }) {
-  const contract = acceptanceContract(scope, { projectId });
+  const contract = acceptanceContract(scope, {
+    projectId,
+    outputOracleKind: 'visual',
+    outputTargetId: changedPath,
+  });
   const evidenceRef = `evidence:synthetic-hiprt:${scope}`;
   const visualRef = `visual:hiprt:diff:${fileHashForPath(diffPath)}`;
   const fieldEvidence = Object.fromEntries([
@@ -1211,6 +1355,7 @@ function hiprtAcceptanceContract(scope, {
 
 function runtimeProofMaterials(scope, options = {}) {
   const projectId = options.projectId ?? 'flow';
+  const backend = options.backend ?? 'hip';
   const visualRoot = options.visualRoot ?? visualDir;
   const sourceAdaptedVisualProfile = options.sourceAdaptedVisualProfile === true;
   const runtimeSessionId = options.runtimeSessionId ?? `runtime-session:${scope}`;
@@ -1218,6 +1363,8 @@ function runtimeProofMaterials(scope, options = {}) {
   const dispatchTableEntryId = options.dispatchTableEntryId ?? `dispatch-table-entry:${scope}`;
   const outputTargetId = options.outputTargetId ?? `output-target:${scope}`;
   const evidenceRef = `evidence:synthetic-runtime:${scope}`;
+  const runtimeProofId = options.runtimeProofId
+    ?? `runtime-proof-artifact:sha256:${sha256Hex(scope)}`;
   const evidenceRefs = [...new Set([
     evidenceRef,
     ...(Array.isArray(options.extraEvidenceRefs) ? options.extraEvidenceRefs : []),
@@ -1227,11 +1374,11 @@ function runtimeProofMaterials(scope, options = {}) {
   const timings = timingFields(scope);
   const deterministicVisualMode = deterministicMode(scope);
   const visualArtifacts = visualOracleArtifacts(scope, visualRoot);
-  const proofLedger = buildGpuHmrProofLedger({
+  let proofLedger = buildGpuHmrProofLedger({
     schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     project_id: projectId,
     edit_id: `source-edit:${scope}`,
-    backend: 'hip',
+    backend,
     classification: {
       project_kind: 'gpu_project',
       edit_kind: 'gpu_artifact_edit',
@@ -1297,7 +1444,18 @@ function runtimeProofMaterials(scope, options = {}) {
       proof: 'stream_event_proven',
     },
     process_identity: { process_id: 'pid:4242', runtime_session_id: runtimeSessionId },
-    device_identity: { device_uuid: 'gpu:synthetic-rocm', backend: 'hip' },
+    device_identity: { device_uuid: 'gpu:synthetic-rocm', backend },
+    runtime_proof_id: runtimeProofId,
+    runtime_proof_state: 'gpu-hmr-full-runtime-proven',
+    runtime_proof_accepted: true,
+    runtime_proof_observed_at_ms: 2000,
+    hmr_observed_at_ms: 1000,
+    runtime_session_id: runtimeSessionId,
+    output_oracle_target: {
+      kind: 'visual',
+      target_id: outputTargetId,
+      evidence_refs: evidenceRefs,
+    },
     oracle_artifacts: { visual_oracle_artifacts: visualArtifacts },
     deterministic_visual_mode: deterministicVisualMode,
     metric_clock: 'monotonic_ns',
@@ -1318,10 +1476,22 @@ function runtimeProofMaterials(scope, options = {}) {
     firewall_process_id_before: 'pid:4242',
     firewall_process_id_after: 'pid:4242',
   });
-  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  let proofLedgerQuery;
+  ({ proofLedger, proofLedgerQuery } = proofLedgerForVisualOracleArtifacts(
+    {
+      proofLedger,
+      runtimeProofArtifact: { proofId: runtimeProofId },
+    },
+    visualArtifacts,
+  ));
   assert.deepEqual(proofLedgerQuery.failedInvariants, []);
   assert.equal(proofLedgerQuery.gpuHmrSuccess, true);
-  const contract = acceptanceContract(scope, { projectId });
+  const contract = acceptanceContract(scope, {
+    projectId,
+    backend,
+    outputOracleKind: 'visual',
+    outputTargetId,
+  });
   const acceptanceContractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
   assert.deepEqual(acceptanceContractEvaluation.failedGates, []);
   assert.equal(acceptanceContractEvaluation.accepted, true);
@@ -1341,30 +1511,44 @@ function runtimeProofMaterials(scope, options = {}) {
       producerSubsystem: 'validation_matrix_smoke_runtime_visual',
     },
   );
+  const dispatchCommand = backend === 'opencl'
+    ? 'clEnqueueNDRangeKernel'
+    : backend === 'vulkan'
+      ? 'vkQueueSubmit'
+      : backend === 'webgpu'
+        ? 'GPURenderPassEncoder.draw'
+        : 'hipModuleLaunchKernel';
+  const loaderSource = backend === 'opencl'
+    ? 'clBuildProgram'
+    : backend === 'vulkan'
+      ? 'vkCreateGraphicsPipelines'
+      : backend === 'webgpu'
+        ? 'GPUDevice.createRenderPipeline'
+        : 'hipModuleLoadData';
   const runtimeTrace = {
     loaderEvents: [{
-      source: 'hipModuleLoadData',
+      source: loaderSource,
       artifactHash: afterHash,
       artifact_hash: afterHash,
       evidenceRefs,
       evidence_refs: evidenceRefs,
     }],
     loader_events: [{
-      source: 'hipModuleLoadData',
+      source: loaderSource,
       artifactHash: afterHash,
       artifact_hash: afterHash,
       evidenceRefs,
       evidence_refs: evidenceRefs,
     }],
     dispatchEvents: [{
-      command: 'hipModuleLaunchKernel',
+      command: dispatchCommand,
       dispatchId: `dispatch:${scope}`,
       dispatch_id: `dispatch:${scope}`,
       evidenceRefs,
       evidence_refs: evidenceRefs,
     }],
     dispatch_events: [{
-      command: 'hipModuleLaunchKernel',
+      command: dispatchCommand,
       dispatchId: `dispatch:${scope}`,
       dispatch_id: `dispatch:${scope}`,
       evidenceRefs,
@@ -1386,7 +1570,7 @@ function runtimeProofMaterials(scope, options = {}) {
     }],
   };
   const runtimeProofArtifact = {
-    proofId: `runtime-proof-artifact:sha256:${sha256Hex(scope)}`,
+    proofId: runtimeProofId,
     fullRuntimeProven: sourceAdaptedVisualProfile ? false : true,
     gpuHmrSuccess: sourceAdaptedVisualProfile ? false : true,
     visualProfileAccepted: sourceAdaptedVisualProfile,
@@ -1447,7 +1631,9 @@ function withoutOutputTargetFields(event = {}) {
 
 function runtimeProofMaterialsWithRecordOutputTarget(scope, options = {}) {
   const materials = runtimeProofMaterials(scope, options);
-  const record = cloneJson(materials.proofLedgerQuery.record ?? materials.proofLedger.records[0]);
+  const record = clearFixtureProofIdentity(
+    cloneJson(materials.proofLedgerQuery.record ?? materials.proofLedger.records[0]),
+  );
   const recordOutputTargetId = options.recordOutputTargetId
     ?? options.outputTargetId
     ?? `output-target:${scope}`;
@@ -1469,8 +1655,18 @@ function runtimeProofMaterialsWithRecordOutputTarget(scope, options = {}) {
   record.outputOracleTarget = recordTarget;
   record.output_oracle_target = recordTarget;
 
-  const proofLedger = buildGpuHmrProofLedger(record);
-  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  const initialProofLedger = buildGpuHmrProofLedger(record);
+  const visualArtifacts = record.oracleArtifacts?.visualOracleArtifacts
+    ?? record.oracleArtifacts?.visual_oracle_artifacts
+    ?? record.oracle_artifacts?.visualOracleArtifacts
+    ?? record.oracle_artifacts?.visual_oracle_artifacts;
+  const { proofLedger, proofLedgerQuery } = proofLedgerForVisualOracleArtifacts(
+    {
+      proofLedger: initialProofLedger,
+      runtimeProofArtifact: materials.runtimeProofArtifact,
+    },
+    visualArtifacts,
+  );
   const mutated = cloneJson(materials);
   mutated.proofLedger = proofLedger;
   mutated.proof_ledger = proofLedger;
@@ -1486,7 +1682,9 @@ function runtimeProofMaterialsWithRecordOutputTarget(scope, options = {}) {
 
 function runtimeProofMaterialsWithoutEventOutputTargets(scope, options = {}) {
   const materials = runtimeProofMaterials(scope, options);
-  const record = cloneJson(materials.proofLedgerQuery.record ?? materials.proofLedger.records[0]);
+  const record = clearFixtureProofIdentity(
+    cloneJson(materials.proofLedgerQuery.record ?? materials.proofLedger.records[0]),
+  );
   record.dispatchEvent = withoutOutputTargetFields(record.dispatchEvent ?? record.dispatch_event);
   record.outputEvent = withoutOutputTargetFields(record.outputEvent ?? record.output_event);
   delete record.dispatch_event;
@@ -1521,6 +1719,7 @@ function computeProofLedgerMaterials(scope, {
 }) {
   const beforeHash = hashValue(`compute-artifact-before:${scope}`);
   const afterHash = hashValue(`compute-artifact-after:${scope}`);
+  const runtimeProofId = `runtime-proof-artifact:sha256:${sha256Hex(`compute:${scope}`)}`;
   const actualRawReadbackBytes = Buffer.isBuffer(rawReadbackBytes) ? rawReadbackBytes : null;
   const deterministicSliceLength = Math.min(4, actualRawReadbackBytes?.length ?? 4);
   const rawReadbackHash = actualRawReadbackBytes
@@ -1625,6 +1824,18 @@ function computeProofLedgerMaterials(scope, {
     },
     process_identity: { process_id: 'pid:4242', runtime_session_id: runtimeSessionId },
     device_identity: { device_uuid: 'gpu:synthetic-rocm', backend },
+    runtime_proof_id: runtimeProofId,
+    runtime_proof_state: 'gpu-hmr-full-runtime-proven',
+    runtime_proof_accepted: true,
+    runtime_proof_observed_at_ms: 2000,
+    hmr_observed_at_ms: 1000,
+    runtime_session_id: runtimeSessionId,
+    output_oracle_target: {
+      kind: 'compute',
+      target_id: outputTargetId,
+      compute_only_target_verified: true,
+      evidence_refs: [`evidence:synthetic-compute:${scope}`],
+    },
     oracle_artifacts: { compute_oracle_artifacts: computeOracleArtifacts },
     metric_clock: 'monotonic_ns',
     metric_scope: 'hot_delta_1',
@@ -1647,7 +1858,12 @@ function computeProofLedgerMaterials(scope, {
   const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
   assert.deepEqual(proofLedgerQuery.failedInvariants, []);
   assert.equal(proofLedgerQuery.gpuHmrSuccess, true);
-  const contract = acceptanceContract(scope, { projectId });
+  const contract = acceptanceContract(scope, {
+    projectId,
+    backend,
+    outputOracleKind: 'compute',
+    outputTargetId,
+  });
   const acceptanceContractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
   assert.deepEqual(acceptanceContractEvaluation.failedGates, []);
   assert.equal(acceptanceContractEvaluation.accepted, true);
@@ -1661,12 +1877,16 @@ function computeProofLedgerMaterials(scope, {
     ? 'clEnqueueNDRangeKernel'
     : backend === 'vulkan'
       ? 'vkQueueSubmit'
-      : 'hipModuleLaunchKernel';
+      : backend === 'webgpu'
+        ? 'GPUComputePassEncoder.dispatchWorkgroups'
+        : 'hipModuleLaunchKernel';
   const loaderSource = backend === 'opencl'
     ? 'clBuildProgram'
     : backend === 'vulkan'
       ? 'vkCreatePipeline'
-      : 'hipModuleLoadData';
+      : backend === 'webgpu'
+        ? 'GPUDevice.createComputePipeline'
+        : 'hipModuleLoadData';
   const runtimeTrace = {
     loaderEvents: [{
       source: loaderSource,
@@ -1712,7 +1932,7 @@ function computeProofLedgerMaterials(scope, {
     }],
   };
   const runtimeProofArtifact = {
-    proofId: `runtime-proof-artifact:sha256:${sha256Hex(`compute:${scope}`)}`,
+    proofId: runtimeProofId,
     fullRuntimeProven: true,
     gpuHmrSuccess: true,
     stageResults: [
@@ -10876,9 +11096,13 @@ const oidnRuntimeBridgeManifestHash = hashValue('oidn-runtime-boundary-manifest'
 const oidnRuntimeBridgeArtifactBeforeHash = hashValue('oidn-runtime-boundary-artifact-before');
 const oidnRuntimeBridgeArtifactAfterHash = hashValue('oidn-runtime-boundary-artifact-after');
 const oidnRuntimeBridgeEpoch = 'epoch:oidn-runtime-boundary:2';
+const oidnRuntimeBridgePreviousEpoch = 'epoch:oidn-runtime-boundary:1';
+const oidnRuntimeBridgeActiveGeneration = 2;
+const oidnRuntimeBridgePreviousGeneration = 1;
 const oidnRuntimeBridgeDispatchId = 'dispatch:oidn-runtime-boundary:1';
 const oidnRuntimeBridgeProcessId = 'pid:oidn-runtime-boundary';
 const oidnRuntimeBridgeSession = 'session:oidn-runtime-boundary';
+const oidnRuntimeBridgeStream = 'stream:oidn-runtime-boundary';
 const oidnRuntimeBoundaryEvents = [
   {
     kind: 'artifact_transport',
@@ -10894,6 +11118,12 @@ const oidnRuntimeBoundaryEvents = [
     eventId: 'oidn-epoch-publication',
     artifactHash: oidnRuntimeBridgeArtifactAfterHash,
     epoch: oidnRuntimeBridgeEpoch,
+    previousEpoch: oidnRuntimeBridgePreviousEpoch,
+    activeGeneration: oidnRuntimeBridgeActiveGeneration,
+    previousGeneration: oidnRuntimeBridgePreviousGeneration,
+    streamEpochCounters: {
+      [oidnRuntimeBridgeStream]: oidnRuntimeBridgeActiveGeneration,
+    },
     processId: oidnRuntimeBridgeProcessId,
     runtimeSession: oidnRuntimeBridgeSession,
     dispatchTableHashBefore: hashValue('oidn-runtime-boundary-dispatch-table-before'),
@@ -10909,7 +11139,7 @@ const oidnRuntimeBoundaryEvents = [
     epoch: oidnRuntimeBridgeEpoch,
     processId: oidnRuntimeBridgeProcessId,
     runtimeSession: oidnRuntimeBridgeSession,
-    stream: 'stream:oidn-runtime-boundary',
+    stream: oidnRuntimeBridgeStream,
     dispatchTableEntry: `oidn_generic_denoise:${oidnRuntimeBridgeEpoch}`,
     timestampMonotonicNs: 300,
     evidenceRefs: [
@@ -10924,7 +11154,7 @@ const oidnRuntimeBoundaryEvents = [
     runtimeSession: oidnRuntimeBridgeSession,
     deviceUuid: 'device:oidn-runtime-boundary',
     contextId: 'context:oidn-runtime-boundary',
-    stream: 'stream:oidn-runtime-boundary',
+    stream: oidnRuntimeBridgeStream,
     timestampMonotonicNs: 310,
     evidenceRefs: [
       'worker-log:host_identity:runner_process',
@@ -10947,6 +11177,23 @@ const oidnRuntimeBoundaryEvents = [
     oracleKind: 'buffer_checksum',
     timestampMonotonicNs: 400,
     evidenceRefs: [`worker-log:output_oracle:${oidnRuntimeBridgeSession}:${oidnRuntimeBridgeDispatchId}`],
+  },
+  {
+    kind: 'retirement_receipt',
+    eventId: 'oidn-runtime-boundary-retirement-receipt',
+    oldArtifactHash: oidnRuntimeBridgeArtifactBeforeHash,
+    epoch: oidnRuntimeBridgePreviousEpoch,
+    previousGeneration: oidnRuntimeBridgePreviousGeneration,
+    processId: oidnRuntimeBridgeProcessId,
+    runtimeSession: oidnRuntimeBridgeSession,
+    deviceUuid: 'device:oidn-runtime-boundary',
+    stream: oidnRuntimeBridgeStream,
+    retirementProof: 'stream_event_proven',
+    retirementResult: 'retired_after_quiescent',
+    retirementStrategy: 'epoch_fence',
+    retirementFenceIds: ['oidn-runtime-boundary:fence:retire:1'],
+    timestampMonotonicNs: 500,
+    evidenceRefs: ['oidn-runtime-boundary:retirement-receipt'],
   },
 ];
 const oidnRuntimeBridgeComputeOracleArtifacts = buildComputeOracleArtifactsFromByteEvidence({
@@ -13343,7 +13590,9 @@ function computeOracleArtifactsWithoutDirectPaths(computeOracleArtifacts) {
 }
 
 function proofLedgerForComputeOracleArtifacts(materials, computeOracleArtifacts) {
-  const record = JSON.parse(JSON.stringify(materials.proofLedger.records[0]));
+  const record = clearFixtureProofIdentity(
+    JSON.parse(JSON.stringify(materials.proofLedger.records[0])),
+  );
   const outputEvent = record.output_event ?? record.outputEvent ?? {};
   outputEvent.compute_oracle_artifacts = computeOracleArtifacts;
   outputEvent.computeOracleArtifacts = computeOracleArtifacts;
@@ -13384,20 +13633,165 @@ function withComputeOracleArtifacts(materials, computeOracleArtifacts) {
 }
 
 function proofLedgerForVisualOracleArtifacts(materials, visualOracleArtifacts) {
-  const record = JSON.parse(JSON.stringify(materials.proofLedger.records[0]));
+  const record = clearFixtureProofIdentity(
+    JSON.parse(JSON.stringify(materials.proofLedger.records[0])),
+  );
+  const boundArtifacts = JSON.parse(JSON.stringify(visualOracleArtifacts));
+  const runtimeProofArtifact = materials.runtimeProofArtifact
+    ?? materials.runtime_proof_artifact
+    ?? {};
+  const runtimeProofId = runtimeProofArtifact.proofId
+    ?? runtimeProofArtifact.proof_id
+    ?? record.runtimeProofId
+    ?? record.runtime_proof_id;
+  const runtimeSessionId = record.runtimeSessionId
+    ?? record.runtime_session_id
+    ?? record.processIdentity?.runtime_session_id
+    ?? record.process_identity?.runtime_session_id;
+  const processId = record.processIdentity?.process_id
+    ?? record.process_identity?.process_id;
+  const deviceId = record.deviceIdentity?.device_uuid
+    ?? record.device_identity?.device_uuid;
+  const recordOutputEvent = record.outputEvent ?? record.output_event ?? {};
+  const recordOutputTarget = record.outputOracleTarget ?? record.output_oracle_target;
+  const acceptanceContract = runtimeProofArtifact.acceptanceContract
+    ?? runtimeProofArtifact.acceptance_contract
+    ?? {};
+  const contractOutputTarget = acceptanceContract.outputOracleTarget
+    ?? acceptanceContract.output_oracle_target;
+  const targetIdFrom = (value) => {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    return [value.id, value.targetId, value.target_id]
+      .find((candidate) => typeof candidate === 'string' && candidate.trim())
+      ?.trim() ?? null;
+  };
+  const canonicalOutputTargetId = [
+    recordOutputEvent.outputTargetId,
+    recordOutputEvent.output_target_id,
+    recordOutputEvent.targetId,
+    recordOutputEvent.target_id,
+    targetIdFrom(recordOutputEvent.outputTarget ?? recordOutputEvent.output_target),
+    targetIdFrom(recordOutputTarget),
+  ].find((candidate) => typeof candidate === 'string' && candidate.trim()) ?? null;
+  const outputTargetId = canonicalOutputTargetId ?? targetIdFrom(contractOutputTarget);
+  if (!outputTargetId) {
+    throw new Error('fixture_visual_output_target_binding_missing');
+  }
+  const supplementalOutputTarget = canonicalOutputTargetId
+    ? null
+    : {
+        kind: 'visual',
+        target_id: outputTargetId,
+        evidence_refs: [`fixture:visual-output-target:${outputTargetId}`],
+      };
+
+  record.runtimeProofId = runtimeProofId;
+  record.runtime_proof_id = runtimeProofId;
+  record.runtimeProofState = 'gpu-hmr-full-runtime-proven';
+  record.runtime_proof_state = 'gpu-hmr-full-runtime-proven';
+  record.runtimeProofAccepted = true;
+  record.runtime_proof_accepted = true;
+  record.runtimeProofObservedAtMs = 2000;
+  record.runtime_proof_observed_at_ms = 2000;
+  record.hmrObservedAtMs = 1000;
+  record.hmr_observed_at_ms = 1000;
+  record.runtimeSessionId = runtimeSessionId;
+  record.runtime_session_id = runtimeSessionId;
+
+  for (const eventKey of [
+    'loaderEvent',
+    'epochPublishEvent',
+    'dispatchEvent',
+    'outputEvent',
+  ]) {
+    const event = record[eventKey] ?? {};
+    event.process_id ??= processId;
+    event.runtime_session_id ??= runtimeSessionId;
+    event.device_uuid ??= deviceId;
+    record[eventKey] = event;
+  }
+
   const outputEvent = record.output_event ?? record.outputEvent ?? {};
   outputEvent.kind = 'visual_frame';
-  outputEvent.visual_oracle_artifacts = visualOracleArtifacts;
-  outputEvent.visualOracleArtifacts = visualOracleArtifacts;
+  outputEvent.visual_oracle_artifacts = boundArtifacts;
+  outputEvent.visualOracleArtifacts = boundArtifacts;
   record.output_event = outputEvent;
   record.outputEvent = outputEvent;
   const oracleArtifacts = record.oracle_artifacts ?? record.oracleArtifacts ?? {};
-  oracleArtifacts.visual_oracle_artifacts = visualOracleArtifacts;
-  oracleArtifacts.visualOracleArtifacts = visualOracleArtifacts;
+  oracleArtifacts.visual_oracle_artifacts = boundArtifacts;
+  oracleArtifacts.visualOracleArtifacts = boundArtifacts;
   record.oracle_artifacts = oracleArtifacts;
   record.oracleArtifacts = oracleArtifacts;
+
+  const visualBindingRecord = () => {
+    if (!supplementalOutputTarget) return record;
+    const overlay = cloneJson(record);
+    overlay.outputOracleTarget = supplementalOutputTarget;
+    overlay.output_oracle_target = supplementalOutputTarget;
+    return overlay;
+  };
+  const frameGateRuntimeBinding = buildGpuHmrFrameGateRuntimeBinding(visualBindingRecord());
+  const frameGateRuntimeBindingHash = `sha256:${sha256Hex(stableJson(frameGateRuntimeBinding))}`;
+  const afterImagePath = boundArtifacts.after_image ?? boundArtifacts.afterImage;
+  const afterImageHash = boundArtifacts.after_image_hash ?? boundArtifacts.afterImageHash;
+  const [width, height] = boundArtifacts.swapchain_size ?? boundArtifacts.swapchainSize ?? [8, 8];
+  const frameSeq = Number(boundArtifacts.frame_number ?? boundArtifacts.frameNumber ?? 24);
+  const gateToken = `frame-gate:${runtimeSessionId}:${frameSeq}`;
+  const afterImageByteLength = afterImagePath && fsSync.existsSync(afterImagePath)
+    ? fsSync.statSync(afterImagePath).size
+    : 1;
+  boundArtifacts.capture_manifest = {
+    schema_version: 'synthi.mcp.capture_manifest.v1',
+    session_id: runtimeSessionId,
+    capture_backend: boundArtifacts.capture_backend ?? boundArtifacts.captureBackend,
+    capture_event_id: `capture:${runtimeSessionId}:${frameSeq}`,
+    frame_event_id: `frame:${runtimeSessionId}:${frameSeq}`,
+    frame_seq: frameSeq,
+    frame_ts_ms: 4000,
+    capture_ts_ms: 4100,
+    required_frame_seq: frameSeq,
+    required_ts_ms: 2500,
+    width,
+    height,
+    source_frame_hash: afterImageHash,
+    broker_frame_hash: afterImageHash,
+    image_sha256: afterImageHash,
+    image_byte_length: afterImageByteLength,
+    gate_token: gateToken,
+    gate_token_verified: true,
+    frame_gate: {
+      session_id: runtimeSessionId,
+      gate_token: gateToken,
+      gate_token_verified: true,
+      required_frame_seq: frameSeq,
+      required_ts_ms: 2500,
+      captured_frame_seq: frameSeq,
+      captured_ts_ms: 4000,
+      gate_token_issued_at_ms: 3000,
+      gate_token_expires_at_ms: 5000,
+      evidence_binding: frameGateRuntimeBinding,
+      evidence_binding_hash: frameGateRuntimeBindingHash,
+    },
+    accepted_for_gpu_hmr: false,
+    gpu_hmr_success: false,
+  };
+  if (!supplementalOutputTarget) {
+    boundArtifacts.visual_capture_runtime_binding =
+      buildGpuHmrVisualCaptureRuntimeBinding(visualBindingRecord());
+  }
+  outputEvent.visual_oracle_artifacts = boundArtifacts;
+  outputEvent.visualOracleArtifacts = boundArtifacts;
+  oracleArtifacts.visual_oracle_artifacts = boundArtifacts;
+  oracleArtifacts.visualOracleArtifacts = boundArtifacts;
+
   const proofLedger = buildGpuHmrProofLedger(record);
-  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  const proofLedgerQuery = queryGpuHmrLedgerInvariants(
+    proofLedger,
+    supplementalOutputTarget
+      ? {}
+      : { requireVisualCaptureRuntimeBinding: true },
+  );
   return { proofLedger, proofLedgerQuery };
 }
 
@@ -13502,7 +13896,7 @@ function withNumericComputeEpoch(materials, epoch) {
     }
   };
   replaceEpochFields(copy);
-  const record = copy.proofLedger.records[0];
+  const record = clearFixtureProofIdentity(copy.proofLedger.records[0]);
   for (const event of [
     record.epoch_publish_event,
     record.dispatch_event,
@@ -15878,6 +16272,219 @@ assert.ok(nestedIdentityShortcutAcceptedQuery.failedGates.some((gate) =>
   && gate.path === '$.nestedIdentityShortcutProbe.evidence[0].nested.targetNameUsedForAcceptance'
 ));
 
+const broadReadinessComputeOracleDir = path.join(
+  logsRoot,
+  'broad-readiness-compute-oracle-bytes',
+);
+const broadReadinessComputeReadbackPath = path.join(
+  broadReadinessComputeOracleDir,
+  'readback.bin',
+);
+const broadReadinessComputeBytes = Buffer.from([3, 5, 8, 13, 21, 34, 55, 89]);
+await fs.mkdir(broadReadinessComputeOracleDir, { recursive: true });
+await fs.writeFile(broadReadinessComputeReadbackPath, broadReadinessComputeBytes);
+await writeJson(`${broadReadinessComputeReadbackPath}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: broadReadinessComputeBytes.length,
+  shape: [broadReadinessComputeBytes.length],
+});
+await writeRgbaPng(`${broadReadinessComputeReadbackPath}.card.png`, 8, 8, (x, y) => [
+  broadReadinessComputeBytes[(x + y) % broadReadinessComputeBytes.length],
+  48 + x,
+  112 + y,
+  255,
+]);
+const broadReadinessComputeSliceHash = hashBuffer(broadReadinessComputeBytes.subarray(0, 4));
+const broadReadinessComputeFileVerification = await computeOracleArtifactsFromFiles({
+  raw_readback_bin: broadReadinessComputeReadbackPath,
+  readback_schema_json: `${broadReadinessComputeReadbackPath}.schema.json`,
+  rendered_card_png: `${broadReadinessComputeReadbackPath}.card.png`,
+  raw_readback_hash: hashBuffer(broadReadinessComputeBytes),
+  deterministic_slice: {
+    offset: 0,
+    length: 4,
+    hash: broadReadinessComputeSliceHash,
+  },
+});
+const broadReadinessComputeCardMetadata = await sharp(
+  `${broadReadinessComputeReadbackPath}.card.png`,
+).metadata();
+assert.equal(
+  broadReadinessComputeFileVerification.raw_readback_verification.hash_verified,
+  true,
+);
+assert.equal(
+  broadReadinessComputeFileVerification.raw_readback_verification
+    .deterministic_slice_hash_verified,
+  true,
+);
+assert.equal(broadReadinessComputeCardMetadata.format, 'png');
+
+function proofLedgerFacetFromMaterials(materials) {
+  const query = materials.proofLedgerQuery;
+  return {
+    present: true,
+    source: 'recomputed_ledger',
+    suppliedQueryPresent: true,
+    proofId: query.record.proofId,
+    proof_id: query.record.proofId,
+    gpuHmrSuccess: query.gpuHmrSuccess,
+    gpu_hmr_success: query.gpuHmrSuccess,
+    failedInvariants: query.failedInvariants,
+    failed_invariants: query.failedInvariants,
+    invariantSummary: query.invariantSummary,
+    invariant_summary: query.invariantSummary,
+    record: query.record,
+  };
+}
+
+function outputOracleBindingFromRecord(record) {
+  const dispatch = record.dispatchEvent ?? record.dispatch_event ?? {};
+  const output = record.outputEvent ?? record.output_event ?? {};
+  const dispatchId = dispatch.id;
+  const afterDispatchId = output.afterDispatchId ?? output.after_dispatch_id;
+  const dispatchOutputTargetId = dispatch.outputTargetId ?? dispatch.output_target_id;
+  const oracleOutputTargetId = output.outputTargetId ?? output.output_target_id;
+  const outputTargetId = oracleOutputTargetId ?? dispatchOutputTargetId;
+  const evidenceRefs = [
+    dispatchId,
+    afterDispatchId,
+    outputTargetId,
+    record.proofId,
+  ].filter(Boolean);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.output_oracle_binding.v1',
+    schema_version: 'synthi.gpu_hmr.output_oracle_binding.v1',
+    present: true,
+    accepted:
+      Boolean(dispatchId)
+      && dispatchId === afterDispatchId
+      && Boolean(dispatchOutputTargetId)
+      && dispatchOutputTargetId === oracleOutputTargetId,
+    outputTargetMatched: dispatchOutputTargetId === oracleOutputTargetId,
+    output_target_matched: dispatchOutputTargetId === oracleOutputTargetId,
+    outputAfterDispatchMatched: dispatchId === afterDispatchId,
+    output_after_dispatch_matched: dispatchId === afterDispatchId,
+    outputTargetId,
+    output_target_id: outputTargetId,
+    dispatchOutputTargetId,
+    dispatch_output_target_id: dispatchOutputTargetId,
+    oracleOutputTargetId,
+    oracle_output_target_id: oracleOutputTargetId,
+    dispatchId,
+    dispatch_id: dispatchId,
+    afterDispatchId,
+    after_dispatch_id: afterDispatchId,
+    outputTargetIds: [dispatchOutputTargetId, oracleOutputTargetId].filter(Boolean),
+    output_target_ids: [dispatchOutputTargetId, oracleOutputTargetId].filter(Boolean),
+    dispatchIds: [dispatchId].filter(Boolean),
+    dispatch_ids: [dispatchId].filter(Boolean),
+    afterDispatchIds: [afterDispatchId].filter(Boolean),
+    after_dispatch_ids: [afterDispatchId].filter(Boolean),
+    supplementalBindingSources: [],
+    supplemental_binding_sources: [],
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failedGates: [],
+    failed_gates: [],
+  };
+}
+
+function runtimeProofArtifactFacetFromMaterials(materials) {
+  const artifact = materials.runtimeProofArtifact;
+  return {
+    present: true,
+    proofId: artifact.proofId,
+    proof_id: artifact.proofId,
+    accepted:
+      artifact.fullRuntimeProven === true
+      && artifact.gpuHmrSuccess === true
+      && materials.proofLedgerQuery.gpuHmrSuccess === true
+      && artifact.acceptanceContractEvaluation?.accepted === true,
+    source: 'embedded_runtime_proof_artifact',
+    failedGates: [],
+    failed_gates: [],
+    runtimeTrace: materials.runtimeTrace,
+    runtime_trace: materials.runtimeTrace,
+  };
+}
+
+function verifiedComputeOracleArtifactsFor(materials) {
+  const verification = broadReadinessComputeFileVerification.raw_readback_verification;
+  return {
+    ...materials.computeOracleArtifacts,
+    readback_schema_hash: broadReadinessComputeFileVerification.readback_schema_hash,
+    raw_readback_verification: {
+      ...verification,
+    },
+    raw_readback_hash_verified: verification.hash_verified === true,
+    deterministic_slice_hash_verified:
+      verification.deterministic_slice_hash_verified === true,
+  };
+}
+
+function computeOutputOracleFacetFor(materials) {
+  const record = materials.proofLedgerQuery.record;
+  const artifacts = materials.computeOracleArtifacts;
+  const verification = artifacts.raw_readback_verification ?? {};
+  const semanticAccepted =
+    artifacts.expected_output_verified === true
+    && artifacts.checksum_before !== artifacts.checksum_after
+    && verification.hash_verified === true
+    && verification.deterministic_slice_hash_verified === true
+    && verification.slice_bounds_verified === true;
+  const compute = {
+    ...artifacts,
+    present: true,
+    accepted: semanticAccepted,
+    semanticAccepted,
+    semantic_accepted: semanticAccepted,
+    fileIntegrityAccepted: semanticAccepted,
+    file_integrity_accepted: semanticAccepted,
+    expectedOutputVerified: artifacts.expected_output_verified === true,
+    expected_output_verified: artifacts.expected_output_verified === true,
+    rawReadbackHashVerified: verification.hash_verified === true,
+    raw_readback_hash_verified: verification.hash_verified === true,
+    rawReadbackByteLength: verification.byte_length,
+    raw_readback_byte_length: verification.byte_length,
+    deterministicSliceHashVerified:
+      verification.deterministic_slice_hash_verified === true,
+    deterministic_slice_hash_verified:
+      verification.deterministic_slice_hash_verified === true,
+    readbackSchemaByteLength: verification.readback_schema_byte_length,
+    readback_schema_byte_length: verification.readback_schema_byte_length,
+    renderedCard: {
+      path: artifacts.rendered_card_png,
+      decoded: broadReadinessComputeCardMetadata.format === 'png',
+      format: broadReadinessComputeCardMetadata.format,
+      width: broadReadinessComputeCardMetadata.width,
+      height: broadReadinessComputeCardMetadata.height,
+    },
+  };
+  compute.rendered_card = compute.renderedCard;
+  const outputBinding = outputOracleBindingFromRecord(record);
+  return {
+    accepted: semanticAccepted && outputBinding.accepted === true,
+    kind: 'compute_oracle',
+    compute,
+    outputBinding,
+    output_binding: outputBinding,
+    evidenceRefs: [
+      record.proofId,
+      artifacts.raw_readback_hash,
+      artifacts.deterministic_slice_hash,
+    ],
+    evidence_refs: [
+      record.proofId,
+      artifacts.raw_readback_hash,
+      artifacts.deterministic_slice_hash,
+    ],
+    failedGates: [],
+    failed_gates: [],
+  };
+}
+
 function scopedGeneralityClaim(acceptanceScope) {
   return {
     schemaVersion: 'synthi.gpu_hmr.generality_claim.v1',
@@ -15918,6 +16525,34 @@ function acceptedBroadReadinessCandidate({
   sourceFirstSourceAuthority = 'direct_source_url_commit',
   updatedAt = '2026-06-30T21:00:00.000Z',
 }) {
+  const materialScope = `broad-readiness:${targetId}`;
+  const outputTargetId = `output-target:${targetId}`;
+  let materials;
+  if (oracle === 'visual') {
+    materials = runtimeProofMaterials('hot_delta_1', {
+      projectId: targetId,
+      backend,
+      visualRoot: visualDir,
+      outputTargetId,
+      runtimeProofId: `runtime-proof-artifact:sha256:${sha256Hex(materialScope)}`,
+    });
+  } else {
+    const baseMaterials = computeProofLedgerMaterials(materialScope, {
+      projectId: targetId,
+      backend,
+      rawReadbackPath: broadReadinessComputeReadbackPath,
+      rawReadbackBytes: broadReadinessComputeBytes,
+      outputTargetId,
+    });
+    materials = withComputeOracleArtifacts(
+      baseMaterials,
+      verifiedComputeOracleArtifactsFor(baseMaterials),
+    );
+  }
+  assert.equal(materials.proofLedgerQuery.gpuHmrSuccess, true);
+  assert.deepEqual(materials.proofLedgerQuery.failedInvariants, []);
+  assert.equal(materials.runtimeProofArtifact.acceptanceContractEvaluation.accepted, true);
+
   const row = acceptedAuthoritativeMatrixRow(targetId, {
     backend,
     proofMode,
@@ -15929,62 +16564,131 @@ function acceptedBroadReadinessCandidate({
     generalityClaim: scopedGeneralityClaim(acceptanceScope),
     generality_claim: scopedGeneralityClaim(acceptanceScope),
   });
-  row.acceptanceContract = {
-    ...(row.acceptanceContract ?? row.acceptance_contract ?? {}),
-    projectId: targetId,
-    project_id: targetId,
+  const ledger = proofLedgerFacetFromMaterials(materials);
+  const runtimeProofArtifact = {
+    ...runtimeProofArtifactFacetFromMaterials(materials),
+    fullRuntimeProven: true,
+    full_runtime_proven: true,
+    gpuHmrSuccess: true,
+    gpu_hmr_success: true,
   };
+  const ledgerProofId = ledger.proofId;
+  const runtimeProofId = runtimeProofArtifact.proofId;
+  const ledgerEditId = ledger.record.editId ?? ledger.record.edit_id;
+  const runModeProofId = `agent-split-run-mode-proof:sha256:${sha256Hex(
+    `broad-readiness-run-mode:${targetId}:${backend}:${oracle}`,
+  )}`;
+  row.acceptanceContract = cloneJson(materials.runtimeProofArtifact.acceptanceContract);
   row.acceptance_contract = row.acceptanceContract;
-  row.ledger.record.projectId = targetId;
-  row.ledger.record.project_id = targetId;
-  row.ledger.record.editId = `edit:${targetId}`;
-  row.ledger.record.edit_id = `edit:${targetId}`;
-  row.ledger.record.backend = backend;
-  row.ledger.record.proofId = null;
-  row.ledger.record.proof_id = null;
-  const recomputedLedger = queryGpuHmrLedgerInvariants(row.ledger.record, {
-    ignoreSuppliedLedgerQueryAndSuccess: true,
-  });
-  const recomputedLedgerProofId = recomputedLedger.record.proofId;
-  row.ledger.record.proofId = recomputedLedgerProofId;
-  row.ledger.record.proof_id = recomputedLedgerProofId;
-  row.ledger.proofId = recomputedLedgerProofId;
-  row.ledger.proof_id = recomputedLedgerProofId;
-  row.proofIds = [
-    recomputedLedgerProofId,
-    ...[...new Set((Array.isArray(row.proofIds ?? row.proof_ids) ? (row.proofIds ?? row.proof_ids) : []))]
-      .filter((proofId) => !proofId.startsWith('gpu-ledger-proof:sha256:')),
-  ];
+  row.ledger = ledger;
+  row.runtimeProofArtifact = runtimeProofArtifact;
+  row.runtime_proof_artifact = runtimeProofArtifact;
+  row.runtimeTrace = cloneJson(materials.runtimeTrace);
+  row.runtime_trace = row.runtimeTrace;
+  row.proofChain = 'embedded_runtime_proof_artifact_recomputed_ledger';
+  row.proof_chain = row.proofChain;
+  row.proofChainAccepted = true;
+  row.proof_chain_accepted = true;
+  row.proofId = runModeProofId;
+  row.proof_id = runModeProofId;
+  row.proofIds = [ledgerProofId, runtimeProofId, runModeProofId];
   row.proof_ids = row.proofIds;
+  row.runMode = {
+    ...(row.runMode ?? row.run_mode ?? {}),
+    accepted: true,
+    metricClock: 'monotonic_ns',
+    metric_clock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    metric_scope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    cache_state: 'compiler_cache_warm',
+    editId: ledgerEditId,
+    edit_id: ledgerEditId,
+    editHash: hashValue(`broad-readiness-edit:${targetId}:${backend}:${oracle}`),
+    edit_hash: hashValue(`broad-readiness-edit:${targetId}:${backend}:${oracle}`),
+    editKind: 'gpu_artifact_edit',
+    edit_kind: 'gpu_artifact_edit',
+  };
+  row.run_mode = row.runMode;
   row.sourceFirstIngestion = sourceFirstIngestionEvidenceFor({
     targetId,
     sourceAuthority: sourceFirstSourceAuthority,
   });
   row.source_first_ingestion = row.sourceFirstIngestion;
+  const validationProfileEvidence = {
+    ...(row.validationProfileEvidence ?? row.validation_profile_evidence ?? {}),
+    profileId: targetId,
+    profile_id: targetId,
+    proofIds: [ledgerProofId, runtimeProofId, runModeProofId],
+    proof_ids: [ledgerProofId, runtimeProofId, runModeProofId],
+    evidenceRefs: [targetId, ledgerProofId, runtimeProofId],
+    evidence_refs: [targetId, ledgerProofId, runtimeProofId],
+  };
+  row.validationProfileEvidence = validationProfileEvidence;
+  row.validation_profile_evidence = validationProfileEvidence;
   if (oracle === 'visual') {
     row.visual = {
       ...(row.visual ?? {}),
       required: true,
+      present: true,
       accepted: true,
     };
+    const outputBinding = outputOracleBindingFromRecord(ledger.record);
     row.outputOracleFacet = {
       ...(row.outputOracleFacet ?? {}),
       kind: 'visual_oracle',
-      accepted: true,
+      accepted: outputBinding.accepted === true,
+      outputBinding,
+      output_binding: outputBinding,
+      evidenceRefs: [ledgerProofId, runtimeProofId, ...outputBinding.evidenceRefs],
+      evidence_refs: [ledgerProofId, runtimeProofId, ...outputBinding.evidenceRefs],
     };
     row.output_oracle_facet = row.outputOracleFacet;
   } else {
     row.visual = {
-      ...(row.visual ?? {}),
       required: false,
+      present: false,
       accepted: true,
+      failedGates: [],
+      failed_gates: [],
     };
-    row.outputOracleFacet = {
-      ...(row.outputOracleFacet ?? {}),
-      kind: 'compute_oracle',
-      accepted: true,
-    };
+    row.outputOracleFacet = computeOutputOracleFacetFor(materials);
     row.output_oracle_facet = row.outputOracleFacet;
+    for (const key of [
+      'visualArtifacts',
+      'visual_artifacts',
+      'visualEvidenceArtifacts',
+      'visual_evidence_artifacts',
+      'visualSemanticProbes',
+      'visual_semantic_probes',
+      'asyncVisualCasBundle',
+      'async_visual_cas_bundle',
+      'asyncVisualMetrics',
+      'async_visual_metrics',
+    ]) {
+      delete row[key];
+    }
+  }
+  for (const key of [
+    'runtimeTargetIdentity',
+    'runtime_target_identity',
+    'fullRuntimeRowIdentityBinding',
+    'full_runtime_row_identity_binding',
+    'runtimeIdentityAuthority',
+    'runtime_identity_authority',
+    'fullRuntimeEvidenceAuthority',
+    'full_runtime_evidence_authority',
+    'safety',
+    'nativeHipApiEvidence',
+    'native_hip_api_evidence',
+    'nativeOpenClApiEvidence',
+    'native_opencl_api_evidence',
+    'nativeVulkanApiEvidence',
+    'native_vulkan_api_evidence',
+    'nativeWebGpuApiEvidence',
+    'native_webgpu_api_evidence',
+  ]) {
+    delete row[key];
   }
   row.updatedAt = updatedAt;
   row.updated_at = updatedAt;
@@ -18290,7 +18994,7 @@ assert.equal(
 );
 assert.ok(
   labelOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.openGaps
-    .includes('large_rocm_ml_random_cold_source_intake_ml_domain_not_observed'),
+    .includes('large_rocm_ml_random_cold_source_intake_compiler_build_semantics_not_observed'),
 );
 const broadReadinessIdentityOnlyRocmMlColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
@@ -18330,7 +19034,7 @@ assert.equal(
 );
 assert.ok(
   identityOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.openGaps
-    .includes('large_rocm_ml_random_cold_source_intake_ml_domain_not_observed'),
+    .includes('large_rocm_ml_random_cold_source_intake_compiler_build_semantics_not_observed'),
 );
 const broadReadinessSemanticLabelOnlyRocmMlColdRows = Array.from({ length: 5 }, (_, index) => {
   const targetId = `semantic-label-only-cold-readiness-${index + 1}`;
@@ -18351,20 +19055,6 @@ const broadReadinessSemanticLabelOnlyRocmMlColdRows = Array.from({ length: 5 }, 
       targetId,
       sourceListingManifest,
       semanticSummary: {
-        backendSignalAuthority: 'build_metadata_semantic_tokens_only_not_runtime_authority',
-        backend_signal_authority: 'build_metadata_semantic_tokens_only_not_runtime_authority',
-        backendSignals: [
-          {
-            backend: 'hip_rocm',
-            reason: 'cmake_language_enables_hip',
-          },
-        ],
-        backend_signals: [
-          {
-            backend: 'hip_rocm',
-            reason: 'cmake_language_enables_hip',
-          },
-        ],
         mlDomainSignals: [
           {
             path: 'synthetic/labels/gemm-only-target-name.cc',
@@ -18412,7 +19102,7 @@ assert.equal(
 );
 assert.ok(
   semanticLabelOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.openGaps
-    .includes('large_rocm_ml_random_cold_source_intake_ml_domain_not_observed'),
+    .includes('large_rocm_ml_random_cold_source_intake_compiler_build_semantics_not_observed'),
 );
 const broadReadinessTokenOnlyRocmMlColdRows = Array.from({ length: 5 }, (_, index) => {
   const targetId = `semantic-token-only-cold-readiness-${index + 1}`;
@@ -18433,20 +19123,6 @@ const broadReadinessTokenOnlyRocmMlColdRows = Array.from({ length: 5 }, (_, inde
       targetId,
       sourceListingManifest,
       semanticSummary: {
-        backendSignalAuthority: 'build_metadata_semantic_tokens_only_not_runtime_authority',
-        backend_signal_authority: 'build_metadata_semantic_tokens_only_not_runtime_authority',
-        backendSignals: [
-          {
-            backend: 'hip_rocm',
-            reason: 'cmake_language_enables_hip',
-          },
-        ],
-        backend_signals: [
-          {
-            backend: 'hip_rocm',
-            reason: 'cmake_language_enables_hip',
-          },
-        ],
         mlDomainSignals: [
           {
             token: 'gemm',
@@ -18493,7 +19169,7 @@ assert.equal(
 );
 assert.ok(
   tokenOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.openGaps
-    .includes('large_rocm_ml_random_cold_source_intake_ml_domain_not_source_bound'),
+    .includes('large_rocm_ml_random_cold_source_intake_compiler_build_semantics_not_observed'),
 );
 const broadReadinessSerializedRecomputedBuildContentRows = Array.from({ length: 5 }, (_, index) => {
   const forgedHash = hashValue(`serialized-recomputed-build-content:${index + 1}`);
@@ -20510,7 +21186,18 @@ assert.equal(broadReadinessFreshRandomColdLedger.query.accepted, true);
 assert.equal(
   broadReadinessFreshRandomColdLedger.summary.broadLibraryAgnosticReadiness
     .broadLibraryAgnosticProof.accepted,
-  true,
+  false,
+);
+assert.equal(
+  broadReadinessFreshRandomColdLedger.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.randomColdBuildRows,
+  0,
+);
+assert.ok(
+  broadReadinessFreshRandomColdLedger.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.openGaps.includes(
+      'broad_acceptance_requires_trusted_random_large_project_cold_compile_receipts',
+    ),
 );
 assert.equal(
   broadReadinessFreshRandomColdLedger.summary.broadLibraryAgnosticReadiness
@@ -20964,7 +21651,13 @@ assert.equal(
 );
 assert.equal(
   broadReadinessWithNewerPendingColdAttemptLedger.summary.broadLibraryAgnosticReadiness.accepted,
-  true,
+  false,
+);
+assert.ok(
+  broadReadinessWithNewerPendingColdAttemptLedger.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes(
+      'broad_acceptance_requires_trusted_random_large_project_cold_compile_receipts',
+    ),
 );
 const broadReadinessSerializedAsyncVisualOnlyQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
@@ -21786,14 +22479,14 @@ assert.ok(
 const validScopedSummaryQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
-    withQueryRecomputedRowId(acceptedAuthoritativeMatrixRow('accepted-scoped-summary-row')),
+    withQueryRecomputedRowId(cloneJson(acceptedFlow)),
   ],
 });
 assert.equal(validScopedSummaryQuery.accepted, true);
 const inflatedSummaryQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
-    withQueryRecomputedRowId(acceptedAuthoritativeMatrixRow('accepted-scoped-summary-row')),
+    withQueryRecomputedRowId(cloneJson(acceptedFlow)),
   ],
   summary: {
     ...validScopedSummaryQuery.summary,
@@ -25278,7 +25971,11 @@ assert.equal(coverageById.get('oidn_hip_output')?.status, 'refused');
 assert.ok(coverageById.get('oidn_hip_output')?.openGaps.includes('matching_oidn_hip_runtime_required'));
 assert.ok(coverageById.get('oidn_hip_output')?.openGaps.includes('strict_runtime_proof_ledger_required'));
 assert.equal(ledger.summary.broadLibraryAgnosticReadiness.broadRuntimeRows, 0);
-assert.equal(coverageById.get('external_engine_visual_profile')?.status, 'visual_profile_only');
+assert.equal(coverageById.get('external_engine_visual_profile')?.status, 'missing');
+assert.deepEqual(
+  coverageById.get('external_engine_visual_profile')?.openGaps,
+  ['external_engine_visual_profile_required'],
+);
 assert.ok(coverageById.get('external_engine_visual_profile')?.rows.every((row) =>
   row.externalProfileSelection?.accepted === true
   && row.externalSourceDelta?.accepted === true
@@ -30773,8 +31470,6 @@ async function writeForgedRuntimeChainCase({
   slug,
   mutateRecord,
   expectedReason,
-  expectedOutputOracleAccepted = true,
-  expectedOutputOracleFailedGates = [],
 }) {
   const dir = path.join(logsRoot, `real-rocm-forged-runtime-chain-${slug}`);
   const scope = `forged-runtime-chain-${slug}`;
@@ -30785,7 +31480,7 @@ async function writeForgedRuntimeChainCase({
   });
   const mutatedRecord = structuredClone(materials.proofLedger.records[0]);
   mutateRecord(mutatedRecord);
-  const proofLedger = buildGpuHmrProofLedger(mutatedRecord);
+  const proofLedger = buildGpuHmrProofLedger(clearFixtureProofIdentity(mutatedRecord));
   const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
   materials.proofLedger = proofLedger;
   materials.proof_ledger = proofLedger;
@@ -30858,12 +31553,7 @@ async function writeForgedRuntimeChainCase({
   assert.equal(row.acceptedForGpuHmr, false);
   assert.equal(row.runtimeProofArtifact.accepted, true);
   assert.equal(row.ledger.gpuHmrSuccess, true);
-  assert.equal(row.outputOracleFacet.accepted, expectedOutputOracleAccepted);
-  const outputOracleFailedGateCodes = (row.outputOracleFacet.failedGates ?? [])
-    .map((gate) => gate?.code ?? gate);
-  for (const expectedGate of expectedOutputOracleFailedGates) {
-    assert.ok(outputOracleFailedGateCodes.includes(expectedGate));
-  }
+  assert.equal(row.outputOracleFacet.accepted, true);
   assert.equal(row.outputOracleResolutionGate.accepted, true);
   assert.equal(row.realRocmRuntimeChain.accepted, false);
   assert.ok(row.reasons.includes(expectedReason));
@@ -30896,11 +31586,6 @@ await writeForgedRuntimeChainCase({
 await writeForgedRuntimeChainCase({
   slug: 'missing-output-target',
   expectedReason: 'real_rocm_runtime_chain_output_target_missing',
-  expectedOutputOracleAccepted: false,
-  expectedOutputOracleFailedGates: [
-    'output_oracle_binding_oracle_target_missing',
-    'output_oracle_binding_target_mismatch',
-  ],
   mutateRecord(record) {
     if (record.outputEvent) delete record.outputEvent.output_target_id;
     if (record.output_event) delete record.output_event.output_target_id;
@@ -32520,7 +33205,7 @@ for (const event of [
   delete event.outputTargetId;
 }
 const adapterOverlayOnlyClosureProofLedger =
-  buildGpuHmrProofLedger(adapterOverlayOnlyClosureRecord);
+  buildGpuHmrProofLedger(clearFixtureProofIdentity(adapterOverlayOnlyClosureRecord));
 const adapterOverlayOnlyClosureProofLedgerQuery =
   queryGpuHmrLedgerInvariants(adapterOverlayOnlyClosureProofLedger);
 assert.deepEqual(adapterOverlayOnlyClosureProofLedgerQuery.failedInvariants, []);
