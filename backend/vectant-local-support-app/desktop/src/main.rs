@@ -861,9 +861,21 @@ async fn refresh_process_visibility(
         "The active Full Access receipt does not allow process visibility.".to_string()
     })?;
     let collected_at = Utc::now();
-    let snapshot = match ProcessInspectionAdapter::list_workspace_processes(
+    let approved_ports = state
+        .port_approvals
+        .lock()
+        .await
+        .approvals()
+        .into_iter()
+        .filter(|approval| approval.session_id == session.session_id)
+        .map(|approval| (approval.port, approval.process_identity_hash))
+        .collect::<Vec<_>>();
+    let snapshot = match ProcessInspectionAdapter::list_scoped_processes(
         state.workspace.root(),
         policy.max_process_records,
+        &policy.process_visibility_modes,
+        &policy.allowed_loopback_ports,
+        &approved_ports,
     ) {
         Ok(records) => ProcessVisibilitySnapshot {
             state: "available".to_string(),

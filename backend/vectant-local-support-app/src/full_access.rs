@@ -38,6 +38,18 @@ pub enum FullAccessCapability {
     LocalPortUse,
 }
 
+/// Explicit, bounded diagnostic sources. This deliberately has no "all
+/// processes" variant: every process record must be justified by a selected
+/// workspace or a loopback listener scope.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessVisibilityMode {
+    WorkspaceProcesses,
+    FullAccessListeners,
+    ApprovedListeners,
+    DiagnosticInventory,
+}
+
 impl FullAccessCapability {
     pub fn wire_name(&self) -> &'static str {
         match self {
@@ -80,6 +92,8 @@ pub struct FullAccessPolicy {
     pub max_requests_per_minute: u32,
     pub max_concurrent_reads: u16,
     pub max_process_records: usize,
+    #[serde(default)]
+    pub process_visibility_modes: BTreeSet<ProcessVisibilityMode>,
     pub allowed_command_executables: BTreeSet<String>,
     pub max_command_timeout_seconds: u64,
     pub max_command_output_bytes: usize,
@@ -101,6 +115,7 @@ impl Default for FullAccessPolicy {
             max_requests_per_minute: 30,
             max_concurrent_reads: 2,
             max_process_records: MAX_PROCESS_RECORDS,
+            process_visibility_modes: BTreeSet::new(),
             allowed_command_executables: BTreeSet::new(),
             max_command_timeout_seconds: 60,
             max_command_output_bytes: 65_536,
@@ -159,6 +174,17 @@ impl FullAccessPolicy {
                 return false;
             }
         } else if !self.allowed_command_executables.is_empty() {
+            return false;
+        }
+
+        let process_enabled = self
+            .allowed_capabilities
+            .contains(&FullAccessCapability::ProcessInventory);
+        if process_enabled {
+            if self.process_visibility_modes.is_empty() || self.process_visibility_modes.len() > 4 {
+                return false;
+            }
+        } else if !self.process_visibility_modes.is_empty() {
             return false;
         }
 
@@ -574,6 +600,19 @@ mod tests {
         assert!(!policy.is_valid_enrollment_policy());
         policy.allowed_loopback_ports.insert(3000);
         assert!(policy.is_valid_enrollment_policy());
+
+        policy
+            .allowed_capabilities
+            .insert(FullAccessCapability::ProcessInventory);
+        assert!(!policy.is_valid_enrollment_policy());
+        policy
+            .process_visibility_modes
+            .insert(ProcessVisibilityMode::WorkspaceProcesses);
+        assert!(policy.is_valid_enrollment_policy());
+        policy
+            .allowed_capabilities
+            .remove(&FullAccessCapability::ProcessInventory);
+        assert!(!policy.is_valid_enrollment_policy());
     }
 
     fn binding() -> ReceiptBinding<'static> {

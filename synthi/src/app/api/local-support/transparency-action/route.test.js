@@ -106,6 +106,7 @@ describe("local support transparency action route", () => {
           max_command_output_bytes: 4096,
           max_command_concurrency: 1,
           allowed_loopback_ports: [],
+          process_visibility_modes: ["workspace_processes"],
           enrollment_ttl_seconds: 60,
         },
       },
@@ -116,6 +117,7 @@ describe("local support transparency action route", () => {
       policy: {
         allowed_actors: ["support_agent"],
         allowed_command_executables: ["python.exe"],
+        process_visibility_modes: ["workspace_processes"],
         allowed_capabilities: expect.arrayContaining(["enroll", "command_execute", "process_inventory"]),
       },
     });
@@ -128,7 +130,7 @@ describe("local support transparency action route", () => {
       max_bytes_per_request: 4096, max_bytes_per_session: 16384, max_requests_per_minute: 10,
       max_concurrent_reads: 1, max_process_records: 32, allowed_command_executables: [],
       max_command_timeout_seconds: 30, max_command_output_bytes: 4096, max_command_concurrency: 1,
-      allowed_loopback_ports: [], enrollment_ttl_seconds: 60,
+      allowed_loopback_ports: [], process_visibility_modes: [], enrollment_ttl_seconds: 60,
     };
     cloudMocks.policy.mockResolvedValue({
       enabled: true, policy_version: "2026.07.05",

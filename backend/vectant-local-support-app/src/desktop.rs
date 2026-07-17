@@ -110,6 +110,12 @@ pub async fn build_desktop_status_state(state: &AppState) -> Value {
             "enrolled": receipt.is_some_and(|value| value.revoked_at.is_none() && value.paused_at.is_none()),
             "auto_approval_enabled": receipt.is_some_and(|value| value.auto_approval_enabled),
             "process_visibility_paused": full_access.process_visibility_paused,
+            "process_visibility_modes": full_access.policy.process_visibility_modes.iter().map(|mode| match mode {
+                crate::full_access::ProcessVisibilityMode::WorkspaceProcesses => "workspace_processes",
+                crate::full_access::ProcessVisibilityMode::FullAccessListeners => "full_access_listeners",
+                crate::full_access::ProcessVisibilityMode::ApprovedListeners => "approved_listeners",
+                crate::full_access::ProcessVisibilityMode::DiagnosticInventory => "diagnostic_inventory",
+            }).collect::<Vec<_>>(),
             "capabilities": capabilities,
             "graph_node_count": full_access.graph.len(),
             "bytes_sent_this_session": full_access.budget.bytes_sent,

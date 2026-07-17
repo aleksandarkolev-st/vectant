@@ -3,6 +3,7 @@
 //! No command line, environment, raw path, PID, handle, or process object
 //! crosses this boundary. This is intentionally not a generic process API.
 
+use sha2::{Digest, Sha256};
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::time::Instant;
@@ -11,7 +12,7 @@ use std::time::Instant;
 
 #[cfg(any(windows, target_os = "linux"))]
 use crate::full_access::sanitized_process_record;
-use crate::full_access::{SanitizedProcessRecord, MAX_PROCESS_RECORDS};
+use crate::full_access::{ProcessVisibilityMode, SanitizedProcessRecord, MAX_PROCESS_RECORDS};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessInspectionError {
@@ -33,6 +34,51 @@ impl ProcessInspectionAdapter {
         list_workspace_processes_platform(workspace_root, max_records)
     }
 
+    /// Collects only records justified by an explicit typed source. Listener
+    /// discovery is limited to policy-approved or already-approved loopback
+    /// ports; it never enumerates arbitrary machine processes.
+    pub fn list_scoped_processes(
+        workspace_root: &Path,
+        max_records: usize,
+        modes: &std::collections::BTreeSet<ProcessVisibilityMode>,
+        full_access_ports: &std::collections::BTreeSet<u16>,
+        approved_ports: &[(u16, String)],
+    ) -> Result<Vec<SanitizedProcessRecord>, ProcessInspectionError> {
+        if modes.is_empty() || max_records == 0 || max_records > MAX_PROCESS_RECORDS {
+            return Err(ProcessInspectionError::InvalidScope);
+        }
+        let mut records = Vec::new();
+        if modes.contains(&ProcessVisibilityMode::WorkspaceProcesses)
+            || modes.contains(&ProcessVisibilityMode::DiagnosticInventory)
+        {
+            records.extend(Self::list_workspace_processes(workspace_root, max_records)?);
+        }
+        if records.len() < max_records
+            && (modes.contains(&ProcessVisibilityMode::FullAccessListeners)
+                || modes.contains(&ProcessVisibilityMode::DiagnosticInventory))
+        {
+            records.extend(listener_records(
+                full_access_ports.iter().copied(),
+                None,
+                "policy_scoped_loopback_listener",
+                max_records - records.len(),
+            ));
+        }
+        if records.len() < max_records && modes.contains(&ProcessVisibilityMode::ApprovedListeners)
+        {
+            records.extend(listener_records(
+                approved_ports.iter().map(|(port, _)| *port),
+                Some(approved_ports),
+                "manually_approved_loopback_listener",
+                max_records - records.len(),
+            ));
+        }
+        records.sort_by(|left, right| left.identity_hash.cmp(&right.identity_hash));
+        records.dedup_by(|left, right| left.identity_hash == right.identity_hash);
+        records.truncate(max_records);
+        Ok(records)
+    }
+
     pub fn inspect_listener_identity(
         port: u16,
         expected_identity_hash: &str,
@@ -47,6 +93,55 @@ impl ProcessInspectionAdapter {
             .map_err(|_| ProcessInspectionError::Unavailable)?;
         Ok(listener.process_identity_hash == expected_identity_hash)
     }
+}
+
+fn listener_records(
+    ports: impl IntoIterator<Item = u16>,
+    expected_identities: Option<&[(u16, String)]>,
+    reason: &str,
+    limit: usize,
+) -> Vec<SanitizedProcessRecord> {
+    let started = std::time::Instant::now();
+    let mut records = Vec::new();
+    for port in ports {
+        if records.len() >= limit {
+            break;
+        }
+        let Ok(listener) = crate::port_adapter::detect_loopback_listener(port) else {
+            continue;
+        };
+        if let Some(expected) = expected_identities {
+            if !expected.iter().any(|(approved_port, identity)| {
+                *approved_port == port
+                    && identity == &preview_approval_identity_hash(&listener.process_identity)
+            }) {
+                continue;
+            }
+        }
+        let Ok(record) = crate::full_access::sanitized_process_record(
+            &listener.process_identity,
+            &listener.service,
+            "loopback_listener",
+            0,
+            vec![port],
+            false,
+            reason,
+            started.elapsed().as_millis() as u64,
+        ) else {
+            continue;
+        };
+        records.push(record);
+    }
+    records
+}
+
+// Browser preview grants predate the namespaced port-adapter hash and persist
+// SHA-256(raw identity). Keep that comparison local and exact; do not weaken
+// it to a port-only approval or expose the raw identity to callers.
+fn preview_approval_identity_hash(process_identity: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(process_identity.as_bytes());
+    format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
 #[cfg(windows)]
@@ -262,6 +357,9 @@ mod linux_tests {
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
+    use crate::full_access::ProcessVisibilityMode;
+    use std::collections::BTreeSet;
+    use std::net::TcpListener;
     use std::process::Command;
     use std::time::Duration;
 
@@ -304,6 +402,58 @@ mod windows_tests {
             comparable_windows_path(r"\??\C:\\Workspace\\app.exe"),
             r"c:\\workspace\\app.exe"
         );
+    }
+
+    #[test]
+    fn listener_scope_reads_only_an_allowlisted_live_loopback_listener() {
+        let root = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::sleep(Duration::from_millis(100));
+        let modes = BTreeSet::from([ProcessVisibilityMode::FullAccessListeners]);
+        let ports = BTreeSet::from([port]);
+        let records =
+            ProcessInspectionAdapter::list_scoped_processes(root.path(), 8, &modes, &ports, &[])
+                .unwrap();
+        assert!(records
+            .iter()
+            .any(|record| record.loopback_ports == vec![port]));
+        let serialized = serde_json::to_string(&records).unwrap();
+        assert!(!serialized.contains(root.path().to_string_lossy().as_ref()));
+        assert!(!serialized.contains("127.0.0.1"));
+    }
+
+    #[test]
+    fn approved_listener_scope_requires_the_current_approved_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::sleep(Duration::from_millis(100));
+        let detected = crate::port_adapter::detect_loopback_listener(port).unwrap();
+        let modes = BTreeSet::from([ProcessVisibilityMode::ApprovedListeners]);
+        let records = ProcessInspectionAdapter::list_scoped_processes(
+            root.path(),
+            8,
+            &modes,
+            &BTreeSet::new(),
+            &[(
+                port,
+                preview_approval_identity_hash(&detected.process_identity),
+            )],
+        )
+        .unwrap();
+        assert!(records
+            .iter()
+            .any(|record| record.loopback_ports == vec![port]));
+        let rejected = ProcessInspectionAdapter::list_scoped_processes(
+            root.path(),
+            8,
+            &modes,
+            &BTreeSet::new(),
+            &[(port, "sha256:wrong".to_string())],
+        )
+        .unwrap();
+        assert!(rejected.is_empty());
     }
 }
 

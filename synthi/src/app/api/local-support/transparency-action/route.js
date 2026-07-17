@@ -318,7 +318,10 @@ export function buildFullAccessEnrollmentProposal(policy, requestedActor) {
     if (!Array.isArray(enrollment.allowed_command_executables) || enrollment.allowed_command_executables.length === 0) return null;
     capabilities.push("command_execute", "command_context_read");
   }
-  if (fullAccess.process_visibility_enabled === true) capabilities.push("process_inventory", "process_listener_metadata");
+  if (fullAccess.process_visibility_enabled === true) {
+    if (!Array.isArray(enrollment.process_visibility_modes) || enrollment.process_visibility_modes.length === 0) return null;
+    capabilities.push("process_inventory", "process_listener_metadata");
+  }
   if (fullAccess.local_port_discovery_enabled === true) {
     if (!Array.isArray(enrollment.allowed_loopback_ports) || enrollment.allowed_loopback_ports.length === 0) return null;
     capabilities.push("local_port_discover");
@@ -342,6 +345,7 @@ export function buildFullAccessEnrollmentProposal(policy, requestedActor) {
       max_requests_per_minute: enrollment.max_requests_per_minute,
       max_concurrent_reads: enrollment.max_concurrent_reads,
       max_process_records: enrollment.max_process_records,
+      process_visibility_modes: enrollment.process_visibility_modes,
       allowed_command_executables: enrollment.allowed_command_executables,
       max_command_timeout_seconds: enrollment.max_command_timeout_seconds,
       max_command_output_bytes: enrollment.max_command_output_bytes,

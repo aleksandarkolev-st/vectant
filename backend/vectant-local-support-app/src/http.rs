@@ -1365,10 +1365,26 @@ async fn full_access_processes(
         ));
     }
     let max_records = full_access.policy.max_process_records;
+    let process_modes = full_access.policy.process_visibility_modes.clone();
+    let full_access_ports = full_access.policy.allowed_loopback_ports.clone();
     drop(full_access);
-    let records =
-        ProcessInspectionAdapter::list_workspace_processes(state.workspace.root(), max_records)
-            .map_err(|_| denied(StatusCode::FORBIDDEN, "process_inventory_unavailable"))?;
+    let approved_ports = state
+        .port_approvals
+        .lock()
+        .await
+        .approvals()
+        .into_iter()
+        .filter(|approval| approval.session_id == session_id)
+        .map(|approval| (approval.port, approval.process_identity_hash))
+        .collect::<Vec<_>>();
+    let records = ProcessInspectionAdapter::list_scoped_processes(
+        state.workspace.root(),
+        max_records,
+        &process_modes,
+        &full_access_ports,
+        &approved_ports,
+    )
+    .map_err(|_| denied(StatusCode::FORBIDDEN, "process_inventory_unavailable"))?;
     let count = records.len();
     let mut audit = state.audit.lock().await;
     audit.append(AuditClass::Process, Some(request_id.clone()), format!("Collected {count} sanitized workspace process records under Full Access policy. Command lines, environments, raw paths, and PIDs were excluded."), true);

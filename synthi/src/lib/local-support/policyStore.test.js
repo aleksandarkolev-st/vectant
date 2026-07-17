@@ -299,7 +299,7 @@ describe("durable local support policy", () => {
       max_bytes_per_request: 4096, max_bytes_per_session: 16384, max_requests_per_minute: 10,
       max_concurrent_reads: 1, max_process_records: 32, allowed_command_executables: ["python.exe"],
       max_command_timeout_seconds: 30, max_command_output_bytes: 4096, max_command_concurrency: 1,
-      allowed_loopback_ports: [3000], enrollment_ttl_seconds: 60,
+      allowed_loopback_ports: [3000], process_visibility_modes: ["workspace_processes", "full_access_listeners"], enrollment_ttl_seconds: 60,
     };
     const global = {
       id: "global", orgId: null, globalEnabled: true, orgDisabled: false, pairingDisabled: false,

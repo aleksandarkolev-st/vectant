@@ -189,7 +189,13 @@ function renderFullAccess(fullAccess) {
       : "Full Access requires a separate local confirmation. Pairing or installation alone never enrolls this mode.");
   setText('[data-field="full-access-graph"]', enrolled ? `${fullAccess.graphNodeCount} scrubbed nodes, no raw bodies` : "Not available");
   setText('[data-field="full-access-delivery"]', enrolled && fullAccess.autoApproval && !fullAccess.automaticDeliveryPaused ? "Enabled within policy and budget" : "Disabled or paused");
-  setText('[data-field="full-access-processes"]', enrolled ? (fullAccess.processVisibilityPaused ? "Paused locally" : "Sanitized diagnostic records only") : "Not available");
+  setText('[data-field="full-access-processes"]', enrolled
+    ? (fullAccess.processVisibilityPaused
+      ? "Paused locally"
+      : fullAccess.processVisibilityModes.length
+        ? `Sanitized diagnostic records only: ${fullAccess.processVisibilityModes.join(", ")}`
+        : "No process source is enabled")
+    : "Not available");
   const processReview = fullAccess.processVisibility;
   setText('[data-field="process-visibility-summary"]', !enrolled
     ? "Process visibility is unavailable until Full Access is enrolled."
@@ -459,6 +465,17 @@ function normalizeFullAccess(rawAccess) {
     enrolled: raw.enrolled === true,
     autoApproval: raw.auto_approval_enabled === true,
     processVisibilityPaused: raw.process_visibility_paused === true,
+    processVisibilityModes: Array.isArray(raw.process_visibility_modes)
+      ? raw.process_visibility_modes
+        .map((mode) => ({
+          workspace_processes: "Workspace processes",
+          full_access_listeners: "Full Access listeners",
+          approved_listeners: "Approved listeners",
+          diagnostic_inventory: "Diagnostic inventory",
+        })[mode] || "")
+        .filter(Boolean)
+        .slice(0, 4)
+      : [],
     processVisibility: raw.process_visibility && typeof raw.process_visibility === "object"
       ? {
           state: raw.process_visibility.state === "available" ? "available" : raw.process_visibility.state === "unavailable" ? "unavailable" : "unknown",

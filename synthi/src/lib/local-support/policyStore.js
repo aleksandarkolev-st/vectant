@@ -286,7 +286,7 @@ const FULL_ACCESS_ENROLLMENT_FIELDS = new Set([
   "max_bytes_per_request", "max_bytes_per_session", "max_requests_per_minute",
   "max_concurrent_reads", "max_process_records", "allowed_command_executables",
   "max_command_timeout_seconds", "max_command_output_bytes", "max_command_concurrency",
-  "allowed_loopback_ports", "enrollment_ttl_seconds",
+  "allowed_loopback_ports", "process_visibility_modes", "enrollment_ttl_seconds",
 ]);
 
 function isValidFullAccessInput(value) {
@@ -303,6 +303,7 @@ function isValidFullAccessEnrollment(value) {
   const actors = value.allowed_support_actors;
   const executables = value.allowed_command_executables;
   const ports = value.allowed_loopback_ports;
+  const processModes = value.process_visibility_modes;
   const numericRanges = [
     ["policy_major", 1, 65_535], ["mandatory_reconsent_version", 1, 1_000_000],
     ["max_bytes_per_request", 1, 262_144], ["max_bytes_per_session", 1, 67_108_864],
@@ -318,7 +319,9 @@ function isValidFullAccessEnrollment(value) {
     && Array.isArray(executables) && executables.length <= 32
     && executables.every(safeExecutableName)
     && Array.isArray(ports) && ports.length <= 128
-    && ports.every((port) => Number.isSafeInteger(port) && port >= 1 && port <= 65_535);
+    && ports.every((port) => Number.isSafeInteger(port) && port >= 1 && port <= 65_535)
+    && Array.isArray(processModes) && processModes.length <= 4
+    && processModes.every((mode) => ["workspace_processes", "full_access_listeners", "approved_listeners", "diagnostic_inventory"].includes(mode));
 }
 
 function safePolicyIdentifier(value, maxLength) {
@@ -412,6 +415,7 @@ function intersectEnrollmentPolicy(global, scoped) {
     max_requests_per_minute: Math.min(global.max_requests_per_minute, scoped.max_requests_per_minute),
     max_concurrent_reads: Math.min(global.max_concurrent_reads, scoped.max_concurrent_reads),
     max_process_records: Math.min(global.max_process_records, scoped.max_process_records),
+    process_visibility_modes: global.process_visibility_modes.filter((mode) => scoped.process_visibility_modes.includes(mode)),
     allowed_command_executables: global.allowed_command_executables.filter((item) => scoped.allowed_command_executables.includes(item)),
     max_command_timeout_seconds: Math.min(global.max_command_timeout_seconds, scoped.max_command_timeout_seconds),
     max_command_output_bytes: Math.min(global.max_command_output_bytes, scoped.max_command_output_bytes),
