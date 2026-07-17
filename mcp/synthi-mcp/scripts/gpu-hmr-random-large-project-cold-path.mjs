@@ -4410,7 +4410,7 @@ function sourceIntakePathForCandidate(candidate) {
   );
 }
 
-function classifySourceListing(files) {
+export function classifySourceListing(files) {
   const buildFileBasenames = new Set([
     'cmakelists.txt',
     'makefile',
@@ -4532,16 +4532,14 @@ function classifySourceListing(files) {
       if (sourceRelevantFiles.length < 80) sourceRelevantFiles.push(pathName);
     }
     if (isSourceOrBuildRelevant) sourceOrBuildRelevantFileCount += 1;
-    if (ext === '.hip' || lower.includes('/hip/') || lower.includes('rocm')) addBackend('hip_rocm', pathName, 'path_or_extension');
-    if (ext === '.cu' || ext === '.cuh' || lower.includes('cuda')) addBackend('cuda', pathName, 'path_or_extension');
-    if (ext === '.cl' || ext === '.clh' || lower.includes('opencl')) addBackend('opencl', pathName, 'path_or_extension');
-    if (ext === '.wgsl' || lower.includes('wgpu') || lower.includes('webgpu')) addBackend('webgpu_wgsl', pathName, 'path_or_extension');
+    if (ext === '.hip') addBackend('hip_rocm', pathName, 'device_source_extension');
+    if (ext === '.cu' || ext === '.cuh') addBackend('cuda', pathName, 'device_source_extension');
+    if (ext === '.cl' || ext === '.clh') addBackend('opencl', pathName, 'device_source_extension');
+    if (ext === '.wgsl') addBackend('webgpu_wgsl', pathName, 'device_source_extension');
     if (
       ['.spv', '.glsl', '.hlsl', '.comp', '.vert', '.frag', '.geom', '.tesc', '.tese'].includes(ext)
-      || lower.includes('vulkan')
-    ) addBackend('vulkan', pathName, 'path_or_extension');
-    if (ext === '.metal' || lower.includes('/metal/')) addBackend('metal', pathName, 'path_or_extension');
-    if (lower.includes('sycl') || lower.includes('dpcpp')) addBackend('sycl', pathName, 'path_or_extension');
+    ) addBackend('vulkan', pathName, 'device_source_extension');
+    if (ext === '.metal') addBackend('metal', pathName, 'device_source_extension');
   }
   const backendCandidates = [...backendSignals.keys()].sort();
   return {
@@ -4588,48 +4586,84 @@ function classifyBuildSystemPath(pathName) {
   return 'unknown_build_file';
 }
 
-function buildMetadataBackendSignals(pathName, text) {
+function buildMetadataSemanticSource(pathName, text) {
   const source = String(text ?? '');
-  const pathHint = String(pathName ?? '').replace(/\\/g, '/').toLowerCase();
+  if (classifyBuildSystemPath(pathName) !== 'cmake') return source;
+  return source
+    .replace(/#\[(=*)\[[\s\S]*?\]\1\]/g, '')
+    .replace(/#[^\r\n]*/g, '')
+    .replace(/\bfind_package\s*\((?:[^()]|\([^()]*\))*\)/gi, '')
+    .replace(
+      /(\bproject\s*\(\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s)]+)/gi,
+      '$1',
+    );
+}
+
+function buildMetadataBackendSignals(pathName, text) {
+  const source = buildMetadataSemanticSource(pathName, text);
   const signals = [];
   const add = (backend, reason, regex) => {
-    if (!regex.test(source) && !regex.test(pathHint)) return;
+    if (!regex.test(source)) return;
     signals.push({ backend, reason });
   };
+  const addCmakeLanguage = (backend, language) => {
+    const token = language.replace(/[^A-Z0-9_]/gi, '');
+    add(
+      backend,
+      `cmake_${token.toLowerCase()}_language_enabled`,
+      new RegExp(
+        `\\b(?:enable_language\\s*\\(\\s*[^)]*\\b${token}\\b[^)]*\\)`
+          + `|project\\s*\\(\\s*[^)]*\\bLANGUAGES?\\b[^)]*\\b${token}\\b[^)]*\\))`,
+        'i',
+      ),
+    );
+  };
+  addCmakeLanguage('hip_rocm', 'HIP');
   add(
     'hip_rocm',
-    'rocm_hip_build_metadata_token',
-    /\b(?:find_package\s*\(\s*(?:hip|rocm|rocblas|miopen|hipblas|hipdnn|migraphx|tensile|rocprim|rocrand|rocsolver|rocsparse|hipfft)\b|enable_language\s*\(\s*hip\b|languages\s+[^)\n]*\bhip\b|cmake_hip|hip::|hip_add_|hipcc|amdgpu_targets?|--amdgpu-target|rocm_path|rocm_cmake)\b/i,
+    'hip_toolchain_metadata',
+    /(?:\$\{\s*CMAKE_HIP_[A-Z0-9_]+\s*\}|\bset\s*\(\s*(?:CMAKE_HIP_[A-Z0-9_]+|AMDGPU_TARGETS?)\b|^\s*(?:CMAKE_HIP_[A-Z0-9_]+|AMDGPU_TARGETS?|HIPCC|HIPCXX)\s*(?::[A-Z_]+)?\s*[?:+]?=|--amdgpu-target(?:=|\s+)\S+|--offload-arch(?:=|\s+)gfx[0-9a-z]+)/im,
+  );
+  add(
+    'hip_rocm',
+    'hip_compiler_or_device_source_semantics',
+    /(?:\.hip\b|(?:^|[\s"'=;|&])-x\s+hip\b|\bset\s*\(\s*CMAKE_(?:CXX|HIP)_COMPILER\s+["']?hipcc\b|(?:^|["'=;|&]\s*)hipcc(?:\.exe)?\s+(?:-[^\s"']+|[^\s"']+))/im,
+  );
+  addCmakeLanguage('cuda', 'CUDA');
+  add(
+    'cuda',
+    'cuda_toolchain_metadata',
+    /(?:\$\{\s*CMAKE_CUDA_[A-Z0-9_]+\s*\}|\bset\s*\(\s*CMAKE_CUDA_[A-Z0-9_]+\b|^\s*(?:CMAKE_CUDA_[A-Z0-9_]+|NVCC|CUDACXX)\s*(?::[A-Z_]+)?\s*[?:+]?=|--cuda-gpu-arch(?:=|\s+)\S+|-gencode\s+[^\n]*\barch=compute_[0-9]+)/im,
   );
   add(
     'cuda',
-    'cuda_build_metadata_token',
-    /\b(?:find_package\s*\(\s*(?:cuda|cudatoolkit)\b|enable_language\s*\(\s*cuda\b|languages\s+[^)\n]*\bcuda\b|cmake_cuda|cuda::|cuda_add_|nvcc)\b/i,
+    'cuda_compiler_or_device_source_semantics',
+    /(?:\.cuh?\b|(?:^|[\s"'=;|&])-x\s+cuda\b|\bset\s*\(\s*CMAKE_(?:CXX|CUDA)_COMPILER\s+["']?nvcc\b|(?:^|["'=;|&]\s*)nvcc(?:\.exe)?\s+(?:-[^\s"']+|[^\s"']+))/im,
   );
   add(
     'opencl',
-    'opencl_build_metadata_token',
-    /\b(?:find_package\s*\(\s*opencl\b|opencl::|cl_khr|clenqueue|opencl)\b/i,
+    'opencl_language_compiler_or_device_source_semantics',
+    /(?:\.clh?\b|(?:^|[\s"'=;|&])-x\s+cl\b|\bcl_khr_[A-Z0-9_]+\b|\bcl(?:Enqueue|Create|SetKernelArg)[A-Z0-9_]*\b|(?:^|["'=;|&]\s*)clspv(?:\.exe)?\s+(?:-[^\s"']+|[^\s"']+))/im,
   );
   add(
     'vulkan',
-    'vulkan_build_metadata_token',
-    /\b(?:find_package\s*\(\s*vulkan\b|vulkan::|glslang|shaderc|spirv|spir-v)\b/i,
+    'vulkan_compiler_or_device_source_semantics',
+    /(?:\.(?:spv|glsl|hlsl|comp|vert|frag|geom|tesc|tese)\b|--target-env(?:=|\s+)vulkan\b|(?:^|[\s"'=;|&])-spirv\b|(?:^|["'=;|&]\s*)(?:glslangValidator|spirv-(?:as|opt|link|val))(?:\.exe)?\s+(?:-[^\s"']+|[^\s"']+))/im,
   );
   add(
     'webgpu_wgsl',
-    'webgpu_build_metadata_token',
-    /\b(?:webgpu|wgpu|wgsl|naga)\b/i,
+    'wgsl_language_or_device_source_semantics',
+    /(?:\.wgsl\b|--(?:target|format)(?:=|\s+)wgsl\b)/i,
   );
   add(
     'sycl',
-    'sycl_build_metadata_token',
-    /\b(?:find_package\s*\(\s*(?:sycl|dpcpp|adaptivecpp|hipsycl)\b|-fsycl|dpcpp|oneapi::dpl|sycl)\b/i,
+    'sycl_language_or_compiler_semantics',
+    /(?:-fsycl(?:=|\s|$)|\bsycl::(?:queue|handler|kernel|device|context)\b|\bset\s*\(\s*CMAKE_CXX_COMPILER\s+["']?(?:dpcpp|icpx)\b|(?:^|["'=;|&]\s*)(?:dpcpp|icpx)(?:\.exe)?\s+(?:-[^\s"']+|[^\s"']+))/im,
   );
   add(
     'metal',
-    'metal_build_metadata_token',
-    /\b(?:metal::|metal-cpp|metallib|xcrun\s+metal|metal)\b/i,
+    'metal_language_compiler_or_device_source_semantics',
+    /(?:\.metal\b|\bxcrun\s+(?:--sdk\s+\S+\s+)?metal\b|(?:^|["'=;|&]\s*)metallib(?:\.exe)?\s+(?:-[^\s"']+|[^\s"']+)|(?:^|[\s"'=;|&])-x\s+metal\b)/im,
   );
   const seen = new Set();
   return signals.filter((signal) => {
@@ -4686,7 +4720,7 @@ function buildMetadataBackendCandidates(contentEvidence = {}) {
   };
 }
 
-function mergeClassificationWithBuildMetadataContent(classification = {}, contentEvidence = {}) {
+export function mergeClassificationWithBuildMetadataContent(classification = {}, contentEvidence = {}) {
   const backendSignals = new Map(Object.entries(classification.backendSignals ?? {}));
   const buildMetadata = buildMetadataBackendCandidates(contentEvidence);
   for (const signal of buildMetadata.signals) {
@@ -4725,7 +4759,7 @@ function mergeClassificationWithBuildMetadataContent(classification = {}, conten
   };
 }
 
-function summarizeBuildMetadataContent(pathName, text) {
+export function summarizeBuildMetadataContent(pathName, text) {
   const family = classifyBuildSystemPath(pathName);
   const lines = String(text ?? '').split(/\r?\n/);
   const backendSignals = buildMetadataBackendSignals(pathName, text);
@@ -10487,7 +10521,7 @@ async function selfCheck({ workerImage = null, commandJson = null } = {}) {
     'cmake_minimum_required(VERSION 3.24)',
     'project(arbitrary_ml_runtime LANGUAGES CXX HIP)',
     'enable_language(HIP)',
-    'find_package(hip REQUIRED)',
+    'find_package(neutral_tensor_package REQUIRED)',
     'set(AMDGPU_TARGETS gfx1201 CACHE STRING "")',
     'add_library(arbitrary_runtime src/model_runtime.cpp)',
   ].join('\n');
@@ -10648,7 +10682,7 @@ async function selfCheck({ workerImage = null, commandJson = null } = {}) {
     || wideSourceClassification.sourceRelevantFiles.length !== 80
     || headerHeavyGpuClassification.gpuSourceSignalCount !== 3
     || headerHeavyGpuClassification.sourceRelevantFileCount !== 4
-    || !headerHeavyGpuClassification.backendCandidates.includes('hip_rocm')
+    || headerHeavyGpuClassification.backendCandidates.length !== 0
     || buildMetadataOnlyListingClassification.backendCandidates.length !== 0
     || !buildMetadataOnlySummary.backendSignalCandidates.includes('hip_rocm')
     || !buildMetadataOnlyMergedClassification.backendCandidates.includes('hip_rocm')
