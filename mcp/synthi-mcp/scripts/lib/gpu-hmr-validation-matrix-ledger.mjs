@@ -50,6 +50,20 @@ import {
 const coldBuildContainerCommand = coldBuildLauncherCommand;
 const coldBuildContainerEntrypoint = coldBuildLauncherEntrypoint;
 
+let activeValidationMatrixOperationCache = null;
+
+function withValidationMatrixOperationCache(callback) {
+  if (activeValidationMatrixOperationCache) return callback();
+  activeValidationMatrixOperationCache = {
+    randomColdSourceIntake: new WeakMap(),
+  };
+  try {
+    return callback();
+  } finally {
+    activeValidationMatrixOperationCache = null;
+  }
+}
+
 import {
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
@@ -3070,7 +3084,7 @@ function randomColdSourceIntakeFacetHashSeed(facet) {
   return seed;
 }
 
-function randomColdSourceIntakeSummary(
+function randomColdSourceIntakeSummaryUncached(
   sourceIntake = {},
   result = {},
   { preserveSourceListingEntries = false } = {},
@@ -3866,6 +3880,36 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}, options = {}) {
     failedGates,
     failed_gates: failedGates,
   };
+}
+
+function randomColdSourceIntakeSummary(
+  sourceIntake = {},
+  result = {},
+  { preserveSourceListingEntries = false } = {},
+) {
+  const cache = activeValidationMatrixOperationCache?.randomColdSourceIntake;
+  if (!cache || !isObject(sourceIntake) || !isObject(result)) {
+    return randomColdSourceIntakeSummaryUncached(sourceIntake, result, {
+      preserveSourceListingEntries,
+    });
+  }
+  let byResult = cache.get(sourceIntake);
+  if (!byResult) {
+    byResult = new WeakMap();
+    cache.set(sourceIntake, byResult);
+  }
+  let byProjection = byResult.get(result);
+  if (!byProjection) {
+    byProjection = new Map();
+    byResult.set(result, byProjection);
+  }
+  const cacheKey = preserveSourceListingEntries === true;
+  if (byProjection.has(cacheKey)) return byProjection.get(cacheKey);
+  const summary = randomColdSourceIntakeSummaryUncached(sourceIntake, result, {
+    preserveSourceListingEntries,
+  });
+  byProjection.set(cacheKey, summary);
+  return summary;
 }
 
 function randomColdBroadReadinessSourceEvidenceProvenance({
@@ -44355,7 +44399,7 @@ function planCoverage(rows, context = {}) {
   ];
 }
 
-export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
+function queryGpuHmrValidationMatrixLedgerUncached(ledger = {}) {
   const rows = Array.isArray(ledger.rows) ? ledger.rows : [];
   const generatedAt = firstText(ledger.generatedAt, ledger.generated_at);
   const randomColdPathFreshnessContext = {
@@ -44472,7 +44516,13 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
   };
 }
 
-export function recomputeGpuHmrValidationMatrixRowId(row, options = {}) {
+export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
+  return withValidationMatrixOperationCache(
+    () => queryGpuHmrValidationMatrixLedgerUncached(ledger),
+  );
+}
+
+function recomputeGpuHmrValidationMatrixRowIdUncached(row, options = {}) {
   const generatedAt = firstText(options.generatedAt, options.generated_at);
   const randomColdPathFreshnessContext = {
     generatedAt,
@@ -44492,7 +44542,13 @@ export function recomputeGpuHmrValidationMatrixRowId(row, options = {}) {
   return rowIdFor(evaluatedRow);
 }
 
-export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
+export function recomputeGpuHmrValidationMatrixRowId(row, options = {}) {
+  return withValidationMatrixOperationCache(
+    () => recomputeGpuHmrValidationMatrixRowIdUncached(row, options),
+  );
+}
+
+function buildGpuHmrValidationMatrixLedgerUncached(rows, options = {}) {
   const generatedAt = options.generatedAt ?? new Date().toISOString();
   const enforceRandomColdPathFreshness =
     firstBool(
@@ -44596,6 +44652,12 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
     ...ledger,
     query: queryGpuHmrValidationMatrixLedger(ledger),
   };
+}
+
+export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
+  return withValidationMatrixOperationCache(
+    () => buildGpuHmrValidationMatrixLedgerUncached(rows, options),
+  );
 }
 
 export async function collectGpuHmrValidationMatrixLedger(options = {}) {
