@@ -39,6 +39,7 @@ import {
 import {
   ARBITRARY_COLD_CLI_RESULT_ENVELOPE_AUTHORITY,
   ARBITRARY_COLD_CLI_RESULT_ENVELOPE_SCHEMA,
+  createArbitraryColdCliResultEnvelope,
   verifyArbitraryColdCliResultEnvelope,
 } from '../lib/gpu-hmr-arbitrary-cold-cli-envelope.mjs';
 import {
@@ -795,6 +796,18 @@ try {
   assert.deepEqual(cliResult.testTiming, cliResult.test_timing);
   const cliProofEnvelope = proofEnvelopeFromTimed(cliResult);
   assert.equal(verifyArbitraryColdCliResultEnvelope(cliProofEnvelope), cliProofEnvelope);
+  const recreatedCliEnvelope = createArbitraryColdCliResultEnvelope({
+    descriptorBytesHash: cliProofEnvelope.descriptorBytesHash,
+    result: {
+      evidence: structuredClone(cliProofEnvelope.evidence),
+      retainedExecutionChain: structuredClone(cliProofEnvelope.retainedExecutionChain),
+      outputs: cliProofEnvelope.outputs.map((output) => ({
+        ...structuredClone(output),
+        bytes: Buffer.from('top-level output bytes are deliberately omitted', 'utf8'),
+      })),
+    },
+  });
+  assert.equal(verifyArbitraryColdCliResultEnvelope(recreatedCliEnvelope), recreatedCliEnvelope);
   assert.equal(cliResult.outputBytesEmbedded, false);
   assert.equal(cliResult.externalAuthenticityAnchorEmbedded, false);
   assert.equal(cliResult.acceptedAsCliResultEnvelope, true);
@@ -887,6 +900,70 @@ try {
   assert.throws(
     () => verifyArbitraryColdCliResultEnvelope(forgedCliOutputRole),
     /cli_result_envelope_invalid/,
+  );
+  const binaryPayloadMutations = [
+    (output) => {
+      output.artifactLocator.producer.name = Buffer.from([0, 1, 2, 3]);
+    },
+    (output) => {
+      output.artifactLocator.producer.name = { type: 'Buffer', data: [0, 1, 2, 3] };
+    },
+    (output) => {
+      output.artifactLocator.producer.kind = new Uint8Array([0, 1, 2, 3]);
+    },
+    (output) => {
+      output.artifactLocator.producer.name = 'data:application/octet-stream;base64,AAECAw==';
+    },
+    (output) => { output.artifactLocator.bytes = 'AAECAw=='; },
+    (output) => {
+      output.artifactLocator.storage.unrecognizedNestedField = 'not_schema_material';
+    },
+    (output) => {
+      output.artifactLocator.producer.data = [0, 1, 2, 3];
+    },
+    (output) => {
+      output.artifactLocator.transport.bytePayload = [0, 1, 2, 3];
+    },
+  ];
+  for (const mutateOutput of binaryPayloadMutations) {
+    const forgedCliBinaryPayload = proofEnvelopeFromTimed(cliResult);
+    mutateOutput(forgedCliBinaryPayload.outputs[0]);
+    resealCliLocatorBinding(forgedCliBinaryPayload, 0);
+    assert.throws(
+      () => verifyArbitraryColdCliResultEnvelope(forgedCliBinaryPayload),
+      /cli_result_envelope_invalid/,
+    );
+  }
+  const forgedCliMetadataPayload = proofEnvelopeFromTimed(cliResult);
+  forgedCliMetadataPayload.outputs[0].metadata.contentBase64 = 'AAECAw==';
+  resealEvidence(forgedCliMetadataPayload);
+  assert.throws(
+    () => verifyArbitraryColdCliResultEnvelope(forgedCliMetadataPayload),
+    /cli_result_envelope_invalid/,
+  );
+  const forgedCliTransportPayload = proofEnvelopeFromTimed(cliResult);
+  forgedCliTransportPayload.outputs[0].transportEvidence.data = [0, 1, 2, 3];
+  resealEvidence(forgedCliTransportPayload);
+  assert.throws(
+    () => verifyArbitraryColdCliResultEnvelope(forgedCliTransportPayload),
+    /cli_result_envelope_invalid/,
+  );
+  const forgedCreateSource = proofEnvelopeFromTimed(cliResult);
+  forgedCreateSource.outputs[0].artifactLocator.bytes = Buffer.from([0, 1, 2, 3]);
+  resealCliLocatorBinding(forgedCreateSource, 0);
+  assert.throws(
+    () => createArbitraryColdCliResultEnvelope({
+      descriptorBytesHash: forgedCreateSource.descriptorBytesHash,
+      result: {
+        evidence: structuredClone(forgedCreateSource.evidence),
+        retainedExecutionChain: structuredClone(forgedCreateSource.retainedExecutionChain),
+        outputs: forgedCreateSource.outputs.map((output) => ({
+          ...structuredClone(output),
+          bytes: Buffer.from('top-level output bytes remain source-only', 'utf8'),
+        })),
+      },
+    }),
+    /cli_result_envelope_source_invalid/,
   );
   assert.ok(!JSON.stringify(cliResult.evidence).match(
     /miopen|hiprt|flow|diamond|neural|blas|cuda|rocm|project_name|fixture_name/i,

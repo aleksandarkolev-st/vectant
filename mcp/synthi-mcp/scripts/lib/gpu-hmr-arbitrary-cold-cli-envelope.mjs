@@ -19,6 +19,111 @@ const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const ARTIFACT_ID_PATTERN = /^artifact:sha256:[a-f0-9]{64}$/;
 const TRANSPORT_KIND_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const OUTPUT_KEYS = Object.freeze(['metadata', 'artifactLocator', 'transportEvidence']);
+const OUTPUT_METADATA_KEYS = Object.freeze([
+  'path',
+  'declaredRole',
+  'declaredArtifactKind',
+  'declaredMediaType',
+  'declaredContentHash',
+  'declaredByteLength',
+  'observedContentHash',
+  'observedByteLength',
+  'mode',
+  'metadataAuthority',
+]);
+const ARTIFACT_LOCATOR_KEYS = Object.freeze([
+  'schemaVersion',
+  'artifactId',
+  'contentHash',
+  'artifactKind',
+  'byteLength',
+  'mediaType',
+  'role',
+  'producer',
+  'producerSubsystem',
+  'sessionNamespace',
+  'artifactUri',
+  'transport',
+  'proofAuthority',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'manifestHash',
+]);
+const ARTIFACT_LOCATOR_OPTIONAL_KEYS = Object.freeze([
+  'storage',
+  'sharedStorage',
+  'shared_storage',
+]);
+const ARTIFACT_PRODUCER_KEYS = Object.freeze(['name', 'kind']);
+const ARTIFACT_TRANSPORT_KEYS = Object.freeze([
+  'kind',
+  'contentAddressed',
+  'manifestOnly',
+  'bytesEmbedded',
+  'hotPathOptimized',
+]);
+const ARTIFACT_STORAGE_KEYS = Object.freeze(['kind', 'relativePath']);
+const ARTIFACT_STORAGE_OPTIONAL_KEYS = Object.freeze(['localPath']);
+const SHARED_STORAGE_KEYS = Object.freeze([
+  'schemaVersion',
+  'addressing',
+  'contentHash',
+  'relativePath',
+  'mountCount',
+  'mountRoles',
+  'mounts',
+  'manifestOnly',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'proofAuthority',
+]);
+const SHARED_STORAGE_MOUNT_KEYS = Object.freeze([
+  'role',
+  'root',
+  'path',
+  'addressKind',
+  'readableBytesProven',
+]);
+const SHARED_STORAGE_VALIDATION_KEYS = Object.freeze([
+  'schemaVersion',
+  'accepted',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'proofAuthority',
+  'contentHash',
+  'relativePath',
+  'mountCount',
+  'mountRoles',
+  'reasons',
+  'gaps',
+]);
+const TRANSPORT_EVIDENCE_KEYS = Object.freeze([
+  'schemaVersion',
+  'accepted',
+  'acceptedAsTransportEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'proofAuthority',
+  'manifestHash',
+  'contentHash',
+  'artifactId',
+  'artifactUri',
+  'transportKind',
+  'byteLength',
+  'mediaType',
+  'reasons',
+  'gaps',
+]);
+const TRANSPORT_EVIDENCE_OPTIONAL_KEYS = Object.freeze([
+  'sharedStorage',
+  'shared_storage',
+  'sharedMountCount',
+  'shared_mount_count',
+  'sharedMountRoles',
+  'shared_mount_roles',
+  'localPath',
+  'local_path',
+]);
 const ENVELOPE_KEYS = Object.freeze([
   'schemaVersion',
   'proofAuthority',
@@ -48,6 +153,24 @@ const FORBIDDEN_TRUE_AUTHORITY_KEYS = new Set([
   'dispatchauthority',
   'fullruntimeproven',
 ]);
+const FORBIDDEN_BINARY_PAYLOAD_KEYS = new Set([
+  'base64',
+  'binary',
+  'binarydata',
+  'blob',
+  'blobdata',
+  'buffer',
+  'bufferdata',
+  'bytedata',
+  'bytes',
+  'data',
+  'encodedbytes',
+  'payload',
+  'payloadbase64',
+  'payloadbytes',
+  'rawbytes',
+  'rawdata',
+]);
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -70,11 +193,73 @@ function recomputeEvidenceHash(value) {
   return contentHash(stableJson(projection));
 }
 
+function isPlainRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 function exactKeys(value, keys) {
-  return value
-    && typeof value === 'object'
-    && !Array.isArray(value)
+  return isPlainRecord(value)
     && stableJson(Object.keys(value).sort()) === stableJson([...keys].sort());
+}
+
+function exactOptionalKeys(value, requiredKeys, optionalKeys) {
+  if (!isPlainRecord(value)) return false;
+  const actualKeys = Object.keys(value);
+  const allowedKeys = new Set([...requiredKeys, ...optionalKeys]);
+  return requiredKeys.every((key) => Object.hasOwn(value, key))
+    && actualKeys.every((key) => allowedKeys.has(key));
+}
+
+function isForbiddenBinaryPayloadKey(key) {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return FORBIDDEN_BINARY_PAYLOAD_KEYS.has(normalized)
+    || normalized.includes('base64')
+    || /^(?:artifact|content|file|output|raw)bytes$/.test(normalized)
+    || /^(?:byte|binary|blob|buffer|data)payload$/.test(normalized);
+}
+
+function containsEmbeddedBinaryMaterial(value, seen = new Set()) {
+  if (
+    Buffer.isBuffer(value)
+    || value instanceof ArrayBuffer
+    || (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer)
+    || ArrayBuffer.isView(value)
+  ) {
+    return true;
+  }
+  if (typeof value === 'string') {
+    return /^data:[^,;]+(?:;[^,;]+)*;base64,/i.test(value);
+  }
+  if (value === null || typeof value !== 'object') return false;
+  if (seen.has(value)) return true;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const rejected = value.some((child) => containsEmbeddedBinaryMaterial(child, seen));
+    seen.delete(value);
+    return rejected;
+  }
+  if (!isPlainRecord(value)) {
+    seen.delete(value);
+    return true;
+  }
+  if (
+    value.type === 'Buffer'
+    && Array.isArray(value.data)
+    && value.data.every((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 255)
+  ) {
+    seen.delete(value);
+    return true;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (isForbiddenBinaryPayloadKey(key) || containsEmbeddedBinaryMaterial(child, seen)) {
+      seen.delete(value);
+      return true;
+    }
+  }
+  seen.delete(value);
+  return false;
 }
 
 function byteOrder(left, right) {
@@ -100,6 +285,96 @@ function containsForbiddenAuthorityClaim(value) {
 
 function locatorManifestHash(locator) {
   return contentHash(stableJson({ ...locator, manifestHash: undefined }));
+}
+
+function sharedStorageShapeAccepted(sharedStorage) {
+  return exactKeys(sharedStorage, SHARED_STORAGE_KEYS)
+    && Array.isArray(sharedStorage.mountRoles)
+    && Array.isArray(sharedStorage.mounts)
+    && sharedStorage.mounts.every((mount) => exactKeys(mount, SHARED_STORAGE_MOUNT_KEYS));
+}
+
+function sharedStorageValidationShapeAccepted(sharedStorage) {
+  return exactKeys(sharedStorage, SHARED_STORAGE_VALIDATION_KEYS)
+    && Array.isArray(sharedStorage.mountRoles)
+    && Array.isArray(sharedStorage.reasons)
+    && Array.isArray(sharedStorage.gaps);
+}
+
+function artifactLocatorShapeAccepted(locator) {
+  if (
+    !exactOptionalKeys(locator, ARTIFACT_LOCATOR_KEYS, ARTIFACT_LOCATOR_OPTIONAL_KEYS)
+    || !exactKeys(locator.producer, ARTIFACT_PRODUCER_KEYS)
+    || !exactKeys(locator.transport, ARTIFACT_TRANSPORT_KEYS)
+    || !/^[A-Za-z0-9._:-]{1,160}$/.test(locator.producer.name ?? '')
+    || !/^[A-Za-z0-9._:-]{1,160}$/.test(locator.producer.kind ?? '')
+  ) {
+    return false;
+  }
+  const storagePresent = Object.hasOwn(locator, 'storage');
+  if (storagePresent) {
+    const storage = locator.storage;
+    const localPathPresent = Object.hasOwn(storage, 'localPath');
+    const relativePathAccepted = (
+      typeof storage.relativePath === 'string' && storage.relativePath.length > 0
+    ) || (storage.relativePath === null && localPathPresent);
+    if (
+      !exactOptionalKeys(storage, ARTIFACT_STORAGE_KEYS, ARTIFACT_STORAGE_OPTIONAL_KEYS)
+      || storage.kind !== locator.transport.kind
+      || !relativePathAccepted
+      || (localPathPresent
+        && (typeof storage.localPath !== 'string' || storage.localPath.length === 0))
+    ) {
+      return false;
+    }
+  }
+  const sharedCamelPresent = Object.hasOwn(locator, 'sharedStorage');
+  const sharedSnakePresent = Object.hasOwn(locator, 'shared_storage');
+  return sharedCamelPresent === sharedSnakePresent
+    && (!sharedCamelPresent || (
+      stableJson(locator.sharedStorage) === stableJson(locator.shared_storage)
+      && sharedStorageShapeAccepted(locator.sharedStorage)
+      && sharedStorageShapeAccepted(locator.shared_storage)
+    ));
+}
+
+function transportEvidenceShapeAccepted(locator, evidence) {
+  if (!exactOptionalKeys(
+    evidence,
+    TRANSPORT_EVIDENCE_KEYS,
+    TRANSPORT_EVIDENCE_OPTIONAL_KEYS,
+  )) {
+    return false;
+  }
+  const locatorHasSharedStorage = Object.hasOwn(locator, 'sharedStorage');
+  const sharedEvidenceKeys = [
+    'sharedStorage',
+    'shared_storage',
+    'sharedMountCount',
+    'shared_mount_count',
+    'sharedMountRoles',
+    'shared_mount_roles',
+  ];
+  const sharedEvidencePresent = sharedEvidenceKeys.map((key) => Object.hasOwn(evidence, key));
+  if (
+    sharedEvidencePresent.some(Boolean) !== locatorHasSharedStorage
+    || (locatorHasSharedStorage && !sharedEvidencePresent.every(Boolean))
+  ) {
+    return false;
+  }
+  if (locatorHasSharedStorage && (
+    !sharedStorageValidationShapeAccepted(evidence.sharedStorage)
+    || !sharedStorageValidationShapeAccepted(evidence.shared_storage)
+    || stableJson(evidence.sharedStorage) !== stableJson(evidence.shared_storage)
+  )) {
+    return false;
+  }
+  const locatorHasLocalPath = typeof locator.storage?.localPath === 'string'
+    && locator.storage.localPath.length > 0;
+  const localPathKeysPresent = ['localPath', 'local_path']
+    .map((key) => Object.hasOwn(evidence, key));
+  return localPathKeysPresent.some(Boolean) === locatorHasLocalPath
+    && (!locatorHasLocalPath || localPathKeysPresent.every(Boolean));
 }
 
 function transportEvidenceBindingAccepted(locator, evidence) {
@@ -182,7 +457,10 @@ function retainedOutputAccepted(output, expectedMetadata, expectedBinding) {
   const transport = locator?.transport;
   const transportEvidence = output?.transportEvidence;
   return exactKeys(output, OUTPUT_KEYS)
+    && exactKeys(output.metadata, OUTPUT_METADATA_KEYS)
     && stableJson(output.metadata) === stableJson(expectedMetadata)
+    && artifactLocatorShapeAccepted(locator)
+    && transportEvidenceShapeAccepted(locator, transportEvidence)
     && locator?.schemaVersion === CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION
     && SHA256_PATTERN.test(locator?.contentHash ?? '')
     && locator.contentHash === expectedBinding.contentHash
@@ -211,6 +489,7 @@ function retainedOutputAccepted(output, expectedMetadata, expectedBinding) {
 }
 
 function envelopeMaterialAccepted(envelope) {
+  if (containsEmbeddedBinaryMaterial(envelope)) return false;
   const chain = envelope?.retainedExecutionChain;
   try {
     verifyArbitraryColdRetainedExecutionChain(chain);
