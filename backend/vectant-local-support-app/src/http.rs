@@ -786,10 +786,11 @@ async fn full_access_graph_node(
         .cloned()
         .ok_or_else(|| denied(StatusCode::FORBIDDEN, "unknown_graph_node"))?;
     let policy = full_access.policy.clone();
-    full_access
-        .budget
-        .reserve(&policy, request.max_bytes)
-        .map_err(full_access_denied)?;
+    if let Err(error) = full_access.budget.reserve(&policy, request.max_bytes) {
+        drop(full_access);
+        record_budget_exhaustion(&state, &request.request_id, "graph delivery").await?;
+        return Err(full_access_denied(error));
+    }
     full_access.graph = current_graph;
     drop(full_access);
     let result = state.workspace.read_graph_node(&node, request.max_bytes);
@@ -871,10 +872,11 @@ async fn full_access_mutation(
     }
     let replacement_bytes = request.replacement.len() as u64;
     let policy = full_access.policy.clone();
-    full_access
-        .budget
-        .reserve(&policy, replacement_bytes)
-        .map_err(full_access_denied)?;
+    if let Err(error) = full_access.budget.reserve(&policy, replacement_bytes) {
+        drop(full_access);
+        record_budget_exhaustion(&state, &request.request_id, "workspace mutation").await?;
+        return Err(full_access_denied(error));
+    }
     full_access.graph = graph.clone();
     drop(full_access);
     let transaction = state
@@ -1124,14 +1126,20 @@ async fn full_access_command(
     let policy = full_access.policy.clone();
     let command_cancel = full_access.command_cancel.clone();
     full_access.graph = current_graph.clone();
-    full_access
+    if let Err(error) = full_access.budget.reserve_command(&policy) {
+        drop(full_access);
+        record_budget_exhaustion(&state, &request.request_id, "command execution").await?;
+        return Err(full_access_denied(error));
+    }
+    if let Err(error) = full_access
         .budget
         .reserve(&policy, request.max_output_bytes as u64)
-        .map_err(full_access_denied)?;
-    full_access
-        .budget
-        .reserve_command(&policy)
-        .map_err(full_access_denied)?;
+    {
+        full_access.budget.finish_command();
+        drop(full_access);
+        record_budget_exhaustion(&state, &request.request_id, "command execution").await?;
+        return Err(full_access_denied(error));
+    }
     drop(full_access);
     let projection = state
         .workspace
@@ -1224,10 +1232,14 @@ async fn full_access_port_use(
         ));
     }
     let policy = full_access.policy.clone();
-    full_access
+    if let Err(error) = full_access
         .budget
         .reserve(&policy, request.max_response_bytes as u64)
-        .map_err(full_access_denied)?;
+    {
+        drop(full_access);
+        record_budget_exhaustion(&state, &request.request_id, "loopback port use").await?;
+        return Err(full_access_denied(error));
+    }
     drop(full_access);
     let before = detect_loopback_listener(request.port)
         .map_err(|_| denied(StatusCode::FORBIDDEN, "loopback_listener_unavailable"))?;
@@ -1371,6 +1383,21 @@ fn full_access_denied(error: FullAccessDenied) -> (StatusCode, Json<serde_json::
         StatusCode::FORBIDDEN,
         format!("full_access_{error:?}").to_ascii_lowercase(),
     )
+}
+
+async fn record_budget_exhaustion(
+    state: &AppState,
+    request_id: &str,
+    operation: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let mut audit = state.audit.lock().await;
+    audit.append(
+        AuditClass::Budget,
+        Some(request_id.to_string()),
+        format!("Full Access budget exhausted before {operation}; automatic delivery was paused locally."),
+        true,
+    );
+    persist_audit(state, &audit)
 }
 
 async fn approve_request(
@@ -2553,10 +2580,16 @@ fn denied(status: StatusCode, reason: impl ToString) -> (StatusCode, Json<serde_
 
 #[cfg(test)]
 mod tests {
-    use super::{auto_approval_scope_valid, validate_headers};
+    use super::{auto_approval_scope_valid, record_budget_exhaustion, validate_headers, AppState};
+    use crate::audit::AuditClass;
     use crate::full_access::{FullAccessCapability, FullAccessConsentReceipt, FullAccessPolicy};
+    use crate::scanner::SecretScanner;
+    use crate::session::SessionGuard;
+    use crate::workspace::WorkspacePolicy;
     use axum::http::{HeaderMap, HeaderValue};
     use std::collections::BTreeSet;
+    use std::time::Duration;
+    use tempfile::tempdir;
 
     #[test]
     fn accepts_the_production_app_origin_without_broadening_cross_site_access() {
@@ -2613,5 +2646,28 @@ mod tests {
         assert!(auto_approval_scope_valid(&policy, &receipt));
         policy.allowed_capabilities.clear();
         assert!(!auto_approval_scope_valid(&policy, &receipt));
+    }
+
+    #[tokio::test]
+    async fn budget_exhaustion_is_recorded_without_request_payload() {
+        let root = tempdir().unwrap();
+        let workspace =
+            WorkspacePolicy::new(root.path(), "wk_budget", SecretScanner::default()).unwrap();
+        let state = AppState::new(
+            SessionGuard::new_bound(
+                "acct_budget",
+                "org_budget",
+                "wk_budget",
+                Duration::from_secs(60),
+            ),
+            workspace,
+        );
+        record_budget_exhaustion(&state, "req_budget_123", "graph delivery")
+            .await
+            .unwrap();
+        let event = state.audit.lock().await.events().last().cloned().unwrap();
+        assert!(matches!(event.class, AuditClass::Budget));
+        assert!(event.summary.contains("budget exhausted"));
+        assert!(!event.summary.contains("req_budget_123"));
     }
 }
