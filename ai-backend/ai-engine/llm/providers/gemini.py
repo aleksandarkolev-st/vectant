@@ -30,53 +30,13 @@ def _count_tokens(text: str) -> int:
 
 
 from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt, build_split_mode_prompt
+from llm.provider_diagnostics import provider_failure_reason
 
 load_dotenv()  # Load once at import
 
 
-_PROVIDER_SECRET_PATTERNS = (
-    (re.compile(r"\bapi_key:[A-Za-z0-9._~+/\-=:-]{8,}", re.IGNORECASE), "api_key:[REDACTED]"),
-    (re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"), "[REDACTED_GOOGLE_API_KEY]"),
-    (
-        re.compile(
-            r"\b((?:GOOGLE|GEMINI|OPENAI|ANTHROPIC|SYNTHI)?_?(?:API_?KEY|TOKEN|SECRET|PASSWORD))\s*=\s*[^\"',\s\\]+",
-            re.IGNORECASE,
-        ),
-        r"\1=[REDACTED]",
-    ),
-    (re.compile(r"\b(Bearer\s+)[A-Za-z0-9._~+/\-=]{12,}", re.IGNORECASE), r"\1[REDACTED]"),
-)
-
-
-def _sanitize_provider_error_detail(value: Any) -> str:
-    sanitized = str(value or "")
-    for pattern, replacement in _PROVIDER_SECRET_PATTERNS:
-        sanitized = pattern.sub(replacement, sanitized)
-    return sanitized
-
-
 def _provider_failure_reason_from_text(value: Any) -> str:
-    lowered = str(value or "").lower()
-    if "timeout" in lowered:
-        return "ai_provider_timeout"
-    if "consumer_suspended" in lowered or "account suspended" in lowered or "has been suspended" in lowered:
-        return "ai_provider_account_suspended"
-    if (
-        "permissiondenied" in lowered
-        or "permission denied" in lowered
-        or "unauthenticated" in lowered
-        or "unauthorized" in lowered
-        or "auth denied" in lowered
-        or "invalid api key" in lowered
-        or "api key not valid" in lowered
-        or "403" in lowered
-    ):
-        return "ai_provider_auth_denied"
-    if "rate limit" in lowered or "429" in lowered:
-        return "ai_provider_rate_limited"
-    if "unavailable" in lowered or "overload" in lowered or "503" in lowered:
-        return "ai_provider_unavailable"
-    return "ai_provider_error"
+    return provider_failure_reason(value)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -246,7 +206,7 @@ def _list_live_models(api_key: Optional[str]) -> tuple[Sequence[Any], Optional[s
         genai.configure(api_key=key)
         models = list(genai.list_models())
     except Exception as exc:  # pragma: no cover - SDK/network failures vary by environment
-        return [], _sanitize_provider_error_detail(f"{type(exc).__name__}: {exc}")
+        return [], provider_failure_reason(exc)
     _MODEL_LIST_CACHE[key] = (now, models)
     return models, None
 
@@ -490,7 +450,7 @@ class GeminiProvider(AiProvider):
                 **base,
                 "ok": False,
                 "reasonCode": "ai_provider_auth_denied",
-                "message": "GEMINI_API_KEY is not set and no api_key was provided.",
+                "message": "provider preflight failed: ai_provider_auth_denied",
             }
 
         provider_status = _provider_model_status(requested_model, api_key=api_key)
@@ -502,9 +462,7 @@ class GeminiProvider(AiProvider):
                 **status_metadata,
                 "ok": False,
                 "reasonCode": "ai_provider_unavailable",
-                "message": _sanitize_provider_error_detail(
-                    f"Requested model {requested_model} is marked shutdown."
-                ),
+                "message": "provider preflight failed: ai_provider_unavailable",
             }
         if live_error:
             reason = _provider_failure_reason_from_text(live_error)
@@ -514,7 +472,7 @@ class GeminiProvider(AiProvider):
                     **status_metadata,
                     "ok": False,
                     "reasonCode": reason,
-                    "message": _sanitize_provider_error_detail(live_error),
+                    "message": f"provider preflight failed: {reason}",
                 }
 
         return {

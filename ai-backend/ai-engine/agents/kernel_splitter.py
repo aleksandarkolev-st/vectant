@@ -60,6 +60,11 @@ from agents.gpu_split_repair import (
 from agents.gpu_source_context import build_project_source_context
 from agents.launch_graph_extractor import launch_graph_as_dicts
 from llm.prompts import GPU_SPLIT_PROMPT
+from llm.provider_diagnostics import (
+    build_provider_diagnostic,
+    format_provider_diagnostic,
+    provider_failure_reason,
+)
 from verifier_gpu import SplitVerificationResult, Violation, verify_split_output
 
 if TYPE_CHECKING:  # avoid pulling the provider factory + its heavy SDK deps
@@ -614,13 +619,16 @@ class KernelSplitProviderError(Exception):
     """Raised when the upstream AI provider fails before producing a split."""
 
     def __init__(self, original: BaseException):
-        self.original = original
-        message = (
-            f"{type(original).__name__}: {original}"
-            if str(original)
-            else type(original).__name__
+        endpoint_role = (
+            "provider_preflight"
+            if isinstance(original, KernelSplitProviderPreflightError)
+            else "split_generation"
         )
-        super().__init__(message)
+        self.diagnostic = dict(
+            build_provider_diagnostic(original, endpoint_role=endpoint_role)
+        )
+        self.reason_code = self.diagnostic["reasonCode"]
+        super().__init__(format_provider_diagnostic(self.diagnostic))
 
 
 class KernelSplitProviderPreflightError(RuntimeError):
@@ -640,60 +648,18 @@ class KernelSplitProviderPreflightError(RuntimeError):
         super().__init__(message)
 
 
-_PROVIDER_SECRET_PATTERNS = (
-    (re.compile(r"\bapi_key:[A-Za-z0-9._~+/\-=:-]{8,}", re.IGNORECASE), "api_key:[REDACTED]"),
-    (re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"), "[REDACTED_GOOGLE_API_KEY]"),
-    (
-        re.compile(
-            r"\b((?:GOOGLE|GEMINI|OPENAI|ANTHROPIC|SYNTHI)?_?(?:API_?KEY|TOKEN|SECRET|PASSWORD))\s*=\s*[^\"',\s\\]+",
-            re.IGNORECASE,
-        ),
-        r"\1=[REDACTED]",
-    ),
-    (re.compile(r"\b(Bearer\s+)[A-Za-z0-9._~+/\-=]{12,}", re.IGNORECASE), r"\1[REDACTED]"),
-)
-
-
-def sanitize_provider_error_detail(value: str) -> str:
-    sanitized = str(value or "")
-    for pattern, replacement in _PROVIDER_SECRET_PATTERNS:
-        sanitized = pattern.sub(replacement, sanitized)
-    return sanitized
-
-
 def split_provider_failure_verification(exc: BaseException) -> SplitVerificationResult:
     """Represent an AI provider failure as reason-coded split evidence."""
 
-    original = exc.original if isinstance(exc, KernelSplitProviderError) else exc
-    err_type = type(original).__name__
-    message = str(original)
-    lowered = f"{err_type} {message}".lower()
-    explicit_reason = getattr(original, "reason_code", None)
-    if isinstance(explicit_reason, str) and explicit_reason.startswith("ai_provider_"):
-        rule = explicit_reason
-    elif isinstance(original, TimeoutError) or "timeout" in lowered:
-        rule = "ai_provider_timeout"
-    elif "consumer_suspended" in lowered or "account suspended" in lowered or "has been suspended" in lowered:
-        rule = "ai_provider_account_suspended"
-    elif (
-        "permissiondenied" in lowered
-        or "permission denied" in lowered
-        or "unauthenticated" in lowered
-        or "unauthorized" in lowered
-        or "auth denied" in lowered
-        or "invalid api key" in lowered
-        or "api key not valid" in lowered
-        or "403" in lowered
-    ):
-        rule = "ai_provider_auth_denied"
-    elif "rate limit" in lowered or "429" in lowered:
-        rule = "ai_provider_rate_limited"
-    elif "unavailable" in lowered or "overload" in lowered or "503" in lowered:
-        rule = "ai_provider_unavailable"
-    else:
-        rule = "ai_provider_error"
-    detail = sanitize_provider_error_detail(f"{err_type}: {message}" if message else err_type)
-    return split_failure_verification(rule, detail)
+    diagnostic = (
+        dict(exc.diagnostic)
+        if isinstance(exc, KernelSplitProviderError)
+        else dict(build_provider_diagnostic(exc, endpoint_role="split_generation"))
+    )
+    return split_failure_verification(
+        str(diagnostic["reasonCode"]),
+        format_provider_diagnostic(diagnostic),
+    )
 
 
 def _provider_preflight_failure_reason(preflight: Mapping[str, Any]) -> str:
@@ -705,10 +671,6 @@ def _provider_preflight_failure_reason(preflight: Mapping[str, Any]) -> str:
 
 
 def _provider_preflight_failure_message(preflight: Mapping[str, Any]) -> str:
-    for key in ("message", "detail", "error", "errorMessage", "error_message"):
-        value = preflight.get(key)
-        if value:
-            return sanitize_provider_error_detail(str(value))
     reason = _provider_preflight_failure_reason(preflight)
     return f"provider preflight failed: {reason}"
 
@@ -2386,7 +2348,7 @@ async def run_kernel_splitter(
                 completed_unix_ns=completed_unix_ns,
             )
     except Exception as exc:
-        raise KernelSplitProviderError(exc) from exc
+        raise KernelSplitProviderError(exc) from None
 
     parsed = parse_kernel_split_response(raw)
     arch_list: List[str] = []

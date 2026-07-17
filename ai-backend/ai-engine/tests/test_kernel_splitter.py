@@ -460,7 +460,10 @@ def test_split_provider_timeout_is_reason_coded():
 
     assert verification.ok is False
     assert verification.violations[0].rule == "ai_provider_timeout"
-    assert "TimeoutError" in verification.violations[0].message
+    diagnostic = json.loads(verification.violations[0].message)
+    assert diagnostic["schemaVersion"] == "synthi.ai.provider_diagnostic.v1"
+    assert diagnostic["errorClass"] == "TimeoutError"
+    assert diagnostic["retryable"] is True
 
 
 def test_split_provider_account_suspended_is_reason_coded_and_redacted():
@@ -476,9 +479,10 @@ def test_split_provider_account_suspended_is_reason_coded_and_redacted():
 
     assert verification.ok is False
     assert verification.violations[0].rule == "ai_provider_account_suspended"
-    assert "CONSUMER_SUSPENDED" in verification.violations[0].message
     assert raw_key not in verification.violations[0].message
-    assert "api_key:[REDACTED]" in verification.violations[0].message
+    diagnostic = json.loads(verification.violations[0].message)
+    assert diagnostic["reasonCode"] == "ai_provider_account_suspended"
+    assert diagnostic["acceptedForGpuHmr"] is False
 
 
 def test_split_provider_auth_denied_is_reason_coded():
@@ -490,7 +494,42 @@ def test_split_provider_auth_denied_is_reason_coded():
 
     assert verification.ok is False
     assert verification.violations[0].rule == "ai_provider_auth_denied"
-    assert "PermissionDenied" in verification.violations[0].message
+    assert "API key not valid" not in verification.violations[0].message
+
+
+def test_split_provider_diagnostic_discards_resource_urls_and_credentials():
+    provider_resource = "projects/" + ("7" * 12)
+    sentinels = [
+        provider_resource,
+        "https://user:password@example.invalid/v1/models?key=secret#fragment",
+        "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+        "Cookie: session=secret-session-value",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZWNyZXQifQ.signature",
+    ]
+    verification = split_provider_failure_verification(
+        KernelSplitProviderError(
+            RuntimeError("PermissionDenied 403 " + " ".join(sentinels))
+        )
+    )
+
+    retained = verification.violations[0].message
+    assert verification.violations[0].rule == "ai_provider_auth_denied"
+    assert all(sentinel not in retained for sentinel in sentinels)
+    diagnostic = json.loads(retained)
+    assert set(diagnostic) == {
+        "acceptedForGpuHmr",
+        "canSatisfyRuntimeProof",
+        "diagnosticId",
+        "endpointRole",
+        "errorClass",
+        "gpuHmrSuccess",
+        "httpStatus",
+        "proofAuthority",
+        "reasonCode",
+        "retryable",
+        "schemaVersion",
+    }
+    assert diagnostic["endpointRole"] == "split_generation"
 
 
 def test_run_kernel_splitter_preflight_refusal_skips_provider_call():
@@ -553,7 +592,7 @@ def test_run_kernel_splitter_preflight_refusal_skips_provider_call():
     assert verification.ok is False
     assert verification.violations[0].rule == "ai_provider_account_suspended"
     assert raw_key not in verification.violations[0].message
-    assert "api_key:[REDACTED]" in verification.violations[0].message
+    assert json.loads(verification.violations[0].message)["endpointRole"] == "provider_preflight"
 
 
 def test_run_kernel_splitter_rejects_vulkan_before_ai_provider():
@@ -789,7 +828,7 @@ def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provide
         gpu_arch_hint="gfx1201",
         extra_instructions=None,
     )
-    with pytest.raises(KernelSplitProviderError, match="required provider call observed"):
+    with pytest.raises(KernelSplitProviderError) as provider_error:
         asyncio.run(
             run_kernel_splitter(
                 provider=required_provider,
@@ -805,6 +844,8 @@ def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provide
                 provider_call_request_hash=provider_request_hash,
             )
         )
+    assert provider_error.value.reason_code == "ai_provider_error"
+    assert "required provider call observed" not in str(provider_error.value)
     assert required_provider.preflight_called is True
     assert required_provider.called is True
 
