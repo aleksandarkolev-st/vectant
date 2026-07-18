@@ -418,8 +418,8 @@ impl ObservedRuntimeEvidenceEnvelope {
 }
 
 pub fn initialize_runtime_evidence_transport_signer() -> Result<(), String> {
-    harden_runtime_evidence_transport_signer_process()?;
-    let signer = RuntimeEvidenceTransportSigner::generate(std::process::id());
+    let signer = harden_runtime_evidence_transport_signer_process()
+        .and_then(|_| RuntimeEvidenceTransportSigner::generate(std::process::id()));
     let result = signer.as_ref().map(|_| ()).map_err(Clone::clone);
     GLOBAL_TRANSPORT_SIGNER
         .set(signer)

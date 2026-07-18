@@ -851,9 +851,12 @@ async fn main() -> Result<()> {
     debug_log!("Worker starting...");
     debug_log!("Operating System: {}", std::env::consts::OS);
 
-    hmr::runtime_evidence_transport::initialize_runtime_evidence_transport_signer()
-        .map_err(anyhow::Error::msg)?;
-    debug_log!("[Worker] GPU runtime evidence transport signer initialized");
+    match hmr::runtime_evidence_transport::initialize_runtime_evidence_transport_signer() {
+        Ok(()) => debug_log!("[Worker] GPU runtime evidence transport signer initialized"),
+        Err(error) => eprintln!(
+            "[Worker] GPU runtime evidence transport unavailable; support evidence disabled: {error}"
+        ),
+    }
 
     // Prevent broken X11 connections (e.g. Xvfb tear-down during a reset
     // mid-build) from exit(1)-ing the worker. Must run before any X-using
