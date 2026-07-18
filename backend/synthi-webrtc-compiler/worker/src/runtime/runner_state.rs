@@ -40,6 +40,8 @@ pub struct RunnerState {
     pub loaded_core_path: Option<String>,
     pub loaded_gui_path: Option<String>,
     pub loaded_device_abi: Option<String>,
+    pub gpu_runtime_protocol_process_id: Option<u32>,
+    pub gpu_runtime_protocol_session_id: Option<String>,
     // Widget-level compilation state
     pub loaded_widget_paths: HashMap<String, String>, // widget_id -> so_path
     pub widget_hashes: HashMap<String, u64>,          // widget_id -> content_hash
@@ -74,6 +76,8 @@ impl RunnerState {
             loaded_core_path: None,
             loaded_gui_path: None,
             loaded_device_abi: None,
+            gpu_runtime_protocol_process_id: None,
+            gpu_runtime_protocol_session_id: None,
             loaded_widget_paths: HashMap::new(),
             widget_hashes: HashMap::new(),
         }

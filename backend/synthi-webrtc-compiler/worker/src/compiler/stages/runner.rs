@@ -318,6 +318,9 @@ struct GpuArtifactLoadExpectation {
     request_id: String,
     source_edit_id: String,
     artifact_content_hash: String,
+    runner_pid: u32,
+    runner_runtime_session_id: String,
+    command_envelope_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -335,34 +338,80 @@ struct StrictGpuTerminalExpectation {
     command_envelope_sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CorrelatedGpuTerminalReceipt {
-    ColdLoad {
-        request_id: String,
-        source_edit_id: String,
-        artifact_content_hash: String,
-    },
-    HotReload {
-        request_id: String,
-        source_edit_id: String,
-        artifact_content_hash: String,
-        full_runtime_proof_id: String,
-        proof_ledger_id: String,
-        proof_json_sha256: String,
-        runner_pid: u32,
-        runner_runtime_session_id: String,
-        command_envelope_sha256: String,
-    },
+#[derive(Debug, PartialEq, Eq)]
+pub struct CorrelatedColdGpuLoadReceipt {
+    request_id: String,
+    source_edit_id: String,
+    artifact_content_hash: String,
+    runner_pid: u32,
+    runner_runtime_session_id: String,
+    command_envelope_sha256: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+impl CorrelatedColdGpuLoadReceipt {
+    pub(crate) fn runner_pid(&self) -> u32 {
+        self.runner_pid
+    }
+
+    pub(crate) fn runner_runtime_session_id(&self) -> &str {
+        &self.runner_runtime_session_id
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct VerifiedHotGpuReloadReceipt {
+    request_id: String,
+    source_edit_id: String,
+    artifact_content_hash: String,
+    full_runtime_proof_id: String,
+    proof_ledger_id: String,
+    proof_json_sha256: String,
+    runner_pid: u32,
+    runner_runtime_session_id: String,
+    command_envelope_sha256: String,
+}
+
+impl VerifiedHotGpuReloadReceipt {
+    pub(crate) fn runner_pid(&self) -> u32 {
+        self.runner_pid
+    }
+
+    pub(crate) fn runner_runtime_session_id(&self) -> &str {
+        &self.runner_runtime_session_id
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum CorrelatedGpuTerminalReceipt {
+    ColdLoad(CorrelatedColdGpuLoadReceipt),
+    VerifiedHotReload(VerifiedHotGpuReloadReceipt),
+}
+
+impl CorrelatedGpuTerminalReceipt {
+    fn runner_identity(&self) -> (u32, &str) {
+        match self {
+            Self::ColdLoad(receipt) => (receipt.runner_pid, &receipt.runner_runtime_session_id),
+            Self::VerifiedHotReload(receipt) => {
+                (receipt.runner_pid, &receipt.runner_runtime_session_id)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct RunnerExecutionOutcome {
     gpu_terminal_receipts: Vec<CorrelatedGpuTerminalReceipt>,
 }
 
 impl RunnerExecutionOutcome {
-    pub fn has_correlated_gpu_terminal(&self) -> bool {
-        !self.gpu_terminal_receipts.is_empty()
+    pub fn into_single_gpu_terminal(mut self) -> Result<Option<CorrelatedGpuTerminalReceipt>> {
+        match self.gpu_terminal_receipts.len() {
+            0 => Ok(None),
+            1 => Ok(self.gpu_terminal_receipts.pop()),
+            count => anyhow::bail!(
+                "runner returned {count} GPU terminal receipts for a single continuation"
+            ),
+        }
     }
 
     #[cfg(test)]
@@ -513,6 +562,9 @@ fn runner_load_command(
                     request_id: request_id.clone(),
                     source_edit_id,
                     artifact_content_hash: payload.artifact_content_hash.clone(),
+                    runner_pid: proof_context.runner_pid,
+                    runner_runtime_session_id: payload.runner_runtime_session_id.clone(),
+                    command_envelope_sha256: payload.envelope_sha256.clone(),
                 })
             };
             Ok(RunnerLoadCommand {
@@ -668,13 +720,7 @@ async fn wait_for_gpu_command_terminals(
     for expectation in expectations {
         let duplicate = match expectation {
             RunnerGpuTerminalExpectation::ColdLoad(expectation) => pending_cold
-                .insert(
-                    expectation.request_id.clone(),
-                    (
-                        expectation.source_edit_id.clone(),
-                        expectation.artifact_content_hash.clone(),
-                    ),
-                )
+                .insert(expectation.request_id.clone(), expectation.clone())
                 .is_some(),
             RunnerGpuTerminalExpectation::HotReload(expectation) => pending_hot
                 .insert(expectation.identity.request_id.clone(), expectation.clone())
@@ -708,15 +754,13 @@ async fn wait_for_gpu_command_terminals(
             continue;
         };
         if let Ok(result) = GpuArtifactLoadV1Result::from_json(payload) {
-            let Some((expected_source_edit_id, expected_artifact_hash)) =
-                pending_cold.get(&result.request_id)
-            else {
+            let Some(expectation) = pending_cold.get(&result.request_id) else {
                 continue;
             };
             if !result.matches(
                 &result.request_id,
-                expected_source_edit_id,
-                expected_artifact_hash,
+                &expectation.source_edit_id,
+                &expectation.artifact_content_hash,
             ) {
                 anyhow::bail!(
                     "cold GPU artifact load terminal identity or hash mismatch for request {}",
@@ -730,11 +774,16 @@ async fn wait_for_gpu_command_terminals(
                     result.reason.as_deref().unwrap_or("reason missing")
                 );
             }
-            receipts.push(CorrelatedGpuTerminalReceipt::ColdLoad {
-                request_id: result.request_id.clone(),
-                source_edit_id: result.source_edit_id.clone(),
-                artifact_content_hash: result.artifact_content_hash.clone(),
-            });
+            receipts.push(CorrelatedGpuTerminalReceipt::ColdLoad(
+                CorrelatedColdGpuLoadReceipt {
+                    request_id: result.request_id.clone(),
+                    source_edit_id: result.source_edit_id.clone(),
+                    artifact_content_hash: result.artifact_content_hash.clone(),
+                    runner_pid: expectation.runner_pid,
+                    runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
+                    command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+                },
+            ));
             pending_cold.remove(&result.request_id);
             continue;
         }
@@ -757,17 +806,19 @@ async fn wait_for_gpu_command_terminals(
             }
             let (verified_proof, proof_json_sha256) =
                 verify_applied_gpu_terminal_proof(&result, expectation)?;
-            receipts.push(CorrelatedGpuTerminalReceipt::HotReload {
-                request_id: result.request_id.clone(),
-                source_edit_id: result.source_edit_id.clone(),
-                artifact_content_hash: result.artifact_content_hash.clone(),
-                full_runtime_proof_id: verified_proof.proof_id,
-                proof_ledger_id: verified_proof.ledger_proof_id,
-                proof_json_sha256,
-                runner_pid: expectation.runner_pid,
-                runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
-                command_envelope_sha256: expectation.command_envelope_sha256.clone(),
-            });
+            receipts.push(CorrelatedGpuTerminalReceipt::VerifiedHotReload(
+                VerifiedHotGpuReloadReceipt {
+                    request_id: result.request_id.clone(),
+                    source_edit_id: result.source_edit_id.clone(),
+                    artifact_content_hash: result.artifact_content_hash.clone(),
+                    full_runtime_proof_id: verified_proof.proof_id,
+                    proof_ledger_id: verified_proof.ledger_proof_id,
+                    proof_json_sha256,
+                    runner_pid: expectation.runner_pid,
+                    runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
+                    command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+                },
+            ));
             pending_hot.remove(&result.request_id);
             continue;
         }
@@ -888,6 +939,8 @@ async fn invalidate_runner_after_command_failure(state: &mut RunnerState) {
     state.loaded_core_path = None;
     state.loaded_gui_path = None;
     state.loaded_device_abi = None;
+    state.gpu_runtime_protocol_process_id = None;
+    state.gpu_runtime_protocol_session_id = None;
     state.loaded_widget_paths.clear();
     state.widget_hashes.clear();
 }
@@ -1927,6 +1980,8 @@ pub async fn handle_runner_execution(
             loaded_core_path: uncommitted_module_state.loaded_core_path,
             loaded_gui_path: uncommitted_module_state.loaded_gui_path,
             loaded_device_abi: uncommitted_module_state.loaded_device_abi,
+            gpu_runtime_protocol_process_id: None,
+            gpu_runtime_protocol_session_id: None,
             loaded_widget_paths: HashMap::new(),
             widget_hashes: HashMap::new(),
         });
@@ -2206,6 +2261,12 @@ pub async fn handle_runner_execution(
                         }
                     }
                 }
+                if gpu_terminal_receipts.len() > 1 {
+                    invalidate_runner_after_command_failure(state).await;
+                    anyhow::bail!(
+                        "runner returned multiple GPU terminal receipts before state publication"
+                    );
+                }
 
                 let post_command_exit = if let Some(child) = state.process.as_mut() {
                     probe_runner_exit_after_reload(child, post_reload_crash_probe_duration()).await
@@ -2238,6 +2299,11 @@ pub async fn handle_runner_execution(
         state.loaded_core_path = loaded_module_state.loaded_core_path;
         state.loaded_gui_path = loaded_module_state.loaded_gui_path;
         state.loaded_device_abi = loaded_module_state.loaded_device_abi;
+        if let Some(receipt) = gpu_terminal_receipts.first() {
+            let (runner_pid, runtime_session_id) = receipt.runner_identity();
+            state.gpu_runtime_protocol_process_id = Some(runner_pid);
+            state.gpu_runtime_protocol_session_id = Some(runtime_session_id.to_string());
+        }
     }
 
     // Send build-status "done" so the frontend's compile() promise resolves.
@@ -2842,26 +2908,20 @@ mod tests {
         let outcome = RunnerExecutionOutcome {
             gpu_terminal_receipts: receipts,
         };
-        assert!(outcome.has_correlated_gpu_terminal());
         assert_eq!(outcome.gpu_terminal_receipts().len(), 2);
         for expected_proof_id in [&first_proof_id, &second_proof_id] {
             assert!(outcome.gpu_terminal_receipts().iter().any(|receipt| {
                 matches!(
                     receipt,
-                    CorrelatedGpuTerminalReceipt::HotReload {
-                        full_runtime_proof_id,
-                        proof_ledger_id,
-                        proof_json_sha256,
-                        runner_pid,
-                        runner_runtime_session_id,
-                        command_envelope_sha256,
-                        ..
-                    } if full_runtime_proof_id == expected_proof_id
-                        && proof_ledger_id.starts_with("gpu-ledger-proof:sha256:")
-                        && proof_json_sha256.starts_with("sha256:")
-                        && *runner_pid == std::process::id()
-                        && runner_runtime_session_id == proof_context().runner_runtime_session_id
-                        && command_envelope_sha256 == &first.command_envelope_sha256
+                    CorrelatedGpuTerminalReceipt::VerifiedHotReload(receipt)
+                        if &receipt.full_runtime_proof_id == expected_proof_id
+                            && receipt.proof_ledger_id.starts_with("gpu-ledger-proof:sha256:")
+                            && receipt.proof_json_sha256.starts_with("sha256:")
+                            && receipt.runner_pid == std::process::id()
+                            && receipt.runner_runtime_session_id
+                                == proof_context().runner_runtime_session_id
+                            && receipt.command_envelope_sha256
+                                == first.command_envelope_sha256
                 )
             }));
         }
@@ -2881,6 +2941,52 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("unbound legacy terminal"));
+    }
+
+    #[tokio::test]
+    async fn verified_hot_terminal_mints_single_use_resume_authorization() {
+        let expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "5".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "5".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let (proof, proof_id) = strict_runtime_proof_fixture(&expectation);
+        let (sender, _) = tokio::sync::broadcast::channel(2);
+        let mut receiver = sender.subscribe();
+        sender
+            .send(format!(
+                "[Runner] [HMR-STATUS] {}",
+                GpuReloadV2Result::applied(
+                    &expectation.identity.request_id,
+                    &expectation.identity.source_edit_id,
+                    &expectation.identity.artifact_content_hash,
+                    &proof_id,
+                    proof_material(&expectation, &proof, &proof_id),
+                )
+                .unwrap()
+                .to_json()
+                .unwrap()
+            ))
+            .unwrap();
+        let receipts = wait_for_gpu_command_terminals(
+            &mut receiver,
+            &[RunnerGpuTerminalExpectation::HotReload(expectation)],
+        )
+        .await
+        .unwrap();
+        let terminal = RunnerExecutionOutcome {
+            gpu_terminal_receipts: receipts,
+        }
+        .into_single_gpu_terminal()
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            terminal,
+            CorrelatedGpuTerminalReceipt::VerifiedHotReload(_)
+        ));
     }
 
     #[tokio::test]
@@ -3138,9 +3244,24 @@ mod tests {
                 .unwrap()
             ))
             .unwrap();
-        wait_for_gpu_command_terminals(&mut receiver, &[expectation])
+        let receipts = wait_for_gpu_command_terminals(&mut receiver, &[expectation])
             .await
             .unwrap();
+        let terminal = RunnerExecutionOutcome {
+            gpu_terminal_receipts: receipts,
+        }
+        .into_single_gpu_terminal()
+        .unwrap()
+        .unwrap();
+        let CorrelatedGpuTerminalReceipt::ColdLoad(receipt) = terminal else {
+            panic!("cold artifact load minted hot reload authorization");
+        };
+        assert_eq!(receipt.runner_pid, proof_context().runner_pid);
+        assert_eq!(
+            receipt.runner_runtime_session_id,
+            proof_context().runner_runtime_session_id
+        );
+        assert!(receipt.command_envelope_sha256.starts_with("sha256:"));
 
         let expectation = command.gpu_terminal.unwrap();
         let RunnerGpuTerminalExpectation::ColdLoad(cold) = &expectation else {

@@ -50,7 +50,8 @@ use crate::compiler::stages::guardrails::{
     apply_core_guardrails, apply_gui_guardrails, apply_shared_guardrails,
 };
 use crate::compiler::stages::runner::{
-    handle_runner_execution, RunnerExecutionOutcome, RunnerReloadPolicy,
+    handle_runner_execution, CorrelatedColdGpuLoadReceipt, CorrelatedGpuTerminalReceipt,
+    RunnerExecutionOutcome, RunnerReloadPolicy, VerifiedHotGpuReloadReceipt,
 };
 use crate::runtime::capability::HmrStatus;
 use tokio::io::AsyncWriteExt;
@@ -8308,7 +8309,7 @@ async fn enforce_device_hmr_publication_gates(
         Ok(proof) => proof,
         Err(error) => {
             if runtime_resume_deferred {
-                let _ = resume_active_runner_after_gpu_hmr(ctx, session_id).await;
+                let _ = restore_active_runner_after_gpu_hmr_abort(ctx, session_id).await;
             }
             let status = HmrStatus::gpu_rejected_with_fallback_reason(
                 "device",
@@ -8325,7 +8326,7 @@ async fn enforce_device_hmr_publication_gates(
 
     if proof.proof_id != proof_artifact.proof_id || proof != proof_artifact.artifact {
         if runtime_resume_deferred {
-            let _ = resume_active_runner_after_gpu_hmr(ctx, session_id).await;
+            let _ = restore_active_runner_after_gpu_hmr_abort(ctx, session_id).await;
         }
         let status = HmrStatus::gpu_rejected_with_fallback_reason(
             "device",
@@ -8345,7 +8346,7 @@ async fn enforce_device_hmr_publication_gates(
         proof_artifact.fission_registry.as_ref(),
     ) {
         if runtime_resume_deferred {
-            let _ = resume_active_runner_after_gpu_hmr(ctx, session_id).await;
+            let _ = restore_active_runner_after_gpu_hmr_abort(ctx, session_id).await;
         }
         let status = HmrStatus::gpu_rejected_with_fallback_reason(
             "device",
@@ -8880,19 +8881,71 @@ fn encode_gpu_kernel_command_specs(symbol_specs: &[String]) -> String {
         .join(",")
 }
 
+#[derive(Clone, Copy)]
+struct ExpectedGpuRunnerProtocolIdentity<'a> {
+    process_id: u32,
+    runtime_session_id: &'a str,
+}
+
+fn runner_state_matches_gpu_protocol_identity(
+    state: &crate::runtime::runner_state::RunnerState,
+    expected: ExpectedGpuRunnerProtocolIdentity<'_>,
+) -> bool {
+    gpu_protocol_identity_matches(
+        state.process.as_ref().and_then(|child| child.id()),
+        state.gpu_runtime_protocol_process_id,
+        state.gpu_runtime_protocol_session_id.as_deref(),
+        expected,
+    )
+}
+
+fn gpu_protocol_identity_matches(
+    observed_process_id: Option<u32>,
+    recorded_process_id: Option<u32>,
+    recorded_runtime_session_id: Option<&str>,
+    expected: ExpectedGpuRunnerProtocolIdentity<'_>,
+) -> bool {
+    observed_process_id == Some(expected.process_id)
+        && recorded_process_id == Some(expected.process_id)
+        && recorded_runtime_session_id == Some(expected.runtime_session_id)
+}
+
 async fn send_active_runner_runtime_command(
     ctx: &CompileContext,
     session_id: &str,
     command: &str,
     label: &str,
 ) -> Result<bool> {
+    send_active_runner_runtime_command_for_identity(ctx, session_id, command, label, None).await
+}
+
+async fn send_active_runner_runtime_command_for_identity(
+    ctx: &CompileContext,
+    session_id: &str,
+    command: &str,
+    label: &str,
+    expected_gpu_identity: Option<ExpectedGpuRunnerProtocolIdentity<'_>>,
+) -> Result<bool> {
     let (stdin_arc, mut output_rx) = {
         let mut guard = ctx.runner_store.lock().await;
         let Some(state) = guard.as_mut() else {
+            if expected_gpu_identity.is_some() {
+                anyhow::bail!("runner {label} authorization has no active runner state");
+            }
             return Ok(false);
         };
         if state.session_id.as_deref() != Some(session_id) {
+            if expected_gpu_identity.is_some() {
+                anyhow::bail!("runner {label} authorization session no longer owns the runner");
+            }
             return Ok(false);
+        }
+        if let Some(expected) = expected_gpu_identity {
+            if !runner_state_matches_gpu_protocol_identity(state, expected) {
+                anyhow::bail!(
+                    "runner {label} authorization does not match the active GPU protocol identity"
+                );
+            }
         }
         let runner_alive = if let Some(child) = state.process.as_mut() {
             matches!(child.try_wait(), Ok(None))
@@ -8900,12 +8953,18 @@ async fn send_active_runner_runtime_command(
             false
         };
         if !runner_alive {
+            if expected_gpu_identity.is_some() {
+                anyhow::bail!("runner {label} authorization targets an exited runner");
+            }
             return Ok(false);
         }
         (state.stdin.clone(), state.output_tx.subscribe())
     };
 
     let Some(stdin_arc) = stdin_arc else {
+        if expected_gpu_identity.is_some() {
+            anyhow::bail!("runner {label} authorization has no active stdin channel");
+        }
         return Ok(false);
     };
 
@@ -8927,14 +8986,38 @@ async fn send_active_runner_runtime_command(
     }
     eprintln!("[compile-device] runner {label} command sent: {command}");
     let timeout = runner_runtime_control_ack_timeout();
-    if wait_for_runner_runtime_control_ack(&mut output_rx, expected_status, &token, timeout).await {
-        Ok(true)
-    } else {
+    if !wait_for_runner_runtime_control_ack(&mut output_rx, expected_status, &token, timeout).await
+    {
         anyhow::bail!(
             "runner {label} command did not acknowledge {expected_status} within {}ms",
             timeout.as_millis()
         );
     }
+    drop(stdin);
+
+    if let Some(expected) = expected_gpu_identity {
+        let mut guard = ctx.runner_store.lock().await;
+        let Some(state) = guard.as_mut() else {
+            anyhow::bail!(
+                "runner {label} authorization lost its active runner after acknowledgement"
+            );
+        };
+        if state.session_id.as_deref() != Some(session_id)
+            || !runner_state_matches_gpu_protocol_identity(state, expected)
+        {
+            anyhow::bail!(
+                "runner {label} authorization changed GPU protocol identity during acknowledgement"
+            );
+        }
+        let runner_alive = state
+            .process
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
+        if !runner_alive {
+            anyhow::bail!("runner {label} exited before its acknowledgement was committed");
+        }
+    }
+    Ok(true)
 }
 
 fn runner_runtime_control_ack_status(command: &str) -> Option<&'static str> {
@@ -9045,7 +9128,7 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
         Ok(device) => device,
         Err(error) => {
             if runtime_paused {
-                let _ = resume_active_runner_after_gpu_hmr(ctx, session_id).await;
+                let _ = restore_active_runner_after_gpu_hmr_abort(ctx, session_id).await;
             }
             return Err(error);
         }
@@ -9115,7 +9198,7 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
     .await;
     if let Err(error) = catalog_result {
         if runtime_paused {
-            let _ = resume_active_runner_after_gpu_hmr(ctx, session_id).await;
+            let _ = restore_active_runner_after_gpu_hmr_abort(ctx, session_id).await;
         }
         return Err(error);
     }
@@ -9127,25 +9210,121 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
         );
     }
     if runtime_paused && !runtime_resume_deferred {
-        resume_active_runner_after_gpu_hmr(ctx, session_id).await?;
+        restore_active_runner_after_gpu_hmr_abort(ctx, session_id).await?;
     }
     Ok((device, runtime_resume_deferred))
 }
 
-async fn resume_active_runner_after_gpu_hmr(ctx: &CompileContext, session_id: &str) -> Result<()> {
-    if let Err(error) =
-        send_active_runner_runtime_command(ctx, session_id, "synthi_resume_runtime", "resume").await
+async fn resume_active_runner_runtime(
+    ctx: &CompileContext,
+    session_id: &str,
+    expected_gpu_identity: Option<ExpectedGpuRunnerProtocolIdentity<'_>>,
+    continuation_label: &str,
+) -> Result<()> {
+    if let Err(error) = send_active_runner_runtime_command_for_identity(
+        ctx,
+        session_id,
+        "synthi_resume_runtime",
+        continuation_label,
+        expected_gpu_identity,
+    )
+    .await
     {
         let status = HmrStatus::gpu_rejected_with_fallback_reason(
             "device",
-            &format!("Runner did not acknowledge runtime resume after GPU HMR: {error}"),
+            &format!(
+                "Runner did not acknowledge the {continuation_label} runtime continuation: {error}"
+            ),
             "Restart or reload the preview before applying another GPU HMR patch",
             "runtime.resume_not_acknowledged",
         );
         let _ = ctx.log_dc.send_text(status.to_json()).await;
-        return Err(error.context("runner runtime resume was not acknowledged"));
+        return Err(error.context(format!(
+            "runner {continuation_label} runtime continuation was not acknowledged"
+        )));
     }
     Ok(())
+}
+
+async fn restore_active_runner_after_gpu_hmr_abort(
+    ctx: &CompileContext,
+    session_id: &str,
+) -> Result<()> {
+    resume_active_runner_runtime(ctx, session_id, None, "GPU HMR abort restoration").await
+}
+
+async fn resume_active_runner_after_cold_gpu_load(
+    ctx: &CompileContext,
+    session_id: &str,
+    receipt: CorrelatedColdGpuLoadReceipt,
+) -> Result<()> {
+    let expected = ExpectedGpuRunnerProtocolIdentity {
+        process_id: receipt.runner_pid(),
+        runtime_session_id: receipt.runner_runtime_session_id(),
+    };
+    resume_active_runner_runtime(ctx, session_id, Some(expected), "cold GPU load").await
+}
+
+async fn resume_active_runner_after_verified_hot_reload(
+    ctx: &CompileContext,
+    session_id: &str,
+    receipt: VerifiedHotGpuReloadReceipt,
+) -> Result<()> {
+    let expected = ExpectedGpuRunnerProtocolIdentity {
+        process_id: receipt.runner_pid(),
+        runtime_session_id: receipt.runner_runtime_session_id(),
+    };
+    resume_active_runner_runtime(ctx, session_id, Some(expected), "verified hot GPU reload").await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceGpuTerminalKind {
+    ColdLoad,
+    VerifiedHotReload,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceRuntimeContinuation {
+    None,
+    ColdLoad,
+    VerifiedHotReload,
+}
+
+fn device_gpu_terminal_kind(receipt: &CorrelatedGpuTerminalReceipt) -> DeviceGpuTerminalKind {
+    match receipt {
+        CorrelatedGpuTerminalReceipt::ColdLoad(_) => DeviceGpuTerminalKind::ColdLoad,
+        CorrelatedGpuTerminalReceipt::VerifiedHotReload(_) => {
+            DeviceGpuTerminalKind::VerifiedHotReload
+        }
+    }
+}
+
+fn device_runtime_continuation(
+    device_sidecar_only_reload: bool,
+    runtime_resume_deferred: bool,
+    terminal_kind: Option<DeviceGpuTerminalKind>,
+) -> Result<DeviceRuntimeContinuation> {
+    if device_sidecar_only_reload && terminal_kind.is_none() {
+        anyhow::bail!("device sidecar reload completed without a correlated GPU terminal receipt");
+    }
+    match (runtime_resume_deferred, terminal_kind) {
+        (false, Some(DeviceGpuTerminalKind::VerifiedHotReload)) => anyhow::bail!(
+            "verified hot GPU reload terminal arrived without a deferred runtime continuation"
+        ),
+        (true, Some(DeviceGpuTerminalKind::VerifiedHotReload)) if !device_sidecar_only_reload => {
+            anyhow::bail!(
+                "verified hot GPU reload terminal cannot authorize a mixed reload continuation"
+            )
+        }
+        (true, Some(DeviceGpuTerminalKind::VerifiedHotReload)) => {
+            Ok(DeviceRuntimeContinuation::VerifiedHotReload)
+        }
+        (true, Some(DeviceGpuTerminalKind::ColdLoad)) => Ok(DeviceRuntimeContinuation::ColdLoad),
+        (true, None) => anyhow::bail!(
+            "deferred GPU runtime continuation has no correlated terminal authorization"
+        ),
+        (false, _) => Ok(DeviceRuntimeContinuation::None),
+    }
 }
 
 fn is_gpu_device_reload_marker(name: &str) -> bool {
@@ -15243,28 +15422,56 @@ async fn handle_compile_request_inner(
 
     match runner_result {
         Ok(runner_outcome) => {
-            if device_sidecar_only_reload {
-                if !runner_outcome.has_correlated_gpu_terminal() {
-                    let error = anyhow::anyhow!(
-                        "device sidecar reload completed without a correlated GPU terminal receipt"
-                    );
+            let terminal = match runner_outcome.into_single_gpu_terminal() {
+                Ok(terminal) => terminal,
+                Err(error) => {
                     let status = HmrStatus::gpu_rejected_with_fallback_reason(
                         "device",
                         &format!(
-                            "Runner did not return a correlated device terminal before GPU HMR resume: {error}"
+                            "Runner returned an invalid GPU terminal continuation: {error}"
                         ),
-                        "Keep previous GPU sidecar loaded and restart or reload the preview before applying another GPU HMR patch",
-                        "runtime.device_reload_terminal_unbound",
+                        "Keep the runtime paused and restart or reload the preview before applying another GPU HMR patch",
+                        "runtime.device_reload_terminal_authority_mismatch",
                     );
                     let _ = ctx.log_dc.send_text(status.to_json()).await;
-                    if device_runtime_resume_deferred {
-                        let _ = resume_active_runner_after_gpu_hmr(ctx, &session_id).await;
-                    }
                     return Err(error);
                 }
-            }
-            if device_runtime_resume_deferred {
-                resume_active_runner_after_gpu_hmr(ctx, &session_id).await?;
+            };
+            let continuation = match device_runtime_continuation(
+                device_sidecar_only_reload,
+                device_runtime_resume_deferred,
+                terminal.as_ref().map(device_gpu_terminal_kind),
+            ) {
+                Ok(continuation) => continuation,
+                Err(error) => {
+                    let status = HmrStatus::gpu_rejected_with_fallback_reason(
+                        "device",
+                        &format!(
+                            "Runner GPU terminal could not authorize the requested runtime continuation: {error}"
+                        ),
+                        "Keep the runtime paused and restart or reload the preview before applying another GPU HMR patch",
+                        "runtime.device_reload_terminal_authority_mismatch",
+                    );
+                    let _ = ctx.log_dc.send_text(status.to_json()).await;
+                    return Err(error);
+                }
+            };
+            match (continuation, terminal) {
+                (DeviceRuntimeContinuation::None, _) => {}
+                (
+                    DeviceRuntimeContinuation::ColdLoad,
+                    Some(CorrelatedGpuTerminalReceipt::ColdLoad(receipt)),
+                ) => {
+                    resume_active_runner_after_cold_gpu_load(ctx, &session_id, receipt).await?;
+                }
+                (
+                    DeviceRuntimeContinuation::VerifiedHotReload,
+                    Some(CorrelatedGpuTerminalReceipt::VerifiedHotReload(receipt)),
+                ) => {
+                    resume_active_runner_after_verified_hot_reload(ctx, &session_id, receipt)
+                        .await?;
+                }
+                _ => unreachable!("device runtime continuation kind was derived from its receipt"),
             }
             if !device_sidecar_only_reload {
                 let candidate_messages = {
@@ -15283,7 +15490,7 @@ async fn handle_compile_request_inner(
         }
         Err(error) => {
             if device_runtime_resume_deferred {
-                let _ = resume_active_runner_after_gpu_hmr(ctx, &session_id).await;
+                let _ = restore_active_runner_after_gpu_hmr_abort(ctx, &session_id).await;
             }
             let status = HmrStatus::compile_error("runner", vec![error.to_string()]);
             let _ = ctx.log_dc.send_text(status.to_json()).await;
@@ -15428,6 +15635,81 @@ mod gpu_host_contract_tests {
         "source-edit:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const FIXTURE_SOURCE_PARTIAL_FILENAME: &str = ".synthi/generated/gpu/device.partial.source.hip";
     const FIXTURE_KERNEL_PARTIAL_FILENAME: &str = ".synthi/generated/gpu/device.partial.kernel.hip";
+
+    #[test]
+    fn device_runtime_continuation_selects_only_cold_for_cold_terminal() {
+        assert_eq!(
+            device_runtime_continuation(true, true, Some(DeviceGpuTerminalKind::ColdLoad)).unwrap(),
+            DeviceRuntimeContinuation::ColdLoad
+        );
+        assert_ne!(
+            device_runtime_continuation(true, true, Some(DeviceGpuTerminalKind::ColdLoad)).unwrap(),
+            DeviceRuntimeContinuation::VerifiedHotReload
+        );
+    }
+
+    #[test]
+    fn device_runtime_continuation_requires_sidecar_and_pause_for_verified_hot_terminal() {
+        assert_eq!(
+            device_runtime_continuation(
+                true,
+                true,
+                Some(DeviceGpuTerminalKind::VerifiedHotReload),
+            )
+            .unwrap(),
+            DeviceRuntimeContinuation::VerifiedHotReload
+        );
+        assert!(device_runtime_continuation(
+            false,
+            true,
+            Some(DeviceGpuTerminalKind::VerifiedHotReload),
+        )
+        .is_err());
+        assert!(device_runtime_continuation(
+            true,
+            false,
+            Some(DeviceGpuTerminalKind::VerifiedHotReload),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn device_runtime_continuation_rejects_missing_deferred_terminal() {
+        assert!(device_runtime_continuation(true, true, None).is_err());
+        assert!(device_runtime_continuation(false, true, None).is_err());
+    }
+
+    #[test]
+    fn gpu_protocol_identity_requires_live_recorded_pid_and_session() {
+        let expected = ExpectedGpuRunnerProtocolIdentity {
+            process_id: 41,
+            runtime_session_id: "runtime-session-41",
+        };
+        assert!(gpu_protocol_identity_matches(
+            Some(41),
+            Some(41),
+            Some("runtime-session-41"),
+            expected,
+        ));
+        assert!(!gpu_protocol_identity_matches(
+            Some(42),
+            Some(41),
+            Some("runtime-session-41"),
+            expected,
+        ));
+        assert!(!gpu_protocol_identity_matches(
+            Some(41),
+            Some(42),
+            Some("runtime-session-41"),
+            expected,
+        ));
+        assert!(!gpu_protocol_identity_matches(
+            Some(41),
+            Some(41),
+            Some("runtime-session-42"),
+            expected,
+        ));
+    }
 
     fn symbols(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| (*name).to_string()).collect()
