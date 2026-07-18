@@ -15,6 +15,12 @@ pub const RUNTIME_ACCEPTANCE_VERIFICATION_KEY_SCHEMA_VERSION: &str =
     "synthi.gpu_hmr.runtime_acceptance_verification_key.v1";
 pub const RUNTIME_ACCEPTANCE_RECEIPT_ALGORITHM: &str = "ed25519";
 pub const RUNTIME_ACCEPTANCE_ATTESTATION_DATA_CHANNEL_LABEL: &str = "gpu-hmr-attestation";
+pub const ATTESTED_RUNTIME_PROOF_ENVELOPE_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.attested_runtime_proof_envelope.v1";
+pub const ATTESTED_RUNTIME_PROOF_ENVELOPE_TYPE: &str = "gpu_hmr_attested_runtime_proof";
+pub const ATTESTED_RUNTIME_PROOF_PAYLOAD_ENCODING: &str = "base64url:utf8:json";
+pub const ATTESTED_RUNTIME_PROOF_AUTHORITY: &str =
+    "worker_signed_transport_binding_not_gpu_hmr_acceptance";
 const RUNTIME_ACCEPTANCE_RECEIPT_PRODUCER: &str = "synthi-webrtc-compiler-worker";
 const KEY_ID_PREFIX: &str = "gpu-hmr-runtime-receipt-key:sha256:";
 const RECEIPT_ID_PREFIX: &str = "gpu-hmr-runtime-receipt:sha256:";
@@ -75,6 +81,21 @@ pub struct RuntimeAcceptanceReceipt {
     pub nonce: String,
     pub receipt_id: String,
     pub signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttestedRuntimeProofEnvelope {
+    pub schema_version: String,
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub proof_payload_encoding: String,
+    pub proof_payload_sha256: String,
+    pub proof_payload: String,
+    pub runtime_acceptance_receipt: RuntimeAcceptanceReceipt,
+    pub proof_authority: String,
+    pub accepted_for_gpu_hmr: bool,
+    pub gpu_hmr_success: bool,
 }
 
 #[derive(Clone)]
@@ -339,6 +360,71 @@ impl RuntimeAcceptanceReceipt {
                 .is_some_and(|value| canonical_base64url(value, 64))
         {
             return Err("runtime_acceptance_receipt_field_shape_invalid".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl AttestedRuntimeProofEnvelope {
+    pub fn new(
+        proof_payload: &[u8],
+        runtime_acceptance_receipt: RuntimeAcceptanceReceipt,
+    ) -> Result<Self, String> {
+        let proof_payload_sha256 = prefixed_sha256(proof_payload);
+        if runtime_acceptance_receipt.proof_payload_sha256 != proof_payload_sha256 {
+            return Err("attested_runtime_proof_payload_receipt_hash_mismatch".to_string());
+        }
+        let envelope = Self {
+            schema_version: ATTESTED_RUNTIME_PROOF_ENVELOPE_SCHEMA_VERSION.to_string(),
+            message_type: ATTESTED_RUNTIME_PROOF_ENVELOPE_TYPE.to_string(),
+            proof_payload_encoding: ATTESTED_RUNTIME_PROOF_PAYLOAD_ENCODING.to_string(),
+            proof_payload_sha256,
+            proof_payload: URL_SAFE_NO_PAD.encode(proof_payload),
+            runtime_acceptance_receipt,
+            proof_authority: ATTESTED_RUNTIME_PROOF_AUTHORITY.to_string(),
+            accepted_for_gpu_hmr: false,
+            gpu_hmr_success: false,
+        };
+        envelope.validate_shape()?;
+        Ok(envelope)
+    }
+
+    pub fn decoded_proof_payload(&self) -> Result<Vec<u8>, String> {
+        self.validate_shape()?;
+        URL_SAFE_NO_PAD
+            .decode(&self.proof_payload)
+            .map_err(|_| "attested_runtime_proof_payload_encoding_invalid".to_string())
+    }
+
+    pub fn validate_shape(&self) -> Result<(), String> {
+        if self.schema_version != ATTESTED_RUNTIME_PROOF_ENVELOPE_SCHEMA_VERSION
+            || self.message_type != ATTESTED_RUNTIME_PROOF_ENVELOPE_TYPE
+            || self.proof_payload_encoding != ATTESTED_RUNTIME_PROOF_PAYLOAD_ENCODING
+            || !canonical_sha256(&self.proof_payload_sha256)
+            || self.proof_authority != ATTESTED_RUNTIME_PROOF_AUTHORITY
+            || self.accepted_for_gpu_hmr
+            || self.gpu_hmr_success
+        {
+            return Err("attested_runtime_proof_envelope_shape_invalid".to_string());
+        }
+        self.runtime_acceptance_receipt.validate_shape()?;
+        if self.runtime_acceptance_receipt.proof_payload_sha256 != self.proof_payload_sha256 {
+            return Err("attested_runtime_proof_payload_receipt_hash_mismatch".to_string());
+        }
+        let proof_payload = URL_SAFE_NO_PAD
+            .decode(&self.proof_payload)
+            .map_err(|_| "attested_runtime_proof_payload_encoding_invalid".to_string())?;
+        if URL_SAFE_NO_PAD.encode(&proof_payload) != self.proof_payload
+            || prefixed_sha256(&proof_payload) != self.proof_payload_sha256
+        {
+            return Err("attested_runtime_proof_payload_integrity_mismatch".to_string());
+        }
+        let proof_payload = std::str::from_utf8(&proof_payload)
+            .map_err(|_| "attested_runtime_proof_payload_utf8_invalid".to_string())?;
+        if !serde_json::from_str::<serde_json::Value>(proof_payload)
+            .is_ok_and(|value| value.is_object())
+        {
+            return Err("attested_runtime_proof_payload_json_invalid".to_string());
         }
         Ok(())
     }
@@ -624,5 +710,39 @@ mod tests {
         let mut invalid = input();
         invalid.runtime_proof_id = "declared-success";
         assert!(signer.issue(invalid).is_err());
+    }
+
+    #[test]
+    fn attested_envelope_preserves_exact_proof_bytes_without_claiming_authority() {
+        let signer = RuntimeAcceptanceSigner::generate(41).unwrap();
+        let payload = br#"{"type":"gpu_hmr_proof","proofId":"gpu-runtime-proof:sha256:fixture"}"#;
+        let mut receipt_input = input();
+        receipt_input.proof_payload_sha256 = prefixed_sha256(payload).leak();
+        let receipt = signer.issue(receipt_input).unwrap();
+        let envelope = AttestedRuntimeProofEnvelope::new(payload, receipt.clone()).unwrap();
+
+        envelope.validate_shape().unwrap();
+        assert_eq!(envelope.decoded_proof_payload().unwrap(), payload);
+        assert!(!envelope.accepted_for_gpu_hmr);
+        assert!(!envelope.gpu_hmr_success);
+        verify_runtime_acceptance_receipt(
+            &envelope.runtime_acceptance_receipt,
+            signer.verification_key(),
+        )
+        .unwrap();
+
+        let encoded = serde_json::to_string(&envelope).unwrap();
+        let decoded: AttestedRuntimeProofEnvelope = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, envelope);
+
+        let mut forged_payload = envelope.clone();
+        forged_payload.proof_payload = URL_SAFE_NO_PAD.encode(b"{}");
+        assert!(forged_payload.validate_shape().is_err());
+
+        let mut forged_authority = serde_json::to_value(&envelope).unwrap();
+        forged_authority["gpuHmrSuccess"] = json!(true);
+        let forged_authority: AttestedRuntimeProofEnvelope =
+            serde_json::from_value(forged_authority).unwrap();
+        assert!(forged_authority.validate_shape().is_err());
     }
 }
