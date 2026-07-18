@@ -4,6 +4,8 @@ use base64::{engine::general_purpose, Engine as _};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
+use rand::rngs::OsRng;
+use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -24,20 +26,32 @@ use crate::runtime::gpu_runtime_proof::{
     verify_strict_gpu_runtime_proof, StrictGpuRuntimeProofExpectation, VerifiedGpuRuntimeProof,
 };
 use crate::runtime::runner_protocol::{
-    decode_runner_command_token, parse_runner_protocol_ack, GpuArtifactLoadV1Result,
-    GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload, RunnerProtocolAck,
-    GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY, GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION,
-    GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
-    GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+    decode_runner_command_token, parse_runner_protocol_ack, parse_runner_runtime_control_ack,
+    GpuArtifactLoadV1Result, GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload,
+    RunnerProtocolAck, GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+    GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION, GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
+    GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY, GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
     GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, GPU_RELOAD_V4_RESULT_SCHEMA_VERSION,
     RUNNER_PROTOCOL_ACK_PREFIX, RUNNER_PROTOCOL_CURRENT_VERSION,
-    RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
+    RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION, RUNNER_RUNTIME_CONTROL_ACK_PREFIX,
+    RUNNER_RUNTIME_CONTROL_SESSION_ENV,
 };
 use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
 use crate::webrtc::PER_DC_SEND_TIMEOUT;
 
 const STRUCTURED_LOG_CHUNK_BYTES: usize = 4096;
 const STRUCTURED_LOG_CHUNK_SCHEMA_VERSION: &str = "synthi.build_log.structured_json_chunk.v1";
+
+fn generate_runner_runtime_control_session_id() -> Result<String> {
+    let mut random_bytes = [0_u8; 16];
+    OsRng
+        .try_fill_bytes(&mut random_bytes)
+        .map_err(|error| anyhow::anyhow!("generating runner runtime-control session: {error}"))?;
+    Ok(format!(
+        "runner-control-session:{}",
+        hex::encode(random_bytes)
+    ))
+}
 
 fn extract_structured_runner_message(line: &str) -> Option<&str> {
     let trimmed = line.trim();
@@ -104,6 +118,7 @@ fn json_contains_protected_gpu_evidence(value: &serde_json::Value) -> bool {
 fn runner_line_contains_protected_gpu_evidence(line: &str) -> bool {
     let trimmed = line.trim_start();
     if trimmed.starts_with(RUNNER_PROTOCOL_ACK_PREFIX)
+        || trimmed.starts_with(RUNNER_RUNTIME_CONTROL_ACK_PREFIX)
         || trimmed.starts_with("Stdin received:")
         || trimmed.starts_with("[Runner] Processing command:")
     {
@@ -161,18 +176,11 @@ fn is_legacy_gpu_terminal_candidate(value: &serde_json::Value) -> bool {
         )
 }
 
-fn is_runtime_control_ack(value: &serde_json::Value) -> bool {
-    matches!(
-        value.get("status").and_then(serde_json::Value::as_str),
-        Some("runtime-paused" | "runtime-resumed")
-    ) && value
-        .get("runtimeControlToken")
-        .and_then(serde_json::Value::as_str)
-        .is_some()
-}
-
 fn runner_line_is_private_protocol(line: &str) -> bool {
     if line.starts_with(RUNNER_PROTOCOL_ACK_PREFIX) {
+        return true;
+    }
+    if parse_runner_runtime_control_ack(line).is_some() {
         return true;
     }
     let Some(payload) = extract_structured_runner_message(line) else {
@@ -184,8 +192,7 @@ fn runner_line_is_private_protocol(line: &str) -> bool {
                 .get("schemaVersion")
                 .and_then(serde_json::Value::as_str),
             Some(GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION | GPU_RELOAD_V4_RESULT_SCHEMA_VERSION)
-        ) || is_runtime_control_ack(&value)
-            || is_legacy_gpu_terminal_candidate(&value)
+        ) || is_legacy_gpu_terminal_candidate(&value)
     })
 }
 
@@ -217,6 +224,8 @@ fn protected_runner_line_log_summary(line: &str) -> String {
     let trimmed = line.trim_start();
     let kind = if trimmed.starts_with(RUNNER_PROTOCOL_ACK_PREFIX) {
         "protocol_ack"
+    } else if trimmed.starts_with(RUNNER_RUNTIME_CONTROL_ACK_PREFIX) {
+        "runtime_control_ack"
     } else if trimmed.starts_with("Stdin received:")
         || trimmed.starts_with("[Runner] Processing command:")
     {
@@ -1033,6 +1042,7 @@ async fn invalidate_runner_after_command_failure(state: &mut RunnerState) {
     state.loaded_core_path = None;
     state.loaded_gui_path = None;
     state.loaded_device_abi = None;
+    state.runner_runtime_control_session_id = None;
     state.gpu_runtime_protocol_process_id = None;
     state.gpu_runtime_protocol_session_id = None;
     state.loaded_widget_paths.clear();
@@ -1849,6 +1859,7 @@ pub async fn handle_runner_execution(
         )
         .await;
 
+        let runner_runtime_control_session_id = generate_runner_runtime_control_session_id()?;
         let mut cmd = Command::new(&runner_path);
         cmd.env("DISPLAY", &wsl_display_str)
             .env(
@@ -1861,6 +1872,10 @@ pub async fn handle_runner_execution(
             // the worker's own Xvfb on :99 and uses binary IPC instead of the text
             // protocol the worker sends.
             .env("SYNTHI_UNSAFE_INPROCESS", "1")
+            .env(
+                RUNNER_RUNTIME_CONTROL_SESSION_ENV,
+                &runner_runtime_control_session_id,
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -2087,6 +2102,7 @@ pub async fn handle_runner_execution(
             loaded_core_path: uncommitted_module_state.loaded_core_path,
             loaded_gui_path: uncommitted_module_state.loaded_gui_path,
             loaded_device_abi: uncommitted_module_state.loaded_device_abi,
+            runner_runtime_control_session_id: Some(runner_runtime_control_session_id),
             gpu_runtime_protocol_process_id: None,
             gpu_runtime_protocol_session_id: None,
             loaded_widget_paths: HashMap::new(),
@@ -2471,8 +2487,8 @@ mod tests {
     };
     use crate::runtime::runner_protocol::{
         GpuArtifactLoadV1Result, GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload,
-        GpuRuntimeProofMaterialV1, RunnerProtocolAck,
-        GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+        GpuRuntimeProofMaterialV1, RunnerProtocolAck, RunnerRuntimeControlAck,
+        RunnerRuntimeControlStatus, GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
         GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
         GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
         GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
@@ -3699,9 +3715,19 @@ mod tests {
         )
         .line()
         .unwrap();
+        let runtime_control_ack = RunnerRuntimeControlAck::current(
+            RunnerRuntimeControlStatus::Paused,
+            format!("runner-control:{}", "c".repeat(32)),
+            true,
+            0,
+            format!("runner-control-session:{}", "d".repeat(32)),
+        )
+        .unwrap()
+        .line()
+        .unwrap();
         let protocol_lines = [
             ack,
-            r#"[Runner] [HMR-STATUS] {"module":"runner","status":"runtime-paused","runtimeControlToken":"sentinel-control-token"}"#.to_string(),
+            runtime_control_ack,
             r#"[Runner] [HMR-STATUS] {"module":"device","status":"applied","runtimeProofMaterial":"sentinel-proof-bytes"}"#.to_string(),
         ];
 
@@ -3731,6 +3757,25 @@ mod tests {
             assert!(protocol_rx.try_recv().is_err());
             assert!(!protected_runner_line_log_summary(&line).contains("sentinel"));
         }
+
+        let loose_runtime_ack = r#"[Runner] [HMR-STATUS] {"module":"runner","status":"runtime-paused","runtimeControlToken":"runner-control:cccccccccccccccccccccccccccccccc"}"#;
+        assert_eq!(
+            route_runner_output_line(loose_runtime_ack, &general_tx, &protocol_tx),
+            RunnerOutputRoute::ProtectedEvidence
+        );
+        assert!(protocol_rx.try_recv().is_err());
+
+        let malformed_runtime_ack = format!(
+            "{}{}",
+            crate::runtime::runner_protocol::RUNNER_RUNTIME_CONTROL_ACK_PREFIX,
+            r#"{"schemaVersion":"synthi.runner.runtime_control_ack.v1","status":"runtime-paused","runtimeControlToken":"runner-control:cccccccccccccccccccccccccccccccc","runtimePaused":true,"gpuReloadInflightCount":0,"runnerPid":1,"runnerRuntimeSessionId":"session","acceptedForGpuHmr":true}"#,
+        );
+        assert_eq!(
+            route_runner_output_line(&malformed_runtime_ack, &general_tx, &protocol_tx),
+            RunnerOutputRoute::ProtectedEvidence
+        );
+        assert!(protocol_rx.try_recv().is_err());
+        assert!(general_rx.try_recv().is_err());
 
         let visible = "application output remains visible";
         assert_eq!(

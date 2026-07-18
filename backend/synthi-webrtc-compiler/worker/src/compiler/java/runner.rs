@@ -649,6 +649,7 @@ pub async fn run_java(
         loaded_core_path: None,
         loaded_gui_path: None,
         loaded_device_abi: None,
+        runner_runtime_control_session_id: None,
         gpu_runtime_protocol_process_id: None,
         gpu_runtime_protocol_session_id: None,
         loaded_widget_paths: HashMap::new(),

@@ -20,6 +20,9 @@ pub const GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY: &str =
     "gpu_reload.challenge_bound_envelope.v1";
 pub const GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY: &str = "gpu_reload.bound_proof_material.v1";
 pub const RUNNER_PROTOCOL_ACK_PREFIX: &str = "[synthi-runner-protocol-ack] ";
+pub const RUNNER_RUNTIME_CONTROL_ACK_SCHEMA_VERSION: &str = "synthi.runner.runtime_control_ack.v1";
+pub const RUNNER_RUNTIME_CONTROL_ACK_PREFIX: &str = "[synthi-runner-runtime-control-ack] ";
+pub const RUNNER_RUNTIME_CONTROL_SESSION_ENV: &str = "SYNTHI_RUNNER_RUNTIME_CONTROL_SESSION_ID";
 pub const RUNNER_PROTOCOL_CURRENT_VERSION: u32 = 5;
 pub const RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION: u32 = 1;
 
@@ -98,6 +101,129 @@ impl RunnerProtocolAck {
 pub fn parse_runner_protocol_ack(line: &str) -> Option<RunnerProtocolAck> {
     let json = line.strip_prefix(RUNNER_PROTOCOL_ACK_PREFIX)?;
     serde_json::from_str(json).ok()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RunnerRuntimeControlStatus {
+    #[serde(rename = "runtime-paused")]
+    Paused,
+    #[serde(rename = "runtime-resumed")]
+    Resumed,
+}
+
+impl RunnerRuntimeControlStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Paused => "runtime-paused",
+            Self::Resumed => "runtime-resumed",
+        }
+    }
+
+    fn expected_paused(self) -> bool {
+        matches!(self, Self::Paused)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunnerRuntimeControlAck {
+    pub schema_version: String,
+    pub status: RunnerRuntimeControlStatus,
+    pub runtime_control_token: String,
+    pub runtime_paused: bool,
+    pub gpu_reload_inflight_count: u64,
+    pub runner_pid: u32,
+    pub runner_control_session_id: String,
+}
+
+impl RunnerRuntimeControlAck {
+    pub fn current(
+        status: RunnerRuntimeControlStatus,
+        runtime_control_token: impl Into<String>,
+        runtime_paused: bool,
+        gpu_reload_inflight_count: usize,
+        runner_control_session_id: impl Into<String>,
+    ) -> Result<Self, String> {
+        let ack = Self {
+            schema_version: RUNNER_RUNTIME_CONTROL_ACK_SCHEMA_VERSION.to_string(),
+            status,
+            runtime_control_token: runtime_control_token.into(),
+            runtime_paused,
+            gpu_reload_inflight_count: u64::try_from(gpu_reload_inflight_count)
+                .map_err(|_| "runner runtime-control inflight count exceeds u64".to_string())?,
+            runner_pid: std::process::id(),
+            runner_control_session_id: runner_control_session_id.into(),
+        };
+        ack.validate()?;
+        Ok(ack)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != RUNNER_RUNTIME_CONTROL_ACK_SCHEMA_VERSION {
+            return Err("runner runtime-control ACK schema mismatch".to_string());
+        }
+        if !canonical_runner_runtime_control_token(&self.runtime_control_token) {
+            return Err("runner runtime-control ACK token is invalid".to_string());
+        }
+        if self.runtime_paused != self.status.expected_paused() {
+            return Err("runner runtime-control ACK state contradicts status".to_string());
+        }
+        if self.runner_pid == 0 {
+            return Err("runner runtime-control ACK process identity is invalid".to_string());
+        }
+        if !canonical_runner_runtime_control_session_id(&self.runner_control_session_id) {
+            return Err("runner runtime-control ACK control session is invalid".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn line(&self) -> Result<String, String> {
+        self.validate()?;
+        serde_json::to_string(self)
+            .map(|json| format!("{RUNNER_RUNTIME_CONTROL_ACK_PREFIX}{json}"))
+            .map_err(|error| format!("serializing runner runtime-control ACK: {error}"))
+    }
+
+    pub fn matches_expected(
+        &self,
+        status: RunnerRuntimeControlStatus,
+        token: &str,
+        runner_pid: u32,
+        runner_control_session_id: &str,
+    ) -> bool {
+        self.validate().is_ok()
+            && self.status == status
+            && self.runtime_control_token == token
+            && self.runner_pid == runner_pid
+            && self.runner_control_session_id == runner_control_session_id
+    }
+}
+
+pub fn parse_runner_runtime_control_ack(line: &str) -> Option<RunnerRuntimeControlAck> {
+    let json = line.strip_prefix(RUNNER_RUNTIME_CONTROL_ACK_PREFIX)?;
+    let ack: RunnerRuntimeControlAck = serde_json::from_str(json).ok()?;
+    ack.validate().ok()?;
+    Some(ack)
+}
+
+pub fn canonical_runner_runtime_control_token(value: &str) -> bool {
+    let Some(random_hex) = value.strip_prefix("runner-control:") else {
+        return false;
+    };
+    random_hex.len() == 32
+        && random_hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+pub fn canonical_runner_runtime_control_session_id(value: &str) -> bool {
+    let Some(random_hex) = value.strip_prefix("runner-control-session:") else {
+        return false;
+    };
+    random_hex.len() == 32
+        && random_hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -847,6 +973,14 @@ mod tests {
         "1".repeat(32)
     }
 
+    fn runtime_control_token() -> String {
+        format!("runner-control:{}", "c".repeat(32))
+    }
+
+    fn runner_control_session_id() -> String {
+        format!("runner-control-session:{}", "e".repeat(32))
+    }
+
     fn proof_material(
         request_id: &str,
         source_edit_id: &str,
@@ -1051,6 +1185,124 @@ mod tests {
                 .retain(|capability| capability != required);
             assert!(!missing_capability.supports_strict_gpu_reload("nonce-a", std::process::id()));
         }
+    }
+
+    #[test]
+    fn runtime_control_ack_is_typed_and_bound_to_token_process_session_and_state() {
+        let token = runtime_control_token();
+        let ack = RunnerRuntimeControlAck::current(
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            true,
+            2,
+            runner_control_session_id(),
+        )
+        .unwrap();
+        let line = ack.line().unwrap();
+        let parsed = parse_runner_runtime_control_ack(&line).unwrap();
+
+        assert!(parsed.matches_expected(
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            std::process::id(),
+            &runner_control_session_id(),
+        ));
+        assert!(!parsed.matches_expected(
+            RunnerRuntimeControlStatus::Resumed,
+            &token,
+            std::process::id(),
+            &runner_control_session_id(),
+        ));
+        assert!(!parsed.matches_expected(
+            RunnerRuntimeControlStatus::Paused,
+            &format!("runner-control:{}", "d".repeat(32)),
+            std::process::id(),
+            &runner_control_session_id(),
+        ));
+        assert!(!parsed.matches_expected(
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            std::process::id() + 1,
+            &runner_control_session_id(),
+        ));
+        assert!(!parsed.matches_expected(
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            std::process::id(),
+            &format!("runner-control-session:{}", "f".repeat(32)),
+        ));
+    }
+
+    #[test]
+    fn runtime_control_ack_rejects_loose_or_malformed_protocol_shapes() {
+        let token = runtime_control_token();
+        let ack = RunnerRuntimeControlAck::current(
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            true,
+            0,
+            runner_control_session_id(),
+        )
+        .unwrap();
+
+        assert!(parse_runner_runtime_control_ack(&serde_json::to_string(&ack).unwrap()).is_none());
+        assert!(parse_runner_runtime_control_ack(
+            r#"[Runner] [HMR-STATUS] {"status":"runtime-paused","runtimeControlToken":"runner-control:cccccccccccccccccccccccccccccccc"}"#,
+        )
+        .is_none());
+
+        let mut unknown_field = serde_json::to_value(&ack).unwrap();
+        unknown_field["acceptedForGpuHmr"] = serde_json::Value::Bool(true);
+        let unknown_line = format!(
+            "{RUNNER_RUNTIME_CONTROL_ACK_PREFIX}{}",
+            serde_json::to_string(&unknown_field).unwrap()
+        );
+        assert!(parse_runner_runtime_control_ack(&unknown_line).is_none());
+
+        let mut invalid = ack.clone();
+        invalid.runtime_control_token = "runner-control-1".to_string();
+        assert!(invalid.line().is_err());
+        let mut invalid = ack.clone();
+        invalid.runtime_paused = false;
+        assert!(invalid.line().is_err());
+        let mut invalid = ack.clone();
+        invalid.runner_pid = 0;
+        assert!(invalid.line().is_err());
+        let mut invalid = ack;
+        invalid.runner_control_session_id = "contains whitespace".to_string();
+        assert!(invalid.line().is_err());
+    }
+
+    #[test]
+    fn runtime_control_token_requires_exact_128_bit_lowercase_hex_shape() {
+        assert!(canonical_runner_runtime_control_token(
+            &runtime_control_token()
+        ));
+        assert!(!canonical_runner_runtime_control_token(
+            "runner-control:ccccccccccccccccccccccccccccccc"
+        ));
+        assert!(!canonical_runner_runtime_control_token(
+            "runner-control:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+        ));
+        assert!(!canonical_runner_runtime_control_token(
+            "runner-control-cccccccccccccccccccccccccccccccc"
+        ));
+    }
+
+    #[test]
+    fn runtime_control_session_requires_exact_128_bit_lowercase_hex_shape() {
+        assert!(canonical_runner_runtime_control_session_id(
+            &runner_control_session_id()
+        ));
+        assert!(!canonical_runner_runtime_control_session_id(
+            "runner-control-session:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        ));
+        assert!(!canonical_runner_runtime_control_session_id(
+            "runner-control-session:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"
+        ));
+        assert!(!canonical_runner_runtime_control_session_id(
+            "runner-runtime-session:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        ));
     }
 
     #[test]

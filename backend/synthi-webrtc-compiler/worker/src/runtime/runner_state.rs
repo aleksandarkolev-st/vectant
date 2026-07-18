@@ -43,6 +43,9 @@ pub struct RunnerState {
     pub loaded_core_path: Option<String>,
     pub loaded_gui_path: Option<String>,
     pub loaded_device_abi: Option<String>,
+    /// Random process-incarnation identity used only for authenticated
+    /// parent/runner control acknowledgements.
+    pub runner_runtime_control_session_id: Option<String>,
     pub gpu_runtime_protocol_process_id: Option<u32>,
     pub gpu_runtime_protocol_session_id: Option<String>,
     // Widget-level compilation state
@@ -81,6 +84,7 @@ impl RunnerState {
             loaded_core_path: None,
             loaded_gui_path: None,
             loaded_device_abi: None,
+            runner_runtime_control_session_id: None,
             gpu_runtime_protocol_process_id: None,
             gpu_runtime_protocol_session_id: None,
             loaded_widget_paths: HashMap::new(),

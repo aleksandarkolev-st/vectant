@@ -9,6 +9,15 @@ use crate::compiler::builder::{
 use crate::compiler::context::CompileContext;
 use crate::infra::crash_recovery::PLUGIN_TIMEOUT_SECS;
 use crate::infra::messages::{CompileRequest, FileEntry, FileRef};
+#[cfg(test)]
+use crate::runtime::runner_protocol::{
+    canonical_runner_runtime_control_token, RunnerRuntimeControlAck,
+};
+use crate::runtime::runner_protocol::{
+    parse_runner_runtime_control_ack, RunnerRuntimeControlStatus,
+};
+use rand::rngs::OsRng;
+use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 // ULTRAPLAN Lightning Phase 11 — per-process Tier 0 bypass counters.
@@ -17,8 +26,6 @@ use sha2::{Digest, Sha256};
 static TIER0_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TIER0_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TIER0_INELIGIBLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static RUNNER_RUNTIME_CONTROL_SEQ: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
 const MAX_DEVICE_PARTIAL_ARTIFACTS: usize = 128;
 const MAX_WARM_SOURCE_BRIDGE_TUS: usize = 16;
 const MAX_SOURCE_BRIDGE_SUPPORT_INLINE_DEPTH: usize = 6;
@@ -8910,6 +8917,16 @@ fn gpu_protocol_identity_matches(
         && recorded_runtime_session_id == Some(expected.runtime_session_id)
 }
 
+fn runner_runtime_control_identity_matches(
+    observed_process_id: Option<u32>,
+    recorded_control_session_id: Option<&str>,
+    expected_process_id: u32,
+    expected_control_session_id: &str,
+) -> bool {
+    observed_process_id == Some(expected_process_id)
+        && recorded_control_session_id == Some(expected_control_session_id)
+}
+
 async fn send_active_runner_runtime_command(
     ctx: &CompileContext,
     session_id: &str,
@@ -8926,7 +8943,7 @@ async fn send_active_runner_runtime_command_for_identity(
     label: &str,
     expected_gpu_identity: Option<ExpectedGpuRunnerProtocolIdentity<'_>>,
 ) -> Result<bool> {
-    let (stdin_arc, mut output_rx) = {
+    let (stdin_arc, mut output_rx, runner_process_id, runner_control_session_id) = {
         let mut guard = ctx.runner_store.lock().await;
         let Some(state) = guard.as_mut() else {
             if expected_gpu_identity.is_some() {
@@ -8947,18 +8964,29 @@ async fn send_active_runner_runtime_command_for_identity(
                 );
             }
         }
-        let runner_alive = if let Some(child) = state.process.as_mut() {
-            matches!(child.try_wait(), Ok(None))
-        } else {
-            false
-        };
-        if !runner_alive {
+        let runner_process_id = state.process.as_mut().and_then(|child| {
+            if matches!(child.try_wait(), Ok(None)) {
+                child.id()
+            } else {
+                None
+            }
+        });
+        let Some(runner_process_id) = runner_process_id else {
             if expected_gpu_identity.is_some() {
                 anyhow::bail!("runner {label} authorization targets an exited runner");
             }
             return Ok(false);
-        }
-        (state.stdin.clone(), state.protocol_tx.subscribe())
+        };
+        let Some(runner_control_session_id) = state.runner_runtime_control_session_id.clone()
+        else {
+            anyhow::bail!("runner {label} has no runtime-control session identity");
+        };
+        (
+            state.stdin.clone(),
+            state.protocol_tx.subscribe(),
+            runner_process_id,
+            runner_control_session_id,
+        )
     };
 
     let Some(stdin_arc) = stdin_arc else {
@@ -8968,10 +8996,7 @@ async fn send_active_runner_runtime_command_for_identity(
         return Ok(false);
     };
 
-    let token = format!(
-        "runner-control-{}",
-        RUNNER_RUNTIME_CONTROL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    );
+    let token = generate_runner_runtime_control_token()?;
     let expected_status = runner_runtime_control_ack_status(command)
         .context("runner runtime command does not have an acknowledgement contract")?;
     let mut stdin = stdin_arc.lock().await;
@@ -8986,44 +9011,67 @@ async fn send_active_runner_runtime_command_for_identity(
     }
     eprintln!("[compile-device] runner {label} command sent: {command}");
     let timeout = runner_runtime_control_ack_timeout();
-    if !wait_for_runner_runtime_control_ack(&mut output_rx, expected_status, &token, timeout).await
+    if !wait_for_runner_runtime_control_ack(
+        &mut output_rx,
+        expected_status,
+        &token,
+        runner_process_id,
+        &runner_control_session_id,
+        timeout,
+    )
+    .await
     {
         anyhow::bail!(
-            "runner {label} command did not acknowledge {expected_status} within {}ms",
+            "runner {label} command did not acknowledge {} within {}ms",
+            expected_status.as_str(),
             timeout.as_millis()
         );
     }
     drop(stdin);
 
+    let mut guard = ctx.runner_store.lock().await;
+    let Some(state) = guard.as_mut() else {
+        anyhow::bail!("runner {label} lost its active runner after acknowledgement");
+    };
+    let active_process_id = state.process.as_mut().and_then(|child| {
+        if matches!(child.try_wait(), Ok(None)) {
+            child.id()
+        } else {
+            None
+        }
+    });
+    if state.session_id.as_deref() != Some(session_id)
+        || !runner_runtime_control_identity_matches(
+            active_process_id,
+            state.runner_runtime_control_session_id.as_deref(),
+            runner_process_id,
+            &runner_control_session_id,
+        )
+    {
+        anyhow::bail!("runner {label} changed identity during acknowledgement");
+    }
     if let Some(expected) = expected_gpu_identity {
-        let mut guard = ctx.runner_store.lock().await;
-        let Some(state) = guard.as_mut() else {
-            anyhow::bail!(
-                "runner {label} authorization lost its active runner after acknowledgement"
-            );
-        };
-        if state.session_id.as_deref() != Some(session_id)
-            || !runner_state_matches_gpu_protocol_identity(state, expected)
-        {
+        if !runner_state_matches_gpu_protocol_identity(state, expected) {
             anyhow::bail!(
                 "runner {label} authorization changed GPU protocol identity during acknowledgement"
             );
-        }
-        let runner_alive = state
-            .process
-            .as_mut()
-            .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
-        if !runner_alive {
-            anyhow::bail!("runner {label} exited before its acknowledgement was committed");
         }
     }
     Ok(true)
 }
 
-fn runner_runtime_control_ack_status(command: &str) -> Option<&'static str> {
+fn generate_runner_runtime_control_token() -> Result<String> {
+    let mut random_bytes = [0_u8; 16];
+    OsRng
+        .try_fill_bytes(&mut random_bytes)
+        .map_err(|error| anyhow::anyhow!("generating runner runtime-control token: {error}"))?;
+    Ok(format!("runner-control:{}", hex::encode(random_bytes)))
+}
+
+fn runner_runtime_control_ack_status(command: &str) -> Option<RunnerRuntimeControlStatus> {
     match command {
-        "synthi_pause_runtime" | "pause_runtime" => Some("runtime-paused"),
-        "synthi_resume_runtime" | "resume_runtime" => Some("runtime-resumed"),
+        "synthi_pause_runtime_v2" => Some(RunnerRuntimeControlStatus::Paused),
+        "synthi_resume_runtime_v2" => Some(RunnerRuntimeControlStatus::Resumed),
         _ => None,
     }
 }
@@ -9037,34 +9085,29 @@ fn runner_runtime_control_ack_timeout() -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
-fn extract_runner_structured_payload(line: &str) -> Option<&str> {
-    let trimmed = line.trim();
-    if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        return Some(trimmed);
-    }
-
-    const PREFIX: &str = "[Runner] [HMR-STATUS] ";
-    line.find(PREFIX).map(|idx| &line[idx + PREFIX.len()..])
-}
-
-fn runner_runtime_control_ack_matches(line: &str, expected_status: &str, token: &str) -> bool {
-    let Some(payload) = extract_runner_structured_payload(line) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
-        return false;
-    };
-    value.get("status").and_then(serde_json::Value::as_str) == Some(expected_status)
-        && value
-            .get("runtimeControlToken")
-            .and_then(serde_json::Value::as_str)
-            == Some(token)
+fn runner_runtime_control_ack_matches(
+    line: &str,
+    expected_status: RunnerRuntimeControlStatus,
+    token: &str,
+    runner_process_id: u32,
+    runner_control_session_id: &str,
+) -> bool {
+    parse_runner_runtime_control_ack(line).is_some_and(|ack| {
+        ack.matches_expected(
+            expected_status,
+            token,
+            runner_process_id,
+            runner_control_session_id,
+        )
+    })
 }
 
 async fn wait_for_runner_runtime_control_ack(
     output_rx: &mut tokio::sync::broadcast::Receiver<String>,
-    expected_status: &str,
+    expected_status: RunnerRuntimeControlStatus,
     token: &str,
+    runner_process_id: u32,
+    runner_control_session_id: &str,
     timeout: std::time::Duration,
 ) -> bool {
     let deadline = tokio::time::sleep(timeout);
@@ -9074,7 +9117,13 @@ async fn wait_for_runner_runtime_control_ack(
             _ = &mut deadline => return false,
             received = output_rx.recv() => {
                 match received {
-                    Ok(line) if runner_runtime_control_ack_matches(&line, expected_status, token) => return true,
+                    Ok(line) if runner_runtime_control_ack_matches(
+                        &line,
+                        expected_status,
+                        token,
+                        runner_process_id,
+                        runner_control_session_id,
+                    ) => return true,
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
@@ -9097,22 +9146,26 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
     defer_runtime_resume: bool,
 ) -> Result<(Option<DeviceCompileOutcome>, bool)> {
     let workspace_path = ctx.workspace_path.as_path();
-    let runtime_paused =
-        match send_active_runner_runtime_command(ctx, session_id, "synthi_pause_runtime", "pause")
-            .await
-        {
-            Ok(paused) => paused,
-            Err(error) => {
-                let status = HmrStatus::gpu_rejected_with_fallback_reason(
-                    "device",
-                    &format!("Runner did not acknowledge runtime pause before GPU HMR: {error}"),
-                    "Keep previous GPU sidecar loaded",
-                    "runtime.pause_not_acknowledged",
-                );
-                let _ = ctx.log_dc.send_text(status.to_json()).await;
-                return Err(error.context("runner runtime pause was not acknowledged"));
-            }
-        };
+    let runtime_paused = match send_active_runner_runtime_command(
+        ctx,
+        session_id,
+        "synthi_pause_runtime_v2",
+        "pause",
+    )
+    .await
+    {
+        Ok(paused) => paused,
+        Err(error) => {
+            let status = HmrStatus::gpu_rejected_with_fallback_reason(
+                "device",
+                &format!("Runner did not acknowledge runtime pause before GPU HMR: {error}"),
+                "Keep previous GPU sidecar loaded",
+                "runtime.pause_not_acknowledged",
+            );
+            let _ = ctx.log_dc.send_text(status.to_json()).await;
+            return Err(error.context("runner runtime pause was not acknowledged"));
+        }
+    };
     let device_result = compile_device_sources_phase0(
         workspace_path,
         output_dir,
@@ -9224,7 +9277,7 @@ async fn resume_active_runner_runtime(
     if let Err(error) = send_active_runner_runtime_command_for_identity(
         ctx,
         session_id,
-        "synthi_resume_runtime",
+        "synthi_resume_runtime_v2",
         continuation_label,
         expected_gpu_identity,
     )
@@ -16425,32 +16478,102 @@ mod gpu_host_contract_tests {
 
     #[test]
     fn runtime_control_ack_matches_structured_runner_token() {
-        let line = r#"[Runner] [HMR-STATUS] {"status":"runtime-paused","module":"runner","runtimeControlToken":"runner-control-7","runtimePaused":true}"#;
+        let token = format!("runner-control:{}", "7".repeat(32));
+        let control_session_id = format!("runner-control-session:{}", "9".repeat(32));
+        let line = RunnerRuntimeControlAck::current(
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            true,
+            0,
+            &control_session_id,
+        )
+        .unwrap()
+        .line()
+        .unwrap();
 
         assert!(runner_runtime_control_ack_matches(
-            line,
-            "runtime-paused",
-            "runner-control-7"
+            &line,
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            std::process::id(),
+            &control_session_id,
         ));
         assert!(!runner_runtime_control_ack_matches(
-            line,
-            "runtime-resumed",
-            "runner-control-7"
+            &line,
+            RunnerRuntimeControlStatus::Resumed,
+            &token,
+            std::process::id(),
+            &control_session_id,
         ));
         assert!(!runner_runtime_control_ack_matches(
-            line,
-            "runtime-paused",
-            "runner-control-8"
+            &line,
+            RunnerRuntimeControlStatus::Paused,
+            &format!("runner-control:{}", "8".repeat(32)),
+            std::process::id(),
+            &control_session_id,
+        ));
+        assert!(!runner_runtime_control_ack_matches(
+            &line,
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            std::process::id(),
+            &format!("runner-control-session:{}", "a".repeat(32)),
         ));
     }
 
     #[test]
-    fn runtime_control_ack_ignores_unstructured_logs() {
+    fn runtime_control_ack_ignores_untyped_and_unstructured_logs() {
         assert!(!runner_runtime_control_ack_matches(
             "[Runner] Runtime update/render paused for external HMR work",
-            "runtime-paused",
-            "runner-control-1"
+            RunnerRuntimeControlStatus::Paused,
+            &format!("runner-control:{}", "1".repeat(32)),
+            std::process::id(),
+            &format!("runner-control-session:{}", "2".repeat(32)),
         ));
+        assert!(!runner_runtime_control_ack_matches(
+            r#"[Runner] [HMR-STATUS] {"status":"runtime-paused","runtimeControlToken":"runner-control:11111111111111111111111111111111"}"#,
+            RunnerRuntimeControlStatus::Paused,
+            &format!("runner-control:{}", "1".repeat(32)),
+            std::process::id(),
+            &format!("runner-control-session:{}", "2".repeat(32)),
+        ));
+    }
+
+    #[test]
+    fn runtime_control_identity_rejects_missing_or_replaced_process_incarnation() {
+        let process_id = std::process::id();
+        let control_session_id = format!("runner-control-session:{}", "b".repeat(32));
+        assert!(runner_runtime_control_identity_matches(
+            Some(process_id),
+            Some(&control_session_id),
+            process_id,
+            &control_session_id,
+        ));
+        assert!(!runner_runtime_control_identity_matches(
+            Some(process_id),
+            None,
+            process_id,
+            &control_session_id,
+        ));
+        assert!(!runner_runtime_control_identity_matches(
+            Some(process_id),
+            Some(&format!("runner-control-session:{}", "c".repeat(32))),
+            process_id,
+            &control_session_id,
+        ));
+        assert!(!runner_runtime_control_identity_matches(
+            Some(process_id.wrapping_add(1)),
+            Some(&control_session_id),
+            process_id,
+            &control_session_id,
+        ));
+    }
+
+    #[test]
+    fn generated_runtime_control_token_has_os_random_challenge_shape() {
+        let token = generate_runner_runtime_control_token().unwrap();
+        assert!(canonical_runner_runtime_control_token(&token));
+        assert_eq!(token.len(), "runner-control:".len() + 32);
     }
 
     #[test]

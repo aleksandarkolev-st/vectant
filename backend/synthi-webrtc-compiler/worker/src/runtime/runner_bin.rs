@@ -50,6 +50,10 @@ use worker::runtime::gpu_runtime_proof::{
     verify_strict_gpu_runtime_proof, StrictGpuRuntimeProofExpectation,
 };
 use worker::runtime::loader;
+use worker::runtime::runner_protocol::{
+    canonical_runner_runtime_control_session_id, RunnerRuntimeControlAck,
+    RunnerRuntimeControlStatus, RUNNER_RUNTIME_CONTROL_SESSION_ENV,
+};
 // use worker::safety::boundary;
 // use worker::compiler::source_map;
 // use worker::hmr::reload_manager;
@@ -114,7 +118,7 @@ fn is_runtime_execution_paused(runtime_paused: bool, _gpu_reload_inflight_count:
 fn is_runtime_control_command(command: &str) -> bool {
     matches!(
         command,
-        "synthi_pause_runtime" | "pause_runtime" | "synthi_resume_runtime" | "resume_runtime"
+        "synthi_pause_runtime_v2" | "synthi_resume_runtime_v2"
     )
 }
 
@@ -142,34 +146,55 @@ fn should_process_runner_command(_command: &str, _gpu_reload_inflight_count: usi
     true
 }
 
-fn runtime_control_status_payload(
-    status: &str,
-    token: Option<&str>,
-    runtime_paused: bool,
-    gpu_reload_inflight_count: usize,
-) -> String {
-    let mut payload = serde_json::json!({
-        "status": status,
-        "module": "runner",
-        "runtimePaused": runtime_paused,
-        "gpuReloadInflightCount": gpu_reload_inflight_count,
-    });
-    if let Some(token) = token.filter(|value| !value.trim().is_empty()) {
-        payload["runtimeControlToken"] = serde_json::Value::String(token.to_string());
+fn configured_runner_runtime_control_session_id(value: Option<String>) -> Result<String, String> {
+    let value = value.ok_or_else(|| "runner runtime-control session is missing".to_string())?;
+    if !canonical_runner_runtime_control_session_id(&value) {
+        return Err("runner runtime-control session is invalid".to_string());
     }
-    payload.to_string()
+    Ok(value)
 }
 
-fn emit_runtime_control_status(
-    status: &str,
-    token: Option<&str>,
+fn runtime_control_status_line(
+    status: RunnerRuntimeControlStatus,
+    token: &str,
     runtime_paused: bool,
     gpu_reload_inflight_count: usize,
-) {
-    eprintln!(
-        "[Runner] [HMR-STATUS] {}",
-        runtime_control_status_payload(status, token, runtime_paused, gpu_reload_inflight_count)
-    );
+    runner_control_session_id: &str,
+) -> Result<String, String> {
+    RunnerRuntimeControlAck::current(
+        status,
+        token,
+        runtime_paused,
+        gpu_reload_inflight_count,
+        runner_control_session_id,
+    )?
+    .line()
+}
+
+fn runtime_control_command_ack_line(
+    parts: &[&str],
+    status: RunnerRuntimeControlStatus,
+    runtime_paused: bool,
+    gpu_reload_inflight_count: usize,
+    runner_control_session_id: &str,
+) -> Result<String, String> {
+    if parts.len() != 2 {
+        return Err("runner runtime-control command arity is invalid".to_string());
+    }
+    let expected_command = match status {
+        RunnerRuntimeControlStatus::Paused => "synthi_pause_runtime_v2",
+        RunnerRuntimeControlStatus::Resumed => "synthi_resume_runtime_v2",
+    };
+    if parts[0] != expected_command {
+        return Err("runner runtime-control command/status binding is invalid".to_string());
+    }
+    runtime_control_status_line(
+        status,
+        parts[1],
+        runtime_paused,
+        gpu_reload_inflight_count,
+        runner_control_session_id,
+    )
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -2086,6 +2111,16 @@ fn select_backend_for_runner() -> Option<worker::runtime::backends::selector::Se
 }
 
 fn main() {
+    let runner_runtime_control_session_id = match configured_runner_runtime_control_session_id(
+        std::env::var(RUNNER_RUNTIME_CONTROL_SESSION_ENV).ok(),
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("[Runner] FATAL: {error}");
+            std::process::exit(1);
+        }
+    };
+
     // ULTRAPLAN Lightning Phase 10g.2 — run the backend selector
     // and keep the result for window creation below. `None` means
     // no sidecar was found (e.g. BYOR or pre-Phase-1 project);
@@ -3190,39 +3225,53 @@ fn main() {
                         }
                     }
                 }
-                "synthi_pause_runtime" | "pause_runtime" => {
-                    let control_token = parts.get(1).copied();
+                "synthi_pause_runtime_v2" => {
+                    #[cfg(feature = "gpu-hmr")]
+                    let gpu_reload_inflight_count = gpu_reload_inflight.len();
+                    #[cfg(not(feature = "gpu-hmr"))]
+                    let gpu_reload_inflight_count = 0;
+                    let ack_line = match runtime_control_command_ack_line(
+                        &parts,
+                        RunnerRuntimeControlStatus::Paused,
+                        true,
+                        gpu_reload_inflight_count,
+                        &runner_runtime_control_session_id,
+                    ) {
+                        Ok(line) => line,
+                        Err(_) => {
+                            eprintln!("[Runner] Runtime-control pause command rejected");
+                            continue;
+                        }
+                    };
                     if !runtime_paused {
                         runtime_paused = true;
                         eprintln!("[Runner] Runtime update/render paused for external HMR work");
                     }
+                    eprintln!("{ack_line}");
+                }
+                "synthi_resume_runtime_v2" => {
                     #[cfg(feature = "gpu-hmr")]
                     let gpu_reload_inflight_count = gpu_reload_inflight.len();
                     #[cfg(not(feature = "gpu-hmr"))]
                     let gpu_reload_inflight_count = 0;
-                    emit_runtime_control_status(
-                        "runtime-paused",
-                        control_token,
-                        runtime_paused,
+                    let ack_line = match runtime_control_command_ack_line(
+                        &parts,
+                        RunnerRuntimeControlStatus::Resumed,
+                        false,
                         gpu_reload_inflight_count,
-                    );
-                }
-                "synthi_resume_runtime" | "resume_runtime" => {
-                    let control_token = parts.get(1).copied();
+                        &runner_runtime_control_session_id,
+                    ) {
+                        Ok(line) => line,
+                        Err(_) => {
+                            eprintln!("[Runner] Runtime-control resume command rejected");
+                            continue;
+                        }
+                    };
                     if runtime_paused {
                         runtime_paused = false;
                         eprintln!("[Runner] Runtime update/render resumed");
                     }
-                    #[cfg(feature = "gpu-hmr")]
-                    let gpu_reload_inflight_count = gpu_reload_inflight.len();
-                    #[cfg(not(feature = "gpu-hmr"))]
-                    let gpu_reload_inflight_count = 0;
-                    emit_runtime_control_status(
-                        "runtime-resumed",
-                        control_token,
-                        runtime_paused,
-                        gpu_reload_inflight_count,
-                    );
+                    eprintln!("{ack_line}");
                 }
                 "load" => {
                     // usage: load <name> <path>
@@ -4011,8 +4060,10 @@ mod tests {
         RUNNER_GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
     };
     use super::{
-        decode_gpu_kernel_command_token, device_load_abi_version, is_runtime_execution_paused,
-        runner_command_log_summary, runtime_control_status_payload, should_process_runner_command,
+        configured_runner_runtime_control_session_id, decode_gpu_kernel_command_token,
+        device_load_abi_version, is_runtime_execution_paused, runner_command_log_summary,
+        runtime_control_command_ack_line, runtime_control_status_line,
+        should_process_runner_command, RunnerRuntimeControlStatus,
     };
     #[cfg(feature = "gpu-hmr")]
     use std::io::Write as _;
@@ -4020,6 +4071,10 @@ mod tests {
     use std::sync::Arc;
     #[cfg(feature = "gpu-hmr")]
     use worker::runtime::runner_protocol::GpuReloadV4Payload;
+
+    fn runtime_control_session_id() -> String {
+        format!("runner-control-session:{}", "5".repeat(32))
+    }
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
@@ -4090,24 +4145,113 @@ mod tests {
 
     #[test]
     fn runtime_control_status_payload_carries_token_and_pause_state() {
-        let payload =
-            runtime_control_status_payload("runtime-paused", Some("runner-control-3"), true, 2);
-        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let token = format!("runner-control:{}", "3".repeat(32));
+        let session_id = runtime_control_session_id();
+        let line = runtime_control_status_line(
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            true,
+            2,
+            &session_id,
+        )
+        .unwrap();
+        let ack =
+            worker::runtime::runner_protocol::parse_runner_runtime_control_ack(&line).unwrap();
 
-        assert_eq!(value["status"], "runtime-paused");
-        assert_eq!(value["module"], "runner");
-        assert_eq!(value["runtimeControlToken"], "runner-control-3");
-        assert_eq!(value["runtimePaused"], true);
-        assert_eq!(value["gpuReloadInflightCount"], 2);
+        assert_eq!(ack.status, RunnerRuntimeControlStatus::Paused);
+        assert_eq!(ack.runtime_control_token, token);
+        assert!(ack.runtime_paused);
+        assert_eq!(ack.gpu_reload_inflight_count, 2);
+        assert_eq!(ack.runner_pid, std::process::id());
+        assert_eq!(ack.runner_control_session_id, session_id);
     }
 
     #[test]
-    fn runtime_control_status_payload_omits_blank_token() {
-        let payload = runtime_control_status_payload("runtime-resumed", Some(""), false, 0);
-        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    fn runtime_control_status_line_rejects_untyped_or_contradictory_commands() {
+        assert!(runtime_control_status_line(
+            RunnerRuntimeControlStatus::Resumed,
+            "runner-control-3",
+            false,
+            0,
+            &runtime_control_session_id(),
+        )
+        .is_err());
+        assert!(runtime_control_status_line(
+            RunnerRuntimeControlStatus::Paused,
+            &format!("runner-control:{}", "3".repeat(32)),
+            false,
+            0,
+            &runtime_control_session_id(),
+        )
+        .is_err());
+    }
 
-        assert_eq!(value["status"], "runtime-resumed");
-        assert!(value.get("runtimeControlToken").is_none());
+    #[test]
+    fn runtime_control_session_is_required_and_canonical() {
+        assert_eq!(
+            configured_runner_runtime_control_session_id(Some(runtime_control_session_id()))
+                .unwrap(),
+            runtime_control_session_id()
+        );
+        assert!(configured_runner_runtime_control_session_id(None).is_err());
+        assert!(configured_runner_runtime_control_session_id(Some(
+            "runner-control-session:short".to_string()
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn runtime_control_command_requires_exact_versioned_shape_before_ack() {
+        let token = format!("runner-control:{}", "4".repeat(32));
+        let session_id = runtime_control_session_id();
+        assert!(runtime_control_command_ack_line(
+            &["synthi_pause_runtime_v2", &token],
+            RunnerRuntimeControlStatus::Paused,
+            true,
+            0,
+            &session_id,
+        )
+        .is_ok());
+        assert!(runtime_control_command_ack_line(
+            &["synthi_pause_runtime_v2"],
+            RunnerRuntimeControlStatus::Paused,
+            true,
+            0,
+            &session_id,
+        )
+        .is_err());
+        assert!(runtime_control_command_ack_line(
+            &["synthi_pause_runtime_v2", &token, "extra"],
+            RunnerRuntimeControlStatus::Paused,
+            true,
+            0,
+            &session_id,
+        )
+        .is_err());
+        assert!(runtime_control_command_ack_line(
+            &["synthi_pause_runtime_v2", "runner-control-4"],
+            RunnerRuntimeControlStatus::Paused,
+            true,
+            0,
+            &session_id,
+        )
+        .is_err());
+        assert!(runtime_control_command_ack_line(
+            &["synthi_pause_runtime", &token],
+            RunnerRuntimeControlStatus::Paused,
+            true,
+            0,
+            &session_id,
+        )
+        .is_err());
+        assert!(runtime_control_command_ack_line(
+            &["synthi_resume_runtime_v2", &token],
+            RunnerRuntimeControlStatus::Paused,
+            true,
+            0,
+            &session_id,
+        )
+        .is_err());
     }
 
     #[test]
@@ -4140,10 +4284,10 @@ mod tests {
     #[cfg(feature = "gpu-hmr")]
     #[test]
     fn runner_allows_runtime_control_while_gpu_reload_is_inflight() {
-        assert!(should_process_runner_command("synthi_pause_runtime", 1));
-        assert!(should_process_runner_command("pause_runtime", 1));
-        assert!(should_process_runner_command("synthi_resume_runtime", 1));
-        assert!(should_process_runner_command("resume_runtime", 1));
+        assert!(should_process_runner_command("synthi_pause_runtime_v2", 1));
+        assert!(should_process_runner_command("synthi_resume_runtime_v2", 1));
+        assert!(!should_process_runner_command("synthi_pause_runtime", 1));
+        assert!(!should_process_runner_command("synthi_resume_runtime", 1));
     }
 
     #[cfg(feature = "gpu-hmr")]
