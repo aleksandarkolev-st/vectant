@@ -7,16 +7,16 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const RUNTIME_EVIDENCE_TRANSPORT_RECEIPT_SCHEMA_VERSION: &str =
-    "synthi.gpu_hmr.runtime_evidence_transport_receipt.v1";
+    "synthi.gpu_hmr.runtime_evidence_transport_receipt.v2";
 pub const RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA_VERSION: &str =
     "synthi.gpu_hmr.runtime_evidence_transport_verification_key.v1";
 pub const RUNTIME_EVIDENCE_TRANSPORT_RECEIPT_ALGORITHM: &str = "ed25519";
 pub const RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL: &str = "gpu-hmr-evidence-transport";
 pub const OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_SCHEMA_VERSION: &str =
-    "synthi.gpu_hmr.observed_runtime_evidence_envelope.v1";
+    "synthi.gpu_hmr.observed_runtime_evidence_envelope.v2";
 pub const OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_TYPE: &str = "gpu_hmr_observed_runtime_evidence";
 pub const OBSERVED_RUNTIME_EVIDENCE_AUTHORITY: &str =
     "worker_signed_observation_transport_only_not_gpu_hmr_acceptance";
@@ -27,6 +27,12 @@ const KEY_ANNOUNCEMENT_ID_PREFIX: &str =
     "gpu-hmr-runtime-evidence-transport-key-announcement:sha256:";
 const WORKER_INSTANCE_ID_PREFIX: &str = "gpu-hmr-worker-instance:sha256:";
 const SIGNATURE_PREFIX: &str = "ed25519:";
+const OBSERVATION_CONTEXT_DOMAIN: &str =
+    "synthi.gpu_hmr.runtime_evidence_transport_observation_context.v1";
+const SUBJECT_IDENTITY_DOMAIN: &str =
+    "synthi.gpu_hmr.runtime_evidence_transport_subject_identity.v1";
+const MAX_RECEIPT_AGE: Duration = Duration::from_secs(300);
+const MAX_FUTURE_SKEW: Duration = Duration::from_secs(30);
 
 static GLOBAL_TRANSPORT_SIGNER: OnceLock<Result<RuntimeEvidenceTransportSigner, String>> =
     OnceLock::new();
@@ -36,66 +42,102 @@ pub struct RuntimeEvidenceTransportReceiptInput<'a> {
     pub runner_process_id: u32,
     pub runtime_session_id: &'a str,
     pub runner_challenge: &'a str,
-    pub transport_session_id: Option<&'a str>,
+    pub transport_session_id: &'a str,
     pub request_id: &'a str,
     pub source_edit_id: &'a str,
+    pub subject_identity_namespace: &'a str,
+    pub subject_canonical_bytes: &'a [u8],
     pub artifact_content_hash: &'a str,
     pub observed_runtime_proof_id: &'a str,
     pub observed_proof_ledger_id: &'a str,
-    pub observed_payload_sha256: &'a str,
+    pub observed_payload: &'a [u8],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimeEvidenceTransportVerificationContext<'a> {
+    pub worker_instance_id: &'a str,
+    pub worker_process_id: u32,
+    pub runner_process_id: u32,
+    pub runtime_session_id: &'a str,
+    pub runner_challenge: &'a str,
+    pub transport_session_id: &'a str,
+    pub request_id: &'a str,
+    pub source_edit_id: &'a str,
+    pub subject_identity_namespace: &'a str,
+    pub subject_canonical_bytes: &'a [u8],
+    pub artifact_content_hash: &'a str,
+    pub observed_runtime_proof_id: &'a str,
+    pub observed_proof_ledger_id: &'a str,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimeEvidenceTransportFreshnessPolicy {
+    max_receipt_age_ns: u128,
+    max_future_skew_ns: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeEvidenceTransportWorkerPin {
+    key_id: String,
+    worker_instance_id: String,
+    worker_process_id: String,
+    key_announcement_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeEvidenceTransportVerificationKey {
-    pub schema_version: String,
-    pub algorithm: String,
-    pub key_id: String,
-    pub producer: String,
-    pub worker_instance_id: String,
-    pub worker_process_id: String,
-    pub public_key: String,
-    pub key_announcement_id: String,
+    schema_version: String,
+    algorithm: String,
+    key_id: String,
+    producer: String,
+    worker_instance_id: String,
+    worker_process_id: String,
+    public_key: String,
+    key_announcement_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeEvidenceTransportReceipt {
-    pub schema_version: String,
-    pub algorithm: String,
-    pub key_id: String,
-    pub producer: String,
-    pub worker_instance_id: String,
-    pub worker_process_id: String,
-    pub runner_process_id: String,
-    pub runtime_session_id: String,
-    pub runner_challenge_sha256: String,
-    pub transport_session_binding_sha256: String,
-    pub request_id: String,
-    pub source_edit_id: String,
-    pub artifact_content_hash: String,
-    pub observed_runtime_proof_id: String,
-    pub observed_proof_ledger_id: String,
-    pub observed_payload_sha256: String,
-    pub issued_at_unix_ns: String,
-    pub sequence: String,
-    pub nonce: String,
-    pub receipt_id: String,
-    pub signature: String,
+    schema_version: String,
+    algorithm: String,
+    key_id: String,
+    producer: String,
+    worker_instance_id: String,
+    worker_process_id: String,
+    runner_process_id: String,
+    runtime_session_id: String,
+    runner_challenge_sha256: String,
+    transport_session_binding_sha256: String,
+    request_id: String,
+    source_edit_id: String,
+    subject_identity_namespace: String,
+    subject_identity_hash: String,
+    artifact_content_hash: String,
+    observed_runtime_proof_id: String,
+    observed_proof_ledger_id: String,
+    observed_payload_sha256: String,
+    observation_context_hash: String,
+    issued_at_unix_ns: String,
+    sequence: String,
+    nonce: String,
+    receipt_id: String,
+    signature: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ObservedRuntimeEvidenceEnvelope {
-    pub schema_version: String,
+    schema_version: String,
     #[serde(rename = "type")]
-    pub message_type: String,
-    pub observed_payload_sha256: String,
-    pub runtime_evidence_transport_receipt: RuntimeEvidenceTransportReceipt,
-    pub proof_authority: String,
-    pub accepted_for_gpu_hmr: bool,
-    pub gpu_hmr_success: bool,
-    pub can_satisfy_runtime_proof: bool,
+    message_type: String,
+    observed_payload_sha256: String,
+    runtime_evidence_transport_receipt: RuntimeEvidenceTransportReceipt,
+    proof_authority: String,
+    accepted_for_gpu_hmr: bool,
+    gpu_hmr_success: bool,
+    can_satisfy_runtime_proof: bool,
 }
 
 #[derive(Clone)]
@@ -103,6 +145,54 @@ pub struct RuntimeEvidenceTransportSigner {
     key_pair: Arc<Ed25519KeyPair>,
     verification_key: RuntimeEvidenceTransportVerificationKey,
     sequence: Arc<AtomicU64>,
+}
+
+pub struct RuntimeEvidenceTransportReceiptConsumer {
+    verification_key: RuntimeEvidenceTransportVerificationKey,
+    freshness_policy: RuntimeEvidenceTransportFreshnessPolicy,
+    replay_store: Arc<dyn RuntimeEvidenceTransportReplayStore>,
+    clock: Arc<dyn Fn() -> Result<u128, String> + Send + Sync>,
+}
+
+/// Production implementations must persist state across consumer recreation
+/// for the lifetime of the pinned worker key and transport session.
+pub trait RuntimeEvidenceTransportReplayStore: Send + Sync {
+    /// Atomically rejects a receipt at or below the persisted sequence floor,
+    /// then advances the floor and consumes the receipt ID on success.
+    fn consume_if_newer(
+        &self,
+        key_id: &str,
+        worker_instance_id: &str,
+        transport_session_binding_sha256: &str,
+        sequence: u64,
+        receipt_id: &str,
+    ) -> Result<(), String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub struct RuntimeEvidenceTransportSupportOnlyConsumption {
+    receipt_id: String,
+    observation_context_hash: String,
+}
+
+#[derive(Clone, Copy)]
+struct ObservationContextMaterial<'a> {
+    key_id: &'a str,
+    worker_instance_id: &'a str,
+    worker_process_id: &'a str,
+    runner_process_id: &'a str,
+    runtime_session_id: &'a str,
+    runner_challenge_sha256: &'a str,
+    transport_session_binding_sha256: &'a str,
+    request_id: &'a str,
+    source_edit_id: &'a str,
+    subject_identity_namespace: &'a str,
+    subject_identity_hash: &'a str,
+    artifact_content_hash: &'a str,
+    observed_runtime_proof_id: &'a str,
+    observed_proof_ledger_id: &'a str,
+    observed_payload_sha256: &'a str,
 }
 
 impl std::fmt::Debug for RuntimeEvidenceTransportSigner {
@@ -224,6 +314,32 @@ impl RuntimeEvidenceTransportSigner {
             return Err("runtime_evidence_transport_nonce_invalid".to_string());
         }
 
+        let runner_process_id = input.runner_process_id.to_string();
+        let runner_challenge_sha256 = prefixed_sha256(input.runner_challenge.as_bytes());
+        let transport_session_binding_sha256 =
+            transport_session_binding(input.transport_session_id);
+        let subject_identity_hash = subject_identity_hash(
+            input.subject_identity_namespace,
+            input.subject_canonical_bytes,
+        )?;
+        let observed_payload_sha256 = prefixed_sha256(input.observed_payload);
+        let observation_context_hash = observation_context_hash(ObservationContextMaterial {
+            key_id: &self.verification_key.key_id,
+            worker_instance_id: &self.verification_key.worker_instance_id,
+            worker_process_id: &self.verification_key.worker_process_id,
+            runner_process_id: &runner_process_id,
+            runtime_session_id: input.runtime_session_id,
+            runner_challenge_sha256: &runner_challenge_sha256,
+            transport_session_binding_sha256: &transport_session_binding_sha256,
+            request_id: input.request_id,
+            source_edit_id: input.source_edit_id,
+            subject_identity_namespace: input.subject_identity_namespace,
+            subject_identity_hash: &subject_identity_hash,
+            artifact_content_hash: input.artifact_content_hash,
+            observed_runtime_proof_id: input.observed_runtime_proof_id,
+            observed_proof_ledger_id: input.observed_proof_ledger_id,
+            observed_payload_sha256: &observed_payload_sha256,
+        })?;
         let mut receipt = RuntimeEvidenceTransportReceipt {
             schema_version: RUNTIME_EVIDENCE_TRANSPORT_RECEIPT_SCHEMA_VERSION.to_string(),
             algorithm: RUNTIME_EVIDENCE_TRANSPORT_RECEIPT_ALGORITHM.to_string(),
@@ -231,16 +347,19 @@ impl RuntimeEvidenceTransportSigner {
             producer: RUNTIME_EVIDENCE_TRANSPORT_RECEIPT_PRODUCER.to_string(),
             worker_instance_id: self.verification_key.worker_instance_id.clone(),
             worker_process_id: self.verification_key.worker_process_id.clone(),
-            runner_process_id: input.runner_process_id.to_string(),
+            runner_process_id,
             runtime_session_id: input.runtime_session_id.to_string(),
-            runner_challenge_sha256: prefixed_sha256(input.runner_challenge.as_bytes()),
-            transport_session_binding_sha256: transport_session_binding(input.transport_session_id),
+            runner_challenge_sha256,
+            transport_session_binding_sha256,
             request_id: input.request_id.to_string(),
             source_edit_id: input.source_edit_id.to_string(),
+            subject_identity_namespace: input.subject_identity_namespace.to_string(),
+            subject_identity_hash,
             artifact_content_hash: input.artifact_content_hash.to_string(),
             observed_runtime_proof_id: input.observed_runtime_proof_id.to_string(),
             observed_proof_ledger_id: input.observed_proof_ledger_id.to_string(),
-            observed_payload_sha256: input.observed_payload_sha256.to_string(),
+            observed_payload_sha256,
+            observation_context_hash,
             issued_at_unix_ns,
             sequence,
             nonce,
@@ -258,6 +377,24 @@ impl RuntimeEvidenceTransportSigner {
 }
 
 impl RuntimeEvidenceTransportVerificationKey {
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    pub fn worker_instance_id(&self) -> &str {
+        &self.worker_instance_id
+    }
+
+    pub fn worker_process_id(&self) -> Result<u32, String> {
+        self.worker_process_id
+            .parse::<u32>()
+            .map_err(|_| "runtime_evidence_transport_worker_process_id_invalid".to_string())
+    }
+
+    pub fn key_announcement_id(&self) -> &str {
+        &self.key_announcement_id
+    }
+
     fn material_bytes(&self) -> Result<Vec<u8>, String> {
         serde_json::to_vec(&json!([
             self.schema_version,
@@ -273,7 +410,7 @@ impl RuntimeEvidenceTransportVerificationKey {
         })
     }
 
-    pub fn validate_shape(&self) -> Result<(), String> {
+    fn validate_shape(&self) -> Result<(), String> {
         if self.schema_version != RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA_VERSION
             || self.algorithm != RUNTIME_EVIDENCE_TRANSPORT_RECEIPT_ALGORITHM
             || self.producer != RUNTIME_EVIDENCE_TRANSPORT_RECEIPT_PRODUCER
@@ -326,10 +463,13 @@ impl RuntimeEvidenceTransportReceipt {
             self.transport_session_binding_sha256,
             self.request_id,
             self.source_edit_id,
+            self.subject_identity_namespace,
+            self.subject_identity_hash,
             self.artifact_content_hash,
             self.observed_runtime_proof_id,
             self.observed_proof_ledger_id,
             self.observed_payload_sha256,
+            self.observation_context_hash,
             self.issued_at_unix_ns,
             self.sequence,
             self.nonce,
@@ -352,10 +492,13 @@ impl RuntimeEvidenceTransportReceipt {
             || !canonical_sha256(&self.transport_session_binding_sha256)
             || !canonical_request_id(&self.request_id)
             || !canonical_source_edit_id(&self.source_edit_id)
+            || !canonical_token(&self.subject_identity_namespace)
+            || !canonical_sha256(&self.subject_identity_hash)
             || !canonical_sha256(&self.artifact_content_hash)
             || !canonical_runtime_proof_id(&self.observed_runtime_proof_id)
             || !canonical_ledger_proof_id(&self.observed_proof_ledger_id)
             || !canonical_sha256(&self.observed_payload_sha256)
+            || !canonical_sha256(&self.observation_context_hash)
             || !canonical_u128(&self.issued_at_unix_ns)
             || !canonical_u64(&self.sequence)
             || !canonical_hex(&self.nonce, 64)
@@ -367,7 +510,235 @@ impl RuntimeEvidenceTransportReceipt {
         {
             return Err("runtime_evidence_transport_receipt_field_shape_invalid".to_string());
         }
+        if self.observation_context_hash != observation_context_hash(self.context_material())? {
+            return Err("runtime_evidence_transport_observation_context_hash_mismatch".to_string());
+        }
         Ok(())
+    }
+
+    fn context_material(&self) -> ObservationContextMaterial<'_> {
+        ObservationContextMaterial {
+            key_id: &self.key_id,
+            worker_instance_id: &self.worker_instance_id,
+            worker_process_id: &self.worker_process_id,
+            runner_process_id: &self.runner_process_id,
+            runtime_session_id: &self.runtime_session_id,
+            runner_challenge_sha256: &self.runner_challenge_sha256,
+            transport_session_binding_sha256: &self.transport_session_binding_sha256,
+            request_id: &self.request_id,
+            source_edit_id: &self.source_edit_id,
+            subject_identity_namespace: &self.subject_identity_namespace,
+            subject_identity_hash: &self.subject_identity_hash,
+            artifact_content_hash: &self.artifact_content_hash,
+            observed_runtime_proof_id: &self.observed_runtime_proof_id,
+            observed_proof_ledger_id: &self.observed_proof_ledger_id,
+            observed_payload_sha256: &self.observed_payload_sha256,
+        }
+    }
+}
+
+impl RuntimeEvidenceTransportFreshnessPolicy {
+    pub fn new(max_receipt_age: Duration, max_future_skew: Duration) -> Result<Self, String> {
+        if max_receipt_age.is_zero()
+            || max_receipt_age > MAX_RECEIPT_AGE
+            || max_future_skew > MAX_FUTURE_SKEW
+        {
+            return Err("runtime_evidence_transport_freshness_policy_invalid".to_string());
+        }
+        Ok(Self {
+            max_receipt_age_ns: max_receipt_age.as_nanos(),
+            max_future_skew_ns: max_future_skew.as_nanos(),
+        })
+    }
+}
+
+impl RuntimeEvidenceTransportWorkerPin {
+    /// The caller must source these values from an authenticated control-plane
+    /// key announcement, never from the receipt or observed payload.
+    pub fn from_authenticated_control_plane(
+        key_id: &str,
+        worker_instance_id: &str,
+        worker_process_id: u32,
+        key_announcement_id: &str,
+    ) -> Result<Self, String> {
+        let worker_process_id = worker_process_id.to_string();
+        if !canonical_prefixed_sha256(key_id, KEY_ID_PREFIX)
+            || !canonical_prefixed_sha256(worker_instance_id, WORKER_INSTANCE_ID_PREFIX)
+            || !canonical_u32(&worker_process_id)
+            || !canonical_prefixed_sha256(key_announcement_id, KEY_ANNOUNCEMENT_ID_PREFIX)
+        {
+            return Err("runtime_evidence_transport_worker_pin_invalid".to_string());
+        }
+        Ok(Self {
+            key_id: key_id.to_string(),
+            worker_instance_id: worker_instance_id.to_string(),
+            worker_process_id,
+            key_announcement_id: key_announcement_id.to_string(),
+        })
+    }
+}
+
+impl RuntimeEvidenceTransportReceiptConsumer {
+    pub fn new(
+        verification_key: RuntimeEvidenceTransportVerificationKey,
+        trusted_worker_pin: RuntimeEvidenceTransportWorkerPin,
+        freshness_policy: RuntimeEvidenceTransportFreshnessPolicy,
+        replay_store: Arc<dyn RuntimeEvidenceTransportReplayStore>,
+    ) -> Result<Self, String> {
+        Self::new_with_clock(
+            verification_key,
+            trusted_worker_pin,
+            freshness_policy,
+            replay_store,
+            Arc::new(system_time_unix_ns),
+        )
+    }
+
+    fn new_with_clock(
+        verification_key: RuntimeEvidenceTransportVerificationKey,
+        trusted_worker_pin: RuntimeEvidenceTransportWorkerPin,
+        freshness_policy: RuntimeEvidenceTransportFreshnessPolicy,
+        replay_store: Arc<dyn RuntimeEvidenceTransportReplayStore>,
+        clock: Arc<dyn Fn() -> Result<u128, String> + Send + Sync>,
+    ) -> Result<Self, String> {
+        verification_key.validate_shape()?;
+        if verification_key.key_id != trusted_worker_pin.key_id
+            || verification_key.worker_instance_id != trusted_worker_pin.worker_instance_id
+            || verification_key.worker_process_id != trusted_worker_pin.worker_process_id
+            || verification_key.key_announcement_id != trusted_worker_pin.key_announcement_id
+        {
+            return Err("runtime_evidence_transport_worker_pin_mismatch".to_string());
+        }
+        Ok(Self {
+            verification_key,
+            freshness_policy,
+            replay_store,
+            clock,
+        })
+    }
+
+    /// Verifies and atomically consumes a complete support-only envelope.
+    /// Success cannot satisfy GPU HMR runtime, dispatch, output, or acceptance proof.
+    pub fn consume_support_envelope(
+        &self,
+        envelope: &ObservedRuntimeEvidenceEnvelope,
+        observed_payload: &[u8],
+        context: RuntimeEvidenceTransportVerificationContext<'_>,
+    ) -> Result<RuntimeEvidenceTransportSupportOnlyConsumption, String> {
+        envelope.validate_shape()?;
+        let observed_payload_sha256 = prefixed_sha256(observed_payload);
+        if envelope.observed_payload_sha256 != observed_payload_sha256 {
+            return Err("runtime_evidence_transport_observed_payload_hash_mismatch".to_string());
+        }
+        let receipt = &envelope.runtime_evidence_transport_receipt;
+        verify_runtime_evidence_transport_receipt_signature(receipt, &self.verification_key)?;
+        validate_verification_context(&context)?;
+
+        let worker_process_id = context.worker_process_id.to_string();
+        let runner_process_id = context.runner_process_id.to_string();
+        let runner_challenge_sha256 = prefixed_sha256(context.runner_challenge.as_bytes());
+        let transport_session_binding_sha256 =
+            transport_session_binding(context.transport_session_id);
+        let subject_identity_hash = subject_identity_hash(
+            context.subject_identity_namespace,
+            context.subject_canonical_bytes,
+        )?;
+        if self.verification_key.worker_instance_id != context.worker_instance_id
+            || self.verification_key.worker_process_id != worker_process_id
+            || receipt.worker_instance_id != context.worker_instance_id
+            || receipt.worker_process_id != worker_process_id
+            || receipt.runner_process_id != runner_process_id
+            || receipt.runtime_session_id != context.runtime_session_id
+            || receipt.runner_challenge_sha256 != runner_challenge_sha256
+            || receipt.transport_session_binding_sha256 != transport_session_binding_sha256
+            || receipt.request_id != context.request_id
+            || receipt.source_edit_id != context.source_edit_id
+            || receipt.subject_identity_namespace != context.subject_identity_namespace
+            || receipt.subject_identity_hash != subject_identity_hash
+            || receipt.artifact_content_hash != context.artifact_content_hash
+            || receipt.observed_runtime_proof_id != context.observed_runtime_proof_id
+            || receipt.observed_proof_ledger_id != context.observed_proof_ledger_id
+            || receipt.observed_payload_sha256 != observed_payload_sha256
+        {
+            return Err("runtime_evidence_transport_verification_context_mismatch".to_string());
+        }
+
+        let expected_context_hash = observation_context_hash(ObservationContextMaterial {
+            key_id: &self.verification_key.key_id,
+            worker_instance_id: context.worker_instance_id,
+            worker_process_id: &worker_process_id,
+            runner_process_id: &runner_process_id,
+            runtime_session_id: context.runtime_session_id,
+            runner_challenge_sha256: &runner_challenge_sha256,
+            transport_session_binding_sha256: &transport_session_binding_sha256,
+            request_id: context.request_id,
+            source_edit_id: context.source_edit_id,
+            subject_identity_namespace: context.subject_identity_namespace,
+            subject_identity_hash: &subject_identity_hash,
+            artifact_content_hash: context.artifact_content_hash,
+            observed_runtime_proof_id: context.observed_runtime_proof_id,
+            observed_proof_ledger_id: context.observed_proof_ledger_id,
+            observed_payload_sha256: &observed_payload_sha256,
+        })?;
+        if receipt.observation_context_hash != expected_context_hash {
+            return Err(
+                "runtime_evidence_transport_verification_context_hash_mismatch".to_string(),
+            );
+        }
+
+        let now_unix_ns = (self.clock)()?;
+        let issued_at_unix_ns = receipt
+            .issued_at_unix_ns
+            .parse::<u128>()
+            .map_err(|_| "runtime_evidence_transport_issued_at_invalid".to_string())?;
+        if issued_at_unix_ns > now_unix_ns.saturating_add(self.freshness_policy.max_future_skew_ns)
+        {
+            return Err("runtime_evidence_transport_receipt_from_future".to_string());
+        }
+        if issued_at_unix_ns <= now_unix_ns
+            && now_unix_ns - issued_at_unix_ns > self.freshness_policy.max_receipt_age_ns
+        {
+            return Err("runtime_evidence_transport_receipt_expired".to_string());
+        }
+
+        let sequence = receipt
+            .sequence
+            .parse::<u64>()
+            .map_err(|_| "runtime_evidence_transport_sequence_invalid".to_string())?;
+        self.replay_store.consume_if_newer(
+            &receipt.key_id,
+            &receipt.worker_instance_id,
+            &receipt.transport_session_binding_sha256,
+            sequence,
+            &receipt.receipt_id,
+        )?;
+
+        Ok(RuntimeEvidenceTransportSupportOnlyConsumption {
+            receipt_id: receipt.receipt_id.clone(),
+            observation_context_hash: receipt.observation_context_hash.clone(),
+        })
+    }
+}
+
+impl RuntimeEvidenceTransportSupportOnlyConsumption {
+    pub fn receipt_id(&self) -> &str {
+        &self.receipt_id
+    }
+
+    pub fn observation_context_hash(&self) -> &str {
+        &self.observation_context_hash
+    }
+
+    pub fn accepted_for_gpu_hmr(&self) -> bool {
+        false
+    }
+
+    pub fn gpu_hmr_success(&self) -> bool {
+        false
+    }
+
+    pub fn can_satisfy_runtime_proof(&self) -> bool {
+        false
     }
 }
 
@@ -394,7 +765,7 @@ impl ObservedRuntimeEvidenceEnvelope {
         Ok(envelope)
     }
 
-    pub fn validate_shape(&self) -> Result<(), String> {
+    fn validate_shape(&self) -> Result<(), String> {
         if self.schema_version != OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_SCHEMA_VERSION
             || self.message_type != OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_TYPE
             || !canonical_sha256(&self.observed_payload_sha256)
@@ -453,7 +824,7 @@ pub fn global_runtime_evidence_transport_signer(
         .map_err(Clone::clone)
 }
 
-pub fn verify_runtime_evidence_transport_receipt(
+fn verify_runtime_evidence_transport_receipt_signature(
     receipt: &RuntimeEvidenceTransportReceipt,
     verification_key: &RuntimeEvidenceTransportVerificationKey,
 ) -> Result<(), String> {
@@ -483,27 +854,90 @@ fn validate_input(input: &RuntimeEvidenceTransportReceiptInput<'_>) -> Result<()
     if input.runner_process_id == 0
         || !canonical_token(input.runtime_session_id)
         || !canonical_hex(input.runner_challenge, 32)
-        || input
-            .transport_session_id
-            .is_some_and(|value| !canonical_token(value))
+        || !canonical_token(input.transport_session_id)
         || !canonical_request_id(input.request_id)
         || !canonical_source_edit_id(input.source_edit_id)
+        || !canonical_token(input.subject_identity_namespace)
+        || input.subject_canonical_bytes.is_empty()
         || !canonical_sha256(input.artifact_content_hash)
         || !canonical_runtime_proof_id(input.observed_runtime_proof_id)
         || !canonical_ledger_proof_id(input.observed_proof_ledger_id)
-        || !canonical_sha256(input.observed_payload_sha256)
+        || input.observed_payload.is_empty()
     {
         return Err("runtime_evidence_transport_input_invalid".to_string());
     }
     Ok(())
 }
 
-fn transport_session_binding(session_id: Option<&str>) -> String {
-    let material = match session_id {
-        Some(value) => format!("present\0{value}"),
-        None => "absent".to_string(),
-    };
-    prefixed_sha256(material.as_bytes())
+fn validate_verification_context(
+    context: &RuntimeEvidenceTransportVerificationContext<'_>,
+) -> Result<(), String> {
+    if !canonical_prefixed_sha256(context.worker_instance_id, WORKER_INSTANCE_ID_PREFIX)
+        || context.worker_process_id == 0
+        || context.runner_process_id == 0
+        || !canonical_token(context.runtime_session_id)
+        || !canonical_hex(context.runner_challenge, 32)
+        || !canonical_token(context.transport_session_id)
+        || !canonical_request_id(context.request_id)
+        || !canonical_source_edit_id(context.source_edit_id)
+        || !canonical_token(context.subject_identity_namespace)
+        || context.subject_canonical_bytes.is_empty()
+        || !canonical_sha256(context.artifact_content_hash)
+        || !canonical_runtime_proof_id(context.observed_runtime_proof_id)
+        || !canonical_ledger_proof_id(context.observed_proof_ledger_id)
+    {
+        return Err("runtime_evidence_transport_verification_context_invalid".to_string());
+    }
+    Ok(())
+}
+
+fn observation_context_hash(material: ObservationContextMaterial<'_>) -> Result<String, String> {
+    let bytes = serde_json::to_vec(&json!([
+        OBSERVATION_CONTEXT_DOMAIN,
+        material.key_id,
+        material.worker_instance_id,
+        material.worker_process_id,
+        material.runner_process_id,
+        material.runtime_session_id,
+        material.runner_challenge_sha256,
+        material.transport_session_binding_sha256,
+        material.request_id,
+        material.source_edit_id,
+        material.subject_identity_namespace,
+        material.subject_identity_hash,
+        material.artifact_content_hash,
+        material.observed_runtime_proof_id,
+        material.observed_proof_ledger_id,
+        material.observed_payload_sha256,
+    ]))
+    .map_err(|error| {
+        format!("runtime_evidence_transport_context_material_serialize_failed:{error}")
+    })?;
+    Ok(prefixed_sha256(&bytes))
+}
+
+fn subject_identity_hash(namespace: &str, canonical_bytes: &[u8]) -> Result<String, String> {
+    let canonical_bytes_sha256 = prefixed_sha256(canonical_bytes);
+    let material = serde_json::to_vec(&json!([
+        SUBJECT_IDENTITY_DOMAIN,
+        namespace,
+        canonical_bytes_sha256,
+    ]))
+    .map_err(|error| {
+        format!("runtime_evidence_transport_subject_material_serialize_failed:{error}")
+    })?;
+    Ok(prefixed_sha256(&material))
+}
+
+fn transport_session_binding(session_id: &str) -> String {
+    prefixed_sha256(format!("required\0{session_id}").as_bytes())
+}
+
+fn system_time_unix_ns() -> Result<u128, String> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "runtime_evidence_transport_clock_before_epoch".to_string())
+        .map(|duration| duration.as_nanos())
 }
 
 fn prefixed_sha256(bytes: &[u8]) -> String {
@@ -595,21 +1029,131 @@ fn canonical_token(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    const OBSERVED_PAYLOAD: &[u8] =
+        br#"{"type":"gpu_hmr_proof","proofId":"gpu-runtime-proof:sha256:fixture"}"#;
+    const SUBJECT_NAMESPACE: &str = "synthi.test.canonical_subject_manifest.v1";
+    const SUBJECT_CANONICAL_BYTES: &[u8] = br#"{"project":"arbitrary-test-subject"}"#;
+
+    #[derive(Default)]
+    struct TestReplayStore {
+        entries: Mutex<HashMap<(String, String, String), (u64, String)>>,
+    }
+
+    impl RuntimeEvidenceTransportReplayStore for TestReplayStore {
+        fn consume_if_newer(
+            &self,
+            key_id: &str,
+            worker_instance_id: &str,
+            transport_session_binding_sha256: &str,
+            sequence: u64,
+            receipt_id: &str,
+        ) -> Result<(), String> {
+            let mut entries = self
+                .entries
+                .lock()
+                .map_err(|_| "runtime_evidence_transport_replay_store_poisoned".to_string())?;
+            let entry = entries
+                .entry((
+                    key_id.to_string(),
+                    worker_instance_id.to_string(),
+                    transport_session_binding_sha256.to_string(),
+                ))
+                .or_insert((0, String::new()));
+            if sequence <= entry.0 || entry.1 == receipt_id {
+                return Err("runtime_evidence_transport_receipt_replayed".to_string());
+            }
+            *entry = (sequence, receipt_id.to_string());
+            Ok(())
+        }
+    }
 
     fn input<'a>() -> RuntimeEvidenceTransportReceiptInput<'a> {
         RuntimeEvidenceTransportReceiptInput {
             runner_process_id: 42,
             runtime_session_id: "pid:42:boot:runtime-session",
             runner_challenge: "3".repeat(32).leak(),
-            transport_session_id: Some("workspace-session"),
+            transport_session_id: "workspace-session",
             request_id: format!("gpu-reload:request:{}", "4".repeat(32)).leak(),
             source_edit_id: format!("source-edit:sha256:{}", "5".repeat(64)).leak(),
+            subject_identity_namespace: SUBJECT_NAMESPACE,
+            subject_canonical_bytes: SUBJECT_CANONICAL_BYTES,
             artifact_content_hash: format!("sha256:{}", "6".repeat(64)).leak(),
             observed_runtime_proof_id: format!("gpu-runtime-proof:sha256:{}", "7".repeat(64))
                 .leak(),
             observed_proof_ledger_id: format!("gpu-ledger-proof:sha256:{}", "8".repeat(64)).leak(),
-            observed_payload_sha256: format!("sha256:{}", "9".repeat(64)).leak(),
+            observed_payload: OBSERVED_PAYLOAD,
         }
+    }
+
+    fn verification_context<'a>(
+        signer: &'a RuntimeEvidenceTransportSigner,
+    ) -> RuntimeEvidenceTransportVerificationContext<'a> {
+        RuntimeEvidenceTransportVerificationContext {
+            worker_instance_id: &signer.verification_key().worker_instance_id,
+            worker_process_id: 41,
+            runner_process_id: 42,
+            runtime_session_id: "pid:42:boot:runtime-session",
+            runner_challenge: "3".repeat(32).leak(),
+            transport_session_id: "workspace-session",
+            request_id: format!("gpu-reload:request:{}", "4".repeat(32)).leak(),
+            source_edit_id: format!("source-edit:sha256:{}", "5".repeat(64)).leak(),
+            subject_identity_namespace: SUBJECT_NAMESPACE,
+            subject_canonical_bytes: SUBJECT_CANONICAL_BYTES,
+            artifact_content_hash: format!("sha256:{}", "6".repeat(64)).leak(),
+            observed_runtime_proof_id: format!("gpu-runtime-proof:sha256:{}", "7".repeat(64))
+                .leak(),
+            observed_proof_ledger_id: format!("gpu-ledger-proof:sha256:{}", "8".repeat(64)).leak(),
+        }
+    }
+
+    fn worker_pin(signer: &RuntimeEvidenceTransportSigner) -> RuntimeEvidenceTransportWorkerPin {
+        let key = signer.verification_key();
+        RuntimeEvidenceTransportWorkerPin::from_authenticated_control_plane(
+            key.key_id(),
+            key.worker_instance_id(),
+            key.worker_process_id().unwrap(),
+            key.key_announcement_id(),
+        )
+        .unwrap()
+    }
+
+    fn consumer(
+        signer: &RuntimeEvidenceTransportSigner,
+        now_unix_ns: u128,
+        replay_store: Arc<dyn RuntimeEvidenceTransportReplayStore>,
+    ) -> RuntimeEvidenceTransportReceiptConsumer {
+        RuntimeEvidenceTransportReceiptConsumer::new_with_clock(
+            signer.verification_key().clone(),
+            worker_pin(signer),
+            RuntimeEvidenceTransportFreshnessPolicy::new(
+                Duration::from_secs(5),
+                Duration::from_millis(50),
+            )
+            .unwrap(),
+            replay_store,
+            Arc::new(move || Ok(now_unix_ns)),
+        )
+        .unwrap()
+    }
+
+    fn envelope_at(
+        signer: &RuntimeEvidenceTransportSigner,
+        issued_at_unix_ns: u128,
+        sequence: u64,
+        nonce: char,
+    ) -> ObservedRuntimeEvidenceEnvelope {
+        let receipt = signer
+            .issue_at(
+                input(),
+                issued_at_unix_ns.to_string(),
+                sequence.to_string(),
+                nonce.to_string().repeat(64),
+            )
+            .unwrap();
+        ObservedRuntimeEvidenceEnvelope::new(OBSERVED_PAYLOAD, receipt).unwrap()
     }
 
     #[test]
@@ -623,7 +1167,8 @@ mod tests {
                 "a".repeat(64),
             )
             .unwrap();
-        verify_runtime_evidence_transport_receipt(&receipt, signer.verification_key()).unwrap();
+        verify_runtime_evidence_transport_receipt_signature(&receipt, signer.verification_key())
+            .unwrap();
 
         let encoded = serde_json::to_string(&receipt).unwrap();
         let decoded: RuntimeEvidenceTransportReceipt = serde_json::from_str(&encoded).unwrap();
@@ -642,10 +1187,13 @@ mod tests {
             "transportSessionBindingSha256",
             "requestId",
             "sourceEditId",
+            "subjectIdentityNamespace",
+            "subjectIdentityHash",
             "artifactContentHash",
             "observedRuntimeProofId",
             "observedProofLedgerId",
             "observedPayloadSha256",
+            "observationContextHash",
             "issuedAtUnixNs",
             "sequence",
             "nonce",
@@ -654,10 +1202,13 @@ mod tests {
             forged[field] = match field {
                 "runnerProcessId" => json!("43"),
                 "runtimeSessionId" => json!("pid:43:boot:runtime-session"),
+                "subjectIdentityNamespace" => json!("synthi.test.other_subject_manifest.v1"),
                 "runnerChallengeSha256"
                 | "transportSessionBindingSha256"
+                | "subjectIdentityHash"
                 | "artifactContentHash"
-                | "observedPayloadSha256" => json!(format!("sha256:{}", "b".repeat(64))),
+                | "observedPayloadSha256"
+                | "observationContextHash" => json!(format!("sha256:{}", "b".repeat(64))),
                 "requestId" => json!(format!("gpu-reload:request:{}", "b".repeat(32))),
                 "sourceEditId" => json!(format!("source-edit:sha256:{}", "b".repeat(64))),
                 "observedRuntimeProofId" => {
@@ -673,11 +1224,32 @@ mod tests {
             };
             let forged: RuntimeEvidenceTransportReceipt = serde_json::from_value(forged).unwrap();
             assert!(
-                verify_runtime_evidence_transport_receipt(&forged, signer.verification_key())
-                    .is_err(),
+                verify_runtime_evidence_transport_receipt_signature(
+                    &forged,
+                    signer.verification_key(),
+                )
+                .is_err(),
                 "accepted forged {field}"
             );
         }
+
+        let mut transitively_forged = receipt.clone();
+        transitively_forged.subject_identity_namespace =
+            "synthi.test.other_subject_manifest.v1".to_string();
+        transitively_forged.observation_context_hash =
+            observation_context_hash(transitively_forged.context_material()).unwrap();
+        transitively_forged.receipt_id = format!(
+            "{RECEIPT_ID_PREFIX}{}",
+            sha256_hex(&transitively_forged.signing_bytes().unwrap())
+        );
+        assert_eq!(
+            verify_runtime_evidence_transport_receipt_signature(
+                &transitively_forged,
+                signer.verification_key(),
+            )
+            .unwrap_err(),
+            "runtime_evidence_transport_signature_mismatch"
+        );
     }
 
     #[test]
@@ -691,9 +1263,11 @@ mod tests {
         assert!(serde_json::from_value::<RuntimeEvidenceTransportReceipt>(unknown).is_err());
 
         let other = RuntimeEvidenceTransportSigner::generate(41).unwrap();
-        assert!(
-            verify_runtime_evidence_transport_receipt(&receipt, other.verification_key()).is_err()
-        );
+        assert!(verify_runtime_evidence_transport_receipt_signature(
+            &receipt,
+            other.verification_key(),
+        )
+        .is_err());
 
         let mut forged_key = signer.verification_key().clone();
         forged_key.public_key = other.verification_key().public_key.clone();
@@ -702,22 +1276,188 @@ mod tests {
         let mut invalid = input();
         invalid.observed_runtime_proof_id = "declared-success";
         assert!(signer.issue(invalid).is_err());
+
+        let substituted = RuntimeEvidenceTransportReceiptConsumer::new(
+            other.verification_key().clone(),
+            worker_pin(&signer),
+            RuntimeEvidenceTransportFreshnessPolicy::new(
+                Duration::from_secs(5),
+                Duration::from_millis(50),
+            )
+            .unwrap(),
+            Arc::new(TestReplayStore::default()),
+        );
+        assert_eq!(
+            substituted.err().unwrap(),
+            "runtime_evidence_transport_worker_pin_mismatch"
+        );
+    }
+
+    #[test]
+    fn support_receipt_consumer_binds_context_and_consumes_sequence_once() {
+        let signer = RuntimeEvidenceTransportSigner::generate(41).unwrap();
+        let issued_at = 1_784_379_315_000_000_000_u128;
+        let envelope_one = envelope_at(&signer, issued_at, 1, 'a');
+        let replay_store = Arc::new(TestReplayStore::default());
+        let consumer_one = consumer(&signer, issued_at + 1_000_000, replay_store.clone());
+        let consumer_two = consumer(&signer, issued_at + 1_000_000, replay_store);
+        let context = verification_context(&signer);
+
+        let consumed = consumer_one
+            .consume_support_envelope(&envelope_one, OBSERVED_PAYLOAD, context)
+            .unwrap();
+        assert!(!consumed.accepted_for_gpu_hmr());
+        assert!(!consumed.gpu_hmr_success());
+        assert!(!consumed.can_satisfy_runtime_proof());
+        assert!(consumed.receipt_id().starts_with(RECEIPT_ID_PREFIX));
+        assert!(canonical_sha256(consumed.observation_context_hash()));
+        assert_eq!(
+            consumer_one
+                .consume_support_envelope(&envelope_one, OBSERVED_PAYLOAD, context)
+                .unwrap_err(),
+            "runtime_evidence_transport_receipt_replayed"
+        );
+        assert_eq!(
+            consumer_two
+                .consume_support_envelope(&envelope_one, OBSERVED_PAYLOAD, context)
+                .unwrap_err(),
+            "runtime_evidence_transport_receipt_replayed"
+        );
+
+        let envelope_two = envelope_at(&signer, issued_at + 1, 2, 'b');
+        let _ = consumer_two
+            .consume_support_envelope(&envelope_two, OBSERVED_PAYLOAD, context)
+            .unwrap();
+    }
+
+    #[test]
+    fn support_receipt_consumer_rejects_context_mismatch() {
+        let signer = RuntimeEvidenceTransportSigner::generate(41).unwrap();
+        let issued_at = 1_784_379_315_000_000_000_u128;
+        let envelope = envelope_at(&signer, issued_at, 1, 'a');
+        let consumer = consumer(
+            &signer,
+            issued_at + 1_000_000,
+            Arc::new(TestReplayStore::default()),
+        );
+
+        let mut context = verification_context(&signer);
+        context.subject_canonical_bytes = br#"{"project":"different-subject"}"#;
+        assert_eq!(
+            consumer
+                .consume_support_envelope(&envelope, OBSERVED_PAYLOAD, context)
+                .unwrap_err(),
+            "runtime_evidence_transport_verification_context_mismatch"
+        );
+
+        let mut context = verification_context(&signer);
+        context.subject_identity_namespace = "synthi.test.other_subject_manifest.v1";
+        assert_eq!(
+            consumer
+                .consume_support_envelope(&envelope, OBSERVED_PAYLOAD, context)
+                .unwrap_err(),
+            "runtime_evidence_transport_verification_context_mismatch"
+        );
+
+        let mut context = verification_context(&signer);
+        context.runner_challenge = "b".repeat(32).leak();
+        assert_eq!(
+            consumer
+                .consume_support_envelope(&envelope, OBSERVED_PAYLOAD, context)
+                .unwrap_err(),
+            "runtime_evidence_transport_verification_context_mismatch"
+        );
+
+        let mut context = verification_context(&signer);
+        context.transport_session_id = "other-workspace-session";
+        assert_eq!(
+            consumer
+                .consume_support_envelope(&envelope, OBSERVED_PAYLOAD, context)
+                .unwrap_err(),
+            "runtime_evidence_transport_verification_context_mismatch"
+        );
+
+        assert_eq!(
+            consumer
+                .consume_support_envelope(
+                    &envelope,
+                    b"different-payload",
+                    verification_context(&signer)
+                )
+                .unwrap_err(),
+            "runtime_evidence_transport_observed_payload_hash_mismatch"
+        );
+
+        let _ = consumer
+            .consume_support_envelope(&envelope, OBSERVED_PAYLOAD, verification_context(&signer))
+            .unwrap();
+    }
+
+    #[test]
+    fn support_receipt_consumer_rejects_stale_and_future_receipts() {
+        let signer = RuntimeEvidenceTransportSigner::generate(41).unwrap();
+        let issued_at = 1_784_379_315_000_000_000_u128;
+        let envelope = envelope_at(&signer, issued_at, 1, 'a');
+
+        let stale_consumer = consumer(
+            &signer,
+            issued_at + 5_000_000_001,
+            Arc::new(TestReplayStore::default()),
+        );
+        assert_eq!(
+            stale_consumer
+                .consume_support_envelope(
+                    &envelope,
+                    OBSERVED_PAYLOAD,
+                    verification_context(&signer)
+                )
+                .unwrap_err(),
+            "runtime_evidence_transport_receipt_expired"
+        );
+
+        let future_consumer = consumer(
+            &signer,
+            issued_at - 50_000_001,
+            Arc::new(TestReplayStore::default()),
+        );
+        assert_eq!(
+            future_consumer
+                .consume_support_envelope(
+                    &envelope,
+                    OBSERVED_PAYLOAD,
+                    verification_context(&signer)
+                )
+                .unwrap_err(),
+            "runtime_evidence_transport_receipt_from_future"
+        );
+
+        assert!(RuntimeEvidenceTransportFreshnessPolicy::new(
+            Duration::from_secs(301),
+            Duration::ZERO,
+        )
+        .is_err());
+        assert!(RuntimeEvidenceTransportFreshnessPolicy::new(
+            Duration::from_secs(5),
+            Duration::from_secs(31),
+        )
+        .is_err());
+
+        let mut missing_transport = input();
+        missing_transport.transport_session_id = "";
+        assert!(signer.issue(missing_transport).is_err());
     }
 
     #[test]
     fn observed_envelope_retains_only_a_hash_without_promoting_child_payload() {
         let signer = RuntimeEvidenceTransportSigner::generate(41).unwrap();
-        let payload = br#"{"type":"gpu_hmr_proof","proofId":"gpu-runtime-proof:sha256:fixture"}"#;
-        let mut receipt_input = input();
-        receipt_input.observed_payload_sha256 = prefixed_sha256(payload).leak();
-        let receipt = signer.issue(receipt_input).unwrap();
-        let envelope = ObservedRuntimeEvidenceEnvelope::new(payload, receipt.clone()).unwrap();
+        let issued_at = 1_784_379_315_000_000_000_u128;
+        let envelope = envelope_at(&signer, issued_at, 1, 'a');
 
         envelope.validate_shape().unwrap();
         assert!(!envelope.accepted_for_gpu_hmr);
         assert!(!envelope.gpu_hmr_success);
         assert!(!envelope.can_satisfy_runtime_proof);
-        verify_runtime_evidence_transport_receipt(
+        verify_runtime_evidence_transport_receipt_signature(
             &envelope.runtime_evidence_transport_receipt,
             signer.verification_key(),
         )
@@ -738,5 +1478,21 @@ mod tests {
         let forged_authority: ObservedRuntimeEvidenceEnvelope =
             serde_json::from_value(forged_authority).unwrap();
         assert!(forged_authority.validate_shape().is_err());
+
+        let consumer = consumer(
+            &signer,
+            issued_at + 1_000_000,
+            Arc::new(TestReplayStore::default()),
+        );
+        assert_eq!(
+            consumer
+                .consume_support_envelope(
+                    &forged_authority,
+                    OBSERVED_PAYLOAD,
+                    verification_context(&signer),
+                )
+                .unwrap_err(),
+            "observed_runtime_evidence_envelope_shape_invalid"
+        );
     }
 }
