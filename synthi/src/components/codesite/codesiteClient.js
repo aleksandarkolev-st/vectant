@@ -24,6 +24,10 @@ async function request(path, init = {}) {
   return body;
 }
 
+function uniqueValues(values) {
+  return [...new Set((Array.isArray(values) ? values : []).filter(Boolean).map((value) => String(value)))];
+}
+
 function codeSiteBase(workspaceSlug) {
   return `${BASE}/${encodeURIComponent(workspaceSlug)}/codesite`;
 }
@@ -40,6 +44,8 @@ export function createEmptyCodeSiteRadarState(workspaceSlug = '') {
     controlState: null,
     metrics: null,
     events: [],
+    quarantines: [],
+    quarantineError: null,
     artifactPreview: null,
     selectedProjectId: null,
     counts: {
@@ -52,10 +58,13 @@ export function createEmptyCodeSiteRadarState(workspaceSlug = '') {
       proofBundles: 0,
       incidents: 0,
       inspectionRuns: 0,
+      quarantines: 0,
     },
     collisionForecast: {
       riskLevel: 'unknown',
       risks: [],
+      runwayOccupancy: [],
+      wakeTurbulence: [],
     },
   };
 }
@@ -67,11 +76,14 @@ export function normalizeCodeSiteRadarState({
   controlState = null,
   metrics = null,
   events = [],
+  quarantines = [],
+  quarantineError = null,
   artifactPreview = null,
   selectedProjectId = null,
 } = {}) {
   const normalizedProjects = Array.isArray(projects) ? projects.filter(Boolean) : [];
   const normalizedEvents = Array.isArray(events) ? events.filter(Boolean) : [];
+  const normalizedQuarantines = Array.isArray(quarantines) ? quarantines.filter(Boolean) : [];
   const normalizedControl = controlState || null;
   const normalizedProject = project || null;
   const forecast = normalizedControl?.collisionForecast || { riskLevel: 'unknown', risks: [] };
@@ -83,6 +95,8 @@ export function normalizeCodeSiteRadarState({
     controlState: normalizedControl,
     metrics,
     events: normalizedEvents,
+    quarantines: normalizedQuarantines,
+    quarantineError,
     artifactPreview,
     selectedProjectId: selectedProjectId || normalizedProject?.id || normalizedControl?.projectId || normalizedProjects[0]?.id || null,
     counts: {
@@ -95,10 +109,13 @@ export function normalizeCodeSiteRadarState({
       proofBundles: normalizedProject?.proofBundles?.length || 0,
       incidents: normalizedProject?.incidents?.length || 0,
       inspectionRuns: normalizedProject?.inspectionRuns?.length || 0,
+      quarantines: normalizedQuarantines.length,
     },
     collisionForecast: {
       ...forecast,
       risks: Array.isArray(forecast?.risks) ? forecast.risks : [],
+      runwayOccupancy: Array.isArray(forecast?.runwayOccupancy) ? forecast.runwayOccupancy : [],
+      wakeTurbulence: Array.isArray(forecast?.wakeTurbulence) ? forecast.wakeTurbulence : [],
     },
   };
 }
@@ -132,9 +149,162 @@ export async function fetchCodeSiteMetrics(workspaceSlug, projectId) {
   return body.metrics || null;
 }
 
+export function subscribeCodeSiteProjectEvents(workspaceSlug, projectId, { onEvent, onStatus } = {}) {
+  if (!workspaceSlug || !projectId || typeof window === 'undefined' || typeof window.EventSource !== 'function') {
+    onStatus?.('unavailable');
+    return () => {};
+  }
+
+  const source = new window.EventSource(`${projectBase(workspaceSlug, projectId)}/events/stream`);
+  const eventTypes = [
+    'tower_instruction',
+    'holding_pattern',
+    'ground_stop',
+    'mayday',
+    'mayday_resumed',
+    'near_miss',
+    'clearance_requested',
+    'clearance_issued',
+    'transponder_update',
+    'snapshot_taken',
+    'read_observed',
+    'write_attempted',
+    'write_allowed',
+    'write_denied',
+    'write_quarantined',
+    'quarantine_reviewed',
+    'quarantine_replayed',
+    'quarantine_applied',
+    'transaction_opened',
+    'transaction_validated',
+    'transaction_committed',
+    'transaction_aborted',
+    'policy_delta_proposed',
+    'policy_delta_promoted',
+    'policy_delta_rejected',
+    'rfi',
+    'change_order',
+    'route_deviation',
+    'landing_requested',
+    'inspection_result',
+    'radar_result',
+    'shadow_run',
+    'arbiter_verdict',
+    'black_box_closed',
+    'incident_reported',
+    'codesite_stream_error',
+  ];
+
+  const handleEvent = (event) => {
+    try {
+      onEvent?.(JSON.parse(event.data));
+    } catch (_) {
+      onEvent?.({ eventType: event.type, details: { raw: event.data } });
+    }
+  };
+
+  source.onopen = () => onStatus?.('live');
+  source.onerror = () => onStatus?.('reconnecting');
+  source.onmessage = handleEvent;
+  for (const eventType of eventTypes) {
+    source.addEventListener(eventType, handleEvent);
+  }
+
+  return () => {
+    for (const eventType of eventTypes) {
+      source.removeEventListener(eventType, handleEvent);
+    }
+    source.onmessage = null;
+    source.close();
+  };
+}
+
 export async function fetchCodeSiteArtifactPreview(workspaceSlug, projectId) {
   if (!workspaceSlug || !projectId) return null;
   return request(`${projectBase(workspaceSlug, projectId)}/artifacts/preview?include=content`);
+}
+
+export async function issueCodeSitePermit(workspaceSlug, projectId, payload = {}) {
+  if (!workspaceSlug || !projectId) return null;
+  return request(`${projectBase(workspaceSlug, projectId)}/permits`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function reviewCodeSiteDocument(workspaceSlug, documentId, payload = {}) {
+  if (!workspaceSlug || !documentId) return null;
+  return request(`${codeSiteBase(workspaceSlug)}/documents/${encodeURIComponent(documentId)}/reviews`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function proposeCodeSiteRouteRevision(workspaceSlug, executionPlanId, payload = {}) {
+  if (!workspaceSlug || !executionPlanId) return null;
+  return request(`${codeSiteBase(workspaceSlug)}/execution-plans/${encodeURIComponent(executionPlanId)}/route-revisions`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function reviewCodeSiteRouteRevision(workspaceSlug, routeRevisionId, payload = {}) {
+  if (!workspaceSlug || !routeRevisionId) return null;
+  return request(`${codeSiteBase(workspaceSlug)}/route-revisions/${encodeURIComponent(routeRevisionId)}/review`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function applyCodeSiteRouteRevision(workspaceSlug, routeRevisionId, payload = {}) {
+  if (!workspaceSlug || !routeRevisionId) return null;
+  return request(`${codeSiteBase(workspaceSlug)}/route-revisions/${encodeURIComponent(routeRevisionId)}/apply`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function resumeCodeSiteMayday(workspaceSlug, incidentId, payload = {}) {
+  if (!workspaceSlug || !incidentId) return null;
+  return request(`${codeSiteBase(workspaceSlug)}/incidents/${encodeURIComponent(incidentId)}/resume`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchCodeSiteQuarantines(workspaceSlug, filters = {}) {
+  if (!workspaceSlug) return [];
+  const search = new URLSearchParams();
+  if (filters.transactionId) search.set('transactionId', filters.transactionId);
+  if (filters.status) search.set('status', filters.status);
+  if (filters.userId) search.set('userId', filters.userId);
+  if (filters.filesystemUserId) search.set('filesystemUserId', filters.filesystemUserId);
+  if (filters.runtimeScope) search.set('runtimeScope', filters.runtimeScope);
+  const suffix = search.toString() ? `?${search.toString()}` : '';
+  const body = await request(`${codeSiteBase(workspaceSlug)}/quarantines${suffix}`);
+  return body.quarantines || [];
+}
+
+export async function fetchCodeSiteQuarantine(workspaceSlug, quarantineId) {
+  if (!workspaceSlug || !quarantineId) return null;
+  const body = await request(`${codeSiteBase(workspaceSlug)}/quarantines/${encodeURIComponent(quarantineId)}`);
+  return body.quarantine || null;
+}
+
+export async function replayCodeSiteQuarantine(workspaceSlug, quarantineId, payload = {}) {
+  if (!workspaceSlug || !quarantineId) return null;
+  return request(`${codeSiteBase(workspaceSlug)}/quarantines/${encodeURIComponent(quarantineId)}/replay`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function applyCodeSiteQuarantine(workspaceSlug, quarantineId, payload = {}) {
+  if (!workspaceSlug || !quarantineId) return null;
+  return request(`${codeSiteBase(workspaceSlug)}/quarantines/${encodeURIComponent(quarantineId)}/apply`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function fetchCodeSiteLineProvenance(workspaceSlug, { projectId, filePath, lineAnchor, lineNumber } = {}) {
@@ -190,6 +360,30 @@ export async function fetchCodeSiteRadarState(workspaceSlug, selectedProjectId =
     fetchCodeSiteMetrics(workspaceSlug, projectId).catch(() => null),
     fetchCodeSiteArtifactPreview(workspaceSlug, projectId).catch(() => null),
   ]);
+  const transactionIds = uniqueValues([
+    ...(Array.isArray(controlState?.activeTransactions) ? controlState.activeTransactions.map((transaction) => transaction.id) : []),
+    ...(Array.isArray(project?.mutationTxns) ? project.mutationTxns.map((transaction) => transaction.id) : []),
+    ...(Array.isArray(events) ? events.map((event) => event.details?.transactionId || event.details?.transaction_id) : []),
+  ]);
+  let quarantines = [];
+  let quarantineError = null;
+  if (transactionIds.length) {
+    try {
+      const groups = await Promise.all(transactionIds.map((transactionId) => fetchCodeSiteQuarantines(workspaceSlug, { transactionId })));
+      const seen = new Set();
+      quarantines = groups.flat().filter((record) => {
+        const key = record?.quarantineId || record?.id;
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    } catch (error) {
+      quarantineError = {
+        message: error?.message || 'codesite_quarantine_fetch_failed',
+        status: error?.status || null,
+      };
+    }
+  }
 
   return normalizeCodeSiteRadarState({
     workspaceSlug,
@@ -198,6 +392,8 @@ export async function fetchCodeSiteRadarState(workspaceSlug, selectedProjectId =
     controlState,
     metrics,
     events,
+    quarantines,
+    quarantineError,
     artifactPreview,
     selectedProjectId: projectId,
   });

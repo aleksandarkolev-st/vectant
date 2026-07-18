@@ -3,6 +3,10 @@ import prisma from '@/lib/prisma';
 import { createGcsStorage, getGcsBucketName } from '@/server/gcsStorage';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/auth';
+import {
+    requireWorkspaceAccessById,
+    requireWorkspaceManageAccessById,
+} from '@/lib/workspaceAccess';
 
 
 const storage = createGcsStorage();
@@ -18,6 +22,11 @@ export async function GET(request) {
     }
 
     try {
+        const access = await requireWorkspaceAccessById(id);
+        if (!access.ok) {
+            return NextResponse.json({ error: access.error }, { status: access.status });
+        }
+
         const workspace = await prisma.workspace.findUnique({
             where: {
                 id
@@ -88,26 +97,30 @@ export async function POST(request) {
             throw dbErr;
         }
 
-        const rootFolderPath = `workspaces/${finalSlug}/`;
-        const bucket = storage.bucket(BUCKET_NAME);
-        
-        try {
-            await bucket.file(rootFolderPath).save('', {
-                contentType: 'application/x-directory',
-                resumable: false,
-                metadata: {
-                    cacheControl: 'no-cache',
+        if (BUCKET_NAME) {
+            const rootFolderPath = `workspaces/${finalSlug}/`;
+
+            try {
+                const bucket = storage.bucket(BUCKET_NAME);
+                await bucket.file(rootFolderPath).save('', {
+                    contentType: 'application/x-directory',
+                    resumable: false,
                     metadata: {
-                        isFolder: 'true',
-                        name: newWorkspace.name,
-                        createdBy: 'synthi-ide',
-                        isMarker: 'true'
+                        cacheControl: 'no-cache',
+                        metadata: {
+                            isFolder: 'true',
+                            name: newWorkspace.name,
+                            createdBy: 'synthi-ide',
+                            isMarker: 'true'
+                        }
                     }
-                }
-            });
-        } catch (err) {
-            // Log the error but do not remove workspace; return 201 since DB now has workspace
-            console.warn('Failed to create GCS marker folder for workspace', finalSlug, err?.message || err);
+                });
+            } catch (err) {
+                // Log the error but do not remove workspace; return 201 since DB now has workspace
+                console.warn('Failed to create GCS marker folder for workspace', finalSlug, err?.message || err);
+            }
+        } else {
+            console.warn('Skipping GCS marker folder for workspace because GCS_BUCKET_NAME is not configured', finalSlug);
         }
 
         return NextResponse.json(newWorkspace, { status: 201 });
@@ -126,6 +139,11 @@ export async function PUT(request) {
     }
 
     try {
+        const access = await requireWorkspaceManageAccessById(id);
+        if (!access.ok) {
+            return NextResponse.json({ error: access.error }, { status: access.status });
+        }
+
         const { name } = await request.json();
 
         if (!name) {
@@ -156,7 +174,12 @@ export async function DELETE(request) {
     }
 
     try {
-        const storagePathPrefix = `workspaces/${id}/`;
+        const access = await requireWorkspaceManageAccessById(id);
+        if (!access.ok) {
+            return NextResponse.json({ error: access.error }, { status: access.status });
+        }
+
+        const storagePathPrefix = `workspaces/${access.workspace.slug}/`;
         
         await storage.bucket(BUCKET_NAME).deleteFiles({
             prefix: storagePathPrefix,

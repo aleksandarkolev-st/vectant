@@ -1,0 +1,165 @@
+{
+  "id": "cmr8k1okx03bcqg01803em330",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+  "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+  "baseSnapshot": "sha256:67629c1159676c2c9595e65f4e66bed273cab2186b8415852029978258d53cd9",
+  "baseSnapshotEvidence": {
+    "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+    "status": "recorded",
+    "scope": "repo_wide",
+    "readSet": [
+      "synthi/prisma/schema-contract-read.txt"
+    ],
+    "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565",
+    "fileDigests": [
+      {
+        "path": "synthi/prisma/schema-contract-read.txt",
+        "exists": true,
+        "size": 24,
+        "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+      }
+    ],
+    "missingPaths": [],
+    "skippedPaths": [],
+    "truncated": false,
+    "repoManifestDigest": "sha256:4e787ffb9ccad4cd10a163bdf940801f3e3d1d9da79c05ba19c4743268b668af",
+    "repoManifestFileCount": 5,
+    "repoManifestScannedEntries": 10,
+    "repoManifestTruncated": false,
+    "repoManifestSkippedPaths": [],
+    "repoManifestExcludedPaths": [
+      "synthi/prisma/schema.prisma"
+    ],
+    "limits": {
+      "maxFiles": 512,
+      "maxFileBytes": 2097152,
+      "maxScanEntries": 15000
+    },
+    "generatedAt": "2026-07-06T01:42:13.323Z",
+    "source": "codesite_control_plane",
+    "snapshotDigest": "sha256:67629c1159676c2c9595e65f4e66bed273cab2186b8415852029978258d53cd9",
+    "evidenceDigest": "sha256:6a0bc12183cc4341086178bd1a42f997f925bb86a92ddae24042af8f58b57e9f"
+  },
+  "isolation": "serializable",
+  "status": "committed",
+  "readSet": [
+    "synthi/prisma/schema-contract-read.txt"
+  ],
+  "observedReadSet": [
+    "synthi/prisma/schema-contract-read.txt"
+  ],
+  "writeSet": [
+    "synthi/prisma/schema.prisma"
+  ],
+  "observedWriteSet": [
+    "synthi/prisma/schema.prisma"
+  ],
+  "semanticDependencyRefs": [],
+  "invariants": [
+    "clearance.diff.inside_route"
+  ],
+  "assumptionRefs": [
+    "cmr8k1r1f03biqg015b0ln7c9"
+  ],
+  "commitDecision": {
+    "ok": true,
+    "isolation": "serializable",
+    "reasonCodes": [
+      "repo_snapshot_stable",
+      "serializable_validation_passed",
+      "serializable_commit_landed"
+    ],
+    "blockedWrites": [],
+    "invalidAssumptions": [],
+    "staleReads": [],
+    "repoSnapshot": {
+      "ok": true,
+      "reasonCodes": [
+        "repo_snapshot_stable"
+      ],
+      "expected": {
+        "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+        "status": "recorded",
+        "scope": "repo_wide",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565",
+        "fileDigests": [
+          {
+            "path": "synthi/prisma/schema-contract-read.txt",
+            "exists": true,
+            "size": 24,
+            "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+          }
+        ],
+        "missingPaths": [],
+        "skippedPaths": [],
+        "truncated": false,
+        "repoManifestDigest": "sha256:4e787ffb9ccad4cd10a163bdf940801f3e3d1d9da79c05ba19c4743268b668af",
+        "repoManifestFileCount": 5,
+        "repoManifestScannedEntries": 10,
+        "repoManifestTruncated": false,
+        "repoManifestSkippedPaths": [],
+        "repoManifestExcludedPaths": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "limits": {
+          "maxFiles": 512,
+          "maxFileBytes": 2097152,
+          "maxScanEntries": 15000
+        },
+        "generatedAt": "2026-07-06T01:42:13.323Z",
+        "source": "codesite_control_plane",
+        "snapshotDigest": "sha256:67629c1159676c2c9595e65f4e66bed273cab2186b8415852029978258d53cd9",
+        "evidenceDigest": "sha256:6a0bc12183cc4341086178bd1a42f997f925bb86a92ddae24042af8f58b57e9f"
+      },
+      "current": {
+        "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+        "status": "recorded",
+        "scope": "repo_wide",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565",
+        "fileDigests": [
+          {
+            "path": "synthi/prisma/schema-contract-read.txt",
+            "exists": true,
+            "size": 24,
+            "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+          }
+        ],
+        "missingPaths": [],
+        "skippedPaths": [],
+        "truncated": false,
+        "repoManifestDigest": "sha256:4e787ffb9ccad4cd10a163bdf940801f3e3d1d9da79c05ba19c4743268b668af",
+        "repoManifestFileCount": 5,
+        "repoManifestScannedEntries": 11,
+        "repoManifestTruncated": false,
+        "repoManifestSkippedPaths": [],
+        "repoManifestExcludedPaths": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "limits": {
+          "maxFiles": 512,
+          "maxFileBytes": 2097152,
+          "maxScanEntries": 15000
+        },
+        "generatedAt": "2026-07-06T01:47:00.886Z",
+        "source": "codesite_validation",
+        "snapshotDigest": "sha256:67629c1159676c2c9595e65f4e66bed273cab2186b8415852029978258d53cd9",
+        "evidenceDigest": "sha256:fdb0f09afe7dac89e973ff6596b69ac4985815f6fa05dc89299c8b3ca2194b61"
+      },
+      "driftedPaths": [],
+      "digestChanged": false,
+      "repoManifestDrifted": false
+    },
+    "validatedAt": "2026-07-06T01:47:00.915Z",
+    "committedAt": "2026-07-06T01:47:00.944Z"
+  },
+  "proofBundleDigest": "sha256:50ce41f4cae4718955dcbe98410ec2c9d60d3eea1635696307b8c21f837171b9",
+  "openedAt": "2026-07-06T01:42:13.426Z",
+  "closedAt": "2026-07-06T01:47:00.944Z"
+}

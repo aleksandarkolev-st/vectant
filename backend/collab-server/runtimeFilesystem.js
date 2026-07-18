@@ -2,6 +2,7 @@
 
 const gitService = require('./gitService');
 const repoCache = require('./repoCache');
+const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
 
 const hydrationLocks = new Map();
 const runtimePins = new Map();
@@ -43,12 +44,81 @@ async function hydrateWorkspace(slug, userId, reason = 'runtime') {
   };
 }
 
+function codeSiteContextFromOptions(options = {}) {
+  const context = options.codesiteContext || options.codeSiteContext || options.codeSite || options.codesite || null;
+  return context && typeof context === 'object' ? context : null;
+}
+
+async function isRuntimeFilesystemInitialized(slug, userId) {
+  if (userId && typeof gitService.isUserRepoInitialized === 'function') {
+    return gitService.isUserRepoInitialized(slug, userId);
+  }
+  if (typeof gitService.isRepoInitialized === 'function') {
+    return gitService.isRepoInitialized(slug, userId || null);
+  }
+  return false;
+}
+
+async function existingCodeSiteRuntimeFilesystem(slug, userId, reason) {
+  const initialized = await isRuntimeFilesystemInitialized(slug, userId);
+  if (!initialized) {
+    const error = new Error(
+      `CodeSite runtime filesystem blocked: ${slug}${userId ? '/' + userId : ''} is not provisioned for ${reason}. Provision it through a CodeSite git_provisioning clearance before launching runtime overlay sessions.`,
+    );
+    error.code = 'CODESITE_RUNTIME_FILESYSTEM_PROVISIONING_REQUIRED';
+    error.status = 409;
+    throw error;
+  }
+  return {
+    slug,
+    userId,
+    path: gitService.getEffectiveRepoPath(slug, userId || null),
+    created: false,
+    reusedExisting: true,
+    codeSiteProvisioningSkipped: true,
+  };
+}
+
+function activeWorkspaceRuntimeBlocked(slug, userId, reason) {
+  const error = new Error(
+    `CodeSite runtime filesystem blocked: active transaction owns ${slug}${userId ? '/' + userId : ''} for ${reason}. Launch through a CodeSite overlay/runtime route or close the transaction before real-tree hydration.`,
+  );
+  error.code = 'CODESITE_RUNTIME_FILESYSTEM_ACTIVE_TRANSACTION';
+  error.status = 409;
+  error.details = {
+    workspaceSlug: slug,
+    filesystemUserId: userId || null,
+    reason,
+    activeTransactions: codeSiteActivityRegistry.activeTransactionsForWorkspace(slug),
+  };
+  return error;
+}
+
+async function refreshActiveWorkspaceAuthority(slug, context = null) {
+  try {
+    await codeSiteActivityRegistry.refreshWorkspaceFromControlPlane(slug, {
+      controlPlaneUrl: context?.controlPlaneUrl,
+      controlPlaneTrusted: context?.controlPlaneTrusted,
+      authToken: context?.authToken,
+      cookie: context?.cookie,
+      requireAuthority: true,
+    });
+  } catch (error) {
+    const blocked = activeWorkspaceRuntimeBlocked(slug, context?.effectiveUserId || '', 'active_authority_unavailable');
+    blocked.status = 503;
+    blocked.details.authorityError = error.code || error.message;
+    throw blocked;
+  }
+}
+
 async function ensureRuntimeFilesystem({
   workspaceSlug,
   filesystemUserId = '',
   runtimeScope = '',
   pin = false,
   reason = 'runtime',
+  codesiteContext = null,
+  codeSiteContext = null,
 } = {}) {
   const slug = normalize(workspaceSlug);
   if (!slug) {
@@ -56,6 +126,21 @@ async function ensureRuntimeFilesystem({
   }
 
   const userId = normalize(filesystemUserId);
+  const activeCodeSiteContext = codeSiteContextFromOptions({ codesiteContext, codeSiteContext });
+  if (activeCodeSiteContext?.active) {
+    await refreshActiveWorkspaceAuthority(slug, activeCodeSiteContext);
+    const existing = await existingCodeSiteRuntimeFilesystem(slug, userId, reason);
+    if (pin && runtimeScope) {
+      pinRuntimeFilesystem(runtimeScope, slug, userId);
+    }
+    return existing;
+  }
+
+  await refreshActiveWorkspaceAuthority(slug, activeCodeSiteContext);
+  if (codeSiteActivityRegistry.isWorkspaceActive(slug)) {
+    throw activeWorkspaceRuntimeBlocked(slug, userId, reason);
+  }
+
   const key = pinKey(slug, userId);
   let lock = hydrationLocks.get(key);
   if (!lock) {

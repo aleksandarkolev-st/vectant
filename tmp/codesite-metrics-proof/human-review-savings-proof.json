@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "synthi.codesite.visual-proof.v1",
+  "proofId": "codesite-human-review-savings-metric",
+  "generatedAt": "2026-07-04T11:12:00.000Z",
+  "baseHead": "36ae5035a8aa",
+  "validatedFiles": [
+    "synthi/src/lib/codesite/metrics.js",
+    "synthi/src/lib/codesite/__tests__/metrics.test.js"
+  ],
+  "runtimeValidation": {
+    "command": "docker run --rm -v \"$PWD\":/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc 'node -v && npm exec vitest -- src/lib/codesite/__tests__/metrics.test.js --run --testTimeout=60000'",
+    "node": "v22.23.1",
+    "result": "passed",
+    "testFiles": 1,
+    "tests": 6
+  },
+  "metricSample": {
+    "documentReviewId": "review-1",
+    "decision": "approved",
+    "baselineReviewTimeMs": 300000,
+    "reviewTimeMs": 90000,
+    "humanReviewTimeSavedMs": 210000,
+    "evidenceRefs": [
+      "document-review:review-1",
+      "document-review:evidence"
+    ]
+  },
+  "instrumentationGapSample": {
+    "documentReviewId": "review-without-baseline",
+    "reviewTimeMs": 45000,
+    "status": "not_instrumented",
+    "reason": "baselineReviewTimeMs missing"
+  },
+  "screenshots": [
+    "human-review-savings-proof-desktop.png",
+    "human-review-savings-proof-mobile.png"
+  ]
+}

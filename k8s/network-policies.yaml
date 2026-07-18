@@ -23,33 +23,134 @@ spec:
 
 ---
 # ── Allow Ingress LB → public-facing services ─────────────────────────────
-# Frontend, Collab Server, Signaling, AI Gateway, and Y-Sweet are exposed
-# via the GCE Ingress. Allow ingress from any source on their service ports.
+# Frontend is exposed via the GCE Ingress. Only Google Cloud Load Balancer
+# proxy/health-check ranges may reach the NEG backend port.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-ingress-to-public-services
+  name: allow-gclb-to-frontend
   namespace: synthi
   labels:
     app.kubernetes.io/part-of: synthi-ide
 spec:
   podSelector:
-    matchExpressions:
-      - key: app
-        operator: In
-        values:
-          - frontend
-          - collab-server
-          - signaling-server
-          - ai-gateway
-          - y-sweet
+    matchLabels:
+      app: frontend
   ingress:
-    - {}
+    - from:
+        - ipBlock:
+            cidr: 35.191.0.0/16
+        - ipBlock:
+            cidr: 130.211.0.0/22
+      ports:
+        - port: 3000
+          protocol: TCP
   policyTypes:
     - Ingress
 
 ---
-# ── AI Engine: accept from gateway, collab-server, and workspace pods ──────
+# Collab Server is exposed via the GCE Ingress for HTTP/WebSocket traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gclb-to-collab-server
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: collab-server
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 35.191.0.0/16
+        - ipBlock:
+            cidr: 130.211.0.0/22
+      ports:
+        - port: 1234
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# Signaling is exposed via the GCE Ingress for WebSocket traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gclb-to-signaling-server
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: signaling-server
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 35.191.0.0/16
+        - ipBlock:
+            cidr: 130.211.0.0/22
+      ports:
+        - port: 9000
+          protocol: TCP
+        - port: 8080
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# AI Gateway is exposed via the GCE Ingress for API and WebSocket traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gclb-to-ai-gateway
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-gateway
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 35.191.0.0/16
+        - ipBlock:
+            cidr: 130.211.0.0/22
+      ports:
+        - port: 7070
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# Y-Sweet is cluster-internal; only Collab Server should reach its HTTP API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-y-sweet
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: y-sweet
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: collab-server
+      ports:
+        - port: 8080
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# AI Engine: accept from gateway, collab-server, and workspace pods.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -79,7 +180,7 @@ spec:
     - Ingress
 
 ---
-# ── Redis: accept from any pod in the namespace ───────────────────────────
+# ── Redis: accept only from services that use REDIS_URL ───────────────────
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -93,7 +194,12 @@ spec:
       app: redis
   ingress:
     - from:
-        - podSelector: {}
+        - podSelector:
+            matchLabels:
+              app: collab-server
+        - podSelector:
+            matchLabels:
+              app: signaling-server
       ports:
         - port: 6379
           protocol: TCP
@@ -101,7 +207,7 @@ spec:
     - Ingress
 
 ---
-# ── PostgreSQL: accept from any pod in the namespace ──────────────────────
+# ── PostgreSQL: accept only from services and jobs that use DATABASE_URL ──
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -115,7 +221,12 @@ spec:
       app: postgres
   ingress:
     - from:
-        - podSelector: {}
+        - podSelector:
+            matchLabels:
+              app: frontend
+        - podSelector:
+            matchLabels:
+              app: prisma-migrate
       ports:
         - port: 5432
           protocol: TCP

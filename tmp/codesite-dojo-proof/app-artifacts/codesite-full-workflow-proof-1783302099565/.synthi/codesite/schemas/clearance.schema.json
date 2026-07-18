@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeSite Clearance",
+  "type": "object",
+  "required": [
+    "executionPlanId",
+    "agentSessionId",
+    "displayCallsign",
+    "status",
+    "lease"
+  ],
+  "properties": {
+    "executionPlanId": {
+      "type": "string"
+    },
+    "agentSessionId": {
+      "type": "string"
+    },
+    "displayCallsign": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "lease": {
+      "type": "object"
+    },
+    "dojoProofRef": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "dojoLicenseRef": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "dojoEvidenceRefs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dojoLedgerCheckpointHash": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "dojoDecisionDigest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "implementationStatus": {
+      "type": "object"
+    },
+    "pilotLicenseHealth": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "pilotLicenseRequirement": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

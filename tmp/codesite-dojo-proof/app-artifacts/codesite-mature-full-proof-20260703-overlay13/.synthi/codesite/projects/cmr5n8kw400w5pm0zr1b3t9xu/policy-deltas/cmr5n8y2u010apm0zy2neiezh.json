@@ -1,0 +1,51 @@
+{
+  "id": "cmr5n8y2u010apm0zy2neiezh",
+  "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+  "learnedFromIncidents": [],
+  "affectedZoneKey": null,
+  "ruleCandidate": {
+    "rule": "require_test_owner_for_mutation_route",
+    "affectedRoutes": [
+      "synthi/prisma/**",
+      "synthi/src/app/api/auth/**",
+      "synthi/src/lib/codesite/__tests__/**"
+    ],
+    "expectedRiskReduction": 0.18,
+    "confidence": 0.72
+  },
+  "triggerConditions": [
+    {
+      "path": "synthi/prisma/**"
+    },
+    {
+      "path": "synthi/src/app/api/auth/**"
+    },
+    {
+      "path": "synthi/src/lib/codesite/__tests__/**"
+    }
+  ],
+  "expectedRiskReduction": 0.18,
+  "confidence": 0.72,
+  "promotionState": "proposed",
+  "replayRefs": [
+    "codesite:counterfactual-run:cmr5n8y2j0108pm0z2k91d7zp",
+    "shadow:job:shadow:codesite-mature-full-proof-20260703-overlay13:learned-policy-memory",
+    "codesite:shadow_merge_simulator",
+    "codesite:repo-policy:sha256:bc2715aab8f8e5a72eeef51c13449d7cdcb1bec3f5adea6337bc567af2c794e0",
+    "codesite:collision-forecast:sha256:c9bf89261b79c37d20534b46650555861117dc92678e9bae96914a955057ea61",
+    "codesite:incident:cmr5n8rel00y8pm0zmd8ctqbl",
+    "codesite:incident:cmr5n8svk00yopm0zbo898qk9",
+    "codesite:policy-delta:cmr5n8wlw00zypm0zshvzoxbh",
+    "codesite:shadow-runner:sha256:4655d4ab90b429c39c6151149ae758fefb095a3c79cc2e6252c6d1f265a56787",
+    "codesite:shadow-universe:schema-first:sha256:7eded501d452696440506657a23f4e2b2af131048f63bdbe7827ce1bbdb3e00b",
+    "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay13:learned-policy-memory",
+    "codesite:shadow-command:schema-first:schema-typecheck:sha256:457512a2666aba0326714eaaa0d83db4f3103df74d1184638106e6955e3c24d0",
+    "codesite:shadow-command:schema-first:schema-contract-test:sha256:60bd9a0bd0ae9343612af58096ed9617ac8c0d8c650469b81ee4bd58f164effb",
+    "codesite:shadow-universe:frontend-backend-parallel:sha256:5903d8114d6d8700748ecbc4ff8965c49f85b417a2f280a7fde3ff517f12dbf7",
+    "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:4fbbd9e9f4cb98a29f104b8b836fa7dfc9056e928ceb838d2230f362477e0b5b",
+    "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:bbeb3f3f1d4f3258aa25617c1f4128e34682656360d05729eeb29aa29559308c",
+    "codesite:shadow-runner:sha256:fd2f96e96b68146262282d66a4079ebfa3bbcf34c700f8e47e4a17a317663e27"
+  ],
+  "createdAt": "2026-07-04T00:48:32.646Z",
+  "promotedAt": null
+}

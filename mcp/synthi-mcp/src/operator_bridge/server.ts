@@ -9,9 +9,8 @@
  *
  * Opt-in via SYNTHI_OPERATOR_BRIDGE_PORT. Binds to 127.0.0.1 by default
  * (local-dev posture, same as Prometheus); override with
- * SYNTHI_OPERATOR_BRIDGE_HOST. A shared-secret header check
- * (SYNTHI_OPERATOR_BRIDGE_TOKEN) is opt-in on top of that so a multi-user
- * box can't curl another user's MCP.
+ * SYNTHI_OPERATOR_BRIDGE_HOST. SYNTHI_OPERATOR_BRIDGE_TOKEN is mandatory
+ * whenever the bridge is enabled.
  *
  * Endpoints:
  *   GET  /healthz                            → "ok"
@@ -22,7 +21,7 @@
  *
  * CORS is permissive on GET/POST for the escape-hatch paths because the
  * operator UI lives on a different port (next.js on :3000, MCP bridge on
- * e.g. :9465). We still gate on the shared-secret header when configured.
+ * e.g. :9465). Every non-OPTIONS request is gated on the shared-secret header.
  */
 
 import http from "node:http";
@@ -31,8 +30,8 @@ import { escapeHatchQueue, type PendingEscapeHatch } from "../escape_hatch/queue
 export interface OperatorBridgeOptions {
   port: number;
   host?: string;
-  /** When set, requests must carry `x-synthi-operator-token: <token>`. */
-  token?: string;
+  /** Requests must carry `x-synthi-operator-token: <token>`. */
+  token: string;
 }
 
 const SSE_HEARTBEAT_MS = 15_000;
@@ -99,6 +98,10 @@ export function startOperatorBridge(opts: OperatorBridgeOptions): {
   close: () => Promise<void>;
 } {
   const host = opts.host ?? "127.0.0.1";
+  const token = typeof opts.token === "string" ? opts.token.trim() : "";
+  if (!token) {
+    throw new Error("operator_bridge_token_required");
+  }
   const sseClients = new Set<http.ServerResponse>();
   const heartbeatTimers = new Map<http.ServerResponse, NodeJS.Timeout>();
   const sseLastActive = new Map<http.ServerResponse, number>();
@@ -155,12 +158,10 @@ export function startOperatorBridge(opts: OperatorBridgeOptions): {
       return;
     }
 
-    if (opts.token !== undefined) {
-      const supplied = req.headers["x-synthi-operator-token"];
-      if (supplied !== opts.token) {
-        writeJson(res, 401, { error: "unauthorized" });
-        return;
-      }
+    const supplied = req.headers["x-synthi-operator-token"];
+    if (supplied !== token) {
+      writeJson(res, 401, { error: "unauthorized" });
+      return;
     }
 
     if (url === "/healthz" && method === "GET") {
@@ -304,4 +305,23 @@ export function resolveOperatorBridgePort(envValue: string | undefined): number 
   const n = Number(envValue);
   if (!Number.isFinite(n) || n <= 0 || n > 65535) return undefined;
   return Math.floor(n);
+}
+
+export function resolveOperatorBridgeOptions(
+  env: Record<string, string | undefined>
+): OperatorBridgeOptions | undefined {
+  const port = resolveOperatorBridgePort(env["SYNTHI_OPERATOR_BRIDGE_PORT"]);
+  if (port === undefined) return undefined;
+
+  const token = String(env["SYNTHI_OPERATOR_BRIDGE_TOKEN"] ?? "").trim();
+  if (!token) {
+    throw new Error("operator_bridge_token_required");
+  }
+
+  const host = String(env["SYNTHI_OPERATOR_BRIDGE_HOST"] ?? "").trim();
+  return {
+    port,
+    ...(host ? { host } : {}),
+    token,
+  };
 }

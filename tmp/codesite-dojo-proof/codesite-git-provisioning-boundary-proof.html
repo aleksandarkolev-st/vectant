@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CodeSite Mature Proof: gitProvisioningBoundary</title>
+<style>
+:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080b10;color:#f5f7fb}
+body{margin:0;background:#080b10;padding:30px}
+main{max-width:1180px;margin:0 auto;display:grid;gap:16px}
+.hero,.card{border:1px solid #2c3443;background:#111722;border-radius:8px;padding:18px}
+.hero{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start}
+h1{margin:8px 0 8px;font-size:30px;line-height:1.12;letter-spacing:0}
+h2{margin:0 0 10px;font-size:16px;letter-spacing:0}
+p{margin:0;color:#aeb8c9;line-height:1.55;max-width:92ch}
+.stamp{border-radius:6px;padding:7px 11px;font-size:12px;font-weight:800;background:#133d2a;color:#9df1bd}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.metric{border:1px solid #2c3443;background:#0b1018;border-radius:8px;padding:12px;min-width:0}
+.label{font-size:12px;color:#8f9caf}.value{margin-top:6px;font-size:16px;font-weight:750;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+th,td{border-top:1px solid #2c3443;padding:8px;text-align:left;vertical-align:top}
+th{font-size:12px;color:#aeb8c9}
+code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wrap:anywhere;color:#dce5f5}
+.ok{color:#9df1bd;font-weight:800}.bad{color:#ffc1c1;font-weight:800}
+@media(max-width:820px){body{padding:14px}.hero{grid-template-columns:1fr}.grid{grid-template-columns:1fr 1fr}h1{font-size:25px}}
+</style>
+</head>
+<body>
+<main>
+<section class="hero">
+  <div>
+    <span class="stamp">VALIDATED</span>
+    <h1>CodeSite Mature Proof: gitProvisioningBoundary</h1>
+    <p>Generated from the current proof-suite runner. This visual summary binds assertions, executable commands, and git provenance for release-gate verification.</p>
+  </div>
+  <span class="stamp">validated</span>
+</section>
+<section class="grid">
+  <div class="metric"><div class="label">Git head</div><div class="value">96e35fee3eea974e4ce6a5076f33518cdb82a2f5</div></div>
+  <div class="metric"><div class="label">Branch</div><div class="value">codex/codesite-atc-full-from-dev-20260630</div></div>
+  <div class="metric"><div class="label">Assertions</div><div class="value">15/15</div></div>
+  <div class="metric"><div class="label">Commands</div><div class="value">7/7</div></div>
+</section>
+<section class="card"><h2>Executable Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Summary</th></tr></thead><tbody>
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>node --check backend/collab-server/server.js</code></td>
+      <td><code>{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>node --check backend/collab-server/codeSiteGitPolicy.js</code></td>
+      <td><code>{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js</code></td>
+      <td><code>{&quot;tests&quot;:7,&quot;suites&quot;:0,&quot;pass&quot;:7,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>node --test backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js</code></td>
+      <td><code>{&quot;tests&quot;:46,&quot;suites&quot;:0,&quot;pass&quot;:46,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>node --test backend/collab-server/__tests__/codesiteFs.test.js</code></td>
+      <td><code>{&quot;tests&quot;:48,&quot;suites&quot;:0,&quot;pass&quot;:48,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/codeSiteGitPolicy.js &amp;&amp; node --check backend/collab-server/codesiteFs.js &amp;&amp; node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js backend/collab-server/__tests__/codesiteFs.test.js</code></td>
+      <td><code>{&quot;tests&quot;:55,&quot;suites&quot;:0,&quot;pass&quot;:55,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>node tmp/codesite-dojo-proof/run-git-provisioning-boundary-proof.mjs</code></td>
+      <td><code>{&quot;tests&quot;:1,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;}</code></td>
+    </tr>
+  </tbody></table></section>
+<section class="card"><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Name</th><th>Details</th></tr></thead><tbody>
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>init maps to git_provisioning repo-scoped attempt</td>
+      <td><code>{&quot;path&quot;:&quot;**&quot;,&quot;kind&quot;:&quot;init&quot;,&quot;tool&quot;:&quot;git_provisioning&quot;}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>clone maps to git_provisioning repo-scoped attempt</td>
+      <td><code>{&quot;path&quot;:&quot;**&quot;,&quot;kind&quot;:&quot;clone&quot;,&quot;tool&quot;:&quot;git_provisioning&quot;}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>init callback runs through CodeSiteFS boundary</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>clone callback runs through CodeSiteFS boundary</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>server init branch wraps gitService.initRepo in runGitBoundary</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>server clone branch wraps gitService.cloneRepo in runGitBoundary</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>policy action set includes provisioning actions</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>narrow write set cannot authorize repo provisioning</td>
+      <td><code>{&quot;reason&quot;:&quot;init denied for **: repo_provisioning_clearance_required&quot;,&quot;reason_codes&quot;:[&quot;repo_provisioning_clearance_required&quot;],&quot;process_ancestry&quot;:[&quot;node&quot;,&quot;sh&quot;,&quot;127.0.0.1-3100&quot;,&quot;codex&quot;,&quot;init&quot;],&quot;process_ancestry_sources&quot;:{&quot;caller_supplied&quot;:[],&quot;os_procfs&quot;:[&quot;node&quot;,&quot;sh&quot;,&quot;127.0.0.1-3100&quot;,&quot;codex&quot;,&quot;init&quot;]},&quot;os_process_ancestry&quot;:{&quot;schemaVersion&quot;:&quot;synthi.codesite.processAncestry.v1&quot;,&quot;source&quot;:&quot;linux_procfs&quot;,&quot;sourcePath&quot;:&quot;/proc&quot;,&quot;platform&quot;:&quot;linux&quot;,&quot;wsl&quot;:true,&quot;available&quot;:true,&quot;complete&quot;:true,&quot;direction&quot;:&quot;process_to_root&quot;,&quot;collectorPid&quot;:792154,&quot;requestedPid&quot;:792154,&quot;capturedAt&quot;:&quot;2026-07-06T01:51:16.080Z&quot;,&quot;labels&quot;:[&quot;node&quot;,&quot;sh&quot;,&quot;127.0.0.1-3100&quot;,&quot;codex&quot;,&quot;init&quot;],&quot;nodes&quot;:[{&quot;pid&quot;:792154,&quot;ppid&quot;:789642,&quot;comm&quot;:&quot;node&quot;,&quot;state&quot;:&quot;R&quot;,&quot;argv0Basename&quot;:&quot;node&quot;,&quot;argvCount&quot;:2,&quot;exeBasename&quot;:&quot;node&quot;,&quot;uid&quot;:1000,&quot;gid&quot;:1000,&quot;startTimeClockTicks&quot;:8922789,&quot;cmdlineDigest&quot;:&quot;sha256:b0345d95f3ecbea727dba857d484aac7cbef1479a632d974875c5f851ae5a5ed&quot;,&quot;exePathDigest&quot;:&quot;sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482&quot;,&quot;label&quot;:&quot;node&quot;},{&quot;pid&quot;:789642,&quot;ppid&quot;:789641,&quot;comm&quot;:&quot;node&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;node&quot;,&quot;argvCount&quot;:6,&quot;exeBasename&quot;:&quot;node&quot;,&quot;uid&quot;:1000,&quot;gid&quot;:1000,&quot;startTimeClockTicks&quot;:8906314,&quot;cmdlineDigest&quot;:&quot;sha256:a3167f84e5db9ff4e88c109c4febff7d832b5cce64d4dbedaae1a9f4bd24b01c&quot;,&quot;exePathDigest&quot;:&quot;sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482&quot;,&quot;label&quot;:&quot;node&quot;},{&quot;pid&quot;:789641,&quot;ppid&quot;:789620,&quot;comm&quot;:&quot;sh&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;sh&quot;,&quot;argvCount&quot;:3,&quot;exeBasename&quot;:&quot;dash&quot;,&quot;uid&quot;:1000,&quot;gid&quot;:1000,&quot;startTimeClockTicks&quot;:8906313,&quot;cmdlineDigest&quot;:&quot;sha256:2480eb3fff3e43f7d21ca8a1acaf312b81d21182b4167d3c2acab633444f0daa&quot;,&quot;exePathDigest&quot;:&quot;sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a&quot;,&quot;label&quot;:&quot;sh&quot;},{&quot;pid&quot;:789620,&quot;ppid&quot;:575113,&quot;comm&quot;:&quot;npm-run-codesit&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;127.0.0.1-3100&quot;,&quot;argvCount&quot;:1,&quot;exeBasename&quot;:&quot;node&quot;,&quot;uid&quot;:1000,&quot;gid&quot;:1000,&quot;startTimeClockTicks&quot;:8906263,&quot;cmdlineDigest&quot;:&quot;sha256:2233118d5ceceebba725918f65e9b07b765e69d0270b5011160e9187ec2bc95d&quot;,&quot;exePathDigest&quot;:&quot;sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482&quot;,&quot;label&quot;:&quot;127.0.0.1-3100&quot;},{&quot;pid&quot;:575113,&quot;ppid&quot;:575111,&quot;comm&quot;:&quot;codex&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;codex&quot;,&quot;argvCount&quot;:3,&quot;exeBasename&quot;:&quot;codex&quot;,&quot;uid&quot;:1000,&quot;gid&quot;:1000,&quot;startTimeClockTicks&quot;:6164801,&quot;cmdlineDigest&quot;:&quot;sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64&quot;,&quot;exePathDigest&quot;:&quot;sha256:6bf53fc3c754edcd0bdc3b0cae14f474174a6f32f8e1d960b6d2641439217030&quot;,&quot;label&quot;:&quot;codex&quot;},{&quot;pid&quot;:575111,&quot;ppid&quot;:575109,&quot;comm&quot;:&quot;Relay-575113&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;init&quot;,&quot;argvCount&quot;:1,&quot;exeBasename&quot;:null,&quot;uid&quot;:0,&quot;gid&quot;:0,&quot;startTimeClockTicks&quot;:6164800,&quot;cmdlineDigest&quot;:&quot;sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b&quot;,&quot;exePathDigest&quot;:null,&quot;label&quot;:&quot;init&quot;},{&quot;pid&quot;:575109,&quot;ppid&quot;:2,&quot;comm&quot;:&quot;SessionLeader&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;init&quot;,&quot;argvCount&quot;:1,&quot;exeBasename&quot;:null,&quot;uid&quot;:0,&quot;gid&quot;:0,&quot;startTimeClockTicks&quot;:6164800,&quot;cmdlineDigest&quot;:&quot;sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b&quot;,&quot;exePathDigest&quot;:null,&quot;label&quot;:&quot;init&quot;},{&quot;pid&quot;:2,&quot;ppid&quot;:1,&quot;comm&quot;:&quot;init-systemd-Ub&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;init&quot;,&quot;argvCount&quot;:1,&quot;exeBasename&quot;:null,&quot;uid&quot;:0,&quot;gid&quot;:0,&quot;startTimeClockTicks&quot;:728,&quot;cmdlineDigest&quot;:&quot;sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b&quot;,&quot;exePathDigest&quot;:null,&quot;label&quot;:&quot;init&quot;},{&quot;pid&quot;:1,&quot;ppid&quot;:0,&quot;comm&quot;:&quot;systemd&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;init&quot;,&quot;argvCount&quot;:1,&quot;exeBasename&quot;:null,&quot;uid&quot;:0,&quot;gid&quot;:0,&quot;startTimeClockTicks&quot;:723,&quot;cmdlineDigest&quot;:&quot;sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272&quot;,&quot;exePathDigest&quot;:null,&quot;label&quot;:&quot;init&quot;}],&quot;unavailableReason&quot;:null,&quot;digest&quot;:&quot;sha256:c58b2e5f7bcf1d860c2d6c66b714860c4536fae470fc0a75954a63158dfe9705&quot;},&quot;operation&quot;:&quot;init&quot;}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>repo-wide write set authorizes repo provisioning</td>
+      <td><code>{&quot;reason&quot;:&quot;inside_clearance_route&quot;,&quot;reason_codes&quot;:[&quot;inside_clearance_route&quot;],&quot;process_ancestry&quot;:[&quot;node&quot;,&quot;sh&quot;,&quot;127.0.0.1-3100&quot;,&quot;codex&quot;,&quot;init&quot;],&quot;process_ancestry_sources&quot;:{&quot;caller_supplied&quot;:[],&quot;os_procfs&quot;:[&quot;node&quot;,&quot;sh&quot;,&quot;127.0.0.1-3100&quot;,&quot;codex&quot;,&quot;init&quot;]},&quot;os_process_ancestry&quot;:{&quot;schemaVersion&quot;:&quot;synthi.codesite.processAncestry.v1&quot;,&quot;source&quot;:&quot;linux_procfs&quot;,&quot;sourcePath&quot;:&quot;/proc&quot;,&quot;platform&quot;:&quot;linux&quot;,&quot;wsl&quot;:true,&quot;available&quot;:true,&quot;complete&quot;:true,&quot;direction&quot;:&quot;process_to_root&quot;,&quot;collectorPid&quot;:792154,&quot;requestedPid&quot;:792154,&quot;capturedAt&quot;:&quot;2026-07-06T01:51:16.081Z&quot;,&quot;labels&quot;:[&quot;node&quot;,&quot;sh&quot;,&quot;127.0.0.1-3100&quot;,&quot;codex&quot;,&quot;init&quot;],&quot;nodes&quot;:[{&quot;pid&quot;:792154,&quot;ppid&quot;:789642,&quot;comm&quot;:&quot;node&quot;,&quot;state&quot;:&quot;R&quot;,&quot;argv0Basename&quot;:&quot;node&quot;,&quot;argvCount&quot;:2,&quot;exeBasename&quot;:&quot;node&quot;,&quot;uid&quot;:1000,&quot;gid&quot;:1000,&quot;startTimeClockTicks&quot;:8922789,&quot;cmdlineDigest&quot;:&quot;sha256:b0345d95f3ecbea727dba857d484aac7cbef1479a632d974875c5f851ae5a5ed&quot;,&quot;exePathDigest&quot;:&quot;sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482&quot;,&quot;label&quot;:&quot;node&quot;},{&quot;pid&quot;:789642,&quot;ppid&quot;:789641,&quot;comm&quot;:&quot;node&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;node&quot;,&quot;argvCount&quot;:6,&quot;exeBasename&quot;:&quot;node&quot;,&quot;uid&quot;:1000,&quot;gid&quot;:1000,&quot;startTimeClockTicks&quot;:8906314,&quot;cmdlineDigest&quot;:&quot;sha256:a3167f84e5db9ff4e88c109c4febff7d832b5cce64d4dbedaae1a9f4bd24b01c&quot;,&quot;exePathDigest&quot;:&quot;sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482&quot;,&quot;label&quot;:&quot;node&quot;},{&quot;pid&quot;:789641,&quot;ppid&quot;:789620,&quot;comm&quot;:&quot;sh&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;sh&quot;,&quot;argvCount&quot;:3,&quot;exeBasename&quot;:&quot;dash&quot;,&quot;uid&quot;:1000,&quot;gid&quot;:1000,&quot;startTimeClockTicks&quot;:8906313,&quot;cmdlineDigest&quot;:&quot;sha256:2480eb3fff3e43f7d21ca8a1acaf312b81d21182b4167d3c2acab633444f0daa&quot;,&quot;exePathDigest&quot;:&quot;sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a&quot;,&quot;label&quot;:&quot;sh&quot;},{&quot;pid&quot;:789620,&quot;ppid&quot;:575113,&quot;comm&quot;:&quot;npm-run-codesit&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;127.0.0.1-3100&quot;,&quot;argvCount&quot;:1,&quot;exeBasename&quot;:&quot;node&quot;,&quot;uid&quot;:1000,&quot;gid&quot;:1000,&quot;startTimeClockTicks&quot;:8906263,&quot;cmdlineDigest&quot;:&quot;sha256:2233118d5ceceebba725918f65e9b07b765e69d0270b5011160e9187ec2bc95d&quot;,&quot;exePathDigest&quot;:&quot;sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482&quot;,&quot;label&quot;:&quot;127.0.0.1-3100&quot;},{&quot;pid&quot;:575113,&quot;ppid&quot;:575111,&quot;comm&quot;:&quot;codex&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;codex&quot;,&quot;argvCount&quot;:3,&quot;exeBasename&quot;:&quot;codex&quot;,&quot;uid&quot;:1000,&quot;gid&quot;:1000,&quot;startTimeClockTicks&quot;:6164801,&quot;cmdlineDigest&quot;:&quot;sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64&quot;,&quot;exePathDigest&quot;:&quot;sha256:6bf53fc3c754edcd0bdc3b0cae14f474174a6f32f8e1d960b6d2641439217030&quot;,&quot;label&quot;:&quot;codex&quot;},{&quot;pid&quot;:575111,&quot;ppid&quot;:575109,&quot;comm&quot;:&quot;Relay-575113&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;init&quot;,&quot;argvCount&quot;:1,&quot;exeBasename&quot;:null,&quot;uid&quot;:0,&quot;gid&quot;:0,&quot;startTimeClockTicks&quot;:6164800,&quot;cmdlineDigest&quot;:&quot;sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b&quot;,&quot;exePathDigest&quot;:null,&quot;label&quot;:&quot;init&quot;},{&quot;pid&quot;:575109,&quot;ppid&quot;:2,&quot;comm&quot;:&quot;SessionLeader&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;init&quot;,&quot;argvCount&quot;:1,&quot;exeBasename&quot;:null,&quot;uid&quot;:0,&quot;gid&quot;:0,&quot;startTimeClockTicks&quot;:6164800,&quot;cmdlineDigest&quot;:&quot;sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b&quot;,&quot;exePathDigest&quot;:null,&quot;label&quot;:&quot;init&quot;},{&quot;pid&quot;:2,&quot;ppid&quot;:1,&quot;comm&quot;:&quot;init-systemd-Ub&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;init&quot;,&quot;argvCount&quot;:1,&quot;exeBasename&quot;:null,&quot;uid&quot;:0,&quot;gid&quot;:0,&quot;startTimeClockTicks&quot;:728,&quot;cmdlineDigest&quot;:&quot;sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b&quot;,&quot;exePathDigest&quot;:null,&quot;label&quot;:&quot;init&quot;},{&quot;pid&quot;:1,&quot;ppid&quot;:0,&quot;comm&quot;:&quot;systemd&quot;,&quot;state&quot;:&quot;S&quot;,&quot;argv0Basename&quot;:&quot;init&quot;,&quot;argvCount&quot;:1,&quot;exeBasename&quot;:null,&quot;uid&quot;:0,&quot;gid&quot;:0,&quot;startTimeClockTicks&quot;:723,&quot;cmdlineDigest&quot;:&quot;sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272&quot;,&quot;exePathDigest&quot;:null,&quot;label&quot;:&quot;init&quot;}],&quot;unavailableReason&quot;:null,&quot;digest&quot;:&quot;sha256:c58b2e5f7bcf1d860c2d6c66b714860c4536fae470fc0a75954a63158dfe9705&quot;},&quot;operation&quot;:&quot;init&quot;}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>syntax command exited successfully</td>
+      <td><code>{&quot;command&quot;:&quot;node --check backend/collab-server/server.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>policySyntax command exited successfully</td>
+      <td><code>{&quot;command&quot;:&quot;node --check backend/collab-server/codeSiteGitPolicy.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>policy command exited successfully</td>
+      <td><code>{&quot;command&quot;:&quot;node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:7,&quot;suites&quot;:0,&quot;pass&quot;:7,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0},&quot;exitCode&quot;:0}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>gitService command exited successfully</td>
+      <td><code>{&quot;command&quot;:&quot;node --test backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:46,&quot;suites&quot;:0,&quot;pass&quot;:46,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0},&quot;exitCode&quot;:0}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>codesiteFs command exited successfully</td>
+      <td><code>{&quot;command&quot;:&quot;node --test backend/collab-server/__tests__/codesiteFs.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:48,&quot;suites&quot;:0,&quot;pass&quot;:48,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0},&quot;exitCode&quot;:0}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>dockerCodeSiteFs command exited successfully</td>
+      <td><code>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/codeSiteGitPolicy.js &amp;&amp; node --check backend/collab-server/codesiteFs.js &amp;&amp; node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js backend/collab-server/__tests__/codesiteFs.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:55,&quot;suites&quot;:0,&quot;pass&quot;:55,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0},&quot;exitCode&quot;:0}</code></td>
+    </tr>
+  </tbody></table></section>
+</main>
+</body>
+</html>

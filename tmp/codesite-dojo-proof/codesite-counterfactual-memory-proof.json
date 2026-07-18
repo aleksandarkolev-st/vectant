@@ -1,20 +1,623 @@
 {
-  "generatedAt": "2026-07-01T06:01:56.925Z",
-  "baseUrl": "http://127.0.0.1:3000",
-  "slug": "codesite-counterfactual-memory-proof-1782885591326",
+  "generatedAt": "2026-07-06T02:04:25.352Z",
+  "baseUrl": "http://127.0.0.1:3100",
+  "slug": "codesite-counterfactual-memory-proof-1783303418194",
   "simulationProject": {
-    "id": "cmr1o27bc0000ob4twnhfmi0g",
+    "id": "cmr8kt9tt03xlqg01ep4q1rc0",
     "title": "Counterfactual ATC memory proof"
   },
-  "simulatorDelta": {
-    "id": "cmr1o2luf000xob4t65z2yqz5",
-    "projectId": "cmr1o27bc0000ob4twnhfmi0g",
-    "learnedFromIncidents": [
-      "near-miss-signup-contract-001"
+  "choiceSceneRun": {
+    "id": "cmr8kti2p03ywqg01sb9niqtc",
+    "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+    "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+    "baseSnapshot": "repo@sha256:8e801aea74da93f1b98fd045e796ff0f1d0ece6bb7748cbb2387bad177919e03",
+    "universes": [
+      {
+        "universe": "test-first",
+        "result": "passed",
+        "affectedRoutes": [
+          "packages/schemas/auth.ts",
+          "app/signup/page.tsx"
+        ],
+        "inspectionCost": 3,
+        "staleAssumptions": 0,
+        "reworkRiskReduction": 0.52,
+        "evidenceRefs": [
+          "test:auth-signup-owned"
+        ]
+      },
+      {
+        "universe": "schema-first",
+        "result": "near_miss",
+        "affectedRoutes": [
+          "packages/schemas/auth.ts"
+        ],
+        "unresolvedRisks": [
+          "semantic_collision"
+        ],
+        "predictedCollisionRisk": 0.72,
+        "staleAssumptions": 2,
+        "incidents": [
+          "near-miss-signup-contract-001"
+        ]
+      },
+      {
+        "universe": "frontend-backend-parallel",
+        "result": "near_miss",
+        "affectedRoutes": [
+          "app/signup/page.tsx",
+          "packages/schemas/auth.ts"
+        ],
+        "unresolvedRisks": [
+          "semantic_collision"
+        ],
+        "predictedCollisionRisk": 0.84,
+        "staleAssumptions": 3,
+        "incidents": [
+          "near-miss-signup-contract-001",
+          "near-miss-profile-payload-002"
+        ]
+      }
     ],
-    "affectedZoneKey": null,
+    "arbiterVerdict": {
+      "selected": "test-first",
+      "humanOverride": null,
+      "choiceScene": {
+        "repoSnapshot": "repo@sha256:8e801aea74da93f1b98fd045e796ff0f1d0ece6bb7748cbb2387bad177919e03",
+        "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+        "choices": [
+          {
+            "universe": "test-first",
+            "result": "passed",
+            "inspectionCost": 3,
+            "staleAssumptions": 0,
+            "predictedCollisionRisk": 0,
+            "reworkRiskReduction": 0.52,
+            "affectedRoutes": [
+              "packages/schemas/auth.ts",
+              "app/signup/page.tsx"
+            ],
+            "evidenceRefs": [
+              "test:auth-signup-owned"
+            ],
+            "incidents": []
+          },
+          {
+            "universe": "schema-first",
+            "result": "near_miss",
+            "inspectionCost": 0,
+            "staleAssumptions": 2,
+            "predictedCollisionRisk": 0.72,
+            "reworkRiskReduction": 0,
+            "affectedRoutes": [
+              "packages/schemas/auth.ts"
+            ],
+            "evidenceRefs": [],
+            "incidents": [
+              "near-miss-signup-contract-001"
+            ]
+          },
+          {
+            "universe": "frontend-backend-parallel",
+            "result": "near_miss",
+            "inspectionCost": 0,
+            "staleAssumptions": 3,
+            "predictedCollisionRisk": 0.84,
+            "reworkRiskReduction": 0,
+            "affectedRoutes": [
+              "app/signup/page.tsx",
+              "packages/schemas/auth.ts"
+            ],
+            "evidenceRefs": [],
+            "incidents": [
+              "near-miss-signup-contract-001",
+              "near-miss-profile-payload-002"
+            ]
+          }
+        ],
+        "arbiterVerdict": "test-first",
+        "userChoice": null,
+        "humanOverride": null,
+        "applyResult": {
+          "result": "applied",
+          "selected": "test-first"
+        },
+        "laterManualEdits": [
+          {
+            "path": "app/generated/auth-client.ts",
+            "reason": "manual rewrite refreshed downstream generated client after schema contract churn",
+            "incidentRefs": [
+              "near-miss-profile-payload-002"
+            ]
+          }
+        ],
+        "validityStrength": "executed",
+        "affectedZones": [
+          "packages/schemas/auth.ts",
+          "app/signup/page.tsx"
+        ],
+        "resultingPolicyDeltaCandidateCount": 8
+      },
+      "policyDeltaCandidates": [
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "flight_split_reduced_collision",
+            "learningSignals": [
+              "flight_split_reduced_collisions"
+            ],
+            "preferredStrategies": [
+              "test-first"
+            ],
+            "avoidStrategies": [
+              "schema-first",
+              "frontend-backend-parallel"
+            ],
+            "requiredTowerActions": [
+              "prefer_recorded_low_collision_split",
+              "replay_near_miss_before_parallel_clearance"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "packages/schemas/auth.ts"
+            },
+            {
+              "path": "app/signup/page.tsx"
+            },
+            {
+              "risk": "semantic_collision"
+            }
+          ],
+          "expectedRiskReduction": 0.42,
+          "confidence": 0.98,
+          "learningSignals": [
+            "flight_split_reduced_collisions"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "recurring_near_miss_airspace_rule",
+            "learningSignals": [
+              "recurring_near_misses"
+            ],
+            "preferredStrategies": [
+              "test-first"
+            ],
+            "avoidStrategies": [
+              "schema-first",
+              "frontend-backend-parallel"
+            ],
+            "requiredTowerActions": [
+              "promote_repeated_near_miss_to_airspace_rule",
+              "require_shadow_replay_before_clearance"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "packages/schemas/auth.ts"
+            },
+            {
+              "path": "app/signup/page.tsx"
+            },
+            {
+              "path": "app/generated/auth-client.ts"
+            },
+            {
+              "event": "near_miss.detected"
+            }
+          ],
+          "expectedRiskReduction": 0.42,
+          "confidence": 0.98,
+          "learningSignals": [
+            "recurring_near_misses"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "calibrate_airspace_class_from_counterfactual_outcome",
+            "learningSignals": [
+              "airspace_classes_calibrated"
+            ],
+            "preferredStrategies": [],
+            "avoidStrategies": [],
+            "requiredTowerActions": [
+              "review_zone_class_before_next_clearance",
+              "adjust_airspace_class_after_replay"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "packages/schemas/auth.ts"
+            },
+            {
+              "classCalibration": "too_loose"
+            }
+          ],
+          "expectedRiskReduction": 0.37,
+          "confidence": 0.98,
+          "learningSignals": [
+            "airspace_classes_calibrated"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "inspector_real_issue_gate",
+            "learningSignals": [
+              "inspectors_caught_real_issues"
+            ],
+            "preferredStrategies": [],
+            "avoidStrategies": [],
+            "requiredTowerActions": [
+              "require_matching_inspector_before_landing",
+              "attach_inspection_evidence_to_clearance"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "api/auth/signup.ts"
+            },
+            {
+              "inspector": "api_contract"
+            }
+          ],
+          "expectedRiskReduction": 0.37,
+          "confidence": 0.98,
+          "learningSignals": [
+            "inspectors_caught_real_issues"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "prefer_tower_reroute_that_saved_work",
+            "learningSignals": [
+              "tower_reroutes_saved_work"
+            ],
+            "preferredStrategies": [
+              "test-first"
+            ],
+            "avoidStrategies": [],
+            "requiredTowerActions": [
+              "offer_recorded_reroute_before_ground_stop",
+              "replay_reroute_evidence_before_commit"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "app/signup/page.tsx"
+            },
+            {
+              "towerAction": "reroute"
+            }
+          ],
+          "expectedRiskReduction": 0.395,
+          "confidence": 0.98,
+          "learningSignals": [
+            "tower_reroutes_saved_work"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "enforce_clearance_after_agent_violation",
+            "learningSignals": [
+              "agents_violated_clearances"
+            ],
+            "preferredStrategies": [],
+            "avoidStrategies": [],
+            "requiredTowerActions": [
+              "deny_out_of_clearance_writes",
+              "require_route_revision_for_deviation"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "app/signup/page.tsx"
+            },
+            {
+              "agent": "UI-02"
+            }
+          ],
+          "expectedRiskReduction": 0.395,
+          "confidence": 0.98,
+          "learningSignals": [
+            "agents_violated_clearances"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "schema_first_policy_reduced_rework",
+            "learningSignals": [
+              "schema_first_reduced_rework"
+            ],
+            "preferredStrategies": [
+              "schema-first"
+            ],
+            "avoidStrategies": [
+              "frontend-backend-parallel"
+            ],
+            "requiredTowerActions": [
+              "issue_schema_clearance_before_dependents",
+              "refresh_downstream_assumptions_after_contract"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "packages/schemas/auth.ts"
+            },
+            {
+              "risk": "semantic_collision"
+            }
+          ],
+          "expectedRiskReduction": 0.395,
+          "confidence": 0.98,
+          "learningSignals": [
+            "schema_first_reduced_rework"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "promote_black_box_pattern_to_airspace_rule",
+            "learningSignals": [
+              "black_box_patterns_became_airspace_rules"
+            ],
+            "preferredStrategies": [],
+            "avoidStrategies": [],
+            "requiredTowerActions": [
+              "convert_black_box_escape_to_zone_rule",
+              "require_replay_for_matching_pattern"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "packages/schemas/auth.ts"
+            },
+            {
+              "blackBoxPattern": "contract_escape_without_generated_client_refresh"
+            }
+          ],
+          "expectedRiskReduction": 0.395,
+          "confidence": 0.98,
+          "learningSignals": [
+            "black_box_patterns_became_airspace_rules"
+          ]
+        }
+      ],
+      "counterfactualLearning": {
+        "candidateCount": 8,
+        "inferredCandidateCount": 8,
+        "learningSignals": [
+          "flight_split_reduced_collisions",
+          "recurring_near_misses",
+          "airspace_classes_calibrated",
+          "inspectors_caught_real_issues",
+          "tower_reroutes_saved_work",
+          "agents_violated_clearances",
+          "schema_first_reduced_rework",
+          "black_box_patterns_became_airspace_rules"
+        ]
+      }
+    },
+    "userChoice": null,
+    "laterManualEdits": [
+      {
+        "path": "app/generated/auth-client.ts",
+        "reason": "manual rewrite refreshed downstream generated client after schema contract churn",
+        "incidentRefs": [
+          "near-miss-profile-payload-002"
+        ]
+      }
+    ],
+    "validityStrength": "executed",
+    "evidenceRefs": [
+      "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+      "replay:evidence:counterfactual-choice-scene"
+    ],
+    "createdAt": "2026-07-06T02:03:51.361Z"
+  },
+  "simulatorDelta": {
+    "id": "cmr8kti2t03yyqg01vjjgqu4z",
+    "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+    "learnedFromIncidents": [
+      "near-miss-signup-contract-001",
+      "near-miss-profile-payload-002"
+    ],
+    "affectedZoneKey": "packages/schemas/auth.ts",
     "ruleCandidate": {
-      "rule": "contract_churn_requires_owned_tests",
+      "rule": "flight_split_reduced_collision",
+      "learningSignals": [
+        "flight_split_reduced_collisions"
+      ],
       "preferredStrategies": [
         "test-first"
       ],
@@ -23,46 +626,2613 @@
         "frontend-backend-parallel"
       ],
       "requiredTowerActions": [
-        "run_owned_tests_before_landing"
+        "prefer_recorded_low_collision_split",
+        "replay_near_miss_before_parallel_clearance"
       ],
+      "evidenceBasis": {
+        "validityStrength": "executed",
+        "incidentRefs": [
+          "near-miss-signup-contract-001",
+          "near-miss-profile-payload-002"
+        ],
+        "evidenceRefs": [
+          "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+          "replay:evidence:counterfactual-choice-scene",
+          "test:auth-signup-owned"
+        ],
+        "humanOverride": null,
+        "laterManualEditCount": 1
+      },
       "promotion": {
-        "reviewedBy": "codesite-dev-bypass",
-        "targetState": "active",
+        "reviewedBy": "cmr8kt9qj03xhqg01r7t68yoi",
+        "targetState": "promoted",
         "validationStatus": "passed",
         "replayRefs": [
-          "shadow:job:codesite-shadow:sha256:81579d5a2ad8ddf4efc620e75163743f0e8b9f11a146009f1ce1eef7c8e48ae0"
+          "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+          "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+          "replay:evidence:counterfactual-choice-scene"
         ],
         "evidenceRefs": [
           "replay:evidence:counterfactual-memory-simulator"
         ],
         "reasonCodes": [],
-        "promotedAt": "2026-07-01T06:00:33.960Z"
+        "promotedAt": "2026-07-06T02:04:03.265Z"
       }
     },
     "triggerConditions": [
       {
-        "risk": "semantic_collision"
+        "path": "packages/schemas/auth.ts"
       },
       {
-        "path": "packages/schemas/**"
+        "path": "app/signup/page.tsx"
+      },
+      {
+        "risk": "semantic_collision"
       }
     ],
-    "expectedRiskReduction": 0.6,
-    "confidence": 0.95,
-    "promotionState": "active",
+    "expectedRiskReduction": 0.42,
+    "confidence": 0.98,
+    "promotionState": "promoted",
     "replayRefs": [
-      "shadow:job:codesite-shadow:sha256:81579d5a2ad8ddf4efc620e75163743f0e8b9f11a146009f1ce1eef7c8e48ae0"
+      "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+      "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+      "replay:evidence:counterfactual-choice-scene"
     ],
-    "createdAt": "2026-07-01T06:00:31.768Z",
-    "promotedAt": "2026-07-01T06:00:33.960Z"
+    "createdAt": "2026-07-06T02:03:51.365Z",
+    "promotedAt": "2026-07-06T02:04:03.265Z"
+  },
+  "collisionForecast": {
+    "riskLevel": "high",
+    "risks": [
+      {
+        "risk": "semantic_collision",
+        "severity": "high",
+        "aircraft": [
+          "SCHEMA-01",
+          "UI-02"
+        ],
+        "conflictZone": "packages/schemas/auth.ts",
+        "semanticSignals": {
+          "leftImports": [],
+          "rightImports": [
+            "packages/schemas/auth.ts"
+          ],
+          "sharedImports": []
+        },
+        "recommendedResolution": {
+          "action": "schema_first",
+          "steps": [
+            "Put SCHEMA-01 in holding",
+            "Put UI-02 in holding",
+            "Issue schema clearance first",
+            "Reissue downstream clearances after contract landing"
+          ]
+        },
+        "regretMemoryPolicyHints": [
+          {
+            "policyDeltaId": "cmr8kti2t03yyqg01vjjgqu4z",
+            "learnedFromIncidents": [
+              "near-miss-signup-contract-001",
+              "near-miss-profile-payload-002"
+            ],
+            "affectedZoneKey": "packages/schemas/auth.ts",
+            "rule": "flight_split_reduced_collision",
+            "triggerConditions": [
+              {
+                "path": "packages/schemas/auth.ts"
+              },
+              {
+                "path": "app/signup/page.tsx"
+              },
+              {
+                "risk": "semantic_collision"
+              }
+            ],
+            "expectedRiskReduction": 0.42,
+            "confidence": 0.98,
+            "promotionState": "promoted",
+            "requiredTowerActions": [
+              "prefer_recorded_low_collision_split",
+              "replay_near_miss_before_parallel_clearance"
+            ],
+            "preferredStrategies": [
+              "test-first"
+            ],
+            "avoidStrategies": [
+              "schema-first",
+              "frontend-backend-parallel"
+            ]
+          }
+        ]
+      }
+    ],
+    "runwayOccupancy": [],
+    "wakeTurbulence": [],
+    "regretMemoryPolicyHints": [
+      {
+        "policyDeltaId": "cmr8kti2t03yyqg01vjjgqu4z",
+        "learnedFromIncidents": [
+          "near-miss-signup-contract-001",
+          "near-miss-profile-payload-002"
+        ],
+        "affectedZoneKey": "packages/schemas/auth.ts",
+        "rule": "flight_split_reduced_collision",
+        "triggerConditions": [
+          {
+            "path": "packages/schemas/auth.ts"
+          },
+          {
+            "path": "app/signup/page.tsx"
+          },
+          {
+            "risk": "semantic_collision"
+          }
+        ],
+        "expectedRiskReduction": 0.42,
+        "confidence": 0.98,
+        "promotionState": "promoted",
+        "requiredTowerActions": [
+          "prefer_recorded_low_collision_split",
+          "replay_near_miss_before_parallel_clearance"
+        ],
+        "preferredStrategies": [
+          "test-first"
+        ],
+        "avoidStrategies": [
+          "schema-first",
+          "frontend-backend-parallel"
+        ]
+      }
+    ]
+  },
+  "incident": {
+    "id": "cmr8ktwm6040iqg016nlph77f",
+    "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+    "severity": "high",
+    "category": "near_miss",
+    "participants": [
+      "UI-02",
+      "SCHEMA-01"
+    ],
+    "affectedZones": [
+      "packages/schemas/**",
+      "app/generated/**"
+    ],
+    "incidentReplay": {
+      "schemaVersion": "synthi.codesite.incidentReplay.v1",
+      "incidentId": "cmr8ktwm6040iqg016nlph77f",
+      "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+      "category": "near_miss",
+      "severity": "high",
+      "summary": "Signup contract drift required a manual generated-client rewrite.",
+      "generatedAt": "2026-07-06T02:04:12.586Z",
+      "eventRefs": [
+        "cmr8kta9p03y2qg01bg3f63z9",
+        "cmr8ktasw03y8qg0126zlv051",
+        "cmr8ktbaa03ycqg014ixfwaea",
+        "cmr8ktbsl03ygqg013oqgq5dp",
+        "cmr8kti2x03z0qg0159ii3lr3",
+        "cmr8ktirz03z4qg01u6ao74bf",
+        "cmr8ktjlk03z8qg0124iyqqtz",
+        "cmr8ktk9q03zcqg01adc1awxp",
+        "cmr8ktkwf03zgqg01vlrvf51p",
+        "cmr8ktloy03zkqg01oc83glc1",
+        "cmr8ktmqo03zoqg01gz1d2bwh",
+        "cmr8ktnnk03zsqg01kyr3ndir",
+        "cmr8ktp9003zuqg012qddwxio",
+        "cmr8ktq6y03zwqg01akbjnnr8",
+        "cmr8ktwmd040kqg01ieueu3nb",
+        "cmr8ktxhg040oqg01vbanenrs"
+      ],
+      "causalEvents": [
+        {
+          "eventId": "cmr8kta9p03y2qg01bg3f63z9",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": "SCHEMA-01",
+          "type": "transponder.update",
+          "logicalTime": 2,
+          "wallTime": "2026-07-06T02:03:41.245Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [],
+          "details": {
+            "status": "registered",
+            "provider": "codex-cli",
+            "runtime": null,
+            "permissions": [],
+            "instruction": "SCHEMA-01 registered with tower."
+          }
+        },
+        {
+          "eventId": "cmr8ktasw03y8qg0126zlv051",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": "UI-02",
+          "type": "transponder.update",
+          "logicalTime": 3,
+          "wallTime": "2026-07-06T02:03:41.936Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [],
+          "details": {
+            "status": "registered",
+            "provider": "codex-cli",
+            "runtime": null,
+            "permissions": [],
+            "instruction": "UI-02 registered with tower."
+          }
+        },
+        {
+          "eventId": "cmr8ktbaa03ycqg014ixfwaea",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": "SCHEMA-01",
+          "type": "flight_plan.filed",
+          "logicalTime": 4,
+          "wallTime": "2026-07-06T02:03:42.563Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [],
+          "details": {
+            "executionPlanId": "cmr8ktba603yaqg01ezjgrtxt",
+            "mission": "Change signup contract",
+            "route": [
+              "packages/schemas/auth.ts"
+            ],
+            "blockedZones": []
+          }
+        },
+        {
+          "eventId": "cmr8ktbsl03ygqg013oqgq5dp",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": "UI-02",
+          "type": "flight_plan.filed",
+          "logicalTime": 5,
+          "wallTime": "2026-07-06T02:03:43.221Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [],
+          "details": {
+            "executionPlanId": "cmr8ktbsi03yeqg01p5p2q1eo",
+            "mission": "Build signup UI",
+            "route": [
+              "app/signup/page.tsx"
+            ],
+            "blockedZones": []
+          }
+        },
+        {
+          "eventId": "cmr8kti2x03z0qg0159ii3lr3",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": null,
+          "type": "policy_delta.proposed",
+          "logicalTime": 10,
+          "wallTime": "2026-07-06T02:03:51.369Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [
+            "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "replay:evidence:counterfactual-choice-scene"
+          ],
+          "details": {
+            "policyDeltaId": "cmr8kti2t03yyqg01vjjgqu4z",
+            "counterfactualRunId": "cmr8kti2p03ywqg01sb9niqtc",
+            "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "promotionState": "proposed",
+            "confidence": 0.98,
+            "affectedZones": [
+              "packages/schemas/auth.ts",
+              "app/signup/page.tsx",
+              "app/generated/auth-client.ts"
+            ],
+            "triggerConditions": [
+              {
+                "path": "packages/schemas/auth.ts"
+              },
+              {
+                "path": "app/signup/page.tsx"
+              },
+              {
+                "risk": "semantic_collision"
+              }
+            ],
+            "ruleCandidate": {
+              "rule": "flight_split_reduced_collision",
+              "learningSignals": [
+                "flight_split_reduced_collisions"
+              ],
+              "preferredStrategies": [
+                "test-first"
+              ],
+              "avoidStrategies": [
+                "schema-first",
+                "frontend-backend-parallel"
+              ],
+              "requiredTowerActions": [
+                "prefer_recorded_low_collision_split",
+                "replay_near_miss_before_parallel_clearance"
+              ],
+              "evidenceBasis": {
+                "validityStrength": "executed",
+                "incidentRefs": [
+                  "near-miss-signup-contract-001",
+                  "near-miss-profile-payload-002"
+                ],
+                "evidenceRefs": [
+                  "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                  "replay:evidence:counterfactual-choice-scene",
+                  "test:auth-signup-owned"
+                ],
+                "humanOverride": null,
+                "laterManualEditCount": 1
+              }
+            }
+          }
+        },
+        {
+          "eventId": "cmr8ktirz03z4qg01u6ao74bf",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": null,
+          "type": "policy_delta.proposed",
+          "logicalTime": 11,
+          "wallTime": "2026-07-06T02:03:52.271Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [
+            "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "replay:evidence:counterfactual-choice-scene"
+          ],
+          "details": {
+            "policyDeltaId": "cmr8ktirv03z2qg01qwc97mx9",
+            "counterfactualRunId": "cmr8kti2p03ywqg01sb9niqtc",
+            "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "promotionState": "proposed",
+            "confidence": 0.98,
+            "affectedZones": [
+              "packages/schemas/auth.ts",
+              "app/signup/page.tsx",
+              "app/generated/auth-client.ts"
+            ],
+            "triggerConditions": [
+              {
+                "path": "packages/schemas/auth.ts"
+              },
+              {
+                "path": "app/signup/page.tsx"
+              },
+              {
+                "path": "app/generated/auth-client.ts"
+              },
+              {
+                "event": "near_miss.detected"
+              }
+            ],
+            "ruleCandidate": {
+              "rule": "recurring_near_miss_airspace_rule",
+              "learningSignals": [
+                "recurring_near_misses"
+              ],
+              "preferredStrategies": [
+                "test-first"
+              ],
+              "avoidStrategies": [
+                "schema-first",
+                "frontend-backend-parallel"
+              ],
+              "requiredTowerActions": [
+                "promote_repeated_near_miss_to_airspace_rule",
+                "require_shadow_replay_before_clearance"
+              ],
+              "evidenceBasis": {
+                "validityStrength": "executed",
+                "incidentRefs": [
+                  "near-miss-signup-contract-001",
+                  "near-miss-profile-payload-002"
+                ],
+                "evidenceRefs": [
+                  "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                  "replay:evidence:counterfactual-choice-scene",
+                  "test:auth-signup-owned"
+                ],
+                "humanOverride": null,
+                "laterManualEditCount": 1
+              }
+            }
+          }
+        },
+        {
+          "eventId": "cmr8ktjlk03z8qg0124iyqqtz",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": null,
+          "type": "policy_delta.proposed",
+          "logicalTime": 12,
+          "wallTime": "2026-07-06T02:03:53.336Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [
+            "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "replay:evidence:counterfactual-choice-scene"
+          ],
+          "details": {
+            "policyDeltaId": "cmr8ktjlf03z6qg01mhl3zxmi",
+            "counterfactualRunId": "cmr8kti2p03ywqg01sb9niqtc",
+            "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "promotionState": "proposed",
+            "confidence": 0.98,
+            "affectedZones": [
+              "packages/schemas/auth.ts",
+              "app/signup/page.tsx",
+              "app/generated/auth-client.ts"
+            ],
+            "triggerConditions": [
+              {
+                "path": "packages/schemas/auth.ts"
+              },
+              {
+                "classCalibration": "too_loose"
+              }
+            ],
+            "ruleCandidate": {
+              "rule": "calibrate_airspace_class_from_counterfactual_outcome",
+              "learningSignals": [
+                "airspace_classes_calibrated"
+              ],
+              "preferredStrategies": [],
+              "avoidStrategies": [],
+              "requiredTowerActions": [
+                "review_zone_class_before_next_clearance",
+                "adjust_airspace_class_after_replay"
+              ],
+              "evidenceBasis": {
+                "validityStrength": "executed",
+                "incidentRefs": [
+                  "near-miss-signup-contract-001",
+                  "near-miss-profile-payload-002"
+                ],
+                "evidenceRefs": [
+                  "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                  "replay:evidence:counterfactual-choice-scene",
+                  "test:auth-signup-owned"
+                ],
+                "humanOverride": null,
+                "laterManualEditCount": 1
+              }
+            }
+          }
+        },
+        {
+          "eventId": "cmr8ktk9q03zcqg01adc1awxp",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": null,
+          "type": "policy_delta.proposed",
+          "logicalTime": 13,
+          "wallTime": "2026-07-06T02:03:54.206Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [
+            "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "replay:evidence:counterfactual-choice-scene"
+          ],
+          "details": {
+            "policyDeltaId": "cmr8ktk9m03zaqg01uayhs9r5",
+            "counterfactualRunId": "cmr8kti2p03ywqg01sb9niqtc",
+            "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "promotionState": "proposed",
+            "confidence": 0.98,
+            "affectedZones": [
+              "packages/schemas/auth.ts",
+              "app/signup/page.tsx",
+              "app/generated/auth-client.ts",
+              "api/auth/signup.ts"
+            ],
+            "triggerConditions": [
+              {
+                "path": "api/auth/signup.ts"
+              },
+              {
+                "inspector": "api_contract"
+              }
+            ],
+            "ruleCandidate": {
+              "rule": "inspector_real_issue_gate",
+              "learningSignals": [
+                "inspectors_caught_real_issues"
+              ],
+              "preferredStrategies": [],
+              "avoidStrategies": [],
+              "requiredTowerActions": [
+                "require_matching_inspector_before_landing",
+                "attach_inspection_evidence_to_clearance"
+              ],
+              "evidenceBasis": {
+                "validityStrength": "executed",
+                "incidentRefs": [
+                  "near-miss-signup-contract-001",
+                  "near-miss-profile-payload-002"
+                ],
+                "evidenceRefs": [
+                  "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                  "replay:evidence:counterfactual-choice-scene",
+                  "test:auth-signup-owned"
+                ],
+                "humanOverride": null,
+                "laterManualEditCount": 1
+              }
+            }
+          }
+        },
+        {
+          "eventId": "cmr8ktkwf03zgqg01vlrvf51p",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": null,
+          "type": "policy_delta.proposed",
+          "logicalTime": 14,
+          "wallTime": "2026-07-06T02:03:55.023Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [
+            "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "replay:evidence:counterfactual-choice-scene"
+          ],
+          "details": {
+            "policyDeltaId": "cmr8ktkwb03zeqg01pik6j1xq",
+            "counterfactualRunId": "cmr8kti2p03ywqg01sb9niqtc",
+            "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "promotionState": "proposed",
+            "confidence": 0.98,
+            "affectedZones": [
+              "packages/schemas/auth.ts",
+              "app/signup/page.tsx",
+              "app/generated/auth-client.ts"
+            ],
+            "triggerConditions": [
+              {
+                "path": "app/signup/page.tsx"
+              },
+              {
+                "towerAction": "reroute"
+              }
+            ],
+            "ruleCandidate": {
+              "rule": "prefer_tower_reroute_that_saved_work",
+              "learningSignals": [
+                "tower_reroutes_saved_work"
+              ],
+              "preferredStrategies": [
+                "test-first"
+              ],
+              "avoidStrategies": [],
+              "requiredTowerActions": [
+                "offer_recorded_reroute_before_ground_stop",
+                "replay_reroute_evidence_before_commit"
+              ],
+              "evidenceBasis": {
+                "validityStrength": "executed",
+                "incidentRefs": [
+                  "near-miss-signup-contract-001",
+                  "near-miss-profile-payload-002"
+                ],
+                "evidenceRefs": [
+                  "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                  "replay:evidence:counterfactual-choice-scene",
+                  "test:auth-signup-owned"
+                ],
+                "humanOverride": null,
+                "laterManualEditCount": 1
+              }
+            }
+          }
+        },
+        {
+          "eventId": "cmr8ktloy03zkqg01oc83glc1",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": null,
+          "type": "policy_delta.proposed",
+          "logicalTime": 15,
+          "wallTime": "2026-07-06T02:03:56.051Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [
+            "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "replay:evidence:counterfactual-choice-scene"
+          ],
+          "details": {
+            "policyDeltaId": "cmr8ktlov03ziqg0103it1vbj",
+            "counterfactualRunId": "cmr8kti2p03ywqg01sb9niqtc",
+            "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "promotionState": "proposed",
+            "confidence": 0.98,
+            "affectedZones": [
+              "packages/schemas/auth.ts",
+              "app/signup/page.tsx",
+              "app/generated/auth-client.ts"
+            ],
+            "triggerConditions": [
+              {
+                "path": "app/signup/page.tsx"
+              },
+              {
+                "agent": "UI-02"
+              }
+            ],
+            "ruleCandidate": {
+              "rule": "enforce_clearance_after_agent_violation",
+              "learningSignals": [
+                "agents_violated_clearances"
+              ],
+              "preferredStrategies": [],
+              "avoidStrategies": [],
+              "requiredTowerActions": [
+                "deny_out_of_clearance_writes",
+                "require_route_revision_for_deviation"
+              ],
+              "evidenceBasis": {
+                "validityStrength": "executed",
+                "incidentRefs": [
+                  "near-miss-signup-contract-001",
+                  "near-miss-profile-payload-002"
+                ],
+                "evidenceRefs": [
+                  "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                  "replay:evidence:counterfactual-choice-scene",
+                  "test:auth-signup-owned"
+                ],
+                "humanOverride": null,
+                "laterManualEditCount": 1
+              }
+            }
+          }
+        },
+        {
+          "eventId": "cmr8ktmqo03zoqg01gz1d2bwh",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": null,
+          "type": "policy_delta.proposed",
+          "logicalTime": 16,
+          "wallTime": "2026-07-06T02:03:57.409Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [
+            "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "replay:evidence:counterfactual-choice-scene"
+          ],
+          "details": {
+            "policyDeltaId": "cmr8ktmqk03zmqg016yg1o4af",
+            "counterfactualRunId": "cmr8kti2p03ywqg01sb9niqtc",
+            "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "promotionState": "proposed",
+            "confidence": 0.98,
+            "affectedZones": [
+              "packages/schemas/auth.ts",
+              "app/signup/page.tsx",
+              "app/generated/auth-client.ts"
+            ],
+            "triggerConditions": [
+              {
+                "path": "packages/schemas/auth.ts"
+              },
+              {
+                "risk": "semantic_collision"
+              }
+            ],
+            "ruleCandidate": {
+              "rule": "schema_first_policy_reduced_rework",
+              "learningSignals": [
+                "schema_first_reduced_rework"
+              ],
+              "preferredStrategies": [
+                "schema-first"
+              ],
+              "avoidStrategies": [
+                "frontend-backend-parallel"
+              ],
+              "requiredTowerActions": [
+                "issue_schema_clearance_before_dependents",
+                "refresh_downstream_assumptions_after_contract"
+              ],
+              "evidenceBasis": {
+                "validityStrength": "executed",
+                "incidentRefs": [
+                  "near-miss-signup-contract-001",
+                  "near-miss-profile-payload-002"
+                ],
+                "evidenceRefs": [
+                  "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                  "replay:evidence:counterfactual-choice-scene",
+                  "test:auth-signup-owned"
+                ],
+                "humanOverride": null,
+                "laterManualEditCount": 1
+              }
+            }
+          }
+        },
+        {
+          "eventId": "cmr8ktnnk03zsqg01kyr3ndir",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": null,
+          "type": "policy_delta.proposed",
+          "logicalTime": 17,
+          "wallTime": "2026-07-06T02:03:58.593Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [
+            "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "replay:evidence:counterfactual-choice-scene"
+          ],
+          "details": {
+            "policyDeltaId": "cmr8ktnnf03zqqg01chotjg2p",
+            "counterfactualRunId": "cmr8kti2p03ywqg01sb9niqtc",
+            "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "promotionState": "proposed",
+            "confidence": 0.98,
+            "affectedZones": [
+              "packages/schemas/auth.ts",
+              "app/signup/page.tsx",
+              "app/generated/auth-client.ts"
+            ],
+            "triggerConditions": [
+              {
+                "path": "packages/schemas/auth.ts"
+              },
+              {
+                "blackBoxPattern": "contract_escape_without_generated_client_refresh"
+              }
+            ],
+            "ruleCandidate": {
+              "rule": "promote_black_box_pattern_to_airspace_rule",
+              "learningSignals": [
+                "black_box_patterns_became_airspace_rules"
+              ],
+              "preferredStrategies": [],
+              "avoidStrategies": [],
+              "requiredTowerActions": [
+                "convert_black_box_escape_to_zone_rule",
+                "require_replay_for_matching_pattern"
+              ],
+              "evidenceBasis": {
+                "validityStrength": "executed",
+                "incidentRefs": [
+                  "near-miss-signup-contract-001",
+                  "near-miss-profile-payload-002"
+                ],
+                "evidenceRefs": [
+                  "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                  "replay:evidence:counterfactual-choice-scene",
+                  "test:auth-signup-owned"
+                ],
+                "humanOverride": null,
+                "laterManualEditCount": 1
+              }
+            }
+          }
+        },
+        {
+          "eventId": "cmr8ktp9003zuqg012qddwxio",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": null,
+          "type": "shadow.run",
+          "logicalTime": 18,
+          "wallTime": "2026-07-06T02:04:00.660Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [],
+          "details": {
+            "counterfactualRunId": "cmr8kti2p03ywqg01sb9niqtc",
+            "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "validityStrength": "executed",
+            "affectedZones": [
+              "packages/schemas/auth.ts",
+              "app/signup/page.tsx"
+            ]
+          }
+        },
+        {
+          "eventId": "cmr8ktq6y03zwqg01akbjnnr8",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": null,
+          "type": "arbiter.verdict",
+          "logicalTime": 19,
+          "wallTime": "2026-07-06T02:04:01.882Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [
+            "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "replay:evidence:counterfactual-choice-scene"
+          ],
+          "details": {
+            "counterfactualRunId": "cmr8kti2p03ywqg01sb9niqtc",
+            "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+            "arbiterVerdict": {
+              "selected": "test-first",
+              "humanOverride": null,
+              "choiceScene": {
+                "repoSnapshot": "repo@sha256:8e801aea74da93f1b98fd045e796ff0f1d0ece6bb7748cbb2387bad177919e03",
+                "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "choices": [
+                  {
+                    "universe": "test-first",
+                    "result": "passed",
+                    "inspectionCost": 3,
+                    "staleAssumptions": 0,
+                    "predictedCollisionRisk": 0,
+                    "reworkRiskReduction": 0.52,
+                    "affectedRoutes": [
+                      "packages/schemas/auth.ts",
+                      "app/signup/page.tsx"
+                    ],
+                    "evidenceRefs": [
+                      "test:auth-signup-owned"
+                    ],
+                    "incidents": []
+                  },
+                  {
+                    "universe": "schema-first",
+                    "result": "near_miss",
+                    "inspectionCost": 0,
+                    "staleAssumptions": 2,
+                    "predictedCollisionRisk": 0.72,
+                    "reworkRiskReduction": 0,
+                    "affectedRoutes": [
+                      "packages/schemas/auth.ts"
+                    ],
+                    "evidenceRefs": [],
+                    "incidents": [
+                      "near-miss-signup-contract-001"
+                    ]
+                  },
+                  {
+                    "universe": "frontend-backend-parallel",
+                    "result": "near_miss",
+                    "inspectionCost": 0,
+                    "staleAssumptions": 3,
+                    "predictedCollisionRisk": 0.84,
+                    "reworkRiskReduction": 0,
+                    "affectedRoutes": [
+                      "app/signup/page.tsx",
+                      "packages/schemas/auth.ts"
+                    ],
+                    "evidenceRefs": [],
+                    "incidents": [
+                      "near-miss-signup-contract-001",
+                      "near-miss-profile-payload-002"
+                    ]
+                  }
+                ],
+                "arbiterVerdict": "test-first",
+                "userChoice": null,
+                "humanOverride": null,
+                "applyResult": {
+                  "result": "applied",
+                  "selected": "test-first"
+                },
+                "laterManualEdits": [
+                  {
+                    "path": "app/generated/auth-client.ts",
+                    "reason": "manual rewrite refreshed downstream generated client after schema contract churn",
+                    "incidentRefs": [
+                      "near-miss-profile-payload-002"
+                    ]
+                  }
+                ],
+                "validityStrength": "executed",
+                "affectedZones": [
+                  "packages/schemas/auth.ts",
+                  "app/signup/page.tsx"
+                ],
+                "resultingPolicyDeltaCandidateCount": 8
+              },
+              "policyDeltaCandidates": [
+                {
+                  "learnedFromIncidents": [
+                    "near-miss-signup-contract-001",
+                    "near-miss-profile-payload-002"
+                  ],
+                  "affectedZoneKey": "packages/schemas/auth.ts",
+                  "affectedRoutes": [
+                    "packages/schemas/auth.ts",
+                    "app/signup/page.tsx",
+                    "app/generated/auth-client.ts"
+                  ],
+                  "ruleCandidate": {
+                    "rule": "flight_split_reduced_collision",
+                    "learningSignals": [
+                      "flight_split_reduced_collisions"
+                    ],
+                    "preferredStrategies": [
+                      "test-first"
+                    ],
+                    "avoidStrategies": [
+                      "schema-first",
+                      "frontend-backend-parallel"
+                    ],
+                    "requiredTowerActions": [
+                      "prefer_recorded_low_collision_split",
+                      "replay_near_miss_before_parallel_clearance"
+                    ],
+                    "evidenceBasis": {
+                      "validityStrength": "executed",
+                      "incidentRefs": [
+                        "near-miss-signup-contract-001",
+                        "near-miss-profile-payload-002"
+                      ],
+                      "evidenceRefs": [
+                        "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                        "replay:evidence:counterfactual-choice-scene",
+                        "test:auth-signup-owned"
+                      ],
+                      "humanOverride": null,
+                      "laterManualEditCount": 1
+                    }
+                  },
+                  "triggerConditions": [
+                    {
+                      "path": "packages/schemas/auth.ts"
+                    },
+                    {
+                      "path": "app/signup/page.tsx"
+                    },
+                    {
+                      "risk": "semantic_collision"
+                    }
+                  ],
+                  "expectedRiskReduction": 0.42,
+                  "confidence": 0.98,
+                  "learningSignals": [
+                    "flight_split_reduced_collisions"
+                  ]
+                },
+                {
+                  "learnedFromIncidents": [
+                    "near-miss-signup-contract-001",
+                    "near-miss-profile-payload-002"
+                  ],
+                  "affectedZoneKey": "packages/schemas/auth.ts",
+                  "affectedRoutes": [
+                    "packages/schemas/auth.ts",
+                    "app/signup/page.tsx",
+                    "app/generated/auth-client.ts"
+                  ],
+                  "ruleCandidate": {
+                    "rule": "recurring_near_miss_airspace_rule",
+                    "learningSignals": [
+                      "recurring_near_misses"
+                    ],
+                    "preferredStrategies": [
+                      "test-first"
+                    ],
+                    "avoidStrategies": [
+                      "schema-first",
+                      "frontend-backend-parallel"
+                    ],
+                    "requiredTowerActions": [
+                      "promote_repeated_near_miss_to_airspace_rule",
+                      "require_shadow_replay_before_clearance"
+                    ],
+                    "evidenceBasis": {
+                      "validityStrength": "executed",
+                      "incidentRefs": [
+                        "near-miss-signup-contract-001",
+                        "near-miss-profile-payload-002"
+                      ],
+                      "evidenceRefs": [
+                        "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                        "replay:evidence:counterfactual-choice-scene",
+                        "test:auth-signup-owned"
+                      ],
+                      "humanOverride": null,
+                      "laterManualEditCount": 1
+                    }
+                  },
+                  "triggerConditions": [
+                    {
+                      "path": "packages/schemas/auth.ts"
+                    },
+                    {
+                      "path": "app/signup/page.tsx"
+                    },
+                    {
+                      "path": "app/generated/auth-client.ts"
+                    },
+                    {
+                      "event": "near_miss.detected"
+                    }
+                  ],
+                  "expectedRiskReduction": 0.42,
+                  "confidence": 0.98,
+                  "learningSignals": [
+                    "recurring_near_misses"
+                  ]
+                },
+                {
+                  "learnedFromIncidents": [
+                    "near-miss-signup-contract-001",
+                    "near-miss-profile-payload-002"
+                  ],
+                  "affectedZoneKey": "packages/schemas/auth.ts",
+                  "affectedRoutes": [
+                    "packages/schemas/auth.ts",
+                    "app/signup/page.tsx",
+                    "app/generated/auth-client.ts"
+                  ],
+                  "ruleCandidate": {
+                    "rule": "calibrate_airspace_class_from_counterfactual_outcome",
+                    "learningSignals": [
+                      "airspace_classes_calibrated"
+                    ],
+                    "preferredStrategies": [],
+                    "avoidStrategies": [],
+                    "requiredTowerActions": [
+                      "review_zone_class_before_next_clearance",
+                      "adjust_airspace_class_after_replay"
+                    ],
+                    "evidenceBasis": {
+                      "validityStrength": "executed",
+                      "incidentRefs": [
+                        "near-miss-signup-contract-001",
+                        "near-miss-profile-payload-002"
+                      ],
+                      "evidenceRefs": [
+                        "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                        "replay:evidence:counterfactual-choice-scene",
+                        "test:auth-signup-owned"
+                      ],
+                      "humanOverride": null,
+                      "laterManualEditCount": 1
+                    }
+                  },
+                  "triggerConditions": [
+                    {
+                      "path": "packages/schemas/auth.ts"
+                    },
+                    {
+                      "classCalibration": "too_loose"
+                    }
+                  ],
+                  "expectedRiskReduction": 0.37,
+                  "confidence": 0.98,
+                  "learningSignals": [
+                    "airspace_classes_calibrated"
+                  ]
+                },
+                {
+                  "learnedFromIncidents": [
+                    "near-miss-signup-contract-001",
+                    "near-miss-profile-payload-002"
+                  ],
+                  "affectedZoneKey": "packages/schemas/auth.ts",
+                  "affectedRoutes": [
+                    "packages/schemas/auth.ts",
+                    "app/signup/page.tsx",
+                    "app/generated/auth-client.ts"
+                  ],
+                  "ruleCandidate": {
+                    "rule": "inspector_real_issue_gate",
+                    "learningSignals": [
+                      "inspectors_caught_real_issues"
+                    ],
+                    "preferredStrategies": [],
+                    "avoidStrategies": [],
+                    "requiredTowerActions": [
+                      "require_matching_inspector_before_landing",
+                      "attach_inspection_evidence_to_clearance"
+                    ],
+                    "evidenceBasis": {
+                      "validityStrength": "executed",
+                      "incidentRefs": [
+                        "near-miss-signup-contract-001",
+                        "near-miss-profile-payload-002"
+                      ],
+                      "evidenceRefs": [
+                        "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                        "replay:evidence:counterfactual-choice-scene",
+                        "test:auth-signup-owned"
+                      ],
+                      "humanOverride": null,
+                      "laterManualEditCount": 1
+                    }
+                  },
+                  "triggerConditions": [
+                    {
+                      "path": "api/auth/signup.ts"
+                    },
+                    {
+                      "inspector": "api_contract"
+                    }
+                  ],
+                  "expectedRiskReduction": 0.37,
+                  "confidence": 0.98,
+                  "learningSignals": [
+                    "inspectors_caught_real_issues"
+                  ]
+                },
+                {
+                  "learnedFromIncidents": [
+                    "near-miss-signup-contract-001",
+                    "near-miss-profile-payload-002"
+                  ],
+                  "affectedZoneKey": "packages/schemas/auth.ts",
+                  "affectedRoutes": [
+                    "packages/schemas/auth.ts",
+                    "app/signup/page.tsx",
+                    "app/generated/auth-client.ts"
+                  ],
+                  "ruleCandidate": {
+                    "rule": "prefer_tower_reroute_that_saved_work",
+                    "learningSignals": [
+                      "tower_reroutes_saved_work"
+                    ],
+                    "preferredStrategies": [
+                      "test-first"
+                    ],
+                    "avoidStrategies": [],
+                    "requiredTowerActions": [
+                      "offer_recorded_reroute_before_ground_stop",
+                      "replay_reroute_evidence_before_commit"
+                    ],
+                    "evidenceBasis": {
+                      "validityStrength": "executed",
+                      "incidentRefs": [
+                        "near-miss-signup-contract-001",
+                        "near-miss-profile-payload-002"
+                      ],
+                      "evidenceRefs": [
+                        "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                        "replay:evidence:counterfactual-choice-scene",
+                        "test:auth-signup-owned"
+                      ],
+                      "humanOverride": null,
+                      "laterManualEditCount": 1
+                    }
+                  },
+                  "triggerConditions": [
+                    {
+                      "path": "app/signup/page.tsx"
+                    },
+                    {
+                      "towerAction": "reroute"
+                    }
+                  ],
+                  "expectedRiskReduction": 0.395,
+                  "confidence": 0.98,
+                  "learningSignals": [
+                    "tower_reroutes_saved_work"
+                  ]
+                },
+                {
+                  "learnedFromIncidents": [
+                    "near-miss-signup-contract-001",
+                    "near-miss-profile-payload-002"
+                  ],
+                  "affectedZoneKey": "packages/schemas/auth.ts",
+                  "affectedRoutes": [
+                    "packages/schemas/auth.ts",
+                    "app/signup/page.tsx",
+                    "app/generated/auth-client.ts"
+                  ],
+                  "ruleCandidate": {
+                    "rule": "enforce_clearance_after_agent_violation",
+                    "learningSignals": [
+                      "agents_violated_clearances"
+                    ],
+                    "preferredStrategies": [],
+                    "avoidStrategies": [],
+                    "requiredTowerActions": [
+                      "deny_out_of_clearance_writes",
+                      "require_route_revision_for_deviation"
+                    ],
+                    "evidenceBasis": {
+                      "validityStrength": "executed",
+                      "incidentRefs": [
+                        "near-miss-signup-contract-001",
+                        "near-miss-profile-payload-002"
+                      ],
+                      "evidenceRefs": [
+                        "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                        "replay:evidence:counterfactual-choice-scene",
+                        "test:auth-signup-owned"
+                      ],
+                      "humanOverride": null,
+                      "laterManualEditCount": 1
+                    }
+                  },
+                  "triggerConditions": [
+                    {
+                      "path": "app/signup/page.tsx"
+                    },
+                    {
+                      "agent": "UI-02"
+                    }
+                  ],
+                  "expectedRiskReduction": 0.395,
+                  "confidence": 0.98,
+                  "learningSignals": [
+                    "agents_violated_clearances"
+                  ]
+                },
+                {
+                  "learnedFromIncidents": [
+                    "near-miss-signup-contract-001",
+                    "near-miss-profile-payload-002"
+                  ],
+                  "affectedZoneKey": "packages/schemas/auth.ts",
+                  "affectedRoutes": [
+                    "packages/schemas/auth.ts",
+                    "app/signup/page.tsx",
+                    "app/generated/auth-client.ts"
+                  ],
+                  "ruleCandidate": {
+                    "rule": "schema_first_policy_reduced_rework",
+                    "learningSignals": [
+                      "schema_first_reduced_rework"
+                    ],
+                    "preferredStrategies": [
+                      "schema-first"
+                    ],
+                    "avoidStrategies": [
+                      "frontend-backend-parallel"
+                    ],
+                    "requiredTowerActions": [
+                      "issue_schema_clearance_before_dependents",
+                      "refresh_downstream_assumptions_after_contract"
+                    ],
+                    "evidenceBasis": {
+                      "validityStrength": "executed",
+                      "incidentRefs": [
+                        "near-miss-signup-contract-001",
+                        "near-miss-profile-payload-002"
+                      ],
+                      "evidenceRefs": [
+                        "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                        "replay:evidence:counterfactual-choice-scene",
+                        "test:auth-signup-owned"
+                      ],
+                      "humanOverride": null,
+                      "laterManualEditCount": 1
+                    }
+                  },
+                  "triggerConditions": [
+                    {
+                      "path": "packages/schemas/auth.ts"
+                    },
+                    {
+                      "risk": "semantic_collision"
+                    }
+                  ],
+                  "expectedRiskReduction": 0.395,
+                  "confidence": 0.98,
+                  "learningSignals": [
+                    "schema_first_reduced_rework"
+                  ]
+                },
+                {
+                  "learnedFromIncidents": [
+                    "near-miss-signup-contract-001",
+                    "near-miss-profile-payload-002"
+                  ],
+                  "affectedZoneKey": "packages/schemas/auth.ts",
+                  "affectedRoutes": [
+                    "packages/schemas/auth.ts",
+                    "app/signup/page.tsx",
+                    "app/generated/auth-client.ts"
+                  ],
+                  "ruleCandidate": {
+                    "rule": "promote_black_box_pattern_to_airspace_rule",
+                    "learningSignals": [
+                      "black_box_patterns_became_airspace_rules"
+                    ],
+                    "preferredStrategies": [],
+                    "avoidStrategies": [],
+                    "requiredTowerActions": [
+                      "convert_black_box_escape_to_zone_rule",
+                      "require_replay_for_matching_pattern"
+                    ],
+                    "evidenceBasis": {
+                      "validityStrength": "executed",
+                      "incidentRefs": [
+                        "near-miss-signup-contract-001",
+                        "near-miss-profile-payload-002"
+                      ],
+                      "evidenceRefs": [
+                        "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                        "replay:evidence:counterfactual-choice-scene",
+                        "test:auth-signup-owned"
+                      ],
+                      "humanOverride": null,
+                      "laterManualEditCount": 1
+                    }
+                  },
+                  "triggerConditions": [
+                    {
+                      "path": "packages/schemas/auth.ts"
+                    },
+                    {
+                      "blackBoxPattern": "contract_escape_without_generated_client_refresh"
+                    }
+                  ],
+                  "expectedRiskReduction": 0.395,
+                  "confidence": 0.98,
+                  "learningSignals": [
+                    "black_box_patterns_became_airspace_rules"
+                  ]
+                }
+              ],
+              "counterfactualLearning": {
+                "candidateCount": 8,
+                "inferredCandidateCount": 8,
+                "learningSignals": [
+                  "flight_split_reduced_collisions",
+                  "recurring_near_misses",
+                  "airspace_classes_calibrated",
+                  "inspectors_caught_real_issues",
+                  "tower_reroutes_saved_work",
+                  "agents_violated_clearances",
+                  "schema_first_reduced_rework",
+                  "black_box_patterns_became_airspace_rules"
+                ]
+              }
+            },
+            "selected": "test-first",
+            "validityStrength": "executed",
+            "affectedZones": [
+              "packages/schemas/auth.ts",
+              "app/signup/page.tsx"
+            ]
+          }
+        },
+        {
+          "eventId": "cmr8ktwmd040kqg01ieueu3nb",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": null,
+          "type": "near_miss.detected",
+          "logicalTime": 26,
+          "wallTime": "2026-07-06T02:04:10.213Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [
+            "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+            "runtime:event:signup-drift"
+          ],
+          "details": {
+            "incidentId": "cmr8ktwm6040iqg016nlph77f",
+            "severity": "high",
+            "category": "near_miss",
+            "replayDigest": "sha256:ad9b555422f3c32af14a7f4f25996619c196cfaacebf9b8bc0f668a413142777",
+            "affectedZones": [
+              "packages/schemas/**",
+              "app/generated/**"
+            ]
+          }
+        },
+        {
+          "eventId": "cmr8ktxhg040oqg01vbanenrs",
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+          "transactionId": null,
+          "mutationLeaseId": null,
+          "agentSessionId": null,
+          "displayCallsign": null,
+          "type": "policy_delta.proposed",
+          "logicalTime": 27,
+          "wallTime": "2026-07-06T02:04:11.332Z",
+          "zoneKey": null,
+          "path": null,
+          "policyDecisionId": null,
+          "evidenceRefs": [
+            "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+            "runtime:event:signup-drift"
+          ],
+          "details": {
+            "incidentId": "cmr8ktwm6040iqg016nlph77f",
+            "policyDelta": {
+              "id": "cmr8ktxhb040mqg01k5yab8aa",
+              "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+              "learnedFromIncidents": [
+                "cmr8ktwm6040iqg016nlph77f"
+              ],
+              "affectedZoneKey": "packages/schemas",
+              "ruleCandidate": {
+                "rule": "near_miss_replay_requires_airspace_rule",
+                "learningSignals": [
+                  "near_miss_policy_delta"
+                ],
+                "requiredTowerActions": [
+                  "replay_near_miss_before_matching_clearance",
+                  "require_tower_sequence_for_repeated_zone"
+                ],
+                "participants": [
+                  "UI-02",
+                  "SCHEMA-01"
+                ],
+                "evidenceBasis": {
+                  "category": "near_miss",
+                  "severity": "high",
+                  "evidenceRefs": [
+                    "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+                    "runtime:event:signup-drift"
+                  ],
+                  "projectId": "cmr8kt9tt03xlqg01ep4q1rc0"
+                }
+              },
+              "triggerConditions": [
+                {
+                  "path": "packages/schemas/**"
+                },
+                {
+                  "path": "app/generated/**"
+                },
+                {
+                  "event": "near_miss.detected"
+                }
+              ],
+              "expectedRiskReduction": 0.3,
+              "confidence": 0.8,
+              "promotionState": "proposed",
+              "replayRefs": [
+                "incident:cmr8ktwm6040iqg016nlph77f",
+                "codesite:incident:cmr8ktwm6040iqg016nlph77f",
+                "replay:sha256:ad9b555422f3c32af14a7f4f25996619c196cfaacebf9b8bc0f668a413142777",
+                "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+                "runtime:event:signup-drift"
+              ],
+              "createdAt": "2026-07-06T02:04:11.328Z",
+              "promotedAt": null
+            },
+            "reason": "incident_replay_policy_delta"
+          }
+        }
+      ],
+      "evidenceRefs": [
+        "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+        "runtime:event:signup-drift",
+        "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+        "replay:evidence:counterfactual-choice-scene"
+      ],
+      "routeContext": {
+        "affectedZones": [
+          "packages/schemas/**",
+          "app/generated/**"
+        ],
+        "zones": [
+          {
+            "zoneKey": "class_a",
+            "class": "A",
+            "label": "Critical controlled airspace",
+            "paths": [
+              "api/auth/**",
+              "billing/**",
+              "db/migrations/**",
+              "infra/prod/**",
+              "infra/production/**",
+              "**/.env",
+              "**/.env.*"
+            ],
+            "risk": "critical",
+            "rules": [
+              "explicit_tower_clearance_required",
+              "licensed_pilot_required",
+              "inspector_signoff_required",
+              "black_box_required"
+            ]
+          },
+          {
+            "zoneKey": "class_b",
+            "class": "B",
+            "label": "Shared contract airspace",
+            "paths": [
+              "packages/schemas/**",
+              "openapi/**",
+              "packages/*/src/index.ts",
+              "synthi/prisma/**",
+              "backend/collab-server/permissionMiddleware.js"
+            ],
+            "risk": "high",
+            "rules": [
+              "flight_plan_required",
+              "downstream_notification_required",
+              "change_order_for_mutation"
+            ]
+          },
+          {
+            "zoneKey": "class_c",
+            "class": "C",
+            "label": "Feature implementation airspace",
+            "paths": [
+              "apps/web/**",
+              "components/**",
+              "synthi/src/app/**",
+              "synthi/src/components/**",
+              "backend/collab-server/**"
+            ],
+            "risk": "medium",
+            "rules": [
+              "auto_clearance_allowed",
+              "landing_inspection_required"
+            ]
+          },
+          {
+            "zoneKey": "class_d",
+            "class": "D",
+            "label": "Low-risk support airspace",
+            "paths": [
+              "docs/**",
+              "tests/**",
+              "**/__tests__/**",
+              "**/*.test.js",
+              "**/*.test.jsx",
+              "**/*.test.ts",
+              "**/*.test.tsx",
+              "**/*.md"
+            ],
+            "risk": "low",
+            "rules": [
+              "micro_clearance_allowed",
+              "sample_inspection"
+            ]
+          },
+          {
+            "zoneKey": "package_exports_packages_schemas",
+            "class": "B",
+            "label": "Public package exports: @acme/contracts",
+            "paths": [
+              "packages/schemas/**",
+              "packages/schemas/auth.ts"
+            ],
+            "risk": "high",
+            "rules": [
+              "flight_plan_required",
+              "downstream_notification_required",
+              "change_order_for_mutation",
+              "downstream_package_radar_required"
+            ]
+          },
+          {
+            "zoneKey": "schema-contracts",
+            "class": "B",
+            "label": "Schema contracts",
+            "paths": [
+              "packages/schemas/**"
+            ],
+            "risk": "high",
+            "rules": [
+              "api_contract_radar_required"
+            ]
+          },
+          {
+            "zoneKey": "signup-ui",
+            "class": "C",
+            "label": "Signup UI",
+            "paths": [
+              "app/signup/**"
+            ],
+            "risk": "medium",
+            "rules": [
+              "landing_inspection_required"
+            ]
+          }
+        ],
+        "noFlyZones": [
+          "**/.env",
+          "**/.env.*",
+          "secrets/**",
+          "**/*secret*",
+          "**/*.pem",
+          "**/*.key"
+        ]
+      },
+      "participants": [
+        "UI-02",
+        "SCHEMA-01"
+      ],
+      "affectedZones": [
+        "packages/schemas/**",
+        "app/generated/**"
+      ],
+      "policyDelta": {
+        "id": "cmr8ktxhb040mqg01k5yab8aa",
+        "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+        "learnedFromIncidents": [
+          "cmr8ktwm6040iqg016nlph77f"
+        ],
+        "affectedZoneKey": "packages/schemas",
+        "ruleCandidate": {
+          "rule": "near_miss_replay_requires_airspace_rule",
+          "learningSignals": [
+            "near_miss_policy_delta"
+          ],
+          "requiredTowerActions": [
+            "replay_near_miss_before_matching_clearance",
+            "require_tower_sequence_for_repeated_zone"
+          ],
+          "participants": [
+            "UI-02",
+            "SCHEMA-01"
+          ],
+          "evidenceBasis": {
+            "category": "near_miss",
+            "severity": "high",
+            "evidenceRefs": [
+              "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+              "runtime:event:signup-drift"
+            ],
+            "projectId": "cmr8kt9tt03xlqg01ep4q1rc0"
+          }
+        },
+        "triggerConditions": [
+          {
+            "path": "packages/schemas/**"
+          },
+          {
+            "path": "app/generated/**"
+          },
+          {
+            "event": "near_miss.detected"
+          }
+        ],
+        "expectedRiskReduction": 0.3,
+        "confidence": 0.8,
+        "promotionState": "proposed",
+        "replayRefs": [
+          "incident:cmr8ktwm6040iqg016nlph77f",
+          "codesite:incident:cmr8ktwm6040iqg016nlph77f",
+          "replay:sha256:ad9b555422f3c32af14a7f4f25996619c196cfaacebf9b8bc0f668a413142777",
+          "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+          "runtime:event:signup-drift"
+        ],
+        "createdAt": "2026-07-06T02:04:11.328Z",
+        "promotedAt": null
+      },
+      "completeness": {
+        "score": 0.29,
+        "eventScore": 0.29,
+        "evidenceScore": 1,
+        "requiredEventTypes": [
+          "transaction.opened",
+          "assumption.recorded",
+          "clearance.issued",
+          "read.observed",
+          "write.attempted",
+          "write.denied",
+          "snapshot.taken",
+          "shadow.run",
+          "arbiter.verdict",
+          "inspection.result",
+          "near_miss.detected",
+          "policy_delta.proposed",
+          "transaction.committed",
+          "transaction.aborted"
+        ],
+        "presentEventTypes": [
+          "shadow.run",
+          "arbiter.verdict",
+          "near_miss.detected",
+          "policy_delta.proposed"
+        ],
+        "missingEventTypes": [
+          "transaction.opened",
+          "assumption.recorded",
+          "clearance.issued",
+          "read.observed",
+          "write.attempted",
+          "write.denied",
+          "snapshot.taken",
+          "inspection.result",
+          "transaction.committed",
+          "transaction.aborted"
+        ],
+        "requiredEvidence": [],
+        "presentEvidence": [],
+        "missingEvidence": [],
+        "observedEventTypes": [
+          "transponder.update",
+          "flight_plan.filed",
+          "policy_delta.proposed",
+          "shadow.run",
+          "arbiter.verdict",
+          "near_miss.detected"
+        ],
+        "totalEvents": 16
+      },
+      "counterfactualManualEditLinks": {
+        "linkedRunIds": [
+          "cmr8kti2p03ywqg01sb9niqtc"
+        ],
+        "manualEditCount": 1,
+        "unresolvedRunIds": [],
+        "unresolvedShadowJobRefs": []
+      }
+    },
+    "replayDigest": "sha256:249086cb354da4037aa167f8c6036d21ec5ac8e454606138f132d701bae457ed",
+    "timelineEventRefs": [
+      "cmr8kta9p03y2qg01bg3f63z9",
+      "cmr8ktasw03y8qg0126zlv051",
+      "cmr8ktbaa03ycqg014ixfwaea",
+      "cmr8ktbsl03ygqg013oqgq5dp",
+      "cmr8kti2x03z0qg0159ii3lr3",
+      "cmr8ktirz03z4qg01u6ao74bf",
+      "cmr8ktjlk03z8qg0124iyqqtz",
+      "cmr8ktk9q03zcqg01adc1awxp",
+      "cmr8ktkwf03zgqg01vlrvf51p",
+      "cmr8ktloy03zkqg01oc83glc1",
+      "cmr8ktmqo03zoqg01gz1d2bwh",
+      "cmr8ktnnk03zsqg01kyr3ndir",
+      "cmr8ktp9003zuqg012qddwxio",
+      "cmr8ktq6y03zwqg01akbjnnr8",
+      "cmr8ktwmd040kqg01ieueu3nb",
+      "cmr8ktxhg040oqg01vbanenrs"
+    ],
+    "policyDelta": {
+      "id": "cmr8ktxhb040mqg01k5yab8aa",
+      "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+      "learnedFromIncidents": [
+        "cmr8ktwm6040iqg016nlph77f"
+      ],
+      "affectedZoneKey": "packages/schemas",
+      "ruleCandidate": {
+        "rule": "near_miss_replay_requires_airspace_rule",
+        "learningSignals": [
+          "near_miss_policy_delta"
+        ],
+        "requiredTowerActions": [
+          "replay_near_miss_before_matching_clearance",
+          "require_tower_sequence_for_repeated_zone"
+        ],
+        "participants": [
+          "UI-02",
+          "SCHEMA-01"
+        ],
+        "evidenceBasis": {
+          "category": "near_miss",
+          "severity": "high",
+          "evidenceRefs": [
+            "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+            "runtime:event:signup-drift"
+          ],
+          "projectId": "cmr8kt9tt03xlqg01ep4q1rc0"
+        }
+      },
+      "triggerConditions": [
+        {
+          "path": "packages/schemas/**"
+        },
+        {
+          "path": "app/generated/**"
+        },
+        {
+          "event": "near_miss.detected"
+        }
+      ],
+      "expectedRiskReduction": 0.3,
+      "confidence": 0.8,
+      "promotionState": "proposed",
+      "replayRefs": [
+        "incident:cmr8ktwm6040iqg016nlph77f",
+        "codesite:incident:cmr8ktwm6040iqg016nlph77f",
+        "replay:sha256:ad9b555422f3c32af14a7f4f25996619c196cfaacebf9b8bc0f668a413142777",
+        "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+        "runtime:event:signup-drift"
+      ],
+      "createdAt": "2026-07-06T02:04:11.328Z",
+      "promotedAt": null
+    },
+    "evidenceRefs": [
+      "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+      "runtime:event:signup-drift"
+    ],
+    "createdAt": "2026-07-06T02:04:10.207Z"
+  },
+  "updatedChoiceSceneRun": {
+    "id": "cmr8kti2p03ywqg01sb9niqtc",
+    "projectId": "cmr8kt9tt03xlqg01ep4q1rc0",
+    "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+    "baseSnapshot": "repo@sha256:8e801aea74da93f1b98fd045e796ff0f1d0ece6bb7748cbb2387bad177919e03",
+    "universes": [
+      {
+        "universe": "test-first",
+        "result": "passed",
+        "affectedRoutes": [
+          "packages/schemas/auth.ts",
+          "app/signup/page.tsx"
+        ],
+        "inspectionCost": 3,
+        "staleAssumptions": 0,
+        "reworkRiskReduction": 0.52,
+        "evidenceRefs": [
+          "test:auth-signup-owned"
+        ]
+      },
+      {
+        "universe": "schema-first",
+        "result": "near_miss",
+        "affectedRoutes": [
+          "packages/schemas/auth.ts"
+        ],
+        "unresolvedRisks": [
+          "semantic_collision"
+        ],
+        "predictedCollisionRisk": 0.72,
+        "staleAssumptions": 2,
+        "incidents": [
+          "near-miss-signup-contract-001"
+        ]
+      },
+      {
+        "universe": "frontend-backend-parallel",
+        "result": "near_miss",
+        "affectedRoutes": [
+          "app/signup/page.tsx",
+          "packages/schemas/auth.ts"
+        ],
+        "unresolvedRisks": [
+          "semantic_collision"
+        ],
+        "predictedCollisionRisk": 0.84,
+        "staleAssumptions": 3,
+        "incidents": [
+          "near-miss-signup-contract-001",
+          "near-miss-profile-payload-002"
+        ]
+      }
+    ],
+    "arbiterVerdict": {
+      "selected": "test-first",
+      "humanOverride": null,
+      "choiceScene": {
+        "repoSnapshot": "repo@sha256:8e801aea74da93f1b98fd045e796ff0f1d0ece6bb7748cbb2387bad177919e03",
+        "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+        "choices": [
+          {
+            "universe": "test-first",
+            "result": "passed",
+            "inspectionCost": 3,
+            "staleAssumptions": 0,
+            "predictedCollisionRisk": 0,
+            "reworkRiskReduction": 0.52,
+            "affectedRoutes": [
+              "packages/schemas/auth.ts",
+              "app/signup/page.tsx"
+            ],
+            "evidenceRefs": [
+              "test:auth-signup-owned"
+            ],
+            "incidents": []
+          },
+          {
+            "universe": "schema-first",
+            "result": "near_miss",
+            "inspectionCost": 0,
+            "staleAssumptions": 2,
+            "predictedCollisionRisk": 0.72,
+            "reworkRiskReduction": 0,
+            "affectedRoutes": [
+              "packages/schemas/auth.ts"
+            ],
+            "evidenceRefs": [],
+            "incidents": [
+              "near-miss-signup-contract-001"
+            ]
+          },
+          {
+            "universe": "frontend-backend-parallel",
+            "result": "near_miss",
+            "inspectionCost": 0,
+            "staleAssumptions": 3,
+            "predictedCollisionRisk": 0.84,
+            "reworkRiskReduction": 0,
+            "affectedRoutes": [
+              "app/signup/page.tsx",
+              "packages/schemas/auth.ts"
+            ],
+            "evidenceRefs": [],
+            "incidents": [
+              "near-miss-signup-contract-001",
+              "near-miss-profile-payload-002"
+            ]
+          }
+        ],
+        "arbiterVerdict": "test-first",
+        "userChoice": null,
+        "humanOverride": null,
+        "applyResult": {
+          "result": "applied",
+          "selected": "test-first"
+        },
+        "laterManualEdits": [
+          {
+            "path": "app/generated/auth-client.ts",
+            "reason": "manual rewrite refreshed downstream generated client after schema contract churn",
+            "incidentRefs": [
+              "near-miss-profile-payload-002"
+            ]
+          }
+        ],
+        "validityStrength": "executed",
+        "affectedZones": [
+          "packages/schemas/auth.ts",
+          "app/signup/page.tsx"
+        ],
+        "resultingPolicyDeltaCandidateCount": 8
+      },
+      "policyDeltaCandidates": [
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "flight_split_reduced_collision",
+            "learningSignals": [
+              "flight_split_reduced_collisions"
+            ],
+            "preferredStrategies": [
+              "test-first"
+            ],
+            "avoidStrategies": [
+              "schema-first",
+              "frontend-backend-parallel"
+            ],
+            "requiredTowerActions": [
+              "prefer_recorded_low_collision_split",
+              "replay_near_miss_before_parallel_clearance"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "packages/schemas/auth.ts"
+            },
+            {
+              "path": "app/signup/page.tsx"
+            },
+            {
+              "risk": "semantic_collision"
+            }
+          ],
+          "expectedRiskReduction": 0.42,
+          "confidence": 0.98,
+          "learningSignals": [
+            "flight_split_reduced_collisions"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "recurring_near_miss_airspace_rule",
+            "learningSignals": [
+              "recurring_near_misses"
+            ],
+            "preferredStrategies": [
+              "test-first"
+            ],
+            "avoidStrategies": [
+              "schema-first",
+              "frontend-backend-parallel"
+            ],
+            "requiredTowerActions": [
+              "promote_repeated_near_miss_to_airspace_rule",
+              "require_shadow_replay_before_clearance"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "packages/schemas/auth.ts"
+            },
+            {
+              "path": "app/signup/page.tsx"
+            },
+            {
+              "path": "app/generated/auth-client.ts"
+            },
+            {
+              "event": "near_miss.detected"
+            }
+          ],
+          "expectedRiskReduction": 0.42,
+          "confidence": 0.98,
+          "learningSignals": [
+            "recurring_near_misses"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "calibrate_airspace_class_from_counterfactual_outcome",
+            "learningSignals": [
+              "airspace_classes_calibrated"
+            ],
+            "preferredStrategies": [],
+            "avoidStrategies": [],
+            "requiredTowerActions": [
+              "review_zone_class_before_next_clearance",
+              "adjust_airspace_class_after_replay"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "packages/schemas/auth.ts"
+            },
+            {
+              "classCalibration": "too_loose"
+            }
+          ],
+          "expectedRiskReduction": 0.37,
+          "confidence": 0.98,
+          "learningSignals": [
+            "airspace_classes_calibrated"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "inspector_real_issue_gate",
+            "learningSignals": [
+              "inspectors_caught_real_issues"
+            ],
+            "preferredStrategies": [],
+            "avoidStrategies": [],
+            "requiredTowerActions": [
+              "require_matching_inspector_before_landing",
+              "attach_inspection_evidence_to_clearance"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "api/auth/signup.ts"
+            },
+            {
+              "inspector": "api_contract"
+            }
+          ],
+          "expectedRiskReduction": 0.37,
+          "confidence": 0.98,
+          "learningSignals": [
+            "inspectors_caught_real_issues"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "prefer_tower_reroute_that_saved_work",
+            "learningSignals": [
+              "tower_reroutes_saved_work"
+            ],
+            "preferredStrategies": [
+              "test-first"
+            ],
+            "avoidStrategies": [],
+            "requiredTowerActions": [
+              "offer_recorded_reroute_before_ground_stop",
+              "replay_reroute_evidence_before_commit"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "app/signup/page.tsx"
+            },
+            {
+              "towerAction": "reroute"
+            }
+          ],
+          "expectedRiskReduction": 0.395,
+          "confidence": 0.98,
+          "learningSignals": [
+            "tower_reroutes_saved_work"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "enforce_clearance_after_agent_violation",
+            "learningSignals": [
+              "agents_violated_clearances"
+            ],
+            "preferredStrategies": [],
+            "avoidStrategies": [],
+            "requiredTowerActions": [
+              "deny_out_of_clearance_writes",
+              "require_route_revision_for_deviation"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "app/signup/page.tsx"
+            },
+            {
+              "agent": "UI-02"
+            }
+          ],
+          "expectedRiskReduction": 0.395,
+          "confidence": 0.98,
+          "learningSignals": [
+            "agents_violated_clearances"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "schema_first_policy_reduced_rework",
+            "learningSignals": [
+              "schema_first_reduced_rework"
+            ],
+            "preferredStrategies": [
+              "schema-first"
+            ],
+            "avoidStrategies": [
+              "frontend-backend-parallel"
+            ],
+            "requiredTowerActions": [
+              "issue_schema_clearance_before_dependents",
+              "refresh_downstream_assumptions_after_contract"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "packages/schemas/auth.ts"
+            },
+            {
+              "risk": "semantic_collision"
+            }
+          ],
+          "expectedRiskReduction": 0.395,
+          "confidence": 0.98,
+          "learningSignals": [
+            "schema_first_reduced_rework"
+          ]
+        },
+        {
+          "learnedFromIncidents": [
+            "near-miss-signup-contract-001",
+            "near-miss-profile-payload-002"
+          ],
+          "affectedZoneKey": "packages/schemas/auth.ts",
+          "affectedRoutes": [
+            "packages/schemas/auth.ts",
+            "app/signup/page.tsx",
+            "app/generated/auth-client.ts"
+          ],
+          "ruleCandidate": {
+            "rule": "promote_black_box_pattern_to_airspace_rule",
+            "learningSignals": [
+              "black_box_patterns_became_airspace_rules"
+            ],
+            "preferredStrategies": [],
+            "avoidStrategies": [],
+            "requiredTowerActions": [
+              "convert_black_box_escape_to_zone_rule",
+              "require_replay_for_matching_pattern"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-signup-contract-001",
+                "near-miss-profile-payload-002"
+              ],
+              "evidenceRefs": [
+                "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+                "replay:evidence:counterfactual-choice-scene",
+                "test:auth-signup-owned"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 1
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "packages/schemas/auth.ts"
+            },
+            {
+              "blackBoxPattern": "contract_escape_without_generated_client_refresh"
+            }
+          ],
+          "expectedRiskReduction": 0.395,
+          "confidence": 0.98,
+          "learningSignals": [
+            "black_box_patterns_became_airspace_rules"
+          ]
+        }
+      ],
+      "counterfactualLearning": {
+        "candidateCount": 8,
+        "inferredCandidateCount": 8,
+        "learningSignals": [
+          "flight_split_reduced_collisions",
+          "recurring_near_misses",
+          "airspace_classes_calibrated",
+          "inspectors_caught_real_issues",
+          "tower_reroutes_saved_work",
+          "agents_violated_clearances",
+          "schema_first_reduced_rework",
+          "black_box_patterns_became_airspace_rules"
+        ]
+      }
+    },
+    "userChoice": null,
+    "laterManualEdits": [
+      {
+        "path": "app/generated/auth-client.ts",
+        "reason": "manual rewrite refreshed downstream generated client after schema contract churn",
+        "incidentRefs": [
+          "near-miss-profile-payload-002"
+        ]
+      },
+      {
+        "path": "app/generated/auth-client.ts",
+        "reason": "manual rewrite after schema drift",
+        "incidentId": "cmr8ktwm6040iqg016nlph77f",
+        "incidentCategory": "near_miss",
+        "incidentSeverity": "high",
+        "evidenceRefs": [
+          "codesite:counterfactual-run:cmr8kti2p03ywqg01sb9niqtc",
+          "runtime:event:signup-drift"
+        ],
+        "policyDeltaId": "cmr8ktxhb040mqg01k5yab8aa"
+      }
+    ],
+    "validityStrength": "executed",
+    "evidenceRefs": [
+      "shadow:job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+      "replay:evidence:counterfactual-choice-scene"
+    ],
+    "createdAt": "2026-07-06T02:03:51.361Z"
   },
   "leaseProject": {
-    "id": "cmr1o40z00018ob4tm2dt9j8n",
+    "id": "cmr8ktz7y040pqg01m2cipwlv",
     "title": "Counterfactual lease gate proof"
   },
+  "leaseMemoryRun": {
+    "id": "cmr8ku1dp041dqg01nezie5zv",
+    "projectId": "cmr8ktz7y040pqg01m2cipwlv",
+    "shadowJobRef": "lease-shadow:cmr8kti2p03ywqg01sb9niqtc",
+    "baseSnapshot": "repo@lease-cmr8kti2p03ywqg01sb9niqtc",
+    "universes": [
+      {
+        "universe": "sequence-after-contract-rfi",
+        "result": "passed",
+        "affectedRoutes": [
+          "src/components/SignupForm.tsx"
+        ],
+        "inspectionCost": 2,
+        "staleAssumptions": 0
+      },
+      {
+        "universe": "immediate-ui-clearance",
+        "result": "near_miss",
+        "affectedRoutes": [
+          "src/components/SignupForm.tsx"
+        ],
+        "incidents": [
+          "near-miss-ui-contract-rfi-001"
+        ],
+        "staleAssumptions": 2
+      }
+    ],
+    "arbiterVerdict": {
+      "selected": "sequence-after-contract-rfi",
+      "choiceScene": {
+        "repoSnapshot": "repo@lease-cmr8kti2p03ywqg01sb9niqtc",
+        "shadowJobRef": "lease-shadow:cmr8kti2p03ywqg01sb9niqtc",
+        "choices": [
+          {
+            "universe": "sequence-after-contract-rfi",
+            "result": "passed",
+            "inspectionCost": 2,
+            "staleAssumptions": 0,
+            "predictedCollisionRisk": 0,
+            "reworkRiskReduction": 0,
+            "affectedRoutes": [
+              "src/components/SignupForm.tsx"
+            ],
+            "evidenceRefs": [],
+            "incidents": []
+          },
+          {
+            "universe": "immediate-ui-clearance",
+            "result": "near_miss",
+            "inspectionCost": 0,
+            "staleAssumptions": 2,
+            "predictedCollisionRisk": 0,
+            "reworkRiskReduction": 0,
+            "affectedRoutes": [
+              "src/components/SignupForm.tsx"
+            ],
+            "evidenceRefs": [],
+            "incidents": [
+              "near-miss-ui-contract-rfi-001"
+            ]
+          }
+        ],
+        "arbiterVerdict": "sequence-after-contract-rfi",
+        "userChoice": null,
+        "humanOverride": null,
+        "applyResult": null,
+        "laterManualEdits": [],
+        "validityStrength": "executed",
+        "affectedZones": [
+          "src/components/SignupForm.tsx"
+        ],
+        "resultingPolicyDeltaCandidateCount": 1
+      },
+      "policyDeltaCandidates": [
+        {
+          "learnedFromIncidents": [
+            "near-miss-ui-contract-rfi-001"
+          ],
+          "affectedZoneKey": "src/components/SignupForm.tsx",
+          "affectedRoutes": [
+            "src/components/SignupForm.tsx"
+          ],
+          "ruleCandidate": {
+            "rule": "flight_split_reduced_collision",
+            "learningSignals": [
+              "flight_split_reduced_collisions"
+            ],
+            "preferredStrategies": [
+              "sequence-after-contract-rfi"
+            ],
+            "avoidStrategies": [
+              "immediate-ui-clearance"
+            ],
+            "requiredTowerActions": [
+              "prefer_recorded_low_collision_split",
+              "replay_near_miss_before_parallel_clearance"
+            ],
+            "evidenceBasis": {
+              "validityStrength": "executed",
+              "incidentRefs": [
+                "near-miss-ui-contract-rfi-001"
+              ],
+              "evidenceRefs": [
+                "replay:evidence:counterfactual-memory-lease"
+              ],
+              "humanOverride": null,
+              "laterManualEditCount": 0
+            }
+          },
+          "triggerConditions": [
+            {
+              "path": "src/components/SignupForm.tsx"
+            }
+          ],
+          "expectedRiskReduction": 0.215,
+          "confidence": 0.935,
+          "learningSignals": [
+            "flight_split_reduced_collisions"
+          ]
+        }
+      ],
+      "counterfactualLearning": {
+        "candidateCount": 1,
+        "inferredCandidateCount": 1,
+        "learningSignals": [
+          "flight_split_reduced_collisions"
+        ]
+      }
+    },
+    "userChoice": null,
+    "laterManualEdits": [],
+    "validityStrength": "executed",
+    "evidenceRefs": [
+      "replay:evidence:counterfactual-memory-lease"
+    ],
+    "createdAt": "2026-07-06T02:04:16.381Z"
+  },
   "leaseDelta": {
-    "id": "cmr1o4b8h0037ob4tyba2h6l4",
-    "projectId": "cmr1o40z00018ob4tm2dt9j8n",
+    "id": "cmr8ku5qq041nqg0115oh2q89",
+    "projectId": "cmr8ktz7y040pqg01m2cipwlv",
     "learnedFromIncidents": [
       "near-miss-ui-contract-rfi-001"
     ],
@@ -77,17 +3247,17 @@
         "sequence_after_contract_response"
       ],
       "promotion": {
-        "reviewedBy": "codesite-dev-bypass",
-        "targetState": "active",
+        "reviewedBy": "cmr8kt9qj03xhqg01r7t68yoi",
+        "targetState": "promoted",
         "validationStatus": "passed",
         "replayRefs": [
-          "shadow:job:codesite-shadow:sha256:1031b1b7442aff26767f6093a96f07ff0e468a5f03271deaf07c2430477f317c"
+          "codesite:counterfactual-run:cmr8ku1dp041dqg01nezie5zv"
         ],
         "evidenceRefs": [
           "replay:evidence:counterfactual-memory-lease"
         ],
         "reasonCodes": [],
-        "promotedAt": "2026-07-01T06:01:53.012Z"
+        "promotedAt": "2026-07-06T02:04:22.792Z"
       }
     },
     "triggerConditions": [
@@ -97,12 +3267,12 @@
     ],
     "expectedRiskReduction": 0.3,
     "confidence": 0.9,
-    "promotionState": "active",
+    "promotionState": "promoted",
     "replayRefs": [
-      "shadow:job:codesite-shadow:sha256:1031b1b7442aff26767f6093a96f07ff0e468a5f03271deaf07c2430477f317c"
+      "codesite:counterfactual-run:cmr8ku1dp041dqg01nezie5zv"
     ],
-    "createdAt": "2026-07-01T06:01:51.329Z",
-    "promotedAt": "2026-07-01T06:01:53.012Z"
+    "createdAt": "2026-07-06T02:04:22.034Z",
+    "promotedAt": "2026-07-06T02:04:22.792Z"
   },
   "before": {
     "selected": "schema-first",
@@ -137,7 +3307,33 @@
         "inspectionRuns": 0,
         "signalStrength": "moderate"
       },
-      "learnedPolicyDeltaRefs": []
+      "learnedPolicyDeltaRefs": [],
+      "shadowExecutionMode": "external_runner",
+      "shadowExecutionPolicy": {
+        "ok": true,
+        "required": false,
+        "sources": [],
+        "status": "not_required",
+        "shadowExecutionStatus": "completed",
+        "shadowExecutionMode": "external_runner",
+        "runner": "codesite-shadow-runner",
+        "executionMode": "risk_budget_evaluation",
+        "evidenceRefs": [
+          "codesite:shadow-runner:sha256:18be3efda4d2e284f2e0ec5c865c494605259c7c453e263f652d75af77e89c01",
+          "codesite:shadow-universe:schema-first:sha256:ee97d68b58ad704b3829ece0595b0f8df16c959ff472367ace09a50f185748de",
+          "codesite:shadow-job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:3ac0e7d8d7d7a93f3f2733b7c1abd2bcd3d1bad178f9e0969db22e30df94238e",
+          "codesite:shadow-universe:test-first:sha256:27a595fc4ef2222012b982dde713d8e2ea11341b85577bf628c756829dd878bc",
+          "codesite:shadow-runner-input:sha256:d86041b0473844f89183773ead6e56a44ba29493965b7af71ae043be2573706f",
+          "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+          "codesite:shadow-runner-output-artifact:sha256:c8fb9698b1d3b0cecb1e57c901fbe1e8840af92f6b2db27c572776b15924b5d0",
+          "codesite:shadow-runner-output:sha256:c8fb9698b1d3b0cecb1e57c901fbe1e8840af92f6b2db27c572776b15924b5d0",
+          "codesite:shadow-runner-result:sha256:0598263317343ed107019f9b3c9a3c288914a860eeae83c7153e4ce70893e445"
+        ],
+        "reasonCodes": [
+          "shadow_runner_evidence_not_required"
+        ]
+      }
     },
     "universes": [
       {
@@ -157,12 +3353,15 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "schema_airspace_first",
           "downstream_assumptions_refresh_after_contract",
           "semantic_collision_mitigated",
           "import_graph_weighted",
-          "test_ownership_weighted"
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
         "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
@@ -182,7 +3381,22 @@
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "moderate"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:schema-first:sha256:ee97d68b58ad704b3829ece0595b0f8df16c959ff472367ace09a50f185748de",
+            "codesite:shadow-job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:ee97d68b58ad704b3829ece0595b0f8df16c959ff472367ace09a50f185748de"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:schema-first:sha256:ee97d68b58ad704b3829ece0595b0f8df16c959ff472367ace09a50f185748de",
+          "codesite:shadow-job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f"
+        ]
       },
       {
         "strategy": "frontend-backend-parallel",
@@ -201,11 +3415,14 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "parallelism_crosses_contract_airspace",
           "requires_extra_assumption_refresh",
           "import_graph_weighted",
-          "test_ownership_weighted"
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
         ],
         "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
@@ -225,7 +3442,22 @@
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "moderate"
-        }
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:frontend-backend-parallel:sha256:3ac0e7d8d7d7a93f3f2733b7c1abd2bcd3d1bad178f9e0969db22e30df94238e",
+            "codesite:shadow-job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:3ac0e7d8d7d7a93f3f2733b7c1abd2bcd3d1bad178f9e0969db22e30df94238e"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:3ac0e7d8d7d7a93f3f2733b7c1abd2bcd3d1bad178f9e0969db22e30df94238e",
+          "codesite:shadow-job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f"
+        ]
       },
       {
         "strategy": "test-first",
@@ -244,12 +3476,15 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "test_ownership_before_landing",
           "inspection_radar_runs_before_mutation",
           "semantic_collision_mitigated",
           "import_graph_weighted",
-          "test_ownership_weighted"
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
         "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
@@ -269,17 +3504,62 @@
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "moderate"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:test-first:sha256:27a595fc4ef2222012b982dde713d8e2ea11341b85577bf628c756829dd878bc",
+            "codesite:shadow-job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:27a595fc4ef2222012b982dde713d8e2ea11341b85577bf628c756829dd878bc"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:test-first:sha256:27a595fc4ef2222012b982dde713d8e2ea11341b85577bf628c756829dd878bc",
+          "codesite:shadow-job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f"
+        ]
       }
     ],
-    "shadowJobRef": "codesite-shadow:sha256:81579d5a2ad8ddf4efc620e75163743f0e8b9f11a146009f1ce1eef7c8e48ae0",
-    "baseSnapshot": "repo@sha256:5b9e0935475a6b601c15a86df6edd3c5e8cb7bd6c759b297960d7b7e62ec0477",
+    "shadowJobRef": "codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+    "baseSnapshot": "repo@sha256:8e801aea74da93f1b98fd045e796ff0f1d0ece6bb7748cbb2387bad177919e03",
     "evidenceRefs": [
       "codesite:shadow_merge_simulator",
-      "codesite:repo-policy:sha256:eae67d5cd9d917359bbf15b8447d6ef9f08c40166c077a6aa1b1c9d642046252",
-      "codesite:collision-forecast:sha256:fe1f855a5432139f7ab4f9f765e97e3616049ff5884ec2e857d4fb6f16a387fa"
+      "codesite:repo-policy:sha256:00b05825d444bbe231cd66bb0fe5bb4ebea0caae93779b13cf141469ba22b7f7",
+      "codesite:collision-forecast:sha256:fe1f855a5432139f7ab4f9f765e97e3616049ff5884ec2e857d4fb6f16a387fa",
+      "codesite:shadow-runner:sha256:18be3efda4d2e284f2e0ec5c865c494605259c7c453e263f652d75af77e89c01",
+      "codesite:shadow-universe:schema-first:sha256:ee97d68b58ad704b3829ece0595b0f8df16c959ff472367ace09a50f185748de",
+      "codesite:shadow-job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+      "codesite:shadow-universe:frontend-backend-parallel:sha256:3ac0e7d8d7d7a93f3f2733b7c1abd2bcd3d1bad178f9e0969db22e30df94238e",
+      "codesite:shadow-universe:test-first:sha256:27a595fc4ef2222012b982dde713d8e2ea11341b85577bf628c756829dd878bc",
+      "codesite:shadow-runner-input:sha256:d86041b0473844f89183773ead6e56a44ba29493965b7af71ae043be2573706f",
+      "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+      "codesite:shadow-runner-output-artifact:sha256:c8fb9698b1d3b0cecb1e57c901fbe1e8840af92f6b2db27c572776b15924b5d0",
+      "codesite:shadow-runner-output:sha256:c8fb9698b1d3b0cecb1e57c901fbe1e8840af92f6b2db27c572776b15924b5d0",
+      "codesite:shadow-runner-result:sha256:0598263317343ed107019f9b3c9a3c288914a860eeae83c7153e4ce70893e445",
+      "codesite:shadow-runner:sha256:ad59e6852e1505e86c936159d97a86139f5a706cf71bc24f896ad2a6ec113521"
     ],
     "policyDeltaCandidates": [],
+    "shadowExecution": {
+      "status": "completed",
+      "runner": "codesite-shadow-runner",
+      "executionMode": "risk_budget_evaluation",
+      "evidenceRefs": [
+        "codesite:shadow-runner:sha256:18be3efda4d2e284f2e0ec5c865c494605259c7c453e263f652d75af77e89c01",
+        "codesite:shadow-universe:schema-first:sha256:ee97d68b58ad704b3829ece0595b0f8df16c959ff472367ace09a50f185748de",
+        "codesite:shadow-job:codesite-shadow:sha256:f427cf2a23f910b9e20ec809387bb464d2d768f5b2b1cfef961fc0043008912f",
+        "codesite:shadow-universe:frontend-backend-parallel:sha256:3ac0e7d8d7d7a93f3f2733b7c1abd2bcd3d1bad178f9e0969db22e30df94238e",
+        "codesite:shadow-universe:test-first:sha256:27a595fc4ef2222012b982dde713d8e2ea11341b85577bf628c756829dd878bc",
+        "codesite:shadow-runner-input:sha256:d86041b0473844f89183773ead6e56a44ba29493965b7af71ae043be2573706f",
+        "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+        "codesite:shadow-runner-output-artifact:sha256:c8fb9698b1d3b0cecb1e57c901fbe1e8840af92f6b2db27c572776b15924b5d0",
+        "codesite:shadow-runner-output:sha256:c8fb9698b1d3b0cecb1e57c901fbe1e8840af92f6b2db27c572776b15924b5d0",
+        "codesite:shadow-runner-result:sha256:0598263317343ed107019f9b3c9a3c288914a860eeae83c7153e4ce70893e445"
+      ],
+      "universeCount": 3,
+      "digest": "sha256:ad59e6852e1505e86c936159d97a86139f5a706cf71bc24f896ad2a6ec113521"
+    },
     "repoSignals": {
       "signalStrength": "moderate",
       "planCount": 2,
@@ -305,7 +3585,7 @@
   "after": {
     "selected": "test-first",
     "appliedPolicyDeltas": [
-      "cmr1o2luf000xob4t65z2yqz5"
+      "cmr8kti2t03yyqg01vjjgqu4z"
     ],
     "reason": {
       "reasonCodes": [
@@ -340,16 +3620,42 @@
         "signalStrength": "moderate"
       },
       "learnedPolicyDeltaRefs": [
-        "cmr1o2luf000xob4t65z2yqz5"
-      ]
+        "cmr8kti2t03yyqg01vjjgqu4z"
+      ],
+      "shadowExecutionMode": "external_runner",
+      "shadowExecutionPolicy": {
+        "ok": true,
+        "required": false,
+        "sources": [],
+        "status": "not_required",
+        "shadowExecutionStatus": "completed",
+        "shadowExecutionMode": "external_runner",
+        "runner": "codesite-shadow-runner",
+        "executionMode": "risk_budget_evaluation",
+        "evidenceRefs": [
+          "codesite:shadow-runner:sha256:39597268345a6c8d1d82c9cf53ccd52c4e31d4f4bceffc86796981bc69002dd4",
+          "codesite:shadow-universe:schema-first:sha256:aa9f14734db7c4d971453589f1a84c042b1d02354f92888b5dd84e1824682ea2",
+          "codesite:shadow-job:codesite-shadow:sha256:65125ab66d037b276fb9f7388f7cce585435e5d66bfbfc7475d22f486a3be4d5",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:d072f74f075a10e26c6bf13231ded23bb8f68e67396bafcb125bd081875a676b",
+          "codesite:shadow-universe:test-first:sha256:8da16ba12c53c9a11608d7b093ef1ecf88da147370f4e7fbc2c35a47b76e20af",
+          "codesite:shadow-runner-input:sha256:7d609f4c482f5684e1c53d743c471893399b22b6e0672bf74fe1efee93f5b0cb",
+          "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+          "codesite:shadow-runner-output-artifact:sha256:a6cf1683109d04ae783088873532b0b7e4290e86886673fa80dcf557369abbe0",
+          "codesite:shadow-runner-output:sha256:a6cf1683109d04ae783088873532b0b7e4290e86886673fa80dcf557369abbe0",
+          "codesite:shadow-runner-result:sha256:8715cb489ec7a64964cb5020dc0292a3d24a1ce89a1bd09515b28a961f6c21ce"
+        ],
+        "reasonCodes": [
+          "shadow_runner_evidence_not_required"
+        ]
+      }
     },
     "universes": [
       {
         "strategy": "schema-first",
-        "result": "risk",
-        "predictedCollisionRisk": 0.704,
+        "result": "review",
+        "predictedCollisionRisk": 0.546,
         "staleAssumptions": 2,
-        "inspectionCost": 12,
+        "inspectionCost": 11,
         "reworkRiskReduction": 0.66,
         "confidence": 0.71,
         "avoidedRisks": [
@@ -361,6 +3667,7 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": -0.98,
         "reasonCodes": [
           "schema_airspace_first",
           "downstream_assumptions_refresh_after_contract",
@@ -368,10 +3675,12 @@
           "import_graph_weighted",
           "test_ownership_weighted",
           "counterfactual_policy_delta_applied",
-          "learned_policy_delta_avoided_strategy"
+          "learned_policy_delta_avoided_strategy",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
         "learnedPolicyDeltaRefs": [
-          "cmr1o2luf000xob4t65z2yqz5"
+          "cmr8kti2t03yyqg01vjjgqu4z"
         ],
         "sourceSignals": {
           "forecastRiskCount": 1,
@@ -390,7 +3699,22 @@
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "moderate"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:schema-first:sha256:aa9f14734db7c4d971453589f1a84c042b1d02354f92888b5dd84e1824682ea2",
+            "codesite:shadow-job:codesite-shadow:sha256:65125ab66d037b276fb9f7388f7cce585435e5d66bfbfc7475d22f486a3be4d5"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:aa9f14734db7c4d971453589f1a84c042b1d02354f92888b5dd84e1824682ea2"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:schema-first:sha256:aa9f14734db7c4d971453589f1a84c042b1d02354f92888b5dd84e1824682ea2",
+          "codesite:shadow-job:codesite-shadow:sha256:65125ab66d037b276fb9f7388f7cce585435e5d66bfbfc7475d22f486a3be4d5"
+        ]
       },
       {
         "strategy": "frontend-backend-parallel",
@@ -409,16 +3733,19 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": -0.98,
         "reasonCodes": [
           "parallelism_crosses_contract_airspace",
           "requires_extra_assumption_refresh",
           "import_graph_weighted",
           "test_ownership_weighted",
           "counterfactual_policy_delta_applied",
-          "learned_policy_delta_avoided_strategy"
+          "learned_policy_delta_avoided_strategy",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
         ],
         "learnedPolicyDeltaRefs": [
-          "cmr1o2luf000xob4t65z2yqz5"
+          "cmr8kti2t03yyqg01vjjgqu4z"
         ],
         "sourceSignals": {
           "forecastRiskCount": 1,
@@ -437,7 +3764,22 @@
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "moderate"
-        }
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:frontend-backend-parallel:sha256:d072f74f075a10e26c6bf13231ded23bb8f68e67396bafcb125bd081875a676b",
+            "codesite:shadow-job:codesite-shadow:sha256:65125ab66d037b276fb9f7388f7cce585435e5d66bfbfc7475d22f486a3be4d5"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:d072f74f075a10e26c6bf13231ded23bb8f68e67396bafcb125bd081875a676b"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:d072f74f075a10e26c6bf13231ded23bb8f68e67396bafcb125bd081875a676b",
+          "codesite:shadow-job:codesite-shadow:sha256:65125ab66d037b276fb9f7388f7cce585435e5d66bfbfc7475d22f486a3be4d5"
+        ]
       },
       {
         "strategy": "test-first",
@@ -456,6 +3798,7 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0.98,
         "reasonCodes": [
           "test_ownership_before_landing",
           "inspection_radar_runs_before_mutation",
@@ -463,10 +3806,12 @@
           "import_graph_weighted",
           "test_ownership_weighted",
           "counterfactual_policy_delta_applied",
-          "learned_policy_delta_preferred_strategy"
+          "learned_policy_delta_preferred_strategy",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
         "learnedPolicyDeltaRefs": [
-          "cmr1o2luf000xob4t65z2yqz5"
+          "cmr8kti2t03yyqg01vjjgqu4z"
         ],
         "sourceSignals": {
           "forecastRiskCount": 1,
@@ -485,18 +3830,63 @@
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "moderate"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:test-first:sha256:8da16ba12c53c9a11608d7b093ef1ecf88da147370f4e7fbc2c35a47b76e20af",
+            "codesite:shadow-job:codesite-shadow:sha256:65125ab66d037b276fb9f7388f7cce585435e5d66bfbfc7475d22f486a3be4d5"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:8da16ba12c53c9a11608d7b093ef1ecf88da147370f4e7fbc2c35a47b76e20af"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:test-first:sha256:8da16ba12c53c9a11608d7b093ef1ecf88da147370f4e7fbc2c35a47b76e20af",
+          "codesite:shadow-job:codesite-shadow:sha256:65125ab66d037b276fb9f7388f7cce585435e5d66bfbfc7475d22f486a3be4d5"
+        ]
       }
     ],
-    "shadowJobRef": "codesite-shadow:sha256:1031b1b7442aff26767f6093a96f07ff0e468a5f03271deaf07c2430477f317c",
-    "baseSnapshot": "repo@sha256:5b9e0935475a6b601c15a86df6edd3c5e8cb7bd6c759b297960d7b7e62ec0477",
+    "shadowJobRef": "codesite-shadow:sha256:65125ab66d037b276fb9f7388f7cce585435e5d66bfbfc7475d22f486a3be4d5",
+    "baseSnapshot": "repo@sha256:8e801aea74da93f1b98fd045e796ff0f1d0ece6bb7748cbb2387bad177919e03",
     "evidenceRefs": [
       "codesite:shadow_merge_simulator",
-      "codesite:repo-policy:sha256:eae67d5cd9d917359bbf15b8447d6ef9f08c40166c077a6aa1b1c9d642046252",
+      "codesite:repo-policy:sha256:00b05825d444bbe231cd66bb0fe5bb4ebea0caae93779b13cf141469ba22b7f7",
       "codesite:collision-forecast:sha256:fe1f855a5432139f7ab4f9f765e97e3616049ff5884ec2e857d4fb6f16a387fa",
-      "codesite:policy-delta:cmr1o2luf000xob4t65z2yqz5"
+      "codesite:policy-delta:cmr8kti2t03yyqg01vjjgqu4z",
+      "codesite:shadow-runner:sha256:39597268345a6c8d1d82c9cf53ccd52c4e31d4f4bceffc86796981bc69002dd4",
+      "codesite:shadow-universe:schema-first:sha256:aa9f14734db7c4d971453589f1a84c042b1d02354f92888b5dd84e1824682ea2",
+      "codesite:shadow-job:codesite-shadow:sha256:65125ab66d037b276fb9f7388f7cce585435e5d66bfbfc7475d22f486a3be4d5",
+      "codesite:shadow-universe:frontend-backend-parallel:sha256:d072f74f075a10e26c6bf13231ded23bb8f68e67396bafcb125bd081875a676b",
+      "codesite:shadow-universe:test-first:sha256:8da16ba12c53c9a11608d7b093ef1ecf88da147370f4e7fbc2c35a47b76e20af",
+      "codesite:shadow-runner-input:sha256:7d609f4c482f5684e1c53d743c471893399b22b6e0672bf74fe1efee93f5b0cb",
+      "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+      "codesite:shadow-runner-output-artifact:sha256:a6cf1683109d04ae783088873532b0b7e4290e86886673fa80dcf557369abbe0",
+      "codesite:shadow-runner-output:sha256:a6cf1683109d04ae783088873532b0b7e4290e86886673fa80dcf557369abbe0",
+      "codesite:shadow-runner-result:sha256:8715cb489ec7a64964cb5020dc0292a3d24a1ce89a1bd09515b28a961f6c21ce",
+      "codesite:shadow-runner:sha256:fb1e43ff57bbd2bbc1db9e5d8d654794c96b9f9ebe117626cb80e050699065bf"
     ],
     "policyDeltaCandidates": [],
+    "shadowExecution": {
+      "status": "completed",
+      "runner": "codesite-shadow-runner",
+      "executionMode": "risk_budget_evaluation",
+      "evidenceRefs": [
+        "codesite:shadow-runner:sha256:39597268345a6c8d1d82c9cf53ccd52c4e31d4f4bceffc86796981bc69002dd4",
+        "codesite:shadow-universe:schema-first:sha256:aa9f14734db7c4d971453589f1a84c042b1d02354f92888b5dd84e1824682ea2",
+        "codesite:shadow-job:codesite-shadow:sha256:65125ab66d037b276fb9f7388f7cce585435e5d66bfbfc7475d22f486a3be4d5",
+        "codesite:shadow-universe:frontend-backend-parallel:sha256:d072f74f075a10e26c6bf13231ded23bb8f68e67396bafcb125bd081875a676b",
+        "codesite:shadow-universe:test-first:sha256:8da16ba12c53c9a11608d7b093ef1ecf88da147370f4e7fbc2c35a47b76e20af",
+        "codesite:shadow-runner-input:sha256:7d609f4c482f5684e1c53d743c471893399b22b6e0672bf74fe1efee93f5b0cb",
+        "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+        "codesite:shadow-runner-output-artifact:sha256:a6cf1683109d04ae783088873532b0b7e4290e86886673fa80dcf557369abbe0",
+        "codesite:shadow-runner-output:sha256:a6cf1683109d04ae783088873532b0b7e4290e86886673fa80dcf557369abbe0",
+        "codesite:shadow-runner-result:sha256:8715cb489ec7a64964cb5020dc0292a3d24a1ce89a1bd09515b28a961f6c21ce"
+      ],
+      "universeCount": 3,
+      "digest": "sha256:fb1e43ff57bbd2bbc1db9e5d8d654794c96b9f9ebe117626cb80e050699065bf"
+    },
     "repoSignals": {
       "signalStrength": "moderate",
       "planCount": 2,
@@ -527,7 +3917,7 @@
     ],
     "counterfactualPolicy": {
       "appliedPolicyDeltas": [
-        "cmr1o4b8h0037ob4tyba2h6l4"
+        "cmr8ku5qq041nqg0115oh2q89"
       ],
       "reasonCodes": [
         "counterfactual_policy_delta_applied",
@@ -544,17 +3934,18 @@
       "towerInstruction": "Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx."
     },
     "policyDecision": {
-      "id": "cmr1o4eb5003fob4trq1oi4d9",
-      "projectId": "cmr1o40z00018ob4tm2dt9j8n",
-      "mutationLeaseId": "cmr1o4eat003dob4tt2y24g36",
+      "id": "cmr8ku7ee041xqg01l3au4f31",
+      "projectId": "cmr8ktz7y040pqg01m2cipwlv",
+      "mutationLeaseId": "cmr8ku7ea041vqg010em5t6xc",
       "displayCallsign": "UI-GATE-01",
       "decision": "hold",
       "reasonCodes": [
         "route_inside_clearance",
+        "pilot_license_not_required_for_route",
         "counterfactual_policy_delta_applied",
         "counterfactual_policy_delta_hold"
       ],
-      "inputDigest": "sha256:88d9455b59154faa3aa262c57be2b7cecf04e3382e4a19b1a2871650422b105e",
+      "inputDigest": "sha256:615ab419c48718ab3db4dc33532a58fb3d0764c22dee9d5c88cdafd9b4bada37",
       "decisionBody": {
         "status": "holding",
         "towerInstruction": "Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx.",
@@ -587,7 +3978,7 @@
           "verification": {
             "ok": false,
             "status": "blocked",
-            "checkedAt": "2026-07-01T06:01:55.071Z",
+            "checkedAt": "2026-07-06T02:04:24.156Z",
             "source": "codesite_dojo_public_verifier",
             "signatureVerified": false,
             "blockedBy": [
@@ -597,10 +3988,71 @@
             "digest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a"
           }
         },
+        "pilotLicenseHealth": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "key": "cmr8ku08e0413qg0186a8qrfs",
+          "projectId": "cmr8ktz7y040pqg01m2cipwlv",
+          "workspaceSlug": "codesite-counterfactual-memory-proof-1783303418194",
+          "agentSessionId": "cmr8ku08e0413qg0186a8qrfs",
+          "ownerUserId": "cmr8kt9qj03xhqg01r7t68yoi",
+          "displayCallsign": "UI-GATE-01",
+          "status": "active",
+          "level": "Student",
+          "levelRank": 1,
+          "dojoPilotLicenseRef": null,
+          "dojoLicenseRef": null,
+          "dojoProofRef": null,
+          "dojoDecisionDigest": null,
+          "repoScope": "codesite-counterfactual-memory-proof-1783303418194",
+          "authorizedAirspace": [],
+          "restrictedAirspace": [],
+          "requiredRadar": [],
+          "earnedBy": [],
+          "expiresAt": null,
+          "expiresOn": [],
+          "sourceDrift": {
+            "monitored": false,
+            "sourceDigest": null,
+            "currentSourceDigest": "sha256:0f2774f3202ef7b8bd5a40291f0a0e071ba83a6b2d1b55441a4e0223377dd1c2",
+            "expired": false
+          },
+          "landingStats": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "evidenceRefs": []
+          },
+          "violationStats": {
+            "total": 0,
+            "critical": 0,
+            "latestAt": null,
+            "evidenceRefs": []
+          },
+          "reasonCodes": [
+            "pilot_license_health_active"
+          ],
+          "requiredAction": null,
+          "evidenceRefs": [],
+          "lifecycle": {
+            "issuedAt": "2026-07-06T02:04:14.894Z",
+            "checkedAt": "2026-07-06T02:04:24.177Z",
+            "latestLandingAt": null,
+            "latestViolationAt": null,
+            "sourcePolicyDigest": "sha256:292b7338b226520bb3a998887f4586596bde8136feabf4cd09f3e7de2f16f0ba"
+          }
+        },
+        "pilotLicenseRequirement": {
+          "required": false,
+          "classes": [
+            "C"
+          ],
+          "minimumLevel": "Student",
+          "minimumLevelRank": 1
+        },
         "collisionAvoidance": null,
         "counterfactualPolicy": {
           "appliedPolicyDeltas": [
-            "cmr1o4b8h0037ob4tyba2h6l4"
+            "cmr8ku5qq041nqg0115oh2q89"
           ],
           "reasonCodes": [
             "counterfactual_policy_delta_applied",
@@ -615,9 +4067,10 @@
           "status": "holding",
           "decision": "hold",
           "towerInstruction": "Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx."
-        }
+        },
+        "governancePolicy": null
       },
-      "createdAt": "2026-07-01T06:01:55.313Z"
+      "createdAt": "2026-07-06T02:04:24.182Z"
     }
   },
   "assertions": {
@@ -626,8 +4079,61 @@
     "afterReasonExplainsLearning": true,
     "simulatorEvidenceReferencesDelta": true,
     "governedPromotionActivatedMemory": true,
+    "inferredChoiceSceneCapturedAllMatureSignals": true,
+    "collisionPredictionCarriesRegretMemoryHints": true,
+    "nearMissIncidentCreatedGovernedDelta": true,
+    "laterManualRewriteLinkedToCounterfactualRun": true,
     "explicitAvoidWasNotNeutralizedByFallback": true,
     "learnedLeaseGateHeldClearance": true,
     "learnedLeaseGateAugmentedRadar": true
-  }
+  },
+  "status": "validated",
+  "git": {
+    "head": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n?? .synthi/codesite/"
+  },
+  "commands": [
+    {
+      "name": "proofSuiteGenerator:counterfactualMemory",
+      "command": "node synthi/scripts/codesite-counterfactual-memory-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "{",
+        "  \"ok\": true,",
+        "  \"jsonPath\": \"tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\",",
+        "  \"htmlPath\": \"tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\",",
+        "  \"pngPath\": \"tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\",",
+        "  \"assertions\": {",
+        "    \"baselineHadNoAppliedPolicyDelta\": true,",
+        "    \"promotedDeltaChangedTowerSelection\": true,",
+        "    \"afterReasonExplainsLearning\": true,",
+        "    \"simulatorEvidenceReferencesDelta\": true,",
+        "    \"governedPromotionActivatedMemory\": true,",
+        "    \"inferredChoiceSceneCapturedAllMatureSignals\": true,",
+        "    \"collisionPredictionCarriesRegretMemoryHints\": true,",
+        "    \"nearMissIncidentCreatedGovernedDelta\": true,",
+        "    \"laterManualRewriteLinkedToCounterfactualRun\": true,",
+        "    \"explicitAvoidWasNotNeutralizedByFallback\": true,",
+        "    \"learnedLeaseGateHeldClearance\": true,",
+        "    \"learnedLeaseGateAugmentedRadar\": true",
+        "  }",
+        "}"
+      ]
+    }
+  ],
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-06T02:04:25.352Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json"
+  },
+  "ok": true
 }

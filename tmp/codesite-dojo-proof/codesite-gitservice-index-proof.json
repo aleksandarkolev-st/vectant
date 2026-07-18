@@ -1,0 +1,440 @@
+{
+  "schemaVersion": "synthi.codesite.gitServiceIndexProof.v1",
+  "generatedAt": "2026-07-06T01:49:44.037Z",
+  "source": "scripts/codesite-gitservice-index-proof.mjs",
+  "scenarios": [
+    {
+      "name": "Path-scoped stageFile",
+      "notes": [
+        "A direct stageFile call recorded a git_index event before staging src/app.js.",
+        "A second call targeting api/auth/signup.ts was denied before the index changed."
+      ],
+      "mutations": [
+        {
+          "path": "src/app.js",
+          "disposition": "write_allowed",
+          "tool": "git_index",
+          "operation": "stage",
+          "evidenceRefs": [
+            "proof:index-context",
+            "proof:stage-file"
+          ],
+          "reasonCodes": [
+            "inside_clearance_route"
+          ]
+        },
+        {
+          "path": "api/auth/signup.ts",
+          "disposition": "write_denied",
+          "tool": "git_index",
+          "operation": "stage",
+          "evidenceRefs": [
+            "proof:index-context"
+          ],
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Patch hunk stage",
+      "notes": [
+        "A real unified diff hunk was applied to the index only after CodeSiteFS recorded a path-scoped git_index allowance."
+      ],
+      "mutations": [
+        {
+          "path": "src/app.js",
+          "disposition": "write_allowed",
+          "tool": "git_index",
+          "operation": "stage-lines",
+          "evidenceRefs": [
+            "proof:index-context",
+            "proof:stage-lines"
+          ],
+          "reasonCodes": [
+            "inside_clearance_route"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Forged stageLines target",
+      "notes": [
+        "The request claimed src/app.js, but the unified diff header targeted api/auth/signup.ts. The service denied the actual patch target before git apply --cached."
+      ],
+      "mutations": [
+        {
+          "path": "api/auth/signup.ts",
+          "disposition": "write_denied",
+          "tool": "git_index",
+          "operation": "stage-lines",
+          "evidenceRefs": [
+            "proof:index-context",
+            "proof:stage-lines-forged"
+          ],
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Same-route patch mismatch",
+      "notes": [
+        "A patch targeting src/other.js was inside the write set, but the request claimed src/app.js. The boundary allowed the real path, then the service rejected the mismatch before git apply --cached."
+      ],
+      "mutations": [
+        {
+          "path": "src/other.js",
+          "disposition": "write_allowed",
+          "tool": "git_index",
+          "operation": "stage-lines",
+          "evidenceRefs": [
+            "proof:index-context",
+            "proof:stage-lines-mismatch"
+          ],
+          "reasonCodes": [
+            "inside_clearance_route"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Unstage file pathspec",
+      "notes": [
+        "A branch named src/app.js existed. unstageFile stayed on main and unstaged the file path using an explicit pathspec separator.",
+        "A denied unstageFile request outside clearance left the cached entry intact."
+      ],
+      "mutations": [
+        {
+          "path": "src/app.js",
+          "disposition": "write_allowed",
+          "tool": "git_index",
+          "operation": "unstage",
+          "evidenceRefs": [
+            "proof:index-context",
+            "proof:unstage-file"
+          ],
+          "reasonCodes": [
+            "inside_clearance_route"
+          ]
+        },
+        {
+          "path": "api/auth/signup.ts",
+          "disposition": "write_denied",
+          "tool": "git_index",
+          "operation": "unstage",
+          "evidenceRefs": [
+            "proof:index-context",
+            "proof:unstage-file-denied"
+          ],
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Unstage hunk gate",
+      "notes": [
+        "An approved staged hunk was removed from the index while the worktree edit remained.",
+        "A forged unstageLines patch targeting api/auth/signup.ts was denied before cached content changed."
+      ],
+      "mutations": [
+        {
+          "path": "src/app.js",
+          "disposition": "write_allowed",
+          "tool": "git_index",
+          "operation": "unstage-lines",
+          "evidenceRefs": [
+            "proof:index-context",
+            "proof:unstage-lines"
+          ],
+          "reasonCodes": [
+            "inside_clearance_route"
+          ]
+        },
+        {
+          "path": "api/auth/signup.ts",
+          "disposition": "write_denied",
+          "tool": "git_index",
+          "operation": "unstage-lines",
+          "evidenceRefs": [
+            "proof:index-context",
+            "proof:unstage-lines-forged"
+          ],
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Repo-wide stageAll gate",
+      "notes": [
+        "A path-scoped lease cannot stage the whole repository. The same direct service call succeeds only after ** git_index clearance."
+      ],
+      "mutations": [
+        {
+          "path": "**",
+          "disposition": "write_denied",
+          "tool": "git_index",
+          "operation": "stage-all",
+          "evidenceRefs": [
+            "proof:index-context"
+          ],
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        },
+        {
+          "path": "**",
+          "disposition": "write_allowed",
+          "tool": "git_index",
+          "operation": "stage-all",
+          "evidenceRefs": [
+            "proof:index-context",
+            "proof:stage-all"
+          ],
+          "reasonCodes": [
+            "inside_clearance_route"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Repo-wide unstageAll gate",
+      "notes": [
+        "A direct unstageAll call is blocked under path-scoped clearance and succeeds only after a broad git_index write set is granted."
+      ],
+      "mutations": [
+        {
+          "path": "**",
+          "disposition": "write_denied",
+          "tool": "git_index",
+          "operation": "unstage-all",
+          "evidenceRefs": [
+            "proof:index-context"
+          ],
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        },
+        {
+          "path": "**",
+          "disposition": "write_allowed",
+          "tool": "git_index",
+          "operation": "unstage-all",
+          "evidenceRefs": [
+            "proof:index-context",
+            "proof:unstage-all"
+          ],
+          "reasonCodes": [
+            "inside_clearance_route"
+          ]
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "name": "stageFile records git_index before staging an allowed path",
+      "ok": true,
+      "detail": {
+        "cachedAfterAllow": [
+          "src/app.js"
+        ],
+        "event": "write_allowed",
+        "tool": "git_index"
+      }
+    },
+    {
+      "name": "stageFile denial preserves the index for paths outside clearance",
+      "ok": true,
+      "detail": {
+        "deniedPath": "api/auth/signup.ts",
+        "cachedAfterDeny": [
+          "src/app.js"
+        ],
+        "reasonCodes": [
+          "outside_clearance_route"
+        ],
+        "digest": "sha256:7b9a72466d3960eb2aacccfc848939453490db0678bd4725def3f789b891c919"
+      }
+    },
+    {
+      "name": "stageLines stages approved hunks only after git_index clearance",
+      "ok": true,
+      "detail": {
+        "cachedNames": [
+          "src/app.js"
+        ],
+        "worktreeNames": [],
+        "event": "write_allowed",
+        "operation": "stage-lines"
+      }
+    },
+    {
+      "name": "stageLines gates the patch header target instead of the claimed filePath",
+      "ok": true,
+      "detail": {
+        "deniedPath": "api/auth/signup.ts",
+        "cachedNames": [],
+        "reasonCodes": [
+          "outside_clearance_route"
+        ],
+        "digest": "sha256:b873416d9c6f7c7f4e065744f787804830f85f3c93fbcebb71b9e683a6dba5e2"
+      }
+    },
+    {
+      "name": "stageLines rejects same-route patch/filePath mismatches before applying",
+      "ok": true,
+      "detail": {
+        "expectedPath": "src/app.js",
+        "patchPaths": [
+          "src/other.js"
+        ],
+        "cachedNames": [],
+        "event": "write_allowed"
+      }
+    },
+    {
+      "name": "unstageFile uses pathspec disambiguation when a branch shares the file name",
+      "ok": true,
+      "detail": {
+        "currentBranch": "main",
+        "cachedNames": [],
+        "event": "write_allowed"
+      }
+    },
+    {
+      "name": "unstageFile denial preserves cached entries outside clearance",
+      "ok": true,
+      "detail": {
+        "deniedPath": "api/auth/signup.ts",
+        "cachedAfterDeny": [
+          "api/auth/signup.ts"
+        ],
+        "reasonCodes": [
+          "outside_clearance_route"
+        ]
+      }
+    },
+    {
+      "name": "unstageLines removes approved hunks from index and keeps worktree edits",
+      "ok": true,
+      "detail": {
+        "cachedAfterAllow": [],
+        "worktreeAfterAllow": [
+          "src/app.js"
+        ],
+        "event": "write_allowed"
+      }
+    },
+    {
+      "name": "unstageLines forged patch denial preserves the cached target",
+      "ok": true,
+      "detail": {
+        "deniedPath": "api/auth/signup.ts",
+        "cachedAfterDeny": [
+          "api/auth/signup.ts"
+        ],
+        "reasonCodes": [
+          "outside_clearance_route"
+        ]
+      }
+    },
+    {
+      "name": "stageAll is denied without broad index clearance and leaves the index untouched",
+      "ok": true,
+      "detail": {
+        "reasonCodes": [
+          "outside_clearance_route"
+        ],
+        "cachedAfterDeny": []
+      }
+    },
+    {
+      "name": "stageAll with broad clearance stages every changed path",
+      "ok": true,
+      "detail": {
+        "cachedAfterAllow": [
+          "api/auth/signup.ts",
+          "src/app.js"
+        ],
+        "event": "write_allowed"
+      }
+    },
+    {
+      "name": "unstageAll is denied without broad index clearance and keeps staged entries",
+      "ok": true,
+      "detail": {
+        "reasonCodes": [
+          "outside_clearance_route"
+        ],
+        "cachedAfterDeny": [
+          "api/auth/signup.ts",
+          "src/app.js"
+        ]
+      }
+    },
+    {
+      "name": "unstageAll with broad clearance moves all staged entries back to the worktree",
+      "ok": true,
+      "detail": {
+        "cachedAfterAllow": [],
+        "worktreeAfterAllow": [
+          "api/auth/signup.ts",
+          "src/app.js"
+        ],
+        "event": "write_allowed"
+      }
+    }
+  ],
+  "summary": {
+    "status": "pass",
+    "scenarioCount": 8,
+    "assertionCount": 13
+  },
+  "status": "validated",
+  "git": {
+    "head": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n?? .synthi/codesite/"
+  },
+  "commands": [
+    {
+      "name": "proofSuiteGenerator:gitServiceIndexBoundary",
+      "command": "node scripts/codesite-gitservice-index-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "{",
+        "  \"ok\": true,",
+        "  \"proofJsonPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\",",
+        "  \"proofHtmlPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\",",
+        "  \"proofPngPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\"",
+        "}",
+        "[GitService] WARNING: token store is PLAINTEXT on disk. Set SYNTHI_TOKEN_ENCRYPTION_KEY (32 bytes, base64) or SYNTHI_TOKEN_ENCRYPTION_PASSPHRASE to encrypt at rest.",
+        "[GitService] Native git bindings unavailable; using simple-git fallback: Cannot find module 'nodegit'",
+        "Require stack:",
+        "- /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/backend/collab-server/gitService.js",
+        "- /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/scripts/codesite-gitservice-index-proof.mjs"
+      ]
+    }
+  ],
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-06T01:49:44.037Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json"
+  },
+  "ok": true
+}

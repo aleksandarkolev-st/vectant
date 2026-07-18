@@ -1,0 +1,43 @@
+{
+  "id": "cmr8k2ay303cwqg01h3xwdsmo",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "learnedFromIncidents": [],
+  "affectedZoneKey": null,
+  "ruleCandidate": {
+    "rule": "schema_contract_first_before_api_parallelism",
+    "preferredStrategies": [
+      "schema-first"
+    ],
+    "avoidStrategies": [
+      "frontend-backend-parallel"
+    ],
+    "affectedRoutes": [
+      "synthi/prisma/schema.prisma",
+      "synthi/src/app/api/auth/**"
+    ],
+    "requiredTowerActions": [
+      "refresh_downstream_assumptions",
+      "hold_dependent_api_until_schema_lands"
+    ],
+    "expectedRiskReduction": 0.31,
+    "confidence": 0.84
+  },
+  "triggerConditions": [
+    {
+      "path": "synthi/prisma/schema.prisma"
+    },
+    {
+      "path": "synthi/src/app/api/auth/**"
+    }
+  ],
+  "expectedRiskReduction": 0.31,
+  "confidence": 0.84,
+  "promotionState": "proposed",
+  "replayRefs": [
+    "codesite:counterfactual-run:cmr8k2axz03cuqg01ak9lce1g",
+    "shadow:job:shadow:codesite-full-workflow-proof-1783302099565:counterfactual-choice",
+    "codesite:shadow:full-workflow-counterfactual"
+  ],
+  "createdAt": "2026-07-06T01:42:42.411Z",
+  "promotedAt": null
+}

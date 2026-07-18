@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeSite LineProvenance",
+  "type": "object",
+  "required": [
+    "filePath",
+    "lineAnchor",
+    "displayCallsign"
+  ],
+  "properties": {
+    "filePath": {
+      "type": "string"
+    },
+    "lineAnchor": {
+      "type": "string"
+    },
+    "startLine": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "endLine": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "displayCallsign": {
+      "type": "string"
+    },
+    "reasonRef": {
+      "type": "string"
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dojoSourceRefs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "proofBundleId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "processAncestry": {
+      "type": "array"
+    },
+    "promptSummary": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

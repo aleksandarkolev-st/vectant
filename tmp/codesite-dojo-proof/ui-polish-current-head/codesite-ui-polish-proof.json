@@ -1,0 +1,84 @@
+{
+  "ok": true,
+  "generatedAt": "2026-07-04T19:06:36.046Z",
+  "slug": "codesite-mature-full-proof-20260704-current-head-1",
+  "url": "http://127.0.0.1:3107/workspace/codesite-mature-full-proof-20260704-current-head-1/codesite",
+  "designRead": "B2B infrastructure cockpit for senior engineering teams, serious ATC/control-plane language, dense but legible operational UI.",
+  "captures": [
+    {
+      "name": "desktop",
+      "path": "tmp/codesite-dojo-proof/ui-polish-current-head/codesite-ui-polish-desktop.png",
+      "metrics": {
+        "viewport": {
+          "width": 1440,
+          "height": 1100
+        },
+        "documentWidth": 1440,
+        "documentHeight": 1100,
+        "horizontalOverflow": false,
+        "rightOverflow": 0,
+        "laneCount": 4,
+        "maxLaneHeight": 147.328125,
+        "minLaneTrack": 84.5156,
+        "statusTexts": [
+          "Flights6active",
+          "Required5high",
+          "Permits1active",
+          "Reroutes0active"
+        ],
+        "statusRailHasLabels": true,
+        "hasRadar": true,
+        "hasProofBundle": true,
+        "hasTowerFeed": true,
+        "nextOverlays": 0
+      },
+      "stats": {
+        "bytes": 300735,
+        "sampleUniqueBytes": 256
+      }
+    },
+    {
+      "name": "mobile",
+      "path": "tmp/codesite-dojo-proof/ui-polish-current-head/codesite-ui-polish-mobile.png",
+      "metrics": {
+        "viewport": {
+          "width": 390,
+          "height": 900
+        },
+        "documentWidth": 390,
+        "documentHeight": 900,
+        "horizontalOverflow": false,
+        "rightOverflow": 0,
+        "laneCount": 4,
+        "maxLaneHeight": 192.90625,
+        "minLaneTrack": 27,
+        "statusTexts": [
+          "Flights6active",
+          "Required5high",
+          "Permits1active",
+          "Reroutes0active"
+        ],
+        "statusRailHasLabels": true,
+        "hasRadar": true,
+        "hasProofBundle": true,
+        "hasTowerFeed": true,
+        "nextOverlays": 0
+      },
+      "stats": {
+        "bytes": 283937,
+        "sampleUniqueBytes": 256
+      }
+    }
+  ],
+  "assertions": {
+    "desktopCaptured": true,
+    "mobileCaptured": true,
+    "noHorizontalOverflow": true,
+    "lanesHaveStableGeometry": true,
+    "statusLabelsVisible": true,
+    "radarContentVisible": true,
+    "proofContentVisible": true,
+    "towerContentVisible": true,
+    "nextOverlayHidden": true
+  }
+}

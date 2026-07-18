@@ -1,0 +1,4764 @@
+{
+  "displayCallsign": "SCHEMA-01",
+  "session": {
+    "id": "cmr76rypy009lqk017lm2gi9u",
+    "projectId": "cmr76rvc3008sqk01itxc3o8s",
+    "ownerUserId": "cmr76rv7e008jqk01igpdj00w",
+    "agentProvider": "codex",
+    "agentRuntime": "tmp-codex-cli",
+    "providerSessionRef": "codex-proof-schema-20260705T0050",
+    "displayCallsign": "SCHEMA-01",
+    "status": "registered",
+    "permissions": [
+      "synthi_codesite_get_radar",
+      "synthi_codesite_open_transaction",
+      "synthi_codesite_apply_patch",
+      "synthi_codesite_record_assumption"
+    ],
+    "redactionPolicy": {
+      "acceptsTowerMessages": true,
+      "redactSecrets": true,
+      "redactPrivatePrompts": true,
+      "allowAttachments": false,
+      "visibleZones": [
+        "**"
+      ],
+      "allowedDocumentKinds": [
+        "rfi",
+        "change_order",
+        "inspection_request",
+        "inspection_result",
+        "mayday",
+        "handoff",
+        "stop_work",
+        "punch",
+        "tower_instruction"
+      ]
+    },
+    "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+    "dojoProofRef": "pcap-full-workflow-schema",
+    "dojoEvidenceRefs": [
+      "dojo:evidence:full-workflow-checkride"
+    ],
+    "dojoDecisionDigest": "sha256:7719e9ce4785edcdf1663981edbd7b0e8027aad7334c9da80d6dd3189bcb3652",
+    "pilotLicenseSnapshot": {
+      "licenseLevel": "IFR",
+      "licenseStatus": "active",
+      "repoScope": "codesite-full-workflow-proof-1783219369293",
+      "authorizedAirspace": [
+        "packages/schemas/**",
+        "openapi/**",
+        "packages/*/src/index.ts",
+        "synthi/prisma/**",
+        "backend/collab-server/permissionMiddleware.js"
+      ],
+      "requiredRadar": [
+        "typecheck",
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:full-workflow-checkride"
+      ],
+      "expiresOn": [
+        "source_drift"
+      ],
+      "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "evidenceRefs": [
+        "dojo:evidence:full-workflow-checkride"
+      ]
+    },
+    "createdAt": "2026-07-05T02:42:58.823Z",
+    "endedAt": null
+  },
+  "flightPlans": [
+    {
+      "id": "cmr76rzmj009rqk01rxv77xvc",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+      "displayCallsign": "SCHEMA-01",
+      "mission": "Schema first",
+      "domain": "schema",
+      "status": "preflight",
+      "route": [
+        "synthi/prisma/**"
+      ],
+      "blockedZones": [],
+      "abortConditions": [
+        "required radar failed",
+        "tower reroute issued"
+      ],
+      "requestedTools": [
+        "file_write",
+        "npm_test"
+      ],
+      "estimatedDurationMs": null,
+      "filedAt": "2026-07-05T02:42:59.996Z",
+      "closedAt": null
+    }
+  ],
+  "clearances": [
+    {
+      "id": "cmr76s97i00alqk01mvljd1m6",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "executionPlanId": "cmr76rzmj009rqk01rxv77xvc",
+      "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+      "displayCallsign": "SCHEMA-01",
+      "status": "active",
+      "lease": {
+        "allowedPaths": [
+          "synthi/prisma/**"
+        ],
+        "blockedPaths": [
+          "secrets/**"
+        ],
+        "allowedTools": [
+          "file_write"
+        ],
+        "invariants": [
+          "clearance.diff.inside_route",
+          "no.secret.exposure",
+          "restricted_airspace.inspector_required"
+        ],
+        "requiredRadar": [
+          "typecheck",
+          "tests",
+          "governance"
+        ],
+        "expiresAt": null,
+        "issuedBy": "codesite_policy_engine",
+        "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands.",
+        "inspectedZones": [
+          {
+            "zoneKey": "class_b",
+            "label": "Shared contract airspace",
+            "class": "B",
+            "paths": [
+              "packages/schemas/**",
+              "openapi/**",
+              "packages/*/src/index.ts",
+              "synthi/prisma/**",
+              "backend/collab-server/permissionMiddleware.js"
+            ],
+            "rules": [
+              "flight_plan_required",
+              "downstream_notification_required",
+              "change_order_for_mutation"
+            ],
+            "risk": "high",
+            "source": "compiled_default",
+            "path": "synthi/prisma/**"
+          }
+        ],
+        "dojoProofVerification": {
+          "ok": true,
+          "status": "verified",
+          "checkedAt": "2026-07-05T02:43:12.386Z",
+          "source": "dojo_public_proof_verifier",
+          "capsuleId": "pcap-full-workflow-schema",
+          "keyId": "dojo-full-workflow-key",
+          "proofKeyStatus": "active",
+          "proofKeyIssuer": "dojo-full-workflow-issuer",
+          "proofKeySigningProvider": "ed25519-local",
+          "proofKeyCustody": "local",
+          "signatureVerified": true,
+          "blockedBy": [],
+          "expected": {
+            "required_evidence_claims": [
+              "codesite.restricted_mutation"
+            ],
+            "ledger_checkpoint_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "requested_action": "codesite.mutation.clearance"
+          },
+          "digest": "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2"
+        },
+        "pilotLicenseHealth": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "key": "cmr76rypy009lqk017lm2gi9u",
+          "projectId": "cmr76rvc3008sqk01itxc3o8s",
+          "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+          "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+          "ownerUserId": "cmr76rv7e008jqk01igpdj00w",
+          "displayCallsign": "SCHEMA-01",
+          "status": "active",
+          "level": "IFR",
+          "levelRank": 3,
+          "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+          "dojoLicenseRef": "schema.level_2@2026-06-25",
+          "dojoProofRef": "pcap-full-workflow-schema",
+          "dojoDecisionDigest": "sha256:7719e9ce4785edcdf1663981edbd7b0e8027aad7334c9da80d6dd3189bcb3652",
+          "repoScope": "codesite-full-workflow-proof-1783219369293",
+          "authorizedAirspace": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "restrictedAirspace": [],
+          "requiredRadar": [
+            "typecheck",
+            "tests"
+          ],
+          "earnedBy": [
+            "dojo:full-workflow-checkride",
+            "dojo:evidence:full-workflow-checkride",
+            "full-workflow-checkride"
+          ],
+          "expiresAt": null,
+          "expiresOn": [
+            "source_drift"
+          ],
+          "sourceDrift": {
+            "monitored": true,
+            "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "expired": false
+          },
+          "landingStats": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "evidenceRefs": []
+          },
+          "violationStats": {
+            "total": 0,
+            "critical": 0,
+            "latestAt": null,
+            "evidenceRefs": []
+          },
+          "reasonCodes": [
+            "pilot_license_health_active",
+            "pilot_license_source_current",
+            "pilot_license_from_verified_dojo_proof"
+          ],
+          "requiredAction": null,
+          "evidenceRefs": [
+            "dojo:evidence:full-workflow-checkride",
+            "dojo:full-workflow-checkride",
+            "pcap-full-workflow-schema",
+            "schema.level_2@2026-06-25",
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+            "full-workflow-checkride"
+          ],
+          "lifecycle": {
+            "issuedAt": "2026-07-05T02:42:58.823Z",
+            "checkedAt": "2026-07-05T02:43:12.408Z",
+            "latestLandingAt": null,
+            "latestViolationAt": null,
+            "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712",
+            "clearanceProofCheckedAt": "2026-07-05T02:43:12.386Z"
+          }
+        },
+        "pilotLicenseRequirement": {
+          "required": true,
+          "classes": [
+            "B"
+          ],
+          "minimumLevel": "IFR",
+          "minimumLevelRank": 3
+        },
+        "collisionAvoidance": {
+          "forecast": {
+            "riskLevel": "high",
+            "risks": [
+              {
+                "risk": "contract_collision",
+                "severity": "high",
+                "aircraft": [
+                  "API-02",
+                  "SCHEMA-01"
+                ],
+                "conflictZone": "synthi/prisma/**",
+                "overlaps": [
+                  [
+                    "synthi/prisma/**",
+                    "synthi/prisma/**"
+                  ]
+                ],
+                "recommendedResolution": {
+                  "action": "schema_first",
+                  "steps": [
+                    "Put SCHEMA-01 in holding",
+                    "Put API-02 in holding",
+                    "Issue schema clearance first",
+                    "Reissue downstream clearances after contract landing"
+                  ]
+                }
+              }
+            ],
+            "runwayOccupancy": [],
+            "wakeTurbulence": []
+          },
+          "risk": null,
+          "schemaFirstLeader": true,
+          "reasonCodes": [
+            "schema_first_leader_clearance"
+          ],
+          "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands."
+        },
+        "counterfactualPolicy": null,
+        "governancePolicy": {
+          "required": true,
+          "verified": true,
+          "restrictedZones": [
+            {
+              "zoneKey": "class_b",
+              "label": "Shared contract airspace",
+              "class": "B",
+              "path": "synthi/prisma/index.ts"
+            }
+          ],
+          "evidence": {
+            "permits": [
+              {
+                "id": "cmr76s48400afqk01o8bcd748",
+                "permitType": "schema_work_permit",
+                "status": "issued",
+                "executionPlanId": "cmr76rzmj009rqk01rxv77xvc",
+                "documentId": null,
+                "evidenceRefs": [
+                  "codesite:governance:full-workflow-schema-permit"
+                ]
+              }
+            ],
+            "routeRevisions": [],
+            "documents": []
+          },
+          "requiredRadar": [
+            "governance"
+          ],
+          "reasonCodes": [
+            "governance_clearance_evidence_verified"
+          ],
+          "towerInstruction": null
+        }
+      },
+      "pilotLicenseHealth": {
+        "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+        "key": "cmr76rypy009lqk017lm2gi9u",
+        "projectId": "cmr76rvc3008sqk01itxc3o8s",
+        "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+        "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+        "ownerUserId": "cmr76rv7e008jqk01igpdj00w",
+        "displayCallsign": "SCHEMA-01",
+        "status": "active",
+        "level": "IFR",
+        "levelRank": 3,
+        "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+        "dojoLicenseRef": "schema.level_2@2026-06-25",
+        "dojoProofRef": "pcap-full-workflow-schema",
+        "dojoDecisionDigest": "sha256:7719e9ce4785edcdf1663981edbd7b0e8027aad7334c9da80d6dd3189bcb3652",
+        "repoScope": "codesite-full-workflow-proof-1783219369293",
+        "authorizedAirspace": [
+          "packages/schemas/**",
+          "openapi/**",
+          "packages/*/src/index.ts",
+          "synthi/prisma/**",
+          "backend/collab-server/permissionMiddleware.js"
+        ],
+        "restrictedAirspace": [],
+        "requiredRadar": [
+          "typecheck",
+          "tests"
+        ],
+        "earnedBy": [
+          "dojo:full-workflow-checkride",
+          "dojo:evidence:full-workflow-checkride",
+          "full-workflow-checkride"
+        ],
+        "expiresAt": null,
+        "expiresOn": [
+          "source_drift"
+        ],
+        "sourceDrift": {
+          "monitored": true,
+          "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+          "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+          "expired": false
+        },
+        "landingStats": {
+          "total": 0,
+          "passed": 0,
+          "failed": 0,
+          "evidenceRefs": []
+        },
+        "violationStats": {
+          "total": 0,
+          "critical": 0,
+          "latestAt": null,
+          "evidenceRefs": []
+        },
+        "reasonCodes": [
+          "pilot_license_health_active",
+          "pilot_license_source_current",
+          "pilot_license_from_verified_dojo_proof"
+        ],
+        "requiredAction": null,
+        "evidenceRefs": [
+          "dojo:evidence:full-workflow-checkride",
+          "dojo:full-workflow-checkride",
+          "pcap-full-workflow-schema",
+          "schema.level_2@2026-06-25",
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+          "full-workflow-checkride"
+        ],
+        "lifecycle": {
+          "issuedAt": "2026-07-05T02:42:58.823Z",
+          "checkedAt": "2026-07-05T02:43:12.408Z",
+          "latestLandingAt": null,
+          "latestViolationAt": null,
+          "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712",
+          "clearanceProofCheckedAt": "2026-07-05T02:43:12.386Z"
+        }
+      },
+      "pilotLicenseRequirement": {
+        "required": true,
+        "classes": [
+          "B"
+        ],
+        "minimumLevel": "IFR",
+        "minimumLevelRank": 3
+      },
+      "dojoProofRef": "pcap-full-workflow-schema",
+      "dojoLicenseRef": "schema.level_2@2026-06-25",
+      "dojoEvidenceRefs": [
+        "full-workflow-checkride"
+      ],
+      "dojoLedgerCheckpointHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "dojoDecisionDigest": "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+      "implementationStatus": {
+        "executable": true,
+        "productionRuntime": true,
+        "verificationRuntime": "codesite-ed25519-proof-verifier",
+        "runtimeBoundary": "docker-full-workflow-proof"
+      },
+      "issuedAt": "2026-07-05T02:43:12.414Z",
+      "expiresAt": null,
+      "revokedAt": null
+    }
+  ],
+  "transactions": [
+    {
+      "id": "cmr76sqte00blqk01jga6jnj3",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+      "baseSnapshot": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+      "baseSnapshotEvidence": {
+        "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+        "status": "recorded",
+        "scope": "repo_wide",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+        "fileDigests": [
+          {
+            "path": "synthi/prisma/schema-contract-read.txt",
+            "exists": true,
+            "size": 24,
+            "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+          }
+        ],
+        "missingPaths": [],
+        "skippedPaths": [],
+        "truncated": false,
+        "repoManifestDigest": "sha256:4ab6d19df4f6c2ef92ad202b07de5637dec9d23a2e414c4b1f18fba5e9ec2254",
+        "repoManifestFileCount": 5,
+        "repoManifestScannedEntries": 10,
+        "repoManifestTruncated": false,
+        "repoManifestSkippedPaths": [],
+        "repoManifestExcludedPaths": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "limits": {
+          "maxFiles": 512,
+          "maxFileBytes": 2097152,
+          "maxScanEntries": 15000
+        },
+        "generatedAt": "2026-07-05T02:43:35.169Z",
+        "source": "codesite_control_plane",
+        "snapshotDigest": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+        "evidenceDigest": "sha256:ec8199f8668dee7f87523f5839403218bd5f73b8ccdc0a6884689c24d50be2bb"
+      },
+      "isolation": "serializable",
+      "status": "committed",
+      "readSet": [
+        "synthi/prisma/schema-contract-read.txt"
+      ],
+      "observedReadSet": [
+        "synthi/prisma/schema-contract-read.txt"
+      ],
+      "writeSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "observedWriteSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "semanticDependencyRefs": [],
+      "invariants": [
+        "clearance.diff.inside_route"
+      ],
+      "assumptionRefs": [
+        "cmr76stj200brqk01rdlmxv30"
+      ],
+      "commitDecision": {
+        "ok": true,
+        "isolation": "serializable",
+        "reasonCodes": [
+          "repo_snapshot_stable",
+          "serializable_validation_passed",
+          "serializable_commit_landed"
+        ],
+        "blockedWrites": [],
+        "invalidAssumptions": [],
+        "staleReads": [],
+        "repoSnapshot": {
+          "ok": true,
+          "reasonCodes": [
+            "repo_snapshot_stable"
+          ],
+          "expected": {
+            "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+            "status": "recorded",
+            "scope": "repo_wide",
+            "readSet": [
+              "synthi/prisma/schema-contract-read.txt"
+            ],
+            "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+            "fileDigests": [
+              {
+                "path": "synthi/prisma/schema-contract-read.txt",
+                "exists": true,
+                "size": 24,
+                "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+              }
+            ],
+            "missingPaths": [],
+            "skippedPaths": [],
+            "truncated": false,
+            "repoManifestDigest": "sha256:4ab6d19df4f6c2ef92ad202b07de5637dec9d23a2e414c4b1f18fba5e9ec2254",
+            "repoManifestFileCount": 5,
+            "repoManifestScannedEntries": 10,
+            "repoManifestTruncated": false,
+            "repoManifestSkippedPaths": [],
+            "repoManifestExcludedPaths": [
+              "synthi/prisma/schema.prisma"
+            ],
+            "limits": {
+              "maxFiles": 512,
+              "maxFileBytes": 2097152,
+              "maxScanEntries": 15000
+            },
+            "generatedAt": "2026-07-05T02:43:35.169Z",
+            "source": "codesite_control_plane",
+            "snapshotDigest": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+            "evidenceDigest": "sha256:ec8199f8668dee7f87523f5839403218bd5f73b8ccdc0a6884689c24d50be2bb"
+          },
+          "current": {
+            "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+            "status": "recorded",
+            "scope": "repo_wide",
+            "readSet": [
+              "synthi/prisma/schema-contract-read.txt"
+            ],
+            "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+            "fileDigests": [
+              {
+                "path": "synthi/prisma/schema-contract-read.txt",
+                "exists": true,
+                "size": 24,
+                "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+              }
+            ],
+            "missingPaths": [],
+            "skippedPaths": [],
+            "truncated": false,
+            "repoManifestDigest": "sha256:4ab6d19df4f6c2ef92ad202b07de5637dec9d23a2e414c4b1f18fba5e9ec2254",
+            "repoManifestFileCount": 5,
+            "repoManifestScannedEntries": 11,
+            "repoManifestTruncated": false,
+            "repoManifestSkippedPaths": [],
+            "repoManifestExcludedPaths": [
+              "synthi/prisma/schema.prisma"
+            ],
+            "limits": {
+              "maxFiles": 512,
+              "maxFileBytes": 2097152,
+              "maxScanEntries": 15000
+            },
+            "generatedAt": "2026-07-05T02:48:36.255Z",
+            "source": "codesite_validation",
+            "snapshotDigest": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+            "evidenceDigest": "sha256:1fc48e88fc8e160f18eb398509e1fbfa14916180baa65b9bf4fc46049af616e9"
+          },
+          "driftedPaths": [],
+          "digestChanged": false,
+          "repoManifestDrifted": false
+        },
+        "validatedAt": "2026-07-05T02:48:36.352Z",
+        "committedAt": "2026-07-05T02:48:36.380Z"
+      },
+      "proofBundleDigest": "sha256:a2a603d7be97a67a393353e7f2cb1eeb298374ad34c8404190b26d3f6e174222",
+      "openedAt": "2026-07-05T02:43:35.234Z",
+      "closedAt": "2026-07-05T02:48:36.380Z"
+    },
+    {
+      "id": "cmr76sbkw00atqk019prwd8lw",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+      "baseSnapshot": "sha256:de42bdaa72fcc4ab9e1da0bf2f51c8b5749f394e71fd7f709964cbd1d935dea1",
+      "baseSnapshotEvidence": null,
+      "isolation": "serializable",
+      "status": "aborted",
+      "readSet": [
+        "synthi/prisma/schema-contract-read.txt"
+      ],
+      "observedReadSet": [],
+      "writeSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "observedWriteSet": [],
+      "semanticDependencyRefs": [],
+      "invariants": [
+        "clearance.diff.inside_route"
+      ],
+      "assumptionRefs": [],
+      "commitDecision": {
+        "reason": "serializable_snapshot_required",
+        "abortedAt": "2026-07-05T02:43:18.577Z"
+      },
+      "proofBundleDigest": null,
+      "openedAt": "2026-07-05T02:43:15.489Z",
+      "closedAt": "2026-07-05T02:43:18.577Z"
+    },
+    {
+      "id": "cmr76sgjw00b5qk01xadbal59",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+      "baseSnapshot": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+      "baseSnapshotEvidence": {
+        "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+        "status": "recorded",
+        "scope": "read_set",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+        "fileDigests": [
+          {
+            "path": "synthi/prisma/schema-contract-read.txt",
+            "exists": true,
+            "size": 24,
+            "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+          }
+        ],
+        "missingPaths": [],
+        "skippedPaths": [],
+        "truncated": false,
+        "repoManifestDigest": null,
+        "repoManifestFileCount": 0,
+        "repoManifestScannedEntries": 0,
+        "repoManifestTruncated": false,
+        "repoManifestSkippedPaths": [],
+        "repoManifestExcludedPaths": [],
+        "limits": {
+          "maxFiles": 512,
+          "maxFileBytes": 2097152,
+          "maxScanEntries": 15000
+        },
+        "generatedAt": "2026-07-05T02:42:54.352Z",
+        "source": "codesite-full-workflow-proof",
+        "snapshotDigest": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+        "evidenceDigest": "sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c"
+      },
+      "isolation": "serializable",
+      "status": "aborted",
+      "readSet": [
+        "synthi/prisma/schema-contract-read.txt",
+        "synthi/prisma/schema.prisma"
+      ],
+      "observedReadSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "writeSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "observedWriteSet": [],
+      "semanticDependencyRefs": [],
+      "invariants": [
+        "clearance.diff.inside_route"
+      ],
+      "assumptionRefs": [],
+      "commitDecision": {
+        "reason": "serializable_snapshot_undercovered",
+        "abortedAt": "2026-07-05T02:43:28.822Z"
+      },
+      "proofBundleDigest": null,
+      "openedAt": "2026-07-05T02:43:21.932Z",
+      "closedAt": "2026-07-05T02:43:28.822Z"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "cmr76stj200brqk01rdlmxv30",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "ownerSessionId": "cmr76rypy009lqk017lm2gi9u",
+      "displayCallsign": "SCHEMA-01",
+      "assumptionKey": "auth.signup.schema.v1",
+      "dependsOn": [
+        {
+          "ref": "auth.signup.schema",
+          "version": "v1",
+          "path": "synthi/prisma/schema-contract-read.txt"
+        }
+      ],
+      "usedBy": [
+        "synthi/src/app/api/auth/signup.ts"
+      ],
+      "status": "active",
+      "invalidatedBy": null,
+      "invalidatedAt": null,
+      "createdAt": "2026-07-05T02:43:38.750Z"
+    }
+  ],
+  "inbox": [
+    {
+      "id": "cmr76tu3z00dpqk016015sdcl",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+      "recipientUserId": "cmr76rv7e008jqk01igpdj00w",
+      "eventId": "cmr76trqi00dnqk01dfm67k17",
+      "documentId": "cmr76trqd00dlqk011lwlhv5g",
+      "kind": "change_order",
+      "requiresResponse": false,
+      "status": "acknowledged",
+      "redactedPayload": {
+        "documentId": "cmr76trqd00dlqk011lwlhv5g",
+        "eventId": "cmr76trqi00dnqk01dfm67k17",
+        "kind": "change_order",
+        "title": "API flight accepts schema-first hold",
+        "body": {
+          "answerToDocumentId": "cmr76tm7e00ddqk01ic8pff9a",
+          "decision": "accepted",
+          "towerInstruction": "API-02 remains holding until SCHEMA-01 proof bundle lands.",
+          "routing": {
+            "fromSessionId": "cmr76s0bl009vqk013j9fu23i",
+            "toSessionIds": [
+              "cmr76rypy009lqk017lm2gi9u"
+            ],
+            "projectRefs": {
+              "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+              "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+              "transactionId": "cmr76sqte00blqk01jga6jnj3",
+              "affectedZones": [
+                "synthi/prisma/schema.prisma"
+              ],
+              "contractRefs": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "inspectionRunId": null,
+              "incidentId": null
+            }
+          }
+        },
+        "redaction": {
+          "policyApplied": true,
+          "recipientSessionId": "cmr76rypy009lqk017lm2gi9u"
+        },
+        "delivery": {
+          "modes": [
+            "durable_inbox",
+            "sse_stream",
+            "mcp_poll",
+            "repo_local_projection"
+          ],
+          "targets": [],
+          "adapterStatus": "not_configured",
+          "recipient": {
+            "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+            "provider": "codex",
+            "runtime": "tmp-codex-cli",
+            "providerSessionRef": "codex-proof-schema-20260705T0050"
+          }
+        }
+      },
+      "createdAt": "2026-07-05T02:44:26.160Z",
+      "acknowledgedAt": "2026-07-05T02:44:28.892Z"
+    }
+  ],
+  "events": [
+    {
+      "id": "cmr76ryqb009pqk019jb91wec",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "transponder_update",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr76rypy009lqk017lm2gi9u",
+      "details": {
+        "status": "registered",
+        "provider": "codex",
+        "runtime": "tmp-codex-cli",
+        "permissions": [
+          "synthi_codesite_get_radar",
+          "synthi_codesite_open_transaction",
+          "synthi_codesite_apply_patch",
+          "synthi_codesite_record_assumption"
+        ],
+        "instruction": "SCHEMA-01 registered with tower."
+      },
+      "evidenceRefs": [],
+      "logicalTime": 5,
+      "createdAt": "2026-07-05T02:42:58.835Z"
+    },
+    {
+      "id": "cmr76rzmv009tqk01or5i78hs",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "flight_plan_filed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr76rypy009lqk017lm2gi9u",
+      "details": {
+        "executionPlanId": "cmr76rzmj009rqk01rxv77xvc",
+        "mission": "Schema first",
+        "route": [
+          "synthi/prisma/**"
+        ],
+        "blockedZones": []
+      },
+      "evidenceRefs": [],
+      "logicalTime": 6,
+      "createdAt": "2026-07-05T02:43:00.008Z"
+    },
+    {
+      "id": "cmr76s48900ahqk01tf4to5je",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "tower_instruction",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "permit",
+      "actorId": "cmr76s48400afqk01o8bcd748",
+      "details": {
+        "permitId": "cmr76s48400afqk01o8bcd748",
+        "permitType": "schema_work_permit",
+        "status": "issued",
+        "executionPlanId": "cmr76rzmj009rqk01rxv77xvc",
+        "mutationLeaseId": null,
+        "documentId": null,
+        "scope": {
+          "executionPlanId": "cmr76rzmj009rqk01rxv77xvc",
+          "mutationLeaseId": null,
+          "allowedPaths": [
+            "synthi/prisma/**"
+          ],
+          "blockedPaths": [],
+          "affectedZones": [
+            "schema"
+          ],
+          "contractRefs": [
+            "auth.signup.schema.v1"
+          ],
+          "expiresAt": null
+        },
+        "approval": {
+          "approved": true,
+          "approvedByUserId": "cmr76ruwz008fqk01jq43g2e1",
+          "rationale": "Permit the schema-first leader to enter restricted schema airspace after tower membership and execution-plan registration.",
+          "reviewRef": null
+        }
+      },
+      "evidenceRefs": [
+        "codesite:governance:full-workflow-schema-permit"
+      ],
+      "logicalTime": 11,
+      "createdAt": "2026-07-05T02:43:05.961Z"
+    },
+    {
+      "id": "cmr76s8ef00ajqk01nvdkcc7v",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "clearance_requested",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr76rypy009lqk017lm2gi9u",
+      "details": {
+        "executionPlanId": "cmr76rzmj009rqk01rxv77xvc",
+        "requestedLease": {
+          "allowedPaths": [
+            "synthi/prisma/**"
+          ],
+          "blockedPaths": [
+            "secrets/**"
+          ],
+          "allowedTools": [
+            "file_write"
+          ],
+          "invariants": [
+            "clearance.diff.inside_route",
+            "no.secret.exposure",
+            "restricted_airspace.inspector_required"
+          ],
+          "requiredRadar": [
+            "typecheck",
+            "tests"
+          ],
+          "expiresAt": null
+        },
+        "route": [
+          "synthi/prisma/**"
+        ],
+        "blockedZones": []
+      },
+      "evidenceRefs": [],
+      "logicalTime": 12,
+      "createdAt": "2026-07-05T02:43:11.367Z"
+    },
+    {
+      "id": "cmr76s97s00apqk011790jcro",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "clearance_issued",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "policy_engine",
+      "actorId": "cmr76s97n00anqk01fxeme8ab",
+      "details": {
+        "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+        "policyDecisionId": "cmr76s97n00anqk01fxeme8ab",
+        "status": "active",
+        "reasonCodes": [
+          "restricted_airspace_requires_inspection",
+          "dojo_clearance_proof_verified",
+          "dojo_public_proof_signature_verified",
+          "schema_first_leader_clearance",
+          "pilot_license_health_active",
+          "pilot_license_source_current",
+          "pilot_license_from_verified_dojo_proof",
+          "pilot_license_level_authorized",
+          "governance_clearance_evidence_verified"
+        ],
+        "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands.",
+        "pilotLicenseHealth": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "key": "cmr76rypy009lqk017lm2gi9u",
+          "projectId": "cmr76rvc3008sqk01itxc3o8s",
+          "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+          "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+          "ownerUserId": "cmr76rv7e008jqk01igpdj00w",
+          "displayCallsign": "SCHEMA-01",
+          "status": "active",
+          "level": "IFR",
+          "levelRank": 3,
+          "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+          "dojoLicenseRef": "schema.level_2@2026-06-25",
+          "dojoProofRef": "pcap-full-workflow-schema",
+          "dojoDecisionDigest": "sha256:7719e9ce4785edcdf1663981edbd7b0e8027aad7334c9da80d6dd3189bcb3652",
+          "repoScope": "codesite-full-workflow-proof-1783219369293",
+          "authorizedAirspace": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "restrictedAirspace": [],
+          "requiredRadar": [
+            "typecheck",
+            "tests"
+          ],
+          "earnedBy": [
+            "dojo:full-workflow-checkride",
+            "dojo:evidence:full-workflow-checkride",
+            "full-workflow-checkride"
+          ],
+          "expiresAt": null,
+          "expiresOn": [
+            "source_drift"
+          ],
+          "sourceDrift": {
+            "monitored": true,
+            "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "expired": false
+          },
+          "landingStats": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "evidenceRefs": []
+          },
+          "violationStats": {
+            "total": 0,
+            "critical": 0,
+            "latestAt": null,
+            "evidenceRefs": []
+          },
+          "reasonCodes": [
+            "pilot_license_health_active",
+            "pilot_license_source_current",
+            "pilot_license_from_verified_dojo_proof"
+          ],
+          "requiredAction": null,
+          "evidenceRefs": [
+            "dojo:evidence:full-workflow-checkride",
+            "dojo:full-workflow-checkride",
+            "pcap-full-workflow-schema",
+            "schema.level_2@2026-06-25",
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+            "full-workflow-checkride"
+          ],
+          "lifecycle": {
+            "issuedAt": "2026-07-05T02:42:58.823Z",
+            "checkedAt": "2026-07-05T02:43:12.408Z",
+            "latestLandingAt": null,
+            "latestViolationAt": null,
+            "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712",
+            "clearanceProofCheckedAt": "2026-07-05T02:43:12.386Z"
+          }
+        },
+        "pilotLicenseRequirement": {
+          "required": true,
+          "classes": [
+            "B"
+          ],
+          "minimumLevel": "IFR",
+          "minimumLevelRank": 3
+        },
+        "collisionAvoidance": {
+          "forecast": {
+            "riskLevel": "high",
+            "risks": [
+              {
+                "risk": "contract_collision",
+                "severity": "high",
+                "aircraft": [
+                  "API-02",
+                  "SCHEMA-01"
+                ],
+                "conflictZone": "synthi/prisma/**",
+                "overlaps": [
+                  [
+                    "synthi/prisma/**",
+                    "synthi/prisma/**"
+                  ]
+                ],
+                "recommendedResolution": {
+                  "action": "schema_first",
+                  "steps": [
+                    "Put SCHEMA-01 in holding",
+                    "Put API-02 in holding",
+                    "Issue schema clearance first",
+                    "Reissue downstream clearances after contract landing"
+                  ]
+                }
+              }
+            ],
+            "runwayOccupancy": [],
+            "wakeTurbulence": []
+          },
+          "risk": null,
+          "schemaFirstLeader": true,
+          "reasonCodes": [
+            "schema_first_leader_clearance"
+          ],
+          "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands."
+        },
+        "counterfactualPolicy": null,
+        "governancePolicy": {
+          "required": true,
+          "verified": true,
+          "restrictedZones": [
+            {
+              "zoneKey": "class_b",
+              "label": "Shared contract airspace",
+              "class": "B",
+              "path": "synthi/prisma/index.ts"
+            }
+          ],
+          "evidence": {
+            "permits": [
+              {
+                "id": "cmr76s48400afqk01o8bcd748",
+                "permitType": "schema_work_permit",
+                "status": "issued",
+                "executionPlanId": "cmr76rzmj009rqk01rxv77xvc",
+                "documentId": null,
+                "evidenceRefs": [
+                  "codesite:governance:full-workflow-schema-permit"
+                ]
+              }
+            ],
+            "routeRevisions": [],
+            "documents": []
+          },
+          "requiredRadar": [
+            "governance"
+          ],
+          "reasonCodes": [
+            "governance_clearance_evidence_verified"
+          ],
+          "towerInstruction": null
+        }
+      },
+      "evidenceRefs": [],
+      "logicalTime": 13,
+      "createdAt": "2026-07-05T02:43:12.424Z"
+    },
+    {
+      "id": "cmr76sa3200arqk01zcbgkual",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "near_miss",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "policy_engine",
+      "actorId": "cmr76s97n00anqk01fxeme8ab",
+      "details": {
+        "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+        "policyDecisionId": "cmr76s97n00anqk01fxeme8ab",
+        "prevented": true,
+        "collisionAvoidance": {
+          "forecast": {
+            "riskLevel": "high",
+            "risks": [
+              {
+                "risk": "contract_collision",
+                "severity": "high",
+                "aircraft": [
+                  "API-02",
+                  "SCHEMA-01"
+                ],
+                "conflictZone": "synthi/prisma/**",
+                "overlaps": [
+                  [
+                    "synthi/prisma/**",
+                    "synthi/prisma/**"
+                  ]
+                ],
+                "recommendedResolution": {
+                  "action": "schema_first",
+                  "steps": [
+                    "Put SCHEMA-01 in holding",
+                    "Put API-02 in holding",
+                    "Issue schema clearance first",
+                    "Reissue downstream clearances after contract landing"
+                  ]
+                }
+              }
+            ],
+            "runwayOccupancy": [],
+            "wakeTurbulence": []
+          },
+          "risk": null,
+          "schemaFirstLeader": true,
+          "reasonCodes": [
+            "schema_first_leader_clearance"
+          ],
+          "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands."
+        }
+      },
+      "evidenceRefs": [
+        "codesite:policy-decision:cmr76s97n00anqk01fxeme8ab"
+      ],
+      "logicalTime": 14,
+      "createdAt": "2026-07-05T02:43:13.550Z"
+    },
+    {
+      "id": "cmr76sbl200avqk01cqdcw5pw",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "transaction_opened",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr76rypy009lqk017lm2gi9u",
+      "details": {
+        "transactionId": "cmr76sbkw00atqk019prwd8lw",
+        "baseSnapshot": "sha256:de42bdaa72fcc4ab9e1da0bf2f51c8b5749f394e71fd7f709964cbd1d935dea1",
+        "baseSnapshotEvidenceDigest": null,
+        "baseSnapshotStatus": null,
+        "isolation": "serializable"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 15,
+      "createdAt": "2026-07-05T02:43:15.494Z"
+    },
+    {
+      "id": "cmr76scx300axqk012qztzq13",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "transaction_validated",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sbkw00atqk019prwd8lw",
+      "details": {
+        "transactionId": "cmr76sbkw00atqk019prwd8lw",
+        "decision": {
+          "ok": false,
+          "isolation": "serializable",
+          "reasonCodes": [
+            "repo_snapshot_not_recorded",
+            "repo_snapshot_required_for_serializable",
+            "repo_snapshot_read_set_coverage_required",
+            "repo_snapshot_repo_wide_evidence_required"
+          ],
+          "blockedWrites": [],
+          "invalidAssumptions": [],
+          "staleReads": [],
+          "repoSnapshot": {
+            "ok": false,
+            "reasonCodes": [
+              "repo_snapshot_not_recorded",
+              "repo_snapshot_required_for_serializable",
+              "repo_snapshot_read_set_coverage_required",
+              "repo_snapshot_repo_wide_evidence_required"
+            ],
+            "expected": null,
+            "current": null,
+            "driftedPaths": [],
+            "requiredReadSet": [
+              "synthi/prisma/schema-contract-read.txt"
+            ],
+            "snapshotReadSet": [],
+            "missingReadSet": [
+              "synthi/prisma/schema-contract-read.txt"
+            ],
+            "skippedRequiredPaths": []
+          },
+          "validatedAt": "2026-07-05T02:43:17.218Z"
+        }
+      },
+      "evidenceRefs": [],
+      "logicalTime": 16,
+      "createdAt": "2026-07-05T02:43:17.223Z"
+    },
+    {
+      "id": "cmr76sdyu00azqk01i4h5pfxz",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "transaction_aborted",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sbkw00atqk019prwd8lw",
+      "details": {
+        "transactionId": "cmr76sbkw00atqk019prwd8lw",
+        "reason": "serializable_snapshot_required"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 17,
+      "createdAt": "2026-07-05T02:43:18.583Z"
+    },
+    {
+      "id": "cmr76sett00b3qk01k7qxrhox",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "black_box_closed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sbkw00atqk019prwd8lw",
+      "details": {
+        "transactionId": "cmr76sbkw00atqk019prwd8lw",
+        "incidentId": "cmr76setn00b1qk016rwy464r",
+        "proofBundleId": null,
+        "proofBundleDigest": null,
+        "landingStatus": "aborted",
+        "status": "aborted",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "writeSet": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "exportedPaths": [
+          "projects/cmr76rvc3008sqk01itxc3o8s/handover.md",
+          "projects/cmr76rvc3008sqk01itxc3o8s/events.jsonl",
+          "projects/cmr76rvc3008sqk01itxc3o8s/incidents/incident-replay-<incident-id>.jsonl",
+          "projects/cmr76rvc3008sqk01itxc3o8s/flights/SCHEMA-01/black-box.json",
+          "projects/cmr76rvc3008sqk01itxc3o8s/flights/SCHEMA-01/transaction-cmr76sbkw00atqk019prwd8lw.json"
+        ],
+        "reason": "transaction_black_box_closeout"
+      },
+      "evidenceRefs": [
+        "codesite:transaction:cmr76sbkw00atqk019prwd8lw",
+        "codesite:lease:cmr76s97i00alqk01mvljd1m6"
+      ],
+      "logicalTime": 18,
+      "createdAt": "2026-07-05T02:43:19.697Z"
+    },
+    {
+      "id": "cmr76sgk000b7qk01077kqt38",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "transaction_opened",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr76rypy009lqk017lm2gi9u",
+      "details": {
+        "transactionId": "cmr76sgjw00b5qk01xadbal59",
+        "baseSnapshot": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+        "baseSnapshotEvidenceDigest": "sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c",
+        "baseSnapshotStatus": "recorded",
+        "isolation": "serializable"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 19,
+      "createdAt": "2026-07-05T02:43:21.937Z"
+    },
+    {
+      "id": "cmr76shha00b9qk01otoaiwqu",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "snapshot_taken",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sgjw00b5qk01xadbal59",
+      "details": {
+        "transactionId": "cmr76sgjw00b5qk01xadbal59",
+        "baseSnapshot": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+        "snapshotDigest": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+        "evidenceDigest": "sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c",
+        "status": "recorded",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "fileCount": 1,
+        "missingPaths": [],
+        "reason": "serializable_transaction_open"
+      },
+      "evidenceRefs": [
+        "codesite:read-snapshot:sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c"
+      ],
+      "logicalTime": 20,
+      "createdAt": "2026-07-05T02:43:23.134Z"
+    },
+    {
+      "id": "cmr76siqn00bbqk0122u590ud",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "transponder_update",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sgjw00b5qk01xadbal59",
+      "details": {
+        "type": "read_recorded",
+        "transactionId": "cmr76sgjw00b5qk01xadbal59",
+        "path": "synthi/prisma/schema.prisma",
+        "tool": "file_read",
+        "codesiteFsEvent": null,
+        "processAncestry": []
+      },
+      "evidenceRefs": [],
+      "logicalTime": 21,
+      "createdAt": "2026-07-05T02:43:24.768Z"
+    },
+    {
+      "id": "cmr76skag00bdqk01kw7ck1x9",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "transaction_validated",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sgjw00b5qk01xadbal59",
+      "details": {
+        "transactionId": "cmr76sgjw00b5qk01xadbal59",
+        "decision": {
+          "ok": false,
+          "isolation": "serializable",
+          "reasonCodes": [
+            "repo_snapshot_stable",
+            "repo_snapshot_read_set_coverage_required",
+            "repo_snapshot_repo_wide_evidence_required"
+          ],
+          "blockedWrites": [],
+          "invalidAssumptions": [],
+          "staleReads": [],
+          "repoSnapshot": {
+            "ok": false,
+            "reasonCodes": [
+              "repo_snapshot_stable",
+              "repo_snapshot_read_set_coverage_required",
+              "repo_snapshot_repo_wide_evidence_required"
+            ],
+            "expected": {
+              "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+              "status": "recorded",
+              "scope": "read_set",
+              "readSet": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+              "fileDigests": [
+                {
+                  "path": "synthi/prisma/schema-contract-read.txt",
+                  "exists": true,
+                  "size": 24,
+                  "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+                }
+              ],
+              "missingPaths": [],
+              "skippedPaths": [],
+              "truncated": false,
+              "repoManifestDigest": null,
+              "repoManifestFileCount": 0,
+              "repoManifestScannedEntries": 0,
+              "repoManifestTruncated": false,
+              "repoManifestSkippedPaths": [],
+              "repoManifestExcludedPaths": [],
+              "limits": {
+                "maxFiles": 512,
+                "maxFileBytes": 2097152,
+                "maxScanEntries": 15000
+              },
+              "generatedAt": "2026-07-05T02:42:54.352Z",
+              "source": "codesite-full-workflow-proof",
+              "snapshotDigest": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+              "evidenceDigest": "sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c"
+            },
+            "current": {
+              "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+              "status": "recorded",
+              "scope": "read_set",
+              "readSet": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+              "fileDigests": [
+                {
+                  "path": "synthi/prisma/schema-contract-read.txt",
+                  "exists": true,
+                  "size": 24,
+                  "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+                }
+              ],
+              "missingPaths": [],
+              "skippedPaths": [],
+              "truncated": false,
+              "repoManifestDigest": null,
+              "repoManifestFileCount": 0,
+              "repoManifestScannedEntries": 0,
+              "repoManifestTruncated": false,
+              "repoManifestSkippedPaths": [],
+              "repoManifestExcludedPaths": [],
+              "limits": {
+                "maxFiles": 512,
+                "maxFileBytes": 2097152,
+                "maxScanEntries": 15000
+              },
+              "generatedAt": "2026-07-05T02:43:26.754Z",
+              "source": "codesite_validation",
+              "snapshotDigest": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+              "evidenceDigest": "sha256:44b1a72ee97edc6468566e586a19b165c9ba584f9c17c3a0571909f15702dc52"
+            },
+            "driftedPaths": [],
+            "digestChanged": false,
+            "repoManifestDrifted": false,
+            "requiredReadSet": [
+              "synthi/prisma/schema-contract-read.txt",
+              "synthi/prisma/schema.prisma"
+            ],
+            "snapshotReadSet": [
+              "synthi/prisma/schema-contract-read.txt"
+            ],
+            "missingReadSet": [
+              "synthi/prisma/schema.prisma"
+            ],
+            "skippedRequiredPaths": []
+          },
+          "validatedAt": "2026-07-05T02:43:26.768Z"
+        }
+      },
+      "evidenceRefs": [],
+      "logicalTime": 22,
+      "createdAt": "2026-07-05T02:43:26.776Z"
+    },
+    {
+      "id": "cmr76slvh00bfqk01swzjbq57",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "transaction_aborted",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sgjw00b5qk01xadbal59",
+      "details": {
+        "transactionId": "cmr76sgjw00b5qk01xadbal59",
+        "reason": "serializable_snapshot_undercovered"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 23,
+      "createdAt": "2026-07-05T02:43:28.829Z"
+    },
+    {
+      "id": "cmr76snbx00bjqk01xzt6pmyx",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "black_box_closed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sgjw00b5qk01xadbal59",
+      "details": {
+        "transactionId": "cmr76sgjw00b5qk01xadbal59",
+        "incidentId": "cmr76snbq00bhqk01ohox8ez4",
+        "proofBundleId": null,
+        "proofBundleDigest": null,
+        "landingStatus": "aborted",
+        "status": "aborted",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt",
+          "synthi/prisma/schema.prisma"
+        ],
+        "writeSet": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "exportedPaths": [
+          "projects/cmr76rvc3008sqk01itxc3o8s/handover.md",
+          "projects/cmr76rvc3008sqk01itxc3o8s/events.jsonl",
+          "projects/cmr76rvc3008sqk01itxc3o8s/incidents/incident-replay-<incident-id>.jsonl",
+          "projects/cmr76rvc3008sqk01itxc3o8s/flights/SCHEMA-01/black-box.json",
+          "projects/cmr76rvc3008sqk01itxc3o8s/flights/SCHEMA-01/transaction-cmr76sgjw00b5qk01xadbal59.json"
+        ],
+        "reason": "transaction_black_box_closeout"
+      },
+      "evidenceRefs": [
+        "codesite:transaction:cmr76sgjw00b5qk01xadbal59",
+        "codesite:lease:cmr76s97i00alqk01mvljd1m6"
+      ],
+      "logicalTime": 24,
+      "createdAt": "2026-07-05T02:43:30.717Z"
+    },
+    {
+      "id": "cmr76sqtj00bnqk01ei2rzfu5",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "transaction_opened",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr76rypy009lqk017lm2gi9u",
+      "details": {
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "baseSnapshot": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+        "baseSnapshotEvidenceDigest": "sha256:ec8199f8668dee7f87523f5839403218bd5f73b8ccdc0a6884689c24d50be2bb",
+        "baseSnapshotStatus": "recorded",
+        "isolation": "serializable"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 25,
+      "createdAt": "2026-07-05T02:43:35.239Z"
+    },
+    {
+      "id": "cmr76ssbn00bpqk01uu8jtk2r",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "snapshot_taken",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sqte00blqk01jga6jnj3",
+      "details": {
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "baseSnapshot": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+        "snapshotDigest": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+        "evidenceDigest": "sha256:ec8199f8668dee7f87523f5839403218bd5f73b8ccdc0a6884689c24d50be2bb",
+        "status": "recorded",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "fileCount": 1,
+        "missingPaths": [],
+        "reason": "serializable_transaction_open"
+      },
+      "evidenceRefs": [
+        "codesite:read-snapshot:sha256:ec8199f8668dee7f87523f5839403218bd5f73b8ccdc0a6884689c24d50be2bb"
+      ],
+      "logicalTime": 26,
+      "createdAt": "2026-07-05T02:43:37.187Z"
+    },
+    {
+      "id": "cmr76stja00btqk01bd5uhmxj",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "assumption_recorded",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sqte00blqk01jga6jnj3",
+      "details": {
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "assumptionId": "cmr76stj200brqk01rdlmxv30",
+        "assumptionKey": "auth.signup.schema.v1"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 27,
+      "createdAt": "2026-07-05T02:43:38.758Z"
+    },
+    {
+      "id": "cmr76tm7k00dfqk017rgvfxk7",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "rfi",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "document",
+      "actorId": "cmr76tm7e00ddqk01ic8pff9a",
+      "details": {
+        "documentId": "cmr76tm7e00ddqk01ic8pff9a",
+        "kind": "rfi",
+        "title": "Confirm schema-first contract before API route",
+        "blocking": true,
+        "fromSession": "cmr76rypy009lqk017lm2gi9u",
+        "toSession": "cmr76s0bl009vqk013j9fu23i"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 44,
+      "createdAt": "2026-07-05T02:44:15.920Z"
+    },
+    {
+      "id": "cmr76tw8300drqk01111jyjij",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "transponder_update",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr76rypy009lqk017lm2gi9u",
+      "details": {
+        "type": "inbox_acknowledged",
+        "inboxItemId": "cmr76tu3z00dpqk016015sdcl",
+        "eventId": "cmr76trqi00dnqk01dfm67k17",
+        "documentId": "cmr76trqd00dlqk011lwlhv5g",
+        "status": "acknowledged"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 47,
+      "createdAt": "2026-07-05T02:44:28.899Z"
+    },
+    {
+      "id": "cmr76ty6x00dtqk01b4og5j7h",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "read_observed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "codesitefs",
+      "actorId": "cmr76sqte00blqk01jga6jnj3",
+      "details": {
+        "type": "read_recorded",
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "path": "synthi/prisma/schema-contract-read.txt",
+        "tool": "file_read",
+        "codesiteFsEvent": {
+          "type": "read_observed",
+          "transaction_id": "cmr76sqte00blqk01jga6jnj3",
+          "mutation_lease_id": "cmr76s97i00alqk01mvljd1m6",
+          "display_callsign": "SCHEMA-01",
+          "workspace_slug": "codesite-full-workflow-proof-1783219369293",
+          "actor_user_id": null,
+          "effective_user_id": null,
+          "path": "synthi/prisma/schema-contract-read.txt",
+          "tool": "file_read",
+          "wall_time": "2026-07-05T02:44:31.409Z",
+          "evidence_refs": [
+            "mcp:audit:read-full-workflow"
+          ],
+          "details": {
+            "reason": "inside_repo_boundary",
+            "reason_codes": [
+              "inside_repo_boundary"
+            ],
+            "process_ancestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session",
+              "mcp:synthi_codesite_read_file",
+              "node",
+              "sh",
+              "npm-run-codesite-proof-full-workflow",
+              "codex",
+              "init"
+            ],
+            "process_ancestry_sources": {
+              "caller_supplied": [
+                "mcp:synthi_codesite_apply_patch",
+                "codex:tmp-proof-session",
+                "mcp:synthi_codesite_read_file"
+              ],
+              "os_procfs": [
+                "node",
+                "sh",
+                "npm-run-codesite-proof-full-workflow",
+                "codex",
+                "init"
+              ]
+            },
+            "os_process_ancestry": {
+              "schemaVersion": "synthi.codesite.processAncestry.v1",
+              "source": "linux_procfs",
+              "sourcePath": "/proc",
+              "platform": "linux",
+              "wsl": true,
+              "available": true,
+              "complete": true,
+              "direction": "process_to_root",
+              "collectorPid": 119758,
+              "requestedPid": 119758,
+              "capturedAt": "2026-07-05T02:44:31.404Z",
+              "labels": [
+                "node",
+                "sh",
+                "npm-run-codesite-proof-full-workflow",
+                "codex",
+                "init"
+              ],
+              "nodes": [
+                {
+                  "pid": 119758,
+                  "ppid": 119757,
+                  "comm": "node",
+                  "state": "R",
+                  "argv0Basename": "node",
+                  "argvCount": 2,
+                  "exeBasename": "node",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411970,
+                  "cmdlineDigest": "sha256:731cfd963e9d0fc2425f96611f7ce4c4c3254cf1868013878c9b6b9590def73c",
+                  "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+                  "label": "node"
+                },
+                {
+                  "pid": 119757,
+                  "ppid": 119736,
+                  "comm": "sh",
+                  "state": "S",
+                  "argv0Basename": "sh",
+                  "argvCount": 3,
+                  "exeBasename": "dash",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411968,
+                  "cmdlineDigest": "sha256:ac027f6eccab303e41ee0836930574ff462b8ca8338cfe36e10e541d01b7c316",
+                  "exePathDigest": "sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a",
+                  "label": "sh"
+                },
+                {
+                  "pid": 119736,
+                  "ppid": 684,
+                  "comm": "npm-run-codesit",
+                  "state": "S",
+                  "argv0Basename": "npm-run-codesite-proof-full-workflow",
+                  "argvCount": 1,
+                  "exeBasename": "node",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411915,
+                  "cmdlineDigest": "sha256:e9055bb56655464f81bd420f306d146adbe3f9ea1e90a9b625278ec04bba818e",
+                  "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+                  "label": "npm-run-codesite-proof-full-workflow"
+                },
+                {
+                  "pid": 684,
+                  "ppid": 683,
+                  "comm": "codex",
+                  "state": "S",
+                  "argv0Basename": "codex",
+                  "argvCount": 3,
+                  "exeBasename": "codex",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1815,
+                  "cmdlineDigest": "sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64",
+                  "exePathDigest": "sha256:30b3392d5989f13146f24b5499e1583fb821cd950981cfde4ca4390364c3b809",
+                  "label": "codex"
+                },
+                {
+                  "pid": 683,
+                  "ppid": 682,
+                  "comm": "Relay-684",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 1810,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 682,
+                  "ppid": 2,
+                  "comm": "SessionLeader",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 1810,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 2,
+                  "ppid": 1,
+                  "comm": "init-systemd-Ub",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 728,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 1,
+                  "ppid": 0,
+                  "comm": "systemd",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 723,
+                  "cmdlineDigest": "sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272",
+                  "exePathDigest": null,
+                  "label": "init"
+                }
+              ],
+              "unavailableReason": null,
+              "digest": "sha256:93b064b0b4fb6ac3e44dbdb8faa500d62066264d8c6c4a592d3cf065efb5a60f"
+            },
+            "operation": "schema-contract-read"
+          }
+        },
+        "processAncestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session",
+          "mcp:synthi_codesite_read_file",
+          "node",
+          "sh",
+          "npm-run-codesite-proof-full-workflow",
+          "codex",
+          "init"
+        ]
+      },
+      "evidenceRefs": [
+        "mcp:audit:read-full-workflow"
+      ],
+      "logicalTime": 48,
+      "createdAt": "2026-07-05T02:44:31.449Z"
+    },
+    {
+      "id": "cmr76u0eb00dvqk01pribc7m6",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "write_attempted",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sqte00blqk01jga6jnj3",
+      "details": {
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "path": "secrets/prod.env",
+        "tool": "file_write",
+        "zone": {
+          "zoneKey": "unclassified",
+          "label": "Unclassified repo airspace",
+          "class": "C",
+          "risk": "medium",
+          "rules": [
+            "auto_clearance_allowed",
+            "landing_inspection_required"
+          ],
+          "path": "secrets/prod.env"
+        },
+        "codesiteFsEvent": {
+          "type": "write_denied",
+          "transaction_id": "cmr76sqte00blqk01jga6jnj3",
+          "mutation_lease_id": "cmr76s97i00alqk01mvljd1m6",
+          "display_callsign": "SCHEMA-01",
+          "workspace_slug": "codesite-full-workflow-proof-1783219369293",
+          "actor_user_id": null,
+          "effective_user_id": null,
+          "path": "secrets/prod.env",
+          "tool": "file_write",
+          "wall_time": "2026-07-05T02:44:34.191Z",
+          "evidence_refs": [
+            "mcp:audit:codesitefs-denied-full-workflow"
+          ],
+          "details": {
+            "reason": "raw-terminal-write denied for secrets/prod.env: outside_clearance_route",
+            "reason_codes": [
+              "outside_clearance_route"
+            ],
+            "process_ancestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session",
+              "node",
+              "sh",
+              "npm-run-codesite-proof-full-workflow",
+              "codex",
+              "init"
+            ],
+            "process_ancestry_sources": {
+              "caller_supplied": [
+                "mcp:synthi_codesite_apply_patch",
+                "codex:tmp-proof-session"
+              ],
+              "os_procfs": [
+                "node",
+                "sh",
+                "npm-run-codesite-proof-full-workflow",
+                "codex",
+                "init"
+              ]
+            },
+            "os_process_ancestry": {
+              "schemaVersion": "synthi.codesite.processAncestry.v1",
+              "source": "linux_procfs",
+              "sourcePath": "/proc",
+              "platform": "linux",
+              "wsl": true,
+              "available": true,
+              "complete": true,
+              "direction": "process_to_root",
+              "collectorPid": 119758,
+              "requestedPid": 119758,
+              "capturedAt": "2026-07-05T02:44:34.189Z",
+              "labels": [
+                "node",
+                "sh",
+                "npm-run-codesite-proof-full-workflow",
+                "codex",
+                "init"
+              ],
+              "nodes": [
+                {
+                  "pid": 119758,
+                  "ppid": 119757,
+                  "comm": "node",
+                  "state": "R",
+                  "argv0Basename": "node",
+                  "argvCount": 2,
+                  "exeBasename": "node",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411970,
+                  "cmdlineDigest": "sha256:731cfd963e9d0fc2425f96611f7ce4c4c3254cf1868013878c9b6b9590def73c",
+                  "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+                  "label": "node"
+                },
+                {
+                  "pid": 119757,
+                  "ppid": 119736,
+                  "comm": "sh",
+                  "state": "S",
+                  "argv0Basename": "sh",
+                  "argvCount": 3,
+                  "exeBasename": "dash",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411968,
+                  "cmdlineDigest": "sha256:ac027f6eccab303e41ee0836930574ff462b8ca8338cfe36e10e541d01b7c316",
+                  "exePathDigest": "sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a",
+                  "label": "sh"
+                },
+                {
+                  "pid": 119736,
+                  "ppid": 684,
+                  "comm": "npm-run-codesit",
+                  "state": "S",
+                  "argv0Basename": "npm-run-codesite-proof-full-workflow",
+                  "argvCount": 1,
+                  "exeBasename": "node",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411915,
+                  "cmdlineDigest": "sha256:e9055bb56655464f81bd420f306d146adbe3f9ea1e90a9b625278ec04bba818e",
+                  "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+                  "label": "npm-run-codesite-proof-full-workflow"
+                },
+                {
+                  "pid": 684,
+                  "ppid": 683,
+                  "comm": "codex",
+                  "state": "S",
+                  "argv0Basename": "codex",
+                  "argvCount": 3,
+                  "exeBasename": "codex",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1815,
+                  "cmdlineDigest": "sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64",
+                  "exePathDigest": "sha256:30b3392d5989f13146f24b5499e1583fb821cd950981cfde4ca4390364c3b809",
+                  "label": "codex"
+                },
+                {
+                  "pid": 683,
+                  "ppid": 682,
+                  "comm": "Relay-684",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 1810,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 682,
+                  "ppid": 2,
+                  "comm": "SessionLeader",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 1810,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 2,
+                  "ppid": 1,
+                  "comm": "init-systemd-Ub",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 728,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 1,
+                  "ppid": 0,
+                  "comm": "systemd",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 723,
+                  "cmdlineDigest": "sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272",
+                  "exePathDigest": null,
+                  "label": "init"
+                }
+              ],
+              "unavailableReason": null,
+              "digest": "sha256:93b064b0b4fb6ac3e44dbdb8faa500d62066264d8c6c4a592d3cf065efb5a60f"
+            },
+            "operation": "raw-terminal-write"
+          }
+        },
+        "semanticDependencyRefs": [],
+        "evidenceRefs": [
+          "mcp:audit:codesitefs-denied-full-workflow"
+        ],
+        "processAncestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session",
+          "node",
+          "sh",
+          "npm-run-codesite-proof-full-workflow",
+          "codex",
+          "init"
+        ]
+      },
+      "evidenceRefs": [
+        "mcp:audit:codesitefs-denied-full-workflow"
+      ],
+      "logicalTime": 49,
+      "createdAt": "2026-07-05T02:44:34.308Z"
+    },
+    {
+      "id": "cmr76u2jr00dzqk01jwqgotb3",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "write_denied",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "codesitefs",
+      "actorId": "cmr76u2jm00dxqk013fcdp17q",
+      "details": {
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "path": "secrets/prod.env",
+        "reasonCodes": [
+          "outside_clearance_route"
+        ],
+        "policyDecisionId": "cmr76u2jm00dxqk013fcdp17q",
+        "zone": {
+          "zoneKey": "unclassified",
+          "label": "Unclassified repo airspace",
+          "class": "C",
+          "risk": "medium",
+          "rules": [
+            "auto_clearance_allowed",
+            "landing_inspection_required"
+          ],
+          "path": "secrets/prod.env"
+        },
+        "codesiteFsEvent": {
+          "type": "write_denied",
+          "transaction_id": "cmr76sqte00blqk01jga6jnj3",
+          "mutation_lease_id": "cmr76s97i00alqk01mvljd1m6",
+          "display_callsign": "SCHEMA-01",
+          "workspace_slug": "codesite-full-workflow-proof-1783219369293",
+          "actor_user_id": null,
+          "effective_user_id": null,
+          "path": "secrets/prod.env",
+          "tool": "file_write",
+          "wall_time": "2026-07-05T02:44:34.191Z",
+          "evidence_refs": [
+            "mcp:audit:codesitefs-denied-full-workflow"
+          ],
+          "details": {
+            "reason": "raw-terminal-write denied for secrets/prod.env: outside_clearance_route",
+            "reason_codes": [
+              "outside_clearance_route"
+            ],
+            "process_ancestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session",
+              "node",
+              "sh",
+              "npm-run-codesite-proof-full-workflow",
+              "codex",
+              "init"
+            ],
+            "process_ancestry_sources": {
+              "caller_supplied": [
+                "mcp:synthi_codesite_apply_patch",
+                "codex:tmp-proof-session"
+              ],
+              "os_procfs": [
+                "node",
+                "sh",
+                "npm-run-codesite-proof-full-workflow",
+                "codex",
+                "init"
+              ]
+            },
+            "os_process_ancestry": {
+              "schemaVersion": "synthi.codesite.processAncestry.v1",
+              "source": "linux_procfs",
+              "sourcePath": "/proc",
+              "platform": "linux",
+              "wsl": true,
+              "available": true,
+              "complete": true,
+              "direction": "process_to_root",
+              "collectorPid": 119758,
+              "requestedPid": 119758,
+              "capturedAt": "2026-07-05T02:44:34.189Z",
+              "labels": [
+                "node",
+                "sh",
+                "npm-run-codesite-proof-full-workflow",
+                "codex",
+                "init"
+              ],
+              "nodes": [
+                {
+                  "pid": 119758,
+                  "ppid": 119757,
+                  "comm": "node",
+                  "state": "R",
+                  "argv0Basename": "node",
+                  "argvCount": 2,
+                  "exeBasename": "node",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411970,
+                  "cmdlineDigest": "sha256:731cfd963e9d0fc2425f96611f7ce4c4c3254cf1868013878c9b6b9590def73c",
+                  "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+                  "label": "node"
+                },
+                {
+                  "pid": 119757,
+                  "ppid": 119736,
+                  "comm": "sh",
+                  "state": "S",
+                  "argv0Basename": "sh",
+                  "argvCount": 3,
+                  "exeBasename": "dash",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411968,
+                  "cmdlineDigest": "sha256:ac027f6eccab303e41ee0836930574ff462b8ca8338cfe36e10e541d01b7c316",
+                  "exePathDigest": "sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a",
+                  "label": "sh"
+                },
+                {
+                  "pid": 119736,
+                  "ppid": 684,
+                  "comm": "npm-run-codesit",
+                  "state": "S",
+                  "argv0Basename": "npm-run-codesite-proof-full-workflow",
+                  "argvCount": 1,
+                  "exeBasename": "node",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411915,
+                  "cmdlineDigest": "sha256:e9055bb56655464f81bd420f306d146adbe3f9ea1e90a9b625278ec04bba818e",
+                  "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+                  "label": "npm-run-codesite-proof-full-workflow"
+                },
+                {
+                  "pid": 684,
+                  "ppid": 683,
+                  "comm": "codex",
+                  "state": "S",
+                  "argv0Basename": "codex",
+                  "argvCount": 3,
+                  "exeBasename": "codex",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1815,
+                  "cmdlineDigest": "sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64",
+                  "exePathDigest": "sha256:30b3392d5989f13146f24b5499e1583fb821cd950981cfde4ca4390364c3b809",
+                  "label": "codex"
+                },
+                {
+                  "pid": 683,
+                  "ppid": 682,
+                  "comm": "Relay-684",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 1810,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 682,
+                  "ppid": 2,
+                  "comm": "SessionLeader",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 1810,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 2,
+                  "ppid": 1,
+                  "comm": "init-systemd-Ub",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 728,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 1,
+                  "ppid": 0,
+                  "comm": "systemd",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 723,
+                  "cmdlineDigest": "sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272",
+                  "exePathDigest": null,
+                  "label": "init"
+                }
+              ],
+              "unavailableReason": null,
+              "digest": "sha256:93b064b0b4fb6ac3e44dbdb8faa500d62066264d8c6c4a592d3cf065efb5a60f"
+            },
+            "operation": "raw-terminal-write"
+          }
+        }
+      },
+      "evidenceRefs": [
+        "mcp:audit:codesitefs-denied-full-workflow"
+      ],
+      "logicalTime": 50,
+      "createdAt": "2026-07-05T02:44:37.095Z"
+    },
+    {
+      "id": "cmr76u4fo00e1qk01i567saf5",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "write_attempted",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sqte00blqk01jga6jnj3",
+      "details": {
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "path": "synthi/prisma/schema.prisma",
+        "tool": "raw_terminal",
+        "zone": {
+          "zoneKey": "class_b",
+          "label": "Shared contract airspace",
+          "class": "B",
+          "paths": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "rules": [
+            "flight_plan_required",
+            "downstream_notification_required",
+            "change_order_for_mutation"
+          ],
+          "risk": "high",
+          "source": "compiled_default",
+          "path": "synthi/prisma/schema.prisma"
+        },
+        "codesiteFsEvent": {
+          "type": "write_quarantined",
+          "transaction_id": "cmr76sqte00blqk01jga6jnj3",
+          "mutation_lease_id": "cmr76s97i00alqk01mvljd1m6",
+          "display_callsign": "SCHEMA-01",
+          "workspace_slug": "codesite-full-workflow-proof-1783219369293",
+          "actor_user_id": null,
+          "effective_user_id": null,
+          "path": "synthi/prisma/schema.prisma",
+          "tool": "raw_terminal",
+          "wall_time": "2026-07-05T02:44:39.524Z",
+          "evidence_refs": [
+            "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432"
+          ],
+          "details": {
+            "reason": "Raw terminal modified quarantined for synthi/prisma/schema.prisma",
+            "reason_codes": [
+              "raw_terminal_quarantine"
+            ],
+            "process_ancestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session",
+              "node",
+              "sh",
+              "npm-run-codesite-proof-full-workflow",
+              "codex",
+              "init"
+            ],
+            "process_ancestry_sources": {
+              "caller_supplied": [
+                "mcp:synthi_codesite_apply_patch",
+                "codex:tmp-proof-session"
+              ],
+              "os_procfs": [
+                "node",
+                "sh",
+                "npm-run-codesite-proof-full-workflow",
+                "codex",
+                "init"
+              ]
+            },
+            "os_process_ancestry": {
+              "schemaVersion": "synthi.codesite.processAncestry.v1",
+              "source": "linux_procfs",
+              "sourcePath": "/proc",
+              "platform": "linux",
+              "wsl": true,
+              "available": true,
+              "complete": true,
+              "direction": "process_to_root",
+              "collectorPid": 119758,
+              "requestedPid": 119758,
+              "capturedAt": "2026-07-05T02:44:39.522Z",
+              "labels": [
+                "node",
+                "sh",
+                "npm-run-codesite-proof-full-workflow",
+                "codex",
+                "init"
+              ],
+              "nodes": [
+                {
+                  "pid": 119758,
+                  "ppid": 119757,
+                  "comm": "node",
+                  "state": "R",
+                  "argv0Basename": "node",
+                  "argvCount": 2,
+                  "exeBasename": "node",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411970,
+                  "cmdlineDigest": "sha256:731cfd963e9d0fc2425f96611f7ce4c4c3254cf1868013878c9b6b9590def73c",
+                  "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+                  "label": "node"
+                },
+                {
+                  "pid": 119757,
+                  "ppid": 119736,
+                  "comm": "sh",
+                  "state": "S",
+                  "argv0Basename": "sh",
+                  "argvCount": 3,
+                  "exeBasename": "dash",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411968,
+                  "cmdlineDigest": "sha256:ac027f6eccab303e41ee0836930574ff462b8ca8338cfe36e10e541d01b7c316",
+                  "exePathDigest": "sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a",
+                  "label": "sh"
+                },
+                {
+                  "pid": 119736,
+                  "ppid": 684,
+                  "comm": "npm-run-codesit",
+                  "state": "S",
+                  "argv0Basename": "npm-run-codesite-proof-full-workflow",
+                  "argvCount": 1,
+                  "exeBasename": "node",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411915,
+                  "cmdlineDigest": "sha256:e9055bb56655464f81bd420f306d146adbe3f9ea1e90a9b625278ec04bba818e",
+                  "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+                  "label": "npm-run-codesite-proof-full-workflow"
+                },
+                {
+                  "pid": 684,
+                  "ppid": 683,
+                  "comm": "codex",
+                  "state": "S",
+                  "argv0Basename": "codex",
+                  "argvCount": 3,
+                  "exeBasename": "codex",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1815,
+                  "cmdlineDigest": "sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64",
+                  "exePathDigest": "sha256:30b3392d5989f13146f24b5499e1583fb821cd950981cfde4ca4390364c3b809",
+                  "label": "codex"
+                },
+                {
+                  "pid": 683,
+                  "ppid": 682,
+                  "comm": "Relay-684",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 1810,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 682,
+                  "ppid": 2,
+                  "comm": "SessionLeader",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 1810,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 2,
+                  "ppid": 1,
+                  "comm": "init-systemd-Ub",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 728,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 1,
+                  "ppid": 0,
+                  "comm": "systemd",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 723,
+                  "cmdlineDigest": "sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272",
+                  "exePathDigest": null,
+                  "label": "init"
+                }
+              ],
+              "unavailableReason": null,
+              "digest": "sha256:93b064b0b4fb6ac3e44dbdb8faa500d62066264d8c6c4a592d3cf065efb5a60f"
+            },
+            "operation": "raw_terminal",
+            "quarantine_id": "qtn-cmr76sqte00blqk01jga6jnj3-1783219478987-45f2c017",
+            "quarantine_root": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-quarantine/codesite-full-workflow-proof-1783219369293/cmr76sqte00blqk01jga6jnj3/qtn-cmr76sqte00blqk01jga6jnj3-1783219478987-45f2c017",
+            "original_cwd": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+            "change_kind": "modified",
+            "quarantine_evidence": {
+              "path": "synthi/prisma/schema.prisma",
+              "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
+              "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+              "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+              "beforeSize": 135,
+              "afterSize": 249,
+              "beforeStat": {
+                "mode": 33279,
+                "uid": 1000,
+                "gid": 1000,
+                "ino": 2814749769147702,
+                "dev": 112,
+                "mtimeMs": 1783219479768.808,
+                "ctimeMs": 1783219479774.3208,
+                "birthtimeMs": 0
+              },
+              "afterStat": {
+                "mode": 33279,
+                "uid": 1000,
+                "gid": 1000,
+                "ino": 2814749769147702,
+                "dev": 112,
+                "mtimeMs": 1783219480141.4336,
+                "ctimeMs": 1783219480141.4336,
+                "birthtimeMs": 0
+              },
+              "beforeText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n",
+              "afterText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n\nmodel QuarantinedAuditEvent {\n  id        String   @id\n  userId    String\n  createdAt DateTime @default(now())\n}\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 8,
+                "beforeLineCount": 3,
+                "afterLineCount": 9,
+                "truncated": false,
+                "lines": [
+                  "   email String @unique",
+                  " }",
+                  " ",
+                  "+model QuarantinedAuditEvent {",
+                  "+  id        String   @id",
+                  "+  userId    String",
+                  "+  createdAt DateTime @default(now())",
+                  "+}",
+                  "+"
+                ]
+              },
+              "digest": "sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432",
+              "evidenceRef": "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432",
+              "quarantineId": "qtn-cmr76sqte00blqk01jga6jnj3-1783219478987-45f2c017"
+            }
+          }
+        },
+        "semanticDependencyRefs": [],
+        "evidenceRefs": [
+          "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432"
+        ],
+        "processAncestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session",
+          "node",
+          "sh",
+          "npm-run-codesite-proof-full-workflow",
+          "codex",
+          "init"
+        ]
+      },
+      "evidenceRefs": [
+        "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432"
+      ],
+      "logicalTime": 51,
+      "createdAt": "2026-07-05T02:44:39.541Z"
+    },
+    {
+      "id": "cmr76u5pu00e5qk019j5wpqyo",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "write_quarantined",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "codesitefs",
+      "actorId": "cmr76u5pf00e3qk01wmn1puqo",
+      "details": {
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "path": "synthi/prisma/schema.prisma",
+        "reasonCodes": [
+          "raw_terminal_quarantine"
+        ],
+        "policyDecisionId": "cmr76u5pf00e3qk01wmn1puqo",
+        "zone": {
+          "zoneKey": "class_b",
+          "label": "Shared contract airspace",
+          "class": "B",
+          "paths": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "rules": [
+            "flight_plan_required",
+            "downstream_notification_required",
+            "change_order_for_mutation"
+          ],
+          "risk": "high",
+          "source": "compiled_default",
+          "path": "synthi/prisma/schema.prisma"
+        },
+        "codesiteFsEvent": {
+          "type": "write_quarantined",
+          "transaction_id": "cmr76sqte00blqk01jga6jnj3",
+          "mutation_lease_id": "cmr76s97i00alqk01mvljd1m6",
+          "display_callsign": "SCHEMA-01",
+          "workspace_slug": "codesite-full-workflow-proof-1783219369293",
+          "actor_user_id": null,
+          "effective_user_id": null,
+          "path": "synthi/prisma/schema.prisma",
+          "tool": "raw_terminal",
+          "wall_time": "2026-07-05T02:44:39.524Z",
+          "evidence_refs": [
+            "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432"
+          ],
+          "details": {
+            "reason": "Raw terminal modified quarantined for synthi/prisma/schema.prisma",
+            "reason_codes": [
+              "raw_terminal_quarantine"
+            ],
+            "process_ancestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session",
+              "node",
+              "sh",
+              "npm-run-codesite-proof-full-workflow",
+              "codex",
+              "init"
+            ],
+            "process_ancestry_sources": {
+              "caller_supplied": [
+                "mcp:synthi_codesite_apply_patch",
+                "codex:tmp-proof-session"
+              ],
+              "os_procfs": [
+                "node",
+                "sh",
+                "npm-run-codesite-proof-full-workflow",
+                "codex",
+                "init"
+              ]
+            },
+            "os_process_ancestry": {
+              "schemaVersion": "synthi.codesite.processAncestry.v1",
+              "source": "linux_procfs",
+              "sourcePath": "/proc",
+              "platform": "linux",
+              "wsl": true,
+              "available": true,
+              "complete": true,
+              "direction": "process_to_root",
+              "collectorPid": 119758,
+              "requestedPid": 119758,
+              "capturedAt": "2026-07-05T02:44:39.522Z",
+              "labels": [
+                "node",
+                "sh",
+                "npm-run-codesite-proof-full-workflow",
+                "codex",
+                "init"
+              ],
+              "nodes": [
+                {
+                  "pid": 119758,
+                  "ppid": 119757,
+                  "comm": "node",
+                  "state": "R",
+                  "argv0Basename": "node",
+                  "argvCount": 2,
+                  "exeBasename": "node",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411970,
+                  "cmdlineDigest": "sha256:731cfd963e9d0fc2425f96611f7ce4c4c3254cf1868013878c9b6b9590def73c",
+                  "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+                  "label": "node"
+                },
+                {
+                  "pid": 119757,
+                  "ppid": 119736,
+                  "comm": "sh",
+                  "state": "S",
+                  "argv0Basename": "sh",
+                  "argvCount": 3,
+                  "exeBasename": "dash",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411968,
+                  "cmdlineDigest": "sha256:ac027f6eccab303e41ee0836930574ff462b8ca8338cfe36e10e541d01b7c316",
+                  "exePathDigest": "sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a",
+                  "label": "sh"
+                },
+                {
+                  "pid": 119736,
+                  "ppid": 684,
+                  "comm": "npm-run-codesit",
+                  "state": "S",
+                  "argv0Basename": "npm-run-codesite-proof-full-workflow",
+                  "argvCount": 1,
+                  "exeBasename": "node",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411915,
+                  "cmdlineDigest": "sha256:e9055bb56655464f81bd420f306d146adbe3f9ea1e90a9b625278ec04bba818e",
+                  "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+                  "label": "npm-run-codesite-proof-full-workflow"
+                },
+                {
+                  "pid": 684,
+                  "ppid": 683,
+                  "comm": "codex",
+                  "state": "S",
+                  "argv0Basename": "codex",
+                  "argvCount": 3,
+                  "exeBasename": "codex",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1815,
+                  "cmdlineDigest": "sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64",
+                  "exePathDigest": "sha256:30b3392d5989f13146f24b5499e1583fb821cd950981cfde4ca4390364c3b809",
+                  "label": "codex"
+                },
+                {
+                  "pid": 683,
+                  "ppid": 682,
+                  "comm": "Relay-684",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 1810,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 682,
+                  "ppid": 2,
+                  "comm": "SessionLeader",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 1810,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 2,
+                  "ppid": 1,
+                  "comm": "init-systemd-Ub",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 728,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 1,
+                  "ppid": 0,
+                  "comm": "systemd",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 723,
+                  "cmdlineDigest": "sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272",
+                  "exePathDigest": null,
+                  "label": "init"
+                }
+              ],
+              "unavailableReason": null,
+              "digest": "sha256:93b064b0b4fb6ac3e44dbdb8faa500d62066264d8c6c4a592d3cf065efb5a60f"
+            },
+            "operation": "raw_terminal",
+            "quarantine_id": "qtn-cmr76sqte00blqk01jga6jnj3-1783219478987-45f2c017",
+            "quarantine_root": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-quarantine/codesite-full-workflow-proof-1783219369293/cmr76sqte00blqk01jga6jnj3/qtn-cmr76sqte00blqk01jga6jnj3-1783219478987-45f2c017",
+            "original_cwd": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+            "change_kind": "modified",
+            "quarantine_evidence": {
+              "path": "synthi/prisma/schema.prisma",
+              "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
+              "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+              "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+              "beforeSize": 135,
+              "afterSize": 249,
+              "beforeStat": {
+                "mode": 33279,
+                "uid": 1000,
+                "gid": 1000,
+                "ino": 2814749769147702,
+                "dev": 112,
+                "mtimeMs": 1783219479768.808,
+                "ctimeMs": 1783219479774.3208,
+                "birthtimeMs": 0
+              },
+              "afterStat": {
+                "mode": 33279,
+                "uid": 1000,
+                "gid": 1000,
+                "ino": 2814749769147702,
+                "dev": 112,
+                "mtimeMs": 1783219480141.4336,
+                "ctimeMs": 1783219480141.4336,
+                "birthtimeMs": 0
+              },
+              "beforeText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n",
+              "afterText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n\nmodel QuarantinedAuditEvent {\n  id        String   @id\n  userId    String\n  createdAt DateTime @default(now())\n}\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 8,
+                "beforeLineCount": 3,
+                "afterLineCount": 9,
+                "truncated": false,
+                "lines": [
+                  "   email String @unique",
+                  " }",
+                  " ",
+                  "+model QuarantinedAuditEvent {",
+                  "+  id        String   @id",
+                  "+  userId    String",
+                  "+  createdAt DateTime @default(now())",
+                  "+}",
+                  "+"
+                ]
+              },
+              "digest": "sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432",
+              "evidenceRef": "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432",
+              "quarantineId": "qtn-cmr76sqte00blqk01jga6jnj3-1783219478987-45f2c017"
+            }
+          }
+        }
+      },
+      "evidenceRefs": [
+        "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432"
+      ],
+      "logicalTime": 52,
+      "createdAt": "2026-07-05T02:44:41.202Z"
+    },
+    {
+      "id": "cmr76u7cq00e7qk0129uryf6k",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "write_attempted",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sqte00blqk01jga6jnj3",
+      "details": {
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "path": "synthi/prisma/schema.prisma",
+        "tool": "file_write",
+        "zone": {
+          "zoneKey": "class_b",
+          "label": "Shared contract airspace",
+          "class": "B",
+          "paths": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "rules": [
+            "flight_plan_required",
+            "downstream_notification_required",
+            "change_order_for_mutation"
+          ],
+          "risk": "high",
+          "source": "compiled_default",
+          "path": "synthi/prisma/schema.prisma"
+        },
+        "codesiteFsEvent": {
+          "type": "write_allowed",
+          "transaction_id": "cmr76sqte00blqk01jga6jnj3",
+          "mutation_lease_id": "cmr76s97i00alqk01mvljd1m6",
+          "display_callsign": "SCHEMA-01",
+          "workspace_slug": "codesite-full-workflow-proof-1783219369293",
+          "actor_user_id": null,
+          "effective_user_id": null,
+          "path": "synthi/prisma/schema.prisma",
+          "tool": "file_write",
+          "wall_time": "2026-07-05T02:44:43.285Z",
+          "evidence_refs": [
+            "mcp:audit:write-full-workflow",
+            "codesite:document:cmr76trqd00dlqk011lwlhv5g",
+            "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z"
+          ],
+          "details": {
+            "reason": "inside_clearance_route",
+            "reason_codes": [
+              "inside_clearance_route"
+            ],
+            "process_ancestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session",
+              "node",
+              "sh",
+              "npm-run-codesite-proof-full-workflow",
+              "codex",
+              "init"
+            ],
+            "process_ancestry_sources": {
+              "caller_supplied": [
+                "mcp:synthi_codesite_apply_patch",
+                "codex:tmp-proof-session"
+              ],
+              "os_procfs": [
+                "node",
+                "sh",
+                "npm-run-codesite-proof-full-workflow",
+                "codex",
+                "init"
+              ]
+            },
+            "os_process_ancestry": {
+              "schemaVersion": "synthi.codesite.processAncestry.v1",
+              "source": "linux_procfs",
+              "sourcePath": "/proc",
+              "platform": "linux",
+              "wsl": true,
+              "available": true,
+              "complete": true,
+              "direction": "process_to_root",
+              "collectorPid": 119758,
+              "requestedPid": 119758,
+              "capturedAt": "2026-07-05T02:44:43.283Z",
+              "labels": [
+                "node",
+                "sh",
+                "npm-run-codesite-proof-full-workflow",
+                "codex",
+                "init"
+              ],
+              "nodes": [
+                {
+                  "pid": 119758,
+                  "ppid": 119757,
+                  "comm": "node",
+                  "state": "R",
+                  "argv0Basename": "node",
+                  "argvCount": 2,
+                  "exeBasename": "node",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411970,
+                  "cmdlineDigest": "sha256:731cfd963e9d0fc2425f96611f7ce4c4c3254cf1868013878c9b6b9590def73c",
+                  "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+                  "label": "node"
+                },
+                {
+                  "pid": 119757,
+                  "ppid": 119736,
+                  "comm": "sh",
+                  "state": "S",
+                  "argv0Basename": "sh",
+                  "argvCount": 3,
+                  "exeBasename": "dash",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411968,
+                  "cmdlineDigest": "sha256:ac027f6eccab303e41ee0836930574ff462b8ca8338cfe36e10e541d01b7c316",
+                  "exePathDigest": "sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a",
+                  "label": "sh"
+                },
+                {
+                  "pid": 119736,
+                  "ppid": 684,
+                  "comm": "npm-run-codesit",
+                  "state": "S",
+                  "argv0Basename": "npm-run-codesite-proof-full-workflow",
+                  "argvCount": 1,
+                  "exeBasename": "node",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1411915,
+                  "cmdlineDigest": "sha256:e9055bb56655464f81bd420f306d146adbe3f9ea1e90a9b625278ec04bba818e",
+                  "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+                  "label": "npm-run-codesite-proof-full-workflow"
+                },
+                {
+                  "pid": 684,
+                  "ppid": 683,
+                  "comm": "codex",
+                  "state": "S",
+                  "argv0Basename": "codex",
+                  "argvCount": 3,
+                  "exeBasename": "codex",
+                  "uid": 1000,
+                  "gid": 1000,
+                  "startTimeClockTicks": 1815,
+                  "cmdlineDigest": "sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64",
+                  "exePathDigest": "sha256:30b3392d5989f13146f24b5499e1583fb821cd950981cfde4ca4390364c3b809",
+                  "label": "codex"
+                },
+                {
+                  "pid": 683,
+                  "ppid": 682,
+                  "comm": "Relay-684",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 1810,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 682,
+                  "ppid": 2,
+                  "comm": "SessionLeader",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 1810,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 2,
+                  "ppid": 1,
+                  "comm": "init-systemd-Ub",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 728,
+                  "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+                  "exePathDigest": null,
+                  "label": "init"
+                },
+                {
+                  "pid": 1,
+                  "ppid": 0,
+                  "comm": "systemd",
+                  "state": "S",
+                  "argv0Basename": "init",
+                  "argvCount": 1,
+                  "exeBasename": null,
+                  "uid": 0,
+                  "gid": 0,
+                  "startTimeClockTicks": 723,
+                  "cmdlineDigest": "sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272",
+                  "exePathDigest": null,
+                  "label": "init"
+                }
+              ],
+              "unavailableReason": null,
+              "digest": "sha256:93b064b0b4fb6ac3e44dbdb8faa500d62066264d8c6c4a592d3cf065efb5a60f"
+            },
+            "operation": "write-file",
+            "lineProvenance": [
+              {
+                "filePath": "synthi/prisma/schema.prisma",
+                "startLine": 10,
+                "endLine": 15,
+                "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+                "reasonRef": "change_order:cmr76trqd00dlqk011lwlhv5g",
+                "evidenceRefs": [
+                  "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4",
+                  "mcp:audit:write-full-workflow",
+                  "codesite:document:cmr76tm7e00ddqk01ic8pff9a",
+                  "codesite:document:cmr76trqd00dlqk011lwlhv5g",
+                  "codesite:inbox:cmr76todp00dhqk01r43bhrgg",
+                  "codesite:inbox:cmr76tu3z00dpqk016015sdcl",
+                  "codesite:assumption:cmr76stj200brqk01rdlmxv30",
+                  "codesite:assumption:cmr76t2r400c9qk01qfeyolp9",
+                  "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z"
+                ],
+                "processAncestry": [
+                  "mcp:synthi_codesite_apply_patch",
+                  "codex:tmp-proof-session"
+                ],
+                "promptSummary": "Land schema-first full workflow proof",
+                "dojoSourceRefs": [
+                  "dojo:proof:pcap-full-workflow-schema",
+                  "dojo:decision:sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+                  "full-workflow-checkride"
+                ]
+              }
+            ]
+          }
+        },
+        "semanticDependencyRefs": [],
+        "lineProvenance": [
+          {
+            "filePath": "synthi/prisma/schema.prisma",
+            "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+            "startLine": 10,
+            "endLine": 15,
+            "source": null,
+            "reasonRef": "change_order:cmr76trqd00dlqk011lwlhv5g",
+            "evidenceRefs": [
+              "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4",
+              "mcp:audit:write-full-workflow",
+              "codesite:document:cmr76tm7e00ddqk01ic8pff9a",
+              "codesite:document:cmr76trqd00dlqk011lwlhv5g",
+              "codesite:inbox:cmr76todp00dhqk01r43bhrgg",
+              "codesite:inbox:cmr76tu3z00dpqk016015sdcl",
+              "codesite:assumption:cmr76stj200brqk01rdlmxv30",
+              "codesite:assumption:cmr76t2r400c9qk01qfeyolp9",
+              "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z"
+            ],
+            "processAncestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session"
+            ],
+            "dojoSourceRefs": [
+              "dojo:proof:pcap-full-workflow-schema",
+              "dojo:decision:sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+              "full-workflow-checkride"
+            ],
+            "promptSummary": "Land schema-first full workflow proof"
+          }
+        ],
+        "evidenceRefs": [
+          "mcp:audit:write-full-workflow",
+          "codesite:document:cmr76trqd00dlqk011lwlhv5g",
+          "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z"
+        ],
+        "processAncestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session",
+          "node",
+          "sh",
+          "npm-run-codesite-proof-full-workflow",
+          "codex",
+          "init"
+        ]
+      },
+      "evidenceRefs": [
+        "mcp:audit:write-full-workflow",
+        "codesite:document:cmr76trqd00dlqk011lwlhv5g",
+        "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z"
+      ],
+      "logicalTime": 53,
+      "createdAt": "2026-07-05T02:44:43.323Z"
+    },
+    {
+      "id": "cmr76ud0z00ebqk01o9j9kkji",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "write_allowed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sqte00blqk01jga6jnj3",
+      "details": {
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "path": "synthi/prisma/schema.prisma",
+        "zone": {
+          "zoneKey": "class_b",
+          "label": "Shared contract airspace",
+          "class": "B",
+          "paths": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "rules": [
+            "flight_plan_required",
+            "downstream_notification_required",
+            "change_order_for_mutation"
+          ],
+          "risk": "high",
+          "source": "compiled_default",
+          "path": "synthi/prisma/schema.prisma"
+        },
+        "semanticDependencyRefs": [],
+        "invalidatedAssumptions": [
+          {
+            "id": "cmr76t2r400c9qk01qfeyolp9",
+            "projectId": "cmr76rvc3008sqk01itxc3o8s",
+            "ownerSessionId": "cmr76s0bl009vqk013j9fu23i",
+            "displayCallsign": "API-02",
+            "assumptionKey": "api.signup.depends_on_schema.v1",
+            "dependsOn": [
+              {
+                "ref": "auth.signup.schema",
+                "version": "v1",
+                "path": "synthi/prisma/schema.prisma"
+              }
+            ],
+            "usedBy": [
+              "synthi/src/app/api/auth/signup.ts"
+            ],
+            "status": "invalidated",
+            "invalidatedBy": "SCHEMA-01",
+            "invalidatedAt": "2026-07-05T02:44:49.270Z",
+            "createdAt": "2026-07-05T02:43:50.704Z"
+          }
+        ],
+        "lineProvenance": [
+          {
+            "filePath": "synthi/prisma/schema.prisma",
+            "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+            "startLine": 10,
+            "endLine": 15,
+            "source": null,
+            "reasonRef": "change_order:cmr76trqd00dlqk011lwlhv5g",
+            "evidenceRefs": [
+              "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4",
+              "mcp:audit:write-full-workflow",
+              "codesite:document:cmr76tm7e00ddqk01ic8pff9a",
+              "codesite:document:cmr76trqd00dlqk011lwlhv5g",
+              "codesite:inbox:cmr76todp00dhqk01r43bhrgg",
+              "codesite:inbox:cmr76tu3z00dpqk016015sdcl",
+              "codesite:assumption:cmr76stj200brqk01rdlmxv30",
+              "codesite:assumption:cmr76t2r400c9qk01qfeyolp9",
+              "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z"
+            ],
+            "processAncestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session"
+            ],
+            "dojoSourceRefs": [
+              "dojo:proof:pcap-full-workflow-schema",
+              "dojo:decision:sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+              "full-workflow-checkride"
+            ],
+            "promptSummary": "Land schema-first full workflow proof"
+          }
+        ],
+        "evidenceRefs": [
+          "mcp:audit:write-full-workflow",
+          "codesite:document:cmr76trqd00dlqk011lwlhv5g",
+          "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z"
+        ],
+        "processAncestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session",
+          "node",
+          "sh",
+          "npm-run-codesite-proof-full-workflow",
+          "codex",
+          "init"
+        ]
+      },
+      "evidenceRefs": [
+        "mcp:audit:write-full-workflow",
+        "codesite:document:cmr76trqd00dlqk011lwlhv5g",
+        "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z"
+      ],
+      "logicalTime": 55,
+      "createdAt": "2026-07-05T02:44:50.675Z"
+    },
+    {
+      "id": "cmr76ujz600enqk017wxc64j7",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "landing_requested",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "inspection",
+      "actorId": "cmr76ujz100elqk01f5b2l9mx",
+      "details": {
+        "inspectionRunId": "cmr76ujz100elqk01f5b2l9mx",
+        "status": "running",
+        "changedPaths": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "inspectionEvidenceRefs": [
+          "runtime:event:inspection-full-workflow",
+          "codesite:permit:cmr76s48400afqk01o8bcd748"
+        ]
+      },
+      "evidenceRefs": [
+        "runtime:event:inspection-full-workflow",
+        "codesite:permit:cmr76s48400afqk01o8bcd748"
+      ],
+      "logicalTime": 58,
+      "createdAt": "2026-07-05T02:44:59.683Z"
+    },
+    {
+      "id": "cmr76umqu00epqk01kdg2wi1b",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "radar_result",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "inspection",
+      "actorId": "cmr76ujz100elqk01f5b2l9mx",
+      "details": {
+        "inspectionRunId": "cmr76ujz100elqk01f5b2l9mx",
+        "status": "completed",
+        "signals": [
+          {
+            "key": "type",
+            "adapter": {
+              "key": "type",
+              "label": "Type radar",
+              "evidencePrefix": "typecheck:run"
+            },
+            "status": "passed",
+            "command": {
+              "executable": "npm",
+              "args": [
+                "run",
+                "typecheck"
+              ],
+              "cwd": ".",
+              "timeoutMs": 60000
+            },
+            "exitCode": 0,
+            "signal": null,
+            "timedOut": false,
+            "durationMs": 429,
+            "stdoutTail": "\n> typecheck\n> node scripts/typecheck-schema.mjs\n\nschema typecheck passed: AuditEvent contract is compatible with User identity schema\n",
+            "stderrTail": "",
+            "evidenceDigest": "sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+            "evidenceRefs": [
+              "typecheck:run:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+              "artifact:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6"
+            ],
+            "reasonCodes": [
+              "type_radar_passed",
+              "type_adapter_executed"
+            ],
+            "source": "codesite_inspection_executor",
+            "startedAt": "2026-07-05T02:45:02.558Z",
+            "completedAt": "2026-07-05T02:45:02.987Z"
+          },
+          {
+            "key": "tests",
+            "adapter": {
+              "key": "tests",
+              "label": "Test radar",
+              "evidencePrefix": "test:run"
+            },
+            "status": "passed",
+            "command": {
+              "executable": "npm",
+              "args": [
+                "test"
+              ],
+              "cwd": ".",
+              "timeoutMs": 60000
+            },
+            "exitCode": 0,
+            "signal": null,
+            "timedOut": false,
+            "durationMs": 277,
+            "stdoutTail": "\n> test\n> node scripts/test-schema-contract.mjs\n\nschema contract tests passed: AuditEvent satisfies startup audit-log workflow\n",
+            "stderrTail": "",
+            "evidenceDigest": "sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+            "evidenceRefs": [
+              "test:run:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+              "artifact:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959"
+            ],
+            "reasonCodes": [
+              "tests_radar_passed",
+              "tests_adapter_executed"
+            ],
+            "source": "codesite_inspection_executor",
+            "startedAt": "2026-07-05T02:45:02.987Z",
+            "completedAt": "2026-07-05T02:45:03.264Z"
+          }
+        ]
+      },
+      "evidenceRefs": [],
+      "logicalTime": 59,
+      "createdAt": "2026-07-05T02:45:03.270Z"
+    },
+    {
+      "id": "cmr76up4f00erqk01a7uo8eta",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "inspection_result",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "inspection",
+      "actorId": "cmr76ujz100elqk01f5b2l9mx",
+      "details": {
+        "inspectionRunId": "cmr76ujz100elqk01f5b2l9mx",
+        "status": "completed",
+        "signals": [
+          {
+            "key": "type",
+            "adapter": {
+              "key": "type",
+              "label": "Type radar",
+              "evidencePrefix": "typecheck:run"
+            },
+            "status": "passed",
+            "command": {
+              "executable": "npm",
+              "args": [
+                "run",
+                "typecheck"
+              ],
+              "cwd": ".",
+              "timeoutMs": 60000
+            },
+            "exitCode": 0,
+            "signal": null,
+            "timedOut": false,
+            "durationMs": 429,
+            "stdoutTail": "\n> typecheck\n> node scripts/typecheck-schema.mjs\n\nschema typecheck passed: AuditEvent contract is compatible with User identity schema\n",
+            "stderrTail": "",
+            "evidenceDigest": "sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+            "evidenceRefs": [
+              "typecheck:run:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+              "artifact:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6"
+            ],
+            "reasonCodes": [
+              "type_radar_passed",
+              "type_adapter_executed"
+            ],
+            "source": "codesite_inspection_executor",
+            "startedAt": "2026-07-05T02:45:02.558Z",
+            "completedAt": "2026-07-05T02:45:02.987Z"
+          },
+          {
+            "key": "tests",
+            "adapter": {
+              "key": "tests",
+              "label": "Test radar",
+              "evidencePrefix": "test:run"
+            },
+            "status": "passed",
+            "command": {
+              "executable": "npm",
+              "args": [
+                "test"
+              ],
+              "cwd": ".",
+              "timeoutMs": 60000
+            },
+            "exitCode": 0,
+            "signal": null,
+            "timedOut": false,
+            "durationMs": 277,
+            "stdoutTail": "\n> test\n> node scripts/test-schema-contract.mjs\n\nschema contract tests passed: AuditEvent satisfies startup audit-log workflow\n",
+            "stderrTail": "",
+            "evidenceDigest": "sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+            "evidenceRefs": [
+              "test:run:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+              "artifact:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959"
+            ],
+            "reasonCodes": [
+              "tests_radar_passed",
+              "tests_adapter_executed"
+            ],
+            "source": "codesite_inspection_executor",
+            "startedAt": "2026-07-05T02:45:02.987Z",
+            "completedAt": "2026-07-05T02:45:03.264Z"
+          }
+        ]
+      },
+      "evidenceRefs": [],
+      "logicalTime": 60,
+      "createdAt": "2026-07-05T02:45:06.351Z"
+    },
+    {
+      "id": "cmr76uraq00evqk01umhdffld",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "landing_requested",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "inspection",
+      "actorId": "cmr76urak00etqk01095qmkpo",
+      "details": {
+        "inspectionRunId": "cmr76urak00etqk01095qmkpo",
+        "status": "passed",
+        "changedPaths": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "inspectionEvidenceRefs": [
+          "codesite:landing:passed-health-proof"
+        ]
+      },
+      "evidenceRefs": [
+        "codesite:landing:passed-health-proof"
+      ],
+      "logicalTime": 61,
+      "createdAt": "2026-07-05T02:45:09.170Z"
+    },
+    {
+      "id": "cmr76z75x00ghqk01awt7ekb0",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "transaction_validated",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sqte00blqk01jga6jnj3",
+      "details": {
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "decision": {
+          "ok": true,
+          "isolation": "serializable",
+          "reasonCodes": [
+            "repo_snapshot_stable",
+            "serializable_validation_passed"
+          ],
+          "blockedWrites": [],
+          "invalidAssumptions": [],
+          "staleReads": [],
+          "repoSnapshot": {
+            "ok": true,
+            "reasonCodes": [
+              "repo_snapshot_stable"
+            ],
+            "expected": {
+              "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+              "status": "recorded",
+              "scope": "repo_wide",
+              "readSet": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+              "fileDigests": [
+                {
+                  "path": "synthi/prisma/schema-contract-read.txt",
+                  "exists": true,
+                  "size": 24,
+                  "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+                }
+              ],
+              "missingPaths": [],
+              "skippedPaths": [],
+              "truncated": false,
+              "repoManifestDigest": "sha256:4ab6d19df4f6c2ef92ad202b07de5637dec9d23a2e414c4b1f18fba5e9ec2254",
+              "repoManifestFileCount": 5,
+              "repoManifestScannedEntries": 10,
+              "repoManifestTruncated": false,
+              "repoManifestSkippedPaths": [],
+              "repoManifestExcludedPaths": [
+                "synthi/prisma/schema.prisma"
+              ],
+              "limits": {
+                "maxFiles": 512,
+                "maxFileBytes": 2097152,
+                "maxScanEntries": 15000
+              },
+              "generatedAt": "2026-07-05T02:43:35.169Z",
+              "source": "codesite_control_plane",
+              "snapshotDigest": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+              "evidenceDigest": "sha256:ec8199f8668dee7f87523f5839403218bd5f73b8ccdc0a6884689c24d50be2bb"
+            },
+            "current": {
+              "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+              "status": "recorded",
+              "scope": "repo_wide",
+              "readSet": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+              "fileDigests": [
+                {
+                  "path": "synthi/prisma/schema-contract-read.txt",
+                  "exists": true,
+                  "size": 24,
+                  "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+                }
+              ],
+              "missingPaths": [],
+              "skippedPaths": [],
+              "truncated": false,
+              "repoManifestDigest": "sha256:4ab6d19df4f6c2ef92ad202b07de5637dec9d23a2e414c4b1f18fba5e9ec2254",
+              "repoManifestFileCount": 5,
+              "repoManifestScannedEntries": 11,
+              "repoManifestTruncated": false,
+              "repoManifestSkippedPaths": [],
+              "repoManifestExcludedPaths": [
+                "synthi/prisma/schema.prisma"
+              ],
+              "limits": {
+                "maxFiles": 512,
+                "maxFileBytes": 2097152,
+                "maxScanEntries": 15000
+              },
+              "generatedAt": "2026-07-05T02:48:36.255Z",
+              "source": "codesite_validation",
+              "snapshotDigest": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+              "evidenceDigest": "sha256:1fc48e88fc8e160f18eb398509e1fbfa14916180baa65b9bf4fc46049af616e9"
+            },
+            "driftedPaths": [],
+            "digestChanged": false,
+            "repoManifestDrifted": false
+          },
+          "validatedAt": "2026-07-05T02:48:36.352Z"
+        }
+      },
+      "evidenceRefs": [],
+      "logicalTime": 75,
+      "createdAt": "2026-07-05T02:48:36.357Z"
+    },
+    {
+      "id": "cmr76z76s00gnqk01sp8hjiwq",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "transaction_committed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sqte00blqk01jga6jnj3",
+      "details": {
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "proofBundleId": "cmr76z76b00gjqk01x6cwpr50",
+        "proofBundleDigest": "sha256:a2a603d7be97a67a393353e7f2cb1eeb298374ad34c8404190b26d3f6e174222",
+        "writeSet": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "repoStateDigest": "sha256:610901da873348539bc5bf0ec6e8397bc7d3a6b7f751692820f4ff12148f68a3",
+        "inspectionRunIds": [
+          "cmr76urak00etqk01095qmkpo",
+          "cmr76ujz100elqk01f5b2l9mx"
+        ],
+        "inspectionEvidenceRefs": [
+          "codesite:landing:passed-health-proof",
+          "codesite:inspection:cmr76urak00etqk01095qmkpo",
+          "runtime:event:inspection-full-workflow",
+          "codesite:permit:cmr76s48400afqk01o8bcd748",
+          "typecheck:run:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+          "artifact:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+          "test:run:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+          "artifact:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+          "codesite:governance:full-workflow-schema-permit",
+          "codesite:inspection:cmr76ujz100elqk01f5b2l9mx"
+        ]
+      },
+      "evidenceRefs": [],
+      "logicalTime": 76,
+      "createdAt": "2026-07-05T02:48:36.388Z"
+    },
+    {
+      "id": "cmr76z77m00gpqk017dcr7zod",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "black_box_closed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr76sqte00blqk01jga6jnj3",
+      "details": {
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "incidentId": "cmr76ufnq00ehqk01texuuh7z",
+        "proofBundleId": "cmr76z76b00gjqk01x6cwpr50",
+        "proofBundleDigest": "sha256:a2a603d7be97a67a393353e7f2cb1eeb298374ad34c8404190b26d3f6e174222",
+        "landingStatus": "completed",
+        "status": "committed",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "writeSet": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "exportedPaths": [
+          "projects/cmr76rvc3008sqk01itxc3o8s/handover.md",
+          "projects/cmr76rvc3008sqk01itxc3o8s/events.jsonl",
+          "projects/cmr76rvc3008sqk01itxc3o8s/incidents/incident-replay-<incident-id>.jsonl",
+          "projects/cmr76rvc3008sqk01itxc3o8s/flights/SCHEMA-01/black-box.json",
+          "projects/cmr76rvc3008sqk01itxc3o8s/flights/SCHEMA-01/transaction-cmr76sqte00blqk01jga6jnj3.json",
+          "projects/cmr76rvc3008sqk01itxc3o8s/proof-bundles/cmr76z76b00gjqk01x6cwpr50.proof.json",
+          "projects/cmr76rvc3008sqk01itxc3o8s/proof-bundles/cmr76z76b00gjqk01x6cwpr50.trailers.txt"
+        ],
+        "reason": "transaction_black_box_closeout"
+      },
+      "evidenceRefs": [
+        "mcp:audit:commit-full-workflow",
+        "git:commit:8f5c8e93c5a049b7d8556c179f6a3bf266b4cdad",
+        "codesite:runtime-attestation:sha256:11e8b941ed3c6038111b02110b262846e1f4098398f7ac25af2572dd9d7dc96f",
+        "codesite:runtime-attestation:sha256:25e88092960046acb5f0ac29bc634f9ed8062c3404b0bd041e91e130468bbd5b",
+        "codesite:landing:passed-health-proof",
+        "codesite:inspection:cmr76urak00etqk01095qmkpo",
+        "runtime:event:inspection-full-workflow",
+        "codesite:permit:cmr76s48400afqk01o8bcd748",
+        "typecheck:run:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+        "artifact:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+        "test:run:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+        "artifact:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+        "codesite:governance:full-workflow-schema-permit",
+        "codesite:inspection:cmr76ujz100elqk01f5b2l9mx",
+        "codesite:repo-state:sha256:610901da873348539bc5bf0ec6e8397bc7d3a6b7f751692820f4ff12148f68a3",
+        "codesite:transaction:cmr76sqte00blqk01jga6jnj3",
+        "codesite:lease:cmr76s97i00alqk01mvljd1m6",
+        "codesite:proof-bundle:cmr76z76b00gjqk01x6cwpr50"
+      ],
+      "logicalTime": 77,
+      "createdAt": "2026-07-05T02:48:36.419Z"
+    },
+    {
+      "id": "cmr76zggt00grqk01sqnckbit",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "eventType": "inspection_result",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "proof_bundle",
+      "actorId": "cmr76z76b00gjqk01x6cwpr50",
+      "details": {
+        "type": "proof_bundle_commit_attached",
+        "proofBundleId": "cmr76z76b00gjqk01x6cwpr50",
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "commitSha": "6e6231718ba31a32cee2225f5a0a58155d8e0964",
+        "trailerDigest": "sha256:57a80fda2b1e861c77856fd83d9d0c6e6d8f4b5c4b38d3342c307139c60edfff",
+        "trailerSource": "git_commit_message",
+        "commitMessageDigest": "sha256:a3b6fb51fa9026a2bda2a7209f9538906e3775e7502e49caf0c00ecf37bcbf80",
+        "evidenceRefs": [
+          "git:commit:6e6231718ba31a32cee2225f5a0a58155d8e0964",
+          "git:trailers:sha256:57a80fda2b1e861c77856fd83d9d0c6e6d8f4b5c4b38d3342c307139c60edfff",
+          "git:commit-message:sha256:a3b6fb51fa9026a2bda2a7209f9538906e3775e7502e49caf0c00ecf37bcbf80",
+          "git:commit:8f5c8e93c5a049b7d8556c179f6a3bf266b4cdad"
+        ],
+        "reasonCodes": [
+          "proof_bundle_actual_commit_trailers_verified"
+        ]
+      },
+      "evidenceRefs": [
+        "git:commit:6e6231718ba31a32cee2225f5a0a58155d8e0964",
+        "git:trailers:sha256:57a80fda2b1e861c77856fd83d9d0c6e6d8f4b5c4b38d3342c307139c60edfff",
+        "git:commit-message:sha256:a3b6fb51fa9026a2bda2a7209f9538906e3775e7502e49caf0c00ecf37bcbf80",
+        "git:commit:8f5c8e93c5a049b7d8556c179f6a3bf266b4cdad"
+      ],
+      "logicalTime": 78,
+      "createdAt": "2026-07-05T02:48:48.414Z"
+    }
+  ],
+  "inspections": [
+    {
+      "id": "cmr76ujz100elqk01f5b2l9mx",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "executionPlanId": "cmr76rzmj009rqk01rxv77xvc",
+      "displayCallsign": "SCHEMA-01",
+      "status": "completed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "governance",
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:permit:cmr76s48400afqk01o8bcd748",
+            "codesite:governance:full-workflow-schema-permit"
+          ],
+          "reasonCodes": [
+            "governance_clearance_evidence_verified"
+          ]
+        },
+        {
+          "key": "type",
+          "adapter": {
+            "key": "type",
+            "label": "Type radar",
+            "evidencePrefix": "typecheck:run"
+          },
+          "status": "passed",
+          "command": {
+            "executable": "npm",
+            "args": [
+              "run",
+              "typecheck"
+            ],
+            "cwd": ".",
+            "timeoutMs": 60000
+          },
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 429,
+          "stdoutTail": "\n> typecheck\n> node scripts/typecheck-schema.mjs\n\nschema typecheck passed: AuditEvent contract is compatible with User identity schema\n",
+          "stderrTail": "",
+          "evidenceDigest": "sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+          "evidenceRefs": [
+            "typecheck:run:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+            "artifact:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6"
+          ],
+          "reasonCodes": [
+            "type_radar_passed",
+            "type_adapter_executed"
+          ],
+          "source": "codesite_inspection_executor",
+          "startedAt": "2026-07-05T02:45:02.558Z",
+          "completedAt": "2026-07-05T02:45:02.987Z"
+        },
+        {
+          "key": "tests",
+          "adapter": {
+            "key": "tests",
+            "label": "Test radar",
+            "evidencePrefix": "test:run"
+          },
+          "status": "passed",
+          "command": {
+            "executable": "npm",
+            "args": [
+              "test"
+            ],
+            "cwd": ".",
+            "timeoutMs": 60000
+          },
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 277,
+          "stdoutTail": "\n> test\n> node scripts/test-schema-contract.mjs\n\nschema contract tests passed: AuditEvent satisfies startup audit-log workflow\n",
+          "stderrTail": "",
+          "evidenceDigest": "sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+          "evidenceRefs": [
+            "test:run:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+            "artifact:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959"
+          ],
+          "reasonCodes": [
+            "tests_radar_passed",
+            "tests_adapter_executed"
+          ],
+          "source": "codesite_inspection_executor",
+          "startedAt": "2026-07-05T02:45:02.987Z",
+          "completedAt": "2026-07-05T02:45:03.264Z"
+        }
+      ],
+      "evidenceRefs": [
+        "runtime:event:inspection-full-workflow",
+        "codesite:permit:cmr76s48400afqk01o8bcd748",
+        "typecheck:run:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+        "artifact:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+        "test:run:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+        "artifact:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959"
+      ],
+      "requestedAt": "2026-07-05T02:44:59.678Z",
+      "completedAt": "2026-07-05T02:45:03.265Z"
+    },
+    {
+      "id": "cmr76urak00etqk01095qmkpo",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "executionPlanId": "cmr76rzmj009rqk01rxv77xvc",
+      "displayCallsign": "SCHEMA-01",
+      "status": "passed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "landing_health",
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:landing:passed-health-proof"
+          ]
+        }
+      ],
+      "evidenceRefs": [
+        "codesite:landing:passed-health-proof"
+      ],
+      "requestedAt": "2026-07-05T02:45:09.165Z",
+      "completedAt": null
+    }
+  ],
+  "pilotLicenseHealth": {
+    "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+    "key": "cmr76rypy009lqk017lm2gi9u",
+    "projectId": "cmr76rvc3008sqk01itxc3o8s",
+    "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+    "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+    "ownerUserId": "cmr76rv7e008jqk01igpdj00w",
+    "displayCallsign": "SCHEMA-01",
+    "status": "suspended",
+    "level": "IFR",
+    "levelRank": 3,
+    "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+    "dojoLicenseRef": "schema.level_2@2026-06-25",
+    "dojoProofRef": "pcap-full-workflow-schema",
+    "dojoDecisionDigest": "sha256:7719e9ce4785edcdf1663981edbd7b0e8027aad7334c9da80d6dd3189bcb3652",
+    "repoScope": "codesite-full-workflow-proof-1783219369293",
+    "authorizedAirspace": [
+      "packages/schemas/**",
+      "openapi/**",
+      "packages/*/src/index.ts",
+      "synthi/prisma/**",
+      "backend/collab-server/permissionMiddleware.js"
+    ],
+    "restrictedAirspace": [
+      "secrets/**"
+    ],
+    "requiredRadar": [
+      "typecheck",
+      "tests",
+      "governance"
+    ],
+    "earnedBy": [
+      "dojo:full-workflow-checkride",
+      "dojo:evidence:full-workflow-checkride"
+    ],
+    "expiresAt": null,
+    "expiresOn": [
+      "source_drift"
+    ],
+    "sourceDrift": {
+      "monitored": true,
+      "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "expired": false
+    },
+    "landingStats": {
+      "total": 2,
+      "passed": 1,
+      "failed": 0,
+      "evidenceRefs": [
+        "runtime:event:inspection-full-workflow",
+        "codesite:permit:cmr76s48400afqk01o8bcd748",
+        "typecheck:run:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+        "artifact:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+        "test:run:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+        "artifact:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+        "codesite:landing:passed-health-proof"
+      ]
+    },
+    "violationStats": {
+      "total": 3,
+      "critical": 2,
+      "latestAt": "2026-07-05T02:44:37.095Z",
+      "evidenceRefs": [
+        "codesite:policy-decision:cmr76s97n00anqk01fxeme8ab",
+        "mcp:audit:codesitefs-denied-full-workflow"
+      ]
+    },
+    "reasonCodes": [
+      "pilot_license_critical_violation_window"
+    ],
+    "requiredAction": "review_pilot_license:cmr76rypy009lqk017lm2gi9u",
+    "evidenceRefs": [
+      "dojo:evidence:full-workflow-checkride",
+      "dojo:full-workflow-checkride",
+      "full-workflow-checkride",
+      "runtime:event:inspection-full-workflow",
+      "codesite:permit:cmr76s48400afqk01o8bcd748",
+      "typecheck:run:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+      "artifact:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+      "test:run:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+      "artifact:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+      "codesite:landing:passed-health-proof",
+      "codesite:governance:full-workflow-schema-permit",
+      "codesite:policy-decision:cmr76s97n00anqk01fxeme8ab",
+      "codesite:transaction:cmr76sbkw00atqk019prwd8lw",
+      "codesite:lease:cmr76s97i00alqk01mvljd1m6",
+      "codesite:read-snapshot:sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c",
+      "codesite:transaction:cmr76sgjw00b5qk01xadbal59",
+      "codesite:read-snapshot:sha256:ec8199f8668dee7f87523f5839403218bd5f73b8ccdc0a6884689c24d50be2bb",
+      "mcp:audit:read-full-workflow",
+      "mcp:audit:codesitefs-denied-full-workflow",
+      "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432",
+      "mcp:audit:write-full-workflow",
+      "codesite:document:cmr76trqd00dlqk011lwlhv5g",
+      "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z",
+      "mcp:audit:commit-full-workflow",
+      "git:commit:8f5c8e93c5a049b7d8556c179f6a3bf266b4cdad",
+      "codesite:runtime-attestation:sha256:11e8b941ed3c6038111b02110b262846e1f4098398f7ac25af2572dd9d7dc96f",
+      "codesite:runtime-attestation:sha256:25e88092960046acb5f0ac29bc634f9ed8062c3404b0bd041e91e130468bbd5b",
+      "codesite:inspection:cmr76urak00etqk01095qmkpo",
+      "codesite:inspection:cmr76ujz100elqk01f5b2l9mx",
+      "codesite:repo-state:sha256:610901da873348539bc5bf0ec6e8397bc7d3a6b7f751692820f4ff12148f68a3",
+      "codesite:transaction:cmr76sqte00blqk01jga6jnj3",
+      "codesite:proof-bundle:cmr76z76b00gjqk01x6cwpr50",
+      "git:commit:6e6231718ba31a32cee2225f5a0a58155d8e0964",
+      "git:trailers:sha256:57a80fda2b1e861c77856fd83d9d0c6e6d8f4b5c4b38d3342c307139c60edfff",
+      "git:commit-message:sha256:a3b6fb51fa9026a2bda2a7209f9538906e3775e7502e49caf0c00ecf37bcbf80",
+      "codesite:policy-decision:cmr76u2jm00dxqk013fcdp17q",
+      "codesite:policy-decision:cmr76u5pf00e3qk01wmn1puqo"
+    ],
+    "lifecycle": {
+      "issuedAt": "2026-07-05T02:42:58.823Z",
+      "checkedAt": "2026-07-05T02:48:56.964Z",
+      "latestLandingAt": "2026-07-05T02:45:09.165Z",
+      "latestViolationAt": "2026-07-05T02:44:37.095Z",
+      "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+    }
+  },
+  "proofBundles": [
+    {
+      "id": "cmr76z76b00gjqk01x6cwpr50",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "transactionId": "cmr76sqte00blqk01jga6jnj3",
+      "commitSha": "6e6231718ba31a32cee2225f5a0a58155d8e0964",
+      "readSetDigest": "sha256:478271e6e2cb5a755bbfe83737ef10debab09482410cda922c58fc66fa20c83a",
+      "writeSetDigest": "sha256:c9dc8f2e81e79067b5051b7a7e1beca884399b3b891086ab43fb576b0f74f973",
+      "invariants": [
+        "clearance.diff.inside_route"
+      ],
+      "evidenceRefs": [
+        "mcp:audit:commit-full-workflow",
+        "git:commit:8f5c8e93c5a049b7d8556c179f6a3bf266b4cdad",
+        "codesite:runtime-attestation:sha256:11e8b941ed3c6038111b02110b262846e1f4098398f7ac25af2572dd9d7dc96f",
+        "codesite:runtime-attestation:sha256:25e88092960046acb5f0ac29bc634f9ed8062c3404b0bd041e91e130468bbd5b",
+        "codesite:landing:passed-health-proof",
+        "codesite:inspection:cmr76urak00etqk01095qmkpo",
+        "runtime:event:inspection-full-workflow",
+        "codesite:permit:cmr76s48400afqk01o8bcd748",
+        "typecheck:run:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+        "artifact:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+        "test:run:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+        "artifact:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+        "codesite:governance:full-workflow-schema-permit",
+        "codesite:inspection:cmr76ujz100elqk01f5b2l9mx",
+        "codesite:repo-state:sha256:610901da873348539bc5bf0ec6e8397bc7d3a6b7f751692820f4ff12148f68a3",
+        "codesite:transaction:cmr76sqte00blqk01jga6jnj3",
+        "codesite:lease:cmr76s97i00alqk01mvljd1m6"
+      ],
+      "dojoEvidenceRefs": [],
+      "repoState": {
+        "schemaVersion": "synthi.codesite.repoStateEvidence.v1",
+        "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+        "transactionId": "cmr76sqte00blqk01jga6jnj3",
+        "baseSnapshot": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+        "repoIdentity": {
+          "schemaVersion": "synthi.codesite.repoIdentity.v1",
+          "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+          "transactionId": "cmr76sqte00blqk01jga6jnj3",
+          "repoRootDigest": "sha256:20547417aee2af60604cf9f886b02d4024e94527e4b08ccd5b3e9040da08a112",
+          "gitTopLevelDigest": "sha256:20547417aee2af60604cf9f886b02d4024e94527e4b08ccd5b3e9040da08a112",
+          "gitCommonDirDigest": "sha256:ad811d7816365b9faba26bef122fefcf14d0d0308800f072ff4f4bc695e1ff56",
+          "gitTopLevelMatchesRepoRoot": true,
+          "source": "collab-server",
+          "identityDigest": "sha256:03fa49823772de6e0e8deebaaf498a5d8a9a5293c6b77b13b9550fcb76759e19",
+          "computedIdentityDigest": "sha256:03fa49823772de6e0e8deebaaf498a5d8a9a5293c6b77b13b9550fcb76759e19",
+          "identityDigestVerified": true
+        },
+        "gitHead": "8f5c8e93c5a049b7d8556c179f6a3bf266b4cdad",
+        "stagedDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "worktreeDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headDiffDigest": "sha256:039d362eb196592f6a45b10496fcd9fdf186d09e3b42d9aceb8d998ed6474ae3",
+        "changedLineRanges": [
+          {
+            "filePath": "synthi/prisma/schema.prisma",
+            "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+            "startLine": 10,
+            "endLine": 15,
+            "source": "head_commit_diff",
+            "reasonRef": null,
+            "evidenceRefs": [],
+            "processAncestry": [],
+            "dojoSourceRefs": [],
+            "promptSummary": null
+          }
+        ],
+        "writeFileDigests": [
+          {
+            "path": "synthi/prisma/schema.prisma",
+            "digest": "sha256:cc965a1302ccd4ef3195e0250c972005cf2e4fe75bf52a69f3462917cef9a160",
+            "size": 238,
+            "exists": true,
+            "changedLineRanges": [
+              {
+                "filePath": "synthi/prisma/schema.prisma",
+                "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+                "startLine": 10,
+                "endLine": 15,
+                "source": "head_commit_diff",
+                "reasonRef": null,
+                "evidenceRefs": [],
+                "processAncestry": [],
+                "dojoSourceRefs": [],
+                "promptSummary": null
+              }
+            ]
+          }
+        ],
+        "generatedAt": "2026-07-05T02:44:59.664Z",
+        "source": "collab-server",
+        "evidenceDigest": "sha256:610901da873348539bc5bf0ec6e8397bc7d3a6b7f751692820f4ff12148f68a3",
+        "computedEvidenceDigest": "sha256:610901da873348539bc5bf0ec6e8397bc7d3a6b7f751692820f4ff12148f68a3",
+        "evidenceDigestVerified": true
+      },
+      "baseSnapshot": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+      "baseSnapshotEvidence": {
+        "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+        "status": "recorded",
+        "scope": "repo_wide",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+        "fileDigests": [
+          {
+            "path": "synthi/prisma/schema-contract-read.txt",
+            "exists": true,
+            "size": 24,
+            "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+          }
+        ],
+        "missingPaths": [],
+        "skippedPaths": [],
+        "truncated": false,
+        "repoManifestDigest": "sha256:4ab6d19df4f6c2ef92ad202b07de5637dec9d23a2e414c4b1f18fba5e9ec2254",
+        "repoManifestFileCount": 5,
+        "repoManifestScannedEntries": 10,
+        "repoManifestTruncated": false,
+        "repoManifestSkippedPaths": [],
+        "repoManifestExcludedPaths": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "limits": {
+          "maxFiles": 512,
+          "maxFileBytes": 2097152,
+          "maxScanEntries": 15000
+        },
+        "generatedAt": "2026-07-05T02:43:35.169Z",
+        "source": "codesite_control_plane",
+        "snapshotDigest": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+        "evidenceDigest": "sha256:ec8199f8668dee7f87523f5839403218bd5f73b8ccdc0a6884689c24d50be2bb"
+      },
+      "incidentReplayDigest": "sha256:0440d3ec904cc611fa4f78850026ddb97d51be44de844762ad252f73b930b531",
+      "landingStatus": "completed",
+      "bundleDigest": "sha256:a2a603d7be97a67a393353e7f2cb1eeb298374ad34c8404190b26d3f6e174222",
+      "proofSignature": {
+        "schemaVersion": "synthi.codesite.proofSignature.v1",
+        "algorithm": "hmac-sha256",
+        "keyId": "codesite-local-proof-authority",
+        "authority": "CodeSite Proof Authority",
+        "signedAt": "2026-07-05T02:48:42.789Z",
+        "payloadDigest": "sha256:0de8d747c5220a75ee4467fc1a272c52628bc8d12d745a8398c3d79b144b88f3",
+        "signature": "hmac-sha256:codesite-local-proof-authority:Qfb9JWVyH_VXeVEdOb-CrpYpDPFD--9A0JpN9NRezvk"
+      },
+      "signatureKeyId": "codesite-local-proof-authority",
+      "createdAt": "2026-07-05T02:48:36.371Z",
+      "portableDigest": "sha256:0de8d747c5220a75ee4467fc1a272c52628bc8d12d745a8398c3d79b144b88f3",
+      "trailers": {
+        "CodeSite-Project": "cmr76rvc3008sqk01itxc3o8s",
+        "CodeSite-Flight": "SCHEMA-01",
+        "CodeSite-Clearance": "cmr76s97i00alqk01mvljd1m6",
+        "CodeSite-Landing": "completed",
+        "CodeSite-Transaction": "cmr76sqte00blqk01jga6jnj3",
+        "CodeSite-Lease": "cmr76s97i00alqk01mvljd1m6",
+        "CodeSite-Read-Set": "sha256:478271e6e2cb5a755bbfe83737ef10debab09482410cda922c58fc66fa20c83a",
+        "CodeSite-Write-Set": "sha256:c9dc8f2e81e79067b5051b7a7e1beca884399b3b891086ab43fb576b0f74f973",
+        "CodeSite-Base-Snapshot": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+        "CodeSite-Base-Snapshot-Evidence": "sha256:ec8199f8668dee7f87523f5839403218bd5f73b8ccdc0a6884689c24d50be2bb",
+        "CodeSite-Invariants": "clearance.diff.inside_route",
+        "CodeSite-Black-Box": "sha256:0440d3ec904cc611fa4f78850026ddb97d51be44de844762ad252f73b930b531",
+        "CodeSite-Proof-Digest": "sha256:0de8d747c5220a75ee4467fc1a272c52628bc8d12d745a8398c3d79b144b88f3",
+        "CodeSite-Proof-Authority": "codesite-local-proof-authority",
+        "CodeSite-Proof-Signature": "hmac-sha256:codesite-local-proof-authority:Qfb9JWVyH_VXeVEdOb-CrpYpDPFD--9A0JpN9NRezvk"
+      }
+    }
+  ],
+  "quarantines": [
+    {
+      "schemaVersion": "synthi.codesite.codesitefs.quarantine.v1",
+      "quarantineId": "qtn-cmr76sqte00blqk01jga6jnj3-1783219478987-45f2c017",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "transactionId": "cmr76sqte00blqk01jga6jnj3",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "displayCallsign": "SCHEMA-01",
+      "status": "reviewable",
+      "paths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "changes": [
+        {
+          "path": "synthi/prisma/schema.prisma",
+          "kind": "modified",
+          "evidenceRef": "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432",
+          "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+          "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+          "currentDigest": null,
+          "expectedDigest": null,
+          "beforeSize": 135,
+          "afterSize": 249,
+          "lineProvenanceCount": 0
+        }
+      ],
+      "lifecycle": {
+        "capturedAt": "2026-07-05T02:44:41.202Z",
+        "reviewedAt": null,
+        "replayedAt": null,
+        "appliedAt": null
+      },
+      "rejected": [],
+      "applied": [],
+      "appliedPaths": [],
+      "remainingPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "latestReplayAttempt": null,
+      "replayAttempts": [],
+      "successfulReplay": null,
+      "eventRefs": [
+        "cmr76u5pu00e5qk019j5wpqyo"
+      ],
+      "evidenceRefs": [
+        "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432"
+      ],
+      "symlinkSanitization": null,
+      "createdAt": "2026-07-05T02:44:41.202Z",
+      "updatedAt": "2026-07-05T02:44:41.202Z"
+    }
+  ],
+  "filesystemBoundaryProofs": [
+    {
+      "schemaVersion": "synthi.codesite.filesystemBoundaryProof.v1",
+      "proofId": "fs-boundary-cmr76u5pu00e5qk019j5wpqyo",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "eventId": "cmr76u5pu00e5qk019j5wpqyo",
+      "policyDecisionId": "cmr76u5pf00e3qk01wmn1puqo",
+      "eventType": "write_quarantined",
+      "disposition": "write_quarantined",
+      "prevented": true,
+      "quarantined": true,
+      "path": "synthi/prisma/schema.prisma",
+      "transactionId": "cmr76sqte00blqk01jga6jnj3",
+      "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "requestedMutationLeaseId": null,
+      "inspectedLeases": [],
+      "displayCallsign": "SCHEMA-01",
+      "leaseState": "matched_clearance",
+      "lease": {
+        "id": "cmr76s97i00alqk01mvljd1m6",
+        "displayCallsign": "SCHEMA-01",
+        "status": "active",
+        "allowedPaths": [
+          "synthi/prisma/**"
+        ],
+        "blockedPaths": [
+          "secrets/**"
+        ],
+        "allowedTools": [
+          "file_write"
+        ],
+        "dojoLicenseRef": "schema.level_2@2026-06-25",
+        "dojoProofRef": "pcap-full-workflow-schema"
+      },
+      "reasonCodes": [
+        "raw_terminal_quarantine"
+      ],
+      "reason": "Raw terminal modified quarantined for synthi/prisma/schema.prisma",
+      "zone": {
+        "zoneKey": "class_b",
+        "label": "Shared contract airspace",
+        "class": "B",
+        "paths": [
+          "packages/schemas/**",
+          "openapi/**",
+          "packages/*/src/index.ts",
+          "synthi/prisma/**",
+          "backend/collab-server/permissionMiddleware.js"
+        ],
+        "rules": [
+          "flight_plan_required",
+          "downstream_notification_required",
+          "change_order_for_mutation"
+        ],
+        "risk": "high",
+        "source": "compiled_default",
+        "path": "synthi/prisma/schema.prisma"
+      },
+      "boundary": {
+        "source": "codesitefs",
+        "tool": "raw_terminal",
+        "operation": "raw_terminal",
+        "actorType": "codesitefs",
+        "actorId": "cmr76u5pf00e3qk01wmn1puqo"
+      },
+      "process": {
+        "ancestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session",
+          "node",
+          "sh",
+          "npm-run-codesite-proof-full-workflow",
+          "codex",
+          "init"
+        ],
+        "display": "mcp:synthi_codesite_apply_patch <- codex:tmp-proof-session <- node <- sh <- npm-run-codesite-proof-full-workflow <- codex <- init"
+      },
+      "evidence": {
+        "refs": [
+          "event:cmr76u5pu00e5qk019j5wpqyo",
+          "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432"
+        ],
+        "lineProvenanceCount": 0,
+        "changedLineRanges": [],
+        "dojoSourceRefs": []
+      },
+      "evidenceRefs": [
+        "event:cmr76u5pu00e5qk019j5wpqyo",
+        "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432"
+      ],
+      "quarantine": {
+        "quarantineId": "qtn-cmr76sqte00blqk01jga6jnj3-1783219478987-45f2c017",
+        "evidenceRef": "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432",
+        "kind": "modified",
+        "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+        "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+        "symlinkSanitization": null
+      },
+      "proofComplete": true,
+      "missingProofFields": [],
+      "createdAt": "2026-07-05T02:44:41.202Z"
+    },
+    {
+      "schemaVersion": "synthi.codesite.filesystemBoundaryProof.v1",
+      "proofId": "fs-boundary-cmr76u2jr00dzqk01jwqgotb3",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "eventId": "cmr76u2jr00dzqk01jwqgotb3",
+      "policyDecisionId": "cmr76u2jm00dxqk013fcdp17q",
+      "eventType": "write_denied",
+      "disposition": "write_denied",
+      "prevented": true,
+      "quarantined": false,
+      "path": "secrets/prod.env",
+      "transactionId": "cmr76sqte00blqk01jga6jnj3",
+      "mutationLeaseId": null,
+      "requestedMutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+      "inspectedLeases": [],
+      "displayCallsign": "SCHEMA-01",
+      "leaseState": "unmatched_clearance",
+      "lease": null,
+      "reasonCodes": [
+        "outside_clearance_route"
+      ],
+      "reason": "raw-terminal-write denied for secrets/prod.env: outside_clearance_route",
+      "zone": {
+        "zoneKey": "unclassified",
+        "label": "Unclassified repo airspace",
+        "class": "C",
+        "risk": "medium",
+        "rules": [
+          "auto_clearance_allowed",
+          "landing_inspection_required"
+        ],
+        "path": "secrets/prod.env"
+      },
+      "boundary": {
+        "source": "codesitefs",
+        "tool": "file_write",
+        "operation": "raw-terminal-write",
+        "actorType": "codesitefs",
+        "actorId": "cmr76u2jm00dxqk013fcdp17q"
+      },
+      "process": {
+        "ancestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session",
+          "node",
+          "sh",
+          "npm-run-codesite-proof-full-workflow",
+          "codex",
+          "init"
+        ],
+        "display": "mcp:synthi_codesite_apply_patch <- codex:tmp-proof-session <- node <- sh <- npm-run-codesite-proof-full-workflow <- codex <- init"
+      },
+      "evidence": {
+        "refs": [
+          "event:cmr76u2jr00dzqk01jwqgotb3",
+          "mcp:audit:codesitefs-denied-full-workflow"
+        ],
+        "lineProvenanceCount": 0,
+        "changedLineRanges": [],
+        "dojoSourceRefs": []
+      },
+      "evidenceRefs": [
+        "event:cmr76u2jr00dzqk01jwqgotb3",
+        "mcp:audit:codesitefs-denied-full-workflow"
+      ],
+      "quarantine": null,
+      "proofComplete": true,
+      "missingProofFields": [],
+      "createdAt": "2026-07-05T02:44:37.095Z"
+    }
+  ],
+  "causalReplays": [
+    {
+      "incidentId": "cmr76snbq00bhqk01ohox8ez4",
+      "category": "black_box",
+      "severity": "warning",
+      "replayDigest": "sha256:e97996daf2fd26e4aa96a51e4737346d37f8bcaf0357fff959c1409c26f9e88a",
+      "transactionId": "cmr76sgjw00b5qk01xadbal59",
+      "proofBundleId": null,
+      "proofBundleDigest": null,
+      "codeSiteBlackBox": "sha256:e97996daf2fd26e4aa96a51e4737346d37f8bcaf0357fff959c1409c26f9e88a",
+      "completeness": {
+        "score": 1,
+        "eventScore": 1,
+        "evidenceScore": 1,
+        "requiredEventTypes": [
+          "transaction.opened",
+          "clearance.issued",
+          "black_box.closed",
+          "snapshot.taken",
+          "near_miss.detected",
+          "transaction.aborted"
+        ],
+        "presentEventTypes": [
+          "transaction.opened",
+          "clearance.issued",
+          "black_box.closed",
+          "snapshot.taken",
+          "near_miss.detected",
+          "transaction.aborted"
+        ],
+        "missingEventTypes": [],
+        "requiredEvidence": [],
+        "presentEvidence": [],
+        "missingEvidence": [],
+        "observedEventTypes": [
+          "transponder.update",
+          "flight_plan.filed",
+          "tower.instruction",
+          "clearance.requested",
+          "clearance.issued",
+          "near_miss.detected",
+          "transaction.opened",
+          "transaction.validated",
+          "transaction.aborted",
+          "black_box.closed",
+          "snapshot.taken"
+        ],
+        "totalEvents": 16
+      },
+      "presentEventTypes": [
+        "transaction.opened",
+        "clearance.issued",
+        "black_box.closed",
+        "snapshot.taken",
+        "near_miss.detected",
+        "transaction.aborted"
+      ],
+      "missingEventTypes": [],
+      "totalEvents": 16,
+      "exportPaths": [
+        "projects/cmr76rvc3008sqk01itxc3o8s/incidents/incident-replay-cmr76snbq00bhqk01ohox8ez4.jsonl",
+        "projects/cmr76rvc3008sqk01itxc3o8s/handover.md",
+        "projects/cmr76rvc3008sqk01itxc3o8s/events.jsonl",
+        "projects/cmr76rvc3008sqk01itxc3o8s/incidents/incident-replay-<incident-id>.jsonl",
+        "projects/cmr76rvc3008sqk01itxc3o8s/flights/SCHEMA-01/black-box.json",
+        "projects/cmr76rvc3008sqk01itxc3o8s/flights/SCHEMA-01/transaction-cmr76sgjw00b5qk01xadbal59.json"
+      ]
+    },
+    {
+      "incidentId": "cmr76setn00b1qk016rwy464r",
+      "category": "black_box",
+      "severity": "warning",
+      "replayDigest": "sha256:4ad49dfdb00cec1ad68a3cfa6c5f62e229a5b5bc7530a05d654e1693f2d232a0",
+      "transactionId": "cmr76sbkw00atqk019prwd8lw",
+      "proofBundleId": null,
+      "proofBundleDigest": null,
+      "codeSiteBlackBox": "sha256:4ad49dfdb00cec1ad68a3cfa6c5f62e229a5b5bc7530a05d654e1693f2d232a0",
+      "completeness": {
+        "score": 1,
+        "eventScore": 1,
+        "evidenceScore": 1,
+        "requiredEventTypes": [
+          "transaction.opened",
+          "clearance.issued",
+          "black_box.closed",
+          "near_miss.detected",
+          "transaction.aborted"
+        ],
+        "presentEventTypes": [
+          "transaction.opened",
+          "clearance.issued",
+          "black_box.closed",
+          "near_miss.detected",
+          "transaction.aborted"
+        ],
+        "missingEventTypes": [],
+        "requiredEvidence": [],
+        "presentEvidence": [],
+        "missingEvidence": [],
+        "observedEventTypes": [
+          "transponder.update",
+          "flight_plan.filed",
+          "tower.instruction",
+          "clearance.requested",
+          "clearance.issued",
+          "near_miss.detected",
+          "transaction.opened",
+          "transaction.validated",
+          "transaction.aborted",
+          "black_box.closed"
+        ],
+        "totalEvents": 10
+      },
+      "presentEventTypes": [
+        "transaction.opened",
+        "clearance.issued",
+        "black_box.closed",
+        "near_miss.detected",
+        "transaction.aborted"
+      ],
+      "missingEventTypes": [],
+      "totalEvents": 10,
+      "exportPaths": [
+        "projects/cmr76rvc3008sqk01itxc3o8s/incidents/incident-replay-cmr76setn00b1qk016rwy464r.jsonl",
+        "projects/cmr76rvc3008sqk01itxc3o8s/handover.md",
+        "projects/cmr76rvc3008sqk01itxc3o8s/events.jsonl",
+        "projects/cmr76rvc3008sqk01itxc3o8s/incidents/incident-replay-<incident-id>.jsonl",
+        "projects/cmr76rvc3008sqk01itxc3o8s/flights/SCHEMA-01/black-box.json",
+        "projects/cmr76rvc3008sqk01itxc3o8s/flights/SCHEMA-01/transaction-cmr76sbkw00atqk019prwd8lw.json"
+      ]
+    },
+    {
+      "incidentId": "cmr76vnbv00gdqk01nrgyvuch",
+      "category": "security",
+      "severity": "critical",
+      "replayDigest": "sha256:a2e1c63ce99f849285a5392f497fc377ce30f8e7c5488beb3910767e0bb16bb6",
+      "transactionId": "cmr76sbkw00atqk019prwd8lw",
+      "proofBundleId": null,
+      "proofBundleDigest": null,
+      "codeSiteBlackBox": "sha256:a2e1c63ce99f849285a5392f497fc377ce30f8e7c5488beb3910767e0bb16bb6",
+      "completeness": {
+        "score": 0.36,
+        "eventScore": 0.36,
+        "evidenceScore": 1,
+        "requiredEventTypes": [
+          "transaction.opened",
+          "assumption.recorded",
+          "clearance.issued",
+          "read.observed",
+          "write.attempted",
+          "write.denied",
+          "snapshot.taken",
+          "shadow.run",
+          "arbiter.verdict",
+          "inspection.result",
+          "near_miss.detected",
+          "policy_delta.proposed",
+          "transaction.committed",
+          "transaction.aborted"
+        ],
+        "presentEventTypes": [
+          "write.attempted",
+          "snapshot.taken",
+          "shadow.run",
+          "arbiter.verdict",
+          "policy_delta.proposed"
+        ],
+        "missingEventTypes": [
+          "transaction.opened",
+          "assumption.recorded",
+          "clearance.issued",
+          "read.observed",
+          "write.denied",
+          "inspection.result",
+          "near_miss.detected",
+          "transaction.committed",
+          "transaction.aborted"
+        ],
+        "requiredEvidence": [],
+        "presentEvidence": [],
+        "missingEvidence": [],
+        "observedEventTypes": [
+          "black_box.closed",
+          "transponder.update",
+          "snapshot.taken",
+          "policy_delta.proposed",
+          "shadow.run",
+          "arbiter.verdict",
+          "write.attempted",
+          "write.quarantined",
+          "assumption.invalidated",
+          "write.allowed",
+          "inspection.requested",
+          "flight_plan.filed",
+          "mayday.declared"
+        ],
+        "totalEvents": 26
+      },
+      "presentEventTypes": [
+        "write.attempted",
+        "snapshot.taken",
+        "shadow.run",
+        "arbiter.verdict",
+        "policy_delta.proposed"
+      ],
+      "missingEventTypes": [
+        "transaction.opened",
+        "assumption.recorded",
+        "clearance.issued",
+        "read.observed",
+        "write.denied",
+        "inspection.result",
+        "near_miss.detected",
+        "transaction.committed",
+        "transaction.aborted"
+      ],
+      "totalEvents": 26,
+      "exportPaths": [
+        "projects/cmr76rvc3008sqk01itxc3o8s/incidents/incident-replay-cmr76vnbv00gdqk01nrgyvuch.jsonl",
+        "projects/cmr76rvc3008sqk01itxc3o8s/handover.md"
+      ]
+    },
+    {
+      "incidentId": "cmr76ufnq00ehqk01texuuh7z",
+      "category": "black_box",
+      "severity": "low",
+      "replayDigest": "sha256:0440d3ec904cc611fa4f78850026ddb97d51be44de844762ad252f73b930b531",
+      "transactionId": "cmr76sqte00blqk01jga6jnj3",
+      "proofBundleId": "cmr76z76b00gjqk01x6cwpr50",
+      "proofBundleDigest": "sha256:a2a603d7be97a67a393353e7f2cb1eeb298374ad34c8404190b26d3f6e174222",
+      "codeSiteBlackBox": "sha256:0440d3ec904cc611fa4f78850026ddb97d51be44de844762ad252f73b930b531",
+      "completeness": {
+        "score": 1,
+        "eventScore": 1,
+        "evidenceScore": 1,
+        "requiredEventTypes": [
+          "transaction.opened",
+          "assumption.recorded",
+          "clearance.issued",
+          "read.observed",
+          "write.attempted",
+          "write.denied",
+          "snapshot.taken",
+          "shadow.run",
+          "arbiter.verdict",
+          "inspection.result",
+          "near_miss.detected",
+          "policy_delta.proposed",
+          "transaction.committed",
+          "transaction.aborted"
+        ],
+        "presentEventTypes": [
+          "transaction.opened",
+          "assumption.recorded",
+          "clearance.issued",
+          "read.observed",
+          "write.attempted",
+          "write.denied",
+          "snapshot.taken",
+          "shadow.run",
+          "arbiter.verdict",
+          "inspection.result",
+          "near_miss.detected",
+          "policy_delta.proposed",
+          "transaction.committed",
+          "transaction.aborted"
+        ],
+        "missingEventTypes": [],
+        "requiredEvidence": [
+          "proof_bundle_id",
+          "proof_bundle_digest",
+          "proof_bundle_evidence_refs",
+          "handover_proof_bundle_id",
+          "handover_proof_bundle_digest",
+          "proof_bundle_export_path",
+          "proof_trailers_export_path"
+        ],
+        "presentEvidence": [
+          "proof_bundle_id",
+          "proof_bundle_digest",
+          "proof_bundle_evidence_refs",
+          "handover_proof_bundle_id",
+          "handover_proof_bundle_digest",
+          "proof_bundle_export_path",
+          "proof_trailers_export_path"
+        ],
+        "missingEvidence": [],
+        "observedEventTypes": [
+          "transponder.update",
+          "flight_plan.filed",
+          "tower.instruction",
+          "clearance.requested",
+          "clearance.issued",
+          "near_miss.detected",
+          "transaction.opened",
+          "transaction.validated",
+          "transaction.aborted",
+          "black_box.closed",
+          "snapshot.taken",
+          "assumption.recorded",
+          "policy_delta.proposed",
+          "shadow.run",
+          "arbiter.verdict",
+          "document.rfi",
+          "read.observed",
+          "write.attempted",
+          "write.denied",
+          "write.quarantined",
+          "assumption.invalidated",
+          "write.allowed",
+          "inspection.requested",
+          "radar.result",
+          "inspection.result",
+          "mayday.declared",
+          "transaction.committed"
+        ],
+        "totalEvents": 50
+      },
+      "presentEventTypes": [
+        "transaction.opened",
+        "assumption.recorded",
+        "clearance.issued",
+        "read.observed",
+        "write.attempted",
+        "write.denied",
+        "snapshot.taken",
+        "shadow.run",
+        "arbiter.verdict",
+        "inspection.result",
+        "near_miss.detected",
+        "policy_delta.proposed",
+        "transaction.committed",
+        "transaction.aborted"
+      ],
+      "missingEventTypes": [],
+      "totalEvents": 50,
+      "exportPaths": [
+        "projects/cmr76rvc3008sqk01itxc3o8s/incidents/incident-replay-cmr76ufnq00ehqk01texuuh7z.jsonl",
+        "projects/cmr76rvc3008sqk01itxc3o8s/handover.md",
+        "projects/cmr76rvc3008sqk01itxc3o8s/proof-bundles/cmr76z76b00gjqk01x6cwpr50.proof.json",
+        "projects/cmr76rvc3008sqk01itxc3o8s/proof-bundles/cmr76z76b00gjqk01x6cwpr50.trailers.txt",
+        "projects/cmr76rvc3008sqk01itxc3o8s/events.jsonl",
+        "projects/cmr76rvc3008sqk01itxc3o8s/incidents/incident-replay-<incident-id>.jsonl",
+        "projects/cmr76rvc3008sqk01itxc3o8s/flights/SCHEMA-01/black-box.json",
+        "projects/cmr76rvc3008sqk01itxc3o8s/flights/SCHEMA-01/transaction-cmr76sqte00blqk01jga6jnj3.json"
+      ]
+    }
+  ]
+}

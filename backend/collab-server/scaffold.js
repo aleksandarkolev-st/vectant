@@ -8,8 +8,9 @@ const path = require('path');
  *
  * @param {string} cwd
  * @param {{path:string, contents:string}[]} files
+ * @param {{overwrite?:boolean}} [options] - overwrite an existing target (still path-guarded)
  */
-function applyScaffoldFiles(cwd, files) {
+function applyScaffoldFiles(cwd, files, { overwrite = false } = {}) {
   const root = path.resolve(cwd);
   const written = [];
   const skipped = [];
@@ -24,7 +25,7 @@ function applyScaffoldFiles(cwd, files) {
     if (target !== root && !target.startsWith(root + path.sep)) {
       throw new Error('path_escape');
     }
-    if (fs.existsSync(target)) {
+    if (!overwrite && fs.existsSync(target)) {
       skipped.push(rel);
       continue;
     }

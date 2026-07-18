@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "synthi.codesite.visual-proof.v1",
+  "proofId": "codesite-mcp-lifecycle-parity",
+  "generatedAt": "2026-07-04T11:31:30.000Z",
+  "baseHead": "d758eb0eb813",
+  "validatedFiles": [
+    "mcp/synthi-mcp/src/tools/codesite.ts",
+    "mcp/synthi-mcp/src/tool_registry.ts",
+    "mcp/synthi-mcp/tests/unit/codesite_tools.test.ts",
+    "synthi/src/lib/codesite/artifacts.js"
+  ],
+  "toolCoverage": {
+    "codesiteTools": 63,
+    "missingFromRegistry": 0,
+    "missingFromAgentManifest": 0,
+    "groups": [
+      "project lifecycle",
+      "agent sessions and members",
+      "clearance and transactions",
+      "governance permits and document reviews",
+      "route revisions and reroutes",
+      "mayday resume and incident replay",
+      "policy delta promotion and rejection",
+      "landing inspections",
+      "proof bundle retrieval and commit attachment",
+      "quarantine review and apply"
+    ]
+  },
+  "runtimeValidation": [
+    {
+      "environment": "host",
+      "command": "npm --prefix mcp/synthi-mcp run typecheck",
+      "result": "passed"
+    },
+    {
+      "environment": "host",
+      "command": "npm exec vitest -- run tests/unit/codesite_tools.test.ts",
+      "result": "passed",
+      "tests": 18
+    },
+    {
+      "environment": "docker",
+      "command": "docker run --rm -v \"$PWD\":/repo -w /repo/mcp/synthi-mcp node:22-bookworm bash -lc 'node -v && npm exec vitest -- run tests/unit/codesite_tools.test.ts'",
+      "node": "v22.23.1",
+      "result": "passed",
+      "tests": 18
+    },
+    {
+      "environment": "host",
+      "command": "npm --prefix mcp/synthi-mcp run build",
+      "result": "passed"
+    }
+  ],
+  "screenshots": [
+    "mcp-lifecycle-proof-desktop.png",
+    "mcp-lifecycle-proof-mobile.png"
+  ]
+}

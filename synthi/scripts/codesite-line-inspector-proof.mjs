@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright';
+import { addAuthCookiesToBrowserContext, ensureProofWorkspace } from './codesite-proof-api.mjs';
 
 const require = createRequire(import.meta.url);
 const { collectCodeSiteRepoState } = require('../../backend/collab-server/codesiteFs.js');
@@ -76,9 +77,9 @@ async function run(command, args, options = {}) {
 function checkoutContractLines(replacement = null) {
   const lines = Array.from({ length: 64 }, (_, index) => `line ${String(index + 1).padStart(2, '0')}: checkout contract unchanged`);
   lines[40] = 'line 41: refund window remains configurable by policy';
-  lines[41] = replacement?.[0] || 'line 42: cancellation policy pending tower decision';
-  lines[42] = replacement?.[1] || 'line 43: refund event schema pending tower decision';
-  lines[43] = replacement?.[2] || 'line 44: retry behavior pending tower decision';
+  lines[41] = replacement?.[0] || 'line 42: cancellation policy pending coordination decision';
+  lines[42] = replacement?.[1] || 'line 43: refund event schema pending coordination decision';
+  lines[43] = replacement?.[2] || 'line 44: retry behavior pending coordination decision';
   lines[44] = 'line 45: payment capture remains behind order confirmation';
   return `${lines.join('\n')}\n`;
 }
@@ -123,7 +124,7 @@ async function createPlanIfMissing(api, project) {
     body: JSON.stringify({
       agentSessionId: sessionResponse.agentSession.id,
       displayCallsign: 'LINE-INSPECT-01',
-      mission: 'Land checkout contract line provenance',
+      mission: 'Land checkout contract lineage evidence',
       domain: 'docs',
       status: 'preflight',
       route: ['docs/**'],
@@ -141,9 +142,11 @@ async function screenshotSummary(htmlPath, pngPath) {
   await browser.close();
 }
 
-async function captureInspectorUi({ baseUrl, slug, viewport, screenshotPath }) {
+async function captureInspectorUi({ baseUrl, slug, viewport, screenshotPath, authCookie }) {
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport, deviceScaleFactor: 1 });
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
+  await addAuthCookiesToBrowserContext(context, baseUrl, authCookie);
+  const page = await context.newPage();
   const consoleErrors = [];
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text());
@@ -154,13 +157,29 @@ async function captureInspectorUi({ baseUrl, slug, viewport, screenshotPath }) {
     waitUntil: 'domcontentloaded',
     timeout: 60000,
   });
+  await page.addStyleTag({
+    content: `
+      nextjs-portal,
+      [data-nextjs-toast],
+      [data-next-badge-root],
+      [data-nextjs-dev-tools-button],
+      button[aria-label="Open Next.js Dev Tools"] {
+        display: none !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+      }
+    `,
+  });
   await page.waitForSelector('[data-testid="codesite-panel"]', { timeout: 60000 });
-  await page.waitForSelector('[data-testid="codesite-line-provenance-row"]', { timeout: 60000 });
-  await page.locator('[data-testid="codesite-line-provenance-row"]').first().scrollIntoViewIfNeeded();
-  await page.locator('[data-testid="codesite-line-provenance-row"]').first().click();
+  await page.waitForSelector('[data-testid="codesite-lineage-row"]', { timeout: 60000 });
+  await page.locator('[data-testid="codesite-lineage-row"]').first().scrollIntoViewIfNeeded();
+  await page.locator('[data-testid="codesite-lineage-row"]').first().click();
   await page.waitForFunction(() => {
     const inspector = document.querySelector('[data-testid="codesite-line-inspector"]');
+    const status = document.querySelector('[data-testid="codesite-line-inspector-status"]')?.textContent?.trim();
     return inspector
+      && status
+      && status !== 'loading'
       && inspector.textContent.includes('L42-L44 causal trace')
       && inspector.textContent.includes('mcp:synthi_codesite_apply_patch')
       && inspector.textContent.includes('tmp-codex-line-inspector')
@@ -171,17 +190,34 @@ async function captureInspectorUi({ baseUrl, slug, viewport, screenshotPath }) {
   await page.waitForTimeout(450);
   await page.screenshot({ path: screenshotPath, fullPage: true });
   const checks = await page.evaluate(() => {
-    const row = document.querySelector('[data-testid="codesite-line-provenance-row"]');
+    const row = document.querySelector('[data-testid="codesite-lineage-row"]');
     const inspector = document.querySelector('[data-testid="codesite-line-inspector"]');
+    const status = document.querySelector('[data-testid="codesite-line-inspector-status"]')?.textContent?.trim() || null;
     const rectOf = (node) => {
       const rect = node.getBoundingClientRect();
-      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, right: rect.right };
     };
+    const fits = (rect) => Boolean(rect && rect.x >= -1 && rect.right <= window.innerWidth + 4 && rect.width <= window.innerWidth + 4);
+    const overlaySelectors = [
+      'nextjs-portal',
+      '[data-nextjs-toast]',
+      '[data-next-badge-root]',
+      '[data-nextjs-dev-tools-button]',
+      'button[aria-label="Open Next.js Dev Tools"]',
+    ];
+    const visibleDevOverlays = overlaySelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)).filter((element) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }).map((element) => selector));
+    const rowRect = row ? rectOf(row) : null;
+    const inspectorRect = inspector ? rectOf(inspector) : null;
     return {
       viewportWidth: window.innerWidth,
       documentScrollWidth: document.documentElement.scrollWidth,
-      rowRect: row ? rectOf(row) : null,
-      inspectorRect: inspector ? rectOf(inspector) : null,
+      rowRect,
+      inspectorRect,
+      inspectorStatus: status,
       inspectorText: inspector?.textContent || '',
       hasRange: Boolean(inspector?.textContent.includes('L42-L44 causal trace')),
       hasTransaction: Boolean(inspector?.textContent.includes('Transaction')),
@@ -191,13 +227,10 @@ async function captureInspectorUi({ baseUrl, slug, viewport, screenshotPath }) {
       hasDojoSource: Boolean(inspector?.textContent.includes('dojo:source:line-inspector-contract')),
       hasProcess: Boolean(inspector?.textContent.includes('mcp:synthi_codesite_apply_patch')),
       hasPrompt: Boolean(inspector?.textContent.includes('checkout cancellation contract')),
-      fitsViewport: Boolean(
-        row
-        && inspector
-        && rectOf(row).x >= -1
-        && rectOf(inspector).x >= -1
-        && document.documentElement.scrollWidth <= window.innerWidth + 4
-      ),
+      lineInspectorSettled: status !== 'loading',
+      visibleDevOverlays,
+      devOverlayHidden: visibleDevOverlays.length === 0,
+      fitsViewport: Boolean(row && inspector && fits(rowRect) && fits(inspectorRect) && document.documentElement.scrollWidth <= window.innerWidth + 4),
     };
   });
   await browser.close();
@@ -248,7 +281,7 @@ img{display:block;width:100%;height:auto;border-radius:8px;border:1px solid #252
 <section class="hero">
 <span class="pass">PASS</span>
 <h1>CodeSite Line Inspector Proof</h1>
-<p>Live Docker workflow with a real CodeSite transaction, ranged line provenance persisted in the database, API lookup by line number, and browser-clicked causal inspector captures.</p>
+<p>Live Docker workflow with a real CodeSite transaction, ranged lineage evidence persisted in the database, API lookup by line number, and browser-clicked causal inspector captures.</p>
 </section>
 <section class="grid">
 ${rows.map(([label, value]) => `<div class="card"><div class="label">${escapeHtml(label)}</div><div class="value">${escapeHtml(value)}</div></div>`).join('\n')}
@@ -271,7 +304,9 @@ function escapeHtml(value) {
 async function main() {
   const baseUrl = process.env.CODESITE_PROOF_BASE_URL || DEFAULT_BASE_URL;
   const slug = process.env.CODESITE_PROOF_WORKSPACE_SLUG || slugNow();
-  const api = createApi(baseUrl, slug);
+  const { api, authCookie } = await ensureProofWorkspace(baseUrl, slug, {
+    workspaceName: 'Line inspector proof workspace',
+  });
   const dir = proofDir();
   await fs.promises.mkdir(dir, { recursive: true });
 
@@ -290,7 +325,7 @@ async function main() {
       missions: [{
         callsign: 'LINE-INSPECT-01',
         domain: 'docs',
-        mission: 'Land checkout contract line provenance',
+        mission: 'Land checkout contract lineage evidence',
         route: ['docs/**'],
         requestedTools: ['file_write', 'node'],
       }],
@@ -382,7 +417,7 @@ async function main() {
 
   const lineLookupResponse = await api(`/provenance/line?projectId=${encodeURIComponent(project.id)}&filePath=${encodeURIComponent(changedPath)}&lineNumber=42`);
   const lineRows = lineLookupResponse.lineProvenance || [];
-  assertProof(lineRows.length >= 1, 'line provenance lookup returned no rows');
+  assertProof(lineRows.length >= 1, 'lineage lookup returned no rows');
 
   const desktopShot = path.join(dir, 'codesite-line-inspector-ui-desktop.png');
   const mobileShot = path.join(dir, 'codesite-line-inspector-ui-mobile.png');
@@ -392,12 +427,14 @@ async function main() {
       slug,
       viewport: { name: 'desktop', width: 1440, height: 1100 },
       screenshotPath: desktopShot,
+      authCookie,
     }),
     await captureInspectorUi({
       baseUrl,
       slug,
       viewport: { name: 'mobile', width: 390, height: 980 },
       screenshotPath: mobileShot,
+      authCookie,
     }),
   ];
 
@@ -454,6 +491,8 @@ async function main() {
         && captures[0].checks.hasDojoSource
         && captures[0].checks.hasProcess
         && captures[0].checks.hasPrompt
+        && captures[0].checks.lineInspectorSettled
+        && captures[0].checks.devOverlayHidden
         && captures[0].checks.fitsViewport,
       mobileInspectorVisible: captures[1].checks.hasRange
         && captures[1].checks.hasTransaction
@@ -463,6 +502,8 @@ async function main() {
         && captures[1].checks.hasDojoSource
         && captures[1].checks.hasProcess
         && captures[1].checks.hasPrompt
+        && captures[1].checks.lineInspectorSettled
+        && captures[1].checks.devOverlayHidden
         && captures[1].checks.fitsViewport,
     },
   };

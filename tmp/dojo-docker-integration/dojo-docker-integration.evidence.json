@@ -1,0 +1,279 @@
+{
+  "schema_version": "synthi.dojo.dockerIntegrationEvidence.v1",
+  "generated_at": "2026-07-05T00:43:31.238Z",
+  "ok": true,
+  "duration_ms": 54365.811,
+  "docker_compose_up_ran": true,
+  "docker_compose_up_skipped": false,
+  "required_services": [
+    "frontend",
+    "collab-server",
+    "mcp",
+    "worker",
+    "signaling-server",
+    "ai-gateway",
+    "ai-engine",
+    "y-sweet",
+    "postgres",
+    "redis",
+    "coturn"
+  ],
+  "required_service_count": 11,
+  "running_services": [
+    "frontend",
+    "collab-server",
+    "mcp",
+    "worker",
+    "signaling-server",
+    "ai-gateway",
+    "ai-engine",
+    "y-sweet",
+    "postgres",
+    "redis",
+    "coturn"
+  ],
+  "missing_services": [],
+  "unhealthy_services": [],
+  "healthy_services_required": [
+    "postgres",
+    "redis",
+    "y-sweet"
+  ],
+  "endpoint_checks": [
+    {
+      "id": "frontend_workspace",
+      "url": "http://127.0.0.1:3100/workspace",
+      "expected_status": 200,
+      "status": 200,
+      "ok": true,
+      "duration_ms": 123.511,
+      "attempts": 1,
+      "error": null
+    },
+    {
+      "id": "collab_ports",
+      "url": "http://127.0.0.1:11234/ports",
+      "expected_status": 200,
+      "status": 200,
+      "ok": true,
+      "duration_ms": 30.547,
+      "attempts": 1,
+      "error": null
+    }
+  ],
+  "endpoint_count": 2,
+  "endpoint_ok_count": 2,
+  "command_evaluation": {
+    "compose_up_ran": true,
+    "compose_up_exit_code": 0,
+    "compose_ps_exit_code": 0,
+    "compose_config_exit_code": 0,
+    "compose_up_error": null,
+    "compose_ps_error": null,
+    "compose_config_error": null
+  },
+  "compose_env": {
+    "NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS": {
+      "value": "1",
+      "default_applied": true
+    },
+    "FRONTEND_HOST_PORT": {
+      "value": "3100",
+      "default_applied": true
+    },
+    "COLLAB_HOST_PORT": {
+      "value": "11234",
+      "default_applied": true
+    },
+    "YSWEET_HOST_PORT": {
+      "value": "18180",
+      "default_applied": true
+    },
+    "REDIS_HOST_PORT": {
+      "value": "16379",
+      "default_applied": true
+    },
+    "SIGNALING_HOST_PORT": {
+      "value": "19000",
+      "default_applied": true
+    },
+    "AI_GATEWAY_HOST_PORT": {
+      "value": "17071",
+      "default_applied": true
+    },
+    "AI_ENGINE_HOST_PORT": {
+      "value": "18081",
+      "default_applied": true
+    },
+    "POSTGRES_HOST_PORT": {
+      "value": "15432",
+      "default_applied": true
+    },
+    "TURN_HOST_PORT": {
+      "value": "13478",
+      "default_applied": true
+    },
+    "TURN_RELAY_HOST_PORT_RANGE": {
+      "value": "49352-49400",
+      "default_applied": true
+    },
+    "MCP_METRICS_HOST_PORT": {
+      "value": "19464",
+      "default_applied": true
+    },
+    "SYNTHI_DOJO_DOCKER_WORKSPACE_URL": {
+      "value": "http://127.0.0.1:3100/workspace",
+      "default_applied": true
+    },
+    "SYNTHI_DOJO_DOCKER_PORTS_URL": {
+      "value": "http://127.0.0.1:11234/ports",
+      "default_applied": true
+    }
+  },
+  "service_evaluation": {
+    "ok": true,
+    "configured_services": [
+      "ai-engine",
+      "redis",
+      "y-sweet",
+      "collab-server",
+      "signaling-server",
+      "worker",
+      "mcp",
+      "ai-gateway",
+      "coturn",
+      "postgres",
+      "frontend"
+    ],
+    "required_services": [
+      "frontend",
+      "collab-server",
+      "mcp",
+      "worker",
+      "signaling-server",
+      "ai-gateway",
+      "ai-engine",
+      "y-sweet",
+      "postgres",
+      "redis",
+      "coturn"
+    ],
+    "running_services": [
+      "frontend",
+      "collab-server",
+      "mcp",
+      "worker",
+      "signaling-server",
+      "ai-gateway",
+      "ai-engine",
+      "y-sweet",
+      "postgres",
+      "redis",
+      "coturn"
+    ],
+    "missing_services": [],
+    "stopped_services": [],
+    "unhealthy_services": [],
+    "unknown_configured_services": [],
+    "service_states": [
+      {
+        "service": "frontend",
+        "state": "running",
+        "health": "",
+        "status": "Up 2 seconds"
+      },
+      {
+        "service": "collab-server",
+        "state": "running",
+        "health": "",
+        "status": "Up 2 seconds"
+      },
+      {
+        "service": "mcp",
+        "state": "running",
+        "health": "",
+        "status": "Up Less than a second"
+      },
+      {
+        "service": "worker",
+        "state": "running",
+        "health": "",
+        "status": "Up 1 second"
+      },
+      {
+        "service": "signaling-server",
+        "state": "running",
+        "health": "",
+        "status": "Up 1 second"
+      },
+      {
+        "service": "ai-gateway",
+        "state": "running",
+        "health": "",
+        "status": "Up 10 seconds"
+      },
+      {
+        "service": "ai-engine",
+        "state": "running",
+        "health": "",
+        "status": "Up 11 seconds"
+      },
+      {
+        "service": "y-sweet",
+        "state": "running",
+        "health": "healthy",
+        "status": "Up 11 seconds (healthy)"
+      },
+      {
+        "service": "postgres",
+        "state": "running",
+        "health": "healthy",
+        "status": "Up 11 seconds (healthy)"
+      },
+      {
+        "service": "redis",
+        "state": "running",
+        "health": "healthy",
+        "status": "Up 11 seconds (healthy)"
+      },
+      {
+        "service": "coturn",
+        "state": "running",
+        "health": "",
+        "status": "Up 10 seconds"
+      }
+    ]
+  },
+  "budget_evaluation": {
+    "ok": true,
+    "checks": {
+      "compose_up_ran_or_explicitly_skipped": true,
+      "compose_up_succeeded": true,
+      "compose_ps_succeeded": true,
+      "compose_config_succeeded": true,
+      "all_required_services_present": true,
+      "all_required_services_running": true,
+      "required_healthchecks_healthy": true,
+      "required_endpoints_ok": true,
+      "self_check_within_timeout": true
+    },
+    "failed_checks": []
+  },
+  "report_path": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/dojo-docker-integration/dojo-docker-integration.report.json",
+  "report_sha256": "7c4bd97f46d0caabfc9ec0ef2fdcfee1a9a37e8ae73f175deb3b7ca91e1df987",
+  "report_bytes": 35749,
+  "json_report_path": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/dojo-docker-integration/dojo-docker-integration.report.json",
+  "json_report_sha256": "7c4bd97f46d0caabfc9ec0ef2fdcfee1a9a37e8ae73f175deb3b7ca91e1df987",
+  "json_report_bytes": 35749,
+  "stdout_path": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/dojo-docker-integration/dojo-docker-integration.stdout.log",
+  "stderr_path": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/dojo-docker-integration/dojo-docker-integration.stderr.log",
+  "stdout_sha256": "6fb95e923be8837f720ae944d146199cfab67dc02756f1e49f3f370df58c1df8",
+  "stderr_sha256": "0a76f7c4b18c97386929f5f5bfcee7ba2193a58e90c9aeb39d78c2d0c35ccfac",
+  "stdout_bytes": 54282,
+  "stderr_bytes": 3585,
+  "budget": {
+    "self_check_timeout_ms": 600000,
+    "endpoint_timeout_ms": 30000,
+    "intended_gate": "full_local_docker_integration"
+  }
+}

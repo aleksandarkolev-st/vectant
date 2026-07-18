@@ -1,6 +1,7 @@
 import { parseProgramManifest } from './manifest';
 import { importDevcontainer } from './devcontainer';
 import { detectRepoProgram } from './repoDetect';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
 
 const COLLAB_BASE = (process.env.COLLAB_SERVER_URL || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234').replace(/\/$/, '');
 
@@ -21,7 +22,7 @@ async function requestJson(path, options = {}) {
   const response = await fetch(`${COLLAB_BASE}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...withInternalAiAuth({ 'Content-Type': 'application/json' }),
       ...(options.headers || {}),
     },
   });
@@ -154,9 +155,19 @@ export async function launchInstalledProgram({ workspaceSlug, sessionId, config,
  * the collab-server). Returns the collab response verbatim: `{ written, skipped }`.
  * `userId` must be the IDE's workspaceUserId so files land where the editor reads.
  */
-export async function scaffoldProgram({ workspaceSlug, userId = '', files = [] }) {
+export async function scaffoldProgram({ workspaceSlug, userId = '', files = [], overwrite = false }) {
   return requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/scaffold`, {
     method: 'POST',
-    body: JSON.stringify({ userId, files }),
+    body: JSON.stringify({ userId, files, overwrite }),
   });
+}
+
+/**
+ * Fetch a curated, read-only set of workspace files for AI manifest generation.
+ * Returns `{ name: contents }` (allow-listed by the collab-server), or `{}`.
+ */
+export async function fetchWorkspaceContext(workspaceSlug, userId = '') {
+  const query = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+  const data = await requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/context${query}`);
+  return (data && data.files) || {};
 }

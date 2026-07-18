@@ -1,0 +1,63 @@
+{
+  "title": "CodeSite Writeful Automatic Workflow Proof",
+  "generatedAt": "2026-07-04T20:05:59.784Z",
+  "branch": "codex/codesite-atc-full-from-dev-20260630",
+  "gitHead": "4ca67d837d389399f539cbdf56c1b1a348f8ec91",
+  "success": true,
+  "totals": {
+    "suites": "2/2",
+    "tests": "97/97",
+    "failed": 0,
+    "pending": 0
+  },
+  "command": "node /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/node_modules/vitest/vitest.mjs run synthi/src/lib/codesite/__tests__/controlPlane.test.js --config tmp/codesite-dojo-proof/vitest.codesite-no-postcss.config.mjs --environment node",
+  "keyAssertions": [
+    {
+      "title": "CodeSite control plane transaction validation bootstraps automatic tower workflow with schema-first holding plans",
+      "status": "passed",
+      "durationMs": 18.409179002046585
+    },
+    {
+      "title": "CodeSite control plane transaction validation runs eligible automatic workflow plans through clearance, inspection, proof, and black-box closeout",
+      "status": "passed",
+      "durationMs": 15.10547998547554
+    },
+    {
+      "title": "CodeSite control plane transaction validation lands writeful automatic workflow plans only with durable agent evidence",
+      "status": "passed",
+      "durationMs": 48.662925988435745
+    },
+    {
+      "title": "CodeSite control plane transaction validation blocks proof-carrying commits until landing inspection evidence covers the write set",
+      "status": "passed",
+      "durationMs": 9.938510000705719
+    },
+    {
+      "title": "CodeSite control plane transaction validation lands proof-carrying commits only after passed inspections become proof evidence",
+      "status": "passed",
+      "durationMs": 11.062635004520416
+    },
+    {
+      "title": "CodeSite control plane transaction validation blocks proof-carrying commits when changed paths lack line provenance evidence",
+      "status": "passed",
+      "durationMs": 1.4722989797592163
+    },
+    {
+      "title": "CodeSite control plane transaction validation blocks proof-carrying commits when any write event lacks strict line provenance",
+      "status": "passed",
+      "durationMs": 1.2766560018062592
+    },
+    {
+      "title": "CodeSite control plane transaction validation blocks proof-carrying commits when passed inspections lack repo-state evidence",
+      "status": "passed",
+      "durationMs": 2.9727219939231873
+    },
+    {
+      "title": "CodeSite control plane transaction validation blocks proof-carrying commits when repo-state evidence lacks managed workspace identity",
+      "status": "passed",
+      "durationMs": 4.3038310110569
+    }
+  ],
+  "diffStat": ".../lib/codesite/__tests__/controlPlane.test.js    | 181 ++++++++++++++++++++-\n synthi/src/lib/codesite/controlPlane.js            | 164 +++++++++++++++++--\n 2 files changed, 333 insertions(+), 12 deletions(-)",
+  "scope": "automatic workflow writeful landing requires write evidence, line provenance, inspection evidence, and repo-state proof before proof bundle creation"
+}

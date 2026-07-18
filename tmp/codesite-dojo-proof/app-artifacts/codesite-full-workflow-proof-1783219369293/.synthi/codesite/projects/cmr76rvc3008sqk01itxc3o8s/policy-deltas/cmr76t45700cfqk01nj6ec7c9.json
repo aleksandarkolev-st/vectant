@@ -1,0 +1,55 @@
+{
+  "id": "cmr76t45700cfqk01nj6ec7c9",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "learnedFromIncidents": [],
+  "affectedZoneKey": null,
+  "ruleCandidate": {
+    "rule": "require_test_owner_for_mutation_route",
+    "affectedRoutes": [
+      "synthi/prisma/**",
+      "synthi/src/app/api/auth/**",
+      "synthi/src/lib/codesite/__tests__/**"
+    ],
+    "expectedRiskReduction": 0.18,
+    "confidence": 0.72
+  },
+  "triggerConditions": [
+    {
+      "path": "synthi/prisma/**"
+    },
+    {
+      "path": "synthi/src/app/api/auth/**"
+    },
+    {
+      "path": "synthi/src/lib/codesite/__tests__/**"
+    }
+  ],
+  "expectedRiskReduction": 0.18,
+  "confidence": 0.72,
+  "promotionState": "proposed",
+  "replayRefs": [
+    "codesite:counterfactual-run:cmr76t45200cdqk01fn41aeft",
+    "shadow:job:shadow:codesite-full-workflow-proof-1783219369293:schema-first",
+    "codesite:shadow_merge_simulator",
+    "codesite:repo-policy:sha256:6b0a73bdab9130ada048856eb6fcf89b69377e6804304ad138d49f2ac3baf8e1",
+    "codesite:collision-forecast:sha256:dbbb7416a1575b2b32d487ccb98abac384dd9f09056d9fd7d995a62c90952ca7",
+    "codesite:incident:cmr76snbq00bhqk01ohox8ez4",
+    "codesite:incident:cmr76setn00b1qk016rwy464r",
+    "codesite:shadow-runner:sha256:0dc2cfa5c1b6924c6a7bcc6f2c0a6f2b9523db61d17ab05bbf35627473e46c71",
+    "codesite:shadow-universe:schema-first:sha256:eb7cefee062b6c29ca913147cd677da0bb0ffa22cc7d38ccca796a204c16a20d",
+    "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:schema-first",
+    "codesite:shadow-command:schema-first:schema-typecheck:sha256:d9f92b0ba0061d254629471a07ab229ec2202785282187281587654c01360f4f",
+    "codesite:shadow-command:schema-first:schema-contract-test:sha256:5878e781658baa210780ade4ced658a83213c064f59c8e63518378c78fb459f3",
+    "codesite:shadow-universe:frontend-backend-parallel:sha256:3c0d0e369fdd4cce283e8188d8976bf756bbcdc7e9e8b2d5d5377f1b13247228",
+    "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:58c1416db301407480c38a2de8fea1703fa3ec14d8eeef9858bc7a2098660219",
+    "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:e1c9716dd1a72c50b26e207bac1111d8051cd1e80d8a9691383e10decf1ecdc3",
+    "codesite:shadow-runner-input:sha256:7eace98a6c575316b222f3f7d391522ca575f8b35e89c7615874dc9bdba6405e",
+    "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+    "codesite:shadow-runner-output-artifact:sha256:6e63093762fd606aef856fb8ef88a1223a6b4dfe00ef5c16288197bc6d5be55f",
+    "codesite:shadow-runner-output:sha256:6e63093762fd606aef856fb8ef88a1223a6b4dfe00ef5c16288197bc6d5be55f",
+    "codesite:shadow-runner-result:sha256:bd927c1a064cde2109a08640f0007e36e2b1c9a4791e8035684aed6794eea914",
+    "codesite:shadow-runner:sha256:594d21fa4371cc53c5e7e54904311d6ebb7fcc37fd0b7185600070dde9a0251b"
+  ],
+  "createdAt": "2026-07-05T02:43:52.508Z",
+  "promotedAt": null
+}

@@ -180,11 +180,19 @@ model MarketplaceProgram {
   description       String?
   publishedByUserId String?
   installCount      Int      @default(0)
+  // The currently-live (last-approved) version + its AR digest. Null until a
+  // version reaches `published`. The marketplace lists only programs where this
+  // is set; an update in review does NOT change these until it is approved
+  // (the previously-approved digest stays live).
+  publishedVersion  String?
+  publishedDigest   String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  versions ProgramVersion[]
-  installs ProgramInstall[]
+  versions     ProgramVersion[]
+  installs     ProgramInstall[]
+  pricing      ProgramPricing?
+  entitlements Entitlement[]
 }
 
 model ProgramVersion {
@@ -194,12 +202,30 @@ model ProgramVersion {
   manifestJson  String
   requiredTools String[] @default([])
   ports         String[] @default([])
+
+  // ── Community-app review gate (Phase 1) ──
+  // State machine: submitted|scanning|ai_review|pending_review|approved|rehosting|published|rejected.
+  // Built-in/legacy direct-published versions default to 'published'.
+  reviewState       String   @default("published")
+  sourceImageRef    String?  // publisher's pullable ref (their registry), container/gui only
+  sourceImageDigest String?  // resolved digest of the source ref at scan time
+  hostedImageDigest String?  // our AR digest after re-host (what installers pull)
+  scanReportJson    String?  // redacted trivy summary (severity counts + decisive CVEs)
+  aiRiskJson        String?  // Phase 2 placeholder (nullable)
+  submittedByUserId String?
+  reviewedByUserId  String?
+  reviewNotes       String?
+  submittedAt       DateTime @default(now())
+  reviewedAt        DateTime?
+
   createdAt     DateTime @default(now())
 
   program MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  events  ProgramReviewEvent[]
 
   @@unique([programId, version])
   @@index([programId])
+  @@index([reviewState])
 }
 
 model ProgramInstall {
@@ -294,6 +320,7 @@ model CodeSiteProject {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  members            CodeSiteProjectMember[]
   agentSessions      CodeSiteAgentSession[]
   executionPlans     CodeSiteExecutionPlan[]
   mutationLeases     CodeSiteMutationLease[]
@@ -306,12 +333,39 @@ model CodeSiteProject {
   proofBundles       CodeSiteProofBundle[]
   lineProvenance     CodeSiteLineProvenance[]
   documents          CodeSiteDocument[]
+  permits            CodeSitePermit[]
+  documentReviews    CodeSiteDocumentReview[]
+  routeRevisions     CodeSiteRouteRevision[]
   counterfactualRuns CodeSiteCounterfactualRun[]
   policyDeltas       CodeSitePolicyDelta[]
   inboxItems         CodeSiteAgentInboxItem[]
 
   @@index([workspaceSlug])
   @@index([status])
+}
+
+model CodeSiteProjectMember {
+  id              String   @id @default(cuid())
+  projectId       String
+  workspaceSlug   String
+  userId          String
+  role            String
+  permissionsJson String
+  redactionPolicyJson String?
+  participationStatus String @default("enabled")
+  source          String
+  createdByUserId String?
+  revokedAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([workspaceSlug, userId])
+  @@index([projectId])
+  @@index([role])
+  @@index([projectId, revokedAt])
 }
 
 model CodeSiteMutationZone {
@@ -382,6 +436,7 @@ model CodeSiteExecutionPlan {
   agentSession   CodeSiteAgentSession    @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
   mutationLeases CodeSiteMutationLease[]
   inspectionRuns CodeSiteInspectionRun[]
+  routeRevisions CodeSiteRouteRevision[]
 
   @@index([projectId])
   @@index([agentSessionId])
@@ -498,19 +553,22 @@ model CodeSitePolicyDecision {
 }
 
 model CodeSiteProofBundle {
-  id                   String   @id @default(cuid())
-  projectId            String
-  transactionId        String
-  commitSha            String?
-  readSetDigest        String
-  writeSetDigest       String
-  invariantsJson       String
-  evidenceRefsJson     String
-  dojoEvidenceRefsJson String?
-  repoStateJson        String?
-  incidentReplayDigest String?
-  bundleDigest         String
-  createdAt            DateTime @default(now())
+  id                    String   @id @default(cuid())
+  projectId             String
+  transactionId         String
+  commitSha             String?
+  readSetDigest         String
+  writeSetDigest        String
+  invariantsJson        String
+  evidenceRefsJson      String
+  dojoEvidenceRefsJson  String?
+  repoStateJson         String?
+  incidentReplayDigest  String?
+  landingStatus         String?
+  bundleDigest          String
+  proofSignatureJson    String?
+  signatureKeyId        String?
+  createdAt             DateTime @default(now())
 
   project     CodeSiteProject             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   transaction CodeSiteMutationTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
@@ -519,6 +577,7 @@ model CodeSiteProofBundle {
   @@index([transactionId])
   @@index([commitSha])
   @@index([bundleDigest])
+  @@index([signatureKeyId])
 }
 
 model CodeSiteLineProvenance {
@@ -604,10 +663,90 @@ model CodeSiteDocument {
 
   project    CodeSiteProject          @relation(fields: [projectId], references: [id], onDelete: Cascade)
   inboxItems CodeSiteAgentInboxItem[]
+  reviews    CodeSiteDocumentReview[]
+  routeRevisions CodeSiteRouteRevision[]
 
   @@index([projectId])
   @@index([kind])
   @@index([status])
+}
+
+model CodeSitePermit {
+  id               String   @id @default(cuid())
+  projectId        String
+  executionPlanId  String?
+  mutationLeaseId  String?
+  documentId       String?
+  permitType       String
+  status           String
+  title            String
+  scopeJson        String
+  approvalJson     String
+  evidenceRefsJson String
+  issuedByUserId   String?
+  issuedAt         DateTime @default(now())
+  expiresAt        DateTime?
+  closedAt         DateTime?
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([executionPlanId])
+  @@index([mutationLeaseId])
+  @@index([documentId])
+  @@index([status])
+  @@index([permitType])
+}
+
+model CodeSiteDocumentReview {
+  id               String   @id @default(cuid())
+  projectId        String
+  documentId       String
+  reviewerUserId   String?
+  status           String
+  decision         String
+  reasonCodesJson  String
+  bodyJson         String
+  evidenceRefsJson String
+  requestedAt      DateTime @default(now())
+  reviewedAt       DateTime?
+
+  project  CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document CodeSiteDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([documentId])
+  @@index([reviewerUserId])
+  @@index([status])
+  @@index([decision])
+}
+
+model CodeSiteRouteRevision {
+  id                 String   @id @default(cuid())
+  projectId          String
+  executionPlanId    String
+  documentId         String?
+  status             String
+  previousRouteJson  String
+  proposedRouteJson  String
+  affectedLeasesJson String
+  approvalJson       String
+  evidenceRefsJson   String
+  proposedByUserId   String?
+  approvedByUserId   String?
+  appliedAt          DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  project       CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionPlan CodeSiteExecutionPlan @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
+  document      CodeSiteDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([executionPlanId])
+  @@index([documentId])
+  @@index([status])
+  @@index([createdAt])
 }
 
 model CodeSiteEvent {
@@ -957,4 +1096,70 @@ model LocalSupportPairingRateLimit {
   bucket    String   @id
   attempts  Int      @default(0)
   expiresAt DateTime
+}
+
+model ProgramReviewEvent {
+  id          String   @id @default(cuid())
+  versionId   String
+  fromState   String?
+  toState     String
+  actorUserId String?
+  reasonJson  String?
+  createdAt   DateTime @default(now())
+
+  version ProgramVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@index([versionId])
+  @@index([createdAt])
+}
+
+// ── Paid apps (marketplace billing control plane) ──
+// This repo owns pricing + entitlement + the paywall; the external payments app
+// (checkout-synthi, Stripe) owns card processing + payouts. See
+// docs/superpowers/specs/2026-07-04-paid-apps-design.md.
+
+model ProgramPricing {
+  id               String   @id @default(cuid())
+  programId        String   @unique
+  model            String   @default("one_time") // v1 = one_time; subscription/usage later
+  priceCents       Int // >= 0; 0 = free (but explicitly priced)
+  currency         String   @default("eur")
+  active           Boolean  @default(true)
+  payoutAccountRef String? // Stripe Connect account id (acct_…), owned by the payments app
+  takeRateBps      Int      @default(3000) // platform cut, basis points
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  program MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+}
+
+model Entitlement {
+  id          String    @id @default(cuid())
+  programId   String
+  subjectType String    @default("user") // user | workspace (v1 = user)
+  subjectId   String // userId (or workspaceSlug when workspace-scoped)
+  status      String    @default("active") // active | revoked
+  source      String // purchase | grant | trial
+  reference   String    @unique // idempotency key — carried in the PaymentIntent metadata
+  priceCents  Int? // captured at purchase (audit)
+  currency    String?
+  grantedAt   DateTime  @default(now())
+  revokedAt   DateTime?
+
+  program MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+
+  @@unique([programId, subjectType, subjectId]) // one live entitlement per subject+app
+  @@index([programId])
+  @@index([subjectId])
+}
+
+model PaymentWebhookEvent {
+  id          String   @id @default(cuid())
+  eventId     String   @unique // provider (Stripe) event id — dedupe/idempotency
+  type        String // purchase | refund
+  reference   String
+  payloadJson String
+  processedAt DateTime @default(now())
+
+  @@index([reference])
 }

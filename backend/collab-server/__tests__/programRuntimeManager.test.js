@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const {
   createProgramRuntimeManager,
   DEFAULT_HEADLESS_TTL_MS,
+  buildManagedRuntimeEnv,
   composeProgramCommand,
   attributeSessionPorts,
   selectWebPort,
@@ -339,6 +340,47 @@ test('launchManagedSession scrubs env, tracks output, and captures ports', async
   ]);
   assert.equal(events[0].data.command, undefined);
   assert.equal(events[0].data.env, undefined);
+});
+
+test('buildManagedRuntimeEnv strips provider, internal, and generic secret keys', () => {
+  const out = buildManagedRuntimeEnv({
+    PATH: '/usr/local/bin:/usr/bin',
+    OPENAI_API_KEY: 'openai-secret',
+    ANTHROPIC_API_KEY: 'anthropic-secret',
+    GEMINI_API_KEY: 'gemini-secret',
+    AI_BACKEND_AUTH_TOKEN: 'backend-token',
+    CODE_INTEL_API_KEY: 'code-intel-secret',
+    SERVICE_TOKEN: 'service-token',
+    CUSTOM_SECRET: 'custom-secret',
+    DB_PASSWORD: 'db-password',
+    LOCAL_CREDENTIALS: 'credentials',
+    GOOGLE_AI_API_KEY: 'google-secret',
+  }, {
+    SAFE_FLAG: '1',
+    USER_MODE: 'demo',
+    WORKSPACE_TOKEN: 'workspace-token',
+    CLIENT_KEY: 'client-key',
+  });
+
+  assert.equal(out.PATH, '/usr/local/bin:/usr/bin');
+  assert.equal(out.SAFE_FLAG, '1');
+  assert.equal(out.USER_MODE, 'demo');
+  for (const key of [
+    'OPENAI_API_KEY',
+    'ANTHROPIC_API_KEY',
+    'GEMINI_API_KEY',
+    'AI_BACKEND_AUTH_TOKEN',
+    'CODE_INTEL_API_KEY',
+    'SERVICE_TOKEN',
+    'CUSTOM_SECRET',
+    'DB_PASSWORD',
+    'LOCAL_CREDENTIALS',
+    'GOOGLE_AI_API_KEY',
+    'WORKSPACE_TOKEN',
+    'CLIENT_KEY',
+  ]) {
+    assert.equal(out[key], undefined, `${key} must not pass into managed runtimes`);
+  }
 });
 
 test('restartManagedSession relaunches the runtime and stopManagedSession kills it', async () => {

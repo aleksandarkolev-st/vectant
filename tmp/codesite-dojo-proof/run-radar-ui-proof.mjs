@@ -2,22 +2,50 @@ import { chromium } from '@playwright/test';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  addAuthCookiesToBrowserContext,
+  proofAuthCookieForSlug,
+} from '../../synthi/scripts/codesite-proof-api.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
 const proofDir = path.resolve(repoRoot, 'tmp', 'codesite-dojo-proof');
 const proofJsonPath = path.join(proofDir, 'codesite-radar-ui-proof.json');
 const proofHtmlPath = path.join(proofDir, 'codesite-radar-ui-proof.html');
-const appUrl = process.env.CODESITE_APP_URL || 'http://127.0.0.1:3109';
+const adapterProofPath = path.join(proofDir, 'codesite-radar-adapter-proof.json');
+const appUrl = process.env.CODESITE_APP_URL || process.env.CODESITE_PROOF_BASE_URL || 'http://127.0.0.1:3109';
 
-const proof = JSON.parse(await fs.readFile(proofJsonPath, 'utf8'));
-const route = proof.route || '/workspace/codesite-radar-proof-1782857554702/codesite';
+async function readJsonIfExists(filePath) {
+  try {
+    return JSON.parse(await fs.readFile(filePath, 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+const existingProof = await readJsonIfExists(proofJsonPath);
+const adapterProof = await readJsonIfExists(adapterProofPath);
+const slug = adapterProof.slug || existingProof.slug || 'codesite-radar-proof-1782857554702';
+const route = adapterProof.schemaProject?.route || adapterProof.project?.route || `/workspace/${encodeURIComponent(slug)}/codesite`;
+const { authCookie } = await proofAuthCookieForSlug(slug);
+const proof = {
+  schemaVersion: 'synthi.codesite.radarUiProof.v1',
+  ...existingProof,
+  generatedAt: new Date().toISOString(),
+  appUrl,
+  slug,
+  route,
+  adapterProofPath: path.relative(repoRoot, adapterProofPath),
+};
 
 const browser = await chromium.launch({ headless: true });
 const captures = [];
 
 async function capture(viewport) {
-  const page = await browser.newPage({ viewport });
+  const context = await browser.newContext({ viewport });
+  await addAuthCookiesToBrowserContext(context, appUrl, authCookie);
+  const page = await context.newPage();
   const consoleErrors = [];
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text());
@@ -100,7 +128,7 @@ async function capture(viewport) {
     throw new Error(`${viewport.name} collapsed path chips: ${JSON.stringify(collapsedChips)}`);
   }
 
-  await page.close();
+  await context.close();
   captures.push({ viewport, screenshot, consoleErrors, checks });
 }
 

@@ -1,0 +1,28 @@
+{
+  "title": "CodeSite Automatic Workflow Operational Bootstrap Proof",
+  "generatedAt": "2026-07-04T19:54:17.918Z",
+  "branch": "codex/codesite-atc-full-from-dev-20260630",
+  "gitHead": "796cff6695f07f7fb1583c29c8da86235aea8242",
+  "success": true,
+  "totals": {
+    "suites": "2/2",
+    "tests": "96/96",
+    "failed": 0,
+    "pending": 0
+  },
+  "command": "node /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/node_modules/vitest/vitest.mjs run synthi/src/lib/codesite/__tests__/controlPlane.test.js --config tmp/codesite-dojo-proof/vitest.codesite-no-postcss.config.mjs --environment node",
+  "keyAssertions": [
+    {
+      "title": "CodeSite control plane transaction validation bootstraps automatic tower workflow with schema-first holding plans",
+      "status": "passed",
+      "durationMs": 19.968408972024918
+    },
+    {
+      "title": "CodeSite control plane transaction validation runs eligible automatic workflow plans through clearance, inspection, proof, and black-box closeout",
+      "status": "passed",
+      "durationMs": 21.994690984487534
+    }
+  ],
+  "diffStat": ".../lib/codesite/__tests__/controlPlane.test.js    | 100 ++++++\n synthi/src/lib/codesite/controlPlane.js            | 349 ++++++++++++++++++++-\n 2 files changed, 447 insertions(+), 2 deletions(-)",
+  "scope": "automatic workflow: clearance, transaction open, inspection, proof bundle, black-box closeout for eligible operational bootstrap plans"
+}

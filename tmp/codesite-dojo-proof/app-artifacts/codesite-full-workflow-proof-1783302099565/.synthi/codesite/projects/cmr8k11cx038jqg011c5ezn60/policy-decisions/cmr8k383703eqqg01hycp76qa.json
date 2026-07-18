@@ -1,0 +1,281 @@
+{
+  "id": "cmr8k383703eqqg01hycp76qa",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+  "displayCallsign": "SCHEMA-01",
+  "decision": "quarantine",
+  "reasonCodes": [
+    "raw_terminal_quarantine"
+  ],
+  "inputDigest": "sha256:deccc33655fb0c62e166c802dbc5c257d5e93dd7ac772c930b40b1c96616d724",
+  "decisionBody": {
+    "path": "synthi/prisma/schema.prisma",
+    "zone": {
+      "zoneKey": "class_b",
+      "label": "Shared contract airspace",
+      "class": "B",
+      "paths": [
+        "packages/schemas/**",
+        "openapi/**",
+        "packages/*/src/index.ts",
+        "synthi/prisma/**",
+        "backend/collab-server/permissionMiddleware.js"
+      ],
+      "rules": [
+        "flight_plan_required",
+        "downstream_notification_required",
+        "change_order_for_mutation"
+      ],
+      "risk": "high",
+      "source": "compiled_default",
+      "path": "synthi/prisma/schema.prisma"
+    },
+    "codesiteFsEvent": {
+      "type": "write_quarantined",
+      "transaction_id": "cmr8k1okx03bcqg01803em330",
+      "mutation_lease_id": "cmr8k19c003acqg01swot8vyl",
+      "display_callsign": "SCHEMA-01",
+      "workspace_slug": "codesite-full-workflow-proof-1783302099565",
+      "actor_user_id": null,
+      "effective_user_id": null,
+      "path": "synthi/prisma/schema.prisma",
+      "tool": "raw_terminal",
+      "wall_time": "2026-07-06T01:43:23.512Z",
+      "evidence_refs": [
+        "codesitefs:quarantine:sha256:e93df4389de882ba0c23bd508b5e98062d0fcd781a820214668911f4cb25dea0"
+      ],
+      "details": {
+        "reason": "Raw terminal modified quarantined for synthi/prisma/schema.prisma",
+        "reason_codes": [
+          "raw_terminal_quarantine"
+        ],
+        "process_ancestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session",
+          "node",
+          "sh",
+          "npm-run-codesite-proof-full-workflow",
+          "codex",
+          "init"
+        ],
+        "process_ancestry_sources": {
+          "caller_supplied": [
+            "mcp:synthi_codesite_apply_patch",
+            "codex:tmp-proof-session"
+          ],
+          "os_procfs": [
+            "node",
+            "sh",
+            "npm-run-codesite-proof-full-workflow",
+            "codex",
+            "init"
+          ]
+        },
+        "os_process_ancestry": {
+          "schemaVersion": "synthi.codesite.processAncestry.v1",
+          "source": "linux_procfs",
+          "sourcePath": "/proc",
+          "platform": "linux",
+          "wsl": true,
+          "available": true,
+          "complete": true,
+          "direction": "process_to_root",
+          "collectorPid": 786773,
+          "requestedPid": 786773,
+          "capturedAt": "2026-07-06T01:43:23.508Z",
+          "labels": [
+            "node",
+            "sh",
+            "npm-run-codesite-proof-full-workflow",
+            "codex",
+            "init"
+          ],
+          "nodes": [
+            {
+              "pid": 786773,
+              "ppid": 786772,
+              "comm": "node",
+              "state": "R",
+              "argv0Basename": "node",
+              "argvCount": 2,
+              "exeBasename": "node",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 8870813,
+              "cmdlineDigest": "sha256:731cfd963e9d0fc2425f96611f7ce4c4c3254cf1868013878c9b6b9590def73c",
+              "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+              "label": "node"
+            },
+            {
+              "pid": 786772,
+              "ppid": 786751,
+              "comm": "sh",
+              "state": "S",
+              "argv0Basename": "sh",
+              "argvCount": 3,
+              "exeBasename": "dash",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 8870812,
+              "cmdlineDigest": "sha256:ac027f6eccab303e41ee0836930574ff462b8ca8338cfe36e10e541d01b7c316",
+              "exePathDigest": "sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a",
+              "label": "sh"
+            },
+            {
+              "pid": 786751,
+              "ppid": 575113,
+              "comm": "npm-run-codesit",
+              "state": "S",
+              "argv0Basename": "npm-run-codesite-proof-full-workflow",
+              "argvCount": 1,
+              "exeBasename": "node",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 8870774,
+              "cmdlineDigest": "sha256:e9055bb56655464f81bd420f306d146adbe3f9ea1e90a9b625278ec04bba818e",
+              "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+              "label": "npm-run-codesite-proof-full-workflow"
+            },
+            {
+              "pid": 575113,
+              "ppid": 575111,
+              "comm": "codex",
+              "state": "S",
+              "argv0Basename": "codex",
+              "argvCount": 3,
+              "exeBasename": "codex",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 6164801,
+              "cmdlineDigest": "sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64",
+              "exePathDigest": "sha256:6bf53fc3c754edcd0bdc3b0cae14f474174a6f32f8e1d960b6d2641439217030",
+              "label": "codex"
+            },
+            {
+              "pid": 575111,
+              "ppid": 575109,
+              "comm": "Relay-575113",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 6164800,
+              "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+              "exePathDigest": null,
+              "label": "init"
+            },
+            {
+              "pid": 575109,
+              "ppid": 2,
+              "comm": "SessionLeader",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 6164800,
+              "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+              "exePathDigest": null,
+              "label": "init"
+            },
+            {
+              "pid": 2,
+              "ppid": 1,
+              "comm": "init-systemd-Ub",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 728,
+              "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+              "exePathDigest": null,
+              "label": "init"
+            },
+            {
+              "pid": 1,
+              "ppid": 0,
+              "comm": "systemd",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 723,
+              "cmdlineDigest": "sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272",
+              "exePathDigest": null,
+              "label": "init"
+            }
+          ],
+          "unavailableReason": null,
+          "digest": "sha256:6867762046988f3af530eaa76b6575e4252485ea03508533b4ff808b780233ad"
+        },
+        "operation": "raw_terminal",
+        "quarantine_id": "qtn-cmr8k1okx03bcqg01803em330-1783302202982-22a91e00",
+        "quarantine_root": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-quarantine/codesite-full-workflow-proof-1783302099565/cmr8k1okx03bcqg01803em330/qtn-cmr8k1okx03bcqg01803em330-1783302202982-22a91e00",
+        "original_cwd": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565",
+        "change_kind": "modified",
+        "quarantine_evidence": {
+          "path": "synthi/prisma/schema.prisma",
+          "kind": "modified",
+          "beforeExists": true,
+          "afterExists": true,
+          "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+          "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+          "beforeSize": 135,
+          "afterSize": 249,
+          "beforeStat": {
+            "mode": 33279,
+            "uid": 1000,
+            "gid": 1000,
+            "ino": 1407374885567396,
+            "dev": 112,
+            "mtimeMs": 1783302201466.1802,
+            "ctimeMs": 1783302201472.837,
+            "birthtimeMs": 0
+          },
+          "afterStat": {
+            "mode": 33279,
+            "uid": 1000,
+            "gid": 1000,
+            "ino": 1407374885567396,
+            "dev": 112,
+            "mtimeMs": 1783302201750.5715,
+            "ctimeMs": 1783302201750.5715,
+            "birthtimeMs": 0
+          },
+          "beforeText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n",
+          "afterText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n\nmodel QuarantinedAuditEvent {\n  id        String   @id\n  userId    String\n  createdAt DateTime @default(now())\n}\n",
+          "textDiff": {
+            "format": "line-window-v1",
+            "startLine": 8,
+            "beforeLineCount": 3,
+            "afterLineCount": 9,
+            "truncated": false,
+            "lines": [
+              "   email String @unique",
+              " }",
+              " ",
+              "+model QuarantinedAuditEvent {",
+              "+  id        String   @id",
+              "+  userId    String",
+              "+  createdAt DateTime @default(now())",
+              "+}",
+              "+"
+            ]
+          },
+          "digest": "sha256:e93df4389de882ba0c23bd508b5e98062d0fcd781a820214668911f4cb25dea0",
+          "evidenceRef": "codesitefs:quarantine:sha256:e93df4389de882ba0c23bd508b5e98062d0fcd781a820214668911f4cb25dea0",
+          "quarantineId": "qtn-cmr8k1okx03bcqg01803em330-1783302202982-22a91e00"
+        }
+      }
+    },
+    "towerInstruction": "Write quarantined for synthi/prisma/schema.prisma. Review before landing."
+  },
+  "createdAt": "2026-07-06T01:43:25.363Z"
+}

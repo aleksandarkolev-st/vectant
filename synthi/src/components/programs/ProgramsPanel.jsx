@@ -11,9 +11,14 @@ import {
   fetchInstalledPrograms,
   installWorkspaceProgram,
   launchInstalledProgram,
-  publishWorkspaceProgram,
+  submitForReview,
+  fetchMySubmissions,
+  unpublishProgram,
+  generateManifest,
+  saveWorkspaceManifest,
   fetchMarketplace,
   installPublishedProgram,
+  checkoutProgram,
   scaffoldProgram,
   fetchDetectedProgram,
   launchDetectedProgram,
@@ -35,7 +40,13 @@ import { setShowTerminal } from '@/redux/uiSlice';
 import { PROGRAM_STYLE } from './programTokens';
 import LibraryView from './library/LibraryView';
 import StoreView from './store/StoreView';
+import MyAppsView from './myapps/MyAppsView';
+import FirstPublishTutorial from './FirstPublishTutorial';
+import GenerateManifestDialog from './GenerateManifestDialog';
 import ConfirmDialog from './ConfirmDialog';
+
+/** Non-terminal review states — while any app is here, the My Apps tab polls. */
+const IN_FLIGHT_STATES = ['submitted', 'scanning', 'ai_review', 'approved', 'rehosting'];
 
 function sessionLabel(session) {
   if (!session?.id) {
@@ -91,6 +102,9 @@ export default function ProgramsPanel() {
   const [marketplace, setMarketplace] = useState([]);
   const [marketQuery, setMarketQuery] = useState('');
   const [detected, setDetected] = useState(null);
+  const [submissions, setSubmissions] = useState([]);
+  const [showTutorial, setShowTutorial] = useState(false);
+  const [genManifest, setGenManifest] = useState(null); // { manifest, errors } | null
   const [loading, setLoading] = useState(true);
   const [consent, setConsent] = useState(null); // { requested, published? }
   const [busy, setBusy] = useState(false);
@@ -105,22 +119,25 @@ export default function ProgramsPanel() {
       setSessions([]);
       setInstalls([]);
       setMarketplace([]);
+      setSubmissions([]);
       setLoading(false);
       return;
     }
 
     setLoading(true);
     try {
-      const [nextSessions, nextInstalls, nextMarket, nextDetected] = await Promise.all([
+      const [nextSessions, nextInstalls, nextMarket, nextDetected, nextSubmissions] = await Promise.all([
         fetchProgramSessions(workspaceSlug),
         fetchInstalledPrograms(workspaceSlug).catch(() => []),
         fetchMarketplace(workspaceSlug, marketQuery).catch(() => []),
         fetchDetectedProgram(workspaceSlug).catch(() => null),
+        fetchMySubmissions(workspaceSlug).catch(() => []),
       ]);
       setSessions(nextSessions);
       setInstalls(nextInstalls);
       setMarketplace(Array.isArray(nextMarket) ? nextMarket : []);
       setDetected(nextDetected || null);
+      setSubmissions(Array.isArray(nextSubmissions) ? nextSubmissions : []);
     } catch (error) {
       toast.error(error.message || 'Failed to load programs');
     } finally {
@@ -131,6 +148,15 @@ export default function ProgramsPanel() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // While the My Apps tab is open and an app is mid-pipeline, poll for status so
+  // the autonomous pipeline's progress shows live without a manual refresh.
+  useEffect(() => {
+    if (view !== 'myapps') return undefined;
+    if (!submissions.some((s) => IN_FLIGHT_STATES.includes(s.reviewState))) return undefined;
+    const id = setInterval(() => { load(); }, 4000);
+    return () => clearInterval(id);
+  }, [view, submissions, load]);
 
   const openProgramSession = useCallback((session, { label = null, command = null } = {}) => {
     if (!session?.id) return;
@@ -282,16 +308,69 @@ export default function ProgramsPanel() {
 
   const handlePublish = useCallback(async () => {
     if (!workspaceSlug) return;
+    // Container/GUI apps publish a pre-built image; web/CLI apps need none. Collect
+    // the optional image ref; a blank entry submits with no image, a cancel aborts.
+    let sourceImageRef;
     try {
-      const { program } = await publishWorkspaceProgram(workspaceSlug);
-      toast.success(`Published ${program?.packageId || 'program'}`);
+      const ref = window.prompt('Container/GUI apps: paste the image reference to publish (leave blank for web/CLI apps).', '');
+      if (ref === null) return;
+      sourceImageRef = ref.trim() || undefined;
+    } catch { sourceImageRef = undefined; }
+    try {
+      const { submission } = await submitForReview(workspaceSlug, { sourceImageRef });
+      toast.success(submission?.reviewState === 'submitted' ? 'Submitted for review' : `Submission: ${submission?.reviewState || 'received'}`);
+      setView('myapps');
       await load();
     } catch (error) {
       if (error?.status === 422) toast.error(error.body?.message || 'Invalid manifest');
       else if (error?.status === 404) toast.error('No vectant.programs.json or devcontainer.json found in this workspace.');
-      else toast.error(error.body?.message || error.message || 'Failed to publish');
+      else if (error?.status === 403) toast.error('You are not allowed to publish.');
+      else toast.error(error.body?.message || error.message || 'Failed to submit');
     }
   }, [load, workspaceSlug]);
+
+  // My Apps: "Submit update" sends the publisher back to the Store submit flow;
+  // "Unpublish" takes a live app down (confirmed).
+  const handleSubmitUpdate = useCallback(() => { setView('store'); }, []);
+  const handleUnpublish = useCallback(async (packageId) => {
+    if (!workspaceSlug || !packageId) return;
+    if (!window.confirm(`Unpublish ${packageId}? It will be removed from the marketplace.`)) return;
+    try {
+      await unpublishProgram(workspaceSlug, packageId);
+      toast.success('Unpublished');
+      await load();
+    } catch (error) {
+      toast.error(error.body?.message || error.message || 'Failed to unpublish');
+    }
+  }, [load, workspaceSlug]);
+
+  // AI manifest authoring: generate a draft → open the preview dialog → Save writes it.
+  const handleGenerate = useCallback(async () => {
+    if (!workspaceSlug) return;
+    const toastId = toast.loading('Generating vectant.programs.json…');
+    try {
+      const { manifest, errors } = await generateManifest(workspaceSlug);
+      toast.dismiss(toastId);
+      setGenManifest({ manifest, errors: errors || null });
+    } catch (error) {
+      toast.dismiss(toastId);
+      if (error?.status === 502) toast.error('AI generation is unavailable right now.');
+      else if (error?.status === 404) toast.error('No workspace files to base a manifest on.');
+      else toast.error(error.body?.message || error.message || 'Failed to generate manifest');
+    }
+  }, [workspaceSlug]);
+
+  const handleSaveManifest = useCallback(async (manifest) => {
+    if (!workspaceSlug) return;
+    try {
+      await saveWorkspaceManifest(workspaceSlug, manifest);
+      toast.success('Saved vectant.programs.json to your workspace');
+      setGenManifest(null);
+    } catch (error) {
+      if (error?.status === 422) toast.error(error.body?.message || 'Manifest is invalid');
+      else toast.error(error.body?.message || error.message || 'Failed to save manifest');
+    }
+  }, [workspaceSlug]);
 
   const handleInstallManifest = useCallback(async (grantScopes) => {
     if (!workspaceSlug) return;
@@ -332,6 +411,26 @@ export default function ProgramsPanel() {
     }
   }, [load, workspaceSlug]);
 
+  // Buy a paid app: hand off to the external checkout (opens the payments page);
+  // if the caller already owns it (or it's free) proceed straight to install.
+  const handleBuy = useCallback(async (item) => {
+    if (!workspaceSlug || !item?.packageId) return;
+    setBusy(true);
+    try {
+      const res = await checkoutProgram(workspaceSlug, item.packageId);
+      if (res?.checkoutUrl) {
+        if (typeof window !== 'undefined') window.open(res.checkoutUrl, '_blank', 'noopener');
+        toast.success('Opening checkout — after payment, install the app.');
+      } else {
+        await handleInstallPublished(item);
+      }
+    } catch (error) {
+      toast.error(error?.body?.error === 'billing_unconfigured' ? 'Payments are not configured.' : (error?.message || 'Checkout failed'));
+    } finally {
+      setBusy(false);
+    }
+  }, [workspaceSlug, handleInstallPublished]);
+
   const onApprove = useCallback((_item, scopes) => (
     consent?.published ? handleInstallPublished(consent.published, scopes) : handleInstallManifest(scopes)
   ), [consent, handleInstallManifest, handleInstallPublished]);
@@ -341,8 +440,25 @@ export default function ProgramsPanel() {
     ? (consent.published || { packageId: '__manifest__', displayName: 'Workspace program', latestVersion: '', verified: false })
     : null;
 
+  const tabBtn = (id, label) => (
+    <button
+      type="button"
+      data-testid={`tab-${id}`}
+      onClick={() => { setView(id); if (id === 'store') setShowTutorial(true); }}
+      style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', color: view === id ? 'var(--text-primary)' : 'var(--text-secondary)', background: view === id ? 'var(--bg-elevated, #16161c)' : 'transparent' }}
+    >{label}</button>
+  );
+
   return (
     <div className="flex flex-col h-full min-h-0" style={{ ...PROGRAM_STYLE.panelShell, borderRadius: '0' }}>
+      {canManage ? (
+        <div data-testid="programs-tabs" className="flex items-center gap-1" style={{ padding: '4px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+          {tabBtn('library', 'Library')}
+          {tabBtn('store', 'Store')}
+          {tabBtn('myapps', 'My Apps')}
+        </div>
+      ) : null}
+
       {view === 'library' ? (
         <LibraryView
           canManage={canManage}
@@ -362,6 +478,13 @@ export default function ProgramsPanel() {
           onScaffold={handleScaffold}
           onLaunchDetected={handleLaunchDetected}
         />
+      ) : view === 'myapps' ? (
+        <MyAppsView
+          submissions={submissions}
+          onSubmitUpdate={handleSubmitUpdate}
+          onUnpublish={handleUnpublish}
+          onRefresh={load}
+        />
       ) : (
         <StoreView
           canManage={canManage}
@@ -371,13 +494,25 @@ export default function ProgramsPanel() {
           onBack={() => { setView('library'); setConsent(null); }}
           onInstallManifest={() => handleInstallManifest()}
           onPublish={handlePublish}
+          onGenerate={handleGenerate}
           onInstallPublished={(item) => handleInstallPublished(item)}
+          onBuy={(item) => handleBuy(item)}
           requestedScopes={consent?.requested || []}
           consentItem={consentItem}
           busy={busy}
           onApprove={onApprove}
         />
       )}
+
+      <FirstPublishTutorial userId={workspaceSlug || 'anon'} open={showTutorial} onClose={() => setShowTutorial(false)} />
+
+      <GenerateManifestDialog
+        open={!!genManifest}
+        manifest={genManifest?.manifest}
+        errors={genManifest?.errors}
+        onCancel={() => setGenManifest(null)}
+        onSave={handleSaveManifest}
+      />
 
       {removeTarget ? (
         <ConfirmDialog

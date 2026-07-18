@@ -1,0 +1,122 @@
+{
+  "displayCallsign": "SCHEMA-01",
+  "inspections": [
+    {
+      "id": "cmr5n96io011qpm0z8rwbzfgq",
+      "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+      "executionPlanId": "cmr5n8nlb00x4pm0zvb4u0w2j",
+      "displayCallsign": "SCHEMA-01",
+      "status": "completed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "type",
+          "adapter": {
+            "key": "type",
+            "label": "Type radar",
+            "evidencePrefix": "typecheck:run"
+          },
+          "status": "passed",
+          "command": {
+            "executable": "npm",
+            "args": [
+              "run",
+              "typecheck"
+            ],
+            "cwd": ".",
+            "timeoutMs": 60000
+          },
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 338,
+          "stdoutTail": "\n> typecheck\n> node scripts/typecheck-schema.mjs\n\nschema typecheck passed: AuditEvent contract is compatible with User identity schema\n",
+          "stderrTail": "",
+          "evidenceDigest": "sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+          "evidenceRefs": [
+            "typecheck:run:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+            "artifact:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b"
+          ],
+          "reasonCodes": [
+            "type_radar_passed",
+            "type_adapter_executed"
+          ],
+          "source": "codesite_inspection_executor",
+          "startedAt": "2026-07-04T00:48:43.601Z",
+          "completedAt": "2026-07-04T00:48:43.939Z"
+        },
+        {
+          "key": "tests",
+          "adapter": {
+            "key": "tests",
+            "label": "Test radar",
+            "evidencePrefix": "test:run"
+          },
+          "status": "passed",
+          "command": {
+            "executable": "npm",
+            "args": [
+              "test"
+            ],
+            "cwd": ".",
+            "timeoutMs": 60000
+          },
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 349,
+          "stdoutTail": "\n> test\n> node scripts/test-schema-contract.mjs\n\nschema contract tests passed: AuditEvent satisfies startup audit-log workflow\n",
+          "stderrTail": "",
+          "evidenceDigest": "sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+          "evidenceRefs": [
+            "test:run:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+            "artifact:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4"
+          ],
+          "reasonCodes": [
+            "tests_radar_passed",
+            "tests_adapter_executed"
+          ],
+          "source": "codesite_inspection_executor",
+          "startedAt": "2026-07-04T00:48:43.940Z",
+          "completedAt": "2026-07-04T00:48:44.289Z"
+        }
+      ],
+      "evidenceRefs": [
+        "runtime:event:inspection-full-workflow",
+        "typecheck:run:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+        "artifact:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+        "test:run:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+        "artifact:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4"
+      ],
+      "requestedAt": "2026-07-04T00:48:43.585Z",
+      "completedAt": "2026-07-04T00:48:44.290Z"
+    },
+    {
+      "id": "cmr5n97nm011ypm0zril7q8l1",
+      "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+      "executionPlanId": "cmr5n8nlb00x4pm0zvb4u0w2j",
+      "displayCallsign": "SCHEMA-01",
+      "status": "passed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "landing_health",
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:landing:passed-health-proof"
+          ]
+        }
+      ],
+      "evidenceRefs": [
+        "codesite:landing:passed-health-proof"
+      ],
+      "requestedAt": "2026-07-04T00:48:45.059Z",
+      "completedAt": null
+    }
+  ],
+  "status": "passed"
+}

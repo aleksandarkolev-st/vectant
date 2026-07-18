@@ -1,0 +1,198 @@
+{
+  "schemaVersion": "synthi.codesite.proofBundle.v1",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+  "transactionId": "cmr76sqte00blqk01jga6jnj3",
+  "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+  "displayCallsign": "SCHEMA-01",
+  "landingStatus": "completed",
+  "readSetDigest": "sha256:478271e6e2cb5a755bbfe83737ef10debab09482410cda922c58fc66fa20c83a",
+  "writeSetDigest": "sha256:c9dc8f2e81e79067b5051b7a7e1beca884399b3b891086ab43fb576b0f74f973",
+  "invariants": [
+    "clearance.diff.inside_route"
+  ],
+  "evidenceRefs": [
+    "mcp:audit:commit-full-workflow",
+    "git:commit:8f5c8e93c5a049b7d8556c179f6a3bf266b4cdad",
+    "codesite:runtime-attestation:sha256:11e8b941ed3c6038111b02110b262846e1f4098398f7ac25af2572dd9d7dc96f",
+    "codesite:runtime-attestation:sha256:25e88092960046acb5f0ac29bc634f9ed8062c3404b0bd041e91e130468bbd5b",
+    "codesite:landing:passed-health-proof",
+    "codesite:inspection:cmr76urak00etqk01095qmkpo",
+    "runtime:event:inspection-full-workflow",
+    "codesite:permit:cmr76s48400afqk01o8bcd748",
+    "typecheck:run:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+    "artifact:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+    "test:run:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+    "artifact:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+    "codesite:governance:full-workflow-schema-permit",
+    "codesite:inspection:cmr76ujz100elqk01f5b2l9mx",
+    "codesite:repo-state:sha256:610901da873348539bc5bf0ec6e8397bc7d3a6b7f751692820f4ff12148f68a3",
+    "codesite:transaction:cmr76sqte00blqk01jga6jnj3",
+    "codesite:lease:cmr76s97i00alqk01mvljd1m6"
+  ],
+  "dojoEvidenceRefs": [],
+  "repoState": {
+    "schemaVersion": "synthi.codesite.repoStateEvidence.v1",
+    "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+    "transactionId": "cmr76sqte00blqk01jga6jnj3",
+    "baseSnapshot": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+    "repoIdentity": {
+      "schemaVersion": "synthi.codesite.repoIdentity.v1",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "transactionId": "cmr76sqte00blqk01jga6jnj3",
+      "repoRootDigest": "sha256:20547417aee2af60604cf9f886b02d4024e94527e4b08ccd5b3e9040da08a112",
+      "gitTopLevelDigest": "sha256:20547417aee2af60604cf9f886b02d4024e94527e4b08ccd5b3e9040da08a112",
+      "gitCommonDirDigest": "sha256:ad811d7816365b9faba26bef122fefcf14d0d0308800f072ff4f4bc695e1ff56",
+      "gitTopLevelMatchesRepoRoot": true,
+      "source": "collab-server",
+      "identityDigest": "sha256:03fa49823772de6e0e8deebaaf498a5d8a9a5293c6b77b13b9550fcb76759e19",
+      "computedIdentityDigest": "sha256:03fa49823772de6e0e8deebaaf498a5d8a9a5293c6b77b13b9550fcb76759e19",
+      "identityDigestVerified": true
+    },
+    "gitHead": "8f5c8e93c5a049b7d8556c179f6a3bf266b4cdad",
+    "stagedDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "worktreeDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "headDiffDigest": "sha256:039d362eb196592f6a45b10496fcd9fdf186d09e3b42d9aceb8d998ed6474ae3",
+    "changedLineRanges": [
+      {
+        "filePath": "synthi/prisma/schema.prisma",
+        "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+        "startLine": 10,
+        "endLine": 15,
+        "source": "head_commit_diff",
+        "reasonRef": null,
+        "evidenceRefs": [],
+        "processAncestry": [],
+        "dojoSourceRefs": [],
+        "promptSummary": null
+      }
+    ],
+    "writeFileDigests": [
+      {
+        "path": "synthi/prisma/schema.prisma",
+        "digest": "sha256:cc965a1302ccd4ef3195e0250c972005cf2e4fe75bf52a69f3462917cef9a160",
+        "size": 238,
+        "exists": true,
+        "changedLineRanges": [
+          {
+            "filePath": "synthi/prisma/schema.prisma",
+            "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+            "startLine": 10,
+            "endLine": 15,
+            "source": "head_commit_diff",
+            "reasonRef": null,
+            "evidenceRefs": [],
+            "processAncestry": [],
+            "dojoSourceRefs": [],
+            "promptSummary": null
+          }
+        ]
+      }
+    ],
+    "generatedAt": "2026-07-05T02:44:59.664Z",
+    "source": "collab-server",
+    "evidenceDigest": "sha256:610901da873348539bc5bf0ec6e8397bc7d3a6b7f751692820f4ff12148f68a3",
+    "computedEvidenceDigest": "sha256:610901da873348539bc5bf0ec6e8397bc7d3a6b7f751692820f4ff12148f68a3",
+    "evidenceDigestVerified": true
+  },
+  "baseSnapshot": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+  "baseSnapshotEvidence": {
+    "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+    "status": "recorded",
+    "scope": "repo_wide",
+    "readSet": [
+      "synthi/prisma/schema-contract-read.txt"
+    ],
+    "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+    "fileDigests": [
+      {
+        "path": "synthi/prisma/schema-contract-read.txt",
+        "exists": true,
+        "size": 24,
+        "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+      }
+    ],
+    "missingPaths": [],
+    "skippedPaths": [],
+    "truncated": false,
+    "repoManifestDigest": "sha256:4ab6d19df4f6c2ef92ad202b07de5637dec9d23a2e414c4b1f18fba5e9ec2254",
+    "repoManifestFileCount": 5,
+    "repoManifestScannedEntries": 10,
+    "repoManifestTruncated": false,
+    "repoManifestSkippedPaths": [],
+    "repoManifestExcludedPaths": [
+      "synthi/prisma/schema.prisma"
+    ],
+    "limits": {
+      "maxFiles": 512,
+      "maxFileBytes": 2097152,
+      "maxScanEntries": 15000
+    },
+    "generatedAt": "2026-07-05T02:43:35.169Z",
+    "source": "codesite_control_plane",
+    "snapshotDigest": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+    "evidenceDigest": "sha256:ec8199f8668dee7f87523f5839403218bd5f73b8ccdc0a6884689c24d50be2bb"
+  },
+  "incidentReplayDigest": "sha256:0440d3ec904cc611fa4f78850026ddb97d51be44de844762ad252f73b930b531",
+  "bundleDigest": "sha256:a2a603d7be97a67a393353e7f2cb1eeb298374ad34c8404190b26d3f6e174222",
+  "incidents": [
+    {
+      "id": "cmr76ufnq00ehqk01texuuh7z",
+      "severity": "low",
+      "category": "black_box",
+      "replayDigest": "sha256:0440d3ec904cc611fa4f78850026ddb97d51be44de844762ad252f73b930b531"
+    }
+  ],
+  "lineProvenance": [
+    {
+      "filePath": "synthi/prisma/schema.prisma",
+      "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+      "startLine": 10,
+      "endLine": 15,
+      "displayCallsign": "SCHEMA-01",
+      "reasonRef": "change_order:cmr76trqd00dlqk011lwlhv5g",
+      "evidenceRefs": [
+        "proof:cmr76z76b00gjqk01x6cwpr50",
+        "transaction:cmr76sqte00blqk01jga6jnj3",
+        "event:cmr76ud0z00ebqk01o9j9kkji",
+        "mcp:audit:write-full-workflow",
+        "codesite:document:cmr76trqd00dlqk011lwlhv5g",
+        "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z",
+        "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4",
+        "codesite:document:cmr76tm7e00ddqk01ic8pff9a",
+        "codesite:inbox:cmr76todp00dhqk01r43bhrgg",
+        "codesite:inbox:cmr76tu3z00dpqk016015sdcl",
+        "codesite:assumption:cmr76stj200brqk01rdlmxv30",
+        "codesite:assumption:cmr76t2r400c9qk01qfeyolp9"
+      ],
+      "dojoSourceRefs": [
+        "dojo:proof:pcap-full-workflow-schema",
+        "dojo:decision:sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+        "full-workflow-checkride"
+      ],
+      "proofBundleId": "cmr76z76b00gjqk01x6cwpr50",
+      "processAncestry": [
+        "mcp:synthi_codesite_apply_patch",
+        "codex:tmp-proof-session",
+        "node",
+        "sh",
+        "npm-run-codesite-proof-full-workflow",
+        "codex",
+        "init"
+      ],
+      "promptSummary": "Land schema-first full workflow proof"
+    }
+  ],
+  "createdAt": "2026-07-05T02:48:36.371Z",
+  "portableDigest": "sha256:0de8d747c5220a75ee4467fc1a272c52628bc8d12d745a8398c3d79b144b88f3",
+  "proofSignature": {
+    "schemaVersion": "synthi.codesite.proofSignature.v1",
+    "algorithm": "hmac-sha256",
+    "keyId": "codesite-local-proof-authority",
+    "authority": "CodeSite Proof Authority",
+    "signedAt": "2026-07-05T02:48:42.789Z",
+    "payloadDigest": "sha256:0de8d747c5220a75ee4467fc1a272c52628bc8d12d745a8398c3d79b144b88f3",
+    "signature": "hmac-sha256:codesite-local-proof-authority:Qfb9JWVyH_VXeVEdOb-CrpYpDPFD--9A0JpN9NRezvk",
+    "publicKeyPem": null
+  }
+}

@@ -1,0 +1,154 @@
+{
+  "ok": true,
+  "skill_id": "dojo_save_profile",
+  "requested_action": "run_prefix_validation",
+  "enforcement_mode": "development",
+  "require_verified_evidence": true,
+  "control_plane_source": "compatibility_registry",
+  "proof_key": null,
+  "proof_capsule": {
+    "schema_version": "synthi.dojo.proofCapsule.v1",
+    "capsule_id": "capsule_eb544f72-a40f-4641-8495-a4f4730dc897",
+    "skill_id": "dojo_save_profile",
+    "skill_version": "1.0.0",
+    "requested_action": "run_prefix_validation",
+    "license_id": "license_3103ef056d7a",
+    "license_version": "1.0.0",
+    "entrustment_level": "EX",
+    "issuer": "synthi-dojo-license-kernel",
+    "key_id": "dojo-key-4171243b214f",
+    "nonce": "4f6d9a2f-45ed-4ddf-a1f0-5595eeeed8a6",
+    "context_claims": {
+      "workspace_verified": true
+    },
+    "evidence_claims": [
+      {
+        "claim": "checkride_passed",
+        "satisfied": true,
+        "evidence_refs": [
+          "evidence:evidence_023_d5769495b27d"
+        ]
+      },
+      {
+        "claim": "success_assertions_defined",
+        "satisfied": true,
+        "evidence_refs": [
+          "evidence:evidence_023_d5769495b27d",
+          "evidence:evidence_035_b8bd5f52bee9"
+        ]
+      },
+      {
+        "claim": "guardrails_active",
+        "satisfied": true,
+        "evidence_refs": [
+          "evidence:evidence_028_c6ba04843a82",
+          "evidence:evidence_029_13d7216338fa",
+          "evidence:evidence_030_5a128350e3db",
+          "evidence:evidence_031_34d70a2152fd",
+          "evidence:evidence_032_76949c39cb4c"
+        ]
+      },
+      {
+        "claim": "durable_state_evidence",
+        "satisfied": true,
+        "evidence_refs": [
+          "evidence:evidence_023_d5769495b27d",
+          "evidence:evidence_035_b8bd5f52bee9"
+        ]
+      },
+      {
+        "claim": "workspace_verified",
+        "satisfied": true,
+        "evidence_refs": [
+          "evidence:evidence_001_587d74a5e748",
+          "evidence:evidence_023_d5769495b27d"
+        ]
+      }
+    ],
+    "evidence_record_ids": [
+      "evidence_001_587d74a5e748",
+      "evidence_023_d5769495b27d",
+      "evidence_028_c6ba04843a82",
+      "evidence_029_13d7216338fa",
+      "evidence_030_5a128350e3db",
+      "evidence_031_34d70a2152fd",
+      "evidence_032_76949c39cb4c",
+      "evidence_035_b8bd5f52bee9"
+    ],
+    "ledger_checkpoint_hash": "274a821b5049eb291cd4d99eb701ff076a0cbd76bf001929ad854bb20a2e99d0",
+    "guardrails_active": [
+      "guard_a1b8528fb0a0",
+      "guard_6bec45218304",
+      "guard_de81bd7053f8",
+      "guard_5619e562b631",
+      "guard_mutation_requires_isolation"
+    ],
+    "substrate_claim": "mcp",
+    "assurance_case_ref": "assurance_41f3038e2455",
+    "issued_at": "2026-07-05T04:04:06.593Z",
+    "expires_at": "2026-07-05T04:19:06.593Z",
+    "signature_algorithm": "hmac-sha256",
+    "signature": "hmac-sha256:dc7da24d6b9c3d9d991a38836d719d1052dd122a070def074f3dee4918d92693"
+  },
+  "proof_record": {
+    "tenant_id": "local-tenant-23af210391f3",
+    "workspace_id": "workflow-pipeline-profile-form-mr79no5t",
+    "capsule_id": "capsule_eb544f72-a40f-4641-8495-a4f4730dc897",
+    "skill_id": "dojo_save_profile",
+    "license_id": "license_3103ef056d7a",
+    "license_version": "1.0.0",
+    "requested_action": "run_prefix_validation",
+    "nonce": "4f6d9a2f-45ed-4ddf-a1f0-5595eeeed8a6",
+    "key_id": "dojo-key-4171243b214f",
+    "signature_algorithm": "hmac-sha256",
+    "substrate_claim": "mcp",
+    "evidence_record_ids": [
+      "evidence_001_587d74a5e748",
+      "evidence_023_d5769495b27d",
+      "evidence_028_c6ba04843a82",
+      "evidence_029_13d7216338fa",
+      "evidence_030_5a128350e3db",
+      "evidence_031_34d70a2152fd",
+      "evidence_032_76949c39cb4c",
+      "evidence_035_b8bd5f52bee9"
+    ],
+    "ledger_checkpoint_hash": "274a821b5049eb291cd4d99eb701ff076a0cbd76bf001929ad854bb20a2e99d0",
+    "issued_at": "2026-07-05T04:04:06.593Z",
+    "expires_at": "2026-07-05T04:19:06.593Z",
+    "status": "issued",
+    "issued_by": {
+      "actor_id": "workflow-pipeline-e2e:profile-form:proof-agent",
+      "actor_type": "agent"
+    }
+  },
+  "validation": {
+    "ok": true,
+    "status": "allowed",
+    "blocked_by": [],
+    "error_codes": [],
+    "license": {
+      "skill_id": "dojo_save_profile",
+      "license_version": "1.0.0",
+      "entrustment_level": "EX"
+    }
+  },
+  "implementation_status": "executable",
+  "runtime_enforced": true,
+  "runtime_scope": "proof_validation",
+  "production_runtime": false,
+  "evidence_backing": "runtime_validation",
+  "simulation_backing": "none",
+  "dojo_implementation": {
+    "implementation_status": "executable",
+    "runtime_enforced": true,
+    "runtime_scope": "proof_validation",
+    "production_runtime": false,
+    "evidence_backing": "runtime_validation",
+    "simulation_backing": "none",
+    "summary": "Issues and stores a proof capsule using current context and evidence-claim checks; Ed25519 local, external command, and managed-key-service signing are supported when configured.",
+    "maturity_blockers": [
+      "managed_kms_hsm_provider_not_configured_by_default",
+      "not_yet_proven_in_deployed_non_loopback_host"
+    ]
+  }
+}

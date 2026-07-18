@@ -18,6 +18,15 @@ const bounded = (v, max) => { const s = str(v); return s && s.length <= max ? s 
 const HASH_RE = /^[0-9a-f]{64}$/i; // sha-256 hex is always exactly 64 chars
 const hex64 = (v) => { const s = str(v); return s && HASH_RE.test(s) ? s : null; };
 
+async function canLinkConnection(actor, conn) {
+  if (!actor?.userId || !conn) return false;
+  if (conn.scope === 'personal') return conn.ownerUserId === actor.userId;
+  if (conn.scope === 'workspace' && conn.workspaceSlug) {
+    return canReadScope({ userId: actor.userId }, { scope: 'workspace', workspaceSlug: conn.workspaceSlug });
+  }
+  return false;
+}
+
 async function resolveTrustedCodeSiteRefs(workspaceSlug, body) {
   if (!workspaceSlug) return emptyCodeSiteIdentityFields();
   const codeSiteContext = body.codeSiteContext && typeof body.codeSiteContext === 'object' && !Array.isArray(body.codeSiteContext) ? body.codeSiteContext : {};
@@ -63,11 +72,17 @@ export async function POST(req) {
 
   const b = await req.json().catch(() => ({}));
 
-  // Only link connectionId if the connection still exists (avoid FK violation on a stale id).
+  // Only link connectionId if the connection exists and belongs to the PAT actor's scope.
   let connectionId = null;
   if (str(b.connId)) {
-    const conn = await prisma.mcpConnection.findUnique({ where: { id: b.connId } });
-    connectionId = conn ? conn.id : null;
+    const conn = await prisma.mcpConnection.findUnique({
+      where: { id: b.connId },
+      select: { id: true, scope: true, ownerUserId: true, workspaceSlug: true },
+    });
+    if (conn && !(await canLinkConnection(actor, conn))) {
+      return NextResponse.json({ error: 'forbidden_connection' }, { status: 403 });
+    }
+    connectionId = conn?.id || null;
   }
   // Echo workspaceSlug only when the PAT's user is a member.
   let workspaceSlug = null;
