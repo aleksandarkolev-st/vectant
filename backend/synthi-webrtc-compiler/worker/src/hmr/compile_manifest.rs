@@ -41,6 +41,8 @@
 // hot_reload_mode semantics.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use unicode_normalization::UnicodeNormalization;
 
 /// Per-call confidence the AI reports about its own manifest synthesis.
 /// `runner_synthesis == "low"` is the Point 2 guardrail trigger — handler
@@ -489,8 +491,57 @@ impl CompileManifest {
     /// request a verified re-split; missing manifests never infer link flags.
     pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
         let mut manifest: Self = serde_json::from_value(value.clone()).ok()?;
+        if !manifest.normalize_generated_paths() {
+            return None;
+        }
         manifest.normalize_argv_fields();
         Some(manifest)
+    }
+
+    fn normalize_generated_paths(&mut self) -> bool {
+        let module_paths = [
+            self.module_files.shared.as_deref(),
+            self.module_files.core.as_deref(),
+            self.module_files.gui.as_deref(),
+            self.module_files.host_runner.as_deref(),
+            self.module_files.device.as_deref(),
+        ];
+        if !(generated_paths_are_unambiguous(self.files.iter().map(String::as_str), false)
+            && generated_paths_are_unambiguous(module_paths.into_iter().flatten(), true)
+            && self.gpu.as_ref().map_or(true, |gpu| {
+                generated_paths_are_unambiguous(
+                    gpu.device_roles.iter().map(|role| role.path.as_str()),
+                    true,
+                )
+            }))
+        {
+            return false;
+        }
+
+        for path in &mut self.files {
+            *path = normalize_generated_relative_path(path)
+                .expect("generated file path was validated before normalization");
+        }
+        for path in [
+            &mut self.module_files.shared,
+            &mut self.module_files.core,
+            &mut self.module_files.gui,
+            &mut self.module_files.host_runner,
+            &mut self.module_files.device,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *path = normalize_generated_relative_path(path)
+                .expect("generated module path was validated before normalization");
+        }
+        if let Some(gpu) = &mut self.gpu {
+            for role in &mut gpu.device_roles {
+                role.path = normalize_generated_relative_path(&role.path)
+                    .expect("generated device role path was validated before normalization");
+            }
+        }
+        true
     }
 
     fn normalize_argv_fields(&mut self) {
@@ -593,6 +644,75 @@ impl CompileManifest {
     }
 }
 
+fn generated_paths_are_unambiguous<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+    allow_exact_duplicates: bool,
+) -> bool {
+    let mut owners_by_collision_key = HashMap::new();
+    paths.into_iter().all(|path| {
+        normalize_generated_relative_path(path).is_some_and(|normalized| {
+            let collision_key = normalized.to_lowercase();
+            match owners_by_collision_key.get(&collision_key) {
+                Some(previous) => allow_exact_duplicates && previous == &path,
+                None => {
+                    owners_by_collision_key.insert(collision_key, path);
+                    true
+                }
+            }
+        })
+    })
+}
+
+fn normalize_generated_relative_path(path: &str) -> Option<String> {
+    if path.is_empty()
+        || path.trim() != path
+        || path.chars().any(|character| character.is_control())
+    {
+        return None;
+    }
+    let path = path.replace('\\', "/");
+    let bytes = path.as_bytes();
+    if path.starts_with('/')
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+        || path.contains(':')
+        || path
+            .chars()
+            .any(|character| matches!(character, '<' | '>' | '"' | '|' | '?' | '*'))
+    {
+        return None;
+    }
+    let path = path.trim_start_matches("./");
+    if path.is_empty() {
+        return None;
+    }
+    let segments = path.split('/').collect::<Vec<_>>();
+    if segments.iter().any(|segment| {
+        segment.is_empty()
+            || *segment == "."
+            || *segment == ".."
+            || segment.ends_with(' ')
+            || segment.ends_with('.')
+            || is_windows_reserved_generated_segment(segment)
+    }) {
+        return None;
+    }
+    Some(segments.join("/").nfc().collect())
+}
+
+fn is_windows_reserved_generated_segment(segment: &str) -> bool {
+    let basename = segment.split('.').next().unwrap_or_default().to_uppercase();
+    matches!(
+        basename.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
+    ) || basename
+        .strip_prefix("COM")
+        .or_else(|| basename.strip_prefix("LPT"))
+        .is_some_and(|suffix| {
+            (suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9'))
+                || matches!(suffix, "\u{b9}" | "\u{b2}" | "\u{b3}")
+        })
+}
+
 fn normalize_argv_list(values: &mut Vec<String>) {
     let mut normalized = Vec::with_capacity(values.len());
     for value in values.drain(..) {
@@ -665,6 +785,28 @@ fn split_manifest_argv_value(value: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scoped_path_manifest() -> serde_json::Value {
+        serde_json::json!({
+            "compiler": "clang++",
+            "std": "c++20",
+            "common_flags": [],
+            "core_link_flags": [],
+            "gui_link_flags": [],
+            "shared_link_flags": [],
+            "runner_link_flags": [],
+            "files": ["objects/a", "objects/b"],
+            "module_files": {"core": "objects/a", "device": "objects/b"},
+            "system_packages": [],
+            "hot_reload_mode": "swap",
+            "confidence": {
+                "overall": "high",
+                "runner_synthesis": "high",
+                "link_flags": "high",
+                "notes": ""
+            }
+        })
+    }
 
     const SAMPLE_SDL2_JSON: &str = r#"{
         "compiler": "g++",
@@ -786,6 +928,139 @@ mod tests {
         assert_eq!(m.compiler.executable(), "clang++");
         assert_eq!(m.std, "c++20");
         assert_eq!(m.gui_link_flags, vec!["-lglfw".to_string()]);
+    }
+
+    #[test]
+    fn from_json_value_accepts_scoped_opaque_generated_paths() {
+        assert!(CompileManifest::from_json_value(&scoped_path_manifest()).is_some());
+    }
+
+    #[test]
+    fn from_json_value_persists_canonical_generated_paths() {
+        let mut manifest = scoped_path_manifest();
+        manifest["files"] = serde_json::json!(["./nested\\unit"]);
+        manifest["module_files"] = serde_json::json!({"core": "./nested\\unit"});
+        let parsed = CompileManifest::from_json_value(&manifest).expect("manifest must parse");
+        assert_eq!(parsed.files, ["nested/unit"]);
+        assert_eq!(parsed.module_files.core.as_deref(), Some("nested/unit"));
+    }
+
+    #[test]
+    fn from_json_value_rejects_unscoped_generated_paths() {
+        for path in ["/outside/unit", "../outside/unit", "C:/outside/unit"] {
+            let mut manifest = scoped_path_manifest();
+            manifest["files"] = serde_json::json!([path]);
+            assert!(
+                CompileManifest::from_json_value(&manifest).is_none(),
+                "unsafe path must be refused: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_json_value_rejects_case_colliding_generated_paths() {
+        let mut manifest = scoped_path_manifest();
+        manifest["files"] = serde_json::json!(["Units/A", "units/a"]);
+        assert!(CompileManifest::from_json_value(&manifest).is_none());
+    }
+
+    #[test]
+    fn from_json_value_rejects_unscoped_device_role_path() {
+        let mut manifest = scoped_path_manifest();
+        manifest["gpu"] = serde_json::json!({
+            "vendor": "rocm",
+            "device_compiler": "hipcc",
+            "arch": ["gfx1201"],
+            "device_flags": [],
+            "runtime_libs": ["amdhip64"],
+            "snapshot_mode": "auto",
+            "fatbin_strategy": "sidecar_module",
+            "device_roles": [{"id": "device.primary", "path": "../outside/device"}]
+        });
+        assert!(CompileManifest::from_json_value(&manifest).is_none());
+    }
+
+    #[test]
+    fn from_json_value_allows_exact_device_role_path_references() {
+        let mut manifest = scoped_path_manifest();
+        manifest["gpu"] = serde_json::json!({
+            "vendor": "rocm",
+            "device_compiler": "hipcc",
+            "arch": ["gfx1201"],
+            "device_flags": [],
+            "runtime_libs": ["amdhip64"],
+            "snapshot_mode": "auto",
+            "fatbin_strategy": "sidecar_module",
+            "device_roles": [
+                {"id": "device.alpha", "path": "objects/b"},
+                {"id": "device.beta", "path": "objects/b"}
+            ]
+        });
+        assert!(CompileManifest::from_json_value(&manifest).is_some());
+    }
+
+    #[test]
+    fn generated_path_policy_matches_shared_conformance_corpus() {
+        let corpus_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../test-fixtures/gpu-hmr/generated-path-policy-v1.json");
+        let corpus: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&corpus_path).unwrap_or_else(|error| {
+                panic!("failed to read {}: {error}", corpus_path.display())
+            }),
+        )
+        .expect("generated path policy corpus must be valid JSON");
+        assert_eq!(
+            corpus.get("schema").and_then(serde_json::Value::as_str),
+            Some("synthi.generated_path_policy.conformance.v1")
+        );
+
+        for case in corpus["valid"]
+            .as_array()
+            .expect("valid path cases must be an array")
+        {
+            let input = case["input"]
+                .as_str()
+                .expect("valid input must be a string");
+            let expected = case["normalized"]
+                .as_str()
+                .expect("normalized path must be a string");
+            assert_eq!(
+                normalize_generated_relative_path(input).as_deref(),
+                Some(expected),
+                "valid conformance path must normalize: {input:?}"
+            );
+        }
+
+        for case in corpus["invalid"]
+            .as_array()
+            .expect("invalid path cases must be an array")
+        {
+            let input = case["input"]
+                .as_str()
+                .expect("invalid input must be a string");
+            assert!(
+                normalize_generated_relative_path(input).is_none(),
+                "invalid conformance path must be refused: {input:?}"
+            );
+        }
+
+        for case in corpus["collisions"]
+            .as_array()
+            .expect("collision cases must be an array")
+        {
+            let inputs = case["inputs"]
+                .as_array()
+                .expect("collision inputs must be an array");
+            assert!(
+                !generated_paths_are_unambiguous(
+                    inputs
+                        .iter()
+                        .map(|input| input.as_str().expect("collision path must be a string")),
+                    false,
+                ),
+                "conformance aliases must collide: {inputs:?}"
+            );
+        }
     }
 
     #[test]

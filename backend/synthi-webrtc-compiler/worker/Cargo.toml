@@ -82,6 +82,7 @@ iced-x86 = { version = "1.21", default-features = false, features = ["decoder", 
 # Phase 11: AST-based value-only classification
 tree-sitter = "0.24"
 tree-sitter-cpp = "0.23"
+unicode-normalization = "0.1"
 
 [build-dependencies]
 tonic-build = "0.11"

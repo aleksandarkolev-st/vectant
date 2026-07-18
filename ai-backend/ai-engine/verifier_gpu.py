@@ -54,6 +54,12 @@ from agents.gpu_device_markers import (
     DEVICE_ANNOTATION_MACRO_PATTERN,
     has_gpu_device_marker,
 )
+from generated_path_policy import (
+    GeneratedPathViolation,
+    normalize_generated_path_list,
+    normalize_generated_path_mapping,
+    normalize_generated_relative_path,
+)
 
 
 HealTier = str  # "compile_hard" | "compile_soft" | "runtime"
@@ -1783,7 +1789,7 @@ def _manifest_role_path(manifest: Optional[Mapping[str, object]], role: str) -> 
     value = module_files.get(role)
     if not isinstance(value, str) or not value.strip():
         return None
-    return value.strip().lstrip("./").replace("\\", "/")
+    return normalize_generated_relative_path(value)
 
 
 def _normalize_generated_path(path: str) -> str:
@@ -1857,6 +1863,34 @@ def verify_split_output(
         fallbacks for older outputs.
     """
     violations: List[Violation] = []
+    try:
+        files = normalize_generated_path_mapping(files)
+        module_files = manifest.get("module_files") if isinstance(manifest, Mapping) else None
+        if isinstance(module_files, Mapping):
+            normalize_generated_path_list(
+                (path for path in module_files.values() if path is not None),
+                allow_exact_duplicates=True,
+            )
+        gpu = manifest.get("gpu") if isinstance(manifest, Mapping) else None
+        device_roles = gpu.get("device_roles") if isinstance(gpu, Mapping) else None
+        if isinstance(device_roles, list):
+            normalize_generated_path_list(
+                (
+                    role.get("path")
+                    for role in device_roles
+                    if isinstance(role, Mapping) and role.get("path") is not None
+                ),
+                allow_exact_duplicates=True,
+            )
+    except GeneratedPathViolation as exc:
+        violations.append(
+            Violation(
+                rule=exc.reason_code,
+                message=str(exc),
+                offending_module=str(exc.path),
+            )
+        )
+        return SplitVerificationResult(ok=False, violations=violations)
     if not list(manifest_arch):
         violations.append(
             Violation(

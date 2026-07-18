@@ -773,6 +773,23 @@ def test_split_clean_output_with_manifest_dynamic_paths_passes():
     assert r.ok, r.violations
 
 
+def test_split_rejects_unscoped_manifest_role_before_filename_resolution():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": "",
+        "gui.cpp": "",
+        "host_runner.cpp": "",
+        "device.hip": 'extern "C" __global__ void step() {}',
+    }
+    manifest = {
+        "module_files": {"device": "../outside/device.hip"},
+        "gpu": {"vendor": "rocm", "arch": ["gfx1201"]},
+    }
+    result = verify_split_output(files=files, manifest_arch=["gfx1201"], manifest=manifest)
+    assert not result.ok
+    assert result.violations[0].rule == "generated.path_traversal_rejected"
+
+
 def test_split_allows_quoted_includes_of_generated_role_paths():
     files = {
         "src/state/shared_runtime_abc123.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',

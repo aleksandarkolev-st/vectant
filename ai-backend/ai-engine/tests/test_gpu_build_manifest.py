@@ -22,6 +22,7 @@ from build_manifest import (
     parse_manifest,
     validate_manifest_v1,
 )
+from generated_path_policy import GeneratedPathViolation
 
 
 HOST_ONLY_MANIFEST = {
@@ -326,6 +327,45 @@ def test_gpu_manifest_rejects_missing_arch_instead_of_defaulting():
             vendor_hint="rocm",
             arch_hint=None,
         )
+
+
+@pytest.mark.parametrize("unsafe_path", ["/outside/device", "../outside/device", "C:/outside/device"])
+def test_gpu_manifest_rejects_unscoped_generated_paths(unsafe_path):
+    with pytest.raises(GeneratedPathViolation, match="generated path"):
+        normalize_gpu_split_manifest(
+            {
+                "module_files": {"device": unsafe_path},
+                "gpu": {"vendor": "rocm", "arch": ["gfx1201"]},
+            },
+            split_files={unsafe_path: "device"},
+            vendor_hint="rocm",
+            arch_hint=None,
+        )
+
+
+def test_manifest_execution_gate_rejects_unscoped_sidecar_path():
+    manifest = parse_manifest(
+        {
+            **HOST_ONLY_MANIFEST,
+            "files": ["../outside/core.cpp"],
+            "module_files": {"core": "../outside/core.cpp"},
+        }
+    )
+    with pytest.raises(ManifestRejection, match="generated.path_traversal_rejected"):
+        validate_manifest_v1(manifest)
+
+
+def test_manifest_execution_gate_persists_canonical_generated_paths():
+    manifest = parse_manifest(
+        {
+            **HOST_ONLY_MANIFEST,
+            "files": ["./nested\\core.cpp"],
+            "module_files": {"core": "./nested\\core.cpp"},
+        }
+    )
+    validate_manifest_v1(manifest)
+    assert manifest.files == ["nested/core.cpp"]
+    assert manifest.module_files.core == "nested/core.cpp"
 
 
 def test_gpu_manifest_does_not_infer_host_link_flags_from_framework_names():
