@@ -14,6 +14,7 @@ pub const RUNTIME_ACCEPTANCE_RECEIPT_SCHEMA_VERSION: &str =
 pub const RUNTIME_ACCEPTANCE_VERIFICATION_KEY_SCHEMA_VERSION: &str =
     "synthi.gpu_hmr.runtime_acceptance_verification_key.v1";
 pub const RUNTIME_ACCEPTANCE_RECEIPT_ALGORITHM: &str = "ed25519";
+pub const RUNTIME_ACCEPTANCE_ATTESTATION_DATA_CHANNEL_LABEL: &str = "gpu-hmr-attestation";
 const RUNTIME_ACCEPTANCE_RECEIPT_PRODUCER: &str = "synthi-webrtc-compiler-worker";
 const KEY_ID_PREFIX: &str = "gpu-hmr-runtime-receipt-key:sha256:";
 const RECEIPT_ID_PREFIX: &str = "gpu-hmr-runtime-receipt:sha256:";
@@ -344,12 +345,30 @@ impl RuntimeAcceptanceReceipt {
 }
 
 pub fn initialize_runtime_acceptance_signer() -> Result<(), String> {
+    harden_runtime_acceptance_signer_process()?;
     let signer = RuntimeAcceptanceSigner::generate(std::process::id());
     let result = signer.as_ref().map(|_| ()).map_err(Clone::clone);
     GLOBAL_SIGNER
         .set(signer)
         .map_err(|_| "runtime_acceptance_receipt_signer_already_initialized".to_string())?;
     result
+}
+
+fn harden_runtime_acceptance_signer_process() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        // The runner executes user-owned code in a child process. Keep the
+        // parent-only ephemeral signing key out of ptrace and /proc memory
+        // access available to same-UID descendants.
+        let result = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+        if result != 0 {
+            return Err(format!(
+                "runtime_acceptance_receipt_process_hardening_failed:{}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn global_runtime_acceptance_signer() -> Result<&'static RuntimeAcceptanceSigner, String> {

@@ -851,6 +851,10 @@ async fn main() -> Result<()> {
     debug_log!("Worker starting...");
     debug_log!("Operating System: {}", std::env::consts::OS);
 
+    hmr::runtime_acceptance_receipt::initialize_runtime_acceptance_signer()
+        .map_err(anyhow::Error::msg)?;
+    debug_log!("[Worker] GPU runtime acceptance signer initialized");
+
     // Prevent broken X11 connections (e.g. Xvfb tear-down during a reset
     // mid-build) from exit(1)-ing the worker. Must run before any X-using
     // code (GStreamer ximagesrc, x11rb input emulation) so the default
@@ -2089,6 +2093,47 @@ async fn wire_peer_channels(
     audio_fanout: Arc<worker::webrtc::TrackFanout>,
 ) -> Result<()> {
     let pc = pc.clone();
+    let attestation_label =
+        hmr::runtime_acceptance_receipt::RUNTIME_ACCEPTANCE_ATTESTATION_DATA_CHANNEL_LABEL;
+    let attestation_dc = pc
+        .create_data_channel(attestation_label, Some(RTCDataChannelInit::default()))
+        .await?;
+    let attestation_dc_for_open = attestation_dc.clone();
+    attestation_dc.on_open(Box::new(move || {
+        let dc = attestation_dc_for_open.clone();
+        async move {
+            let payload = hmr::runtime_acceptance_receipt::global_runtime_acceptance_signer()
+                .and_then(|signer| {
+                    serde_json::to_string(signer.verification_key()).map_err(|error| {
+                        format!(
+                            "runtime_acceptance_verification_key_serialize_failed:{error}"
+                        )
+                    })
+                });
+            match payload {
+                Ok(payload) => {
+                    if let Err(error) = dc_send_text_with_backpressure(
+                        &dc,
+                        payload,
+                        attestation_label,
+                    )
+                    .await
+                    {
+                        eprintln!(
+                            "[Worker] GPU runtime acceptance key announcement failed: {error}"
+                        );
+                    }
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[Worker] GPU runtime acceptance key announcement unavailable: {error}"
+                    );
+                }
+            }
+        }
+        .boxed()
+    }));
+
     let build_log_dc = pc
         .create_data_channel("build-log", Some(RTCDataChannelInit::default()))
         .await?;
