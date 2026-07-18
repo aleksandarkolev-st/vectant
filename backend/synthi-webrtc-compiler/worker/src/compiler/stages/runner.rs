@@ -319,6 +319,37 @@ enum RunnerGpuTerminalExpectation {
     HotReload(GpuReloadV2Expectation),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorrelatedGpuTerminalReceipt {
+    ColdLoad {
+        request_id: String,
+        source_edit_id: String,
+        artifact_content_hash: String,
+    },
+    HotReload {
+        request_id: String,
+        source_edit_id: String,
+        artifact_content_hash: String,
+        full_runtime_proof_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerExecutionOutcome {
+    gpu_terminal_receipts: Vec<CorrelatedGpuTerminalReceipt>,
+}
+
+impl RunnerExecutionOutcome {
+    pub fn has_correlated_gpu_terminal(&self) -> bool {
+        !self.gpu_terminal_receipts.is_empty()
+    }
+
+    #[cfg(test)]
+    fn gpu_terminal_receipts(&self) -> &[CorrelatedGpuTerminalReceipt] {
+        &self.gpu_terminal_receipts
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RunnerCommandProofContext<'a> {
     runner_runtime_session_id: &'a str,
@@ -583,12 +614,13 @@ fn strict_gpu_reload_terminal_timeout() -> Duration {
 async fn wait_for_gpu_command_terminals(
     receiver: &mut tokio::sync::broadcast::Receiver<String>,
     expectations: &[RunnerGpuTerminalExpectation],
-) -> Result<()> {
+) -> Result<Vec<CorrelatedGpuTerminalReceipt>> {
     if expectations.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut pending_cold = HashMap::new();
     let mut pending_hot = HashMap::new();
+    let mut receipts = Vec::with_capacity(expectations.len());
     for expectation in expectations {
         let duplicate = match expectation {
             RunnerGpuTerminalExpectation::ColdLoad(expectation) => pending_cold
@@ -660,6 +692,11 @@ async fn wait_for_gpu_command_terminals(
                     result.reason.as_deref().unwrap_or("reason missing")
                 );
             }
+            receipts.push(CorrelatedGpuTerminalReceipt::ColdLoad {
+                request_id: result.request_id.clone(),
+                source_edit_id: result.source_edit_id.clone(),
+                artifact_content_hash: result.artifact_content_hash.clone(),
+            });
             pending_cold.remove(&result.request_id);
             continue;
         }
@@ -686,6 +723,16 @@ async fn wait_for_gpu_command_terminals(
                     result.reason.as_deref().unwrap_or("reason missing")
                 );
             }
+            let full_runtime_proof_id = result
+                .full_runtime_proof_id
+                .clone()
+                .context("applied strict GPU terminal omitted its runtime proof identity")?;
+            receipts.push(CorrelatedGpuTerminalReceipt::HotReload {
+                request_id: result.request_id.clone(),
+                source_edit_id: result.source_edit_id.clone(),
+                artifact_content_hash: result.artifact_content_hash.clone(),
+                full_runtime_proof_id,
+            });
             pending_hot.remove(&result.request_id);
             continue;
         }
@@ -704,7 +751,7 @@ async fn wait_for_gpu_command_terminals(
             );
         }
     }
-    Ok(())
+    Ok(receipts)
 }
 
 fn full_device_abi_from_marker(name: &str) -> Option<&str> {
@@ -942,7 +989,7 @@ pub async fn handle_runner_execution(
     // it (frame capture via ximagesrc on DISPLAY=:99 is unchanged).
     host_runner_bin_path: Option<String>,
     reload_policy: RunnerReloadPolicy,
-) -> Result<()> {
+) -> Result<RunnerExecutionOutcome> {
     // Unified Runner Logic
     if modules_to_load.is_empty() {
         // Nothing to load — still resolve the frontend's compile() promise.
@@ -958,8 +1005,10 @@ pub async fn handle_runner_execution(
             "runner-done",
         )
         .await;
-        return Ok(());
+        return Ok(RunnerExecutionOutcome::default());
     }
+
+    let mut gpu_terminal_receipts = Vec::new();
 
     let mut guard = ctx.runner_store.lock().await;
 
@@ -2063,13 +2112,15 @@ pub async fn handle_runner_execution(
 
                 drop(stdin);
                 if let Some(receiver) = strict_output_receiver.as_mut() {
-                    if let Err(error) =
-                        wait_for_gpu_command_terminals(receiver, &gpu_terminal_expectations).await
+                    match wait_for_gpu_command_terminals(receiver, &gpu_terminal_expectations).await
                     {
-                        invalidate_runner_after_command_failure(state).await;
-                        return Err(error.context(
-                            "GPU runner command failed before loaded module state publication",
-                        ));
+                        Ok(receipts) => gpu_terminal_receipts.extend(receipts),
+                        Err(error) => {
+                            invalidate_runner_after_command_failure(state).await;
+                            return Err(error.context(
+                                "GPU runner command failed before loaded module state publication",
+                            ));
+                        }
                     }
                 }
 
@@ -2122,7 +2173,9 @@ pub async fn handle_runner_execution(
     )
     .await;
 
-    Ok(())
+    Ok(RunnerExecutionOutcome {
+        gpu_terminal_receipts,
+    })
 }
 
 #[cfg(test)]
@@ -2135,8 +2188,8 @@ mod tests {
         same_session_full_device_abi_changed, should_forward_runner_stderr_line_to_log_dc,
         structured_log_json_chunks, uncommitted_runner_module_state,
         wait_for_gpu_command_terminals, wait_for_strict_gpu_protocol_ack,
-        RunnerCommandProofContext, RunnerGpuTerminalExpectation, RunnerReloadPolicy,
-        STRUCTURED_LOG_CHUNK_BYTES,
+        CorrelatedGpuTerminalReceipt, RunnerCommandProofContext, RunnerExecutionOutcome,
+        RunnerGpuTerminalExpectation, RunnerReloadPolicy, STRUCTURED_LOG_CHUNK_BYTES,
     };
     use crate::compiler::builder::ModuleHashes;
     use crate::runtime::runner_protocol::{
@@ -2434,7 +2487,7 @@ mod tests {
                 .unwrap()
             ))
             .unwrap();
-        wait_for_gpu_command_terminals(
+        let receipts = wait_for_gpu_command_terminals(
             &mut receiver,
             &[
                 RunnerGpuTerminalExpectation::HotReload(first.clone()),
@@ -2443,6 +2496,20 @@ mod tests {
         )
         .await
         .unwrap();
+        let outcome = RunnerExecutionOutcome {
+            gpu_terminal_receipts: receipts,
+        };
+        assert!(outcome.has_correlated_gpu_terminal());
+        assert_eq!(outcome.gpu_terminal_receipts().len(), 2);
+        assert!(outcome.gpu_terminal_receipts().iter().all(|receipt| {
+            matches!(
+                receipt,
+                CorrelatedGpuTerminalReceipt::HotReload {
+                    full_runtime_proof_id,
+                    ..
+                } if full_runtime_proof_id == &proof_id
+            )
+        }));
 
         let mut receiver = sender.subscribe();
         sender
