@@ -1,5 +1,7 @@
 import prisma from "@/lib/prisma";
 
+export const LOCAL_SUPPORT_SESSION_TTL_MS = 60 * 60 * 1000;
+
 export async function persistPairedSession(completed, proof, client = prisma) {
   if (completed?.decision !== "pairing_complete" || !validPublicKey(proof?.device_public_key)) {
     throw new Error("Pairing session was not safe to persist.");
@@ -96,6 +98,23 @@ export async function updatePairedSessionPorts(sessionId, deviceFingerprint, por
     data: { approvedPortsJson: JSON.stringify(normalized) },
   });
   return result.count === 1;
+}
+
+// The desktop app calls this only from its signed, active-session heartbeat.
+// Revoked or expired sessions cannot be revived by a stale device.
+export async function renewPairedSession(sessionId, deviceFingerprint, client = prisma, now = new Date()) {
+  const expiresAt = new Date(now.getTime() + LOCAL_SUPPORT_SESSION_TTL_MS);
+  const result = await client.localSupportSession.updateMany({
+    where: {
+      sessionId,
+      deviceFingerprint,
+      status: "active",
+      revokedAt: null,
+      expiresAt: { gt: now },
+    },
+    data: { expiresAt },
+  });
+  return result.count === 1 ? expiresAt : null;
 }
 
 function normalizeSyncedPorts(value) {

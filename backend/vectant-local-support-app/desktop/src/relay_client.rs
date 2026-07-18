@@ -156,6 +156,28 @@ impl RelayClient {
         }
     }
 
+    pub async fn renew(
+        &self,
+        identity: &DeviceIdentity,
+        session_id: &str,
+    ) -> Result<String, String> {
+        let body = serde_json::to_vec(&serde_json::json!({ "action": "renew" }))
+            .map_err(|_| "Session renewal could not be serialized.".to_string())?;
+        let value = self
+            .post_signed(identity, session_id, DEVICE_RELAY_PATH, body)
+            .await?;
+        if value.get("decision").and_then(Value::as_str) != Some("session_renewed") {
+            return Err("Session renewal was not accepted.".to_string());
+        }
+        let expires_at = value
+            .get("expires_at")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Session renewal omitted its expiry.".to_string())?;
+        chrono::DateTime::parse_from_rfc3339(expires_at)
+            .map_err(|_| "Session renewal expiry was invalid.".to_string())?;
+        Ok(expires_at.to_string())
+    }
+
     pub async fn report_control_outcome(
         &self,
         identity: &DeviceIdentity,

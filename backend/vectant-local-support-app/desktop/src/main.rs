@@ -1441,6 +1441,7 @@ fn validate_private_target(target_host: &str) -> Result<(), String> {
 }
 
 async fn relay_poll_loop(app_handle: tauri::AppHandle) {
+    const RENEWAL_MARGIN: Duration = Duration::from_secs(30 * 60);
     loop {
         let runtime = app_handle.state::<DesktopRuntime>();
         if let Ok(app_state) = current_app_state(&runtime) {
@@ -1456,6 +1457,20 @@ async fn relay_poll_loop(app_handle: tauri::AppHandle) {
             if let Some(session) =
                 session_state.filter(|state| !state.paused && state.session_id.starts_with("sess_"))
             {
+                let should_renew = app_state.session.lock().await.remaining() <= RENEWAL_MARGIN;
+                if should_renew {
+                    if let Ok(expires_at) = runtime
+                        .relay_client
+                        .renew(&runtime.device_identity, &session.session_id)
+                        .await
+                    {
+                        if let Ok(expires_at) = DateTime::parse_from_rfc3339(&expires_at) {
+                            if let Ok(ttl) = (expires_at.with_timezone(&Utc) - Utc::now()).to_std() {
+                                let _ = app_state.session.lock().await.renew(ttl);
+                            }
+                        }
+                    }
+                }
                 let _ = sync_cloud_port_status(&runtime, &app_state, &session).await;
                 match runtime
                     .relay_client

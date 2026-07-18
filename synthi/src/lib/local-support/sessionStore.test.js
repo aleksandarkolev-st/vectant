@@ -4,6 +4,7 @@ import {
   authorizeRelaySession,
   findActivePairedSession,
   persistPairedSession,
+  renewPairedSession,
   updatePairedSessionPorts,
 } from "./sessionStore";
 
@@ -144,6 +145,29 @@ describe("local support paired session store", () => {
       send_screenshot_allowed: false,
       send_console_errors_allowed: false,
       state_changing_methods_allowed: false,
+    });
+  });
+
+  it("renews only an active, non-revoked session for another hour", async () => {
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const now = new Date("2029-01-01T00:00:00.000Z");
+    const expiresAt = await renewPairedSession(
+      "sess_1",
+      "sha256:1111111111111111",
+      { localSupportSession: { updateMany } },
+      now,
+    );
+
+    expect(expiresAt).toEqual(new Date("2029-01-01T01:00:00.000Z"));
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        sessionId: "sess_1",
+        deviceFingerprint: "sha256:1111111111111111",
+        status: "active",
+        revokedAt: null,
+        expiresAt: { gt: now },
+      },
+      data: { expiresAt },
     });
   });
 });

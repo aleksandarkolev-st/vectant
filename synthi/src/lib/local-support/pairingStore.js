@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import prisma from "@/lib/prisma";
 import { compareSemverLike, verifyDevicePairingProof } from "@/lib/local-support/controlPlane";
-import { persistPairedSession } from "@/lib/local-support/sessionStore";
+import { LOCAL_SUPPORT_SESSION_TTL_MS, persistPairedSession } from "@/lib/local-support/sessionStore";
 
 const CLAIM_WINDOW_MS = 60_000;
 const MAX_CLAIMS_PER_WINDOW = 20;
@@ -139,7 +139,7 @@ export async function completePairingChallengeDurably(input, policy, client = pr
     const pairing = pairingProofContext(challenge);
     const proofDecision = verifyDevicePairingProof(proof, pairing);
     if (proofDecision.decision === "denied") return proofDecision;
-    const completed = completedResponse(challenge, proof, policy);
+    const completed = completedResponse(challenge, proof, policy, now);
     const consumed = await tx.localSupportPairingChallenge.updateMany({
       where: { pairingId, status: "claimed", expiresAt: { gt: now } },
       data: { status: "consumed", consumedAt: now },
@@ -172,8 +172,9 @@ function claimedResponse(challenge, workspaceId, policy) {
   };
 }
 
-function completedResponse(challenge, proof, policy) {
+function completedResponse(challenge, proof, policy, now) {
   const sessionId = `sess_${createHash("sha256").update(challenge.pairingId).digest("hex").slice(0, 24)}`;
+  const expiresAt = new Date(now.getTime() + LOCAL_SUPPORT_SESSION_TTL_MS).toISOString();
   return {
     decision: "pairing_complete",
     reason: "device_keypair_challenge_verified",
@@ -187,7 +188,7 @@ function completedResponse(challenge, proof, policy) {
     device_fingerprint: proof.device_fingerprint,
     device_public_key_hash: `sha256:${createHash("sha256").update(proof.device_public_key).digest("hex")}`,
     capabilities: CAPABILITIES,
-    expires_at: challenge.expiresAt.toISOString(),
+    expires_at: expiresAt,
     consent_receipt: {
       session_id: sessionId,
       account_id: challenge.accountId,
@@ -196,7 +197,7 @@ function completedResponse(challenge, proof, policy) {
       device_fingerprint: proof.device_fingerprint,
       capabilities: CAPABILITIES,
       policy_version: policy.policy_version,
-      expires_at: challenge.expiresAt.toISOString(),
+      expires_at: expiresAt,
       user_confirmation_required: true,
     },
     raw_body_included: false,

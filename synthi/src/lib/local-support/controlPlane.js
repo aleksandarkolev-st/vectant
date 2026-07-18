@@ -91,7 +91,10 @@ const replayCache = new Map();
 const pairingSessions = new Map();
 const revokedSessions = new Set();
 const revokedDevices = new Set();
+// A pairing challenge is deliberately short-lived, while the support session
+// created from it is renewed independently by the signed desktop heartbeat.
 const PAIRING_TTL_MS = 5 * 60 * 1000;
+export const LOCAL_SUPPORT_SESSION_TTL_MS = 60 * 60 * 1000;
 const MAX_PAIRING_ATTEMPTS = 5;
 const PAIRING_CLAIM_WINDOW_MS = 60 * 1000;
 const MAX_PAIRING_CLAIMS_PER_WINDOW = 20;
@@ -525,7 +528,7 @@ export function createPairingChallenge(input, policy = readLocalSupportPolicy(),
     account_id: accountId,
     org_id: orgId,
     workspace_id: workspaceId,
-    expires_at: new Date(pairing.expires_at_ms).toISOString(),
+    expires_at: new Date(nowMs + LOCAL_SUPPORT_SESSION_TTL_MS).toISOString(),
     expires_in_seconds: Math.trunc(PAIRING_TTL_MS / 1000),
     raw_body_included: false,
     bytes_sent: 0,
@@ -661,7 +664,7 @@ export function completePairingChallenge(input, policy = readLocalSupportPolicy(
       device_fingerprint: proof.device_fingerprint,
       capabilities: allowedCapabilitiesForPolicy(policy),
       policy_version: policy.policy_version,
-      expires_at: new Date(pairing.expires_at_ms).toISOString(),
+      expires_at: new Date(nowMs + LOCAL_SUPPORT_SESSION_TTL_MS).toISOString(),
       user_confirmation_required: true,
     },
     raw_body_included: false,

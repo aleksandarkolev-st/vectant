@@ -9,7 +9,7 @@ import {
   recordLocalControlOutcome,
   recordRelayOutcome,
 } from "@/lib/local-support/relayStore";
-import { updatePairedSessionPorts } from "@/lib/local-support/sessionStore";
+import { renewPairedSession, updatePairedSessionPorts } from "@/lib/local-support/sessionStore";
 import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 
 export const runtime = "nodejs";
@@ -17,6 +17,7 @@ export const runtime = "nodejs";
 const PATH = "/api/local-support/relay/device";
 const MAX_BODY_BYTES = 16 * 1024;
 const POLL_FIELDS = new Set(["action"]);
+const RENEW_FIELDS = new Set(["action"]);
 const STATUS_FIELDS = new Set(["action", "ports"]);
 const OUTCOME_FIELDS = new Set([
   "action", "request_id", "lease_id", "decision", "bytes_sent",
@@ -90,6 +91,25 @@ export async function POST(req) {
     return jsonNoStore(delivery
       ? { decision: "relay_delivery", delivery, raw_body_included: false, bytes_sent: 0 }
       : { decision: "relay_idle", raw_body_included: false, bytes_sent: 0 });
+  }
+
+  if (body.action === "renew" && hasOnlyFields(body, RENEW_FIELDS)) {
+    let expiresAt;
+    try {
+      expiresAt = await renewPairedSession(
+        authentication.session.sessionId,
+        authentication.session.deviceFingerprint,
+      );
+    } catch {
+      return jsonNoStore(denied("relay_unavailable"), 503);
+    }
+    if (!expiresAt) return jsonNoStore(denied("paired_session_not_found"), 403);
+    return jsonNoStore({
+      decision: "session_renewed",
+      expires_at: expiresAt.toISOString(),
+      raw_body_included: false,
+      bytes_sent: 0,
+    });
   }
 
   if (body.action === "control_outcome" && validControlOutcome(body)

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   controlOutcome: vi.fn(),
   outcome: vi.fn(),
   updatePorts: vi.fn(),
+  renewSession: vi.fn(),
   policy: vi.fn(),
 }));
 
@@ -20,6 +21,7 @@ vi.mock("@/lib/local-support/relayStore", () => ({
   recordRelayOutcome: mocks.outcome,
 }));
 vi.mock("@/lib/local-support/sessionStore", () => ({
+  renewPairedSession: mocks.renewSession,
   updatePairedSessionPorts: mocks.updatePorts,
 }));
 vi.mock("@/lib/local-support/policyStore", () => ({
@@ -200,6 +202,26 @@ describe("device-authenticated relay endpoint", () => {
     const invalid = await POST(request({ action: "status", ports, preview_token: "must-not-be-accepted" }));
     expect(invalid.status).toBe(400);
     expect(mocks.updatePorts).toHaveBeenCalledTimes(1);
+  });
+
+  it("renews an authenticated active session without accepting extra fields", async () => {
+    authenticate();
+    mocks.renewSession.mockResolvedValue(new Date("2030-01-01T01:00:00.000Z"));
+
+    const response = await POST(request({ action: "renew" }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.renewSession).toHaveBeenCalledWith(
+      "sess_12345678",
+      "sha256:1111111111111111",
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "session_renewed",
+      expires_at: "2030-01-01T01:00:00.000Z",
+      raw_body_included: false,
+    });
+
+    expect((await POST(request({ action: "renew", unexpected: true }))).status).toBe(400);
   });
 
   it("accepts a body-free local review pending outcome", async () => {

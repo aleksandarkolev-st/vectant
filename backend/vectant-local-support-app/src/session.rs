@@ -254,6 +254,18 @@ impl SessionGuard {
         Instant::now() <= self.expires_at
     }
 
+    pub fn remaining(&self) -> Duration {
+        self.expires_at.saturating_duration_since(Instant::now())
+    }
+
+    pub fn renew(&mut self, ttl: Duration) -> Result<(), SessionError> {
+        if !self.is_active() {
+            return Err(SessionError::Expired);
+        }
+        self.expires_at = Instant::now() + ttl;
+        Ok(())
+    }
+
     pub fn validate(&mut self, token: &str, request_id: &str) -> Result<(), SessionError> {
         self.validate_inner(token, request_id, false)
     }
