@@ -24,7 +24,7 @@ use crate::runtime::runner_protocol::{
     decode_runner_command_token, parse_runner_protocol_ack, GpuArtifactLoadV1Result,
     GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload, RunnerProtocolAck,
     GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY, GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
-    GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+    GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY, GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
     GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, RUNNER_PROTOCOL_CURRENT_VERSION,
     RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
 };
@@ -75,6 +75,7 @@ fn json_contains_protected_gpu_evidence(value: &serde_json::Value) -> bool {
                         | "fullruntimeproofaccepted"
                         | "fullruntimeproven"
                         | "runtimeproofartifact"
+                        | "runtimeproofmaterial"
                         | "proofledger"
                         | "acceptancecontract"
                 ) || key.starts_with("cansatisfy")
@@ -88,6 +89,7 @@ fn json_contains_protected_gpu_evidence(value: &serde_json::Value) -> bool {
                 || value.contains("gpuhmrfullruntimeproven")
                 || value.starts_with("synthigpuhmr")
                 || value == "synthirunnergpureloadresultv3"
+                || value == "synthirunnergpureloadresultv4"
                 || value == "synthirunnergpuartifactloadresultv1"
         }
         _ => false,
@@ -104,6 +106,8 @@ fn runner_line_contains_protected_gpu_evidence(line: &str) -> bool {
             "fullruntimeproven",
             "gpuhmrfullruntimeproven",
             "synthirunnergpureloadresultv3",
+            "synthirunnergpureloadresultv4",
+            "runtimeproofmaterial",
             "synthirunnergpuartifactloadresultv1",
         ]
         .iter()
@@ -551,6 +555,22 @@ fn module_requires_strict_gpu_protocol(name: &str, strict_hot_reload: bool) -> b
         .splitn(7, ':')
         .nth(5)
         .is_some_and(|value| !value.is_empty() && value != "-")
+}
+
+fn strict_gpu_protocol_required_for_batch(
+    modules_to_load: &[(String, String)],
+    strict_hot_reload: bool,
+) -> Result<bool> {
+    let strict_command_count = modules_to_load
+        .iter()
+        .filter(|(name, _)| module_requires_strict_gpu_protocol(name, strict_hot_reload))
+        .count();
+    if strict_command_count > 1 {
+        anyhow::bail!(
+            "runner protocol v5 permits one challenge-bound GPU command per batch; received {strict_command_count}"
+        );
+    }
+    Ok(strict_command_count == 1)
 }
 
 fn runner_has_hot_device_epoch(
@@ -1954,9 +1974,8 @@ pub async fn handle_runner_execution(
                 existing_runner_can_hmr,
                 state.loaded_device_abi.as_deref(),
             );
-            let requires_strict_gpu_protocol = modules_to_load
-                .iter()
-                .any(|(name, _)| module_requires_strict_gpu_protocol(name, strict_gpu_hot_reload));
+            let requires_strict_gpu_protocol =
+                strict_gpu_protocol_required_for_batch(&modules_to_load, strict_gpu_hot_reload)?;
             let mut strict_output_receiver =
                 requires_strict_gpu_protocol.then(|| state.output_tx.subscribe());
             // Check if process is still alive before sending anything.
@@ -1986,7 +2005,7 @@ pub async fn handle_runner_execution(
                             .context("strict GPU runner process has no PID")?;
                         let nonce = uuid::Uuid::new_v4().simple().to_string();
                         let handshake = format!(
-                            "handshake_v4 {} {} {} {} {} {} {}\n",
+                            "handshake_v5 {} {} {} {} {} {} {} {}\n",
                             nonce,
                             RUNNER_PROTOCOL_CURRENT_VERSION,
                             RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
@@ -1994,6 +2013,7 @@ pub async fn handle_runner_execution(
                             GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
                             GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
                             GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+                            GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
                         );
                         {
                             let mut stdin = stdin_arc.lock().await;
@@ -2186,16 +2206,18 @@ mod tests {
         runner_has_hot_device_epoch, runner_line_contains_protected_gpu_evidence,
         runner_load_command, runner_reuse_allowed, runner_session_matches,
         same_session_full_device_abi_changed, should_forward_runner_stderr_line_to_log_dc,
-        structured_log_json_chunks, uncommitted_runner_module_state,
-        wait_for_gpu_command_terminals, wait_for_strict_gpu_protocol_ack,
-        CorrelatedGpuTerminalReceipt, RunnerCommandProofContext, RunnerExecutionOutcome,
-        RunnerGpuTerminalExpectation, RunnerReloadPolicy, STRUCTURED_LOG_CHUNK_BYTES,
+        strict_gpu_protocol_required_for_batch, structured_log_json_chunks,
+        uncommitted_runner_module_state, wait_for_gpu_command_terminals,
+        wait_for_strict_gpu_protocol_ack, CorrelatedGpuTerminalReceipt, RunnerCommandProofContext,
+        RunnerExecutionOutcome, RunnerGpuTerminalExpectation, RunnerReloadPolicy,
+        STRUCTURED_LOG_CHUNK_BYTES,
     };
     use crate::compiler::builder::ModuleHashes;
     use crate::runtime::runner_protocol::{
         GpuArtifactLoadV1Result, GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload,
-        RunnerProtocolAck, GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
-        GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
+        GpuRuntimeProofMaterialV1, RunnerProtocolAck,
+        GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+        GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
         GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
         GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
     };
@@ -2226,6 +2248,57 @@ mod tests {
             runner_runtime_session_id: "pid123-456",
             runner_challenge: "11111111111111111111111111111111",
         }
+    }
+
+    #[test]
+    fn strict_gpu_protocol_batch_refuses_multiple_challenge_consumers() {
+        let host_module = ("core".to_string(), "/tmp/core.so".to_string());
+        let first_gpu_module = (
+            "__gpu_device:rocm:-:-:-:-:-:-".to_string(),
+            "/tmp/device-a.hsaco".to_string(),
+        );
+        let second_gpu_module = (
+            "__gpu_device_partial:rocm:-:-:-:-:-:-".to_string(),
+            "/tmp/device-b.hsaco".to_string(),
+        );
+
+        assert!(
+            !strict_gpu_protocol_required_for_batch(std::slice::from_ref(&host_module), true,)
+                .unwrap()
+        );
+        assert!(strict_gpu_protocol_required_for_batch(
+            &[host_module.clone(), first_gpu_module.clone()],
+            true,
+        )
+        .unwrap());
+
+        let error = strict_gpu_protocol_required_for_batch(
+            &[host_module, first_gpu_module, second_gpu_module],
+            true,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("one challenge-bound GPU command per batch; received 2"));
+    }
+
+    fn proof_material(
+        expectation: &GpuReloadV2Expectation,
+        proof_id: &str,
+    ) -> GpuRuntimeProofMaterialV1 {
+        let context = proof_context();
+        GpuRuntimeProofMaterialV1::new(
+            &serde_json::json!({"proofId": proof_id, "evidence": "terminal-transport"}),
+            &expectation.request_id,
+            &expectation.source_edit_id,
+            &expectation.artifact_content_hash,
+            proof_id,
+            format!("sha256:{}", "e".repeat(64)),
+            std::process::id(),
+            context.runner_runtime_session_id,
+            context.runner_challenge,
+        )
+        .unwrap()
     }
 
     fn decode_gpu_v4_command(command: &str, expected_verb: &str) -> (String, GpuReloadV4Payload) {
@@ -2421,6 +2494,7 @@ mod tests {
             GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
             GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
             GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+            GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
         ] {
             let mut invalid = RunnerProtocolAck::current(
                 "nonce-b",
@@ -2467,6 +2541,7 @@ mod tests {
                     &second.source_edit_id,
                     &second.artifact_content_hash,
                     &proof_id,
+                    proof_material(&second, &proof_id),
                 )
                 .unwrap()
                 .to_json()
@@ -2481,6 +2556,7 @@ mod tests {
                     &first.source_edit_id,
                     &first.artifact_content_hash,
                     &proof_id,
+                    proof_material(&first, &proof_id),
                 )
                 .unwrap()
                 .to_json()
@@ -2536,16 +2612,30 @@ mod tests {
             format!("sha256:{}", "c".repeat(64)),
         )
         .unwrap();
+        let proof_id = format!("gpu-runtime-proof:sha256:{}", "e".repeat(64));
+        let source_mismatch = GpuReloadV2Expectation::new(
+            expectation.request_id.clone(),
+            format!("source-edit:sha256:{}", "d".repeat(64)),
+            expectation.artifact_content_hash.clone(),
+        )
+        .unwrap();
+        let hash_mismatch = GpuReloadV2Expectation::new(
+            expectation.request_id.clone(),
+            expectation.source_edit_id.clone(),
+            format!("sha256:{}", "f".repeat(64)),
+        )
+        .unwrap();
         let (sender, _) = tokio::sync::broadcast::channel(4);
         let mut mismatch_receiver = sender.subscribe();
         sender
             .send(format!(
                 "[Runner] [HMR-STATUS] {}",
                 GpuReloadV2Result::applied(
-                    &expectation.request_id,
-                    format!("source-edit:sha256:{}", "d".repeat(64)),
-                    &expectation.artifact_content_hash,
-                    format!("gpu-runtime-proof:sha256:{}", "e".repeat(64)),
+                    &source_mismatch.request_id,
+                    &source_mismatch.source_edit_id,
+                    &source_mismatch.artifact_content_hash,
+                    &proof_id,
+                    proof_material(&source_mismatch, &proof_id),
                 )
                 .unwrap()
                 .to_json()
@@ -2566,10 +2656,11 @@ mod tests {
             .send(format!(
                 "[Runner] [HMR-STATUS] {}",
                 GpuReloadV2Result::applied(
-                    &expectation.request_id,
-                    &expectation.source_edit_id,
-                    format!("sha256:{}", "f".repeat(64)),
-                    format!("gpu-runtime-proof:sha256:{}", "e".repeat(64)),
+                    &hash_mismatch.request_id,
+                    &hash_mismatch.source_edit_id,
+                    &hash_mismatch.artifact_content_hash,
+                    &proof_id,
+                    proof_material(&hash_mismatch, &proof_id),
                 )
                 .unwrap()
                 .to_json()

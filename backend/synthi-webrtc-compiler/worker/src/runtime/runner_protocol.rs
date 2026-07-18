@@ -6,7 +6,9 @@ use sha2::{Digest, Sha256};
 
 pub const RUNNER_PROTOCOL_ACK_SCHEMA_VERSION: &str = "synthi.runner.protocol_ack.v3";
 pub const GPU_RELOAD_V4_SCHEMA_VERSION: &str = "synthi.runner.gpu_reload.v4";
-pub const GPU_RELOAD_V3_RESULT_SCHEMA_VERSION: &str = "synthi.runner.gpu_reload_result.v3";
+pub const GPU_RELOAD_V4_RESULT_SCHEMA_VERSION: &str = "synthi.runner.gpu_reload_result.v4";
+pub const GPU_RUNTIME_PROOF_MATERIAL_V1_SCHEMA_VERSION: &str =
+    "synthi.runner.gpu_runtime_proof_material.v1";
 pub const GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION: &str =
     "synthi.runner.gpu_artifact_load_result.v1";
 pub const GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY: &str =
@@ -16,8 +18,9 @@ pub const GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY: &str =
     "gpu_load.correlated_terminal.v1";
 pub const GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY: &str =
     "gpu_reload.challenge_bound_envelope.v1";
+pub const GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY: &str = "gpu_reload.bound_proof_material.v1";
 pub const RUNNER_PROTOCOL_ACK_PREFIX: &str = "[synthi-runner-protocol-ack] ";
-pub const RUNNER_PROTOCOL_CURRENT_VERSION: u32 = 4;
+pub const RUNNER_PROTOCOL_CURRENT_VERSION: u32 = 5;
 pub const RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +55,7 @@ impl RunnerProtocolAck {
                 GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY.to_string(),
                 GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY.to_string(),
                 GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY.to_string(),
+                GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY.to_string(),
             ],
         }
     }
@@ -84,6 +88,10 @@ impl RunnerProtocolAck {
                 .capabilities
                 .iter()
                 .any(|capability| capability == GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY)
+            && self
+                .capabilities
+                .iter()
+                .any(|capability| capability == GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY)
     }
 }
 
@@ -302,13 +310,13 @@ impl GpuReloadV2Expectation {
         artifact_content_hash: String,
     ) -> Result<Self, String> {
         if !canonical_gpu_reload_request_id(&request_id) {
-            return Err("GPU reload V3 expectation request identity is invalid".to_string());
+            return Err("GPU reload expectation request identity is invalid".to_string());
         }
         if !canonical_source_edit_id(&source_edit_id) {
-            return Err("GPU reload V3 expectation source edit identity is invalid".to_string());
+            return Err("GPU reload expectation source edit identity is invalid".to_string());
         }
         if !canonical_sha256_content_hash(&artifact_content_hash) {
-            return Err("GPU reload V3 expectation artifact content hash is invalid".to_string());
+            return Err("GPU reload expectation artifact content hash is invalid".to_string());
         }
         Ok(Self {
             request_id,
@@ -338,6 +346,188 @@ fn canonical_source_edit_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
+const GPU_RUNTIME_PROOF_MATERIAL_MAX_BYTES: usize = 16 * 1024 * 1024;
+const GPU_RUNTIME_PROOF_MATERIAL_MAX_ENCODED_BYTES: usize =
+    (GPU_RUNTIME_PROOF_MATERIAL_MAX_BYTES * 4 + 2) / 3;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GpuRuntimeProofMaterialV1 {
+    pub schema_version: String,
+    pub proof_json_base64: String,
+    pub proof_json_sha256: String,
+    pub proof_byte_length: u64,
+    pub command_envelope_sha256: String,
+    pub runner_pid: u32,
+    pub runner_runtime_session_id: String,
+    pub runner_challenge: String,
+    pub terminal_binding_sha256: String,
+}
+
+impl GpuRuntimeProofMaterialV1 {
+    pub fn new(
+        proof: &serde_json::Value,
+        request_id: &str,
+        source_edit_id: &str,
+        artifact_content_hash: &str,
+        full_runtime_proof_id: &str,
+        command_envelope_sha256: impl Into<String>,
+        runner_pid: u32,
+        runner_runtime_session_id: impl Into<String>,
+        runner_challenge: impl Into<String>,
+    ) -> Result<Self, String> {
+        let proof_bytes = serde_json::to_vec(proof)
+            .map_err(|error| format!("serializing protected GPU runtime proof: {error}"))?;
+        if proof_bytes.len() > GPU_RUNTIME_PROOF_MATERIAL_MAX_BYTES {
+            return Err("protected GPU runtime proof exceeds the protocol byte limit".to_string());
+        }
+        let mut material = Self {
+            schema_version: GPU_RUNTIME_PROOF_MATERIAL_V1_SCHEMA_VERSION.to_string(),
+            proof_json_base64: URL_SAFE_NO_PAD.encode(&proof_bytes),
+            proof_json_sha256: format!("sha256:{:x}", Sha256::digest(&proof_bytes)),
+            proof_byte_length: proof_bytes.len() as u64,
+            command_envelope_sha256: command_envelope_sha256.into(),
+            runner_pid,
+            runner_runtime_session_id: runner_runtime_session_id.into(),
+            runner_challenge: runner_challenge.into(),
+            terminal_binding_sha256: String::new(),
+        };
+        material.terminal_binding_sha256 = material.expected_terminal_binding_sha256(
+            request_id,
+            source_edit_id,
+            artifact_content_hash,
+            full_runtime_proof_id,
+            &material.command_envelope_sha256,
+        );
+        material.validate_for(
+            request_id,
+            source_edit_id,
+            artifact_content_hash,
+            full_runtime_proof_id,
+            &material.command_envelope_sha256,
+        )?;
+        Ok(material)
+    }
+
+    fn expected_terminal_binding_sha256(
+        &self,
+        request_id: &str,
+        source_edit_id: &str,
+        artifact_content_hash: &str,
+        full_runtime_proof_id: &str,
+        command_envelope_sha256: &str,
+    ) -> String {
+        let material = json!({
+            "schemaVersion": self.schema_version,
+            "requestId": request_id,
+            "sourceEditId": source_edit_id,
+            "artifactContentHash": artifact_content_hash,
+            "fullRuntimeProofId": full_runtime_proof_id,
+            "commandEnvelopeSha256": command_envelope_sha256,
+            "proofJsonSha256": self.proof_json_sha256,
+            "proofByteLength": self.proof_byte_length,
+            "runnerPid": self.runner_pid,
+            "runnerRuntimeSessionId": self.runner_runtime_session_id,
+            "runnerChallenge": self.runner_challenge,
+        });
+        let bytes = serde_json::to_vec(&material).unwrap_or_default();
+        format!("sha256:{:x}", Sha256::digest(bytes))
+    }
+
+    pub fn validate_for(
+        &self,
+        request_id: &str,
+        source_edit_id: &str,
+        artifact_content_hash: &str,
+        full_runtime_proof_id: &str,
+        command_envelope_sha256: &str,
+    ) -> Result<(), String> {
+        if self.schema_version != GPU_RUNTIME_PROOF_MATERIAL_V1_SCHEMA_VERSION {
+            return Err("GPU runtime proof material schema mismatch".to_string());
+        }
+        if !canonical_gpu_reload_request_id(request_id)
+            || !canonical_source_edit_id(source_edit_id)
+            || !canonical_sha256_content_hash(artifact_content_hash)
+            || !canonical_runtime_proof_id(full_runtime_proof_id)
+            || !canonical_sha256_content_hash(command_envelope_sha256)
+            || self.command_envelope_sha256 != command_envelope_sha256
+        {
+            return Err("GPU runtime proof material terminal identity is invalid".to_string());
+        }
+        if self.runner_pid == 0
+            || !valid_protocol_token(&self.runner_runtime_session_id)
+            || !canonical_runner_challenge(&self.runner_challenge)
+        {
+            return Err("GPU runtime proof material runner identity is invalid".to_string());
+        }
+        if self.proof_json_base64.len() > GPU_RUNTIME_PROOF_MATERIAL_MAX_ENCODED_BYTES {
+            return Err(
+                "protected GPU runtime proof exceeds the protocol encoded-byte limit".to_string(),
+            );
+        }
+        let proof_bytes = URL_SAFE_NO_PAD
+            .decode(self.proof_json_base64.as_bytes())
+            .map_err(|error| format!("decoding protected GPU runtime proof: {error}"))?;
+        if proof_bytes.len() > GPU_RUNTIME_PROOF_MATERIAL_MAX_BYTES
+            || self.proof_byte_length != proof_bytes.len() as u64
+            || self.proof_json_sha256 != format!("sha256:{:x}", Sha256::digest(&proof_bytes))
+        {
+            return Err("GPU runtime proof material byte identity mismatch".to_string());
+        }
+        let proof: serde_json::Value = serde_json::from_slice(&proof_bytes)
+            .map_err(|error| format!("parsing protected GPU runtime proof: {error}"))?;
+        if proof.get("proofId").and_then(serde_json::Value::as_str) != Some(full_runtime_proof_id) {
+            return Err("GPU runtime proof material proof identity mismatch".to_string());
+        }
+        if !canonical_sha256_content_hash(&self.terminal_binding_sha256)
+            || self.terminal_binding_sha256
+                != self.expected_terminal_binding_sha256(
+                    request_id,
+                    source_edit_id,
+                    artifact_content_hash,
+                    full_runtime_proof_id,
+                    command_envelope_sha256,
+                )
+        {
+            return Err("GPU runtime proof material terminal binding mismatch".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn decode_for(
+        &self,
+        request_id: &str,
+        source_edit_id: &str,
+        artifact_content_hash: &str,
+        full_runtime_proof_id: &str,
+        command_envelope_sha256: &str,
+    ) -> Result<serde_json::Value, String> {
+        self.validate_for(
+            request_id,
+            source_edit_id,
+            artifact_content_hash,
+            full_runtime_proof_id,
+            command_envelope_sha256,
+        )?;
+        let proof_bytes = URL_SAFE_NO_PAD
+            .decode(self.proof_json_base64.as_bytes())
+            .map_err(|error| format!("decoding protected GPU runtime proof: {error}"))?;
+        serde_json::from_slice(&proof_bytes)
+            .map_err(|error| format!("parsing protected GPU runtime proof: {error}"))
+    }
+
+    pub fn matches_runner_context(
+        &self,
+        runner_pid: u32,
+        runner_runtime_session_id: &str,
+        runner_challenge: &str,
+    ) -> bool {
+        self.runner_pid == runner_pid
+            && self.runner_runtime_session_id == runner_runtime_session_id
+            && self.runner_challenge == runner_challenge
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GpuReloadV2Result {
@@ -350,6 +540,8 @@ pub struct GpuReloadV2Result {
     pub full_runtime_proof_accepted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub full_runtime_proof_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub runtime_proof_material: Option<GpuRuntimeProofMaterialV1>,
     pub gpu_hmr_success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -361,9 +553,10 @@ impl GpuReloadV2Result {
         source_edit_id: impl Into<String>,
         artifact_content_hash: impl Into<String>,
         full_runtime_proof_id: impl Into<String>,
+        runtime_proof_material: GpuRuntimeProofMaterialV1,
     ) -> Result<Self, String> {
         let result = Self {
-            schema_version: GPU_RELOAD_V3_RESULT_SCHEMA_VERSION.to_string(),
+            schema_version: GPU_RELOAD_V4_RESULT_SCHEMA_VERSION.to_string(),
             status: "applied".to_string(),
             module: "device".to_string(),
             request_id: request_id.into(),
@@ -371,6 +564,7 @@ impl GpuReloadV2Result {
             artifact_content_hash: artifact_content_hash.into(),
             full_runtime_proof_accepted: true,
             full_runtime_proof_id: Some(full_runtime_proof_id.into()),
+            runtime_proof_material: Some(runtime_proof_material),
             gpu_hmr_success: true,
             reason: None,
         };
@@ -385,7 +579,7 @@ impl GpuReloadV2Result {
         reason: impl Into<String>,
     ) -> Result<Self, String> {
         let result = Self {
-            schema_version: GPU_RELOAD_V3_RESULT_SCHEMA_VERSION.to_string(),
+            schema_version: GPU_RELOAD_V4_RESULT_SCHEMA_VERSION.to_string(),
             status: "rejected".to_string(),
             module: "device".to_string(),
             request_id: request_id.into(),
@@ -393,6 +587,7 @@ impl GpuReloadV2Result {
             artifact_content_hash: artifact_content_hash.into(),
             full_runtime_proof_accepted: false,
             full_runtime_proof_id: None,
+            runtime_proof_material: None,
             gpu_hmr_success: false,
             reason: Some(reason.into()),
         };
@@ -401,15 +596,15 @@ impl GpuReloadV2Result {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != GPU_RELOAD_V3_RESULT_SCHEMA_VERSION {
-            return Err("GPU reload V3 result schema mismatch".to_string());
+        if self.schema_version != GPU_RELOAD_V4_RESULT_SCHEMA_VERSION {
+            return Err("GPU reload V4 result schema mismatch".to_string());
         }
         if self.module != "device"
             || !canonical_gpu_reload_request_id(&self.request_id)
             || !canonical_source_edit_id(&self.source_edit_id)
             || !canonical_sha256_content_hash(&self.artifact_content_hash)
         {
-            return Err("GPU reload V3 terminal identity mismatch".to_string());
+            return Err("GPU reload V4 terminal identity mismatch".to_string());
         }
         match self.status.as_str() {
             "applied"
@@ -421,20 +616,33 @@ impl GpuReloadV2Result {
                         .as_deref()
                         .is_some_and(canonical_runtime_proof_id) =>
             {
-                Ok(())
+                let material = self
+                    .runtime_proof_material
+                    .as_ref()
+                    .ok_or_else(|| "GPU reload V4 terminal omitted proof material".to_string())?;
+                material.validate_for(
+                    &self.request_id,
+                    &self.source_edit_id,
+                    &self.artifact_content_hash,
+                    self.full_runtime_proof_id
+                        .as_deref()
+                        .expect("validated applied proof ID"),
+                    &material.command_envelope_sha256,
+                )
             }
             "rejected"
                 if !self.full_runtime_proof_accepted
                     && !self.gpu_hmr_success
                     && self.full_runtime_proof_id.is_none()
+                    && self.runtime_proof_material.is_none()
                     && self.reason.as_deref().is_some_and(nonempty_safe_text) =>
             {
                 Ok(())
             }
             "applied" | "rejected" => {
-                Err("GPU reload V3 terminal proof fields are inconsistent".to_string())
+                Err("GPU reload V4 terminal proof fields are inconsistent".to_string())
             }
-            _ => Err("GPU reload V3 terminal status is invalid".to_string()),
+            _ => Err("GPU reload V4 terminal status is invalid".to_string()),
         }
     }
 
@@ -639,6 +847,26 @@ mod tests {
         "1".repeat(32)
     }
 
+    fn proof_material(
+        request_id: &str,
+        source_edit_id: &str,
+        artifact_hash: &str,
+        proof_id: &str,
+    ) -> GpuRuntimeProofMaterialV1 {
+        GpuRuntimeProofMaterialV1::new(
+            &json!({"proofId": proof_id, "evidence": "runtime-proof-bytes"}),
+            request_id,
+            source_edit_id,
+            artifact_hash,
+            proof_id,
+            format!("sha256:{}", "e".repeat(64)),
+            std::process::id(),
+            runner_runtime_session_id(),
+            runner_challenge(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn gpu_reload_v4_round_trip_preserves_exact_typed_payload() {
         let payload = GpuReloadV4Payload::new(
@@ -815,6 +1043,7 @@ mod tests {
             GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
             GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
             GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+            GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
         ] {
             let mut missing_capability = parsed.clone();
             missing_capability
@@ -830,9 +1059,15 @@ mod tests {
         let request_id = fixture_request_id('3');
         let artifact_hash = format!("sha256:{}", "a".repeat(64));
         let proof_id = format!("gpu-runtime-proof:sha256:{}", "b".repeat(64));
-        let applied =
-            GpuReloadV2Result::applied(&request_id, &source_edit_id, &artifact_hash, &proof_id)
-                .unwrap();
+        let material = proof_material(&request_id, &source_edit_id, &artifact_hash, &proof_id);
+        let applied = GpuReloadV2Result::applied(
+            &request_id,
+            &source_edit_id,
+            &artifact_hash,
+            &proof_id,
+            material,
+        )
+        .unwrap();
         let encoded = applied.to_json().unwrap();
         let decoded = GpuReloadV2Result::from_json(&encoded).unwrap();
         assert_eq!(decoded, applied);
@@ -851,7 +1086,8 @@ mod tests {
             &request_id,
             &source_edit_id,
             &artifact_hash,
-            "proof:declared"
+            "proof:declared",
+            proof_material(&request_id, &source_edit_id, &artifact_hash, &proof_id),
         )
         .is_err());
 
@@ -864,6 +1100,108 @@ mod tests {
         .unwrap();
         assert!(!rejected.gpu_hmr_success);
         assert!(rejected.full_runtime_proof_id.is_none());
+        assert!(rejected.runtime_proof_material.is_none());
+    }
+
+    #[test]
+    fn gpu_runtime_proof_material_rejects_byte_context_and_runner_splices() {
+        let source_edit_id = source_edit_id();
+        let request_id = fixture_request_id('6');
+        let artifact_hash = format!("sha256:{}", "c".repeat(64));
+        let proof_id = format!("gpu-runtime-proof:sha256:{}", "d".repeat(64));
+        let material = proof_material(&request_id, &source_edit_id, &artifact_hash, &proof_id);
+        assert_eq!(
+            material
+                .decode_for(
+                    &request_id,
+                    &source_edit_id,
+                    &artifact_hash,
+                    &proof_id,
+                    &material.command_envelope_sha256,
+                )
+                .unwrap()["proofId"],
+            proof_id
+        );
+
+        let mut mutations = Vec::new();
+        let mut value = material.clone();
+        value.proof_json_base64.push('A');
+        mutations.push(value);
+        let mut value = material.clone();
+        value.proof_byte_length += 1;
+        mutations.push(value);
+        let mut value = material.clone();
+        value.proof_json_sha256 = format!("sha256:{}", "e".repeat(64));
+        mutations.push(value);
+        let mut value = material.clone();
+        value.command_envelope_sha256 = format!("sha256:{}", "f".repeat(64));
+        mutations.push(value);
+        let mut value = material.clone();
+        value.runner_pid = 0;
+        mutations.push(value);
+        let mut value = material.clone();
+        value.runner_runtime_session_id = "runtime session with spaces".to_string();
+        mutations.push(value);
+        let mut value = material.clone();
+        value.runner_challenge = "f".repeat(32);
+        mutations.push(value);
+        let mut value = material.clone();
+        value.terminal_binding_sha256 = format!("sha256:{}", "0".repeat(64));
+        mutations.push(value);
+
+        for mutation in mutations {
+            assert!(mutation
+                .validate_for(
+                    &request_id,
+                    &source_edit_id,
+                    &artifact_hash,
+                    &proof_id,
+                    &material.command_envelope_sha256,
+                )
+                .is_err());
+        }
+        assert!(material
+            .validate_for(
+                &fixture_request_id('7'),
+                &source_edit_id,
+                &artifact_hash,
+                &proof_id,
+                &material.command_envelope_sha256,
+            )
+            .is_err());
+        assert!(material
+            .validate_for(
+                &request_id,
+                &source_edit_id,
+                &format!("sha256:{}", "1".repeat(64)),
+                &proof_id,
+                &material.command_envelope_sha256,
+            )
+            .is_err());
+        assert!(material
+            .validate_for(
+                &request_id,
+                &source_edit_id,
+                &artifact_hash,
+                &proof_id,
+                &format!("sha256:{}", "2".repeat(64)),
+            )
+            .is_err());
+
+        let mut oversized = material;
+        oversized.proof_json_base64 = "*".repeat(GPU_RUNTIME_PROOF_MATERIAL_MAX_ENCODED_BYTES + 1);
+        assert_eq!(
+            oversized
+                .validate_for(
+                    &request_id,
+                    &source_edit_id,
+                    &artifact_hash,
+                    &proof_id,
+                    &oversized.command_envelope_sha256,
+                )
+                .unwrap_err(),
+            "protected GPU runtime proof exceeds the protocol encoded-byte limit"
+        );
     }
 
     #[test]

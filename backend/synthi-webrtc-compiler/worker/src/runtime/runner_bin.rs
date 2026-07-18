@@ -201,8 +201,9 @@ use worker::hmr::gpu_proof::sha256_hex_bytes;
 #[cfg(feature = "gpu-hmr")]
 use worker::runtime::runner_protocol::{
     canonical_sha256_content_hash, GpuArtifactLoadV1Result, GpuReloadV2Result, GpuReloadV4Payload,
-    RunnerProtocolAck, GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
-    GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+    GpuRuntimeProofMaterialV1, RunnerProtocolAck, GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+    GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
+    GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
     GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, RUNNER_PROTOCOL_CURRENT_VERSION,
     RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
 };
@@ -225,6 +226,8 @@ struct GpuReloadCompletion {
     cold_load: bool,
     request_id: Option<String>,
     source_edit_id: Option<String>,
+    command_envelope_sha256: Option<String>,
+    runner_challenge: Option<String>,
     adapter: GpuModuleAdapter,
     result: AdapterReloadResult,
 }
@@ -1369,6 +1372,8 @@ fn strict_gpu_reload_terminal_result(
     artifact_content_hash: &str,
     result: &AdapterReloadResult,
     runtime_proof: Option<&serde_json::Value>,
+    command_envelope_sha256: Option<&str>,
+    runner_challenge: Option<&str>,
 ) -> Result<GpuReloadV2Result, String> {
     match result {
         AdapterReloadResult::Success { .. } => {
@@ -1409,6 +1414,8 @@ fn strict_gpu_reload_terminal_result(
                 result,
                 runtime_proof,
                 Some(&receipt),
+                command_envelope_sha256,
+                runner_challenge,
             )
         }
         AdapterReloadResult::Failed { .. } | AdapterReloadResult::Unsupported { .. } => {
@@ -1419,6 +1426,8 @@ fn strict_gpu_reload_terminal_result(
                 result,
                 runtime_proof,
                 None,
+                command_envelope_sha256,
+                runner_challenge,
             )
         }
     }
@@ -1432,25 +1441,56 @@ fn strict_gpu_reload_terminal_result_with_receipt(
     result: &AdapterReloadResult,
     runtime_proof: Option<&serde_json::Value>,
     receipt: Option<&StrictRuntimeOracleReceipt>,
+    command_envelope_sha256: Option<&str>,
+    runner_challenge: Option<&str>,
 ) -> Result<GpuReloadV2Result, String> {
     match result {
         AdapterReloadResult::Success { .. } => {
-            let proof_id = receipt.zip(runtime_proof).and_then(|(receipt, proof)| {
-                matching_strict_gpu_runtime_proof_id(
+            let proof_match = receipt
+                .zip(runtime_proof)
+                .zip(command_envelope_sha256)
+                .zip(runner_challenge)
+                .and_then(
+                    |(((receipt, proof), command_envelope_sha256), runner_challenge)| {
+                        matching_strict_gpu_runtime_proof_id(
+                            proof,
+                            request_id,
+                            source_edit_id,
+                            artifact_content_hash,
+                            receipt,
+                        )
+                        .map(|proof_id| {
+                            (proof_id, proof, command_envelope_sha256, runner_challenge)
+                        })
+                    },
+                );
+            if let Some((proof_id, proof, command_envelope_sha256, runner_challenge)) = proof_match
+            {
+                match GpuRuntimeProofMaterialV1::new(
                     proof,
                     request_id,
                     source_edit_id,
                     artifact_content_hash,
-                    receipt,
-                )
-            });
-            if let Some(proof_id) = proof_id {
-                GpuReloadV2Result::applied(
-                    request_id,
-                    source_edit_id,
-                    artifact_content_hash,
-                    proof_id,
-                )
+                    &proof_id,
+                    command_envelope_sha256,
+                    std::process::id(),
+                    runtime_session_id(),
+                    runner_challenge,
+                ) {
+                    Ok(material) => GpuReloadV2Result::applied(
+                        request_id,
+                        source_edit_id,
+                        artifact_content_hash,
+                        proof_id,
+                        material,
+                    ),
+                    Err(error) => GpuReloadV2Result::rejected(
+                        request_id,
+                        source_edit_id,
+                        artifact_content_hash,
+                        format!("strict GPU runtime proof transport failed: {error}"),
+                    ),
+                }
             } else {
                 GpuReloadV2Result::rejected(
                     request_id,
@@ -1586,6 +1626,8 @@ fn emit_gpu_reload_completion(completion: &GpuReloadCompletion) {
                     &completion.artifact_content_hash,
                     &completion.result,
                     completion.adapter.last_runtime_proof(),
+                    completion.command_envelope_sha256.as_deref(),
+                    completion.runner_challenge.as_deref(),
                 )
                 .and_then(|result| result.to_json())
             };
@@ -1744,6 +1786,8 @@ struct ParsedGpuReloadCommand {
     abi_version: String,
     capsule_metadata: Option<ReloadCapsuleMetadata>,
     source_edit_id: Option<String>,
+    command_envelope_sha256: Option<String>,
+    runner_challenge: Option<String>,
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -1813,6 +1857,8 @@ fn parse_gpu_reload_command(
             abi_version,
             capsule_metadata,
             source_edit_id: Some(source_edit_id),
+            command_envelope_sha256: Some(payload.envelope_sha256),
+            runner_challenge: Some(payload.runner_challenge),
         });
     }
 
@@ -1854,6 +1900,8 @@ fn parse_gpu_reload_command(
         abi_version,
         capsule_metadata: None,
         source_edit_id: None,
+        command_envelope_sha256: None,
+        runner_challenge: None,
     })
 }
 
@@ -2906,10 +2954,10 @@ fn main() {
             }
 
             match parts[0] {
-                "handshake_v4" => {
+                "handshake_v5" => {
                     #[cfg(feature = "gpu-hmr")]
                     {
-                        let valid = parts.len() == 8
+                        let valid = parts.len() == 9
                             && !parts[1].is_empty()
                             && parts[1].len() <= 128
                             && parts[1]
@@ -2922,7 +2970,8 @@ fn main() {
                             && parts[4] == GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY
                             && parts[5] == GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY
                             && parts[6] == GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY
-                            && parts[7] == GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY;
+                            && parts[7] == GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY
+                            && parts[8] == GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY;
                         if !valid {
                             eprintln!(
                                 "[Runner] [GPU HMR] Refusing malformed strict GPU protocol handshake"
@@ -3227,6 +3276,9 @@ fn main() {
                         let source_paths = gpu_reload_source_paths(capsule_metadata.as_ref());
                         let terminal_request_id = parsed.request_id.clone();
                         let terminal_source_edit_id = parsed.source_edit_id.clone();
+                        let terminal_command_envelope_sha256 =
+                            parsed.command_envelope_sha256.clone();
+                        let terminal_runner_challenge = parsed.runner_challenge.clone();
                         let source_edit_id = parsed.source_edit_id;
                         let reload_id = parsed.request_id.unwrap_or_else(|| {
                             format!("runner-device-{}-{}", vendor_raw, frame_count)
@@ -3443,6 +3495,8 @@ fn main() {
                                 cold_load,
                                 request_id: terminal_request_id,
                                 source_edit_id: terminal_source_edit_id,
+                                command_envelope_sha256: terminal_command_envelope_sha256,
+                                runner_challenge: terminal_runner_challenge,
                                 adapter,
                                 result,
                             };
@@ -3482,6 +3536,8 @@ fn main() {
                                     cold_load,
                                     request_id: terminal_request_id,
                                     source_edit_id: terminal_source_edit_id,
+                                    command_envelope_sha256: terminal_command_envelope_sha256,
+                                    runner_challenge: terminal_runner_challenge,
                                     adapter,
                                     result,
                                 };
@@ -4405,6 +4461,14 @@ mod tests {
             parsed.source_edit_id.as_deref(),
             Some(source_edit_id.as_str())
         );
+        assert_eq!(
+            parsed.command_envelope_sha256.as_deref(),
+            Some(payload.envelope_sha256.as_str())
+        );
+        assert_eq!(
+            parsed.runner_challenge.as_deref(),
+            Some(runner_challenge.as_str())
+        );
     }
 
     #[cfg(feature = "gpu-hmr")]
@@ -4867,6 +4931,8 @@ mod tests {
         let artifact_content_hash = format!("sha256:{}", "b".repeat(64));
         let live_process_id = std::process::id().to_string();
         let live_runtime_session_id = super::runtime_session_id().to_string();
+        let command_envelope_sha256 = format!("sha256:{}", "6".repeat(64));
+        let runner_challenge = "7".repeat(32);
         let (proof, proof_id, oracle_receipt) = strict_runtime_proof_fixture(
             &request_id,
             &source_edit_id,
@@ -4886,6 +4952,8 @@ mod tests {
             &success,
             Some(&proof),
             Some(&oracle_receipt),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(terminal.status, "applied");
@@ -4896,6 +4964,27 @@ mod tests {
         assert!(terminal.gpu_hmr_success);
 
         assert_eq!(terminal.artifact_content_hash, artifact_content_hash);
+        let material = terminal
+            .runtime_proof_material
+            .as_ref()
+            .expect("applied terminal must carry protected proof material");
+        assert!(material.matches_runner_context(
+            std::process::id(),
+            &live_runtime_session_id,
+            &runner_challenge,
+        ));
+        assert_eq!(
+            material
+                .decode_for(
+                    &request_id,
+                    &source_edit_id,
+                    &artifact_content_hash,
+                    &proof_id,
+                    &command_envelope_sha256,
+                )
+                .unwrap(),
+            proof
+        );
 
         let parsed_proof = proof.clone();
         let mut conflicting_outer_id = parsed_proof.clone();
@@ -4918,6 +5007,8 @@ mod tests {
                 &success,
                 Some(&replay),
                 Some(&oracle_receipt),
+                Some(&command_envelope_sha256),
+                Some(&runner_challenge),
             )
             .unwrap();
             assert_eq!(rejected.status, "rejected");
@@ -4940,6 +5031,8 @@ mod tests {
                 &success,
                 Some(&contradictory),
                 Some(&oracle_receipt),
+                Some(&command_envelope_sha256),
+                Some(&runner_challenge),
             )
             .unwrap();
             assert_eq!(rejected.status, "rejected");
@@ -4958,6 +5051,8 @@ mod tests {
             &success,
             Some(&missing_query_schema),
             Some(&oracle_receipt),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(rejected.status, "rejected");
@@ -4972,10 +5067,40 @@ mod tests {
             &success,
             None,
             Some(&oracle_receipt),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(log_only.status, "rejected");
         assert!(!log_only.gpu_hmr_success);
+
+        let missing_command_envelope = strict_gpu_reload_terminal_result_with_receipt(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &success,
+            Some(&proof),
+            Some(&oracle_receipt),
+            None,
+            Some(&runner_challenge),
+        )
+        .unwrap();
+        assert_eq!(missing_command_envelope.status, "rejected");
+        assert!(!missing_command_envelope.gpu_hmr_success);
+
+        let missing_runner_challenge = strict_gpu_reload_terminal_result_with_receipt(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &success,
+            Some(&proof),
+            Some(&oracle_receipt),
+            Some(&command_envelope_sha256),
+            None,
+        )
+        .unwrap();
+        assert_eq!(missing_runner_challenge.status, "rejected");
+        assert!(!missing_runner_challenge.gpu_hmr_success);
 
         let other_artifact_hash = format!("sha256:{}", "c".repeat(64));
         let artifact_mismatch = strict_gpu_reload_terminal_result_with_receipt(
@@ -4985,6 +5110,8 @@ mod tests {
             &success,
             Some(&proof),
             Some(&oracle_receipt),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(artifact_mismatch.status, "rejected");
@@ -5004,6 +5131,8 @@ mod tests {
             &success,
             Some(&wrong_process_proof),
             Some(&wrong_process_receipt),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(wrong_process.status, "rejected");
@@ -5023,6 +5152,8 @@ mod tests {
             &success,
             Some(&wrong_session_proof),
             Some(&wrong_session_receipt),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(wrong_session.status, "rejected");
@@ -5037,6 +5168,8 @@ mod tests {
             &success,
             Some(&proof),
             Some(&oracle_receipt),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(stale.status, "rejected");
@@ -5056,6 +5189,8 @@ mod tests {
             &success,
             Some(&proof),
             None,
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(missing_live_receipt.status, "rejected");
@@ -5070,6 +5205,8 @@ mod tests {
             &success,
             Some(&proof),
             Some(&forged_receipt),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(forged_live_bytes.status, "rejected");
@@ -5084,6 +5221,8 @@ mod tests {
             &success,
             Some(&proof),
             Some(&forged_schema),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(forged_schema.status, "rejected");
@@ -5098,6 +5237,8 @@ mod tests {
             &success,
             Some(&proof),
             Some(&forged_slice),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(forged_slice.status, "rejected");
@@ -5113,6 +5254,8 @@ mod tests {
             &success,
             Some(&proof),
             Some(&forged_publication),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(forged_publication.status, "rejected");
@@ -5127,6 +5270,8 @@ mod tests {
             &success,
             Some(&proof),
             Some(&forged_dispatch_slot),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(forged_dispatch_slot.status, "rejected");
@@ -5141,6 +5286,8 @@ mod tests {
             &success,
             Some(&proof),
             Some(&wrong_stream),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
         )
         .unwrap();
         assert_eq!(wrong_stream.status, "rejected");
