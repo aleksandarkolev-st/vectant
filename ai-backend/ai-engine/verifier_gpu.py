@@ -1642,11 +1642,28 @@ def _mirror_initialized_in_load(core_load_body: str, mirror: str, fields: Set[st
 def _source_device_files(source_files: Optional[Mapping[str, str]]) -> Mapping[str, str]:
     if not source_files:
         return {}
-    return {
-        path: source
-        for path, source in source_files.items()
-        if _is_source_device_file(path, source)
+    normalized = {
+        path.replace("\\", "/"): source for path, source in source_files.items()
     }
+    queue = sorted(
+        path
+        for path, source in normalized.items()
+        if has_gpu_device_marker(mask_comments_for_parsing(source))
+    )
+    reachable: dict[str, str] = {}
+    while queue:
+        path = queue.pop(0)
+        if path in reachable:
+            continue
+        source = normalized.get(path)
+        if source is None:
+            continue
+        reachable[path] = source
+        for match in _QUOTED_INCLUDE_RE.finditer(mask_comments_for_parsing(source)):
+            resolved = _resolve_source_include(match.group(1).strip(), normalized)
+            if resolved is not None and resolved not in reachable:
+                queue.append(resolved)
+    return {path: reachable[path] for path in sorted(reachable)}
 
 
 def _resolve_source_include(
@@ -1728,16 +1745,6 @@ def _device_role_included_source_files(
             if child is not None and child not in included:
                 queue.append(child)
     return included
-
-
-def _is_source_device_file(path: str, source: str) -> bool:
-    normalized = path.replace("\\", "/").lower()
-    masked = mask_comments_for_parsing(source)
-    if normalized.endswith((".cu", ".hip")):
-        return True
-    if not normalized.endswith((".cuh", ".hpp", ".hh", ".h")):
-        return False
-    return has_gpu_device_marker(masked)
 
 
 def _render_backends_in_sources(sources: Iterable[str]) -> Set[str]:

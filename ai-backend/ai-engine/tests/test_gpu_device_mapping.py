@@ -88,6 +88,34 @@ extern "C" __global__ void flow(float* x, int n) {
     assert "generated:device" in report["constantGlobalLayoutHashes"]
 
 
+def test_device_mapping_uses_gpu_syntax_not_source_filename_extension():
+    source = {
+        "units/accelerator.payload": (
+            '#include "../support/device-types.data"\n'
+            'extern "C" __global__ void transform(DeviceValue* out) { out->value += 1; }'
+        ),
+        "support/device-types.data": "struct DeviceValue { int value; };",
+        "units/host-only.payload": "void transform_host() {}",
+    }
+    generated = {
+        "generated/device-stage": (
+            "struct DeviceValue { int value; };\n"
+            'extern "C" __global__ void transform(DeviceValue* out) { out->value += 1; }'
+        )
+    }
+
+    report = build_device_mapping_report(
+        source_files=source,
+        generated_files=generated,
+        manifest={"module_files": {"device": "generated/device-stage"}},
+    )
+
+    assert report["mappingStatus"] == "mapped"
+    assert report["deviceMappings"][0]["sourcePath"] == "units/accelerator.payload"
+    assert "support/device-types.data" in report["sourceBaselineContents"]
+    assert "units/host-only.payload" not in report["sourceBaselineContents"]
+
+
 def test_build_device_mapping_report_records_namespace_symbol_identity():
     source = {
         "src/gpu/shade.hip": """
@@ -399,6 +427,7 @@ GLOBAL_KERNEL_SIGNATURE(void) CameraRays(HIPRTRenderData render_data) {
     assert report["deviceMappings"][0]["sourcePath"] == "src/Device/kernels/CameraRays.h"
     assert report["deviceMappings"][0]["generatedMappingMode"] == "source_include_bridge"
     assert report["deviceIncludeGraph"]["generatedDeviceIncludes"] == [
+        "src/Device/bridge.h",
         "src/Device/kernels/CameraRays.h"
     ]
 

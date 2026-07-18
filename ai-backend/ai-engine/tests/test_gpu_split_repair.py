@@ -454,7 +454,7 @@ def test_repair_uses_generated_opengl_context_when_source_context_is_target_scop
 
 def test_repair_preserves_source_device_constant_declaration():
     source_files = {
-        "src/gpu/effects.hip": (
+        "units/device-effects.payload": (
             "#include <hip/hip_runtime.h>\n"
             "constexpr int kDeviceColorBias = 7;\n"
             'extern "C" __global__ void shade(unsigned int* out, int n) { '
@@ -496,8 +496,8 @@ def test_repair_preserves_source_device_constant_declaration():
     )
 
     assert report["repaired"] is True
-    assert "repair.source_device_constants" in report["repairRules"]
-    assert "constexpr int kDeviceColorBias = 7;" in repaired["device.hip"]
+    assert "repair.source_device_include_bridge" in report["repairRules"]
+    assert '#include "units/device-effects.payload"' in repaired["device.hip"]
     after = verify_split_output(
         files=repaired,
         manifest_arch=["gfx1201"],
@@ -1808,10 +1808,8 @@ def test_repair_restores_source_kernel_semantics_from_device_headers():
     )
 
     assert report["repaired"] is True
-    assert "repair.source_device_semantics" in report["repairRules"]
-    assert "Synthi source-device preservation preamble" in repaired["device.hip"]
-    assert "constexpr float kResetPadding = 18.0f;" in repaired["device.hip"]
-    assert "color_for(i)" in repaired["device.hip"]
+    assert "repair.source_device_include_bridge" in report["repairRules"]
+    assert '#include "src/gpu/kernels.hip"' in repaired["device.hip"]
     after = verify_split_output(
         files=repaired,
         manifest_arch=["gfx1201"],

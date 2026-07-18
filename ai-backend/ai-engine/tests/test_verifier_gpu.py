@@ -2039,7 +2039,7 @@ def test_split_accepts_initialized_render_mirror_used_for_first_frame():
 
 def test_split_rejects_dropped_source_device_kernel_and_constants():
     source_files = {
-        "src/gpu/particle_kernels.hip": (
+        "units/particle-kernels.payload": (
             "#include <hip/hip_runtime.h>\n"
             "namespace scale {\n"
             "constexpr float kResetPadding = 18.0f;\n"

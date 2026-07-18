@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from agents.abi_stamper import mask_comments_for_parsing
 from agents.gpu_device_mapping import extract_kernel_region_records
 from agents.gpu_device_markers import has_gpu_device_marker
-from agents.launch_graph_extractor import extract_launch_graph
+from agents.launch_graph_extractor import extract_launch_sites
 from gpu_hmr.canonical import canonical_hash
 
 
@@ -129,8 +129,12 @@ def _drop_reason(path: str) -> Optional[str]:
     return None
 
 
+def _structured_launch_sites(path: str, source: str) -> list[Any]:
+    return extract_launch_sites(path, source or "")
+
+
 def _has_source_launch_site(path: str, source: str) -> bool:
-    return bool(extract_launch_graph({normalize_path(path): source or ""}))
+    return bool(_structured_launch_sites(path, source))
 
 
 def _declared_kernel_names(source: str) -> set[str]:
@@ -142,12 +146,20 @@ def _launches_any_kernel(path: str, source: str, kernel_names: set[str]) -> bool
         return False
     return any(
         site.kernel in kernel_names
-        for site in extract_launch_graph({normalize_path(path): source or ""})
+        for site in _structured_launch_sites(path, source)
     )
 
 
 def _has_runtime_launch_boundary(source: str) -> bool:
     return bool(_GPU_RUNTIME_LAUNCH_API_RE.search(source or ""))
+
+
+def _is_gpu_context_source(path: str, parsed_source: str) -> bool:
+    return (
+        has_gpu_device_marker(parsed_source)
+        or _has_runtime_launch_boundary(parsed_source)
+        or _has_source_launch_site(path, parsed_source)
+    )
 
 
 def _reason_and_priority(
@@ -164,18 +176,13 @@ def _reason_and_priority(
     base = normalized.rsplit("/", 1)[-1]
     if base == "CMakeLists.txt" or normalized.endswith("/CMakeLists.txt"):
         return (1, "build_metadata")
-    if normalized.lower().endswith((".cu", ".cuh", ".hip")) and has_gpu_device_marker(parsed_source):
-        return (2, "device_translation_unit")
+    has_device_marker = has_gpu_device_marker(parsed_source)
     if _has_runtime_launch_boundary(parsed_source):
         return (2, "runtime_launch_boundary")
-    if looks_like_source_file(normalized) and has_gpu_device_marker(parsed_source):
-        if "/kernels/" in normalized:
-            return (3, "kernel_declaration")
-        return (4, "kernel_declaration")
+    if has_device_marker:
+        return (3, "kernel_declaration")
     if _launches_any_kernel(normalized, parsed_source, focus_kernel_names or set()):
         return (2, "focused_kernel_launch_site")
-    if "<<<" in parsed_source and ">>>" in parsed_source:
-        return (5, "kernel_launch_site")
     if _has_source_launch_site(normalized, parsed_source):
         return (5, "kernel_launch_site")
     if _RENDER_RE.search(parsed_source):
@@ -749,6 +756,7 @@ def _selected_compile_command(
         normalize_path(path): _reason_and_priority(path, source, focus)[0]
         for path, source in source_files.items()
         if looks_like_source_file(path)
+        or _is_gpu_context_source(path, mask_comments_for_parsing(source or ""))
     }
     ranked_sources = sorted(source_priorities.items(), key=lambda item: (item[1], item[0]))
 
@@ -814,17 +822,11 @@ def build_source_context_report(
     for path, source in sorted(normalized_files.items()):
         static_drop = _drop_reason(path)
         priority, reason = _reason_and_priority(path, source, focus, focus_kernel_names)
+        parsed_source = mask_comments_for_parsing(source or "")
+        is_device_like_source = _is_gpu_context_source(path, parsed_source)
         is_target_scoped = (
             not selected_target_scope
-            or not looks_like_source_file(path)
             or any(_path_matches(path, scoped) for scoped in selected_target_scope)
-        )
-        parsed_source = mask_comments_for_parsing(source or "")
-        is_device_like_source = (
-            normalize_path(path).lower().endswith((".cu", ".cuh", ".hip"))
-            or has_gpu_device_marker(parsed_source)
-            or ("<<<" in parsed_source and ">>>" in parsed_source)
-            or _has_source_launch_site(path, parsed_source)
         )
         record = {
             "path": path,
@@ -879,12 +881,9 @@ def build_source_context_report(
             "includedInPrompt": any(included_item["path"] == item["path"] for included_item in included),
         }
         for item in candidates
-        if item.get("reason") == "device_translation_unit"
-        or (
-            item.get("path") == normalize_path(focus or "")
-            and normalize_path(item.get("path") or "").lower().endswith((".cu", ".cuh", ".hip"))
-            and has_gpu_device_marker(
-                mask_comments_for_parsing(normalized_files.get(item.get("path") or "", "") or "")
+        if has_gpu_device_marker(
+            mask_comments_for_parsing(
+                normalized_files.get(item.get("path") or "", "") or ""
             )
         )
     ]

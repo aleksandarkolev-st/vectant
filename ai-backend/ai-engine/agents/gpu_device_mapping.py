@@ -333,22 +333,8 @@ def _manifest_device_path(manifest: Mapping[str, Any]) -> Optional[str]:
     return None
 
 
-def _is_device_source_path(path: str) -> bool:
-    return _normalize_path(path).lower().endswith((".cu", ".hip"))
-
-
-def _is_device_header_path(path: str) -> bool:
-    return _normalize_path(path).lower().endswith((".cuh", ".hpp", ".hh", ".h"))
-
-
-def _is_device_compilation_source(path: str, source: str) -> bool:
-    normalized = _normalize_path(path).lower()
-    masked = mask_comments_for_parsing(source)
-    if normalized.endswith((".cu", ".hip")):
-        return _contains_device_compilation_marker(masked)
-    if not _is_device_header_path(path):
-        return False
-    return _contains_device_compilation_marker(masked)
+def _is_device_compilation_source(_path: str, source: str) -> bool:
+    return _contains_device_compilation_marker(mask_comments_for_parsing(source))
 
 
 def _contains_device_compilation_marker(masked_source: str) -> bool:
@@ -404,8 +390,7 @@ def _generated_direct_source_includes(
                 continue
             visited.add(resolved)
             resolved_source = source_files[resolved]
-            if _is_device_compilation_source(resolved, resolved_source):
-                included[resolved] = resolved_source
+            included[resolved] = resolved_source
             stack.append((resolved, resolved_source))
     return included
 
@@ -435,7 +420,7 @@ def _collect_device_reachable_headers(
                 missing.append({"source": current, "include": _normalize_path(raw_include)})
                 continue
             includes.append(resolved)
-            if _is_device_header_path(resolved) and resolved not in reachable:
+            if resolved not in reachable:
                 reachable.add(resolved)
                 stack.append(resolved)
         include_graph[current] = sorted(set(includes))

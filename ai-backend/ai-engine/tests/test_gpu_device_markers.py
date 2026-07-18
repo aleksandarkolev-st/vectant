@@ -52,18 +52,24 @@ def test_gpu_device_marker_requires_macro_declaration_or_concrete_definition():
 
 def test_source_device_file_detection_uses_generic_device_macro():
     source_files = {
-        "include/device_callbacks.h": (
-            "#pragma once\n"
+        "units/device-callbacks.payload": (
+            '#include "support/opaque-dependency.data"\n'
             "PROJECT_DEVICE_API bool filter_value(int value);\n"
             "GENERIC_GPU_DEVICE inline int helper(int value) { return value + 1; }\n"
         ),
-        "include/host_only.h": "inline int host_helper(int value) { return value; }\n",
+        "support/opaque-dependency.data": "struct DeviceRecord { int value; };\n",
+        "units/host-only.payload": "inline int host_helper(int value) { return value; }\n",
     }
 
-    assert "include/device_callbacks.h" in repair_source_device_files(source_files)
-    assert "include/device_callbacks.h" in verifier_source_device_files(source_files)
-    assert "include/host_only.h" not in repair_source_device_files(source_files)
-    assert "include/host_only.h" not in verifier_source_device_files(source_files)
+    repair_scope = repair_source_device_files(source_files)
+    verifier_scope = verifier_source_device_files(source_files)
+
+    assert "units/device-callbacks.payload" in repair_scope
+    assert "units/device-callbacks.payload" in verifier_scope
+    assert "support/opaque-dependency.data" in repair_scope
+    assert "support/opaque-dependency.data" in verifier_scope
+    assert "units/host-only.payload" not in repair_scope
+    assert "units/host-only.payload" not in verifier_scope
 
 
 def test_gpu_device_marker_detects_portable_backend_syntax():

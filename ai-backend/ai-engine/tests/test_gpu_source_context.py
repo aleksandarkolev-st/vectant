@@ -16,11 +16,11 @@ def test_source_context_records_included_and_dropped_reasons():
     dropped_reasons = {item["path"]: item["dropReason"] for item in report["dropped"]}
 
     assert included_reasons["src/app/main.cpp"] == "entry_translation_unit"
-    assert included_reasons["src/gpu/flow.hip"] == "device_translation_unit"
+    assert included_reasons["src/gpu/flow.hip"] == "kernel_declaration"
     assert included_reasons["src/render/glfw_view.cpp"] == "render_backend"
     assert dropped_reasons["docs/readme.md"] == "docs_tests_examples"
     assert dropped_reasons[".synthi/generated/gpu/device.hip"] == "generated_or_build_output"
-    assert "INCLUDE_REASON: device_translation_unit" in prompt
+    assert "INCLUDE_REASON: kernel_declaration" in prompt
     assert report["deterministicContextComplete"] is True
 
 
@@ -32,7 +32,7 @@ def test_source_context_includes_generic_opencl_sidecars_with_existing_path_guar
         "docs/examples/ignored.cl": "DOCS_OPENCL_SENTINEL",
         "vendor/runtime/ignored.opencl": "VENDOR_OPENCL_SENTINEL",
         "src/gpu/ignored.opencl.bak": "FAKE_SUFFIX_SENTINEL",
-        "src/gpu/ignored.txt": "__kernel void fake_kernel() {}",
+        "src/gpu/ignored.txt": "void host_only_helper() {}",
     }
 
     prompt, report = build_project_source_context(files, focus="src/main.cpp")
@@ -50,7 +50,52 @@ def test_source_context_includes_generic_opencl_sidecars_with_existing_path_guar
     assert "DOCS_OPENCL_SENTINEL" not in prompt
     assert "VENDOR_OPENCL_SENTINEL" not in prompt
     assert "FAKE_SUFFIX_SENTINEL" not in prompt
-    assert "fake_kernel" not in prompt
+    assert "host_only_helper" not in prompt
+
+
+def test_source_context_includes_device_bearing_sources_with_arbitrary_extensions():
+    files = {
+        "src/main.cpp": "int main(){ return 0; }",
+        "src/accelerator.payload": """
+        __global__ void accelerate(float* values) {
+          values[threadIdx.x] += 1.0f;
+        }
+        """,
+        "src/dispatch.payload": """
+        void dispatch(void* gpu, void* stream, float* values) {
+          synthi_gpu_launch(gpu, "accelerate", 1, 64, 0, stream, {&values});
+        }
+        """,
+    }
+
+    prompt, report = build_project_source_context(files, focus="src/main.cpp")
+    included_reasons = {item["path"]: item["includeReason"] for item in report["included"]}
+    device_paths = {
+        item["path"] for item in report["deviceTuTopology"]["deviceTranslationUnits"]
+    }
+
+    assert included_reasons["src/accelerator.payload"] == "kernel_declaration"
+    assert included_reasons["src/dispatch.payload"] == "kernel_launch_site"
+    assert device_paths == {"src/accelerator.payload"}
+    assert "void accelerate" in prompt
+    assert "synthi_gpu_launch" in prompt
+
+
+def test_source_context_rejects_host_only_source_with_opaque_extension():
+    files = {
+        "src/main.cpp": "int main(){ return 0; }",
+        "src/accelerator.payload": "int host_only_transform(int value) { return value + 1; }",
+    }
+
+    prompt, report = build_project_source_context(files, focus="src/main.cpp")
+    dropped_reasons = {item["path"]: item["dropReason"] for item in report["dropped"]}
+    device_paths = {
+        item["path"] for item in report["deviceTuTopology"]["deviceTranslationUnits"]
+    }
+
+    assert dropped_reasons["src/accelerator.payload"] == "unsupported_file_type"
+    assert "src/accelerator.payload" not in device_paths
+    assert "host_only_transform" not in prompt
 
 
 def test_source_context_treats_macro_wrapped_runtime_kernels_as_gpu_context():
@@ -669,6 +714,61 @@ def test_selected_target_context_drops_unrelated_device_translation_units():
     assert dropped["HIP-Basic/matrix_multiplication/main.hip"] == "unrelated_target_device_source"
     assert report["deviceTuTopology"]["deviceTranslationUnitCount"] == 1
     assert report["deviceTuTopology"]["deviceTranslationUnits"][0]["path"] == "HIP-Basic/saxpy/main.hip"
+
+
+def test_selected_target_context_scopes_device_bearing_opaque_sources():
+    files = {
+        "src/app/main.cpp": "int main(){ return 0; }",
+        "src/accelerator.payload": "__global__ void owned_kernel() {}",
+        "tools/probe.payload": "__global__ void unrelated_kernel() {}",
+        ".cmake/api/v1/reply/codemodel-v2-debug.json": """
+        {
+          "kind": "codemodel",
+          "configurations": [
+            {
+              "name": "Debug",
+              "targets": [
+                {"name": "app", "id": "app::@root", "jsonFile": "target-app-Debug.json"},
+                {"name": "probe", "id": "probe::@root", "jsonFile": "target-probe-Debug.json"}
+              ]
+            }
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-app-Debug.json": """
+        {
+          "name": "app",
+          "id": "app::@root",
+          "type": "EXECUTABLE",
+          "sources": [
+            {"path": "src/app/main.cpp"},
+            {"path": "src/accelerator.payload"}
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-probe-Debug.json": """
+        {
+          "name": "probe",
+          "id": "probe::@root",
+          "type": "EXECUTABLE",
+          "sources": [{"path": "tools/probe.payload"}]
+        }
+        """,
+    }
+
+    prompt, report = build_project_source_context(files, focus="src/app/main.cpp")
+    included_paths = {item["path"] for item in report["included"]}
+    dropped_reasons = {item["path"]: item["dropReason"] for item in report["dropped"]}
+    device_paths = {
+        item["path"] for item in report["deviceTuTopology"]["deviceTranslationUnits"]
+    }
+
+    assert "src/accelerator.payload" in included_paths
+    assert dropped_reasons["tools/probe.payload"] == "unrelated_target_device_source"
+    assert device_paths == {"src/accelerator.payload"}
+    assert "owned_kernel" in prompt
+    assert "unrelated_kernel" not in prompt
+    assert report["buildMetadata"]["targetResolution"]["selectedTarget"]["name"] == "app"
 
 
 def test_selected_target_context_drops_unrelated_opencl_sidecars():

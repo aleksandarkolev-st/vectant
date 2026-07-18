@@ -17,7 +17,6 @@ from agents.launch_graph_extractor import LaunchSite, extract_launch_graph
 from agents.abi_stamper import mask_comments_for_parsing
 from agents.gpu_device_markers import (
     DEVICE_ANNOTATION_MACRO_PATTERN,
-    has_gpu_device_marker,
 )
 from verifier_gpu import (
     _CPP_DECL_KEYWORDS,
@@ -51,8 +50,6 @@ from verifier_gpu import (
 
 REPAIR_SCHEMA_VERSION = "synthi.gpu.split_repair.v1"
 
-_DEVICE_SOURCE_EXTENSIONS = (".cu", ".hip")
-_DEVICE_HEADER_EXTENSIONS = (".h", ".hpp", ".hh", ".hxx", ".cuh")
 _QUOTE_INCLUDE_RE = re.compile(r"#\s*include\s+\"(?P<path>[^\"]+)\"")
 _ANY_INCLUDE_RE = re.compile(r"#\s*include\s+[<\"](?P<path>[^>\"]+)[>\"]")
 _INCLUDE_LINE_RE = re.compile(
@@ -611,16 +608,7 @@ def _needs_source_device_semantics_repair(
 
 
 def _source_device_files(source_files: Mapping[str, str]) -> Dict[str, str]:
-    files: Dict[str, str] = {}
-    for path, source in source_files.items():
-        normalized = path.replace("\\", "/")
-        lower = normalized.lower()
-        if not lower.endswith(_DEVICE_SOURCE_EXTENSIONS + _DEVICE_HEADER_EXTENSIONS):
-            continue
-        masked = mask_comments_for_parsing(source)
-        if has_gpu_device_marker(masked):
-            files[normalized] = source
-    return files
+    return dict(_verifier_source_device_files(source_files))
 
 
 def _device_lookup_source_with_source_includes(
@@ -730,9 +718,7 @@ def _source_device_reachable_files(source_files: Mapping[str, str]) -> Dict[str,
                 source_files=normalized,
             )
             if resolved and resolved not in reachable:
-                lower = resolved.lower()
-                if lower.endswith(_DEVICE_SOURCE_EXTENSIONS + _DEVICE_HEADER_EXTENSIONS):
-                    queue.append(resolved)
+                queue.append(resolved)
     return {path: reachable[path] for path in sorted(reachable)}
 
 
@@ -1158,10 +1144,9 @@ def _source_device_support_preamble(reachable: Mapping[str, str]) -> str:
     seen: Set[str] = set()
     for path, source in sorted(reachable.items()):
         inline_source = _inlineable_device_source(source)
-        if path.lower().endswith(_DEVICE_SOURCE_EXTENSIONS):
-            first_kernel = _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(inline_source))
-            if first_kernel:
-                inline_source = inline_source[: first_kernel.start()]
+        first_kernel = _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(inline_source))
+        if first_kernel:
+            inline_source = inline_source[: first_kernel.start()]
         inline_source = inline_source.strip()
         if not inline_source or inline_source in seen:
             continue
@@ -1406,7 +1391,7 @@ def _source_device_prelude_definition_headers(
     kernel_header_set = set(kernel_headers)
     headers: List[str] = []
     for path, source in sorted(reachable.items()):
-        if path in kernel_header_set or not path.lower().endswith(_DEVICE_HEADER_EXTENSIONS):
+        if path in kernel_header_set:
             continue
         definitions = _source_device_function_names(source, terminator="{")
         if definitions & prelude_declarations:
@@ -1487,8 +1472,7 @@ def _source_device_include_bridge(
     kernel_headers = [
         path
         for path, source in sorted(reachable.items())
-        if path.lower().endswith(_DEVICE_HEADER_EXTENSIONS)
-        and _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(source))
+        if _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(source))
     ]
     if not kernel_headers:
         return None
@@ -1552,8 +1536,7 @@ def _device_role_source_kernel_includes(
     kernel_headers = {
         path.replace("\\", "/")
         for path, source in reachable.items()
-        if path.lower().endswith(_DEVICE_HEADER_EXTENSIONS)
-        and _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(source))
+        if _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(source))
     }
     if not kernel_headers:
         return []
@@ -1587,7 +1570,7 @@ def _repair_source_device_semantics(
         out = out[:insert_at] + f"\n\n{marker}\n{preamble}\n" + out[insert_at:]
 
     for path, source in sorted(reachable.items()):
-        if not path.lower().endswith(_DEVICE_SOURCE_EXTENSIONS):
+        if not _GLOBAL_KERNEL_SIGNATURE_RE.search(mask_comments_for_parsing(source)):
             continue
         inline_source = _inlineable_device_source(source)
         for match in list(_GLOBAL_KERNEL_SIGNATURE_RE.finditer(inline_source)):
