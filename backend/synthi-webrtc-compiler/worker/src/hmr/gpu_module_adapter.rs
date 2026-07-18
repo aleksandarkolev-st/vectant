@@ -367,12 +367,19 @@ struct DeviceReloadOwnership {
     retired_module_count: usize,
     replaced_primary: bool,
     runtime_log_lines: Vec<String>,
+    strict_runtime_proof: Option<Value>,
     hot_reload_acceptance_required: bool,
     acceptance_ledger_success: bool,
     acceptance_ledger_failures: Vec<String>,
     verified_device_identity: Option<RuntimeHardwareDeviceIdentity>,
     strict_device_attestation_available: bool,
     strict_device_attestation_gaps: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeFullProof {
+    value: Value,
+    log_line: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2895,7 +2902,7 @@ fn validate_runtime_publication_binding(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn runtime_full_proof_line(
+fn runtime_full_proof(
     req: &AdapterReloadRequest,
     firewall_receipt: &VerifiedReloadFirewallReceipt,
     vendor: GpuVendor,
@@ -2918,7 +2925,7 @@ fn runtime_full_proof_line(
     capsule_metadata: Option<&ReloadCapsuleMetadata>,
     pinned_output_oracle_profile: Option<&PinnedRuntimeOutputOracleProfile>,
     after_dispatch_id: &str,
-) -> Result<String, String> {
+) -> Result<RuntimeFullProof, String> {
     if !loader_transport.is_content_bound() {
         return Err("runtime_proof_loader_transport_not_content_bound".to_string());
     }
@@ -3729,8 +3736,12 @@ fn runtime_full_proof_line(
         "proofLedger": proof_ledger,
         "runtimeProofArtifact": runtime_artifact,
     });
-    serde_json::to_string(&message)
-        .map_err(|error| format!("runtime_proof_serialization_failed:{error}"))
+    let log_line = serde_json::to_string(&message)
+        .map_err(|error| format!("runtime_proof_serialization_failed:{error}"))?;
+    Ok(RuntimeFullProof {
+        value: message,
+        log_line,
+    })
 }
 
 fn capsule_id_for_publication(
@@ -4139,6 +4150,9 @@ pub struct GpuModuleAdapter {
     /// printed during `reload()` so the worker log carries the
     /// markers from docs/GPU_HMR_ULTRAPLAN.md §9.
     last_reload_log: Vec<String>,
+    /// Typed strict runtime proof produced by this adapter operation. The
+    /// serialized log remains diagnostic output and is not the retained source.
+    last_runtime_proof: Option<Value>,
     /// ABI fingerprint from the last device sidecar manifest this
     /// adapter accepted. Device-only body edits keep this stable;
     /// kernel signature edits change it and must cold-reload.
@@ -4174,6 +4188,7 @@ impl GpuModuleAdapter {
             module_manager: GpuModuleManager::new(),
             pending_retired_modules: Vec::new(),
             last_reload_log: Vec::new(),
+            last_runtime_proof: None,
             last_device_abi_version: None,
             last_driver_error: None,
             reload_context: None,
@@ -4259,6 +4274,10 @@ impl GpuModuleAdapter {
 
     pub fn last_reload_log(&self) -> &[String] {
         &self.last_reload_log
+    }
+
+    pub fn last_runtime_proof(&self) -> Option<&Value> {
+        self.last_runtime_proof.as_ref()
     }
 
     fn managed_snapshot_stats() -> (u64, u32) {
@@ -4579,6 +4598,7 @@ impl Adapter for GpuModuleAdapter {
         self.module_manager = GpuModuleManager::new();
         clear_launch_dispatcher();
         self.last_reload_log.clear();
+        self.last_runtime_proof = None;
         self.last_device_abi_version = None;
         self.reload_context = None;
         self.phase = GpuPhase::ShutDown;
@@ -4588,6 +4608,7 @@ impl Adapter for GpuModuleAdapter {
 
     fn reload(&mut self, req: &AdapterReloadRequest) -> AdapterReloadResult {
         self.reload_count += 1;
+        self.last_runtime_proof = None;
         if self.phase == GpuPhase::Uninitialized || self.phase == GpuPhase::ShutDown {
             return AdapterReloadResult::Failed {
                 error: format!("GpuModuleAdapter not initialized (phase={:?})", self.phase),
@@ -5716,7 +5737,7 @@ impl Adapter for GpuModuleAdapter {
                         if acceptance_ledger.device_identity.as_deref()
                             == Some(dispatch_device_identity.identity_key.as_str()) =>
                     {
-                        runtime_full_proof_line(
+                        runtime_full_proof(
                             req,
                             &verified_firewall_receipt,
                             self.config.vendor,
@@ -5774,10 +5795,11 @@ impl Adapter for GpuModuleAdapter {
                 eprintln!("{acceptance_line}");
                 runtime_log_lines.push(acceptance_line);
             }
-            if let Some(proof_line) = strict_runtime_proof_line {
-                eprintln!("{proof_line}");
-                runtime_log_lines.push(proof_line);
-            }
+            let strict_runtime_proof = strict_runtime_proof_line.map(|proof| {
+                eprintln!("{}", proof.log_line);
+                runtime_log_lines.push(proof.log_line);
+                proof.value
+            });
             let strict_runtime_proof_success = first_device_load
                 || (!acceptance_ledger.gpu_hmr_success || strict_runtime_proof_gap.is_none());
             let mut final_acceptance_failures = acceptance_ledger.failed_invariants.clone();
@@ -5792,6 +5814,7 @@ impl Adapter for GpuModuleAdapter {
                 retired_module_count,
                 replaced_primary,
                 runtime_log_lines,
+                strict_runtime_proof,
                 hot_reload_acceptance_required: !first_device_load,
                 acceptance_ledger_success: acceptance_ledger.gpu_hmr_success
                     && strict_runtime_proof_success,
@@ -5867,6 +5890,7 @@ impl Adapter for GpuModuleAdapter {
                 });
                 self.last_reload_log
                     .extend(ownership.runtime_log_lines.iter().cloned());
+                self.last_runtime_proof = ownership.strict_runtime_proof.clone();
                 self.emit_runtime_ownership_report(&ownership, artifact);
                 self.phase = GpuPhase::Ready;
                 if ownership.hot_reload_acceptance_required && !ownership.acceptance_ledger_success
@@ -6574,7 +6598,7 @@ mod tests {
             authority: GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY.to_string(),
             host_thread_id: "unreached".to_string(),
         };
-        let error = runtime_full_proof_line(
+        let error = runtime_full_proof(
             &request,
             &firewall_receipt,
             GpuVendor::Rocm,
@@ -8428,6 +8452,7 @@ mod tests {
             .find(|line| line.contains("\"type\":\"gpu_hmr_proof\""))
             .expect("strict runtime proof after native identity continuity");
         let proof = proof_json_from_line(proof_line);
+        assert_eq!(adapter.last_runtime_proof(), Some(&proof));
         assert_eq!(proof["runtimeProofArtifact"]["gpuHmrSuccess"], json!(true));
         assert_eq!(
             proof.pointer("/runtimeProofArtifact/explicitProofLedgerRecord/edit_id"),
@@ -8559,6 +8584,7 @@ mod tests {
             .last_reload_log()
             .iter()
             .any(|line| line.contains("\"type\":\"gpu_hmr_proof\"")));
+        assert!(adapter.last_runtime_proof().is_none());
         assert!(!adapter
             .last_reload_log()
             .iter()
