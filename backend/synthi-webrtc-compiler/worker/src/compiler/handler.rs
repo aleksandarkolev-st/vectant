@@ -34,9 +34,16 @@ const DEFAULT_WORKSPACE_FILE_REF_SEARCH_DEPTH: usize = 8;
 const MAX_WORKSPACE_FILE_REF_SEARCH_DEPTH: usize = 32;
 const DEFAULT_WORKSPACE_FILE_REF_SEARCH_LIMIT: usize = 16_384;
 const MAX_WORKSPACE_FILE_REF_SEARCH_LIMIT: usize = 65_536;
+const RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_ENV: &str =
+    "SYNTHI_RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_MS";
+const DEFAULT_RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_MS: u64 = 2_000;
+const MAX_RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_MS: u64 = 10_000;
+const RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_ENV: &str =
+    "SYNTHI_GPU_HMR_RUNTIME_CONTROL_ACK_TIMEOUT_MS";
 const DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_GRACE_MS: u64 = 5_000;
 const DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS: u64 =
     PLUGIN_TIMEOUT_SECS * 1_000 + DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_GRACE_MS;
+const MAX_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS: u64 = 120_000;
 
 // Import our new modular stages
 use crate::compiler::stages::ai_utils::{
@@ -8927,6 +8934,217 @@ fn runner_runtime_control_identity_matches(
         && recorded_control_session_id == Some(expected_control_session_id)
 }
 
+fn runner_runtime_control_incarnation_matches(
+    observed_owner_session_id: Option<&str>,
+    observed_process_id: Option<u32>,
+    recorded_control_session_id: Option<&str>,
+    expected_owner_session_id: &str,
+    expected_process_id: u32,
+    expected_control_session_id: &str,
+) -> bool {
+    observed_owner_session_id == Some(expected_owner_session_id)
+        && runner_runtime_control_identity_matches(
+            observed_process_id,
+            recorded_control_session_id,
+            expected_process_id,
+            expected_control_session_id,
+        )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerRuntimeControlDeliveryFailure {
+    StdinWriteFailed,
+    StdinFlushFailed,
+    StdinDeadlineExceeded(std::time::Duration),
+    AckDeliveryLagged,
+    AckChannelClosed,
+    AckDeadlineExceeded(std::time::Duration),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerRuntimeControlInvalidationOutcome {
+    Invalidated,
+    IdentityNoLongerActive,
+    TerminationFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerRuntimeControlAckWaitOutcome {
+    Acknowledged,
+    DeliveryLagged,
+    ChannelClosed,
+    DeadlineExceeded,
+}
+
+struct RunnerRuntimeControlCancellationGuard {
+    completed_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl RunnerRuntimeControlCancellationGuard {
+    fn disarm(&mut self) {
+        if let Some(completed_tx) = self.completed_tx.take() {
+            let _ = completed_tx.send(());
+        }
+    }
+}
+
+fn runner_runtime_control_cancellation_guard<F>(
+    on_cancel: F,
+) -> RunnerRuntimeControlCancellationGuard
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        if completed_rx.await.is_err() {
+            on_cancel.await;
+        }
+    });
+    RunnerRuntimeControlCancellationGuard {
+        completed_tx: Some(completed_tx),
+    }
+}
+
+fn arm_runner_runtime_control_cancellation_guard(
+    runner_store: std::sync::Arc<
+        tokio::sync::Mutex<Option<crate::runtime::runner_state::RunnerState>>,
+    >,
+    owner_session_id: String,
+    runner_process_id: u32,
+    runner_control_session_id: String,
+) -> RunnerRuntimeControlCancellationGuard {
+    runner_runtime_control_cancellation_guard(async move {
+        let outcome = invalidate_runner_after_runtime_control_delivery_failure(
+            &runner_store,
+            &owner_session_id,
+            runner_process_id,
+            &runner_control_session_id,
+        )
+        .await;
+        if outcome == RunnerRuntimeControlInvalidationOutcome::TerminationFailed {
+            eprintln!(
+                "[compile-device] runner runtime-control cancellation detached the captured runner but termination failed"
+            );
+        }
+    })
+}
+
+async fn invalidate_runner_after_runtime_control_delivery_failure(
+    runner_store: &std::sync::Arc<
+        tokio::sync::Mutex<Option<crate::runtime::runner_state::RunnerState>>,
+    >,
+    owner_session_id: &str,
+    runner_process_id: u32,
+    runner_control_session_id: &str,
+) -> RunnerRuntimeControlInvalidationOutcome {
+    let mut child = {
+        let mut guard = runner_store.lock().await;
+        let Some(state) = guard.as_mut() else {
+            return RunnerRuntimeControlInvalidationOutcome::IdentityNoLongerActive;
+        };
+        let active_process_id = state.process.as_mut().and_then(|child| {
+            if matches!(child.try_wait(), Ok(None)) {
+                child.id()
+            } else {
+                None
+            }
+        });
+        if !runner_runtime_control_incarnation_matches(
+            state.session_id.as_deref(),
+            active_process_id,
+            state.runner_runtime_control_session_id.as_deref(),
+            owner_session_id,
+            runner_process_id,
+            runner_control_session_id,
+        ) {
+            return RunnerRuntimeControlInvalidationOutcome::IdentityNoLongerActive;
+        }
+        let Some(child) = state.process.take() else {
+            return RunnerRuntimeControlInvalidationOutcome::IdentityNoLongerActive;
+        };
+        state.stdin = None;
+        state.module_hashes = ModuleHashes::default();
+        state.loaded_core_path = None;
+        state.loaded_gui_path = None;
+        state.loaded_device_abi = None;
+        state.runner_runtime_control_session_id = None;
+        state.gpu_runtime_protocol_process_id = None;
+        state.gpu_runtime_protocol_session_id = None;
+        state.loaded_widget_paths.clear();
+        state.widget_hashes.clear();
+        child
+    };
+
+    match child.kill().await {
+        Ok(()) => RunnerRuntimeControlInvalidationOutcome::Invalidated,
+        Err(_) => RunnerRuntimeControlInvalidationOutcome::TerminationFailed,
+    }
+}
+
+fn runner_runtime_control_delivery_error(
+    label: &str,
+    failure: RunnerRuntimeControlDeliveryFailure,
+    invalidation: RunnerRuntimeControlInvalidationOutcome,
+) -> anyhow::Error {
+    let failure = match failure {
+        RunnerRuntimeControlDeliveryFailure::StdinWriteFailed => "stdin write failed".to_string(),
+        RunnerRuntimeControlDeliveryFailure::StdinFlushFailed => "stdin flush failed".to_string(),
+        RunnerRuntimeControlDeliveryFailure::StdinDeadlineExceeded(timeout) => format!(
+            "stdin delivery deadline exceeded after {}ms",
+            timeout.as_millis()
+        ),
+        RunnerRuntimeControlDeliveryFailure::AckDeliveryLagged => {
+            "acknowledgement delivery lagged".to_string()
+        }
+        RunnerRuntimeControlDeliveryFailure::AckChannelClosed => {
+            "acknowledgement channel closed".to_string()
+        }
+        RunnerRuntimeControlDeliveryFailure::AckDeadlineExceeded(timeout) => format!(
+            "acknowledgement deadline exceeded after {}ms",
+            timeout.as_millis()
+        ),
+    };
+    let invalidation = match invalidation {
+        RunnerRuntimeControlInvalidationOutcome::Invalidated => "captured runner invalidated",
+        RunnerRuntimeControlInvalidationOutcome::IdentityNoLongerActive => {
+            "captured runner identity no longer active"
+        }
+        RunnerRuntimeControlInvalidationOutcome::TerminationFailed => {
+            "captured runner detached but termination failed"
+        }
+    };
+    anyhow::anyhow!("runner {label} {failure}; {invalidation}")
+}
+
+async fn write_and_flush_runner_runtime_control_command(
+    stdin_arc: std::sync::Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
+    line: String,
+    timeout: std::time::Duration,
+) -> std::result::Result<
+    tokio::sync::OwnedMutexGuard<tokio::process::ChildStdin>,
+    RunnerRuntimeControlDeliveryFailure,
+> {
+    let operation = async move {
+        let mut stdin = stdin_arc.lock_owned().await;
+        stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|_| RunnerRuntimeControlDeliveryFailure::StdinWriteFailed)?;
+        stdin
+            .flush()
+            .await
+            .map_err(|_| RunnerRuntimeControlDeliveryFailure::StdinFlushFailed)?;
+        Ok(stdin)
+    };
+
+    match tokio::time::timeout(timeout, operation).await {
+        Ok(result) => result,
+        Err(_) => Err(RunnerRuntimeControlDeliveryFailure::StdinDeadlineExceeded(
+            timeout,
+        )),
+    }
+}
+
 async fn send_active_runner_runtime_command(
     ctx: &CompileContext,
     session_id: &str,
@@ -8999,33 +9217,72 @@ async fn send_active_runner_runtime_command_for_identity(
     let token = generate_runner_runtime_control_token()?;
     let expected_status = runner_runtime_control_ack_status(command)
         .context("runner runtime command does not have an acknowledgement contract")?;
-    let mut stdin = stdin_arc.lock().await;
     let line = format!("{command} {token}\n");
-    if let Err(e) = stdin.write_all(line.as_bytes()).await {
-        eprintln!("[compile-device] runner {label} command failed: {e}");
-        anyhow::bail!("runner {label} command write failed: {e}");
-    }
-    if let Err(e) = stdin.flush().await {
-        eprintln!("[compile-device] runner {label} flush failed: {e}");
-        anyhow::bail!("runner {label} command flush failed: {e}");
-    }
-    eprintln!("[compile-device] runner {label} command sent: {command}");
-    let timeout = runner_runtime_control_ack_timeout();
-    if !wait_for_runner_runtime_control_ack(
+    let mut cancellation_guard = arm_runner_runtime_control_cancellation_guard(
+        ctx.runner_store.clone(),
+        session_id.to_string(),
+        runner_process_id,
+        runner_control_session_id.clone(),
+    );
+    let write_timeout = runner_runtime_control_write_timeout();
+    let stdin = match write_and_flush_runner_runtime_control_command(stdin_arc, line, write_timeout)
+        .await
+    {
+        Ok(stdin) => stdin,
+        Err(failure) => {
+            let invalidation = invalidate_runner_after_runtime_control_delivery_failure(
+                &ctx.runner_store,
+                session_id,
+                runner_process_id,
+                &runner_control_session_id,
+            )
+            .await;
+            cancellation_guard.disarm();
+            return Err(runner_runtime_control_delivery_error(
+                label,
+                failure,
+                invalidation,
+            ));
+        }
+    };
+    eprintln!("[compile-device] runner {label} command sent");
+    let ack_timeout = runner_runtime_control_ack_timeout();
+    let ack_outcome = wait_for_runner_runtime_control_ack(
         &mut output_rx,
         expected_status,
         &token,
         runner_process_id,
         &runner_control_session_id,
-        timeout,
+        ack_timeout,
     )
-    .await
-    {
-        anyhow::bail!(
-            "runner {label} command did not acknowledge {} within {}ms",
-            expected_status.as_str(),
-            timeout.as_millis()
-        );
+    .await;
+    if ack_outcome != RunnerRuntimeControlAckWaitOutcome::Acknowledged {
+        drop(stdin);
+        let failure = match ack_outcome {
+            RunnerRuntimeControlAckWaitOutcome::Acknowledged => unreachable!(),
+            RunnerRuntimeControlAckWaitOutcome::DeliveryLagged => {
+                RunnerRuntimeControlDeliveryFailure::AckDeliveryLagged
+            }
+            RunnerRuntimeControlAckWaitOutcome::ChannelClosed => {
+                RunnerRuntimeControlDeliveryFailure::AckChannelClosed
+            }
+            RunnerRuntimeControlAckWaitOutcome::DeadlineExceeded => {
+                RunnerRuntimeControlDeliveryFailure::AckDeadlineExceeded(ack_timeout)
+            }
+        };
+        let invalidation = invalidate_runner_after_runtime_control_delivery_failure(
+            &ctx.runner_store,
+            session_id,
+            runner_process_id,
+            &runner_control_session_id,
+        )
+        .await;
+        cancellation_guard.disarm();
+        return Err(runner_runtime_control_delivery_error(
+            label,
+            failure,
+            invalidation,
+        ));
     }
     drop(stdin);
 
@@ -9057,6 +9314,7 @@ async fn send_active_runner_runtime_command_for_identity(
             );
         }
     }
+    cancellation_guard.disarm();
     Ok(true)
 }
 
@@ -9076,13 +9334,34 @@ fn runner_runtime_control_ack_status(command: &str) -> Option<RunnerRuntimeContr
     }
 }
 
-fn runner_runtime_control_ack_timeout() -> std::time::Duration {
-    let ms = std::env::var("SYNTHI_GPU_HMR_RUNTIME_CONTROL_ACK_TIMEOUT_MS")
-        .ok()
+fn runner_runtime_control_write_timeout_from_config(
+    configured: Option<&str>,
+) -> std::time::Duration {
+    let ms = configured
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_MS)
+        .min(MAX_RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_MS);
+    std::time::Duration::from_millis(ms)
+}
+
+fn runner_runtime_control_write_timeout() -> std::time::Duration {
+    let configured = std::env::var(RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_ENV).ok();
+    runner_runtime_control_write_timeout_from_config(configured.as_deref())
+}
+
+fn runner_runtime_control_ack_timeout_from_config(configured: Option<&str>) -> std::time::Duration {
+    let ms = configured
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS);
+        .unwrap_or(DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS)
+        .min(MAX_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS);
     std::time::Duration::from_millis(ms)
+}
+
+fn runner_runtime_control_ack_timeout() -> std::time::Duration {
+    let configured = std::env::var(RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_ENV).ok();
+    runner_runtime_control_ack_timeout_from_config(configured.as_deref())
 }
 
 fn runner_runtime_control_ack_matches(
@@ -9109,27 +9388,35 @@ async fn wait_for_runner_runtime_control_ack(
     runner_process_id: u32,
     runner_control_session_id: &str,
     timeout: std::time::Duration,
-) -> bool {
-    let deadline = tokio::time::sleep(timeout);
-    tokio::pin!(deadline);
-    loop {
-        tokio::select! {
-            _ = &mut deadline => return false,
-            received = output_rx.recv() => {
-                match received {
-                    Ok(line) if runner_runtime_control_ack_matches(
+) -> RunnerRuntimeControlAckWaitOutcome {
+    let receive = async {
+        loop {
+            match output_rx.recv().await {
+                Ok(line)
+                    if runner_runtime_control_ack_matches(
                         &line,
                         expected_status,
                         token,
                         runner_process_id,
                         runner_control_session_id,
-                    ) => return true,
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+                    ) =>
+                {
+                    return RunnerRuntimeControlAckWaitOutcome::Acknowledged;
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    return RunnerRuntimeControlAckWaitOutcome::DeliveryLagged;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    return RunnerRuntimeControlAckWaitOutcome::ChannelClosed;
                 }
             }
         }
+    };
+
+    match tokio::time::timeout(timeout, receive).await {
+        Ok(outcome) => outcome,
+        Err(_) => RunnerRuntimeControlAckWaitOutcome::DeadlineExceeded,
     }
 }
 
@@ -16476,20 +16763,32 @@ mod gpu_host_contract_tests {
         assert!(!should_compile_partial_device_source(&sources, false));
     }
 
+    fn runtime_control_ack_line(
+        status: RunnerRuntimeControlStatus,
+        token: &str,
+        control_session_id: &str,
+    ) -> String {
+        RunnerRuntimeControlAck::current(
+            status,
+            token,
+            matches!(status, RunnerRuntimeControlStatus::Paused),
+            0,
+            control_session_id,
+        )
+        .unwrap()
+        .line()
+        .unwrap()
+    }
+
     #[test]
     fn runtime_control_ack_matches_structured_runner_token() {
         let token = format!("runner-control:{}", "7".repeat(32));
         let control_session_id = format!("runner-control-session:{}", "9".repeat(32));
-        let line = RunnerRuntimeControlAck::current(
+        let line = runtime_control_ack_line(
             RunnerRuntimeControlStatus::Paused,
             &token,
-            true,
-            0,
             &control_session_id,
-        )
-        .unwrap()
-        .line()
-        .unwrap();
+        );
 
         assert!(runner_runtime_control_ack_matches(
             &line,
@@ -16518,6 +16817,30 @@ mod gpu_host_contract_tests {
             &token,
             std::process::id(),
             &format!("runner-control-session:{}", "a".repeat(32)),
+        ));
+        assert!(!runner_runtime_control_ack_matches(
+            &line,
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            std::process::id().wrapping_add(1),
+            &control_session_id,
+        ));
+
+        let wildcard_token_line = line.replace(&token, "*");
+        assert!(!runner_runtime_control_ack_matches(
+            &wildcard_token_line,
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            std::process::id(),
+            &control_session_id,
+        ));
+        let wildcard_session_line = line.replace(&control_session_id, "*");
+        assert!(!runner_runtime_control_ack_matches(
+            &wildcard_session_line,
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            std::process::id(),
+            &control_session_id,
         ));
     }
 
@@ -16570,6 +16893,122 @@ mod gpu_host_contract_tests {
     }
 
     #[test]
+    fn runtime_control_invalidation_gate_requires_exact_captured_identity() {
+        let owner_session_id = "owner-session-a";
+        let process_id = 41;
+        let control_session_id = format!("runner-control-session:{}", "b".repeat(32));
+
+        assert!(runner_runtime_control_incarnation_matches(
+            Some(owner_session_id),
+            Some(process_id),
+            Some(&control_session_id),
+            owner_session_id,
+            process_id,
+            &control_session_id,
+        ));
+        assert!(!runner_runtime_control_incarnation_matches(
+            Some("owner-session-b"),
+            Some(process_id),
+            Some(&control_session_id),
+            owner_session_id,
+            process_id,
+            &control_session_id,
+        ));
+        assert!(!runner_runtime_control_incarnation_matches(
+            Some(owner_session_id),
+            Some(process_id + 1),
+            Some(&control_session_id),
+            owner_session_id,
+            process_id,
+            &control_session_id,
+        ));
+        assert!(!runner_runtime_control_incarnation_matches(
+            Some(owner_session_id),
+            Some(process_id),
+            Some(&format!("runner-control-session:{}", "c".repeat(32))),
+            owner_session_id,
+            process_id,
+            &control_session_id,
+        ));
+        assert!(!runner_runtime_control_incarnation_matches(
+            Some("*"),
+            Some(process_id),
+            Some(&control_session_id),
+            owner_session_id,
+            process_id,
+            &control_session_id,
+        ));
+        assert!(!runner_runtime_control_incarnation_matches(
+            Some(owner_session_id),
+            Some(process_id),
+            Some("*"),
+            owner_session_id,
+            process_id,
+            &control_session_id,
+        ));
+        assert!(!runner_runtime_control_incarnation_matches(
+            Some(owner_session_id),
+            Some(process_id),
+            Some(&control_session_id),
+            "*",
+            process_id,
+            &control_session_id,
+        ));
+        assert!(!runner_runtime_control_incarnation_matches(
+            Some(owner_session_id),
+            Some(process_id),
+            Some(&control_session_id),
+            owner_session_id,
+            process_id,
+            "*",
+        ));
+    }
+
+    #[tokio::test]
+    async fn runtime_control_cancellation_guard_runs_invalidation_when_delivery_is_aborted() {
+        let (cancelled_tx, cancelled_rx) = tokio::sync::oneshot::channel();
+        let (armed_tx, armed_rx) = tokio::sync::oneshot::channel();
+        let delivery = tokio::spawn(async move {
+            let _cancellation_guard = runner_runtime_control_cancellation_guard(async move {
+                let _ = cancelled_tx.send(());
+            });
+            let _ = armed_tx.send(());
+            std::future::pending::<()>().await;
+        });
+
+        armed_rx.await.expect("delivery guard should be armed");
+        delivery.abort();
+        assert!(delivery
+            .await
+            .expect_err("delivery should be aborted")
+            .is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(1), cancelled_rx)
+            .await
+            .expect("cancellation invalidation should run promptly")
+            .expect("cancellation invalidation action should execute");
+    }
+
+    #[tokio::test]
+    async fn runtime_control_cancellation_guard_disarm_suppresses_invalidation() {
+        let (cancelled_tx, cancelled_rx) = tokio::sync::oneshot::channel();
+        let mut cancellation_guard = runner_runtime_control_cancellation_guard(async move {
+            let _ = cancelled_tx.send(());
+        });
+
+        cancellation_guard.disarm();
+        drop(cancellation_guard);
+
+        let cancellation_result =
+            tokio::time::timeout(std::time::Duration::from_secs(1), cancelled_rx)
+                .await
+                .expect("disarmed monitor should finish promptly");
+        assert!(
+            cancellation_result.is_err(),
+            "disarmed guard must not run invalidation"
+        );
+    }
+
+    #[test]
     fn generated_runtime_control_token_has_os_random_challenge_shape() {
         let token = generate_runner_runtime_control_token().unwrap();
         assert!(canonical_runner_runtime_control_token(&token));
@@ -16577,8 +17016,159 @@ mod gpu_host_contract_tests {
     }
 
     #[test]
+    fn runtime_control_write_timeout_policy_is_finite_and_bounded() {
+        let default =
+            std::time::Duration::from_millis(DEFAULT_RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_MS);
+        let maximum = std::time::Duration::from_millis(MAX_RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_MS);
+        assert!(default > std::time::Duration::ZERO);
+        assert!(default < maximum);
+        assert_eq!(
+            runner_runtime_control_write_timeout_from_config(None),
+            default
+        );
+        assert_eq!(
+            runner_runtime_control_write_timeout_from_config(Some("invalid")),
+            default
+        );
+        assert_eq!(
+            runner_runtime_control_write_timeout_from_config(Some("0")),
+            default
+        );
+        assert_eq!(
+            runner_runtime_control_write_timeout_from_config(Some("1")),
+            std::time::Duration::from_millis(1)
+        );
+        assert_eq!(
+            runner_runtime_control_write_timeout_from_config(Some(
+                &(MAX_RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_MS + 1).to_string(),
+            )),
+            maximum
+        );
+        assert_eq!(
+            runner_runtime_control_write_timeout_from_config(Some(&u64::MAX.to_string())),
+            maximum
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_control_ack_wait_reports_exact_match() {
+        let token = format!("runner-control:{}", "1".repeat(32));
+        let control_session_id = format!("runner-control-session:{}", "2".repeat(32));
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+        tx.send(runtime_control_ack_line(
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            &control_session_id,
+        ))
+        .unwrap();
+
+        let outcome = wait_for_runner_runtime_control_ack(
+            &mut rx,
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            std::process::id(),
+            &control_session_id,
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+
+        assert_eq!(outcome, RunnerRuntimeControlAckWaitOutcome::Acknowledged);
+    }
+
+    #[tokio::test]
+    async fn runtime_control_ack_wait_reports_deadline_timeout() {
+        let token = format!("runner-control:{}", "3".repeat(32));
+        let control_session_id = format!("runner-control-session:{}", "4".repeat(32));
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+
+        let outcome = wait_for_runner_runtime_control_ack(
+            &mut rx,
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            std::process::id(),
+            &control_session_id,
+            std::time::Duration::from_millis(10),
+        )
+        .await;
+        drop(tx);
+
+        assert_eq!(
+            outcome,
+            RunnerRuntimeControlAckWaitOutcome::DeadlineExceeded
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_control_ack_wait_reports_closed_channel() {
+        let token = format!("runner-control:{}", "5".repeat(32));
+        let control_session_id = format!("runner-control-session:{}", "6".repeat(32));
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(4);
+        drop(tx);
+
+        let outcome = wait_for_runner_runtime_control_ack(
+            &mut rx,
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            std::process::id(),
+            &control_session_id,
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+
+        assert_eq!(outcome, RunnerRuntimeControlAckWaitOutcome::ChannelClosed);
+    }
+
+    #[tokio::test]
+    async fn runtime_control_ack_wait_fails_immediately_on_lag() {
+        let token = format!("runner-control:{}", "7".repeat(32));
+        let control_session_id = format!("runner-control-session:{}", "8".repeat(32));
+        let (tx, mut rx) = tokio::sync::broadcast::channel(1);
+        tx.send("unrelated protocol line".to_string()).unwrap();
+        tx.send(runtime_control_ack_line(
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            &control_session_id,
+        ))
+        .unwrap();
+
+        let outcome = wait_for_runner_runtime_control_ack(
+            &mut rx,
+            RunnerRuntimeControlStatus::Paused,
+            &token,
+            std::process::id(),
+            &control_session_id,
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+
+        assert_eq!(outcome, RunnerRuntimeControlAckWaitOutcome::DeliveryLagged);
+    }
+
+    #[test]
     fn runtime_control_ack_timeout_covers_plugin_watchdog() {
         assert!(DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS > PLUGIN_TIMEOUT_SECS * 1_000);
+        let default =
+            std::time::Duration::from_millis(DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS);
+        let maximum = std::time::Duration::from_millis(MAX_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS);
+        assert!(default < maximum);
+        assert_eq!(
+            runner_runtime_control_ack_timeout_from_config(None),
+            default
+        );
+        assert_eq!(
+            runner_runtime_control_ack_timeout_from_config(Some("invalid")),
+            default
+        );
+        assert_eq!(
+            runner_runtime_control_ack_timeout_from_config(Some("0")),
+            default
+        );
+        assert_eq!(
+            runner_runtime_control_ack_timeout_from_config(Some(
+                &(MAX_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS + 1).to_string(),
+            )),
+            maximum
+        );
     }
 
     #[test]
