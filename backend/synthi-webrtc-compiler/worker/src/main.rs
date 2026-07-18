@@ -851,9 +851,9 @@ async fn main() -> Result<()> {
     debug_log!("Worker starting...");
     debug_log!("Operating System: {}", std::env::consts::OS);
 
-    hmr::runtime_acceptance_receipt::initialize_runtime_acceptance_signer()
+    hmr::runtime_evidence_transport::initialize_runtime_evidence_transport_signer()
         .map_err(anyhow::Error::msg)?;
-    debug_log!("[Worker] GPU runtime acceptance signer initialized");
+    debug_log!("[Worker] GPU runtime evidence transport signer initialized");
 
     // Prevent broken X11 connections (e.g. Xvfb tear-down during a reset
     // mid-build) from exit(1)-ing the worker. Must run before any X-using
@@ -2093,20 +2093,24 @@ async fn wire_peer_channels(
     audio_fanout: Arc<worker::webrtc::TrackFanout>,
 ) -> Result<()> {
     let pc = pc.clone();
-    let attestation_label =
-        hmr::runtime_acceptance_receipt::RUNTIME_ACCEPTANCE_ATTESTATION_DATA_CHANNEL_LABEL;
-    let attestation_dc = pc
-        .create_data_channel(attestation_label, Some(RTCDataChannelInit::default()))
+    let evidence_transport_label =
+        hmr::runtime_evidence_transport::RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL;
+    let evidence_transport_dc = pc
+        .create_data_channel(
+            evidence_transport_label,
+            Some(RTCDataChannelInit::default()),
+        )
         .await?;
-    let attestation_dc_for_open = attestation_dc.clone();
-    attestation_dc.on_open(Box::new(move || {
-        let dc = attestation_dc_for_open.clone();
+    let evidence_transport_dc_for_open = evidence_transport_dc.clone();
+    evidence_transport_dc.on_open(Box::new(move || {
+        let dc = evidence_transport_dc_for_open.clone();
         async move {
-            let payload = hmr::runtime_acceptance_receipt::global_runtime_acceptance_signer()
+            let payload =
+                hmr::runtime_evidence_transport::global_runtime_evidence_transport_signer()
                 .and_then(|signer| {
                     serde_json::to_string(signer.verification_key()).map_err(|error| {
                         format!(
-                            "runtime_acceptance_verification_key_serialize_failed:{error}"
+                            "runtime_evidence_transport_verification_key_serialize_failed:{error}"
                         )
                     })
                 });
@@ -2115,18 +2119,18 @@ async fn wire_peer_channels(
                     if let Err(error) = dc_send_text_with_backpressure(
                         &dc,
                         payload,
-                        attestation_label,
+                        evidence_transport_label,
                     )
                     .await
                     {
                         eprintln!(
-                            "[Worker] GPU runtime acceptance key announcement failed: {error}"
+                            "[Worker] GPU runtime evidence transport key announcement failed: {error}"
                         );
                     }
                 }
                 Err(error) => {
                     eprintln!(
-                        "[Worker] GPU runtime acceptance key announcement unavailable: {error}"
+                        "[Worker] GPU runtime evidence transport key announcement unavailable: {error}"
                     );
                 }
             }
