@@ -1,6 +1,22 @@
 from agents.gpu_device_mapping import build_device_mapping_report, extract_kernel_regions
 
 
+def test_device_mapping_does_not_infer_generated_role_from_extension():
+    report = build_device_mapping_report(
+        source_files={
+            "src/kernel.hip": 'extern "C" __global__ void step() {}',
+        },
+        generated_files={
+            "opaque/generated.hip": 'extern "C" __global__ void step() {}',
+        },
+        manifest={"files": ["opaque/generated.hip"]},
+    )
+
+    assert report["generatedDevicePath"] is None
+    assert report["mappingStatus"] == "missing"
+    assert report["deviceMappings"] == []
+
+
 def test_extract_kernel_regions_records_body_spans():
     source = '__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n'
 

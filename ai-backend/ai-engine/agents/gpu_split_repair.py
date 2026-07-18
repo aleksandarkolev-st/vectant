@@ -205,7 +205,19 @@ def repair_split_artifacts(
         else []
     )
 
-    role_paths = _resolve_split_role_paths(repaired, manifest)
+    role_paths = _resolve_split_role_paths(manifest)
+    if not role_paths or any(
+        not path or path not in repaired for path in role_paths.values()
+    ):
+        return repaired, {
+            "schemaVersion": REPAIR_SCHEMA_VERSION,
+            "repaired": False,
+            "inputReasonCodes": input_reason_codes,
+            "repairRules": [],
+            "changedFiles": [],
+            "scope": "generated_artifacts_only",
+            "blockingReasonCodes": ["split_role_declarations_incomplete"],
+        }
     device_path = role_paths.get("device")
     core_path = role_paths.get("core")
     shared_path = role_paths.get("shared")
@@ -525,7 +537,13 @@ def canonicalize_source_backed_device_roles(
     """
 
     repaired = {str(path): str(content) for path, content in files.items()}
-    role_paths = _resolve_split_role_paths(repaired, manifest)
+    role_paths = _resolve_split_role_paths(manifest)
+    if not role_paths or any(
+        not path or path not in repaired for path in role_paths.values()
+    ):
+        report = _empty_repair_report()
+        report["blockingReasonCodes"] = ["split_role_declarations_incomplete"]
+        return repaired, report
     device_path = role_paths.get("device")
     if not device_path or device_path not in repaired:
         return repaired, _empty_repair_report()

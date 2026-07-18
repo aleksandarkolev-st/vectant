@@ -10,6 +10,7 @@ from typing import Any, Dict, Mapping, Optional, Set
 
 from agents.abi_stamper import constant_layout_hash, mask_comments_for_parsing, stamp_device_source
 from agents.gpu_device_markers import has_gpu_device_marker
+from generated_path_policy import GeneratedPathViolation, normalize_generated_relative_path
 
 
 _GLOBAL_KERNEL_RE = re.compile(
@@ -48,7 +49,7 @@ def build_device_mapping_report(
     reject `device_only` instead of guessing.
     """
 
-    generated_path = _manifest_device_path(manifest) or _first_device_path(generated_files)
+    generated_path = _manifest_device_path(manifest)
     generated_source = generated_files.get(generated_path or "", "") if generated_path else ""
     generated_region_records = extract_kernel_region_records(generated_source)
     generated_regions, generated_duplicate_symbols = _unique_kernel_regions_by_symbol(
@@ -325,19 +326,10 @@ def _manifest_device_path(manifest: Mapping[str, Any]) -> Optional[str]:
     if isinstance(module_files, Mapping):
         device = module_files.get("device")
         if isinstance(device, str) and device.strip():
-            return _normalize_path(device)
-    files = manifest.get("files")
-    if isinstance(files, list):
-        for path in files:
-            if isinstance(path, str) and _is_device_source_path(path):
-                return _normalize_path(path)
-    return None
-
-
-def _first_device_path(files: Mapping[str, str]) -> Optional[str]:
-    for path in sorted(files):
-        if _is_device_source_path(path):
-            return _normalize_path(path)
+            try:
+                return normalize_generated_relative_path(device)
+            except GeneratedPathViolation:
+                return None
     return None
 
 

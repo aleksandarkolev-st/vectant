@@ -65,6 +65,11 @@ from llm.provider_diagnostics import (
     format_provider_diagnostic,
     provider_failure_reason,
 )
+from generated_path_policy import (
+    GeneratedPathViolation,
+    normalize_generated_path_list,
+    normalize_generated_relative_path,
+)
 from verifier_gpu import SplitVerificationResult, Violation, verify_split_output
 
 if TYPE_CHECKING:  # avoid pulling the provider factory + its heavy SDK deps
@@ -1027,13 +1032,6 @@ _LAUNCH_GRAPH_BLOCK_RE = re.compile(
     r"<synthi_launch_graph>(?P<body>.*?)</synthi_launch_graph>", re.DOTALL
 )
 
-_ROLE_FILENAMES = {
-    "shared": "shared.h",
-    "core": "core.cpp",
-    "gui": "gui.cpp",
-    "host_runner": "host_runner.cpp",
-    "device": "device.cu",
-}
 _SOURCE_GLOBAL_KERNEL_RE = re.compile(
     r"\b(?:"
     r"__global__\s+(?:void\s+)?"
@@ -1155,85 +1153,203 @@ def _decode_structural_source_escapes(value: str) -> str:
     return "".join(out)
 
 
-def _is_file_map_like(value: Mapping[str, Any]) -> bool:
-    return any(
-        key in _ROLE_FILENAMES or _looks_like_source_file(str(key))
-        for key in value.keys()
-    )
+_FILE_RECORD_NAME_KEYS = ("filename", "path", "name")
+_FILE_RECORD_CONTENT_KEYS = ("content", "file_content", "source")
 
 
-def _normalise_file_map(files: Mapping[str, Any]) -> Dict[str, str]:
+def _generated_file_map_error(reason_code: str, message: str) -> KernelSplitterError:
+    error = KernelSplitterError(f"{reason_code}: {message}")
+    error.reason_code = reason_code
+    return error
+
+
+def _mapping_fields(
+    value: Mapping[str, Any],
+    names: Sequence[str],
+) -> List[tuple[str, Any]]:
+    return [(name, value[name]) for name in names if name in value]
+
+
+def _is_file_map_like(
+    value: Mapping[str, Any],
+    *,
+    declared_paths: Iterable[str] = (),
+) -> bool:
+    """Return whether a decoded object structurally contains generated files.
+
+    Generated filenames are opaque relative paths. Extensions and semantic role
+    names are not evidence; an explicit file-record object is the only object
+    shape that is not treated as a nested file map.
+    """
+
+    if not value:
+        return False
+    declared = set(declared_paths)
+    normalized_keys: List[str] = []
+    for key in value:
+        try:
+            normalized_keys.append(normalize_generated_relative_path(key))
+        except GeneratedPathViolation:
+            # Let the recursive normalizer produce the typed path-policy error.
+            normalized_keys.append("")
+    if declared and any(path in declared for path in normalized_keys):
+        return True
+
+    name_fields = _mapping_fields(value, _FILE_RECORD_NAME_KEYS)
+    content_fields = _mapping_fields(value, _FILE_RECORD_CONTENT_KEYS)
+    if content_fields and (name_fields or len(value) == 1):
+        return False
+    return all(isinstance(item, (str, Mapping)) for item in value.values())
+
+
+def _manifest_declared_generated_paths(
+    manifest: Optional[Mapping[str, Any]],
+) -> set[str]:
+    if not isinstance(manifest, Mapping):
+        return set()
+    module_files = manifest.get("module_files")
+    if not isinstance(module_files, Mapping):
+        return set()
+    try:
+        return set(normalize_generated_path_list(
+            path for path in module_files.values() if path is not None
+        ))
+    except GeneratedPathViolation as exc:
+        raise _generated_file_map_error(exc.reason_code, str(exc)) from exc
+
+
+def _normalise_file_map(
+    files: Mapping[str, Any],
+    *,
+    declared_paths: Iterable[str] = (),
+) -> Dict[str, str]:
     """Accept common LLM file-map variants and return filename -> source."""
 
     out: Dict[str, str] = {}
+    owners_by_collision_key: Dict[str, object] = {}
+    declared = set(declared_paths)
 
-    def add(name: str, value: Any) -> None:
-        clean_name = str(name).strip().replace("\\", "/")
-        if clean_name in _ROLE_FILENAMES:
-            clean_name = _ROLE_FILENAMES[clean_name]
-        if isinstance(value, str) and value.strip().startswith("{"):
-            try:
-                decoded = json.loads(value)
-            except json.JSONDecodeError:
-                decoded = None
-            if isinstance(decoded, Mapping):
-                if _is_file_map_like(decoded):
-                    for nested_name, nested_value in decoded.items():
-                        if nested_name in _ROLE_FILENAMES or _looks_like_source_file(str(nested_name)):
-                            add(str(nested_name), nested_value)
-                    return
-                add(clean_name, decoded)
+    def normalized_name(name: object) -> str:
+        try:
+            return normalize_generated_relative_path(name)
+        except GeneratedPathViolation as exc:
+            raise _generated_file_map_error(exc.reason_code, str(exc)) from exc
+
+    def store(name: object, content: str) -> None:
+        clean_name = normalized_name(name)
+        collision_key = clean_name.lower()
+        if collision_key in owners_by_collision_key:
+            previous = owners_by_collision_key[collision_key]
+            raise _generated_file_map_error(
+                "generated.case_collision_rejected",
+                f"provider file paths {previous!r} and {name!r} alias",
+            )
+        owners_by_collision_key[collision_key] = name
+        out[clean_name] = _decode_structural_source_escapes(content)
+
+    def invalid_value(name: object, value: Any) -> KernelSplitterError:
+        return _generated_file_map_error(
+            "generated.invalid_file_value_rejected",
+            (
+                f"provider file {name!r} must contain a non-empty source string "
+                f"or an explicit file record; got {type(value).__name__}"
+            ),
+        )
+
+    def decoded_object(value: str) -> Optional[Mapping[str, Any]]:
+        if not value.strip().startswith("{"):
+            return None
+        try:
+            decoded = json.loads(value, object_pairs_hook=_reject_duplicate_file_keys)
+        except json.JSONDecodeError:
+            return None
+        return decoded if isinstance(decoded, Mapping) else None
+
+    def record_content(
+        target_name: object,
+        content: Any,
+        *,
+        allow_embedded_map: bool,
+    ) -> None:
+        if not isinstance(content, str) or not content.strip():
+            raise invalid_value(target_name, content)
+
+        decoded = decoded_object(content)
+        if isinstance(decoded, Mapping):
+            nested_name_fields = _mapping_fields(decoded, _FILE_RECORD_NAME_KEYS)
+            nested_content_fields = _mapping_fields(decoded, _FILE_RECORD_CONTENT_KEYS)
+            if nested_content_fields and not nested_name_fields and len(decoded) == 1:
+                nested_content = nested_content_fields[0][1]
+                if not isinstance(nested_content, str) or not nested_content.strip():
+                    raise invalid_value(target_name, nested_content)
+                store(target_name, nested_content)
                 return
-            embedded = _extract_embedded_source_object(value)
-            if embedded and _looks_like_source_file(clean_name):
-                out[clean_name] = _decode_structural_source_escapes(embedded)
+            if allow_embedded_map and _is_file_map_like(
+                decoded,
+                declared_paths=declared,
+            ):
+                for nested_name, nested_value in decoded.items():
+                    add(nested_name, nested_value)
                 return
-        if isinstance(value, str) and value.strip() and _looks_like_source_file(clean_name):
-            out[clean_name] = _decode_structural_source_escapes(value)
-        elif isinstance(value, Mapping):
-            filename = value.get("filename") or value.get("path") or value.get("name")
-            content = value.get("content") or value.get("file_content") or value.get("source")
-            if filename and isinstance(content, str) and content.strip():
-                target_name = str(filename).strip().replace("\\", "/")
-                if content.strip().startswith("{"):
-                    try:
-                        decoded = json.loads(content)
-                    except json.JSONDecodeError:
-                        decoded = None
-                    if isinstance(decoded, Mapping) and _is_file_map_like(decoded):
-                        for nested_name, nested_value in decoded.items():
-                            if nested_name in _ROLE_FILENAMES or _looks_like_source_file(str(nested_name)):
-                                add(str(nested_name), nested_value)
-                        return
-                    embedded = _extract_embedded_source_object(content)
-                    if embedded:
-                        out[target_name] = _decode_structural_source_escapes(embedded)
-                        return
-                out[target_name] = _decode_structural_source_escapes(content)
-                return
-            if isinstance(content, str) and content.strip() and _looks_like_source_file(clean_name):
-                if content.strip().startswith("{"):
-                    try:
-                        decoded = json.loads(content)
-                    except json.JSONDecodeError:
-                        decoded = None
-                    if isinstance(decoded, Mapping) and _is_file_map_like(decoded):
-                        for nested_name, nested_value in decoded.items():
-                            if nested_name in _ROLE_FILENAMES or _looks_like_source_file(str(nested_name)):
-                                add(str(nested_name), nested_value)
-                        return
-                    embedded = _extract_embedded_source_object(content)
-                    if embedded:
-                        out[clean_name] = _decode_structural_source_escapes(embedded)
-                        return
-                out[clean_name] = _decode_structural_source_escapes(content)
-                return
-            for nested_name, nested_value in value.items():
-                if _looks_like_source_file(str(nested_name)):
-                    add(str(nested_name), nested_value)
+
+        embedded = _extract_embedded_source_object(content)
+        if embedded is not None:
+            if not embedded.strip():
+                raise invalid_value(target_name, embedded)
+            store(target_name, embedded)
+            return
+        store(target_name, content)
+
+    def add(name: object, value: Any) -> None:
+        clean_name = normalized_name(name)
+        if isinstance(value, str):
+            decoded = decoded_object(value)
+            nested_declared = bool(
+                isinstance(decoded, Mapping)
+                and any(
+                    normalized_name(nested_name) in declared
+                    for nested_name in decoded
+                )
+            )
+            record_content(
+                name,
+                value,
+                allow_embedded_map=bool(decoded) and (not declared or nested_declared),
+            )
+            return
+        if not isinstance(value, Mapping):
+            raise invalid_value(name, value)
+
+        name_fields = _mapping_fields(value, _FILE_RECORD_NAME_KEYS)
+        content_fields = _mapping_fields(value, _FILE_RECORD_CONTENT_KEYS)
+        if len(name_fields) > 1 or len(content_fields) > 1:
+            raise _generated_file_map_error(
+                "generated.invalid_file_value_rejected",
+                f"provider file record {clean_name!r} contains ambiguous alias fields",
+            )
+        if name_fields:
+            if not content_fields:
+                raise invalid_value(name, value)
+            record_content(
+                name_fields[0][1],
+                content_fields[0][1],
+                allow_embedded_map=True,
+            )
+            return
+        if content_fields:
+            record_content(
+                name,
+                content_fields[0][1],
+                allow_embedded_map=True,
+            )
+            return
+        if not value:
+            raise invalid_value(name, value)
+        for nested_name, nested_value in value.items():
+            add(nested_name, nested_value)
 
     for key, value in files.items():
-        add(str(key), value)
+        add(key, value)
     return out
 
 
@@ -1786,11 +1902,31 @@ def _extract_block(pattern: re.Pattern, text: str) -> str:
     return m.group("body").strip() if m else ""
 
 
-def _parse_json_block(label: str, body: str) -> Any:
+def _reject_duplicate_file_keys(pairs: Sequence[tuple[str, Any]]) -> Dict[str, Any]:
+    value: Dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise _generated_file_map_error(
+                "generated.case_collision_rejected",
+                f"provider file object contains duplicate JSON key {key!r}",
+            )
+        value[key] = item
+    return value
+
+
+def _parse_json_block(
+    label: str,
+    body: str,
+    *,
+    reject_duplicate_keys: bool = False,
+) -> Any:
     if not body:
         return None
     try:
-        return json.loads(body)
+        return json.loads(
+            body,
+            object_pairs_hook=_reject_duplicate_file_keys if reject_duplicate_keys else None,
+        )
     except json.JSONDecodeError as e:
         raise KernelSplitterError(
             f"{label} block is not valid JSON: {e}; first 200 chars: {body[:200]!r}"
@@ -1808,19 +1944,21 @@ def parse_kernel_split_response(raw: str) -> Dict[str, Any]:
         raise KernelSplitterError(
             "Response missing <JSON>...</JSON> file block — AI did not follow the response format."
         )
-    files = _parse_json_block("<JSON>", files_body)
+    files = _parse_json_block("<JSON>", files_body, reject_duplicate_keys=True)
     if not isinstance(files, dict):
         raise KernelSplitterError(
             "<JSON> block did not parse to a dict; "
             f"got {type(files).__name__}"
         )
-    files = _normalise_file_map(files)
-    if not files:
-        raise KernelSplitterError("<JSON> block did not contain any source files")
 
     arch_body = _extract_block(_ARCH_BLOCK_RE, raw)
     manifest_body = _extract_block(_MANIFEST_BLOCK_RE, arch_body or raw)
     manifest = _parse_json_block("<synthi_build_manifest>", manifest_body) if manifest_body else None
+    declared_paths = _manifest_declared_generated_paths(manifest)
+
+    files = _normalise_file_map(files, declared_paths=declared_paths)
+    if not files:
+        raise KernelSplitterError("<JSON> block did not contain any generated files")
 
     kernel_hashes_body = _extract_block(_KERNEL_HASHES_BLOCK_RE, arch_body or raw)
     kernel_hashes = _parse_json_block("<synthi_kernel_hashes>", kernel_hashes_body) or {}
@@ -1855,11 +1993,13 @@ def _manifest_device_path(
     module_files = manifest.get("module_files") if isinstance(manifest, Mapping) else None
     if isinstance(module_files, Mapping):
         device = module_files.get("device")
-        if isinstance(device, str) and device.strip() in files:
-            return device.strip()
-    for path in sorted(files):
-        if path.replace("\\", "/").lower().endswith((".cu", ".hip")):
-            return path
+        if isinstance(device, str) and device:
+            try:
+                declared = normalize_generated_relative_path(device)
+            except GeneratedPathViolation:
+                return None
+            if declared in files:
+                return declared
     return None
 
 
@@ -1912,12 +2052,13 @@ def _core_path_for_generated_split(
     module_files = manifest.get("module_files") if isinstance(manifest, Mapping) else None
     if isinstance(module_files, Mapping):
         core = module_files.get("core")
-        if isinstance(core, str) and core.strip() in files:
-            return core.strip()
-    for path in sorted(files):
-        normalized = path.replace("\\", "/").lower()
-        if normalized.endswith("core.cpp") or normalized.endswith("/core.cpp"):
-            return path
+        if isinstance(core, str) and core:
+            try:
+                declared = normalize_generated_relative_path(core)
+            except GeneratedPathViolation:
+                return None
+            if declared in files:
+                return declared
     return None
 
 

@@ -40,6 +40,17 @@ from llm.prompts import GPU_SPLIT_PROMPT, build_split_mode_prompt
 from verifier_gpu import SplitVerificationResult, Violation, verify_split_output
 
 
+HIP_SPLIT_MANIFEST = {
+    "module_files": {
+        "shared": "shared.h",
+        "core": "core.cpp",
+        "gui": "gui.cpp",
+        "host_runner": "host_runner.cpp",
+        "device": "device.hip",
+    }
+}
+
+
 SAMPLE_RAW = '''
 <JSON>
 {
@@ -69,6 +80,13 @@ This project is a CUDA vector-add demo.
   "shared_link_flags": [],
   "runner_link_flags": ["-lSDL2","-ldl","-lcudart","-lcuda"],
   "files": ["shared.h","core.cpp","gui.cpp","host_runner.cpp","device.cu"],
+  "module_files": {
+    "shared": "shared.h",
+    "core": "core.cpp",
+    "gui": "gui.cpp",
+    "host_runner": "host_runner.cpp",
+    "device": "device.cu"
+  },
   "system_packages": [],
   "hot_reload_mode": "swap",
   "confidence": { "overall": "high", "runner_synthesis": "high",
@@ -109,6 +127,7 @@ def test_parses_clean_response():
     assert "vec_add" in parsed["files"]["device.cu"]
     assert parsed["manifest"]["gpu"]["vendor"] == "cuda"
     assert parsed["manifest"]["files"][-1] == "device.cu"
+    assert parsed["manifest"]["module_files"]["device"] == "device.cu"
     assert parsed["kernel_hashes"] == {"vec_add": "0x1234abcd5678ef01"}
     assert isinstance(parsed["launch_graph"], list)
     assert parsed["launch_graph"][0]["kernel"] == "vec_add"
@@ -374,6 +393,103 @@ def test_does_not_compile_embedded_file_map_as_role_source():
     parsed = parse_kernel_split_response(raw)
     assert parsed["files"]["shared.h"].startswith("#pragma once")
     assert "core.cpp" not in parsed["files"]
+
+
+def test_preserves_manifest_declared_opaque_generated_paths_and_json_source_bytes():
+    manifest = {
+        "module_files": {
+            "shared": "units/shared.contract",
+            "core": "units/host-core.payload",
+            "gui": "units/visual-stage",
+            "host_runner": "units/launch-entry",
+            "device": "units/accelerator-A.payload",
+        }
+    }
+    files = {
+        "units/shared.contract": '#include "synthi_gpu_runtime.h"',
+        "units/host-core.payload": '{"literal":"source bytes"}',
+        "units/visual-stage": 'extern "C" void gui_on_render(void*) {}',
+        "units/launch-entry": "int main(){return 0;}",
+        "units/accelerator-A.payload": 'extern "C" __global__ void step() {}',
+        "units/auxiliary.data": "opaque auxiliary bytes",
+    }
+    raw = (
+        f"<JSON>{json.dumps(files)}</JSON>"
+        "<synthi_arch_cache>"
+        f"<synthi_build_manifest>{json.dumps(manifest)}</synthi_build_manifest>"
+        "</synthi_arch_cache>"
+    )
+
+    parsed = parse_kernel_split_response(raw)
+
+    assert parsed["files"] == files
+    assert parsed["manifest"]["module_files"]["device"] == "units/accelerator-A.payload"
+
+
+def test_rejects_manifest_semantic_roles_that_alias_one_generated_path():
+    manifest = {
+        "module_files": {
+            "shared": "units/shared",
+            "core": "units/host",
+            "gui": "units/host",
+            "host_runner": "units/runner",
+            "device": "units/device",
+        }
+    }
+    raw = (
+        '<JSON>{"units/shared":"s","units/host":"h",'
+        '"units/runner":"r","units/device":"d"}</JSON>'
+        "<synthi_arch_cache>"
+        f"<synthi_build_manifest>{json.dumps(manifest)}</synthi_build_manifest>"
+        "</synthi_arch_cache>"
+    )
+
+    with pytest.raises(KernelSplitterError, match="generated.case_collision_rejected"):
+        parse_kernel_split_response(raw)
+
+
+@pytest.mark.parametrize(
+    ("path", "reason_code"),
+    [
+        ("../escape.payload", "generated.path_traversal_rejected"),
+        ("C:/escape.payload", "generated.absolute_path_rejected"),
+        ("folder/CON.payload", "generated.invalid_path_rejected"),
+    ],
+)
+def test_rejects_unsafe_generated_file_paths(path, reason_code):
+    raw = f"<JSON>{json.dumps({path: 'bytes'})}</JSON>"
+
+    with pytest.raises(KernelSplitterError, match=reason_code):
+        parse_kernel_split_response(raw)
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ("Units/Accelerator", "units/accelerator"),
+        ("unicode/caf\u00e9", "unicode/cafe\u0301"),
+    ],
+)
+def test_rejects_portable_generated_path_aliases(paths):
+    raw = f"<JSON>{json.dumps({paths[0]: 'first', paths[1]: 'second'})}</JSON>"
+
+    with pytest.raises(KernelSplitterError, match="generated.case_collision_rejected"):
+        parse_kernel_split_response(raw)
+
+
+def test_rejects_duplicate_generated_json_keys_before_dict_collapse():
+    raw = '<JSON>{"units/accelerator":"first","units/accelerator":"second"}</JSON>'
+
+    with pytest.raises(KernelSplitterError, match="generated.case_collision_rejected"):
+        parse_kernel_split_response(raw)
+
+
+@pytest.mark.parametrize("invalid_value", [None, 7, ["not", "source"]])
+def test_rejects_invalid_generated_file_values(invalid_value):
+    raw = f"<JSON>{json.dumps({'units/accelerator': invalid_value})}</JSON>"
+
+    with pytest.raises(KernelSplitterError, match="generated.invalid_file_value_rejected"):
+        parse_kernel_split_response(raw)
 
 
 def test_build_prompt_substitutes_user_code():
@@ -1629,6 +1745,7 @@ def test_deterministic_split_repair_runs_followup_passes():
     verification = verify_split_output(
         files=files,
         manifest_arch=["unit-test-arch"],
+        manifest=HIP_SPLIT_MANIFEST,
         source_files=source_files,
     )
     assert any(v.rule.startswith("source_device_kernel_") for v in verification.violations)
@@ -1636,7 +1753,7 @@ def test_deterministic_split_repair_runs_followup_passes():
 
     repaired, after, report = _apply_split_repairs_until_stable(
         files=files,
-        manifest=None,
+        manifest=HIP_SPLIT_MANIFEST,
         manifest_arch=["unit-test-arch"],
         source_files=source_files,
         verification=verification,

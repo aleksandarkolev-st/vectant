@@ -32,6 +32,26 @@ VALID_HOST_RUNNER = (
     'if (render) render(core_state); return 0; }'
 )
 
+CUDA_SPLIT_MANIFEST = {
+    "module_files": {
+        "shared": "shared.h",
+        "core": "core.cpp",
+        "gui": "gui.cpp",
+        "host_runner": "host_runner.cpp",
+        "device": "device.cu",
+    }
+}
+
+HIP_SPLIT_MANIFEST = {
+    "module_files": {
+        "shared": "shared.h",
+        "core": "core.cpp",
+        "gui": "gui.cpp",
+        "host_runner": "host_runner.cpp",
+        "device": "device.hip",
+    }
+}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Heal verifier — rule 1 (no file creation)
@@ -93,7 +113,12 @@ def test_split_rejects_placeholder_opengl_drawing_loop_comment():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void step() {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert any(v.rule == "gui_render_placeholder" for v in r.violations)
 
 
@@ -122,7 +147,12 @@ def test_split_rejects_gui_render_with_comment_but_no_drawing_effect():
         "host_runner.cpp": VALID_HOST_RUNNER,
         "device.hip": 'extern "C" __global__ void step() {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert any(v.rule == "gui_render_no_effect" for v in r.violations)
 
 
@@ -151,7 +181,12 @@ def test_split_rejects_glfw_opengl_clear_only_renderer():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void step() {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert any(v.rule == "gui_render_too_sparse" for v in r.violations)
 
 
@@ -183,7 +218,12 @@ def test_split_rejects_source_kernel_launch_with_fabricated_arg_pack():
         "host_runner.cpp": VALID_HOST_RUNNER,
         "device.hip": 'extern "C" __global__ void shade_pixels(LaunchArgs args) { }',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert any(v.rule == "source_launch_args_not_preserved" for v in r.violations)
 
 
@@ -210,7 +250,12 @@ def test_split_accepts_source_kernel_launch_with_same_arg_pack_identity():
         "host_runner.cpp": VALID_HOST_RUNNER,
         "device.hip": 'extern "C" __global__ void shade_pixels(LaunchArgs args) { }',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert not any(v.rule == "source_launch_args_not_preserved" for v in r.violations)
     assert not any(v.rule == "source_launch_host_path_not_attached" for v in r.violations)
 
@@ -238,7 +283,12 @@ def test_split_rejects_source_kernel_launch_without_explicit_host_path():
         "host_runner.cpp": VALID_HOST_RUNNER,
         "device.hip": 'extern "C" __global__ void shade_pixels(LaunchArgs args) { }',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert any(
         v.rule == "source_launch_host_path_not_attached"
         and v.offending_symbol == "shade_pixels"
@@ -269,7 +319,12 @@ def test_split_accepts_original_host_path_source_kernel_launch():
         "host_runner.cpp": VALID_HOST_RUNNER,
         "device.hip": 'extern "C" __global__ void shade_pixels(LaunchArgs args) { }',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert not any(v.rule == "source_launch_host_path_not_attached" for v in r.violations)
 
 
@@ -298,7 +353,12 @@ def test_split_accepts_original_host_path_with_runtime_resolved_dispatch_entry()
         "host_runner.cpp": VALID_HOST_RUNNER,
         "device.hip": 'extern "C" __global__ void shade_pixels(LaunchArgs args) { }',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert not any(v.rule == "source_launch_host_path_not_attached" for v in r.violations)
 
 
@@ -328,7 +388,12 @@ def test_split_accepts_runtime_object_launch_with_resolved_arg_pack_entries():
         "host_runner.cpp": VALID_HOST_RUNNER,
         "device.hip": 'struct Payload {}; extern "C" __global__ void shade_pixels(Payload payload, float* output_buffer) { }',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert not any(v.rule == "source_launch_args_not_preserved" for v in r.violations)
     assert not any(v.rule == "source_launch_host_path_not_attached" for v in r.violations)
 
@@ -362,7 +427,12 @@ def test_split_rejects_launching_preserved_kernel_not_in_source_launch_graph():
             'extern "C" __global__ void debug_probe(LaunchArgs args) { }'
         ),
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert any(
         v.rule == "non_source_reachable_launch_site"
         and v.offending_symbol == "debug_probe"
@@ -403,7 +473,12 @@ def test_split_rejects_missing_source_launch_when_other_launch_is_present():
         ),
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert any(
         v.rule == "source_launch_kernel_not_preserved"
@@ -442,7 +517,12 @@ def test_split_accepts_source_launches_and_device_to_host_readback_coverage():
         "device.hip": 'extern "C" __global__ void advect_particles(float* values) { values[0] += 1.0f; }',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert not any(v.rule == "source_launch_kernel_not_preserved" for v in r.violations)
     assert not any(v.rule == "source_device_to_host_readback_not_preserved" for v in r.violations)
@@ -480,7 +560,12 @@ def test_split_allows_source_launch_scalar_aliases_initialized_from_source_expre
         "device.hip": 'extern "C" __global__ void advect_particles(float* values, int n, float cx, unsigned long long frame) {}',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert not any(v.rule == "source_launch_args_not_preserved" for v in r.violations)
 
@@ -503,7 +588,12 @@ def test_split_rejects_statically_invalid_launch_dimensions():
         "device.hip": 'extern "C" __global__ void step(int* out) { }',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert any(v.rule == "invalid_synthi_launch_dimensions" for v in r.violations)
 
@@ -526,7 +616,12 @@ def test_split_rejects_invalid_named_dim3_launch_dimensions():
         "device.hip": 'extern "C" __global__ void step(int* out) { }',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert any(
         v.rule == "invalid_synthi_launch_dimensions" and "block[0]" in v.message
@@ -552,7 +647,12 @@ def test_split_allows_dynamic_launch_dimensions_for_runtime_evidence():
         "device.hip": 'extern "C" __global__ void step(int* out, int n) { }',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert not any(v.rule == "invalid_synthi_launch_dimensions" for v in r.violations)
 
@@ -739,6 +839,191 @@ def test_rejects_new_cu_file():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def test_split_rejects_missing_module_file_role_mapping():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": "",
+        "gui.cpp": "",
+        "host_runner.cpp": "",
+        "device.cu": '__global__ void step() {}',
+    }
+
+    result = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest={},
+    )
+
+    assert not result.ok
+    assert {violation.offending_module for violation in result.violations} == {
+        "shared",
+        "core",
+        "gui",
+        "host_runner",
+        "device",
+    }
+
+
+def test_split_rejects_partial_module_file_role_mapping():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": "",
+        "gui.cpp": "",
+        "host_runner.cpp": "",
+        "device.cu": '__global__ void step() {}',
+    }
+    manifest = {
+        "module_files": {
+            "shared": "shared.h",
+            "core": "core.cpp",
+            "device": "device.cu",
+        }
+    }
+
+    result = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=manifest,
+    )
+
+    assert not result.ok
+    assert {
+        violation.offending_module
+        for violation in result.violations
+        if violation.rule == "split_missing_file"
+    } == {"gui", "host_runner"}
+
+
+def test_split_rejects_duplicate_semantic_role_paths():
+    files = {
+        "units/shared": '#include "synthi_gpu_runtime.h"',
+        "units/core": "",
+        "units/runner": "",
+        "units/device": 'extern "C" __global__ void step() {}',
+    }
+    manifest = {
+        "module_files": {
+            "shared": "units/shared",
+            "core": "units/core",
+            "gui": "units/core",
+            "host_runner": "units/runner",
+            "device": "units/device",
+        }
+    }
+
+    result = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=manifest,
+    )
+
+    assert not result.ok
+    assert result.violations[0].rule == "generated.case_collision_rejected"
+
+
+def test_split_rejects_generated_artifact_without_role_ownership():
+    files = {
+        "units/shared": '#include "synthi_gpu_runtime.h"',
+        "units/core": "",
+        "units/gui": "",
+        "units/runner": "",
+        "units/device": 'extern "C" __global__ void step() {}',
+        "units/hidden-payload": "unbound generated bytes",
+    }
+    manifest = {
+        "module_files": {
+            "shared": "units/shared",
+            "core": "units/core",
+            "gui": "units/gui",
+            "host_runner": "units/runner",
+            "device": "units/device",
+        }
+    }
+
+    result = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=manifest,
+    )
+
+    assert not result.ok
+    assert any(
+        violation.rule == "split_undeclared_generated_file"
+        and violation.offending_module == "units/hidden-payload"
+        for violation in result.violations
+    )
+
+
+def test_split_rejects_manifest_files_that_disagree_with_role_ownership():
+    files = {
+        "units/shared": '#include "synthi_gpu_runtime.h"',
+        "units/core": "",
+        "units/gui": "",
+        "units/runner": "",
+        "units/device": 'extern "C" __global__ void step() {}',
+    }
+    manifest = {
+        "files": [
+            "units/shared",
+            "units/core",
+            "units/gui",
+            "units/runner",
+            "units/device",
+            "units/not-produced",
+        ],
+        "module_files": {
+            "shared": "units/shared",
+            "core": "units/core",
+            "gui": "units/gui",
+            "host_runner": "units/runner",
+            "device": "units/device",
+        },
+    }
+
+    result = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=manifest,
+    )
+
+    assert not result.ok
+    assert any(
+        violation.rule == "split_manifest_file_set_mismatch"
+        for violation in result.violations
+    )
+
+
+def test_split_rejects_undeclared_device_file_without_filename_inference():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": "",
+        "gui.cpp": "",
+        "host_runner.cpp": "",
+        "gpu/arbitrary_compute_stage.hip": '__global__ void step() {}',
+    }
+    manifest = {
+        "module_files": {
+            "shared": "shared.h",
+            "core": "core.cpp",
+            "gui": "gui.cpp",
+            "host_runner": "host_runner.cpp",
+        }
+    }
+
+    result = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=manifest,
+    )
+
+    assert not result.ok
+    assert any(
+        violation.rule == "split_missing_device_file"
+        and violation.offending_module == "device"
+        for violation in result.violations
+    )
+
+
 def test_split_clean_output_passes():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
@@ -747,11 +1032,15 @@ def test_split_clean_output_passes():
         "host_runner.cpp": VALID_HOST_RUNNER,
         "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert r.ok, r.violations
 
 
-def test_split_clean_output_with_manifest_dynamic_paths_passes():
+def test_split_accepts_arbitrary_explicit_role_paths():
     files = {
         "src/state/shared_runtime_abc123.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
         "host/core_loop_abc123.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, { &a, &b, &c, &n }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
@@ -820,7 +1109,11 @@ def test_split_rejects_marker_only_host_runner_gui_reference():
         "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
         "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "host_runner_omits_gui_module" for v in r.violations)
 
 
@@ -832,7 +1125,11 @@ def test_split_rejects_generated_role_including_project_header():
         "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
         "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(
         v.rule == "generated_role_includes_project_header"
         and v.offending_symbol == "simulation.hpp"
@@ -867,7 +1164,12 @@ def test_split_allows_device_role_including_target_source_device_header():
         "device.hip": '#define __KERNELCC__ 1\n#include "src/Device/kernels/CameraRays.h"\n',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     disallowed = {
         "generated_role_includes_project_header",
@@ -902,7 +1204,12 @@ def test_split_rejects_non_device_role_including_target_source_device_header():
         "device.hip": '#include "src/Device/kernels/CameraRays.h"\n',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert any(
         v.rule == "generated_role_includes_project_header"
@@ -932,6 +1239,7 @@ def test_split_rejects_non_device_role_angle_include_resolving_to_project_file()
     r = verify_split_output(
         files=files,
         manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
         source_files=source_files,
     )
 
@@ -957,7 +1265,12 @@ def test_split_rejects_non_device_role_unknown_angle_header_even_without_context
         "device.hip": "extern \"C\" __global__ void noop() {}",
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files={})
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files={},
+    )
 
     assert any(
         v.rule == "generated_role_includes_project_header"
@@ -982,7 +1295,12 @@ def test_split_allows_standard_and_installed_generated_role_includes():
         "device.hip": "extern \"C\" __global__ void noop() {}",
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files={})
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files={},
+    )
 
     assert not any(v.rule == "generated_role_includes_project_header" for v in r.violations)
 
@@ -1007,7 +1325,12 @@ def test_split_rejects_generated_gpu_sdk_vector_type_redeclaration():
         "device.hip": "extern \"C\" __global__ void noop() {}",
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files={})
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files={},
+    )
 
     assert any(
         v.rule == "generated_role_redeclares_gpu_sdk_type"
@@ -1037,7 +1360,12 @@ def test_split_rejects_generated_gpu_sdk_vector_helper_redeclaration():
         "device.hip": "extern \"C\" __global__ void noop() {}",
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files={})
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files={},
+    )
 
     assert {
         v.offending_symbol
@@ -1054,7 +1382,11 @@ def test_split_rejects_invented_gpu_runtime_accessor():
         "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
         "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(
         v.rule == "invented_gpu_runtime_accessor"
         and v.offending_symbol == "synthi_get_gpu_context"
@@ -1076,7 +1408,11 @@ def test_split_rejects_inert_device_kernels_without_host_launch():
         "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
         "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "device_kernels_not_launched" for v in r.violations)
 
 
@@ -1106,7 +1442,12 @@ def test_split_allows_source_include_mapping_without_safe_launch_owner():
         "device.hip": '#include "src/kernels.hip"\n',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert not any(v.rule == "device_kernels_not_launched" for v in r.violations)
 
@@ -1137,7 +1478,12 @@ def test_split_rejects_source_include_kernel_without_original_launch_site():
         "device.hip": '#include "src/kernels.hip"\n',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert any(v.rule == "device_kernels_not_launched" for v in r.violations)
 
@@ -1159,7 +1505,11 @@ def test_split_rejects_constant_false_launch_guard():
         "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
         "device.cu": 'extern "C" __global__ void vec_add(void*) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(
         v.rule == "constant_false_launch_guard"
         and v.offending_symbol == "launched"
@@ -1175,7 +1525,11 @@ def test_split_rejects_placeholder_gui_render():
         "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
         "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "gui_render_placeholder" for v in r.violations)
 
 
@@ -1198,7 +1552,11 @@ def test_split_rejects_sdl_present_and_sparse_point_render():
         "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
         "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     rules = {v.rule for v in r.violations}
     assert "gui_calls_sdl_render_present" in rules
     assert "gui_render_too_sparse" in rules
@@ -1246,6 +1604,7 @@ def test_split_rejects_glfw_opengl_render_that_drops_projection():
     r = verify_split_output(
         files=files,
         manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
         source_files=source_files,
     )
     assert any(v.rule == "opengl_projection_not_preserved" for v in r.violations)
@@ -1270,7 +1629,11 @@ def test_split_rejects_gui_device_pointer_dereference():
             'int i = blockIdx.x * blockDim.x + threadIdx.x; particles[i] = particles[i] + 1.0f; }'
         ),
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(
         v.rule == "gui_dereferences_device_pointer"
         and v.offending_symbol == "d_particles"
@@ -1293,7 +1656,11 @@ def test_split_rejects_uninitialized_device_buffers():
         "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
         "device.cu": 'extern "C" __global__ void step(float*) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "device_buffers_not_initialized" for v in r.violations)
 
 
@@ -1325,6 +1692,7 @@ def test_split_allows_source_device_launch_without_pointer_init_requirement():
     r = verify_split_output(
         files=files,
         manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
         source_files=source_files,
     )
 
@@ -1363,6 +1731,7 @@ def test_split_rejects_synthetic_source_launch_pointer_aggregate():
     r = verify_split_output(
         files=files,
         manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
         source_files=source_files,
     )
 
@@ -1398,6 +1767,7 @@ def test_split_allows_source_launch_aggregate_copied_from_state():
     r = verify_split_output(
         files=files,
         manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
         source_files=source_files,
     )
 
@@ -1421,7 +1791,11 @@ def test_split_allows_output_only_pointer_kernel_without_init():
         "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
         "device.hip": 'extern "C" __global__ void write_size(size_t* out_buffer) { out_buffer[0] = sizeof(float); }',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert not any(v.rule == "device_buffers_not_initialized" for v in r.violations)
 
 
@@ -1445,7 +1819,11 @@ def test_split_reports_only_pointer_params_that_need_input_state():
             'int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < n) output[i] = values[i]; }'
         ),
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     init_violations = [v for v in r.violations if v.rule == "device_buffers_not_initialized"]
     assert init_violations
     assert "d_values" in (init_violations[0].offending_symbol or "")
@@ -1470,7 +1848,11 @@ def test_split_rejects_host_to_device_copy_in_core_on_load():
         "host_runner.cpp": "int main() { return 0; }",
         "device.cu": 'extern "C" __global__ void step(float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "host_to_device_copy_in_core_on_load" for v in r.violations)
 
 
@@ -1491,7 +1873,11 @@ def test_split_rejects_unguarded_device_to_host_copy_after_launch():
         "host_runner.cpp": "int main() { return 0; }",
         "device.cu": 'extern "C" __global__ void step(float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "device_to_host_copy_not_launch_guarded" for v in r.violations)
 
 
@@ -1512,7 +1898,11 @@ def test_split_accepts_source_location_guarded_device_to_host_copy():
         "host_runner.cpp": VALID_HOST_RUNNER,
         "device.cu": 'extern "C" __global__ void step(float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert not any(v.rule == "device_to_host_copy_not_launch_guarded" for v in r.violations)
 
 
@@ -1543,7 +1933,11 @@ def test_split_rejects_zeroed_host_mirror_used_for_render():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.cu": 'extern "C" __global__ void step(float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "host_visible_mirror_zeroed_for_render" for v in r.violations)
 
 
@@ -1583,7 +1977,11 @@ def test_split_rejects_uninitialized_render_mirror_used_for_first_frame():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void init_particles(void*, int*) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert any(
         v.rule == "host_visible_mirror_not_initialized_for_render"
         and v.offending_symbol == "particles"
@@ -1631,7 +2029,11 @@ def test_split_accepts_initialized_render_mirror_used_for_first_frame():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void init_particles(void*, int*) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert not any(v.rule == "host_visible_mirror_not_initialized_for_render" for v in r.violations)
 
 
@@ -1667,7 +2069,12 @@ def test_split_rejects_dropped_source_device_kernel_and_constants():
             "int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < n) p[i].x += p[i].vx * dt; }"
         ),
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert any(
         v.rule == "source_device_kernel_not_preserved"
         and v.offending_symbol == "advance_particle_field"
@@ -1703,7 +2110,12 @@ def test_split_rejects_dropped_macro_wrapped_runtime_kernel_header():
         "device.hip": 'extern "C" __global__ void OtherKernel(int) {}',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert any(
         v.rule == "source_device_kernel_not_preserved"
@@ -1739,7 +2151,12 @@ def test_split_rejects_stubbed_macro_wrapped_runtime_kernel_body():
         "device.hip": 'extern "C" __global__ void CameraRays(HIPRTRenderData render_data) {}',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert any(
         v.rule == "source_device_kernel_body_not_preserved"
@@ -1771,7 +2188,12 @@ def test_split_rejects_macro_kernel_signature_erasure():
         "device.hip": 'extern "C" __global__ void CameraRays(void* data) { data = data; }',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert any(
         v.rule == "source_device_kernel_signature_not_preserved"
@@ -1801,7 +2223,12 @@ def test_split_ignores_commented_kernel_examples_in_source_headers():
         "device.hip": "",
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
 
     assert not any(v.offending_symbol == "my_function" for v in r.violations)
     assert not any(v.offending_symbol == "FakeKernel" for v in r.violations)
@@ -1840,7 +2267,12 @@ def test_split_ignores_constants_in_non_device_hip_helpers():
             "if (i < count) x[i] += kHmrScaleDirection; }"
         ),
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert not any(
         v.rule == "source_device_constant_declaration_not_preserved"
         and v.offending_symbol in {"kFlowGain", "kColorBand"}
@@ -1876,7 +2308,12 @@ def test_split_rejects_stubbed_source_device_kernel_and_dangling_constants():
             'extern "C" __global__ void advance_particle_field(float* x, unsigned int* rgba, int count) {}'
         ),
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+    )
     assert any(v.rule == "source_device_kernel_body_not_preserved" for v in r.violations)
     assert any(
         v.rule == "source_device_constant_declaration_not_preserved"
@@ -1919,7 +2356,11 @@ def test_split_rejects_uninitialized_gui_render_surface():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.cu": 'extern "C" __global__ void step(float*, float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "gui_render_surface_not_initialized" for v in r.violations)
 
 
@@ -1948,7 +2389,11 @@ def test_split_rejects_core_gui_state_type_mismatch():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void step(int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "generated.core_gui_state_abi_mismatch" for v in r.violations)
 
 
@@ -1974,7 +2419,11 @@ def test_split_allows_core_gui_state_type_alias_match():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void step(int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert not any(v.rule == "generated.core_gui_state_abi_mismatch" for v in r.violations)
 
 
@@ -2001,7 +2450,11 @@ def test_split_rejects_private_core_state_type_crossing_gui_boundary():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void step(int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "generated.host_state_type_not_shared" for v in r.violations)
 
 
@@ -2029,7 +2482,11 @@ def test_split_rejects_unqualified_namespaced_shared_constants():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void step(int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert any(
         v.rule == "generated.shared_namespace_symbol_unqualified"
         and v.offending_symbol == "scale::kParticleCount"
@@ -2061,7 +2518,11 @@ def test_split_allows_qualified_namespaced_shared_constants():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void step(int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert not any(v.rule == "generated.shared_namespace_symbol_unqualified" for v in r.violations)
 
 
@@ -2079,7 +2540,11 @@ def test_split_rejects_invalid_device_descriptor_initializer():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.cu": 'extern "C" __global__ void step(int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "invalid_device_descriptor_initializer" for v in r.violations)
 
 
@@ -2099,7 +2564,11 @@ def test_split_rejects_device_descriptor_dangling_arrays():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.cu": 'extern "C" __global__ void step(int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "invalid_device_descriptor_array_reference" for v in r.violations)
 
 
@@ -2121,7 +2590,11 @@ def test_split_allows_declared_device_descriptor_arrays():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.cu": 'extern "C" __global__ void step(int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert not any(v.rule == "invalid_device_descriptor_array_reference" for v in r.violations)
 
 
@@ -2144,7 +2617,11 @@ def test_split_allows_device_init_kernel_before_update():
             'extern "C" __global__ void step(float*) {}'
         ),
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert not any(v.rule == "device_buffers_not_initialized" for v in r.violations)
 
 
@@ -2172,7 +2649,11 @@ def test_split_rejects_init_kernel_that_omits_update_device_buffers():
             "int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < count) { vx[i] += params.dt; rgba[i] = 0xffffffffu; } }"
         ),
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert any(
         v.rule == "device_init_kernel_incomplete" and "dvx" in (v.offending_symbol or "")
         for v in r.violations
@@ -2187,7 +2668,11 @@ def test_split_rejects_missing_lifecycle_exports_and_runtime_redeclaration():
         "host_runner.cpp": "int main() { return 0; }",
         "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert not r.ok
     rules = {v.rule for v in r.violations}
     assert "runtime_abi_redeclared" in rules
@@ -2203,7 +2688,11 @@ def test_split_rejects_heap_state_and_args_array_launch():
         "host_runner.cpp": "int main() { return 0; }",
         "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     rules = {v.rule for v in r.violations}
     assert "heap_allocated_app_state" in rules
     assert "launch_args_array" in rules
@@ -2217,7 +2706,11 @@ def test_split_rejects_invalid_launch_signature_and_runner_registration():
         "host_runner.cpp": 'int main() { synthi_register(ptr, size, "persistent"); return 0; }',
         "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     rules = {v.rule for v in r.violations}
     assert "invalid_synthi_launch_signature" in rules
     assert "host_runner_registers_gpu_buffers" in rules
@@ -2240,7 +2733,11 @@ def test_split_rejects_pointer_cast_launch_arguments():
         "host_runner.cpp": "int main() { return 0; }",
         "device.cu": 'extern "C" __global__ void vec_add(float*, int, float) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     rules = {v.rule for v in r.violations}
     assert "launch_arg_pointer_cast" in rules
 
@@ -2260,7 +2757,11 @@ def test_split_rejects_non_address_launch_arguments():
         "host_runner.cpp": "int main() { return 0; }",
         "device.cu": 'extern "C" __global__ void vec_add(float*, int) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     rules = {v.rule for v in r.violations}
     assert "launch_arg_not_address" in rules
 
@@ -2281,7 +2782,11 @@ def test_split_rejects_kernel_launch_abi_argument_count_mismatch():
         "host_runner.cpp": "int main() { return 0; }",
         "device.cu": 'extern "C" __global__ void advance(float* x, int n, LaunchParams params) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     rules = {v.rule for v in r.violations}
     assert "kernel_launch_abi_mismatch" in rules
 
@@ -2302,7 +2807,11 @@ def test_split_rejects_launch_block_exceeding_kernel_launch_bounds_literal():
         "device.hip": 'GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) step(int n) {}',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     rules = {v.rule for v in r.violations}
     assert "kernel_launch_bounds_exceeded" in rules
 
@@ -2325,7 +2834,11 @@ def test_split_rejects_launch_block_exceeding_kernel_launch_bounds_dim3():
         "device.hip": 'GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) step(int n) {}',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     rules = {v.rule for v in r.violations}
     assert "kernel_launch_bounds_exceeded" in rules
 
@@ -2348,7 +2861,11 @@ def test_split_accepts_launch_block_within_kernel_launch_bounds_dim3():
         "device.hip": 'GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) step(int n) {}',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     rules = {v.rule for v in r.violations}
     assert "kernel_launch_bounds_exceeded" not in rules
 
@@ -2369,7 +2886,11 @@ def test_split_rejects_launch_block_exceeding_macro_kernel_launch_bounds():
         "device.hip": '#define STEP_THREADS 64\nGLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(STEP_THREADS) step(int n) {}',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     rules = {v.rule for v in r.violations}
     assert "kernel_launch_bounds_exceeded" in rules
 
@@ -2391,7 +2912,11 @@ def test_split_rejects_launch_block_exceeding_constexpr_kernel_launch_bounds():
         "device.hip": 'constexpr int step_threads = 32 * 2;\n__global__ __launch_bounds__(step_threads) void step(int n) {}',
     }
 
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     rules = {v.rule for v in r.violations}
     assert "kernel_launch_bounds_exceeded" in rules
 
@@ -2404,7 +2929,11 @@ def test_split_rejects_runtime_unsafe_gpu_buffer_split():
         "host_runner.cpp": "int main() { return 0; }",
         "device.hip": 'extern "C" const DeviceDescriptor* device_descriptor() { return nullptr; }\nextern "C" __global__ void vec_add(float*) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     rules = {v.rule for v in r.violations}
     assert "missing_core_gpu_lifecycle_export" in rules
     assert "device_file_owns_host_gpu_lifecycle" in rules
@@ -2420,7 +2949,11 @@ def test_split_rejects_mangled_device_kernel_exports():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": "__global__ void particle_flow(float*) {}",
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "device_kernel_not_extern_c" for v in r.violations)
 
 
@@ -2432,7 +2965,11 @@ def test_split_rejects_brittle_sdl_window_id_lookup():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void particle_flow(float*) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "gui_uses_global_window_id_lookup" for v in r.violations)
 
 
@@ -2444,7 +2981,11 @@ def test_split_rejects_implicit_render_surface_lookup():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void particle_flow(float*) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "gui_uses_implicit_render_surface_lookup" for v in r.violations)
 
 
@@ -2456,7 +2997,11 @@ def test_split_rejects_backend_swap_in_gui():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void particle_flow(float*) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert any(
         v.rule == "gui_calls_backend_present" and v.offending_symbol == "glfwSwapBuffers"
         for v in r.violations
@@ -2471,7 +3016,11 @@ def test_split_rejects_gui_creating_render_surface():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void particle_flow(float*) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert any(
         v.rule == "gui_creates_render_surface" and v.offending_symbol == "glfwCreateWindow"
         for v in r.violations
@@ -2493,6 +3042,7 @@ def test_split_rejects_translating_glfw_source_to_sdl():
     r = verify_split_output(
         files=files,
         manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
         source_files=source_files,
     )
     assert any(
@@ -2509,7 +3059,11 @@ def test_split_rejects_treating_runner_renderer_as_window():
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
         "device.hip": 'extern "C" __global__ void particle_flow(float*) {}',
     }
-    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        manifest=HIP_SPLIT_MANIFEST,
+    )
     assert any(v.rule == "gui_treats_renderer_as_window" for v in r.violations)
 
 
@@ -2521,7 +3075,11 @@ def test_split_rejects_empty_arch():
         "host_runner.cpp": "",
         "device.cu": "__global__ void k() {}",
     }
-    r = verify_split_output(files=files, manifest_arch=[])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=[],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert not r.ok
     assert any(v.rule == "manifest_arch_empty" for v in r.violations)
 
@@ -2534,7 +3092,11 @@ def test_split_rejects_raw_launch_site():
         "host_runner.cpp": "",
         "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert not r.ok
     assert any(
         v.rule == "raw_launch_not_rewritten" and v.offending_symbol == "vec_add"
@@ -2550,7 +3112,11 @@ def test_split_rejects_unresolved_synthi_launch_site():
         "host_runner.cpp": "",
         "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert not r.ok
     assert any(
         v.rule == "launch_site_unresolved" and v.offending_symbol == "ghost_kernel"
@@ -2569,7 +3135,11 @@ def test_split_rejects_direct_launch_table_bypass():
         "host_runner.cpp": "",
         "device.cu": "__global__ void vec_add(float*) {}",
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert not r.ok
     assert any(v.rule == "launch_indirection_bypassed" for v in r.violations)
 
@@ -2581,7 +3151,11 @@ def test_split_rejects_missing_device_file():
         "gui.cpp": "",
         "host_runner.cpp": "",
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert not r.ok
     assert any(v.rule == "split_missing_device_file" for v in r.violations)
 
@@ -2594,6 +3168,10 @@ def test_split_rejects_missing_runtime_contract_header():
         "host_runner.cpp": "int main() { return 0; }",
         "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
     }
-    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        manifest=CUDA_SPLIT_MANIFEST,
+    )
     assert not r.ok
     assert any(v.rule == "missing_gpu_runtime_header" for v in r.violations)

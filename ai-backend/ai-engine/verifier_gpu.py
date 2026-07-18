@@ -1781,10 +1781,10 @@ def _source_body_effectively_empty(body: str) -> bool:
 
 
 def _manifest_role_path(manifest: Optional[Mapping[str, object]], role: str) -> Optional[str]:
-    if not isinstance(manifest, dict):
+    if not isinstance(manifest, Mapping):
         return None
     module_files = manifest.get("module_files")
-    if not isinstance(module_files, dict):
+    if not isinstance(module_files, Mapping):
         return None
     value = module_files.get(role)
     if not isinstance(value, str) or not value.strip():
@@ -1800,41 +1800,12 @@ def _normalize_generated_path(path: str) -> str:
 
 
 def _resolve_split_role_paths(
-    files: Mapping[str, str],
     manifest: Optional[Mapping[str, object]],
 ) -> dict[str, Optional[str]]:
-    def first_existing(candidates: Iterable[str]) -> Optional[str]:
-        for candidate in candidates:
-            if candidate in files:
-                return candidate
-        return None
-
-    paths: dict[str, Optional[str]] = {}
-    fallback_candidates = {
-        "shared": ("shared.h",),
-        "core": ("core.cpp",),
-        "gui": ("gui.cpp",),
-        "host_runner": ("host_runner.cpp",),
+    return {
+        role: _manifest_role_path(manifest, role)
+        for role in ("shared", "core", "gui", "host_runner", "device")
     }
-    for role, candidates in fallback_candidates.items():
-        declared = _manifest_role_path(manifest, role)
-        paths[role] = declared if declared else first_existing(candidates)
-
-    declared_device = _manifest_role_path(manifest, "device")
-    if declared_device:
-        paths["device"] = declared_device
-    else:
-        paths["device"] = first_existing(("device.cu", "device.hip"))
-        if paths["device"] is None:
-            paths["device"] = next(
-                (
-                    name
-                    for name in files
-                    if name.replace("\\", "/").lower().endswith((".cu", ".hip"))
-                ),
-                None,
-            )
-    return paths
 
 
 def verify_split_output(
@@ -1859,8 +1830,7 @@ def verify_split_output(
         `synthi_gpu_runtime.h` ABI header instead of inventing local
         launch/lifecycle declarations.
       - the split contains every current GPU HMR semantic role. Filenames
-        come from `compile_manifest.module_files`; canonical names are only
-        fallbacks for older outputs.
+        come exclusively from `compile_manifest.module_files`.
     """
     violations: List[Violation] = []
     try:
@@ -1868,8 +1838,7 @@ def verify_split_output(
         module_files = manifest.get("module_files") if isinstance(manifest, Mapping) else None
         if isinstance(module_files, Mapping):
             normalize_generated_path_list(
-                (path for path in module_files.values() if path is not None),
-                allow_exact_duplicates=True,
+                path for path in module_files.values() if path is not None
             )
         gpu = manifest.get("gpu") if isinstance(manifest, Mapping) else None
         device_roles = gpu.get("device_roles") if isinstance(gpu, Mapping) else None
@@ -1899,29 +1868,110 @@ def verify_split_output(
             )
         )
 
-    role_paths = _resolve_split_role_paths(files, manifest)
+    role_paths = _resolve_split_role_paths(manifest)
+    role_resolution_failed = False
     for role in ("shared", "core", "gui", "host_runner"):
         path = role_paths.get(role)
-        if not path or path not in files:
+        if not path:
+            role_resolution_failed = True
             violations.append(
                 Violation(
                     rule="split_missing_file",
-                    message=f"Split output is missing required {role} role file.",
-                    offending_module=path or role,
+                    message=(
+                        "compile_manifest.module_files is missing the required "
+                        f"{role} role declaration. Role identity cannot be inferred "
+                        "from a generated filename."
+                    ),
+                    offending_module=role,
+                )
+            )
+        elif path not in files:
+            role_resolution_failed = True
+            violations.append(
+                Violation(
+                    rule="split_missing_file",
+                    message=f"Split output does not contain declared {role} role path {path!r}.",
+                    offending_module=path,
                 )
             )
     device_path = role_paths.get("device")
-    if not device_path or device_path not in files:
+    if not device_path:
+        role_resolution_failed = True
         violations.append(
             Violation(
                 rule="split_missing_device_file",
                 message=(
-                    "GPU split output is missing the manifest-declared device "
-                    "role file. Kernels must live in the dedicated device role."
+                    "compile_manifest.module_files is missing the required device "
+                    "role declaration. Device role identity cannot be inferred from "
+                    "an extension or generated filename."
                 ),
-                offending_module=device_path or "device",
+                offending_module="device",
             )
         )
+    elif device_path not in files:
+        role_resolution_failed = True
+        violations.append(
+            Violation(
+                rule="split_missing_device_file",
+                message=f"GPU split output does not contain declared device role path {device_path!r}.",
+                offending_module=device_path,
+            )
+        )
+
+    if role_resolution_failed:
+        return SplitVerificationResult(ok=False, violations=violations)
+
+    declared_role_paths = {
+        path for path in role_paths.values() if isinstance(path, str) and path
+    }
+    manifest_files = manifest.get("files") if isinstance(manifest, Mapping) else None
+    if manifest_files is not None:
+        if not isinstance(manifest_files, list):
+            violations.append(
+                Violation(
+                    rule="split_manifest_file_set_invalid",
+                    message="compile_manifest.files must be an ordered list of generated paths.",
+                    offending_module="files",
+                )
+            )
+            return SplitVerificationResult(ok=False, violations=violations)
+        try:
+            normalized_manifest_files = set(normalize_generated_path_list(manifest_files))
+        except GeneratedPathViolation as exc:
+            violations.append(
+                Violation(
+                    rule=exc.reason_code,
+                    message=str(exc),
+                    offending_module=str(exc.path),
+                )
+            )
+            return SplitVerificationResult(ok=False, violations=violations)
+        if normalized_manifest_files != declared_role_paths:
+            violations.append(
+                Violation(
+                    rule="split_manifest_file_set_mismatch",
+                    message=(
+                        "compile_manifest.files must exactly match the generated paths "
+                        "owned by compile_manifest.module_files."
+                    ),
+                    offending_module="files",
+                )
+            )
+
+    undeclared_generated_paths = sorted(set(files) - declared_role_paths)
+    for path in undeclared_generated_paths:
+        violations.append(
+            Violation(
+                rule="split_undeclared_generated_file",
+                message=(
+                    f"Generated artifact {path!r} is not owned by any declared semantic role. "
+                    "Unbound generated bytes cannot participate in an accepted split."
+                ),
+                offending_module=path,
+            )
+        )
+    if violations:
+        return SplitVerificationResult(ok=False, violations=violations)
 
     shared_path = role_paths.get("shared") or "shared"
     core_path = role_paths.get("core") or "core"
