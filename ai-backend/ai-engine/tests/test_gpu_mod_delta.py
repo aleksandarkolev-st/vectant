@@ -56,7 +56,7 @@ def test_host_and_device_body_change_is_mixed():
     assert result.reload_plan == "mixed"
 
 
-def test_parse_gpu_diff_response_normalizes_device_file_module():
+def test_parse_gpu_diff_response_rejects_physical_filename_module():
     raw = json.dumps(
         {
             "reload_plan": "device_only",
@@ -70,8 +70,8 @@ def test_parse_gpu_diff_response_normalizes_device_file_module():
             ],
         }
     )
-    parsed = parse_gpu_diff_response(raw)
-    assert parsed["edits"][0]["module"] == "device"
+    with pytest.raises(Exception):
+        parse_gpu_diff_response(raw)
 
 
 def test_parse_gpu_diff_response_preserves_fission_candidate_as_proposal():

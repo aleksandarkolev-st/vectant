@@ -10,7 +10,14 @@ from verifier_gpu import (
 )
 
 
-PROJECT_FILES = ("shared.h", "core.cpp", "gui.cpp", "host_runner.cpp", "device.cu")
+HEAL_MODULE_FILES = {
+    "shared": "generated/contracts/state.payload",
+    "core": "generated/runtime/update.payload",
+    "gui": "generated/presentation/frame.payload",
+    "host_runner": "generated/process/entry.payload",
+    "device": "generated/accelerator/kernels.payload",
+}
+PROJECT_FILES = tuple(HEAL_MODULE_FILES.values())
 EXISTING_DEVICE = """
 __global__ void vec_add(const float* a, const float* b, float* c, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -58,22 +65,23 @@ HIP_SPLIT_MANIFEST = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_rejects_edit_outside_manifest_files():
-    edits = [{"module": "newfile.cu", "operation": "replace", "anchor": "x", "content": "y"}]
+def test_rejects_edit_that_names_a_path_instead_of_a_semantic_role():
+    edits = [{"module": "unbound_role", "operation": "replace", "anchor": "x", "content": "y"}]
     r = verify_heal_output(
         tier="compile_hard",
         project_files=PROJECT_FILES,
+        module_files=HEAL_MODULE_FILES,
         edits=edits,
         existing_kernels=EXISTING_KERNELS,
     )
     assert not r.ok
-    assert any(v.rule == "no_file_creation" for v in r.violations)
+    assert any(v.rule == "heal_unknown_module_role" for v in r.violations)
 
 
 def test_accepts_edit_to_existing_module():
     edits = [
         {
-            "module": "device.cu",
+            "module": "device",
             "operation": "replace",
             "anchor": "c[i] = a[i] + b[i]",
             "content": "c[i] = a[i] * b[i]",
@@ -82,6 +90,7 @@ def test_accepts_edit_to_existing_module():
     r = verify_heal_output(
         tier="compile_hard",
         project_files=PROJECT_FILES,
+        module_files=HEAL_MODULE_FILES,
         edits=edits,
         existing_kernels=EXISTING_KERNELS,
         existing_device_source=EXISTING_DEVICE,
@@ -660,7 +669,7 @@ def test_split_allows_dynamic_launch_dimensions_for_runtime_evidence():
 def test_rejects_suffix_wrapper():
     edits = [
         {
-            "module": "device.cu",
+            "module": "device",
             "operation": "patch",
             "anchor": "// end of file",
             "content": "__global__ void vec_add_safe(const float* a, const float* b, float* c, int n) {}",
@@ -669,6 +678,7 @@ def test_rejects_suffix_wrapper():
     r = verify_heal_output(
         tier="runtime",
         project_files=PROJECT_FILES,
+        module_files=HEAL_MODULE_FILES,
         edits=edits,
         existing_kernels=EXISTING_KERNELS,
         existing_device_source=EXISTING_DEVICE,
@@ -680,7 +690,7 @@ def test_rejects_suffix_wrapper():
 def test_rejects_v2_wrapper():
     edits = [
         {
-            "module": "device.cu",
+            "module": "device",
             "operation": "patch",
             "anchor": "// end of file",
             "content": "__global__ void scale_v2(float* x, float s, int n) {}",
@@ -689,6 +699,7 @@ def test_rejects_v2_wrapper():
     r = verify_heal_output(
         tier="compile_soft",
         project_files=PROJECT_FILES,
+        module_files=HEAL_MODULE_FILES,
         edits=edits,
         existing_kernels=EXISTING_KERNELS,
         existing_device_source=EXISTING_DEVICE,
@@ -699,7 +710,7 @@ def test_rejects_v2_wrapper():
 def test_rejects_safe_prefix_wrapper():
     edits = [
         {
-            "module": "device.cu",
+            "module": "device",
             "operation": "patch",
             "anchor": "// end of file",
             "content": "__global__ void safe_vec_add(const float*, const float*, float*, int) {}",
@@ -708,6 +719,7 @@ def test_rejects_safe_prefix_wrapper():
     r = verify_heal_output(
         tier="compile_hard",
         project_files=PROJECT_FILES,
+        module_files=HEAL_MODULE_FILES,
         edits=edits,
         existing_kernels=EXISTING_KERNELS,
         existing_device_source=EXISTING_DEVICE,
@@ -718,7 +730,7 @@ def test_rejects_safe_prefix_wrapper():
 def test_accepts_legitimate_new_kernel_with_distinct_name():
     edits = [
         {
-            "module": "device.cu",
+            "module": "device",
             "operation": "patch",
             "anchor": "// end of file",
             "content": "__global__ void reduce_block(const float* in, float* partials, int n) {}",
@@ -727,6 +739,7 @@ def test_accepts_legitimate_new_kernel_with_distinct_name():
     r = verify_heal_output(
         tier="compile_soft",
         project_files=PROJECT_FILES,
+        module_files=HEAL_MODULE_FILES,
         edits=edits,
         existing_kernels=EXISTING_KERNELS,
         existing_device_source=EXISTING_DEVICE,
@@ -744,7 +757,7 @@ def test_signature_change_without_host_update_rejected_on_tier3():
     # a different one. No host update.
     edits = [
         {
-            "module": "device.cu",
+            "module": "device",
             "operation": "replace",
             "anchor": "__global__ void vec_add(const float* a, const float* b, float* c, int n)",
             "content": "__global__ void vec_add(const float* a, const float* b, float* c, int n, float scale)",
@@ -753,6 +766,7 @@ def test_signature_change_without_host_update_rejected_on_tier3():
     r = verify_heal_output(
         tier="runtime",
         project_files=PROJECT_FILES,
+        module_files=HEAL_MODULE_FILES,
         edits=edits,
         existing_kernels=EXISTING_KERNELS,
         existing_device_source=EXISTING_DEVICE,
@@ -764,13 +778,13 @@ def test_signature_change_without_host_update_rejected_on_tier3():
 def test_signature_change_with_host_update_accepted():
     edits = [
         {
-            "module": "device.cu",
+            "module": "device",
             "operation": "replace",
             "anchor": "__global__ void vec_add(const float* a, const float* b, float* c, int n)",
             "content": "__global__ void vec_add(const float* a, const float* b, float* c, int n, float scale)",
         },
         {
-            "module": "core.cpp",
+            "module": "core",
             "operation": "replace",
             "anchor": "vec_add<<<g, b>>>(a, b, c, n)",
             "content": "vec_add<<<g, b>>>(a, b, c, n, scale)",
@@ -779,6 +793,7 @@ def test_signature_change_with_host_update_accepted():
     r = verify_heal_output(
         tier="runtime",
         project_files=PROJECT_FILES,
+        module_files=HEAL_MODULE_FILES,
         edits=edits,
         existing_kernels=EXISTING_KERNELS,
         existing_device_source=EXISTING_DEVICE,
@@ -793,7 +808,7 @@ def test_signature_preservation_not_enforced_on_tier1():
     # flight; the next compile catches any drift.
     edits = [
         {
-            "module": "device.cu",
+            "module": "device",
             "operation": "replace",
             "anchor": "__global__ void vec_add(const float* a, const float* b, float* c, int n)",
             "content": "__global__ void vec_add(const float* a, const float* b, float* c, int n, float scale)",
@@ -802,6 +817,7 @@ def test_signature_preservation_not_enforced_on_tier1():
     r = verify_heal_output(
         tier="compile_hard",
         project_files=PROJECT_FILES,
+        module_files=HEAL_MODULE_FILES,
         edits=edits,
         existing_kernels=EXISTING_KERNELS,
         existing_device_source=EXISTING_DEVICE,
@@ -810,14 +826,14 @@ def test_signature_preservation_not_enforced_on_tier1():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Heal verifier — rule 4 (no new .cu/.hip files)
+# Heal verifier — rule 4 (no file creation through semantic roles)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_rejects_new_cu_file():
+def test_rejects_new_file_operation():
     edits = [
         {
-            "module": "device_utils.cu",
+            "module": "device",
             "operation": "create",
             "anchor": "",
             "content": "__global__ void helper() {}",
@@ -826,12 +842,12 @@ def test_rejects_new_cu_file():
     r = verify_heal_output(
         tier="compile_hard",
         project_files=PROJECT_FILES,
+        module_files=HEAL_MODULE_FILES,
         edits=edits,
         existing_kernels=EXISTING_KERNELS,
     )
-    # Either rule 1 (no_file_creation) or rule 4 (no_extra_device_tu)
-    # is enough — assert at least one fires.
     assert not r.ok
+    assert any(v.rule == "no_file_creation" for v in r.violations)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1060,6 +1076,91 @@ def test_split_accepts_arbitrary_explicit_role_paths():
     }
     r = verify_split_output(files=files, manifest_arch=["gfx1201"], manifest=manifest)
     assert r.ok, r.violations
+
+
+def test_rejects_missing_heal_role_binding():
+    partial_roles = dict(HEAL_MODULE_FILES)
+    del partial_roles["device"]
+
+    result = verify_heal_output(
+        tier="compile_hard",
+        project_files=PROJECT_FILES,
+        module_files=partial_roles,
+        edits=[],
+        existing_kernels=EXISTING_KERNELS,
+    )
+
+    assert not result.ok
+    assert any(v.rule == "heal_missing_module_role" for v in result.violations)
+
+
+def test_rejects_unknown_heal_role_declaration():
+    unknown_roles = dict(HEAL_MODULE_FILES)
+    unknown_roles["shadow"] = "generated/unknown/role.payload"
+
+    result = verify_heal_output(
+        tier="compile_hard",
+        project_files=PROJECT_FILES,
+        module_files=unknown_roles,
+        edits=[],
+        existing_kernels=EXISTING_KERNELS,
+    )
+
+    assert not result.ok
+    assert any(
+        v.rule == "heal_unknown_module_role_declaration" for v in result.violations
+    )
+
+
+def test_rejects_duplicate_heal_role_paths():
+    duplicate_roles = dict(HEAL_MODULE_FILES)
+    duplicate_roles["gui"] = duplicate_roles["core"]
+
+    result = verify_heal_output(
+        tier="compile_hard",
+        project_files=PROJECT_FILES,
+        module_files=duplicate_roles,
+        edits=[],
+        existing_kernels=EXISTING_KERNELS,
+    )
+
+    assert not result.ok
+    assert any(v.rule == "heal_duplicate_module_role_path" for v in result.violations)
+
+
+def test_rejects_case_colliding_heal_role_paths():
+    duplicate_roles = dict(HEAL_MODULE_FILES)
+    duplicate_roles["gui"] = duplicate_roles["core"].upper()
+    project_files = (*PROJECT_FILES, duplicate_roles["gui"])
+
+    result = verify_heal_output(
+        tier="compile_hard",
+        project_files=project_files,
+        module_files=duplicate_roles,
+        edits=[],
+        existing_kernels=EXISTING_KERNELS,
+    )
+
+    assert not result.ok
+    assert any(v.rule == "generated.case_collision_rejected" for v in result.violations)
+
+
+def test_rejects_heal_role_path_absent_from_project_files():
+    unbound_roles = dict(HEAL_MODULE_FILES)
+    unbound_roles["device"] = "generated/accelerator/unsubmitted.payload"
+
+    result = verify_heal_output(
+        tier="compile_hard",
+        project_files=PROJECT_FILES,
+        module_files=unbound_roles,
+        edits=[],
+        existing_kernels=EXISTING_KERNELS,
+    )
+
+    assert not result.ok
+    assert any(
+        v.rule == "heal_module_role_not_in_project_files" for v in result.violations
+    )
 
 
 def test_split_rejects_unscoped_manifest_role_before_filename_resolution():

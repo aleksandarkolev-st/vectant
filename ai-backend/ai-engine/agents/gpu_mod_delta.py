@@ -30,7 +30,6 @@ ReloadPlan = str
 VALID_RELOAD_PLANS = {"host_only", "device_only", "mixed", "abi_breaking"}
 VALID_GPU_EDIT_MODULES = {"core", "gui", "shared", "host_runner", "device"}
 VALID_GPU_EDIT_OPS = {"insert_after", "insert_before", "replace", "delete"}
-DEVICE_PATHS = {"device.cu", "device.hip"}
 _QUOTED_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
 _SHA256_DIGEST_RE = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
 FISSION_CANDIDATE_STRING_FIELDS = {
@@ -297,14 +296,6 @@ FISSION_REJECTION_STRING_LIST_FIELDS = {
     "rejectionEvidenceIds",
     "verifierEvidenceIds",
 }
-HOST_PATH_TO_MODULE = {
-    "core.cpp": "core",
-    "gui.cpp": "gui",
-    "shared.h": "shared",
-    "host_runner.cpp": "host_runner",
-}
-
-
 class GpuDiffPatchRequest(BaseModel):
     diff: str
     core_content: str = ""
@@ -424,7 +415,7 @@ def gpu_diff_patch_anchor_failures(
     }
     failures: List[dict] = []
     for index, edit in enumerate(edits):
-        module = _normalize_module(str(edit.get("module", "")))
+        module = str(edit.get("module", ""))
         anchor = edit.get("anchor")
         if module not in contents:
             failures.append(
@@ -469,7 +460,7 @@ def gpu_diff_patch_content_failures(
     allowed_includes = _allowed_generated_includes(req.compile_manifest)
     failures: List[dict] = []
     for index, edit in enumerate(edits):
-        module = _normalize_module(str(edit.get("module", "")))
+        module = str(edit.get("module", ""))
         content = edit.get("content", "")
         if not isinstance(content, str):
             continue
@@ -600,7 +591,7 @@ def validate_gpu_edit_list(edits: object) -> List[dict]:
     for i, edit in enumerate(edits):
         if not isinstance(edit, dict):
             raise HTTPException(status_code=400, detail=f"edit #{i} must be an object")
-        module = _normalize_module(str(edit.get("module", "")))
+        module = str(edit.get("module", ""))
         op = edit.get("operation")
         anchor = edit.get("anchor")
         content = edit.get("content", "")
@@ -1065,14 +1056,6 @@ def _validate_non_negative_int(value: object, label: str) -> int:
     if type(value) is not int or value < 0:
         raise HTTPException(status_code=400, detail=f"`{label}` must be a non-negative integer")
     return value
-
-
-def _normalize_module(module: str) -> str:
-    if module in HOST_PATH_TO_MODULE:
-        return HOST_PATH_TO_MODULE[module]
-    if module in DEVICE_PATHS:
-        return "device"
-    return module
 
 
 def _strip_json_fence(raw: str) -> str:

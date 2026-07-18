@@ -1483,6 +1483,13 @@ function manifestFor(vendor, fixture = activeFixture(), arch = archForVendor(ven
       hot_reload_mode: 'swap',
       confidence,
       files: ['shared.h', 'core.cpp', 'gui.cpp', 'host_runner.cpp', 'device.hip'],
+      module_files: {
+        shared: 'shared.h',
+        core: 'core.cpp',
+        gui: 'gui.cpp',
+        host_runner: 'host_runner.cpp',
+        device: 'device.hip',
+      },
       gpu: {
         vendor: 'rocm',
         device_compiler: 'hipcc',
@@ -1509,6 +1516,13 @@ function manifestFor(vendor, fixture = activeFixture(), arch = archForVendor(ven
     hot_reload_mode: 'swap',
     confidence,
     files: ['shared.h', 'core.cpp', 'gui.cpp', 'host_runner.cpp', 'device.cu'],
+    module_files: {
+      shared: 'shared.h',
+      core: 'core.cpp',
+      gui: 'gui.cpp',
+      host_runner: 'host_runner.cpp',
+      device: 'device.cu',
+    },
     gpu: {
       vendor: 'cuda',
       device_compiler: 'nvcc',
@@ -1778,7 +1792,14 @@ async function captureMcpScreenshot(label, waitEvidence = null) {
 
 async function postHeal({ slug, tier, error, manifest }) {
   try {
-    const body = { slug, tier, error, manifest_gpu: manifest.gpu };
+    const body = {
+      slug,
+      tier,
+      error,
+      manifest_gpu: manifest.gpu,
+      project_files: manifest.files,
+      module_files: manifest.module_files,
+    };
     const r = await fetch(`${CFG.aiEngineUrl}/refactor/heal/gpu`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
     });
@@ -1805,29 +1826,65 @@ function levenshtein(a, b) {
   return dp[a.length][b.length];
 }
 
-function canonicalManifestModule(moduleName, manifestFiles) {
-  if (typeof moduleName !== 'string' || moduleName.trim() === '') return null;
-  if (manifestFiles.includes(moduleName)) return moduleName;
+const HEAL_MODULE_ROLES = Object.freeze(['shared', 'core', 'gui', 'host_runner', 'device']);
 
-  const normalized = moduleName.replaceAll('\\', '/');
-  if (manifestFiles.includes(normalized)) return normalized;
-
-  const extension = path.extname(normalized);
-  if (extension) return null;
-
-  const matches = manifestFiles.filter((file) => {
-    const base = path.basename(file);
-    return base.slice(0, base.length - path.extname(base).length) === normalized;
-  });
-  return matches.length === 1 ? matches[0] : null;
+function explicitHealRolePaths(manifest) {
+  const findings = [];
+  const manifestFiles = new Set(
+    (Array.isArray(manifest?.files) ? manifest.files : [])
+      .filter((file) => typeof file === 'string' && file.length > 0)
+      .map((file) => file.replaceAll('\\', '/')),
+  );
+  const declarations = manifest?.module_files;
+  if (!declarations || typeof declarations !== 'object' || Array.isArray(declarations)) {
+    return {
+      rolePaths: new Map(),
+      findings: HEAL_MODULE_ROLES.map((role) => ({
+        rule: 'heal_missing_module_role',
+        detail: role,
+      })),
+    };
+  }
+  for (const role of Object.keys(declarations)) {
+    if (!HEAL_MODULE_ROLES.includes(role)) {
+      findings.push({ rule: 'heal_unknown_module_role_declaration', detail: role });
+    }
+  }
+  const rolePaths = new Map();
+  const owners = new Map();
+  for (const role of HEAL_MODULE_ROLES) {
+    const rawPath = declarations[role];
+    if (typeof rawPath !== 'string' || rawPath.length === 0) {
+      findings.push({ rule: 'heal_missing_module_role', detail: role });
+      continue;
+    }
+    const rolePath = rawPath.replaceAll('\\', '/');
+    const collisionKey = rolePath.toLowerCase();
+    if (owners.has(collisionKey)) {
+      findings.push({
+        rule: 'heal_duplicate_module_role_path',
+        detail: `${owners.get(collisionKey)} and ${role}`,
+      });
+      continue;
+    }
+    owners.set(collisionKey, role);
+    rolePaths.set(role, rolePath);
+    if (!manifestFiles.has(rolePath)) {
+      findings.push({ rule: 'heal_module_role_not_in_project_files', detail: `${role}:${rolePath}` });
+    }
+  }
+  return { rolePaths, findings };
 }
 
-function verifyHealOutput(edits, manifestFiles, existingKernels) {
-  const findings = [];
+function verifyHealOutput(edits, manifest, existingKernels) {
+  const roleBinding = explicitHealRolePaths(manifest);
+  const findings = [...roleBinding.findings];
   for (const e of edits ?? []) {
-    const canonicalModule = canonicalManifestModule(e.module, manifestFiles);
-    if (!canonicalModule) {
-      findings.push({ rule: 'no_new_files', detail: `module ${e.module} not in manifest` });
+    if (!roleBinding.rolePaths.has(e.module)) {
+      findings.push({ rule: 'heal_unknown_module_role', detail: String(e.module) });
+    }
+    if (e.operation === 'create') {
+      findings.push({ rule: 'no_file_creation', detail: String(e.module) });
     }
     // Detect __global__ declarations in `content`
     const m = (e.content ?? '').match(/__global__\s+\w[\w<>,\s\*&]*\s+(\w+)\s*\(/);
@@ -1841,10 +1898,6 @@ function verifyHealOutput(edits, manifestFiles, existingKernels) {
           findings.push({ rule: 'no_wrapper_kernel', detail: `${newSym} resembles ${k}` });
         }
       }
-    }
-    const targetModule = canonicalModule ?? e.module;
-    if (!canonicalModule && /^[^.]+\.(cu|hip)$/.test(targetModule) && e.operation === 'create') {
-      findings.push({ rule: 'no_new_device_file', detail: e.module });
     }
   }
   return { ok: findings.length === 0, findings };
@@ -4265,19 +4318,18 @@ async function phaseP3Heal(ctx) {
     // 3. apply no-shim verifier rules locally
     const verify = verifyHealOutput(
       heal.body?.edits ?? [],
-      ctx.manifest.files,
+      ctx.manifest,
       ['vec_add'],
     );
     record('P3-heal', `${d.name}: no-shim verifier`,
       verify.ok ? 'pass' : 'fail',
       verify.ok ? 'clean' : verify.findings.map((f) => `${f.rule}:${f.detail}`).join('; '));
 
-    // 4. assert no new device file
-    const hasNewDeviceFile = (heal.body?.edits ?? []).some((e) =>
-      /\.(cu|hip)$/.test(e.module) && e.module !== ctx.deviceFilename && e.operation === 'create');
-    record('P3-heal', `${d.name}: no new device files`,
-      !hasNewDeviceFile ? 'pass' : 'fail',
-      hasNewDeviceFile ? 'create operation on new .cu/.hip' : 'clean');
+    // 4. assert no file creation through any semantic role
+    const hasCreateOperation = (heal.body?.edits ?? []).some((e) => e.operation === 'create');
+    record('P3-heal', `${d.name}: no file creation`,
+      !hasCreateOperation ? 'pass' : 'fail',
+      hasCreateOperation ? 'create operation in healer output' : 'clean');
   }
 }
 
@@ -4693,6 +4745,51 @@ async function selfCheck() {
       ...flowContract.findings.map((f) => `flow:${f}`),
     ];
     console.error(`gpu-hmr-test self-check failed: ${findings.join(', ')}`);
+    process.exitCode = 1;
+    return;
+  }
+  const healManifest = {
+    files: [
+      'generated/contracts/state.payload',
+      'generated/runtime/update.payload',
+      'generated/presentation/frame.payload',
+      'generated/process/entry.payload',
+      'generated/accelerator/kernels.payload',
+    ],
+    module_files: {
+      shared: 'generated/contracts/state.payload',
+      core: 'generated/runtime/update.payload',
+      gui: 'generated/presentation/frame.payload',
+      host_runner: 'generated/process/entry.payload',
+      device: 'generated/accelerator/kernels.payload',
+    },
+  };
+  const semanticHeal = verifyHealOutput([
+    { module: 'device', operation: 'replace', anchor: 'before', content: 'after' },
+  ], healManifest, []);
+  const physicalPathHeal = verifyHealOutput([
+    {
+      module: 'generated/accelerator/kernels.payload',
+      operation: 'replace',
+      anchor: 'before',
+      content: 'after',
+    },
+  ], healManifest, []);
+  const unknownRoleManifest = {
+    ...healManifest,
+    module_files: { ...healManifest.module_files, shadow: 'generated/unknown/role.payload' },
+  };
+  const unknownRoleHeal = verifyHealOutput([], unknownRoleManifest, []);
+  if (
+    !semanticHeal.ok
+    || physicalPathHeal.ok
+    || !physicalPathHeal.findings.some((finding) => finding.rule === 'heal_unknown_module_role')
+    || unknownRoleHeal.ok
+    || !unknownRoleHeal.findings.some(
+      (finding) => finding.rule === 'heal_unknown_module_role_declaration',
+    )
+  ) {
+    console.error('gpu-hmr-test self-check failed: healer roles were inferred instead of explicitly bound');
     process.exitCode = 1;
     return;
   }
