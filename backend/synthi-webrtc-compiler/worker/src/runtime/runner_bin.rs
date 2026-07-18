@@ -1376,17 +1376,33 @@ fn matching_strict_gpu_runtime_proof_id(
             .and_then(serde_json::Value::as_bool)
             != Some(true)
         || runtime_artifact
+            .pointer("/acceptanceContractEvaluation/failedGates")
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(|failed_gates| !failed_gates.is_empty())
+        || runtime_artifact
             .pointer("/acceptanceContractConsistency/accepted")
             .and_then(serde_json::Value::as_bool)
             != Some(true)
+        || runtime_artifact
+            .pointer("/acceptanceContractConsistency/failedGates")
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(|failed_gates| !failed_gates.is_empty())
         || runtime_artifact
             .pointer("/derivedAcceptanceContractEvaluation/accepted")
             .and_then(serde_json::Value::as_bool)
             != Some(true)
         || runtime_artifact
+            .pointer("/derivedAcceptanceContractEvaluation/failedGates")
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(|failed_gates| !failed_gates.is_empty())
+        || runtime_artifact
             .pointer("/proofLedgerSourceConsistency/accepted")
             .and_then(serde_json::Value::as_bool)
             != Some(true)
+        || runtime_artifact
+            .pointer("/proofLedgerSourceConsistency/failures")
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(|failures| !failures.is_empty())
         || runtime_artifact
             .get("limitations")
             .and_then(serde_json::Value::as_array)
@@ -4984,12 +5000,12 @@ mod tests {
             "runtimeTrace": runtime_trace,
             "acceptanceContract": acceptance_contract,
             "derivedAcceptanceContract": acceptance_contract,
-            "acceptanceContractEvaluation": { "accepted": true },
-            "acceptanceContractConsistency": { "accepted": true },
-            "derivedAcceptanceContractEvaluation": { "accepted": true },
+            "acceptanceContractEvaluation": { "accepted": true, "failedGates": [] },
+            "acceptanceContractConsistency": { "accepted": true, "failedGates": [] },
+            "derivedAcceptanceContractEvaluation": { "accepted": true, "failedGates": [] },
             "explicitProofLedgerRecord": record,
             "derivedProofLedgerRecord": record,
-            "proofLedgerSourceConsistency": { "accepted": true },
+            "proofLedgerSourceConsistency": { "accepted": true, "failures": [] },
         });
         let proof_id = recomputed_runtime_proof_id(&runtime_artifact, &record).unwrap();
         runtime_artifact["proofId"] = serde_json::Value::String(proof_id.clone());
@@ -5063,6 +5079,28 @@ mod tests {
                 &artifact_content_hash,
                 &success,
                 Some(&replay),
+                Some(&oracle_receipt),
+            )
+            .unwrap();
+            assert_eq!(rejected.status, "rejected");
+            assert!(!rejected.gpu_hmr_success);
+        }
+
+        for (evaluation, failure_field) in [
+            ("acceptanceContractEvaluation", "failedGates"),
+            ("acceptanceContractConsistency", "failedGates"),
+            ("derivedAcceptanceContractEvaluation", "failedGates"),
+            ("proofLedgerSourceConsistency", "failures"),
+        ] {
+            let mut contradictory = proof.clone();
+            contradictory["runtimeProofArtifact"][evaluation][failure_field] =
+                serde_json::json!(["generic_strict_gate_failed"]);
+            let rejected = strict_gpu_reload_terminal_result_with_receipt(
+                &request_id,
+                &source_edit_id,
+                &artifact_content_hash,
+                &success,
+                Some(&contradictory),
                 Some(&oracle_receipt),
             )
             .unwrap();
