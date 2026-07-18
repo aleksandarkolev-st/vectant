@@ -1326,7 +1326,7 @@ fn recomputed_runtime_proof_id(
 
 #[cfg(feature = "gpu-hmr")]
 fn matching_strict_gpu_runtime_proof_id(
-    log_lines: &[String],
+    proof: &serde_json::Value,
     request_id: &str,
     source_edit_id: &str,
     artifact_content_hash: &str,
@@ -1336,179 +1336,176 @@ fn matching_strict_gpu_runtime_proof_id(
     let source_edit_ref = format!("source-edit-id:{source_edit_id}");
     let expected_process_id = std::process::id().to_string();
     let expected_runtime_session_id = runtime_session_id();
-    log_lines.iter().rev().find_map(|line| {
-        let proof = serde_json::from_str::<serde_json::Value>(line).ok()?;
-        if !portable_runner_json_numbers_supported(&proof)
-            || !portable_runner_json_aliases_consistent(&proof)
-            || proof.get("type").and_then(serde_json::Value::as_str) != Some("gpu_hmr_proof")
-            || proof
-                .get("schemaVersion")
-                .and_then(serde_json::Value::as_str)
-                != Some(RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION)
-            || proof.get("module").and_then(serde_json::Value::as_str) != Some("device")
-            || proof.get("resultState").and_then(serde_json::Value::as_str)
-                != Some(RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE)
-        {
-            return None;
-        }
-        let proof_id = proof.get("proofId").and_then(serde_json::Value::as_str)?;
-        let runtime_artifact = proof.get("runtimeProofArtifact")?;
-        if runtime_artifact
+    if !portable_runner_json_numbers_supported(proof)
+        || !portable_runner_json_aliases_consistent(proof)
+        || proof.get("type").and_then(serde_json::Value::as_str) != Some("gpu_hmr_proof")
+        || proof
             .get("schemaVersion")
             .and_then(serde_json::Value::as_str)
-            != Some(RUNNER_GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION)
-            || runtime_artifact
+            != Some(RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION)
+        || proof.get("module").and_then(serde_json::Value::as_str) != Some("device")
+        || proof.get("resultState").and_then(serde_json::Value::as_str)
+            != Some(RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE)
+    {
+        return None;
+    }
+    let proof_id = proof.get("proofId").and_then(serde_json::Value::as_str)?;
+    let runtime_artifact = proof.get("runtimeProofArtifact")?;
+    if runtime_artifact
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_str)
+        != Some(RUNNER_GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION)
+        || runtime_artifact
+            .get("proofId")
+            .and_then(serde_json::Value::as_str)
+            != Some(proof_id)
+        || runtime_artifact
+            .get("resultState")
+            .and_then(serde_json::Value::as_str)
+            != Some(RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE)
+        || runtime_artifact
+            .get("fullRuntimeProven")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || runtime_artifact
+            .get("gpuHmrSuccess")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || runtime_artifact
+            .pointer("/acceptanceContractEvaluation/accepted")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || runtime_artifact
+            .pointer("/acceptanceContractConsistency/accepted")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || runtime_artifact
+            .pointer("/derivedAcceptanceContractEvaluation/accepted")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || runtime_artifact
+            .pointer("/proofLedgerSourceConsistency/accepted")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || runtime_artifact
+            .get("limitations")
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(|limitations| !limitations.is_empty())
+        || runtime_artifact
+            .pointer("/runtimeTrace/processId")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_process_id.as_str())
+        || runtime_artifact
+            .pointer("/runtimeTrace/runtimeSessionId")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_runtime_session_id)
+    {
+        return None;
+    }
+
+    let proof_ledger = proof.get("proofLedger")?;
+    if proof_ledger
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_str)
+        != Some(RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION)
+        || proof_ledger
+            .get("gpuHmrSuccess")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || runtime_artifact.get("proofLedger") != Some(proof_ledger)
+    {
+        return None;
+    }
+    let record = proof_ledger.pointer("/records/0")?;
+    let expected_ledger_proof_id = canonical_runner_runtime_ledger_proof_id(record);
+    if proof_ledger
+        .get("records")
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(|records| records.len() != 1)
+        || !strict_runtime_record_chain_matches(
+            record,
+            request_id,
+            source_edit_id,
+            artifact_content_hash,
+            &expected_process_id,
+            expected_runtime_session_id,
+        )
+        || !strict_runtime_oracle_receipt_matches(
+            record,
+            expected_runtime_session_id,
+            request_id,
+            source_edit_id,
+            artifact_content_hash,
+            receipt,
+        )
+        || proof_ledger
+            .get("proofId")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_ledger_proof_id.as_str())
+        || runtime_artifact
+            .pointer("/proofLedgerQuery/proofId")
+            .and_then(serde_json::Value::as_str)
+            != proof_ledger
                 .get("proofId")
                 .and_then(serde_json::Value::as_str)
-                != Some(proof_id)
-            || runtime_artifact
-                .get("resultState")
-                .and_then(serde_json::Value::as_str)
-                != Some(RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE)
-            || runtime_artifact
-                .get("fullRuntimeProven")
-                .and_then(serde_json::Value::as_bool)
-                != Some(true)
-            || runtime_artifact
-                .get("gpuHmrSuccess")
-                .and_then(serde_json::Value::as_bool)
-                != Some(true)
-            || runtime_artifact
-                .pointer("/acceptanceContractEvaluation/accepted")
-                .and_then(serde_json::Value::as_bool)
-                != Some(true)
-            || runtime_artifact
-                .pointer("/acceptanceContractConsistency/accepted")
-                .and_then(serde_json::Value::as_bool)
-                != Some(true)
-            || runtime_artifact
-                .pointer("/derivedAcceptanceContractEvaluation/accepted")
-                .and_then(serde_json::Value::as_bool)
-                != Some(true)
-            || runtime_artifact
-                .pointer("/proofLedgerSourceConsistency/accepted")
-                .and_then(serde_json::Value::as_bool)
-                != Some(true)
-            || runtime_artifact
-                .get("limitations")
-                .and_then(serde_json::Value::as_array)
-                .is_none_or(|limitations| !limitations.is_empty())
-            || runtime_artifact
-                .pointer("/runtimeTrace/processId")
-                .and_then(serde_json::Value::as_str)
-                != Some(expected_process_id.as_str())
-            || runtime_artifact
-                .pointer("/runtimeTrace/runtimeSessionId")
-                .and_then(serde_json::Value::as_str)
-                != Some(expected_runtime_session_id)
-        {
-            return None;
-        }
-
-        let proof_ledger = proof.get("proofLedger")?;
-        if proof_ledger
-            .get("schemaVersion")
+        || runtime_artifact
+            .pointer("/proofLedgerQuery/schemaVersion")
             .and_then(serde_json::Value::as_str)
             != Some(RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION)
-            || proof_ledger
-                .get("gpuHmrSuccess")
-                .and_then(serde_json::Value::as_bool)
-                != Some(true)
-            || runtime_artifact.get("proofLedger") != Some(proof_ledger)
-        {
-            return None;
-        }
-        let record = proof_ledger.pointer("/records/0")?;
-        let expected_ledger_proof_id = canonical_runner_runtime_ledger_proof_id(record);
-        if proof_ledger
-            .get("records")
-            .and_then(serde_json::Value::as_array)
-            .is_none_or(|records| records.len() != 1)
-            || !strict_runtime_record_chain_matches(
-                record,
-                request_id,
-                source_edit_id,
-                artifact_content_hash,
-                &expected_process_id,
-                expected_runtime_session_id,
-            )
-            || !strict_runtime_oracle_receipt_matches(
-                record,
-                expected_runtime_session_id,
-                request_id,
-                source_edit_id,
-                artifact_content_hash,
-                receipt,
-            )
-            || proof_ledger
-                .get("proofId")
-                .and_then(serde_json::Value::as_str)
-                != Some(expected_ledger_proof_id.as_str())
-            || runtime_artifact
-                .pointer("/proofLedgerQuery/proofId")
-                .and_then(serde_json::Value::as_str)
-                != proof_ledger
-                    .get("proofId")
-                    .and_then(serde_json::Value::as_str)
-            || runtime_artifact
-                .pointer("/proofLedgerQuery/schemaVersion")
-                .and_then(serde_json::Value::as_str)
-                != Some(RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION)
-            || runtime_artifact
-                .pointer("/explicitProofLedgerRecord/edit_id")
-                .and_then(serde_json::Value::as_str)
-                != Some(source_edit_id)
-            || runtime_artifact
-                .pointer("/acceptanceContract/edit_id")
-                .and_then(serde_json::Value::as_str)
-                != Some(source_edit_id)
-            || runtime_artifact
-                .pointer("/derivedAcceptanceContract/edit_id")
-                .and_then(serde_json::Value::as_str)
-                != Some(source_edit_id)
-            || runtime_artifact.get("explicitProofLedgerRecord") != Some(record)
-            || runtime_artifact.get("derivedProofLedgerRecord") != Some(record)
-            || runtime_artifact
-                .pointer("/proofLedgerQuery/gpuHmrSuccess")
-                .and_then(serde_json::Value::as_bool)
-                != Some(true)
-            || runtime_artifact
-                .pointer("/proofLedgerQuery/failedInvariants")
-                .and_then(serde_json::Value::as_array)
-                .is_none_or(|failures| !failures.is_empty())
-        {
-            return None;
-        }
-        let expected_artifact_id = expected_runtime_artifact_id(artifact_content_hash)?;
-        let acceptance_contract = runtime_artifact.get("acceptanceContract")?;
-        if acceptance_contract
-            .get("contract_version")
+        || runtime_artifact
+            .pointer("/explicitProofLedgerRecord/edit_id")
             .and_then(serde_json::Value::as_str)
-            != Some(RUNNER_GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION)
-            || acceptance_contract
-                .get("edit_id")
-                .and_then(serde_json::Value::as_str)
-                != Some(source_edit_id)
-            || acceptance_contract
-                .get("artifact_hash_after")
-                .and_then(serde_json::Value::as_str)
-                != Some(expected_artifact_id.as_str())
-            || runtime_artifact.get("derivedAcceptanceContract") != Some(acceptance_contract)
-            || recomputed_runtime_proof_id(runtime_artifact, record).as_deref() != Some(proof_id)
-        {
-            return None;
-        }
-        (record
-            .get("evidence_refs")
+            != Some(source_edit_id)
+        || runtime_artifact
+            .pointer("/acceptanceContract/edit_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(source_edit_id)
+        || runtime_artifact
+            .pointer("/derivedAcceptanceContract/edit_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(source_edit_id)
+        || runtime_artifact.get("explicitProofLedgerRecord") != Some(record)
+        || runtime_artifact.get("derivedProofLedgerRecord") != Some(record)
+        || runtime_artifact
+            .pointer("/proofLedgerQuery/gpuHmrSuccess")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || runtime_artifact
+            .pointer("/proofLedgerQuery/failedInvariants")
             .and_then(serde_json::Value::as_array)
-            .is_some_and(|refs| {
-                refs.iter().any(|value| value.as_str() == Some(&reload_ref))
-                    && refs
-                        .iter()
-                        .any(|value| value.as_str() == Some(&source_edit_ref))
-            }))
-        .then(|| proof_id.to_string())
-    })
+            .is_none_or(|failures| !failures.is_empty())
+    {
+        return None;
+    }
+    let expected_artifact_id = expected_runtime_artifact_id(artifact_content_hash)?;
+    let acceptance_contract = runtime_artifact.get("acceptanceContract")?;
+    if acceptance_contract
+        .get("contract_version")
+        .and_then(serde_json::Value::as_str)
+        != Some(RUNNER_GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION)
+        || acceptance_contract
+            .get("edit_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(source_edit_id)
+        || acceptance_contract
+            .get("artifact_hash_after")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_artifact_id.as_str())
+        || runtime_artifact.get("derivedAcceptanceContract") != Some(acceptance_contract)
+        || recomputed_runtime_proof_id(runtime_artifact, record).as_deref() != Some(proof_id)
+    {
+        return None;
+    }
+    (record
+        .get("evidence_refs")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|refs| {
+            refs.iter().any(|value| value.as_str() == Some(&reload_ref))
+                && refs
+                    .iter()
+                    .any(|value| value.as_str() == Some(&source_edit_ref))
+        }))
+    .then(|| proof_id.to_string())
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -1517,7 +1514,7 @@ fn strict_gpu_reload_terminal_result(
     source_edit_id: &str,
     artifact_content_hash: &str,
     result: &AdapterReloadResult,
-    log_lines: &[String],
+    runtime_proof: Option<&serde_json::Value>,
 ) -> Result<GpuReloadV2Result, String> {
     match result {
         AdapterReloadResult::Success { .. } => {
@@ -1556,7 +1553,7 @@ fn strict_gpu_reload_terminal_result(
                 source_edit_id,
                 artifact_content_hash,
                 result,
-                log_lines,
+                runtime_proof,
                 Some(&receipt),
             )
         }
@@ -1566,7 +1563,7 @@ fn strict_gpu_reload_terminal_result(
                 source_edit_id,
                 artifact_content_hash,
                 result,
-                log_lines,
+                runtime_proof,
                 None,
             )
         }
@@ -1579,14 +1576,14 @@ fn strict_gpu_reload_terminal_result_with_receipt(
     source_edit_id: &str,
     artifact_content_hash: &str,
     result: &AdapterReloadResult,
-    log_lines: &[String],
+    runtime_proof: Option<&serde_json::Value>,
     receipt: Option<&StrictRuntimeOracleReceipt>,
 ) -> Result<GpuReloadV2Result, String> {
     match result {
         AdapterReloadResult::Success { .. } => {
-            let proof_id = receipt.and_then(|receipt| {
+            let proof_id = receipt.zip(runtime_proof).and_then(|(receipt, proof)| {
                 matching_strict_gpu_runtime_proof_id(
-                    log_lines,
+                    proof,
                     request_id,
                     source_edit_id,
                     artifact_content_hash,
@@ -1734,7 +1731,7 @@ fn emit_gpu_reload_completion(completion: &GpuReloadCompletion) {
                     source_edit_id,
                     &completion.artifact_content_hash,
                     &completion.result,
-                    completion.adapter.last_reload_log(),
+                    completion.adapter.last_runtime_proof(),
                 )
                 .and_then(|result| result.to_json())
             };
@@ -4667,7 +4664,7 @@ mod tests {
         artifact_content_hash: &str,
         process_id: &str,
         runtime_session_id: &str,
-    ) -> (String, String, StrictRuntimeOracleReceipt) {
+    ) -> (serde_json::Value, String, StrictRuntimeOracleReceipt) {
         let artifact_id = format!(
             "artifact:sha256:{}",
             artifact_content_hash.trim_start_matches("sha256:")
@@ -4996,7 +4993,7 @@ mod tests {
         });
         let proof_id = recomputed_runtime_proof_id(&runtime_artifact, &record).unwrap();
         runtime_artifact["proofId"] = serde_json::Value::String(proof_id.clone());
-        let proof_line = serde_json::json!({
+        let proof = serde_json::json!({
             "type": "gpu_hmr_proof",
             "schemaVersion": RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION,
             "module": "device",
@@ -5004,9 +5001,8 @@ mod tests {
             "proofId": proof_id,
             "proofLedger": proof_ledger,
             "runtimeProofArtifact": runtime_artifact,
-        })
-        .to_string();
-        (proof_line, proof_id, oracle_receipt)
+        });
+        (proof, proof_id, oracle_receipt)
     }
 
     #[cfg(feature = "gpu-hmr")]
@@ -5017,7 +5013,7 @@ mod tests {
         let artifact_content_hash = format!("sha256:{}", "b".repeat(64));
         let live_process_id = std::process::id().to_string();
         let live_runtime_session_id = super::runtime_session_id().to_string();
-        let (proof_line, proof_id, oracle_receipt) = strict_runtime_proof_fixture(
+        let (proof, proof_id, oracle_receipt) = strict_runtime_proof_fixture(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
@@ -5034,7 +5030,7 @@ mod tests {
             &source_edit_id,
             &artifact_content_hash,
             &success,
-            &[proof_line.clone()],
+            Some(&proof),
             Some(&oracle_receipt),
         )
         .unwrap();
@@ -5047,7 +5043,7 @@ mod tests {
 
         assert_eq!(terminal.artifact_content_hash, artifact_content_hash);
 
-        let parsed_proof = serde_json::from_str::<serde_json::Value>(&proof_line).unwrap();
+        let parsed_proof = proof.clone();
         let mut conflicting_outer_id = parsed_proof.clone();
         conflicting_outer_id["proof_id"] = serde_json::json!("gpu-runtime-proof:stale");
         let mut conflicting_artifact_id = parsed_proof.clone();
@@ -5066,7 +5062,7 @@ mod tests {
                 &source_edit_id,
                 &artifact_content_hash,
                 &success,
-                &[replay.to_string()],
+                Some(&replay),
                 Some(&oracle_receipt),
             )
             .unwrap();
@@ -5084,24 +5080,26 @@ mod tests {
             &source_edit_id,
             &artifact_content_hash,
             &success,
-            &[missing_query_schema.to_string()],
+            Some(&missing_query_schema),
             Some(&oracle_receipt),
         )
         .unwrap();
         assert_eq!(rejected.status, "rejected");
         assert!(!rejected.gpu_hmr_success);
 
-        let missing = strict_gpu_reload_terminal_result_with_receipt(
+        let success_shaped_log_line = proof.to_string();
+        assert!(success_shaped_log_line.contains("\"type\":\"gpu_hmr_proof\""));
+        let log_only = strict_gpu_reload_terminal_result_with_receipt(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
             &success,
-            &[],
+            None,
             Some(&oracle_receipt),
         )
         .unwrap();
-        assert_eq!(missing.status, "rejected");
-        assert!(!missing.gpu_hmr_success);
+        assert_eq!(log_only.status, "rejected");
+        assert!(!log_only.gpu_hmr_success);
 
         let other_artifact_hash = format!("sha256:{}", "c".repeat(64));
         let artifact_mismatch = strict_gpu_reload_terminal_result_with_receipt(
@@ -5109,14 +5107,14 @@ mod tests {
             &source_edit_id,
             &other_artifact_hash,
             &success,
-            &[proof_line.clone()],
+            Some(&proof),
             Some(&oracle_receipt),
         )
         .unwrap();
         assert_eq!(artifact_mismatch.status, "rejected");
         assert!(!artifact_mismatch.gpu_hmr_success);
 
-        let (wrong_process_line, _, wrong_process_receipt) = strict_runtime_proof_fixture(
+        let (wrong_process_proof, _, wrong_process_receipt) = strict_runtime_proof_fixture(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
@@ -5128,14 +5126,14 @@ mod tests {
             &source_edit_id,
             &artifact_content_hash,
             &success,
-            &[wrong_process_line],
+            Some(&wrong_process_proof),
             Some(&wrong_process_receipt),
         )
         .unwrap();
         assert_eq!(wrong_process.status, "rejected");
         assert!(!wrong_process.gpu_hmr_success);
 
-        let (wrong_session_line, _, wrong_session_receipt) = strict_runtime_proof_fixture(
+        let (wrong_session_proof, _, wrong_session_receipt) = strict_runtime_proof_fixture(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
@@ -5147,7 +5145,7 @@ mod tests {
             &source_edit_id,
             &artifact_content_hash,
             &success,
-            &[wrong_session_line],
+            Some(&wrong_session_proof),
             Some(&wrong_session_receipt),
         )
         .unwrap();
@@ -5161,14 +5159,14 @@ mod tests {
             &other_source_edit_id,
             &artifact_content_hash,
             &success,
-            &[proof_line],
+            Some(&proof),
             Some(&oracle_receipt),
         )
         .unwrap();
         assert_eq!(stale.status, "rejected");
         assert!(!stale.full_runtime_proof_accepted);
 
-        let (proof_line, _, oracle_receipt) = strict_runtime_proof_fixture(
+        let (proof, _, oracle_receipt) = strict_runtime_proof_fixture(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
@@ -5180,7 +5178,7 @@ mod tests {
             &source_edit_id,
             &artifact_content_hash,
             &success,
-            &[proof_line.clone()],
+            Some(&proof),
             None,
         )
         .unwrap();
@@ -5194,7 +5192,7 @@ mod tests {
             &source_edit_id,
             &artifact_content_hash,
             &success,
-            &[proof_line.clone()],
+            Some(&proof),
             Some(&forged_receipt),
         )
         .unwrap();
@@ -5208,7 +5206,7 @@ mod tests {
             &source_edit_id,
             &artifact_content_hash,
             &success,
-            &[proof_line.clone()],
+            Some(&proof),
             Some(&forged_schema),
         )
         .unwrap();
@@ -5222,7 +5220,7 @@ mod tests {
             &source_edit_id,
             &artifact_content_hash,
             &success,
-            &[proof_line.clone()],
+            Some(&proof),
             Some(&forged_slice),
         )
         .unwrap();
@@ -5237,7 +5235,7 @@ mod tests {
             &source_edit_id,
             &artifact_content_hash,
             &success,
-            &[proof_line.clone()],
+            Some(&proof),
             Some(&forged_publication),
         )
         .unwrap();
@@ -5251,7 +5249,7 @@ mod tests {
             &source_edit_id,
             &artifact_content_hash,
             &success,
-            &[proof_line.clone()],
+            Some(&proof),
             Some(&forged_dispatch_slot),
         )
         .unwrap();
@@ -5265,7 +5263,7 @@ mod tests {
             &source_edit_id,
             &artifact_content_hash,
             &success,
-            &[proof_line],
+            Some(&proof),
             Some(&wrong_stream),
         )
         .unwrap();
@@ -5281,14 +5279,13 @@ mod tests {
         let artifact_content_hash = format!("sha256:{}", "b".repeat(64));
         let process_id = std::process::id().to_string();
         let runtime_session_id = super::runtime_session_id().to_string();
-        let (proof_line, _, _) = strict_runtime_proof_fixture(
+        let (proof, _, _) = strict_runtime_proof_fixture(
             &request_id,
             &source_edit_id,
             &artifact_content_hash,
             &process_id,
             &runtime_session_id,
         );
-        let proof: serde_json::Value = serde_json::from_str(&proof_line).unwrap();
         let record = proof.pointer("/proofLedger/records/0").unwrap();
         let matches = |candidate: &serde_json::Value| {
             super::strict_runtime_record_chain_matches(
