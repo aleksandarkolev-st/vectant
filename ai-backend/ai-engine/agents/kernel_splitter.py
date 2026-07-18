@@ -487,6 +487,14 @@ def _reason_codes(verification: SplitVerificationResult) -> List[str]:
     return [violation.rule for violation in verification.violations]
 
 
+def _deterministic_protected_kernel_names(report: Mapping[str, Any]) -> List[str]:
+    seed_plan = report.get("seedPlan") if isinstance(report, Mapping) else None
+    kernel = seed_plan.get("kernel") if isinstance(seed_plan, Mapping) else None
+    if not isinstance(kernel, str) or not kernel.strip():
+        return []
+    return [kernel.strip()]
+
+
 def _append_unique(target: List[str], values: Sequence[Any]) -> None:
     for value in values:
         text = str(value)
@@ -501,6 +509,7 @@ def _apply_split_repairs_until_stable(
     manifest_arch: Sequence[str],
     source_files: Mapping[str, str],
     verification: SplitVerificationResult,
+    protected_generated_kernels: Optional[Sequence[str]] = None,
     max_passes: int = MAX_DETERMINISTIC_REPAIR_PASSES,
 ) -> tuple[Dict[str, str], SplitVerificationResult, dict]:
     """Apply deterministic generated-artifact repairs to a fixed point.
@@ -534,6 +543,7 @@ def _apply_split_repairs_until_stable(
             manifest=manifest,
             source_files=source_files,
             verification=current_verification,
+            protected_generated_kernels=protected_generated_kernels,
         )
         pass_record = dict(pass_report)
         pass_record["pass"] = pass_index + 1
@@ -2328,6 +2338,9 @@ async def run_kernel_splitter(
             manifest_arch=arch_list,
             source_files=scoped_source_map,
             verification=verification,
+            protected_generated_kernels=_deterministic_protected_kernel_names(
+                deterministic.report
+            ),
         )
         parsed["kernel_hashes"] = _kernel_hashes_for_generated_split(
             files=parsed["files"],

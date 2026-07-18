@@ -185,6 +185,7 @@ def repair_split_artifacts(
     manifest: Optional[Mapping[str, Any]],
     source_files: Mapping[str, str],
     verification: Optional[SplitVerificationResult],
+    protected_generated_kernels: Optional[Iterable[str]] = None,
 ) -> tuple[Dict[str, str], dict]:
     """Return generated files after narrow deterministic repairs.
 
@@ -252,10 +253,12 @@ def repair_split_artifacts(
             repaired[device_path],
             source_files,
             input_reason_codes,
+            protected_generated_kernels=protected_generated_kernels,
         ):
             device_after, changed = _repair_source_device_semantics(
                 repaired[device_path],
                 source_files,
+                protected_generated_kernels=protected_generated_kernels,
             )
             if changed:
                 repaired[device_path] = device_after
@@ -588,6 +591,8 @@ def _needs_source_device_semantics_repair(
     device_source: str,
     source_files: Mapping[str, str],
     input_reason_codes: Sequence[str],
+    *,
+    protected_generated_kernels: Optional[Iterable[str]] = None,
 ) -> bool:
     if any(
         rule.startswith(
@@ -603,7 +608,12 @@ def _needs_source_device_semantics_repair(
     reachable = _source_device_reachable_files(source_files)
     if not reachable:
         return False
-    bridge = _source_device_include_bridge(reachable, source_files)
+    bridge = _source_device_bridge_with_protected_kernels(
+        reachable,
+        source_files,
+        device_source=device_source,
+        protected_generated_kernel_names=set(protected_generated_kernels or ()),
+    )
     return bool(bridge and bridge != device_source)
 
 
@@ -1476,7 +1486,6 @@ def _source_device_include_bridge(
     ]
     if not kernel_headers:
         return None
-
     prelude_include_lines = _source_device_compiler_prelude_includes(reachable, source_files)
     prelude_include_paths = [
         match.group("path")
@@ -1528,6 +1537,33 @@ def _source_device_include_bridge(
     )
 
 
+def _source_device_bridge_with_protected_kernels(
+    reachable: Mapping[str, str],
+    source_files: Mapping[str, str],
+    *,
+    device_source: str,
+    protected_generated_kernel_names: Set[str],
+) -> Optional[str]:
+    bridge = _source_device_include_bridge(reachable, source_files)
+    if bridge is None:
+        return None
+
+    source_kernel_names = {
+        match.group("name")
+        for source in reachable.values()
+        for match in _ANY_GLOBAL_KERNEL_RE.finditer(mask_comments_for_parsing(source))
+    }
+    protected_definitions: List[str] = []
+    for kernel in sorted(protected_generated_kernel_names - source_kernel_names):
+        span = _kernel_function_span(device_source, kernel)
+        if span is None:
+            continue
+        protected_definitions.append(device_source[span[0] : span[1]].strip())
+    if not protected_definitions:
+        return bridge
+    return bridge.rstrip() + "\n\n" + "\n\n".join(protected_definitions) + "\n"
+
+
 def _device_role_source_kernel_includes(
     device_source: str,
     reachable: Mapping[str, str],
@@ -1552,12 +1588,19 @@ def _device_role_source_kernel_includes(
 def _repair_source_device_semantics(
     device_source: str,
     source_files: Mapping[str, str],
+    *,
+    protected_generated_kernels: Optional[Iterable[str]] = None,
 ) -> tuple[str, bool]:
     reachable = _source_device_reachable_files(source_files)
     if not reachable:
         return device_source, False
 
-    bridge = _source_device_include_bridge(reachable, source_files)
+    bridge = _source_device_bridge_with_protected_kernels(
+        reachable,
+        source_files,
+        device_source=device_source,
+        protected_generated_kernel_names=set(protected_generated_kernels or ()),
+    )
     if bridge is not None:
         return bridge, bridge != device_source
 

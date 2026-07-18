@@ -507,6 +507,52 @@ def test_repair_preserves_source_device_constant_declaration():
     assert not any(v.rule == "source_device_constant_declaration_not_preserved" for v in after.violations)
 
 
+def test_source_bridge_retains_only_explicitly_protected_generated_kernel():
+    source_files = {
+        "units/accelerator.payload": (
+            'extern "C" __global__ void advance(float* values, int n) { '
+            "int i = blockIdx.x * blockDim.x + threadIdx.x; "
+            "if (i < n) values[i] += 2.0f; }\n"
+            "int main() { return 0; }\n"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": "",
+        "gui.cpp": "",
+        "host_runner.cpp": "",
+        "device.hip": (
+            'extern "C" __global__ void advance(float* values, int n) { values[0] = 0.0f; }\n'
+            'extern "C" __global__ void initialize_buffers(float* values, int n) { '
+            "int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < n) values[i] = 1.0f; }\n"
+            'extern "C" __global__ void unverified_extra(float* values) { values[0] = 99.0f; }\n'
+        ),
+    }
+    verification = SimpleNamespace(
+        violations=[
+            Violation(
+                "source_device_kernel_body_not_preserved",
+                "generated kernel body differs from source",
+                offending_symbol="advance",
+            )
+        ]
+    )
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=HIP_SPLIT_MANIFEST,
+        source_files=source_files,
+        verification=verification,
+        protected_generated_kernels={"initialize_buffers"},
+    )
+
+    assert "repair.source_device_include_bridge" in report["repairRules"]
+    assert '#include "units/accelerator.payload"' in repaired["device.hip"]
+    assert "initialize_buffers" in repaired["device.hip"]
+    assert "unverified_extra" not in repaired["device.hip"]
+    assert "Synthi source-device include bridge" in repaired["device.hip"]
+
+
 def test_repair_bridges_macro_kernel_device_headers_without_stubbing():
     source_files = {
         "src/Device/includes/FixIntellisense.h": (
