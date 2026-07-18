@@ -252,21 +252,23 @@ fn gpu_reload_result_allows_adapter_restore(result: &AdapterReloadResult) -> boo
     )
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 const RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof_ledger.v1";
+#[cfg(all(feature = "gpu-hmr", test))]
 const RUNNER_GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE: &str =
     "synthi.gpu_hmr.proof_ledger.portable.v2";
+#[cfg(all(feature = "gpu-hmr", test))]
 const RUNNER_GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 const RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof.v1";
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 const RUNNER_GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.validation-proof.v1";
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 const RUNNER_GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION: &str = "synthi.gpu_hmr.contract.v1";
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 const RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE: &str = "gpu-hmr-full-runtime-proven";
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn stable_runtime_proof_json(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Null
@@ -302,17 +304,17 @@ fn stable_runtime_proof_json(value: &serde_json::Value) -> String {
     }
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn runtime_proof_json_sha256(value: &serde_json::Value) -> String {
     sha256_hex_bytes(stable_runtime_proof_json(value).as_bytes())
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn runtime_proof_json_field(value: &serde_json::Value, key: &str) -> serde_json::Value {
     value.get(key).cloned().unwrap_or(serde_json::Value::Null)
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn runtime_proof_json_object_or_empty(value: &serde_json::Value, key: &str) -> serde_json::Value {
     match value.get(key) {
         Some(serde_json::Value::Object(_)) => value
@@ -323,7 +325,7 @@ fn runtime_proof_json_object_or_empty(value: &serde_json::Value, key: &str) -> s
     }
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn canonical_runner_runtime_ledger_proof_id(record: &serde_json::Value) -> String {
     let firewall = runtime_proof_json_object_or_empty(record, "firewall_evidence");
     let mut material = serde_json::json!({
@@ -392,7 +394,7 @@ fn canonical_runner_runtime_ledger_proof_id(record: &serde_json::Value) -> Strin
     )
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn portable_runner_json_numbers_supported(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Number(number) => number
@@ -414,7 +416,7 @@ fn portable_runner_json_numbers_supported(value: &serde_json::Value) -> bool {
     }
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn portable_runner_json_aliases_consistent(value: &serde_json::Value) -> bool {
     fn alias_group_consistent(
         fields: &serde_json::Map<String, serde_json::Value>,
@@ -479,7 +481,7 @@ fn portable_runner_json_aliases_consistent(value: &serde_json::Value) -> bool {
     }
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 #[derive(Clone, Copy)]
 enum PortableRunnerEventAliasMode {
     Standard,
@@ -488,7 +490,7 @@ enum PortableRunnerEventAliasMode {
     Retirement,
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn portable_runner_event_aliases_consistent(
     event: &serde_json::Value,
     mode: PortableRunnerEventAliasMode,
@@ -586,7 +588,7 @@ fn portable_runner_event_aliases_consistent(
             ]) && alias_group_consistent(&["proof", "retirement_proof", "retirementProof"])))
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn canonical_runner_epoch(value: Option<&str>) -> Option<u64> {
     let value = value?;
     if value.is_empty()
@@ -598,7 +600,7 @@ fn canonical_runner_epoch(value: Option<&str>) -> Option<u64> {
     value.parse::<u64>().ok()
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn expected_runtime_artifact_id(artifact_content_hash: &str) -> Option<String> {
     canonical_sha256_content_hash(artifact_content_hash).then(|| {
         format!(
@@ -608,14 +610,14 @@ fn expected_runtime_artifact_id(artifact_content_hash: &str) -> Option<String> {
     })
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn canonical_runtime_artifact_id(value: &str) -> bool {
     value
         .strip_prefix("artifact:")
         .is_some_and(canonical_sha256_content_hash)
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn strict_runtime_record_chain_matches(
     record: &serde_json::Value,
     request_id: &str,
@@ -1306,7 +1308,7 @@ fn strict_runtime_oracle_receipt_matches(
             == Some(receipt.output_target_id.as_str())
 }
 
-#[cfg(feature = "gpu-hmr")]
+#[cfg(all(feature = "gpu-hmr", test))]
 fn recomputed_runtime_proof_id(
     runtime_artifact: &serde_json::Value,
     record: &serde_json::Value,
@@ -1336,8 +1338,6 @@ fn matching_strict_gpu_runtime_proof_id(
     artifact_content_hash: &str,
     receipt: &StrictRuntimeOracleReceipt,
 ) -> Option<String> {
-    let reload_ref = format!("reload:{request_id}");
-    let source_edit_ref = format!("source-edit-id:{source_edit_id}");
     let expected_process_id = std::process::id().to_string();
     let expected_runtime_session_id = runtime_session_id();
     let shared_verification = verify_strict_gpu_runtime_proof(
@@ -1350,191 +1350,15 @@ fn matching_strict_gpu_runtime_proof_id(
             runtime_session_id: expected_runtime_session_id,
         },
     )?;
-    if !portable_runner_json_numbers_supported(proof)
-        || !portable_runner_json_aliases_consistent(proof)
-        || proof.get("type").and_then(serde_json::Value::as_str) != Some("gpu_hmr_proof")
-        || proof
-            .get("schemaVersion")
-            .and_then(serde_json::Value::as_str)
-            != Some(RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION)
-        || proof.get("module").and_then(serde_json::Value::as_str) != Some("device")
-        || proof.get("resultState").and_then(serde_json::Value::as_str)
-            != Some(RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE)
-    {
-        return None;
-    }
-    let proof_id = proof.get("proofId").and_then(serde_json::Value::as_str)?;
-    let runtime_artifact = proof.get("runtimeProofArtifact")?;
-    if runtime_artifact
-        .get("schemaVersion")
-        .and_then(serde_json::Value::as_str)
-        != Some(RUNNER_GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION)
-        || runtime_artifact
-            .get("proofId")
-            .and_then(serde_json::Value::as_str)
-            != Some(proof_id)
-        || runtime_artifact
-            .get("resultState")
-            .and_then(serde_json::Value::as_str)
-            != Some(RUNNER_GPU_HMR_FULL_RUNTIME_RESULT_STATE)
-        || runtime_artifact
-            .get("fullRuntimeProven")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
-        || runtime_artifact
-            .get("gpuHmrSuccess")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
-        || runtime_artifact
-            .pointer("/acceptanceContractEvaluation/accepted")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
-        || runtime_artifact
-            .pointer("/acceptanceContractEvaluation/failedGates")
-            .and_then(serde_json::Value::as_array)
-            .is_none_or(|failed_gates| !failed_gates.is_empty())
-        || runtime_artifact
-            .pointer("/acceptanceContractConsistency/accepted")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
-        || runtime_artifact
-            .pointer("/acceptanceContractConsistency/failedGates")
-            .and_then(serde_json::Value::as_array)
-            .is_none_or(|failed_gates| !failed_gates.is_empty())
-        || runtime_artifact
-            .pointer("/derivedAcceptanceContractEvaluation/accepted")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
-        || runtime_artifact
-            .pointer("/derivedAcceptanceContractEvaluation/failedGates")
-            .and_then(serde_json::Value::as_array)
-            .is_none_or(|failed_gates| !failed_gates.is_empty())
-        || runtime_artifact
-            .pointer("/proofLedgerSourceConsistency/accepted")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
-        || runtime_artifact
-            .pointer("/proofLedgerSourceConsistency/failures")
-            .and_then(serde_json::Value::as_array)
-            .is_none_or(|failures| !failures.is_empty())
-        || runtime_artifact
-            .get("limitations")
-            .and_then(serde_json::Value::as_array)
-            .is_none_or(|limitations| !limitations.is_empty())
-        || runtime_artifact
-            .pointer("/runtimeTrace/processId")
-            .and_then(serde_json::Value::as_str)
-            != Some(expected_process_id.as_str())
-        || runtime_artifact
-            .pointer("/runtimeTrace/runtimeSessionId")
-            .and_then(serde_json::Value::as_str)
-            != Some(expected_runtime_session_id)
-    {
-        return None;
-    }
-
-    let proof_ledger = proof.get("proofLedger")?;
-    if proof_ledger
-        .get("schemaVersion")
-        .and_then(serde_json::Value::as_str)
-        != Some(RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION)
-        || proof_ledger
-            .get("gpuHmrSuccess")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
-        || runtime_artifact.get("proofLedger") != Some(proof_ledger)
-    {
-        return None;
-    }
-    let record = proof_ledger.pointer("/records/0")?;
-    let expected_ledger_proof_id = canonical_runner_runtime_ledger_proof_id(record);
-    if proof_ledger
-        .get("records")
-        .and_then(serde_json::Value::as_array)
-        .is_none_or(|records| records.len() != 1)
-        || !strict_runtime_record_chain_matches(
-            record,
-            request_id,
-            source_edit_id,
-            artifact_content_hash,
-            &expected_process_id,
-            expected_runtime_session_id,
-        )
-        || !strict_runtime_oracle_receipt_matches(
-            record,
-            expected_runtime_session_id,
-            request_id,
-            source_edit_id,
-            artifact_content_hash,
-            receipt,
-        )
-        || proof_ledger
-            .get("proofId")
-            .and_then(serde_json::Value::as_str)
-            != Some(expected_ledger_proof_id.as_str())
-        || runtime_artifact
-            .pointer("/proofLedgerQuery/proofId")
-            .and_then(serde_json::Value::as_str)
-            != proof_ledger
-                .get("proofId")
-                .and_then(serde_json::Value::as_str)
-        || runtime_artifact
-            .pointer("/proofLedgerQuery/schemaVersion")
-            .and_then(serde_json::Value::as_str)
-            != Some(RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION)
-        || runtime_artifact
-            .pointer("/explicitProofLedgerRecord/edit_id")
-            .and_then(serde_json::Value::as_str)
-            != Some(source_edit_id)
-        || runtime_artifact
-            .pointer("/acceptanceContract/edit_id")
-            .and_then(serde_json::Value::as_str)
-            != Some(source_edit_id)
-        || runtime_artifact
-            .pointer("/derivedAcceptanceContract/edit_id")
-            .and_then(serde_json::Value::as_str)
-            != Some(source_edit_id)
-        || runtime_artifact.get("explicitProofLedgerRecord") != Some(record)
-        || runtime_artifact.get("derivedProofLedgerRecord") != Some(record)
-        || runtime_artifact
-            .pointer("/proofLedgerQuery/gpuHmrSuccess")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
-        || runtime_artifact
-            .pointer("/proofLedgerQuery/failedInvariants")
-            .and_then(serde_json::Value::as_array)
-            .is_none_or(|failures| !failures.is_empty())
-    {
-        return None;
-    }
-    let expected_artifact_id = expected_runtime_artifact_id(artifact_content_hash)?;
-    let acceptance_contract = runtime_artifact.get("acceptanceContract")?;
-    if acceptance_contract
-        .get("contract_version")
-        .and_then(serde_json::Value::as_str)
-        != Some(RUNNER_GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION)
-        || acceptance_contract
-            .get("edit_id")
-            .and_then(serde_json::Value::as_str)
-            != Some(source_edit_id)
-        || acceptance_contract
-            .get("artifact_hash_after")
-            .and_then(serde_json::Value::as_str)
-            != Some(expected_artifact_id.as_str())
-        || runtime_artifact.get("derivedAcceptanceContract") != Some(acceptance_contract)
-        || recomputed_runtime_proof_id(runtime_artifact, record).as_deref() != Some(proof_id)
-    {
-        return None;
-    }
-    (record
-        .get("evidence_refs")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|refs| {
-            refs.iter().any(|value| value.as_str() == Some(&reload_ref))
-                && refs
-                    .iter()
-                    .any(|value| value.as_str() == Some(&source_edit_ref))
-        }))
+    let record = proof.pointer("/proofLedger/records/0")?;
+    strict_runtime_oracle_receipt_matches(
+        record,
+        expected_runtime_session_id,
+        request_id,
+        source_edit_id,
+        artifact_content_hash,
+        receipt,
+    )
     .then(|| shared_verification.proof_id)
 }
 
