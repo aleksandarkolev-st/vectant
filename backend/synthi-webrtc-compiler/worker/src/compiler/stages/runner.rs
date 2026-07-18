@@ -45,8 +45,88 @@ fn extract_structured_runner_message(line: &str) -> Option<&str> {
 }
 
 fn should_forward_runner_stderr_line_to_log_dc(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    !trimmed.starts_with("[gpu-runtime-boundary]")
+    !runner_line_contains_protected_gpu_evidence(line)
+}
+
+fn normalized_evidence_token(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn json_contains_protected_gpu_evidence(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(values) => values.iter().any(json_contains_protected_gpu_evidence),
+        serde_json::Value::Object(fields) => {
+            let module_is_device =
+                fields.get("module").and_then(serde_json::Value::as_str) == Some("device");
+            if module_is_device && fields.contains_key("status") {
+                return true;
+            }
+
+            fields.iter().any(|(key, field_value)| {
+                let key = normalized_evidence_token(key);
+                let authority_key = matches!(
+                    key.as_str(),
+                    "acceptedforgpuhmr"
+                        | "gpuhmrsuccess"
+                        | "fullruntimeproofaccepted"
+                        | "fullruntimeproven"
+                        | "runtimeproofartifact"
+                        | "proofledger"
+                        | "acceptancecontract"
+                ) || key.starts_with("cansatisfy")
+                    || key.ends_with("authority");
+                authority_key || json_contains_protected_gpu_evidence(field_value)
+            })
+        }
+        serde_json::Value::String(value) => {
+            let value = normalized_evidence_token(value);
+            (value.contains("gpu") && value.contains("hmr") && value.contains("proof"))
+                || value.contains("gpuhmrfullruntimeproven")
+                || value.starts_with("synthigpuhmr")
+                || value == "synthirunnergpureloadresultv3"
+                || value == "synthirunnergpuartifactloadresultv1"
+        }
+        _ => false,
+    }
+}
+
+fn runner_line_contains_protected_gpu_evidence(line: &str) -> bool {
+    let normalized_line = normalized_evidence_token(line);
+    if normalized_line.contains("gpuruntimeboundary")
+        || [
+            "acceptedforgpuhmr",
+            "gpuhmrsuccess",
+            "fullruntimeproofaccepted",
+            "fullruntimeproven",
+            "gpuhmrfullruntimeproven",
+            "synthirunnergpureloadresultv3",
+            "synthirunnergpuartifactloadresultv1",
+        ]
+        .iter()
+        .any(|marker| normalized_line.contains(marker))
+    {
+        return true;
+    }
+
+    let hmr_status_line = line.contains("[Runner] [HMR-STATUS] ");
+    let Some(payload) = extract_structured_runner_message(line) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return hmr_status_line;
+    };
+    if json_contains_protected_gpu_evidence(&value) {
+        return true;
+    }
+    hmr_status_line
+        && !matches!(
+            value.get("module").and_then(serde_json::Value::as_str),
+            Some("core" | "gui" | "host")
+        )
 }
 
 fn sha256_hex_local(bytes: &[u8]) -> String {
@@ -1622,6 +1702,9 @@ pub async fn handle_runner_execution(
                 match line {
                     Some(l) => {
                         let _ = log_tx_clone.send(l.clone());
+                        if runner_line_contains_protected_gpu_evidence(&l) {
+                            continue;
+                        }
                         // Send to frontend
                         let payload = serde_json::json!({
                            "sessionId": session_id_clone,
@@ -1652,6 +1735,10 @@ pub async fn handle_runner_execution(
                     Some(l) => {
                         debug_log!("[Runner Stderr] {}", l);
                         let _ = log_tx_clone2.send(l.clone());
+
+                        if runner_line_contains_protected_gpu_evidence(&l) {
+                            continue;
+                        }
 
                         if let Some(structured) = extract_structured_runner_message(&l) {
                             if serde_json::from_str::<serde_json::Value>(structured).is_ok() {
@@ -2043,12 +2130,13 @@ mod tests {
     use super::{
         full_device_abi_from_marker, full_device_abi_restart_marker, loaded_runner_module_state,
         next_full_device_abi, runner_command_requires_strict_gpu_protocol,
-        runner_has_hot_device_epoch, runner_load_command, runner_reuse_allowed,
-        runner_session_matches, same_session_full_device_abi_changed,
-        should_forward_runner_stderr_line_to_log_dc, structured_log_json_chunks,
-        uncommitted_runner_module_state, wait_for_gpu_command_terminals,
-        wait_for_strict_gpu_protocol_ack, RunnerCommandProofContext, RunnerGpuTerminalExpectation,
-        RunnerReloadPolicy, STRUCTURED_LOG_CHUNK_BYTES,
+        runner_has_hot_device_epoch, runner_line_contains_protected_gpu_evidence,
+        runner_load_command, runner_reuse_allowed, runner_session_matches,
+        same_session_full_device_abi_changed, should_forward_runner_stderr_line_to_log_dc,
+        structured_log_json_chunks, uncommitted_runner_module_state,
+        wait_for_gpu_command_terminals, wait_for_strict_gpu_protocol_ack,
+        RunnerCommandProofContext, RunnerGpuTerminalExpectation, RunnerReloadPolicy,
+        STRUCTURED_LOG_CHUNK_BYTES,
     };
     use crate::compiler::builder::ModuleHashes;
     use crate::runtime::runner_protocol::{
@@ -2770,12 +2858,24 @@ mod tests {
     }
 
     #[test]
-    fn runtime_boundary_telemetry_stays_out_of_compile_datachannel() {
+    fn child_gpu_proof_authority_stays_out_of_compile_datachannel() {
         assert!(!should_forward_runner_stderr_line_to_log_dc(
             "[gpu-runtime-boundary] synthi_gpu_launch kernel=step dispatch=ok"
         ));
-        assert!(should_forward_runner_stderr_line_to_log_dc(
+        assert!(!should_forward_runner_stderr_line_to_log_dc(
             "[Runner] [HMR-STATUS] {\"status\":\"applied\"}"
+        ));
+        assert!(!should_forward_runner_stderr_line_to_log_dc(
+            "[Runner] [HMR-STATUS] {\"module\":\"device\",\"status\":\"compile-error\"}"
+        ));
+        assert!(runner_line_contains_protected_gpu_evidence(
+            r#"{"type":"diagnostic","nested":{"fullRuntimeProven":false}}"#
+        ));
+        assert!(runner_line_contains_protected_gpu_evidence(
+            r#"{"schemaVersion":"synthi.gpu.hmr.unknown-proof.v99","status":"pending"}"#
+        ));
+        assert!(should_forward_runner_stderr_line_to_log_dc(
+            "[Runner] [HMR-STATUS] {\"module\":\"core\",\"status\":\"applied\"}"
         ));
         assert!(should_forward_runner_stderr_line_to_log_dc(
             "application stderr remains visible"
