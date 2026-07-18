@@ -1,0 +1,123 @@
+.local-support-surface {
+  --ls-radius: 4px;
+  --ls-line: color-mix(in srgb, var(--border-subtle) 82%, transparent);
+  letter-spacing: -0.005em;
+}
+
+.local-support-surface .local-support-header {
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+
+.local-support-surface .local-support-panel,
+.local-support-surface .local-support-stat,
+.local-support-surface .local-support-hero {
+  border-radius: var(--ls-radius);
+  box-shadow: none;
+  background: color-mix(in srgb, var(--attention-purple) 4%, var(--bg-panel));
+}
+
+.local-support-surface .local-support-hero {
+  border-color: color-mix(in srgb, var(--attention-purple) 24%, var(--border-subtle));
+}
+
+.local-support-surface .local-support-stat {
+  min-height: 112px;
+  background: var(--bg-surface);
+}
+
+.local-support-surface .local-support-stat > div:last-child {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: -0.04em;
+}
+
+.local-support-surface [class*="rounded-lg"] {
+  border-radius: var(--ls-radius);
+}
+
+.local-support-surface [class*="bg-white/[0.03]"] {
+  background: color-mix(in srgb, var(--bg-surface) 72%, transparent);
+}
+
+.local-support-surface [class*="bg-white/[0.04]"] {
+  background: color-mix(in srgb, var(--bg-surface) 90%, transparent);
+}
+
+.local-support-surface .local-support-table thead {
+  background: var(--bg-surface);
+}
+
+.local-support-surface .local-support-table tbody tr {
+  transition: background 140ms ease;
+}
+
+.local-support-surface .local-support-table tbody tr:hover {
+  background: color-mix(in srgb, var(--attention-purple) 5%, transparent);
+}
+
+.local-support-surface [role="tablist"] {
+  border-radius: var(--ls-radius);
+  box-shadow: none;
+}
+
+.local-support-surface [role="tab"] {
+  border-radius: 3px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.local-support-surface button {
+  border-radius: 3px;
+  transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+
+.local-support-surface button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.local-support-surface h1,
+.local-support-surface h2,
+.local-support-surface h3 {
+  letter-spacing: -0.025em;
+}
+
+.local-support-surface .font-mono,
+.local-support-admin .font-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+.local-support-admin {
+  --admin-line: color-mix(in srgb, #ffffff 10%, transparent);
+  letter-spacing: -0.005em;
+}
+
+.local-support-admin h1 {
+  max-width: 18ch;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: clamp(1.7rem, 3.5vw, 3.35rem);
+  letter-spacing: -0.055em;
+  line-height: 0.98;
+}
+
+.local-support-admin section,
+.local-support-admin article {
+  border-radius: 4px !important;
+  box-shadow: none !important;
+}
+
+.local-support-admin input,
+.local-support-admin button {
+  border-radius: 3px !important;
+}
+
+.local-support-admin input:focus-visible,
+.local-support-admin button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--attention-purple) 70%, transparent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 700px) {
+  .local-support-surface .local-support-hero {
+    border-color: color-mix(in srgb, var(--attention-purple) 24%, var(--border-subtle));
+  }
+}

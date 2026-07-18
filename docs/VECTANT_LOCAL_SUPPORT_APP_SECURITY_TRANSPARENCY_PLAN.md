@@ -2556,6 +2556,8 @@ Before beta:
 - update signing keys stored in hardened environment;
 - emergency signing key rotation playbook.
 
+Operational procedures are maintained in [`docs/VECTANT_LOCAL_SUPPORT_APP_INCIDENT_RESPONSE.md`](VECTANT_LOCAL_SUPPORT_APP_INCIDENT_RESPONSE.md). Documentation is not evidence that the tabletop or clean-runner release exercises have passed.
+
 ---
 
 ## 20. Desktop App Hardening
@@ -3336,3 +3338,19 @@ Sensitive files are blocked locally.
 Nothing sensitive is sent without review.
 You can pause or disconnect at any time.
 ```
+
+---
+
+## 32. Current Implementation Goals
+
+The remaining shippable implementation goals are tracked in:
+
+- `docs/VECTANT_LOCAL_SUPPORT_APP_REMAINING_IMPLEMENTATION_GOALS.md`
+
+Do not treat release-checklist mappings, static UI evidence, helper functions, or unit-only coverage as completion. A blocker is complete only when the feature works end-to-end through the production desktop app, local daemon, cloud control plane, browser UI, audit storage, and security tests.
+
+## 33. Implementation evidence update — 2026-07-13
+
+The current implementation has verified loopback-only preview enforcement and browser-only capability projections across the desktop IPC path, Rust local gateway, cloud session persistence, relay control, and transparency UI. Native clippy/tests, the production Next build, focused web tests, and Chromium local-support gates pass for the exercised workflows, including protected daemon status, preview rejection of state-changing methods and private-network targets, session/port revocation, scrubbed transparency state, live PostgreSQL-backed cloud/relay E2E for polling, review, encrypted payload upload, denied-secret alerting, and revocation purge, and explicit Windows installer downgrade rejection in the Tauri/release configuration.
+
+This evidence does not constitute release readiness. The Windows installer smoke path passes locally, but the artifact is unsigned because the updater private signing key and production certificate are not available in the workspace. Signed updater tamper/downgrade/revocation tests and production release controls remain required before beta or public release.

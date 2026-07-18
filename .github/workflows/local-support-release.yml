@@ -1,0 +1,218 @@
+name: Local Support Signed Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        required: true
+        type: choice
+        options: [internal, beta, stable]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-support-signing
+  cancel-in-progress: false
+
+jobs:
+  build-and-sign:
+    name: Build and sign Windows release
+    runs-on: windows-latest
+    environment: local-support-signing
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.LOCAL_SUPPORT_UPDATER_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.LOCAL_SUPPORT_UPDATER_KEY_PASSWORD }}
+      WINDOWS_PFX_BASE64: ${{ secrets.LOCAL_SUPPORT_WINDOWS_PFX_BASE64 }}
+      WINDOWS_PFX_PASSWORD: ${{ secrets.LOCAL_SUPPORT_WINDOWS_PFX_PASSWORD }}
+      UPDATER_PUBLIC_KEY: ${{ secrets.LOCAL_SUPPORT_UPDATER_PUBLIC_KEY }}
+      UPDATER_ENDPOINT: ${{ secrets.LOCAL_SUPPORT_UPDATER_ENDPOINT }}
+    steps:
+      - name: Checkout reviewed source
+        uses: actions/checkout@v4
+
+      - name: Require protected signing inputs
+        shell: pwsh
+        run: |
+          $required = @(
+            "TAURI_SIGNING_PRIVATE_KEY",
+            "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+            "WINDOWS_PFX_BASE64",
+            "WINDOWS_PFX_PASSWORD",
+            "UPDATER_PUBLIC_KEY",
+            "UPDATER_ENDPOINT"
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Protected signing input $name is missing."
+            }
+          }
+          if (-not $env:UPDATER_ENDPOINT.StartsWith("https://")) {
+            throw "Updater endpoint must use HTTPS."
+          }
+          $config = Get-Content "backend/vectant-local-support-app/desktop/tauri.conf.json" -Raw | ConvertFrom-Json
+          if (-not $config.bundle.createUpdaterArtifacts -or -not $config.plugins.updater.active) {
+            throw "The checked-in desktop configuration must keep signed updater support active."
+          }
+          if ($config.bundle.windows.allowDowngrades -ne $false) {
+            throw "The checked-in desktop configuration must reject Windows installer downgrades."
+          }
+          if ($env:UPDATER_PUBLIC_KEY -match '^0+$' -or $env:UPDATER_PUBLIC_KEY.Length -lt 32) {
+            throw "Protected updater public key is missing or is the non-production sentinel."
+          }
+          if ($env:UPDATER_PUBLIC_KEY -eq $config.plugins.updater.pubkey) {
+            throw "Protected updater public key must replace the checked-in non-production fixture key."
+          }
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Run release security gates
+        run: |
+          cargo fmt --manifest-path backend/vectant-local-support-app/Cargo.toml --check
+          cargo clippy --manifest-path backend/vectant-local-support-app/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path backend/vectant-local-support-app/Cargo.toml
+          cargo test --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml
+
+      - name: Confirm live test binaries are excluded
+        shell: pwsh
+        run: |
+          cargo build --manifest-path backend/vectant-local-support-app/Cargo.toml --release
+          if (Test-Path "backend/vectant-local-support-app/target/release/local-support-test-daemon.exe") {
+            throw "Feature-gated live daemon leaked into the release target."
+          }
+
+      - name: Install release tooling
+        run: |
+          cargo install tauri-cli --version "^2.0" --locked
+          cargo install cargo-cyclonedx --locked
+
+      - name: Import ephemeral Windows signing certificate
+        id: certificate
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "local-support-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
+          $password = ConvertTo-SecureString $env:WINDOWS_PFX_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password -Exportable:$false
+          if (-not $certificate.HasPrivateKey) { throw "Signing certificate has no private key." }
+          "thumbprint=$($certificate.Thumbprint)" >> $env:GITHUB_OUTPUT
+          Remove-Item -LiteralPath $pfx -Force
+
+      - name: Build signed installers and updater artifacts
+        shell: pwsh
+        working-directory: backend/vectant-local-support-app/desktop
+        env:
+          CERTIFICATE_THUMBPRINT: ${{ steps.certificate.outputs.thumbprint }}
+        run: |
+          $override = @{
+            bundle = @{
+              createUpdaterArtifacts = $true
+              windows = @{
+                certificateThumbprint = $env:CERTIFICATE_THUMBPRINT
+                digestAlgorithm = "sha256"
+                timestampUrl = "https://timestamp.digicert.com"
+              }
+            }
+            plugins = @{
+              updater = @{
+                active = $true
+                dialog = $false
+                pubkey = $env:UPDATER_PUBLIC_KEY
+                endpoints = @($env:UPDATER_ENDPOINT)
+              }
+            }
+          } | ConvertTo-Json -Depth 8 -Compress
+          cargo tauri build --config $override
+
+      - name: Verify and inventory signed output
+        shell: pwsh
+        run: |
+          if (Test-Path "backend/vectant-local-support-app/target/release/local-support-test-daemon.exe") {
+            throw "Feature-gated live daemon leaked into the signed release build."
+          }
+          if (Test-Path "backend/vectant-local-support-app/desktop/target/release/local-support-live-relay.exe") {
+            throw "Feature-gated live relay probe leaked into the signed release build."
+          }
+          $bundle = Resolve-Path "backend/vectant-local-support-app/desktop/target/release/bundle"
+          $installers = Get-ChildItem -LiteralPath $bundle -Recurse -File | Where-Object { $_.Extension -in ".exe", ".msi" }
+          if ($installers.Count -eq 0) { throw "No Windows installers were produced." }
+          foreach ($installer in $installers) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+            if ($signature.Status -ne "Valid") { throw "Invalid Authenticode signature: $($installer.Name) ($($signature.Status))" }
+          }
+          $signatures = Get-ChildItem -LiteralPath $bundle -Recurse -File -Filter "*.sig"
+          if ($signatures.Count -eq 0) { throw "No signed updater metadata was produced." }
+          $checksums = Get-ChildItem -LiteralPath $bundle -Recurse -File | Sort-Object FullName | ForEach-Object {
+            "$( (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.FullName.Substring($bundle.Path.Length + 1).Replace('\','/'))"
+          }
+          $checksums | Set-Content -LiteralPath (Join-Path $bundle "SHA256SUMS") -Encoding ascii
+          cargo cyclonedx --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml --format json
+          Copy-Item -LiteralPath "backend/vectant-local-support-app/desktop/vectant-local-support-desktop.cdx.json" -Destination (Join-Path $bundle "desktop-sbom.cdx.json")
+
+      - name: Smoke-test signed install and uninstall
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "backend/vectant-local-support-app/desktop/target/release/bundle/nsis" -File -Filter "*.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Signed NSIS installer was not produced." }
+          & "backend/vectant-local-support-app/scripts/windows-installer-smoke.ps1" -InstallerPath $installer.FullName
+
+      - name: Remove signing certificate from runner
+        if: ${{ always() && steps.certificate.outputs.thumbprint != '' }}
+        shell: pwsh
+        env:
+          CERTIFICATE_THUMBPRINT: ${{ steps.certificate.outputs.thumbprint }}
+        run: Remove-Item -LiteralPath "Cert:\CurrentUser\My\$env:CERTIFICATE_THUMBPRINT" -Force -ErrorAction Stop
+
+      - name: Upload signed candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-support-${{ inputs.channel }}-${{ github.sha }}
+          path: backend/vectant-local-support-app/desktop/target/release/bundle
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-on-clean-runner:
+    name: Verify signed candidate on clean runner
+    needs: build-and-sign
+    runs-on: windows-latest
+    steps:
+      - name: Download candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: local-support-${{ inputs.channel }}-${{ github.sha }}
+          path: candidate
+
+      - name: Verify checksums and Authenticode
+        shell: pwsh
+        run: |
+          $root = Resolve-Path candidate
+          $lines = Get-Content -LiteralPath (Join-Path $root "SHA256SUMS")
+          foreach ($line in $lines) {
+            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { throw "Malformed checksum entry." }
+            $path = Join-Path $root $Matches[2]
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $Matches[1]) { throw "Checksum mismatch: $($Matches[2])" }
+          }
+          $installers = Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object { $_.Extension -in ".exe", ".msi" }
+          if ($installers.Count -eq 0) { throw "No installers found on verification runner." }
+          foreach ($installer in $installers) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+            if ($signature.Status -ne "Valid") { throw "Signature verification failed: $($installer.Name) ($($signature.Status))" }
+          }
+          $tamperTarget = $installers | Select-Object -First 1
+          $before = (Get-FileHash -LiteralPath $tamperTarget.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          Add-Content -LiteralPath $tamperTarget.FullName -Value "tamper-probe" -NoNewline
+          $after = (Get-FileHash -LiteralPath $tamperTarget.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($before -eq $after) { throw "Tamper probe did not change artifact bytes." }
+          $tamperRelative = $tamperTarget.FullName.Substring($root.Path.Length + 1).Replace('\','/')
+          $recorded = ($lines | Where-Object { $_ -match [regex]::Escape("  $tamperRelative") } | Select-Object -First 1)
+          $recordedHash = if ($recorded) { ($recorded -split '\s+', 2)[0] } else { '' }
+          if ($recordedHash -notmatch '^[0-9a-f]{64}$') { throw "Tampered artifact was missing from the recorded checksum set." }
+          if ($after -eq $recordedHash) { throw "Tampered artifact still matched its recorded checksum." }
+          $tamperedSignature = Get-AuthenticodeSignature -LiteralPath $tamperTarget.FullName
+          if ($tamperedSignature.Status -eq "Valid") { throw "Tampered installer still reported a valid Authenticode signature." }
+          Write-Host "Tamper probe was rejected by checksum and Authenticode verification as expected."

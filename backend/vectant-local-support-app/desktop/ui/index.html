@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vectant Local Support</title>
+    <link rel="stylesheet" href="./styles.css">
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <main class="shell" data-paused="false" data-connected="false">
+      <header class="topbar" aria-label="Local support status">
+        <div>
+          <p class="eyebrow">Desktop control</p>
+          <h1>Vectant Local Support</h1>
+        </div>
+        <div class="status-block">
+          <span class="status-pill" data-status-pill>Disconnected</span>
+          <span class="muted" data-workspace-subtitle>No workspace selected</span>
+        </div>
+      </header>
+
+      <section class="banner" aria-label="Security boundary">
+        <div>
+          <h2>Local enforcement state</h2>
+          <p>Workspace scope, pairing state, approvals, and port grants are controlled here.</p>
+        </div>
+        <div class="banner-actions">
+          <button class="primary" type="button" data-action="pick-workspace">Choose workspace</button>
+          <button type="button" data-action="pair-session">Pair session</button>
+        </div>
+      </section>
+
+      <nav class="tabs" aria-label="Desktop sections" role="tablist">
+        <button class="tab active" type="button" role="tab" tabindex="0" aria-selected="true" aria-controls="panel-overview" data-tab="overview">Control plane</button>
+        <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-workflow" data-tab="workflow">Bootstrap</button>
+        <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-approvals" data-tab="approvals">Approvals</button>
+        <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-ports" data-tab="ports">Ports</button>
+        <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-full-access" data-tab="full-access">Full Access</button>
+        <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-activity" data-tab="activity">Activity</button>
+      </nav>
+
+      <section class="grid overview-grid active" id="panel-overview" role="tabpanel" data-panel="overview">
+        <article class="panel session-panel">
+          <div class="panel-head">
+            <div>
+              <p class="label">Session</p>
+              <h2>Waiting for secure pairing</h2>
+            </div>
+            <span class="tag warn">Local authority required</span>
+          </div>
+          <dl class="facts">
+            <div><dt>Account</dt><dd data-field="account">not paired</dd></div>
+            <div><dt>Workspace</dt><dd data-field="workspace">No folder selected</dd></div>
+            <div><dt>Device</dt><dd data-field="device">Stored locally, private key never shown to renderer</dd></div>
+            <div><dt>Mode</dt><dd data-field="mode">Balanced review before send</dd></div>
+          </dl>
+        </article>
+
+        <div class="side-stack">
+          <article class="panel compact-panel">
+            <p class="label">Updates</p>
+            <div class="panel-head release-policy-head">
+              <h2 data-update-title>Checking signed update policy</h2>
+              <span class="tag warn" data-update-tag>Fail closed</span>
+            </div>
+            <p class="copy" data-update-copy>New pairing stays disabled until cloud version policy is available.</p>
+            <div class="control-row update-actions">
+              <button type="button" data-action="check-update">Check for signed update</button>
+              <button class="primary" type="button" data-action="install-update" disabled>Install update</button>
+            </div>
+            <p class="hint" role="status" data-update-status>Updates are signature-verified natively before installation.</p>
+          </article>
+
+          <article class="panel compact-panel">
+            <p class="label">Controls</p>
+            <div class="control-row">
+              <button type="button" data-action="pause">Pause</button>
+              <button type="button" data-action="disconnect" disabled>Disconnect</button>
+            </div>
+            <button class="full-control" type="button" data-action="revoke" disabled>Revoke session approvals</button>
+            <p class="hint" data-bridge-status>Desktop IPC unavailable, showing safe disconnected state.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="grid" id="panel-full-access" role="tabpanel" hidden data-panel="full-access">
+        <article class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="label">Privileged diagnostic mode</p>
+              <h2 data-field="full-access-title">Full Access is not enrolled</h2>
+            </div>
+            <span class="tag warn" data-field="full-access-tag">Review-first mode</span>
+          </div>
+          <p class="copy" data-field="full-access-copy">Full Access can only be enabled after a local confirmation. Sensitive files, credentials, command lines, environment variables, and process contents remain blocked.</p>
+          <dl class="facts">
+            <div><dt>Workspace graph</dt><dd data-field="full-access-graph">Not available</dd></div>
+            <div><dt>Automatic delivery</dt><dd data-field="full-access-delivery">Disabled</dd></div>
+            <div><dt>Process visibility</dt><dd data-field="full-access-processes">Not available</dd></div>
+          </dl>
+        </article>
+        <article class="panel">
+          <p class="label">Local stop controls</p>
+          <div class="control-stack">
+            <button class="primary" type="button" data-action="confirm-full-access-enrollment" disabled>Confirm Full Access enrollment</button>
+            <button type="button" data-action="review-process-visibility">Review process visibility</button>
+            <button type="button" data-action="pause-full-access">Pause Full Access</button>
+            <button type="button" data-action="pause-process-visibility">Pause process visibility</button>
+            <button type="button" data-action="revoke-full-access">Revoke Full Access grants</button>
+          </div>
+          <p class="hint">Visible locally does not mean sent. These controls stop future automatic releases immediately.</p>
+          <p class="hint" data-field="process-visibility-summary">Process visibility has not been reviewed locally in this session.</p>
+          <ul class="tight-list" data-field="process-visibility-records" aria-live="polite"></ul>
+        </article>
+        <article class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="label">Local mutation record</p>
+              <h2 data-field="full-access-mutations-title">No reversible workspace changes</h2>
+            </div>
+            <span class="tag" data-field="full-access-mutations-tag">Content stays local</span>
+          </div>
+          <p class="copy" data-field="full-access-mutations-copy">When a scoped Full Access mutation occurs, this desktop view records its file and line-change count. File bodies are not sent through the relay or stored in activity history.</p>
+          <ul class="tight-list" data-field="full-access-mutations" aria-live="polite"></ul>
+          <div class="mutation-review" hidden data-mutation-review>
+            <div class="panel-head">
+              <div>
+                <p class="label">Local-only exact diff</p>
+                <h3 data-field="mutation-review-title">No change selected</h3>
+              </div>
+              <span class="tag">Never sent</span>
+            </div>
+            <p class="hint" data-field="mutation-review-copy"></p>
+            <pre class="approval-content" dir="ltr" data-field="mutation-review-diff"></pre>
+            <div class="control-row">
+              <button type="button" data-action="revert-mutation">Revert this local change</button>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid" id="panel-workflow" role="tabpanel" hidden data-panel="workflow">
+        <article class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="label">Bootstrap sequence</p>
+              <h2>Set up Local Support</h2>
+            </div>
+            <span class="tag warn" data-workflow-summary>Safe disconnected state</span>
+          </div>
+          <ol class="workflow-list" aria-label="Local support first-run checklist">
+            <li data-workflow-step="workspace">
+              <span class="step-status">Pending</span>
+              <div>
+                <strong>Choose one workspace</strong>
+                <p data-workflow-copy="workspace">No folder is selected. This screen sends no workspace bytes while disconnected.</p>
+              </div>
+            </li>
+            <li data-workflow-step="pairing">
+              <span class="step-status">Pending</span>
+              <div>
+                <strong>Confirm pairing fingerprint</strong>
+                <p data-workflow-copy="pairing">Pairing requires a local confirmation before the desktop bridge can trust a support session.</p>
+              </div>
+            </li>
+            <li data-workflow-step="approvals">
+              <span class="step-status">Armed</span>
+              <div>
+                <strong>Review before send</strong>
+                <p data-workflow-copy="approvals">File and log requests wait for classification, redaction, reason, expiry, and explicit local approval.</p>
+              </div>
+            </li>
+            <li data-workflow-step="ports">
+              <span class="step-status">Locked</span>
+              <div>
+                <strong>Approve a local port and its capabilities</strong>
+                <p data-workflow-copy="ports">Choose the target host and capabilities for browser, AI, support, interaction, response bodies, and state-changing methods.</p>
+              </div>
+            </li>
+            <li data-workflow-step="history">
+              <span class="step-status">Local</span>
+              <div>
+                <strong>Export or delete scrubbed activity</strong>
+                <p data-workflow-copy="history">History actions stay disabled until a paired daemon can confirm local storage access.</p>
+              </div>
+            </li>
+          </ol>
+        </article>
+        <article class="panel">
+          <p class="label">Browser trust</p>
+          <h2 data-pairing-title>Enter the browser code</h2>
+          <p class="copy" data-pairing-copy>Start pairing in Vectant, then enter the 12-character one-time code here.</p>
+          <form class="pairing-form" data-pairing-form>
+            <label for="pairing-code">One-time code</label>
+            <input id="pairing-code" name="pairing-code" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" minlength="12" maxlength="12" pattern="[A-HJ-NP-Z2-9]{12}" placeholder="ABCD2345WXYZ" required data-pairing-code>
+            <button class="primary" type="submit" data-pairing-submit disabled>Check code</button>
+          </form>
+          <div class="pairing-confirm" hidden data-pairing-confirm>
+            <span class="label">Compare fingerprint</span>
+            <strong class="pairing-fingerprint" data-pairing-fingerprint></strong>
+            <p class="hint" data-pairing-identity></p>
+            <button class="primary full-control" type="button" data-action="confirm-pairing">Confirm fingerprint</button>
+          </div>
+          <p class="hint" role="status" data-pairing-status></p>
+        </article>
+      </section>
+
+      <section class="grid" id="panel-approvals" role="tabpanel" hidden data-panel="approvals">
+        <article class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="label">Review before send</p>
+              <h2 data-field="approval-title">No live approval request</h2>
+            </div>
+            <span class="tag" data-field="approval-tag">Zero bytes sent</span>
+          </div>
+          <div class="approval-preview">
+            <p data-field="approval-copy">When Vectant requests a source file or log, this desktop screen must show classification, redactions, target path, actor, reason, expiry, and approval scope before content leaves the machine.</p>
+          </div>
+          <div class="approval-review-detail" hidden data-approval-review-detail>
+            <dl class="approval-facts">
+              <div><dt>Target</dt><dd data-approval-field="target"></dd></div>
+              <div><dt>Actor</dt><dd data-approval-field="actor"></dd></div>
+              <div><dt>Classification</dt><dd data-approval-field="classification"></dd></div>
+              <div><dt>Expires</dt><dd data-approval-field="expires"></dd></div>
+            </dl>
+            <p class="hint" data-approval-field="reason"></p>
+            <pre class="approval-content" data-approval-field="preview"></pre>
+            <p class="hint" data-approval-field="redactions"></p>
+            <div class="control-row">
+              <button class="primary" type="button" data-action="approve-file">Approve locally</button>
+              <button type="button" data-action="deny-file">Deny</button>
+            </div>
+          </div>
+        </article>
+        <article class="panel">
+          <p class="label">Denied by default</p>
+          <ul class="tight-list">
+            <li>.env and credential stores</li>
+            <li>Path traversal and symlink escapes</li>
+            <li>Binary, archive, sparse, generated artifacts</li>
+            <li>Scanner failure or uncertain classification</li>
+          </ul>
+          <div class="control-stack">
+            <button type="button" data-action="review-file-approval" disabled>Open approval review</button>
+          </div>
+          <p class="hint">Review opens only when a live local approval request exists.</p>
+        </article>
+      </section>
+
+      <section class="grid" id="panel-ports" role="tabpanel" hidden data-panel="ports">
+        <article class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="label">Localhost preview</p>
+              <h2 data-field="ports-title">No ports approved</h2>
+            </div>
+            <span class="tag warn">Explicit capabilities</span>
+          </div>
+          <p class="copy" data-field="ports-copy">Approved preview hosts are session scoped, target-bound, token bound, process identity bound, and revoked on disconnect or app quit.</p>
+        </article>
+        <article class="panel">
+          <p class="label">Available capabilities</p>
+          <ul class="tight-list">
+            <li>AI page body reading</li>
+            <li>Support agent clicking</li>
+            <li>POST, PUT, PATCH, DELETE</li>
+            <li>Private network proxying</li>
+          </ul>
+          <div class="pairing-form port-form">
+            <label for="preview-target-host">Target host</label>
+            <input id="preview-target-host" data-preview-target-host type="text" value="127.0.0.1" autocomplete="off">
+            <label for="preview-port">Target port</label>
+            <input id="preview-port" data-preview-port type="number" min="1" max="65535" inputmode="numeric" value="3000" autocomplete="off">
+          </div>
+          <div class="control-stack">
+            <button type="button" data-action="review-port-approval" disabled>Approve port capabilities</button>
+            <button type="button" data-action="open-port-preview" disabled>Open in system browser</button>
+            <button type="button" data-action="revoke-port-approval" disabled>Revoke port approval</button>
+          </div>
+          <p class="hint">Port review stays local. Preview tokens remain hidden from the renderer.</p>
+        </article>
+      </section>
+
+      <section class="grid" id="panel-activity" role="tabpanel" hidden data-panel="activity">
+        <article class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="label">Local activity</p>
+              <h2 data-field="activity-title">History is empty</h2>
+            </div>
+            <span class="tag">Raw bodies excluded</span>
+          </div>
+          <p class="copy" data-field="activity-copy">Allowed, denied, redacted, approved, revoked, paused, disconnected, exported, and deleted events are written to local product storage with scrubbed summaries.</p>
+        </article>
+        <article class="panel">
+          <p class="label">History controls</p>
+          <div class="control-stack">
+            <button type="button" data-action="export-history" disabled>Export scrubbed history</button>
+            <button type="button" data-action="delete-history" disabled>Delete local history</button>
+          </div>
+          <p class="hint">Open the desktop app to export or delete scrubbed local history, even while disconnected.</p>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

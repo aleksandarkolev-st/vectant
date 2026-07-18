@@ -17,11 +17,21 @@ function resolveDep(rel) {
   return candidates.find((p) => fs.existsSync(p)) || candidates[0];
 }
 
+function resolveDepForTurbopack(rel) {
+  const absolute = resolveDep(rel);
+  const relative = path.relative(__dirname, absolute).replaceAll(path.sep, '/');
+  return relative.startsWith('.') ? relative : `./${relative}`;
+}
+
 const contentSecurityPolicy = buildContentSecurityPolicy(
   // Use the configured collab URL; only fall back to localhost in non-production
   // so an unset env var never injects a bogus localhost origin into prod headers.
   process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
     || (process.env.NODE_ENV !== 'production' ? 'http://localhost:1234' : ''),
+);
+const localSupportContentSecurityPolicy = contentSecurityPolicy.replace(
+  /frame-ancestors [^;]+;?/,
+  "frame-ancestors 'none';",
 );
 
 /** @type {import('next').NextConfig} */
@@ -43,7 +53,7 @@ const nextConfig = { eslint: { ignoreDuringBuilds: true },
       // use the same instance for LSP features to work.
       'monaco-editor': '@codingame/monaco-vscode-editor-api',
       // Yjs dedup (resolveDep handles workspace hoisting)
-      'yjs': resolveDep('yjs/dist/yjs.mjs'),
+      'yjs': resolveDepForTurbopack('yjs/dist/yjs.mjs'),
     },
   },
   // Webpack fallback (used by `next build` without turbopack)
@@ -67,6 +77,32 @@ const nextConfig = { eslint: { ignoreDuringBuilds: true },
     return config;
   },
   async headers() {
+    const localSupportHeaders = [
+      {
+        key: 'Content-Security-Policy',
+        value: localSupportContentSecurityPolicy,
+      },
+      {
+        key: 'X-Frame-Options',
+        value: 'DENY',
+      },
+      {
+        key: 'X-Content-Type-Options',
+        value: 'nosniff',
+      },
+      {
+        key: 'Referrer-Policy',
+        value: 'no-referrer',
+      },
+      {
+        key: 'Cache-Control',
+        value: 'no-store',
+      },
+      {
+        key: 'Permissions-Policy',
+        value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), clipboard-read=(), clipboard-write=(), fullscreen=()',
+      },
+    ];
     return [
       {
         source: '/(.*)',
@@ -104,6 +140,14 @@ const nextConfig = { eslint: { ignoreDuringBuilds: true },
             value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), browsing-topics=()',
           },
         ],
+      },
+      {
+        source: '/local-support',
+        headers: localSupportHeaders,
+      },
+      {
+        source: '/api/local-support/:path*',
+        headers: localSupportHeaders,
       },
     ];
   },

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Vectant Local Support",
+  "version": "0.1.0",
+  "identifier": "dev.vectant.local-support",
+  "build": {
+    "frontendDist": "./ui",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; worker-src 'none'"
+    },
+    "windows": [
+      {
+        "title": "Vectant Local Support",
+        "width": 980,
+        "height": 720,
+        "resizable": true,
+        "fullscreen": false,
+        "devtools": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "allowDowngrades": false
+    },
+    "publisher": "Vectant",
+    "copyright": "Copyright Vectant",
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "shell": {
+      "open": false
+    },
+    "fs": {
+      "scope": []
+    },
+    "clipboard": {
+      "enabled": false
+    },
+    "globalShortcut": {
+      "enabled": false
+    },
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhBODI2MDZBNzE1MzI1NkUKUldSdUpWTnhhbUNDaWdXb0I1eUdOTE1QWVVRdVhJVmN1eHh5QSsvRWJxa21hTWFJK2JuVzFKb2wK",
+      "endpoints": ["https://updates.vectant.dev/local-support/{{target}}/{{current_version}}"]
+    }
+  }
+}

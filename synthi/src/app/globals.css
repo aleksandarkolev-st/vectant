@@ -1258,6 +1258,65 @@
   }
 }
 
+/* Local Support is an operational console, not a campaign surface. Keep its
+   visual language compact, neutral, and easy to scan during an incident. */
+[data-testid="local-support-surface"] {
+  font-variant-numeric: tabular-nums;
+}
+
+[data-testid="local-support-surface"] > div:first-child {
+  box-shadow: none !important;
+  backdrop-filter: none;
+}
+
+[data-testid="local-support-surface"] > div:first-child > div,
+[data-testid="local-support-surface"] > div:nth-child(3) {
+  max-width: 1240px;
+}
+
+[data-testid="local-support-surface"] > div:nth-child(3) {
+  padding-top: 1.25rem;
+}
+
+[data-testid="local-support-surface"] h2 {
+  letter-spacing: -0.015em;
+}
+
+[data-testid="local-support-surface"] section,
+[data-testid="local-support-surface"] [role="tabpanel"] > section,
+[data-testid="local-support-surface"] [role="tabpanel"] > div,
+[data-testid="local-support-surface"] table,
+[data-testid="local-support-surface"] [role="tablist"] {
+  box-shadow: none !important;
+}
+
+[data-testid="local-support-surface"] [role="tablist"] {
+  border-radius: 4px !important;
+}
+
+[data-testid="local-support-surface"] [role="tab"] {
+  border-radius: 3px !important;
+  min-height: 2rem;
+}
+
+[data-testid="local-support-surface"] [role="tab"][data-state="active"] {
+  box-shadow: inset 0 -2px 0 var(--attention-purple) !important;
+}
+
+[data-testid="local-support-surface"] .rounded-md,
+[data-testid="local-support-surface"] .rounded-lg {
+  border-radius: 4px !important;
+}
+
+[data-testid="local-support-surface"] .text-2xl {
+  font-size: 1.6rem !important;
+}
+
+[data-testid="local-support-surface"] button {
+  border-radius: 4px;
+  box-shadow: none !important;
+}
+
 /* ─── Self-Healing system polish ─────────────────────────────────────────
    Hover-lift on cards, smooth chevron rotation, scale-in popovers, and
    shimmer-on-hover for the primary "Heal current problems" button.
