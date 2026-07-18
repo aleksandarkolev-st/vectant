@@ -6,6 +6,8 @@ pub mod capability;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_runtime_boundary;
 #[cfg(feature = "gpu-hmr")]
+pub mod gpu_runtime_proof;
+#[cfg(feature = "gpu-hmr")]
 pub mod gpu_runtime_watchdog;
 pub mod loader;
 pub mod process_isolation;

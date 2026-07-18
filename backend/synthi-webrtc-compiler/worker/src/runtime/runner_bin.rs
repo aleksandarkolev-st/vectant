@@ -44,6 +44,10 @@ use worker::infra::host_kv;
 use worker::runtime::capability;
 #[cfg(feature = "gpu-hmr")]
 use worker::runtime::gpu_runtime_boundary::runtime_session_id;
+#[cfg(feature = "gpu-hmr")]
+use worker::runtime::gpu_runtime_proof::{
+    verify_strict_gpu_runtime_proof, StrictGpuRuntimeProofExpectation,
+};
 use worker::runtime::loader;
 // use worker::safety::boundary;
 // use worker::compiler::source_map;
@@ -1336,6 +1340,16 @@ fn matching_strict_gpu_runtime_proof_id(
     let source_edit_ref = format!("source-edit-id:{source_edit_id}");
     let expected_process_id = std::process::id().to_string();
     let expected_runtime_session_id = runtime_session_id();
+    let shared_verification = verify_strict_gpu_runtime_proof(
+        proof,
+        &StrictGpuRuntimeProofExpectation {
+            request_id,
+            source_edit_id,
+            artifact_content_hash,
+            process_id: &expected_process_id,
+            runtime_session_id: expected_runtime_session_id,
+        },
+    )?;
     if !portable_runner_json_numbers_supported(proof)
         || !portable_runner_json_aliases_consistent(proof)
         || proof.get("type").and_then(serde_json::Value::as_str) != Some("gpu_hmr_proof")
@@ -1521,7 +1535,7 @@ fn matching_strict_gpu_runtime_proof_id(
                     .iter()
                     .any(|value| value.as_str() == Some(&source_edit_ref))
         }))
-    .then(|| proof_id.to_string())
+    .then(|| shared_verification.proof_id)
 }
 
 #[cfg(feature = "gpu-hmr")]
