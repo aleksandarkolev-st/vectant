@@ -4939,6 +4939,7 @@ dependencies = [
  "rand 0.8.5",
  "regex",
  "reqwest 0.11.27",
+ "ring 0.17.14",
  "rmp",
  "rmp-serde",
  "serde",
