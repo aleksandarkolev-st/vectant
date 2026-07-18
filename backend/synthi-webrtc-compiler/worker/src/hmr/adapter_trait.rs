@@ -121,32 +121,69 @@ pub struct ReloadCapsuleMetadata {
     pub proof_hash: Option<String>,
 }
 
-/// Evidence from the caller boundary that non-GPU reload routes were not used.
-///
-/// GPU adapters must consume this as evidence, not infer it locally. Missing
-/// values mean the caller did not prove the firewall invariant.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Process-local evidence minted by the reload router. It is deliberately not
+/// serializable so a project request cannot manufacture firewall authority.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReloadFirewallEvidence {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub cpu_hmr_used: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub full_rebuild_used: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub process_restarted: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub route: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub evidence_source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub process_id_before: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub process_id_after: Option<u32>,
+    cpu_hmr_used: Option<bool>,
+    full_rebuild_used: Option<bool>,
+    process_restarted: Option<bool>,
+    route: Option<String>,
+    evidence_source: Option<String>,
+    process_id_before: Option<u32>,
+    process_id_after: Option<u32>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedReloadFirewallReceipt {
+    receipt_id: String,
+    cpu_hmr_used: bool,
+    full_rebuild_used: bool,
+    process_restarted: bool,
+    route: String,
+    evidence_source: String,
+    process_id_before: u32,
+    process_id_after: u32,
+}
+
+impl VerifiedReloadFirewallReceipt {
+    pub(crate) fn receipt_id(&self) -> &str {
+        &self.receipt_id
+    }
+
+    pub(crate) fn cpu_hmr_used(&self) -> bool {
+        self.cpu_hmr_used
+    }
+
+    pub(crate) fn full_rebuild_used(&self) -> bool {
+        self.full_rebuild_used
+    }
+
+    pub(crate) fn process_restarted(&self) -> bool {
+        self.process_restarted
+    }
+
+    pub(crate) fn route(&self) -> &str {
+        &self.route
+    }
+
+    pub(crate) fn evidence_source(&self) -> &str {
+        &self.evidence_source
+    }
+
+    pub(crate) fn process_id_before(&self) -> u32 {
+        self.process_id_before
+    }
+
+    pub(crate) fn process_id_after(&self) -> u32 {
+        self.process_id_after
+    }
 }
 
 impl ReloadFirewallEvidence {
     pub const GPU_DEVICE_SIDECAR_ROUTE: &'static str = "gpu_device_sidecar_reload";
 
-    pub fn from_gpu_device_sidecar_boundary(
+    pub(crate) fn from_gpu_device_sidecar_boundary(
         evidence_source: impl Into<String>,
         process_id_before: u32,
         process_id_after: u32,
@@ -160,6 +197,58 @@ impl ReloadFirewallEvidence {
             process_id_before: Some(process_id_before),
             process_id_after: Some(process_id_after),
         }
+    }
+
+    pub(crate) fn verify_gpu_device_sidecar_boundary(
+        &self,
+        current_process_id: u32,
+    ) -> Result<VerifiedReloadFirewallReceipt, &'static str> {
+        let evidence_source = self
+            .evidence_source
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or("reload_firewall_evidence_source_missing")?;
+        let process_id_before = self
+            .process_id_before
+            .ok_or("reload_firewall_process_id_before_missing")?;
+        let process_id_after = self
+            .process_id_after
+            .ok_or("reload_firewall_process_id_after_missing")?;
+        if self.cpu_hmr_used != Some(false)
+            || self.full_rebuild_used != Some(false)
+            || self.process_restarted != Some(false)
+            || self.route.as_deref() != Some(Self::GPU_DEVICE_SIDECAR_ROUTE)
+        {
+            return Err("reload_firewall_route_not_gpu_device_sidecar");
+        }
+        if process_id_before != current_process_id || process_id_after != current_process_id {
+            return Err("reload_firewall_process_identity_mismatch");
+        }
+
+        let material = json!({
+            "schemaVersion": "synthi.gpu_hmr.reload_firewall_receipt.v1",
+            "route": Self::GPU_DEVICE_SIDECAR_ROUTE,
+            "evidenceSource": evidence_source,
+            "processIdBefore": process_id_before,
+            "processIdAfter": process_id_after,
+            "cpuHmrUsed": false,
+            "fullRebuildUsed": false,
+            "processRestarted": false,
+        });
+        Ok(VerifiedReloadFirewallReceipt {
+            receipt_id: format!(
+                "reload-firewall-receipt:{}",
+                sha256_prefixed(stable_json_string(&material).as_bytes())
+            ),
+            cpu_hmr_used: false,
+            full_rebuild_used: false,
+            process_restarted: false,
+            route: Self::GPU_DEVICE_SIDECAR_ROUTE.to_string(),
+            evidence_source: evidence_source.to_string(),
+            process_id_before,
+            process_id_after,
+        })
     }
 }
 
@@ -517,13 +606,53 @@ pub struct AdapterReloadRequest {
     /// Optional capsule proof metadata for generation-published reloads.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub capsule_metadata: Option<ReloadCapsuleMetadata>,
-    /// Explicit firewall evidence supplied by the reload boundary.
-    #[serde(default)]
-    pub firewall_evidence: ReloadFirewallEvidence,
+    /// Process-local firewall evidence. Serialized requests cannot set it.
+    #[serde(skip)]
+    pub(crate) firewall_evidence: ReloadFirewallEvidence,
     /// Whether state preservation is requested.
     pub preserve_state: bool,
     /// Timeout for this reload (millis).
     pub timeout_ms: u64,
+}
+
+impl AdapterReloadRequest {
+    /// Creates an untrusted reload request with no process-local proof authority.
+    ///
+    /// Runtime routing code must explicitly transition it onto the process-local
+    /// GPU device-sidecar route after parsing any serialized input.
+    pub fn new(
+        reload_id: impl Into<String>,
+        module_id: impl Into<String>,
+        changed_files: Vec<String>,
+        build_manifest: BuildManifest,
+        preserve_state: bool,
+        timeout_ms: u64,
+    ) -> Self {
+        Self {
+            reload_id: reload_id.into(),
+            source_edit_id: None,
+            module_id: module_id.into(),
+            changed_files,
+            build_manifest,
+            artifact_blob: None,
+            capsule_metadata: None,
+            firewall_evidence: ReloadFirewallEvidence::default(),
+            preserve_state,
+            timeout_ms,
+        }
+    }
+
+    /// Selects the process-local GPU device-sidecar route without accepting
+    /// serialized or caller-supplied proof fields.
+    pub fn into_gpu_device_sidecar_route(mut self) -> Self {
+        let process_id = std::process::id();
+        self.firewall_evidence = ReloadFirewallEvidence::from_gpu_device_sidecar_boundary(
+            "adapter_reload_request:gpu_device_sidecar_route",
+            process_id,
+            process_id,
+        );
+        self
+    }
 }
 
 /// Result of an adapter reload attempt.
@@ -653,6 +782,19 @@ mod tests {
         assert_eq!(evidence.evidence_source.as_deref(), Some("unit-test"));
         assert_eq!(evidence.process_id_before, Some(100));
         assert_eq!(evidence.process_id_after, Some(100));
+        let receipt = evidence
+            .verify_gpu_device_sidecar_boundary(100)
+            .expect("verified process-local receipt");
+        assert!(receipt
+            .receipt_id()
+            .starts_with("reload-firewall-receipt:sha256:"));
+        assert_eq!(
+            receipt.route(),
+            ReloadFirewallEvidence::GPU_DEVICE_SIDECAR_ROUTE
+        );
+        assert!(!receipt.cpu_hmr_used());
+        assert!(!receipt.full_rebuild_used());
+        assert!(!receipt.process_restarted());
     }
 
     #[test]
@@ -660,6 +802,91 @@ mod tests {
         let evidence =
             ReloadFirewallEvidence::from_gpu_device_sidecar_boundary("unit-test", 100, 101);
         assert_eq!(evidence.process_restarted, Some(true));
+        assert_eq!(
+            evidence.verify_gpu_device_sidecar_boundary(101),
+            Err("reload_firewall_route_not_gpu_device_sidecar")
+        );
+    }
+
+    #[test]
+    fn serialized_reload_request_cannot_supply_firewall_authority() {
+        let request = AdapterReloadRequest {
+            reload_id: "reload-id".into(),
+            source_edit_id: None,
+            module_id: "module-id".into(),
+            changed_files: vec!["source.ext".into()],
+            build_manifest: BuildManifest::for_language("preview-id", "rust"),
+            artifact_blob: None,
+            capsule_metadata: None,
+            firewall_evidence: ReloadFirewallEvidence::from_gpu_device_sidecar_boundary(
+                "trusted-router",
+                100,
+                100,
+            ),
+            preserve_state: true,
+            timeout_ms: 1_000,
+        };
+        let mut serialized = serde_json::to_value(&request).expect("serialize request");
+        assert!(serialized.get("firewall_evidence").is_none());
+        serialized.as_object_mut().unwrap().insert(
+            "firewall_evidence".to_string(),
+            json!({
+                "cpu_hmr_used": false,
+                "full_rebuild_used": false,
+                "process_restarted": false,
+                "route": ReloadFirewallEvidence::GPU_DEVICE_SIDECAR_ROUTE,
+                "evidence_source": "forged-request",
+                "process_id_before": 100,
+                "process_id_after": 100,
+            }),
+        );
+        serialized.as_object_mut().unwrap().insert(
+            "firewallEvidence".to_string(),
+            json!({
+                "cpuHmrUsed": false,
+                "fullRebuildUsed": false,
+                "processRestarted": false,
+                "route": ReloadFirewallEvidence::GPU_DEVICE_SIDECAR_ROUTE,
+                "evidenceSource": "forged-request-alias",
+                "processIdBefore": 100,
+                "processIdAfter": 100,
+            }),
+        );
+        let decoded: AdapterReloadRequest =
+            serde_json::from_value(serialized).expect("deserialize request");
+        assert_eq!(decoded.firewall_evidence, ReloadFirewallEvidence::default());
+        assert!(decoded
+            .firewall_evidence
+            .verify_gpu_device_sidecar_boundary(100)
+            .is_err());
+    }
+
+    #[test]
+    fn public_reload_request_constructor_starts_without_firewall_authority() {
+        let request = AdapterReloadRequest::new(
+            "reload-id",
+            "module-id",
+            vec!["source.ext".into()],
+            BuildManifest::for_language("preview-id", "rust"),
+            true,
+            1_000,
+        );
+
+        assert_eq!(request.firewall_evidence, ReloadFirewallEvidence::default());
+        assert!(request
+            .firewall_evidence
+            .verify_gpu_device_sidecar_boundary(100)
+            .is_err());
+
+        let routed = request.into_gpu_device_sidecar_route();
+        let receipt = routed
+            .firewall_evidence
+            .verify_gpu_device_sidecar_boundary(std::process::id())
+            .expect("process-local route must mint a valid receipt");
+        assert_eq!(
+            receipt.evidence_source(),
+            "adapter_reload_request:gpu_device_sidecar_route"
+        );
     }
 
     #[test]

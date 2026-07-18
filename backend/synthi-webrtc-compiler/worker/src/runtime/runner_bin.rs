@@ -181,7 +181,7 @@ use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 use worker::hmr::adapter_trait::{
     decode_reload_capsule_metadata_token, normalized_reload_source_edit_id,
     reload_output_oracle_proof_context_valid_for_reload, Adapter, AdapterReloadRequest,
-    AdapterReloadResult, ReloadArtifactBlob, ReloadCapsuleMetadata, ReloadFirewallEvidence,
+    AdapterReloadResult, ReloadArtifactBlob, ReloadCapsuleMetadata,
 };
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::build_manifest::{
@@ -3465,25 +3465,18 @@ fn main() {
                             manifest.dirty_units = Some(source_paths.clone());
                         }
 
-                        let firewall_process_id_before = std::process::id();
-                        let firewall_process_id_after = std::process::id();
-                        let req = AdapterReloadRequest {
+                        let mut req = AdapterReloadRequest::new(
                             reload_id,
-                            source_edit_id,
-                            module_id: "device".into(),
-                            changed_files: source_paths,
-                            build_manifest: manifest,
-                            artifact_blob,
-                            capsule_metadata,
-                            firewall_evidence:
-                                ReloadFirewallEvidence::from_gpu_device_sidecar_boundary(
-                                    "runner_bin:device_sidecar_reload",
-                                    firewall_process_id_before,
-                                    firewall_process_id_after,
-                                ),
-                            preserve_state: true,
-                            timeout_ms: 5000,
-                        };
+                            "device",
+                            source_paths,
+                            manifest,
+                            true,
+                            5000,
+                        );
+                        req.source_edit_id = source_edit_id;
+                        req.artifact_blob = artifact_blob;
+                        req.capsule_metadata = capsule_metadata;
+                        let req = req.into_gpu_device_sidecar_route();
                         let artifact_loader_transport =
                             match gpu_artifact_loader_transport_from_env_for_reload(
                                 req.artifact_blob.as_ref(),

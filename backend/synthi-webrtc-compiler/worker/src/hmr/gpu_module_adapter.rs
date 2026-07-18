@@ -67,7 +67,8 @@ use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::adapter_trait::{
     configured_gpu_hmr_runtime_output_oracle_profile_path, normalized_reload_source_edit_id,
     Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest, AdapterReloadResult,
-    ReloadCapsuleMetadata, RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
+    ReloadCapsuleMetadata, VerifiedReloadFirewallReceipt,
+    RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
 };
 use crate::hmr::build_manifest::{
     BuildSlot, GPU_SIDECAR_MODULE_CAPABILITY, GPU_SIDECAR_PARTIAL_MODULE_CAPABILITY,
@@ -2612,6 +2613,7 @@ fn runtime_acceptance_contract(
     output_oracle_target: &Value,
     retirement_strategy: &str,
     capsule_metadata: Option<&ReloadCapsuleMetadata>,
+    firewall_receipt: &VerifiedReloadFirewallReceipt,
 ) -> Value {
     let entry_points = if expected_symbols.is_empty() {
         vec!["unknown_kernel".to_string()]
@@ -2733,13 +2735,14 @@ fn runtime_acceptance_contract(
         "adapter_outcome": "adapter_generated",
         "reload_evidence_refs": acceptance_evidence_refs,
         "firewall_evidence": {
-            "route": req.firewall_evidence.route,
-            "cpu_hmr_used": false,
-            "full_rebuild_used": false,
-            "process_restarted": false,
-            "process_id_before": process_id,
-            "process_id_after": process_id,
-            "evidence_source": req.firewall_evidence.evidence_source,
+            "route": firewall_receipt.route(),
+            "cpu_hmr_used": firewall_receipt.cpu_hmr_used(),
+            "full_rebuild_used": firewall_receipt.full_rebuild_used(),
+            "process_restarted": firewall_receipt.process_restarted(),
+            "process_id_before": firewall_receipt.process_id_before(),
+            "process_id_after": firewall_receipt.process_id_after(),
+            "evidence_source": firewall_receipt.evidence_source(),
+            "receipt_id": firewall_receipt.receipt_id(),
             "evidence_refs": acceptance_evidence_refs,
         },
         "output_oracle_target": output_oracle_target,
@@ -2894,6 +2897,7 @@ fn validate_runtime_publication_binding(
 #[allow(clippy::too_many_arguments)]
 fn runtime_full_proof_line(
     req: &AdapterReloadRequest,
+    firewall_receipt: &VerifiedReloadFirewallReceipt,
     vendor: GpuVendor,
     previous_artifact_id: &str,
     new_artifact_id: &str,
@@ -2918,23 +2922,9 @@ fn runtime_full_proof_line(
     if !loader_transport.is_content_bound() {
         return Err("runtime_proof_loader_transport_not_content_bound".to_string());
     }
-    if req.firewall_evidence.cpu_hmr_used != Some(false)
-        || req.firewall_evidence.full_rebuild_used != Some(false)
-        || req.firewall_evidence.process_restarted != Some(false)
-    {
-        return Err("runtime_proof_firewall_evidence_incomplete".to_string());
-    }
     let process_id = std::process::id().to_string();
-    let firewall_pid_before = req
-        .firewall_evidence
-        .process_id_before
-        .ok_or_else(|| "runtime_proof_process_id_before_missing".to_string())?
-        .to_string();
-    let firewall_pid_after = req
-        .firewall_evidence
-        .process_id_after
-        .ok_or_else(|| "runtime_proof_process_id_after_missing".to_string())?
-        .to_string();
+    let firewall_pid_before = firewall_receipt.process_id_before().to_string();
+    let firewall_pid_after = firewall_receipt.process_id_after().to_string();
     if firewall_pid_before != process_id || firewall_pid_after != process_id {
         return Err("runtime_proof_process_identity_changed".to_string());
     }
@@ -3093,10 +3083,8 @@ fn runtime_full_proof_line(
         format!("oracle:{}", output_receipt.oracle_id()),
         format!("host-output-receipt:{}", output_receipt.receipt_id()),
         format!("retirement-strategy:{retirement_strategy}"),
-        req.firewall_evidence
-            .evidence_source
-            .clone()
-            .unwrap_or_else(|| "runtime-firewall".to_string()),
+        firewall_receipt.receipt_id().to_string(),
+        firewall_receipt.evidence_source().to_string(),
         raw_readback_bin.clone(),
     ];
     evidence_ref_values.extend(log_list_values(retirement_fence_ids));
@@ -3356,17 +3344,18 @@ fn runtime_full_proof_line(
         "cache_state": "compiler_cache_warm",
         "model_provenance": runtime_proof_model_provenance(),
         "evidence_refs": evidence_refs,
-        "cpu_hmr_used": false,
-        "full_rebuild_used": false,
-        "process_restarted": false,
+        "cpu_hmr_used": firewall_receipt.cpu_hmr_used(),
+        "full_rebuild_used": firewall_receipt.full_rebuild_used(),
+        "process_restarted": firewall_receipt.process_restarted(),
         "firewall_evidence": {
-            "cpu_hmr_used": false,
-            "full_rebuild_used": false,
-            "process_restarted": false,
-            "route": req.firewall_evidence.route,
-            "evidence_source": req.firewall_evidence.evidence_source,
-            "process_id_before": process_id,
-            "process_id_after": process_id,
+            "cpu_hmr_used": firewall_receipt.cpu_hmr_used(),
+            "full_rebuild_used": firewall_receipt.full_rebuild_used(),
+            "process_restarted": firewall_receipt.process_restarted(),
+            "route": firewall_receipt.route(),
+            "evidence_source": firewall_receipt.evidence_source(),
+            "receipt_id": firewall_receipt.receipt_id(),
+            "process_id_before": firewall_receipt.process_id_before(),
+            "process_id_after": firewall_receipt.process_id_after(),
         },
     });
     if !portable_canonical_json_numbers_supported(&ledger_record) {
@@ -3665,6 +3654,7 @@ fn runtime_full_proof_line(
         &output_oracle_target,
         retirement_strategy,
         capsule_metadata,
+        firewall_receipt,
     );
     let proof_artifact_material = json!({
         "resultState": GPU_HMR_FULL_RUNTIME_RESULT_STATE,
@@ -4879,6 +4869,20 @@ impl Adapter for GpuModuleAdapter {
                 }
             }
         };
+        let verified_firewall_receipt = match req
+            .firewall_evidence
+            .verify_gpu_device_sidecar_boundary(std::process::id())
+        {
+            Ok(receipt) => receipt,
+            Err(reason) => {
+                self.health = AdapterHealth::Degraded;
+                self.phase = GpuPhase::Ready;
+                return AdapterReloadResult::Failed {
+                    error: format!("GPU HMR runtime firewall refused: {reason}"),
+                    recoverable: false,
+                };
+            }
+        };
         #[cfg(test)]
         run_runtime_output_oracle_post_pin_hook_for_test();
 
@@ -5364,13 +5368,16 @@ impl Adapter for GpuModuleAdapter {
                     output_oracle_passed,
                     output_after_dispatch,
                     retirement_proven,
-                    cpu_hmr_used: req.firewall_evidence.cpu_hmr_used,
-                    full_rebuild_used: req.firewall_evidence.full_rebuild_used,
-                    process_restarted: req.firewall_evidence.process_restarted,
-                    firewall_route: req.firewall_evidence.route.clone(),
-                    firewall_evidence_source: req.firewall_evidence.evidence_source.clone(),
-                    firewall_process_id_before: req.firewall_evidence.process_id_before,
-                    firewall_process_id_after: req.firewall_evidence.process_id_after,
+                    cpu_hmr_used: Some(verified_firewall_receipt.cpu_hmr_used()),
+                    full_rebuild_used: Some(verified_firewall_receipt.full_rebuild_used()),
+                    process_restarted: Some(verified_firewall_receipt.process_restarted()),
+                    firewall_route: Some(verified_firewall_receipt.route().to_string()),
+                    firewall_evidence_source: Some(
+                        verified_firewall_receipt.evidence_source().to_string(),
+                    ),
+                    firewall_receipt_id: Some(verified_firewall_receipt.receipt_id().to_string()),
+                    firewall_process_id_before: Some(verified_firewall_receipt.process_id_before()),
+                    firewall_process_id_after: Some(verified_firewall_receipt.process_id_after()),
                     process_id: Some(format!("pid:{}", std::process::id())),
                     device_identity: verified_dispatch_device_identity
                         .as_ref()
@@ -5711,6 +5718,7 @@ impl Adapter for GpuModuleAdapter {
                     {
                         runtime_full_proof_line(
                             req,
+                            &verified_firewall_receipt,
                             self.config.vendor,
                             &previous_artifact_id,
                             &new_artifact_id,
@@ -6540,6 +6548,11 @@ mod tests {
 
     #[test]
     fn strict_runtime_proof_builder_reports_content_binding_gap() {
+        let request = dummy_request();
+        let firewall_receipt = request
+            .firewall_evidence
+            .verify_gpu_device_sidecar_boundary(std::process::id())
+            .expect("verified firewall receipt");
         let unreachable_commit = dispatcher_commit_receipt_for_test(
             "publication:test".to_string(),
             1,
@@ -6562,7 +6575,8 @@ mod tests {
             host_thread_id: "unreached".to_string(),
         };
         let error = runtime_full_proof_line(
-            &dummy_request(),
+            &request,
+            &firewall_receipt,
             GpuVendor::Rocm,
             "artifact:sha256:before",
             "artifact:sha256:after",
@@ -6752,6 +6766,10 @@ mod tests {
             "compute_only_target_verified": true,
             "evidence_refs": evidence_refs.clone(),
         });
+        let firewall_receipt = req
+            .firewall_evidence
+            .verify_gpu_device_sidecar_boundary(std::process::id())
+            .expect("verified firewall receipt");
 
         let contract = runtime_acceptance_contract(
             &req,
@@ -6774,6 +6792,7 @@ mod tests {
             &output_oracle_target,
             "epoch_fence",
             None,
+            &firewall_receipt,
         );
 
         assert_eq!(contract["confidence"], json!(0.95));
@@ -9521,7 +9540,7 @@ mod tests {
     }
 
     #[test]
-    fn phase3_hot_reload_rejects_missing_firewall_evidence() {
+    fn phase3_hot_reload_rejects_missing_firewall_receipt_before_mutation() {
         let _guard = runtime_boundary_test_guard();
         reset_for_test();
         let mut first = tempfile::NamedTempFile::new().unwrap();
@@ -9539,6 +9558,11 @@ mod tests {
             )),
             AdapterReloadResult::Success { .. }
         ));
+        let first_generation = current_launch_generation();
+        let first_handle = adapter.active_module_handle;
+        let first_artifact_id = adapter.active_generation_artifact_id.clone();
+        let module_loads_before = MODULE_LOAD_CALLS.load(Ordering::SeqCst);
+        let unloads_before = UNLOAD_CALLS.load(Ordering::SeqCst);
 
         let mut second_request = request_with_artifact(&second_path, vec!["device.cu".into()]);
         second_request.firewall_evidence = Default::default();
@@ -9546,29 +9570,59 @@ mod tests {
 
         match result {
             AdapterReloadResult::Failed { error, recoverable } => {
-                assert!(recoverable);
-                assert!(error.contains(
-                    "GPU HMR acceptance ledger rejected candidate before global publication"
-                ));
-                assert!(error.contains("cpu_hmr_absence_evidence_missing"));
-                assert!(error.contains("full_rebuild_absence_evidence_missing"));
-                assert!(error.contains("process_restart_absence_evidence_missing"));
-                assert!(error.contains("candidate rolled back"));
+                assert!(!recoverable);
+                assert_eq!(
+                    error,
+                    "GPU HMR runtime firewall refused: reload_firewall_evidence_source_missing"
+                );
             }
-            other => panic!("expected missing firewall evidence rejection, got {other:?}"),
+            other => panic!("expected missing firewall receipt rejection, got {other:?}"),
         }
-        assert!(adapter.last_reload_log().iter().any(|line| {
-            line.contains("\"type\":\"gpu_hmr_acceptance_ledger\"")
-                && line.contains("\"gpuHmrSuccess\":false")
-                && line.contains("cpu_hmr_absence_evidence_missing")
-                && line.contains("full_rebuild_absence_evidence_missing")
-                && line.contains("process_restart_absence_evidence_missing")
-        }));
-        assert!(adapter.last_reload_log().iter().any(|line| {
-            line.contains("dispatcher_epoch")
-                && line.contains("event=rolled_back")
-                && line.contains("reason=acceptance_ledger_rejected")
-        }));
+        assert_eq!(current_launch_generation(), first_generation);
+        assert_eq!(adapter.active_module_handle, first_handle);
+        assert_eq!(adapter.active_generation_artifact_id, first_artifact_id);
+        assert_eq!(
+            MODULE_LOAD_CALLS.load(Ordering::SeqCst),
+            module_loads_before
+        );
+        assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), unloads_before);
+        reset_for_test();
+    }
+
+    #[test]
+    fn phase3_fresh_adapter_rejects_missing_firewall_receipt_before_mutation() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        let mut artifact = tempfile::NamedTempFile::new().unwrap();
+        artifact.write_all(b"fake-cubin-1").unwrap();
+        let artifact_path = artifact.path().to_string_lossy().to_string();
+        let mut adapter = adapter_with_symbols(stub_symbols());
+        let mut request = request_with_artifact(&artifact_path, vec!["device.cu".into()]);
+        request.firewall_evidence = Default::default();
+        let generation_before = current_launch_generation();
+        let module_loads_before = MODULE_LOAD_CALLS.load(Ordering::SeqCst);
+        let unloads_before = UNLOAD_CALLS.load(Ordering::SeqCst);
+
+        let result = adapter.reload(&request);
+
+        match result {
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(!recoverable);
+                assert_eq!(
+                    error,
+                    "GPU HMR runtime firewall refused: reload_firewall_evidence_source_missing"
+                );
+            }
+            other => panic!("expected missing firewall receipt rejection, got {other:?}"),
+        }
+        assert_eq!(current_launch_generation(), generation_before);
+        assert!(adapter.active_module_handle.is_none());
+        assert!(adapter.active_generation_artifact_id.is_none());
+        assert_eq!(
+            MODULE_LOAD_CALLS.load(Ordering::SeqCst),
+            module_loads_before
+        );
+        assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), unloads_before);
         reset_for_test();
     }
 

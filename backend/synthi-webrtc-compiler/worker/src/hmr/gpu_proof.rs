@@ -272,6 +272,7 @@ pub struct GpuHmrAcceptanceLedgerInput {
     pub process_restarted: Option<bool>,
     pub firewall_route: Option<String>,
     pub firewall_evidence_source: Option<String>,
+    pub firewall_receipt_id: Option<String>,
     pub firewall_process_id_before: Option<u32>,
     pub firewall_process_id_after: Option<u32>,
     pub process_id: Option<String>,
@@ -324,6 +325,8 @@ pub struct GpuHmrAcceptanceLedger {
         skip_serializing_if = "Option::is_none"
     )]
     pub firewall_evidence_source: Option<String>,
+    #[serde(rename = "firewallReceiptId", skip_serializing_if = "Option::is_none")]
+    pub firewall_receipt_id: Option<String>,
     #[serde(
         rename = "firewallProcessIdBefore",
         skip_serializing_if = "Option::is_none"
@@ -385,6 +388,15 @@ impl GpuHmrAcceptanceLedger {
                 .is_empty()
             {
                 failed.push("firewall_evidence_source_missing".to_string());
+            }
+            if input
+                .firewall_receipt_id
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                failed.push("firewall_receipt_id_missing".to_string());
             }
             match (
                 input.firewall_process_id_before,
@@ -456,6 +468,7 @@ impl GpuHmrAcceptanceLedger {
             "processRestartAbsenceEvidencePresent": input.process_restarted.is_some(),
             "firewallRoute": input.firewall_route,
             "firewallEvidenceSource": input.firewall_evidence_source,
+            "firewallReceiptId": input.firewall_receipt_id,
             "firewallProcessIdBefore": input.firewall_process_id_before,
             "firewallProcessIdAfter": input.firewall_process_id_after,
             "processId": input.process_id,
@@ -498,6 +511,7 @@ impl GpuHmrAcceptanceLedger {
             firewall_evidence_source: material["firewallEvidenceSource"]
                 .as_str()
                 .map(str::to_string),
+            firewall_receipt_id: material["firewallReceiptId"].as_str().map(str::to_string),
             firewall_process_id_before: material["firewallProcessIdBefore"]
                 .as_u64()
                 .and_then(|value| u32::try_from(value).ok()),
@@ -544,6 +558,7 @@ impl GpuHmrAcceptanceLedger {
                     .then_some(self.process_restarted),
                 firewall_route: self.firewall_route.clone(),
                 firewall_evidence_source: self.firewall_evidence_source.clone(),
+                firewall_receipt_id: self.firewall_receipt_id.clone(),
                 firewall_process_id_before: self.firewall_process_id_before,
                 firewall_process_id_after: self.firewall_process_id_after,
                 process_id: self.process_id.clone(),
@@ -580,6 +595,7 @@ impl GpuHmrAcceptanceLedger {
             "processRestartAbsenceEvidencePresent": self.process_restart_absence_evidence_present,
             "firewallRoute": self.firewall_route,
             "firewallEvidenceSource": self.firewall_evidence_source,
+            "firewallReceiptId": self.firewall_receipt_id,
             "firewallProcessIdBefore": self.firewall_process_id_before,
             "firewallProcessIdAfter": self.firewall_process_id_after,
             "processId": self.process_id,
@@ -950,6 +966,7 @@ mod tests {
                     .to_string(),
             ),
             firewall_evidence_source: Some("gpu_proof_test:accepted_ledger_input".to_string()),
+            firewall_receipt_id: Some(format!("reload-firewall-receipt:sha256:{}", "a".repeat(64))),
             firewall_process_id_before: Some(42),
             firewall_process_id_after: Some(42),
             process_id: Some("pid:1".to_string()),
@@ -1004,6 +1021,7 @@ mod tests {
         input.process_restarted = None;
         input.firewall_route = None;
         input.firewall_evidence_source = None;
+        input.firewall_receipt_id = None;
         input.firewall_process_id_before = None;
         input.firewall_process_id_after = None;
         let ledger = GpuHmrAcceptanceLedger::new(input);
@@ -1024,6 +1042,9 @@ mod tests {
         assert!(ledger
             .failed_invariants
             .contains(&"firewall_evidence_source_missing".to_string()));
+        assert!(ledger
+            .failed_invariants
+            .contains(&"firewall_receipt_id_missing".to_string()));
         assert!(ledger
             .failed_invariants
             .contains(&"firewall_process_boundary_missing".to_string()));
