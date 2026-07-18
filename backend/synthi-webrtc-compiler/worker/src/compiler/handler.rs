@@ -8958,7 +8958,7 @@ async fn send_active_runner_runtime_command_for_identity(
             }
             return Ok(false);
         }
-        (state.stdin.clone(), state.output_tx.subscribe())
+        (state.stdin.clone(), state.protocol_tx.subscribe())
     };
 
     let Some(stdin_arc) = stdin_arc else {

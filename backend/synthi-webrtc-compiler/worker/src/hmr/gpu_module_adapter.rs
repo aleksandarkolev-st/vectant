@@ -379,7 +379,6 @@ struct DeviceReloadOwnership {
 #[derive(Debug, Clone)]
 struct RuntimeFullProof {
     value: Value,
-    log_line: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3736,12 +3735,7 @@ fn runtime_full_proof(
         "proofLedger": proof_ledger,
         "runtimeProofArtifact": runtime_artifact,
     });
-    let log_line = serde_json::to_string(&message)
-        .map_err(|error| format!("runtime_proof_serialization_failed:{error}"))?;
-    Ok(RuntimeFullProof {
-        value: message,
-        log_line,
-    })
+    Ok(RuntimeFullProof { value: message })
 }
 
 fn capsule_id_for_publication(
@@ -4150,8 +4144,8 @@ pub struct GpuModuleAdapter {
     /// printed during `reload()` so the worker log carries the
     /// markers from docs/GPU_HMR_ULTRAPLAN.md §9.
     last_reload_log: Vec<String>,
-    /// Typed strict runtime proof produced by this adapter operation. The
-    /// serialized log remains diagnostic output and is not the retained source.
+    /// Typed strict runtime proof produced by this adapter operation. Full proof
+    /// bytes stay out of diagnostic logs and move only through the typed terminal.
     last_runtime_proof: Option<Value>,
     /// ABI fingerprint from the last device sidecar manifest this
     /// adapter accepted. Device-only body edits keep this stable;
@@ -5795,11 +5789,7 @@ impl Adapter for GpuModuleAdapter {
                 eprintln!("{acceptance_line}");
                 runtime_log_lines.push(acceptance_line);
             }
-            let strict_runtime_proof = strict_runtime_proof_line.map(|proof| {
-                eprintln!("{}", proof.log_line);
-                runtime_log_lines.push(proof.log_line);
-                proof.value
-            });
+            let strict_runtime_proof = strict_runtime_proof_line.map(|proof| proof.value);
             let strict_runtime_proof_success = first_device_load
                 || (!acceptance_ledger.gpu_hmr_success || strict_runtime_proof_gap.is_none());
             let mut final_acceptance_failures = acceptance_ledger.failed_invariants.clone();
@@ -6021,10 +6011,6 @@ mod tests {
             .map(|(_, json)| json)
             .expect("epoch graph JSON payload");
         serde_json::from_str(graph_json).expect("valid epoch graph JSON")
-    }
-
-    fn proof_json_from_line(line: &str) -> serde_json::Value {
-        serde_json::from_str(line).expect("valid GPU HMR proof JSON")
     }
 
     #[test]
@@ -8446,12 +8432,14 @@ mod tests {
             .contains("device_identity_key=gpu-hardware-uuid:00112233445566778899aabbccddeeff"));
         assert!(continuity.contains("accepted_for_gpu_hmr=false"));
 
-        let proof_line = adapter
+        assert!(!adapter
             .last_reload_log()
             .iter()
-            .find(|line| line.contains("\"type\":\"gpu_hmr_proof\""))
+            .any(|line| line.contains("\"type\":\"gpu_hmr_proof\"")));
+        let proof = adapter
+            .last_runtime_proof()
+            .cloned()
             .expect("strict runtime proof after native identity continuity");
-        let proof = proof_json_from_line(proof_line);
         assert_eq!(adapter.last_runtime_proof(), Some(&proof));
         assert_eq!(proof["runtimeProofArtifact"]["gpuHmrSuccess"], json!(true));
         assert_eq!(
@@ -9115,12 +9103,14 @@ mod tests {
             .last_reload_log()
             .iter()
             .any(|line| line.contains("event=rolled_back")));
-        let proof_line = adapter
+        assert!(!adapter
             .last_reload_log()
             .iter()
-            .find(|line| line.contains("\"type\":\"gpu_hmr_proof\""))
-            .expect("strict GPU HMR proof line");
-        let proof = proof_json_from_line(proof_line);
+            .any(|line| line.contains("\"type\":\"gpu_hmr_proof\"")));
+        let proof = adapter
+            .last_runtime_proof()
+            .cloned()
+            .expect("strict GPU HMR proof value");
         let record = &proof["proofLedger"]["records"][0];
         let publish = &record["epoch_publish_event"];
         let commit = &record["epoch_commit_event"];

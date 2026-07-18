@@ -16,6 +16,9 @@ pub struct RunnerState {
     pub process: Option<Child>, // Option to allow taking it if needed, or just drop
     pub stdin: Option<Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>>,
     pub output_tx: broadcast::Sender<String>,
+    /// Private runner control/proof traffic. Protocol messages must never
+    /// share the general output channel consumed by diagnostics or UI logs.
+    pub protocol_tx: broadcast::Sender<String>,
     // Session that owns this runner. Required so cancel-build with a
     // specific session_id can verify the cancel actually targets the
     // currently-active runner before tearing down Xvfb/GStreamer — a
@@ -55,10 +58,12 @@ impl RunnerState {
         stdin: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
         output_tx: broadcast::Sender<String>,
     ) -> Self {
+        let (protocol_tx, _) = broadcast::channel(100);
         Self {
             process,
             stdin: Some(stdin),
             output_tx,
+            protocol_tx,
             session_id: None,
             is_gui: false,
             is_hmr_capable: false,

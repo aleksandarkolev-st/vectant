@@ -26,9 +26,11 @@ use crate::runtime::gpu_runtime_proof::{
 use crate::runtime::runner_protocol::{
     decode_runner_command_token, parse_runner_protocol_ack, GpuArtifactLoadV1Result,
     GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload, RunnerProtocolAck,
-    GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY, GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
-    GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY, GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
-    GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, RUNNER_PROTOCOL_CURRENT_VERSION,
+    GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY, GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION,
+    GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
+    GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+    GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, GPU_RELOAD_V4_RESULT_SCHEMA_VERSION,
+    RUNNER_PROTOCOL_ACK_PREFIX, RUNNER_PROTOCOL_CURRENT_VERSION,
     RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
 };
 use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
@@ -100,6 +102,14 @@ fn json_contains_protected_gpu_evidence(value: &serde_json::Value) -> bool {
 }
 
 fn runner_line_contains_protected_gpu_evidence(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with(RUNNER_PROTOCOL_ACK_PREFIX)
+        || trimmed.starts_with("Stdin received:")
+        || trimmed.starts_with("[Runner] Processing command:")
+    {
+        return true;
+    }
+
     let normalized_line = normalized_evidence_token(line);
     if normalized_line.contains("gpuruntimeboundary")
         || [
@@ -134,6 +144,95 @@ fn runner_line_contains_protected_gpu_evidence(line: &str) -> bool {
             value.get("module").and_then(serde_json::Value::as_str),
             Some("core" | "gui" | "host")
         )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerOutputRoute {
+    General,
+    ProtectedProtocol,
+    ProtectedEvidence,
+}
+
+fn is_legacy_gpu_terminal_candidate(value: &serde_json::Value) -> bool {
+    value.get("module").and_then(serde_json::Value::as_str) == Some("device")
+        && matches!(
+            value.get("status").and_then(serde_json::Value::as_str),
+            Some("applied" | "rejected" | "compile_error" | "compile-error" | "crash-fatal")
+        )
+}
+
+fn is_runtime_control_ack(value: &serde_json::Value) -> bool {
+    matches!(
+        value.get("status").and_then(serde_json::Value::as_str),
+        Some("runtime-paused" | "runtime-resumed")
+    ) && value
+        .get("runtimeControlToken")
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+}
+
+fn runner_line_is_private_protocol(line: &str) -> bool {
+    if line.starts_with(RUNNER_PROTOCOL_ACK_PREFIX) {
+        return true;
+    }
+    let Some(payload) = extract_structured_runner_message(line) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(payload).is_ok_and(|value| {
+        matches!(
+            value
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_str),
+            Some(GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION | GPU_RELOAD_V4_RESULT_SCHEMA_VERSION)
+        ) || is_runtime_control_ack(&value)
+            || is_legacy_gpu_terminal_candidate(&value)
+    })
+}
+
+fn route_runner_output_line(
+    line: &str,
+    general_tx: &tokio::sync::broadcast::Sender<String>,
+    protocol_tx: &tokio::sync::broadcast::Sender<String>,
+) -> RunnerOutputRoute {
+    if runner_line_is_private_protocol(line) {
+        let _ = protocol_tx.send(line.to_string());
+        RunnerOutputRoute::ProtectedProtocol
+    } else if runner_line_contains_protected_gpu_evidence(line) {
+        RunnerOutputRoute::ProtectedEvidence
+    } else {
+        let _ = general_tx.send(line.to_string());
+        RunnerOutputRoute::General
+    }
+}
+
+fn runner_command_log_summary(command: &str) -> String {
+    format!(
+        "bytes={} sha256=sha256:{}",
+        command.len(),
+        sha256_hex_local(command.as_bytes())
+    )
+}
+
+fn protected_runner_line_log_summary(line: &str) -> String {
+    let trimmed = line.trim_start();
+    let kind = if trimmed.starts_with(RUNNER_PROTOCOL_ACK_PREFIX) {
+        "protocol_ack"
+    } else if trimmed.starts_with("Stdin received:")
+        || trimmed.starts_with("[Runner] Processing command:")
+    {
+        "command_echo"
+    } else if normalized_evidence_token(line).contains("gpuruntimeboundary") {
+        "runtime_evidence"
+    } else if extract_structured_runner_message(line).is_some() {
+        "structured_terminal"
+    } else {
+        "protected_evidence"
+    };
+    format!(
+        "kind={kind} bytes={} sha256=sha256:{}",
+        line.len(),
+        sha256_hex_local(line.as_bytes())
+    )
 }
 
 fn sha256_hex_local(bytes: &[u8]) -> String {
@@ -826,12 +925,7 @@ async fn wait_for_gpu_command_terminals(
         let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
             continue;
         };
-        if value.get("module").and_then(serde_json::Value::as_str) == Some("device")
-            && matches!(
-                value.get("status").and_then(serde_json::Value::as_str),
-                Some("applied" | "rejected" | "compile_error" | "crash-fatal")
-            )
-        {
+        if is_legacy_gpu_terminal_candidate(&value) {
             anyhow::bail!(
                 "GPU runner emitted an unbound legacy terminal result instead of a correlated envelope"
             );
@@ -1874,6 +1968,9 @@ pub async fn handle_runner_execution(
 
         let (log_tx, _) = tokio::sync::broadcast::channel::<String>(100);
         let log_tx_clone = log_tx.clone();
+        let (protocol_tx, _) = tokio::sync::broadcast::channel::<String>(100);
+        let protocol_tx_stdout = protocol_tx.clone();
+        let protocol_tx_stderr = protocol_tx.clone();
 
         // Forward stdout/stderr to log_dc
         let ctx_clone = ctx.clone();
@@ -1885,8 +1982,13 @@ pub async fn handle_runner_execution(
             while let Ok(line) = reader.next_line().await {
                 match line {
                     Some(l) => {
-                        let _ = log_tx_clone.send(l.clone());
-                        if runner_line_contains_protected_gpu_evidence(&l) {
+                        let route =
+                            route_runner_output_line(&l, &log_tx_clone, &protocol_tx_stdout);
+                        if route != RunnerOutputRoute::General {
+                            debug_log!(
+                                "[Runner Protocol] {}",
+                                protected_runner_line_log_summary(&l)
+                            );
                             continue;
                         }
                         // Send to frontend
@@ -1917,12 +2019,16 @@ pub async fn handle_runner_execution(
             while let Ok(line) = reader.next_line().await {
                 match line {
                     Some(l) => {
-                        debug_log!("[Runner Stderr] {}", l);
-                        let _ = log_tx_clone2.send(l.clone());
-
-                        if runner_line_contains_protected_gpu_evidence(&l) {
+                        let route =
+                            route_runner_output_line(&l, &log_tx_clone2, &protocol_tx_stderr);
+                        if route != RunnerOutputRoute::General {
+                            debug_log!(
+                                "[Runner Protocol] {}",
+                                protected_runner_line_log_summary(&l)
+                            );
                             continue;
                         }
+                        debug_log!("[Runner Stderr] {}", l);
 
                         if let Some(structured) = extract_structured_runner_message(&l) {
                             if serde_json::from_str::<serde_json::Value>(structured).is_ok() {
@@ -1963,6 +2069,7 @@ pub async fn handle_runner_execution(
             process: Some(child),
             stdin: Some(stdin.clone()),
             output_tx: log_tx,
+            protocol_tx,
             session_id: session_id.clone(),
             is_gui: req.is_gui,
             is_hmr_capable: has_on_update,
@@ -2094,7 +2201,7 @@ pub async fn handle_runner_execution(
             let requires_strict_gpu_protocol =
                 strict_gpu_protocol_required_for_batch(&modules_to_load, strict_gpu_hot_reload)?;
             let mut strict_output_receiver =
-                requires_strict_gpu_protocol.then(|| state.output_tx.subscribe());
+                requires_strict_gpu_protocol.then(|| state.protocol_tx.subscribe());
             // Check if process is still alive before sending anything.
             // Capture the exit status (signal vs code) so that the bail
             // message below can carry it into the frontend's
@@ -2134,7 +2241,10 @@ pub async fn handle_runner_execution(
                         );
                         {
                             let mut stdin = stdin_arc.lock().await;
-                            debug_log!("[Main] Sending strict GPU handshake: {}", handshake.trim());
+                            debug_log!(
+                                "[Main] Sending strict GPU handshake {}",
+                                runner_command_log_summary(handshake.trim_end())
+                            );
                             stdin
                                 .write_all(handshake.as_bytes())
                                 .await
@@ -2201,7 +2311,10 @@ pub async fn handle_runner_execution(
                 // all the runner needs to speak today.
                 if !requires_strict_gpu_protocol {
                     let handshake = "handshake 1\n";
-                    debug_log!("[Main] Sending handshake: {}", handshake.trim());
+                    debug_log!(
+                        "[Main] Sending runner handshake {}",
+                        runner_command_log_summary(handshake.trim_end())
+                    );
                     if let Err(e) = stdin.write_all(handshake.as_bytes()).await {
                         eprintln!("[Main] Failed to write handshake to runner stdin: {}", e);
                         send_failed = true;
@@ -2214,7 +2327,10 @@ pub async fn handle_runner_execution(
                 if !send_failed {
                     if let Some(ref sid) = session_id {
                         let session_cmd = format!("set_session {}\n", sid);
-                        debug_log!("[Main] Sending session to runner: {}", session_cmd.trim());
+                        debug_log!(
+                            "[Main] Sending runner session command {}",
+                            runner_command_log_summary(session_cmd.trim_end())
+                        );
                         if let Err(e) = stdin.write_all(session_cmd.as_bytes()).await {
                             eprintln!("[Main] Failed to write set_session to runner stdin: {}", e);
                             send_failed = true;
@@ -2225,7 +2341,10 @@ pub async fn handle_runner_execution(
                 if !send_failed {
                     // Send all load commands back-to-back (no sleep between them)
                     for cmd in &load_commands {
-                        debug_log!("[Main] Sending command to runner: {}", cmd.wire.trim());
+                        debug_log!(
+                            "[Main] Sending runner load command {}",
+                            runner_command_log_summary(cmd.wire.trim_end())
+                        );
                         if let Err(e) = stdin.write_all(cmd.wire.as_bytes()).await {
                             eprintln!("[Main] Failed to write to runner stdin: {}", e);
                             send_failed = true;
@@ -2331,7 +2450,8 @@ pub async fn handle_runner_execution(
 mod tests {
     use super::{
         full_device_abi_from_marker, full_device_abi_restart_marker, loaded_runner_module_state,
-        next_full_device_abi, runner_command_requires_strict_gpu_protocol,
+        next_full_device_abi, protected_runner_line_log_summary, route_runner_output_line,
+        runner_command_log_summary, runner_command_requires_strict_gpu_protocol,
         runner_has_hot_device_epoch, runner_line_contains_protected_gpu_evidence,
         runner_load_command, runner_reuse_allowed, runner_session_matches,
         same_session_full_device_abi_changed, should_forward_runner_stderr_line_to_log_dc,
@@ -2339,8 +2459,8 @@ mod tests {
         uncommitted_runner_module_state, verify_applied_gpu_terminal_proof,
         wait_for_gpu_command_terminals, wait_for_strict_gpu_protocol_ack,
         CorrelatedGpuTerminalReceipt, RunnerCommandProofContext, RunnerExecutionOutcome,
-        RunnerGpuTerminalExpectation, RunnerReloadPolicy, StrictGpuTerminalExpectation,
-        STRUCTURED_LOG_CHUNK_BYTES,
+        RunnerGpuTerminalExpectation, RunnerOutputRoute, RunnerReloadPolicy,
+        StrictGpuTerminalExpectation, STRUCTURED_LOG_CHUNK_BYTES,
     };
     use crate::compiler::builder::ModuleHashes;
     use crate::runtime::gpu_runtime_proof::{
@@ -3566,5 +3686,62 @@ mod tests {
         assert!(should_forward_runner_stderr_line_to_log_dc(
             "application stderr remains visible"
         ));
+    }
+
+    #[test]
+    fn protected_runner_protocol_uses_private_channel_and_redacted_summaries() {
+        let (general_tx, mut general_rx) = tokio::sync::broadcast::channel(8);
+        let (protocol_tx, mut protocol_rx) = tokio::sync::broadcast::channel(8);
+        let ack = RunnerProtocolAck::current(
+            "sentinel-nonce",
+            "sentinel-runtime-session",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .line()
+        .unwrap();
+        let protocol_lines = [
+            ack,
+            r#"[Runner] [HMR-STATUS] {"module":"runner","status":"runtime-paused","runtimeControlToken":"sentinel-control-token"}"#.to_string(),
+            r#"[Runner] [HMR-STATUS] {"module":"device","status":"applied","runtimeProofMaterial":"sentinel-proof-bytes"}"#.to_string(),
+        ];
+
+        for line in protocol_lines {
+            assert_eq!(
+                route_runner_output_line(&line, &general_tx, &protocol_tx),
+                RunnerOutputRoute::ProtectedProtocol
+            );
+            assert_eq!(protocol_rx.try_recv().unwrap(), line);
+            assert!(general_rx.try_recv().is_err());
+            let summary = protected_runner_line_log_summary(&line);
+            assert!(!summary.contains("sentinel"));
+        }
+
+        let protected_evidence_lines = [
+            "[Runner] Processing command: gpu_reload_v4 sentinel-command-bytes".to_string(),
+            "[gpu-runtime-boundary] dispatch_trace sentinel-runtime-evidence".to_string(),
+            r#"{"type":"diagnostic","fullRuntimeProven":false,"value":"sentinel-authority"}"#
+                .to_string(),
+        ];
+        for line in protected_evidence_lines {
+            assert_eq!(
+                route_runner_output_line(&line, &general_tx, &protocol_tx),
+                RunnerOutputRoute::ProtectedEvidence
+            );
+            assert!(general_rx.try_recv().is_err());
+            assert!(protocol_rx.try_recv().is_err());
+            assert!(!protected_runner_line_log_summary(&line).contains("sentinel"));
+        }
+
+        let visible = "application output remains visible";
+        assert_eq!(
+            route_runner_output_line(visible, &general_tx, &protocol_tx),
+            RunnerOutputRoute::General
+        );
+        assert_eq!(general_rx.try_recv().unwrap(), visible);
+        assert!(protocol_rx.try_recv().is_err());
+
+        let command_summary = runner_command_log_summary("gpu_reload_v4 sentinel-command-bytes");
+        assert!(!command_summary.contains("sentinel"));
+        assert!(command_summary.contains("sha256=sha256:"));
     }
 }

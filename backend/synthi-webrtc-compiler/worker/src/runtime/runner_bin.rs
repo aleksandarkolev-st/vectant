@@ -1,4 +1,5 @@
 use libloading::{Library, Symbol};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_void, CString};
 use std::io::{self, BufRead, Write};
@@ -217,12 +218,19 @@ use worker::runtime::runner_protocol::{
 use worker::debug_log;
 use worker::runtime::legacy_module_state::{AppState, ModuleState};
 
+fn runner_command_log_summary(command: &str) -> String {
+    format!(
+        "bytes={} sha256=sha256:{:x}",
+        command.len(),
+        Sha256::digest(command.as_bytes())
+    )
+}
+
 #[cfg(feature = "gpu-hmr")]
 struct GpuReloadCompletion {
     language: String,
-    artifact_path: String,
     artifact_content_hash: String,
-    kernels: String,
+    kernel_count: usize,
     cold_load: bool,
     request_id: Option<String>,
     source_edit_id: Option<String>,
@@ -1602,9 +1610,17 @@ fn legacy_cold_gpu_artifact_status(
 
 #[cfg(feature = "gpu-hmr")]
 fn emit_gpu_reload_completion(completion: &GpuReloadCompletion) {
+    let result_status = match &completion.result {
+        AdapterReloadResult::Success { .. } => "success",
+        AdapterReloadResult::Failed { .. } => "failed",
+        AdapterReloadResult::Unsupported { .. } => "unsupported",
+    };
     eprintln!(
-        "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact={} kernels={} result={:?}",
-        completion.language, completion.artifact_path, completion.kernels, completion.result
+        "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact_hash={} kernel_count={} result={}",
+        completion.language,
+        completion.artifact_content_hash,
+        completion.kernel_count,
+        result_status,
     );
     match (
         completion.request_id.as_deref(),
@@ -1679,8 +1695,10 @@ fn gpu_reload_artifact_blob_from_path(artifact_path: &str) -> Option<ReloadArtif
         }
         Err(error) => {
             eprintln!(
-                "[Runner] [GPU HMR] RAM artifact capsule unavailable artifact={} error={}",
-                artifact_path, error
+                "[Runner] [GPU HMR] RAM artifact capsule unavailable path_bytes={} path_sha256=sha256:{:x} error_kind={:?}",
+                artifact_path.len(),
+                Sha256::digest(artifact_path.as_bytes()),
+                error.kind()
             );
             None
         }
@@ -2550,7 +2568,10 @@ fn main() {
                         Ok(_) => {
                             let trimmed = line.trim().to_string();
                             if !trimmed.is_empty() {
-                                debug_log!("Stdin received: {}", trimmed);
+                                debug_log!(
+                                    "Stdin received command {}",
+                                    runner_command_log_summary(&trimmed)
+                                );
                                 if let Err(e) = tx_clone.send(RunnerCommand::Legacy(trimmed)) {
                                     eprintln!("Failed to send command to main thread: {}", e);
                                     break;
@@ -2942,7 +2963,10 @@ fn main() {
             }
 
             // Route command logs to stderr so stdout stays dedicated to the video stream.
-            debug_log!("[Runner] Processing command: {}", cmd);
+            debug_log!(
+                "[Runner] Processing command {}",
+                runner_command_log_summary(&cmd)
+            );
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             if parts.is_empty() {
                 continue;
@@ -3427,10 +3451,10 @@ fn main() {
 
                         if gpu_reload_inflight.contains_key(language) {
                             eprintln!(
-                                "[Runner] [GPU HMR] Device sidecar reload skipped vendor={} artifact={} kernels={} reason=reload-in-flight",
+                                "[Runner] [GPU HMR] Device sidecar reload skipped vendor={} artifact_hash={} kernel_count={} reason=reload-in-flight",
                                 language,
-                                artifact_path,
-                                kernels.join(",")
+                                artifact_hash,
+                                kernels.len()
                             );
                             if terminal_request_id.is_some() || terminal_source_edit_id.is_some() {
                                 emit_correlated_gpu_command_rejection(
@@ -3468,14 +3492,13 @@ fn main() {
 
                         let completion_tx = gpu_reload_tx.clone();
                         let language_owned = language.to_string();
-                        let artifact_path_owned = artifact_path.to_string();
-                        let kernels_log = kernels.join(",");
+                        let kernel_count = kernels.len();
                         gpu_reload_inflight.insert(language_owned.clone(), Instant::now());
                         eprintln!(
-                            "[Runner] [GPU HMR] Device sidecar reload started vendor={} artifact={} kernels={} partial={}",
+                            "[Runner] [GPU HMR] Device sidecar reload started vendor={} artifact_hash={} kernel_count={} partial={}",
                             language_owned,
-                            artifact_path_owned,
-                            kernels_log,
+                            artifact_hash,
+                            kernels.len(),
                             partial_device_load
                         );
                         if let Err(error) = adapter.capture_current_context_for_reload() {
@@ -3489,9 +3512,8 @@ fn main() {
                             let result = catch_gpu_reload_worker_result(|| adapter.reload(&req));
                             let completion = GpuReloadCompletion {
                                 language: language_owned,
-                                artifact_path: artifact_path_owned,
                                 artifact_content_hash: artifact_hash.clone(),
-                                kernels: kernels_log,
+                                kernel_count,
                                 cold_load,
                                 request_id: terminal_request_id,
                                 source_edit_id: terminal_source_edit_id,
@@ -3530,9 +3552,8 @@ fn main() {
                                     catch_gpu_reload_worker_result(|| adapter.reload(&req));
                                 let completion = GpuReloadCompletion {
                                     language: language_owned,
-                                    artifact_path: artifact_path_owned,
                                     artifact_content_hash: artifact_hash,
-                                    kernels: kernels_log,
+                                    kernel_count,
                                     cold_load,
                                     request_id: terminal_request_id,
                                     source_edit_id: terminal_source_edit_id,
@@ -3991,7 +4012,7 @@ mod tests {
     };
     use super::{
         decode_gpu_kernel_command_token, device_load_abi_version, is_runtime_execution_paused,
-        runtime_control_status_payload, should_process_runner_command,
+        runner_command_log_summary, runtime_control_status_payload, should_process_runner_command,
     };
     #[cfg(feature = "gpu-hmr")]
     use std::io::Write as _;
@@ -4087,6 +4108,16 @@ mod tests {
 
         assert_eq!(value["status"], "runtime-resumed");
         assert!(value.get("runtimeControlToken").is_none());
+    }
+
+    #[test]
+    fn runner_command_log_summary_never_contains_command_material() {
+        let summary = runner_command_log_summary(
+            "gpu_reload_v4 sentinel-request sentinel-capsule sentinel-proof-material",
+        );
+        assert!(!summary.contains("sentinel"));
+        assert!(summary.contains("bytes="));
+        assert!(summary.contains("sha256=sha256:"));
     }
 
     #[cfg(feature = "gpu-hmr")]

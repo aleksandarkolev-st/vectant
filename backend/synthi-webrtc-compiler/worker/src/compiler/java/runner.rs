@@ -583,6 +583,7 @@ pub async fn run_java(
     let stdin = Arc::new(tokio::sync::Mutex::new(child.stdin.take().unwrap()));
 
     let (log_tx, _) = tokio::sync::broadcast::channel::<String>(100);
+    let (protocol_tx, _) = tokio::sync::broadcast::channel::<String>(16);
     let log_tx_stdout = log_tx.clone();
     let log_tx_stderr = log_tx.clone();
 
@@ -630,6 +631,7 @@ pub async fn run_java(
         process: Some(child),
         stdin: Some(stdin.clone()),
         output_tx: log_tx,
+        protocol_tx,
         session_id: Some(session_id.to_string()),
         is_gui: req.is_gui,
         is_hmr_capable: false, // Java doesn't support in-process HMR
