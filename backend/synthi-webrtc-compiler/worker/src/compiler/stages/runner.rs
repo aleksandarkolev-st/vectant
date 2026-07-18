@@ -20,6 +20,9 @@ use crate::compiler::builder::ModuleHashes;
 use crate::compiler::context::CompileContext;
 use crate::infra::constants::GUI_TOOLS;
 use crate::infra::messages::CompileRequest;
+use crate::runtime::gpu_runtime_proof::{
+    verify_strict_gpu_runtime_proof, StrictGpuRuntimeProofExpectation, VerifiedGpuRuntimeProof,
+};
 use crate::runtime::runner_protocol::{
     decode_runner_command_token, parse_runner_protocol_ack, GpuArtifactLoadV1Result,
     GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload, RunnerProtocolAck,
@@ -320,7 +323,16 @@ struct GpuArtifactLoadExpectation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RunnerGpuTerminalExpectation {
     ColdLoad(GpuArtifactLoadExpectation),
-    HotReload(GpuReloadV2Expectation),
+    HotReload(StrictGpuTerminalExpectation),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StrictGpuTerminalExpectation {
+    identity: GpuReloadV2Expectation,
+    runner_pid: u32,
+    runner_runtime_session_id: String,
+    runner_challenge: String,
+    command_envelope_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -335,6 +347,11 @@ pub enum CorrelatedGpuTerminalReceipt {
         source_edit_id: String,
         artifact_content_hash: String,
         full_runtime_proof_id: String,
+        proof_ledger_id: String,
+        proof_json_sha256: String,
+        runner_pid: u32,
+        runner_runtime_session_id: String,
+        command_envelope_sha256: String,
     },
 }
 
@@ -356,6 +373,7 @@ impl RunnerExecutionOutcome {
 
 #[derive(Debug, Clone, Copy)]
 struct RunnerCommandProofContext<'a> {
+    runner_pid: u32,
     runner_runtime_session_id: &'a str,
     runner_challenge: &'a str,
 }
@@ -483,7 +501,13 @@ fn runner_load_command(
             .map_err(anyhow::Error::msg)?;
             let encoded = payload.encode().map_err(anyhow::Error::msg)?;
             let gpu_terminal = if strict_hot_reload {
-                RunnerGpuTerminalExpectation::HotReload(validated_identity)
+                RunnerGpuTerminalExpectation::HotReload(StrictGpuTerminalExpectation {
+                    identity: validated_identity,
+                    runner_pid: proof_context.runner_pid,
+                    runner_runtime_session_id: payload.runner_runtime_session_id.clone(),
+                    runner_challenge: payload.runner_challenge.clone(),
+                    command_envelope_sha256: payload.envelope_sha256.clone(),
+                })
             } else {
                 RunnerGpuTerminalExpectation::ColdLoad(GpuArtifactLoadExpectation {
                     request_id: request_id.clone(),
@@ -653,13 +677,7 @@ async fn wait_for_gpu_command_terminals(
                 )
                 .is_some(),
             RunnerGpuTerminalExpectation::HotReload(expectation) => pending_hot
-                .insert(
-                    expectation.request_id.clone(),
-                    (
-                        expectation.source_edit_id.clone(),
-                        expectation.artifact_content_hash.clone(),
-                    ),
-                )
+                .insert(expectation.identity.request_id.clone(), expectation.clone())
                 .is_some(),
         };
         if duplicate {
@@ -721,16 +739,10 @@ async fn wait_for_gpu_command_terminals(
             continue;
         }
         if let Ok(result) = GpuReloadV2Result::from_json(payload) {
-            let Some((expected_source_edit_id, expected_artifact_hash)) =
-                pending_hot.get(&result.request_id)
-            else {
+            let Some(expectation) = pending_hot.get(&result.request_id) else {
                 continue;
             };
-            if !result.matches(
-                &result.request_id,
-                expected_source_edit_id,
-                expected_artifact_hash,
-            ) {
+            if !result.matches_expectation(&expectation.identity) {
                 anyhow::bail!(
                     "strict GPU runner terminal identity or artifact hash mismatch for request {}",
                     result.request_id
@@ -743,15 +755,18 @@ async fn wait_for_gpu_command_terminals(
                     result.reason.as_deref().unwrap_or("reason missing")
                 );
             }
-            let full_runtime_proof_id = result
-                .full_runtime_proof_id
-                .clone()
-                .context("applied strict GPU terminal omitted its runtime proof identity")?;
+            let (verified_proof, proof_json_sha256) =
+                verify_applied_gpu_terminal_proof(&result, expectation)?;
             receipts.push(CorrelatedGpuTerminalReceipt::HotReload {
                 request_id: result.request_id.clone(),
                 source_edit_id: result.source_edit_id.clone(),
                 artifact_content_hash: result.artifact_content_hash.clone(),
-                full_runtime_proof_id,
+                full_runtime_proof_id: verified_proof.proof_id,
+                proof_ledger_id: verified_proof.ledger_proof_id,
+                proof_json_sha256,
+                runner_pid: expectation.runner_pid,
+                runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
+                command_envelope_sha256: expectation.command_envelope_sha256.clone(),
             });
             pending_hot.remove(&result.request_id);
             continue;
@@ -772,6 +787,53 @@ async fn wait_for_gpu_command_terminals(
         }
     }
     Ok(receipts)
+}
+
+fn verify_applied_gpu_terminal_proof(
+    result: &GpuReloadV2Result,
+    expectation: &StrictGpuTerminalExpectation,
+) -> Result<(VerifiedGpuRuntimeProof, String)> {
+    let full_runtime_proof_id = result
+        .full_runtime_proof_id
+        .as_deref()
+        .context("applied strict GPU terminal omitted its runtime proof identity")?;
+    let material = result
+        .runtime_proof_material
+        .as_ref()
+        .context("applied strict GPU terminal omitted its runtime proof material")?;
+    if !material.matches_runner_context(
+        expectation.runner_pid,
+        &expectation.runner_runtime_session_id,
+        &expectation.runner_challenge,
+    ) {
+        anyhow::bail!("strict GPU terminal proof material runner context mismatch");
+    }
+    let proof = material
+        .decode_for(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            full_runtime_proof_id,
+            &expectation.command_envelope_sha256,
+        )
+        .map_err(anyhow::Error::msg)
+        .context("validating strict GPU terminal proof material")?;
+    let expected_process_id = expectation.runner_pid.to_string();
+    let verified = verify_strict_gpu_runtime_proof(
+        &proof,
+        &StrictGpuRuntimeProofExpectation {
+            request_id: &expectation.identity.request_id,
+            source_edit_id: &expectation.identity.source_edit_id,
+            artifact_content_hash: &expectation.identity.artifact_content_hash,
+            process_id: &expected_process_id,
+            runtime_session_id: &expectation.runner_runtime_session_id,
+        },
+    )
+    .context("parent rejected strict GPU runtime proof semantics")?;
+    if verified.proof_id != full_runtime_proof_id {
+        anyhow::bail!("strict GPU terminal proof identity disagrees with parent recomputation");
+    }
+    Ok((verified, material.proof_json_sha256.clone()))
 }
 
 fn full_device_abi_from_marker(name: &str) -> Option<&str> {
@@ -2053,6 +2115,7 @@ pub async fn handle_runner_execution(
                     strict_protocol_ack
                         .as_ref()
                         .map(|ack| RunnerCommandProofContext {
+                            runner_pid: ack.runner_pid,
                             runner_runtime_session_id: &ack.runner_runtime_session_id,
                             runner_challenge: &ack.runner_challenge,
                         });
@@ -2207,12 +2270,19 @@ mod tests {
         runner_load_command, runner_reuse_allowed, runner_session_matches,
         same_session_full_device_abi_changed, should_forward_runner_stderr_line_to_log_dc,
         strict_gpu_protocol_required_for_batch, structured_log_json_chunks,
-        uncommitted_runner_module_state, wait_for_gpu_command_terminals,
-        wait_for_strict_gpu_protocol_ack, CorrelatedGpuTerminalReceipt, RunnerCommandProofContext,
-        RunnerExecutionOutcome, RunnerGpuTerminalExpectation, RunnerReloadPolicy,
+        uncommitted_runner_module_state, verify_applied_gpu_terminal_proof,
+        wait_for_gpu_command_terminals, wait_for_strict_gpu_protocol_ack,
+        CorrelatedGpuTerminalReceipt, RunnerCommandProofContext, RunnerExecutionOutcome,
+        RunnerGpuTerminalExpectation, RunnerReloadPolicy, StrictGpuTerminalExpectation,
         STRUCTURED_LOG_CHUNK_BYTES,
     };
     use crate::compiler::builder::ModuleHashes;
+    use crate::runtime::gpu_runtime_proof::{
+        canonical_runtime_ledger_proof_id, recomputed_runtime_proof_id,
+        GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION, GPU_HMR_FULL_RUNTIME_RESULT_STATE,
+        GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE, GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+        GPU_HMR_PROOF_SCHEMA_VERSION, GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
+    };
     use crate::runtime::runner_protocol::{
         GpuArtifactLoadV1Result, GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload,
         GpuRuntimeProofMaterialV1, RunnerProtocolAck,
@@ -2245,6 +2315,7 @@ mod tests {
 
     fn proof_context() -> RunnerCommandProofContext<'static> {
         RunnerCommandProofContext {
+            runner_pid: std::process::id(),
             runner_runtime_session_id: "pid123-456",
             runner_challenge: "11111111111111111111111111111111",
         }
@@ -2282,21 +2353,200 @@ mod tests {
             .contains("one challenge-bound GPU command per batch; received 2"));
     }
 
+    fn strict_terminal_expectation(
+        identity: GpuReloadV2Expectation,
+    ) -> StrictGpuTerminalExpectation {
+        let context = proof_context();
+        StrictGpuTerminalExpectation {
+            identity,
+            runner_pid: context.runner_pid,
+            runner_runtime_session_id: context.runner_runtime_session_id.to_string(),
+            runner_challenge: context.runner_challenge.to_string(),
+            command_envelope_sha256: format!("sha256:{}", "e".repeat(64)),
+        }
+    }
+
+    fn strict_runtime_proof_fixture(
+        expectation: &StrictGpuTerminalExpectation,
+    ) -> (serde_json::Value, String) {
+        let identity = &expectation.identity;
+        let process_id = expectation.runner_pid.to_string();
+        let artifact_id = format!(
+            "artifact:sha256:{}",
+            identity.artifact_content_hash.trim_start_matches("sha256:")
+        );
+        let previous_artifact_id = format!("artifact:sha256:{}", "0".repeat(64));
+        let publication_id = format!("dispatcher-publication:sha256:{}", "8".repeat(64));
+        let registration_id = format!("dispatcher:sha256:{}", "9".repeat(64));
+        let dispatch_id = format!("dispatch:sha256:{}", "6".repeat(64));
+        let record = serde_json::json!({
+            "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+            "proof_canonical_profile": GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE,
+            "project_id": "generic-parent-proof-verification",
+            "edit_id": identity.source_edit_id,
+            "backend": "rocm",
+            "classification": {
+                "project_kind": "gpu_project",
+                "edit_kind": "gpu_artifact_edit",
+                "route": "gpu_hmr",
+            },
+            "contract_hash": format!("sha256:{}", "1".repeat(64)),
+            "artifact_before_hash": previous_artifact_id,
+            "artifact_after_hash": artifact_id,
+            "loader_event": {
+                "id": "loader:2",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 10,
+                "process_id": process_id,
+            },
+            "epoch_publish_event": {
+                "id": "epoch:2",
+                "event": "provisional_install",
+                "publication_id": publication_id,
+                "candidate_registration_id": registration_id,
+                "epoch": "2",
+                "previous_epoch": "1",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 20,
+                "process_id": process_id,
+            },
+            "epoch_commit_event": {
+                "id": "epoch-commit:2",
+                "event": "unrestricted_visibility_commit",
+                "publication_id": publication_id,
+                "candidate_registration_id": registration_id,
+                "epoch": "2",
+                "previous_epoch": "1",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 45,
+                "process_id": process_id,
+            },
+            "dispatch_event": {
+                "id": dispatch_id,
+                "publication_id": publication_id,
+                "dispatcher_registration_id": registration_id,
+                "epoch": "2",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 30,
+                "process_id": process_id,
+            },
+            "output_event": {
+                "id": "output:2",
+                "passed": true,
+                "after_dispatch_id": dispatch_id,
+                "epoch": "2",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 40,
+                "process_id": process_id,
+            },
+            "retirement_event": {
+                "id": "retirement:1",
+                "epoch": "1",
+                "artifact_id": previous_artifact_id,
+                "artifact_hash": previous_artifact_id,
+                "status": "retired_after_quiescent",
+                "retirement_proof": "stream_event_proven",
+                "timestamp_monotonic_ns": 50,
+                "process_id": process_id,
+            },
+            "process_identity": {
+                "process_id": process_id,
+                "runtime_session_id": expectation.runner_runtime_session_id,
+            },
+            "device_identity": {},
+            "oracle_artifacts": {},
+            "cpu_hmr_used": false,
+            "full_rebuild_used": false,
+            "process_restarted": false,
+            "firewall_evidence": {
+                "cpu_hmr_used": false,
+                "full_rebuild_used": false,
+                "process_restarted": false,
+                "process_id_before": process_id,
+                "process_id_after": process_id,
+            },
+            "evidence_refs": [
+                format!("reload:{}", identity.request_id),
+                format!("source-edit-id:{}", identity.source_edit_id),
+                publication_id,
+                registration_id,
+            ],
+        });
+        let ledger_proof_id = canonical_runtime_ledger_proof_id(&record);
+        let proof_ledger = serde_json::json!({
+            "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+            "proofId": ledger_proof_id,
+            "gpuHmrSuccess": true,
+            "records": [record],
+        });
+        let acceptance_contract = serde_json::json!({
+            "contract_version": GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
+            "edit_id": identity.source_edit_id,
+            "artifact_hash_before": previous_artifact_id,
+            "artifact_hash_after": artifact_id,
+        });
+        let mut runtime_artifact = serde_json::json!({
+            "schemaVersion": GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
+            "proofId": "pending",
+            "resultState": GPU_HMR_FULL_RUNTIME_RESULT_STATE,
+            "fullRuntimeProven": true,
+            "gpuHmrSuccess": true,
+            "stageResults": [],
+            "limitations": [],
+            "proofLedger": proof_ledger,
+            "proofLedgerQuery": {
+                "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+                "proofId": ledger_proof_id,
+                "gpuHmrSuccess": true,
+                "failedInvariants": [],
+            },
+            "runtimeTrace": {
+                "runtimeSessionId": expectation.runner_runtime_session_id,
+                "processId": process_id,
+            },
+            "acceptanceContract": acceptance_contract,
+            "derivedAcceptanceContract": acceptance_contract,
+            "acceptanceContractEvaluation": { "accepted": true, "failedGates": [] },
+            "acceptanceContractConsistency": { "accepted": true, "failedGates": [] },
+            "derivedAcceptanceContractEvaluation": { "accepted": true, "failedGates": [] },
+            "explicitProofLedgerRecord": record,
+            "derivedProofLedgerRecord": record,
+            "proofLedgerSourceConsistency": { "accepted": true, "failures": [] },
+        });
+        let proof_id = recomputed_runtime_proof_id(&runtime_artifact, &record).unwrap();
+        runtime_artifact["proofId"] = serde_json::Value::String(proof_id.clone());
+        let proof = serde_json::json!({
+            "type": "gpu_hmr_proof",
+            "schemaVersion": GPU_HMR_PROOF_SCHEMA_VERSION,
+            "module": "device",
+            "resultState": GPU_HMR_FULL_RUNTIME_RESULT_STATE,
+            "proofId": proof_id,
+            "proofLedger": proof_ledger,
+            "runtimeProofArtifact": runtime_artifact,
+        });
+        (proof, proof_id)
+    }
+
     fn proof_material(
-        expectation: &GpuReloadV2Expectation,
+        expectation: &StrictGpuTerminalExpectation,
+        proof: &serde_json::Value,
         proof_id: &str,
     ) -> GpuRuntimeProofMaterialV1 {
-        let context = proof_context();
         GpuRuntimeProofMaterialV1::new(
-            &serde_json::json!({"proofId": proof_id, "evidence": "terminal-transport"}),
-            &expectation.request_id,
-            &expectation.source_edit_id,
-            &expectation.artifact_content_hash,
+            proof,
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
             proof_id,
-            format!("sha256:{}", "e".repeat(64)),
-            std::process::id(),
-            context.runner_runtime_session_id,
-            context.runner_challenge,
+            &expectation.command_envelope_sha256,
+            expectation.runner_pid,
+            &expectation.runner_runtime_session_id,
+            &expectation.runner_challenge,
         )
         .unwrap()
     }
@@ -2404,6 +2654,18 @@ mod tests {
         assert_eq!(payload.source_edit_id, canonical_source_edit_id());
         assert_eq!(payload.artifact_content_hash, artifact_content_hash());
         assert!(runner_command_requires_strict_gpu_protocol(&command));
+        let Some(RunnerGpuTerminalExpectation::HotReload(expectation)) =
+            command.gpu_terminal.as_ref()
+        else {
+            panic!("expected strict GPU terminal context");
+        };
+        assert_eq!(expectation.runner_pid, std::process::id());
+        assert_eq!(
+            expectation.runner_runtime_session_id,
+            payload.runner_runtime_session_id
+        );
+        assert_eq!(expectation.runner_challenge, payload.runner_challenge);
+        assert_eq!(expectation.command_envelope_sha256, payload.envelope_sha256);
 
         let second =
             runner_load_command(&marker, "/tmp/device.hsaco", true, Some(proof_context())).unwrap();
@@ -2518,30 +2780,35 @@ mod tests {
 
     #[tokio::test]
     async fn strict_gpu_terminal_wait_correlates_unique_requests_and_rejects_legacy_status() {
-        let first = GpuReloadV2Expectation::new(
-            format!("gpu-reload:request:{}", "1".repeat(32)),
-            canonical_source_edit_id(),
-            format!("sha256:{}", "a".repeat(64)),
-        )
-        .unwrap();
-        let second = GpuReloadV2Expectation::new(
-            format!("gpu-reload:request:{}", "2".repeat(32)),
-            format!("source-edit:sha256:{}", "b".repeat(64)),
-            format!("sha256:{}", "b".repeat(64)),
-        )
-        .unwrap();
-        let proof_id = format!("gpu-runtime-proof:sha256:{}", "c".repeat(64));
+        let first = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "1".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "a".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let second = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "2".repeat(32)),
+                format!("source-edit:sha256:{}", "b".repeat(64)),
+                format!("sha256:{}", "b".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let (first_proof, first_proof_id) = strict_runtime_proof_fixture(&first);
+        let (second_proof, second_proof_id) = strict_runtime_proof_fixture(&second);
         let (sender, _) = tokio::sync::broadcast::channel(8);
         let mut receiver = sender.subscribe();
         sender
             .send(format!(
                 "[Runner] [HMR-STATUS] {}",
                 GpuReloadV2Result::applied(
-                    &second.request_id,
-                    &second.source_edit_id,
-                    &second.artifact_content_hash,
-                    &proof_id,
-                    proof_material(&second, &proof_id),
+                    &second.identity.request_id,
+                    &second.identity.source_edit_id,
+                    &second.identity.artifact_content_hash,
+                    &second_proof_id,
+                    proof_material(&second, &second_proof, &second_proof_id),
                 )
                 .unwrap()
                 .to_json()
@@ -2552,11 +2819,11 @@ mod tests {
             .send(format!(
                 "[Runner] [HMR-STATUS] {}",
                 GpuReloadV2Result::applied(
-                    &first.request_id,
-                    &first.source_edit_id,
-                    &first.artifact_content_hash,
-                    &proof_id,
-                    proof_material(&first, &proof_id),
+                    &first.identity.request_id,
+                    &first.identity.source_edit_id,
+                    &first.identity.artifact_content_hash,
+                    &first_proof_id,
+                    proof_material(&first, &first_proof, &first_proof_id),
                 )
                 .unwrap()
                 .to_json()
@@ -2577,15 +2844,27 @@ mod tests {
         };
         assert!(outcome.has_correlated_gpu_terminal());
         assert_eq!(outcome.gpu_terminal_receipts().len(), 2);
-        assert!(outcome.gpu_terminal_receipts().iter().all(|receipt| {
-            matches!(
-                receipt,
-                CorrelatedGpuTerminalReceipt::HotReload {
-                    full_runtime_proof_id,
-                    ..
-                } if full_runtime_proof_id == &proof_id
-            )
-        }));
+        for expected_proof_id in [&first_proof_id, &second_proof_id] {
+            assert!(outcome.gpu_terminal_receipts().iter().any(|receipt| {
+                matches!(
+                    receipt,
+                    CorrelatedGpuTerminalReceipt::HotReload {
+                        full_runtime_proof_id,
+                        proof_ledger_id,
+                        proof_json_sha256,
+                        runner_pid,
+                        runner_runtime_session_id,
+                        command_envelope_sha256,
+                        ..
+                    } if full_runtime_proof_id == expected_proof_id
+                        && proof_ledger_id.starts_with("gpu-ledger-proof:sha256:")
+                        && proof_json_sha256.starts_with("sha256:")
+                        && *runner_pid == std::process::id()
+                        && runner_runtime_session_id == proof_context().runner_runtime_session_id
+                        && command_envelope_sha256 == &first.command_envelope_sha256
+                )
+            }));
+        }
 
         let mut receiver = sender.subscribe();
         sender
@@ -2606,36 +2885,49 @@ mod tests {
 
     #[tokio::test]
     async fn strict_gpu_terminal_wait_fails_on_source_mismatch_or_rejection() {
-        let expectation = GpuReloadV2Expectation::new(
-            format!("gpu-reload:request:{}", "3".repeat(32)),
-            canonical_source_edit_id(),
-            format!("sha256:{}", "c".repeat(64)),
-        )
-        .unwrap();
-        let proof_id = format!("gpu-runtime-proof:sha256:{}", "e".repeat(64));
-        let source_mismatch = GpuReloadV2Expectation::new(
-            expectation.request_id.clone(),
-            format!("source-edit:sha256:{}", "d".repeat(64)),
-            expectation.artifact_content_hash.clone(),
-        )
-        .unwrap();
-        let hash_mismatch = GpuReloadV2Expectation::new(
-            expectation.request_id.clone(),
-            expectation.source_edit_id.clone(),
-            format!("sha256:{}", "f".repeat(64)),
-        )
-        .unwrap();
+        let expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "3".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "c".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let source_mismatch = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                expectation.identity.request_id.clone(),
+                format!("source-edit:sha256:{}", "d".repeat(64)),
+                expectation.identity.artifact_content_hash.clone(),
+            )
+            .unwrap(),
+        );
+        let hash_mismatch = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                expectation.identity.request_id.clone(),
+                expectation.identity.source_edit_id.clone(),
+                format!("sha256:{}", "f".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let (source_mismatch_proof, source_mismatch_proof_id) =
+            strict_runtime_proof_fixture(&source_mismatch);
+        let (hash_mismatch_proof, hash_mismatch_proof_id) =
+            strict_runtime_proof_fixture(&hash_mismatch);
         let (sender, _) = tokio::sync::broadcast::channel(4);
         let mut mismatch_receiver = sender.subscribe();
         sender
             .send(format!(
                 "[Runner] [HMR-STATUS] {}",
                 GpuReloadV2Result::applied(
-                    &source_mismatch.request_id,
-                    &source_mismatch.source_edit_id,
-                    &source_mismatch.artifact_content_hash,
-                    &proof_id,
-                    proof_material(&source_mismatch, &proof_id),
+                    &source_mismatch.identity.request_id,
+                    &source_mismatch.identity.source_edit_id,
+                    &source_mismatch.identity.artifact_content_hash,
+                    &source_mismatch_proof_id,
+                    proof_material(
+                        &source_mismatch,
+                        &source_mismatch_proof,
+                        &source_mismatch_proof_id,
+                    ),
                 )
                 .unwrap()
                 .to_json()
@@ -2656,11 +2948,15 @@ mod tests {
             .send(format!(
                 "[Runner] [HMR-STATUS] {}",
                 GpuReloadV2Result::applied(
-                    &hash_mismatch.request_id,
-                    &hash_mismatch.source_edit_id,
-                    &hash_mismatch.artifact_content_hash,
-                    &proof_id,
-                    proof_material(&hash_mismatch, &proof_id),
+                    &hash_mismatch.identity.request_id,
+                    &hash_mismatch.identity.source_edit_id,
+                    &hash_mismatch.identity.artifact_content_hash,
+                    &hash_mismatch_proof_id,
+                    proof_material(
+                        &hash_mismatch,
+                        &hash_mismatch_proof,
+                        &hash_mismatch_proof_id,
+                    ),
                 )
                 .unwrap()
                 .to_json()
@@ -2681,9 +2977,9 @@ mod tests {
             .send(format!(
                 "[Runner] [HMR-STATUS] {}",
                 GpuReloadV2Result::rejected(
-                    &expectation.request_id,
-                    &expectation.source_edit_id,
-                    &expectation.artifact_content_hash,
+                    &expectation.identity.request_id,
+                    &expectation.identity.source_edit_id,
+                    &expectation.identity.artifact_content_hash,
                     "runtime proof missing",
                 )
                 .unwrap()
@@ -2699,6 +2995,117 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("runtime proof missing"));
+    }
+
+    #[test]
+    fn parent_recomputes_runtime_proof_and_rejects_bound_context_splices() {
+        let expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "4".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "d".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let (proof, proof_id) = strict_runtime_proof_fixture(&expectation);
+        let valid = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &proof_id,
+            proof_material(&expectation, &proof, &proof_id),
+        )
+        .unwrap();
+        let (verified, proof_json_sha256) =
+            verify_applied_gpu_terminal_proof(&valid, &expectation).unwrap();
+        assert_eq!(verified.proof_id, proof_id);
+        assert!(verified
+            .ledger_proof_id
+            .starts_with("gpu-ledger-proof:sha256:"));
+        assert!(proof_json_sha256.starts_with("sha256:"));
+
+        let mut forged_semantics = proof.clone();
+        forged_semantics["resultState"] = serde_json::json!("gpu-hmr-compile-proven");
+        let forged = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &proof_id,
+            proof_material(&expectation, &forged_semantics, &proof_id),
+        )
+        .unwrap();
+        assert!(verify_applied_gpu_terminal_proof(&forged, &expectation)
+            .unwrap_err()
+            .to_string()
+            .contains("parent rejected strict GPU runtime proof semantics"));
+
+        let stale_proof_id = format!("gpu-runtime-proof:sha256:{}", "7".repeat(64));
+        let mut forged_proof_id = proof.clone();
+        forged_proof_id["proofId"] = serde_json::json!(stale_proof_id);
+        forged_proof_id["runtimeProofArtifact"]["proofId"] = serde_json::json!(stale_proof_id);
+        let forged = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &stale_proof_id,
+            proof_material(&expectation, &forged_proof_id, &stale_proof_id),
+        )
+        .unwrap();
+        assert!(verify_applied_gpu_terminal_proof(&forged, &expectation)
+            .unwrap_err()
+            .to_string()
+            .contains("parent rejected strict GPU runtime proof semantics"));
+
+        let context_splices = [
+            (
+                expectation.runner_pid.saturating_add(1),
+                expectation.runner_runtime_session_id.clone(),
+                expectation.runner_challenge.clone(),
+                expectation.command_envelope_sha256.clone(),
+            ),
+            (
+                expectation.runner_pid,
+                "pid999-999".to_string(),
+                expectation.runner_challenge.clone(),
+                expectation.command_envelope_sha256.clone(),
+            ),
+            (
+                expectation.runner_pid,
+                expectation.runner_runtime_session_id.clone(),
+                "2".repeat(32),
+                expectation.command_envelope_sha256.clone(),
+            ),
+            (
+                expectation.runner_pid,
+                expectation.runner_runtime_session_id.clone(),
+                expectation.runner_challenge.clone(),
+                format!("sha256:{}", "f".repeat(64)),
+            ),
+        ];
+        for (runner_pid, runtime_session_id, challenge, command_envelope_sha256) in context_splices
+        {
+            let material = GpuRuntimeProofMaterialV1::new(
+                &proof,
+                &expectation.identity.request_id,
+                &expectation.identity.source_edit_id,
+                &expectation.identity.artifact_content_hash,
+                &proof_id,
+                command_envelope_sha256,
+                runner_pid,
+                runtime_session_id,
+                challenge,
+            )
+            .unwrap();
+            let terminal = GpuReloadV2Result::applied(
+                &expectation.identity.request_id,
+                &expectation.identity.source_edit_id,
+                &expectation.identity.artifact_content_hash,
+                &proof_id,
+                material,
+            )
+            .unwrap();
+            assert!(verify_applied_gpu_terminal_proof(&terminal, &expectation).is_err());
+        }
     }
 
     #[tokio::test]
