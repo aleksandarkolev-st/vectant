@@ -287,15 +287,23 @@ function normalizeWorkerResult(result, startedAtMs, context = {}) {
     ? result
     : failClosedWorkerResult('visual_worker_invalid_result');
   const identityReasons = workerIdentityRejectionReasons(normalized, context);
+  const proofHashValidation = validateVisualWorkerResultProofHash(normalized);
+  const proofHashReasons = normalized.accepted === true
+    ? proofHashValidation.failures
+    : [];
   const reasons = [
     ...(Array.isArray(normalized.reasons) ? normalized.reasons : []),
     ...identityReasons,
+    ...proofHashReasons,
   ];
   const gaps = [
     ...(Array.isArray(normalized.gaps) ? normalized.gaps : []),
     ...identityReasons,
+    ...proofHashReasons,
   ];
-  const accepted = normalized.accepted === true && identityReasons.length === 0;
+  const accepted = normalized.accepted === true
+    && identityReasons.length === 0
+    && proofHashReasons.length === 0;
   return {
     ...normalized,
     schemaVersion: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
@@ -312,6 +320,41 @@ function normalizeWorkerResult(result, startedAtMs, context = {}) {
     durationMs: Number.isFinite(normalized.durationMs)
       ? normalized.durationMs
       : Math.max(0, Date.now() - startedAtMs),
+  };
+}
+
+export function computeVisualWorkerResultProofHash(result) {
+  const material = result && typeof result === 'object'
+    ? { ...result, proofHash: undefined, proof_hash: undefined }
+    : {};
+  return hashText(stableJson(material));
+}
+
+export function validateVisualWorkerResultProofHash(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return {
+      accepted: false,
+      declaredProofHash: null,
+      expectedProofHash: null,
+      failures: ['visual_worker_proof_hash_result_invalid'],
+    };
+  }
+  const camelHash = normalizeSha256Hash(result.proofHash);
+  const snakeHash = normalizeSha256Hash(result.proof_hash);
+  const expectedProofHash = computeVisualWorkerResultProofHash(result);
+  const failures = [];
+  if (!camelHash || !snakeHash) {
+    failures.push('visual_worker_proof_hash_missing');
+  } else if (camelHash !== snakeHash) {
+    failures.push('visual_worker_proof_hash_alias_mismatch');
+  } else if (camelHash !== expectedProofHash) {
+    failures.push('visual_worker_proof_hash_mismatch');
+  }
+  return {
+    accepted: failures.length === 0,
+    declaredProofHash: camelHash ?? snakeHash,
+    expectedProofHash,
+    failures,
   };
 }
 

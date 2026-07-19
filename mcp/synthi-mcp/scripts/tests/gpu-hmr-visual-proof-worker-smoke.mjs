@@ -8,7 +8,9 @@ import { writeArtifactToCas } from '../lib/gpu-hmr-artifact-cas.mjs';
 import {
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
   GPU_HMR_VISUAL_INCREMENTAL_EVIDENCE_BINDING_SCHEMA_VERSION,
+  computeVisualWorkerResultProofHash,
   computeAsyncVisualProof,
+  validateVisualWorkerResultProofHash,
 } from '../lib/gpu-hmr-visual-proof-worker.mjs';
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), 'synthi-visual-proof-worker-'));
@@ -81,6 +83,39 @@ assert.equal(proof.accepted, true);
 assert.equal(proof.acceptedAsAsyncVisualMetrics, true);
 assert.equal(proof.acceptedForGpuHmr, false);
 assert.equal(proof.gpuHmrSuccess, false);
+assert.match(proof.proofHash, /^sha256:[a-f0-9]{64}$/);
+assert.equal(proof.proofHash, proof.proof_hash);
+
+const proofHashFixture = {
+  accepted: true,
+  eventType: 'proof_ready',
+  metrics: { changedRatio: 0.25, visiblePixelCount: 256 },
+};
+proofHashFixture.proofHash = computeVisualWorkerResultProofHash(proofHashFixture);
+proofHashFixture.proof_hash = proofHashFixture.proofHash;
+assert.equal(validateVisualWorkerResultProofHash(proofHashFixture).accepted, true);
+assert.deepEqual(
+  validateVisualWorkerResultProofHash({
+    ...proofHashFixture,
+    metrics: { ...proofHashFixture.metrics, changedRatio: 0.75 },
+  }).failures,
+  ['visual_worker_proof_hash_mismatch'],
+);
+assert.deepEqual(
+  validateVisualWorkerResultProofHash({
+    ...proofHashFixture,
+    proofHash: undefined,
+    proof_hash: undefined,
+  }).failures,
+  ['visual_worker_proof_hash_missing'],
+);
+assert.deepEqual(
+  validateVisualWorkerResultProofHash({
+    ...proofHashFixture,
+    proof_hash: `sha256:${'f'.repeat(64)}`,
+  }).failures,
+  ['visual_worker_proof_hash_alias_mismatch'],
+);
 assert.equal(proof.worker.offMainThread, true);
 assert.match(proof.worker.executableHash, /^sha256:[a-f0-9]{64}$/);
 assert.equal(proof.worker.executableHash, proof.worker.executable_hash);
