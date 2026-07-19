@@ -681,6 +681,8 @@ pub struct GpuReloadV4Payload {
     pub source_edit_id: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub proof_runtime_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub compute_expected_output_semantics_hash: Option<String>,
     pub runner_runtime_session_id: String,
     pub runner_challenge: String,
     pub envelope_sha256: String,
@@ -699,6 +701,7 @@ impl GpuReloadV4Payload {
         capsule_token: Option<String>,
         source_edit_id: String,
         proof_runtime_session_id: Option<String>,
+        compute_expected_output_semantics_hash: Option<String>,
         runner_runtime_session_id: String,
         runner_challenge: String,
     ) -> Result<Self, String> {
@@ -715,6 +718,7 @@ impl GpuReloadV4Payload {
             capsule_token,
             source_edit_id,
             proof_runtime_session_id,
+            compute_expected_output_semantics_hash,
             runner_runtime_session_id,
             runner_challenge,
             envelope_sha256: String::new(),
@@ -738,6 +742,7 @@ impl GpuReloadV4Payload {
             "capsuleToken": self.capsule_token,
             "sourceEditId": self.source_edit_id,
             "proofRuntimeSessionId": self.proof_runtime_session_id,
+            "computeExpectedOutputSemanticsHash": self.compute_expected_output_semantics_hash,
             "runnerRuntimeSessionId": self.runner_runtime_session_id,
             "runnerChallenge": self.runner_challenge,
         });
@@ -798,6 +803,20 @@ impl GpuReloadV4Payload {
         if self.capsule_token.is_some() != self.proof_runtime_session_id.is_some() {
             return Err(
                 "GPU reload V4 proof capsule/runtime session binding is incomplete".to_string(),
+            );
+        }
+        if self
+            .compute_expected_output_semantics_hash
+            .as_deref()
+            .is_some_and(|hash| !canonical_sha256_content_hash(hash))
+        {
+            return Err(
+                "GPU reload V4 compute expected-output semantics hash is invalid".to_string(),
+            );
+        }
+        if self.compute_expected_output_semantics_hash.is_some() && self.capsule_token.is_none() {
+            return Err(
+                "GPU reload V4 expected-output semantics require a proof capsule".to_string(),
             );
         }
         if self.operation == "hot_reload" && self.capsule_token.is_none() {
@@ -1470,6 +1489,7 @@ mod tests {
             Some("capsulev1_payload".to_string()),
             source_edit_id(),
             Some("runtime-session:test".to_string()),
+            Some(format!("sha256:{}", "9".repeat(64))),
             runner_runtime_session_id(),
             runner_challenge(),
         )
@@ -1493,6 +1513,7 @@ mod tests {
             None,
             "source-edit:sha256:short".to_string(),
             None,
+            None,
             runner_runtime_session_id(),
             runner_challenge(),
         )
@@ -1509,6 +1530,7 @@ mod tests {
             None,
             None,
             source_edit_id(),
+            None,
             None,
             runner_runtime_session_id(),
             runner_challenge(),
@@ -1532,6 +1554,7 @@ mod tests {
             Some("capsulev1_payload".to_string()),
             source_edit_id(),
             Some("runtime-session:test".to_string()),
+            Some(format!("sha256:{}", "9".repeat(64))),
             runner_runtime_session_id(),
             runner_challenge(),
         )
@@ -1560,6 +1583,7 @@ mod tests {
             Some("capsulev1_payload".to_string()),
             source_edit_id(),
             Some("runtime-session:test".to_string()),
+            Some(format!("sha256:{}", "9".repeat(64))),
             runner_runtime_session_id(),
             runner_challenge(),
         )
@@ -1592,6 +1616,9 @@ mod tests {
         mutations.push(value);
         let mut value = payload.clone();
         value.proof_runtime_session_id = Some("runtime-session:other".to_string());
+        mutations.push(value);
+        let mut value = payload.clone();
+        value.compute_expected_output_semantics_hash = Some(format!("sha256:{}", "8".repeat(64)));
         mutations.push(value);
         let mut value = payload.clone();
         value.artifact_path = "/tmp/other.hsaco".to_string();

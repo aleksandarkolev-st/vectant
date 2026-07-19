@@ -21,7 +21,8 @@ use webrtc_util::Unmarshal;
 use crate::compiler::builder::ModuleHashes;
 use crate::compiler::context::CompileContext;
 use crate::hmr::adapter_trait::{
-    decode_reload_capsule_metadata_token, reload_output_oracle_contract_content_hash,
+    decode_reload_capsule_metadata_token, reload_compute_expected_output_semantics_binding_valid,
+    reload_output_oracle_contract_content_hash,
     reload_output_oracle_proof_context_valid_for_reload, ReloadOutputOracleProfileCommitment,
 };
 use crate::hmr::runtime_evidence_transport::{
@@ -895,6 +896,7 @@ fn prepublication_output_oracle_commitment_from_capsule(
     proof_runtime_session_id: Option<&str>,
     artifact_content_hash: &str,
     source_edit_id: &str,
+    compute_expected_output_semantics_hash: Option<&str>,
 ) -> Result<Option<ReloadOutputOracleProfileCommitment>> {
     let Some(capsule_token) = capsule_token else {
         return Ok(None);
@@ -915,6 +917,14 @@ fn prepublication_output_oracle_commitment_from_capsule(
     ) {
         anyhow::bail!(
             "prepublication output-oracle commitment does not match the independently transported reload identity"
+        );
+    }
+    if !reload_compute_expected_output_semantics_binding_valid(
+        &metadata,
+        compute_expected_output_semantics_hash,
+    ) {
+        anyhow::bail!(
+            "prepublication output-oracle capsule does not match the independently transported expected-output semantics"
         );
     }
     Ok(Some(commitment))
@@ -1037,6 +1047,9 @@ fn runner_load_command(
                 capsule.filter(|value| *value != "-").map(str::to_string),
                 source_edit_id.clone(),
                 proof_runtime_session_id,
+                proof_context
+                    .compute_expected_output_semantics_hash
+                    .map(str::to_string),
                 proof_context.runner_runtime_session_id.to_string(),
                 proof_context.runner_challenge.to_string(),
             )
@@ -1049,6 +1062,7 @@ fn runner_load_command(
                         payload.proof_runtime_session_id.as_deref(),
                         &payload.artifact_content_hash,
                         &payload.source_edit_id,
+                        payload.compute_expected_output_semantics_hash.as_deref(),
                     )?;
                 RunnerGpuTerminalExpectation::HotReload(StrictGpuTerminalExpectation {
                     identity: validated_identity,

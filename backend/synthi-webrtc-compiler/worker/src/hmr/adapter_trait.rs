@@ -471,6 +471,27 @@ pub fn reload_output_oracle_proof_context_valid_for_reload(
         && commitment.edit_id == expected_source_edit_id
 }
 
+/// Reconciles the independently transported caller expectation with the typed
+/// contract sealed into the reload capsule. Absence is meaningful: a caller
+/// that supplied no expected-output semantics must not acquire a contract in
+/// transit, and a caller that supplied semantics must not lose it.
+pub fn reload_compute_expected_output_semantics_binding_valid(
+    metadata: &ReloadCapsuleMetadata,
+    expected_semantics_hash: Option<&str>,
+) -> bool {
+    match (
+        metadata.compute_expected_output_contract_v2.as_ref(),
+        expected_semantics_hash,
+    ) {
+        (None, None) => true,
+        (Some(contract), Some(expected_hash)) => {
+            canonical_sha256(expected_hash)
+                && contract.semantics().semantics_hash() == expected_hash
+        }
+        _ => false,
+    }
+}
+
 fn non_empty_token(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())

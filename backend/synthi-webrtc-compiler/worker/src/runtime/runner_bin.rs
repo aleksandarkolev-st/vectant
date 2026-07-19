@@ -219,6 +219,7 @@ use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::adapter_trait::{
     decode_reload_capsule_metadata_token, normalized_reload_source_edit_id,
+    reload_compute_expected_output_semantics_binding_valid,
     reload_output_oracle_proof_context_valid_for_reload, Adapter, AdapterReloadRequest,
     AdapterReloadResult, ReloadArtifactBlob, ReloadCapsuleMetadata,
 };
@@ -1899,6 +1900,17 @@ fn parse_gpu_reload_command(
             )
         }) {
             return Err("GPU reload V4 proof capsule/envelope binding mismatch".to_string());
+        }
+        if capsule_metadata.as_ref().is_some_and(|metadata| {
+            !reload_compute_expected_output_semantics_binding_valid(
+                metadata,
+                payload.compute_expected_output_semantics_hash.as_deref(),
+            )
+        }) {
+            return Err(
+                "GPU reload V4 expected-output semantics capsule/envelope binding mismatch"
+                    .to_string(),
+            );
         }
         return Ok(ParsedGpuReloadCommand {
             request_id: Some(payload.request_id),
@@ -4805,6 +4817,23 @@ mod tests {
         artifact_content_hash: &str,
         source_edit_id: &str,
     ) -> String {
+        bound_gpu_reload_capsule_token_with_contract(
+            runtime_session_id,
+            artifact_content_hash,
+            source_edit_id,
+            None,
+        )
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    fn bound_gpu_reload_capsule_token_with_contract(
+        runtime_session_id: &str,
+        artifact_content_hash: &str,
+        source_edit_id: &str,
+        compute_expected_output_contract_v2: Option<
+            worker::infra::compute_expected_output_semantics::ComputeExpectedOutputContractV2,
+        >,
+    ) -> String {
         use worker::hmr::adapter_trait::{
             bind_reload_output_oracle_proof_context, encode_reload_capsule_metadata_token,
             reload_output_oracle_contract_content_hash, ReloadCapsuleMetadata,
@@ -4815,7 +4844,7 @@ mod tests {
         let proof_digest = "d".repeat(64);
         let contract = serde_json::json!({
             "kind": "compute_readback",
-            "outputTargetId": "buffer:result",
+            "outputTargetId": "output:tensor:0",
             "causalOutputChangeRequired": true,
         });
         let mut metadata =
@@ -4830,6 +4859,7 @@ mod tests {
                     profile_bytes_sha256: format!("sha256:{}", "c".repeat(64)),
                     edit_id: source_edit_id.to_string(),
                 }),
+                compute_expected_output_contract_v2,
                 abi_membrane_hash: Some(format!("sha256:{}", "4".repeat(64))),
                 dependency_closure_hash: Some(format!("sha256:{}", "5".repeat(64))),
                 proof_hash: Some(format!("sha256:{proof_digest}")),
@@ -4842,6 +4872,49 @@ mod tests {
             runtime_session_id,
         ));
         encode_reload_capsule_metadata_token(&metadata).expect("bound capsule token")
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    fn expected_output_contract_for_reload(
+        artifact_content_hash: &str,
+        source_edit_id: &str,
+        runtime_session_id: &str,
+    ) -> worker::infra::compute_expected_output_semantics::ComputeExpectedOutputContractV2 {
+        use worker::infra::compute_expected_output_semantics::{
+            ComputeExpectedOutputContractBindingV2, ComputeExpectedOutputSemantics,
+            COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+        };
+
+        let semantics: ComputeExpectedOutputSemantics =
+            serde_json::from_value(serde_json::json!({
+                "schemaVersion": COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+                "comparisonMode": "exact_bytes",
+                "outputTargetId": "output:tensor:0",
+                "byteOffset": 64,
+                "byteLength": 16,
+                "dtype": "u32",
+                "shape": [2, 2],
+                "elementCount": 4,
+                "byteOrder": "little_endian",
+                "toleranceDecimal": "0",
+                "expectedValuesDecimal": null,
+                "expectedValuesHash": null,
+                "expectedRawHash": format!("sha256:{}", "a".repeat(64)),
+                "semanticsHash": "sha256:cd7074de01fc4bc0fb0eab922f457e4499c886128cadff30232b7e5f6df3bdde",
+            }))
+            .expect("canonical expected-output semantics");
+        semantics
+            .derive_contract_v2(ComputeExpectedOutputContractBindingV2 {
+                project_id: "project:protocol-fixture".to_string(),
+                edit_id: source_edit_id.to_string(),
+                artifact_after_hash: artifact_content_hash.to_string(),
+                output_target_id: "output:tensor:0".to_string(),
+                oracle_code_hash: format!("sha256:{}", "f".repeat(64)),
+                compile_transport_nonce:
+                    "gpu-proof-transport-request:0123456789abcdef0123456789abcdef".to_string(),
+                runtime_session_id: runtime_session_id.to_string(),
+            })
+            .expect("derived expected-output contract")
     }
 
     #[cfg(feature = "gpu-hmr")]
@@ -4896,6 +4969,7 @@ mod tests {
                 Some(capsule.clone()),
                 source_edit_id,
                 Some(session.to_string()),
+                None,
                 runner_session.clone(),
                 runner_challenge.clone(),
             )
@@ -4981,6 +5055,7 @@ mod tests {
             accepted.capsule_token.clone(),
             accepted.source_edit_id.clone(),
             accepted.proof_runtime_session_id.clone(),
+            accepted.compute_expected_output_semantics_hash.clone(),
             "pid:999999:boot:11111111111111111111111111111111".to_string(),
             runner_challenge.clone(),
         )
@@ -4988,6 +5063,72 @@ mod tests {
         assert!(parse(&wrong_target_session)
             .unwrap_err()
             .contains("target runtime session mismatch"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn gpu_reload_v4_parser_requires_exact_expected_output_semantics_binding() {
+        let artifact_hash = format!("sha256:{}", "a".repeat(64));
+        let source_edit_id = format!("source-edit:sha256:{}", "e".repeat(64));
+        let proof_session = "runtime-session:semantics";
+        let runner_challenge = "7".repeat(32);
+        let expected_contract =
+            expected_output_contract_for_reload(&artifact_hash, &source_edit_id, proof_session);
+        let expected_semantics_hash = expected_contract.semantics().semantics_hash().to_string();
+        let contract_capsule = bound_gpu_reload_capsule_token_with_contract(
+            proof_session,
+            &artifact_hash,
+            &source_edit_id,
+            Some(expected_contract),
+        );
+        let legacy_capsule =
+            bound_gpu_reload_capsule_token(proof_session, &artifact_hash, &source_edit_id);
+        let make_payload = |capsule: String, semantics_hash: Option<String>| {
+            GpuReloadV4Payload::new(
+                format!("gpu-reload:request:{}", "7".repeat(32)),
+                "hot_reload",
+                "partial",
+                "rocm",
+                "/tmp/device.hsaco",
+                artifact_hash.clone(),
+                vec!["gpu::shade".to_string()],
+                Some("sha256:abi".to_string()),
+                Some(capsule),
+                source_edit_id.clone(),
+                Some(proof_session.to_string()),
+                semantics_hash,
+                super::runtime_session_id().to_string(),
+                runner_challenge.clone(),
+            )
+            .unwrap()
+        };
+        let parse = |payload: &GpuReloadV4Payload| {
+            let encoded = payload.encode().unwrap();
+            parse_gpu_reload_command(
+                &[
+                    "gpu_reload_v4",
+                    payload.request_id.as_str(),
+                    encoded.as_str(),
+                ],
+                Some(&runner_challenge),
+            )
+        };
+
+        let accepted = make_payload(
+            contract_capsule.clone(),
+            Some(expected_semantics_hash.clone()),
+        );
+        assert!(parse(&accepted).is_ok());
+
+        for rejected in [
+            make_payload(contract_capsule.clone(), None),
+            make_payload(contract_capsule, Some(format!("sha256:{}", "b".repeat(64)))),
+            make_payload(legacy_capsule, Some(expected_semantics_hash)),
+        ] {
+            assert!(parse(&rejected)
+                .unwrap_err()
+                .contains("expected-output semantics capsule/envelope binding mismatch"));
+        }
     }
 
     #[cfg(feature = "gpu-hmr")]
@@ -5049,6 +5190,7 @@ mod tests {
             Some(capsule),
             source_edit_id.clone(),
             Some(proof_session.to_string()),
+            None,
             super::runtime_session_id().to_string(),
             runner_challenge.clone(),
         )
@@ -5173,6 +5315,7 @@ mod tests {
             Some("sha256:abi".to_string()),
             None,
             source_edit_id,
+            None,
             None,
             super::runtime_session_id().to_string(),
             runner_challenge.clone(),
