@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   canonicalizeGpuParentRuntimeProofJson,
+  parseGpuParentRuntimeOutputOracleCommitment,
   type GpuParentRuntimeProofExpectedBinding,
 } from "./gpu_parent_runtime_proof.js";
 import type {
@@ -9,13 +10,13 @@ import type {
 } from "./runtime_evidence_transport.js";
 
 export const GPU_PARENT_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION =
-  "synthi.gpu_hmr.parent_runtime_proof_control_binding.v1";
+  "synthi.gpu_hmr.parent_runtime_proof_control_binding.v2";
 export const GPU_PARENT_RUNTIME_PROOF_CONTROL_BINDING_TYPE =
   "gpu_hmr_parent_runtime_proof_control_binding";
 export const GPU_PARENT_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY =
   "parent_signed_compile_correlated_runtime_proof_binding_only_not_gpu_hmr_acceptance";
 export const GPU_PARENT_RUNTIME_PROOF_CONTROL_BINDING_SUBJECT_SCHEMA_VERSION =
-  "synthi.gpu_hmr.parent_runtime_proof_control_binding_subject.v1";
+  "synthi.gpu_hmr.parent_runtime_proof_control_binding_subject.v2";
 
 const VALIDATION_SCHEMA =
   "synthi.gpu_hmr.parent_runtime_proof_control_binding_verification.v1";
@@ -44,6 +45,7 @@ const CONTROL_BINDING_KEYS = [
   "runnerRuntimeSessionId",
   "runnerChallenge",
   "commandEnvelopeSha256",
+  "prepublicationOutputOracleCommitment",
   "parentPid",
   "bindingCanonicalSha256",
   "bindingId",
@@ -201,7 +203,15 @@ function validCompileRequestNonce(value: unknown): value is string {
 }
 
 function validBindingFieldShapes(binding: ExactRecord): boolean {
-  return canonicalToken(binding.compileSessionId)
+  const commitment = parseGpuParentRuntimeOutputOracleCommitment(
+    binding.prepublicationOutputOracleCommitment,
+  );
+  return commitment !== undefined
+    && (commitment === null || (
+      commitment.candidateArtifactSha256 === binding.artifactContentHash
+      && commitment.editId === binding.sourceEditId
+    ))
+    && canonicalToken(binding.compileSessionId)
     && validCompileRequestNonce(binding.compileRequestNonce)
     && typeof binding.requestId === "string"
     && /^gpu-reload:request:[a-f0-9]{32}$/.test(binding.requestId)
@@ -295,6 +305,10 @@ function verified(
       runnerRuntimeSessionId: binding.runnerRuntimeSessionId as string,
       runnerChallenge: binding.runnerChallenge as string,
       commandEnvelopeSha256: binding.commandEnvelopeSha256 as string,
+      prepublicationOutputOracleCommitment:
+        parseGpuParentRuntimeOutputOracleCommitment(
+          binding.prepublicationOutputOracleCommitment,
+        ) ?? null,
     },
     acceptedForGpuHmr: false,
     gpuHmrSuccess: false,

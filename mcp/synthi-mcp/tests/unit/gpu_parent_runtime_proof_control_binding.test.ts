@@ -92,6 +92,9 @@ function expectedBindingFrom(
     runnerRuntimeSessionId: binding.runnerRuntimeSessionId as string,
     runnerChallenge: binding.runnerChallenge as string,
     commandEnvelopeSha256: binding.commandEnvelopeSha256 as string,
+    prepublicationOutputOracleCommitment:
+      binding.prepublicationOutputOracleCommitment as
+        GpuParentRuntimeProofExpectedBinding["prepublicationOutputOracleCommitment"],
   };
 }
 
@@ -148,6 +151,7 @@ function makeFixture(
     runnerRuntimeSessionId: RUNTIME_SESSION_ID,
     runnerChallenge: RUNNER_CHALLENGE,
     commandEnvelopeSha256: COMMAND_ENVELOPE_HASH,
+    prepublicationOutputOracleCommitment: null,
     parentPid: WORKER_PROCESS_ID,
     ...baseOverrides,
     bindingCanonicalSha256: "",
@@ -387,8 +391,8 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
     });
-    expect(Object.keys(fixture.binding)).toHaveLength(23);
-    expect(Object.keys(basePayload(fixture.binding))).toHaveLength(20);
+    expect(Object.keys(fixture.binding)).toHaveLength(24);
+    expect(Object.keys(basePayload(fixture.binding))).toHaveLength(21);
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.evidence)).toBe(true);
     expect(result.verified && Object.isFrozen(result.expectedBinding)).toBe(true);
@@ -430,6 +434,14 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
       runnerRuntimeSessionId: "opaque-runtime:unclassified-88",
       runnerChallenge: "1".repeat(32),
       commandEnvelopeSha256: `sha256:${"2".repeat(64)}`,
+      prepublicationOutputOracleCommitment: {
+        schemaVersion:
+          "synthi.gpu_hmr.reload_output_oracle_profile_commitment.v1",
+        candidateArtifactSha256: `sha256:${"e".repeat(64)}`,
+        fissionOutputOracleContractSha256: `sha256:${"3".repeat(64)}`,
+        profileBytesSha256: `sha256:${"4".repeat(64)}`,
+        editId: `source-edit:sha256:${"d".repeat(64)}`,
+      },
     });
     const signed = attachRealSignedEnvelope(fixture.binding);
 
@@ -446,6 +458,44 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
     });
     expect(signed.envelope.observedPayloadSha256)
       .toBe(sha256(signed.canonicalPayload));
+  });
+
+  it.each([
+    [
+      "artifact",
+      {
+        schemaVersion:
+          "synthi.gpu_hmr.reload_output_oracle_profile_commitment.v1",
+        candidateArtifactSha256: `sha256:${"c".repeat(64)}`,
+        fissionOutputOracleContractSha256: `sha256:${"3".repeat(64)}`,
+        profileBytesSha256: `sha256:${"4".repeat(64)}`,
+        editId: SOURCE_EDIT_ID,
+      },
+    ],
+    [
+      "edit",
+      {
+        schemaVersion:
+          "synthi.gpu_hmr.reload_output_oracle_profile_commitment.v1",
+        candidateArtifactSha256: ARTIFACT_HASH,
+        fissionOutputOracleContractSha256: `sha256:${"3".repeat(64)}`,
+        profileBytesSha256: `sha256:${"4".repeat(64)}`,
+        editId: `source-edit:sha256:${"d".repeat(64)}`,
+      },
+    ],
+  ])("rejects a commitment whose %s identity disagrees with the control binding", (
+    _name,
+    commitment,
+  ) => {
+    const fixture = makeFixture({
+      prepublicationOutputOracleCommitment: commitment,
+    });
+
+    expect(verifyFixture(fixture)).toMatchObject({
+      verified: false,
+      code: "gpu_parent_runtime_proof_control_binding_field_invalid",
+    });
+    expect(fixture.consumeSupportEnvelope).not.toHaveBeenCalled();
   });
 
   it("rejects replay through the actual session replay store", () => {
@@ -559,7 +609,7 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
   });
 
   it.each([
-    ["schema", "schemaVersion", "synthi.gpu_hmr.parent_runtime_proof_control_binding.v2"],
+    ["schema", "schemaVersion", "synthi.gpu_hmr.parent_runtime_proof_control_binding.v3"],
     ["type", "type", "gpu_hmr_parent_runtime_proof_binding"],
     ["authority", "proofAuthority", "parent_acceptance_authority"],
     ["accepted flag", "acceptedForGpuHmr", true],
@@ -589,6 +639,11 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
     ["runner session", "runnerRuntimeSessionId", "contains a space"],
     ["runner challenge", "runnerChallenge", "A".repeat(32)],
     ["command envelope hash", "commandEnvelopeSha256", `sha256:${"G".repeat(64)}`],
+    [
+      "prepublication output oracle commitment",
+      "prepublicationOutputOracleCommitment",
+      { schemaVersion: "invalid" },
+    ],
     ["worker PID", "parentPid", { value: WORKER_PROCESS_ID }],
     ["binding hash", "bindingCanonicalSha256", "sha256:short"],
     ["binding ID", "bindingId", `gpu-parent-runtime-proof-control-binding:sha256:${"G".repeat(64)}`],

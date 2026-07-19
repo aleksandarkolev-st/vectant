@@ -153,7 +153,13 @@ function nonceHistoryKey(nonce: string): string {
 function freezeExpectedBinding(
   value: GpuParentRuntimeProofExpectedBinding,
 ): GpuParentRuntimeProofExpectedBinding {
-  return Object.freeze({ ...value });
+  return Object.freeze({
+    ...value,
+    prepublicationOutputOracleCommitment:
+      value.prepublicationOutputOracleCommitment === null
+        ? null
+        : Object.freeze({ ...value.prepublicationOutputOracleCommitment }),
+  });
 }
 
 export class SessionGpuParentRuntimeProofAdmission {

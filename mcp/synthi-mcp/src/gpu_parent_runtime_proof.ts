@@ -5,11 +5,13 @@ import type {
 } from "./runtime_evidence_transport.js";
 
 const PARENT_VERIFICATION_SCHEMA =
-  "synthi.gpu_hmr.parent_verified_runtime_proof.v1";
+  "synthi.gpu_hmr.parent_verified_runtime_proof.v2";
 const PARENT_VERIFICATION_AUTHORITY =
   "parent_recomputed_runtime_proof_binding_only_not_gpu_hmr_acceptance";
 const PARENT_SUBJECT_SCHEMA =
-  "synthi.gpu_hmr.parent_verified_runtime_proof_subject.v1";
+  "synthi.gpu_hmr.parent_verified_runtime_proof_subject.v2";
+const PREPUBLICATION_OUTPUT_ORACLE_COMMITMENT_SCHEMA =
+  "synthi.gpu_hmr.reload_output_oracle_profile_commitment.v1";
 const VALIDATION_SCHEMA =
   "synthi.gpu_hmr.parent_runtime_proof_transport_verification.v1";
 const PARENT_RECEIPT_PREFIX = "gpu-parent-runtime-proof-receipt:";
@@ -45,6 +47,7 @@ const PARENT_VERIFICATION_KEYS = [
   "runnerRuntimeSessionId",
   "runnerChallenge",
   "commandEnvelopeSha256",
+  "prepublicationOutputOracleCommitment",
   "parentPid",
   "runtimeEvidenceTransportEnvelope",
   "receiptId",
@@ -60,6 +63,15 @@ const EXPECTED_BINDING_KEYS = [
   "runnerRuntimeSessionId",
   "runnerChallenge",
   "commandEnvelopeSha256",
+  "prepublicationOutputOracleCommitment",
+] as const;
+
+const PREPUBLICATION_OUTPUT_ORACLE_COMMITMENT_KEYS = [
+  "schemaVersion",
+  "candidateArtifactSha256",
+  "fissionOutputOracleContractSha256",
+  "profileBytesSha256",
+  "editId",
 ] as const;
 
 export interface GpuParentRuntimeProofReceiptConsumer {
@@ -78,6 +90,16 @@ export interface GpuParentRuntimeProofExpectedBinding {
   readonly runnerRuntimeSessionId: string;
   readonly runnerChallenge: string;
   readonly commandEnvelopeSha256: string;
+  readonly prepublicationOutputOracleCommitment:
+    GpuParentRuntimeOutputOracleCommitment | null;
+}
+
+export interface GpuParentRuntimeOutputOracleCommitment {
+  readonly schemaVersion: typeof PREPUBLICATION_OUTPUT_ORACLE_COMMITMENT_SCHEMA;
+  readonly candidateArtifactSha256: string;
+  readonly fissionOutputOracleContractSha256: string;
+  readonly profileBytesSha256: string;
+  readonly editId: string;
 }
 
 export interface GpuParentRuntimeProofVerificationContext {
@@ -438,8 +460,52 @@ function validation(
   });
 }
 
+export function parseGpuParentRuntimeOutputOracleCommitment(
+  value: unknown,
+): GpuParentRuntimeOutputOracleCommitment | null | undefined {
+  if (value === null) return null;
+  const commitment = plainRecord(value);
+  if (
+    commitment === null
+    || !hasExactKeys(
+      commitment,
+      PREPUBLICATION_OUTPUT_ORACLE_COMMITMENT_KEYS,
+    )
+    || commitment.schemaVersion
+      !== PREPUBLICATION_OUTPUT_ORACLE_COMMITMENT_SCHEMA
+    || !canonicalSha256(commitment.candidateArtifactSha256)
+    || !canonicalSha256(commitment.fissionOutputOracleContractSha256)
+    || !canonicalSha256(commitment.profileBytesSha256)
+    || !canonicalPrefixedSha256(commitment.editId, "source-edit:")
+  ) {
+    return undefined;
+  }
+  return commitment as unknown as GpuParentRuntimeOutputOracleCommitment;
+}
+
+function outputOracleCommitmentsMatch(
+  left: GpuParentRuntimeOutputOracleCommitment | null,
+  right: GpuParentRuntimeOutputOracleCommitment | null,
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.schemaVersion === right.schemaVersion
+    && left.candidateArtifactSha256 === right.candidateArtifactSha256
+    && left.fissionOutputOracleContractSha256
+      === right.fissionOutputOracleContractSha256
+    && left.profileBytesSha256 === right.profileBytesSha256
+    && left.editId === right.editId;
+}
+
 function validParentFieldShapes(parent: Record<string, unknown>): boolean {
-  return canonicalToken(parent.compileSessionId)
+  const commitment = parseGpuParentRuntimeOutputOracleCommitment(
+    parent.prepublicationOutputOracleCommitment,
+  );
+  return commitment !== undefined
+    && (commitment === null || (
+      commitment.candidateArtifactSha256 === parent.artifactContentHash
+      && commitment.editId === parent.sourceEditId
+    ))
+    && canonicalToken(parent.compileSessionId)
     && typeof parent.requestId === "string"
     && /^gpu-reload:request:[a-f0-9]{32}$/.test(parent.requestId)
     && canonicalPrefixedSha256(parent.sourceEditId, "source-edit:")
@@ -462,7 +528,15 @@ function validExpectedBinding(
   value: unknown,
 ): value is GpuParentRuntimeProofExpectedBinding {
   const binding = plainRecord(value);
+  const commitment = parseGpuParentRuntimeOutputOracleCommitment(
+    binding?.prepublicationOutputOracleCommitment,
+  );
   return binding !== null
+    && commitment !== undefined
+    && (commitment === null || (
+      commitment.candidateArtifactSha256 === binding.artifactContentHash
+      && commitment.editId === binding.sourceEditId
+    ))
     && hasExactKeys(binding, EXPECTED_BINDING_KEYS)
     && typeof binding.requestId === "string"
     && /^gpu-reload:request:[a-f0-9]{32}$/.test(binding.requestId)
@@ -481,6 +555,9 @@ function parentMatchesExpectedBinding(
   parent: Record<string, unknown>,
   expected: GpuParentRuntimeProofExpectedBinding,
 ): boolean {
+  const parentCommitment = parseGpuParentRuntimeOutputOracleCommitment(
+    parent.prepublicationOutputOracleCommitment,
+  );
   return parent.requestId === expected.requestId
     && parent.sourceEditId === expected.sourceEditId
     && parent.artifactContentHash === expected.artifactContentHash
@@ -489,7 +566,12 @@ function parentMatchesExpectedBinding(
     && parent.runnerPid === expected.runnerProcessId
     && parent.runnerRuntimeSessionId === expected.runnerRuntimeSessionId
     && parent.runnerChallenge === expected.runnerChallenge
-    && parent.commandEnvelopeSha256 === expected.commandEnvelopeSha256;
+    && parent.commandEnvelopeSha256 === expected.commandEnvelopeSha256
+    && parentCommitment !== undefined
+    && outputOracleCommitmentsMatch(
+      parentCommitment,
+      expected.prepublicationOutputOracleCommitment,
+    );
 }
 
 export function verifyGpuParentRuntimeProofTransport(
@@ -597,6 +679,7 @@ export function verifyGpuParentRuntimeProofTransport(
       parent.runnerRuntimeSessionId,
       parent.runnerChallenge,
       parent.commandEnvelopeSha256,
+      parent.prepublicationOutputOracleCommitment,
       parent.parentPid,
       true,
     ]), "utf8");
