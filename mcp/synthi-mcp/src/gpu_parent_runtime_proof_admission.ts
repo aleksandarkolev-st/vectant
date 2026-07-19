@@ -50,6 +50,7 @@ export interface GpuParentRuntimeProofCompileIntent {
   readonly compileRequestNonce: string;
   readonly correlationId: string;
   readonly computeExpectedOutputContractHash: string | null;
+  readonly computeExpectedOutputSemanticsHash: string | null;
 }
 
 export type GpuParentRuntimeProofTrustInvalidationReason =
@@ -74,6 +75,7 @@ interface PendingIntent {
   readonly compileRequestNonce: string;
   readonly correlationId: string;
   readonly computeExpectedOutputContractHash: string | null;
+  readonly computeExpectedOutputSemanticsHash: string | null;
   readonly expiresAt: number;
 }
 
@@ -114,7 +116,7 @@ function validCompileRequestNonce(value: unknown): value is string {
     && /^gpu-proof-transport-request:[a-f0-9]{32}$/.test(value);
 }
 
-function validComputeExpectedOutputContractHash(
+function validOptionalCanonicalSha256(
   value: unknown,
 ): value is string | null {
   return value === null
@@ -230,11 +232,17 @@ export class SessionGpuParentRuntimeProofAdmission {
 
   issueCompileIntent(
     computeExpectedOutputContractHash: string | null = null,
+    computeExpectedOutputSemanticsHash: string | null = null,
   ): GpuParentRuntimeProofCompileIntent {
     this.assertActive();
-    if (!validComputeExpectedOutputContractHash(computeExpectedOutputContractHash)) {
+    if (!validOptionalCanonicalSha256(computeExpectedOutputContractHash)) {
       throw new Error(
         "gpu_parent_runtime_proof_admission_expected_output_contract_hash_invalid",
+      );
+    }
+    if (!validOptionalCanonicalSha256(computeExpectedOutputSemanticsHash)) {
+      throw new Error(
+        "gpu_parent_runtime_proof_admission_expected_output_semantics_hash_invalid",
       );
     }
     const now = this.currentTime();
@@ -259,6 +267,7 @@ export class SessionGpuParentRuntimeProofAdmission {
           compileRequestNonce: nonce,
           correlationId: correlationId(this.transportSessionId, nonce),
           computeExpectedOutputContractHash,
+          computeExpectedOutputSemanticsHash,
           expiresAt: now + this.intentTtlMs,
         });
         this.issuedNonceHashes.add(nonceHash);
@@ -269,6 +278,8 @@ export class SessionGpuParentRuntimeProofAdmission {
           correlationId: intent.correlationId,
           computeExpectedOutputContractHash:
             intent.computeExpectedOutputContractHash,
+          computeExpectedOutputSemanticsHash:
+            intent.computeExpectedOutputSemanticsHash,
         });
       } finally {
         bytes.fill(0);
@@ -396,6 +407,15 @@ export class SessionGpuParentRuntimeProofAdmission {
     ) {
       this.fail(
         "gpu_parent_runtime_proof_authenticated_expected_output_contract_hash_mismatch",
+      );
+      return;
+    }
+    if (
+      validation.computeExpectedOutputSemanticsHash
+      !== pendingIntent.computeExpectedOutputSemanticsHash
+    ) {
+      this.fail(
+        "gpu_parent_runtime_proof_authenticated_expected_output_semantics_hash_mismatch",
       );
       return;
     }

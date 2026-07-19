@@ -289,6 +289,7 @@ export class SessionChannels {
     }
     const intent = this.gpuParentRuntimeProofAdmission.issueCompileIntent(
       capturedExpectedOutputContractHash ?? null,
+      capturedExpectedOutputSemantics?.semanticsHash ?? null,
     );
 
     try {
