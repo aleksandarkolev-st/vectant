@@ -15,6 +15,9 @@ import {
 import {
   buildGpuHmrFrameGateRuntimeBinding,
 } from '../lib/gpu-hmr-proof-ledger.mjs';
+import {
+  buildComputeExpectedOutputContract,
+} from '../lib/gpu-hmr-compute-oracle-semantics.mjs';
 
 const HASH_A = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HASH_B = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -309,6 +312,25 @@ function computeOracle() {
   });
 }
 
+function computeExpectedOutputContract() {
+  return buildComputeExpectedOutputContract({
+    comparisonMode: 'exact_bytes',
+    dtype: 'u8',
+    shape: [COMPUTE_RAW_BYTES.length],
+    elementCount: COMPUTE_RAW_BYTES.length,
+    byteOrder: 'not_applicable',
+    expectedRawHash: COMPUTE_RAW_HASH,
+    binding: {
+      projectId: 'generic-runtime-boundary-project',
+      editId: 'gpu-artifact-edit',
+      artifactAfterHash: `artifact:${HASH_B}`,
+      outputTargetId: 'allocation-1',
+      oracleCodeHash: COMPUTE_SLICE_HASH,
+    },
+    evidenceRefs: ['compute-oracle:expected-output-contract'],
+  });
+}
+
 function adapterInput(overrides = {}) {
   return {
     backend: 'hip',
@@ -328,6 +350,7 @@ function adapterInput(overrides = {}) {
     contractHash: HASH_C,
     runtimeBoundaryEvents: boundaryEvents(overrides.events ?? {}),
     computeOracleArtifacts: computeOracle(),
+    expectedOutputContract: computeExpectedOutputContract(),
     ...overrides,
   };
 }
@@ -498,6 +521,11 @@ assert.equal(accepted.runtimeProofArtifact.gpuHmrSuccess, true);
 assert.equal(accepted.strictGate.status, 'pass', accepted.strictGate.detail);
 assert.equal(accepted.runtimeProofArtifact.proofLedgerQuery.gpuHmrSuccess, true);
 assert.equal(accepted.runtimeProofArtifact.acceptanceContractEvaluation.accepted, true);
+assert.deepEqual(
+  accepted.runtimeProofArtifact.acceptanceContract.fission_report
+    .output_oracle_contract.expected_output_contract,
+  computeExpectedOutputContract(),
+);
 assert.deepEqual(
   accepted.components.epochProof.epochGenerationGraph.nodes,
   [

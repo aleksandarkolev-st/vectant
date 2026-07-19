@@ -2433,6 +2433,12 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     throw new Error(`runtime boundary output oracle kind rejected: ${oracleKindClassification.failureCode}`);
   }
   const oracleMode = oracleKindClassification.modality;
+  const expectedOutputContract = oracleMode === 'compute'
+    ? objectOrNull(
+      input.expectedOutputContract
+      ?? input.expected_output_contract,
+    )
+    : null;
   const artifactAfterHash = normalizeSha256(firstText(input.artifactHashAfter, input.artifact_hash_after));
   const artifactBeforeHash = normalizeSha256(firstText(input.artifactHashBefore, input.artifact_hash_before));
   const artifactAfterId = artifactIdFromHash(artifactAfterHash);
@@ -2542,6 +2548,9 @@ function buildBoundaryProofComponents(input, stageEvidence) {
         kind: output?.oracleKind === 'output_oracle' ? 'buffer_checksum' : output?.oracleKind,
         outputTargetId,
         readbackPlan: 'after-dispatch',
+        ...(expectedOutputContract
+          ? { expected_output_contract: expectedOutputContract }
+          : {}),
       },
       verificationEvidenceCoverage: fissionCoverage(`${evidencePrefix}:fission`),
     }],
