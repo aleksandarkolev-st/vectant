@@ -87,6 +87,9 @@ import {
 import {
   gpuHmrSourceExtensionMetadata,
 } from './lib/gpu-hmr-source-extension-registry.mjs';
+import {
+  verifyGpuHmrScreenshotCaptureBinding,
+} from './lib/gpu-hmr-screenshot-capture-binding.mjs';
 
 let stdioPipeClosed = false;
 
@@ -417,6 +420,32 @@ export function observedMcpVisualCaptureContract(toolResult) {
     height,
     hasFrameSequence: Number.isFinite(Number(metadata.seq ?? metadata.frame_seq)),
     hasCaptureManifest: Boolean(metadata.capture_manifest ?? metadata.captureManifest),
+  });
+}
+
+export function verifyAgentSplitScreenshotSample(sample) {
+  if (
+    !sample
+    || typeof sample !== 'object'
+    || typeof sample.imageData !== 'string'
+    || sample.imageData.length === 0
+    || !sample.meta
+    || typeof sample.meta !== 'object'
+  ) {
+    return verifyGpuHmrScreenshotCaptureBinding(null);
+  }
+  let metadataText;
+  try {
+    metadataText = JSON.stringify(sample.meta);
+  } catch {
+    return verifyGpuHmrScreenshotCaptureBinding(null);
+  }
+  return verifyGpuHmrScreenshotCaptureBinding({
+    content: [
+      { type: 'image', data: sample.imageData, mimeType: 'image/png' },
+      { type: 'text', text: metadataText },
+    ],
+    structuredContent: sample.meta,
   });
 }
 
@@ -9803,7 +9832,7 @@ async function selfCheckSemanticVisualProbeEvidence() {
   }
 }
 
-function selfCheckRunModeVisualLedgerClockDomain() {
+async function selfCheckRunModeVisualLedgerClockDomain() {
   const artifactBefore = `sha256:${'a'.repeat(64)}`;
   const artifactAfter = `sha256:${'b'.repeat(64)}`;
   const processId = 'pid:self-check-clock';
@@ -9812,6 +9841,75 @@ function selfCheckRunModeVisualLedgerClockDomain() {
   const dispatchTimestampNs = 1_782_760_141_383_000;
   const outputTimestampNs = dispatchTimestampNs + 1_000_000;
   const selectedFrameTimestampMs = 1_782_760_145_309;
+  const selfCheckScreenshotSample = async ({ seq, ts, color, frameGate = null }) => {
+    const png = await sharp({
+      create: {
+        width: 2,
+        height: 2,
+        channels: 3,
+        background: color,
+      },
+    }).png().toBuffer();
+    const imageHash = `sha256:${sha256BufferHex(png)}`;
+    const captureManifest = {
+      schema_version: 'synthi.mcp.capture_manifest.v1',
+      session_id: 'runtime-session:self-check-clock',
+      capture_backend: 'mcp_screenshot',
+      capture_event_id: `screenshot:self-check-clock:${seq}`,
+      frame_event_id: seq,
+      frame_seq: seq,
+      frame_ts_ms: ts,
+      capture_ts_ms: ts + 1,
+      source_frame_hash: imageHash,
+      broker_frame_hash: imageHash,
+      image_sha256: imageHash,
+      image_byte_length: png.length,
+      width: 2,
+      height: 2,
+      gate_token_verified: frameGate !== null,
+      ...(frameGate ?? {}),
+    };
+    return {
+      seq,
+      ts,
+      width: 2,
+      height: 2,
+      visiblePixels: 4,
+      imageData: png.toString('base64'),
+      imageHash,
+      meta: {
+        w: 2,
+        h: 2,
+        ts,
+        seq,
+        image_sha256: imageHash,
+        image_byte_length: png.length,
+        mimeType: 'image/png',
+        capture_manifest: captureManifest,
+      },
+    };
+  };
+  const baselineSample = await selfCheckScreenshotSample({
+    seq: 1,
+    ts: selectedFrameTimestampMs - 10_000,
+    color: { r: 32, g: 48, b: 64 },
+  });
+  const gateSample = await selfCheckScreenshotSample({
+    seq: 2,
+    ts: selectedFrameTimestampMs - 100,
+    color: { r: 64, g: 80, b: 96 },
+    frameGate: {
+      gate_token: 'frame-gate:self-check-clock',
+      frame_gate: {
+        required_ts_ms: selectedFrameTimestampMs - 3_926,
+      },
+    },
+  });
+  const selectedSample = await selfCheckScreenshotSample({
+    seq: 3,
+    ts: selectedFrameTimestampMs,
+    color: { r: 160, g: 96, b: 48 },
+  });
   const timingFields = {
     static_discovery_time: 1,
     ai_contract_synthesis_time: 1,
@@ -9932,93 +10030,27 @@ function selfCheckRunModeVisualLedgerClockDomain() {
     selected_frame_capture_after_epoch_dispatch: true,
     visual_artifacts: {
       before_image: 'self-check-before.png',
-      before_image_hash: `sha256:${'1'.repeat(64)}`,
+      before_image_hash: baselineSample.imageHash,
       after_image: 'self-check-after.png',
-      after_image_hash: `sha256:${'2'.repeat(64)}`,
+      after_image_hash: selectedSample.imageHash,
       diff_image: 'self-check-diff.png',
       diff_image_hash: `sha256:${'3'.repeat(64)}`,
     },
     visualArtifacts: {
       beforeImage: 'self-check-before.png',
-      beforeImageHash: `sha256:${'1'.repeat(64)}`,
+      beforeImageHash: baselineSample.imageHash,
       afterImage: 'self-check-after.png',
-      afterImageHash: `sha256:${'2'.repeat(64)}`,
+      afterImageHash: selectedSample.imageHash,
       diffImage: 'self-check-diff.png',
       diffImageHash: `sha256:${'3'.repeat(64)}`,
     },
   };
   const beforeShot = {
-    first: {
-      seq: 1,
-      ts: selectedFrameTimestampMs - 10_000,
-      width: 2,
-      height: 2,
-      visiblePixels: 4,
-      meta: {
-        image_sha256: `sha256:${'4'.repeat(64)}`,
-        capture_manifest: {
-          schema_version: 'synthi.mcp.capture_manifest.v1',
-          session_id: 'runtime-session:self-check-clock',
-          capture_event_id: 'screenshot:self-check-clock:1',
-          frame_event_id: 1,
-          frame_seq: 1,
-          frame_ts_ms: selectedFrameTimestampMs - 10_000,
-          source_frame_hash: `sha256:${'5'.repeat(64)}`,
-          image_sha256: `sha256:${'4'.repeat(64)}`,
-          image_byte_length: 128,
-        },
-      },
-    },
+    first: baselineSample,
   };
   const afterShot = {
-    first: {
-      seq: 2,
-      ts: selectedFrameTimestampMs - 100,
-      width: 2,
-      height: 2,
-      visiblePixels: 4,
-      meta: {
-        image_sha256: `sha256:${'6'.repeat(64)}`,
-        capture_manifest: {
-          schema_version: 'synthi.mcp.capture_manifest.v1',
-          session_id: 'runtime-session:self-check-clock',
-          capture_event_id: 'screenshot:self-check-clock:2',
-          frame_event_id: 2,
-          frame_seq: 2,
-          frame_ts_ms: selectedFrameTimestampMs - 100,
-          source_frame_hash: `sha256:${'7'.repeat(64)}`,
-          image_sha256: `sha256:${'6'.repeat(64)}`,
-          image_byte_length: 128,
-          gate_token: 'frame-gate:self-check-clock',
-          gate_token_verified: true,
-          frame_gate: {
-            required_ts_ms: selectedFrameTimestampMs - 3_926,
-          },
-        },
-      },
-    },
-    second: {
-      seq: 3,
-      ts: selectedFrameTimestampMs,
-      width: 2,
-      height: 2,
-      visiblePixels: 4,
-      meta: {
-        image_sha256: `sha256:${'8'.repeat(64)}`,
-        capture_manifest: {
-          schema_version: 'synthi.mcp.capture_manifest.v1',
-          session_id: 'runtime-session:self-check-clock',
-          capture_event_id: 'screenshot:self-check-clock:3',
-          frame_event_id: 3,
-          frame_seq: 3,
-          frame_ts_ms: selectedFrameTimestampMs,
-          source_frame_hash: `sha256:${'9'.repeat(64)}`,
-          image_sha256: `sha256:${'8'.repeat(64)}`,
-          image_byte_length: 128,
-          gate_token_verified: false,
-        },
-      },
-    },
+    first: gateSample,
+    second: selectedSample,
   };
   const originalProfile = ACTIVE_AGENT_PROFILE;
   let proof;
@@ -10082,6 +10114,27 @@ function selfCheckRunModeVisualLedgerClockDomain() {
     ?? record?.declared_deterministic_visual_mode
     ?? null;
   const failedInvariantCodes = recomputed.failedInvariants?.map((failure) => failure?.code ?? failure) ?? [];
+  const substitutedBytes = Buffer.from(selectedSample.imageData, 'base64');
+  substitutedBytes[substitutedBytes.length - 9] ^= 0x01;
+  let substitutedCaptureRejected = false;
+  try {
+    visualLedgerArtifactsFromDelta({
+      visualDelta,
+      beforeShot,
+      afterShot: {
+        ...afterShot,
+        second: {
+          ...selectedSample,
+          imageData: substitutedBytes.toString('base64'),
+        },
+      },
+      ledgerRecord: ledger.records[0],
+    });
+  } catch (error) {
+    substitutedCaptureRejected =
+      classifyAgentSplitTimingTerminal(error).reasonCode
+        === 'agent_split_visual_capture_binding_refused';
+  }
   let acceptedFirewallRejected = false;
   try {
     ledgerFirewallFieldsFromProof(proof);
@@ -10098,6 +10151,12 @@ function selfCheckRunModeVisualLedgerClockDomain() {
     || artifacts?.timestamp_after_dispatch_clock !== 'ledger_output_event_monotonic_ns'
     || artifacts?.selected_frame_timestamp_ms !== selectedFrameTimestampMs
     || artifacts?.camera_state_hash !== null
+    || artifacts?.capture_manifest?.image_sha256 !== selectedSample.imageHash
+    || artifacts?.before_capture_manifest?.image_sha256 !== baselineSample.imageHash
+    || artifacts?.screenshot_capture_byte_binding
+      ?.acceptedAsScreenshotCaptureByteEvidence !== true
+    || artifacts?.before_screenshot_capture_byte_binding
+      ?.acceptedAsScreenshotCaptureByteEvidence !== true
     || deterministicMode?.fixed_resolution !== true
     || deterministicMode?.frame_capture_after_epoch_dispatch !== true
     || deterministicMode?.presentation_fence_or_frame_boundary !== true
@@ -10114,6 +10173,7 @@ function selfCheckRunModeVisualLedgerClockDomain() {
     || declaredModeFacet?.declaredMode?.profile_only_marker
       !== 'self-check-profile-declaration-retained-only'
     || acceptedFirewallRejected !== true
+    || substitutedCaptureRejected !== true
   ) {
     throw new Error(`run-mode visual ledger clock-domain self-check failed: ${JSON.stringify({
       gpuHmrSuccess: recomputed.gpuHmrSuccess,
@@ -10125,6 +10185,7 @@ function selfCheckRunModeVisualLedgerClockDomain() {
       deterministicMode,
       declaredModeFacet,
       acceptedFirewallRejected,
+      substitutedCaptureRejected,
     })}`);
   }
   console.log('run-mode visual ledger clock-domain self-check passed');
@@ -10909,6 +10970,43 @@ function visualLedgerArtifactsFromDelta({
 }) {
   const selected = selectedVisualShot(afterShot, visualDelta?.selectedSeq);
   const baseline = selectedVisualShot(beforeShot, visualDelta?.baselineSeq);
+  const selectedCaptureBinding = verifyAgentSplitScreenshotSample(selected);
+  const baselineCaptureBinding = verifyAgentSplitScreenshotSample(baseline);
+  const expectedBeforeImageHash =
+    visualDelta?.visual_artifacts?.before_image_hash
+    ?? visualDelta?.visualArtifacts?.beforeImageHash
+    ?? null;
+  const expectedAfterImageHash =
+    visualDelta?.visual_artifacts?.after_image_hash
+    ?? visualDelta?.visualArtifacts?.afterImageHash
+    ?? null;
+  const captureBindingGaps = [];
+  if (baselineCaptureBinding.acceptedAsScreenshotCaptureByteEvidence !== true) {
+    captureBindingGaps.push(...baselineCaptureBinding.failedGates);
+  }
+  if (selectedCaptureBinding.acceptedAsScreenshotCaptureByteEvidence !== true) {
+    captureBindingGaps.push(...selectedCaptureBinding.failedGates);
+  }
+  if (baselineCaptureBinding.imageSha256 !== expectedBeforeImageHash) {
+    captureBindingGaps.push('visual_baseline_capture_hash_mismatch');
+  }
+  if (selectedCaptureBinding.imageSha256 !== expectedAfterImageHash) {
+    captureBindingGaps.push('visual_selected_capture_hash_mismatch');
+  }
+  if (captureBindingGaps.length > 0) {
+    throw agentSplitRefusalError(
+      `visual screenshot capture binding rejected: ${[...new Set(captureBindingGaps)].join('|')}`,
+      'agent_split_visual_capture_binding_refused',
+    );
+  }
+  const selectedCaptureManifest =
+    selected?.meta?.capture_manifest
+    ?? selected?.meta?.captureManifest
+    ?? null;
+  const baselineCaptureManifest =
+    baseline?.meta?.capture_manifest
+    ?? baseline?.meta?.captureManifest
+    ?? null;
   const width = Number(selected?.width ?? baseline?.width ?? 0);
   const height = Number(selected?.height ?? baseline?.height ?? 0);
   const visiblePixelCount = Number(
@@ -11030,6 +11128,14 @@ function visualLedgerArtifactsFromDelta({
     changedPixelRatio: Number(visualDelta.changedRatio ?? 0),
     visible_pixel_count: visiblePixelCount,
     visiblePixelCount,
+    capture_manifest: selectedCaptureManifest,
+    captureManifest: selectedCaptureManifest,
+    before_capture_manifest: baselineCaptureManifest,
+    beforeCaptureManifest: baselineCaptureManifest,
+    screenshot_capture_byte_binding: selectedCaptureBinding,
+    screenshotCaptureByteBinding: selectedCaptureBinding,
+    before_screenshot_capture_byte_binding: baselineCaptureBinding,
+    beforeScreenshotCaptureByteBinding: baselineCaptureBinding,
     pixel_metrics_verified: true,
     pixelMetricsVerified: true,
     verification: {
@@ -11042,6 +11148,8 @@ function visualLedgerArtifactsFromDelta({
       control_mean_abs_delta8bit: Number(visualDelta.controlMeanAbs ?? 0),
       selected_frame_capture_after_epoch_dispatch:
         visualDelta.selected_frame_capture_after_epoch_dispatch === true,
+      screenshot_capture_bytes_verified: true,
+      before_screenshot_capture_bytes_verified: true,
     },
   };
 }
@@ -15033,6 +15141,14 @@ async function assertMcpScreenshot(
       Math.max(30000, CFG.frameGateTimeoutMs + 5000),
     );
     const captureEndNs = timingBoundaryNs();
+    const analysisStartNs = timingBoundaryNs();
+    const screenshotCaptureBinding = verifyGpuHmrScreenshotCaptureBinding(shot);
+    if (screenshotCaptureBinding.acceptedAsScreenshotCaptureByteEvidence !== true) {
+      throw agentSplitRefusalError(
+        `${label} screenshot capture byte binding rejected: ${screenshotCaptureBinding.failedGates.join('|')}`,
+        'agent_split_visual_capture_byte_binding_refused',
+      );
+    }
     const captureContract = observedMcpVisualCaptureContract(shot);
     activeAgentSplitTestTiming?.observeCaptureContract(
       captureContract,
@@ -15061,16 +15177,22 @@ async function assertMcpScreenshot(
           && mcpFrameAtOrAfterFrameGate(waitEvidence, frameMeta)
           && frameMeta.seq >= verifiedGateCapture.seq
           && frameMeta.ts >= verifiedGateCapture.ts);
-    const analysisStartNs = timingBoundaryNs();
     const analysis = await analyzeImage(image?.data);
     const analysisEndNs = timingBoundaryNs();
+    const captureManifest = meta.capture_manifest ?? meta.captureManifest ?? null;
     const captured = {
       meta,
       imageData: image?.data || '',
+      imageHash: screenshotCaptureBinding.imageSha256,
+      image_hash: screenshotCaptureBinding.imageSha256,
       width: Number(meta.w || meta.width || 0),
       height: Number(meta.h || meta.height || 0),
       seq: frameMeta.seq,
       ts: frameMeta.ts,
+      captureManifest,
+      capture_manifest: captureManifest,
+      screenshotCaptureByteBinding: screenshotCaptureBinding,
+      screenshot_capture_byte_binding: screenshotCaptureBinding,
       frameGateTokenVerified: gateTokenVerified,
       frameCaptureAfterEpochDispatch: frameAfterGate,
       ...analysis,
@@ -16053,7 +16175,7 @@ export async function main() {
     try {
       selfCheckAgentVisualProfile();
       await selfCheckSemanticVisualProbeEvidence();
-      selfCheckRunModeVisualLedgerClockDomain();
+      await selfCheckRunModeVisualLedgerClockDomain();
       await selfCheckProofFinalizationRetry();
       selfCheckRequestedProofStateGate();
       await selfCheckColdAiSplitProof();
