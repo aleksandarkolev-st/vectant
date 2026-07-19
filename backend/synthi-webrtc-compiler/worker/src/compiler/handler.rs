@@ -21610,6 +21610,7 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             ai_provider_call_nonce: None,
             gpu_proof_transport_nonce: None,
             compute_expected_output_contract_hash: None,
+            compute_expected_output_semantics: None,
             ai_provider: None,
             ai_model: None,
             user_requested_ai: false,

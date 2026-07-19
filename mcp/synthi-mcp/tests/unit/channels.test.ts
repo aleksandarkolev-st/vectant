@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionChannels } from "../../src/channels.js";
 import {
+  COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+  computeExpectedOutputSemanticsHash,
+  type ComputeExpectedOutputSemantics,
+  type ComputeExpectedOutputSemanticsMaterial,
+} from "../../src/compute_expected_output_semantics.js";
+import {
   RUNTIME_EVIDENCE_TRANSPORT_ALGORITHM,
   RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
   RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA,
@@ -11,6 +17,25 @@ import type { RTCDataChannel } from "werift";
 
 const TRANSPORT_SESSION_ID = "opaque-compile-session:unit-01";
 const EXPECTED_OUTPUT_CONTRACT_HASH = `sha256:${"a".repeat(64)}`;
+
+function exactOutputSemantics(): ComputeExpectedOutputSemantics {
+  const material: ComputeExpectedOutputSemanticsMaterial = {
+    schemaVersion: COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+    comparisonMode: "exact_bytes",
+    outputTargetId: "output:tensor:0",
+    byteOffset: 64,
+    byteLength: 16,
+    dtype: "u32",
+    shape: [2, 2],
+    elementCount: 4,
+    byteOrder: "little_endian",
+    toleranceDecimal: "0",
+    expectedValuesDecimal: null,
+    expectedValuesHash: null,
+    expectedRawHash: `sha256:${"a".repeat(64)}`,
+  };
+  return { ...material, semanticsHash: computeExpectedOutputSemanticsHash(material) };
+}
 
 class MockEvidenceDataChannel extends EventTarget {
   readonly label = RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL;
@@ -189,6 +214,25 @@ describe("SessionChannels compile chunking", () => {
     channels.dispose();
   });
 
+  it("revalidates, snapshots, and transports caller-owned output semantics", async () => {
+    const sent: string[] = [];
+    const channels = makeChannels(sent);
+    const semantics = exactOutputSemantics();
+
+    const receipt = await channels.sendCompileRequest(
+      { language: "cpp", source: "int main(){return 0;}" },
+      undefined,
+      semantics,
+    );
+
+    const payload = decodeCompilePayload(sent);
+    expect(payload.compute_expected_output_semantics).toEqual(semantics);
+    expect(payload).not.toHaveProperty("compute_expected_output_semantics_hash");
+    expect(receipt.computeExpectedOutputSemanticsHash).toBe(semantics.semanticsHash);
+    expect(Object.isFrozen(receipt)).toBe(true);
+    channels.dispose();
+  });
+
   it("omits an absent expected-output contract hash on the direct wire path", async () => {
     const sent: string[] = [];
     const channels = makeChannels(sent);
@@ -226,6 +270,41 @@ describe("SessionChannels compile chunking", () => {
       source: "int main(){}",
       [field]: EXPECTED_OUTPUT_CONTRACT_HASH,
     })).rejects.toThrow("compile_compute_expected_output_contract_hash_reserved");
+
+    expect(sent).toEqual([]);
+    expect(channels.gpuParentRuntimeProofAdmissionSnapshot().pendingIntentCount).toBe(0);
+    channels.dispose();
+  });
+
+  it.each([
+    "compute_expected_output_semantics",
+    "computeExpectedOutputSemantics",
+    "compute_expected_output_semantics_hash",
+    "computeExpectedOutputSemanticsHash",
+  ])("rejects caller-supplied semantic wire field %s", async (field) => {
+    const sent: string[] = [];
+    const channels = makeChannels(sent);
+
+    await expect(channels.sendCompileRequest({
+      source: "int main(){}",
+      [field]: exactOutputSemantics(),
+    })).rejects.toThrow("compile_compute_expected_output_semantics_reserved");
+
+    expect(sent).toEqual([]);
+    expect(channels.gpuParentRuntimeProofAdmissionSnapshot().pendingIntentCount).toBe(0);
+    channels.dispose();
+  });
+
+  it("rejects mutated semantic preimages before issuing an admission intent", async () => {
+    const sent: string[] = [];
+    const channels = makeChannels(sent);
+    const semantics = { ...exactOutputSemantics(), byteOffset: 2 };
+
+    await expect(channels.sendCompileRequest(
+      { source: "int main(){}" },
+      undefined,
+      semantics,
+    )).rejects.toThrow("compile_compute_expected_output_semantics_invalid");
 
     expect(sent).toEqual([]);
     expect(channels.gpuParentRuntimeProofAdmissionSnapshot().pendingIntentCount).toBe(0);

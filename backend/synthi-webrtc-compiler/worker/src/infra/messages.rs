@@ -1,6 +1,8 @@
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
+use super::compute_expected_output_semantics::ComputeExpectedOutputSemantics;
+
 pub const GPU_PROOF_TRANSPORT_REQUEST_NONCE_PREFIX: &str = "gpu-proof-transport-request:";
 pub const COMPUTE_EXPECTED_OUTPUT_CONTRACT_HASH_PREFIX: &str = "sha256:";
 
@@ -145,6 +147,11 @@ pub struct CompileRequest {
         deserialize_with = "deserialize_optional_compute_expected_output_contract_hash"
     )]
     pub compute_expected_output_contract_hash: Option<String>,
+    /// Caller-owned output meaning captured before compilation. Its embedded
+    /// hash is recomputed during deserialization; it remains non-authoritative
+    /// until later compiler/runtime stages bind it to immutable artifact bytes.
+    #[serde(default, alias = "computeExpectedOutputSemantics")]
+    pub compute_expected_output_semantics: Option<ComputeExpectedOutputSemantics>,
     /// Explicit AI provider selected by the caller for split requests.
     #[serde(
         default,
@@ -462,6 +469,71 @@ mod tests {
                 "{value}"
             );
         }
+    }
+
+    #[test]
+    fn compile_request_accepts_canonical_compute_expected_output_semantics() {
+        let semantics = json!({
+            "schemaVersion": "synthi.gpu_hmr.compute_expected_output_semantics.v1",
+            "comparisonMode": "exact_bytes",
+            "outputTargetId": "output:tensor:0",
+            "byteOffset": 64,
+            "byteLength": 16,
+            "dtype": "u32",
+            "shape": [2, 2],
+            "elementCount": 4,
+            "byteOrder": "little_endian",
+            "toleranceDecimal": "0",
+            "expectedValuesDecimal": null,
+            "expectedValuesHash": null,
+            "expectedRawHash": format!("sha256:{}", "a".repeat(64)),
+            "semanticsHash": "sha256:cd7074de01fc4bc0fb0eab922f457e4499c886128cadff30232b7e5f6df3bdde",
+        });
+        for field in [
+            "compute_expected_output_semantics",
+            "computeExpectedOutputSemantics",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut()
+                .expect("object")
+                .insert(field.to_string(), semantics.clone());
+
+            let request: CompileRequest =
+                serde_json::from_value(raw).expect("canonical semantic preimage");
+            let accepted = request
+                .compute_expected_output_semantics
+                .expect("semantic preimage");
+            assert_eq!(
+                accepted.semantics_hash(),
+                "sha256:cd7074de01fc4bc0fb0eab922f457e4499c886128cadff30232b7e5f6df3bdde"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_request_rejects_semantics_with_rehashed_but_invalid_fields() {
+        let mut raw = base_request();
+        raw.as_object_mut().expect("object").insert(
+            "compute_expected_output_semantics".to_string(),
+            json!({
+                "schemaVersion": "synthi.gpu_hmr.compute_expected_output_semantics.v1",
+                "comparisonMode": "exact_bytes",
+                "outputTargetId": "output:tensor:0",
+                "byteOffset": 2,
+                "byteLength": 16,
+                "dtype": "u32",
+                "shape": [2, 2],
+                "elementCount": 4,
+                "byteOrder": "little_endian",
+                "toleranceDecimal": "0",
+                "expectedValuesDecimal": null,
+                "expectedValuesHash": null,
+                "expectedRawHash": format!("sha256:{}", "a".repeat(64)),
+                "semanticsHash": format!("sha256:{}", "b".repeat(64)),
+            }),
+        );
+
+        assert!(serde_json::from_value::<CompileRequest>(raw).is_err());
     }
 
     #[test]

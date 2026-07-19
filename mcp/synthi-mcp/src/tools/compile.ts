@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { validateComputeExpectedOutputSemantics } from "../compute_expected_output_semantics.js";
 import { eventLog } from "../events/index.js";
 import { session } from "../session.js";
 import { checkInputGate } from "../correctness/index.js";
@@ -180,6 +181,7 @@ interface RawArgs {
   manifest?: unknown;
   source_first_request_intent?: unknown;
   compute_expected_output_contract_hash?: unknown;
+  compute_expected_output_semantics?: unknown;
   target?: unknown;
   project_root?: unknown;
   slug?: unknown;
@@ -209,6 +211,23 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     return errorResponse("invalid_args", {
       field: "compute_expected_output_contract_hash",
       expected: "sha256: followed by exactly 64 lowercase hexadecimal characters",
+    });
+  }
+  const computeExpectedOutputSemantics =
+    a.compute_expected_output_semantics === undefined
+      ? null
+      : validateComputeExpectedOutputSemantics(
+        a.compute_expected_output_semantics,
+      );
+  if (
+    computeExpectedOutputSemantics !== null
+    && !computeExpectedOutputSemantics.accepted
+  ) {
+    return errorResponse("invalid_args", {
+      field: "compute_expected_output_semantics",
+      expected:
+        "canonical synthi.gpu_hmr.compute_expected_output_semantics.v1 object",
+      reason: computeExpectedOutputSemantics.reason,
     });
   }
 
@@ -393,6 +412,9 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     compileDispatch = await attached.channels.sendCompileRequest(
       payload,
       computeExpectedOutputContractHash,
+      computeExpectedOutputSemantics?.accepted === true
+        ? computeExpectedOutputSemantics.value
+        : undefined,
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -409,6 +431,8 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     schema_version: compileDispatch.schemaVersion,
     evidence_authority: compileDispatch.proofAuthority,
     correlation_id: compileDispatch.proofCorrelationId,
+    compute_expected_output_semantics_hash:
+      compileDispatch.computeExpectedOutputSemanticsHash,
     accepted_for_gpu_hmr: false,
     gpu_hmr_success: false,
     can_satisfy_runtime_proof: false,

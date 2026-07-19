@@ -1,4 +1,8 @@
 import type { RTCDataChannel } from "werift";
+import {
+  validateComputeExpectedOutputSemantics,
+  type ComputeExpectedOutputSemantics,
+} from "./compute_expected_output_semantics.js";
 import { HmrNormalizer } from "./hmr.js";
 import {
   SessionGpuParentRuntimeProofAdmission,
@@ -26,6 +30,7 @@ export interface CompileDispatchReceipt {
   readonly proofAuthority: "compile_dispatch_correlation_only_not_gpu_hmr_acceptance";
   readonly dispatchedAt: number;
   readonly proofCorrelationId: string;
+  readonly computeExpectedOutputSemanticsHash: string | null;
   readonly acceptedForGpuHmr: false;
   readonly gpuHmrSuccess: false;
   readonly canSatisfyRuntimeProof: false;
@@ -34,12 +39,14 @@ export interface CompileDispatchReceipt {
 function compileDispatchReceipt(
   dispatchedAt: number,
   proofCorrelationId: string,
+  computeExpectedOutputSemanticsHash: string | null,
 ): CompileDispatchReceipt {
   return Object.freeze({
     schemaVersion: "synthi.gpu_hmr.compile_dispatch_correlation.v1",
     proofAuthority: "compile_dispatch_correlation_only_not_gpu_hmr_acceptance",
     dispatchedAt,
     proofCorrelationId,
+    computeExpectedOutputSemanticsHash,
     acceptedForGpuHmr: false,
     gpuHmrSuccess: false,
     canSatisfyRuntimeProof: false,
@@ -206,6 +213,7 @@ export class SessionChannels {
   async sendCompileRequest(
     payload: Record<string, unknown>,
     computeExpectedOutputContractHash?: string,
+    computeExpectedOutputSemantics?: ComputeExpectedOutputSemantics,
   ): Promise<CompileDispatchReceipt> {
     if (this.compileDC.readyState !== "open") {
       throw new Error(`compile_channel_not_open:${this.compileDC.readyState}`);
@@ -219,6 +227,14 @@ export class SessionChannels {
     ) {
       throw new Error("compile_compute_expected_output_contract_hash_reserved");
     }
+    if (
+      Object.prototype.hasOwnProperty.call(payload, "compute_expected_output_semantics")
+      || Object.prototype.hasOwnProperty.call(payload, "computeExpectedOutputSemantics")
+      || Object.prototype.hasOwnProperty.call(payload, "compute_expected_output_semantics_hash")
+      || Object.prototype.hasOwnProperty.call(payload, "computeExpectedOutputSemanticsHash")
+    ) {
+      throw new Error("compile_compute_expected_output_semantics_reserved");
+    }
     const capturedExpectedOutputContractHash = computeExpectedOutputContractHash;
     if (
       capturedExpectedOutputContractHash !== undefined
@@ -226,6 +242,17 @@ export class SessionChannels {
     ) {
       throw new Error("compile_compute_expected_output_contract_hash_invalid");
     }
+    const semanticsValidation = computeExpectedOutputSemantics === undefined
+      ? null
+      : validateComputeExpectedOutputSemantics(computeExpectedOutputSemantics);
+    if (semanticsValidation !== null && !semanticsValidation.accepted) {
+      throw new Error(
+        `compile_compute_expected_output_semantics_invalid:${semanticsValidation.reason}`,
+      );
+    }
+    const capturedExpectedOutputSemantics = semanticsValidation?.accepted === true
+      ? semanticsValidation.value
+      : null;
     const capturedPayload = { ...payload };
     if (Object.prototype.hasOwnProperty.call(capturedPayload, "gpu_proof_transport_nonce")) {
       throw new Error("compile_gpu_proof_transport_nonce_reserved");
@@ -241,6 +268,20 @@ export class SessionChannels {
       )
     ) {
       throw new Error("compile_compute_expected_output_contract_hash_reserved");
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(capturedPayload, "compute_expected_output_semantics")
+      || Object.prototype.hasOwnProperty.call(capturedPayload, "computeExpectedOutputSemantics")
+      || Object.prototype.hasOwnProperty.call(
+        capturedPayload,
+        "compute_expected_output_semantics_hash",
+      )
+      || Object.prototype.hasOwnProperty.call(
+        capturedPayload,
+        "computeExpectedOutputSemanticsHash",
+      )
+    ) {
+      throw new Error("compile_compute_expected_output_semantics_reserved");
     }
     await this.runtimeEvidenceKeyPin.waitUntilPinned(GPU_PROOF_KEY_PIN_WAIT_MS);
     if (this.compileDC.readyState !== "open") {
@@ -260,12 +301,22 @@ export class SessionChannels {
               compute_expected_output_contract_hash:
                 intent.computeExpectedOutputContractHash,
             }),
+        ...(capturedExpectedOutputSemantics === null
+          ? {}
+          : {
+              compute_expected_output_semantics:
+                capturedExpectedOutputSemantics,
+            }),
       });
       const maxBytes = compileChunkMaxBytes();
       if (Buffer.byteLength(body, "utf8") <= maxBytes) {
         const dispatchedAt = Date.now();
         this.compileDC.send(body);
-        return compileDispatchReceipt(dispatchedAt, intent.correlationId);
+        return compileDispatchReceipt(
+          dispatchedAt,
+          intent.correlationId,
+          capturedExpectedOutputSemantics?.semanticsHash ?? null,
+        );
       }
 
       const encoded = Buffer.from(body, "utf8").toString("base64");
@@ -289,7 +340,11 @@ export class SessionChannels {
         this.compileDC.send(frame);
         await new Promise((resolve) => setTimeout(resolve, 1));
       }
-      return compileDispatchReceipt(dispatchedAt, intent.correlationId);
+      return compileDispatchReceipt(
+        dispatchedAt,
+        intent.correlationId,
+        capturedExpectedOutputSemantics?.semanticsHash ?? null,
+      );
     } catch (error) {
       this.gpuParentRuntimeProofAdmission.cancelCompileIntent(
         intent.compileRequestNonce,

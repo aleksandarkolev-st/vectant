@@ -374,6 +374,84 @@ const TOOLS = [
           description:
             "Optional pre-dispatch canonical compute expected-output contract hash. The worker must bind this exact caller commitment to returned runtime proof before compute GPU HMR can be admitted.",
         },
+        compute_expected_output_semantics: {
+          type: "object",
+          additionalProperties: false,
+          description:
+            "Caller-owned compute-output semantics committed before compilation. This object is evidence input only until the compiler binds it to produced artifact bytes and runtime proof.",
+          properties: {
+            schemaVersion: {
+              type: "string",
+              const: "synthi.gpu_hmr.compute_expected_output_semantics.v1",
+            },
+            comparisonMode: {
+              type: "string",
+              enum: ["exact_bytes", "numeric_tolerance"],
+            },
+            outputTargetId: { type: "string", minLength: 1, maxLength: 512 },
+            byteOffset: { type: "integer", minimum: 0 },
+            byteLength: { type: "integer", minimum: 1 },
+            dtype: {
+              type: "string",
+              enum: ["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "f32", "f64"],
+            },
+            shape: {
+              type: "array",
+              minItems: 0,
+              maxItems: 32,
+              items: { type: "integer", minimum: 1 },
+            },
+            elementCount: { type: "integer", minimum: 1 },
+            byteOrder: {
+              type: "string",
+              enum: ["little_endian", "big_endian", "not_applicable"],
+            },
+            toleranceDecimal: { type: "string", minLength: 1, maxLength: 128 },
+            expectedValuesDecimal: {
+              anyOf: [
+                { type: "null" },
+                {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: 16384,
+                  items: { type: "string", minLength: 1, maxLength: 128 },
+                },
+              ],
+            },
+            expectedValuesHash: {
+              anyOf: [
+                { type: "null" },
+                { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+              ],
+            },
+            expectedRawHash: {
+              anyOf: [
+                { type: "null" },
+                { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+              ],
+            },
+            semanticsHash: {
+              type: "string",
+              pattern: "^sha256:[a-f0-9]{64}$",
+            },
+          },
+          required: [
+            "schemaVersion",
+            "comparisonMode",
+            "outputTargetId",
+            "byteOffset",
+            "byteLength",
+            "dtype",
+            "shape",
+            "elementCount",
+            "byteOrder",
+            "toleranceDecimal",
+            "expectedValuesDecimal",
+            "expectedValuesHash",
+            "expectedRawHash",
+            "semanticsHash",
+          ],
+        },
         target: {
           type: "string",
           description: "Target platform. Default 'native'; mobile uses 'react-native-emulator'.",

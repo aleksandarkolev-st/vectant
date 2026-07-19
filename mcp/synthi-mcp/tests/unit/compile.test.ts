@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import {
+  COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+  computeExpectedOutputSemanticsHash,
+  type ComputeExpectedOutputSemantics,
+  type ComputeExpectedOutputSemanticsMaterial,
+} from "../../src/compute_expected_output_semantics.js";
 import { compileTool } from "../../src/tools/compile.js";
 import { eventLog } from "../../src/events/index.js";
 import { session } from "../../src/session.js";
@@ -7,6 +13,7 @@ interface SentPayload {
   raw: string;
   parsed: Record<string, unknown>;
   computeExpectedOutputContractHash: string | undefined;
+  computeExpectedOutputSemantics: ComputeExpectedOutputSemantics | undefined;
 }
 
 function installFakeAttached(): { sent: SentPayload[]; setReadyState: (s: string) => void } {
@@ -26,6 +33,7 @@ function installFakeAttached(): { sent: SentPayload[]; setReadyState: (s: string
       sendCompileRequest: async (
         payload: Record<string, unknown>,
         computeExpectedOutputContractHash?: string,
+        computeExpectedOutputSemantics?: ComputeExpectedOutputSemantics,
       ) => {
         if (readyState !== "open") {
           throw new Error(`compile_channel_not_open:${readyState}`);
@@ -35,6 +43,7 @@ function installFakeAttached(): { sent: SentPayload[]; setReadyState: (s: string
           raw,
           parsed: payload,
           computeExpectedOutputContractHash,
+          computeExpectedOutputSemantics,
         });
         return {
           schemaVersion: "synthi.gpu_hmr.compile_dispatch_correlation.v1" as const,
@@ -43,6 +52,8 @@ function installFakeAttached(): { sent: SentPayload[]; setReadyState: (s: string
           dispatchedAt: Date.now(),
           proofCorrelationId:
             `gpu-proof-compile-correlation:sha256:${"a".repeat(64)}`,
+          computeExpectedOutputSemanticsHash:
+            computeExpectedOutputSemantics?.semanticsHash ?? null,
           acceptedForGpuHmr: false as const,
           gpuHmrSuccess: false as const,
           canSatisfyRuntimeProof: false as const,
@@ -63,6 +74,25 @@ describe("synthi_compile", () => {
     session._resetForTests();
     eventLog._resetForTests();
   });
+
+  function exactOutputSemantics(): ComputeExpectedOutputSemantics {
+    const material: ComputeExpectedOutputSemanticsMaterial = {
+      schemaVersion: COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+      comparisonMode: "exact_bytes",
+      outputTargetId: "output:tensor:0",
+      byteOffset: 64,
+      byteLength: 16,
+      dtype: "u32",
+      shape: [2, 2],
+      elementCount: 4,
+      byteOrder: "little_endian",
+      toleranceDecimal: "0",
+      expectedValuesDecimal: null,
+      expectedValuesHash: null,
+      expectedRawHash: `sha256:${"a".repeat(64)}`,
+    };
+    return { ...material, semanticsHash: computeExpectedOutputSemanticsHash(material) };
+  }
 
   it("rejects when language is missing", async () => {
     installFakeAttached();
@@ -171,6 +201,51 @@ describe("synthi_compile", () => {
     expect(res.isError).toBe(true);
     expect((res.structuredContent as { field?: string }).field)
       .toBe("compute_expected_output_contract_hash");
+    expect(fake.sent).toHaveLength(0);
+  });
+
+  it("forwards a validated caller-owned semantic preimage outside the mutable payload", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const semantics = exactOutputSemantics();
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      compute_expected_output_semantics: semantics,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]!.parsed).not.toHaveProperty("compute_expected_output_semantics");
+    expect(fake.sent[0]!.computeExpectedOutputSemantics).toEqual(semantics);
+    expect(
+      (res.structuredContent as Record<string, unknown>)
+        .gpu_proof_dispatch_correlation,
+    ).toMatchObject({
+      compute_expected_output_semantics_hash: semantics.semanticsHash,
+      accepted_for_gpu_hmr: false,
+      gpu_hmr_success: false,
+    });
+  });
+
+  it("rejects malformed semantic preimages before compile dispatch", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const semantics = {
+      ...exactOutputSemantics(),
+      byteOffset: 2,
+    };
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      compute_expected_output_semantics: semantics,
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { field?: string }).field)
+      .toBe("compute_expected_output_semantics");
     expect(fake.sent).toHaveLength(0);
   });
 
