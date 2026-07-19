@@ -60,6 +60,9 @@ import {
   buildGpuHmrValidationProofSummary,
 } from "../../scripts/lib/gpu-hmr-validation-proof-summary.mjs";
 import {
+  buildComputeExpectedOutputContract,
+} from "../../scripts/lib/gpu-hmr-compute-oracle-semantics.mjs";
+import {
   evaluateGpuHmrDeterministicVisualMode,
 } from "../../scripts/lib/gpu-hmr-visual-evidence.mjs";
 import {
@@ -7531,11 +7534,34 @@ describe("GPU HMR runtime output proof classification", () => {
     const rawPath = path.join(dir, "readback.bin");
     const schemaPath = path.join(dir, "readback.schema.json");
     const rawBytes = Buffer.from([1, 3, 5, 7, 11, 13, 17, 19]);
-    const schemaBytes = Buffer.from(JSON.stringify({ elementType: "u8", count: rawBytes.length }));
+    const rawHash = `sha256:${createHash("sha256").update(rawBytes).digest("hex")}`;
+    const schemaBytes = Buffer.from(JSON.stringify({
+      schemaVersion: "synthi.gpu.hmr.compute_readback_schema.v1",
+      elementType: "u8",
+      elementCount: rawBytes.length,
+      byteLength: rawBytes.length,
+      rawReadbackHash: rawHash,
+    }));
     await writeFile(rawPath, rawBytes);
     await writeFile(schemaPath, schemaBytes);
-    const rawHash = `sha256:${createHash("sha256").update(rawBytes).digest("hex")}`;
     const sliceHash = `sha256:${createHash("sha256").update(rawBytes.subarray(2, 6)).digest("hex")}`;
+    const observedBinding = {
+      projectId: "project:compute-oracle-file-test",
+      editId: "edit:compute-oracle-file-test",
+      artifactAfterHash: `sha256:${"4".repeat(64)}`,
+      outputTargetId: "output:compute-oracle-file-test",
+      oracleCodeHash: `sha256:${"3".repeat(64)}`,
+    };
+    const expectedOutputContract = buildComputeExpectedOutputContract({
+      comparisonMode: "exact_bytes",
+      dtype: "u8",
+      shape: [rawBytes.length],
+      elementCount: rawBytes.length,
+      byteOrder: "not_applicable",
+      expectedRawHash: rawHash,
+      binding: observedBinding,
+      evidenceRefs: ["contract:pre-dispatch-compute-oracle-file-test"],
+    });
 
     const artifacts = await computeOracleArtifactsFromFiles({
       raw_readback_bin: rawPath,
@@ -7549,6 +7575,9 @@ describe("GPU HMR runtime output proof classification", () => {
       producer: "unit-test",
       timestamp_after_dispatch: 1779980000000,
       epoch: "3",
+    }, {
+      expectedOutputContract,
+      observedBinding,
     });
 
     expect(artifacts?.raw_readback_hash).toBe(rawHash);
@@ -7563,6 +7592,46 @@ describe("GPU HMR runtime output proof classification", () => {
       deterministic_slice_hash_verified: true,
       slice_bounds_verified: true,
     }));
+    expect(artifacts?.compute_oracle_semantic_verification).toEqual(expect.objectContaining({
+      accepted: true,
+      bindingAccepted: true,
+      mismatchCount: 0,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    }));
+
+    const forgedBytes = Buffer.from([1, 3, 5, 7, 11, 13, 17, 23]);
+    const forgedHash = `sha256:${createHash("sha256").update(forgedBytes).digest("hex")}`;
+    await writeFile(rawPath, forgedBytes);
+    await writeFile(schemaPath, JSON.stringify({
+      schemaVersion: "synthi.gpu.hmr.compute_readback_schema.v1",
+      elementType: "u8",
+      elementCount: forgedBytes.length,
+      byteLength: forgedBytes.length,
+      rawReadbackHash: forgedHash,
+    }));
+    const forgedArtifacts = await computeOracleArtifactsFromFiles({
+      raw_readback_bin: rawPath,
+      readback_schema_json: schemaPath,
+      raw_readback_hash: forgedHash,
+      expected_output_verified: true,
+      deterministic_slice: {
+        offset: 0,
+        length: forgedBytes.length,
+        hash: forgedHash,
+      },
+    }, {
+      expectedOutputContract,
+      observedBinding,
+    });
+    expect(forgedArtifacts?.raw_readback_hash_verified).toBe(true);
+    expect(forgedArtifacts?.compute_oracle_semantic_verification.accepted).toBe(false);
+    expect(
+      forgedArtifacts?.compute_oracle_semantic_verification.failedGates.map(
+        (gate: { code: string }) => gate.code,
+      ),
+    ).toContain("compute_oracle_exact_bytes_mismatch");
   });
 
   it("materializes visual oracle proof from image pixels", async () => {

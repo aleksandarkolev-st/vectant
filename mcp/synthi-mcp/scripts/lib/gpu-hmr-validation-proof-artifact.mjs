@@ -34,6 +34,9 @@ import {
   defaultCasRootFromEnv,
   validateArtifactCasManifest,
 } from './gpu-hmr-artifact-cas.mjs';
+import {
+  verifyComputeOracleSemantics,
+} from './gpu-hmr-compute-oracle-semantics.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
 
@@ -4271,16 +4274,20 @@ export async function computeOracleArtifactsFromFiles(computeArtifacts = null, o
   const rawPath = fileArtifactPath(firstString(resolvedSource.raw_readback_bin, resolvedSource.rawReadbackBin));
   const schemaPath = fileArtifactPath(firstString(resolvedSource.readback_schema_json, resolvedSource.readbackSchemaJson));
   const enriched = { ...resolvedSource };
+  delete enriched.compute_oracle_semantic_verification;
+  delete enriched.computeOracleSemanticVerification;
   const verification = {
     ...objectOrNull(resolvedSource.raw_readback_verification),
     ...objectOrNull(resolvedSource.rawReadbackVerification),
     ...objectOrNull(resolvedSource.byte_verification),
     ...objectOrNull(resolvedSource.byteVerification),
   };
+  let schemaBytes = null;
+  let rawBytes = null;
 
   if (schemaPath) {
     try {
-      const schemaBytes = await readFile(schemaPath);
+      schemaBytes = await readFile(schemaPath);
       const schemaHash = sha256BufferHash(schemaBytes);
       enriched.readback_schema_hash = schemaHash;
       verification.readback_schema_hash = schemaHash;
@@ -4292,7 +4299,7 @@ export async function computeOracleArtifactsFromFiles(computeArtifacts = null, o
 
   if (rawPath) {
     try {
-      const rawBytes = await readFile(rawPath);
+      rawBytes = await readFile(rawPath);
       const actualHash = sha256BufferHash(rawBytes);
       const declaredHash = firstString(source.raw_readback_hash, source.rawReadbackHash);
       enriched.raw_readback_hash = declaredHash ?? actualHash;
@@ -4323,6 +4330,19 @@ export async function computeOracleArtifactsFromFiles(computeArtifacts = null, o
       verification.raw_readback_read_error = error?.message ? String(error.message) : String(error);
     }
   }
+
+  const semanticVerification = verifyComputeOracleSemantics({
+    rawBytes,
+    readbackSchema: schemaBytes,
+    expectedOutputContract:
+      options.expectedOutputContract
+      ?? options.expected_output_contract,
+    observedBinding:
+      options.observedBinding
+      ?? options.observed_binding,
+  });
+  enriched.compute_oracle_semantic_verification = semanticVerification;
+  enriched.computeOracleSemanticVerification = semanticVerification;
 
   if (Object.keys(verification).length > 0) {
     enriched.raw_readback_verification = verification;
