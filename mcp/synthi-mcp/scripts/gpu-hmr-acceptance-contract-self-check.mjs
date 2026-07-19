@@ -163,6 +163,26 @@ const accepted = evaluateGpuHmrAcceptanceContract(contract());
 assert.equal(accepted.accepted, true);
 assert.equal(accepted.contract.contract_hash, accepted.recomputedContractHash);
 
+const transientOptionalFields = contract({
+  fission_report: {
+    ...contract().fission_report,
+    output_oracle_contract: {
+      ...contract().fission_report.output_oracle_contract,
+      optional_runtime_field: undefined,
+      optional_runtime_sequence: ['observed', undefined],
+    },
+  },
+});
+const transientOptionalEvaluation = evaluateGpuHmrAcceptanceContract(transientOptionalFields);
+assert.equal(transientOptionalEvaluation.accepted, true);
+const persistedOptionalContract = JSON.parse(JSON.stringify(transientOptionalEvaluation.contract));
+const persistedOptionalEvaluation = evaluateGpuHmrAcceptanceContract(persistedOptionalContract);
+assert.equal(persistedOptionalEvaluation.accepted, true);
+assert.equal(
+  persistedOptionalEvaluation.recomputedContractHash,
+  transientOptionalEvaluation.recomputedContractHash,
+);
+
 const staleHashedContract = structuredClone(accepted.contract);
 staleHashedContract.fission_report.output_oracle_contract.readback_plan = 'changed-after-hash';
 const staleHashedEvaluation = evaluateGpuHmrAcceptanceContract(staleHashedContract);

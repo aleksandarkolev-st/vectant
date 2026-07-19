@@ -153,10 +153,15 @@ const BACKEND_CONTRACT_COMPARABLE_FIELDS = {
 
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  return `{${Object.keys(value).sort().map((key) =>
-    `${JSON.stringify(key)}:${stableJson(value[key])}`
-  ).join(',')}}`;
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableJson(entry) ?? 'null').join(',')}]`;
+  }
+  const entries = [];
+  for (const key of Object.keys(value).sort()) {
+    const serialized = stableJson(value[key]);
+    if (serialized !== undefined) entries.push(`${JSON.stringify(key)}:${serialized}`);
+  }
+  return `{${entries.join(',')}}`;
 }
 
 function sha256Hex(value) {
