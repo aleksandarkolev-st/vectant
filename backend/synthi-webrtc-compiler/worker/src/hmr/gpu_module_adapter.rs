@@ -68,6 +68,7 @@ use crate::hmr::adapter_trait::{
     configured_gpu_hmr_runtime_output_oracle_profile_path, normalized_reload_source_edit_id,
     Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest, AdapterReloadResult,
     ReloadCapsuleMetadata, VerifiedReloadFirewallReceipt,
+    GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_SCHEMA_VERSION,
     RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
 };
 use crate::hmr::build_manifest::{
@@ -804,8 +805,6 @@ fn log_optional_token(value: Option<&str>) -> String {
         .to_string()
 }
 
-const RUNTIME_OUTPUT_ORACLE_PROFILE_SCHEMA_VERSION: &str =
-    "synthi.gpu_hmr.runtime_output_oracle_profile.v1";
 const MAX_RUNTIME_OUTPUT_ORACLE_PROFILE_BYTES: u64 = 1024 * 1024;
 const MAX_RUNTIME_OUTPUT_ORACLE_TOKEN_BYTES: usize = 1024;
 const DEFAULT_RUNTIME_OUTPUT_ORACLE_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
@@ -1169,9 +1168,9 @@ fn validate_runtime_output_oracle_profile(
     if !profile.enabled {
         return Err("runtime output oracle profile is disabled".to_string());
     }
-    if profile.schema_version != RUNTIME_OUTPUT_ORACLE_PROFILE_SCHEMA_VERSION {
+    if profile.schema_version != GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_SCHEMA_VERSION {
         return Err(format!(
-            "runtime output oracle profile schema mismatch: expected {RUNTIME_OUTPUT_ORACLE_PROFILE_SCHEMA_VERSION:?} got {:?}",
+            "runtime output oracle profile schema mismatch: expected {GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_SCHEMA_VERSION:?} got {:?}",
             profile.schema_version
         ));
     }

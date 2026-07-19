@@ -39,6 +39,8 @@ pub const RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION: &str =
     "synthi.gpu_hmr.reload_output_oracle_profile_commitment.v1";
 pub const RELOAD_OUTPUT_ORACLE_PROOF_CONTEXT_SCHEMA_VERSION: &str =
     "synthi.gpu_hmr.reload_output_oracle_proof_context.v1";
+pub const GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.runtime_output_oracle_profile.v1";
 pub const GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH_ENV: &str =
     "SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH";
 pub const GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_DEFAULT_PATH: &str =
