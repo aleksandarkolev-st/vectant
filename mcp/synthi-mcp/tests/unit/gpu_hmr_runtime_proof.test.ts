@@ -8939,9 +8939,7 @@ describe("GPU HMR runtime output proof classification", () => {
       "artifacts/flat.png",
       "artifacts/varied.png",
     ]);
-    expect(summary.visual_artifact_paths).toEqual([
-      "artifacts/varied.png",
-    ]);
+    expect(summary.visual_artifact_paths).toEqual([]);
     expect(summary.visual_evidence_quality).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -8958,6 +8956,8 @@ describe("GPU HMR runtime output proof classification", () => {
           path: "artifacts/varied.png",
           visual_quality: "gpu-hmr-visual-varied-frame",
           accepted_as_visual_evidence: true,
+          accepted_as_image_evidence: true,
+          accepted_as_runtime_visual_proof: false,
         }),
       ])
     );
