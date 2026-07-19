@@ -122,7 +122,7 @@ function plainDataRecord(value: unknown): Record<string, unknown> | null {
   if (prototype !== Object.prototype && prototype !== null) return null;
   if (Object.getOwnPropertySymbols(value).length > 0) return null;
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  const record: Record<string, unknown> = {};
+  const record = Object.create(null) as Record<string, unknown>;
   for (const [key, descriptor] of Object.entries(descriptors)) {
     if (!("value" in descriptor) || descriptor.enumerable !== true) return null;
     record[key] = descriptor.value;

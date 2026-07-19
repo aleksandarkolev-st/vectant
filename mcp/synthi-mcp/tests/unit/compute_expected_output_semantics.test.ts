@@ -129,4 +129,20 @@ describe("compute expected-output semantic commitments", () => {
     expect(validateComputeExpectedOutputSemantics(value).accepted).toBe(false);
     expect(getterCalled).toBe(false);
   });
+
+  it("rejects an own enumerable prototype key as an extra field", () => {
+    const value = contract(exactMaterial()) as Record<string, unknown>;
+    Object.defineProperty(value, "__proto__", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: { acceptedForGpuHmr: true },
+    });
+
+    expect(Object.prototype.hasOwnProperty.call(value, "__proto__")).toBe(true);
+    expect(validateComputeExpectedOutputSemantics(value)).toEqual({
+      accepted: false,
+      reason: "expected exact semantic-contract fields",
+    });
+  });
 });
