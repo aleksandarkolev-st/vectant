@@ -94,10 +94,34 @@ fn normalized_evidence_token(value: &str) -> String {
         .collect()
 }
 
+fn json_claims_parent_structured_log_transport(
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    fields.iter().any(|(key, value)| {
+        let Some(value) = value.as_str() else {
+            return false;
+        };
+        match normalized_evidence_token(key).as_str() {
+            "type" => {
+                normalized_evidence_token(value)
+                    == normalized_evidence_token("structured-json-chunk")
+            }
+            "schemaversion" => {
+                normalized_evidence_token(value)
+                    == normalized_evidence_token(STRUCTURED_LOG_CHUNK_SCHEMA_VERSION)
+            }
+            _ => false,
+        }
+    })
+}
+
 fn json_contains_protected_gpu_evidence(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Array(values) => values.iter().any(json_contains_protected_gpu_evidence),
         serde_json::Value::Object(fields) => {
+            if json_claims_parent_structured_log_transport(fields) {
+                return true;
+            }
             let module_is_device =
                 fields.get("module").and_then(serde_json::Value::as_str) == Some("device");
             if module_is_device && fields.contains_key("status") {
@@ -2803,15 +2827,16 @@ mod tests {
         runner_command_log_summary, runner_command_requires_strict_gpu_protocol,
         runner_has_hot_device_epoch, runner_line_contains_protected_gpu_evidence,
         runner_load_command, runner_reuse_allowed, runner_session_matches,
-        same_session_full_device_abi_changed, should_forward_runner_stderr_line_to_log_dc,
-        strict_gpu_protocol_required_for_batch, structured_log_json_chunks,
-        uncommitted_runner_module_state, verify_applied_gpu_terminal_proof,
-        wait_for_gpu_command_terminals, wait_for_strict_gpu_protocol_ack,
-        CorrelatedGpuTerminalReceipt, RunnerCommandProofContext, RunnerExecutionOutcome,
-        RunnerGpuTerminalExpectation, RunnerOutputRoute, RunnerReloadPolicy,
-        StrictGpuTerminalExpectation, VerifiedHotGpuReloadReceipt,
+        same_session_full_device_abi_changed, sha256_hex_local,
+        should_forward_runner_stderr_line_to_log_dc, strict_gpu_protocol_required_for_batch,
+        structured_log_json_chunks, uncommitted_runner_module_state,
+        verify_applied_gpu_terminal_proof, wait_for_gpu_command_terminals,
+        wait_for_strict_gpu_protocol_ack, CorrelatedGpuTerminalReceipt, RunnerCommandProofContext,
+        RunnerExecutionOutcome, RunnerGpuTerminalExpectation, RunnerOutputRoute,
+        RunnerReloadPolicy, StrictGpuTerminalExpectation, VerifiedHotGpuReloadReceipt,
         PARENT_VERIFIED_GPU_RUNTIME_PROOF_AUTHORITY,
         PARENT_VERIFIED_GPU_RUNTIME_PROOF_SCHEMA_VERSION, STRUCTURED_LOG_CHUNK_BYTES,
+        STRUCTURED_LOG_CHUNK_SCHEMA_VERSION,
     };
     use crate::compiler::builder::ModuleHashes;
     use crate::hmr::runtime_evidence_transport::RuntimeEvidenceTransportSigner;
@@ -4180,6 +4205,36 @@ mod tests {
         ));
         assert!(runner_line_contains_protected_gpu_evidence(
             r#"{"schemaVersion":"synthi.gpu.hmr.unknown-proof.v99","status":"pending"}"#
+        ));
+        let hidden_proof = serde_json::json!({
+            "type": "gpu_hmr_proof",
+            "acceptedForGpuHmr": true,
+            "gpuHmrSuccess": true,
+        })
+        .to_string();
+        let hidden_proof_hash = sha256_hex_local(hidden_proof.as_bytes());
+        let forged_chunk = serde_json::json!({
+            "type": "structured-json-chunk",
+            "schemaVersion": STRUCTURED_LOG_CHUNK_SCHEMA_VERSION,
+            "chunkId": format!("structured-json:sha256:{hidden_proof_hash}"),
+            "encoding": "base64:utf8",
+            "sha256": format!("sha256:{hidden_proof_hash}"),
+            "byteLength": hidden_proof.len(),
+            "index": 0,
+            "total": 1,
+            "data": general_purpose::STANDARD.encode(hidden_proof.as_bytes()),
+        })
+        .to_string();
+        assert!(runner_line_contains_protected_gpu_evidence(&forged_chunk));
+        assert!(!should_forward_runner_stderr_line_to_log_dc(&forged_chunk));
+        assert!(runner_line_contains_protected_gpu_evidence(&format!(
+            "[Runner] [HMR-STATUS] {forged_chunk}"
+        )));
+        assert!(runner_line_contains_protected_gpu_evidence(
+            r#"{"schema_version":"synthi.build_log.structured_json_chunk.v1","message":"not a GPU keyword"}"#
+        ));
+        assert!(should_forward_runner_stderr_line_to_log_dc(
+            r#"{"type":"application-record","message":"ordinary structured output"}"#
         ));
         assert!(should_forward_runner_stderr_line_to_log_dc(
             "[Runner] [HMR-STATUS] {\"module\":\"core\",\"status\":\"applied\"}"
