@@ -1,10 +1,16 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::fmt;
+use std::io::{self, Write};
 
 pub const RUNNER_PROTOCOL_ACK_SCHEMA_VERSION: &str = "synthi.runner.protocol_ack.v3";
+pub const RUNNER_PROTOCOL_ACK_RESOURCE_POLICY_SCHEMA_VERSION: &str =
+    "synthi.runner.protocol_ack.v4";
+pub const RUNNER_RESOURCE_POLICY_V1_SCHEMA_VERSION: &str = "synthi.runner.resource_policy.v1";
 pub const GPU_RELOAD_V4_SCHEMA_VERSION: &str = "synthi.runner.gpu_reload.v4";
 pub const GPU_RELOAD_V4_RESULT_SCHEMA_VERSION: &str = "synthi.runner.gpu_reload_result.v4";
 pub const GPU_RUNTIME_PROOF_MATERIAL_V1_SCHEMA_VERSION: &str =
@@ -19,12 +25,247 @@ pub const GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY: &str =
 pub const GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY: &str =
     "gpu_reload.challenge_bound_envelope.v1";
 pub const GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY: &str = "gpu_reload.bound_proof_material.v1";
+pub const RUNNER_BOUNDED_INGRESS_V1_CAPABILITY: &str = "runner.bounded_ingress.v1";
+pub const RUNNER_ATOMIC_BATCH_V1_CAPABILITY: &str = "runner.atomic_batch.v1";
 pub const RUNNER_PROTOCOL_ACK_PREFIX: &str = "[synthi-runner-protocol-ack] ";
 pub const RUNNER_RUNTIME_CONTROL_ACK_SCHEMA_VERSION: &str = "synthi.runner.runtime_control_ack.v1";
 pub const RUNNER_RUNTIME_CONTROL_ACK_PREFIX: &str = "[synthi-runner-runtime-control-ack] ";
 pub const RUNNER_RUNTIME_CONTROL_SESSION_ENV: &str = "SYNTHI_RUNNER_RUNTIME_CONTROL_SESSION_ID";
 pub const RUNNER_PROTOCOL_CURRENT_VERSION: u32 = 5;
 pub const RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION: u32 = 1;
+pub const RUNNER_PROTOCOL_ACK_MAX_ENCODED_BYTES: usize = 1280;
+pub const RUNNER_PROTOCOL_ACK_MAX_CAPABILITIES: usize = 16;
+pub const RUNNER_PROTOCOL_ACK_MAX_CAPABILITY_BYTES: usize = 64;
+pub const RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMAND_BYTES: u64 = 32 * 1024 * 1024;
+pub const RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_QUEUE_ITEMS: u64 = 256;
+pub const RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_QUEUE_RETAINED_BYTES: u64 = 128 * 1024 * 1024;
+pub const RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_ITEMS: u64 = 16;
+pub const RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_BYTES: u64 = 64 * 1024 * 1024;
+pub const RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMANDS_PER_TICK: u64 = 64;
+
+const RUNNER_PROTOCOL_ACK_MAX_SCHEMA_VERSION_BYTES: usize = 64;
+const RUNNER_PROTOCOL_ACK_MAX_NONCE_BYTES: usize = 128;
+const RUNNER_PROTOCOL_ACK_MAX_RUNTIME_SESSION_BYTES: usize = 128;
+const RUNNER_PROTOCOL_ACK_CHALLENGE_BYTES: usize = 32;
+const STRICT_GPU_RELOAD_CAPABILITIES: [&str; 5] = [
+    GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
+    GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
+    GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+    GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+    GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
+];
+
+const _: () = {
+    assert!(RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMAND_BYTES > 0);
+    assert!(RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_QUEUE_ITEMS > 0);
+    assert!(RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_QUEUE_RETAINED_BYTES > 0);
+    assert!(RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_ITEMS > 0);
+    assert!(RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_BYTES > 0);
+    assert!(RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMANDS_PER_TICK > 0);
+    assert!(
+        RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMAND_BYTES
+            <= RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_BYTES
+    );
+    assert!(
+        RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_BYTES
+            <= RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_QUEUE_RETAINED_BYTES
+    );
+    assert!(
+        RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_ITEMS
+            <= RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMANDS_PER_TICK
+    );
+    assert!(
+        RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMANDS_PER_TICK
+            <= RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_QUEUE_ITEMS
+    );
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunnerResourcePolicyV1 {
+    pub schema_version: String,
+    pub max_command_bytes: u64,
+    pub max_queue_items: u64,
+    pub max_queue_retained_bytes: u64,
+    pub max_atomic_batch_items: u64,
+    pub max_atomic_batch_bytes: u64,
+    pub max_commands_per_tick: u64,
+}
+
+impl RunnerResourcePolicyV1 {
+    pub fn at_consumer_maxima() -> Self {
+        Self {
+            schema_version: RUNNER_RESOURCE_POLICY_V1_SCHEMA_VERSION.to_string(),
+            max_command_bytes: RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMAND_BYTES,
+            max_queue_items: RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_QUEUE_ITEMS,
+            max_queue_retained_bytes: RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_QUEUE_RETAINED_BYTES,
+            max_atomic_batch_items: RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_ITEMS,
+            max_atomic_batch_bytes: RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_BYTES,
+            max_commands_per_tick: RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMANDS_PER_TICK,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.schema_version != RUNNER_RESOURCE_POLICY_V1_SCHEMA_VERSION {
+            return Err("runner resource policy schema is unsupported");
+        }
+        if [
+            self.max_command_bytes,
+            self.max_queue_items,
+            self.max_queue_retained_bytes,
+            self.max_atomic_batch_items,
+            self.max_atomic_batch_bytes,
+            self.max_commands_per_tick,
+        ]
+        .contains(&0)
+        {
+            return Err("runner resource policy limits must be nonzero");
+        }
+        if self.max_command_bytes > RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMAND_BYTES
+            || self.max_queue_items > RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_QUEUE_ITEMS
+            || self.max_queue_retained_bytes
+                > RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_QUEUE_RETAINED_BYTES
+            || self.max_atomic_batch_items
+                > RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_ITEMS
+            || self.max_atomic_batch_bytes
+                > RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_BYTES
+            || self.max_commands_per_tick > RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMANDS_PER_TICK
+        {
+            return Err("runner resource policy exceeds consumer maxima");
+        }
+        if self.max_command_bytes > self.max_atomic_batch_bytes
+            || self.max_atomic_batch_bytes > self.max_queue_retained_bytes
+        {
+            return Err("runner resource policy byte limits are inconsistent");
+        }
+        if self.max_atomic_batch_items > self.max_commands_per_tick
+            || self.max_commands_per_tick > self.max_queue_items
+        {
+            return Err("runner resource policy item limits are inconsistent");
+        }
+        Ok(())
+    }
+}
+
+struct BoundedRunnerCapability(String);
+
+impl<'de> Deserialize<'de> for BoundedRunnerCapability {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct CapabilityVisitor;
+
+        impl<'de> Visitor<'de> for CapabilityVisitor {
+            type Value = BoundedRunnerCapability;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a bounded runner capability string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value.len() > RUNNER_PROTOCOL_ACK_MAX_CAPABILITY_BYTES {
+                    return Err(E::custom("runner capability exceeds the byte limit"));
+                }
+                Ok(BoundedRunnerCapability(value.to_string()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value.len() > RUNNER_PROTOCOL_ACK_MAX_CAPABILITY_BYTES {
+                    return Err(E::custom("runner capability exceeds the byte limit"));
+                }
+                Ok(BoundedRunnerCapability(value))
+            }
+        }
+
+        deserializer.deserialize_str(CapabilityVisitor)
+    }
+}
+
+fn deserialize_runner_capabilities<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct CapabilitiesVisitor;
+
+    impl<'de> Visitor<'de> for CapabilitiesVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a bounded runner capability list")
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut capabilities = Vec::with_capacity(
+                sequence
+                    .size_hint()
+                    .unwrap_or(0)
+                    .min(RUNNER_PROTOCOL_ACK_MAX_CAPABILITIES),
+            );
+            while capabilities.len() < RUNNER_PROTOCOL_ACK_MAX_CAPABILITIES {
+                let Some(capability) = sequence.next_element::<BoundedRunnerCapability>()? else {
+                    return Ok(capabilities);
+                };
+                capabilities.push(capability.0);
+            }
+            if sequence.next_element::<IgnoredAny>()?.is_some() {
+                return Err(de::Error::custom(
+                    "runner capability count exceeds the limit",
+                ));
+            }
+            Ok(capabilities)
+        }
+    }
+
+    deserializer.deserialize_seq(CapabilitiesVisitor)
+}
+
+struct RunnerProtocolAckByteLimit {
+    remaining: usize,
+}
+
+impl Write for RunnerProtocolAckByteLimit {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "runner protocol ACK exceeds the encoded-byte limit",
+            ));
+        }
+        self.remaining -= bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn runner_protocol_ack_encoded_bytes_within_limit(ack: &impl Serialize) -> bool {
+    serde_json::to_writer(
+        RunnerProtocolAckByteLimit {
+            remaining: RUNNER_PROTOCOL_ACK_MAX_ENCODED_BYTES,
+        },
+        ack,
+    )
+    .is_ok()
+}
+
+fn runner_protocol_ack_size_error() -> serde_json::Error {
+    serde_json::Error::io(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "runner protocol ACK exceeds an encoding limit",
+    ))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -36,6 +277,7 @@ pub struct RunnerProtocolAck {
     pub runner_pid: u32,
     pub runner_runtime_session_id: String,
     pub runner_challenge: String,
+    #[serde(deserialize_with = "deserialize_runner_capabilities")]
     pub capabilities: Vec<String>,
 }
 
@@ -64,43 +306,238 @@ impl RunnerProtocolAck {
     }
 
     pub fn line(&self) -> Result<String, serde_json::Error> {
+        if !self.encoding_fields_within_limits()
+            || !runner_protocol_ack_encoded_bytes_within_limit(self)
+        {
+            return Err(runner_protocol_ack_size_error());
+        }
         serde_json::to_string(self).map(|json| format!("{RUNNER_PROTOCOL_ACK_PREFIX}{json}"))
     }
 
     pub fn supports_strict_gpu_reload(&self, nonce: &str, expected_pid: u32) -> bool {
         self.schema_version == RUNNER_PROTOCOL_ACK_SCHEMA_VERSION
-            && self.nonce == nonce
-            && self.current_version >= RUNNER_PROTOCOL_CURRENT_VERSION
-            && self.min_supported_version <= RUNNER_PROTOCOL_CURRENT_VERSION
-            && self.runner_pid == expected_pid
-            && valid_protocol_token(&self.runner_runtime_session_id)
-            && canonical_runner_challenge(&self.runner_challenge)
+            && !claims_runner_resource_policy_capabilities(&self.capabilities)
+            && supports_strict_gpu_reload_common(
+                &self.nonce,
+                self.current_version,
+                self.min_supported_version,
+                self.runner_pid,
+                &self.runner_runtime_session_id,
+                &self.runner_challenge,
+                &self.capabilities,
+                nonce,
+                expected_pid,
+            )
+            && runner_protocol_ack_encoded_bytes_within_limit(self)
+    }
+
+    fn encoding_fields_within_limits(&self) -> bool {
+        self.schema_version.len() <= RUNNER_PROTOCOL_ACK_MAX_SCHEMA_VERSION_BYTES
+            && self.nonce.len() <= RUNNER_PROTOCOL_ACK_MAX_NONCE_BYTES
+            && self.runner_runtime_session_id.len() <= RUNNER_PROTOCOL_ACK_MAX_RUNTIME_SESSION_BYTES
+            && self.runner_challenge.len() <= RUNNER_PROTOCOL_ACK_CHALLENGE_BYTES
+            && self.capabilities.len() <= RUNNER_PROTOCOL_ACK_MAX_CAPABILITIES
             && self
                 .capabilities
                 .iter()
-                .any(|capability| capability == GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY)
+                .all(|capability| capability.len() <= RUNNER_PROTOCOL_ACK_MAX_CAPABILITY_BYTES)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunnerProtocolAckV4 {
+    pub schema_version: String,
+    pub nonce: String,
+    pub current_version: u32,
+    pub min_supported_version: u32,
+    pub runner_pid: u32,
+    pub runner_runtime_session_id: String,
+    pub runner_challenge: String,
+    #[serde(deserialize_with = "deserialize_runner_capabilities")]
+    pub capabilities: Vec<String>,
+    pub resource_policy: RunnerResourcePolicyV1,
+}
+
+impl RunnerProtocolAckV4 {
+    /// Only callers that enforce both advertised mechanisms should use this constructor.
+    pub fn current_with_enforced_resource_policy(
+        nonce: impl Into<String>,
+        runner_runtime_session_id: impl Into<String>,
+        runner_challenge: impl Into<String>,
+        resource_policy: RunnerResourcePolicyV1,
+    ) -> Result<Self, &'static str> {
+        resource_policy.validate()?;
+        Ok(Self {
+            schema_version: RUNNER_PROTOCOL_ACK_RESOURCE_POLICY_SCHEMA_VERSION.to_string(),
+            nonce: nonce.into(),
+            current_version: RUNNER_PROTOCOL_CURRENT_VERSION,
+            min_supported_version: RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
+            runner_pid: std::process::id(),
+            runner_runtime_session_id: runner_runtime_session_id.into(),
+            runner_challenge: runner_challenge.into(),
+            capabilities: vec![
+                GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY.to_string(),
+                GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY.to_string(),
+                GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY.to_string(),
+                GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY.to_string(),
+                GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY.to_string(),
+                RUNNER_BOUNDED_INGRESS_V1_CAPABILITY.to_string(),
+                RUNNER_ATOMIC_BATCH_V1_CAPABILITY.to_string(),
+            ],
+            resource_policy,
+        })
+    }
+
+    pub fn line(&self) -> Result<String, serde_json::Error> {
+        if !self.encoding_fields_within_limits()
+            || !runner_protocol_ack_encoded_bytes_within_limit(self)
+        {
+            return Err(runner_protocol_ack_size_error());
+        }
+        serde_json::to_string(self).map(|json| format!("{RUNNER_PROTOCOL_ACK_PREFIX}{json}"))
+    }
+
+    pub fn supports_strict_gpu_reload_with_resource_policy(
+        &self,
+        nonce: &str,
+        expected_pid: u32,
+    ) -> bool {
+        self.schema_version == RUNNER_PROTOCOL_ACK_RESOURCE_POLICY_SCHEMA_VERSION
+            && self.resource_policy.validate().is_ok()
             && self
                 .capabilities
                 .iter()
-                .any(|capability| capability == GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY)
+                .any(|capability| capability == RUNNER_BOUNDED_INGRESS_V1_CAPABILITY)
             && self
                 .capabilities
                 .iter()
-                .any(|capability| capability == GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY)
+                .any(|capability| capability == RUNNER_ATOMIC_BATCH_V1_CAPABILITY)
+            && supports_strict_gpu_reload_common(
+                &self.nonce,
+                self.current_version,
+                self.min_supported_version,
+                self.runner_pid,
+                &self.runner_runtime_session_id,
+                &self.runner_challenge,
+                &self.capabilities,
+                nonce,
+                expected_pid,
+            )
+            && runner_protocol_ack_encoded_bytes_within_limit(self)
+    }
+
+    fn encoding_fields_within_limits(&self) -> bool {
+        self.schema_version.len() <= RUNNER_PROTOCOL_ACK_MAX_SCHEMA_VERSION_BYTES
+            && self.nonce.len() <= RUNNER_PROTOCOL_ACK_MAX_NONCE_BYTES
+            && self.runner_runtime_session_id.len() <= RUNNER_PROTOCOL_ACK_MAX_RUNTIME_SESSION_BYTES
+            && self.runner_challenge.len() <= RUNNER_PROTOCOL_ACK_CHALLENGE_BYTES
+            && self.capabilities.len() <= RUNNER_PROTOCOL_ACK_MAX_CAPABILITIES
             && self
                 .capabilities
                 .iter()
-                .any(|capability| capability == GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY)
-            && self
-                .capabilities
-                .iter()
-                .any(|capability| capability == GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY)
+                .all(|capability| capability.len() <= RUNNER_PROTOCOL_ACK_MAX_CAPABILITY_BYTES)
+            && self.resource_policy.schema_version.len()
+                <= RUNNER_PROTOCOL_ACK_MAX_SCHEMA_VERSION_BYTES
     }
 }
 
 pub fn parse_runner_protocol_ack(line: &str) -> Option<RunnerProtocolAck> {
     let json = line.strip_prefix(RUNNER_PROTOCOL_ACK_PREFIX)?;
+    if json.len() > RUNNER_PROTOCOL_ACK_MAX_ENCODED_BYTES {
+        return None;
+    }
     serde_json::from_str(json).ok()
+}
+
+pub fn parse_runner_protocol_ack_v4(line: &str) -> Option<RunnerProtocolAckV4> {
+    let json = line.strip_prefix(RUNNER_PROTOCOL_ACK_PREFIX)?;
+    if json.len() > RUNNER_PROTOCOL_ACK_MAX_ENCODED_BYTES {
+        return None;
+    }
+    serde_json::from_str(json).ok()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn supports_strict_gpu_reload_common(
+    ack_nonce: &str,
+    current_version: u32,
+    min_supported_version: u32,
+    runner_pid: u32,
+    runner_runtime_session_id: &str,
+    runner_challenge: &str,
+    capabilities: &[String],
+    expected_nonce: &str,
+    expected_pid: u32,
+) -> bool {
+    canonical_runner_protocol_nonce(expected_nonce)
+        && expected_pid != 0
+        && ack_nonce == expected_nonce
+        && current_version >= RUNNER_PROTOCOL_CURRENT_VERSION
+        && min_supported_version > 0
+        && min_supported_version <= current_version
+        && min_supported_version <= RUNNER_PROTOCOL_CURRENT_VERSION
+        && runner_pid == expected_pid
+        && canonical_runner_protocol_nonce(ack_nonce)
+        && canonical_runner_protocol_session_id(runner_runtime_session_id)
+        && canonical_runner_challenge(runner_challenge)
+        && valid_runner_capabilities(capabilities)
+}
+
+fn claims_runner_resource_policy_capabilities(capabilities: &[String]) -> bool {
+    capabilities.iter().any(|capability| {
+        capability == RUNNER_BOUNDED_INGRESS_V1_CAPABILITY
+            || capability == RUNNER_ATOMIC_BATCH_V1_CAPABILITY
+    })
+}
+
+fn canonical_runner_protocol_nonce(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= RUNNER_PROTOCOL_ACK_MAX_NONCE_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn canonical_runner_protocol_session_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= RUNNER_PROTOCOL_ACK_MAX_RUNTIME_SESSION_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
+
+fn canonical_runner_capability(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= RUNNER_PROTOCOL_ACK_MAX_CAPABILITY_BYTES
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+        && value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && value
+            .as_bytes()
+            .last()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+}
+
+fn valid_runner_capabilities(capabilities: &[String]) -> bool {
+    if capabilities.len() < STRICT_GPU_RELOAD_CAPABILITIES.len()
+        || capabilities.len() > RUNNER_PROTOCOL_ACK_MAX_CAPABILITIES
+    {
+        return false;
+    }
+    for (index, capability) in capabilities.iter().enumerate() {
+        if !canonical_runner_capability(capability)
+            || capabilities[..index]
+                .iter()
+                .any(|previous| previous == capability)
+        {
+            return false;
+        }
+    }
+    STRICT_GPU_RELOAD_CAPABILITIES
+        .iter()
+        .all(|required| capabilities.iter().any(|capability| capability == required))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -973,6 +1410,24 @@ mod tests {
         "1".repeat(32)
     }
 
+    fn configured_resource_policy_ack() -> RunnerProtocolAckV4 {
+        RunnerProtocolAckV4::current_with_enforced_resource_policy(
+            "nonce-a",
+            runner_runtime_session_id(),
+            runner_challenge(),
+            RunnerResourcePolicyV1::at_consumer_maxima(),
+        )
+        .unwrap()
+    }
+
+    fn assert_resource_policy_rejected(policy: RunnerResourcePolicyV1) {
+        let mut ack = configured_resource_policy_ack();
+        ack.resource_policy = policy;
+        assert!(
+            !ack.supports_strict_gpu_reload_with_resource_policy("nonce-a", std::process::id(),)
+        );
+    }
+
     fn runtime_control_token() -> String {
         format!("runner-control:{}", "c".repeat(32))
     }
@@ -1185,6 +1640,423 @@ mod tests {
                 .retain(|capability| capability != required);
             assert!(!missing_capability.supports_strict_gpu_reload("nonce-a", std::process::id()));
         }
+    }
+
+    #[test]
+    fn ordinary_current_protocol_ack_does_not_claim_resource_guarantees() {
+        let ack =
+            RunnerProtocolAck::current("nonce-a", runner_runtime_session_id(), runner_challenge());
+
+        assert_eq!(RUNNER_PROTOCOL_CURRENT_VERSION, 5);
+        assert_eq!(ack.schema_version, RUNNER_PROTOCOL_ACK_SCHEMA_VERSION);
+        assert!(!ack
+            .capabilities
+            .iter()
+            .any(|capability| capability == RUNNER_BOUNDED_INGRESS_V1_CAPABILITY));
+        assert!(!ack
+            .capabilities
+            .iter()
+            .any(|capability| capability == RUNNER_ATOMIC_BATCH_V1_CAPABILITY));
+        assert!(ack.supports_strict_gpu_reload("nonce-a", std::process::id()));
+        assert!(serde_json::to_value(&ack)
+            .unwrap()
+            .get("resourcePolicy")
+            .is_none());
+    }
+
+    #[test]
+    fn configured_resource_policy_ack_round_trips_with_explicit_support() {
+        let ack = configured_resource_policy_ack();
+
+        assert_eq!(
+            ack.schema_version,
+            RUNNER_PROTOCOL_ACK_RESOURCE_POLICY_SCHEMA_VERSION
+        );
+        assert_eq!(ack.current_version, RUNNER_PROTOCOL_CURRENT_VERSION);
+        assert!(ack
+            .capabilities
+            .iter()
+            .any(|capability| capability == RUNNER_BOUNDED_INGRESS_V1_CAPABILITY));
+        assert!(ack
+            .capabilities
+            .iter()
+            .any(|capability| capability == RUNNER_ATOMIC_BATCH_V1_CAPABILITY));
+        assert!(ack.resource_policy.validate().is_ok());
+
+        let line = ack.line().unwrap();
+        assert!(line
+            .strip_prefix(RUNNER_PROTOCOL_ACK_PREFIX)
+            .is_some_and(|json| json.len() <= RUNNER_PROTOCOL_ACK_MAX_ENCODED_BYTES));
+        let parsed = parse_runner_protocol_ack_v4(&line).unwrap();
+        assert_eq!(parsed, ack);
+        assert!(
+            parsed.supports_strict_gpu_reload_with_resource_policy("nonce-a", std::process::id(),)
+        );
+        assert!(parse_runner_protocol_ack(&line).is_none());
+    }
+
+    #[test]
+    fn configured_ack_rejects_missing_policy_or_capability() {
+        let ack = configured_resource_policy_ack();
+
+        let mut missing_policy_json = serde_json::to_value(&ack).unwrap();
+        missing_policy_json
+            .as_object_mut()
+            .unwrap()
+            .remove("resourcePolicy");
+        let missing_policy_line = format!(
+            "{RUNNER_PROTOCOL_ACK_PREFIX}{}",
+            serde_json::to_string(&missing_policy_json).unwrap()
+        );
+        assert!(parse_runner_protocol_ack_v4(&missing_policy_line).is_none());
+
+        for required in [
+            RUNNER_BOUNDED_INGRESS_V1_CAPABILITY,
+            RUNNER_ATOMIC_BATCH_V1_CAPABILITY,
+        ] {
+            let mut missing_capability = ack.clone();
+            missing_capability
+                .capabilities
+                .retain(|capability| capability != required);
+            assert!(!missing_capability
+                .supports_strict_gpu_reload_with_resource_policy("nonce-a", std::process::id()));
+        }
+    }
+
+    #[test]
+    fn protocol_ack_schemas_reject_cross_version_resource_claims() {
+        let mut v3 =
+            RunnerProtocolAck::current("nonce-a", runner_runtime_session_id(), runner_challenge());
+        v3.capabilities
+            .push(RUNNER_BOUNDED_INGRESS_V1_CAPABILITY.to_string());
+        v3.capabilities
+            .push(RUNNER_ATOMIC_BATCH_V1_CAPABILITY.to_string());
+        assert!(!v3.supports_strict_gpu_reload("nonce-a", std::process::id()));
+
+        let plain_v3 =
+            RunnerProtocolAck::current("nonce-a", runner_runtime_session_id(), runner_challenge());
+        let mut v3_with_policy = serde_json::to_value(&plain_v3).unwrap();
+        v3_with_policy["resourcePolicy"] =
+            serde_json::to_value(RunnerResourcePolicyV1::at_consumer_maxima()).unwrap();
+        let line = format!(
+            "{RUNNER_PROTOCOL_ACK_PREFIX}{}",
+            serde_json::to_string(&v3_with_policy).unwrap()
+        );
+        assert!(parse_runner_protocol_ack(&line).is_none());
+        let parsed_as_v4 = parse_runner_protocol_ack_v4(&line).unwrap();
+        assert!(!parsed_as_v4
+            .supports_strict_gpu_reload_with_resource_policy("nonce-a", std::process::id()));
+
+        let mut unsupported_ack_schema = configured_resource_policy_ack();
+        unsupported_ack_schema.schema_version = "synthi.runner.protocol_ack.v5".to_string();
+        assert!(!unsupported_ack_schema
+            .supports_strict_gpu_reload_with_resource_policy("nonce-a", std::process::id()));
+
+        let mut unsupported_policy_schema = configured_resource_policy_ack();
+        unsupported_policy_schema.resource_policy.schema_version =
+            "synthi.runner.resource_policy.v2".to_string();
+        assert!(!unsupported_policy_schema
+            .supports_strict_gpu_reload_with_resource_policy("nonce-a", std::process::id()));
+    }
+
+    #[test]
+    fn protocol_ack_rejects_duplicate_and_noncanonical_capabilities() {
+        let v3 =
+            RunnerProtocolAck::current("nonce-a", runner_runtime_session_id(), runner_challenge());
+        let mut duplicate_v3 = v3.clone();
+        duplicate_v3
+            .capabilities
+            .push(GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY.to_string());
+        assert!(!duplicate_v3.supports_strict_gpu_reload("nonce-a", std::process::id()));
+
+        let mut noncanonical_v3 = v3;
+        noncanonical_v3
+            .capabilities
+            .push("Runner.Invalid".to_string());
+        assert!(!noncanonical_v3.supports_strict_gpu_reload("nonce-a", std::process::id()));
+
+        let v4 = configured_resource_policy_ack();
+        let mut duplicate_v4 = v4.clone();
+        duplicate_v4
+            .capabilities
+            .push(RUNNER_BOUNDED_INGRESS_V1_CAPABILITY.to_string());
+        assert!(!duplicate_v4
+            .supports_strict_gpu_reload_with_resource_policy("nonce-a", std::process::id()));
+
+        let mut noncanonical_v4 = v4;
+        noncanonical_v4
+            .capabilities
+            .push("runner/invalid".to_string());
+        assert!(!noncanonical_v4
+            .supports_strict_gpu_reload_with_resource_policy("nonce-a", std::process::id()));
+    }
+
+    #[test]
+    fn protocol_ack_rejects_invalid_protocol_version_ordering() {
+        let v3 =
+            RunnerProtocolAck::current("nonce-a", runner_runtime_session_id(), runner_challenge());
+        let v4 = configured_resource_policy_ack();
+
+        let mut v3_cases = Vec::new();
+        let mut below_current = v3.clone();
+        below_current.current_version = RUNNER_PROTOCOL_CURRENT_VERSION - 1;
+        v3_cases.push(below_current);
+        let mut zero_minimum = v3.clone();
+        zero_minimum.min_supported_version = 0;
+        v3_cases.push(zero_minimum);
+        let mut minimum_above_current = v3.clone();
+        minimum_above_current.min_supported_version = minimum_above_current.current_version + 1;
+        v3_cases.push(minimum_above_current);
+        let mut minimum_above_consumer = v3;
+        minimum_above_consumer.current_version = RUNNER_PROTOCOL_CURRENT_VERSION + 1;
+        minimum_above_consumer.min_supported_version = RUNNER_PROTOCOL_CURRENT_VERSION + 1;
+        v3_cases.push(minimum_above_consumer);
+        for ack in v3_cases {
+            assert!(!ack.supports_strict_gpu_reload("nonce-a", std::process::id()));
+        }
+
+        let mut v4_cases = Vec::new();
+        let mut below_current = v4.clone();
+        below_current.current_version = RUNNER_PROTOCOL_CURRENT_VERSION - 1;
+        v4_cases.push(below_current);
+        let mut zero_minimum = v4.clone();
+        zero_minimum.min_supported_version = 0;
+        v4_cases.push(zero_minimum);
+        let mut minimum_above_current = v4.clone();
+        minimum_above_current.min_supported_version = minimum_above_current.current_version + 1;
+        v4_cases.push(minimum_above_current);
+        let mut minimum_above_consumer = v4;
+        minimum_above_consumer.current_version = RUNNER_PROTOCOL_CURRENT_VERSION + 1;
+        minimum_above_consumer.min_supported_version = RUNNER_PROTOCOL_CURRENT_VERSION + 1;
+        v4_cases.push(minimum_above_consumer);
+        for ack in v4_cases {
+            assert!(
+                !ack.supports_strict_gpu_reload_with_resource_policy("nonce-a", std::process::id())
+            );
+        }
+    }
+
+    #[test]
+    fn resource_policy_rejects_zero_limits() {
+        let base = RunnerResourcePolicyV1::at_consumer_maxima();
+        let policies = [
+            RunnerResourcePolicyV1 {
+                max_command_bytes: 0,
+                ..base.clone()
+            },
+            RunnerResourcePolicyV1 {
+                max_queue_items: 0,
+                ..base.clone()
+            },
+            RunnerResourcePolicyV1 {
+                max_queue_retained_bytes: 0,
+                ..base.clone()
+            },
+            RunnerResourcePolicyV1 {
+                max_atomic_batch_items: 0,
+                ..base.clone()
+            },
+            RunnerResourcePolicyV1 {
+                max_atomic_batch_bytes: 0,
+                ..base.clone()
+            },
+            RunnerResourcePolicyV1 {
+                max_commands_per_tick: 0,
+                ..base
+            },
+        ];
+
+        for policy in policies {
+            assert_resource_policy_rejected(policy);
+        }
+    }
+
+    #[test]
+    fn resource_policy_rejects_consumer_maxima_plus_one() {
+        let base = RunnerResourcePolicyV1::at_consumer_maxima();
+        let policies = [
+            RunnerResourcePolicyV1 {
+                max_command_bytes: RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMAND_BYTES + 1,
+                ..base.clone()
+            },
+            RunnerResourcePolicyV1 {
+                max_queue_items: RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_QUEUE_ITEMS + 1,
+                ..base.clone()
+            },
+            RunnerResourcePolicyV1 {
+                max_queue_retained_bytes:
+                    RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_QUEUE_RETAINED_BYTES + 1,
+                ..base.clone()
+            },
+            RunnerResourcePolicyV1 {
+                max_atomic_batch_items: RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_ITEMS
+                    + 1,
+                ..base.clone()
+            },
+            RunnerResourcePolicyV1 {
+                max_atomic_batch_bytes: RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_ATOMIC_BATCH_BYTES
+                    + 1,
+                ..base.clone()
+            },
+            RunnerResourcePolicyV1 {
+                max_commands_per_tick: RUNNER_RESOURCE_POLICY_V1_CONSUMER_MAX_COMMANDS_PER_TICK + 1,
+                ..base
+            },
+        ];
+
+        for policy in policies {
+            assert_resource_policy_rejected(policy);
+        }
+    }
+
+    #[test]
+    fn resource_policy_rejects_inconsistent_limit_ordering() {
+        let base = RunnerResourcePolicyV1::at_consumer_maxima();
+
+        let mut batch_exceeds_queue_bytes = base.clone();
+        batch_exceeds_queue_bytes.max_command_bytes = 1024;
+        batch_exceeds_queue_bytes.max_atomic_batch_bytes = 2048;
+        batch_exceeds_queue_bytes.max_queue_retained_bytes = 1024;
+
+        let mut command_exceeds_batch_bytes = base.clone();
+        command_exceeds_batch_bytes.max_command_bytes = 2048;
+        command_exceeds_batch_bytes.max_atomic_batch_bytes = 1024;
+        command_exceeds_batch_bytes.max_queue_retained_bytes = 2048;
+
+        let mut tick_exceeds_queue_items = base.clone();
+        tick_exceeds_queue_items.max_atomic_batch_items = 8;
+        tick_exceeds_queue_items.max_commands_per_tick = 9;
+        tick_exceeds_queue_items.max_queue_items = 8;
+
+        let mut batch_exceeds_tick_items = base;
+        batch_exceeds_tick_items.max_atomic_batch_items = 9;
+        batch_exceeds_tick_items.max_commands_per_tick = 8;
+        batch_exceeds_tick_items.max_queue_items = 9;
+
+        for policy in [
+            batch_exceeds_queue_bytes,
+            command_exceeds_batch_bytes,
+            tick_exceeds_queue_items,
+            batch_exceeds_tick_items,
+        ] {
+            assert_resource_policy_rejected(policy);
+        }
+    }
+
+    #[test]
+    fn protocol_ack_rejects_capability_flooding_and_overlong_values() {
+        let mut flooded = configured_resource_policy_ack();
+        let additional = RUNNER_PROTOCOL_ACK_MAX_CAPABILITIES + 1 - flooded.capabilities.len();
+        for index in 0..additional {
+            flooded
+                .capabilities
+                .push(char::from(b'a' + index as u8).to_string());
+        }
+        assert_eq!(
+            flooded.capabilities.len(),
+            RUNNER_PROTOCOL_ACK_MAX_CAPABILITIES + 1
+        );
+        assert!(
+            !flooded.supports_strict_gpu_reload_with_resource_policy("nonce-a", std::process::id())
+        );
+        assert!(flooded.line().is_err());
+        let flooded_json = serde_json::to_string(&flooded).unwrap();
+        assert!(flooded_json.len() <= RUNNER_PROTOCOL_ACK_MAX_ENCODED_BYTES);
+        assert!(parse_runner_protocol_ack_v4(&format!(
+            "{RUNNER_PROTOCOL_ACK_PREFIX}{flooded_json}"
+        ))
+        .is_none());
+
+        let mut overlong = configured_resource_policy_ack();
+        overlong
+            .capabilities
+            .push("x".repeat(RUNNER_PROTOCOL_ACK_MAX_CAPABILITY_BYTES + 1));
+        assert!(!overlong
+            .supports_strict_gpu_reload_with_resource_policy("nonce-a", std::process::id()));
+        assert!(overlong.line().is_err());
+        let overlong_json = serde_json::to_string(&overlong).unwrap();
+        assert!(overlong_json.len() <= RUNNER_PROTOCOL_ACK_MAX_ENCODED_BYTES);
+        assert!(parse_runner_protocol_ack_v4(&format!(
+            "{RUNNER_PROTOCOL_ACK_PREFIX}{overlong_json}"
+        ))
+        .is_none());
+    }
+
+    #[test]
+    fn protocol_ack_rejects_unknown_fields() {
+        let ack = configured_resource_policy_ack();
+
+        let mut unknown_ack_field = serde_json::to_value(&ack).unwrap();
+        unknown_ack_field["extra"] = serde_json::Value::Bool(true);
+        let line = format!(
+            "{RUNNER_PROTOCOL_ACK_PREFIX}{}",
+            serde_json::to_string(&unknown_ack_field).unwrap()
+        );
+        assert!(parse_runner_protocol_ack_v4(&line).is_none());
+
+        let mut unknown_policy_field = serde_json::to_value(&ack).unwrap();
+        unknown_policy_field["resourcePolicy"]["extra"] = serde_json::Value::Bool(true);
+        let line = format!(
+            "{RUNNER_PROTOCOL_ACK_PREFIX}{}",
+            serde_json::to_string(&unknown_policy_field).unwrap()
+        );
+        assert!(parse_runner_protocol_ack_v4(&line).is_none());
+    }
+
+    #[test]
+    fn protocol_ack_rejects_encoded_bytes_over_limit() {
+        let mut ack = configured_resource_policy_ack();
+        while ack.capabilities.len() < RUNNER_PROTOCOL_ACK_MAX_CAPABILITIES {
+            let suffix = ack.capabilities.len().to_string();
+            ack.capabilities.push(format!(
+                "{}{}",
+                "x".repeat(RUNNER_PROTOCOL_ACK_MAX_CAPABILITY_BYTES - suffix.len()),
+                suffix
+            ));
+        }
+
+        assert!(ack
+            .capabilities
+            .iter()
+            .all(|capability| capability.len() <= RUNNER_PROTOCOL_ACK_MAX_CAPABILITY_BYTES));
+        let json = serde_json::to_string(&ack).unwrap();
+        assert!(json.len() > RUNNER_PROTOCOL_ACK_MAX_ENCODED_BYTES);
+        assert!(!ack.supports_strict_gpu_reload_with_resource_policy("nonce-a", std::process::id()));
+        assert!(ack.line().is_err());
+        assert!(
+            parse_runner_protocol_ack_v4(&format!("{RUNNER_PROTOCOL_ACK_PREFIX}{json}")).is_none()
+        );
+    }
+
+    #[test]
+    fn protocol_ack_rejects_malformed_identity_shapes() {
+        let base =
+            RunnerProtocolAck::current("nonce-a", runner_runtime_session_id(), runner_challenge());
+
+        let mut empty_nonce = base.clone();
+        empty_nonce.nonce.clear();
+        assert!(!empty_nonce.supports_strict_gpu_reload("", std::process::id()));
+
+        let mut long_nonce = base.clone();
+        long_nonce.nonce = "n".repeat(RUNNER_PROTOCOL_ACK_MAX_NONCE_BYTES + 1);
+        assert!(!long_nonce.supports_strict_gpu_reload(&long_nonce.nonce, std::process::id()));
+
+        let mut invalid_session = base.clone();
+        invalid_session.runner_runtime_session_id = "invalid/session".to_string();
+        assert!(!invalid_session.supports_strict_gpu_reload("nonce-a", std::process::id()));
+
+        let mut long_session = base.clone();
+        long_session.runner_runtime_session_id =
+            "s".repeat(RUNNER_PROTOCOL_ACK_MAX_RUNTIME_SESSION_BYTES + 1);
+        assert!(!long_session.supports_strict_gpu_reload("nonce-a", std::process::id()));
+
+        let mut invalid_challenge = base.clone();
+        invalid_challenge.runner_challenge = "A".repeat(RUNNER_PROTOCOL_ACK_CHALLENGE_BYTES);
+        assert!(!invalid_challenge.supports_strict_gpu_reload("nonce-a", std::process::id()));
+
+        let mut zero_pid = base;
+        zero_pid.runner_pid = 0;
+        assert!(!zero_pid.supports_strict_gpu_reload("nonce-a", 0));
     }
 
     #[test]
