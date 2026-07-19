@@ -260,6 +260,74 @@ describe("classifyHmrMessage (pure)", () => {
   });
 });
 
+describe("HmrNormalizer preclassification gate", () => {
+  it("runs before terminal classification, proof retention, and public listeners", async () => {
+    const mockDC = dc();
+    const observed: WireMessage[] = [];
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0],
+      {
+        beforeClassify(message) {
+          observed.push(message);
+          return false;
+        },
+      },
+    );
+    const publicMessages: WireMessage[] = [];
+    normalizer.onMessage((message) => publicMessages.push(message));
+
+    mockDC.emit(JSON.stringify({ status: "applied", module: "arbitrary-module" }));
+    mockDC.emit(JSON.stringify({
+      status: "gpu-proof-state",
+      module: "arbitrary-module",
+      resultState: "gpu-hmr-full-runtime-proven",
+    }));
+
+    expect(observed).toHaveLength(2);
+    expect(publicMessages).toEqual([]);
+    expect(normalizer.latestGpuProof()).toBeNull();
+    await expect(normalizer.waitForTerminal({ timeoutMs: 1 })).resolves.toMatchObject({
+      status: "timeout",
+      source: "timeout",
+    });
+    normalizer.dispose();
+  });
+
+  it("passes admitted messages through unchanged", () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0],
+      { beforeClassify: () => true },
+    );
+    const publicMessages: WireMessage[] = [];
+    normalizer.onMessage((message) => publicMessages.push(message));
+
+    mockDC.emit(JSON.stringify({ status: "applied", module: "arbitrary-module" }));
+
+    expect(publicMessages).toEqual([{ status: "applied", module: "arbitrary-module" }]);
+    normalizer.dispose();
+  });
+
+  it("fails closed when the gate throws", () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0],
+      {
+        beforeClassify() {
+          throw new Error("synthetic_gate_failure");
+        },
+      },
+    );
+    const publicListener = vi.fn();
+    normalizer.onMessage(publicListener);
+
+    mockDC.emit(JSON.stringify({ status: "applied" }));
+
+    expect(publicListener).not.toHaveBeenCalled();
+    normalizer.dispose();
+  });
+});
+
 describe("parseWireMessages", () => {
   it("extracts a structured JSON object from prefixed runner text", () => {
     const parsed = parseWireMessages(

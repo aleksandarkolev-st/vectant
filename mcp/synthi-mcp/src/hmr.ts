@@ -59,6 +59,15 @@ export interface HmrTerminalEvent {
 
 export type WireMessage = Record<string, unknown>;
 
+export interface HmrNormalizerOptions {
+  /**
+   * Runs after wire parsing and structured-chunk reassembly, but before any
+   * terminal/proof classification or public listener notification. Returning
+   * false suppresses the message. Exceptions also fail closed.
+   */
+  readonly beforeClassify?: (message: WireMessage, observedAt: number) => boolean;
+}
+
 interface StructuredJsonChunk {
   chunkId: string;
   sha256: string;
@@ -457,6 +466,7 @@ export class HmrNormalizer {
     opts: GpuHmrProofMatchOpts;
     cb: (proof: GpuHmrProofTelemetry) => void;
   }>();
+  private readonly beforeClassify: HmrNormalizerOptions["beforeClassify"];
   private readonly unbind: () => void;
   private latestProof: GpuHmrProofTelemetry | null = null;
   private readonly structuredJsonChunks = new Map<string, StructuredJsonChunkBuffer>();
@@ -467,7 +477,8 @@ export class HmrNormalizer {
   private static readonly TERMINAL_HISTORY_LIMIT = 128;
   private static readonly PROOF_HISTORY_LIMIT = 128;
 
-  constructor(dc: RTCDataChannel) {
+  constructor(dc: RTCDataChannel, options: HmrNormalizerOptions = {}) {
+    this.beforeClassify = options.beforeClassify;
     const dcListener = (ev: Event): void => {
       const data = (ev as unknown as { data: unknown }).data;
       let text: string | null = null;
@@ -490,7 +501,17 @@ export class HmrNormalizer {
     this.unbind = (): void => dc.removeEventListener("message", dcListener);
   }
 
-  private rememberMessage(parsed: WireMessage, observedAt: number): void {
+  private rememberMessage(
+    parsed: WireMessage,
+    observedAt: number,
+  ): void {
+    if (this.beforeClassify !== undefined) {
+      try {
+        if (!this.beforeClassify(parsed, observedAt)) return;
+      } catch {
+        return;
+      }
+    }
     const cls = classifyHmrMessage(parsed);
     if (cls) this.rememberTerminal(cls, observedAt);
     const proof = classifyGpuHmrProofMessage(parsed, observedAt);
