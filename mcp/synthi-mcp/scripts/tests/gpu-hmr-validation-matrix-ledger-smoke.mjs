@@ -37,6 +37,7 @@ import {
   evaluateGpuHmrAcceptanceContract,
   evaluateGpuHmrAcceptanceContractConsistency,
   GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
+  recomputeGpuHmrAcceptanceContractHash,
 } from '../lib/gpu-hmr-acceptance-contract.mjs';
 import {
   evaluateGpuHmrDeterministicVisualMode,
@@ -67,6 +68,9 @@ import {
   computeOracleArtifactsFromFiles,
   visualEvidenceArtifactsFromVisualOracleArtifacts,
 } from '../lib/gpu-hmr-validation-proof-artifact.mjs';
+import {
+  buildComputeExpectedOutputContract,
+} from '../lib/gpu-hmr-compute-oracle-semantics.mjs';
 import {
   buildGpuHmrValidationProofSummary,
 } from '../lib/gpu-hmr-validation-proof-summary.mjs';
@@ -1034,8 +1038,8 @@ function acceptanceContract(scope, options = {}) {
   const backend = options.backend ?? 'hip';
   const outputTargetId = options.outputTargetId ?? `output-target:${scope}`;
   const evidenceRef = `evidence:synthetic-runtime:${scope}`;
-  const beforeHash = hashValue(`artifact-before:${scope}`);
-  const afterHash = hashValue(`artifact-after:${scope}`);
+  const beforeHash = options.artifactBeforeHash ?? hashValue(`artifact-before:${scope}`);
+  const afterHash = options.artifactAfterHash ?? hashValue(`artifact-after:${scope}`);
   const fissionEvidenceRef = `evidence:fission-verifier-report:synthetic:${scope}`;
   const fieldEvidence = Object.fromEntries([
     'kernel_name',
@@ -1183,6 +1187,9 @@ function acceptanceContract(scope, options = {}) {
         : {
             kind: 'buffer_checksum',
             expected: 'runtime_readback_changed_after_epoch_dispatch',
+            ...(options.expectedOutputContract
+              ? { expected_output_contract: options.expectedOutputContract }
+              : {}),
             evidence_refs: [evidenceRef],
           },
       evidence_refs: [evidenceRef, fissionEvidenceRef],
@@ -1298,6 +1305,10 @@ function acceptanceContract(scope, options = {}) {
           }),
       field_evidence_refs: Object.fromEntries(fields.map((field) => [field, [evidenceRef]])),
     };
+  }
+  if (options.includeCanonicalHash === true) {
+    contract.contract_hash = recomputeGpuHmrAcceptanceContractHash(contract);
+    contract.contract_id = `gpu-hmr-contract:${contract.contract_hash}`;
   }
   return contract;
 }
@@ -1716,6 +1727,7 @@ function computeProofLedgerMaterials(scope, {
   outputRuntimeSessionId = runtimeSessionId,
   dispatchTableEntryId = `dispatch-table-entry:${scope}`,
   outputTargetId = `output-target:${scope}`,
+  expectedRawReadbackHash = null,
 }) {
   const beforeHash = hashValue(`compute-artifact-before:${scope}`);
   const afterHash = hashValue(`compute-artifact-after:${scope}`);
@@ -1728,6 +1740,34 @@ function computeProofLedgerMaterials(scope, {
   const deterministicSliceHash = actualRawReadbackBytes
     ? hashBuffer(actualRawReadbackBytes.subarray(0, deterministicSliceLength))
     : hashValue(`raw-readback-slice:${scope}`);
+  const oracleCodeHash = hashValue(`compute-oracle-code:${scope}`);
+  const readbackByteLength = actualRawReadbackBytes?.length ?? 4;
+  const expectedOutputContract = buildComputeExpectedOutputContract({
+    comparisonMode: 'exact_bytes',
+    dtype: 'u8',
+    shape: [readbackByteLength],
+    elementCount: readbackByteLength,
+    byteOrder: 'not_applicable',
+    expectedRawHash: expectedRawReadbackHash ?? rawReadbackHash,
+    binding: {
+      projectId,
+      editId: `source-edit:${scope}`,
+      artifactAfterHash: afterHash,
+      outputTargetId,
+      oracleCodeHash,
+    },
+    evidenceRefs: [`evidence:synthetic-compute:${scope}:expected-output-contract`],
+  });
+  const contract = acceptanceContract(scope, {
+    projectId,
+    backend,
+    outputOracleKind: 'compute',
+    outputTargetId,
+    artifactBeforeHash: beforeHash,
+    artifactAfterHash: afterHash,
+    expectedOutputContract,
+    includeCanonicalHash: true,
+  });
   const computeOracleArtifacts = {
     raw_readback_bin: rawReadbackPath,
     readback_schema_json: `${rawReadbackPath}.schema.json`,
@@ -1740,14 +1780,14 @@ function computeProofLedgerMaterials(scope, {
     },
     deterministic_slice_hash: deterministicSliceHash,
     deterministic_slice_hash_verified: true,
-    oracle_code_hash: hashValue(`compute-oracle-code:${scope}`),
+    oracle_code_hash: oracleCodeHash,
     rendered_card_png: `${rawReadbackPath}.card.png`,
     producer: 'synthetic_compute_oracle',
     timestamp_after_dispatch: 4000,
     epoch: `epoch:${scope}`,
     raw_readback_hash: rawReadbackHash,
     raw_readback_hash_verified: true,
-    raw_readback_byte_length: actualRawReadbackBytes?.length ?? 4,
+    raw_readback_byte_length: readbackByteLength,
     raw_readback_source: 'runtime_raw_readback',
     expected_output_verified: true,
     expected_output_source: 'runtime_checksum_oracle',
@@ -1763,7 +1803,7 @@ function computeProofLedgerMaterials(scope, {
       edit_kind: 'gpu_artifact_edit',
       route: 'gpu_hmr',
     },
-    contract_hash: hashValue(`compute-contract:${scope}`),
+    contract_hash: contract.contract_hash,
     artifact_before_hash: beforeHash,
     artifact_after_hash: afterHash,
     loader_event: {
@@ -1858,12 +1898,6 @@ function computeProofLedgerMaterials(scope, {
   const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
   assert.deepEqual(proofLedgerQuery.failedInvariants, []);
   assert.equal(proofLedgerQuery.gpuHmrSuccess, true);
-  const contract = acceptanceContract(scope, {
-    projectId,
-    backend,
-    outputOracleKind: 'compute',
-    outputTargetId,
-  });
   const acceptanceContractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
   assert.deepEqual(acceptanceContractEvaluation.failedGates, []);
   assert.equal(acceptanceContractEvaluation.accepted, true);
@@ -1966,6 +2000,22 @@ function computeProofLedgerMaterials(scope, {
     computeOracleArtifacts,
     runtimeTrace,
     runtime_trace: runtimeTrace,
+  };
+}
+
+function computeTargetProgressionSmallOracleEntry(materials) {
+  const record = cloneJson(materials.proofLedger.records[0]);
+  const proofId = record.proofId ?? record.proof_id;
+  return {
+    phase: 'small-oracle',
+    status: 'pass',
+    resultState: 'gpu-hmr-output-oracle-proven',
+    outputOracleProven: true,
+    proofId,
+    schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
+    compute_oracle_artifacts: cloneJson(materials.computeOracleArtifacts),
+    acceptance_contract: cloneJson(materials.runtimeProofArtifact.acceptanceContract),
+    proof_ledger_record: record,
   };
 }
 
@@ -5654,8 +5704,10 @@ await fs.writeFile(fileBackedRawReadbackPath, fileBackedRawReadbackBytes);
 await writeJson(fileBackedReadbackSchemaPath, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: fileBackedRawReadbackBytes.length,
   byteLength: fileBackedRawReadbackBytes.length,
   shape: [fileBackedRawReadbackBytes.length],
+  byteOrder: 'not_applicable',
   rawReadbackHash: fileBackedRawReadbackHash,
   raw_readback_hash: fileBackedRawReadbackHash,
 });
@@ -5693,6 +5745,22 @@ const fileBackedComputeOracleArtifacts = {
   evidenceRefs: ['file-backed-runtime-boundary:compute-oracle-bytes'],
   evidence_refs: ['file-backed-runtime-boundary:compute-oracle-bytes'],
 };
+const fileBackedExpectedOutputContract = buildComputeExpectedOutputContract({
+  comparisonMode: 'exact_bytes',
+  dtype: 'u8',
+  shape: [fileBackedRawReadbackBytes.length],
+  elementCount: fileBackedRawReadbackBytes.length,
+  byteOrder: 'not_applicable',
+  expectedRawHash: fileBackedRawReadbackHash,
+  binding: {
+    projectId: 'generic-random-large-runtime-bridge-project',
+    editId: 'file-backed-gpu-artifact-edit',
+    artifactAfterHash: `artifact:${fileBackedArtifactAfterHash}`,
+    outputTargetId: fileBackedOutputTargetId,
+    oracleCodeHash: fileBackedComputeOracleArtifacts.oracle_code_hash,
+  },
+  evidenceRefs: ['file-backed-runtime-boundary:expected-output-contract'],
+});
 const fileBackedRuntimeBoundaryRunModeProof = buildRuntimeBoundaryRunModeProof({
   backend: 'hip',
   projectId: 'generic-random-large-runtime-bridge-project',
@@ -5711,6 +5779,7 @@ const fileBackedRuntimeBoundaryRunModeProof = buildRuntimeBoundaryRunModeProof({
   contractHash: hashValue('file-backed-contract'),
   runtimeBoundaryEvents: fileBackedRuntimeBoundaryEvents,
   computeOracleArtifacts: fileBackedComputeOracleArtifacts,
+  expectedOutputContract: fileBackedExpectedOutputContract,
   allowedArtifactRoots: [tmpRoot],
   computeArtifactPathBaseRoots: [tmpRoot],
   metricScope: 'hot_delta_1',
@@ -10171,9 +10240,12 @@ await fs.mkdir(forgedGenericOpenclDir, { recursive: true });
 await fs.writeFile(forgedGenericOpenclReadback, forgedGenericOpenclBytes);
 await writeJson(`${forgedGenericOpenclReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
-  dtype: 'uint8',
+  elementType: 'u8',
+  elementCount: forgedGenericOpenclBytes.length,
   byteLength: forgedGenericOpenclBytes.length,
   shape: [forgedGenericOpenclBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(forgedGenericOpenclBytes),
 });
 await writeRgbaPng(`${forgedGenericOpenclReadback}.card.png`, 8, 8, (x, y) => {
   const value = forgedGenericOpenclBytes[(x + y) % forgedGenericOpenclBytes.length];
@@ -10185,33 +10257,8 @@ const forgedGenericOpenclMaterials = computeProofLedgerMaterials('forged-generic
   rawReadbackPath: forgedGenericOpenclReadback,
   rawReadbackBytes: forgedGenericOpenclBytes,
 });
-const forgedGenericOpenclContract = acceptanceContract('forged_generic_opencl_label', {
-  projectId: 'forged-generic-opencl-ledger-project',
-});
-forgedGenericOpenclContract.backend = { value: 'opencl' };
-forgedGenericOpenclContract.artifact_identity.artifact_kind = 'opencl_program';
-forgedGenericOpenclContract.opencl_contract = {
-  program_hash_before: forgedGenericOpenclContract.artifact_hash_before,
-  program_hash_after: forgedGenericOpenclContract.artifact_hash_after,
-  kernel_name: 'flow_kernel',
-  command_queue: 'queue:0',
-  work_dim: 1,
-  global_work_size: [64],
-  local_work_size: [64],
-  event_trace: 'event:forged-generic-opencl-label',
-  output_buffer_readback: 'buffer:flow-output',
-  field_evidence_refs: Object.fromEntries([
-    'program_hash_before',
-    'program_hash_after',
-    'kernel_name',
-    'command_queue',
-    'work_dim',
-    'global_work_size',
-    'local_work_size',
-    'event_trace',
-    'output_buffer_readback',
-  ].map((field) => [field, ['evidence:synthetic-runtime:forged-generic-opencl-label']])),
-};
+const forgedGenericOpenclContract =
+  forgedGenericOpenclMaterials.runtimeProofArtifact.acceptanceContract;
 forgedGenericOpenclMaterials.proofLedger.records[0].backend = 'opencl';
 forgedGenericOpenclMaterials.proof_ledger.records[0].backend = 'opencl';
 forgedGenericOpenclMaterials.runtimeProofArtifact.proof_ledger =
@@ -11008,8 +11055,10 @@ const oidnDenoisedHash = `sha256:${sha256BufferHex(oidnDenoisedBytes)}`;
 await writeJson(oidnReadbackSchemaPath, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: oidnDenoisedBytes.length,
   byteLength: oidnDenoisedBytes.length,
   shape: [oidnDenoisedBytes.length],
+  byteOrder: 'not_applicable',
   rawReadbackHash: oidnDenoisedHash,
   raw_readback_hash: oidnDenoisedHash,
 });
@@ -13521,19 +13570,6 @@ function withAcceptedRuntimeCapabilityPreflight(materials = {}) {
       real_rocm_sidecar_runtime_consistency: acceptedSidecarRuntimeConsistencyNotApplicable,
     },
   };
-}
-
-function stripExpectedOutputVerified(value) {
-  if (Array.isArray(value)) {
-    value.forEach(stripExpectedOutputVerified);
-    return value;
-  }
-  if (value && typeof value === 'object') {
-    delete value.expected_output_verified;
-    delete value.expectedOutputVerified;
-    for (const nested of Object.values(value)) stripExpectedOutputVerified(nested);
-  }
-  return value;
 }
 
 function realRocmRuntimeProofMaterials(scope, options = {}) {
@@ -16290,8 +16326,11 @@ await fs.writeFile(broadReadinessComputeReadbackPath, broadReadinessComputeBytes
 await writeJson(`${broadReadinessComputeReadbackPath}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: broadReadinessComputeBytes.length,
   byteLength: broadReadinessComputeBytes.length,
   shape: [broadReadinessComputeBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(broadReadinessComputeBytes),
 });
 await writeRgbaPng(`${broadReadinessComputeReadbackPath}.card.png`, 8, 8, (x, y) => [
   broadReadinessComputeBytes[(x + y) % broadReadinessComputeBytes.length],
@@ -28836,8 +28875,11 @@ await fs.writeFile(acceptedComputeRawReadback, acceptedComputeBytes);
 await writeJson(`${acceptedComputeRawReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: acceptedComputeBytes.length,
   byteLength: acceptedComputeBytes.length,
   shape: [acceptedComputeBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(acceptedComputeBytes),
 });
 await writeRgbaPng(`${acceptedComputeRawReadback}.card.png`, 8, 8, (x, y) => [
   acceptedComputeBytes[(x + y) % acceptedComputeBytes.length],
@@ -28939,8 +28981,11 @@ await fs.writeFile(acceptedComputeCasSourceRaw, acceptedComputeBytes);
 await writeJson(`${acceptedComputeCasSourceRaw}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: acceptedComputeBytes.length,
   byteLength: acceptedComputeBytes.length,
   shape: [acceptedComputeBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(acceptedComputeBytes),
 });
 await writeRgbaPng(`${acceptedComputeCasSourceRaw}.card.png`, 8, 8, (x, y) => [
   acceptedComputeBytes[(x * 3 + y) % acceptedComputeBytes.length],
@@ -29786,8 +29831,11 @@ await fs.writeFile(acceptedNativeBridgeReadback, acceptedNativeBridgeBytes);
 await writeJson(`${acceptedNativeBridgeReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: acceptedNativeBridgeBytes.length,
   byteLength: acceptedNativeBridgeBytes.length,
   shape: [acceptedNativeBridgeBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(acceptedNativeBridgeBytes),
 });
 await writeRgbaPng(`${acceptedNativeBridgeReadback}.card.png`, 8, 8, (x, y) => [
   acceptedNativeBridgeBytes[(x + y) % acceptedNativeBridgeBytes.length],
@@ -29910,8 +29958,11 @@ await fs.writeFile(numericEpochComputeRawReadback, numericEpochComputeBytes);
 await writeJson(`${numericEpochComputeRawReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: numericEpochComputeBytes.length,
   byteLength: numericEpochComputeBytes.length,
   shape: [numericEpochComputeBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(numericEpochComputeBytes),
 });
 await writeRgbaPng(`${numericEpochComputeRawReadback}.card.png`, 8, 8, (x, y) => [
   numericEpochComputeBytes[(x + y) % numericEpochComputeBytes.length],
@@ -30002,8 +30053,11 @@ await fs.writeFile(acceptedLargeMlRawReadback, acceptedLargeMlBytes);
 await writeJson(`${acceptedLargeMlRawReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: acceptedLargeMlBytes.length,
   byteLength: acceptedLargeMlBytes.length,
   shape: [acceptedLargeMlBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(acceptedLargeMlBytes),
 });
 await writeRgbaPng(`${acceptedLargeMlRawReadback}.card.png`, 8, 8, (x, y) => [
   acceptedLargeMlBytes[(x + y) % acceptedLargeMlBytes.length],
@@ -30024,8 +30078,19 @@ const acceptedLargeMlAppHookMaterialization =
   acceptedRealRocmAppHookMaterialization('accepted-large-ml-generic-hook');
 const acceptedLargeMlSameProcessOracle =
   acceptedSameProcessRuntimeOracle('accepted-large-ml-generic-hook');
-const acceptedLargeMlPriorArtifacts = acceptedLargeMlProofMaterials.computeOracleArtifacts;
-await writeJson(path.join(acceptedLargeMlRocmDir, 'real-rocm-accepted-large-ml-generic-hook.json'), {
+const acceptedLargeMlPriorProofMaterials = realRocmComputeProofLedgerMaterials(
+  'accepted-large-ml-generic-hook-small-oracle',
+  {
+    projectId: 'real-rocm-accepted-large-ml-generic-hook',
+    rawReadbackPath: acceptedLargeMlRawReadback,
+    rawReadbackBytes: acceptedLargeMlBytes,
+  },
+);
+const acceptedLargeMlReportPath = path.join(
+  acceptedLargeMlRocmDir,
+  'real-rocm-accepted-large-ml-generic-hook.json',
+);
+await writeJson(acceptedLargeMlReportPath, {
   slug: 'gpu-real-rocm-accepted-large-ml-generic-hook-20260625',
   real_rocm_profile: largeRocmMlProfile('real-rocm-accepted-large-ml-generic-hook'),
   source_url: 'https://example.invalid/rocm/accepted-large-ml-generic-hook.git',
@@ -30065,15 +30130,7 @@ await writeJson(path.join(acceptedLargeMlRocmDir, 'real-rocm-accepted-large-ml-g
     schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
     provided: true,
     entries: [
-      {
-        phase: 'small-oracle',
-        status: 'pass',
-        resultState: 'gpu-hmr-output-oracle-proven',
-        outputOracleProven: true,
-        proofId: 'large-ml-small-oracle:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
-        compute_oracle_artifacts: acceptedLargeMlPriorArtifacts,
-      },
+      computeTargetProgressionSmallOracleEntry(acceptedLargeMlPriorProofMaterials),
       {
         phase: 'partial-reload',
         status: 'pass',
@@ -30200,6 +30257,80 @@ assert.equal(
   true,
 );
 
+const forgedLargeMlPriorProofIdDir = path.join(
+  logsRoot,
+  'real-rocm-forged-large-ml-prior-proof-id',
+);
+const forgedLargeMlPriorProofIdReport = JSON.parse(
+  await fs.readFile(acceptedLargeMlReportPath, 'utf8'),
+);
+forgedLargeMlPriorProofIdReport.slug = 'gpu-real-rocm-forged-large-ml-prior-proof-id';
+forgedLargeMlPriorProofIdReport.target_progression_ledger.entries[0].proofId =
+  `gpu-ledger-proof:${hashValue('forged-large-ml-prior-proof-id')}`;
+await writeJson(
+  path.join(forgedLargeMlPriorProofIdDir, 'forged-large-ml-prior-proof-id.json'),
+  forgedLargeMlPriorProofIdReport,
+);
+const forgedLargeMlPriorProofIdLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedLargeMlPriorProofIdDir],
+  generatedAt: '2026-06-25T00:00:02.275Z',
+  includeUnproven: true,
+});
+const forgedLargeMlPriorProofId = forgedLargeMlPriorProofIdLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+const forgedLargeMlPriorProofIdGate = forgedLargeMlPriorProofId?.targetProgressionGates.find(
+  (gate) => gate.name === 'target progression prior small-oracle',
+);
+assert.equal(forgedLargeMlPriorProofId?.matrixOutcome, 'unproven');
+assert.equal(forgedLargeMlPriorProofId.acceptedForGpuHmr, false);
+assert.equal(forgedLargeMlPriorProofIdGate?.status, 'fail');
+assert.match(
+  forgedLargeMlPriorProofIdGate?.detail ?? '',
+  /compute oracle proof id does not match proof-ledger record/,
+);
+
+const failedLargeMlPriorLedgerDir = path.join(
+  logsRoot,
+  'real-rocm-failed-large-ml-prior-ledger',
+);
+const failedLargeMlPriorLedgerReport = JSON.parse(
+  await fs.readFile(acceptedLargeMlReportPath, 'utf8'),
+);
+failedLargeMlPriorLedgerReport.slug = 'gpu-real-rocm-failed-large-ml-prior-ledger';
+const failedPriorEntry = failedLargeMlPriorLedgerReport.target_progression_ledger.entries[0];
+const failedPriorRecord = cloneJson(failedPriorEntry.proof_ledger_record);
+failedPriorRecord.cpuHmrUsed = true;
+const failedPriorLedger = buildGpuHmrProofLedger(failedPriorRecord);
+failedPriorEntry.proof_ledger_record = cloneJson(failedPriorLedger.records[0]);
+failedPriorEntry.proofId = failedPriorLedger.records[0].proofId;
+await writeJson(
+  path.join(failedLargeMlPriorLedgerDir, 'failed-large-ml-prior-ledger.json'),
+  failedLargeMlPriorLedgerReport,
+);
+const failedLargeMlPriorLedgerMatrix = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [failedLargeMlPriorLedgerDir],
+  generatedAt: '2026-06-25T00:00:02.275Z',
+  includeUnproven: true,
+});
+const failedLargeMlPriorLedgerRow = failedLargeMlPriorLedgerMatrix.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+const failedLargeMlPriorLedgerGate = failedLargeMlPriorLedgerRow?.targetProgressionGates.find(
+  (gate) => gate.name === 'target progression prior small-oracle',
+);
+assert.equal(failedLargeMlPriorLedgerRow?.matrixOutcome, 'unproven');
+assert.equal(failedLargeMlPriorLedgerRow.acceptedForGpuHmr, false);
+assert.equal(failedLargeMlPriorLedgerGate?.status, 'fail');
+assert.match(
+  failedLargeMlPriorLedgerGate?.detail ?? '',
+  /compute oracle proof-ledger invariants failed: cpu_hmr_used/,
+);
+
 async function writeSameProcessOracleNegative({
   scope,
   appHookOverrides = {},
@@ -30218,8 +30349,11 @@ async function writeSameProcessOracleNegative({
   await writeJson(`${rawReadback}.schema.json`, {
     schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
     elementType: 'u8',
+    elementCount: bytes.length,
     byteLength: bytes.length,
     shape: [bytes.length],
+    byteOrder: 'not_applicable',
+    rawReadbackHash: hashBuffer(bytes),
   });
   await writeRgbaPng(`${rawReadback}.card.png`, 8, 8, (x, y) => [
     bytes[(x + y) % bytes.length],
@@ -30228,6 +30362,11 @@ async function writeSameProcessOracleNegative({
     255,
   ]);
   const materials = realRocmComputeProofLedgerMaterials(scope, {
+    projectId: scope,
+    rawReadbackPath: rawReadback,
+    rawReadbackBytes: bytes,
+  });
+  const priorMaterials = realRocmComputeProofLedgerMaterials(`${scope}:small-oracle`, {
     projectId: scope,
     rawReadbackPath: rawReadback,
     rawReadbackBytes: bytes,
@@ -30292,15 +30431,7 @@ async function writeSameProcessOracleNegative({
       schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
       provided: true,
       entries: [
-        {
-          phase: 'small-oracle',
-          status: 'pass',
-          resultState: 'gpu-hmr-output-oracle-proven',
-          outputOracleProven: true,
-          proofId: `${scope}-small:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
-          schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
-          compute_oracle_artifacts: materials.computeOracleArtifacts,
-        },
+        computeTargetProgressionSmallOracleEntry(priorMaterials),
         {
           phase: 'partial-reload',
           status: 'pass',
@@ -30645,8 +30776,11 @@ await fs.writeFile(forgedComputeSemanticReadback, forgedComputeSemanticBytes);
 await writeJson(`${forgedComputeSemanticReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: forgedComputeSemanticBytes.length,
   byteLength: forgedComputeSemanticBytes.length,
   shape: [forgedComputeSemanticBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(forgedComputeSemanticBytes),
 });
 await writeRgbaPng(`${forgedComputeSemanticReadback}.card.png`, 8, 8, (x, y) => [
   forgedComputeSemanticBytes[(x + y) % forgedComputeSemanticBytes.length],
@@ -30654,37 +30788,15 @@ await writeRgbaPng(`${forgedComputeSemanticReadback}.card.png`, 8, 8, (x, y) => 
   96 + y,
   255,
 ]);
-const forgedComputeSemanticProofMaterials = stripExpectedOutputVerified(
-  realRocmComputeProofLedgerMaterials('forged-compute-semantic', {
+const forgedComputeSemanticProofMaterials = realRocmComputeProofLedgerMaterials(
+  'forged-compute-semantic',
+  {
     projectId: 'real-rocm-forged-compute-semantic',
     rawReadbackPath: forgedComputeSemanticReadback,
     rawReadbackBytes: forgedComputeSemanticBytes,
-  }),
-);
-const forgedComputeSemanticSliceLength = Math.min(4, forgedComputeSemanticBytes.length);
-const forgedComputeSemanticPriorArtifacts = {
-  raw_readback_bin: forgedComputeSemanticReadback,
-  readback_schema_json: `${forgedComputeSemanticReadback}.schema.json`,
-  checksum_before: hashValue('forged-compute-semantic-prior-before'),
-  checksum_after: hashValue('forged-compute-semantic-prior-after'),
-  deterministic_slice: {
-    offset: 0,
-    length: forgedComputeSemanticSliceLength,
-    hash: hashBuffer(forgedComputeSemanticBytes.subarray(0, forgedComputeSemanticSliceLength)),
+    expectedRawReadbackHash: hashValue('forged-compute-semantic-expected-output'),
   },
-  deterministic_slice_hash: hashBuffer(forgedComputeSemanticBytes.subarray(0, forgedComputeSemanticSliceLength)),
-  deterministic_slice_hash_verified: true,
-  oracle_code_hash: hashValue('forged-compute-semantic-prior-oracle'),
-  rendered_card_png: `${forgedComputeSemanticReadback}.card.png`,
-  producer: 'synthetic_compute_oracle',
-  timestamp_after_dispatch: 4000,
-  epoch: 'epoch:forged-compute-semantic',
-  raw_readback_hash: hashBuffer(forgedComputeSemanticBytes),
-  raw_readback_hash_verified: true,
-  raw_readback_byte_length: forgedComputeSemanticBytes.length,
-  raw_readback_source: 'runtime_raw_readback',
-  output_change_expected: true,
-};
+);
 await writeJson(path.join(forgedComputeSemanticRocmDir, 'real-rocm-forged-compute-semantic.json'), {
   slug: 'gpu-real-rocm-forged-compute-semantic-20260625',
   real_rocm_profile: { id: 'real-rocm-forged-compute-semantic' },
@@ -30710,18 +30822,10 @@ await writeJson(path.join(forgedComputeSemanticRocmDir, 'real-rocm-forged-comput
     targetMatchesFinalAcceptance: true,
   },
   target_progression_ledger: {
-    schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
-    provided: true,
-    entries: [
-      {
-        phase: 'small-oracle',
-        status: 'pass',
-        resultState: 'gpu-hmr-output-oracle-proven',
-        outputOracleProven: true,
-        proofId: 'compute-semantic-small-oracle:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
-        compute_oracle_artifacts: forgedComputeSemanticPriorArtifacts,
-      },
+      schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+      provided: true,
+      entries: [
+      computeTargetProgressionSmallOracleEntry(forgedComputeSemanticProofMaterials),
       {
         phase: 'partial-reload',
         status: 'pass',
@@ -30793,9 +30897,10 @@ const forgedComputeSemanticSmallOracleGate = forgedComputeSemanticRocm?.targetPr
 );
 assert.equal(forgedComputeSemanticRocm?.matrixOutcome, 'unproven');
 assert.equal(forgedComputeSemanticRocm.acceptedForGpuHmr, false);
-assert.equal(forgedComputeSemanticRocm.outputOracleFacet.kind, 'ledger_rejected');
+assert.equal(forgedComputeSemanticRocm.outputOracleFacet.kind, 'compute_oracle');
+assert.equal(forgedComputeSemanticRocm.outputOracleFacet.compute?.semanticAccepted, false);
 assert.equal(forgedComputeSemanticSmallOracleGate?.status, 'fail');
-assert.match(forgedComputeSemanticSmallOracleGate?.detail ?? '', /compute_oracle_expected_output_not_verified/);
+assert.match(forgedComputeSemanticSmallOracleGate?.detail ?? '', /compute_oracle_exact_bytes_mismatch/);
 assert.ok(forgedComputeSemanticRocm.reasons.includes(
   'target_progression_gate_failed:target progression prior small-oracle',
 ));
@@ -30809,8 +30914,11 @@ await fs.writeFile(forgedFinalMissingFixturesReadback, forgedFinalMissingFixture
 await writeJson(`${forgedFinalMissingFixturesReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: forgedFinalMissingFixturesBytes.length,
   byteLength: forgedFinalMissingFixturesBytes.length,
   shape: [forgedFinalMissingFixturesBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(forgedFinalMissingFixturesBytes),
 });
 await writeRgbaPng(`${forgedFinalMissingFixturesReadback}.card.png`, 8, 8, (x, y) => [
   forgedFinalMissingFixturesBytes[(x + y) % forgedFinalMissingFixturesBytes.length],
@@ -31611,8 +31719,11 @@ await fs.writeFile(completeAdapterBoundaryRawReadback, completeAdapterBoundaryRe
 await writeJson(`${completeAdapterBoundaryRawReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: completeAdapterBoundaryReadbackBytes.length,
   byteLength: completeAdapterBoundaryReadbackBytes.length,
   shape: [completeAdapterBoundaryReadbackBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(completeAdapterBoundaryReadbackBytes),
 });
 await writeRgbaPng(`${completeAdapterBoundaryRawReadback}.card.png`, 8, 8, (x, y) => [
   completeAdapterBoundaryReadbackBytes[
@@ -31624,6 +31735,14 @@ await writeRgbaPng(`${completeAdapterBoundaryRawReadback}.card.png`, 8, 8, (x, y
 ]);
 const completeAdapterBoundaryMaterials = realRocmComputeProofLedgerMaterials(
   completeAdapterBoundaryBridgeScope,
+  {
+    projectId: 'real-rocm-adapter-boundary-bridge-complete',
+    rawReadbackPath: completeAdapterBoundaryRawReadback,
+    rawReadbackBytes: completeAdapterBoundaryReadbackBytes,
+  },
+);
+const completeAdapterBoundaryPriorMaterials = realRocmComputeProofLedgerMaterials(
+  `${completeAdapterBoundaryBridgeScope}:small-oracle`,
   {
     projectId: 'real-rocm-adapter-boundary-bridge-complete',
     rawReadbackPath: completeAdapterBoundaryRawReadback,
@@ -31746,15 +31865,7 @@ const completeAdapterBoundaryReport = {
     schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
     provided: true,
     entries: [
-      {
-        phase: 'small-oracle',
-        status: 'pass',
-        resultState: 'gpu-hmr-output-oracle-proven',
-        outputOracleProven: true,
-        proofId: 'adapter-boundary-complete-small:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
-        compute_oracle_artifacts: completeAdapterBoundaryMaterials.computeOracleArtifacts,
-      },
+      computeTargetProgressionSmallOracleEntry(completeAdapterBoundaryPriorMaterials),
       {
         phase: 'partial-reload',
         status: 'pass',
@@ -34110,8 +34221,11 @@ await fs.writeFile(adapterBoundaryRawReadback, adapterBoundaryReadbackBytes);
 await writeJson(`${adapterBoundaryRawReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: adapterBoundaryReadbackBytes.length,
   byteLength: adapterBoundaryReadbackBytes.length,
   shape: [adapterBoundaryReadbackBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(adapterBoundaryReadbackBytes),
 });
 await writeRgbaPng(`${adapterBoundaryRawReadback}.card.png`, 8, 8, (x, y) => [
   adapterBoundaryReadbackBytes[(x + y) % adapterBoundaryReadbackBytes.length],
@@ -34124,6 +34238,14 @@ const adapterBoundaryMaterials = realRocmComputeProofLedgerMaterials(adapterBoun
   rawReadbackPath: adapterBoundaryRawReadback,
   rawReadbackBytes: adapterBoundaryReadbackBytes,
 });
+const adapterBoundaryPriorMaterials = realRocmComputeProofLedgerMaterials(
+  `${adapterBoundaryBridgeScope}:small-oracle`,
+  {
+    projectId: 'real-rocm-adapter-boundary-bridge-missing-after-dispatch',
+    rawReadbackPath: adapterBoundaryRawReadback,
+    rawReadbackBytes: adapterBoundaryReadbackBytes,
+  },
+);
 const adapterBoundaryAppHook = acceptedRealRocmAppHookContract(adapterBoundaryBridgeScope);
 const adapterBoundaryAppHookMaterialization =
   acceptedRealRocmAppHookMaterialization(adapterBoundaryBridgeScope);
@@ -34208,15 +34330,7 @@ await writeJson(
       schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
       provided: true,
       entries: [
-        {
-          phase: 'small-oracle',
-          status: 'pass',
-          resultState: 'gpu-hmr-output-oracle-proven',
-          outputOracleProven: true,
-          proofId: 'adapter-boundary-small-oracle:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-          schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
-          compute_oracle_artifacts: adapterBoundaryMaterials.computeOracleArtifacts,
-        },
+        computeTargetProgressionSmallOracleEntry(adapterBoundaryPriorMaterials),
         {
           phase: 'partial-reload',
           status: 'pass',
@@ -34522,8 +34636,11 @@ await fs.writeFile(forgedFinalNoOracleRawReadback, forgedFinalNoOracleBytes);
 await writeJson(`${forgedFinalNoOracleRawReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: forgedFinalNoOracleBytes.length,
   byteLength: forgedFinalNoOracleBytes.length,
   shape: [forgedFinalNoOracleBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(forgedFinalNoOracleBytes),
 });
 await writeRgbaPng(`${forgedFinalNoOracleRawReadback}.card.png`, 8, 8, (x, y) => [
   forgedFinalNoOracleBytes[(x + y) % forgedFinalNoOracleBytes.length],
@@ -34646,8 +34763,11 @@ await fs.writeFile(forgedMissingRequiredHookRawReadback, forgedMissingRequiredHo
 await writeJson(`${forgedMissingRequiredHookRawReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: forgedMissingRequiredHookBytes.length,
   byteLength: forgedMissingRequiredHookBytes.length,
   shape: [forgedMissingRequiredHookBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(forgedMissingRequiredHookBytes),
 });
 await writeRgbaPng(`${forgedMissingRequiredHookRawReadback}.card.png`, 8, 8, (x, y) => [
   forgedMissingRequiredHookBytes[(x + y) % forgedMissingRequiredHookBytes.length],
@@ -34736,8 +34856,11 @@ await fs.writeFile(forgedImplicitLargeMlHookRawReadback, forgedImplicitLargeMlHo
 await writeJson(`${forgedImplicitLargeMlHookRawReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: forgedImplicitLargeMlHookBytes.length,
   byteLength: forgedImplicitLargeMlHookBytes.length,
   shape: [forgedImplicitLargeMlHookBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(forgedImplicitLargeMlHookBytes),
 });
 await writeRgbaPng(`${forgedImplicitLargeMlHookRawReadback}.card.png`, 8, 8, (x, y) => [
   forgedImplicitLargeMlHookBytes[(x + y) % forgedImplicitLargeMlHookBytes.length],
@@ -34747,6 +34870,14 @@ await writeRgbaPng(`${forgedImplicitLargeMlHookRawReadback}.card.png`, 8, 8, (x,
 ]);
 const forgedImplicitLargeMlHookProofMaterials = realRocmComputeProofLedgerMaterials(
   'forged-implicit-large-ml-hook',
+  {
+    projectId: 'real-rocm-forged-implicit-large-ml-hook',
+    rawReadbackPath: forgedImplicitLargeMlHookRawReadback,
+    rawReadbackBytes: forgedImplicitLargeMlHookBytes,
+  },
+);
+const forgedImplicitLargeMlHookPriorMaterials = realRocmComputeProofLedgerMaterials(
+  'forged-implicit-large-ml-hook:small-oracle',
   {
     projectId: 'real-rocm-forged-implicit-large-ml-hook',
     rawReadbackPath: forgedImplicitLargeMlHookRawReadback,
@@ -34797,15 +34928,7 @@ await writeJson(
       schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
       provided: true,
       entries: [
-        {
-          phase: 'small-oracle',
-          status: 'pass',
-          resultState: 'gpu-hmr-output-oracle-proven',
-          outputOracleProven: true,
-          proofId: 'implicit-large-ml-small-oracle:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-          schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
-          compute_oracle_artifacts: forgedImplicitLargeMlHookProofMaterials.computeOracleArtifacts,
-        },
+        computeTargetProgressionSmallOracleEntry(forgedImplicitLargeMlHookPriorMaterials),
         {
           phase: 'partial-reload',
           status: 'pass',
@@ -34906,8 +35029,11 @@ await fs.writeFile(forgedTargetProgressionRawReadback, forgedTargetProgressionBy
 await writeJson(`${forgedTargetProgressionRawReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: forgedTargetProgressionBytes.length,
   byteLength: forgedTargetProgressionBytes.length,
   shape: [forgedTargetProgressionBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(forgedTargetProgressionBytes),
 });
 await writeRgbaPng(`${forgedTargetProgressionRawReadback}.card.png`, 8, 8, (x, y) => [
   forgedTargetProgressionBytes[(x + y) % forgedTargetProgressionBytes.length],
@@ -34996,8 +35122,11 @@ await fs.writeFile(forgedVisualPriorReadback, forgedVisualPriorBytes);
 await writeJson(`${forgedVisualPriorReadback}.schema.json`, {
   schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
   elementType: 'u8',
+  elementCount: forgedVisualPriorBytes.length,
   byteLength: forgedVisualPriorBytes.length,
   shape: [forgedVisualPriorBytes.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: hashBuffer(forgedVisualPriorBytes),
 });
 await writeRgbaPng(`${forgedVisualPriorReadback}.card.png`, 8, 8, (x, y) => [
   forgedVisualPriorBytes[(x + y) % forgedVisualPriorBytes.length],

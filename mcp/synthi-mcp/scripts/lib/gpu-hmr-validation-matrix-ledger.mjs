@@ -12,10 +12,14 @@ import {
   classifyGpuHmrOutputOracleKind,
   isGpuHmrVisualOutputOracleKind,
 } from './gpu-hmr-output-oracle-kind.mjs';
-import { evaluateGpuHmrAcceptanceContract } from './gpu-hmr-acceptance-contract.mjs';
+import {
+  evaluateGpuHmrAcceptanceContract,
+  recomputeGpuHmrAcceptanceContractHash,
+} from './gpu-hmr-acceptance-contract.mjs';
 import { classifyGpuHmrFissionProof } from './gpu-hmr-runtime-proof.mjs';
 import { runtimeProofArtifactStrictGate } from './gpu-hmr-proof-strict-gates.mjs';
 import { computeOracleArtifactsFromFiles } from './gpu-hmr-validation-proof-artifact.mjs';
+import { buildComputeExpectedOutputContract } from './gpu-hmr-compute-oracle-semantics.mjs';
 import {
   evaluateGpuHmrDeterministicVisualMode,
   GPU_HMR_ASYNC_VISUAL_PROOF_JOB_AUTHORITY,
@@ -25064,6 +25068,7 @@ async function runtimeProofRow(json, filePath, context) {
     visual,
     context.repoRoot,
     path.dirname(filePath),
+    { acceptanceContract: contract },
   );
   const accepted =
     baseAccepted
@@ -25613,6 +25618,12 @@ async function agentSplitRow(records, filePath, context) {
     visual,
     context.repoRoot,
     path.dirname(filePath),
+    {
+      acceptanceContract: compactObject(
+        runtimeProofArtifact.acceptanceContract
+        ?? runtimeProofArtifact.acceptance_contract,
+      ),
+    },
   );
   const strictRuntimeProofAccepted =
     recomputedLedger.present === true
@@ -26091,6 +26102,7 @@ async function hiprtWarmRow(json, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     {
+      acceptanceContract,
       supplementalBindings: compactObjectList([contractOutputOracleTargetBinding]),
     },
   );
@@ -26332,6 +26344,13 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     {
+      acceptanceContract: compactObject(
+        json.contract
+        ?? json.acceptanceContract
+        ?? json.acceptance_contract
+        ?? runtimeProofArtifact.acceptanceContract
+        ?? runtimeProofArtifact.acceptance_contract,
+      ),
       supplementalBindings: [
         outputOracleTargetSupplementalBinding(
           json.outputOracleTarget ?? json.output_oracle_target,
@@ -26583,6 +26602,7 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     { present: false, accepted: false },
     context.repoRoot,
     path.dirname(filePath),
+    { acceptanceContract: contract },
   );
   const directComputeArtifacts = compactObject(
     json.computeOracleArtifacts
@@ -26775,6 +26795,7 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     { present: false, accepted: false },
     context.repoRoot,
     path.dirname(filePath),
+    { acceptanceContract: contract },
   );
   const directComputeArtifacts = compactObject(
     json.computeOracleArtifacts
@@ -27061,6 +27082,7 @@ async function openClRuntimeRow(json, filePath, context) {
     { present: false, accepted: false },
     context.repoRoot,
     path.dirname(filePath),
+    { acceptanceContract: contract },
   );
   const directComputeArtifacts = compactObject(
     json.computeOracleArtifacts
@@ -27376,6 +27398,7 @@ async function vulkanRuntimeRow(json, filePath, context) {
     visual,
     context.repoRoot,
     path.dirname(filePath),
+    { acceptanceContract: contract },
   );
   const artifactAfterHash = firstText(
     json.compiler?.afterShaderModuleHash,
@@ -31993,7 +32016,103 @@ async function resolveComputeOracleArtifactPaths(artifacts, repoRoot, baseDir) {
   return out;
 }
 
-async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, baseDir) {
+function computeExpectedOutputContractFromAcceptanceContract(value) {
+  const rawContract = compactObject(value);
+  if (Object.keys(rawContract).length === 0) {
+    return {
+      present: false,
+      hashVerified: false,
+      suppliedContractHash: null,
+      recomputedContractHash: null,
+      normalizedContract: {},
+      expectedOutputContract: {},
+      failedGates: ['compute_oracle_acceptance_contract_missing'],
+    };
+  }
+  const evaluation = evaluateGpuHmrAcceptanceContract(rawContract);
+  const normalizedContract = compactObject(evaluation.contract);
+  const fissionReport = compactObject(
+    normalizedContract.fission_report
+    ?? normalizedContract.fissionReport,
+  );
+  const outputOracleContract = compactObject(
+    fissionReport.output_oracle_contract
+    ?? fissionReport.outputOracleContract,
+  );
+  const expectedOutputContract = compactObject(
+    outputOracleContract.expected_output_contract
+    ?? outputOracleContract.expectedOutputContract,
+  );
+  const suppliedContractHash = firstText(rawContract.contract_hash, rawContract.contractHash);
+  const recomputedContractHash = firstText(
+    evaluation.recomputedContractHash,
+    evaluation.recomputed_contract_hash,
+  );
+  const hashFailureCodes = compactStringList(
+    (evaluation.failedGates ?? [])
+      .map((failure) => firstText(failure?.code, failure))
+      .filter((code) => code?.startsWith('contract_hash_')),
+  );
+  const hashVerified = Boolean(
+    suppliedContractHash
+    && recomputedContractHash
+    && suppliedContractHash === recomputedContractHash
+    && hashFailureCodes.length === 0,
+  );
+  return {
+    present: true,
+    hashVerified,
+    suppliedContractHash,
+    recomputedContractHash,
+    normalizedContract,
+    expectedOutputContract,
+    failedGates: compactStringList([
+      hashVerified ? null : 'compute_oracle_acceptance_contract_hash_unverified',
+      Object.keys(expectedOutputContract).length > 0
+        ? null
+        : 'compute_oracle_expected_output_contract_missing',
+      ...hashFailureCodes.map((code) => `compute_oracle_acceptance_${code}`),
+    ]),
+  };
+}
+
+function observedComputeOracleBinding(record, computeArtifacts, outputBinding) {
+  const ledgerRecord = compactObject(record);
+  const artifacts = compactObject(computeArtifacts);
+  const outputEvent = compactObject(ledgerRecord.output_event ?? ledgerRecord.outputEvent);
+  const outputOracle = compactObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+  return {
+    projectId: firstText(ledgerRecord.project_id, ledgerRecord.projectId),
+    editId: firstText(ledgerRecord.edit_id, ledgerRecord.editId),
+    artifactAfterHash: firstText(
+      ledgerRecord.artifact_after_hash,
+      ledgerRecord.artifactAfterHash,
+    ),
+    outputTargetId: firstText(
+      outputBinding?.outputTargetId,
+      outputBinding?.output_target_id,
+      outputEvent.output_target_id,
+      outputEvent.outputTargetId,
+      outputOracle.output_target_id,
+      outputOracle.outputTargetId,
+    ),
+    oracleCodeHash: firstText(
+      outputEvent.oracle_code_hash,
+      outputEvent.oracleCodeHash,
+      outputOracle.oracle_code_hash,
+      outputOracle.oracleCodeHash,
+      artifacts.oracle_code_hash,
+      artifacts.oracleCodeHash,
+    ),
+  };
+}
+
+async function realRocmComputeOracleFileIntegrityFacet(
+  proofLedger,
+  repoRoot,
+  baseDir,
+  options = {},
+) {
   const computeRecord = ledgerRecordsFromValue(proofLedger)
     .find((record) => Object.keys(ledgerRecordComputeOracleArtifacts(record)).length > 0);
   const computeArtifacts = computeRecord ? ledgerRecordComputeOracleArtifacts(computeRecord) : {};
@@ -32006,9 +32125,24 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
     };
   }
   const resolvedArtifacts = await resolveComputeOracleArtifactPaths(computeArtifacts, repoRoot, baseDir);
+  const acceptanceContractEvidence = computeExpectedOutputContractFromAcceptanceContract(
+    options.acceptanceContract
+    ?? options.acceptance_contract,
+  );
+  const outputBinding = compactObject(
+    options.outputBinding
+    ?? options.output_binding,
+  );
+  const observedBinding = observedComputeOracleBinding(
+    computeRecord,
+    resolvedArtifacts,
+    outputBinding,
+  );
   const enriched = await computeOracleArtifactsFromFiles(resolvedArtifacts, {
     allowedRoots: computeArtifactCasAllowedRoots(repoRoot, baseDir, resolvedArtifacts),
     artifactRoot: trustedComputeArtifactCasRoot(repoRoot, baseDir),
+    expectedOutputContract: acceptanceContractEvidence.expectedOutputContract,
+    observedBinding,
   });
   const verification = compactObject(
     enriched?.raw_readback_verification
@@ -32093,16 +32227,40 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
     computeArtifactCasResolution.failedGates
     ?? computeArtifactCasResolution.failed_gates,
   ).map((code) => ({ code }));
-  const expectedOutputVerified = firstBool(
-    enriched?.expected_output_verified,
-    enriched?.expectedOutputVerified,
-    verification.expected_output_verified,
-    verification.expectedOutputVerified,
-    outputEvent.expected_output_verified,
-    outputEvent.expectedOutputVerified,
-    outputOracle.expected_output_verified,
-    outputOracle.expectedOutputVerified,
-  ) === true;
+  const semanticVerification = compactObject(
+    enriched?.compute_oracle_semantic_verification
+    ?? enriched?.computeOracleSemanticVerification,
+  );
+  const semanticVerificationFailedGates = compactStringList(
+    (semanticVerification.failedGates ?? semanticVerification.failed_gates ?? [])
+      .map((failure) => firstText(failure?.code, failure)),
+  );
+  const recordContractHash = firstText(
+    computeRecord.contract_hash,
+    computeRecord.contractHash,
+  );
+  const acceptanceContractLedgerHashMatched = Boolean(
+    recordContractHash
+    && acceptanceContractEvidence.recomputedContractHash
+    && recordContractHash === acceptanceContractEvidence.recomputedContractHash,
+  );
+  const normalizedAcceptanceContract = compactObject(
+    acceptanceContractEvidence.normalizedContract,
+  );
+  const acceptanceContractRecordIdentityAccepted = Boolean(
+    observedBinding.projectId
+    && normalizedAcceptanceContract.project_id === observedBinding.projectId
+    && observedBinding.editId
+    && normalizedAcceptanceContract.edit_id === observedBinding.editId
+    && observedBinding.artifactAfterHash
+    && normalizedAcceptanceContract.artifact_hash_after === observedBinding.artifactAfterHash,
+  );
+  const expectedOutputVerified = Boolean(
+    semanticVerification.accepted === true
+    && acceptanceContractEvidence.hashVerified === true
+    && acceptanceContractLedgerHashMatched
+    && acceptanceContractRecordIdentityAccepted,
+  );
   const timestampAfterDispatch = finiteNumber(
     enriched?.timestamp_after_dispatch
     ?? enriched?.timestampAfterDispatch,
@@ -32111,6 +32269,17 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
   const outputEpoch = firstEpochText(outputEvent.epoch, outputEvent.epoch_id, outputEvent.epochId);
   const epochMatches = artifactEpoch && outputEpoch ? artifactEpoch === outputEpoch : Boolean(artifactEpoch);
   const semanticFailedGates = compactStringList([
+    ...acceptanceContractEvidence.failedGates,
+    acceptanceContractLedgerHashMatched
+      ? null
+      : 'compute_oracle_acceptance_contract_ledger_hash_mismatch',
+    acceptanceContractRecordIdentityAccepted
+      ? null
+      : 'compute_oracle_acceptance_contract_record_identity_mismatch',
+    semanticVerification.accepted === true
+      ? null
+      : 'compute_oracle_semantic_verification_not_accepted',
+    ...semanticVerificationFailedGates,
     declaredRawReadbackHash ? null : 'compute_oracle_raw_readback_hash_declared_missing',
     schemaHash ? null : 'compute_oracle_readback_schema_hash_missing',
     deterministicSliceHash ? null : 'compute_oracle_deterministic_slice_hash_missing',
@@ -32165,6 +32334,37 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
     checksum_after: checksumAfter,
     expectedOutputVerified,
     expected_output_verified: expectedOutputVerified,
+    computeOracleSemanticVerification: Object.keys(semanticVerification).length > 0
+      ? semanticVerification
+      : null,
+    compute_oracle_semantic_verification: Object.keys(semanticVerification).length > 0
+      ? semanticVerification
+      : null,
+    acceptanceContractBinding: {
+      present: acceptanceContractEvidence.present,
+      hashVerified: acceptanceContractEvidence.hashVerified,
+      hash_verified: acceptanceContractEvidence.hashVerified,
+      suppliedContractHash: acceptanceContractEvidence.suppliedContractHash,
+      supplied_contract_hash: acceptanceContractEvidence.suppliedContractHash,
+      recomputedContractHash: acceptanceContractEvidence.recomputedContractHash,
+      recomputed_contract_hash: acceptanceContractEvidence.recomputedContractHash,
+      ledgerContractHash: recordContractHash,
+      ledger_contract_hash: recordContractHash,
+      ledgerHashMatched: acceptanceContractLedgerHashMatched,
+      ledger_hash_matched: acceptanceContractLedgerHashMatched,
+      recordIdentityAccepted: acceptanceContractRecordIdentityAccepted,
+      record_identity_accepted: acceptanceContractRecordIdentityAccepted,
+      expectedOutputContractHash: firstText(
+        semanticVerification.expectedOutputContractHash,
+        semanticVerification.expected_output_contract_hash,
+      ),
+      expected_output_contract_hash: firstText(
+        semanticVerification.expectedOutputContractHash,
+        semanticVerification.expected_output_contract_hash,
+      ),
+    },
+    observedBinding,
+    observed_binding: observedBinding,
     timestampAfterDispatch,
     timestamp_after_dispatch: timestampAfterDispatch,
     epoch: artifactEpoch ?? null,
@@ -32446,7 +32646,15 @@ async function ledgerOutputOracleFacet(ledger, proofLedger, visual, repoRoot, ba
       failed_gates: failedGates,
     };
   }
-  const compute = await realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, baseDir);
+  const compute = await realRocmComputeOracleFileIntegrityFacet(
+    proofLedger,
+    repoRoot,
+    baseDir,
+    {
+      ...options,
+      outputBinding,
+    },
+  );
   const failedGates = failedGateObjects([
     outputBinding.accepted === true ? null : 'output_oracle_binding_not_accepted',
     compute.accepted === true ? null : 'compute_oracle_artifacts_not_accepted',
@@ -32505,9 +32713,30 @@ function genericOutputOracleSelfCheckModel(requestMode, requestedModel) {
   };
 }
 
-function genericOutputOracleSelfCheckRecord(computeOracleArtifacts) {
+function genericOutputOracleSelfCheckAcceptanceContract(expectedOutputContract) {
+  const source = {
+    contract_version: 'synthi.gpu_hmr.contract.v1',
+    project_id: 'generic-output-oracle-self-check',
+    edit_id: 'generic-output-oracle-edit',
+    artifact_hash_after: stableJsonHash({ selfCheck: 'generic-output-oracle-after' }),
+    fission_report: {
+      output_oracle_contract: {
+        expected_output_contract: expectedOutputContract,
+      },
+    },
+  };
+  return {
+    ...source,
+    contract_hash: recomputeGpuHmrAcceptanceContractHash(source),
+  };
+}
+
+function genericOutputOracleSelfCheckRecord(computeOracleArtifacts, acceptanceContract) {
   const artifactBeforeHash = stableJsonHash({ selfCheck: 'generic-output-oracle-before' });
-  const artifactAfterHash = stableJsonHash({ selfCheck: 'generic-output-oracle-after' });
+  const artifactAfterHash = firstText(
+    acceptanceContract.artifact_hash_after,
+    acceptanceContract.artifactHashAfter,
+  );
   const epoch = 'epoch:generic-output-oracle';
   const dispatchId = 'dispatch:generic-output-oracle';
   const outputTargetId = 'output-target:generic-compute-buffer';
@@ -32523,7 +32752,10 @@ function genericOutputOracleSelfCheckRecord(computeOracleArtifacts) {
       edit_kind: 'gpu_artifact_edit',
       route: 'gpu_hmr',
     },
-    contract_hash: stableJsonHash({ selfCheck: 'generic-output-oracle-contract' }),
+    contract_hash: firstText(
+      acceptanceContract.contract_hash,
+      acceptanceContract.contractHash,
+    ),
     artifact_before_hash: artifactBeforeHash,
     artifact_after_hash: artifactAfterHash,
     loader_event: {
@@ -32611,14 +32843,41 @@ export async function selfCheckGenericOutputOracleLedger() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'synthi-generic-output-oracle-'));
   const rawPath = path.join(dir, 'raw-readback.bin');
   const schemaPath = path.join(dir, 'readback-schema.json');
+  const forgedRawPath = path.join(dir, 'forged-raw-readback.bin');
+  const forgedSchemaPath = path.join(dir, 'forged-readback-schema.json');
   const cardPath = path.join(dir, 'proof-card.png');
   const rawBytes = Buffer.from([3, 5, 8, 13, 21, 34, 55, 89]);
   const sliceBytes = rawBytes.subarray(0, 4);
+  const artifactAfterHash = stableJsonHash({ selfCheck: 'generic-output-oracle-after' });
+  const oracleCodeHash = stableJsonHash({ oracle: 'generic-output-oracle-self-check' });
+  const expectedOutputContract = buildComputeExpectedOutputContract({
+    comparisonMode: 'exact_bytes',
+    dtype: 'u8',
+    shape: [rawBytes.length],
+    elementCount: rawBytes.length,
+    byteOrder: 'not_applicable',
+    expectedRawHash: sha256BufferHash(rawBytes),
+    binding: {
+      projectId: 'generic-output-oracle-self-check',
+      editId: 'generic-output-oracle-edit',
+      artifactAfterHash,
+      outputTargetId: 'output-target:generic-compute-buffer',
+      oracleCodeHash,
+    },
+    evidenceRefs: ['self-check:generic-output-oracle:expected-output'],
+  });
+  const acceptanceContract = genericOutputOracleSelfCheckAcceptanceContract(
+    expectedOutputContract,
+  );
   await fs.writeFile(rawPath, rawBytes);
   await fs.writeFile(schemaPath, `${JSON.stringify({
     schemaVersion: 'synthi.gpu_hmr.compute_readback_schema.v1',
     elementType: 'u8',
     elementCount: rawBytes.length,
+    shape: [rawBytes.length],
+    byteLength: rawBytes.length,
+    byteOrder: 'not_applicable',
+    rawReadbackHash: sha256BufferHash(rawBytes),
   }, null, 2)}\n`);
   await sharp({
     create: {
@@ -32639,7 +32898,7 @@ export async function selfCheckGenericOutputOracleLedger() {
       length: sliceBytes.length,
       hash: sha256BufferHash(sliceBytes),
     },
-    oracle_code_hash: stableJsonHash({ oracle: 'generic-output-oracle-self-check' }),
+    oracle_code_hash: oracleCodeHash,
     rendered_card_png: cardPath,
     producer: 'generic_output_oracle_self_check',
     timestamp_after_dispatch: 400,
@@ -32653,7 +32912,7 @@ export async function selfCheckGenericOutputOracleLedger() {
     expected_output_verified: true,
     output_change_expected: true,
   };
-  const record = genericOutputOracleSelfCheckRecord(computeOracleArtifacts);
+  const record = genericOutputOracleSelfCheckRecord(computeOracleArtifacts, acceptanceContract);
   const proofLedger = buildGpuHmrProofLedger(record);
   const ledgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
   assertGenericOutputOracleSelfCheck(
@@ -32671,6 +32930,7 @@ export async function selfCheckGenericOutputOracleLedger() {
     {},
     dir,
     dir,
+    { acceptanceContract },
   );
   assertGenericOutputOracleSelfCheck(
     acceptedFacet.accepted === true,
@@ -32692,7 +32952,7 @@ export async function selfCheckGenericOutputOracleLedger() {
     ...computeOracleArtifacts,
     raw_readback_hash: `sha256:${'0'.repeat(64)}`,
   };
-  const forgedRecord = genericOutputOracleSelfCheckRecord(forgedArtifacts);
+  const forgedRecord = genericOutputOracleSelfCheckRecord(forgedArtifacts, acceptanceContract);
   const forgedProofLedger = buildGpuHmrProofLedger(forgedRecord);
   const forgedLedgerQuery = queryGpuHmrLedgerInvariants(forgedProofLedger);
   const forgedFacet = await ledgerOutputOracleFacet(
@@ -32706,6 +32966,7 @@ export async function selfCheckGenericOutputOracleLedger() {
     {},
     dir,
     dir,
+    { acceptanceContract },
   );
   const forgedCodes = compactStringList([
     ...forgedLedgerQuery.failedInvariants.map((failure) => failure.code),
@@ -32718,6 +32979,62 @@ export async function selfCheckGenericOutputOracleLedger() {
     `forged generic compute output oracle should reject: ${forgedCodes.join(',')}`,
   );
 
+  const forgedBytes = Buffer.from([2, 4, 8, 16, 32, 64, 128, 255]);
+  const forgedSliceBytes = forgedBytes.subarray(0, 4);
+  await fs.writeFile(forgedRawPath, forgedBytes);
+  await fs.writeFile(forgedSchemaPath, `${JSON.stringify({
+    schemaVersion: 'synthi.gpu_hmr.compute_readback_schema.v1',
+    elementType: 'u8',
+    elementCount: forgedBytes.length,
+    shape: [forgedBytes.length],
+    byteLength: forgedBytes.length,
+    byteOrder: 'not_applicable',
+    rawReadbackHash: sha256BufferHash(forgedBytes),
+  }, null, 2)}\n`);
+  const semanticallyForgedArtifacts = {
+    ...computeOracleArtifacts,
+    raw_readback_bin: forgedRawPath,
+    readback_schema_json: forgedSchemaPath,
+    raw_readback_hash: sha256BufferHash(forgedBytes),
+    raw_readback_byte_length: forgedBytes.length,
+    deterministic_slice: {
+      offset: 0,
+      length: forgedSliceBytes.length,
+      hash: sha256BufferHash(forgedSliceBytes),
+    },
+    deterministic_slice_hash: sha256BufferHash(forgedSliceBytes),
+    expected_output_verified: true,
+  };
+  const semanticallyForgedRecord = genericOutputOracleSelfCheckRecord(
+    semanticallyForgedArtifacts,
+    acceptanceContract,
+  );
+  const semanticallyForgedProofLedger = buildGpuHmrProofLedger(semanticallyForgedRecord);
+  const semanticallyForgedFacet = await ledgerOutputOracleFacet(
+    {
+      present: true,
+      source: 'recomputed_ledger',
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    },
+    semanticallyForgedProofLedger,
+    {},
+    dir,
+    dir,
+    { acceptanceContract },
+  );
+  const semanticForgedCodes = compactStringList(
+    semanticallyForgedFacet.failedGates.map((failure) => failure.code),
+  );
+  assertGenericOutputOracleSelfCheck(
+    semanticallyForgedFacet.accepted === false
+      && semanticallyForgedFacet.compute?.fileIntegrityAccepted === true
+      && semanticallyForgedFacet.compute?.semanticAccepted === false
+      && semanticForgedCodes.includes('compute_oracle_exact_bytes_mismatch')
+      && semanticForgedCodes.includes('compute_oracle_expected_output_not_verified'),
+    `self-consistent wrong bytes should fail semantic proof: ${semanticForgedCodes.join(',')}`,
+  );
+
   return {
     ok: true,
     schemaVersion: 'synthi.gpu_hmr.generic_output_oracle_self_check.v1',
@@ -32728,7 +33045,9 @@ export async function selfCheckGenericOutputOracleLedger() {
       computeAccepted: acceptedFacet.compute?.accepted === true,
     },
     forgedRejected: true,
+    selfConsistentWrongBytesRejected: true,
     failedGateCoverage: forgedCodes,
+    semanticFailedGateCoverage: semanticForgedCodes,
   };
 }
 
@@ -32902,18 +33221,87 @@ function normalizedTargetProgressionEntryPhase(entry) {
 }
 
 async function targetProgressionSmallOracleLedgerEvidence(entry, repoRoot, baseDir) {
-  const computeArtifacts = compactObject(
+  const declaredComputeArtifacts = compactObject(
     entry.compute_oracle_artifacts
     ?? entry.computeOracleArtifacts,
   );
-  if (Object.keys(computeArtifacts).length > 0) {
-    const compute = await realRocmComputeOracleFileIntegrityFacet({
-      records: [{
-        oracle_artifacts: {
-          compute_oracle_artifacts: computeArtifacts,
-        },
-      }],
-    }, repoRoot, baseDir);
+  if (Object.keys(declaredComputeArtifacts).length > 0) {
+    const explicitRecord = compactObject(
+      entry.proofLedgerRecord
+      ?? entry.proof_ledger_record,
+    );
+    const suppliedLedger = compactObject(
+      entry.proofLedger
+      ?? entry.proof_ledger,
+    );
+    const suppliedRecord = Object.keys(explicitRecord).length > 0
+      ? explicitRecord
+      : compactObject(ledgerRecordsFromValue(suppliedLedger)[0]);
+    if (Object.keys(suppliedRecord).length === 0) {
+      return {
+        accepted: false,
+        detail: 'compute oracle proof-ledger record missing',
+      };
+    }
+    const normalizedLedger = buildGpuHmrProofLedger(suppliedRecord);
+    const normalizedRecord = compactObject(normalizedLedger.records?.[0]);
+    const normalizedRecordArtifacts = ledgerRecordComputeOracleArtifacts(normalizedRecord);
+    if (Object.keys(normalizedRecordArtifacts).length === 0) {
+      return {
+        accepted: false,
+        detail: 'compute oracle proof-ledger record lacks compute artifacts',
+      };
+    }
+    if (stableJsonHash(declaredComputeArtifacts) !== stableJsonHash(normalizedRecordArtifacts)) {
+      return {
+        accepted: false,
+        detail: 'compute oracle artifacts do not match proof-ledger record',
+      };
+    }
+    const entryProofId = firstText(entry.proofId, entry.proof_id);
+    const recordProofId = firstText(normalizedRecord.proofId, normalizedRecord.proof_id);
+    const recordIdentityFailures = compactStringList(
+      (normalizedLedger.query?.failedInvariants ?? [])
+        .map((failure) => firstText(failure?.code, failure))
+        .filter((code) => code?.startsWith('record_proof_id_')),
+    );
+    if (!entryProofId || !recordProofId || entryProofId !== recordProofId) {
+      return {
+        accepted: false,
+        detail: 'compute oracle proof id does not match proof-ledger record',
+      };
+    }
+    if (recordIdentityFailures.length > 0) {
+      return {
+        accepted: false,
+        detail: `compute oracle proof-ledger record identity invalid: ${recordIdentityFailures.join(',')}`,
+      };
+    }
+    const ledgerInvariantFailures = compactStringList(
+      (normalizedLedger.query?.failedInvariants ?? [])
+        .map((failure) => firstText(failure?.code, failure)),
+    );
+    if (
+      normalizedLedger.query?.gpuHmrSuccess !== true
+      || normalizedLedger.gpuHmrSuccess !== true
+      || ledgerInvariantFailures.length > 0
+    ) {
+      return {
+        accepted: false,
+        detail: `compute oracle proof-ledger invariants failed: ${ledgerInvariantFailures.join(',') || 'gpu_hmr_success_false'}`,
+      };
+    }
+    const compute = await realRocmComputeOracleFileIntegrityFacet(
+      normalizedLedger,
+      repoRoot,
+      baseDir,
+      {
+        acceptanceContract: compactObject(
+          entry.acceptanceContract
+          ?? entry.acceptance_contract,
+        ),
+      },
+    );
     if (compute.accepted === true) {
       return {
         accepted: true,
@@ -34411,7 +34799,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     visual,
     context.repoRoot,
     path.dirname(filePath),
-    { runtimeChain: realRocmRuntimeChain },
+    {
+      runtimeChain: realRocmRuntimeChain,
+      acceptanceContract,
+    },
   );
   const outputOrVisualOracleAccepted = outputOracleFacet.accepted === true;
   const nativeBoundaryRequiresAppHook = nativeBoundaryRequiresRealRocmAppHook({
@@ -35379,6 +35770,12 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     ...compactObject(runtimeProofArtifact.runtimeResourceTrace ?? runtimeProofArtifact.runtime_resource_trace),
     ...compactObject(json.runtimeResourceTrace ?? json.runtime_resource_trace),
   });
+  const acceptanceContract = compactObject(
+    json.acceptanceContract
+    ?? json.acceptance_contract
+    ?? runtimeProofArtifact.acceptanceContract
+    ?? runtimeProofArtifact.acceptance_contract,
+  );
   const declaredOutputOracleFacet = compactObject(
     json.outputOracleFacet
     ?? json.output_oracle_facet
@@ -35402,6 +35799,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
         visual,
         context.repoRoot,
         path.dirname(filePath),
+        { acceptanceContract },
       );
   outputOracleFacet.declaredOutputOracleFacet = Object.keys(declaredOutputOracleFacet).length > 0
     ? declaredOutputOracleFacet
@@ -35421,12 +35819,6 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   const noFullRebuild = fullRebuildUsed === false;
   const noRestart = processRestarted === false;
   const sourceAdaptedProfile = sourceAdaptation.sourceAdaptedProfile === true;
-  const acceptanceContract = compactObject(
-    json.acceptanceContract
-    ?? json.acceptance_contract
-    ?? runtimeProofArtifact.acceptanceContract
-    ?? runtimeProofArtifact.acceptance_contract,
-  );
   const runtimeIdentityContract = Object.keys(acceptanceContract).length > 0
     ? acceptanceContract
     : compactObject(json.contract);
@@ -36723,7 +37115,15 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
         {},
         context.repoRoot,
         path.dirname(filePath),
-        { runtimeChain: randomColdRealRocmRuntimeChain },
+        {
+          runtimeChain: randomColdRealRocmRuntimeChain,
+          acceptanceContract: compactObject(
+            randomColdImportedRuntimeProofArtifact.acceptanceContract
+            ?? randomColdImportedRuntimeProofArtifact.acceptance_contract
+            ?? randomColdRuntimeProofArtifactGate.acceptanceContract
+            ?? randomColdRuntimeProofArtifactGate.acceptance_contract,
+          ),
+        },
       )
     : {
         accepted: false,
