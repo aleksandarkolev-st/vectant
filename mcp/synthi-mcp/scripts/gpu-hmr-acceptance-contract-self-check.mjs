@@ -161,6 +161,21 @@ function expectReject(name, patch, expectedCode) {
 
 const accepted = evaluateGpuHmrAcceptanceContract(contract());
 assert.equal(accepted.accepted, true);
+assert.equal(accepted.contract.contract_hash, accepted.recomputedContractHash);
+
+const staleHashedContract = structuredClone(accepted.contract);
+staleHashedContract.fission_report.output_oracle_contract.readback_plan = 'changed-after-hash';
+const staleHashedEvaluation = evaluateGpuHmrAcceptanceContract(staleHashedContract);
+assert.equal(staleHashedEvaluation.accepted, false);
+assert.ok(staleHashedEvaluation.failedGates.some(({ code }) => code === 'contract_hash_mismatch'));
+
+const conflictingHashAliases = {
+  ...accepted.contract,
+  contractHash: `sha256:${'f'.repeat(64)}`,
+};
+const conflictingHashEvaluation = evaluateGpuHmrAcceptanceContract(conflictingHashAliases);
+assert.equal(conflictingHashEvaluation.accepted, false);
+assert.ok(conflictingHashEvaluation.failedGates.some(({ code }) => code === 'contract_hash_alias_mismatch'));
 
 expectReject('missing project id', {
   project_id: null,

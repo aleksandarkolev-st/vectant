@@ -11,6 +11,7 @@ import {
   type GpuHmrProofTelemetry,
 } from "../../src/gpu_proof.js";
 import { queryGpuHmrLedgerInvariants } from "../../src/gpu_proof_ledger.js";
+import { normalizeGpuHmrAcceptanceContract } from "../../scripts/lib/gpu-hmr-acceptance-contract.mjs";
 
 const HASH_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -211,12 +212,10 @@ function passingAcceptanceContract(ledger = passingProofLedger(), overrides: Rec
   const record = ledger.records[0] as Record<string, any>;
   const artifactBeforeHash = record.artifact_before_hash ?? HASH_A;
   const artifactAfterHash = record.artifact_after_hash ?? HASH_B;
-  const contractHash = record.contract_hash ?? HASH_C;
-  return {
+  return normalizeGpuHmrAcceptanceContract({
     contract_version: "synthi.gpu_hmr.contract.v1",
     project_id: record.project_id ?? "wait-generic-gpu-project",
     edit_id: record.edit_id ?? "gpu-edit",
-    contract_hash: contractHash,
     backend: "hip",
     confidence: 0.95,
     evidence_refs: ["static:hip-launch", "runtime:module-load"],
@@ -342,11 +341,16 @@ function passingAcceptanceContract(ledger = passingProofLedger(), overrides: Rec
       field_evidence_refs: HIP_FIELD_EVIDENCE_REFS,
     },
     ...overrides,
-  };
+  });
 }
 
 function passingRuntimeProofArtifact(ledger = passingProofLedger(), overrides: Record<string, unknown> = {}) {
   const contract = passingAcceptanceContract(ledger);
+  const mutableLedgerRecord = ledger.records?.[0] as Record<string, any> | undefined;
+  if (mutableLedgerRecord && mutableLedgerRecord.contract_hash !== contract.contract_hash) {
+    mutableLedgerRecord.contract_hash = contract.contract_hash;
+    refreshLedgerIdentity(ledger);
+  }
   const ledgerRecord = (ledger.records as unknown[] | undefined)?.[0] as Record<string, unknown> | undefined;
   return {
     schemaVersion: "synthi.gpu.hmr.validation-proof.v1",
@@ -1517,7 +1521,8 @@ describe("synthi_wait_hmr", () => {
     const forgedArtifactLedger = passingProofLedger();
     const forgedRecord = forgedArtifactLedger.records[0] as Record<string, unknown>;
     forgedRecord.cpu_hmr_used = true;
-    forgedArtifactLedger.query = {
+    const forgedArtifact = passingRuntimeProofArtifact(forgedArtifactLedger);
+    forgedArtifact.proofLedgerQuery = {
       ...forgedArtifactLedger.query,
       gpuHmrSuccess: true,
       failedInvariants: [],
@@ -1527,7 +1532,7 @@ describe("synthi_wait_hmr", () => {
         status: "gpu-proof-state",
         resultState: "gpu-hmr-full-runtime-proven",
         proofLedger: ledger,
-        runtimeProofArtifact: passingRuntimeProofArtifact(forgedArtifactLedger),
+        runtimeProofArtifact: forgedArtifact,
       });
       return { status: "applied", source: "hmr_status", elapsedMs: 10 };
     });

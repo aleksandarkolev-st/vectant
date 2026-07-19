@@ -547,6 +547,43 @@ function fissionVerifierEvidenceRefAccepted(value) {
     || normalized.startsWith('static:fission-verifier-report:');
 }
 
+function acceptanceContractHashMaterial(normalized) {
+  return {
+    contract_version: normalized.contract_version,
+    project_id: normalized.project_id,
+    edit_id: normalized.edit_id,
+    backend: normalized.backend,
+    classification: normalized.classification,
+    artifact_identity: normalized.artifact_identity,
+    artifact_hash_before: normalized.artifact_hash_before,
+    artifact_hash_after: normalized.artifact_hash_after,
+    unaffected_artifacts_hash_unchanged: normalized.unaffected_artifacts_hash_unchanged,
+    abi_compatibility_class: normalized.abi_compatibility_class,
+    abi_metadata: normalized.abi_metadata,
+    reload_mechanism: normalized.reload_mechanism,
+    adapter_outcome: normalized.adapter_outcome,
+    reload_evidence_refs: normalized.reload_evidence_refs,
+    firewall_evidence: normalized.firewall_evidence,
+    output_oracle_target: normalized.output_oracle_target,
+    native_runtime_eligibility: normalized.native_runtime_eligibility,
+    dispatch_trace_required: normalized.dispatch_trace_required,
+    oracle_trace_required: normalized.oracle_trace_required,
+    state_preservation_checks: normalized.state_preservation_checks,
+    epoch_policy: normalized.epoch_policy,
+    epoch_retirement_proof: normalized.epoch_retirement_proof,
+    fission_report: normalized.fission_report,
+    hip_contract: normalized.hip_contract,
+    hiprt_contract: normalized.hiprt_contract,
+    vulkan_contract: normalized.vulkan_contract,
+    webgpu_contract: normalized.webgpu_contract,
+    opencl_contract: normalized.opencl_contract,
+  };
+}
+
+function normalizedAcceptanceContractHash(normalized) {
+  return `sha256:${sha256Hex(stableJson(acceptanceContractHashMaterial(normalized)))}`;
+}
+
 export function normalizeGpuHmrAcceptanceContract(input = {}) {
   const c = asObject(input);
   const classification = normalizeClassification(c.classification);
@@ -595,38 +632,21 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     webgpu_contract: asObject(c.webgpu_contract ?? c.webgpuContract),
     opencl_contract: asObject(c.opencl_contract ?? c.openclContract),
   };
-  normalized.contract_hash ??= `sha256:${sha256Hex(stableJson({
-    contract_version: normalized.contract_version,
-    project_id: normalized.project_id,
-    edit_id: normalized.edit_id,
-    backend: normalized.backend,
-    classification: normalized.classification,
-    artifact_identity: normalized.artifact_identity,
-    artifact_hash_before: normalized.artifact_hash_before,
-    artifact_hash_after: normalized.artifact_hash_after,
-    unaffected_artifacts_hash_unchanged: normalized.unaffected_artifacts_hash_unchanged,
-    abi_compatibility_class: normalized.abi_compatibility_class,
-    abi_metadata: normalized.abi_metadata,
-    reload_mechanism: normalized.reload_mechanism,
-    adapter_outcome: normalized.adapter_outcome,
-    reload_evidence_refs: normalized.reload_evidence_refs,
-    firewall_evidence: normalized.firewall_evidence,
-    output_oracle_target: normalized.output_oracle_target,
-    native_runtime_eligibility: normalized.native_runtime_eligibility,
-    dispatch_trace_required: normalized.dispatch_trace_required,
-    oracle_trace_required: normalized.oracle_trace_required,
-    state_preservation_checks: normalized.state_preservation_checks,
-    epoch_policy: normalized.epoch_policy,
-    epoch_retirement_proof: normalized.epoch_retirement_proof,
-    fission_report: normalized.fission_report,
-    hip_contract: normalized.hip_contract,
-    hiprt_contract: normalized.hiprt_contract,
-    vulkan_contract: normalized.vulkan_contract,
-    webgpu_contract: normalized.webgpu_contract,
-    opencl_contract: normalized.opencl_contract,
-  }))}`;
+  normalized.contract_hash ??= normalizedAcceptanceContractHash(normalized);
   normalized.contract_id ??= `gpu-hmr-contract:${normalized.contract_hash}`;
   return normalized;
+}
+
+export function recomputeGpuHmrAcceptanceContractHash(input = {}) {
+  const source = asObject(input);
+  const normalized = normalizeGpuHmrAcceptanceContract({
+    ...source,
+    contract_hash: null,
+    contractHash: null,
+    contract_id: null,
+    contractId: null,
+  });
+  return normalizedAcceptanceContractHash(normalized);
 }
 
 export function evaluateGpuHmrAcceptanceContract(input = {}) {
@@ -635,6 +655,26 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   const failures = [];
   const warnings = [];
   const c = contract.classification;
+  const suppliedContractHashSnake = text(rawContract.contract_hash);
+  const suppliedContractHashCamel = text(rawContract.contractHash);
+  const suppliedContractHash = suppliedContractHashSnake ?? suppliedContractHashCamel;
+  const recomputedContractHash = normalizedAcceptanceContractHash(contract);
+
+  if (
+    suppliedContractHashSnake
+    && suppliedContractHashCamel
+    && suppliedContractHashSnake !== suppliedContractHashCamel
+  ) {
+    addFailure(failures, 'contract_hash_alias_mismatch');
+  }
+  if (suppliedContractHash && !/^sha256:[0-9a-f]{64}$/.test(suppliedContractHash)) {
+    addFailure(failures, 'contract_hash_invalid', { supplied_contract_hash: suppliedContractHash });
+  } else if (suppliedContractHash && suppliedContractHash !== recomputedContractHash) {
+    addFailure(failures, 'contract_hash_mismatch', {
+      supplied_contract_hash: suppliedContractHash,
+      recomputed_contract_hash: recomputedContractHash,
+    });
+  }
 
   if (contract.contract_version !== GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION) {
     addFailure(failures, 'contract_version_unsupported', {
@@ -998,6 +1038,8 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
     failureMode: failures.length === 0 ? null : contract.failure_mode,
     failedGates: failures,
     warnings,
+    recomputedContractHash,
+    recomputed_contract_hash: recomputedContractHash,
   };
 }
 

@@ -49,6 +49,7 @@ import {
 import {
   deriveGpuHmrAcceptanceContractFromVerifiedProofs,
   evaluateGpuHmrAcceptanceContract,
+  normalizeGpuHmrAcceptanceContract,
 } from "../../scripts/lib/gpu-hmr-acceptance-contract.mjs";
 import {
   buildValidationRuntimeProofArtifact,
@@ -7845,13 +7846,15 @@ describe("GPU HMR runtime output proof classification", () => {
       hostPreservationProof,
       fullRuntimeProof,
     });
-    const forgedContract = {
+    const forgedContract = normalizeGpuHmrAcceptanceContract({
       ...verifiedContract,
+      contract_hash: null,
+      contract_id: null,
       artifact_identity: {
         ...verifiedContract.artifact_identity,
         source_paths: ["src/forged/not-the-verified-kernel.hip"],
       },
-    };
+    });
 
     const artifact = buildValidationRuntimeProofArtifact({
       workspaceSlug: "workspace",
@@ -7892,13 +7895,15 @@ describe("GPU HMR runtime output proof classification", () => {
       ]),
     );
 
-    const forgedBackendContract = {
+    const forgedBackendContract = normalizeGpuHmrAcceptanceContract({
       ...verifiedContract,
+      contract_hash: null,
+      contract_id: null,
       hip_contract: {
         ...verifiedContract.hip_contract,
         kernel_name: "forged_kernel",
       },
-    };
+    });
     const backendForgedArtifact = buildValidationRuntimeProofArtifact({
       workspaceSlug: "workspace",
       backend: "hip",
@@ -8182,7 +8187,11 @@ describe("GPU HMR runtime output proof classification", () => {
 
       const forgedArtifact = buildValidationRuntimeProofArtifact({
         ...baseInput,
-        acceptanceContract: testCase.forge(verifiedArtifact.acceptanceContract),
+        acceptanceContract: normalizeGpuHmrAcceptanceContract({
+          ...testCase.forge(verifiedArtifact.acceptanceContract),
+          contract_hash: null,
+          contract_id: null,
+        }),
       });
 
       expect(forgedArtifact.acceptanceContractEvaluation.accepted).toBe(true);

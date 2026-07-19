@@ -8,6 +8,7 @@ import {
 } from "../../src/gpu_proof.js";
 import { buildGpuHmrFrameGateEvidenceBinding } from "../../src/gpu_frame_gate_binding.js";
 import { queryGpuHmrLedgerInvariants } from "../../src/gpu_proof_ledger.js";
+import { normalizeGpuHmrAcceptanceContract } from "../../scripts/lib/gpu-hmr-acceptance-contract.mjs";
 
 const HASH_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -167,12 +168,10 @@ function acceptanceContract(ledger = proofLedger(), overrides: Record<string, un
   const record = ledger.records[0] as Record<string, any>;
   const artifactBeforeHash = record.artifact_before_hash ?? HASH_A;
   const artifactAfterHash = record.artifact_after_hash ?? HASH_B;
-  const contractHash = record.contract_hash ?? HASH_C;
-  return {
+  return normalizeGpuHmrAcceptanceContract({
     contract_version: "synthi.gpu_hmr.contract.v1",
     project_id: record.project_id ?? "generic-gpu-project",
     edit_id: record.edit_id ?? "gpu-edit",
-    contract_hash: contractHash,
     backend: "hip",
     confidence: 0.95,
     evidence_refs: ["static:hip-launch", "runtime:module-load"],
@@ -292,11 +291,25 @@ function acceptanceContract(ledger = proofLedger(), overrides: Record<string, un
       field_evidence_refs: HIP_FIELD_EVIDENCE_REFS,
     },
     ...overrides,
-  };
+  });
+}
+
+function synchronizeLedgerContractHash(ledger: Record<string, any>, contractHash: string) {
+  const record = ledger.records?.[0] as Record<string, any> | undefined;
+  if (!record || record.contract_hash === contractHash) return;
+  record.contract_hash = contractHash;
+  const query = queryGpuHmrLedgerInvariants({
+    schemaVersion: ledger.schemaVersion,
+    records: ledger.records,
+  });
+  ledger.proofId = query.proofId;
+  ledger.gpuHmrSuccess = query.gpuHmrSuccess;
+  ledger.query = query;
 }
 
 function runtimeProofArtifact(ledger = proofLedger(), overrides: Record<string, unknown> = {}) {
   const contract = acceptanceContract(ledger);
+  synchronizeLedgerContractHash(ledger, contract.contract_hash);
   const ledgerRecord = (ledger.records as unknown[] | undefined)?.[0] as Record<string, unknown> | undefined;
   return {
     schemaVersion: "synthi.gpu.hmr.validation-proof.v1",
@@ -1129,7 +1142,8 @@ describe("GPU HMR proof-state validation", () => {
     const forgedArtifactLedger = proofLedger();
     const forgedRecord = forgedArtifactLedger.records[0] as Record<string, unknown>;
     forgedRecord.cpu_hmr_used = true;
-    forgedArtifactLedger.query = {
+    const forgedArtifact = runtimeProofArtifact(forgedArtifactLedger);
+    forgedArtifact.proofLedgerQuery = {
       ...forgedArtifactLedger.query,
       gpuHmrSuccess: true,
       failedInvariants: [],
@@ -1138,7 +1152,7 @@ describe("GPU HMR proof-state validation", () => {
       status: "gpu-proof-state",
       resultState: "gpu-hmr-full-runtime-proven",
       proofLedger: ledger,
-      runtimeProofArtifact: runtimeProofArtifact(forgedArtifactLedger),
+      runtimeProofArtifact: forgedArtifact,
     });
 
     const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
@@ -2014,13 +2028,16 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
     const replayedArtifactLedger = structuredClone(frameGateProofLedger({
       runtimeSessionId: "runtime-session-replayed",
     }));
-    delete telemetryLedger.proofId;
-    delete replayedArtifactLedger.proofId;
+    synchronizeLedgerContractHash(
+      replayedArtifactLedger,
+      acceptanceContract(replayedArtifactLedger).contract_hash,
+    );
     const replayedArtifact = runtimeProofArtifact(telemetryLedger, {
       proofLedger: replayedArtifactLedger,
       proofLedgerQuery: replayedArtifactLedger.query,
       derivedProofLedgerRecord: replayedArtifactLedger.records[0],
     });
+    delete telemetryLedger.proofId;
     const proof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",
       resultState: "gpu-hmr-full-runtime-proven",
