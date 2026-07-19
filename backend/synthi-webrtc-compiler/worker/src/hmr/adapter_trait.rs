@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::build_manifest::BuildManifest;
+use crate::infra::compute_expected_output_semantics::ComputeExpectedOutputContractV2;
 
 // ── Adapter lifecycle events ────────────────────────────────
 
@@ -109,6 +110,8 @@ pub struct ReloadCapsuleMetadata {
     pub fission_selection_decision_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fission_output_oracle_contract: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub compute_expected_output_contract_v2: Option<ComputeExpectedOutputContractV2>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub output_oracle_profile_commitment: Option<ReloadOutputOracleProfileCommitment>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -342,6 +345,7 @@ fn output_oracle_proof_context_material(metadata: &ReloadCapsuleMetadata) -> Opt
         "fissionSourcePaths": metadata.fission_source_paths,
         "fissionSelectionDecisionHash": metadata.fission_selection_decision_hash,
         "fissionOutputOracleContract": metadata.fission_output_oracle_contract,
+        "computeExpectedOutputContractV2": metadata.compute_expected_output_contract_v2,
         "outputOracleProfileCommitment": commitment,
         "abiMembraneHash": metadata.abi_membrane_hash,
         "dependencyClosureHash": metadata.dependency_closure_hash,
@@ -411,6 +415,15 @@ pub fn reload_output_oracle_proof_context_valid(
     let Some(commitment) = metadata.output_oracle_profile_commitment.as_ref() else {
         return false;
     };
+    let derived_contract_consistent = metadata
+        .compute_expected_output_contract_v2
+        .as_ref()
+        .is_none_or(|contract| {
+            let binding = contract.binding();
+            binding.artifact_after_hash == commitment.candidate_artifact_sha256
+                && binding.edit_id == commitment.edit_id
+                && binding.runtime_session_id == context.runtime_session_id
+        });
     let Some(proof_digest) = canonical_gpu_proof_id(&context.proof_id) else {
         return false;
     };
@@ -428,6 +441,7 @@ pub fn reload_output_oracle_proof_context_valid(
         && expected_runtime_session_id.is_none_or(|expected| expected == context.runtime_session_id)
         && metadata.proof_hash.as_deref() == Some(expected_proof_hash.as_str())
         && commitment.schema_version == RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION
+        && derived_contract_consistent
         && canonical_sha256(&commitment.candidate_artifact_sha256)
         && commitment.fission_output_oracle_contract_sha256 == contract_sha256
         && canonical_sha256(&commitment.profile_bytes_sha256)
@@ -482,6 +496,7 @@ fn normalized_reload_capsule_metadata_fields(
         fission_output_oracle_contract: non_empty_json_object(
             metadata.fission_output_oracle_contract.clone(),
         ),
+        compute_expected_output_contract_v2: metadata.compute_expected_output_contract_v2.clone(),
         output_oracle_profile_commitment: metadata.output_oracle_profile_commitment.clone().map(
             |commitment| ReloadOutputOracleProfileCommitment {
                 schema_version: commitment.schema_version.trim().to_string(),
@@ -514,6 +529,7 @@ fn normalized_reload_capsule_metadata_fields(
         || normalized.fission_source_paths.is_some()
         || normalized.fission_selection_decision_hash.is_some()
         || normalized.fission_output_oracle_contract.is_some()
+        || normalized.compute_expected_output_contract_v2.is_some()
         || normalized.output_oracle_profile_commitment.is_some()
         || normalized.output_oracle_proof_context.is_some()
         || normalized.abi_membrane_hash.is_some()
@@ -529,11 +545,12 @@ fn normalized_reload_capsule_metadata(
     match (
         normalized.output_oracle_profile_commitment.as_ref(),
         normalized.output_oracle_proof_context.as_ref(),
+        normalized.compute_expected_output_contract_v2.as_ref(),
     ) {
-        (Some(_), Some(_)) if reload_output_oracle_proof_context_valid(&normalized, None) => {
+        (Some(_), Some(_), _) if reload_output_oracle_proof_context_valid(&normalized, None) => {
             Some(normalized)
         }
-        (None, None) => Some(normalized),
+        (None, None, None) => Some(normalized),
         _ => None,
     }
 }
@@ -724,6 +741,46 @@ pub trait Adapter: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::compute_expected_output_semantics::{
+        ComputeExpectedOutputContractBindingV2, ComputeExpectedOutputSemantics,
+    };
+
+    fn derived_output_contract(
+        project_id: &str,
+        artifact_after_hash: &str,
+        edit_id: &str,
+        runtime_session_id: &str,
+        compile_transport_nonce: &str,
+    ) -> ComputeExpectedOutputContractV2 {
+        let semantics: ComputeExpectedOutputSemantics = serde_json::from_value(json!({
+            "schemaVersion": "synthi.gpu_hmr.compute_expected_output_semantics.v1",
+            "comparisonMode": "exact_bytes",
+            "outputTargetId": "output:tensor:0",
+            "byteOffset": 64,
+            "byteLength": 16,
+            "dtype": "u32",
+            "shape": [2, 2],
+            "elementCount": 4,
+            "byteOrder": "little_endian",
+            "toleranceDecimal": "0",
+            "expectedValuesDecimal": null,
+            "expectedValuesHash": null,
+            "expectedRawHash": format!("sha256:{}", "a".repeat(64)),
+            "semanticsHash": "sha256:cd7074de01fc4bc0fb0eab922f457e4499c886128cadff30232b7e5f6df3bdde",
+        }))
+        .expect("canonical expected-output semantics");
+        semantics
+            .derive_contract_v2(ComputeExpectedOutputContractBindingV2 {
+                project_id: project_id.to_string(),
+                edit_id: edit_id.to_string(),
+                artifact_after_hash: artifact_after_hash.to_string(),
+                output_target_id: "output:tensor:0".to_string(),
+                oracle_code_hash: format!("sha256:{}", "f".repeat(64)),
+                compile_transport_nonce: compile_transport_nonce.to_string(),
+                runtime_session_id: runtime_session_id.to_string(),
+            })
+            .expect("derived expected-output contract")
+    }
 
     /// Dummy adapter to verify the trait compiles.
     struct NoopAdapter;
@@ -901,6 +958,13 @@ mod tests {
             ReloadCapsuleMetadata {
                 fission_island_id: Some(" fission-island:sha256:abc ".into()),
                 fission_output_oracle_contract: Some(contract.clone()),
+                compute_expected_output_contract_v2: Some(derived_output_contract(
+                    "project:generic",
+                    &format!("sha256:{}", "a".repeat(64)),
+                    &format!("source-edit:sha256:{}", "e".repeat(64)),
+                    "runtime-session:test",
+                    "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+                )),
                 output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
                     schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.into(),
                     candidate_artifact_sha256: format!("sha256:{}", "a".repeat(64)),
@@ -958,6 +1022,15 @@ mod tests {
                 profile_bytes_sha256: format!("sha256:{}", "c".repeat(64)),
                 edit_id: format!("source-edit:sha256:{}", "e".repeat(64)),
             })
+        );
+        assert_eq!(
+            decoded
+                .compute_expected_output_contract_v2
+                .as_ref()
+                .expect("derived contract")
+                .binding()
+                .project_id,
+            "project:generic"
         );
     }
 
@@ -1044,6 +1117,88 @@ mod tests {
             &changed_contract_commitment,
             Some("runtime-session:a")
         ));
+    }
+
+    #[test]
+    fn reload_capsule_proof_context_binds_derived_output_contract_lineage() {
+        let proof_digest = "d".repeat(64);
+        let artifact_hash = format!("sha256:{}", "a".repeat(64));
+        let edit_id = format!("source-edit:sha256:{}", "e".repeat(64));
+        let contract = json!({
+            "kind": "compute_readback",
+            "outputTargetId": "output:tensor:0",
+            "causalOutputChangeRequired": true,
+        });
+        let mut metadata =
+            ReloadCapsuleMetadata {
+                fission_output_oracle_contract: Some(contract.clone()),
+                compute_expected_output_contract_v2: Some(derived_output_contract(
+                    "project:generic",
+                    &artifact_hash,
+                    &edit_id,
+                    "runtime-session:a",
+                    "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+                )),
+                output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
+                    schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.into(),
+                    candidate_artifact_sha256: artifact_hash.clone(),
+                    fission_output_oracle_contract_sha256:
+                        reload_output_oracle_contract_content_hash(&contract).unwrap(),
+                    profile_bytes_sha256: format!("sha256:{}", "c".repeat(64)),
+                    edit_id: edit_id.clone(),
+                }),
+                proof_hash: Some(format!("sha256:{proof_digest}")),
+                ..Default::default()
+            };
+        assert!(bind_reload_output_oracle_proof_context(
+            &mut metadata,
+            &format!("gpu-proof:{proof_digest}"),
+            "2026-07-16T12:00:00.000Z",
+            "runtime-session:a",
+        ));
+
+        let mut project_splice = metadata.clone();
+        project_splice.compute_expected_output_contract_v2 = Some(derived_output_contract(
+            "project:replayed",
+            &artifact_hash,
+            &edit_id,
+            "runtime-session:a",
+            "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+        ));
+        assert!(!reload_output_oracle_proof_context_valid(
+            &project_splice,
+            Some("runtime-session:a")
+        ));
+
+        let mut artifact_splice = metadata;
+        artifact_splice.compute_expected_output_contract_v2 = Some(derived_output_contract(
+            "project:generic",
+            &format!("sha256:{}", "b".repeat(64)),
+            &edit_id,
+            "runtime-session:a",
+            "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+        ));
+        assert!(!bind_reload_output_oracle_proof_context(
+            &mut artifact_splice,
+            &format!("gpu-proof:{proof_digest}"),
+            "2026-07-16T12:00:00.000Z",
+            "runtime-session:a",
+        ));
+    }
+
+    #[test]
+    fn reload_capsule_rejects_unbound_derived_output_contract() {
+        let metadata = ReloadCapsuleMetadata {
+            compute_expected_output_contract_v2: Some(derived_output_contract(
+                "project:generic",
+                &format!("sha256:{}", "a".repeat(64)),
+                &format!("source-edit:sha256:{}", "e".repeat(64)),
+                "runtime-session:a",
+                "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+            )),
+            ..Default::default()
+        };
+        assert!(encode_reload_capsule_metadata_token(&metadata).is_none());
     }
 
     #[test]

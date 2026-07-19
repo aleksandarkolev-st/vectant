@@ -8343,6 +8343,7 @@ async fn reload_capsule_metadata_from_proof_artifact_with_profile_path(
             .as_ref()
             .and_then(proof_fission_selection_decision_hash),
         fission_output_oracle_contract,
+        compute_expected_output_contract_v2: None,
         output_oracle_profile_commitment,
         output_oracle_proof_context: None,
         abi_membrane_hash: proof.as_ref().and_then(proof_abi_membrane_hash),
