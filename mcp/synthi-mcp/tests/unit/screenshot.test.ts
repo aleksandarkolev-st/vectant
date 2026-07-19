@@ -98,6 +98,25 @@ function fakeFrameGate(
   };
 }
 
+function bindGpuProofTrustInvalidation(): () => void {
+  let listener: (() => void) | null = null;
+  const hmr = {
+    onGpuProofTrustInvalidated(cb: () => void): () => void {
+      listener = cb;
+      return (): void => {
+        if (listener === cb) listener = null;
+      };
+    },
+  };
+  (session as unknown as {
+    bindFrameGateTokenRevocation: (source: typeof hmr) => () => void;
+  }).bindFrameGateTokenRevocation(hmr);
+  return (): void => {
+    if (listener === null) throw new Error("proof trust invalidation listener not bound");
+    listener();
+  };
+}
+
 describe("synthi_screenshot", () => {
   beforeEach(() => {
     session._resetForTests();
@@ -377,6 +396,26 @@ describe("synthi_screenshot", () => {
     expect(meta.capture_manifest?.frame_gate?.evidence_binding_hash).toBe(
       meta.frame_gate?.evidence_binding_hash,
     );
+  });
+
+  it("rejects a pre-invalidation token without exporting its stale evidence binding", async () => {
+    const png = await solidPng(100, 100, { r: 30, g: 60, b: 90 });
+    installFakeSession({ data: png, width: 100, height: 100, ts: 1_350, seq: 4 });
+    const invalidateProofTrust = bindGpuProofTrustInvalidation();
+    const gate = fakeFrameGate(4, 1_350, {
+      schema_version: "test.evidence_binding.v1",
+      runtime_proof_ref: "stale-proof-ref",
+    });
+
+    invalidateProofTrust();
+    const res = await screenshotTool({ after_frame_gate: gate });
+
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as Record<string, unknown>;
+    expect(body["error"]).toBe("frame_gate_unverified");
+    expect(body["reason"]).toBe("frame_gate_token_unknown");
+    expect(body).not.toHaveProperty("evidence_binding");
+    expect(JSON.stringify(body)).not.toContain("stale-proof-ref");
   });
 
   it("does not copy caller-injected evidence into a legacy gate token", async () => {

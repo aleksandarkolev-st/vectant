@@ -105,6 +105,8 @@ export interface FrameGateTokenValidation {
  *  than blocking on a signal that will never arrive. */
 export const FRAME_ADVANCE_FRESHNESS_WINDOW_MS = 10_000;
 export const FRAME_GATE_TOKEN_TTL_MS = 20 * 60_000;
+export const FRAME_GATE_TOKEN_MAX_RETENTION_MS = FRAME_GATE_TOKEN_TTL_MS;
+export const FRAME_GATE_TOKEN_MAX_ENTRIES = 128;
 
 type FrameAdvanceListener = (fa: FrameAdvance) => void;
 
@@ -290,6 +292,7 @@ class SessionManager {
   private lastFrameAdvance: FrameAdvance | null = null;
   private frameAdvanceListeners = new Set<FrameAdvanceListener>();
   private frameGateTokens = new Map<string, FrameGateToken>();
+  private gpuProofTrustInvalidated = false;
   private presenceCounts: { humans: number; agents: number } = { humans: 0, agents: 1 };
   private warmingProgress: WarmingProgress | null = null;
   private frameTiming: FrameTimingSnapshot | null = null;
@@ -503,7 +506,16 @@ class SessionManager {
     now?: number;
   }): FrameGateToken {
     const now = input.now ?? Date.now();
-    const ttlMs = Math.max(1, input.ttl_ms ?? FRAME_GATE_TOKEN_TTL_MS);
+    if (input.evidence_binding !== undefined && this.gpuProofTrustInvalidated) {
+      throw new Error("frame_gate_gpu_proof_trust_invalidated");
+    }
+    const requestedTtlMs = input.ttl_ms ?? FRAME_GATE_TOKEN_TTL_MS;
+    const ttlMs = Number.isFinite(requestedTtlMs)
+      ? Math.min(
+          FRAME_GATE_TOKEN_MAX_RETENTION_MS,
+          Math.max(1, requestedTtlMs),
+        )
+      : FRAME_GATE_TOKEN_TTL_MS;
     this.pruneFrameGateTokens(now);
     const evidenceBinding = input.evidence_binding === undefined
       ? undefined
@@ -523,6 +535,7 @@ class SessionManager {
         : {}),
     };
     this.frameGateTokens.set(token.token, token);
+    this.pruneFrameGateTokens(now);
     return { ...token };
   }
 
@@ -568,6 +581,30 @@ class SessionManager {
     for (const [token, gate] of this.frameGateTokens) {
       if (gate.expires_at_ms < now) this.frameGateTokens.delete(token);
     }
+    while (this.frameGateTokens.size > FRAME_GATE_TOKEN_MAX_ENTRIES) {
+      const oldestToken = this.frameGateTokens.keys().next().value as string | undefined;
+      if (oldestToken === undefined) break;
+      this.frameGateTokens.delete(oldestToken);
+    }
+  }
+
+  private revokeFrameGateTokens(): void {
+    this.frameGateTokens.clear();
+  }
+
+  private invalidateGpuProofBoundFrameTokens(): void {
+    this.gpuProofTrustInvalidated = true;
+    this.revokeFrameGateTokens();
+  }
+
+  private bindFrameGateTokenRevocation(
+    hmr: Pick<SessionChannels["hmr"], "onGpuProofTrustInvalidated">,
+  ): () => void {
+    this.gpuProofTrustInvalidated = false;
+    this.revokeFrameGateTokens();
+    return hmr.onGpuProofTrustInvalidated(() => {
+      this.invalidateGpuProofBoundFrameTokens();
+    });
   }
 
   get(): AttachedSession | null {
@@ -709,6 +746,8 @@ class SessionManager {
       keyPin: peer.runtimeEvidenceTransportKeyPin,
       transportSessionId: opts.sessionId,
     });
+    const unsubFrameGateTokenRevocation = this.bindFrameGateTokenRevocation(channels.hmr);
+    this.unsubscribers.push(unsubFrameGateTokenRevocation);
 
     const attached: AttachedSession = {
       sessionId: opts.sessionId,
@@ -1092,6 +1131,7 @@ class SessionManager {
   }
 
   async close(): Promise<void> {
+    this.invalidateGpuProofBoundFrameTokens();
     if (this.state === "closed") return;
     this.state = "closed";
     this.setWireState("terminated");
@@ -1148,7 +1188,8 @@ class SessionManager {
     this.lastActivityAt = Date.now();
     this.lastFrameAdvance = null;
     this.frameAdvanceListeners.clear();
-    this.frameGateTokens.clear();
+    this.gpuProofTrustInvalidated = false;
+    this.revokeFrameGateTokens();
     this.presenceCounts = { humans: 0, agents: 1 };
     for (const unsub of this.unsubscribers) {
       try { unsub(); } catch { /* ignored */ }
