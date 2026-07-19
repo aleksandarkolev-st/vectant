@@ -91,6 +91,7 @@ use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
 use crate::hmr::gpu_stream_drain::{drain_context, drain_stream, DrainOutcome, DrainScope};
+use crate::infra::compute_expected_output_semantics::ComputeExpectedOutputContractV2;
 #[cfg(test)]
 use crate::runtime::gpu_runtime_boundary::output_oracle_records_snapshot;
 use crate::runtime::gpu_runtime_boundary::{
@@ -869,6 +870,9 @@ struct PinnedRuntimeOutputOracleProfile {
     fission_output_oracle_contract_sha256: String,
     profile_bytes_sha256: String,
     source_edit_id: String,
+    compute_expected_output_contract_v2: ComputeExpectedOutputContractV2,
+    compute_expected_output_contract_hash: String,
+    compute_expected_output_semantics_hash: String,
     evidence_line: String,
 }
 
@@ -1139,7 +1143,7 @@ fn validate_runtime_output_oracle_expected_contract_v2(
     profile: &RuntimeOutputOracleProfile,
     candidate_artifact_sha256: &str,
     request_edit_id: &str,
-) -> Result<(String, String), String> {
+) -> Result<ComputeExpectedOutputContractV2, String> {
     let contract = metadata
         .compute_expected_output_contract_v2
         .as_ref()
@@ -1159,6 +1163,33 @@ fn validate_runtime_output_oracle_expected_contract_v2(
     if semantics.comparison_mode() != "exact_bytes" {
         return Err(
             "runtime output oracle expected-output contract v2 comparison mode is not executable by the byte-exact probe"
+                .to_string(),
+        );
+    }
+    let output_buffer = profile
+        .buffers
+        .iter()
+        .find(|buffer| buffer.name == profile.output_buffer)
+        .ok_or_else(|| {
+            "runtime output oracle expected-output contract v2 has no declared output buffer"
+                .to_string()
+        })?;
+    let output_byte_length = output_buffer
+        .count
+        .checked_mul(std::mem::size_of::<f32>())
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| {
+            "runtime output oracle expected-output contract v2 output byte length overflows"
+                .to_string()
+        })?;
+    if semantics.byte_offset() != 0
+        || semantics.byte_length() != output_byte_length
+        || semantics.dtype() != output_buffer.element_type
+        || semantics.element_count() != output_buffer.count as u64
+        || semantics.byte_order() != "little_endian"
+    {
+        return Err(
+            "runtime output oracle expected-output contract v2 byte selection does not match the executed full-buffer readback"
                 .to_string(),
         );
     }
@@ -1196,10 +1227,7 @@ fn validate_runtime_output_oracle_expected_contract_v2(
             ));
         }
     }
-    Ok((
-        contract.contract_hash().to_string(),
-        semantics.semantics_hash().to_string(),
-    ))
+    Ok(contract.clone())
 }
 
 fn runtime_output_oracle_token<'a>(label: &str, value: &'a str) -> Result<&'a str, String> {
@@ -1600,13 +1628,17 @@ fn pin_runtime_output_oracle_profile(
         .capsule_metadata
         .as_ref()
         .expect("commitment came from metadata");
-    let (expected_output_contract_hash, expected_output_semantics_hash) =
-        validate_runtime_output_oracle_expected_contract_v2(
-            metadata,
-            &profile,
-            candidate_artifact_sha256,
-            &request_edit_id,
-        )?;
+    let expected_output_contract = validate_runtime_output_oracle_expected_contract_v2(
+        metadata,
+        &profile,
+        candidate_artifact_sha256,
+        &request_edit_id,
+    )?;
+    let expected_output_contract_hash = expected_output_contract.contract_hash().to_string();
+    let expected_output_semantics_hash = expected_output_contract
+        .semantics()
+        .semantics_hash()
+        .to_string();
     if !reload_output_oracle_proof_context_valid(metadata, None) {
         return Err(
             "runtime output oracle expected-output contract v2 is not sealed by a valid proof context before module mutation"
@@ -1634,6 +1666,9 @@ fn pin_runtime_output_oracle_profile(
             fission_output_oracle_contract_sha256: contract_sha256,
             profile_bytes_sha256,
             source_edit_id: request_edit_id,
+            compute_expected_output_contract_v2: expected_output_contract,
+            compute_expected_output_contract_hash: expected_output_contract_hash,
+            compute_expected_output_semantics_hash: expected_output_semantics_hash,
             evidence_line,
         },
     ))
@@ -2302,6 +2337,15 @@ fn verified_runtime_source_edit_commitment(
         != format!("sha256:{}", stable_json_hash(contract))
         || pinned_profile.fission_output_oracle_contract_sha256
             != commitment.fission_output_oracle_contract_sha256
+    {
+        return None;
+    }
+    let expected_output_contract = metadata.compute_expected_output_contract_v2.as_ref()?;
+    if &pinned_profile.compute_expected_output_contract_v2 != expected_output_contract
+        || pinned_profile.compute_expected_output_contract_hash
+            != expected_output_contract.contract_hash()
+        || pinned_profile.compute_expected_output_semantics_hash
+            != expected_output_contract.semantics().semantics_hash()
     {
         return None;
     }
@@ -7397,16 +7441,48 @@ mod tests {
         oracle_code_hash: &str,
         expected_sha256: &str,
     ) -> crate::infra::compute_expected_output_semantics::ComputeExpectedOutputContractV2 {
+        expected_output_contract_with_layout_for_test(
+            source_edit_id,
+            artifact_after_hash,
+            runtime_session,
+            output_target_id,
+            oracle_code_hash,
+            expected_sha256,
+            0,
+            16,
+            "f32",
+            &[4],
+            4,
+            "little_endian",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn expected_output_contract_with_layout_for_test(
+        source_edit_id: &str,
+        artifact_after_hash: &str,
+        runtime_session: &str,
+        output_target_id: &str,
+        oracle_code_hash: &str,
+        expected_sha256: &str,
+        byte_offset: u64,
+        byte_length: u64,
+        dtype: &str,
+        shape: &[u64],
+        element_count: u64,
+        byte_order: &str,
+    ) -> crate::infra::compute_expected_output_semantics::ComputeExpectedOutputContractV2 {
+        let shape_strings = shape.iter().map(u64::to_string).collect::<Vec<_>>();
         let semantics_material = serde_json::json!([
             crate::infra::compute_expected_output_semantics::COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
             "exact_bytes",
             output_target_id,
-            "0",
-            "16",
-            "f32",
-            ["4"],
-            "4",
-            "little_endian",
+            byte_offset.to_string(),
+            byte_length.to_string(),
+            dtype,
+            shape_strings,
+            element_count.to_string(),
+            byte_order,
             "0",
             null,
             null,
@@ -7423,12 +7499,12 @@ mod tests {
             "schemaVersion": crate::infra::compute_expected_output_semantics::COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
             "comparisonMode": "exact_bytes",
             "outputTargetId": output_target_id,
-            "byteOffset": 0,
-            "byteLength": 16,
-            "dtype": "f32",
-            "shape": [4],
-            "elementCount": 4,
-            "byteOrder": "little_endian",
+            "byteOffset": byte_offset,
+            "byteLength": byte_length,
+            "dtype": dtype,
+            "shape": shape,
+            "elementCount": element_count,
+            "byteOrder": byte_order,
             "toleranceDecimal": "0",
             "expectedValuesDecimal": null,
             "expectedValuesHash": null,
@@ -9042,6 +9118,76 @@ mod tests {
             let error =
                 pin_runtime_output_oracle_profile(&forged, &candidate_sha256, true).unwrap_err();
             assert!(error.contains(label), "unexpected refusal: {error}");
+        }
+
+        for contract in [
+            expected_output_contract_with_layout_for_test(
+                source_edit_id,
+                &candidate_sha256,
+                "runtime-session:test-proof",
+                output_target_id,
+                oracle_code_hash,
+                expected_sha256,
+                4,
+                16,
+                "f32",
+                &[4],
+                4,
+                "little_endian",
+            ),
+            expected_output_contract_with_layout_for_test(
+                source_edit_id,
+                &candidate_sha256,
+                "runtime-session:test-proof",
+                output_target_id,
+                oracle_code_hash,
+                expected_sha256,
+                0,
+                8,
+                "f32",
+                &[2],
+                2,
+                "little_endian",
+            ),
+            expected_output_contract_with_layout_for_test(
+                source_edit_id,
+                &candidate_sha256,
+                "runtime-session:test-proof",
+                output_target_id,
+                oracle_code_hash,
+                expected_sha256,
+                0,
+                16,
+                "u32",
+                &[4],
+                4,
+                "little_endian",
+            ),
+            expected_output_contract_with_layout_for_test(
+                source_edit_id,
+                &candidate_sha256,
+                "runtime-session:test-proof",
+                output_target_id,
+                oracle_code_hash,
+                expected_sha256,
+                0,
+                16,
+                "f32",
+                &[4],
+                4,
+                "big_endian",
+            ),
+        ] {
+            let mut forged = valid.clone();
+            let metadata = forged.capsule_metadata.as_mut().unwrap();
+            metadata.compute_expected_output_contract_v2 = Some(contract);
+            seal_output_oracle_proof_context_for_test(metadata);
+            let error =
+                pin_runtime_output_oracle_profile(&forged, &candidate_sha256, true).unwrap_err();
+            assert!(
+                error.contains("byte selection does not match the executed full-buffer readback"),
+                "unexpected refusal: {error}"
+            );
         }
 
         fs::remove_file(configured_gpu_hmr_runtime_output_oracle_profile_path()).unwrap();

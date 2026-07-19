@@ -204,6 +204,26 @@ impl ComputeExpectedOutputSemantics {
         &self.comparison_mode
     }
 
+    pub fn byte_offset(&self) -> u64 {
+        self.byte_offset
+    }
+
+    pub fn byte_length(&self) -> u64 {
+        self.byte_length
+    }
+
+    pub fn dtype(&self) -> &str {
+        &self.dtype
+    }
+
+    pub fn element_count(&self) -> u64 {
+        self.element_count
+    }
+
+    pub fn byte_order(&self) -> &str {
+        &self.byte_order
+    }
+
     pub fn expected_evidence_hash(&self) -> &str {
         match self.comparison_mode.as_str() {
             "exact_bytes" => self

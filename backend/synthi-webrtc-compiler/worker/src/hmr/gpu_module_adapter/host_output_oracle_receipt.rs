@@ -6,10 +6,11 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::hmr::adapter_trait::{
-    reload_output_oracle_contract_content_hash, ReloadCapsuleMetadata,
-    RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
+    reload_output_oracle_contract_content_hash, reload_output_oracle_proof_context_valid,
+    ReloadCapsuleMetadata, RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
 };
 use crate::hmr::gpu_proof::sha256_hex_bytes;
+use crate::infra::compute_expected_output_semantics::ComputeExpectedOutputContractV2;
 #[cfg(test)]
 use crate::runtime::gpu_runtime_boundary::GpuDispatchSlotBinding;
 use crate::runtime::gpu_runtime_boundary::{
@@ -48,6 +49,10 @@ pub(super) struct HostOutputOracleRequestBinding {
     output_target_id: String,
     probe_mode: String,
     probe_config_hash: String,
+    proof_runtime_session_id: String,
+    compute_expected_output_contract_v2: ComputeExpectedOutputContractV2,
+    compute_expected_output_contract_hash: String,
+    compute_expected_output_semantics_hash: String,
     proof_context_binding_sha256: Option<String>,
     proof_context_proof_id: Option<String>,
 }
@@ -73,6 +78,10 @@ pub struct HostVerifiedComputeReadbackReceipt {
     profile_id: String,
     profile_bytes_sha256: String,
     contract_sha256: String,
+    proof_runtime_session_id: String,
+    compute_expected_output_contract_v2: ComputeExpectedOutputContractV2,
+    compute_expected_output_contract_hash: String,
+    compute_expected_output_semantics_hash: String,
     proof_context_binding_sha256: Option<String>,
     proof_context_proof_id: Option<String>,
     oracle_id: String,
@@ -135,6 +144,10 @@ struct ReceiptIdMaterial<'a> {
     profile_id: &'a str,
     profile_bytes_sha256: &'a str,
     contract_sha256: &'a str,
+    proof_runtime_session_id: &'a str,
+    compute_expected_output_contract_v2: &'a ComputeExpectedOutputContractV2,
+    compute_expected_output_contract_hash: &'a str,
+    compute_expected_output_semantics_hash: &'a str,
     proof_context_binding_sha256: Option<&'a str>,
     proof_context_proof_id: Option<&'a str>,
     oracle_id: &'a str,
@@ -512,21 +525,80 @@ impl HostOutputOracleRequestBinding {
             );
         }
 
-        let proof_context = capsule_metadata.output_oracle_proof_context.as_ref();
-        let proof_context_binding_sha256 = proof_context
-            .map(|context| context.binding_sha256.trim())
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-        if proof_context_binding_sha256
-            .as_deref()
-            .is_some_and(|value| !canonical_sha256(value))
-        {
-            return Err("host output oracle proof context binding is not canonical".to_string());
+        if !reload_output_oracle_proof_context_valid(capsule_metadata, None) {
+            return Err("host output oracle proof context binding is invalid".to_string());
         }
-        let proof_context_proof_id = proof_context
-            .map(|context| context.proof_id.trim())
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
+        let proof_context = capsule_metadata
+            .output_oracle_proof_context
+            .as_ref()
+            .expect("validated output-oracle proof context");
+        let expected_output_contract = capsule_metadata
+            .compute_expected_output_contract_v2
+            .as_ref()
+            .ok_or_else(|| {
+                "host output oracle caller-derived expected-output contract v2 is missing"
+                    .to_string()
+            })?;
+        let expected_output_binding = expected_output_contract.binding();
+        let expected_output_semantics = expected_output_contract.semantics();
+        if expected_output_semantics.comparison_mode() != "exact_bytes" {
+            return Err(
+                "host output oracle expected-output comparison mode is not executable by the exact-byte readback"
+                    .to_string(),
+            );
+        }
+        for (label, observed, expected) in [
+            (
+                "artifact hash",
+                expected_output_binding.artifact_after_hash.as_str(),
+                artifact_content_hash.as_str(),
+            ),
+            (
+                "source edit id",
+                expected_output_binding.edit_id.as_str(),
+                source_edit_id.as_str(),
+            ),
+            (
+                "proof runtime session",
+                expected_output_binding.runtime_session_id.as_str(),
+                proof_context.runtime_session_id.as_str(),
+            ),
+            (
+                "output target id",
+                expected_output_binding.output_target_id.as_str(),
+                output_target_id.as_str(),
+            ),
+            (
+                "oracle code hash",
+                expected_output_binding.oracle_code_hash.as_str(),
+                probe_config_hash.as_str(),
+            ),
+            (
+                "expected evidence hash",
+                expected_output_semantics.expected_evidence_hash(),
+                expected_sha256.as_str(),
+            ),
+        ] {
+            if observed != expected {
+                return Err(format!(
+                    "host output oracle expected-output {label} does not match the request binding"
+                ));
+            }
+        }
+        let compute_expected_output_contract_hash =
+            expected_output_contract.contract_hash().to_string();
+        let compute_expected_output_semantics_hash =
+            expected_output_semantics.semantics_hash().to_string();
+        if !canonical_sha256(&compute_expected_output_contract_hash)
+            || expected_output_contract.canonical_hash() != compute_expected_output_contract_hash
+            || !canonical_sha256(&compute_expected_output_semantics_hash)
+        {
+            return Err(
+                "host output oracle expected-output contract hashes are not canonical".to_string(),
+            );
+        }
+        let proof_context_binding_sha256 = Some(proof_context.binding_sha256.clone());
+        let proof_context_proof_id = Some(proof_context.proof_id.clone());
 
         Ok(Self {
             request_id,
@@ -543,6 +615,10 @@ impl HostOutputOracleRequestBinding {
             output_target_id,
             probe_mode,
             probe_config_hash,
+            proof_runtime_session_id: proof_context.runtime_session_id.clone(),
+            compute_expected_output_contract_v2: expected_output_contract.clone(),
+            compute_expected_output_contract_hash,
+            compute_expected_output_semantics_hash,
             proof_context_binding_sha256,
             proof_context_proof_id,
         })
@@ -690,6 +766,28 @@ pub(super) fn record_host_verified_compute_readback(
             readback_bytes.len()
         ));
     }
+    let semantic_byte_order =
+        match endianness.as_str() {
+            "little" => "little_endian",
+            "big" => "big_endian",
+            "not_applicable" => "not_applicable",
+            _ => return Err(
+                "host output oracle readback endianness has no expected-output semantic mapping"
+                    .to_string(),
+            ),
+        };
+    let expected_output_semantics = binding.compute_expected_output_contract_v2.semantics();
+    if expected_output_semantics.byte_offset() != 0
+        || u64::try_from(readback_bytes.len()).ok() != Some(expected_output_semantics.byte_length())
+        || expected_output_semantics.dtype() != element_type
+        || u64::try_from(element_count).ok() != Some(expected_output_semantics.element_count())
+        || expected_output_semantics.byte_order() != semantic_byte_order
+    {
+        return Err(
+            "host output oracle readback schema does not match the caller-derived expected-output byte selection"
+                .to_string(),
+        );
+    }
     let observed_sha256 = format!("sha256:{}", sha256_hex_bytes(readback_bytes));
     if observed_sha256 != binding.expected_sha256 {
         return Err("host output oracle full readback checksum mismatch".to_string());
@@ -745,6 +843,10 @@ pub(super) fn record_host_verified_compute_readback(
         profile_id,
         profile_bytes_sha256: binding.profile_bytes_sha256,
         contract_sha256: binding.contract_sha256,
+        proof_runtime_session_id: binding.proof_runtime_session_id,
+        compute_expected_output_contract_v2: binding.compute_expected_output_contract_v2,
+        compute_expected_output_contract_hash: binding.compute_expected_output_contract_hash,
+        compute_expected_output_semantics_hash: binding.compute_expected_output_semantics_hash,
         proof_context_binding_sha256: binding.proof_context_binding_sha256,
         proof_context_proof_id: binding.proof_context_proof_id,
         oracle_id: binding.oracle_id,
@@ -861,6 +963,10 @@ pub(super) fn finalize_host_verified_compute_readback(
         profile_id: &receipt.profile_id,
         profile_bytes_sha256: &receipt.profile_bytes_sha256,
         contract_sha256: &receipt.contract_sha256,
+        proof_runtime_session_id: &receipt.proof_runtime_session_id,
+        compute_expected_output_contract_v2: &receipt.compute_expected_output_contract_v2,
+        compute_expected_output_contract_hash: &receipt.compute_expected_output_contract_hash,
+        compute_expected_output_semantics_hash: &receipt.compute_expected_output_semantics_hash,
         proof_context_binding_sha256: receipt.proof_context_binding_sha256.as_deref(),
         proof_context_proof_id: receipt.proof_context_proof_id.as_deref(),
         oracle_id: &receipt.oracle_id,
@@ -1066,6 +1172,22 @@ impl HostVerifiedComputeReadbackReceipt {
         &self.contract_sha256
     }
 
+    pub fn proof_runtime_session_id(&self) -> &str {
+        &self.proof_runtime_session_id
+    }
+
+    pub fn compute_expected_output_contract_v2(&self) -> &ComputeExpectedOutputContractV2 {
+        &self.compute_expected_output_contract_v2
+    }
+
+    pub fn compute_expected_output_contract_hash(&self) -> &str {
+        &self.compute_expected_output_contract_hash
+    }
+
+    pub fn compute_expected_output_semantics_hash(&self) -> &str {
+        &self.compute_expected_output_semantics_hash
+    }
+
     pub fn proof_context_binding_sha256(&self) -> Option<&str> {
         self.proof_context_binding_sha256.as_deref()
     }
@@ -1204,7 +1326,11 @@ pub(super) fn reset_host_output_oracle_receipts_for_test() {
 mod tests {
     use super::*;
     use crate::hmr::adapter_trait::{
-        ReloadOutputOracleProfileCommitment, ReloadOutputOracleProofContext,
+        bind_reload_output_oracle_proof_context, ReloadOutputOracleProfileCommitment,
+    };
+    use crate::infra::compute_expected_output_semantics::{
+        ComputeExpectedOutputContractBindingV2, ComputeExpectedOutputSemantics,
+        COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
     };
     use crate::runtime::gpu_runtime_boundary::dispatcher_commit_receipt_for_test;
 
@@ -1244,6 +1370,67 @@ mod tests {
         (store.retained_receipt_count, store.retained_readback_bytes)
     }
 
+    fn expected_output_contract_for_test(
+        source_edit_id: &str,
+        artifact_content_hash: &str,
+        expected_sha256: &str,
+        byte_length: usize,
+        project_id: &str,
+    ) -> ComputeExpectedOutputContractV2 {
+        let output_target_id = "buffer:0";
+        let oracle_code_hash = format!("sha256:{}", "c".repeat(64));
+        let semantic_material = json!([
+            COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "exact_bytes",
+            output_target_id,
+            "0",
+            byte_length.to_string(),
+            "u8",
+            [byte_length.to_string()],
+            byte_length.to_string(),
+            "not_applicable",
+            "0",
+            null,
+            null,
+            expected_sha256,
+        ]);
+        let mut hash_material =
+            b"synthi.gpu_hmr.compute_expected_output_semantics_hash.v1\0".to_vec();
+        hash_material.extend(
+            serde_json::to_vec(&semantic_material).expect("serialize expected-output semantics"),
+        );
+        let semantics_hash = format!("sha256:{}", sha256_hex_bytes(&hash_material));
+        let semantics: ComputeExpectedOutputSemantics = serde_json::from_value(json!({
+            "schemaVersion": COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "comparisonMode": "exact_bytes",
+            "outputTargetId": output_target_id,
+            "byteOffset": 0,
+            "byteLength": byte_length,
+            "dtype": "u8",
+            "shape": [byte_length],
+            "elementCount": byte_length,
+            "byteOrder": "not_applicable",
+            "toleranceDecimal": "0",
+            "expectedValuesDecimal": null,
+            "expectedValuesHash": null,
+            "expectedRawHash": expected_sha256,
+            "semanticsHash": semantics_hash,
+        }))
+        .expect("canonical expected-output semantics");
+        semantics
+            .derive_contract_v2(ComputeExpectedOutputContractBindingV2 {
+                project_id: project_id.to_string(),
+                edit_id: source_edit_id.to_string(),
+                artifact_after_hash: artifact_content_hash.to_string(),
+                output_target_id: output_target_id.to_string(),
+                oracle_code_hash,
+                compile_transport_nonce:
+                    "gpu-proof-transport-request:0123456789abcdef0123456789abcdef".to_string(),
+                runtime_session_id: "runtime-session:test-proof".to_string(),
+            })
+            .expect("derive expected-output contract")
+    }
+
     fn fixture(
         request_id: &str,
         bytes: &[u8],
@@ -1268,8 +1455,16 @@ mod tests {
             "probeConfigHash": format!("sha256:{}", "c".repeat(64)),
         });
         let contract_hash = reload_output_oracle_contract_content_hash(&contract).unwrap();
-        let metadata = ReloadCapsuleMetadata {
+        let expected_output_contract = expected_output_contract_for_test(
+            &source_edit_id,
+            &artifact_content_hash,
+            &expected,
+            bytes.len(),
+            "workspace:receipt-fixture",
+        );
+        let mut metadata = ReloadCapsuleMetadata {
             fission_output_oracle_contract: Some(contract),
+            compute_expected_output_contract_v2: Some(expected_output_contract),
             output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
                 schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.to_string(),
                 candidate_artifact_sha256: artifact_content_hash.clone(),
@@ -1277,15 +1472,15 @@ mod tests {
                 profile_bytes_sha256: format!("sha256:{}", "d".repeat(64)),
                 edit_id: source_edit_id.clone(),
             }),
-            output_oracle_proof_context: Some(ReloadOutputOracleProofContext {
-                schema_version: "synthi.gpu_hmr.reload_output_oracle_proof_context.v1".to_string(),
-                proof_id: format!("gpu-proof:{}", "e".repeat(64)),
-                proof_created_at: "2026-07-16T00:00:00Z".to_string(),
-                runtime_session_id: runtime_session_id().to_string(),
-                binding_sha256: format!("sha256:{}", "f".repeat(64)),
-            }),
+            proof_hash: Some(format!("sha256:{}", "e".repeat(64))),
             ..ReloadCapsuleMetadata::default()
         };
+        assert!(bind_reload_output_oracle_proof_context(
+            &mut metadata,
+            &format!("gpu-proof:{}", "e".repeat(64)),
+            "2026-07-19T00:00:00Z",
+            "runtime-session:test-proof",
+        ));
         let binding = HostOutputOracleRequestBinding::from_reload_request(
             request_id,
             &source_edit_id,
@@ -1557,7 +1752,7 @@ mod tests {
         let bytes = (0..5000)
             .map(|index| (index % 251) as u8)
             .collect::<Vec<_>>();
-        let (binding, launch, _) = fixture("request-full-bytes", &bytes);
+        let (binding, launch, metadata) = fixture("request-full-bytes", &bytes);
         let provisional = record_fixture(&binding, &launch, &bytes).unwrap();
         assert!(consume_host_verified_compute_receipt(
             binding.request_id.as_str(),
@@ -1586,6 +1781,26 @@ mod tests {
             .is_some_and(|value| value.starts_with("dispatcher-publication:sha256:")));
         assert_eq!(receipt.previous_generation(), Some(6));
         assert_eq!(receipt.dispatch_table_entry_id(), "kernel:0x1000");
+        let expected_output_contract = metadata
+            .compute_expected_output_contract_v2
+            .as_ref()
+            .expect("fixture expected-output contract");
+        assert_eq!(
+            receipt.compute_expected_output_contract_v2(),
+            expected_output_contract
+        );
+        assert_eq!(
+            receipt.compute_expected_output_contract_hash(),
+            expected_output_contract.contract_hash()
+        );
+        assert_eq!(
+            receipt.compute_expected_output_semantics_hash(),
+            expected_output_contract.semantics().semantics_hash()
+        );
+        assert_eq!(
+            receipt.proof_runtime_session_id(),
+            "runtime-session:test-proof"
+        );
 
         let consumed = consume_host_verified_compute_receipt(
             binding.request_id.as_str(),
@@ -1600,6 +1815,46 @@ mod tests {
             binding.artifact_content_hash.as_str(),
         )
         .is_err());
+        reset_host_output_oracle_receipts_for_test();
+    }
+
+    #[test]
+    fn receipt_rejects_expected_output_byte_selection_not_executed_by_readback() {
+        let _guard = receipt_test_guard();
+        reset_host_output_oracle_receipts_for_test();
+        let bytes = vec![21u8; 64];
+        let (_, launch, mut metadata) = fixture("request-byte-selection", &bytes);
+        let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
+        let artifact_content_hash = format!("sha256:{}", "b".repeat(64));
+        let expected_sha256 = format!("sha256:{}", sha256_hex_bytes(&bytes));
+        metadata.compute_expected_output_contract_v2 = Some(expected_output_contract_for_test(
+            &source_edit_id,
+            &artifact_content_hash,
+            &expected_sha256,
+            bytes.len() - 1,
+            "workspace:receipt-fixture",
+        ));
+        metadata.output_oracle_proof_context = None;
+        assert!(bind_reload_output_oracle_proof_context(
+            &mut metadata,
+            &format!("gpu-proof:{}", "e".repeat(64)),
+            "2026-07-19T00:00:00Z",
+            "runtime-session:test-proof",
+        ));
+        let binding = HostOutputOracleRequestBinding::from_reload_request(
+            "request-byte-selection",
+            &source_edit_id,
+            &artifact_content_hash,
+            &metadata,
+        )
+        .expect("byte selection is retained until concrete readback shape is known");
+
+        let error = record_fixture(&binding, &launch, &bytes).unwrap_err();
+        assert!(
+            error.contains("does not match the caller-derived expected-output byte selection"),
+            "unexpected refusal: {error}"
+        );
+        assert_eq!(retained_accounting_for_test(), (0, 0));
         reset_host_output_oracle_receipts_for_test();
     }
 
