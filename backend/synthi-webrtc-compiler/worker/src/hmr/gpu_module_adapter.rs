@@ -3218,6 +3218,14 @@ fn runtime_full_proof(
         ),
         format!("oracle:{}", output_receipt.oracle_id()),
         format!("host-output-receipt:{}", output_receipt.receipt_id()),
+        format!(
+            "compute-expected-output-contract:{}",
+            output_receipt.compute_expected_output_contract_hash()
+        ),
+        format!(
+            "compute-expected-output-semantics:{}",
+            output_receipt.compute_expected_output_semantics_hash()
+        ),
         format!("retirement-strategy:{retirement_strategy}"),
         firewall_receipt.receipt_id().to_string(),
         firewall_receipt.evidence_source().to_string(),
@@ -3317,6 +3325,10 @@ fn runtime_full_proof(
         "profile_schema_version": output_receipt.profile_schema_version(),
         "profile_bytes_sha256": output_receipt.profile_bytes_sha256(),
         "fission_output_oracle_contract_sha256": output_receipt.contract_sha256(),
+        "proof_runtime_session_id": output_receipt.proof_runtime_session_id(),
+        "compute_expected_output_contract_v2": output_receipt.compute_expected_output_contract_v2(),
+        "compute_expected_output_contract_hash": output_receipt.compute_expected_output_contract_hash(),
+        "compute_expected_output_semantics_hash": output_receipt.compute_expected_output_semantics_hash(),
         "proof_context_binding_sha256": output_receipt.proof_context_binding_sha256(),
         "proof_context_proof_id": output_receipt.proof_context_proof_id(),
         "probe_mode": output_receipt.probe_mode(),
@@ -8719,6 +8731,45 @@ mod tests {
         assert_eq!(
             proof.pointer("/runtimeProofArtifact/explicitProofLedgerRecord/device_identity/dispatch_device_attestation_schema"),
             Some(&json!(GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA))
+        );
+        let ledger_record = proof
+            .pointer("/runtimeProofArtifact/explicitProofLedgerRecord")
+            .expect("explicit strict ledger record");
+        let oracle_artifacts = ledger_record
+            .get("oracle_artifacts")
+            .expect("strict ledger oracle artifacts");
+        let expected_output_contract: ComputeExpectedOutputContractV2 = serde_json::from_value(
+            oracle_artifacts
+                .get("compute_expected_output_contract_v2")
+                .expect("typed expected-output contract")
+                .clone(),
+        )
+        .expect("canonical expected-output contract");
+        assert_eq!(
+            oracle_artifacts.get("compute_expected_output_contract_hash"),
+            Some(&json!(expected_output_contract.contract_hash()))
+        );
+        assert_eq!(
+            oracle_artifacts.get("compute_expected_output_semantics_hash"),
+            Some(&json!(expected_output_contract
+                .semantics()
+                .semantics_hash()))
+        );
+        assert_eq!(
+            expected_output_contract.contract_hash(),
+            expected_output_contract.canonical_hash()
+        );
+        assert_eq!(
+            expected_output_contract.semantics().semantics_hash(),
+            expected_output_contract.semantics().canonical_hash()
+        );
+        assert_eq!(
+            ledger_record.pointer("/output_event/oracle_artifacts"),
+            Some(oracle_artifacts)
+        );
+        assert_eq!(
+            ledger_record.pointer("/output_event/output_oracle/oracle_artifacts"),
+            Some(oracle_artifacts)
         );
         reset_for_test();
     }

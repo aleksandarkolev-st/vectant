@@ -40,6 +40,8 @@ use worker::hmr::gpu_module_adapter::host_output_oracle_receipt::{
     HOST_OUTPUT_ORACLE_RECEIPT_AUTHORITY, HOST_OUTPUT_ORACLE_RECEIPT_SCHEMA,
 };
 use worker::hmr::orchestrator as hmr_orchestrator;
+#[cfg(feature = "gpu-hmr")]
+use worker::infra::compute_expected_output_semantics::ComputeExpectedOutputContractV2;
 use worker::infra::crash_recovery;
 use worker::infra::host_kv;
 use worker::runtime::capability;
@@ -878,6 +880,10 @@ struct StrictRuntimeOracleReceipt {
     profile_id: String,
     profile_bytes_sha256: String,
     contract_sha256: String,
+    proof_runtime_session_id: String,
+    compute_expected_output_contract_v2: ComputeExpectedOutputContractV2,
+    compute_expected_output_contract_hash: String,
+    compute_expected_output_semantics_hash: String,
     proof_context_binding_sha256: Option<String>,
     proof_context_proof_id: Option<String>,
     oracle_id: String,
@@ -948,6 +954,16 @@ impl TryFrom<&HostVerifiedComputeReadbackReceipt> for StrictRuntimeOracleReceipt
             profile_id: receipt.profile_id().to_string(),
             profile_bytes_sha256: receipt.profile_bytes_sha256().to_string(),
             contract_sha256: receipt.contract_sha256().to_string(),
+            proof_runtime_session_id: receipt.proof_runtime_session_id().to_string(),
+            compute_expected_output_contract_v2: receipt
+                .compute_expected_output_contract_v2()
+                .clone(),
+            compute_expected_output_contract_hash: receipt
+                .compute_expected_output_contract_hash()
+                .to_string(),
+            compute_expected_output_semantics_hash: receipt
+                .compute_expected_output_semantics_hash()
+                .to_string(),
             proof_context_binding_sha256: receipt
                 .proof_context_binding_sha256()
                 .map(str::to_string),
@@ -972,6 +988,70 @@ impl TryFrom<&HostVerifiedComputeReadbackReceipt> for StrictRuntimeOracleReceipt
             readback_bytes: receipt.readback_bytes_arc(),
         })
     }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn strict_runtime_expected_output_contract_matches(
+    expected_source_edit_id: &str,
+    expected_artifact_content_hash: &str,
+    oracle_artifacts: &serde_json::Map<String, serde_json::Value>,
+    receipt: &StrictRuntimeOracleReceipt,
+) -> bool {
+    let contract = &receipt.compute_expected_output_contract_v2;
+    let binding = contract.binding();
+    let semantics = contract.semantics();
+    let Some(serialized_contract) = serde_json::to_value(contract).ok() else {
+        return false;
+    };
+    let Some(readback_schema) = receipt.readback_schema.as_object() else {
+        return false;
+    };
+    let semantic_byte_order = match readback_schema
+        .get("endianness")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("little") => "little_endian",
+        Some("big") => "big_endian",
+        Some("not_applicable") => "not_applicable",
+        _ => return false,
+    };
+    canonical_sha256_content_hash(&receipt.compute_expected_output_contract_hash)
+        && canonical_sha256_content_hash(&receipt.compute_expected_output_semantics_hash)
+        && receipt.compute_expected_output_contract_hash == contract.contract_hash()
+        && receipt.compute_expected_output_contract_hash == contract.canonical_hash()
+        && receipt.compute_expected_output_semantics_hash == semantics.semantics_hash()
+        && binding.edit_id == expected_source_edit_id
+        && binding.artifact_after_hash == expected_artifact_content_hash
+        && binding.output_target_id == receipt.output_target_id
+        && binding.oracle_code_hash == receipt.probe_config_hash
+        && binding.runtime_session_id == receipt.proof_runtime_session_id
+        && semantics.comparison_mode() == "exact_bytes"
+        && semantics.output_target_id() == receipt.output_target_id
+        && semantics.expected_evidence_hash() == receipt.expected_sha256
+        && semantics.byte_offset() == 0
+        && u64::try_from(receipt.readback_bytes.len()).ok() == Some(semantics.byte_length())
+        && readback_schema
+            .get("elementType")
+            .and_then(serde_json::Value::as_str)
+            == Some(semantics.dtype())
+        && readback_schema
+            .get("elementCount")
+            .and_then(serde_json::Value::as_u64)
+            == Some(semantics.element_count())
+        && semantics.byte_order() == semantic_byte_order
+        && oracle_artifacts.get("proof_runtime_session_id")
+            == Some(&serde_json::Value::String(
+                receipt.proof_runtime_session_id.clone(),
+            ))
+        && oracle_artifacts.get("compute_expected_output_contract_v2") == Some(&serialized_contract)
+        && oracle_artifacts
+            .get("compute_expected_output_contract_hash")
+            .and_then(serde_json::Value::as_str)
+            == Some(receipt.compute_expected_output_contract_hash.as_str())
+        && oracle_artifacts
+            .get("compute_expected_output_semantics_hash")
+            .and_then(serde_json::Value::as_str)
+            == Some(receipt.compute_expected_output_semantics_hash.as_str())
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -1027,6 +1107,12 @@ fn strict_runtime_oracle_receipt_matches(
     };
     if output_event.get("oracle_artifacts") != record.get("oracle_artifacts")
         || output_oracle.get("oracle_artifacts") != record.get("oracle_artifacts")
+        || !strict_runtime_expected_output_contract_matches(
+            expected_source_edit_id,
+            expected_artifact_content_hash,
+            oracle_artifacts,
+            receipt,
+        )
     {
         return false;
     }
@@ -4348,6 +4434,11 @@ mod tests {
     use std::sync::mpsc;
     #[cfg(feature = "gpu-hmr")]
     use std::sync::Arc;
+    #[cfg(feature = "gpu-hmr")]
+    use worker::infra::compute_expected_output_semantics::{
+        ComputeExpectedOutputContractBindingV2, ComputeExpectedOutputContractV2,
+        ComputeExpectedOutputSemantics, COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+    };
     use worker::runtime::process_isolation::IpcMessage;
     use worker::runtime::runner_command_admission::{
         RunnerCommandAdmission, RunnerCommandAdmissionClass, RunnerCommandAdmissionLimits,
@@ -5336,6 +5427,72 @@ mod tests {
     }
 
     #[cfg(feature = "gpu-hmr")]
+    fn strict_expected_output_contract_fixture(
+        source_edit_id: &str,
+        artifact_content_hash: &str,
+        output_target_id: &str,
+        oracle_code_hash: &str,
+        expected_raw_hash: &str,
+        element_count: u64,
+        proof_runtime_session_id: &str,
+    ) -> ComputeExpectedOutputContractV2 {
+        let byte_length = element_count.checked_mul(4).unwrap();
+        let semantic_material = serde_json::json!([
+            COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "exact_bytes",
+            output_target_id,
+            "0",
+            byte_length.to_string(),
+            "f32",
+            [element_count.to_string()],
+            element_count.to_string(),
+            "little_endian",
+            "0",
+            null,
+            null,
+            expected_raw_hash,
+        ]);
+        let mut hash_material =
+            b"synthi.gpu_hmr.compute_expected_output_semantics_hash.v1\0".to_vec();
+        hash_material.extend(
+            serde_json::to_vec(&semantic_material).expect("serialize strict expected semantics"),
+        );
+        let semantics_hash = format!(
+            "sha256:{}",
+            worker::hmr::gpu_proof::sha256_hex_bytes(&hash_material)
+        );
+        let semantics: ComputeExpectedOutputSemantics = serde_json::from_value(serde_json::json!({
+            "schemaVersion": COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "comparisonMode": "exact_bytes",
+            "outputTargetId": output_target_id,
+            "byteOffset": 0,
+            "byteLength": byte_length,
+            "dtype": "f32",
+            "shape": [element_count],
+            "elementCount": element_count,
+            "byteOrder": "little_endian",
+            "toleranceDecimal": "0",
+            "expectedValuesDecimal": null,
+            "expectedValuesHash": null,
+            "expectedRawHash": expected_raw_hash,
+            "semanticsHash": semantics_hash,
+        }))
+        .expect("canonical strict expected semantics");
+        semantics
+            .derive_contract_v2(ComputeExpectedOutputContractBindingV2 {
+                project_id: "workspace:strict-runtime-fixture".to_string(),
+                edit_id: source_edit_id.to_string(),
+                artifact_after_hash: artifact_content_hash.to_string(),
+                output_target_id: output_target_id.to_string(),
+                oracle_code_hash: oracle_code_hash.to_string(),
+                compile_transport_nonce:
+                    "gpu-proof-transport-request:0123456789abcdef0123456789abcdef".to_string(),
+                runtime_session_id: proof_runtime_session_id.to_string(),
+            })
+            .expect("derive strict expected-output contract")
+    }
+
+    #[cfg(feature = "gpu-hmr")]
     fn strict_runtime_proof_fixture(
         request_id: &str,
         source_edit_id: &str,
@@ -5400,6 +5557,23 @@ mod tests {
         let probe_mode = "runtime_profile_dispatch";
         let probe_config_hash = format!("sha256:{}", "7".repeat(64));
         let probe_evidence_ref = "host-receipt://generic-compute/readback";
+        let proof_runtime_session_id = "runtime-session:proof-fixture";
+        let compute_expected_output_contract_v2 = strict_expected_output_contract_fixture(
+            source_edit_id,
+            artifact_content_hash,
+            output_target_id,
+            &probe_config_hash,
+            &observed_sha256,
+            1_250,
+            proof_runtime_session_id,
+        );
+        let compute_expected_output_contract_hash = compute_expected_output_contract_v2
+            .contract_hash()
+            .to_string();
+        let compute_expected_output_semantics_hash = compute_expected_output_contract_v2
+            .semantics()
+            .semantics_hash()
+            .to_string();
         let receipt_id = format!(
             "host-output-oracle-receipt:sha256:{}",
             worker::hmr::gpu_proof::sha256_hex_bytes(
@@ -5407,7 +5581,7 @@ mod tests {
                     .as_bytes()
             )
         );
-        let oracle_artifacts = serde_json::json!({
+        let mut oracle_artifacts = serde_json::json!({
             "raw_readback_bin": format!("host-receipt://{receipt_id}/raw"),
             "readback_schema_json": format!("host-receipt://{receipt_id}/schema"),
             "readback_schema": readback_schema,
@@ -5460,6 +5634,26 @@ mod tests {
             "probe_evidence_ref": probe_evidence_ref,
             "output_buffer_name": output_buffer_name,
         });
+        let oracle_artifacts_object = oracle_artifacts
+            .as_object_mut()
+            .expect("strict oracle artifacts object");
+        oracle_artifacts_object.insert(
+            "proof_runtime_session_id".to_string(),
+            serde_json::Value::String(proof_runtime_session_id.to_string()),
+        );
+        oracle_artifacts_object.insert(
+            "compute_expected_output_contract_v2".to_string(),
+            serde_json::to_value(&compute_expected_output_contract_v2)
+                .expect("serialize strict expected-output contract"),
+        );
+        oracle_artifacts_object.insert(
+            "compute_expected_output_contract_hash".to_string(),
+            serde_json::Value::String(compute_expected_output_contract_hash.clone()),
+        );
+        oracle_artifacts_object.insert(
+            "compute_expected_output_semantics_hash".to_string(),
+            serde_json::Value::String(compute_expected_output_semantics_hash.clone()),
+        );
         let output_oracle_target = serde_json::json!({
             "kind": "compute",
             "target_id": output_target_id,
@@ -5489,6 +5683,10 @@ mod tests {
             profile_id: profile_id.to_string(),
             profile_bytes_sha256: profile_bytes_sha256.clone(),
             contract_sha256: contract_sha256.clone(),
+            proof_runtime_session_id: proof_runtime_session_id.to_string(),
+            compute_expected_output_contract_v2: compute_expected_output_contract_v2.clone(),
+            compute_expected_output_contract_hash: compute_expected_output_contract_hash.clone(),
+            compute_expected_output_semantics_hash: compute_expected_output_semantics_hash.clone(),
             proof_context_binding_sha256: proof_context_binding_sha256.clone(),
             proof_context_proof_id: proof_context_proof_id.clone(),
             oracle_id: oracle_id.to_string(),
@@ -6004,6 +6202,57 @@ mod tests {
         assert_eq!(forged_slice.status, "rejected");
         assert!(!forged_slice.gpu_hmr_success);
 
+        let mut forged_expected_contract_hash = oracle_receipt.clone();
+        forged_expected_contract_hash.compute_expected_output_contract_hash =
+            format!("sha256:{}", "0".repeat(64));
+        let forged_expected_contract_hash = strict_gpu_reload_terminal_result_with_receipt(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &success,
+            Some(&proof),
+            Some(&forged_expected_contract_hash),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
+        )
+        .unwrap();
+        assert_eq!(forged_expected_contract_hash.status, "rejected");
+        assert!(!forged_expected_contract_hash.gpu_hmr_success);
+
+        let mut forged_expected_semantics_hash = oracle_receipt.clone();
+        forged_expected_semantics_hash.compute_expected_output_semantics_hash =
+            format!("sha256:{}", "1".repeat(64));
+        let forged_expected_semantics_hash = strict_gpu_reload_terminal_result_with_receipt(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &success,
+            Some(&proof),
+            Some(&forged_expected_semantics_hash),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
+        )
+        .unwrap();
+        assert_eq!(forged_expected_semantics_hash.status, "rejected");
+        assert!(!forged_expected_semantics_hash.gpu_hmr_success);
+
+        let mut forged_proof_runtime_session = oracle_receipt.clone();
+        forged_proof_runtime_session.proof_runtime_session_id =
+            "runtime-session:substituted-proof".to_string();
+        let forged_proof_runtime_session = strict_gpu_reload_terminal_result_with_receipt(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &success,
+            Some(&proof),
+            Some(&forged_proof_runtime_session),
+            Some(&command_envelope_sha256),
+            Some(&runner_challenge),
+        )
+        .unwrap();
+        assert_eq!(forged_proof_runtime_session.status, "rejected");
+        assert!(!forged_proof_runtime_session.gpu_hmr_success);
+
         let mut forged_publication = oracle_receipt.clone();
         forged_publication.publication_id =
             format!("dispatcher-publication:sha256:{}", "0".repeat(64));
@@ -6052,6 +6301,84 @@ mod tests {
         .unwrap();
         assert_eq!(wrong_stream.status, "rejected");
         assert!(!wrong_stream.gpu_hmr_success);
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn strict_runtime_oracle_receipt_rejects_canonical_ledger_contract_substitution() {
+        let source_edit_id = format!("source-edit:sha256:{}", "a".repeat(64));
+        let request_id = format!("gpu-reload:request:{}", "2".repeat(32));
+        let artifact_content_hash = format!("sha256:{}", "b".repeat(64));
+        let process_id = std::process::id().to_string();
+        let runtime_session_id = super::runtime_session_id().to_string();
+        let (proof, _, oracle_receipt) = strict_runtime_proof_fixture(
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &process_id,
+            &runtime_session_id,
+        );
+        let record = proof.pointer("/proofLedger/records/0").unwrap();
+        assert!(super::strict_runtime_oracle_receipt_matches(
+            record,
+            &runtime_session_id,
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &oracle_receipt,
+        ));
+
+        let substituted_contract = strict_expected_output_contract_fixture(
+            &source_edit_id,
+            &artifact_content_hash,
+            &oracle_receipt.output_target_id,
+            &oracle_receipt.probe_config_hash,
+            &format!("sha256:{}", "e".repeat(64)),
+            1_250,
+            &oracle_receipt.proof_runtime_session_id,
+        );
+        assert_ne!(
+            substituted_contract.contract_hash(),
+            oracle_receipt.compute_expected_output_contract_hash
+        );
+        let substituted_contract_json =
+            serde_json::to_value(&substituted_contract).expect("serialize substituted contract");
+        let substituted_contract_hash = substituted_contract.contract_hash().to_string();
+        let substituted_semantics_hash = substituted_contract
+            .semantics()
+            .semantics_hash()
+            .to_string();
+        let mut substituted_record = record.clone();
+        for pointer in [
+            "/oracle_artifacts",
+            "/output_event/oracle_artifacts",
+            "/output_event/output_oracle/oracle_artifacts",
+        ] {
+            let artifacts = substituted_record
+                .pointer_mut(pointer)
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("strict oracle artifact copy");
+            artifacts.insert(
+                "compute_expected_output_contract_v2".to_string(),
+                substituted_contract_json.clone(),
+            );
+            artifacts.insert(
+                "compute_expected_output_contract_hash".to_string(),
+                serde_json::Value::String(substituted_contract_hash.clone()),
+            );
+            artifacts.insert(
+                "compute_expected_output_semantics_hash".to_string(),
+                serde_json::Value::String(substituted_semantics_hash.clone()),
+            );
+        }
+        assert!(!super::strict_runtime_oracle_receipt_matches(
+            &substituted_record,
+            &runtime_session_id,
+            &request_id,
+            &source_edit_id,
+            &artifact_content_hash,
+            &oracle_receipt,
+        ));
     }
 
     #[cfg(feature = "gpu-hmr")]
