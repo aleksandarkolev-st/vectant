@@ -9104,6 +9104,10 @@ describe("GPU HMR runtime output proof classification", () => {
           value: "window_mean_delta",
         },
         sample_count: 9,
+        post_epoch_frame_hashes: Array.from(
+          { length: 9 },
+          (_, index) => `sha256:${String(index + 1).repeat(64)}`,
+        ),
         metric_delta: 0.42,
         convergence_proven: true,
         evidence_refs: ["mcp:visual-window:post-epoch-frames"],
