@@ -475,25 +475,36 @@ class SessionManager {
    */
   async awaitFrameAdvanceAtOrAfter(
     minTsMs: number,
-    timeoutMs: number
+    timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<FrameAdvance | null> {
+    if (signal?.aborted) return null;
     if (!this.frameSeqGateEnabled()) return null;
     if (this.lastFrameAdvance && this.lastFrameAdvance.ts_ms >= minTsMs) {
       return this.lastFrameAdvance;
     }
     return new Promise<FrameAdvance | null>((resolve) => {
       let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
       const settle = (value: FrameAdvance | null): void => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer !== null) clearTimeout(timer);
         unsub();
+        signal?.removeEventListener("abort", onAbort);
         resolve(value);
       };
       const unsub = this.onFrameAdvance((fa) => {
         if (fa.ts_ms >= minTsMs) settle(fa);
       });
-      const timer = setTimeout(() => settle(null), timeoutMs);
+      const onAbort = (): void => settle(null);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      timer = setTimeout(() => settle(null), timeoutMs);
+      timer.unref?.();
     });
   }
 

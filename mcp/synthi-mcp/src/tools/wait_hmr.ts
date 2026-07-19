@@ -729,7 +729,11 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         const frameOrTerminalOutcome = await raceWithProofTrustInvalidation(
           Promise.race([
             session
-              .awaitFrameAdvanceAtOrAfter(tHmr + budget, remaining)
+              .awaitFrameAdvanceAtOrAfter(
+                tHmr + budget,
+                remaining,
+                terminalWaitAbort.signal,
+              )
               .then((satisfiedBy) => ({ kind: "frame" as const, satisfiedBy })),
             postApplyWait.promise.then((terminal) => ({
               kind: "terminal" as const,
@@ -911,7 +915,11 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       );
       const postProofObservationOutcome = await raceWithProofTrustInvalidation(
         session.frameSeqGateEnabled()
-          ? session.awaitFrameAdvanceAtOrAfter(minFrameObservedAt, remaining)
+          ? session.awaitFrameAdvanceAtOrAfter(
+              minFrameObservedAt,
+              remaining,
+              terminalWaitAbort.signal,
+            )
           : waitForDecodedFrameAtOrAfter(
               attached,
               minFrameObservedAt,

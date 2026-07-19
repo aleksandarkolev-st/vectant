@@ -121,6 +121,27 @@ describe("session frame-advance tracker", () => {
     expect(r).toBeNull();
   });
 
+  it("awaitFrameAdvanceAtOrAfter removes its listener when aborted", async () => {
+    session.setFrameAdvance(1, 1_000);
+    const controller = new AbortController();
+    const pending = session.awaitFrameAdvanceAtOrAfter(
+      2_000,
+      60_000,
+      controller.signal,
+    );
+    const frameAdvanceListeners = (
+      session as unknown as {
+        frameAdvanceListeners: Set<(frameAdvance: unknown) => void>;
+      }
+    ).frameAdvanceListeners;
+
+    expect(frameAdvanceListeners.size).toBe(1);
+    controller.abort();
+
+    await expect(pending).resolves.toBeNull();
+    expect(frameAdvanceListeners.size).toBe(0);
+  });
+
   it("awaitFrameAdvanceAtOrAfter returns null when the gate is disabled", async () => {
     expect(session.frameSeqGateEnabled()).toBe(false);
     const r = await session.awaitFrameAdvanceAtOrAfter(1_000, 40);
