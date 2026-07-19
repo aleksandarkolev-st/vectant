@@ -51,6 +51,10 @@ export interface GpuParentRuntimeProofCompileIntent {
   readonly correlationId: string;
 }
 
+export type GpuParentRuntimeProofTrustInvalidationReason =
+  | "runtime_evidence_transport_failed"
+  | "runtime_evidence_transport_disposed";
+
 export interface GpuParentRuntimeProofAdmissionSnapshot {
   readonly schemaVersion: "synthi.gpu_hmr.parent_runtime_proof_admission_snapshot.v1";
   readonly proofAuthority: "session_admission_diagnostics_only_not_gpu_hmr_acceptance";
@@ -253,6 +257,11 @@ export class SessionGpuParentRuntimeProofAdmission {
     if (this.pendingIntents.delete(compileRequestNonce)) {
       this.lastDecisionCode = "gpu_parent_runtime_proof_compile_intent_cancelled";
     }
+  }
+
+  invalidateTrust(reason: GpuParentRuntimeProofTrustInvalidationReason): void {
+    if (this.disposed || this.failureReason !== null) return;
+    this.fail(`gpu_parent_runtime_proof_admission_${reason}`);
   }
 
   beforeClassify(message: Record<string, unknown>, _observedAt: number): boolean {

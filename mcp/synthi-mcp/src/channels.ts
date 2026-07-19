@@ -126,6 +126,7 @@ export class SessionChannels {
   private readonly runtimeEvidenceReceiptConsumer: RuntimeEvidenceTransportReceiptConsumer;
   private readonly runtimeEvidenceKeyPin: RuntimeEvidenceTransportKeyPin;
   private readonly gpuParentRuntimeProofAdmission: SessionGpuParentRuntimeProofAdmission;
+  private runtimeEvidenceKeyPinUnsubscribe: (() => void) | null = null;
 
   constructor(
     private readonly terminalDC: RTCDataChannel,
@@ -148,6 +149,21 @@ export class SessionChannels {
       beforeClassify: (message, observedAt) =>
         this.gpuParentRuntimeProofAdmission.beforeClassify(message, observedAt),
     });
+    this.runtimeEvidenceKeyPinUnsubscribe = runtimeEvidenceContext.keyPin.onChange(
+      (snapshot) => {
+        if (snapshot.status === "failed") {
+          this.gpuParentRuntimeProofAdmission.invalidateTrust(
+            "runtime_evidence_transport_failed",
+          );
+          this.hmr.invalidateGpuProofTrust("runtime_evidence_transport_failed");
+        } else if (snapshot.status === "disposed") {
+          this.gpuParentRuntimeProofAdmission.invalidateTrust(
+            "runtime_evidence_transport_disposed",
+          );
+          this.hmr.invalidateGpuProofTrust("runtime_evidence_transport_disposed");
+        }
+      },
+    );
   }
 
   async sendInput(frames: string[], opts?: SendOptions): Promise<void> {
@@ -254,6 +270,8 @@ export class SessionChannels {
   }
 
   dispose(): void {
+    this.runtimeEvidenceKeyPinUnsubscribe?.();
+    this.runtimeEvidenceKeyPinUnsubscribe = null;
     this.hmr.dispose();
     this.gpuParentRuntimeProofAdmission.dispose();
     this.runtimeEvidenceReceiptConsumer.dispose();

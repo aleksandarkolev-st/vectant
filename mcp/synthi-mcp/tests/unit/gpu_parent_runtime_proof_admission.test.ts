@@ -504,6 +504,41 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
     expect(consumer.consumeSupportEnvelope).not.toHaveBeenCalled();
   });
 
+  it("clears proof state on trust invalidation while passing unrelated messages", () => {
+    const gate = admission();
+    const boundIntent = gate.issueCompileIntent();
+    const pendingIntent = gate.issueCompileIntent();
+    const pair = makePair(boundIntent.compileRequestNonce, "c");
+    expect(gate.beforeClassify(pair.control, 1)).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      pendingIntentCount: 1,
+      verifiedBindingCount: 1,
+    });
+
+    gate.invalidateTrust("runtime_evidence_transport_failed");
+    gate.invalidateTrust("runtime_evidence_transport_disposed");
+
+    expect(gate.snapshot()).toMatchObject({
+      status: "failed",
+      pendingIntentCount: 0,
+      verifiedBindingCount: 0,
+      failureReason:
+        "gpu_parent_runtime_proof_admission_runtime_evidence_transport_failed",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(gate.beforeClassify({ type: "ordinary-event", value: 1 }, 2)).toBe(true);
+    expect(gate.beforeClassify({
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-full-runtime-proven",
+      parentVerification: pair.proof.parentVerification,
+    }, 3)).toBe(false);
+    expect(() => gate.issueCompileIntent())
+      .toThrow("gpu_parent_runtime_proof_admission_runtime_evidence_transport_failed");
+    gate.cancelCompileIntent(pendingIntent.compileRequestNonce);
+  });
+
   it("reports only frozen support diagnostics and clears state on disposal", () => {
     const gate = admission();
     gate.issueCompileIntent();
