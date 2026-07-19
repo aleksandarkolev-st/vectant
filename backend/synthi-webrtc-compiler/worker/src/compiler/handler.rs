@@ -64,8 +64,9 @@ use crate::compiler::stages::guardrails::{
     apply_core_guardrails, apply_gui_guardrails, apply_shared_guardrails,
 };
 use crate::compiler::stages::runner::{
-    handle_runner_execution, CorrelatedColdGpuLoadReceipt, CorrelatedGpuTerminalReceipt,
-    RunnerExecutionOutcome, RunnerReloadPolicy, VerifiedHotGpuReloadReceipt,
+    handle_runner_execution, publish_parent_verified_hot_gpu_proof, CorrelatedColdGpuLoadReceipt,
+    CorrelatedGpuTerminalReceipt, RunnerExecutionOutcome, RunnerReloadPolicy,
+    VerifiedHotGpuReloadReceipt,
 };
 use crate::runtime::capability::HmrStatus;
 use tokio::io::AsyncWriteExt;
@@ -9614,7 +9615,18 @@ async fn resume_active_runner_after_verified_hot_reload(
         process_id: receipt.runner_pid(),
         runtime_session_id: receipt.runner_runtime_session_id(),
     };
-    resume_active_runner_runtime(ctx, session_id, Some(expected), "verified hot GPU reload").await
+    resume_active_runner_runtime(ctx, session_id, Some(expected), "verified hot GPU reload")
+        .await?;
+    match publish_parent_verified_hot_gpu_proof(ctx, session_id, receipt).await {
+        Ok(true) => {}
+        Ok(false) => debug_log!(
+            "[GPU HMR] parent-verified runtime proof publication did not complete; strict proof remains pending"
+        ),
+        Err(error) => debug_log!(
+            "[GPU HMR] parent-verified runtime proof publication refused: {error}; strict proof remains pending"
+        ),
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

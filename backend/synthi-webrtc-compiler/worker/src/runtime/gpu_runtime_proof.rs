@@ -61,6 +61,17 @@ fn json_sha256(value: &serde_json::Value) -> String {
     sha256_hex_bytes(stable_json(value).as_bytes())
 }
 
+pub fn canonical_gpu_runtime_proof_json_bytes(value: &serde_json::Value) -> Vec<u8> {
+    stable_json(value).into_bytes()
+}
+
+pub fn canonical_gpu_runtime_proof_json_sha256(value: &serde_json::Value) -> String {
+    format!(
+        "sha256:{}",
+        sha256_hex_bytes(&canonical_gpu_runtime_proof_json_bytes(value))
+    )
+}
+
 fn json_field(value: &serde_json::Value, key: &str) -> serde_json::Value {
     value.get(key).cloned().unwrap_or(serde_json::Value::Null)
 }
