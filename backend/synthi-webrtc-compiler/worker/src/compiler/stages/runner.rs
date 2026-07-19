@@ -620,6 +620,7 @@ impl VerifiedHotGpuReloadReceipt {
             &original_proof_sha256,
             self.runner_pid,
             &self.runner_runtime_session_id,
+            &self.runner_challenge,
             &self.command_envelope_sha256,
             parent_pid,
             true,
@@ -665,6 +666,7 @@ impl VerifiedHotGpuReloadReceipt {
             "canonicalProofSha256": original_proof_sha256,
             "runnerPid": self.runner_pid,
             "runnerRuntimeSessionId": self.runner_runtime_session_id,
+            "runnerChallenge": self.runner_challenge,
             "commandEnvelopeSha256": self.command_envelope_sha256,
             "parentPid": parent_pid,
             "runtimeEvidenceTransportEnvelope": transport_envelope,
@@ -2835,7 +2837,8 @@ mod tests {
         RunnerExecutionOutcome, RunnerGpuTerminalExpectation, RunnerOutputRoute,
         RunnerReloadPolicy, StrictGpuTerminalExpectation, VerifiedHotGpuReloadReceipt,
         PARENT_VERIFIED_GPU_RUNTIME_PROOF_AUTHORITY,
-        PARENT_VERIFIED_GPU_RUNTIME_PROOF_SCHEMA_VERSION, STRUCTURED_LOG_CHUNK_BYTES,
+        PARENT_VERIFIED_GPU_RUNTIME_PROOF_SCHEMA_VERSION,
+        PARENT_VERIFIED_GPU_RUNTIME_PROOF_SUBJECT_SCHEMA_VERSION, STRUCTURED_LOG_CHUNK_BYTES,
         STRUCTURED_LOG_CHUNK_SCHEMA_VERSION,
     };
     use crate::compiler::builder::ModuleHashes;
@@ -3696,6 +3699,10 @@ mod tests {
             expectation.runner_runtime_session_id
         );
         assert_eq!(
+            parent_verification["runnerChallenge"],
+            expectation.runner_challenge
+        );
+        assert_eq!(
             parent_verification["commandEnvelopeSha256"],
             expectation.command_envelope_sha256
         );
@@ -3717,6 +3724,45 @@ mod tests {
         );
         let transport_receipt = &transport_envelope["runtimeEvidenceTransportReceipt"];
         assert_eq!(transport_receipt["algorithm"], "ed25519");
+        assert_eq!(
+            transport_receipt["runnerChallengeSha256"],
+            format!(
+                "sha256:{}",
+                sha256_hex_local(expectation.runner_challenge.as_bytes())
+            )
+        );
+        let subject_bytes = serde_json::to_vec(&serde_json::json!([
+            PARENT_VERIFIED_GPU_RUNTIME_PROOF_SUBJECT_SCHEMA_VERSION,
+            "compile-session:test",
+            expectation.identity.request_id,
+            expectation.identity.source_edit_id,
+            expectation.identity.artifact_content_hash,
+            proof_id,
+            verified.ledger_proof_id,
+            proof_json_sha256,
+            canonical_gpu_runtime_proof_json_sha256(&proof),
+            expectation.runner_pid,
+            expectation.runner_runtime_session_id,
+            expectation.runner_challenge,
+            expectation.command_envelope_sha256,
+            parent_verification["parentPid"],
+            true,
+        ]))
+        .unwrap();
+        let subject_bytes_sha256 = format!("sha256:{}", sha256_hex_local(&subject_bytes));
+        let subject_identity_material = serde_json::to_vec(&serde_json::json!([
+            "synthi.gpu_hmr.runtime_evidence_transport_subject_identity.v1",
+            PARENT_VERIFIED_GPU_RUNTIME_PROOF_SUBJECT_SCHEMA_VERSION,
+            subject_bytes_sha256,
+        ]))
+        .unwrap();
+        assert_eq!(
+            transport_receipt["subjectIdentityHash"],
+            format!(
+                "sha256:{}",
+                sha256_hex_local(&subject_identity_material)
+            )
+        );
         assert_eq!(
             transport_receipt["keyId"],
             transport_signer.verification_key().key_id()
