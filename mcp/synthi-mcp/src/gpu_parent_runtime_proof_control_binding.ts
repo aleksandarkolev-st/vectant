@@ -10,13 +10,13 @@ import type {
 } from "./runtime_evidence_transport.js";
 
 export const GPU_PARENT_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION =
-  "synthi.gpu_hmr.parent_runtime_proof_control_binding.v3";
+  "synthi.gpu_hmr.parent_runtime_proof_control_binding.v4";
 export const GPU_PARENT_RUNTIME_PROOF_CONTROL_BINDING_TYPE =
   "gpu_hmr_parent_runtime_proof_control_binding";
 export const GPU_PARENT_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY =
   "parent_signed_compile_correlated_runtime_proof_binding_only_not_gpu_hmr_acceptance";
 export const GPU_PARENT_RUNTIME_PROOF_CONTROL_BINDING_SUBJECT_SCHEMA_VERSION =
-  "synthi.gpu_hmr.parent_runtime_proof_control_binding_subject.v3";
+  "synthi.gpu_hmr.parent_runtime_proof_control_binding_subject.v4";
 
 const VALIDATION_SCHEMA =
   "synthi.gpu_hmr.parent_runtime_proof_control_binding_verification.v1";
@@ -47,6 +47,7 @@ const CONTROL_BINDING_KEYS = [
   "commandEnvelopeSha256",
   "prepublicationOutputOracleCommitment",
   "computeExpectedOutputContractHash",
+  "computeExpectedOutputSemanticsHash",
   "parentPid",
   "bindingCanonicalSha256",
   "bindingId",
@@ -111,6 +112,7 @@ extends GpuParentRuntimeProofControlBindingValidationBase {
   readonly reason: null;
   readonly expectedBinding: GpuParentRuntimeProofExpectedBinding;
   readonly computeExpectedOutputContractHash: string | null;
+  readonly computeExpectedOutputSemanticsHash: string | null;
 }
 
 export interface GpuParentRuntimeProofControlBindingRefused
@@ -232,6 +234,10 @@ function validBindingFieldShapes(binding: ExactRecord): boolean {
       binding.computeExpectedOutputContractHash === null
       || canonicalSha256(binding.computeExpectedOutputContractHash)
     )
+    && (
+      binding.computeExpectedOutputSemanticsHash === null
+      || canonicalSha256(binding.computeExpectedOutputSemanticsHash)
+    )
     && canonicalProcessNumber(binding.parentPid)
     && canonicalSha256(binding.bindingCanonicalSha256)
     && canonicalPrefixedSha256(binding.bindingId, BINDING_ID_PREFIX);
@@ -311,6 +317,8 @@ function verified(
       runnerRuntimeSessionId: binding.runnerRuntimeSessionId as string,
       runnerChallenge: binding.runnerChallenge as string,
       commandEnvelopeSha256: binding.commandEnvelopeSha256 as string,
+      computeExpectedOutputSemanticsHash:
+        binding.computeExpectedOutputSemanticsHash as string | null,
       prepublicationOutputOracleCommitment:
         parseGpuParentRuntimeOutputOracleCommitment(
           binding.prepublicationOutputOracleCommitment,
@@ -318,6 +326,8 @@ function verified(
     },
     computeExpectedOutputContractHash:
       binding.computeExpectedOutputContractHash as string | null,
+    computeExpectedOutputSemanticsHash:
+      binding.computeExpectedOutputSemanticsHash as string | null,
     acceptedForGpuHmr: false,
     gpuHmrSuccess: false,
     canSatisfyRuntimeProof: false,

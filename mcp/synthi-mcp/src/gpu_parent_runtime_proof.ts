@@ -5,11 +5,11 @@ import type {
 } from "./runtime_evidence_transport.js";
 
 const PARENT_VERIFICATION_SCHEMA =
-  "synthi.gpu_hmr.parent_verified_runtime_proof.v2";
+  "synthi.gpu_hmr.parent_verified_runtime_proof.v3";
 const PARENT_VERIFICATION_AUTHORITY =
   "parent_recomputed_runtime_proof_binding_only_not_gpu_hmr_acceptance";
 const PARENT_SUBJECT_SCHEMA =
-  "synthi.gpu_hmr.parent_verified_runtime_proof_subject.v2";
+  "synthi.gpu_hmr.parent_verified_runtime_proof_subject.v3";
 const PREPUBLICATION_OUTPUT_ORACLE_COMMITMENT_SCHEMA =
   "synthi.gpu_hmr.reload_output_oracle_profile_commitment.v1";
 const VALIDATION_SCHEMA =
@@ -47,6 +47,7 @@ const PARENT_VERIFICATION_KEYS = [
   "runnerRuntimeSessionId",
   "runnerChallenge",
   "commandEnvelopeSha256",
+  "computeExpectedOutputSemanticsHash",
   "prepublicationOutputOracleCommitment",
   "parentPid",
   "runtimeEvidenceTransportEnvelope",
@@ -63,6 +64,7 @@ const EXPECTED_BINDING_KEYS = [
   "runnerRuntimeSessionId",
   "runnerChallenge",
   "commandEnvelopeSha256",
+  "computeExpectedOutputSemanticsHash",
   "prepublicationOutputOracleCommitment",
 ] as const;
 
@@ -90,6 +92,7 @@ export interface GpuParentRuntimeProofExpectedBinding {
   readonly runnerRuntimeSessionId: string;
   readonly runnerChallenge: string;
   readonly commandEnvelopeSha256: string;
+  readonly computeExpectedOutputSemanticsHash: string | null;
   readonly prepublicationOutputOracleCommitment:
     GpuParentRuntimeOutputOracleCommitment | null;
 }
@@ -519,6 +522,10 @@ function validParentFieldShapes(parent: Record<string, unknown>): boolean {
     && typeof parent.runnerChallenge === "string"
     && /^[a-f0-9]{32}$/.test(parent.runnerChallenge)
     && canonicalSha256(parent.commandEnvelopeSha256)
+    && (
+      parent.computeExpectedOutputSemanticsHash === null
+      || canonicalSha256(parent.computeExpectedOutputSemanticsHash)
+    )
     && canonicalProcessNumber(parent.parentPid)
     && typeof parent.receiptId === "string"
     && /^gpu-parent-runtime-proof-receipt:sha256:[a-f0-9]{64}$/.test(parent.receiptId);
@@ -548,7 +555,11 @@ function validExpectedBinding(
     && canonicalToken(binding.runnerRuntimeSessionId)
     && typeof binding.runnerChallenge === "string"
     && /^[a-f0-9]{32}$/.test(binding.runnerChallenge)
-    && canonicalSha256(binding.commandEnvelopeSha256);
+    && canonicalSha256(binding.commandEnvelopeSha256)
+    && (
+      binding.computeExpectedOutputSemanticsHash === null
+      || canonicalSha256(binding.computeExpectedOutputSemanticsHash)
+    );
 }
 
 function parentMatchesExpectedBinding(
@@ -567,6 +578,8 @@ function parentMatchesExpectedBinding(
     && parent.runnerRuntimeSessionId === expected.runnerRuntimeSessionId
     && parent.runnerChallenge === expected.runnerChallenge
     && parent.commandEnvelopeSha256 === expected.commandEnvelopeSha256
+    && parent.computeExpectedOutputSemanticsHash
+      === expected.computeExpectedOutputSemanticsHash
     && parentCommitment !== undefined
     && outputOracleCommitmentsMatch(
       parentCommitment,
@@ -679,6 +692,7 @@ export function verifyGpuParentRuntimeProofTransport(
       parent.runnerRuntimeSessionId,
       parent.runnerChallenge,
       parent.commandEnvelopeSha256,
+      parent.computeExpectedOutputSemanticsHash,
       parent.prepublicationOutputOracleCommitment,
       parent.parentPid,
       true,

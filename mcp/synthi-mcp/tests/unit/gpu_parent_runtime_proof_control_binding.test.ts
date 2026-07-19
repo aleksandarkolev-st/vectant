@@ -45,6 +45,7 @@ const PROTECTED_PROOF_HASH = `sha256:${"5".repeat(64)}`;
 const CANONICAL_PROOF_HASH = `sha256:${"6".repeat(64)}`;
 const COMMAND_ENVELOPE_HASH = `sha256:${"7".repeat(64)}`;
 const EXPECTED_OUTPUT_CONTRACT_HASH = `sha256:${"a".repeat(64)}`;
+const EXPECTED_OUTPUT_SEMANTICS_HASH = `sha256:${"b".repeat(64)}`;
 const TRANSPORT_RECEIPT_ID =
   `gpu-hmr-runtime-evidence-transport-receipt:sha256:${"8".repeat(64)}`;
 const OBSERVATION_CONTEXT_HASH = `sha256:${"9".repeat(64)}`;
@@ -93,6 +94,8 @@ function expectedBindingFrom(
     runnerRuntimeSessionId: binding.runnerRuntimeSessionId as string,
     runnerChallenge: binding.runnerChallenge as string,
     commandEnvelopeSha256: binding.commandEnvelopeSha256 as string,
+    computeExpectedOutputSemanticsHash:
+      binding.computeExpectedOutputSemanticsHash as string | null,
     prepublicationOutputOracleCommitment:
       binding.prepublicationOutputOracleCommitment as
         GpuParentRuntimeProofExpectedBinding["prepublicationOutputOracleCommitment"],
@@ -154,6 +157,7 @@ function makeFixture(
     commandEnvelopeSha256: COMMAND_ENVELOPE_HASH,
     prepublicationOutputOracleCommitment: null,
     computeExpectedOutputContractHash: null,
+    computeExpectedOutputSemanticsHash: null,
     parentPid: WORKER_PROCESS_ID,
     ...baseOverrides,
     bindingCanonicalSha256: "",
@@ -384,6 +388,7 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
       reason: null,
       expectedBinding: expectedBindingFrom(fixture.binding),
       computeExpectedOutputContractHash: null,
+      computeExpectedOutputSemanticsHash: null,
       evidence: {
         bindingId: fixture.binding.bindingId,
         bindingCanonicalSha256: fixture.binding.bindingCanonicalSha256,
@@ -394,8 +399,8 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
     });
-    expect(Object.keys(fixture.binding)).toHaveLength(25);
-    expect(Object.keys(basePayload(fixture.binding))).toHaveLength(22);
+    expect(Object.keys(fixture.binding)).toHaveLength(26);
+    expect(Object.keys(basePayload(fixture.binding))).toHaveLength(23);
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.evidence)).toBe(true);
     expect(result.verified && Object.isFrozen(result.expectedBinding)).toBe(true);
@@ -446,6 +451,7 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
         editId: `source-edit:sha256:${"d".repeat(64)}`,
       },
       computeExpectedOutputContractHash: EXPECTED_OUTPUT_CONTRACT_HASH,
+      computeExpectedOutputSemanticsHash: EXPECTED_OUTPUT_SEMANTICS_HASH,
     });
     const signed = attachRealSignedEnvelope(fixture.binding);
 
@@ -457,6 +463,8 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
     expect(result.expectedBinding).toEqual(expectedBindingFrom(fixture.binding));
     expect(result.computeExpectedOutputContractHash)
       .toBe(EXPECTED_OUTPUT_CONTRACT_HASH);
+    expect(result.computeExpectedOutputSemanticsHash)
+      .toBe(EXPECTED_OUTPUT_SEMANTICS_HASH);
     expect(result.expectedBinding).not.toBe(fixture.binding);
     expect(result.evidence).toMatchObject({
       transportReceiptId: signed.receiptId,
@@ -472,6 +480,22 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
     });
     const signed = attachRealSignedEnvelope(fixture.binding);
     fixture.binding.computeExpectedOutputContractHash = `sha256:${"b".repeat(64)}`;
+    sealBinding(fixture.binding);
+
+    const result = verifyFixture(fixture, { receiptConsumer: signed.consumer });
+
+    expect(result).toMatchObject({
+      verified: false,
+      code: "gpu_parent_runtime_proof_control_binding_receipt_consumer_refused",
+    });
+  });
+
+  it("rejects a signed expected-output semantics mutation", () => {
+    const fixture = makeFixture({
+      computeExpectedOutputSemanticsHash: EXPECTED_OUTPUT_SEMANTICS_HASH,
+    });
+    const signed = attachRealSignedEnvelope(fixture.binding);
+    fixture.binding.computeExpectedOutputSemanticsHash = `sha256:${"c".repeat(64)}`;
     sealBinding(fixture.binding);
 
     const result = verifyFixture(fixture, { receiptConsumer: signed.consumer });
@@ -631,7 +655,7 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
   });
 
   it.each([
-    ["schema", "schemaVersion", "synthi.gpu_hmr.parent_runtime_proof_control_binding.v4"],
+    ["schema", "schemaVersion", "synthi.gpu_hmr.parent_runtime_proof_control_binding.v3"],
     ["type", "type", "gpu_hmr_parent_runtime_proof_binding"],
     ["authority", "proofAuthority", "parent_acceptance_authority"],
     ["accepted flag", "acceptedForGpuHmr", true],
@@ -664,6 +688,11 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
     [
       "compute expected-output contract hash",
       "computeExpectedOutputContractHash",
+      `sha256:${"A".repeat(64)}`,
+    ],
+    [
+      "compute expected-output semantics hash",
+      "computeExpectedOutputSemanticsHash",
       `sha256:${"A".repeat(64)}`,
     ],
     [

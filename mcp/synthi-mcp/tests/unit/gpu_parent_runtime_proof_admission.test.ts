@@ -74,6 +74,7 @@ function makePair(
     proofLedgerId: string;
     payloadMarker: string;
     computeExpectedOutputContractHash: string | null;
+    computeExpectedOutputSemanticsHash: string | null;
   }> = {},
 ): ProofPair {
   const requestId = overrides.requestId
@@ -120,6 +121,8 @@ function makePair(
     prepublicationOutputOracleCommitment: null,
     computeExpectedOutputContractHash:
       overrides.computeExpectedOutputContractHash ?? null,
+    computeExpectedOutputSemanticsHash:
+      overrides.computeExpectedOutputSemanticsHash ?? null,
     parentPid: WORKER_PROCESS_ID,
     bindingCanonicalSha256: "",
     bindingId: "",
@@ -127,7 +130,7 @@ function makePair(
   };
   sealControl(control);
   const parent: Record<string, unknown> = {
-    schemaVersion: "synthi.gpu_hmr.parent_verified_runtime_proof.v2",
+    schemaVersion: "synthi.gpu_hmr.parent_verified_runtime_proof.v3",
     proofAuthority: "parent_recomputed_runtime_proof_binding_only_not_gpu_hmr_acceptance",
     acceptedForGpuHmr: false,
     gpuHmrSuccess: false,
@@ -146,6 +149,8 @@ function makePair(
     runnerRuntimeSessionId: RUNTIME_SESSION_ID,
     runnerChallenge: RUNNER_CHALLENGE,
     commandEnvelopeSha256: COMMAND_ENVELOPE_HASH,
+    computeExpectedOutputSemanticsHash:
+      overrides.computeExpectedOutputSemanticsHash ?? null,
     prepublicationOutputOracleCommitment: null,
     parentPid: WORKER_PROCESS_ID,
     runtimeEvidenceTransportEnvelope: { schemaVersion: "opaque.parent.envelope.v1" },
