@@ -44,6 +44,7 @@ const LEDGER_PROOF_ID = `gpu-ledger-proof:sha256:${"4".repeat(64)}`;
 const PROTECTED_PROOF_HASH = `sha256:${"5".repeat(64)}`;
 const CANONICAL_PROOF_HASH = `sha256:${"6".repeat(64)}`;
 const COMMAND_ENVELOPE_HASH = `sha256:${"7".repeat(64)}`;
+const EXPECTED_OUTPUT_CONTRACT_HASH = `sha256:${"a".repeat(64)}`;
 const TRANSPORT_RECEIPT_ID =
   `gpu-hmr-runtime-evidence-transport-receipt:sha256:${"8".repeat(64)}`;
 const OBSERVATION_CONTEXT_HASH = `sha256:${"9".repeat(64)}`;
@@ -152,6 +153,7 @@ function makeFixture(
     runnerChallenge: RUNNER_CHALLENGE,
     commandEnvelopeSha256: COMMAND_ENVELOPE_HASH,
     prepublicationOutputOracleCommitment: null,
+    computeExpectedOutputContractHash: null,
     parentPid: WORKER_PROCESS_ID,
     ...baseOverrides,
     bindingCanonicalSha256: "",
@@ -381,6 +383,7 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
       code: "gpu_parent_runtime_proof_control_binding_verified",
       reason: null,
       expectedBinding: expectedBindingFrom(fixture.binding),
+      computeExpectedOutputContractHash: null,
       evidence: {
         bindingId: fixture.binding.bindingId,
         bindingCanonicalSha256: fixture.binding.bindingCanonicalSha256,
@@ -391,8 +394,8 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
     });
-    expect(Object.keys(fixture.binding)).toHaveLength(24);
-    expect(Object.keys(basePayload(fixture.binding))).toHaveLength(21);
+    expect(Object.keys(fixture.binding)).toHaveLength(25);
+    expect(Object.keys(basePayload(fixture.binding))).toHaveLength(22);
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.evidence)).toBe(true);
     expect(result.verified && Object.isFrozen(result.expectedBinding)).toBe(true);
@@ -442,6 +445,7 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
         profileBytesSha256: `sha256:${"4".repeat(64)}`,
         editId: `source-edit:sha256:${"d".repeat(64)}`,
       },
+      computeExpectedOutputContractHash: EXPECTED_OUTPUT_CONTRACT_HASH,
     });
     const signed = attachRealSignedEnvelope(fixture.binding);
 
@@ -451,6 +455,8 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
     expect(result.verified).toBe(true);
     if (!result.verified) throw new Error(result.code);
     expect(result.expectedBinding).toEqual(expectedBindingFrom(fixture.binding));
+    expect(result.computeExpectedOutputContractHash)
+      .toBe(EXPECTED_OUTPUT_CONTRACT_HASH);
     expect(result.expectedBinding).not.toBe(fixture.binding);
     expect(result.evidence).toMatchObject({
       transportReceiptId: signed.receiptId,
@@ -458,6 +464,22 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
     });
     expect(signed.envelope.observedPayloadSha256)
       .toBe(sha256(signed.canonicalPayload));
+  });
+
+  it("rejects a signed expected-output hash mutation", () => {
+    const fixture = makeFixture({
+      computeExpectedOutputContractHash: EXPECTED_OUTPUT_CONTRACT_HASH,
+    });
+    const signed = attachRealSignedEnvelope(fixture.binding);
+    fixture.binding.computeExpectedOutputContractHash = `sha256:${"b".repeat(64)}`;
+    sealBinding(fixture.binding);
+
+    const result = verifyFixture(fixture, { receiptConsumer: signed.consumer });
+
+    expect(result).toMatchObject({
+      verified: false,
+      code: "gpu_parent_runtime_proof_control_binding_receipt_consumer_refused",
+    });
   });
 
   it.each([
@@ -609,7 +631,7 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
   });
 
   it.each([
-    ["schema", "schemaVersion", "synthi.gpu_hmr.parent_runtime_proof_control_binding.v3"],
+    ["schema", "schemaVersion", "synthi.gpu_hmr.parent_runtime_proof_control_binding.v4"],
     ["type", "type", "gpu_hmr_parent_runtime_proof_binding"],
     ["authority", "proofAuthority", "parent_acceptance_authority"],
     ["accepted flag", "acceptedForGpuHmr", true],
@@ -639,6 +661,11 @@ describe("verifyGpuParentRuntimeProofControlBinding", () => {
     ["runner session", "runnerRuntimeSessionId", "contains a space"],
     ["runner challenge", "runnerChallenge", "A".repeat(32)],
     ["command envelope hash", "commandEnvelopeSha256", `sha256:${"G".repeat(64)}`],
+    [
+      "compute expected-output contract hash",
+      "computeExpectedOutputContractHash",
+      `sha256:${"A".repeat(64)}`,
+    ],
     [
       "prepublication output oracle commitment",
       "prepublicationOutputOracleCommitment",

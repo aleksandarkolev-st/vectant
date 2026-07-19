@@ -49,6 +49,7 @@ export interface GpuParentRuntimeProofAdmissionContext {
 export interface GpuParentRuntimeProofCompileIntent {
   readonly compileRequestNonce: string;
   readonly correlationId: string;
+  readonly computeExpectedOutputContractHash: string | null;
 }
 
 export type GpuParentRuntimeProofTrustInvalidationReason =
@@ -72,6 +73,7 @@ export interface GpuParentRuntimeProofAdmissionSnapshot {
 interface PendingIntent {
   readonly compileRequestNonce: string;
   readonly correlationId: string;
+  readonly computeExpectedOutputContractHash: string | null;
   readonly expiresAt: number;
 }
 
@@ -110,6 +112,13 @@ function canonicalToken(value: unknown): value is string {
 function validCompileRequestNonce(value: unknown): value is string {
   return typeof value === "string"
     && /^gpu-proof-transport-request:[a-f0-9]{32}$/.test(value);
+}
+
+function validComputeExpectedOutputContractHash(
+  value: unknown,
+): value is string | null {
+  return value === null
+    || (typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value));
 }
 
 function plainRecord(value: unknown): Record<string, unknown> | null {
@@ -219,8 +228,15 @@ export class SessionGpuParentRuntimeProofAdmission {
     );
   }
 
-  issueCompileIntent(): GpuParentRuntimeProofCompileIntent {
+  issueCompileIntent(
+    computeExpectedOutputContractHash: string | null = null,
+  ): GpuParentRuntimeProofCompileIntent {
     this.assertActive();
+    if (!validComputeExpectedOutputContractHash(computeExpectedOutputContractHash)) {
+      throw new Error(
+        "gpu_parent_runtime_proof_admission_expected_output_contract_hash_invalid",
+      );
+    }
     const now = this.currentTime();
     this.prune(now);
     if (this.pendingIntents.size >= this.maxPendingIntents) {
@@ -242,6 +258,7 @@ export class SessionGpuParentRuntimeProofAdmission {
         const intent = Object.freeze({
           compileRequestNonce: nonce,
           correlationId: correlationId(this.transportSessionId, nonce),
+          computeExpectedOutputContractHash,
           expiresAt: now + this.intentTtlMs,
         });
         this.issuedNonceHashes.add(nonceHash);
@@ -250,6 +267,8 @@ export class SessionGpuParentRuntimeProofAdmission {
         return Object.freeze({
           compileRequestNonce: intent.compileRequestNonce,
           correlationId: intent.correlationId,
+          computeExpectedOutputContractHash:
+            intent.computeExpectedOutputContractHash,
         });
       } finally {
         bytes.fill(0);
@@ -346,6 +365,11 @@ export class SessionGpuParentRuntimeProofAdmission {
       this.lastDecisionCode = "gpu_parent_runtime_proof_control_without_live_intent";
       return;
     }
+    const pendingIntent = this.pendingIntents.get(nonce);
+    if (pendingIntent === undefined) {
+      this.lastDecisionCode = "gpu_parent_runtime_proof_control_without_live_intent";
+      return;
+    }
     const pin = this.keyPin.snapshot();
     if (pin.status !== "pinned" || pin.key === null) {
       this.lastDecisionCode = "gpu_parent_runtime_proof_control_key_not_pinned";
@@ -364,6 +388,15 @@ export class SessionGpuParentRuntimeProofAdmission {
     });
     if (!validation.verified) {
       this.lastDecisionCode = validation.code;
+      return;
+    }
+    if (
+      validation.computeExpectedOutputContractHash
+      !== pendingIntent.computeExpectedOutputContractHash
+    ) {
+      this.fail(
+        "gpu_parent_runtime_proof_authenticated_expected_output_contract_hash_mismatch",
+      );
       return;
     }
 

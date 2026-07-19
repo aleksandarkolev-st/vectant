@@ -1,5 +1,7 @@
 use crate::hmr::gpu_proof::sha256_hex_bytes;
+use crate::infra::messages::compute_expected_output_contract_hash_valid;
 use crate::runtime::runner_protocol::canonical_sha256_content_hash;
+use std::collections::HashSet;
 
 pub const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof_ledger.v1";
 pub const GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE: &str =
@@ -8,6 +10,8 @@ pub const GPU_HMR_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof.v1";
 pub const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.validation-proof.v1";
 pub const GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION: &str = "synthi.gpu_hmr.contract.v1";
 pub const GPU_HMR_FULL_RUNTIME_RESULT_STATE: &str = "gpu-hmr-full-runtime-proven";
+pub const COMPUTE_EXPECTED_OUTPUT_CONTRACT_SCHEMA_VERSION: &str =
+    "synthi.gpu.hmr.compute_expected_output_contract.v1";
 
 pub const GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 pub const GPU_HMR_PORTABLE_JSON_MAX_DEPTH: usize = 128;
@@ -23,12 +27,15 @@ pub struct StrictGpuRuntimeProofExpectation<'a> {
     pub artifact_content_hash: &'a str,
     pub process_id: &'a str,
     pub runtime_session_id: &'a str,
+    pub compute_expected_output_contract_hash: Option<&'a str>,
+    pub enforce_compute_expected_output_contract_hash: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedGpuRuntimeProof {
     pub proof_id: String,
     pub ledger_proof_id: String,
+    pub compute_expected_output_contract_hash: Option<String>,
 }
 
 fn stable_json(value: &serde_json::Value) -> String {
@@ -432,6 +439,233 @@ fn canonical_artifact_id(value: &str) -> bool {
         .is_some_and(canonical_sha256_content_hash)
 }
 
+fn exact_object_fields(value: &serde_json::Value, expected: &[&str]) -> bool {
+    let Some(fields) = value.as_object() else {
+        return false;
+    };
+    fields.len() == expected.len() && expected.iter().all(|field| fields.contains_key(*field))
+}
+
+fn canonical_contract_text(value: &serde_json::Value) -> Option<&str> {
+    let value = value.as_str()?;
+    (!value.is_empty() && value.trim() == value).then_some(value)
+}
+
+fn canonical_bigint_text(value: &str, unsigned: bool) -> bool {
+    if value == "0" {
+        return true;
+    }
+    let digits = if let Some(rest) = value.strip_prefix('-') {
+        if unsigned || rest.is_empty() {
+            return false;
+        }
+        rest
+    } else {
+        value
+    };
+    digits
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| (b'1'..=b'9').contains(byte))
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn canonical_expected_value(value: &serde_json::Value, dtype: &str) -> bool {
+    match dtype {
+        "bool" => value.is_boolean(),
+        "i64" | "u64" => value
+            .as_str()
+            .is_some_and(|value| canonical_bigint_text(value, dtype == "u64")),
+        "complex64" | "complex128" => value.as_array().is_some_and(|components| {
+            components.len() == 2
+                && components
+                    .iter()
+                    .all(|component| component.as_f64().is_some_and(f64::is_finite))
+        }),
+        _ => value.as_f64().is_some_and(f64::is_finite),
+    }
+}
+
+fn canonical_compute_expected_output_contract_hash(
+    contract: &serde_json::Value,
+    expectation: &StrictGpuRuntimeProofExpectation<'_>,
+) -> Option<String> {
+    const CONTRACT_FIELDS: &[&str] = &[
+        "schemaVersion",
+        "comparisonMode",
+        "dtype",
+        "shape",
+        "elementCount",
+        "byteOrder",
+        "tolerance",
+        "expectedValues",
+        "expectedValuesHash",
+        "expectedRawHash",
+        "binding",
+        "evidenceRefs",
+        "contractHash",
+    ];
+    const BINDING_FIELDS: &[&str] = &[
+        "projectId",
+        "editId",
+        "artifactAfterHash",
+        "outputTargetId",
+        "oracleCodeHash",
+    ];
+    const DTYPES: &[(&str, u64)] = &[
+        ("bool", 1),
+        ("i8", 1),
+        ("u8", 1),
+        ("bf16", 2),
+        ("f16", 2),
+        ("i16", 2),
+        ("u16", 2),
+        ("f32", 4),
+        ("i32", 4),
+        ("u32", 4),
+        ("complex64", 8),
+        ("f64", 8),
+        ("i64", 8),
+        ("u64", 8),
+        ("complex128", 16),
+    ];
+    const MAX_EXPECTED_VALUES: usize = 262_144;
+
+    if !exact_object_fields(contract, CONTRACT_FIELDS)
+        || contract.get("schemaVersion")?.as_str()
+            != Some(COMPUTE_EXPECTED_OUTPUT_CONTRACT_SCHEMA_VERSION)
+    {
+        return None;
+    }
+    let comparison_mode = contract.get("comparisonMode")?.as_str()?;
+    if !matches!(comparison_mode, "exact_bytes" | "numeric_tolerance") {
+        return None;
+    }
+    let dtype = contract.get("dtype")?.as_str()?;
+    let dtype_width = DTYPES
+        .iter()
+        .find_map(|(candidate, width)| (*candidate == dtype).then_some(*width))?;
+    let shape = contract.get("shape")?.as_array()?;
+    if shape.is_empty() {
+        return None;
+    }
+    let mut shape_product = 1_u64;
+    for dimension in shape {
+        let dimension = dimension.as_u64()?;
+        if dimension == 0 || dimension > GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER {
+            return None;
+        }
+        shape_product = shape_product.checked_mul(dimension)?;
+        if shape_product > GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER {
+            return None;
+        }
+    }
+    let element_count = contract.get("elementCount")?.as_u64()?;
+    if element_count == 0 || element_count != shape_product {
+        return None;
+    }
+    let byte_order = contract.get("byteOrder")?.as_str()?;
+    if (dtype_width == 1 && byte_order != "not_applicable")
+        || (dtype_width > 1 && !matches!(byte_order, "little_endian" | "big_endian"))
+    {
+        return None;
+    }
+    if !contract
+        .get("tolerance")?
+        .as_f64()
+        .is_some_and(|value| value.is_finite() && value >= 0.0)
+    {
+        return None;
+    }
+
+    match comparison_mode {
+        "exact_bytes" => {
+            if !contract.get("expectedValues")?.is_null()
+                || !contract.get("expectedValuesHash")?.is_null()
+                || !contract
+                    .get("expectedRawHash")?
+                    .as_str()
+                    .is_some_and(compute_expected_output_contract_hash_valid)
+            {
+                return None;
+            }
+        }
+        "numeric_tolerance" => {
+            if !contract.get("expectedRawHash")?.is_null() {
+                return None;
+            }
+            let expected_values = contract.get("expectedValues")?.as_array()?;
+            if expected_values.len() > MAX_EXPECTED_VALUES
+                || u64::try_from(expected_values.len()).ok()? != element_count
+                || !expected_values
+                    .iter()
+                    .all(|value| canonical_expected_value(value, dtype))
+            {
+                return None;
+            }
+            let expected_values_hash = contract.get("expectedValuesHash")?.as_str()?;
+            if !compute_expected_output_contract_hash_valid(expected_values_hash)
+                || canonical_gpu_runtime_proof_json_sha256(contract.get("expectedValues")?)
+                    != expected_values_hash
+            {
+                return None;
+            }
+        }
+        _ => return None,
+    }
+
+    let binding = contract.get("binding")?;
+    if !exact_object_fields(binding, BINDING_FIELDS) {
+        return None;
+    }
+    let project_id = canonical_contract_text(binding.get("projectId")?)?;
+    let edit_id = canonical_contract_text(binding.get("editId")?)?;
+    let artifact_after_hash = canonical_contract_text(binding.get("artifactAfterHash")?)?;
+    let output_target_id = canonical_contract_text(binding.get("outputTargetId")?)?;
+    let oracle_code_hash = canonical_contract_text(binding.get("oracleCodeHash")?)?;
+    let expected_artifact_id = expected_artifact_id(expectation.artifact_content_hash)?;
+    if project_id.is_empty()
+        || output_target_id.is_empty()
+        || edit_id != expectation.source_edit_id
+        || (artifact_after_hash != expectation.artifact_content_hash
+            && artifact_after_hash != expected_artifact_id)
+        || !compute_expected_output_contract_hash_valid(oracle_code_hash)
+    {
+        return None;
+    }
+
+    let evidence_refs = contract.get("evidenceRefs")?.as_array()?;
+    if evidence_refs.is_empty() {
+        return None;
+    }
+    let mut unique_refs = HashSet::with_capacity(evidence_refs.len());
+    for evidence_ref in evidence_refs {
+        let evidence_ref = canonical_contract_text(evidence_ref)?;
+        if !unique_refs.insert(evidence_ref) {
+            return None;
+        }
+    }
+
+    let material = serde_json::json!({
+        "schemaVersion": contract.get("schemaVersion")?,
+        "comparisonMode": contract.get("comparisonMode")?,
+        "dtype": contract.get("dtype")?,
+        "shape": contract.get("shape")?,
+        "elementCount": contract.get("elementCount")?,
+        "byteOrder": contract.get("byteOrder")?,
+        "tolerance": contract.get("tolerance")?,
+        "expectedValues": contract.get("expectedValues")?,
+        "expectedValuesHash": contract.get("expectedValuesHash")?,
+        "expectedRawHash": contract.get("expectedRawHash")?,
+        "binding": contract.get("binding")?,
+        "evidenceRefs": contract.get("evidenceRefs")?,
+    });
+    let computed_hash = canonical_gpu_runtime_proof_json_sha256(&material);
+    let declared_hash = contract.get("contractHash")?.as_str()?;
+    (compute_expected_output_contract_hash_valid(declared_hash) && declared_hash == computed_hash)
+        .then_some(computed_hash)
+}
+
 pub fn runtime_record_chain_matches(
     record: &serde_json::Value,
     expectation: &StrictGpuRuntimeProofExpectation<'_>,
@@ -792,6 +1026,37 @@ pub fn verify_strict_gpu_runtime_proof(
     {
         return None;
     }
+    let declared_expected_output_contract = acceptance_contract
+        .pointer("/fission_report/output_oracle_contract/expected_output_contract");
+    let verified_expected_output_contract_hash =
+        if expectation.enforce_compute_expected_output_contract_hash {
+            match (
+                expectation.compute_expected_output_contract_hash,
+                declared_expected_output_contract,
+            ) {
+                (Some(expected_hash), Some(contract)) => {
+                    if !compute_expected_output_contract_hash_valid(expected_hash) {
+                        return None;
+                    }
+                    let computed_hash =
+                        canonical_compute_expected_output_contract_hash(contract, expectation)?;
+                    if computed_hash != expected_hash {
+                        return None;
+                    }
+                    Some(computed_hash)
+                }
+                (Some(_), None) | (None, Some(_)) => return None,
+                (None, None) => None,
+            }
+        } else {
+            match declared_expected_output_contract {
+                Some(contract) => Some(canonical_compute_expected_output_contract_hash(
+                    contract,
+                    expectation,
+                )?),
+                None => None,
+            }
+        };
     let evidence_refs = record
         .get("evidence_refs")
         .and_then(serde_json::Value::as_array)?;
@@ -808,6 +1073,7 @@ pub fn verify_strict_gpu_runtime_proof(
     Some(VerifiedGpuRuntimeProof {
         proof_id: proof_id.to_string(),
         ledger_proof_id: expected_ledger_proof_id,
+        compute_expected_output_contract_hash: verified_expected_output_contract_hash,
     })
 }
 

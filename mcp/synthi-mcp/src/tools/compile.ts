@@ -179,6 +179,7 @@ interface RawArgs {
   compile_manifest?: unknown;
   manifest?: unknown;
   source_first_request_intent?: unknown;
+  compute_expected_output_contract_hash?: unknown;
   target?: unknown;
   project_root?: unknown;
   slug?: unknown;
@@ -195,6 +196,20 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
   }
   if (a.filename !== undefined && typeof a.filename !== "string") {
     return errorResponse("invalid_args", { field: "filename", expected: "string" });
+  }
+  const computeExpectedOutputContractHash =
+    a.compute_expected_output_contract_hash;
+  if (
+    computeExpectedOutputContractHash !== undefined
+    && (
+      typeof computeExpectedOutputContractHash !== "string"
+      || !/^sha256:[a-f0-9]{64}$/.test(computeExpectedOutputContractHash)
+    )
+  ) {
+    return errorResponse("invalid_args", {
+      field: "compute_expected_output_contract_hash",
+      expected: "sha256: followed by exactly 64 lowercase hexadecimal characters",
+    });
   }
 
   // Validate optional `files` shape: [{name, content}]. An invalid shape
@@ -375,7 +390,10 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
 
   let compileDispatch: Awaited<ReturnType<typeof attached.channels.sendCompileRequest>>;
   try {
-    compileDispatch = await attached.channels.sendCompileRequest(payload);
+    compileDispatch = await attached.channels.sendCompileRequest(
+      payload,
+      computeExpectedOutputContractHash,
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.startsWith("compile_channel_not_open")) {

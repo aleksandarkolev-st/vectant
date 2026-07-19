@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 
 const DEFAULT_COMPILE_CHUNK_BYTES = 48_000;
 const GPU_PROOF_KEY_PIN_WAIT_MS = 4_000;
+const CANONICAL_SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 
 export interface SessionChannelsRuntimeEvidenceContext {
   readonly keyPin: RuntimeEvidenceTransportKeyPin;
@@ -202,23 +203,63 @@ export class SessionChannels {
    * The returned receipt is transport metadata only; runtime proof must still
    * pass parent-bound admission before HMR classification can accept it.
    */
-  async sendCompileRequest(payload: Record<string, unknown>): Promise<CompileDispatchReceipt> {
+  async sendCompileRequest(
+    payload: Record<string, unknown>,
+    computeExpectedOutputContractHash?: string,
+  ): Promise<CompileDispatchReceipt> {
     if (this.compileDC.readyState !== "open") {
       throw new Error(`compile_channel_not_open:${this.compileDC.readyState}`);
     }
     if (Object.prototype.hasOwnProperty.call(payload, "gpu_proof_transport_nonce")) {
       throw new Error("compile_gpu_proof_transport_nonce_reserved");
     }
+    if (
+      Object.prototype.hasOwnProperty.call(payload, "compute_expected_output_contract_hash")
+      || Object.prototype.hasOwnProperty.call(payload, "computeExpectedOutputContractHash")
+    ) {
+      throw new Error("compile_compute_expected_output_contract_hash_reserved");
+    }
+    const capturedExpectedOutputContractHash = computeExpectedOutputContractHash;
+    if (
+      capturedExpectedOutputContractHash !== undefined
+      && !CANONICAL_SHA256_PATTERN.test(capturedExpectedOutputContractHash)
+    ) {
+      throw new Error("compile_compute_expected_output_contract_hash_invalid");
+    }
+    const capturedPayload = { ...payload };
+    if (Object.prototype.hasOwnProperty.call(capturedPayload, "gpu_proof_transport_nonce")) {
+      throw new Error("compile_gpu_proof_transport_nonce_reserved");
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(
+        capturedPayload,
+        "compute_expected_output_contract_hash",
+      )
+      || Object.prototype.hasOwnProperty.call(
+        capturedPayload,
+        "computeExpectedOutputContractHash",
+      )
+    ) {
+      throw new Error("compile_compute_expected_output_contract_hash_reserved");
+    }
     await this.runtimeEvidenceKeyPin.waitUntilPinned(GPU_PROOF_KEY_PIN_WAIT_MS);
     if (this.compileDC.readyState !== "open") {
       throw new Error(`compile_channel_not_open:${this.compileDC.readyState}`);
     }
-    const intent = this.gpuParentRuntimeProofAdmission.issueCompileIntent();
+    const intent = this.gpuParentRuntimeProofAdmission.issueCompileIntent(
+      capturedExpectedOutputContractHash ?? null,
+    );
 
     try {
       const body = JSON.stringify({
-        ...payload,
+        ...capturedPayload,
         gpu_proof_transport_nonce: intent.compileRequestNonce,
+        ...(intent.computeExpectedOutputContractHash === null
+          ? {}
+          : {
+              compute_expected_output_contract_hash:
+                intent.computeExpectedOutputContractHash,
+            }),
       });
       const maxBytes = compileChunkMaxBytes();
       if (Buffer.byteLength(body, "utf8") <= maxBytes) {

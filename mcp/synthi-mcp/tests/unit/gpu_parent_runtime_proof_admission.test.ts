@@ -25,6 +25,7 @@ const RUNNER_PROCESS_ID = 8123;
 const RUNTIME_SESSION_ID = "opaque-runtime-session:unit-02";
 const RUNNER_CHALLENGE = "0123456789abcdef0123456789abcdef";
 const COMMAND_ENVELOPE_HASH = `sha256:${"7".repeat(64)}`;
+const EXPECTED_OUTPUT_CONTRACT_HASH = `sha256:${"a".repeat(64)}`;
 const BINDING_ID_PREFIX = "gpu-parent-runtime-proof-control-binding:";
 const PARENT_RECEIPT_PREFIX = "gpu-parent-runtime-proof-receipt:";
 const CONTROL_METADATA_KEYS = new Set([
@@ -72,6 +73,7 @@ function makePair(
     fullRuntimeProofId: string;
     proofLedgerId: string;
     payloadMarker: string;
+    computeExpectedOutputContractHash: string | null;
   }> = {},
 ): ProofPair {
   const requestId = overrides.requestId
@@ -116,6 +118,8 @@ function makePair(
     runnerChallenge: RUNNER_CHALLENGE,
     commandEnvelopeSha256: COMMAND_ENVELOPE_HASH,
     prepublicationOutputOracleCommitment: null,
+    computeExpectedOutputContractHash:
+      overrides.computeExpectedOutputContractHash ?? null,
     parentPid: WORKER_PROCESS_ID,
     bindingCanonicalSha256: "",
     bindingId: "",
@@ -256,7 +260,7 @@ function admission(options: Partial<{
 describe("SessionGpuParentRuntimeProofAdmission", () => {
   it("issues bounded one-shot nonces and opaque support correlations", () => {
     const gate = admission();
-    const first = gate.issueCompileIntent();
+    const first = gate.issueCompileIntent(EXPECTED_OUTPUT_CONTRACT_HASH);
     gate.cancelCompileIntent(first.compileRequestNonce);
     const second = gate.issueCompileIntent();
 
@@ -266,8 +270,87 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
     expect(first.correlationId)
       .toMatch(/^gpu-proof-compile-correlation:sha256:[a-f0-9]{64}$/);
     expect(first.correlationId).not.toContain(first.compileRequestNonce);
+    expect(first.computeExpectedOutputContractHash)
+      .toBe(EXPECTED_OUTPUT_CONTRACT_HASH);
+    expect(second.computeExpectedOutputContractHash).toBeNull();
     expect(Object.isFrozen(first)).toBe(true);
     expect(gate.snapshot().pendingIntentCount).toBe(1);
+  });
+
+  it("admits a signed control whose expected-output hash matches the pending intent", () => {
+    const gate = admission();
+    const intent = gate.issueCompileIntent(EXPECTED_OUTPUT_CONTRACT_HASH);
+    const pair = makePair(intent.compileRequestNonce, "a", {
+      computeExpectedOutputContractHash: EXPECTED_OUTPUT_CONTRACT_HASH,
+    });
+
+    expect(gate.beforeClassify(pair.control, 1)).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      status: "active",
+      pendingIntentCount: 0,
+      verifiedBindingCount: 1,
+      lastDecisionCode: "gpu_parent_runtime_proof_control_admitted",
+    });
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(true);
+  });
+
+  it("fails the intent epoch when authenticated contract B replaces caller contract A", () => {
+    const contractA = sha256(canonicalizeGpuParentRuntimeProofJson({
+      schemaVersion: "synthi.gpu_hmr.compute_expected_output_contract.v1",
+      expectedValues: [1, 2, 3],
+    }));
+    const contractB = sha256(canonicalizeGpuParentRuntimeProofJson({
+      schemaVersion: "synthi.gpu_hmr.compute_expected_output_contract.v1",
+      expectedValues: [9, 9, 9],
+    }));
+    expect(contractB).not.toBe(contractA);
+    const gate = admission();
+    const intent = gate.issueCompileIntent(contractA);
+    const regenerated = makePair(intent.compileRequestNonce, "b", {
+      computeExpectedOutputContractHash: contractB,
+    });
+
+    expect(gate.beforeClassify(regenerated.control, 1)).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      status: "failed",
+      pendingIntentCount: 0,
+      verifiedBindingCount: 0,
+      failureReason:
+        "gpu_parent_runtime_proof_authenticated_expected_output_contract_hash_mismatch",
+    });
+    expect(() => gate.issueCompileIntent(contractA))
+      .toThrow(
+        "gpu_parent_runtime_proof_authenticated_expected_output_contract_hash_mismatch",
+      );
+  });
+
+  it("refuses an unauthenticated expected-output mismatch without failing the intent epoch", () => {
+    const consumer = receiptConsumer();
+    consumer.consumeSupportEnvelope.mockReturnValue(Object.freeze({
+      verified: false,
+      reason: "test_signature_refused",
+      receiptId: null,
+      observationContextHash: null,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    }));
+    const gate = admission({ consumer });
+    const intent = gate.issueCompileIntent(EXPECTED_OUTPUT_CONTRACT_HASH);
+    const pair = makePair(intent.compileRequestNonce, "c", {
+      computeExpectedOutputContractHash: `sha256:${"b".repeat(64)}`,
+    });
+
+    expect(gate.beforeClassify(pair.control, 1)).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      status: "active",
+      pendingIntentCount: 1,
+      verifiedBindingCount: 0,
+      lastDecisionCode:
+        "gpu_parent_runtime_proof_control_binding_receipt_consumer_refused",
+      failureReason: null,
+    });
+    expect(consumer.consumeSupportEnvelope).toHaveBeenCalledTimes(1);
   });
 
   it("suppresses control records, then admits the matching parent proof exactly once", () => {
@@ -578,5 +661,7 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
       .toThrow("gpu_parent_runtime_proof_admission_clock_invalid");
     expect(() => admission({ nonceBytes: () => Buffer.alloc(15) }).issueCompileIntent())
       .toThrow("gpu_parent_runtime_proof_admission_nonce_source_invalid");
+    expect(() => admission().issueCompileIntent(`sha256:${"A".repeat(64)}`))
+      .toThrow("gpu_parent_runtime_proof_admission_expected_output_contract_hash_invalid");
   });
 });

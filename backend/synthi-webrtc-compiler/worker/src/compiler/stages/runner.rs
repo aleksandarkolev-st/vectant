@@ -67,11 +67,11 @@ const PARENT_VERIFIED_GPU_RUNTIME_PROOF_SUBJECT_SCHEMA_VERSION: &str =
 const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_TYPE: &str =
     "gpu_hmr_parent_runtime_proof_control_binding";
 const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION: &str =
-    "synthi.gpu_hmr.parent_runtime_proof_control_binding.v2";
+    "synthi.gpu_hmr.parent_runtime_proof_control_binding.v3";
 const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY: &str =
     "parent_signed_compile_correlated_runtime_proof_binding_only_not_gpu_hmr_acceptance";
 const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SUBJECT_SCHEMA_VERSION: &str =
-    "synthi.gpu_hmr.parent_runtime_proof_control_binding_subject.v2";
+    "synthi.gpu_hmr.parent_runtime_proof_control_binding_subject.v3";
 const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_ID_PREFIX: &str =
     "gpu-parent-runtime-proof-control-binding:";
 
@@ -546,6 +546,7 @@ struct StrictGpuTerminalExpectation {
     runner_runtime_session_id: String,
     runner_challenge: String,
     command_envelope_sha256: String,
+    compute_expected_output_contract_hash: Option<String>,
     prepublication_output_oracle_commitment: Option<ReloadOutputOracleProfileCommitment>,
 }
 
@@ -581,6 +582,7 @@ pub struct VerifiedHotGpuReloadReceipt {
     runner_runtime_session_id: String,
     runner_challenge: String,
     command_envelope_sha256: String,
+    compute_expected_output_contract_hash: Option<String>,
     prepublication_output_oracle_commitment: Option<ReloadOutputOracleProfileCommitment>,
     proof: serde_json::Value,
 }
@@ -649,6 +651,7 @@ impl VerifiedHotGpuReloadReceipt {
             "runnerRuntimeSessionId": self.runner_runtime_session_id,
             "runnerChallenge": self.runner_challenge,
             "commandEnvelopeSha256": self.command_envelope_sha256,
+            "computeExpectedOutputContractHash": self.compute_expected_output_contract_hash,
             "prepublicationOutputOracleCommitment": prepublication_output_oracle_commitment,
             "parentPid": parent_pid,
         });
@@ -878,6 +881,7 @@ struct RunnerCommandProofContext<'a> {
     runner_pid: u32,
     runner_runtime_session_id: &'a str,
     runner_challenge: &'a str,
+    compute_expected_output_contract_hash: Option<&'a str>,
 }
 
 fn prepublication_output_oracle_commitment_from_capsule(
@@ -1046,6 +1050,9 @@ fn runner_load_command(
                     runner_runtime_session_id: payload.runner_runtime_session_id.clone(),
                     runner_challenge: payload.runner_challenge.clone(),
                     command_envelope_sha256: payload.envelope_sha256.clone(),
+                    compute_expected_output_contract_hash: proof_context
+                        .compute_expected_output_contract_hash
+                        .map(str::to_string),
                     prepublication_output_oracle_commitment,
                 })
             } else {
@@ -1309,6 +1316,8 @@ async fn wait_for_gpu_command_terminals(
                     runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
                     runner_challenge: expectation.runner_challenge.clone(),
                     command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+                    compute_expected_output_contract_hash: verified_proof
+                        .compute_expected_output_contract_hash,
                     prepublication_output_oracle_commitment: expectation
                         .prepublication_output_oracle_commitment
                         .clone(),
@@ -1408,6 +1417,10 @@ fn verify_applied_gpu_terminal_proof(
             artifact_content_hash: &expectation.identity.artifact_content_hash,
             process_id: &expected_process_id,
             runtime_session_id: &expectation.runner_runtime_session_id,
+            compute_expected_output_contract_hash: expectation
+                .compute_expected_output_contract_hash
+                .as_deref(),
+            enforce_compute_expected_output_contract_hash: true,
         },
     )
     .context("parent rejected strict GPU runtime proof semantics")?;
@@ -2868,6 +2881,9 @@ pub async fn handle_runner_execution(
                             runner_pid: ack.runner_pid,
                             runner_runtime_session_id: &ack.runner_runtime_session_id,
                             runner_challenge: &ack.runner_challenge,
+                            compute_expected_output_contract_hash: req
+                                .compute_expected_output_contract_hash
+                                .as_deref(),
                         });
                 let load_commands = modules_to_load
                     .iter()
@@ -3110,6 +3126,7 @@ mod tests {
             runner_pid: std::process::id(),
             runner_runtime_session_id: "pid123-456",
             runner_challenge: "11111111111111111111111111111111",
+            compute_expected_output_contract_hash: None,
         }
     }
 
@@ -3163,19 +3180,57 @@ mod tests {
             runner_runtime_session_id: context.runner_runtime_session_id.to_string(),
             runner_challenge: context.runner_challenge.to_string(),
             command_envelope_sha256: format!("sha256:{}", "e".repeat(64)),
+            compute_expected_output_contract_hash: None,
             prepublication_output_oracle_commitment: None,
         }
     }
 
-    fn strict_output_oracle_contract() -> serde_json::Value {
-        serde_json::json!({
+    fn strict_compute_expected_output_contract(
+        expectation: &StrictGpuTerminalExpectation,
+    ) -> serde_json::Value {
+        let mut contract = serde_json::json!({
+            "schemaVersion": "synthi.gpu.hmr.compute_expected_output_contract.v1",
+            "comparisonMode": "exact_bytes",
+            "dtype": "u8",
+            "shape": [32],
+            "elementCount": 32,
+            "byteOrder": "not_applicable",
+            "tolerance": 0,
+            "expectedValues": null,
+            "expectedValuesHash": null,
+            "expectedRawHash": format!("sha256:{}", "7".repeat(64)),
+            "binding": {
+                "projectId": "generic-parent-proof-verification",
+                "editId": expectation.identity.source_edit_id,
+                "artifactAfterHash": expectation.identity.artifact_content_hash,
+                "outputTargetId": "output:generic-parent-proof",
+                "oracleCodeHash": format!("sha256:{}", "5".repeat(64)),
+            },
+            "evidenceRefs": [
+                format!("source-edit-id:{}", expectation.identity.source_edit_id),
+            ],
+        });
+        let contract_hash = canonical_gpu_runtime_proof_json_sha256(&contract);
+        contract["contractHash"] = serde_json::Value::String(contract_hash);
+        contract
+    }
+
+    fn strict_output_oracle_contract(
+        expectation: &StrictGpuTerminalExpectation,
+    ) -> serde_json::Value {
+        let mut contract = serde_json::json!({
             "kind": "compute_readback",
             "oracleId": "oracle:generic-parent-proof",
             "expectedSha256": format!("sha256:{}", "7".repeat(64)),
             "producer": "runtime-readback",
             "outputTargetId": "output:generic-parent-proof",
             "expectedOutputChange": true,
-        })
+        });
+        if expectation.compute_expected_output_contract_hash.is_some() {
+            contract["expected_output_contract"] =
+                strict_compute_expected_output_contract(expectation);
+        }
+        contract
     }
 
     fn strict_output_oracle_commitment(
@@ -3185,7 +3240,7 @@ mod tests {
             schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.to_string(),
             candidate_artifact_sha256: expectation.identity.artifact_content_hash.clone(),
             fission_output_oracle_contract_sha256: reload_output_oracle_contract_content_hash(
-                &strict_output_oracle_contract(),
+                &strict_output_oracle_contract(expectation),
             )
             .unwrap(),
             profile_bytes_sha256: format!("sha256:{}", "8".repeat(64)),
@@ -3331,9 +3386,10 @@ mod tests {
         if expectation
             .prepublication_output_oracle_commitment
             .is_some()
+            || expectation.compute_expected_output_contract_hash.is_some()
         {
             acceptance_contract["fission_report"] = serde_json::json!({
-                "output_oracle_contract": strict_output_oracle_contract(),
+                "output_oracle_contract": strict_output_oracle_contract(expectation),
             });
         }
         let mut runtime_artifact = serde_json::json!({
@@ -3395,6 +3451,23 @@ mod tests {
             &expectation.runner_challenge,
         )
         .unwrap()
+    }
+
+    fn refresh_runtime_proof_id(proof: &mut serde_json::Value) -> String {
+        let record = proof
+            .pointer("/runtimeProofArtifact/proofLedger/records/0")
+            .cloned()
+            .expect("runtime ledger record");
+        let proof_id = recomputed_runtime_proof_id(
+            proof
+                .get("runtimeProofArtifact")
+                .expect("runtime proof artifact"),
+            &record,
+        )
+        .expect("recomputed runtime proof id");
+        proof["proofId"] = serde_json::Value::String(proof_id.clone());
+        proof["runtimeProofArtifact"]["proofId"] = serde_json::Value::String(proof_id.clone());
+        proof_id
     }
 
     fn decode_gpu_v4_command(command: &str, expected_verb: &str) -> (String, GpuReloadV4Payload) {
@@ -3527,6 +3600,33 @@ mod tests {
     }
 
     #[test]
+    fn hot_device_command_captures_predispatch_expected_output_hash() {
+        let capsule = legacy_capsule_token();
+        let marker = format!(
+            "__gpu_device:rocm:advance:12345:{}:{}:{}:{}",
+            capsule,
+            encoded_source_edit_id(),
+            encoded_artifact_content_hash(),
+            encoded_proof_runtime_session_id(),
+        );
+        let expected_hash = format!("sha256:{}", "7".repeat(64));
+        let mut context = proof_context();
+        context.compute_expected_output_contract_hash = Some(expected_hash.as_str());
+
+        let command =
+            runner_load_command(&marker, "/tmp/device.hsaco", true, Some(context)).unwrap();
+        let Some(RunnerGpuTerminalExpectation::HotReload(expectation)) =
+            command.gpu_terminal.as_ref()
+        else {
+            panic!("expected strict GPU terminal context");
+        };
+        assert_eq!(
+            expectation.compute_expected_output_contract_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
+    }
+
+    #[test]
     fn hot_device_command_captures_prepublication_output_oracle_commitment() {
         let identity = GpuReloadV2Expectation::new(
             format!("gpu-reload:request:{}", "4".repeat(32)),
@@ -3538,7 +3638,7 @@ mod tests {
         let commitment = strict_output_oracle_commitment(&expectation);
         let proof_id = format!("gpu-proof:{}", "c".repeat(64));
         let mut metadata = ReloadCapsuleMetadata {
-            fission_output_oracle_contract: Some(strict_output_oracle_contract()),
+            fission_output_oracle_contract: Some(strict_output_oracle_contract(&expectation)),
             output_oracle_profile_commitment: Some(commitment.clone()),
             proof_hash: Some(format!("sha256:{}", "c".repeat(64))),
             ..ReloadCapsuleMetadata::default()
@@ -3942,6 +4042,148 @@ mod tests {
     }
 
     #[test]
+    fn parent_binds_compute_semantics_to_predispatch_expected_output_hash() {
+        let mut expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "a".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "d".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let expected_contract = strict_compute_expected_output_contract(&expectation);
+        let expected_contract_hash = expected_contract["contractHash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            expected_contract_hash,
+            "sha256:6560f7869645acbdd1957e10376df9bd7b253e661f40d16568fd80c13d9df02f"
+        );
+        expectation.compute_expected_output_contract_hash = Some(expected_contract_hash.clone());
+
+        let (proof, proof_id) = strict_runtime_proof_fixture(&expectation);
+        let terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &proof_id,
+            proof_material(&expectation, &proof, &proof_id),
+        )
+        .unwrap();
+        let (verified, proof_json_sha256, verified_proof) =
+            verify_applied_gpu_terminal_proof(&terminal, &expectation).unwrap();
+        assert_eq!(
+            verified.compute_expected_output_contract_hash.as_deref(),
+            Some(expected_contract_hash.as_str())
+        );
+
+        let signer = RuntimeEvidenceTransportSigner::generate(std::process::id()).unwrap();
+        let receipt = VerifiedHotGpuReloadReceipt {
+            request_id: expectation.identity.request_id.clone(),
+            source_edit_id: expectation.identity.source_edit_id.clone(),
+            artifact_content_hash: expectation.identity.artifact_content_hash.clone(),
+            full_runtime_proof_id: verified.proof_id,
+            proof_ledger_id: verified.ledger_proof_id,
+            proof_json_sha256,
+            runner_pid: expectation.runner_pid,
+            runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
+            runner_challenge: expectation.runner_challenge.clone(),
+            command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+            compute_expected_output_contract_hash: verified.compute_expected_output_contract_hash,
+            prepublication_output_oracle_commitment: None,
+            proof: verified_proof,
+        };
+        let control: serde_json::Value = serde_json::from_str(
+            &receipt
+                .parent_control_binding_message_with_signer(
+                    "compile-session:test",
+                    "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+                    &signer,
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            control["computeExpectedOutputContractHash"],
+            expected_contract_hash
+        );
+
+        let mut missing_contract = proof.clone();
+        missing_contract["runtimeProofArtifact"]["acceptanceContract"]["fission_report"]
+            ["output_oracle_contract"]
+            .as_object_mut()
+            .unwrap()
+            .remove("expected_output_contract");
+        missing_contract["runtimeProofArtifact"]["derivedAcceptanceContract"] =
+            missing_contract["runtimeProofArtifact"]["acceptanceContract"].clone();
+        let missing_proof_id = refresh_runtime_proof_id(&mut missing_contract);
+        let missing_terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &missing_proof_id,
+            proof_material(&expectation, &missing_contract, &missing_proof_id),
+        )
+        .unwrap();
+        assert!(
+            verify_applied_gpu_terminal_proof(&missing_terminal, &expectation)
+                .unwrap_err()
+                .to_string()
+                .contains("parent rejected strict GPU runtime proof semantics")
+        );
+
+        let mut unsolicited_expectation = expectation.clone();
+        unsolicited_expectation.compute_expected_output_contract_hash = None;
+        let unsolicited_terminal = GpuReloadV2Result::applied(
+            &unsolicited_expectation.identity.request_id,
+            &unsolicited_expectation.identity.source_edit_id,
+            &unsolicited_expectation.identity.artifact_content_hash,
+            &proof_id,
+            proof_material(&unsolicited_expectation, &proof, &proof_id),
+        )
+        .unwrap();
+        assert!(
+            verify_applied_gpu_terminal_proof(&unsolicited_terminal, &unsolicited_expectation,)
+                .unwrap_err()
+                .to_string()
+                .contains("parent rejected strict GPU runtime proof semantics")
+        );
+
+        let mut posthoc_substitution = proof.clone();
+        let contract = posthoc_substitution
+            .pointer_mut(
+                "/runtimeProofArtifact/acceptanceContract/fission_report/output_oracle_contract/expected_output_contract",
+            )
+            .unwrap();
+        contract["expectedRawHash"] = serde_json::json!(format!("sha256:{}", "6".repeat(64)));
+        let mut contract_material = contract.clone();
+        contract_material
+            .as_object_mut()
+            .unwrap()
+            .remove("contractHash");
+        contract["contractHash"] =
+            serde_json::Value::String(canonical_gpu_runtime_proof_json_sha256(&contract_material));
+        posthoc_substitution["runtimeProofArtifact"]["derivedAcceptanceContract"] =
+            posthoc_substitution["runtimeProofArtifact"]["acceptanceContract"].clone();
+        let substituted_proof_id = refresh_runtime_proof_id(&mut posthoc_substitution);
+        let substituted_terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &substituted_proof_id,
+            proof_material(&expectation, &posthoc_substitution, &substituted_proof_id),
+        )
+        .unwrap();
+        assert!(
+            verify_applied_gpu_terminal_proof(&substituted_terminal, &expectation)
+                .unwrap_err()
+                .to_string()
+                .contains("parent rejected strict GPU runtime proof semantics")
+        );
+    }
+
+    #[test]
     fn parent_recomputes_runtime_proof_and_rejects_bound_context_splices() {
         let expectation = strict_terminal_expectation(
             GpuReloadV2Expectation::new(
@@ -3981,6 +4223,9 @@ mod tests {
             runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
             runner_challenge: expectation.runner_challenge.clone(),
             command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+            compute_expected_output_contract_hash: verified
+                .compute_expected_output_contract_hash
+                .clone(),
             prepublication_output_oracle_commitment: expectation
                 .prepublication_output_oracle_commitment
                 .clone(),
@@ -4058,6 +4303,10 @@ mod tests {
         assert_eq!(
             control_binding["commandEnvelopeSha256"],
             expectation.command_envelope_sha256
+        );
+        assert_eq!(
+            control_binding["computeExpectedOutputContractHash"],
+            serde_json::Value::Null
         );
         assert_eq!(
             control_binding["prepublicationOutputOracleCommitment"],
@@ -4273,6 +4522,8 @@ mod tests {
             runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
             runner_challenge: expectation.runner_challenge.clone(),
             command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+            compute_expected_output_contract_hash: preclaimed_verified
+                .compute_expected_output_contract_hash,
             prepublication_output_oracle_commitment: expectation
                 .prepublication_output_oracle_commitment
                 .clone(),
@@ -4426,6 +4677,7 @@ mod tests {
             runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
             runner_challenge: expectation.runner_challenge.clone(),
             command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+            compute_expected_output_contract_hash: verified.compute_expected_output_contract_hash,
             prepublication_output_oracle_commitment: Some(accepted_commitment.clone()),
             proof: verified_proof,
         };

@@ -2,6 +2,7 @@ use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
 pub const GPU_PROOF_TRANSPORT_REQUEST_NONCE_PREFIX: &str = "gpu-proof-transport-request:";
+pub const COMPUTE_EXPECTED_OUTPUT_CONTRACT_HASH_PREFIX: &str = "sha256:";
 
 pub fn gpu_proof_transport_request_nonce_valid(value: &str) -> bool {
     let Some(nonce) = value.strip_prefix(GPU_PROOF_TRANSPORT_REQUEST_NONCE_PREFIX) else {
@@ -9,6 +10,16 @@ pub fn gpu_proof_transport_request_nonce_valid(value: &str) -> bool {
     };
     nonce.len() == 32
         && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+pub fn compute_expected_output_contract_hash_valid(value: &str) -> bool {
+    let Some(digest) = value.strip_prefix(COMPUTE_EXPECTED_OUTPUT_CONTRACT_HASH_PREFIX) else {
+        return false;
+    };
+    digest.len() == 64
+        && digest
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
@@ -125,6 +136,15 @@ pub struct CompileRequest {
         deserialize_with = "deserialize_optional_gpu_proof_transport_nonce"
     )]
     pub gpu_proof_transport_nonce: Option<String>,
+    /// Caller-owned semantic output expectation captured before compile dispatch.
+    /// The hash is an intent binding only; runtime proof must still carry and
+    /// independently satisfy the matching canonical expected-output contract.
+    #[serde(
+        default,
+        alias = "computeExpectedOutputContractHash",
+        deserialize_with = "deserialize_optional_compute_expected_output_contract_hash"
+    )]
+    pub compute_expected_output_contract_hash: Option<String>,
     /// Explicit AI provider selected by the caller for split requests.
     #[serde(
         default,
@@ -211,6 +231,24 @@ where
     Ok(value)
 }
 
+fn deserialize_optional_compute_expected_output_contract_hash<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    if value
+        .as_deref()
+        .is_some_and(|value| !compute_expected_output_contract_hash_valid(value))
+    {
+        return Err(D::Error::custom(
+            "invalid compute expected-output contract hash",
+        ));
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +271,7 @@ mod tests {
         assert!(!req.require_ai_provider_call);
         assert!(req.ai_provider_call_nonce.is_none());
         assert!(req.gpu_proof_transport_nonce.is_none());
+        assert!(req.compute_expected_output_contract_hash.is_none());
         assert!(req.ai_provider.is_none());
         assert!(req.ai_model.is_none());
     }
@@ -355,6 +394,68 @@ mod tests {
             raw.as_object_mut()
                 .expect("object")
                 .insert("gpu_proof_transport_nonce".to_string(), json!(value));
+
+            assert!(
+                serde_json::from_value::<CompileRequest>(raw).is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_request_accepts_compute_expected_output_contract_hash_alias() {
+        let expected = format!("sha256:{}", "a".repeat(64));
+        for field in [
+            "compute_expected_output_contract_hash",
+            "computeExpectedOutputContractHash",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut()
+                .expect("object")
+                .insert(field.to_string(), json!(expected));
+
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
+
+            assert_eq!(
+                req.compute_expected_output_contract_hash.as_deref(),
+                Some(expected.as_str()),
+                "alias {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_request_accepts_absent_or_null_compute_expected_output_contract_hash() {
+        let absent: CompileRequest =
+            serde_json::from_value(base_request()).expect("absent contract hash");
+        assert!(absent.compute_expected_output_contract_hash.is_none());
+
+        let mut raw = base_request();
+        raw.as_object_mut().expect("object").insert(
+            "compute_expected_output_contract_hash".to_string(),
+            json!(null),
+        );
+        let null: CompileRequest = serde_json::from_value(raw).expect("null contract hash");
+        assert!(null.compute_expected_output_contract_hash.is_none());
+    }
+
+    #[test]
+    fn compile_request_rejects_noncanonical_compute_expected_output_contract_hash() {
+        for value in [
+            "",
+            " sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ",
+            "SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaag",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut().expect("object").insert(
+                "compute_expected_output_contract_hash".to_string(),
+                json!(value),
+            );
 
             assert!(
                 serde_json::from_value::<CompileRequest>(raw).is_err(),

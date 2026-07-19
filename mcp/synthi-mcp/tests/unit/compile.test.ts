@@ -6,6 +6,7 @@ import { session } from "../../src/session.js";
 interface SentPayload {
   raw: string;
   parsed: Record<string, unknown>;
+  computeExpectedOutputContractHash: string | undefined;
 }
 
 function installFakeAttached(): { sent: SentPayload[]; setReadyState: (s: string) => void } {
@@ -22,12 +23,19 @@ function installFakeAttached(): { sent: SentPayload[]; setReadyState: (s: string
       dimensions: () => ({ width: 800, height: 600 }),
     },
     channels: {
-      sendCompileRequest: async (payload: Record<string, unknown>) => {
+      sendCompileRequest: async (
+        payload: Record<string, unknown>,
+        computeExpectedOutputContractHash?: string,
+      ) => {
         if (readyState !== "open") {
           throw new Error(`compile_channel_not_open:${readyState}`);
         }
         const raw = JSON.stringify(payload);
-        sent.push({ raw, parsed: payload });
+        sent.push({
+          raw,
+          parsed: payload,
+          computeExpectedOutputContractHash,
+        });
         return {
           schemaVersion: "synthi.gpu_hmr.compile_dispatch_correlation.v1" as const,
           proofAuthority:
@@ -111,6 +119,7 @@ describe("synthi_compile", () => {
     expect(payload["is_gui"]).toBe(true);
     expect(payload["use_ai_split"]).toBe(true);
     expect(payload["bypass_ai_split_cache"]).toBe(true);
+    expect(fake.sent[0]!.computeExpectedOutputContractHash).toBeUndefined();
     expect((res.structuredContent as Record<string, unknown>).gpu_proof_dispatch_correlation)
       .toMatchObject({
         schema_version: "synthi.gpu_hmr.compile_dispatch_correlation.v1",
@@ -120,6 +129,49 @@ describe("synthi_compile", () => {
         gpu_hmr_success: false,
         can_satisfy_runtime_proof: false,
       });
+  });
+
+  it("forwards an exact pre-dispatch compute expected-output contract hash separately", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const expectedOutputContractHash = `sha256:${"a".repeat(64)}`;
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      compute_expected_output_contract_hash: expectedOutputContractHash,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]!.computeExpectedOutputContractHash)
+      .toBe(expectedOutputContractHash);
+    expect(fake.sent[0]!.parsed)
+      .not.toHaveProperty("compute_expected_output_contract_hash");
+  });
+
+  it.each([
+    `sha256:${"A".repeat(64)}`,
+    ` sha256:${"a".repeat(64)}`,
+    null,
+    "sha256:short",
+    `sha256:${"g".repeat(64)}`,
+  ])("rejects a non-canonical compute expected-output contract hash (%j)", async (
+    computeExpectedOutputContractHash,
+  ) => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      compute_expected_output_contract_hash: computeExpectedOutputContractHash,
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { field?: string }).field)
+      .toBe("compute_expected_output_contract_hash");
+    expect(fake.sent).toHaveLength(0);
   });
 
   it("forwards fresh AI split cache policy aliases", async () => {

@@ -368,6 +368,12 @@ const TOOLS = [
           description:
             "Bounded source-first request metadata forwarded unchanged to the worker. This field is support-only and cannot select compilation/runtime behavior or claim GPU HMR, runtime, or dispatch authority.",
         },
+        compute_expected_output_contract_hash: {
+          type: "string",
+          pattern: "^sha256:[a-f0-9]{64}$",
+          description:
+            "Optional pre-dispatch canonical compute expected-output contract hash. The worker must bind this exact caller commitment to returned runtime proof before compute GPU HMR can be admitted.",
+        },
         target: {
           type: "string",
           description: "Target platform. Default 'native'; mobile uses 'react-native-emulator'.",

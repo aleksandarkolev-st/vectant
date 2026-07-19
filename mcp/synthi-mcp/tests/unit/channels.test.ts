@@ -10,6 +10,7 @@ import {
 import type { RTCDataChannel } from "werift";
 
 const TRANSPORT_SESSION_ID = "opaque-compile-session:unit-01";
+const EXPECTED_OUTPUT_CONTRACT_HASH = `sha256:${"a".repeat(64)}`;
 
 class MockEvidenceDataChannel extends EventTarget {
   readonly label = RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL;
@@ -124,10 +125,13 @@ describe("SessionChannels compile chunking", () => {
     const sent: string[] = [];
     const channels = makeChannels(sent);
 
-    await channels.sendCompileRequest({
-      language: "cpp",
-      source: "int main(){return 0;}\n".repeat(40),
-    });
+    await channels.sendCompileRequest(
+      {
+        language: "cpp",
+        source: "int main(){return 0;}\n".repeat(40),
+      },
+      EXPECTED_OUTPUT_CONTRACT_HASH,
+    );
 
     expect(sent.length).toBeGreaterThan(1);
     for (const frame of sent) {
@@ -136,8 +140,11 @@ describe("SessionChannels compile chunking", () => {
       expect(parsed.type).toBe("compile-request-chunk");
       expect(parsed).not.toHaveProperty("source");
     }
-    expect(decodeCompilePayload(sent).gpu_proof_transport_nonce)
+    const decoded = decodeCompilePayload(sent);
+    expect(decoded.gpu_proof_transport_nonce)
       .toMatch(/^gpu-proof-transport-request:[a-f0-9]{32}$/);
+    expect(decoded.compute_expected_output_contract_hash)
+      .toBe(EXPECTED_OUTPUT_CONTRACT_HASH);
     channels.dispose();
   });
 
@@ -145,14 +152,19 @@ describe("SessionChannels compile chunking", () => {
     const sent: string[] = [];
     const channels = makeChannels(sent);
 
-    const receipt = await channels.sendCompileRequest({
-      language: "cpp",
-      source: "int main(){return 0;}",
-    });
+    const receipt = await channels.sendCompileRequest(
+      {
+        language: "cpp",
+        source: "int main(){return 0;}",
+      },
+      EXPECTED_OUTPUT_CONTRACT_HASH,
+    );
 
     const payload = decodeCompilePayload(sent);
     expect(payload.gpu_proof_transport_nonce)
       .toMatch(/^gpu-proof-transport-request:[a-f0-9]{32}$/);
+    expect(payload.compute_expected_output_contract_hash)
+      .toBe(EXPECTED_OUTPUT_CONTRACT_HASH);
     expect(receipt.proofCorrelationId)
       .toMatch(/^gpu-proof-compile-correlation:sha256:[a-f0-9]{64}$/);
     expect(receipt.proofCorrelationId).not.toContain(
@@ -177,6 +189,17 @@ describe("SessionChannels compile chunking", () => {
     channels.dispose();
   });
 
+  it("omits an absent expected-output contract hash on the direct wire path", async () => {
+    const sent: string[] = [];
+    const channels = makeChannels(sent);
+
+    await channels.sendCompileRequest({ source: "int main(){}" });
+
+    expect(decodeCompilePayload(sent))
+      .not.toHaveProperty("compute_expected_output_contract_hash");
+    channels.dispose();
+  });
+
   it("rejects caller-supplied transport nonces", async () => {
     const sent: string[] = [];
     const channels = makeChannels(sent);
@@ -192,13 +215,53 @@ describe("SessionChannels compile chunking", () => {
     channels.dispose();
   });
 
+  it.each([
+    "compute_expected_output_contract_hash",
+    "computeExpectedOutputContractHash",
+  ])("rejects caller-supplied expected-output wire field %s", async (field) => {
+    const sent: string[] = [];
+    const channels = makeChannels(sent);
+
+    await expect(channels.sendCompileRequest({
+      source: "int main(){}",
+      [field]: EXPECTED_OUTPUT_CONTRACT_HASH,
+    })).rejects.toThrow("compile_compute_expected_output_contract_hash_reserved");
+
+    expect(sent).toEqual([]);
+    expect(channels.gpuParentRuntimeProofAdmissionSnapshot().pendingIntentCount).toBe(0);
+    channels.dispose();
+  });
+
+  it.each([
+    `sha256:${"A".repeat(64)}`,
+    `sha256:${"g".repeat(64)}`,
+    "sha256:short",
+  ])("rejects an invalid expected-output contract hash before dispatch (%s)", async (
+    expectedOutputContractHash,
+  ) => {
+    const sent: string[] = [];
+    const channels = makeChannels(sent);
+
+    await expect(channels.sendCompileRequest(
+      { source: "int main(){}" },
+      expectedOutputContractHash,
+    )).rejects.toThrow("compile_compute_expected_output_contract_hash_invalid");
+
+    expect(sent).toEqual([]);
+    expect(channels.gpuParentRuntimeProofAdmissionSnapshot().pendingIntentCount).toBe(0);
+    channels.dispose();
+  });
+
   it("cancels the live proof intent when compile transport fails", async () => {
     const sent: string[] = [];
     const channels = makeChannels(sent, () => {
       throw new Error("synthetic_compile_transport_failure");
     });
 
-    await expect(channels.sendCompileRequest({ source: "int main(){}" }))
+    await expect(channels.sendCompileRequest(
+      { source: "int main(){}" },
+      EXPECTED_OUTPUT_CONTRACT_HASH,
+    ))
       .rejects.toThrow("synthetic_compile_transport_failure");
 
     expect(channels.gpuParentRuntimeProofAdmissionSnapshot().pendingIntentCount).toBe(0);

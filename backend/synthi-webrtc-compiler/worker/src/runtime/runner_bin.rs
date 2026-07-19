@@ -1393,6 +1393,8 @@ fn matching_strict_gpu_runtime_proof_id(
             artifact_content_hash,
             process_id: &expected_process_id,
             runtime_session_id: expected_runtime_session_id,
+            compute_expected_output_contract_hash: None,
+            enforce_compute_expected_output_contract_hash: false,
         },
     )?;
     let record = proof.pointer("/proofLedger/records/0")?;
