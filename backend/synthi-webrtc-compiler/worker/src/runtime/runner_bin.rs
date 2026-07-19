@@ -2,7 +2,7 @@ use libloading::{Library, Symbol};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_void, CString};
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::ptr;
 use std::sync::mpsc;
 #[cfg(feature = "gpu-hmr")]
@@ -51,6 +51,10 @@ use worker::runtime::gpu_runtime_proof::{
 };
 use worker::runtime::loader;
 use worker::runtime::native_runner_codec::{RunnerStdoutMode, RUNNER_STDOUT_MODE_ENV};
+use worker::runtime::runner_command_admission::{
+    read_bounded_runner_command_line, RunnerCommandAdmission, RunnerCommandAdmissionClass,
+    RunnerCommandAdmissionLease, RunnerCommandWorkBudget,
+};
 use worker::runtime::runner_protocol::{
     canonical_runner_runtime_control_session_id, RunnerRuntimeControlAck,
     RunnerRuntimeControlStatus, RUNNER_RUNTIME_CONTROL_SESSION_ENV,
@@ -76,7 +80,9 @@ use worker::runtime::process_isolation;
 // use worker::safety::security;
 // use worker::safety::slot_isolation;
 
-use worker::safety::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
+use worker::safety::hardened_ipc::{
+    decode_msgpack_limited, read_frame_validated, write_frame_with_checksum, IpcConfig,
+};
 
 use capability::HmrStatus;
 use worker::runtime::plugin_contract::{
@@ -96,6 +102,8 @@ use hmr_orchestrator::HmrOrchestrator; // Removed SavedState
 use host_kv::{
     create_kv_api, // Removed module_slot_to_u32, read_schema_table, KV_STORE, HostKvSchemaEvent, SynthiHostContextV1
 };
+
+const RUNNER_COMMAND_INGRESS_FAILURE_EXIT_CODE: i32 = 74;
 
 fn device_load_abi_version(kernels: &[String], abi_arg: Option<&str>) -> String {
     abi_arg
@@ -1991,6 +1999,183 @@ enum RunnerCommand {
     Ipc(process_isolation::IpcMessage),
 }
 
+impl RunnerCommand {
+    fn command_name(&self) -> Option<&str> {
+        match self {
+            Self::Legacy(command) => runner_command_name(command),
+            Self::Ipc(message) => match message {
+                process_isolation::IpcMessage::LoadModule { .. } => Some("load"),
+                process_isolation::IpcMessage::ReloadModule { .. } => Some("reload"),
+                process_isolation::IpcMessage::InputEvent { .. }
+                | process_isolation::IpcMessage::SendEvent { .. } => Some("input"),
+                process_isolation::IpcMessage::Shutdown { .. } => Some("quit"),
+                _ => None,
+            },
+        }
+    }
+
+    fn admission_class(&self) -> RunnerCommandAdmissionClass {
+        match self {
+            Self::Legacy(command)
+                if reserved_legacy_runner_command(runner_command_name(command)) =>
+            {
+                RunnerCommandAdmissionClass::Reserved
+            }
+            Self::Ipc(
+                process_isolation::IpcMessage::LoadModule { .. }
+                | process_isolation::IpcMessage::ReloadModule { .. }
+                | process_isolation::IpcMessage::RequestSnapshot { .. }
+                | process_isolation::IpcMessage::Shutdown { .. }
+                | process_isolation::IpcMessage::Ping { .. },
+            ) => RunnerCommandAdmissionClass::Reserved,
+            _ => RunnerCommandAdmissionClass::General,
+        }
+    }
+}
+
+fn reserved_legacy_runner_command(command_name: Option<&str>) -> bool {
+    matches!(
+        command_name,
+        Some(
+            "handshake"
+                | "handshake_v5"
+                | "set_session"
+                | "load"
+                | "reload"
+                | "unload"
+                | "load_device"
+                | "load_device_partial"
+                | "gpu_load_v4"
+                | "gpu_reload_v4"
+                | "synthi_pause_runtime_v2"
+                | "synthi_resume_runtime_v2"
+                | "quit"
+        )
+    )
+}
+
+#[derive(Debug)]
+struct AdmittedRunnerCommand {
+    command: RunnerCommand,
+    _admission_lease: RunnerCommandAdmissionLease,
+}
+
+impl AdmittedRunnerCommand {
+    fn command_name(&self) -> Option<&str> {
+        self.command.command_name()
+    }
+}
+
+fn admit_runner_command(
+    admission: &RunnerCommandAdmission,
+    command: RunnerCommand,
+    retained_bytes: usize,
+) -> Result<
+    AdmittedRunnerCommand,
+    worker::runtime::runner_command_admission::RunnerCommandAdmissionError,
+> {
+    let admission_class = command.admission_class();
+    let admission_lease = admission.try_admit(retained_bytes, admission_class)?;
+    Ok(AdmittedRunnerCommand {
+        command,
+        _admission_lease: admission_lease,
+    })
+}
+
+fn send_admitted_runner_command(
+    sender: &mpsc::SyncSender<AdmittedRunnerCommand>,
+    admission: &RunnerCommandAdmission,
+    command: RunnerCommand,
+    retained_bytes: usize,
+) -> bool {
+    let admission_class = command.admission_class();
+    let admitted = match admit_runner_command(admission, command, retained_bytes) {
+        Ok(admitted) => admitted,
+        Err(error)
+            if admission_class == RunnerCommandAdmissionClass::General
+                && error.is_capacity_exhausted() =>
+        {
+            eprintln!(
+                "[Runner] Dropping general input command after bounded admission refusal: {}",
+                error
+            );
+            return true;
+        }
+        Err(error) => {
+            eprintln!(
+                "[Runner] Closing command ingress after fail-closed admission refusal: {}",
+                error
+            );
+            return false;
+        }
+    };
+    if let Err(error) = sender.send(admitted) {
+        eprintln!("[Runner] Failed to send admitted command: {}", error);
+        return false;
+    }
+    true
+}
+
+fn admitted_runner_command_to_text(command: AdmittedRunnerCommand) -> String {
+    runner_command_to_text(command.command)
+}
+
+fn take_next_admitted_runner_command(
+    receiver: &mpsc::Receiver<AdmittedRunnerCommand>,
+    deferred_commands: &mut VecDeque<AdmittedRunnerCommand>,
+    gpu_reload_inflight_count: usize,
+    work_budget: &mut RunnerCommandWorkBudget,
+) -> Option<AdmittedRunnerCommand> {
+    if work_budget.exhausted() {
+        return None;
+    }
+
+    if gpu_reload_inflight_count == 0 {
+        if let Some(command) = deferred_commands.pop_front() {
+            assert!(work_budget.consume_one());
+            return Some(command);
+        }
+        let command = receiver.try_recv().ok()?;
+        assert!(work_budget.consume_one());
+        return Some(command);
+    }
+
+    // Split each tick's finite inspection budget between newly received and
+    // already deferred commands. Rotating blocked commands through the deque
+    // prevents either source from starving runtime-control traffic.
+    let receiver_scan_limit = work_budget.remaining().saturating_add(1) / 2;
+    for _ in 0..receiver_scan_limit {
+        let Ok(command) = receiver.try_recv() else {
+            break;
+        };
+        assert!(work_budget.consume_one());
+        match command.command_name() {
+            Some(name) if should_process_runner_command(name, gpu_reload_inflight_count) => {
+                return Some(command);
+            }
+            Some(_) => deferred_commands.push_back(command),
+            None => {}
+        }
+    }
+
+    let deferred_scan_limit = deferred_commands.len().min(work_budget.remaining());
+    for _ in 0..deferred_scan_limit {
+        let command = deferred_commands
+            .pop_front()
+            .expect("deferred scan limit must not exceed queue length");
+        assert!(work_budget.consume_one());
+        match command.command_name() {
+            Some(name) if should_process_runner_command(name, gpu_reload_inflight_count) => {
+                return Some(command);
+            }
+            Some(_) => deferred_commands.push_back(command),
+            None => {}
+        }
+    }
+
+    None
+}
+
 fn runner_command_to_text(cmd_wrapper: RunnerCommand) -> String {
     match cmd_wrapper {
         RunnerCommand::Legacy(c) => c,
@@ -2567,7 +2752,9 @@ fn main() {
 
     debug_log!("Runner started. Waiting for commands...");
 
-    let (tx, rx) = mpsc::channel::<RunnerCommand>();
+    let command_admission = RunnerCommandAdmission::at_consumer_maxima();
+    let (tx, rx) =
+        mpsc::sync_channel::<AdmittedRunnerCommand>(command_admission.channel_capacity());
 
     // Frame pipe to stdout (non-blocking for the main loop)
     // We keep the channel tiny and drop frames when the pipe is backed up so on_update keeps running.
@@ -2608,6 +2795,7 @@ fn main() {
     // Spawn input reader thread based on execution mode
     let tx_clone = tx.clone();
     let mode_for_thread = execution_mode;
+    let command_admission_for_thread = command_admission.clone();
 
     // Spawn stdin reader thread
     thread::spawn(move || {
@@ -2624,15 +2812,28 @@ fn main() {
                 loop {
                     match read_frame_validated(&mut handle, &config, None) {
                         Ok(payload) => {
+                            let retained_bytes = payload.len();
                             // Deserialize MsgPack
-                            match rmp_serde::from_slice::<process_isolation::IpcMessage>(&payload) {
+                            match decode_msgpack_limited::<process_isolation::IpcMessage>(
+                                &payload,
+                                &config.decode_limits,
+                            ) {
                                 Ok(msg) => {
-                                    if let Err(e) = tx_clone.send(RunnerCommand::Ipc(msg)) {
-                                        eprintln!("Failed to send IPC command: {}", e);
-                                        break;
+                                    if !send_admitted_runner_command(
+                                        &tx_clone,
+                                        &command_admission_for_thread,
+                                        RunnerCommand::Ipc(msg),
+                                        retained_bytes,
+                                    ) {
+                                        std::process::exit(
+                                            RUNNER_COMMAND_INGRESS_FAILURE_EXIT_CODE,
+                                        );
                                     }
                                 }
-                                Err(e) => eprintln!("IPC Deserialization error: {}", e),
+                                Err(e) => {
+                                    eprintln!("IPC Deserialization error: {:?}", e);
+                                    std::process::exit(RUNNER_COMMAND_INGRESS_FAILURE_EXIT_CODE);
+                                }
                             }
                         }
                         Err(e) => {
@@ -2642,6 +2843,7 @@ fn main() {
                                 debug_log!("IPC connection closed (EOF)");
                             } else {
                                 eprintln!("IPC Read error: {:?}", e);
+                                std::process::exit(RUNNER_COMMAND_INGRESS_FAILURE_EXIT_CODE);
                             }
                             break;
                         }
@@ -2651,30 +2853,48 @@ fn main() {
             #[allow(deprecated)]
             process_isolation::ExecutionMode::UnsafeInProcess => {
                 // Legacy text reader
-                let mut line = String::new();
                 loop {
-                    match handle.read_line(&mut line) {
-                        Ok(0) => {
+                    match read_bounded_runner_command_line(
+                        &mut handle,
+                        command_admission_for_thread.max_command_bytes(),
+                    ) {
+                        Ok(None) => {
                             debug_log!("Stdin closed (EOF)");
                             break;
                         }
-                        Ok(_) => {
-                            let trimmed = line.trim().to_string();
+                        Ok(Some(line)) => {
+                            let command = match std::str::from_utf8(&line) {
+                                Ok(command) => command,
+                                Err(error) => {
+                                    eprintln!(
+                                        "[Runner] Closing command ingress after invalid UTF-8: {}",
+                                        error
+                                    );
+                                    std::process::exit(RUNNER_COMMAND_INGRESS_FAILURE_EXIT_CODE);
+                                }
+                            };
+                            let trimmed = command.trim();
                             if !trimmed.is_empty() {
                                 debug_log!(
                                     "Stdin received command {}",
-                                    runner_command_log_summary(&trimmed)
+                                    runner_command_log_summary(trimmed)
                                 );
-                                if let Err(e) = tx_clone.send(RunnerCommand::Legacy(trimmed)) {
-                                    eprintln!("Failed to send command to main thread: {}", e);
-                                    break;
+                                if !send_admitted_runner_command(
+                                    &tx_clone,
+                                    &command_admission_for_thread,
+                                    RunnerCommand::Legacy(trimmed.to_string()),
+                                    trimmed.len(),
+                                ) {
+                                    std::process::exit(RUNNER_COMMAND_INGRESS_FAILURE_EXIT_CODE);
                                 }
                             }
-                            line.clear();
                         }
                         Err(e) => {
-                            eprintln!("Error reading stdin: {}", e);
-                            break;
+                            eprintln!(
+                                "[Runner] Closing command ingress after bounded read failure: {}",
+                                e
+                            );
+                            std::process::exit(RUNNER_COMMAND_INGRESS_FAILURE_EXIT_CODE);
                         }
                     }
                 }
@@ -2695,7 +2915,7 @@ fn main() {
     // update/render during that window without stopping stdin, status
     // processing, frame presentation, or capture.
     let mut runtime_paused: bool = false;
-    let mut deferred_commands: VecDeque<String> = VecDeque::new();
+    let mut deferred_commands: VecDeque<AdmittedRunnerCommand> = VecDeque::new();
     #[cfg(feature = "gpu-hmr")]
     let mut active_gpu_protocol_challenge: Option<String> = None;
 
@@ -3010,46 +3230,32 @@ fn main() {
             last_log = Instant::now();
         }
 
-        // Process all pending commands
-        loop {
+        // Process a bounded amount of command work before returning to runtime
+        // update/render. The budget counts inspected and discarded commands,
+        // not only commands that reach a handler.
+        let mut command_work_budget = RunnerCommandWorkBudget::at_consumer_maximum();
+        while !command_work_budget.exhausted() {
             #[cfg(feature = "gpu-hmr")]
             let gpu_reload_inflight_count = gpu_reload_inflight.len();
             #[cfg(not(feature = "gpu-hmr"))]
             let gpu_reload_inflight_count = 0usize;
 
-            let cmd = if gpu_reload_inflight_count == 0 {
-                if let Some(cmd) = deferred_commands.pop_front() {
-                    cmd
-                } else {
-                    let Ok(cmd_wrapper) = rx.try_recv() else {
-                        break;
-                    };
-                    runner_command_to_text(cmd_wrapper)
-                }
-            } else if let Some(index) = deferred_commands.iter().position(|cmd| {
-                runner_command_name(cmd)
-                    .map(|name| should_process_runner_command(name, gpu_reload_inflight_count))
-                    .unwrap_or(false)
-            }) {
-                deferred_commands.remove(index).unwrap_or_default()
-            } else {
-                let mut selected = None;
-                while let Ok(cmd_wrapper) = rx.try_recv() {
-                    let cmd = runner_command_to_text(cmd_wrapper);
-                    let Some(name) = runner_command_name(&cmd) else {
-                        continue;
-                    };
-                    if should_process_runner_command(name, gpu_reload_inflight_count) {
-                        selected = Some(cmd);
-                        break;
-                    }
-                    deferred_commands.push_back(cmd);
-                }
-                let Some(cmd) = selected else {
-                    break;
-                };
-                cmd
+            let Some(cmd_wrapper) = take_next_admitted_runner_command(
+                &rx,
+                &mut deferred_commands,
+                gpu_reload_inflight_count,
+                &mut command_work_budget,
+            ) else {
+                break;
             };
+
+            if let Some(command_name) = cmd_wrapper.command_name() {
+                if !should_process_runner_command(command_name, gpu_reload_inflight_count) {
+                    deferred_commands.push_back(cmd_wrapper);
+                    break;
+                }
+            }
+            let cmd = admitted_runner_command_to_text(cmd_wrapper);
 
             if cmd.is_empty() {
                 continue;
@@ -3063,11 +3269,6 @@ fn main() {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             if parts.is_empty() {
                 continue;
-            }
-
-            if !should_process_runner_command(parts[0], gpu_reload_inflight_count) {
-                deferred_commands.push_back(cmd);
-                break;
             }
 
             match parts[0] {
@@ -4104,6 +4305,14 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        admitted_runner_command_to_text, configured_runner_runtime_control_session_id,
+        decode_gpu_kernel_command_token, device_load_abi_version, is_runtime_execution_paused,
+        raw_frame_transport_contract_available, runner_command_log_summary,
+        runtime_control_command_ack_line, runtime_control_status_line,
+        send_admitted_runner_command, should_process_runner_command,
+        take_next_admitted_runner_command, RunnerCommand, RunnerRuntimeControlStatus,
+    };
     #[cfg(feature = "gpu-hmr")]
     use super::{
         canonical_runner_runtime_ledger_proof_id, catch_gpu_reload_worker_result,
@@ -4119,22 +4328,175 @@ mod tests {
         RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION, RUNNER_GPU_HMR_PROOF_SCHEMA_VERSION,
         RUNNER_GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
     };
-    use super::{
-        configured_runner_runtime_control_session_id, decode_gpu_kernel_command_token,
-        device_load_abi_version, is_runtime_execution_paused,
-        raw_frame_transport_contract_available, runner_command_log_summary,
-        runtime_control_command_ack_line, runtime_control_status_line,
-        should_process_runner_command, RunnerRuntimeControlStatus,
-    };
+    use std::collections::VecDeque;
     #[cfg(feature = "gpu-hmr")]
     use std::io::Write as _;
+    use std::sync::mpsc;
     #[cfg(feature = "gpu-hmr")]
     use std::sync::Arc;
+    use worker::runtime::process_isolation::IpcMessage;
+    use worker::runtime::runner_command_admission::{
+        RunnerCommandAdmission, RunnerCommandAdmissionClass, RunnerCommandAdmissionLimits,
+        RunnerCommandAdmissionUsage, RunnerCommandWorkBudget,
+    };
     #[cfg(feature = "gpu-hmr")]
     use worker::runtime::runner_protocol::GpuReloadV4Payload;
 
     fn runtime_control_session_id() -> String {
         format!("runner-control-session:{}", "5".repeat(32))
+    }
+
+    fn test_runner_command_admission() -> RunnerCommandAdmission {
+        RunnerCommandAdmission::new(RunnerCommandAdmissionLimits {
+            max_command_bytes: 64,
+            max_queue_items: 4,
+            max_queue_retained_bytes: 128,
+            reserved_queue_items: 1,
+            reserved_queue_retained_bytes: 64,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn native_runner_reserves_admission_for_non_input_protocol_commands() {
+        assert_eq!(
+            RunnerCommand::Legacy("input motion 10 20".to_string()).admission_class(),
+            RunnerCommandAdmissionClass::General
+        );
+        assert_eq!(
+            RunnerCommand::Legacy("unknown_future_command payload".to_string()).admission_class(),
+            RunnerCommandAdmissionClass::General
+        );
+        for command in [
+            "handshake 1",
+            "handshake_v5 nonce",
+            "set_session session",
+            "load core /tmp/core.so",
+            "unload core",
+            "load_device_partial hip /tmp/device.hsaco",
+            "gpu_reload_v4 request payload",
+            "synthi_pause_runtime_v2 token",
+            "quit",
+        ] {
+            assert_eq!(
+                RunnerCommand::Legacy(command.to_string()).admission_class(),
+                RunnerCommandAdmissionClass::Reserved,
+                "{command}"
+            );
+        }
+        assert_eq!(
+            RunnerCommand::Ipc(IpcMessage::InputEvent {
+                kind: 0,
+                a: 1,
+                b: 2,
+                c: 3,
+            })
+            .admission_class(),
+            RunnerCommandAdmissionClass::General
+        );
+        assert_eq!(
+            RunnerCommand::Ipc(IpcMessage::LoadModule {
+                slot: "core".to_string(),
+                path: "/tmp/core.so".to_string(),
+                state_snapshot: None,
+            })
+            .admission_class(),
+            RunnerCommandAdmissionClass::Reserved
+        );
+    }
+
+    #[test]
+    fn native_runner_command_lease_survives_channel_delivery_and_releases_on_consumption() {
+        let admission = test_runner_command_admission();
+        let (sender, receiver) = mpsc::sync_channel(admission.channel_capacity());
+        let wire = "input motion 10 20";
+        assert!(send_admitted_runner_command(
+            &sender,
+            &admission,
+            RunnerCommand::Legacy(wire.to_string()),
+            wire.len(),
+        ));
+        assert_eq!(
+            admission.usage(),
+            RunnerCommandAdmissionUsage {
+                retained_items: 1,
+                retained_bytes: wire.len() as u64,
+                general_retained_items: 1,
+                general_retained_bytes: wire.len() as u64,
+                reserved_retained_items: 0,
+                reserved_retained_bytes: 0,
+            }
+        );
+        let admitted = receiver.recv().unwrap();
+        assert_eq!(admission.usage().retained_items, 1);
+        assert_eq!(admitted_runner_command_to_text(admitted), wire);
+        assert_eq!(
+            admission.usage(),
+            RunnerCommandAdmissionUsage {
+                retained_items: 0,
+                retained_bytes: 0,
+                general_retained_items: 0,
+                general_retained_bytes: 0,
+                reserved_retained_items: 0,
+                reserved_retained_bytes: 0,
+            }
+        );
+
+        drop(receiver);
+        assert!(!send_admitted_runner_command(
+            &sender,
+            &admission,
+            RunnerCommand::Legacy("quit".to_string()),
+            4,
+        ));
+        assert_eq!(admission.usage().retained_items, 0);
+        assert_eq!(admission.usage().retained_bytes, 0);
+    }
+
+    #[test]
+    fn native_runner_bounds_flood_scans_and_eventually_selects_runtime_control() {
+        let admission = RunnerCommandAdmission::new(RunnerCommandAdmissionLimits {
+            max_command_bytes: 64,
+            max_queue_items: 8,
+            max_queue_retained_bytes: 256,
+            reserved_queue_items: 2,
+            reserved_queue_retained_bytes: 64,
+        })
+        .unwrap();
+        let (sender, receiver) = mpsc::sync_channel(admission.channel_capacity());
+        for index in 0..5 {
+            let command = format!("input motion {index} {index}");
+            assert!(send_admitted_runner_command(
+                &sender,
+                &admission,
+                RunnerCommand::Legacy(command.clone()),
+                command.len(),
+            ));
+        }
+        let pause = "synthi_pause_runtime_v2 proof-token";
+        assert!(send_admitted_runner_command(
+            &sender,
+            &admission,
+            RunnerCommand::Legacy(pause.to_string()),
+            pause.len(),
+        ));
+
+        let mut deferred = VecDeque::new();
+        for _ in 0..2 {
+            let mut budget = RunnerCommandWorkBudget::new(4).unwrap();
+            assert!(
+                take_next_admitted_runner_command(&receiver, &mut deferred, 1, &mut budget,)
+                    .is_none()
+            );
+            assert!(budget.exhausted());
+        }
+
+        let mut budget = RunnerCommandWorkBudget::new(4).unwrap();
+        let selected = take_next_admitted_runner_command(&receiver, &mut deferred, 1, &mut budget)
+            .expect("bounded scans must eventually reach runtime control");
+        assert_eq!(selected.command_name(), Some("synthi_pause_runtime_v2"));
+        assert_eq!(admitted_runner_command_to_text(selected), pause);
+        assert_eq!(admission.usage().reserved_retained_items, 0);
     }
 
     #[test]
