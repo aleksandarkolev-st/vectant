@@ -1,6 +1,7 @@
 import { session } from "../session.js";
 import {
   classifyHmrMessage,
+  type GpuProofTrustInvalidation,
   type HmrClassification,
   type HmrTerminalEvent,
 } from "../hmr.js";
@@ -218,10 +219,12 @@ function attachDevLoopProofPendingStatus(
 async function waitForDecodedFrameAtOrAfter(
   attached: ReturnType<typeof session.require>,
   minTsMs: number,
-  timeoutMs: number
+  timeoutMs: number,
+  shouldAbort: () => boolean = () => false,
 ): Promise<{ frame_seq: number; ts_ms: number } | null> {
   const start = Date.now();
   for (;;) {
+    if (shouldAbort()) return null;
     try {
       const frame = await attached.frames.getFrame();
       if (frame.ts >= minTsMs) {
@@ -230,6 +233,7 @@ async function waitForDecodedFrameAtOrAfter(
     } catch {
       // No decoded frame yet. Keep polling until the caller's wait budget expires.
     }
+    if (shouldAbort()) return null;
     if (Date.now() - start >= timeoutMs) return null;
     const remaining = Math.max(0, timeoutMs - (Date.now() - start));
     await new Promise((resolve) => setTimeout(resolve, Math.min(FRAME_GATE_POLL_MS, remaining)));
@@ -404,6 +408,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     require_gpu_full_runtime_proof: a.requireGpuFullRuntimeProof === true,
   };
   const unsubscribePostApply: Array<() => void> = [];
+  let terminalWaitAbort: AbortController | null = null;
 
   try {
     const start = Date.now();
@@ -420,8 +425,15 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     let postApplyTerminal: HmrClassification | null = null;
     let notifyPostApplyTerminal: (() => void) | null = null;
     let notifyRequiredProof: (() => void) | null = null;
+    let proofTrustInvalidation: GpuProofTrustInvalidation | null = null;
+    let resolveProofTrustInvalidation:
+      ((event: GpuProofTrustInvalidation) => void) | null = null;
+    const proofTrustInvalidationSignal = new Promise<GpuProofTrustInvalidation>((resolve) => {
+      resolveProofTrustInvalidation = resolve;
+    });
     const requiredProofSatisfied = (minObservedAt?: number): boolean => {
-      return requiredProofState !== null
+      return proofTrustInvalidation === null
+        && requiredProofState !== null
         && validateGpuHmrProofAtOrAfter(
           latestGpuProof,
           requiredProofState,
@@ -429,7 +441,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         ).satisfied;
     };
     const requiredProofStructuralGap = (minObservedAt?: number): string | null => {
-      if (requiredProofState === null) return null;
+      if (requiredProofState === null || proofTrustInvalidation !== null) return null;
       if (
         minObservedAt !== undefined
         && latestGpuProof !== null
@@ -448,7 +460,17 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         cb: (proof: GpuHmrProofTelemetry) => void
       ) => () => void;
     };
+    unsubscribePostApply.push(proofChannel.onGpuProofTrustInvalidated((event) => {
+      if (proofTrustInvalidation !== null) return;
+      proofTrustInvalidation = event;
+      latestGpuProof = null;
+      resolveProofTrustInvalidation?.(event);
+      resolveProofTrustInvalidation = null;
+      notifyRequiredProof?.();
+      notifyPostApplyTerminal?.();
+    }));
     unsubscribePostApply.push(proofChannel.onGpuProof(proofMatchOpts, (proof) => {
+      if (proofTrustInvalidation !== null) return;
       latestGpuProof = proof;
       notifyRequiredProof?.();
     }));
@@ -492,12 +514,75 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       return { promise, cancel };
     };
 
+    const proofTrustInvalidationResponse = (stage: string): ToolResponse | null => {
+      const invalidation = proofTrustInvalidation;
+      if (requiredProofState === null || invalidation === null) return null;
+      const elapsedMs = Date.now() - start;
+      return responseWithGpuProofValidation({
+        status: "rejected",
+        elapsedMs,
+        source: "gpu_proof",
+        detail: {
+          reason: "gpu_proof_trust_invalidated",
+          invalidation_stage: stage,
+        },
+        wait_contract: waitContract,
+        proof_wait_decision: "fail_fast_trust_invalidated",
+        gpu_proof_wait: {
+          status: "failed_fast",
+          reason: "gpu_proof_trust_invalidated",
+          invalidation_stage: stage,
+          required_gpu_proof_state: requiredProofState,
+          accepted_for_gpu_hmr: false,
+          gpu_hmr_success: false,
+        },
+        gpu_proof_trust_invalidation: {
+          schema_version: invalidation.schemaVersion,
+          evidence_authority: invalidation.proofAuthority,
+          reason_class: invalidation.reasonClass,
+          invalidated_at: invalidation.invalidatedAt,
+          accepted_for_gpu_hmr: false,
+          gpu_hmr_success: false,
+          can_satisfy_runtime_proof: false,
+        },
+      }, null, requiredProofState);
+    };
+
+    const raceWithProofTrustInvalidation = async <T>(
+      work: Promise<T>,
+    ): Promise<
+      | { kind: "value"; value: T }
+      | { kind: "proof_trust_invalidated"; event: GpuProofTrustInvalidation }
+    > => {
+      if (requiredProofState === null) {
+        return { kind: "value", value: await work };
+      }
+      if (proofTrustInvalidation !== null) {
+        return { kind: "proof_trust_invalidated", event: proofTrustInvalidation };
+      }
+      return Promise.race([
+        work.then((value) => ({ kind: "value" as const, value })),
+        proofTrustInvalidationSignal.then((event) => ({
+          kind: "proof_trust_invalidated" as const,
+          event,
+        })),
+      ]);
+    };
+
     const waitForRequiredGpuProof = (
       timeoutMs: number,
       opts: { settleOnTerminal?: boolean; allowStructuralGap?: boolean; minProofObservedAt?: number } = {}
-    ): { promise: Promise<"satisfied" | "terminal" | "structural_gap" | "timeout">; cancel: () => void } => {
+    ): {
+      promise: Promise<
+        "satisfied" | "terminal" | "structural_gap" | "proof_trust_invalidated" | "timeout"
+      >;
+      cancel: () => void;
+    } => {
       const settleOnTerminal = opts.settleOnTerminal !== false;
       const allowStructuralGap = opts.allowStructuralGap === true;
+      if (proofTrustInvalidation !== null) {
+        return { promise: Promise.resolve("proof_trust_invalidated"), cancel: () => {} };
+      }
       if (requiredProofState === null || requiredProofSatisfied(opts.minProofObservedAt)) {
         return { promise: Promise.resolve("satisfied"), cancel: () => {} };
       }
@@ -511,9 +596,15 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         return { promise: Promise.resolve("timeout"), cancel: () => {} };
       }
       let cancel = (): void => {};
-      const promise = new Promise<"satisfied" | "terminal" | "structural_gap" | "timeout">((resolve) => {
+      type ProofWaitOutcome =
+        | "satisfied"
+        | "terminal"
+        | "structural_gap"
+        | "proof_trust_invalidated"
+        | "timeout";
+      const promise = new Promise<ProofWaitOutcome>((resolve) => {
         let settled = false;
-        const settle = (value: "satisfied" | "terminal" | "structural_gap" | "timeout"): void => {
+        const settle = (value: ProofWaitOutcome): void => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
@@ -521,7 +612,9 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
           resolve(value);
         };
         const onProofOrTerminal = (): void => {
-          if (requiredProofSatisfied(opts.minProofObservedAt)) {
+          if (proofTrustInvalidation !== null) {
+            settle("proof_trust_invalidated");
+          } else if (requiredProofSatisfied(opts.minProofObservedAt)) {
             settle("satisfied");
           } else if (allowStructuralGap && requiredProofStructuralGap(opts.minProofObservedAt) !== null) {
             settle("structural_gap");
@@ -575,11 +668,13 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       }, latestGpuProof, requiredProofState, hmrObservedAt ?? undefined);
     };
 
+    terminalWaitAbort = new AbortController();
     const terminalWait = attached.channels.hmr.waitForTerminal({
       timeoutMs,
       module,
       sinceTs,
       previewId,
+      signal: terminalWaitAbort.signal,
     });
     let result: HmrTerminalEvent;
     if (proofCanSatisfyTerminal) {
@@ -589,6 +684,9 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         proofWait.promise.then((proofStatus) => ({ kind: "proof" as const, proofStatus })),
       ]);
       proofWait.cancel();
+      if (outcome.kind === "proof" && outcome.proofStatus === "proof_trust_invalidated") {
+        return proofTrustInvalidationResponse("terminal_or_proof_wait")!;
+      }
       if (outcome.kind === "proof" && outcome.proofStatus === "satisfied" && latestGpuProof !== null) {
         result = terminalEventFromGpuProof(latestGpuProof, Date.now() - start);
       } else {
@@ -600,14 +698,23 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
           const lateProofWait = waitForRequiredGpuProof(remaining, { settleOnTerminal: false });
           const lateProofOutcome = await lateProofWait.promise;
           lateProofWait.cancel();
+          if (lateProofOutcome === "proof_trust_invalidated") {
+            return proofTrustInvalidationResponse("late_proof_wait")!;
+          }
           if (lateProofOutcome === "satisfied" && latestGpuProof !== null) {
             result = terminalEventFromGpuProof(latestGpuProof, Date.now() - start);
           }
         }
       }
     } else {
-      result = await terminalWait;
+      const terminalOutcome = await raceWithProofTrustInvalidation(terminalWait);
+      if (terminalOutcome.kind === "proof_trust_invalidated") {
+        return proofTrustInvalidationResponse("terminal_wait")!;
+      }
+      result = terminalOutcome.value;
     }
+    const postTerminalTrustFailure = proofTrustInvalidationResponse("terminal_resolved");
+    if (postTerminalTrustFailure !== null) return postTerminalTrustFailure;
     let frameGate: Record<string, unknown> | undefined;
     let frameGateObservation: FrameGateObservation | null = null;
     let hmrObservedAtForFrameGate: number | null = null;
@@ -619,16 +726,22 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       const remaining = Math.max(0, timeoutMs - (Date.now() - start));
       if (session.frameSeqGateEnabled()) {
         const postApplyWait = waitForPostApplyTerminal(remaining);
-        const outcome = await Promise.race([
-          session
-            .awaitFrameAdvanceAtOrAfter(tHmr + budget, remaining)
-            .then((satisfiedBy) => ({ kind: "frame" as const, satisfiedBy })),
-          postApplyWait.promise.then((terminal) => ({
-            kind: "terminal" as const,
-            terminal,
-          })),
-        ]);
+        const frameOrTerminalOutcome = await raceWithProofTrustInvalidation(
+          Promise.race([
+            session
+              .awaitFrameAdvanceAtOrAfter(tHmr + budget, remaining)
+              .then((satisfiedBy) => ({ kind: "frame" as const, satisfiedBy })),
+            postApplyWait.promise.then((terminal) => ({
+              kind: "terminal" as const,
+              terminal,
+            })),
+          ]),
+        );
         postApplyWait.cancel();
+        if (frameOrTerminalOutcome.kind === "proof_trust_invalidated") {
+          return proofTrustInvalidationResponse("frame_gate_wait")!;
+        }
+        const outcome = frameOrTerminalOutcome.value;
         if (outcome.kind === "terminal" && outcome.terminal) {
           const late = terminalEventFromClassification(outcome.terminal, Date.now() - start);
           return responseWithGpuProofValidation({
@@ -669,7 +782,12 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       } else {
         const observeMs = Math.min(resolvePostApplyObserveMs(budget), remaining);
         const decodedWaitMs = remaining;
-        const decodedFrameWait = waitForDecodedFrameAtOrAfter(attached, tHmr + budget, decodedWaitMs);
+        const decodedFrameWait = waitForDecodedFrameAtOrAfter(
+          attached,
+          tHmr + budget,
+          decodedWaitMs,
+          () => requiredProofState !== null && proofTrustInvalidation !== null,
+        );
         const lateTerminalWait = waitForPostApplyTerminal(observeMs);
         type DecodedFrameOutcome = {
           kind: "decoded_frame";
@@ -689,11 +807,17 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
             ? { kind: "terminal" as const, terminal }
             : decodedFrameOutcome;
         })();
-        const outcome = await Promise.race<DecodedFrameOutcome | TerminalOutcome>([
-          decodedFrameOutcome,
-          terminalOutcome,
-        ]);
+        const decodedOrTerminalOutcome = await raceWithProofTrustInvalidation(
+          Promise.race<DecodedFrameOutcome | TerminalOutcome>([
+            decodedFrameOutcome,
+            terminalOutcome,
+          ]),
+        );
         lateTerminalWait.cancel();
+        if (decodedOrTerminalOutcome.kind === "proof_trust_invalidated") {
+          return proofTrustInvalidationResponse("decoded_frame_gate_wait")!;
+        }
+        const outcome = decodedOrTerminalOutcome.value;
         if (outcome.kind === "terminal" && outcome.terminal) {
           const lateTerminal = outcome.terminal;
           const late = terminalEventFromClassification(lateTerminal, Date.now() - start);
@@ -731,6 +855,9 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       }
     }
 
+    const preTokenTrustFailure = proofTrustInvalidationResponse("before_frame_token");
+    if (preTokenTrustFailure !== null) return preTokenTrustFailure;
+
     if (
       result.status === "applied"
       && requiredProofState !== null
@@ -744,6 +871,9 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       });
       const proofOutcome = await proofWait.promise;
       proofWait.cancel();
+      if (proofOutcome === "proof_trust_invalidated") {
+        return proofTrustInvalidationResponse("post_apply_proof_wait")!;
+      }
       if (proofOutcome === "structural_gap") {
         const gap = structuralGapResponse(hmrObservedAtForProofWait);
         if (gap !== null) return gap;
@@ -779,9 +909,20 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         latestGpuProof.observedAt,
         (hmrObservedAtForFrameGate ?? latestGpuProof.observedAt) + session.pipelineBudgetMs(),
       );
-      const postProofObservation = session.frameSeqGateEnabled()
-        ? await session.awaitFrameAdvanceAtOrAfter(minFrameObservedAt, remaining)
-        : await waitForDecodedFrameAtOrAfter(attached, minFrameObservedAt, remaining);
+      const postProofObservationOutcome = await raceWithProofTrustInvalidation(
+        session.frameSeqGateEnabled()
+          ? session.awaitFrameAdvanceAtOrAfter(minFrameObservedAt, remaining)
+          : waitForDecodedFrameAtOrAfter(
+              attached,
+              minFrameObservedAt,
+              remaining,
+              () => requiredProofState !== null && proofTrustInvalidation !== null,
+            ),
+      );
+      if (postProofObservationOutcome.kind === "proof_trust_invalidated") {
+        return proofTrustInvalidationResponse("post_proof_frame_reacquisition")!;
+      }
+      const postProofObservation = postProofObservationOutcome.value;
       if (postProofObservation === null) {
         frameGate["runtime_binding_status"] = "unavailable";
         frameGate["capture_binding_ready"] = false;
@@ -818,6 +959,9 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       });
     }
 
+    const postTokenTrustFailure = proofTrustInvalidationResponse("after_frame_token");
+    if (postTokenTrustFailure !== null) return postTokenTrustFailure;
+
     return responseWithGpuProofValidation({
       status: result.status,
       elapsedMs: Date.now() - start,
@@ -837,6 +981,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
   } catch (err) {
     return errorFromException("wait_hmr_failed", err);
   } finally {
+    terminalWaitAbort?.abort();
     for (const unsubscribe of unsubscribePostApply) unsubscribe();
   }
 }

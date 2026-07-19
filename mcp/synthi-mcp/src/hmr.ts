@@ -474,6 +474,7 @@ interface WaitForTerminalOpts {
   module?: string;
   sinceTs?: number;
   previewId?: string;
+  signal?: AbortSignal;
 }
 
 export class HmrNormalizer {
@@ -876,6 +877,13 @@ export class HmrNormalizer {
       ? opts.sinceTs
       : undefined;
     const start = Date.now();
+    if (opts.signal?.aborted) {
+      return {
+        status: "timeout",
+        source: "timeout",
+        elapsedMs: 0,
+      };
+    }
     if (sinceTs !== undefined) {
       const retained = this.latestRetainedTerminal({
         sinceTs,
@@ -897,15 +905,21 @@ export class HmrNormalizer {
 
     return new Promise<HmrTerminalEvent>((resolve) => {
       let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const finish = (event: HmrTerminalEvent): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimeout(timer);
+        unsub();
+        opts.signal?.removeEventListener("abort", onAbort);
+        resolve(event);
+      };
       const unsub = this.onMessage((msg) => {
         if (settled) return;
         const cls = classifyHmrMessage(msg);
         if (!cls) return;
         if (!terminalMatches(cls, expectedModule, expectedPreviewId)) return;
-        settled = true;
-        clearTimeout(timer);
-        unsub();
-        resolve({
+        finish({
           status: cls.status,
           source: cls.source,
           elapsedMs: Date.now() - start,
@@ -913,12 +927,20 @@ export class HmrNormalizer {
           observedAt: Date.now(),
         });
       });
-
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        unsub();
-        resolve({
+      const onAbort = (): void => {
+        finish({
+          status: "timeout",
+          source: "timeout",
+          elapsedMs: Date.now() - start,
+        });
+      };
+      opts.signal?.addEventListener("abort", onAbort, { once: true });
+      if (opts.signal?.aborted) {
+        onAbort();
+        return;
+      }
+      timer = setTimeout(() => {
+        finish({
           status: "timeout",
           source: "timeout",
           elapsedMs: Date.now() - start,

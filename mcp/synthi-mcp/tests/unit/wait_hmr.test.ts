@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { eventLog } from "../../src/events/index.js";
 import { session } from "../../src/session.js";
 import { waitHmrTool } from "../../src/tools/wait_hmr.js";
+import type { GpuProofTrustInvalidation } from "../../src/hmr.js";
 import { resolvePipelineBudgetMs } from "../../src/protocol/index.js";
 import {
   classifyGpuHmrProofMessage,
@@ -32,6 +33,7 @@ type FakeWaitOpts = {
   module?: string;
   sinceTs?: number;
   previewId?: string;
+  signal?: AbortSignal;
 };
 
 function timingMetrics() {
@@ -414,12 +416,21 @@ function installFakeAttached(
     hasFrame?: () => boolean;
     dimensions?: () => { width: number; height: number };
   }
-): { feedHmr: (msg: Record<string, unknown>) => void } {
+): {
+  feedHmr: (msg: Record<string, unknown>) => void;
+  invalidateProofTrust: (
+    reasonClass?: GpuProofTrustInvalidation["reasonClass"],
+  ) => void;
+} {
   const listeners: Array<(msg: Record<string, unknown>) => void> = [];
   const proofListeners: Array<{
     opts: GpuHmrProofMatchOpts;
     cb: (proof: GpuHmrProofTelemetry) => void;
   }> = [];
+  const proofTrustInvalidationListeners: Array<
+    (event: GpuProofTrustInvalidation) => void
+  > = [];
+  let proofTrustInvalidation: GpuProofTrustInvalidation | null = null;
   (session as unknown as { state: string }).state = "attached";
   (session as unknown as { attached: unknown }).attached = {
     sessionId: "fixture",
@@ -449,6 +460,19 @@ function installFakeAttached(
             if (index >= 0) proofListeners.splice(index, 1);
           };
         },
+        onGpuProofTrustInvalidated: (
+          cb: (event: GpuProofTrustInvalidation) => void,
+        ) => {
+          if (proofTrustInvalidation !== null) {
+            cb(proofTrustInvalidation);
+            return () => undefined;
+          }
+          proofTrustInvalidationListeners.push(cb);
+          return () => {
+            const index = proofTrustInvalidationListeners.indexOf(cb);
+            if (index >= 0) proofTrustInvalidationListeners.splice(index, 1);
+          };
+        },
         onMessage: (cb: (msg: Record<string, unknown>) => void) => {
           listeners.push(cb);
           return () => {
@@ -464,10 +488,29 @@ function installFakeAttached(
   return {
     feedHmr: (msg: Record<string, unknown>) => {
       const proof = classifyGpuHmrProofMessage(msg);
+      if (proof !== null && proofTrustInvalidation !== null) return;
       for (const listener of [...proofListeners]) {
         if (gpuHmrProofMatches(proof, listener.opts)) listener.cb(proof);
       }
       for (const listener of [...listeners]) listener(msg);
+    },
+    invalidateProofTrust: (
+      reasonClass = "runtime_evidence_transport_failed",
+    ) => {
+      if (proofTrustInvalidation !== null) return;
+      proofTrustInvalidation = Object.freeze({
+        schemaVersion: "synthi.gpu_hmr.proof_trust_invalidation.v1",
+        proofAuthority: "proof_trust_invalidation_only_not_gpu_hmr_acceptance",
+        reasonClass,
+        invalidatedAt: Date.now(),
+        acceptedForGpuHmr: false,
+        gpuHmrSuccess: false,
+        canSatisfyRuntimeProof: false,
+      });
+      for (const listener of [...proofTrustInvalidationListeners]) {
+        listener(proofTrustInvalidation);
+      }
+      proofTrustInvalidationListeners.length = 0;
     },
   };
 }
@@ -759,6 +802,143 @@ describe("synthi_wait_hmr", () => {
     };
     expect(body.error).toBe("gpu_hmr_proof_insufficient");
     expect(body.gpu_proof_validation?.reason).toBe("proof_state_missing");
+  });
+
+  it("fails fast when proof trust is invalidated during a strict wait", async () => {
+    const issueSpy = vi.spyOn(session, "issueFrameGateToken");
+    let resolveTerminal: (() => void) | null = null;
+    const fake = installFakeAttached(() => new Promise((resolve) => {
+      resolveTerminal = () => resolve({
+        status: "applied",
+        source: "hmr_status",
+        elapsedMs: 100,
+      });
+    }));
+    setTimeout(() => fake.invalidateProofTrust(), 5);
+
+    const started = Date.now();
+    const res = await waitHmrTool({
+      timeoutMs: 1_000,
+      requireGpuFullRuntimeProof: true,
+    });
+    resolveTerminal?.();
+
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_wait?: { status?: string; reason?: string; invalidation_stage?: string };
+      gpu_proof_trust_invalidation?: {
+        evidence_authority?: string;
+        reason_class?: string;
+        accepted_for_gpu_hmr?: boolean;
+        gpu_hmr_success?: boolean;
+      };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_wait).toMatchObject({
+      status: "failed_fast",
+      reason: "gpu_proof_trust_invalidated",
+      invalidation_stage: "terminal_or_proof_wait",
+    });
+    expect(body.gpu_proof_trust_invalidation).toMatchObject({
+      evidence_authority: "proof_trust_invalidation_only_not_gpu_hmr_acceptance",
+      reason_class: "runtime_evidence_transport_failed",
+      accepted_for_gpu_hmr: false,
+      gpu_hmr_success: false,
+    });
+    expect(issueSpy).not.toHaveBeenCalled();
+  });
+
+  it("revokes a strict wait during post-proof frame reacquisition", async () => {
+    const ledger = passingProofLedger();
+    const issueSpy = vi.spyOn(session, "issueFrameGateToken");
+    const budget = resolvePipelineBudgetMs();
+    const frameClockBase = Date.now();
+    session.setFrameAdvance(1, frameClockBase);
+    const fake = installFakeAttached(async () => {
+      setTimeout(
+        () => session.setFrameAdvance(2, frameClockBase + budget + 5),
+        5,
+      );
+      setTimeout(() => fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+        proofLedger: ledger,
+        runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
+      }), budget + 20);
+      setTimeout(() => fake.invalidateProofTrust(), budget + 30);
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({
+      timeoutMs: Math.max(1_000, budget + 500),
+      requireGpuFullRuntimeProof: true,
+    });
+
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_wait?: { reason?: string; invalidation_stage?: string };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_wait).toMatchObject({
+      reason: "gpu_proof_trust_invalidated",
+      invalidation_stage: "post_proof_frame_reacquisition",
+    });
+    expect(issueSpy).not.toHaveBeenCalled();
+  });
+
+  it("rechecks proof trust after a reentrant token-mint boundary", async () => {
+    const ledger = passingProofLedger();
+    const budget = resolvePipelineBudgetMs();
+    const frameClockBase = Date.now();
+    session.setFrameAdvance(1, frameClockBase);
+    let fake: ReturnType<typeof installFakeAttached>;
+    const issueSpy = vi.spyOn(session, "issueFrameGateToken").mockImplementation(() => {
+      fake.invalidateProofTrust();
+      return {
+        token: "frame-gate:synthetic-reentrant-boundary",
+        issued_at_ms: Date.now(),
+        expires_at_ms: Date.now() + 1_000,
+        evidence_binding_hash: HASH_C,
+      };
+    });
+    fake = installFakeAttached(async () => {
+      setTimeout(() => fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+        proofLedger: ledger,
+        runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
+      }), 5);
+      setTimeout(
+        () => session.setFrameAdvance(2, frameClockBase + budget + 100),
+        15,
+      );
+      return {
+        status: "applied",
+        source: "hmr_status",
+        elapsedMs: 10,
+        observedAt: frameClockBase,
+      };
+    });
+
+    const res = await waitHmrTool({
+      timeoutMs: Math.max(1_000, budget + 500),
+      requireGpuFullRuntimeProof: true,
+    });
+
+    expect(issueSpy).toHaveBeenCalledTimes(1);
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_wait?: { reason?: string; invalidation_stage?: string };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_wait).toMatchObject({
+      reason: "gpu_proof_trust_invalidated",
+      invalidation_stage: "after_frame_token",
+    });
   });
 
   it("waits for requested full runtime proof after applied terminal", async () => {

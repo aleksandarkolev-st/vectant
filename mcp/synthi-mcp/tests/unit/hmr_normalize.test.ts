@@ -605,6 +605,29 @@ describe("HmrNormalizer — data channel subscription", () => {
 });
 
 describe("HmrNormalizer.waitForTerminal", () => {
+  it("releases its message listener when the caller aborts", async () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0],
+    );
+    const abort = new AbortController();
+    const internals = normalizer as unknown as { listeners: Set<unknown> };
+    const waiting = normalizer.waitForTerminal({
+      timeoutMs: 10_000,
+      signal: abort.signal,
+    });
+    expect(internals.listeners.size).toBe(1);
+
+    abort.abort();
+
+    await expect(waiting).resolves.toMatchObject({
+      status: "timeout",
+      source: "timeout",
+    });
+    expect(internals.listeners.size).toBe(0);
+    normalizer.dispose();
+  });
+
   it.each([
     {
       name: "candidate rollback",
