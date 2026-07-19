@@ -328,6 +328,98 @@ describe("HmrNormalizer preclassification gate", () => {
   });
 });
 
+describe("HmrNormalizer GPU proof trust invalidation", () => {
+  it("revokes retained proof one way while preserving ordinary HMR traffic", async () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0],
+    );
+    const publicMessages: WireMessage[] = [];
+    const proofListener = vi.fn();
+    normalizer.onMessage((message) => publicMessages.push(message));
+    normalizer.onGpuProof({ module: "arbitrary-module" }, proofListener);
+
+    mockDC.emit(JSON.stringify({
+      status: "gpu-proof-state",
+      module: "arbitrary-module",
+      resultState: "gpu-hmr-compile-proven",
+    }));
+    expect(normalizer.latestGpuProof()?.resultState).toBe("gpu-hmr-compile-proven");
+    expect(normalizer.latestGpuProof({ module: "arbitrary-module" })).not.toBeNull();
+    expect(proofListener).toHaveBeenCalledTimes(1);
+
+    const activeInvalidationListener = vi.fn();
+    normalizer.onGpuProofTrustInvalidated(activeInvalidationListener);
+    const invalidation = normalizer.invalidateGpuProofTrust(
+      "runtime_evidence_transport_failed",
+    );
+    expect(invalidation).toMatchObject({
+      schemaVersion: "synthi.gpu_hmr.proof_trust_invalidation.v1",
+      proofAuthority: "proof_trust_invalidation_only_not_gpu_hmr_acceptance",
+      reasonClass: "runtime_evidence_transport_failed",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(Object.isFrozen(invalidation)).toBe(true);
+    expect(activeInvalidationListener).toHaveBeenCalledTimes(1);
+    expect(normalizer.latestGpuProof()).toBeNull();
+    expect(normalizer.latestGpuProof({ module: "arbitrary-module" })).toBeNull();
+
+    const lateInvalidationListener = vi.fn();
+    normalizer.onGpuProofTrustInvalidated(lateInvalidationListener);
+    expect(lateInvalidationListener).toHaveBeenCalledWith(invalidation);
+    expect(normalizer.invalidateGpuProofTrust("runtime_evidence_transport_disposed"))
+      .toBe(invalidation);
+    expect(activeInvalidationListener).toHaveBeenCalledTimes(1);
+
+    publicMessages.length = 0;
+    mockDC.emit(JSON.stringify({
+      status: "gpu-proof-state",
+      module: "arbitrary-module",
+      resultState: "gpu-hmr-full-runtime-proven",
+    }));
+    mockDC.emit(JSON.stringify({ type: "frame-ready", frame_sequence: 42 }));
+    const sinceTs = Date.now();
+    mockDC.emit(JSON.stringify({ status: "applied", module: "arbitrary-module" }));
+
+    expect(proofListener).toHaveBeenCalledTimes(1);
+    expect(normalizer.latestGpuProof()).toBeNull();
+    expect(publicMessages).toEqual([
+      { type: "frame-ready", frame_sequence: 42 },
+      { status: "applied", module: "arbitrary-module" },
+    ]);
+    await expect(normalizer.waitForTerminal({
+      module: "arbitrary-module",
+      sinceTs,
+      timeoutMs: 1,
+    })).resolves.toMatchObject({ status: "applied", retained: true });
+    normalizer.dispose();
+  });
+
+  it("invalidates proof trust before dispose clears listeners", () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0],
+    );
+    const listener = vi.fn();
+    normalizer.onGpuProofTrustInvalidated(() => {
+      throw new Error("synthetic_invalidation_listener_failure");
+    });
+    normalizer.onGpuProofTrustInvalidated(listener);
+
+    normalizer.dispose();
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0]![0]).toMatchObject({
+      reasonClass: "hmr_normalizer_disposed",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+    });
+    expect(normalizer.latestGpuProof()).toBeNull();
+  });
+});
+
 describe("parseWireMessages", () => {
   it("extracts a structured JSON object from prefixed runner text", () => {
     const parsed = parseWireMessages(

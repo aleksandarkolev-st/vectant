@@ -111,6 +111,21 @@ export interface PublicHmrEventProjection {
   diagnostic: Record<string, unknown>;
 }
 
+export type GpuProofTrustInvalidationReason =
+  | "runtime_evidence_transport_failed"
+  | "runtime_evidence_transport_disposed"
+  | "hmr_normalizer_disposed";
+
+export interface GpuProofTrustInvalidation {
+  readonly schemaVersion: "synthi.gpu_hmr.proof_trust_invalidation.v1";
+  readonly proofAuthority: "proof_trust_invalidation_only_not_gpu_hmr_acceptance";
+  readonly reasonClass: GpuProofTrustInvalidationReason;
+  readonly invalidatedAt: number;
+  readonly acceptedForGpuHmr: false;
+  readonly gpuHmrSuccess: false;
+  readonly canSatisfyRuntimeProof: false;
+}
+
 const PUBLIC_TERMINAL_DIAGNOSTIC_SCHEMA = "synthi.hmr.public_terminal_diagnostic.v1";
 const PUBLIC_TERMINAL_DIAGNOSTIC_AUTHORITY = "terminal_diagnostic_only_not_gpu_hmr_acceptance";
 const terminalDiagnosticReferenceKey = randomBytes(32);
@@ -396,6 +411,7 @@ export function projectPublicHmrEvent(msg: WireMessage): PublicHmrEventProjectio
 }
 
 type MessageHandler = (msg: WireMessage) => void;
+type GpuProofTrustInvalidationHandler = (event: GpuProofTrustInvalidation) => void;
 
 export function terminalModule(detail: Record<string, unknown>): string | null {
   if (typeof detail.module === "string") return detail.module;
@@ -466,9 +482,12 @@ export class HmrNormalizer {
     opts: GpuHmrProofMatchOpts;
     cb: (proof: GpuHmrProofTelemetry) => void;
   }>();
+  private readonly proofTrustInvalidationListeners =
+    new Set<GpuProofTrustInvalidationHandler>();
   private readonly beforeClassify: HmrNormalizerOptions["beforeClassify"];
   private readonly unbind: () => void;
   private latestProof: GpuHmrProofTelemetry | null = null;
+  private proofTrustInvalidation: GpuProofTrustInvalidation | null = null;
   private readonly structuredJsonChunks = new Map<string, StructuredJsonChunkBuffer>();
   private structuredJsonChunkExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly proofHistory: GpuHmrProofTelemetry[] = [];
@@ -512,9 +531,10 @@ export class HmrNormalizer {
         return;
       }
     }
+    const proof = classifyGpuHmrProofMessage(parsed, observedAt);
+    if (proof !== null && this.proofTrustInvalidation !== null) return;
     const cls = classifyHmrMessage(parsed);
     if (cls) this.rememberTerminal(cls, observedAt);
-    const proof = classifyGpuHmrProofMessage(parsed, observedAt);
     if (proof) this.rememberGpuProof(proof);
     for (const listener of this.listeners) listener(parsed);
   }
@@ -752,6 +772,45 @@ export class HmrNormalizer {
     };
   }
 
+  onGpuProofTrustInvalidated(cb: GpuProofTrustInvalidationHandler): () => void {
+    const invalidation = this.proofTrustInvalidation;
+    if (invalidation !== null) {
+      cb(invalidation);
+      return (): void => undefined;
+    }
+    this.proofTrustInvalidationListeners.add(cb);
+    return (): void => {
+      this.proofTrustInvalidationListeners.delete(cb);
+    };
+  }
+
+  invalidateGpuProofTrust(
+    reasonClass: GpuProofTrustInvalidationReason,
+  ): GpuProofTrustInvalidation {
+    if (this.proofTrustInvalidation !== null) return this.proofTrustInvalidation;
+    const invalidation: GpuProofTrustInvalidation = Object.freeze({
+      schemaVersion: "synthi.gpu_hmr.proof_trust_invalidation.v1",
+      proofAuthority: "proof_trust_invalidation_only_not_gpu_hmr_acceptance",
+      reasonClass,
+      invalidatedAt: Date.now(),
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    this.proofTrustInvalidation = invalidation;
+    this.latestProof = null;
+    this.proofHistory.length = 0;
+    for (const listener of this.proofTrustInvalidationListeners) {
+      try {
+        listener(invalidation);
+      } catch {
+        // Trust revocation must complete even if a consumer callback fails.
+      }
+    }
+    this.proofTrustInvalidationListeners.clear();
+    return invalidation;
+  }
+
   latestGpuProof(opts: GpuHmrProofMatchOpts = {}): GpuHmrProofTelemetry | null {
     if (Object.keys(opts).length === 0) return this.latestProof;
     for (const proof of this.proofHistory.slice().reverse()) {
@@ -761,6 +820,7 @@ export class HmrNormalizer {
   }
 
   private rememberGpuProof(proof: GpuHmrProofTelemetry): void {
+    if (this.proofTrustInvalidation !== null) return;
     this.latestProof = proof;
     this.proofHistory.push(proof);
     while (this.proofHistory.length > HmrNormalizer.PROOF_HISTORY_LIMIT) {
@@ -868,8 +928,10 @@ export class HmrNormalizer {
   }
 
   dispose(): void {
+    this.invalidateGpuProofTrust("hmr_normalizer_disposed");
     this.listeners.clear();
     this.proofListeners.clear();
+    this.proofTrustInvalidationListeners.clear();
     if (this.structuredJsonChunkExpiryTimer !== null) {
       clearTimeout(this.structuredJsonChunkExpiryTimer);
       this.structuredJsonChunkExpiryTimer = null;
