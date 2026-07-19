@@ -10,6 +10,11 @@ pub const GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION: &str = "synthi.gpu_hmr.con
 pub const GPU_HMR_FULL_RUNTIME_RESULT_STATE: &str = "gpu-hmr-full-runtime-proven";
 
 pub const GPU_HMR_PORTABLE_JSON_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+pub const GPU_HMR_PORTABLE_JSON_MAX_DEPTH: usize = 128;
+pub const GPU_HMR_PORTABLE_JSON_MAX_NODES: usize = 100_000;
+pub const GPU_HMR_PORTABLE_JSON_MAX_CONTAINER_ENTRIES: usize = 100_000;
+pub const GPU_HMR_PORTABLE_JSON_MAX_STRING_BYTES: usize = 16 * 1024 * 1024;
+pub const GPU_HMR_PORTABLE_JSON_MAX_CANONICAL_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StrictGpuRuntimeProofExpectation<'a> {
@@ -166,6 +171,75 @@ fn portable_json_numbers_supported(value: &serde_json::Value) -> bool {
         serde_json::Value::Object(fields) => fields.values().all(portable_json_numbers_supported),
         _ => true,
     }
+}
+
+fn portable_json_complexity_supported(value: &serde_json::Value) -> bool {
+    fn add_bytes(bytes: &mut usize, amount: usize) -> bool {
+        let Some(next_bytes) = bytes.checked_add(amount) else {
+            return false;
+        };
+        if next_bytes > GPU_HMR_PORTABLE_JSON_MAX_CANONICAL_BYTES {
+            return false;
+        }
+        *bytes = next_bytes;
+        true
+    }
+
+    fn visit(
+        value: &serde_json::Value,
+        depth: usize,
+        nodes: &mut usize,
+        bytes: &mut usize,
+    ) -> bool {
+        if depth > GPU_HMR_PORTABLE_JSON_MAX_DEPTH {
+            return false;
+        }
+        let Some(next_nodes) = nodes.checked_add(1) else {
+            return false;
+        };
+        if next_nodes > GPU_HMR_PORTABLE_JSON_MAX_NODES {
+            return false;
+        }
+        *nodes = next_nodes;
+
+        match value {
+            serde_json::Value::Null => add_bytes(bytes, 4),
+            serde_json::Value::Bool(value) => add_bytes(bytes, if *value { 4 } else { 5 }),
+            serde_json::Value::Number(value) => add_bytes(bytes, value.to_string().len()),
+            serde_json::Value::String(value) => {
+                value.len() <= GPU_HMR_PORTABLE_JSON_MAX_STRING_BYTES
+                    && serde_json::to_string(value)
+                        .ok()
+                        .is_some_and(|encoded| add_bytes(bytes, encoded.len()))
+            }
+            serde_json::Value::Array(values) => {
+                values.len() <= GPU_HMR_PORTABLE_JSON_MAX_CONTAINER_ENTRIES
+                    && add_bytes(bytes, 2 + values.len().saturating_sub(1))
+                    && values
+                        .iter()
+                        .all(|value| visit(value, depth + 1, nodes, bytes))
+            }
+            serde_json::Value::Object(fields) => {
+                fields.len() <= GPU_HMR_PORTABLE_JSON_MAX_CONTAINER_ENTRIES
+                    && add_bytes(bytes, 2 + fields.len().saturating_sub(1) + fields.len())
+                    && fields
+                        .keys()
+                        .all(|key| key.len() <= GPU_HMR_PORTABLE_JSON_MAX_STRING_BYTES)
+                    && fields.keys().all(|key| {
+                        serde_json::to_string(key)
+                            .ok()
+                            .is_some_and(|encoded| add_bytes(bytes, encoded.len()))
+                    })
+                    && fields
+                        .values()
+                        .all(|value| visit(value, depth + 1, nodes, bytes))
+            }
+        }
+    }
+
+    let mut nodes = 0;
+    let mut bytes = 0;
+    visit(value, 0, &mut nodes, &mut bytes)
 }
 
 fn portable_json_aliases_consistent(value: &serde_json::Value) -> bool {
@@ -362,6 +436,12 @@ pub fn runtime_record_chain_matches(
     record: &serde_json::Value,
     expectation: &StrictGpuRuntimeProofExpectation<'_>,
 ) -> bool {
+    if !portable_json_complexity_supported(record)
+        || !portable_json_numbers_supported(record)
+        || !portable_json_aliases_consistent(record)
+    {
+        return false;
+    }
     let Some(expected_artifact_id) = expected_artifact_id(expectation.artifact_content_hash) else {
         return false;
     };
@@ -410,8 +490,6 @@ pub fn runtime_record_chain_matches(
         == Some(GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION)
         && field_str("/proof_canonical_profile")
             == Some(GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE)
-        && portable_json_numbers_supported(record)
-        && portable_json_aliases_consistent(record)
         && record_proof_id_matches
         && record.get("edit_id").and_then(serde_json::Value::as_str)
             == Some(expectation.source_edit_id)
@@ -550,7 +628,8 @@ pub fn verify_strict_gpu_runtime_proof(
 ) -> Option<VerifiedGpuRuntimeProof> {
     let reload_ref = format!("reload:{}", expectation.request_id);
     let source_edit_ref = format!("source-edit-id:{}", expectation.source_edit_id);
-    if !portable_json_numbers_supported(proof)
+    if !portable_json_complexity_supported(proof)
+        || !portable_json_numbers_supported(proof)
         || !portable_json_aliases_consistent(proof)
         || proof.get("type").and_then(serde_json::Value::as_str) != Some("gpu_hmr_proof")
         || proof
@@ -730,4 +809,84 @@ pub fn verify_strict_gpu_runtime_proof(
         proof_id: proof_id.to_string(),
         ledger_proof_id: expected_ledger_proof_id,
     })
+}
+
+#[cfg(test)]
+mod portable_json_profile_tests {
+    use super::{
+        canonical_gpu_runtime_proof_json_bytes, canonical_gpu_runtime_proof_json_sha256,
+        portable_json_complexity_supported, GPU_HMR_PORTABLE_JSON_MAX_CANONICAL_BYTES,
+        GPU_HMR_PORTABLE_JSON_MAX_CONTAINER_ENTRIES, GPU_HMR_PORTABLE_JSON_MAX_DEPTH,
+        GPU_HMR_PORTABLE_JSON_MAX_NODES, GPU_HMR_PORTABLE_JSON_MAX_STRING_BYTES,
+    };
+
+    #[test]
+    fn portable_complexity_profile_bounds_depth_entries_and_total_nodes() {
+        assert!(portable_json_complexity_supported(&serde_json::json!({
+            "records": [{"accepted": false}],
+        })));
+
+        let too_many_entries = serde_json::Value::Array(vec![
+            serde_json::Value::Null;
+            GPU_HMR_PORTABLE_JSON_MAX_CONTAINER_ENTRIES
+                + 1
+        ]);
+        assert!(!portable_json_complexity_supported(&too_many_entries));
+
+        let mut too_deep = serde_json::Value::Null;
+        for _ in 0..=GPU_HMR_PORTABLE_JSON_MAX_DEPTH {
+            too_deep = serde_json::Value::Array(vec![too_deep]);
+        }
+        assert!(!portable_json_complexity_supported(&too_deep));
+
+        let node_heavy =
+            serde_json::Value::Array(vec![
+                serde_json::Value::Array(vec![serde_json::Value::Null]);
+                (GPU_HMR_PORTABLE_JSON_MAX_NODES / 2) + 1
+            ]);
+        assert!(!portable_json_complexity_supported(&node_heavy));
+
+        let too_long_string =
+            serde_json::Value::String("x".repeat(GPU_HMR_PORTABLE_JSON_MAX_STRING_BYTES + 1));
+        assert!(!portable_json_complexity_supported(&too_long_string));
+
+        let aggregate_too_large = serde_json::Value::Array(vec![
+            serde_json::Value::String("x".repeat(GPU_HMR_PORTABLE_JSON_MAX_CANONICAL_BYTES / 2)),
+            serde_json::Value::String("y".repeat(GPU_HMR_PORTABLE_JSON_MAX_CANONICAL_BYTES / 2)),
+        ]);
+        assert!(!portable_json_complexity_supported(&aggregate_too_large));
+    }
+
+    #[test]
+    fn portable_canonical_json_matches_utf8_key_order_golden_vector() {
+        let astral = "\u{10000}";
+        let private_use = "\u{e000}";
+        let mut object = serde_json::Map::new();
+        object.insert(astral.to_string(), serde_json::json!(1));
+        object.insert(private_use.to_string(), serde_json::json!(2));
+        object.insert(
+            "a".to_string(),
+            serde_json::json!([
+                null,
+                true,
+                false,
+                "x",
+                9_007_199_254_740_991_i64,
+                -9_007_199_254_740_991_i64
+            ]),
+        );
+        let value = serde_json::Value::Object(object);
+        let expected = format!(
+            "{{\"a\":[null,true,false,\"x\",9007199254740991,-9007199254740991],\"{private_use}\":2,\"{astral}\":1}}"
+        );
+
+        assert_eq!(
+            canonical_gpu_runtime_proof_json_bytes(&value),
+            expected.as_bytes()
+        );
+        assert_eq!(
+            canonical_gpu_runtime_proof_json_sha256(&value),
+            "sha256:9cd01d39f1b9883189a95c0fe9a25514cf561fa4f96f8367ae2bb67892ccf223"
+        );
+    }
 }
