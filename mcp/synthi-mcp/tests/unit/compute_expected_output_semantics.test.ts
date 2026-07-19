@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMPUTE_EXPECTED_OUTPUT_CONTRACT_V2_SCHEMA_VERSION,
+  COMPUTE_EXPECTED_OUTPUT_DERIVATION_SCHEMA_VERSION,
   COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+  computeExpectedOutputContractV2Hash,
   computeExpectedOutputSemanticsHash,
   computeExpectedOutputValuesHash,
+  deriveComputeExpectedOutputContractV2,
+  validateComputeExpectedOutputContractV2,
   validateComputeExpectedOutputSemantics,
+  type ComputeExpectedOutputContractBindingV2,
   type ComputeExpectedOutputSemanticsMaterial,
 } from "../../src/compute_expected_output_semantics.js";
 
@@ -48,6 +54,21 @@ function contract(material: ComputeExpectedOutputSemanticsMaterial) {
   return {
     ...material,
     semanticsHash: computeExpectedOutputSemanticsHash(material),
+  };
+}
+
+function binding(
+  outputTargetId: string,
+): ComputeExpectedOutputContractBindingV2 {
+  return {
+    projectId: "project:generic",
+    editId: "source-edit:generic",
+    artifactAfterHash: `sha256:${"b".repeat(64)}`,
+    outputTargetId,
+    oracleCodeHash: `sha256:${"c".repeat(64)}`,
+    compileTransportNonce:
+      "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+    runtimeSessionId: "runtime-session:generic",
   };
 }
 
@@ -176,6 +197,96 @@ describe("compute expected-output semantic commitments", () => {
     expect(validateComputeExpectedOutputSemantics(value)).toEqual({
       accepted: false,
       reason: "expected exact semantic-contract fields",
+    });
+  });
+});
+
+describe("compute expected-output v2 derivation", () => {
+  it.each([
+    [
+      exactMaterial(),
+      "sha256:25324a3665869f50e1163acbaf601322fb6fa63c1609876180f99a8bb837d748",
+    ],
+    [
+      numericMaterial(),
+      "sha256:4e164b0c64e6235260a70ebd0fb45be6a9ea1cb19c5c06a6c3c699851be34547",
+    ],
+  ])("matches the Rust golden vector for %#", (material, expectedHash) => {
+    const semantics = contract(material);
+    const derived = deriveComputeExpectedOutputContractV2(
+      semantics,
+      binding(material.outputTargetId),
+    );
+
+    expect(derived.schemaVersion)
+      .toBe(COMPUTE_EXPECTED_OUTPUT_CONTRACT_V2_SCHEMA_VERSION);
+    expect(derived.derivationSchemaVersion)
+      .toBe(COMPUTE_EXPECTED_OUTPUT_DERIVATION_SCHEMA_VERSION);
+    expect(derived.semantics).toEqual(semantics);
+    expect(derived.contractHash).toBe(expectedHash);
+    expect(validateComputeExpectedOutputContractV2(derived).accepted).toBe(true);
+    expect(Object.isFrozen(derived)).toBe(true);
+    expect(Object.isFrozen(derived.binding)).toBe(true);
+  });
+
+  it("preserves scalar shape and byte selection without numeric coercion", () => {
+    const material: ComputeExpectedOutputSemanticsMaterial = {
+      ...exactMaterial(),
+      byteOffset: 128,
+      byteLength: 4,
+      shape: [],
+      elementCount: 1,
+    };
+    const derived = deriveComputeExpectedOutputContractV2(
+      contract(material),
+      binding(material.outputTargetId),
+    );
+
+    expect(derived.semantics.shape).toEqual([]);
+    expect(derived.semantics.byteOffset).toBe(128);
+    expect(derived.semantics.byteLength).toBe(4);
+    expect(derived.semantics.toleranceDecimal).toBe("0");
+  });
+
+  it("rejects partial, aliased, and cross-target derivations", () => {
+    const semantics = contract(exactMaterial());
+    expect(() => deriveComputeExpectedOutputContractV2(
+      semantics,
+      { ...binding(semantics.outputTargetId), outputTargetId: "output:other" },
+    )).toThrow("compute expected-output v2 target mismatch");
+    expect(() => deriveComputeExpectedOutputContractV2(
+      semantics,
+      { ...binding(semantics.outputTargetId), compileTransportNonce: null },
+    )).toThrow("invalid compute expected-output v2 binding");
+
+    const accepted = deriveComputeExpectedOutputContractV2(
+      semantics,
+      binding(semantics.outputTargetId),
+    );
+    expect(validateComputeExpectedOutputContractV2({
+      ...accepted,
+      schema_version: accepted.schemaVersion,
+    })).toEqual({
+      accepted: false,
+      reason: "expected exact derived-contract fields",
+    });
+  });
+
+  it("rejects a rehashed contract when the signed caller target is replaced", () => {
+    const semantics = contract(exactMaterial());
+    const accepted = deriveComputeExpectedOutputContractV2(
+      semantics,
+      binding(semantics.outputTargetId),
+    );
+    const substituted = {
+      ...accepted,
+      binding: { ...accepted.binding, outputTargetId: "output:other" },
+    };
+    substituted.contractHash = computeExpectedOutputContractV2Hash(substituted);
+
+    expect(validateComputeExpectedOutputContractV2(substituted)).toEqual({
+      accepted: false,
+      reason: "derived contract target mismatch",
     });
   });
 });

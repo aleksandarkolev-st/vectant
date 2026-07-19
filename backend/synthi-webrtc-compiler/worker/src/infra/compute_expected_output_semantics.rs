@@ -8,9 +8,15 @@ use std::fmt;
 
 pub const COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION: &str =
     "synthi.gpu_hmr.compute_expected_output_semantics.v1";
+pub const COMPUTE_EXPECTED_OUTPUT_DERIVATION_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.compute_expected_output_derivation.v1";
+pub const COMPUTE_EXPECTED_OUTPUT_CONTRACT_V2_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.compute_expected_output_contract.v2";
 
 const SEMANTICS_HASH_DOMAIN: &str = "synthi.gpu_hmr.compute_expected_output_semantics_hash.v1";
 const EXPECTED_VALUES_HASH_DOMAIN: &str = "synthi.gpu_hmr.compute_expected_output_values_hash.v1";
+const CONTRACT_V2_HASH_DOMAIN: &str = "synthi.gpu_hmr.compute_expected_output_contract_hash.v2";
+const COMPILE_TRANSPORT_NONCE_PREFIX: &str = "gpu-proof-transport-request:";
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_DECIMAL_CHARS: usize = 128;
 const MAX_OUTPUT_TARGET_CHARS: usize = 512;
@@ -53,6 +59,138 @@ pub struct ComputeExpectedOutputSemantics {
     semantics_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComputeExpectedOutputContractBindingV2 {
+    pub project_id: String,
+    pub edit_id: String,
+    pub artifact_after_hash: String,
+    pub output_target_id: String,
+    pub oracle_code_hash: String,
+    pub compile_transport_nonce: String,
+    pub runtime_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputeExpectedOutputContractV2 {
+    schema_version: String,
+    derivation_schema_version: String,
+    semantics: ComputeExpectedOutputSemantics,
+    binding: ComputeExpectedOutputContractBindingV2,
+    contract_hash: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawComputeExpectedOutputContractV2 {
+    schema_version: String,
+    derivation_schema_version: String,
+    semantics: ComputeExpectedOutputSemantics,
+    binding: ComputeExpectedOutputContractBindingV2,
+    contract_hash: String,
+}
+
+impl ComputeExpectedOutputContractBindingV2 {
+    fn validate(&self) -> Result<(), String> {
+        for (label, value) in [
+            ("projectId", self.project_id.as_str()),
+            ("editId", self.edit_id.as_str()),
+            ("outputTargetId", self.output_target_id.as_str()),
+            ("runtimeSessionId", self.runtime_session_id.as_str()),
+        ] {
+            if !canonical_contract_token(value) {
+                return Err(format!("derived contract binding field {label} is invalid"));
+            }
+        }
+        if !canonical_sha256(&self.artifact_after_hash) {
+            return Err("derived contract artifact hash is invalid".to_string());
+        }
+        if !canonical_sha256(&self.oracle_code_hash) {
+            return Err("derived contract oracle code hash is invalid".to_string());
+        }
+        if !self
+            .compile_transport_nonce
+            .strip_prefix(COMPILE_TRANSPORT_NONCE_PREFIX)
+            .is_some_and(|nonce| {
+                nonce.len() == 32
+                    && nonce
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+        {
+            return Err("derived contract compile transport nonce is invalid".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl ComputeExpectedOutputContractV2 {
+    pub fn contract_hash(&self) -> &str {
+        &self.contract_hash
+    }
+
+    pub fn semantics(&self) -> &ComputeExpectedOutputSemantics {
+        &self.semantics
+    }
+
+    pub fn binding(&self) -> &ComputeExpectedOutputContractBindingV2 {
+        &self.binding
+    }
+
+    pub fn canonical_hash(&self) -> String {
+        let material = serde_json::json!([
+            self.schema_version,
+            self.derivation_schema_version,
+            self.semantics.semantics_hash,
+            self.binding.project_id,
+            self.binding.edit_id,
+            self.binding.artifact_after_hash,
+            self.binding.output_target_id,
+            self.binding.oracle_code_hash,
+            self.binding.compile_transport_nonce,
+            self.binding.runtime_session_id,
+        ]);
+        domain_hash(CONTRACT_V2_HASH_DOMAIN, &material)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.schema_version != COMPUTE_EXPECTED_OUTPUT_CONTRACT_V2_SCHEMA_VERSION {
+            return Err("derived contract schema version mismatch".to_string());
+        }
+        if self.derivation_schema_version != COMPUTE_EXPECTED_OUTPUT_DERIVATION_SCHEMA_VERSION {
+            return Err("derivation schema version mismatch".to_string());
+        }
+        self.semantics.validate()?;
+        self.binding.validate()?;
+        if self.binding.output_target_id != self.semantics.output_target_id {
+            return Err("derived contract target mismatch".to_string());
+        }
+        if !canonical_sha256(&self.contract_hash) || self.contract_hash != self.canonical_hash() {
+            return Err("derived contract hash mismatch".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for ComputeExpectedOutputContractV2 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawComputeExpectedOutputContractV2::deserialize(deserializer)?;
+        let contract = Self {
+            schema_version: raw.schema_version,
+            derivation_schema_version: raw.derivation_schema_version,
+            semantics: raw.semantics,
+            binding: raw.binding,
+            contract_hash: raw.contract_hash,
+        };
+        contract.validate().map_err(D::Error::custom)?;
+        Ok(contract)
+    }
+}
+
 impl ComputeExpectedOutputSemantics {
     pub fn semantics_hash(&self) -> &str {
         &self.semantics_hash
@@ -60,6 +198,28 @@ impl ComputeExpectedOutputSemantics {
 
     pub fn output_target_id(&self) -> &str {
         &self.output_target_id
+    }
+
+    pub fn derive_contract_v2(
+        &self,
+        binding: ComputeExpectedOutputContractBindingV2,
+    ) -> Result<ComputeExpectedOutputContractV2, String> {
+        self.validate()?;
+        binding.validate()?;
+        if binding.output_target_id != self.output_target_id {
+            return Err("compute expected-output v2 target mismatch".to_string());
+        }
+        let mut contract = ComputeExpectedOutputContractV2 {
+            schema_version: COMPUTE_EXPECTED_OUTPUT_CONTRACT_V2_SCHEMA_VERSION.to_string(),
+            derivation_schema_version: COMPUTE_EXPECTED_OUTPUT_DERIVATION_SCHEMA_VERSION
+                .to_string(),
+            semantics: self.clone(),
+            binding,
+            contract_hash: String::new(),
+        };
+        contract.contract_hash = contract.canonical_hash();
+        contract.validate()?;
+        Ok(contract)
     }
 
     pub fn canonical_hash(&self) -> String {
@@ -385,6 +545,12 @@ fn canonical_sha256(value: &str) -> bool {
     })
 }
 
+fn canonical_contract_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_OUTPUT_TARGET_CHARS
+        && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+}
+
 fn expected_values_hash(values: &[String]) -> String {
     domain_hash(
         EXPECTED_VALUES_HASH_DOMAIN,
@@ -440,6 +606,19 @@ mod tests {
             "expectedRawHash": null,
             "semanticsHash": "sha256:c35711fc5f51ee39096b85a00b41df7a83d07dac706fc132dfe93719fba58c32",
         })
+    }
+
+    fn contract_binding(output_target_id: &str) -> ComputeExpectedOutputContractBindingV2 {
+        ComputeExpectedOutputContractBindingV2 {
+            project_id: "project:generic".to_string(),
+            edit_id: "source-edit:generic".to_string(),
+            artifact_after_hash: format!("sha256:{}", "b".repeat(64)),
+            output_target_id: output_target_id.to_string(),
+            oracle_code_hash: format!("sha256:{}", "c".repeat(64)),
+            compile_transport_nonce: "gpu-proof-transport-request:0123456789abcdef0123456789abcdef"
+                .to_string(),
+            runtime_session_id: "runtime-session:generic".to_string(),
+        }
     }
 
     #[test]
@@ -516,5 +695,96 @@ mod tests {
             "340282356779733661637539395458142568448",
             "f32",
         ));
+    }
+
+    #[test]
+    fn derived_contract_hashes_match_typescript_golden_vectors() {
+        for (semantics_value, expected_hash) in [
+            (
+                exact_contract(),
+                "sha256:25324a3665869f50e1163acbaf601322fb6fa63c1609876180f99a8bb837d748",
+            ),
+            (
+                numeric_contract(),
+                "sha256:4e164b0c64e6235260a70ebd0fb45be6a9ea1cb19c5c06a6c3c699851be34547",
+            ),
+        ] {
+            let semantics: ComputeExpectedOutputSemantics =
+                serde_json::from_value(semantics_value).expect("canonical semantics");
+            let derived = semantics
+                .derive_contract_v2(contract_binding(semantics.output_target_id()))
+                .expect("derived contract");
+            assert_eq!(derived.contract_hash(), expected_hash);
+
+            let serialized = serde_json::to_value(&derived).expect("serialized derived contract");
+            let reparsed: ComputeExpectedOutputContractV2 =
+                serde_json::from_value(serialized).expect("validated derived contract");
+            assert_eq!(reparsed, derived);
+        }
+    }
+
+    #[test]
+    fn derived_contract_preserves_scalar_selection_and_rejects_partial_binding() {
+        let mut scalar = exact_contract();
+        scalar["byteOffset"] = serde_json::json!(128);
+        scalar["byteLength"] = serde_json::json!(4);
+        scalar["shape"] = serde_json::json!([]);
+        scalar["elementCount"] = serde_json::json!(1);
+        let scalar_material = serde_json::json!([
+            COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "exact_bytes",
+            "output:tensor:0",
+            "128",
+            "4",
+            "u32",
+            Vec::<String>::new(),
+            "1",
+            "little_endian",
+            "0",
+            Value::Null,
+            Value::Null,
+            format!("sha256:{}", "a".repeat(64)),
+        ]);
+        scalar["semanticsHash"] =
+            Value::String(domain_hash(SEMANTICS_HASH_DOMAIN, &scalar_material));
+        let semantics: ComputeExpectedOutputSemantics =
+            serde_json::from_value(scalar).expect("scalar semantics");
+        let derived = semantics
+            .derive_contract_v2(contract_binding(semantics.output_target_id()))
+            .expect("scalar derived contract");
+        assert!(derived.semantics().shape.is_empty());
+        assert_eq!(derived.semantics().byte_offset, 128);
+        assert_eq!(derived.semantics().byte_length, 4);
+
+        let mut invalid_binding =
+            serde_json::to_value(contract_binding(semantics.output_target_id()))
+                .expect("binding value");
+        invalid_binding
+            .as_object_mut()
+            .expect("binding object")
+            .remove("compileTransportNonce");
+        assert!(
+            serde_json::from_value::<ComputeExpectedOutputContractBindingV2>(invalid_binding)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn derived_contract_rejects_aliases_and_rehashed_cross_target_substitution() {
+        let semantics: ComputeExpectedOutputSemantics =
+            serde_json::from_value(exact_contract()).expect("canonical semantics");
+        let derived = semantics
+            .derive_contract_v2(contract_binding(semantics.output_target_id()))
+            .expect("derived contract");
+        let mut aliased = serde_json::to_value(&derived).expect("derived contract value");
+        aliased["schema_version"] = aliased["schemaVersion"].clone();
+        assert!(serde_json::from_value::<ComputeExpectedOutputContractV2>(aliased).is_err());
+
+        let mut substituted = serde_json::to_value(&derived).expect("derived contract value");
+        substituted["binding"]["outputTargetId"] = serde_json::json!("output:other");
+        let mut substituted_contract: ComputeExpectedOutputContractV2 = derived.clone();
+        substituted_contract.binding.output_target_id = "output:other".to_string();
+        substituted["contractHash"] = serde_json::json!(substituted_contract.canonical_hash());
+        assert!(serde_json::from_value::<ComputeExpectedOutputContractV2>(substituted).is_err());
     }
 }

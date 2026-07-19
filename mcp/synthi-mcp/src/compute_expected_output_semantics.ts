@@ -2,12 +2,20 @@ import { createHash } from "node:crypto";
 
 export const COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION =
   "synthi.gpu_hmr.compute_expected_output_semantics.v1" as const;
+export const COMPUTE_EXPECTED_OUTPUT_DERIVATION_SCHEMA_VERSION =
+  "synthi.gpu_hmr.compute_expected_output_derivation.v1" as const;
+export const COMPUTE_EXPECTED_OUTPUT_CONTRACT_V2_SCHEMA_VERSION =
+  "synthi.gpu_hmr.compute_expected_output_contract.v2" as const;
 
 const SEMANTICS_HASH_DOMAIN =
   "synthi.gpu_hmr.compute_expected_output_semantics_hash.v1";
 const EXPECTED_VALUES_HASH_DOMAIN =
   "synthi.gpu_hmr.compute_expected_output_values_hash.v1";
+const CONTRACT_V2_HASH_DOMAIN =
+  "synthi.gpu_hmr.compute_expected_output_contract_hash.v2";
 const CANONICAL_SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const COMPILE_TRANSPORT_NONCE_PATTERN =
+  /^gpu-proof-transport-request:[a-f0-9]{32}$/;
 const CANONICAL_DECIMAL_PATTERN =
   /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$/;
 const MAX_DECIMAL_CHARS = 128;
@@ -53,10 +61,43 @@ export interface ComputeExpectedOutputSemantics
   readonly semanticsHash: string;
 }
 
+export interface ComputeExpectedOutputContractBindingV2 {
+  readonly projectId: string;
+  readonly editId: string;
+  readonly artifactAfterHash: string;
+  readonly outputTargetId: string;
+  readonly oracleCodeHash: string;
+  readonly compileTransportNonce: string;
+  readonly runtimeSessionId: string;
+}
+
+export interface ComputeExpectedOutputContractV2Material {
+  readonly schemaVersion: typeof COMPUTE_EXPECTED_OUTPUT_CONTRACT_V2_SCHEMA_VERSION;
+  readonly derivationSchemaVersion:
+    typeof COMPUTE_EXPECTED_OUTPUT_DERIVATION_SCHEMA_VERSION;
+  readonly semantics: Readonly<ComputeExpectedOutputSemantics>;
+  readonly binding: Readonly<ComputeExpectedOutputContractBindingV2>;
+}
+
+export interface ComputeExpectedOutputContractV2
+  extends ComputeExpectedOutputContractV2Material {
+  readonly contractHash: string;
+}
+
 export type ComputeExpectedOutputSemanticsValidation =
   | {
       readonly accepted: true;
       readonly value: Readonly<ComputeExpectedOutputSemantics>;
+    }
+  | {
+      readonly accepted: false;
+      readonly reason: string;
+    };
+
+export type ComputeExpectedOutputContractV2Validation =
+  | {
+      readonly accepted: true;
+      readonly value: Readonly<ComputeExpectedOutputContractV2>;
     }
   | {
       readonly accepted: false;
@@ -78,6 +119,24 @@ const SEMANTICS_FIELDS = Object.freeze([
   "expectedValuesHash",
   "expectedRawHash",
   "semanticsHash",
+] as const);
+
+const CONTRACT_V2_FIELDS = Object.freeze([
+  "schemaVersion",
+  "derivationSchemaVersion",
+  "semantics",
+  "binding",
+  "contractHash",
+] as const);
+
+const CONTRACT_V2_BINDING_FIELDS = Object.freeze([
+  "projectId",
+  "editId",
+  "artifactAfterHash",
+  "outputTargetId",
+  "oracleCodeHash",
+  "compileTransportNonce",
+  "runtimeSessionId",
 ] as const);
 
 function sha256(domain: string, material: unknown): string {
@@ -114,6 +173,23 @@ export function computeExpectedOutputSemanticsHash(
   ]);
 }
 
+export function computeExpectedOutputContractV2Hash(
+  value: ComputeExpectedOutputContractV2Material,
+): string {
+  return sha256(CONTRACT_V2_HASH_DOMAIN, [
+    value.schemaVersion,
+    value.derivationSchemaVersion,
+    value.semantics.semanticsHash,
+    value.binding.projectId,
+    value.binding.editId,
+    value.binding.artifactAfterHash,
+    value.binding.outputTargetId,
+    value.binding.oracleCodeHash,
+    value.binding.compileTransportNonce,
+    value.binding.runtimeSessionId,
+  ]);
+}
+
 function plainDataRecord(value: unknown): Record<string, unknown> | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -130,11 +206,18 @@ function plainDataRecord(value: unknown): Record<string, unknown> | null {
   return record;
 }
 
-function exactFields(record: Record<string, unknown>): boolean {
+function exactFieldNames(
+  record: Record<string, unknown>,
+  fields: readonly string[],
+): boolean {
   const keys = Object.keys(record).sort();
-  const expected = [...SEMANTICS_FIELDS].sort();
+  const expected = [...fields].sort();
   return keys.length === expected.length
     && keys.every((key, index) => key === expected[index]);
+}
+
+function exactFields(record: Record<string, unknown>): boolean {
+  return exactFieldNames(record, SEMANTICS_FIELDS);
 }
 
 function canonicalOutputTarget(value: unknown): value is string {
@@ -142,6 +225,38 @@ function canonicalOutputTarget(value: unknown): value is string {
     && value.length > 0
     && value.length <= MAX_OUTPUT_TARGET_CHARS
     && /^[\x21-\x7e]+$/.test(value);
+}
+
+function canonicalContractBinding(
+  input: unknown,
+): Readonly<ComputeExpectedOutputContractBindingV2> | null {
+  const record = plainDataRecord(input);
+  if (record === null || !exactFieldNames(record, CONTRACT_V2_BINDING_FIELDS)) {
+    return null;
+  }
+  if (
+    !canonicalOutputTarget(record.projectId)
+    || !canonicalOutputTarget(record.editId)
+    || typeof record.artifactAfterHash !== "string"
+    || !CANONICAL_SHA256_PATTERN.test(record.artifactAfterHash)
+    || !canonicalOutputTarget(record.outputTargetId)
+    || typeof record.oracleCodeHash !== "string"
+    || !CANONICAL_SHA256_PATTERN.test(record.oracleCodeHash)
+    || typeof record.compileTransportNonce !== "string"
+    || !COMPILE_TRANSPORT_NONCE_PATTERN.test(record.compileTransportNonce)
+    || !canonicalOutputTarget(record.runtimeSessionId)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    projectId: record.projectId,
+    editId: record.editId,
+    artifactAfterHash: record.artifactAfterHash,
+    outputTargetId: record.outputTargetId,
+    oracleCodeHash: record.oracleCodeHash,
+    compileTransportNonce: record.compileTransportNonce,
+    runtimeSessionId: record.runtimeSessionId,
+  });
 }
 
 function canonicalSafeInteger(value: unknown, allowZero: boolean): value is number {
@@ -375,5 +490,95 @@ export function validateComputeExpectedOutputSemantics(
   return {
     accepted: true,
     value: freezeSemantics({ ...material, semanticsHash: record.semanticsHash }),
+  };
+}
+
+function freezeContractV2(
+  value: ComputeExpectedOutputContractV2,
+): Readonly<ComputeExpectedOutputContractV2> {
+  return Object.freeze({
+    ...value,
+    semantics: value.semantics,
+    binding: Object.freeze({ ...value.binding }),
+  });
+}
+
+export function deriveComputeExpectedOutputContractV2(
+  semantics: unknown,
+  binding: unknown,
+): Readonly<ComputeExpectedOutputContractV2> {
+  const semanticsValidation = validateComputeExpectedOutputSemantics(semantics);
+  if (!semanticsValidation.accepted) {
+    throw new Error(
+      `invalid compute expected-output semantics: ${semanticsValidation.reason}`,
+    );
+  }
+  const canonicalBinding = canonicalContractBinding(binding);
+  if (canonicalBinding === null) {
+    throw new Error("invalid compute expected-output v2 binding");
+  }
+  if (canonicalBinding.outputTargetId !== semanticsValidation.value.outputTargetId) {
+    throw new Error("compute expected-output v2 target mismatch");
+  }
+  const material: ComputeExpectedOutputContractV2Material = {
+    schemaVersion: COMPUTE_EXPECTED_OUTPUT_CONTRACT_V2_SCHEMA_VERSION,
+    derivationSchemaVersion: COMPUTE_EXPECTED_OUTPUT_DERIVATION_SCHEMA_VERSION,
+    semantics: semanticsValidation.value,
+    binding: canonicalBinding,
+  };
+  return freezeContractV2({
+    ...material,
+    contractHash: computeExpectedOutputContractV2Hash(material),
+  });
+}
+
+export function validateComputeExpectedOutputContractV2(
+  input: unknown,
+): ComputeExpectedOutputContractV2Validation {
+  const record = plainDataRecord(input);
+  if (record === null || !exactFieldNames(record, CONTRACT_V2_FIELDS)) {
+    return { accepted: false, reason: "expected exact derived-contract fields" };
+  }
+  if (record.schemaVersion !== COMPUTE_EXPECTED_OUTPUT_CONTRACT_V2_SCHEMA_VERSION) {
+    return { accepted: false, reason: "derived contract schema version mismatch" };
+  }
+  if (
+    record.derivationSchemaVersion
+    !== COMPUTE_EXPECTED_OUTPUT_DERIVATION_SCHEMA_VERSION
+  ) {
+    return { accepted: false, reason: "derivation schema version mismatch" };
+  }
+  const semanticsValidation = validateComputeExpectedOutputSemantics(record.semantics);
+  if (!semanticsValidation.accepted) {
+    return {
+      accepted: false,
+      reason: `derived contract semantics invalid: ${semanticsValidation.reason}`,
+    };
+  }
+  const binding = canonicalContractBinding(record.binding);
+  if (binding === null) {
+    return { accepted: false, reason: "derived contract binding invalid" };
+  }
+  if (binding.outputTargetId !== semanticsValidation.value.outputTargetId) {
+    return { accepted: false, reason: "derived contract target mismatch" };
+  }
+  if (
+    typeof record.contractHash !== "string"
+    || !CANONICAL_SHA256_PATTERN.test(record.contractHash)
+  ) {
+    return { accepted: false, reason: "derived contract hash invalid" };
+  }
+  const material: ComputeExpectedOutputContractV2Material = {
+    schemaVersion: COMPUTE_EXPECTED_OUTPUT_CONTRACT_V2_SCHEMA_VERSION,
+    derivationSchemaVersion: COMPUTE_EXPECTED_OUTPUT_DERIVATION_SCHEMA_VERSION,
+    semantics: semanticsValidation.value,
+    binding,
+  };
+  if (record.contractHash !== computeExpectedOutputContractV2Hash(material)) {
+    return { accepted: false, reason: "derived contract hash mismatch" };
+  }
+  return {
+    accepted: true,
+    value: freezeContractV2({ ...material, contractHash: record.contractHash }),
   };
 }
