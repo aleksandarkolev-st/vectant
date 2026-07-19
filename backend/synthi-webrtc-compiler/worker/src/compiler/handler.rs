@@ -1942,6 +1942,7 @@ use crate::hmr::adapter_trait::{
     encode_reload_capsule_metadata_token, normalized_reload_source_edit_id,
     reload_output_oracle_contract_content_hash, AdapterReloadResult, ReloadArtifactBlob,
     ReloadCapsuleMetadata, ReloadOutputOracleProfileCommitment,
+    GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_SCHEMA_VERSION,
     RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
 };
 use crate::hmr::ai_bypass::{check_ai_bypass, AiBypassResult, SplitCache};
@@ -1971,6 +1972,9 @@ use crate::hmr::gpu_proof::{
     GpuHmrProofStageResult, GpuHmrProofState, GpuHmrProofTelemetry, GPU_HMR_PROOF_SCHEMA_VERSION,
 };
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
+use crate::infra::compute_expected_output_semantics::{
+    ComputeExpectedOutputContractBindingV2, ComputeExpectedOutputContractV2,
+};
 use crate::runtime::gpu_runtime_proof::canonical_compute_expected_output_contract_hash_for_binding;
 
 fn strip_c_like_comments(source: &str) -> String {
@@ -8287,24 +8291,115 @@ fn proof_dependency_closure_hash(proof: &serde_json::Value) -> Option<String> {
         .and_then(|value| normalized_capsule_hash(Some(value)))
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeOutputOracleProfileBindingProjection {
+    enabled: bool,
+    schema_version: String,
+    expected_sha256: String,
+    output_target_id: String,
+    probe_config_hash: String,
+}
+
+fn derive_compute_expected_output_contract_v2(
+    req: &CompileRequest,
+    artifact_blob: &ReloadArtifactBlob,
+    source_edit_id: &str,
+    runtime_session_id: &str,
+    fission_output_oracle_contract: &serde_json::Value,
+    profile_bytes: &[u8],
+) -> Result<Option<ComputeExpectedOutputContractV2>> {
+    let Some(semantics) = req.compute_expected_output_semantics.as_ref() else {
+        return Ok(None);
+    };
+    if semantics.comparison_mode() != "exact_bytes" {
+        anyhow::bail!("compute_expected_output_v2_comparison_mode_not_executable");
+    }
+    let project_id = req
+        .slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("compute_expected_output_v2_project_id_missing")?;
+    let compile_transport_nonce = req
+        .gpu_proof_transport_nonce
+        .as_deref()
+        .context("compute_expected_output_v2_compile_transport_nonce_missing")?;
+    let canonical_blob_hash = format!("sha256:{}", sha256_hex_bytes(&artifact_blob.bytes));
+    if artifact_blob.bytes.is_empty()
+        || artifact_blob.content_hash != canonical_blob_hash
+        || artifact_blob.blob_id != format!("artifact:{canonical_blob_hash}")
+    {
+        anyhow::bail!("compute_expected_output_v2_artifact_blob_identity_mismatch");
+    }
+    let profile: RuntimeOutputOracleProfileBindingProjection =
+        serde_json::from_slice(profile_bytes)
+            .context("compute_expected_output_v2_profile_binding_unreadable")?;
+    if !profile.enabled
+        || profile.schema_version != GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_SCHEMA_VERSION
+        || !canonical_output_oracle_sha256(&profile.expected_sha256)
+        || !canonical_output_oracle_sha256(&profile.probe_config_hash)
+    {
+        anyhow::bail!("compute_expected_output_v2_profile_binding_invalid");
+    }
+    let contract = fission_output_oracle_contract
+        .as_object()
+        .context("compute_expected_output_v2_fission_contract_missing")?;
+    let contract_expected_sha256 = contract
+        .get("expectedSha256")
+        .and_then(serde_json::Value::as_str)
+        .context("compute_expected_output_v2_fission_expected_hash_missing")?;
+    let contract_output_target_id = contract
+        .get("outputTargetId")
+        .and_then(serde_json::Value::as_str)
+        .context("compute_expected_output_v2_fission_output_target_missing")?;
+    let contract_probe_config_hash = contract
+        .get("probeConfigHash")
+        .and_then(serde_json::Value::as_str)
+        .context("compute_expected_output_v2_fission_oracle_code_hash_missing")?;
+    if contract_expected_sha256 != profile.expected_sha256
+        || contract_expected_sha256 != semantics.expected_evidence_hash()
+        || contract_output_target_id != profile.output_target_id
+        || contract_output_target_id != semantics.output_target_id()
+        || contract_probe_config_hash != profile.probe_config_hash
+    {
+        anyhow::bail!("compute_expected_output_v2_semantic_binding_mismatch");
+    }
+    semantics
+        .derive_contract_v2(ComputeExpectedOutputContractBindingV2 {
+            project_id: project_id.to_string(),
+            edit_id: source_edit_id.to_string(),
+            artifact_after_hash: canonical_blob_hash,
+            output_target_id: contract_output_target_id.to_string(),
+            oracle_code_hash: contract_probe_config_hash.to_string(),
+            compile_transport_nonce: compile_transport_nonce.to_string(),
+            runtime_session_id: runtime_session_id.to_string(),
+        })
+        .map(Some)
+        .map_err(|error| anyhow::anyhow!("compute_expected_output_v2_derivation_failed: {error}"))
+}
+
 async fn reload_capsule_metadata_from_proof_artifact(
+    req: &CompileRequest,
     proof_artifact: &DeviceHmrProofArtifactReceipt,
-    outcome: &DeviceCompileOutcome,
-) -> ReloadCapsuleMetadata {
+    artifact_blob: &ReloadArtifactBlob,
+) -> Result<ReloadCapsuleMetadata> {
     let profile_path = configured_gpu_hmr_runtime_output_oracle_profile_path();
     reload_capsule_metadata_from_proof_artifact_with_profile_path(
+        req,
         proof_artifact,
-        outcome,
+        artifact_blob,
         &profile_path,
     )
     .await
 }
 
 async fn reload_capsule_metadata_from_proof_artifact_with_profile_path(
+    req: &CompileRequest,
     proof_artifact: &DeviceHmrProofArtifactReceipt,
-    _outcome: &DeviceCompileOutcome,
+    artifact_blob: &ReloadArtifactBlob,
     profile_path: &Path,
-) -> ReloadCapsuleMetadata {
+) -> Result<ReloadCapsuleMetadata> {
     let proof = read_proof_artifact(&proof_artifact.path)
         .await
         .ok()
@@ -8315,20 +8410,63 @@ async fn reload_capsule_metadata_from_proof_artifact_with_profile_path(
     let fission_output_oracle_contract = proof.as_ref().and_then(|proof| {
         proof_fission_output_oracle_contract(proof, proof_artifact.fission_registry.as_ref())
     });
-    let output_oracle_profile_commitment =
-        match (proof.as_ref(), fission_output_oracle_contract.as_ref()) {
-            (Some(proof), Some(contract)) => {
-                tokio::fs::read(profile_path).await.ok().and_then(|bytes| {
-                    proof_output_oracle_profile_commitment(
-                        proof,
-                        contract,
-                        &bytes,
-                        proof_artifact.fission_registry.as_ref(),
-                    )
-                })
-            }
-            _ => None,
-        };
+    let profile_bytes = match (proof.as_ref(), fission_output_oracle_contract.as_ref()) {
+        (Some(_), Some(_)) if req.compute_expected_output_semantics.is_some() => {
+            Some(tokio::fs::read(profile_path).await.with_context(|| {
+                format!(
+                    "compute_expected_output_v2_profile_bytes_unreadable: {}",
+                    profile_path.display()
+                )
+            })?)
+        }
+        (Some(_), Some(_)) => tokio::fs::read(profile_path).await.ok(),
+        _ => None,
+    };
+    let output_oracle_profile_commitment = match (
+        proof.as_ref(),
+        fission_output_oracle_contract.as_ref(),
+        profile_bytes.as_deref(),
+    ) {
+        (Some(proof), Some(contract), Some(bytes)) => proof_output_oracle_profile_commitment(
+            proof,
+            contract,
+            bytes,
+            proof_artifact.fission_registry.as_ref(),
+        ),
+        _ => None,
+    };
+    let compute_expected_output_contract_v2 = if req.compute_expected_output_semantics.is_some() {
+        let contract = fission_output_oracle_contract
+            .as_ref()
+            .context("compute_expected_output_v2_verified_fission_contract_missing")?;
+        let bytes = profile_bytes
+            .as_deref()
+            .context("compute_expected_output_v2_profile_bytes_missing")?;
+        let commitment = output_oracle_profile_commitment
+            .as_ref()
+            .context("compute_expected_output_v2_profile_commitment_missing")?;
+        if req.slug.as_deref().map(str::trim)
+            != Some(proof_artifact.artifact.workspace_slug.as_str())
+            || commitment.candidate_artifact_sha256 != artifact_blob.content_hash
+            || commitment.edit_id != proof_artifact.artifact.source_edit_id
+            || commitment.profile_bytes_sha256 != format!("sha256:{}", sha256_hex_bytes(bytes))
+            || commitment.fission_output_oracle_contract_sha256
+                != reload_output_oracle_contract_content_hash(contract)
+                    .context("compute_expected_output_v2_fission_contract_hash_missing")?
+        {
+            anyhow::bail!("compute_expected_output_v2_proof_material_mismatch");
+        }
+        derive_compute_expected_output_contract_v2(
+            req,
+            artifact_blob,
+            &proof_artifact.artifact.source_edit_id,
+            &proof_artifact.artifact.runtime_session_id,
+            contract,
+            bytes,
+        )?
+    } else {
+        None
+    };
     let mut metadata = ReloadCapsuleMetadata {
         fission_island_id: proof.as_ref().and_then(proof_fission_island_id),
         fission_verifier_evidence_id: proof.as_ref().and_then(proof_fission_verifier_evidence_id),
@@ -8343,7 +8481,7 @@ async fn reload_capsule_metadata_from_proof_artifact_with_profile_path(
             .as_ref()
             .and_then(proof_fission_selection_decision_hash),
         fission_output_oracle_contract,
-        compute_expected_output_contract_v2: None,
+        compute_expected_output_contract_v2,
         output_oracle_profile_commitment,
         output_oracle_proof_context: None,
         abi_membrane_hash: proof.as_ref().and_then(proof_abi_membrane_hash),
@@ -8358,11 +8496,14 @@ async fn reload_capsule_metadata_from_proof_artifact_with_profile_path(
             &proof_artifact.artifact.runtime_session_id,
         )
     {
+        if req.compute_expected_output_semantics.is_some() {
+            anyhow::bail!("compute_expected_output_v2_capsule_proof_context_binding_failed");
+        }
         metadata.output_oracle_profile_commitment = None;
         metadata.output_oracle_proof_context = None;
         metadata.fission_output_oracle_contract = None;
     }
-    metadata
+    Ok(metadata)
 }
 
 async fn enforce_device_hmr_publication_gates(
@@ -15051,9 +15192,16 @@ async fn handle_compile_request_inner(
             device_runtime_resume_deferred,
         )
         .await?;
-        device_reload_artifact_blob = Some(reload_artifact_blob_from_outcome(out).await?);
-        device_reload_capsule_metadata =
-            Some(reload_capsule_metadata_from_proof_artifact(&proof_artifact, out).await);
+        let reload_artifact_blob = reload_artifact_blob_from_outcome(out).await?;
+        device_reload_capsule_metadata = Some(
+            reload_capsule_metadata_from_proof_artifact(
+                &req,
+                &proof_artifact,
+                &reload_artifact_blob,
+            )
+            .await?,
+        );
+        device_reload_artifact_blob = Some(reload_artifact_blob);
         device_reload_source_edit_id = Some(source_edit_id);
         device_reload_proof_runtime_session_id =
             Some(proof_artifact.artifact.runtime_session_id.clone());
@@ -16250,6 +16398,144 @@ mod gpu_host_contract_tests {
         });
         rehash_compute_expected_output_contract(&mut contract);
         contract
+    }
+
+    fn exact_compute_expected_output_semantics(
+    ) -> crate::infra::compute_expected_output_semantics::ComputeExpectedOutputSemantics {
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": crate::infra::compute_expected_output_semantics::COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "comparisonMode": "exact_bytes",
+            "outputTargetId": "output:tensor:0",
+            "byteOffset": 64,
+            "byteLength": 16,
+            "dtype": "u32",
+            "shape": [2, 2],
+            "elementCount": 4,
+            "byteOrder": "little_endian",
+            "toleranceDecimal": "0",
+            "expectedValuesDecimal": null,
+            "expectedValuesHash": null,
+            "expectedRawHash": format!("sha256:{}", "a".repeat(64)),
+            "semanticsHash": "sha256:cd7074de01fc4bc0fb0eab922f457e4499c886128cadff30232b7e5f6df3bdde",
+        }))
+        .expect("canonical compute expected-output semantics")
+    }
+
+    #[test]
+    fn derived_compute_expected_output_contract_v2_binds_runtime_material() {
+        let mut request = compile_request_with_file_refs(Vec::new());
+        request.slug = Some("workspace:generic".to_string());
+        request.gpu_proof_transport_nonce =
+            Some("gpu-proof-transport-request:0123456789abcdef0123456789abcdef".to_string());
+        request.compute_expected_output_semantics = Some(exact_compute_expected_output_semantics());
+        let artifact_bytes = b"content-addressed-device-artifact".to_vec();
+        let artifact_hash = format!("sha256:{}", sha256_hex_bytes(&artifact_bytes));
+        let artifact_blob = ReloadArtifactBlob {
+            blob_id: format!("artifact:{artifact_hash}"),
+            content_hash: artifact_hash.clone(),
+            bytes: artifact_bytes,
+        };
+        let probe_config_hash = format!("sha256:{}", "f".repeat(64));
+        let fission_contract = serde_json::json!({
+            "kind": "compute_readback",
+            "expectedSha256": format!("sha256:{}", "a".repeat(64)),
+            "outputTargetId": "output:tensor:0",
+            "probeConfigHash": probe_config_hash,
+        });
+        let profile_bytes = serde_json::to_vec(&serde_json::json!({
+            "enabled": true,
+            "schemaVersion": GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_SCHEMA_VERSION,
+            "expectedSha256": format!("sha256:{}", "a".repeat(64)),
+            "outputTargetId": "output:tensor:0",
+            "probeConfigHash": format!("sha256:{}", "f".repeat(64)),
+        }))
+        .unwrap();
+
+        let derived = derive_compute_expected_output_contract_v2(
+            &request,
+            &artifact_blob,
+            "source-edit:generic",
+            "runtime-session:generic",
+            &fission_contract,
+            &profile_bytes,
+        )
+        .unwrap()
+        .expect("derived expected-output contract");
+        assert_eq!(derived.binding().project_id, "workspace:generic");
+        assert_eq!(derived.binding().artifact_after_hash, artifact_hash);
+        assert_eq!(derived.binding().edit_id, "source-edit:generic");
+        assert_eq!(
+            derived.binding().runtime_session_id,
+            "runtime-session:generic"
+        );
+        assert_eq!(derived.binding().output_target_id, "output:tensor:0");
+        assert_eq!(
+            derived.binding().oracle_code_hash,
+            format!("sha256:{}", "f".repeat(64))
+        );
+
+        let mut substituted_profile: serde_json::Value =
+            serde_json::from_slice(&profile_bytes).unwrap();
+        substituted_profile["expectedSha256"] =
+            serde_json::json!(format!("sha256:{}", "b".repeat(64)));
+        let error = derive_compute_expected_output_contract_v2(
+            &request,
+            &artifact_blob,
+            "source-edit:generic",
+            "runtime-session:generic",
+            &fission_contract,
+            &serde_json::to_vec(&substituted_profile).unwrap(),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("compute_expected_output_v2_semantic_binding_mismatch"));
+
+        let mut forged_blob = artifact_blob;
+        forged_blob.content_hash = format!("sha256:{}", "c".repeat(64));
+        let error = derive_compute_expected_output_contract_v2(
+            &request,
+            &forged_blob,
+            "source-edit:generic",
+            "runtime-session:generic",
+            &fission_contract,
+            &profile_bytes,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("compute_expected_output_v2_artifact_blob_identity_mismatch"));
+
+        let numeric_semantics = serde_json::from_value(serde_json::json!({
+            "schemaVersion": crate::infra::compute_expected_output_semantics::COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "comparisonMode": "numeric_tolerance",
+            "outputTargetId": "output:activation:final",
+            "byteOffset": 0,
+            "byteLength": 16,
+            "dtype": "f32",
+            "shape": [4],
+            "elementCount": 4,
+            "byteOrder": "little_endian",
+            "toleranceDecimal": "0.001",
+            "expectedValuesDecimal": ["0.125", "-3.5", "12", "0"],
+            "expectedValuesHash": "sha256:e793fbfcf7ce664e5632eaeee3e79cfd1fde4ee4a9db0ff6556647076f036450",
+            "expectedRawHash": null,
+            "semanticsHash": "sha256:c35711fc5f51ee39096b85a00b41df7a83d07dac706fc132dfe93719fba58c32",
+        }))
+        .unwrap();
+        request.compute_expected_output_semantics = Some(numeric_semantics);
+        let error = derive_compute_expected_output_contract_v2(
+            &request,
+            &forged_blob,
+            "source-edit:generic",
+            "runtime-session:generic",
+            &fission_contract,
+            &profile_bytes,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("compute_expected_output_v2_comparison_mode_not_executable"));
     }
 
     fn rehash_compute_expected_output_contract(contract: &mut serde_json::Value) {
@@ -18422,8 +18708,12 @@ __constant__ int scale;
                 .map(Vec::len),
             Some(0)
         );
+        let request = compile_request_with_file_refs(Vec::new());
+        let artifact_blob = reload_artifact_blob_from_outcome(&outcome).await.unwrap();
         let capsule_metadata =
-            reload_capsule_metadata_from_proof_artifact(&written, &outcome).await;
+            reload_capsule_metadata_from_proof_artifact(&request, &written, &artifact_blob)
+                .await
+                .unwrap();
         assert_eq!(capsule_metadata.fission_island_id, None);
         assert!(capsule_metadata
             .abi_membrane_hash
@@ -18960,12 +19250,16 @@ __constant__ int scale;
         tokio::fs::write(&profile_path, profile_bytes)
             .await
             .unwrap();
+        let request = compile_request_with_file_refs(Vec::new());
+        let artifact_blob = reload_artifact_blob_from_outcome(&outcome).await.unwrap();
         let capsule_metadata = reload_capsule_metadata_from_proof_artifact_with_profile_path(
+            &request,
             &written,
-            &outcome,
+            &artifact_blob,
             &profile_path,
         )
-        .await;
+        .await
+        .unwrap();
         assert!(capsule_metadata.fission_output_oracle_contract.is_none());
         assert!(capsule_metadata.output_oracle_profile_commitment.is_none());
         let proof_value = serde_json::to_value(&artifact).unwrap();
