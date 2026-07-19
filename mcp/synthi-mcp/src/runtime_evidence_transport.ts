@@ -289,9 +289,13 @@ function dataChannelText(data: unknown): string | null {
 }
 
 export class RuntimeEvidenceTransportKeyPin {
+  private readonly listeners = new Set<
+    (snapshot: RuntimeEvidenceTransportKeyPinSnapshot) => void
+  >();
   private key: RuntimeEvidenceTransportVerificationKey | null = null;
   private failureReason: string | null = null;
   private disposed = false;
+  private revision = 0;
   private boundChannel: RTCDataChannel | null = null;
   private unbind: (() => void) | null = null;
 
@@ -300,12 +304,14 @@ export class RuntimeEvidenceTransportKeyPin {
     if (
       channel.label !== RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL
       || this.boundChannel !== null
+      || channel.readyState === "closing"
+      || channel.readyState === "closed"
     ) {
       this.fail("runtime_evidence_transport_authenticated_channel_invalid");
       return;
     }
     this.boundChannel = channel;
-    const listener = (event: Event): void => {
+    const messageListener = (event: Event): void => {
       if (this.disposed || this.failureReason !== null) return;
       const text = dataChannelText((event as unknown as { data: unknown }).data);
       if (text === null) {
@@ -328,10 +334,31 @@ export class RuntimeEvidenceTransportKeyPin {
         this.fail("runtime_evidence_transport_key_replaced_in_session");
         return;
       }
+      if (this.key?.keyAnnouncementId === next.keyAnnouncementId) return;
       this.key = next;
+      this.revision += 1;
+      this.notifyChange();
     };
-    channel.addEventListener("message", listener);
-    this.unbind = (): void => channel.removeEventListener("message", listener);
+    const closeListener = (): void => {
+      if (!this.disposed) {
+        this.fail("runtime_evidence_transport_authenticated_channel_closed");
+      }
+    };
+    channel.addEventListener("message", messageListener);
+    channel.addEventListener("close", closeListener);
+    this.unbind = (): void => {
+      channel.removeEventListener("message", messageListener);
+      channel.removeEventListener("close", closeListener);
+    };
+  }
+
+  onChange(
+    listener: (snapshot: RuntimeEvidenceTransportKeyPinSnapshot) => void,
+  ): () => void {
+    if (!this.disposed) this.listeners.add(listener);
+    this.notifyListener(listener, this.snapshot());
+    if (this.disposed) return () => {};
+    return () => this.listeners.delete(listener);
   }
 
   snapshot(): RuntimeEvidenceTransportKeyPinSnapshot {
@@ -349,17 +376,44 @@ export class RuntimeEvidenceTransportKeyPin {
   }
 
   dispose(): void {
+    if (this.disposed) return;
     this.unbind?.();
     this.unbind = null;
     this.boundChannel = null;
     this.key = null;
     this.failureReason = null;
     this.disposed = true;
+    this.revision += 1;
+    this.notifyChange();
+    this.listeners.clear();
   }
 
   private fail(reason: string): void {
+    if (this.failureReason !== null || this.disposed) return;
     this.key = null;
-    this.failureReason ??= reason;
+    this.failureReason = reason;
+    this.revision += 1;
+    this.notifyChange();
+  }
+
+  private notifyListener(
+    listener: (snapshot: RuntimeEvidenceTransportKeyPinSnapshot) => void,
+    snapshot: RuntimeEvidenceTransportKeyPinSnapshot,
+  ): void {
+    try {
+      listener(snapshot);
+    } catch {
+      // One observer must not prevent other session safety observers from invalidating state.
+    }
+  }
+
+  private notifyChange(): void {
+    const notificationRevision = this.revision;
+    const snapshot = this.snapshot();
+    for (const listener of [...this.listeners]) {
+      if (this.revision !== notificationRevision) return;
+      this.notifyListener(listener, snapshot);
+    }
   }
 }
 

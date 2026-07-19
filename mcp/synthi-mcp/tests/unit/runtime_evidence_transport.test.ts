@@ -24,7 +24,10 @@ const KEY_ANNOUNCEMENT_ID_PREFIX =
 const WORKER_INSTANCE_ID_PREFIX = "gpu-hmr-worker-instance:sha256:";
 
 class MockDataChannel extends EventTarget {
-  constructor(readonly label: string = RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL) {
+  constructor(
+    readonly label: string = RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
+    readonly readyState: "connecting" | "open" | "closing" | "closed" = "open",
+  ) {
     super();
   }
 
@@ -32,6 +35,10 @@ class MockDataChannel extends EventTarget {
     const event = new Event("message");
     (event as unknown as { data: unknown }).data = data;
     this.dispatchEvent(event);
+  }
+
+  closeRemotely(): void {
+    this.dispatchEvent(new Event("close"));
   }
 }
 
@@ -241,6 +248,19 @@ describe("RuntimeEvidenceTransportKeyPin", () => {
     expect(parseRuntimeEvidenceTransportVerificationKey(announcement)).toEqual(announcement);
   });
 
+  it("allows nonblocking binding while the authenticated channel is connecting", () => {
+    const channel = new MockDataChannel(
+      RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
+      "connecting",
+    );
+    const pin = new RuntimeEvidenceTransportKeyPin();
+    pin.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+    expect(pin.snapshot().status).toBe("pending");
+
+    channel.emit(JSON.stringify(keyAnnouncement(20)));
+    expect(pin.snapshot().status).toBe("pinned");
+  });
+
   it("fails closed on malformed announcements and never recovers within the session", () => {
     const channel = new MockDataChannel();
     const pin = new RuntimeEvidenceTransportKeyPin();
@@ -260,7 +280,10 @@ describe("RuntimeEvidenceTransportKeyPin", () => {
   it("invalidates the pin when the worker attempts in-session key replacement", () => {
     const channel = new MockDataChannel();
     const pin = new RuntimeEvidenceTransportKeyPin();
+    const statuses: string[] = [];
+    pin.onChange((snapshot) => statuses.push(snapshot.status));
     pin.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+    channel.emit(JSON.stringify(keyAnnouncement(3)));
     channel.emit(JSON.stringify(keyAnnouncement(3)));
     channel.emit(JSON.stringify(keyAnnouncement(4)));
 
@@ -269,6 +292,100 @@ describe("RuntimeEvidenceTransportKeyPin", () => {
       key: null,
       failureReason: "runtime_evidence_transport_key_replaced_in_session",
     });
+    expect(statuses).toEqual(["pending", "pinned", "failed"]);
+  });
+
+  it("fails and notifies when the authenticated evidence channel closes", () => {
+    const channel = new MockDataChannel();
+    const pin = new RuntimeEvidenceTransportKeyPin();
+    const snapshots: Array<{ status: string; reason: string | null }> = [];
+    pin.onChange(() => {
+      throw new Error("observer failure must be isolated");
+    });
+    pin.onChange((snapshot) => snapshots.push({
+      status: snapshot.status,
+      reason: snapshot.failureReason,
+    }));
+    pin.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+    channel.emit(JSON.stringify(keyAnnouncement(17)));
+    channel.closeRemotely();
+
+    expect(pin.snapshot()).toMatchObject({
+      status: "failed",
+      key: null,
+      failureReason: "runtime_evidence_transport_authenticated_channel_closed",
+    });
+    expect(snapshots).toEqual([
+      { status: "pending", reason: null },
+      { status: "pinned", reason: null },
+      {
+        status: "failed",
+        reason: "runtime_evidence_transport_authenticated_channel_closed",
+      },
+    ]);
+  });
+
+  it("does not deliver stale pinned state after a reentrant terminal transition", () => {
+    const channel = new MockDataChannel();
+    const pin = new RuntimeEvidenceTransportKeyPin();
+    const laterObserverStatuses: string[] = [];
+    pin.onChange((snapshot) => {
+      if (snapshot.status === "pinned") pin.dispose();
+    });
+    pin.onChange((snapshot) => laterObserverStatuses.push(snapshot.status));
+    pin.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+    channel.emit(JSON.stringify(keyAnnouncement(18)));
+
+    expect(pin.snapshot().status).toBe("disposed");
+    expect(laterObserverStatuses).toEqual(["pending", "disposed"]);
+  });
+
+  it("replays every terminal or usable state to late session observers", () => {
+    const pinnedChannel = new MockDataChannel();
+    const pinned = new RuntimeEvidenceTransportKeyPin();
+    pinned.bindAuthenticatedPeerDataChannel(pinnedChannel as unknown as RTCDataChannel);
+    pinnedChannel.emit(JSON.stringify(keyAnnouncement(19)));
+    const pinnedStatuses: string[] = [];
+    pinned.onChange((snapshot) => pinnedStatuses.push(snapshot.status));
+
+    const failedChannel = new MockDataChannel();
+    const failed = new RuntimeEvidenceTransportKeyPin();
+    failed.bindAuthenticatedPeerDataChannel(failedChannel as unknown as RTCDataChannel);
+    failedChannel.emit("not-json");
+    const failedSnapshots: Array<{ status: string; reason: string | null }> = [];
+    failed.onChange((snapshot) => failedSnapshots.push({
+      status: snapshot.status,
+      reason: snapshot.failureReason,
+    }));
+
+    const disposed = new RuntimeEvidenceTransportKeyPin();
+    disposed.dispose();
+    const disposedStatuses: string[] = [];
+    disposed.onChange((snapshot) => disposedStatuses.push(snapshot.status));
+
+    expect(pinnedStatuses).toEqual(["pinned"]);
+    expect(failedSnapshots).toEqual([{
+      status: "failed",
+      reason: "runtime_evidence_transport_key_announcement_json_invalid",
+    }]);
+    expect(disposedStatuses).toEqual(["disposed"]);
+  });
+
+  it("fails immediately when the authenticated channel is already closing or closed", () => {
+    for (const readyState of ["closing", "closed"] as const) {
+      const pin = new RuntimeEvidenceTransportKeyPin();
+      pin.bindAuthenticatedPeerDataChannel(
+        new MockDataChannel(
+          RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
+          readyState,
+        ) as unknown as RTCDataChannel,
+      );
+      expect(pin.snapshot()).toMatchObject({
+        status: "failed",
+        key: null,
+        failureReason: "runtime_evidence_transport_authenticated_channel_invalid",
+      });
+    }
   });
 
   it("rejects the wrong channel provenance and clears key material on dispose", () => {
@@ -283,8 +400,11 @@ describe("RuntimeEvidenceTransportKeyPin", () => {
     pin.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
     channel.emit(JSON.stringify(keyAnnouncement(6)));
     expect(pin.snapshot().status).toBe("pinned");
+    const statuses: string[] = [];
+    pin.onChange((snapshot) => statuses.push(snapshot.status));
     pin.dispose();
     expect(pin.snapshot()).toEqual({ status: "disposed", key: null, failureReason: null });
+    expect(statuses).toEqual(["pinned", "disposed"]);
   });
 });
 
