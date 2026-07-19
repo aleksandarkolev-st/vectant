@@ -4,7 +4,7 @@ import {
   sign,
   type KeyObject,
 } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RTCDataChannel } from "werift";
 import {
   RUNTIME_EVIDENCE_TRANSPORT_ALGORITHM,
@@ -246,6 +246,143 @@ describe("RuntimeEvidenceTransportKeyPin", () => {
     expect(snapshot.key).toEqual(announcement);
     expect(Object.isFrozen(snapshot.key)).toBe(true);
     expect(parseRuntimeEvidenceTransportVerificationKey(announcement)).toEqual(announcement);
+  });
+
+  describe("waitUntilPinned", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    });
+
+    it("resolves a pending wait once the key is pinned", async () => {
+      vi.useFakeTimers();
+      const channel = new MockDataChannel();
+      const pin = new RuntimeEvidenceTransportKeyPin();
+      pin.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+      const wait = pin.waitUntilPinned(1_000);
+      expect(vi.getTimerCount()).toBe(1);
+
+      const announcement = keyAnnouncement(21);
+      channel.emit(JSON.stringify(announcement));
+
+      const snapshot = await wait;
+      expect(snapshot).toEqual({
+        status: "pinned",
+        key: announcement,
+        failureReason: null,
+      });
+      expect(Object.isFrozen(snapshot)).toBe(true);
+      expect(Object.isFrozen(snapshot.key)).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("resolves an already pinned snapshot without installing a timer", async () => {
+      vi.useFakeTimers();
+      const pin = pinAnnouncement(keyAnnouncement(22));
+
+      const snapshot = await pin.waitUntilPinned(1_000);
+
+      expect(snapshot.status).toBe("pinned");
+      expect(Object.isFrozen(snapshot)).toBe(true);
+      expect(Object.isFrozen(snapshot.key)).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("rejects a pending wait with the pin failure reason", async () => {
+      vi.useFakeTimers();
+      const channel = new MockDataChannel();
+      const pin = new RuntimeEvidenceTransportKeyPin();
+      pin.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+      const wait = pin.waitUntilPinned(1_000);
+      const rejection = expect(wait).rejects.toThrow(
+        "runtime_evidence_transport_key_announcement_json_invalid",
+      );
+
+      channel.emit("not-json");
+
+      await rejection;
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("rejects when disposal occurs before or prior to the wait", async () => {
+      vi.useFakeTimers();
+      const pendingPin = new RuntimeEvidenceTransportKeyPin();
+      const pendingWait = pendingPin.waitUntilPinned(1_000);
+      const pendingRejection = expect(pendingWait).rejects.toThrow(
+        "runtime_evidence_transport_key_pin_disposed",
+      );
+
+      pendingPin.dispose();
+
+      await pendingRejection;
+      expect(vi.getTimerCount()).toBe(0);
+
+      const disposedPin = new RuntimeEvidenceTransportKeyPin();
+      disposedPin.dispose();
+      await expect(disposedPin.waitUntilPinned(1_000)).rejects.toThrow(
+        "runtime_evidence_transport_key_pin_disposed",
+      );
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("rejects invalid timeout values without subscribing or scheduling", async () => {
+      vi.useFakeTimers();
+      const pin = new RuntimeEvidenceTransportKeyPin();
+
+      for (const timeoutMs of [0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+        await expect(pin.waitUntilPinned(timeoutMs)).rejects.toThrow(
+          "runtime_evidence_transport_key_pin_wait_timeout_invalid",
+        );
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("rejects when the bounded wait times out", async () => {
+      vi.useFakeTimers();
+      const pin = new RuntimeEvidenceTransportKeyPin();
+      const wait = pin.waitUntilPinned(50);
+      const rejection = expect(wait).rejects.toThrow(
+        "runtime_evidence_transport_key_pin_wait_timeout",
+      );
+      expect(vi.getTimerCount()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(50);
+
+      await rejection;
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("unsubscribes its listener after the first settlement", async () => {
+      vi.useFakeTimers();
+      const channel = new MockDataChannel();
+      const pin = new RuntimeEvidenceTransportKeyPin();
+      pin.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+      const observedStatuses: string[] = [];
+      const unsubscribeSpy = vi.fn();
+      const onChange = pin.onChange.bind(pin);
+      vi.spyOn(pin, "onChange").mockImplementation((listener) => {
+        const unsubscribe = onChange((snapshot) => {
+          observedStatuses.push(snapshot.status);
+          listener(snapshot);
+        });
+        return () => {
+          unsubscribeSpy();
+          unsubscribe();
+        };
+      });
+      const resolutionSpy = vi.fn();
+      const wait = pin.waitUntilPinned(100).then(resolutionSpy);
+
+      channel.emit(JSON.stringify(keyAnnouncement(23)));
+      await wait;
+      channel.emit(JSON.stringify(keyAnnouncement(24)));
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(observedStatuses).toEqual(["pending", "pinned"]);
+      expect(unsubscribeSpy).toHaveBeenCalledTimes(1);
+      expect(resolutionSpy).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 
   it("allows nonblocking binding while the authenticated channel is connecting", () => {

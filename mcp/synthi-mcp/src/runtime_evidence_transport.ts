@@ -23,6 +23,7 @@ const OBSERVATION_CONTEXT_DOMAIN =
 const SUBJECT_IDENTITY_DOMAIN =
   "synthi.gpu_hmr.runtime_evidence_transport_subject_identity.v1";
 const SIGNATURE_PREFIX = "ed25519:";
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const MAX_RECEIPT_AGE_NS = 300_000_000_000n;
 const MAX_FUTURE_SKEW_NS = 30_000_000_000n;
 const U64_MAX = 18_446_744_073_709_551_615n;
@@ -359,6 +360,80 @@ export class RuntimeEvidenceTransportKeyPin {
     this.notifyListener(listener, this.snapshot());
     if (this.disposed) return () => {};
     return () => this.listeners.delete(listener);
+  }
+
+  waitUntilPinned(timeoutMs: number): Promise<RuntimeEvidenceTransportKeyPinSnapshot> {
+    if (
+      !Number.isFinite(timeoutMs)
+      || !Number.isSafeInteger(timeoutMs)
+      || timeoutMs <= 0
+      || timeoutMs > MAX_TIMER_DELAY_MS
+    ) {
+      return Promise.reject(
+        new Error("runtime_evidence_transport_key_pin_wait_timeout_invalid"),
+      );
+    }
+
+    const current = this.snapshot();
+    if (current.status === "pinned") return Promise.resolve(current);
+    if (current.status === "failed") {
+      return Promise.reject(new Error(
+        current.failureReason ?? "runtime_evidence_transport_key_pin_failed",
+      ));
+    }
+    if (current.status === "disposed") {
+      return Promise.reject(new Error("runtime_evidence_transport_key_pin_disposed"));
+    }
+
+    return new Promise<RuntimeEvidenceTransportKeyPinSnapshot>((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let unsubscribe: (() => void) | null = null;
+
+      const cleanup = (): void => {
+        if (timer !== null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        if (unsubscribe !== null) {
+          const stopListening = unsubscribe;
+          unsubscribe = null;
+          stopListening();
+        }
+      };
+      const settle = (completion: () => void): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        completion();
+      };
+      const observe = (snapshot: RuntimeEvidenceTransportKeyPinSnapshot): void => {
+        if (snapshot.status === "pending") return;
+        if (snapshot.status === "pinned") {
+          settle(() => resolve(snapshot));
+          return;
+        }
+        if (snapshot.status === "failed") {
+          settle(() => reject(new Error(
+            snapshot.failureReason ?? "runtime_evidence_transport_key_pin_failed",
+          )));
+          return;
+        }
+        settle(() => reject(new Error("runtime_evidence_transport_key_pin_disposed")));
+      };
+
+      unsubscribe = this.onChange(observe);
+      if (settled) {
+        cleanup();
+        return;
+      }
+      timer = setTimeout(() => {
+        settle(() => reject(
+          new Error("runtime_evidence_transport_key_pin_wait_timeout"),
+        ));
+      }, timeoutMs);
+      timer.unref?.();
+    });
   }
 
   snapshot(): RuntimeEvidenceTransportKeyPinSnapshot {
