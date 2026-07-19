@@ -707,6 +707,7 @@ class SessionManager {
 
     const channels = new SessionChannels(terminalDC, buildLogDC, compileDC, {
       keyPin: peer.runtimeEvidenceTransportKeyPin,
+      transportSessionId: opts.sessionId,
     });
 
     const attached: AttachedSession = {

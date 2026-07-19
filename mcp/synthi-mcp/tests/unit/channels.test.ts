@@ -1,25 +1,101 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionChannels } from "../../src/channels.js";
-import { RuntimeEvidenceTransportKeyPin } from "../../src/runtime_evidence_transport.js";
+import {
+  RUNTIME_EVIDENCE_TRANSPORT_ALGORITHM,
+  RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
+  RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA,
+  RuntimeEvidenceTransportKeyPin,
+} from "../../src/runtime_evidence_transport.js";
 import type { RTCDataChannel } from "werift";
 
-function makeChannels(sent: string[]): SessionChannels {
-  const buildLogDC = {
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-  } as unknown as RTCDataChannel;
+const TRANSPORT_SESSION_ID = "opaque-compile-session:unit-01";
+
+class MockEvidenceDataChannel extends EventTarget {
+  readonly label = RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL;
+  readonly readyState = "open" as const;
+
+  emit(data: unknown): void {
+    const event = new Event("message");
+    (event as unknown as { data: unknown }).data = data;
+    this.dispatchEvent(event);
+  }
+}
+
+class MockBuildLogDataChannel extends EventTarget {
+  emit(message: Record<string, unknown>): void {
+    const event = new Event("message");
+    (event as unknown as { data: unknown }).data = JSON.stringify(message);
+    this.dispatchEvent(event);
+  }
+}
+
+function sha256Hex(value: Uint8Array | string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function pinnedKeyPin(): RuntimeEvidenceTransportKeyPin {
+  const publicKeyBytes = Buffer.alloc(32, 7);
+  const publicKey = publicKeyBytes.toString("base64url");
+  const keyId = `gpu-hmr-runtime-evidence-transport-key:sha256:${sha256Hex(publicKeyBytes)}`;
+  const workerInstanceId = `gpu-hmr-worker-instance:sha256:${"8".repeat(64)}`;
+  const workerProcessId = "9123";
+  const producer = "synthi-webrtc-compiler-worker";
+  const announcementMaterial = JSON.stringify([
+    RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA,
+    RUNTIME_EVIDENCE_TRANSPORT_ALGORITHM,
+    keyId,
+    producer,
+    workerInstanceId,
+    workerProcessId,
+    publicKey,
+  ]);
+  const announcement = {
+    schemaVersion: RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA,
+    algorithm: RUNTIME_EVIDENCE_TRANSPORT_ALGORITHM,
+    keyId,
+    producer,
+    workerInstanceId,
+    workerProcessId,
+    publicKey,
+    keyAnnouncementId:
+      `gpu-hmr-runtime-evidence-transport-key-announcement:sha256:${sha256Hex(announcementMaterial)}`,
+  };
+  const channel = new MockEvidenceDataChannel();
+  const pin = new RuntimeEvidenceTransportKeyPin();
+  pin.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+  channel.emit(JSON.stringify(announcement));
+  expect(pin.snapshot().status).toBe("pinned");
+  return pin;
+}
+
+function decodeCompilePayload(sent: string[]): Record<string, unknown> {
+  const first = JSON.parse(sent[0]!) as Record<string, unknown>;
+  if (first.type !== "compile-request-chunk") return first;
+  const encoded = sent
+    .map((frame) => JSON.parse(frame) as Record<string, unknown>)
+    .sort((left, right) => Number(left.seq) - Number(right.seq))
+    .map((frame) => String(frame.data))
+    .join("");
+  return JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as Record<string, unknown>;
+}
+
+function makeChannels(
+  sent: string[],
+  send: (frame: string) => void = (frame) => sent.push(frame),
+  buildLogDC: MockBuildLogDataChannel = new MockBuildLogDataChannel(),
+): SessionChannels {
   const terminalDC = {
     readyState: "open",
     send: () => undefined,
   } as unknown as RTCDataChannel;
   const compileDC = {
     readyState: "open",
-    send: (frame: string) => {
-      sent.push(frame);
-    },
+    send,
   } as unknown as RTCDataChannel;
-  return new SessionChannels(terminalDC, buildLogDC, compileDC, {
-    keyPin: new RuntimeEvidenceTransportKeyPin(),
+  return new SessionChannels(terminalDC, buildLogDC as unknown as RTCDataChannel, compileDC, {
+    keyPin: pinnedKeyPin(),
+    transportSessionId: TRANSPORT_SESSION_ID,
   });
 }
 
@@ -45,6 +121,96 @@ describe("SessionChannels compile chunking", () => {
       expect(parsed.type).toBe("compile-request-chunk");
       expect(parsed).not.toHaveProperty("source");
     }
+    expect(decodeCompilePayload(sent).gpu_proof_transport_nonce)
+      .toMatch(/^gpu-proof-transport-request:[a-f0-9]{32}$/);
+    channels.dispose();
+  });
+
+  it("injects a one-shot proof nonce and returns a non-secret correlation receipt", async () => {
+    const sent: string[] = [];
+    const channels = makeChannels(sent);
+
+    const receipt = await channels.sendCompileRequest({
+      language: "cpp",
+      source: "int main(){return 0;}",
+    });
+
+    const payload = decodeCompilePayload(sent);
+    expect(payload.gpu_proof_transport_nonce)
+      .toMatch(/^gpu-proof-transport-request:[a-f0-9]{32}$/);
+    expect(receipt.proofCorrelationId)
+      .toMatch(/^gpu-proof-compile-correlation:sha256:[a-f0-9]{64}$/);
+    expect(receipt.proofCorrelationId).not.toContain(
+      String(payload.gpu_proof_transport_nonce),
+    );
+    expect(Number.isSafeInteger(receipt.dispatchedAt)).toBe(true);
+    expect(receipt).toMatchObject({
+      schemaVersion: "synthi.gpu_hmr.compile_dispatch_correlation.v1",
+      proofAuthority: "compile_dispatch_correlation_only_not_gpu_hmr_acceptance",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(Object.isFrozen(receipt)).toBe(true);
+    expect(channels.gpuParentRuntimeProofAdmissionSnapshot()).toMatchObject({
+      status: "active",
+      pendingIntentCount: 1,
+      verifiedBindingCount: 0,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+    });
+    channels.dispose();
+  });
+
+  it("rejects caller-supplied transport nonces", async () => {
+    const sent: string[] = [];
+    const channels = makeChannels(sent);
+
+    await expect(channels.sendCompileRequest({
+      source: "int main(){}",
+      gpu_proof_transport_nonce:
+        "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+    })).rejects.toThrow("compile_gpu_proof_transport_nonce_reserved");
+
+    expect(sent).toEqual([]);
+    expect(channels.gpuParentRuntimeProofAdmissionSnapshot().pendingIntentCount).toBe(0);
+    channels.dispose();
+  });
+
+  it("cancels the live proof intent when compile transport fails", async () => {
+    const sent: string[] = [];
+    const channels = makeChannels(sent, () => {
+      throw new Error("synthetic_compile_transport_failure");
+    });
+
+    await expect(channels.sendCompileRequest({ source: "int main(){}" }))
+      .rejects.toThrow("synthetic_compile_transport_failure");
+
+    expect(channels.gpuParentRuntimeProofAdmissionSnapshot().pendingIntentCount).toBe(0);
+    channels.dispose();
+  });
+
+  it("suppresses unbound full-runtime claims before HMR proof classification", () => {
+    const sent: string[] = [];
+    const buildLog = new MockBuildLogDataChannel();
+    const channels = makeChannels(sent, (frame) => sent.push(frame), buildLog);
+    const publicMessages: Record<string, unknown>[] = [];
+    channels.hmr.onMessage((message) => publicMessages.push(message));
+
+    buildLog.emit({
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-full-runtime-proven",
+    });
+    expect(channels.hmr.latestGpuProof()).toBeNull();
+    expect(publicMessages).toEqual([]);
+
+    buildLog.emit({
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-compile-proven",
+    });
+    expect(channels.hmr.latestGpuProof()?.resultState).toBe("gpu-hmr-compile-proven");
+    expect(publicMessages).toHaveLength(1);
+    channels.dispose();
   });
 
   it("rejects invalid chunk byte configuration before sending", async () => {
@@ -56,6 +222,8 @@ describe("SessionChannels compile chunking", () => {
       channels.sendCompileRequest({ source: "x".repeat(512) }),
     ).rejects.toThrow("invalid_compile_chunk_bytes:not-a-number");
     expect(sent).toHaveLength(0);
+    expect(channels.gpuParentRuntimeProofAdmissionSnapshot().pendingIntentCount).toBe(0);
+    channels.dispose();
   });
 
   it("rejects too-small chunk byte limits instead of exceeding them", async () => {
@@ -67,5 +235,7 @@ describe("SessionChannels compile chunking", () => {
       channels.sendCompileRequest({ source: "x".repeat(512) }),
     ).rejects.toThrow("compile_chunk_bytes_too_small:32");
     expect(sent).toHaveLength(0);
+    expect(channels.gpuParentRuntimeProofAdmissionSnapshot().pendingIntentCount).toBe(0);
+    channels.dispose();
   });
 });

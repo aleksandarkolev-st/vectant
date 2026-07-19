@@ -373,8 +373,9 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
   if (typeof a.project_root === "string") payload["project_root"] = a.project_root;
   if (typeof a.slug === "string") payload["slug"] = a.slug;
 
+  let compileDispatch: Awaited<ReturnType<typeof attached.channels.sendCompileRequest>>;
   try {
-    await attached.channels.sendCompileRequest(payload);
+    compileDispatch = await attached.channels.sendCompileRequest(payload);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.startsWith("compile_channel_not_open")) {
@@ -385,7 +386,15 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     return errorFromException("compile_send_failed", err);
   }
 
-  const dispatchedAt = Date.now();
+  const dispatchedAt = compileDispatch.dispatchedAt;
+  const gpuProofDispatchCorrelation = Object.freeze({
+    schema_version: compileDispatch.schemaVersion,
+    evidence_authority: compileDispatch.proofAuthority,
+    correlation_id: compileDispatch.proofCorrelationId,
+    accepted_for_gpu_hmr: false,
+    gpu_hmr_success: false,
+    can_satisfy_runtime_proof: false,
+  });
   eventLog.push({
     kind: "input",
     action: "compile:start",
@@ -413,6 +422,7 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       ...(typeof a.gpu_arch === "string" ? { gpu_arch: a.gpu_arch } : {}),
       ...(compileManifest !== undefined ? { compile_manifest: true } : {}),
       ...(typeof a.target === "string" ? { target: a.target } : {}),
+      gpu_proof_dispatch_correlation: gpuProofDispatchCorrelation,
     },
   });
 
@@ -437,6 +447,7 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     language,
     filename,
     dispatched_at: dispatchedAt,
+    gpu_proof_dispatch_correlation: gpuProofDispatchCorrelation,
     note:
       "Compile dispatched. Await terminal HMR status via synthi_wait_hmr({since_ts: dispatched_at}). Responses stream on build-log.",
   });

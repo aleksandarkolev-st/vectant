@@ -28,6 +28,17 @@ function installFakeAttached(): { sent: SentPayload[]; setReadyState: (s: string
         }
         const raw = JSON.stringify(payload);
         sent.push({ raw, parsed: payload });
+        return {
+          schemaVersion: "synthi.gpu_hmr.compile_dispatch_correlation.v1" as const,
+          proofAuthority:
+            "compile_dispatch_correlation_only_not_gpu_hmr_acceptance" as const,
+          dispatchedAt: Date.now(),
+          proofCorrelationId:
+            `gpu-proof-compile-correlation:sha256:${"a".repeat(64)}`,
+          acceptedForGpuHmr: false as const,
+          gpuHmrSuccess: false as const,
+          canSatisfyRuntimeProof: false as const,
+        };
       },
     },
   };
@@ -100,6 +111,15 @@ describe("synthi_compile", () => {
     expect(payload["is_gui"]).toBe(true);
     expect(payload["use_ai_split"]).toBe(true);
     expect(payload["bypass_ai_split_cache"]).toBe(true);
+    expect((res.structuredContent as Record<string, unknown>).gpu_proof_dispatch_correlation)
+      .toMatchObject({
+        schema_version: "synthi.gpu_hmr.compile_dispatch_correlation.v1",
+        evidence_authority: "compile_dispatch_correlation_only_not_gpu_hmr_acceptance",
+        correlation_id: `gpu-proof-compile-correlation:sha256:${"a".repeat(64)}`,
+        accepted_for_gpu_hmr: false,
+        gpu_hmr_success: false,
+        can_satisfy_runtime_proof: false,
+      });
   });
 
   it("forwards fresh AI split cache policy aliases", async () => {
@@ -418,12 +438,24 @@ describe("synthi_compile", () => {
     expect(inputs).toHaveLength(1);
     const ev = inputs[0] as unknown as {
       action: string;
-      payload: { language: string; use_ai_split: boolean; source_chars: number };
+      payload: {
+        language: string;
+        use_ai_split: boolean;
+        source_chars: number;
+        gpu_proof_dispatch_correlation: {
+          evidence_authority: string;
+          accepted_for_gpu_hmr: boolean;
+        };
+      };
     };
     expect(ev.action).toBe("compile:start");
     expect(ev.payload.language).toBe("cpp");
     expect(ev.payload.use_ai_split).toBe(true);
     expect(ev.payload.source_chars).toBeGreaterThan(0);
+    expect(ev.payload.gpu_proof_dispatch_correlation).toMatchObject({
+      evidence_authority: "compile_dispatch_correlation_only_not_gpu_hmr_acceptance",
+      accepted_for_gpu_hmr: false,
+    });
   });
 
   it("surfaces compile_channel_not_open when DC is closed", async () => {
