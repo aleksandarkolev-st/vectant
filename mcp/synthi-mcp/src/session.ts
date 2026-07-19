@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { RTCDataChannel } from "werift";
 import { SignalingClient } from "./signaling.js";
 import { Peer } from "./peer.js";
+import type { RuntimeEvidenceTransportKeyPin } from "./runtime_evidence_transport.js";
 import { FrameSink } from "./frames.js";
 import { SessionChannels } from "./channels.js";
 import { projectPublicHmrEvent } from "./hmr.js";
@@ -53,6 +54,7 @@ export interface AttachedSession {
   readonly buildLogDC: RTCDataChannel;
   readonly terminalDC: RTCDataChannel;
   readonly compileDC: RTCDataChannel;
+  readonly runtimeEvidenceTransportKeyPin: RuntimeEvidenceTransportKeyPin;
   readonly resolution: { width: number; height: number; dpr?: number } | null;
 }
 
@@ -715,6 +717,7 @@ class SessionManager {
       buildLogDC,
       terminalDC,
       compileDC,
+      runtimeEvidenceTransportKeyPin: peer.runtimeEvidenceTransportKeyPin,
       resolution: frames.dimensions(),
     };
     this.attached = attached;
