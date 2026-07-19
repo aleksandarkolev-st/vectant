@@ -9609,6 +9609,7 @@ async fn resume_active_runner_after_cold_gpu_load(
 async fn resume_active_runner_after_verified_hot_reload(
     ctx: &CompileContext,
     session_id: &str,
+    compile_request_nonce: Option<&str>,
     receipt: VerifiedHotGpuReloadReceipt,
 ) -> Result<()> {
     let expected = ExpectedGpuRunnerProtocolIdentity {
@@ -9617,7 +9618,20 @@ async fn resume_active_runner_after_verified_hot_reload(
     };
     resume_active_runner_runtime(ctx, session_id, Some(expected), "verified hot GPU reload")
         .await?;
-    match publish_parent_verified_hot_gpu_proof(ctx, session_id, receipt).await {
+    let Some(compile_request_nonce) = compile_request_nonce else {
+        debug_log!(
+            "[GPU HMR] parent-verified runtime proof publication refused: compile request omitted the MCP proof-transport nonce; strict proof remains pending"
+        );
+        return Ok(());
+    };
+    match publish_parent_verified_hot_gpu_proof(
+        ctx,
+        session_id,
+        compile_request_nonce,
+        receipt,
+    )
+    .await
+    {
         Ok(true) => {}
         Ok(false) => debug_log!(
             "[GPU HMR] parent-verified runtime proof publication did not complete; strict proof remains pending"
@@ -15820,8 +15834,13 @@ async fn handle_compile_request_inner(
                     DeviceRuntimeContinuation::VerifiedHotReload,
                     Some(CorrelatedGpuTerminalReceipt::VerifiedHotReload(receipt)),
                 ) => {
-                    resume_active_runner_after_verified_hot_reload(ctx, &session_id, receipt)
-                        .await?;
+                    resume_active_runner_after_verified_hot_reload(
+                        ctx,
+                        &session_id,
+                        req.gpu_proof_transport_nonce.as_deref(),
+                        receipt,
+                    )
+                    .await?;
                 }
                 _ => unreachable!("device runtime continuation kind was derived from its receipt"),
             }
@@ -21422,6 +21441,7 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             bypass_device_compile_cache: false,
             require_ai_provider_call: false,
             ai_provider_call_nonce: None,
+            gpu_proof_transport_nonce: None,
             ai_provider: None,
             ai_model: None,
             user_requested_ai: false,

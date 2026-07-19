@@ -1,6 +1,18 @@
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
+pub const GPU_PROOF_TRANSPORT_REQUEST_NONCE_PREFIX: &str = "gpu-proof-transport-request:";
+
+pub fn gpu_proof_transport_request_nonce_valid(value: &str) -> bool {
+    let Some(nonce) = value.strip_prefix(GPU_PROOF_TRANSPORT_REQUEST_NONCE_PREFIX) else {
+        return false;
+    };
+    nonce.len() == 32
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct IceServerEnv {
     pub urls: Vec<String>,
@@ -104,6 +116,15 @@ pub struct CompileRequest {
     /// nonces whenever `require_ai_provider_call` is enabled.
     #[serde(default, alias = "provider_call_nonce", alias = "aiProviderCallNonce")]
     pub ai_provider_call_nonce: Option<String>,
+    /// MCP-generated nonce that correlates any later parent-observed GPU proof
+    /// with this concrete compile dispatch. It is transport context only and
+    /// cannot authorize GPU HMR by itself.
+    #[serde(
+        default,
+        alias = "gpuProofTransportNonce",
+        deserialize_with = "deserialize_optional_gpu_proof_transport_nonce"
+    )]
+    pub gpu_proof_transport_nonce: Option<String>,
     /// Explicit AI provider selected by the caller for split requests.
     #[serde(
         default,
@@ -172,6 +193,24 @@ where
     }
 }
 
+fn deserialize_optional_gpu_proof_transport_nonce<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    if value
+        .as_deref()
+        .is_some_and(|value| !gpu_proof_transport_request_nonce_valid(value))
+    {
+        return Err(D::Error::custom(
+            "invalid GPU proof transport request nonce",
+        ));
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,6 +232,7 @@ mod tests {
         assert!(!req.bypass_device_compile_cache);
         assert!(!req.require_ai_provider_call);
         assert!(req.ai_provider_call_nonce.is_none());
+        assert!(req.gpu_proof_transport_nonce.is_none());
         assert!(req.ai_provider.is_none());
         assert!(req.ai_model.is_none());
     }
@@ -279,6 +319,46 @@ mod tests {
                 req.ai_provider_call_nonce.as_deref(),
                 Some("provider-call:0123456789abcdef0123456789abcdef"),
                 "alias {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_request_accepts_gpu_proof_transport_nonce_alias() {
+        for field in ["gpu_proof_transport_nonce", "gpuProofTransportNonce"] {
+            let mut raw = base_request();
+            raw.as_object_mut().expect("object").insert(
+                field.to_string(),
+                json!("gpu-proof-transport-request:0123456789abcdef0123456789abcdef"),
+            );
+
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
+
+            assert_eq!(
+                req.gpu_proof_transport_nonce.as_deref(),
+                Some("gpu-proof-transport-request:0123456789abcdef0123456789abcdef"),
+                "alias {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_request_rejects_invalid_gpu_proof_transport_nonce() {
+        for value in [
+            "",
+            "gpu-proof-transport-request:",
+            "gpu-proof-transport-request:ABCDEF0123456789abcdef0123456789",
+            "gpu-proof-transport-request:0123456789abcdef0123456789abcdeg",
+            "provider-call:0123456789abcdef0123456789abcdef",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut()
+                .expect("object")
+                .insert("gpu_proof_transport_nonce".to_string(), json!(value));
+
+            assert!(
+                serde_json::from_value::<CompileRequest>(raw).is_err(),
+                "{value}"
             );
         }
     }

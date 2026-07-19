@@ -25,7 +25,7 @@ use crate::hmr::runtime_evidence_transport::{
     RuntimeEvidenceTransportReceiptInput, RuntimeEvidenceTransportSigner,
 };
 use crate::infra::constants::GUI_TOOLS;
-use crate::infra::messages::CompileRequest;
+use crate::infra::messages::{gpu_proof_transport_request_nonce_valid, CompileRequest};
 use crate::runtime::gpu_runtime_proof::{
     canonical_gpu_runtime_proof_json_bytes, canonical_gpu_runtime_proof_json_sha256,
     verify_strict_gpu_runtime_proof, StrictGpuRuntimeProofExpectation, VerifiedGpuRuntimeProof,
@@ -60,6 +60,16 @@ const PARENT_VERIFIED_GPU_RUNTIME_PROOF_AUTHORITY: &str =
     "parent_recomputed_runtime_proof_binding_only_not_gpu_hmr_acceptance";
 const PARENT_VERIFIED_GPU_RUNTIME_PROOF_SUBJECT_SCHEMA_VERSION: &str =
     "synthi.gpu_hmr.parent_verified_runtime_proof_subject.v1";
+const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_TYPE: &str =
+    "gpu_hmr_parent_runtime_proof_control_binding";
+const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.parent_runtime_proof_control_binding.v1";
+const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY: &str =
+    "parent_signed_compile_correlated_runtime_proof_binding_only_not_gpu_hmr_acceptance";
+const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SUBJECT_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.parent_runtime_proof_control_binding_subject.v1";
+const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_ID_PREFIX: &str =
+    "gpu-parent-runtime-proof-control-binding:";
 
 fn generate_runner_runtime_control_session_id() -> Result<String> {
     let mut random_bytes = [0_u8; 16];
@@ -578,11 +588,89 @@ impl VerifiedHotGpuReloadReceipt {
         &self.runner_runtime_session_id
     }
 
-    fn into_parent_verified_proof_message(self, compile_session_id: &str) -> Result<String> {
-        let signer = global_runtime_evidence_transport_signer()
+    fn parent_control_binding_message_with_signer(
+        &self,
+        compile_session_id: &str,
+        compile_request_nonce: &str,
+        signer: &RuntimeEvidenceTransportSigner,
+    ) -> Result<String> {
+        if compile_session_id.is_empty() {
+            anyhow::bail!(
+                "parent GPU runtime-proof control binding requires a compile session identity"
+            );
+        }
+        if !gpu_proof_transport_request_nonce_valid(compile_request_nonce) {
+            anyhow::bail!("parent GPU runtime-proof control binding nonce is invalid");
+        }
+
+        let canonical_proof_sha256 = canonical_gpu_runtime_proof_json_sha256(&self.proof);
+        let parent_pid = std::process::id();
+        let mut binding = serde_json::json!({
+            "schemaVersion": PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION,
+            "type": PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_TYPE,
+            "proofAuthority": PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY,
+            "acceptedForGpuHmr": false,
+            "gpuHmrSuccess": false,
+            "canSatisfyRuntimeProof": false,
+            "compileSessionId": compile_session_id,
+            "compileRequestNonce": compile_request_nonce,
+            "requestId": self.request_id,
+            "sourceEditId": self.source_edit_id,
+            "artifactContentHash": self.artifact_content_hash,
+            "fullRuntimeProofId": self.full_runtime_proof_id,
+            "proofLedgerId": self.proof_ledger_id,
+            "protectedProofJsonSha256": self.proof_json_sha256,
+            "canonicalProofSha256": canonical_proof_sha256,
+            "runnerPid": self.runner_pid,
+            "runnerRuntimeSessionId": self.runner_runtime_session_id,
+            "runnerChallenge": self.runner_challenge,
+            "commandEnvelopeSha256": self.command_envelope_sha256,
+            "parentPid": parent_pid,
+        });
+        let binding_bytes = canonical_gpu_runtime_proof_json_bytes(&binding);
+        let binding_sha256 = canonical_gpu_runtime_proof_json_sha256(&binding);
+        let transport_receipt = signer
+            .issue(RuntimeEvidenceTransportReceiptInput {
+                runner_process_id: self.runner_pid,
+                runtime_session_id: &self.runner_runtime_session_id,
+                runner_challenge: &self.runner_challenge,
+                transport_session_id: compile_session_id,
+                request_id: &self.request_id,
+                source_edit_id: &self.source_edit_id,
+                subject_identity_namespace:
+                    PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SUBJECT_SCHEMA_VERSION,
+                subject_canonical_bytes: &binding_bytes,
+                artifact_content_hash: &self.artifact_content_hash,
+                observed_runtime_proof_id: &self.full_runtime_proof_id,
+                observed_proof_ledger_id: &self.proof_ledger_id,
+                observed_payload: &binding_bytes,
+            })
             .map_err(anyhow::Error::msg)
-            .context("loading parent runtime-evidence transport signer")?;
-        self.into_parent_verified_proof_message_with_signer(compile_session_id, signer)
+            .context("signing parent GPU runtime-proof control binding")?;
+        let transport_envelope =
+            ObservedRuntimeEvidenceEnvelope::new(&binding_bytes, transport_receipt)
+                .map_err(anyhow::Error::msg)
+                .context("building parent GPU runtime-proof control-binding envelope")?;
+        let binding_object = binding
+            .as_object_mut()
+            .context("parent GPU runtime-proof control binding must remain an object")?;
+        binding_object.insert(
+            "bindingCanonicalSha256".to_string(),
+            serde_json::Value::String(binding_sha256.clone()),
+        );
+        binding_object.insert(
+            "bindingId".to_string(),
+            serde_json::Value::String(format!(
+                "{PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_ID_PREFIX}{binding_sha256}"
+            )),
+        );
+        binding_object.insert(
+            "runtimeEvidenceTransportEnvelope".to_string(),
+            serde_json::to_value(transport_envelope)
+                .context("serializing parent GPU runtime-proof control-binding envelope")?,
+        );
+        serde_json::to_string(&binding)
+            .context("serializing parent GPU runtime-proof control binding")
     }
 
     fn into_parent_verified_proof_message_with_signer(
@@ -688,9 +776,28 @@ impl VerifiedHotGpuReloadReceipt {
 pub(crate) async fn publish_parent_verified_hot_gpu_proof(
     ctx: &CompileContext,
     compile_session_id: &str,
+    compile_request_nonce: &str,
     receipt: VerifiedHotGpuReloadReceipt,
 ) -> Result<bool> {
-    let message = receipt.into_parent_verified_proof_message(compile_session_id)?;
+    let signer = global_runtime_evidence_transport_signer()
+        .map_err(anyhow::Error::msg)
+        .context("loading parent runtime-evidence transport signer")?;
+    let control_binding_message = receipt.parent_control_binding_message_with_signer(
+        compile_session_id,
+        compile_request_nonce,
+        signer,
+    )?;
+    let message =
+        receipt.into_parent_verified_proof_message_with_signer(compile_session_id, signer)?;
+    if !send_structured_log_dc_text_bounded(
+        &ctx.log_dc,
+        control_binding_message,
+        "parent-gpu-runtime-proof-control-binding",
+    )
+    .await
+    {
+        return Ok(false);
+    }
     Ok(send_structured_log_dc_text_bounded(
         &ctx.log_dc,
         message,
@@ -2836,7 +2943,11 @@ mod tests {
         wait_for_strict_gpu_protocol_ack, CorrelatedGpuTerminalReceipt, RunnerCommandProofContext,
         RunnerExecutionOutcome, RunnerGpuTerminalExpectation, RunnerOutputRoute,
         RunnerReloadPolicy, StrictGpuTerminalExpectation, VerifiedHotGpuReloadReceipt,
-        PARENT_VERIFIED_GPU_RUNTIME_PROOF_AUTHORITY,
+        PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY,
+        PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_ID_PREFIX,
+        PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION,
+        PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SUBJECT_SCHEMA_VERSION,
+        PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_TYPE, PARENT_VERIFIED_GPU_RUNTIME_PROOF_AUTHORITY,
         PARENT_VERIFIED_GPU_RUNTIME_PROOF_SCHEMA_VERSION,
         PARENT_VERIFIED_GPU_RUNTIME_PROOF_SUBJECT_SCHEMA_VERSION, STRUCTURED_LOG_CHUNK_BYTES,
         STRUCTURED_LOG_CHUNK_SCHEMA_VERSION,
@@ -3633,7 +3744,7 @@ mod tests {
 
         let transport_signer = RuntimeEvidenceTransportSigner::generate(std::process::id())
             .expect("test runtime-evidence transport signer");
-        let parent_message = VerifiedHotGpuReloadReceipt {
+        let receipt = VerifiedHotGpuReloadReceipt {
             request_id: expectation.identity.request_id.clone(),
             source_edit_id: expectation.identity.source_edit_id.clone(),
             artifact_content_hash: expectation.identity.artifact_content_hash.clone(),
@@ -3645,9 +3756,122 @@ mod tests {
             runner_challenge: expectation.runner_challenge.clone(),
             command_envelope_sha256: expectation.command_envelope_sha256.clone(),
             proof: verified_proof,
-        }
-        .into_parent_verified_proof_message_with_signer("compile-session:test", &transport_signer)
-        .unwrap();
+        };
+        assert!(receipt
+            .parent_control_binding_message_with_signer(
+                "compile-session:test",
+                "forged",
+                &transport_signer,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("nonce is invalid"));
+        let control_binding_message = receipt
+            .parent_control_binding_message_with_signer(
+                "compile-session:test",
+                "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+                &transport_signer,
+            )
+            .unwrap();
+        let control_binding: serde_json::Value =
+            serde_json::from_str(&control_binding_message).unwrap();
+        assert_eq!(
+            control_binding["schemaVersion"],
+            PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION
+        );
+        assert_eq!(
+            control_binding["type"],
+            PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_TYPE
+        );
+        assert_eq!(
+            control_binding["proofAuthority"],
+            PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY
+        );
+        assert_eq!(control_binding["acceptedForGpuHmr"], false);
+        assert_eq!(control_binding["gpuHmrSuccess"], false);
+        assert_eq!(control_binding["canSatisfyRuntimeProof"], false);
+        assert_eq!(control_binding["compileSessionId"], "compile-session:test");
+        assert_eq!(
+            control_binding["compileRequestNonce"],
+            "gpu-proof-transport-request:0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(
+            control_binding["requestId"],
+            expectation.identity.request_id
+        );
+        assert_eq!(
+            control_binding["sourceEditId"],
+            expectation.identity.source_edit_id
+        );
+        assert_eq!(
+            control_binding["artifactContentHash"],
+            expectation.identity.artifact_content_hash
+        );
+        assert_eq!(control_binding["fullRuntimeProofId"], proof_id);
+        assert_eq!(control_binding["proofLedgerId"], verified.ledger_proof_id);
+        assert_eq!(
+            control_binding["protectedProofJsonSha256"],
+            proof_json_sha256
+        );
+        assert_eq!(
+            control_binding["canonicalProofSha256"],
+            canonical_gpu_runtime_proof_json_sha256(&proof)
+        );
+        assert_eq!(control_binding["runnerPid"], expectation.runner_pid);
+        assert_eq!(
+            control_binding["runnerRuntimeSessionId"],
+            expectation.runner_runtime_session_id
+        );
+        assert_eq!(
+            control_binding["runnerChallenge"],
+            expectation.runner_challenge
+        );
+        assert_eq!(
+            control_binding["commandEnvelopeSha256"],
+            expectation.command_envelope_sha256
+        );
+        let mut control_payload = control_binding.clone();
+        let control_payload = control_payload.as_object_mut().unwrap();
+        let control_envelope = control_payload
+            .remove("runtimeEvidenceTransportEnvelope")
+            .unwrap();
+        let binding_id = control_payload.remove("bindingId").unwrap();
+        let binding_sha256 = control_payload.remove("bindingCanonicalSha256").unwrap();
+        let recomputed_binding_sha256 = canonical_gpu_runtime_proof_json_sha256(
+            &serde_json::Value::Object(control_payload.clone()),
+        );
+        assert_eq!(binding_sha256, recomputed_binding_sha256);
+        assert_eq!(
+            binding_id,
+            format!(
+                "{PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_ID_PREFIX}{recomputed_binding_sha256}"
+            )
+        );
+        assert_eq!(
+            control_envelope["observedPayloadSha256"],
+            recomputed_binding_sha256
+        );
+        assert_eq!(
+            control_envelope["runtimeEvidenceTransportReceipt"]["subjectIdentityNamespace"],
+            PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SUBJECT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            control_envelope["runtimeEvidenceTransportReceipt"]["keyId"],
+            transport_signer.verification_key().key_id()
+        );
+        assert!(
+            control_envelope["runtimeEvidenceTransportReceipt"]["signature"]
+                .as_str()
+                .unwrap()
+                .starts_with("ed25519:")
+        );
+
+        let parent_message = receipt
+            .into_parent_verified_proof_message_with_signer(
+                "compile-session:test",
+                &transport_signer,
+            )
+            .unwrap();
         let parent_message: serde_json::Value = serde_json::from_str(&parent_message).unwrap();
         assert_eq!(parent_message["type"], "gpu_hmr_proof");
         assert_eq!(parent_message["proofId"], proof_id);
@@ -3758,10 +3982,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             transport_receipt["subjectIdentityHash"],
-            format!(
-                "sha256:{}",
-                sha256_hex_local(&subject_identity_material)
-            )
+            format!("sha256:{}", sha256_hex_local(&subject_identity_material))
         );
         assert_eq!(
             transport_receipt["keyId"],
