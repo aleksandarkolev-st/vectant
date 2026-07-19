@@ -200,6 +200,10 @@ impl ComputeExpectedOutputSemantics {
         &self.output_target_id
     }
 
+    pub fn comparison_mode(&self) -> &str {
+        &self.comparison_mode
+    }
+
     pub fn expected_evidence_hash(&self) -> &str {
         match self.comparison_mode.as_str() {
             "exact_bytes" => self
@@ -649,6 +653,10 @@ mod tests {
                 serde_json::from_value(contract).expect("canonical semantic contract");
             assert_eq!(parsed.semantics_hash(), parsed.canonical_hash());
             assert_eq!(parsed.expected_evidence_hash(), expected_evidence_hash);
+            assert!(matches!(
+                parsed.comparison_mode(),
+                "exact_bytes" | "numeric_tolerance"
+            ));
         }
     }
 
