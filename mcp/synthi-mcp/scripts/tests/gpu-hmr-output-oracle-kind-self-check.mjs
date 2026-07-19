@@ -171,6 +171,16 @@ for (const kind of GPU_HMR_COMPUTE_OUTPUT_ORACLE_KINDS) {
   assert.equal(classification.modality, 'compute', kind);
   assert.equal(classification.topLevelKind, 'compute_oracle', kind);
 }
+for (const kind of [
+  'edit_contract',
+  'sentinel_buffer_value',
+  'kernel_checksum',
+  'kernel_side_checksum',
+  'per_pass_checksum',
+  'dispatch_counter',
+]) {
+  assert.ok(GPU_HMR_COMPUTE_OUTPUT_ORACLE_KINDS.includes(kind), kind);
+}
 for (const kind of GPU_HMR_VISUAL_OUTPUT_ORACLE_KINDS) {
   const classification = classifyGpuHmrOutputOracleKind(kind);
   assert.equal(classification.accepted, true, kind);

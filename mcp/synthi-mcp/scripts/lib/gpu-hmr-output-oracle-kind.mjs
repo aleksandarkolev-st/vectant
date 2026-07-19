@@ -12,6 +12,12 @@ const COMPUTE_OUTPUT_ORACLE_KINDS = Object.freeze([
   'buffer_checksum',
   'compute_readback',
   'source_derived_buffer_checksum',
+  'edit_contract',
+  'sentinel_buffer_value',
+  'kernel_checksum',
+  'kernel_side_checksum',
+  'per_pass_checksum',
+  'dispatch_counter',
 ]);
 
 const VISUAL_OUTPUT_ORACLE_KINDS = Object.freeze([
