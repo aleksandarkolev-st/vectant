@@ -1971,6 +1971,7 @@ use crate::hmr::gpu_proof::{
     GpuHmrProofStageResult, GpuHmrProofState, GpuHmrProofTelemetry, GPU_HMR_PROOF_SCHEMA_VERSION,
 };
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
+use crate::runtime::gpu_runtime_proof::canonical_compute_expected_output_contract_hash_for_binding;
 
 fn strip_c_like_comments(source: &str) -> String {
     #[derive(Clone, Copy)]
@@ -8039,6 +8040,50 @@ fn materialize_compute_readback_output_oracle_contract(
     if expected_output_change == Some(false) {
         return None;
     }
+    let expected_output_contract = {
+        let camel = contract.get("expectedOutputContract");
+        let snake = contract.get("expected_output_contract");
+        if camel
+            .zip(snake)
+            .is_some_and(|(camel, snake)| camel != snake)
+        {
+            return None;
+        }
+        camel.or(snake)
+    };
+    let expected_output_contract = match expected_output_contract {
+        Some(expected_output_contract) => {
+            let source_edit_id = candidate.get("sourceEditId")?.as_str()?;
+            let artifact_hash = candidate.get("artifactHash")?.as_str()?;
+            canonical_compute_expected_output_contract_hash_for_binding(
+                expected_output_contract,
+                source_edit_id,
+                artifact_hash,
+            )?;
+            let binding_output_target = expected_output_contract
+                .pointer("/binding/outputTargetId")
+                .and_then(serde_json::Value::as_str)?;
+            let semantic_expected_hash = match expected_output_contract
+                .get("comparisonMode")
+                .and_then(serde_json::Value::as_str)?
+            {
+                "exact_bytes" => expected_output_contract
+                    .get("expectedRawHash")
+                    .and_then(serde_json::Value::as_str)?,
+                "numeric_tolerance" => expected_output_contract
+                    .get("expectedValuesHash")
+                    .and_then(serde_json::Value::as_str)?,
+                _ => return None,
+            };
+            if binding_output_target != output_target_id
+                || semantic_expected_hash != expected_sha256
+            {
+                return None;
+            }
+            Some(expected_output_contract.clone())
+        }
+        None => None,
+    };
 
     let mut materialized = serde_json::Map::new();
     materialized.insert("kind".to_string(), serde_json::json!(kind));
@@ -8066,6 +8111,12 @@ fn materialize_compute_readback_output_oracle_contract(
         "expectedOutputChange".to_string(),
         serde_json::Value::Bool(true),
     );
+    if let Some(expected_output_contract) = expected_output_contract {
+        materialized.insert(
+            "expected_output_contract".to_string(),
+            expected_output_contract,
+        );
+    }
     Some(serde_json::Value::Object(materialized))
 }
 
@@ -16175,6 +16226,41 @@ mod gpu_host_contract_tests {
         })
     }
 
+    fn exact_compute_expected_output_contract(expected_raw_hash: &str) -> serde_json::Value {
+        let mut contract = serde_json::json!({
+            "schemaVersion": "synthi.gpu.hmr.compute_expected_output_contract.v1",
+            "comparisonMode": "exact_bytes",
+            "dtype": "u8",
+            "shape": [4],
+            "elementCount": 4,
+            "byteOrder": "not_applicable",
+            "tolerance": 0,
+            "expectedValues": null,
+            "expectedValuesHash": null,
+            "expectedRawHash": expected_raw_hash,
+            "binding": {
+                "projectId": "project:generic-contract-test",
+                "editId": "source-edit:concrete-oracle",
+                "artifactAfterHash": format!("sha256:{}", "a".repeat(64)),
+                "outputTargetId": "buffer:result",
+                "oracleCodeHash": format!("sha256:{}", "c".repeat(64)),
+            },
+            "evidenceRefs": [format!("evidence:expected-output:{}", "d".repeat(64))],
+        });
+        rehash_compute_expected_output_contract(&mut contract);
+        contract
+    }
+
+    fn rehash_compute_expected_output_contract(contract: &mut serde_json::Value) {
+        contract
+            .as_object_mut()
+            .expect("expected-output contract object")
+            .remove("contractHash");
+        let contract_hash =
+            crate::runtime::gpu_runtime_proof::canonical_gpu_runtime_proof_json_sha256(&contract);
+        contract["contractHash"] = serde_json::Value::String(contract_hash);
+    }
+
     fn proof_with_selected_fission_candidate_and_registry(
         mut candidate: serde_json::Value,
     ) -> (serde_json::Value, CurrentRunFissionEvidenceRegistry) {
@@ -18438,6 +18524,87 @@ __constant__ int scale;
             Some(&registry),
         )
         .is_some());
+    }
+
+    #[test]
+    fn resolved_compute_readback_contract_preserves_only_bound_expected_preimage() {
+        let expected_raw_hash = format!("sha256:{}", "4".repeat(64));
+        let expected_output_contract = exact_compute_expected_output_contract(&expected_raw_hash);
+        let candidate = complete_fission_candidate_with_output_oracle(serde_json::json!({
+            "kind": "buffer_checksum",
+            "oracleId": "oracle:readback:explicit",
+            "expectedHash": expected_raw_hash,
+            "producer": "verified.runtime_probe",
+            "outputTargetId": "buffer:result",
+            "expectedOutputContract": expected_output_contract,
+            "expectedOutputChange": true,
+            "readbackPlan": {"syncPoint": "after-dispatch"},
+            "runtimeSessionIdSource": "runtime-boundary",
+            "artifactIdSource": "selected-artifact"
+        }));
+        let directly_materialized = materialize_compute_readback_output_oracle_contract(
+            &candidate,
+            candidate["outputOracleContract"]
+                .as_object()
+                .expect("outer contract"),
+        )
+        .expect("direct bound expected-output preimage");
+        assert_eq!(
+            directly_materialized.get("expected_output_contract"),
+            Some(&expected_output_contract)
+        );
+        let (proof, registry) = proof_with_selected_fission_candidate_and_registry(candidate);
+        let verifier_metadata =
+            proof_fission_verifier_metadata(&proof).expect("fission verifier metadata");
+        assert_eq!(
+            verifier_metadata.get("status"),
+            Some(&serde_json::json!("pass")),
+            "{verifier_metadata}"
+        );
+
+        let materialized = proof_fission_output_oracle_contract(&proof, Some(&registry))
+            .expect("bound expected-output preimage");
+        assert_eq!(
+            materialized.get("expected_output_contract"),
+            Some(&expected_output_contract)
+        );
+        assert!(materialized.get("expectedOutputContract").is_none());
+
+        let raw_candidate = proof_selected_fission_candidate(&proof)
+            .and_then(|report| report.get("candidate"))
+            .expect("verified candidate");
+        for pointer in [
+            "/binding/editId",
+            "/binding/artifactAfterHash",
+            "/binding/outputTargetId",
+            "/expectedRawHash",
+        ] {
+            let mut tampered = expected_output_contract.clone();
+            *tampered.pointer_mut(pointer).expect("contract pointer") = match pointer {
+                "/binding/editId" => serde_json::json!("source-edit:other"),
+                "/binding/artifactAfterHash" => {
+                    serde_json::json!(format!("sha256:{}", "e".repeat(64)))
+                }
+                "/binding/outputTargetId" => serde_json::json!("buffer:other"),
+                _ => serde_json::json!(format!("sha256:{}", "f".repeat(64))),
+            };
+            rehash_compute_expected_output_contract(&mut tampered);
+            let mut outer = raw_candidate["outputOracleContract"].clone();
+            outer["expectedOutputContract"] = tampered;
+            assert!(materialize_compute_readback_output_oracle_contract(
+                raw_candidate,
+                outer.as_object().expect("outer contract"),
+            )
+            .is_none());
+        }
+
+        let mut conflicting_alias = raw_candidate["outputOracleContract"].clone();
+        conflicting_alias["expected_output_contract"] = serde_json::json!({});
+        assert!(materialize_compute_readback_output_oracle_contract(
+            raw_candidate,
+            conflicting_alias.as_object().expect("outer contract"),
+        )
+        .is_none());
     }
 
     #[test]

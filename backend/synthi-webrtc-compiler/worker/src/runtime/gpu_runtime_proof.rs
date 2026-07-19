@@ -486,9 +486,10 @@ fn canonical_expected_value(value: &serde_json::Value, dtype: &str) -> bool {
     }
 }
 
-fn canonical_compute_expected_output_contract_hash(
+pub(crate) fn canonical_compute_expected_output_contract_hash_for_binding(
     contract: &serde_json::Value,
-    expectation: &StrictGpuRuntimeProofExpectation<'_>,
+    source_edit_id: &str,
+    artifact_content_hash: &str,
 ) -> Option<String> {
     const CONTRACT_FIELDS: &[&str] = &[
         "schemaVersion",
@@ -623,11 +624,11 @@ fn canonical_compute_expected_output_contract_hash(
     let artifact_after_hash = canonical_contract_text(binding.get("artifactAfterHash")?)?;
     let output_target_id = canonical_contract_text(binding.get("outputTargetId")?)?;
     let oracle_code_hash = canonical_contract_text(binding.get("oracleCodeHash")?)?;
-    let expected_artifact_id = expected_artifact_id(expectation.artifact_content_hash)?;
+    let expected_artifact_id = expected_artifact_id(artifact_content_hash)?;
     if project_id.is_empty()
         || output_target_id.is_empty()
-        || edit_id != expectation.source_edit_id
-        || (artifact_after_hash != expectation.artifact_content_hash
+        || edit_id != source_edit_id
+        || (artifact_after_hash != artifact_content_hash
             && artifact_after_hash != expected_artifact_id)
         || !compute_expected_output_contract_hash_valid(oracle_code_hash)
     {
@@ -664,6 +665,17 @@ fn canonical_compute_expected_output_contract_hash(
     let declared_hash = contract.get("contractHash")?.as_str()?;
     (compute_expected_output_contract_hash_valid(declared_hash) && declared_hash == computed_hash)
         .then_some(computed_hash)
+}
+
+fn canonical_compute_expected_output_contract_hash(
+    contract: &serde_json::Value,
+    expectation: &StrictGpuRuntimeProofExpectation<'_>,
+) -> Option<String> {
+    canonical_compute_expected_output_contract_hash_for_binding(
+        contract,
+        expectation.source_edit_id,
+        expectation.artifact_content_hash,
+    )
 }
 
 pub fn runtime_record_chain_matches(
