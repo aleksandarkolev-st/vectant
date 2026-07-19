@@ -20,7 +20,7 @@ function encodeFloat32(values) {
 const binding = {
   projectId: 'project:semantic-self-check',
   editId: 'edit:semantic-self-check',
-  artifactAfterHash: sha256(Buffer.from('artifact-after')),
+  artifactAfterHash: `artifact:${sha256(Buffer.from('artifact-after'))}`,
   outputTargetId: 'output:semantic-self-check',
   oracleCodeHash: sha256(Buffer.from('oracle-code')),
 };

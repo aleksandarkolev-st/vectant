@@ -8,6 +8,7 @@ export const COMPUTE_ORACLE_SEMANTIC_VERIFICATION_AUTHORITY =
   'consumer_recomputed_compute_oracle_semantics_not_gpu_hmr_success';
 
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
+const ARTIFACT_SHA256_RE = /^artifact:sha256:[0-9a-f]{64}$/;
 const MAX_SCHEMA_BYTES = 1024 * 1024;
 const MAX_JSON_DEPTH = 32;
 const MAX_JSON_ENTRIES = 32768;
@@ -275,10 +276,15 @@ function normalizeBinding(source, failures, prefix) {
     if (!value) pushFailure(failures, `${prefix}_${snake}_missing`);
     normalized[camel] = value;
   }
-  for (const field of ['artifactAfterHash', 'oracleCodeHash']) {
-    if (normalized[field] && !SHA256_RE.test(normalized[field])) {
-      pushFailure(failures, `${prefix}_${field.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)}_invalid`);
-    }
+  if (
+    normalized.artifactAfterHash
+    && !SHA256_RE.test(normalized.artifactAfterHash)
+    && !ARTIFACT_SHA256_RE.test(normalized.artifactAfterHash)
+  ) {
+    pushFailure(failures, `${prefix}_artifact_after_hash_invalid`);
+  }
+  if (normalized.oracleCodeHash && !SHA256_RE.test(normalized.oracleCodeHash)) {
+    pushFailure(failures, `${prefix}_oracle_code_hash_invalid`);
   }
   return normalized;
 }
