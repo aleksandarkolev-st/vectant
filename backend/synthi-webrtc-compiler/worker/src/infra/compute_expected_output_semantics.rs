@@ -365,9 +365,10 @@ fn decimal_valid_for_dtype(value: &str, dtype: &str) -> bool {
         "i32" => value.parse::<i32>().is_ok(),
         "u64" => value.parse::<u64>().is_ok(),
         "i64" => value.parse::<i64>().is_ok(),
-        "f32" => value
-            .parse::<f32>()
-            .is_ok_and(|parsed| parsed.is_finite() && (parsed != 0.0 || value == "0")),
+        "f32" => value.parse::<f64>().is_ok_and(|parsed| {
+            let narrowed = parsed as f32;
+            parsed.is_finite() && narrowed.is_finite() && (narrowed != 0.0 || parsed == 0.0)
+        }),
         "f64" => value
             .parse::<f64>()
             .is_ok_and(|parsed| parsed.is_finite() && (parsed != 0.0 || value == "0")),
@@ -493,5 +494,27 @@ mod tests {
         let mut overflow = exact_contract();
         overflow["byteOffset"] = serde_json::json!(MAX_SAFE_JSON_INTEGER - 15);
         assert!(serde_json::from_value::<ComputeExpectedOutputSemantics>(overflow).is_err());
+    }
+
+    #[test]
+    fn f32_decimal_validation_uses_binary64_then_binary32_narrowing() {
+        let double_rounds_to_zero =
+            "0.00000000000000000000000000000000000000000000070064923216240857435571027827709373529053130706403438956761";
+        assert_ne!(double_rounds_to_zero.parse::<f32>().unwrap(), 0.0);
+        assert_eq!(double_rounds_to_zero.parse::<f64>().unwrap() as f32, 0.0);
+        assert!(!decimal_valid_for_dtype(double_rounds_to_zero, "f32"));
+
+        assert!(decimal_valid_for_dtype(
+            "0.000000000000000000000000000000000000000000001",
+            "f32",
+        ));
+        assert!(decimal_valid_for_dtype(
+            "340282346638528859811704183484516925440",
+            "f32",
+        ));
+        assert!(!decimal_valid_for_dtype(
+            "340282356779733661637539395458142568448",
+            "f32",
+        ));
     }
 }

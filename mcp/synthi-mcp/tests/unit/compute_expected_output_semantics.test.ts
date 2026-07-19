@@ -51,6 +51,9 @@ function contract(material: ComputeExpectedOutputSemanticsMaterial) {
   };
 }
 
+const F32_DOUBLE_ROUNDING_UNDERFLOW =
+  "0.00000000000000000000000000000000000000000000070064923216240857435571027827709373529053130706403438956761";
+
 describe("compute expected-output semantic commitments", () => {
   it("accepts and freezes an exact-byte semantic preimage", () => {
     const result = validateComputeExpectedOutputSemantics(contract(exactMaterial()));
@@ -79,6 +82,21 @@ describe("compute expected-output semantic commitments", () => {
     expect(Object.isFrozen(result.value.expectedValuesDecimal)).toBe(true);
   });
 
+  it.each([
+    "0.000000000000000000000000000000000000000000001",
+    "340282346638528859811704183484516925440",
+  ])("accepts a binary64-to-binary32 boundary value (%s)", (boundaryValue) => {
+    const values = [boundaryValue, "-3.5", "12", "0"];
+    const material: ComputeExpectedOutputSemanticsMaterial = {
+      ...numericMaterial(),
+      expectedValuesDecimal: values,
+      expectedValuesHash: computeExpectedOutputValuesHash(values),
+    };
+
+    expect(validateComputeExpectedOutputSemantics(contract(material)).accepted)
+      .toBe(true);
+  });
+
   it("accepts rank-zero scalar output selections", () => {
     const material: ComputeExpectedOutputSemanticsMaterial = {
       ...exactMaterial(),
@@ -96,6 +114,21 @@ describe("compute expected-output semantic commitments", () => {
   it.each([
     ["noncanonical decimal", { expectedValuesDecimal: ["0.1250", "-3.5", "12", "0"] }],
     ["dtype overflow", { dtype: "u8", expectedValuesDecimal: ["256", "1", "2", "3"] }],
+    [
+      "binary64-to-binary32 underflow",
+      { expectedValuesDecimal: [F32_DOUBLE_ROUNDING_UNDERFLOW, "1", "2", "3"] },
+    ],
+    [
+      "binary32 overflow",
+      {
+        expectedValuesDecimal: [
+          "340282356779733661637539395458142568448",
+          "1",
+          "2",
+          "3",
+        ],
+      },
+    ],
     ["shape mismatch", { shape: [2, 3] }],
     ["unaligned byte selection", { byteOffset: 2 }],
     ["overflowing byte selection", { byteOffset: Number.MAX_SAFE_INTEGER - 15 }],
