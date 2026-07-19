@@ -7,6 +7,7 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
 use crate::compiler::builder::ModuleHashes;
 use crate::runtime::capability::HmrCapability;
+use crate::runtime::native_runner_codec::NativeRunnerOutputLifecycle;
 
 // RunnerState tracks the state of a running plugin process
 // This is used by the worker to manage HMR, video streaming, and process lifecycle
@@ -19,6 +20,9 @@ pub struct RunnerState {
     /// Private runner control/proof traffic. Protocol messages must never
     /// share the general output channel consumed by diagnostics or UI logs.
     pub protocol_tx: broadcast::Sender<String>,
+    /// Sticky process-incarnation fault bit for native stdout/stderr framing.
+    /// A faulted runner is never reused or allowed to publish loaded state.
+    pub native_output_lifecycle: Arc<NativeRunnerOutputLifecycle>,
     // Session that owns this runner. Required so cancel-build with a
     // specific session_id can verify the cancel actually targets the
     // currently-active runner before tearing down Xvfb/GStreamer — a
@@ -61,12 +65,15 @@ impl RunnerState {
         stdin: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
         output_tx: broadcast::Sender<String>,
     ) -> Self {
-        let (protocol_tx, _) = broadcast::channel(100);
+        let (protocol_tx, _) = broadcast::channel(
+            crate::runtime::native_runner_codec::NATIVE_RUNNER_PROTOCOL_CHANNEL_CAPACITY,
+        );
         Self {
             process,
             stdin: Some(stdin),
             output_tx,
             protocol_tx,
+            native_output_lifecycle: Arc::new(NativeRunnerOutputLifecycle::new()),
             session_id: None,
             is_gui: false,
             is_hmr_capable: false,

@@ -632,6 +632,9 @@ pub async fn run_java(
         stdin: Some(stdin.clone()),
         output_tx: log_tx,
         protocol_tx,
+        native_output_lifecycle: Arc::new(
+            crate::runtime::native_runner_codec::NativeRunnerOutputLifecycle::new(),
+        ),
         session_id: Some(session_id.to_string()),
         is_gui: req.is_gui,
         is_hmr_capable: false, // Java doesn't support in-process HMR

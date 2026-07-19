@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::rtp::packet::Packet;
 use webrtc_util::Unmarshal;
@@ -24,6 +24,14 @@ use crate::infra::constants::GUI_TOOLS;
 use crate::infra::messages::CompileRequest;
 use crate::runtime::gpu_runtime_proof::{
     verify_strict_gpu_runtime_proof, StrictGpuRuntimeProofExpectation, VerifiedGpuRuntimeProof,
+};
+use crate::runtime::native_runner_codec::{
+    BoundedUtf8RecordReader, NativeRunnerOutputEvent, NativeRunnerOutputLifecycle,
+    NativeRunnerOutputStream, NativeRunnerResourceFault, NativeRunnerResourceFaultKind,
+    NATIVE_RUNNER_GENERAL_CHANNEL_CAPACITY, NATIVE_RUNNER_GENERAL_CHANNEL_MAX_RETAINED_BYTES,
+    NATIVE_RUNNER_OUTPUT_RECORD_MAX_BYTES, NATIVE_RUNNER_PROTOCOL_CHANNEL_CAPACITY,
+    NATIVE_RUNNER_PROTOCOL_CHANNEL_MAX_RETAINED_BYTES, RUNNER_STDOUT_MODE_ENV,
+    RUNNER_STDOUT_TEXT_MODE_V1,
 };
 use crate::runtime::runner_protocol::{
     decode_runner_command_token, parse_runner_protocol_ack, parse_runner_runtime_control_ack,
@@ -312,6 +320,51 @@ async fn send_structured_log_dc_text_bounded(
         all_sent &= send_log_dc_text_bounded(dc, chunk, label).await;
     }
     all_sent
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionNativeRunnerResourceFault<'a> {
+    session_id: Option<&'a str>,
+    #[serde(flatten)]
+    diagnostic: NativeRunnerResourceFault,
+}
+
+async fn emit_native_runner_resource_fault(
+    dc: &Arc<RTCDataChannel>,
+    session_id: Option<&str>,
+    stream: NativeRunnerOutputStream,
+    fault: NativeRunnerResourceFaultKind,
+) {
+    debug_log!(
+        "[Runner Output] resource fault stream={} fault={} record_limit_bytes={}",
+        stream.as_str(),
+        fault.as_str(),
+        NATIVE_RUNNER_OUTPUT_RECORD_MAX_BYTES
+    );
+    let envelope = SessionNativeRunnerResourceFault {
+        session_id,
+        diagnostic: NativeRunnerResourceFault::new(
+            stream,
+            fault,
+            NATIVE_RUNNER_OUTPUT_RECORD_MAX_BYTES,
+        ),
+    };
+    let _ = send_log_dc_text_bounded(
+        dc,
+        serde_json::to_string(&envelope).unwrap_or_default(),
+        "runner-resource-fault",
+    )
+    .await;
+}
+
+fn mark_native_runner_output_fault(
+    lifecycle: &Arc<NativeRunnerOutputLifecycle>,
+    fault_notification: &watch::Sender<bool>,
+) {
+    if lifecycle.record_fault() {
+        fault_notification.send_replace(true);
+    }
 }
 
 /// Emit a lifecycle-progress message on the build-log DC so the MCP +
@@ -1049,6 +1102,63 @@ async fn invalidate_runner_after_command_failure(state: &mut RunnerState) {
     state.widget_hashes.clear();
 }
 
+async fn invalidate_runner_after_native_output_fault(
+    runner_store: Arc<tokio::sync::Mutex<Option<RunnerState>>>,
+    expected_pid: u32,
+    expected_runtime_control_session_id: String,
+    lifecycle: Arc<NativeRunnerOutputLifecycle>,
+    mut fault_notification: watch::Receiver<bool>,
+) {
+    loop {
+        if *fault_notification.borrow_and_update() {
+            break;
+        }
+        if fault_notification.changed().await.is_err() {
+            return;
+        }
+    }
+    if !lifecycle.process_faulted() {
+        return;
+    }
+
+    let mut guard = runner_store.lock().await;
+    let Some(state) = guard.as_mut() else {
+        return;
+    };
+    let process_matches = state.process.as_ref().and_then(|child| child.id()) == Some(expected_pid);
+    let control_session_matches = state.runner_runtime_control_session_id.as_deref()
+        == Some(expected_runtime_control_session_id.as_str());
+    if process_matches && control_session_matches {
+        invalidate_runner_after_command_failure(state).await;
+    }
+}
+
+async fn reject_faulted_native_runner(state: &mut RunnerState, stage: &str) -> Result<()> {
+    if state.native_output_lifecycle.process_faulted() {
+        invalidate_runner_after_command_failure(state).await;
+        anyhow::bail!("runner native output contract failed before {stage}; process invalidated");
+    }
+    Ok(())
+}
+
+async fn begin_native_runner_execution(state: &mut RunnerState) -> Result<()> {
+    if state.native_output_lifecycle.begin_execution() {
+        return Ok(());
+    }
+    invalidate_runner_after_command_failure(state).await;
+    anyhow::bail!("runner native output contract was not healthy at execution start");
+}
+
+async fn commit_native_runner_execution_success(state: &mut RunnerState) -> Result<()> {
+    if state.native_output_lifecycle.try_commit_execution_success() {
+        return Ok(());
+    }
+    invalidate_runner_after_command_failure(state).await;
+    anyhow::bail!(
+        "runner native output fault won the terminal transition before successful completion"
+    );
+}
+
 fn same_session_full_device_abi_changed(
     current_session: Option<&str>,
     requested_session: Option<&str>,
@@ -1301,6 +1411,7 @@ pub async fn handle_runner_execution(
             Some(child) => matches!(child.try_wait(), Ok(None)),
             None => false,
         };
+        let native_output_healthy = !state.native_output_lifecycle.process_faulted();
         let gui_mode_same = state.is_gui == req.is_gui;
         let resolution_same = state.width == req_width && state.height == req_height;
         let session_same =
@@ -1313,19 +1424,20 @@ pub async fn handle_runner_execution(
                 next_device_abi.as_deref(),
             );
         }
-        debug_log!("[Main] Existing runner: alive={}, is_gui={}, gui_mode_same={}, resolution_same={}, session_same={}, current_session={:?}, requested_session={:?}, has_on_update={}, reload_policy_allow_existing={}, reload_policy_reasons={}",
-            runner_alive, state.is_gui, gui_mode_same, resolution_same, session_same, state.session_id.as_deref(), session_id.as_deref(), has_on_update, reload_policy.allow_existing_runner_reload, reload_policy.reason_summary());
+        debug_log!("[Main] Existing runner: alive={}, native_output_healthy={}, is_gui={}, gui_mode_same={}, resolution_same={}, session_same={}, current_session={:?}, requested_session={:?}, has_on_update={}, reload_policy_allow_existing={}, reload_policy_reasons={}",
+            runner_alive, native_output_healthy, state.is_gui, gui_mode_same, resolution_same, session_same, state.session_id.as_deref(), session_id.as_deref(), has_on_update, reload_policy.allow_existing_runner_reload, reload_policy.reason_summary());
 
         // HMR enabled: reuse running process when alive AND GUI mode and
         // resolution/session identity match. Reusing a runner across
         // sessions can send HMR commands into the previous workspace.
-        runner_reuse_allowed(
-            &reload_policy,
-            runner_alive,
-            gui_mode_same,
-            resolution_same,
-            session_same,
-        )
+        native_output_healthy
+            && runner_reuse_allowed(
+                &reload_policy,
+                runner_alive,
+                gui_mode_same,
+                resolution_same,
+                session_same,
+            )
     } else {
         false
     };
@@ -1876,6 +1988,7 @@ pub async fn handle_runner_execution(
                 RUNNER_RUNTIME_CONTROL_SESSION_ENV,
                 &runner_runtime_control_session_id,
             )
+            .env(RUNNER_STDOUT_MODE_ENV, RUNNER_STDOUT_TEXT_MODE_V1)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1980,23 +2093,34 @@ pub async fn handle_runner_execution(
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
         let stdin = Arc::new(tokio::sync::Mutex::new(child.stdin.take().unwrap()));
+        let native_output_lifecycle = Arc::new(NativeRunnerOutputLifecycle::new());
+        let (native_output_fault_notification, native_output_fault_receiver) =
+            watch::channel(false);
+        let spawned_runner_pid = child.id();
 
-        let (log_tx, _) = tokio::sync::broadcast::channel::<String>(100);
+        let (log_tx, _) =
+            tokio::sync::broadcast::channel::<String>(NATIVE_RUNNER_GENERAL_CHANNEL_CAPACITY);
         let log_tx_clone = log_tx.clone();
-        let (protocol_tx, _) = tokio::sync::broadcast::channel::<String>(100);
+        let (protocol_tx, _) =
+            tokio::sync::broadcast::channel::<String>(NATIVE_RUNNER_PROTOCOL_CHANNEL_CAPACITY);
+        debug_assert!(NATIVE_RUNNER_GENERAL_CHANNEL_MAX_RETAINED_BYTES <= 128 * 1024 * 1024);
+        debug_assert!(NATIVE_RUNNER_PROTOCOL_CHANNEL_MAX_RETAINED_BYTES <= 64 * 1024 * 1024);
         let protocol_tx_stdout = protocol_tx.clone();
         let protocol_tx_stderr = protocol_tx.clone();
 
         // Forward stdout/stderr to log_dc
         let ctx_clone = ctx.clone();
         let session_id_clone = session_id.clone();
+        let stdout_lifecycle = native_output_lifecycle.clone();
+        let stdout_fault_notification = native_output_fault_notification.clone();
 
         // Stdout Reader
         tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(line) = reader.next_line().await {
-                match line {
-                    Some(l) => {
+            let mut reader =
+                BoundedUtf8RecordReader::new(stdout, NATIVE_RUNNER_OUTPUT_RECORD_MAX_BYTES);
+            loop {
+                match reader.next_event().await {
+                    Ok(Some(NativeRunnerOutputEvent::Record(l))) => {
                         let route =
                             route_runner_output_line(&l, &log_tx_clone, &protocol_tx_stdout);
                         if route != RunnerOutputRoute::General {
@@ -2019,7 +2143,34 @@ pub async fn handle_runner_execution(
                         )
                         .await;
                     }
-                    None => break,
+                    Ok(Some(NativeRunnerOutputEvent::ResourceFault(fault))) => {
+                        mark_native_runner_output_fault(
+                            &stdout_lifecycle,
+                            &stdout_fault_notification,
+                        );
+                        emit_native_runner_resource_fault(
+                            &ctx_clone.log_dc,
+                            session_id_clone.as_deref(),
+                            NativeRunnerOutputStream::Stdout,
+                            fault,
+                        )
+                        .await;
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        mark_native_runner_output_fault(
+                            &stdout_lifecycle,
+                            &stdout_fault_notification,
+                        );
+                        emit_native_runner_resource_fault(
+                            &ctx_clone.log_dc,
+                            session_id_clone.as_deref(),
+                            NativeRunnerOutputStream::Stdout,
+                            NativeRunnerResourceFaultKind::OutputReadFailed,
+                        )
+                        .await;
+                        break;
+                    }
                 }
             }
         });
@@ -2027,13 +2178,16 @@ pub async fn handle_runner_execution(
         let ctx_clone2 = ctx.clone();
         let session_id_clone2 = session_id.clone();
         let log_tx_clone2 = log_tx.clone();
+        let stderr_lifecycle = native_output_lifecycle.clone();
+        let stderr_fault_notification = native_output_fault_notification.clone();
 
         // Stderr Reader
         tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(line) = reader.next_line().await {
-                match line {
-                    Some(l) => {
+            let mut reader =
+                BoundedUtf8RecordReader::new(stderr, NATIVE_RUNNER_OUTPUT_RECORD_MAX_BYTES);
+            loop {
+                match reader.next_event().await {
+                    Ok(Some(NativeRunnerOutputEvent::Record(l))) => {
                         let route =
                             route_runner_output_line(&l, &log_tx_clone2, &protocol_tx_stderr);
                         if route != RunnerOutputRoute::General {
@@ -2074,10 +2228,38 @@ pub async fn handle_runner_execution(
                         )
                         .await;
                     }
-                    None => break,
+                    Ok(Some(NativeRunnerOutputEvent::ResourceFault(fault))) => {
+                        mark_native_runner_output_fault(
+                            &stderr_lifecycle,
+                            &stderr_fault_notification,
+                        );
+                        emit_native_runner_resource_fault(
+                            &ctx_clone2.log_dc,
+                            session_id_clone2.as_deref(),
+                            NativeRunnerOutputStream::Stderr,
+                            fault,
+                        )
+                        .await;
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        mark_native_runner_output_fault(
+                            &stderr_lifecycle,
+                            &stderr_fault_notification,
+                        );
+                        emit_native_runner_resource_fault(
+                            &ctx_clone2.log_dc,
+                            session_id_clone2.as_deref(),
+                            NativeRunnerOutputStream::Stderr,
+                            NativeRunnerResourceFaultKind::OutputReadFailed,
+                        )
+                        .await;
+                        break;
+                    }
                 }
             }
         });
+        drop(native_output_fault_notification);
 
         let uncommitted_module_state = uncommitted_runner_module_state();
         *guard = Some(RunnerState {
@@ -2085,6 +2267,7 @@ pub async fn handle_runner_execution(
             stdin: Some(stdin.clone()),
             output_tx: log_tx,
             protocol_tx,
+            native_output_lifecycle: native_output_lifecycle.clone(),
             session_id: session_id.clone(),
             is_gui: req.is_gui,
             is_hmr_capable: has_on_update,
@@ -2102,12 +2285,22 @@ pub async fn handle_runner_execution(
             loaded_core_path: uncommitted_module_state.loaded_core_path,
             loaded_gui_path: uncommitted_module_state.loaded_gui_path,
             loaded_device_abi: uncommitted_module_state.loaded_device_abi,
-            runner_runtime_control_session_id: Some(runner_runtime_control_session_id),
+            runner_runtime_control_session_id: Some(runner_runtime_control_session_id.clone()),
             gpu_runtime_protocol_process_id: None,
             gpu_runtime_protocol_session_id: None,
             loaded_widget_paths: HashMap::new(),
             widget_hashes: HashMap::new(),
         });
+
+        if let Some(expected_pid) = spawned_runner_pid {
+            tokio::spawn(invalidate_runner_after_native_output_fault(
+                ctx.runner_store.clone(),
+                expected_pid,
+                runner_runtime_control_session_id.clone(),
+                native_output_lifecycle,
+                native_output_fault_receiver,
+            ));
+        }
 
         // Set up xdotool input channel for GUI apps (only on fresh start, not reuse)
         if req.is_gui && sdl_tx_opt.is_none() {
@@ -2209,6 +2402,8 @@ pub async fn handle_runner_execution(
         // reloads — see UNIVERSAL_SPLIT_PROMPT's HOST RUNNER GENERATION
         // section. So we send the same commands in both modes, no
         // branching needed.
+        begin_native_runner_execution(state).await?;
+        reject_faulted_native_runner(state, "module command delivery").await?;
         if let Some(stdin_arc) = &state.stdin {
             let strict_gpu_hot_reload = runner_has_hot_device_epoch(
                 existing_runner_can_hmr,
@@ -2415,6 +2610,7 @@ pub async fn handle_runner_execution(
                         status
                     );
                 }
+                reject_faulted_native_runner(state, "loaded module state publication").await?;
             } else {
                 anyhow::bail!(
                     "Runner process exited before module loading could begin ({})",
@@ -2439,6 +2635,10 @@ pub async fn handle_runner_execution(
             state.gpu_runtime_protocol_process_id = Some(runner_pid);
             state.gpu_runtime_protocol_session_id = Some(runtime_session_id.to_string());
         }
+    }
+
+    if let Some(state) = guard.as_mut() {
+        commit_native_runner_execution_success(state).await?;
     }
 
     // Send build-status "done" so the frontend's compile() promise resolves.
@@ -3788,5 +3988,19 @@ mod tests {
         let command_summary = runner_command_log_summary("gpu_reload_v4 sentinel-command-bytes");
         assert!(!command_summary.contains("sentinel"));
         assert!(command_summary.contains("sha256=sha256:"));
+    }
+
+    #[test]
+    fn native_output_fault_signal_is_sticky_and_observable() {
+        let lifecycle = std::sync::Arc::new(
+            crate::runtime::native_runner_codec::NativeRunnerOutputLifecycle::new(),
+        );
+        let (fault_tx, fault_rx) = tokio::sync::watch::channel(false);
+
+        super::mark_native_runner_output_fault(&lifecycle, &fault_tx);
+        super::mark_native_runner_output_fault(&lifecycle, &fault_tx);
+
+        assert!(lifecycle.process_faulted());
+        assert!(*fault_rx.borrow());
     }
 }

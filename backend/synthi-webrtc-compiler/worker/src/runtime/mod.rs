@@ -10,6 +10,7 @@ pub mod gpu_runtime_proof;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_runtime_watchdog;
 pub mod loader;
+pub mod native_runner_codec;
 pub mod process_isolation;
 // pub mod runner_bin; // Removed to avoid circular dependency / duplicate verification
 pub mod runner_logic;

@@ -50,6 +50,7 @@ use worker::runtime::gpu_runtime_proof::{
     verify_strict_gpu_runtime_proof, StrictGpuRuntimeProofExpectation,
 };
 use worker::runtime::loader;
+use worker::runtime::native_runner_codec::{RunnerStdoutMode, RUNNER_STDOUT_MODE_ENV};
 use worker::runtime::runner_protocol::{
     canonical_runner_runtime_control_session_id, RunnerRuntimeControlAck,
     RunnerRuntimeControlStatus, RUNNER_RUNTIME_CONTROL_SESSION_ENV,
@@ -2110,7 +2111,30 @@ fn select_backend_for_runner() -> Option<worker::runtime::backends::selector::Se
     Some(selected)
 }
 
+fn raw_frame_transport_contract_available(
+    target_supports_raw_frames: bool,
+    unsafe_in_process: bool,
+    worker_managed_display: bool,
+    x11_connection_ready: bool,
+    shm_capture_ready: bool,
+) -> bool {
+    target_supports_raw_frames
+        && unsafe_in_process
+        && !worker_managed_display
+        && x11_connection_ready
+        && shm_capture_ready
+}
+
 fn main() {
+    let configured_stdout_mode = std::env::var(RUNNER_STDOUT_MODE_ENV).ok();
+    let stdout_mode = match RunnerStdoutMode::parse(configured_stdout_mode.as_deref()) {
+        Ok(mode) => mode,
+        Err(error) => {
+            eprintln!("[Runner] FATAL: invalid stdout mode contract: {error}");
+            std::process::exit(1);
+        }
+    };
+
     let runner_runtime_control_session_id = match configured_runner_runtime_control_session_id(
         std::env::var(RUNNER_RUNTIME_CONTROL_SESSION_ENV).ok(),
     ) {
@@ -2149,6 +2173,7 @@ fn main() {
     //    - Exists only for debugging/profiling where isolation overhead is unacceptable
     // ============================================================
     let execution_mode = process_isolation::ExecutionMode::from_env();
+    let unsafe_in_process = !execution_mode.is_safe();
 
     match execution_mode {
         process_isolation::ExecutionMode::ProcessIsolated => {
@@ -2377,6 +2402,31 @@ fn main() {
         (0u32, ptr::null_mut())
     };
 
+    #[cfg(target_os = "linux")]
+    let raw_frame_transport_available = raw_frame_transport_contract_available(
+        true,
+        unsafe_in_process,
+        worker_managed_display,
+        x11_conn.is_some(),
+        shm_seg != 0 && !shm_ptr.is_null(),
+    );
+    #[cfg(not(target_os = "linux"))]
+    let raw_frame_transport_available = raw_frame_transport_contract_available(
+        false,
+        unsafe_in_process,
+        worker_managed_display,
+        false,
+        false,
+    );
+    let stdout_mode = match stdout_mode.validate_transport_available(raw_frame_transport_available)
+    {
+        Ok(mode) => mode,
+        Err(error) => {
+            eprintln!("[Runner] FATAL: invalid stdout mode contract: {error}");
+            std::process::exit(1);
+        }
+    };
+
     // ULTRAPLAN Lightning Phase 10g.2-10g.4 — backend init via
     // WindowBackend trait. The selector picks a backend from the
     // sidecar; the trait's init + create_window run. For SDL2 we
@@ -2527,23 +2577,31 @@ fn main() {
     // Dedicated writer so rendering never blocks on stdout backpressure
     #[cfg(target_os = "linux")]
     {
-        // Only spawn video writer if NOT in ProcessIsolated mode to prevent IPC corruption
-        if !matches!(
-            execution_mode,
-            process_isolation::ExecutionMode::ProcessIsolated
-        ) {
-            std::thread::spawn(move || {
-                let mut stdout = io::stdout();
-                while let Ok(buf) = frame_rx.recv() {
-                    if let Err(e) = stdout.write_all(&buf) {
-                        eprintln!("[Runner] stdout writer error: {}", e);
-                        break;
+        if stdout_mode.writes_raw_frame_bytes() {
+            // Only spawn video writer if NOT in ProcessIsolated mode to prevent IPC corruption.
+            if !matches!(
+                execution_mode,
+                process_isolation::ExecutionMode::ProcessIsolated
+            ) {
+                std::thread::spawn(move || {
+                    let mut stdout = io::stdout();
+                    while let Ok(buf) = frame_rx.recv() {
+                        if let Err(e) = stdout.write_all(&buf) {
+                            eprintln!("[Runner] stdout writer error: {}", e);
+                            break;
+                        }
+                        let _ = stdout.flush();
                     }
-                    let _ = stdout.flush();
-                }
-            });
+                });
+            } else {
+                drop(frame_rx);
+                debug_log!(
+                    "[Runner] Raw video output DISABLED in ProcessIsolated mode (IPC active)"
+                );
+            }
         } else {
-            debug_log!("[Runner] Raw video output DISABLED in ProcessIsolated mode (IPC active)");
+            drop(frame_rx);
+            debug_log!("[Runner] Raw video output DISABLED by stdout transport contract");
         }
     }
 
@@ -4021,17 +4079,19 @@ fn main() {
         }
 
         #[cfg(target_os = "linux")]
-        if let Some(ref conn) = x11_conn {
-            worker::runtime::runner::capture::capture_frame(
-                conn,
-                x11_root,
-                shm_seg,
-                shm_ptr,
-                &frame_tx,
-                &mut frame_count,
-                &mut frames_sent,
-                &mut last_frame_log,
-            );
+        if stdout_mode.writes_raw_frame_bytes() {
+            if let Some(ref conn) = x11_conn {
+                worker::runtime::runner::capture::capture_frame(
+                    conn,
+                    x11_root,
+                    shm_seg,
+                    shm_ptr,
+                    &frame_tx,
+                    &mut frame_count,
+                    &mut frames_sent,
+                    &mut last_frame_log,
+                );
+            }
         }
 
         // Cap at ~60 FPS
@@ -4061,7 +4121,8 @@ mod tests {
     };
     use super::{
         configured_runner_runtime_control_session_id, decode_gpu_kernel_command_token,
-        device_load_abi_version, is_runtime_execution_paused, runner_command_log_summary,
+        device_load_abi_version, is_runtime_execution_paused,
+        raw_frame_transport_contract_available, runner_command_log_summary,
         runtime_control_command_ack_line, runtime_control_status_line,
         should_process_runner_command, RunnerRuntimeControlStatus,
     };
@@ -4074,6 +4135,23 @@ mod tests {
 
     fn runtime_control_session_id() -> String {
         format!("runner-control-session:{}", "5".repeat(32))
+    }
+
+    #[test]
+    fn raw_frame_contract_requires_concrete_self_managed_capture_transport() {
+        assert!(raw_frame_transport_contract_available(
+            true, true, false, true, true
+        ));
+
+        for unavailable in [
+            raw_frame_transport_contract_available(false, true, false, true, true),
+            raw_frame_transport_contract_available(true, false, false, true, true),
+            raw_frame_transport_contract_available(true, true, true, true, true),
+            raw_frame_transport_contract_available(true, true, false, false, true),
+            raw_frame_transport_contract_available(true, true, false, true, false),
+        ] {
+            assert!(!unavailable);
+        }
     }
 
     #[cfg(feature = "gpu-hmr")]
