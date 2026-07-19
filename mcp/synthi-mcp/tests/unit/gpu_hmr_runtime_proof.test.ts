@@ -62,6 +62,7 @@ import {
   evaluateGpuHmrDeterministicVisualMode,
 } from "../../scripts/lib/gpu-hmr-visual-evidence.mjs";
 import {
+  GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
   evaluateGpuHmrProofLedger,
   buildGpuHmrProofLedger,
   queryGpuHmrLedgerInvariants,
@@ -9184,6 +9185,7 @@ describe("GPU HMR runtime output proof classification", () => {
   it("rejects GPU HMR ledger records missing required safety identity", () => {
     const strictLedgerEvidence = acceptedStrictLedgerEvidence();
     const baseRecord = {
+      schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
       project_id: "workspace",
       edit_id: "edit-1",
       backend: "hip",
@@ -9267,6 +9269,13 @@ describe("GPU HMR runtime output proof classification", () => {
     }).gpuHmrSuccess).toBe(true);
 
     const cases = [
+      [
+        (() => {
+          const { schema_version: _schemaVersion, ...record } = baseRecord;
+          return record;
+        })(),
+        "record_schema_version_missing",
+      ],
       [
         (() => {
           const { backend: _backend, ...record } = baseRecord;
