@@ -441,7 +441,7 @@ function epochGenerationGraph({
 }
 
 function retiredEpochProof() {
-  return classifyGpuHmrEpochSwapProof({
+  const proof = classifyGpuHmrEpochSwapProof({
     published: true,
     processId: "pid1",
     runtimeSessionIds: ["runtime-session:test"],
@@ -460,6 +460,18 @@ function retiredEpochProof() {
     oldGenerationRetired: true,
     evidenceRefs: ["evidence:epoch:abc"],
   });
+  return {
+    ...proof,
+    retirementEpoch: "2",
+    retirementProof: "stream_event_proven",
+    retirementResult: "retired_after_quiescent",
+    retirementArtifactHash: `artifact:sha256:${TEST_OLD_ARTIFACT_HASH}`,
+    retirementProcessId: "pid1",
+    retirementRuntimeSessionId: "runtime-session:test",
+    retirementDispatchStream: "default",
+    retirementTimestampMonotonicNs: 1779980000100,
+    retirementEvidenceRefs: ["evidence:epoch-retirement:test:2->3"],
+  };
 }
 
 function safeDispatchProof({
