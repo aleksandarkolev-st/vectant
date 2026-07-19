@@ -66,9 +66,9 @@ use serde_json::{json, Value};
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::adapter_trait::{
     configured_gpu_hmr_runtime_output_oracle_profile_path, normalized_reload_source_edit_id,
-    Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest, AdapterReloadResult,
-    ReloadCapsuleMetadata, VerifiedReloadFirewallReceipt,
-    GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_SCHEMA_VERSION,
+    reload_output_oracle_proof_context_valid, Adapter, AdapterHealth, AdapterInfo,
+    AdapterReloadRequest, AdapterReloadResult, ReloadCapsuleMetadata,
+    VerifiedReloadFirewallReceipt, GPU_HMR_RUNTIME_OUTPUT_ORACLE_PROFILE_SCHEMA_VERSION,
     RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
 };
 use crate::hmr::build_manifest::{
@@ -1134,6 +1134,74 @@ fn validate_runtime_output_oracle_contract_binding(
     Ok(())
 }
 
+fn validate_runtime_output_oracle_expected_contract_v2(
+    metadata: &ReloadCapsuleMetadata,
+    profile: &RuntimeOutputOracleProfile,
+    candidate_artifact_sha256: &str,
+    request_edit_id: &str,
+) -> Result<(String, String), String> {
+    let contract = metadata
+        .compute_expected_output_contract_v2
+        .as_ref()
+        .ok_or_else(|| {
+            "runtime output oracle is missing its caller-derived expected-output contract v2 before module mutation"
+                .to_string()
+        })?;
+    let proof_context = metadata
+        .output_oracle_proof_context
+        .as_ref()
+        .ok_or_else(|| {
+            "runtime output oracle expected-output contract v2 has no sealed proof context before module mutation"
+                .to_string()
+        })?;
+    let binding = contract.binding();
+    let semantics = contract.semantics();
+    if semantics.comparison_mode() != "exact_bytes" {
+        return Err(
+            "runtime output oracle expected-output contract v2 comparison mode is not executable by the byte-exact probe"
+                .to_string(),
+        );
+    }
+    for (label, observed, expected) in [
+        (
+            "artifactAfterHash",
+            binding.artifact_after_hash.as_str(),
+            candidate_artifact_sha256,
+        ),
+        ("editId", binding.edit_id.as_str(), request_edit_id),
+        (
+            "runtimeSessionId",
+            binding.runtime_session_id.as_str(),
+            proof_context.runtime_session_id.as_str(),
+        ),
+        (
+            "outputTargetId",
+            binding.output_target_id.as_str(),
+            profile.output_target_id.as_str(),
+        ),
+        (
+            "oracleCodeHash",
+            binding.oracle_code_hash.as_str(),
+            profile.probe_config_hash.as_str(),
+        ),
+        (
+            "expectedEvidenceHash",
+            semantics.expected_evidence_hash(),
+            profile.expected_sha256.as_str(),
+        ),
+    ] {
+        if observed != expected {
+            return Err(format!(
+                "runtime output oracle expected-output contract v2 {label} mismatch before module mutation"
+            ));
+        }
+    }
+    Ok((
+        contract.contract_hash().to_string(),
+        semantics.semantics_hash().to_string(),
+    ))
+}
+
 fn runtime_output_oracle_token<'a>(label: &str, value: &'a str) -> Result<&'a str, String> {
     let trimmed = value.trim();
     if trimmed.is_empty()
@@ -1528,15 +1596,34 @@ fn pin_runtime_output_oracle_profile(
                 .to_string(),
         );
     }
+    let metadata = req
+        .capsule_metadata
+        .as_ref()
+        .expect("commitment came from metadata");
+    let (expected_output_contract_hash, expected_output_semantics_hash) =
+        validate_runtime_output_oracle_expected_contract_v2(
+            metadata,
+            &profile,
+            candidate_artifact_sha256,
+            &request_edit_id,
+        )?;
+    if !reload_output_oracle_proof_context_valid(metadata, None) {
+        return Err(
+            "runtime output oracle expected-output contract v2 is not sealed by a valid proof context before module mutation"
+                .to_string(),
+        );
+    }
 
     let evidence_line = format!(
-        "[gpu-runtime-boundary] runtime_output_oracle_profile_pin schema=synthi.gpu_hmr.runtime_output_oracle_profile_pin.v1 status=verified profile={} profile_schema={} candidate_artifact_sha256={} fission_output_oracle_contract_sha256={} profile_bytes_sha256={} source_edit_id={} total_buffer_bytes={} total_buffer_bytes_limit={} semantic_contract_binding=verified causal_output_change_required=true proof_authority=prepublication_profile_binding_only_not_gpu_hmr_success accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false",
+        "[gpu-runtime-boundary] runtime_output_oracle_profile_pin schema=synthi.gpu_hmr.runtime_output_oracle_profile_pin.v1 status=verified profile={} profile_schema={} candidate_artifact_sha256={} fission_output_oracle_contract_sha256={} profile_bytes_sha256={} source_edit_id={} compute_expected_output_contract_hash={} compute_expected_output_semantics_hash={} total_buffer_bytes={} total_buffer_bytes_limit={} semantic_contract_binding=verified caller_expected_output_binding=verified causal_output_change_required=true proof_authority=prepublication_profile_binding_only_not_gpu_hmr_success accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false",
         profile.profile_id,
         profile.schema_version,
         candidate_artifact_sha256,
         contract_sha256,
         profile_bytes_sha256,
         request_edit_id,
+        expected_output_contract_hash,
+        expected_output_semantics_hash,
         validated_profile.total_buffer_bytes,
         total_bytes_limit,
     );
@@ -7302,6 +7389,82 @@ mod tests {
         profile_bytes
     }
 
+    fn expected_output_contract_for_test(
+        source_edit_id: &str,
+        artifact_after_hash: &str,
+        runtime_session: &str,
+        output_target_id: &str,
+        oracle_code_hash: &str,
+        expected_sha256: &str,
+    ) -> crate::infra::compute_expected_output_semantics::ComputeExpectedOutputContractV2 {
+        let semantics_material = serde_json::json!([
+            crate::infra::compute_expected_output_semantics::COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "exact_bytes",
+            output_target_id,
+            "0",
+            "16",
+            "f32",
+            ["4"],
+            "4",
+            "little_endian",
+            "0",
+            null,
+            null,
+            expected_sha256,
+        ]);
+        let mut hash_material =
+            b"synthi.gpu_hmr.compute_expected_output_semantics_hash.v1\0".to_vec();
+        hash_material.extend(
+            serde_json::to_vec(&semantics_material).expect("serialize test semantics material"),
+        );
+        let semantics_hash = format!("sha256:{}", sha256_hex_bytes(&hash_material));
+        let semantics: crate::infra::compute_expected_output_semantics::ComputeExpectedOutputSemantics =
+            serde_json::from_value(serde_json::json!({
+            "schemaVersion": crate::infra::compute_expected_output_semantics::COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "comparisonMode": "exact_bytes",
+            "outputTargetId": output_target_id,
+            "byteOffset": 0,
+            "byteLength": 16,
+            "dtype": "f32",
+            "shape": [4],
+            "elementCount": 4,
+            "byteOrder": "little_endian",
+            "toleranceDecimal": "0",
+            "expectedValuesDecimal": null,
+            "expectedValuesHash": null,
+            "expectedRawHash": expected_sha256,
+            "semanticsHash": semantics_hash,
+            }))
+            .expect("canonical test expected-output semantics");
+        semantics
+            .derive_contract_v2(
+                crate::infra::compute_expected_output_semantics::ComputeExpectedOutputContractBindingV2 {
+                    project_id: "workspace:test-generic".to_string(),
+                    edit_id: source_edit_id.to_string(),
+                    artifact_after_hash: artifact_after_hash.to_string(),
+                    output_target_id: output_target_id.to_string(),
+                    oracle_code_hash: oracle_code_hash.to_string(),
+                    compile_transport_nonce:
+                        "gpu-proof-transport-request:0123456789abcdef0123456789abcdef"
+                            .to_string(),
+                    runtime_session_id: runtime_session.to_string(),
+                },
+            )
+            .expect("derive test expected-output contract")
+    }
+
+    fn seal_output_oracle_proof_context_for_test(metadata: &mut ReloadCapsuleMetadata) {
+        metadata.output_oracle_proof_context = None;
+        assert!(
+            crate::hmr::adapter_trait::bind_reload_output_oracle_proof_context(
+                metadata,
+                &format!("gpu-proof:{}", "e".repeat(64)),
+                "2026-07-19T00:00:00Z",
+                "runtime-session:test-proof",
+            )
+        );
+    }
+
     fn write_runtime_output_oracle_profile_for_request(
         request: &mut AdapterReloadRequest,
         profile: &serde_json::Value,
@@ -7392,6 +7555,34 @@ mod tests {
             "probeMode": profile["probeMode"],
             "probeConfigHash": profile["probeConfigHash"],
         });
+        let artifact_sha256 = format!("sha256:{artifact_hash}");
+        let mut capsule_metadata = ReloadCapsuleMetadata {
+            fission_output_oracle_contract: Some(fission_output_oracle_contract.clone()),
+            compute_expected_output_contract_v2: Some(expected_output_contract_for_test(
+                &source_edit_id,
+                &artifact_sha256,
+                "runtime-session:test-proof",
+                profile["outputTargetId"].as_str().unwrap(),
+                profile["probeConfigHash"].as_str().unwrap(),
+                profile["expectedSha256"].as_str().unwrap(),
+            )),
+            output_oracle_profile_commitment: Some(
+                crate::hmr::adapter_trait::ReloadOutputOracleProfileCommitment {
+                    schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION
+                        .to_string(),
+                    candidate_artifact_sha256: artifact_sha256,
+                    fission_output_oracle_contract_sha256: format!(
+                        "sha256:{}",
+                        stable_json_hash(&fission_output_oracle_contract)
+                    ),
+                    profile_bytes_sha256: format!("sha256:{}", sha256_hex_bytes(&profile_bytes)),
+                    edit_id: source_edit_id.clone(),
+                },
+            ),
+            proof_hash: Some(format!("sha256:{}", "e".repeat(64))),
+            ..ReloadCapsuleMetadata::default()
+        };
+        seal_output_oracle_proof_context_for_test(&mut capsule_metadata);
         let pid = std::process::id();
         let mut manifest = BuildManifest::for_language("test-preview", "cuda")
             .with_slot(BuildSlot::Custom("test-gpu-sidecar".to_string()))
@@ -7406,26 +7597,7 @@ mod tests {
             changed_files,
             build_manifest: manifest,
             artifact_blob: None,
-            capsule_metadata: Some(ReloadCapsuleMetadata {
-                fission_output_oracle_contract: Some(fission_output_oracle_contract.clone()),
-                output_oracle_profile_commitment: Some(
-                    crate::hmr::adapter_trait::ReloadOutputOracleProfileCommitment {
-                        schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION
-                            .to_string(),
-                        candidate_artifact_sha256: format!("sha256:{artifact_hash}"),
-                        fission_output_oracle_contract_sha256: format!(
-                            "sha256:{}",
-                            stable_json_hash(&fission_output_oracle_contract)
-                        ),
-                        profile_bytes_sha256: format!(
-                            "sha256:{}",
-                            sha256_hex_bytes(&profile_bytes)
-                        ),
-                        edit_id: source_edit_id,
-                    },
-                ),
-                ..ReloadCapsuleMetadata::default()
-            }),
+            capsule_metadata: Some(capsule_metadata),
             firewall_evidence: ReloadFirewallEvidence::from_gpu_device_sidecar_boundary(
                 "gpu_module_adapter_test:request_with_artifact",
                 pid,
@@ -8756,10 +8928,121 @@ mod tests {
         let candidate_sha256 = format!("sha256:{}", sha256_hex_bytes(b"profile-pin-candidate"));
         let valid = request_with_artifact(&artifact_path, vec!["device.hip".into()]);
 
-        assert!(matches!(
-            pin_runtime_output_oracle_profile(&valid, &candidate_sha256, true),
-            Ok(RuntimeOutputOracleProfilePin::Committed(_))
-        ));
+        let valid_pin = pin_runtime_output_oracle_profile(&valid, &candidate_sha256, true)
+            .expect("valid committed output oracle profile");
+        let RuntimeOutputOracleProfilePin::Committed(valid_pin) = valid_pin else {
+            panic!("hot output oracle profile must be committed");
+        };
+        assert!(valid_pin
+            .evidence_line
+            .contains("caller_expected_output_binding=verified"));
+        assert!(valid_pin
+            .evidence_line
+            .contains("compute_expected_output_contract_hash=sha256:"));
+        assert!(valid_pin
+            .evidence_line
+            .contains("compute_expected_output_semantics_hash=sha256:"));
+
+        let profile: serde_json::Value =
+            serde_json::from_slice(&install_runtime_output_oracle_profile_for_tests()).unwrap();
+        let source_edit_id = valid.source_edit_id.as_deref().unwrap();
+        let output_target_id = profile["outputTargetId"].as_str().unwrap();
+        let oracle_code_hash = profile["probeConfigHash"].as_str().unwrap();
+        let expected_sha256 = profile["expectedSha256"].as_str().unwrap();
+
+        let mut missing_v2 = valid.clone();
+        let missing_metadata = missing_v2.capsule_metadata.as_mut().unwrap();
+        missing_metadata.compute_expected_output_contract_v2 = None;
+        seal_output_oracle_proof_context_for_test(missing_metadata);
+        assert!(
+            pin_runtime_output_oracle_profile(&missing_v2, &candidate_sha256, true)
+                .unwrap_err()
+                .contains("missing its caller-derived expected-output contract v2")
+        );
+
+        for (label, contract) in [
+            (
+                "artifactAfterHash",
+                expected_output_contract_for_test(
+                    source_edit_id,
+                    &format!("sha256:{}", "1".repeat(64)),
+                    "runtime-session:test-proof",
+                    output_target_id,
+                    oracle_code_hash,
+                    expected_sha256,
+                ),
+            ),
+            (
+                "editId",
+                expected_output_contract_for_test(
+                    &format!("source-edit:sha256:{}", "2".repeat(64)),
+                    &candidate_sha256,
+                    "runtime-session:test-proof",
+                    output_target_id,
+                    oracle_code_hash,
+                    expected_sha256,
+                ),
+            ),
+            (
+                "runtimeSessionId",
+                expected_output_contract_for_test(
+                    source_edit_id,
+                    &candidate_sha256,
+                    "runtime-session:substituted",
+                    output_target_id,
+                    oracle_code_hash,
+                    expected_sha256,
+                ),
+            ),
+        ] {
+            let mut forged = valid.clone();
+            forged
+                .capsule_metadata
+                .as_mut()
+                .unwrap()
+                .compute_expected_output_contract_v2 = Some(contract);
+            let error =
+                pin_runtime_output_oracle_profile(&forged, &candidate_sha256, true).unwrap_err();
+            assert!(error.contains(label), "unexpected refusal: {error}");
+        }
+
+        let substituted_probe = format!("sha256:{}", "3".repeat(64));
+        let substituted_expected = format!("sha256:{}", "4".repeat(64));
+        for (label, target, probe, expected) in [
+            (
+                "outputTargetId",
+                "buffer:substituted",
+                oracle_code_hash,
+                expected_sha256,
+            ),
+            (
+                "oracleCodeHash",
+                output_target_id,
+                substituted_probe.as_str(),
+                expected_sha256,
+            ),
+            (
+                "expectedEvidenceHash",
+                output_target_id,
+                oracle_code_hash,
+                substituted_expected.as_str(),
+            ),
+        ] {
+            let mut forged = valid.clone();
+            let metadata = forged.capsule_metadata.as_mut().unwrap();
+            metadata.compute_expected_output_contract_v2 = Some(expected_output_contract_for_test(
+                source_edit_id,
+                &candidate_sha256,
+                "runtime-session:test-proof",
+                target,
+                probe,
+                expected,
+            ));
+            seal_output_oracle_proof_context_for_test(metadata);
+            let error =
+                pin_runtime_output_oracle_profile(&forged, &candidate_sha256, true).unwrap_err();
+            assert!(error.contains(label), "unexpected refusal: {error}");
+        }
 
         fs::remove_file(configured_gpu_hmr_runtime_output_oracle_profile_path()).unwrap();
         assert!(
