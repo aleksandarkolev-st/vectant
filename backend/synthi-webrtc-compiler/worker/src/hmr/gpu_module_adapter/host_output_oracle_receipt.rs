@@ -21,8 +21,16 @@ pub const HOST_OUTPUT_ORACLE_RECEIPT_SCHEMA: &str =
 pub const HOST_OUTPUT_ORACLE_RECEIPT_AUTHORITY: &str =
     "worker_host_owned_full_dtoh_bytes_after_committed_dispatch_slot";
 
-const MAX_RETAINED_RECEIPTS: usize = 32;
+const MAX_RETAINED_RECEIPT_COUNT: usize = 32;
+const MAX_RETAINED_READBACK_BYTES: usize = 128 * 1024 * 1024;
 const DETERMINISTIC_SLICE_MAX_BYTES: usize = 4096;
+
+const _: () = {
+    assert!(MAX_RETAINED_RECEIPT_COUNT > 0);
+    assert!(MAX_RETAINED_RECEIPT_COUNT < usize::MAX);
+    assert!(MAX_RETAINED_READBACK_BYTES > 0);
+    assert!(MAX_RETAINED_READBACK_BYTES < usize::MAX);
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct HostOutputOracleRequestBinding {
@@ -151,11 +159,207 @@ thread_local! {
     static ACTIVE_REQUEST_BINDING: RefCell<Option<HostOutputOracleRequestBinding>> = const { RefCell::new(None) };
 }
 
-static VERIFIED_RECEIPTS: OnceLock<Mutex<VecDeque<HostVerifiedComputeReadbackReceipt>>> =
-    OnceLock::new();
+#[derive(Debug, Clone, Copy)]
+struct ReceiptRetentionLimits {
+    max_receipt_count: usize,
+    max_readback_bytes: usize,
+}
 
-fn receipt_store() -> &'static Mutex<VecDeque<HostVerifiedComputeReadbackReceipt>> {
-    VERIFIED_RECEIPTS.get_or_init(|| Mutex::new(VecDeque::new()))
+impl ReceiptRetentionLimits {
+    fn new(max_receipt_count: usize, max_readback_bytes: usize) -> Result<Self, String> {
+        if max_receipt_count == 0 || max_receipt_count > MAX_RETAINED_RECEIPT_COUNT {
+            return Err(format!(
+                "host output oracle receipt count limit must be in 1..={MAX_RETAINED_RECEIPT_COUNT}"
+            ));
+        }
+        if max_readback_bytes == 0 || max_readback_bytes > MAX_RETAINED_READBACK_BYTES {
+            return Err(format!(
+                "host output oracle readback byte limit must be in 1..={MAX_RETAINED_READBACK_BYTES}"
+            ));
+        }
+        Ok(Self {
+            max_receipt_count,
+            max_readback_bytes,
+        })
+    }
+
+    fn compile_time_maxima() -> Self {
+        Self::new(MAX_RETAINED_RECEIPT_COUNT, MAX_RETAINED_READBACK_BYTES)
+            .expect("host output oracle compile-time receipt retention limits")
+    }
+}
+
+struct VerifiedReceiptStore {
+    receipts: VecDeque<HostVerifiedComputeReadbackReceipt>,
+    retained_receipt_count: usize,
+    retained_readback_bytes: usize,
+    limits: ReceiptRetentionLimits,
+}
+
+fn checked_retention_after_insert(
+    retained_receipt_count: usize,
+    retained_readback_bytes: usize,
+    readback_bytes: usize,
+) -> Result<(usize, usize), String> {
+    let next_receipt_count = retained_receipt_count
+        .checked_add(1)
+        .ok_or_else(|| "host output oracle retained receipt count overflow".to_string())?;
+    let next_readback_bytes = retained_readback_bytes
+        .checked_add(readback_bytes)
+        .ok_or_else(|| {
+            "host output oracle retained readback byte accounting overflow".to_string()
+        })?;
+    Ok((next_receipt_count, next_readback_bytes))
+}
+
+impl VerifiedReceiptStore {
+    fn new(limits: ReceiptRetentionLimits) -> Self {
+        Self {
+            receipts: VecDeque::new(),
+            retained_receipt_count: 0,
+            retained_readback_bytes: 0,
+            limits,
+        }
+    }
+
+    fn with_compile_time_maxima() -> Self {
+        Self::new(ReceiptRetentionLimits::compile_time_maxima())
+    }
+
+    fn validate_accounting(&self) -> Result<(), String> {
+        if self.retained_receipt_count != self.receipts.len() {
+            return Err(format!(
+                "host output oracle retained receipt count accounting mismatch accounted={} actual={}",
+                self.retained_receipt_count,
+                self.receipts.len()
+            ));
+        }
+        let actual_readback_bytes = self.receipts.iter().try_fold(0usize, |total, receipt| {
+            total
+                .checked_add(receipt.readback_bytes.len())
+                .ok_or_else(|| {
+                    "host output oracle retained readback byte consistency overflow".to_string()
+                })
+        })?;
+        if self.retained_readback_bytes != actual_readback_bytes {
+            return Err(format!(
+                "host output oracle retained readback byte accounting mismatch accounted={} actual={actual_readback_bytes}",
+                self.retained_readback_bytes
+            ));
+        }
+        if self.retained_receipt_count > self.limits.max_receipt_count
+            || self.retained_readback_bytes > self.limits.max_readback_bytes
+        {
+            return Err(
+                "host output oracle retained receipt accounting exceeds configured limits"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    fn insert_pinned(
+        &mut self,
+        receipt: &HostVerifiedComputeReadbackReceipt,
+    ) -> Result<(), String> {
+        self.validate_accounting()?;
+        if self.receipts.iter().any(|candidate| {
+            candidate.request_id == receipt.request_id
+                && candidate.source_edit_id == receipt.source_edit_id
+                && candidate.artifact_content_hash == receipt.artifact_content_hash
+        }) {
+            return Err(
+                "host output oracle produced more than one receipt for a reload".to_string(),
+            );
+        }
+
+        let (next_receipt_count, next_readback_bytes) = checked_retention_after_insert(
+            self.retained_receipt_count,
+            self.retained_readback_bytes,
+            receipt.readback_bytes.len(),
+        )?;
+        if next_receipt_count > self.limits.max_receipt_count {
+            return Err(format!(
+                "host output oracle retained receipt count capacity exceeded limit={}",
+                self.limits.max_receipt_count
+            ));
+        }
+        if next_readback_bytes > self.limits.max_readback_bytes {
+            return Err(format!(
+                "host output oracle retained readback byte capacity exceeded limit={}",
+                self.limits.max_readback_bytes
+            ));
+        }
+
+        self.receipts.push_back(receipt.clone());
+        self.retained_receipt_count = next_receipt_count;
+        self.retained_readback_bytes = next_readback_bytes;
+        debug_assert!(self.validate_accounting().is_ok());
+        Ok(())
+    }
+
+    fn remove_at(&mut self, index: usize) -> Result<HostVerifiedComputeReadbackReceipt, String> {
+        self.validate_accounting()?;
+        let readback_bytes = self
+            .receipts
+            .get(index)
+            .ok_or_else(|| "host output oracle receipt removal index is invalid".to_string())?
+            .readback_bytes
+            .len();
+        let next_receipt_count = self
+            .retained_receipt_count
+            .checked_sub(1)
+            .ok_or_else(|| "host output oracle retained receipt count underflow".to_string())?;
+        let next_readback_bytes = self
+            .retained_readback_bytes
+            .checked_sub(readback_bytes)
+            .ok_or_else(|| {
+                "host output oracle retained readback byte accounting underflow".to_string()
+            })?;
+        let receipt = self
+            .receipts
+            .remove(index)
+            .ok_or_else(|| "host output oracle receipt disappeared during removal".to_string())?;
+        self.retained_receipt_count = next_receipt_count;
+        self.retained_readback_bytes = next_readback_bytes;
+        debug_assert!(self.validate_accounting().is_ok());
+        Ok(receipt)
+    }
+
+    fn discard_matching(
+        &mut self,
+        request_id: &str,
+        source_edit_id: &str,
+        artifact_content_hash: &str,
+    ) -> Result<usize, String> {
+        self.validate_accounting()?;
+        let matches = matching_receipt_indices(
+            &self.receipts,
+            request_id,
+            source_edit_id,
+            artifact_content_hash,
+        );
+        let discarded = matches.len();
+        for index in matches.into_iter().rev() {
+            self.remove_at(index)?;
+        }
+        Ok(discarded)
+    }
+
+    #[cfg(test)]
+    fn clear(&mut self) -> Result<(), String> {
+        self.validate_accounting()?;
+        self.receipts.clear();
+        self.retained_receipt_count = 0;
+        self.retained_readback_bytes = 0;
+        Ok(())
+    }
+}
+
+static VERIFIED_RECEIPTS: OnceLock<Mutex<VerifiedReceiptStore>> = OnceLock::new();
+
+fn receipt_store() -> &'static Mutex<VerifiedReceiptStore> {
+    VERIFIED_RECEIPTS.get_or_init(|| Mutex::new(VerifiedReceiptStore::with_compile_time_maxima()))
 }
 
 fn canonical_sha256(value: &str) -> bool {
@@ -369,11 +573,11 @@ pub(super) fn with_host_output_oracle_request_binding<T>(
     receipt_store()
         .lock()
         .expect("host output oracle receipt lock")
-        .retain(|receipt| {
-            receipt.request_id != binding.request_id
-                || receipt.source_edit_id != binding.source_edit_id
-                || receipt.artifact_content_hash != binding.artifact_content_hash
-        });
+        .discard_matching(
+            &binding.request_id,
+            &binding.source_edit_id,
+            &binding.artifact_content_hash,
+        )?;
     ACTIVE_REQUEST_BINDING.with(|slot| {
         slot.replace(Some(binding.clone()));
     });
@@ -569,20 +773,10 @@ pub(super) fn record_host_verified_compute_readback(
         publication_committed_timestamp_monotonic_ns: None,
     };
 
-    let mut receipts = receipt_store()
+    let mut store = receipt_store()
         .lock()
         .expect("host output oracle receipt lock");
-    if receipts.iter().any(|candidate| {
-        candidate.request_id == receipt.request_id
-            && candidate.source_edit_id == receipt.source_edit_id
-            && candidate.artifact_content_hash == receipt.artifact_content_hash
-    }) {
-        return Err("host output oracle produced more than one receipt for a reload".to_string());
-    }
-    while receipts.len() >= MAX_RETAINED_RECEIPTS {
-        receipts.pop_front();
-    }
-    receipts.push_back(receipt.clone());
+    store.insert_pinned(&receipt)?;
     Ok(receipt)
 }
 
@@ -608,11 +802,12 @@ pub(super) fn finalize_host_verified_compute_readback(
     binding: &HostOutputOracleRequestBinding,
     publication: &DispatcherCommitReceipt,
 ) -> Result<HostVerifiedComputeReadbackReceipt, String> {
-    let mut receipts = receipt_store()
+    let mut store = receipt_store()
         .lock()
         .expect("host output oracle receipt lock");
+    store.validate_accounting()?;
     let matches = matching_receipt_indices(
-        &receipts,
+        &store.receipts,
         &binding.request_id,
         &binding.source_edit_id,
         &binding.artifact_content_hash,
@@ -623,7 +818,8 @@ pub(super) fn finalize_host_verified_compute_readback(
             matches.len()
         ));
     }
-    let receipt = receipts
+    let receipt = store
+        .receipts
         .get_mut(matches[0])
         .ok_or_else(|| "host output oracle receipt disappeared during finalization".to_string())?;
     if receipt.publication_id.is_some() {
@@ -708,18 +904,23 @@ pub(super) fn host_verified_compute_receipt_for_proof(
     artifact_content_hash: &str,
     dispatch_id: &str,
 ) -> Result<HostVerifiedComputeReadbackReceipt, String> {
-    let receipts = receipt_store()
+    let store = receipt_store()
         .lock()
         .expect("host output oracle receipt lock");
-    let matches =
-        matching_receipt_indices(&receipts, request_id, source_edit_id, artifact_content_hash);
+    store.validate_accounting()?;
+    let matches = matching_receipt_indices(
+        &store.receipts,
+        request_id,
+        source_edit_id,
+        artifact_content_hash,
+    );
     if matches.len() != 1 {
         return Err(format!(
             "host output oracle expected one receipt for proof, found {}",
             matches.len()
         ));
     }
-    let receipt = receipts[matches[0]].clone();
+    let receipt = store.receipts[matches[0]].clone();
     if receipt.dispatch_id != dispatch_id {
         return Err("host output oracle proof dispatch id mismatch".to_string());
     }
@@ -734,25 +935,42 @@ pub fn consume_host_verified_compute_receipt(
     source_edit_id: &str,
     artifact_content_hash: &str,
 ) -> Result<HostVerifiedComputeReadbackReceipt, String> {
-    let mut receipts = receipt_store()
+    let mut store = receipt_store()
         .lock()
         .expect("host output oracle receipt lock");
-    let matches =
-        matching_receipt_indices(&receipts, request_id, source_edit_id, artifact_content_hash);
+    store.validate_accounting()?;
+    let matches = matching_receipt_indices(
+        &store.receipts,
+        request_id,
+        source_edit_id,
+        artifact_content_hash,
+    );
     if matches.len() != 1 {
         return Err(format!(
             "host output oracle expected one current-run receipt, found {}",
             matches.len()
         ));
     }
-    if receipts[matches[0]].publication_id.is_none() {
+    if store.receipts[matches[0]].publication_id.is_none() {
         return Err(
             "host output oracle current-run receipt is not publication-finalized".to_string(),
         );
     }
-    receipts
-        .remove(matches[0])
-        .ok_or_else(|| "host output oracle receipt disappeared during consume".to_string())
+    store.remove_at(matches[0])
+}
+
+/// Releases a retained provisional or finalized receipt after terminal failure or cancellation.
+/// Returns whether a matching receipt was present; successful proof delivery should use consume.
+pub fn discard_host_verified_compute_receipt(
+    request_id: &str,
+    source_edit_id: &str,
+    artifact_content_hash: &str,
+) -> Result<bool, String> {
+    let discarded = receipt_store()
+        .lock()
+        .expect("host output oracle receipt lock")
+        .discard_matching(request_id, source_edit_id, artifact_content_hash)?;
+    Ok(discarded != 0)
 }
 
 impl HostVerifiedComputeReadbackReceipt {
@@ -973,10 +1191,13 @@ pub(super) fn reset_host_output_oracle_receipts_for_test() {
     ACTIVE_REQUEST_BINDING.with(|slot| {
         slot.replace(None);
     });
-    receipt_store()
+    let mut store = receipt_store()
         .lock()
-        .expect("host output oracle receipt lock")
-        .clear();
+        .expect("host output oracle receipt lock");
+    store
+        .clear()
+        .expect("host output oracle receipt accounting reset");
+    store.limits = ReceiptRetentionLimits::compile_time_maxima();
 }
 
 #[cfg(test)]
@@ -993,6 +1214,34 @@ mod tests {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .expect("host output oracle receipt test guard")
+    }
+
+    fn configure_retention_limits_for_test(
+        max_receipt_count: usize,
+        max_readback_bytes: usize,
+    ) -> Result<(), String> {
+        let limits = ReceiptRetentionLimits::new(max_receipt_count, max_readback_bytes)?;
+        let mut store = receipt_store()
+            .lock()
+            .expect("host output oracle receipt lock");
+        store.validate_accounting()?;
+        if store.retained_receipt_count != 0 {
+            return Err(
+                "host output oracle test retention limits require an empty store".to_string(),
+            );
+        }
+        store.limits = limits;
+        Ok(())
+    }
+
+    fn retained_accounting_for_test() -> (usize, usize) {
+        let store = receipt_store()
+            .lock()
+            .expect("host output oracle receipt lock");
+        store
+            .validate_accounting()
+            .expect("host output oracle receipt accounting");
+        (store.retained_receipt_count, store.retained_readback_bytes)
     }
 
     fn fixture(
@@ -1066,31 +1315,39 @@ mod tests {
         (binding, launch, metadata)
     }
 
+    fn record_active_fixture(
+        binding: &HostOutputOracleRequestBinding,
+        launch: &GpuLaunchReceipt,
+        bytes: &[u8],
+    ) -> Result<HostVerifiedComputeReadbackReceipt, String> {
+        record_host_verified_compute_readback(
+            launch,
+            "synthi.gpu_hmr.runtime_output_oracle_profile.v1",
+            "profile:generic-compute",
+            &binding.oracle_id,
+            &binding.producer,
+            &binding.output_target_id,
+            "output",
+            "u8",
+            bytes.len(),
+            1,
+            "not_applicable",
+            &binding.baseline_sha256,
+            &binding.expected_sha256,
+            &binding.probe_mode,
+            &binding.probe_config_hash,
+            "evidence:host-dtoh",
+            bytes,
+        )
+    }
+
     fn record_fixture(
         binding: &HostOutputOracleRequestBinding,
         launch: &GpuLaunchReceipt,
         bytes: &[u8],
     ) -> Result<HostVerifiedComputeReadbackReceipt, String> {
         with_host_output_oracle_request_binding(binding, || {
-            record_host_verified_compute_readback(
-                launch,
-                "synthi.gpu_hmr.runtime_output_oracle_profile.v1",
-                "profile:generic-compute",
-                &binding.oracle_id,
-                &binding.producer,
-                &binding.output_target_id,
-                "output",
-                "u8",
-                bytes.len(),
-                1,
-                "not_applicable",
-                &binding.baseline_sha256,
-                &binding.expected_sha256,
-                &binding.probe_mode,
-                &binding.probe_config_hash,
-                "evidence:host-dtoh",
-                bytes,
-            )
+            record_active_fixture(binding, launch, bytes)
         })?
     }
 
@@ -1111,6 +1368,186 @@ mod tests {
                 .saturating_add(1),
         );
         finalize_host_verified_compute_readback(binding, &commit)
+    }
+
+    #[test]
+    fn retention_accepts_the_exact_readback_byte_limit() {
+        let _guard = receipt_test_guard();
+        reset_host_output_oracle_receipts_for_test();
+        configure_retention_limits_for_test(2, 16).unwrap();
+        let bytes = (1u8..=16).collect::<Vec<_>>();
+        let (binding, launch, _) = fixture("request-exact-byte-limit", &bytes);
+
+        record_fixture(&binding, &launch, &bytes).unwrap();
+        assert_eq!(retained_accounting_for_test(), (1, bytes.len()));
+        assert!(discard_host_verified_compute_receipt(
+            &binding.request_id,
+            &binding.source_edit_id,
+            &binding.artifact_content_hash,
+        )
+        .unwrap());
+        assert_eq!(retained_accounting_for_test(), (0, 0));
+        reset_host_output_oracle_receipts_for_test();
+    }
+
+    #[test]
+    fn retention_rejects_the_readback_byte_limit_plus_one() {
+        let _guard = receipt_test_guard();
+        reset_host_output_oracle_receipts_for_test();
+        configure_retention_limits_for_test(2, 16).unwrap();
+        let bytes = vec![7u8; 17];
+        let (binding, launch, _) = fixture("request-byte-limit-plus-one", &bytes);
+
+        assert!(record_fixture(&binding, &launch, &bytes)
+            .unwrap_err()
+            .contains("readback byte capacity exceeded"));
+        assert_eq!(retained_accounting_for_test(), (0, 0));
+        assert!(!discard_host_verified_compute_receipt(
+            &binding.request_id,
+            &binding.source_edit_id,
+            &binding.artifact_content_hash,
+        )
+        .unwrap());
+        reset_host_output_oracle_receipts_for_test();
+    }
+
+    #[test]
+    fn pinned_provisional_and_finalized_receipts_are_not_evicted() {
+        let _guard = receipt_test_guard();
+        reset_host_output_oracle_receipts_for_test();
+        configure_retention_limits_for_test(1, 64).unwrap();
+        let first_bytes = vec![11u8; 8];
+        let second_bytes = vec![12u8; 8];
+        let (first_binding, first_launch, _) = fixture("request-pinned-first", &first_bytes);
+        let (second_binding, second_launch, _) = fixture("request-pinned-second", &second_bytes);
+        let provisional = record_fixture(&first_binding, &first_launch, &first_bytes).unwrap();
+
+        assert!(
+            record_fixture(&second_binding, &second_launch, &second_bytes)
+                .unwrap_err()
+                .contains("receipt count capacity exceeded")
+        );
+        assert_eq!(retained_accounting_for_test(), (1, first_bytes.len()));
+        let finalized = finalize_fixture(&first_binding, &provisional).unwrap();
+
+        assert!(
+            record_fixture(&second_binding, &second_launch, &second_bytes)
+                .unwrap_err()
+                .contains("receipt count capacity exceeded")
+        );
+        let retained = host_verified_compute_receipt_for_proof(
+            &first_binding.request_id,
+            &first_binding.source_edit_id,
+            &first_binding.artifact_content_hash,
+            finalized.dispatch_id(),
+        )
+        .unwrap();
+        assert_eq!(retained.receipt_id(), finalized.receipt_id());
+        assert_eq!(retained_accounting_for_test(), (1, first_bytes.len()));
+        consume_host_verified_compute_receipt(
+            &first_binding.request_id,
+            &first_binding.source_edit_id,
+            &first_binding.artifact_content_hash,
+        )
+        .unwrap();
+        reset_host_output_oracle_receipts_for_test();
+    }
+
+    #[test]
+    fn consume_and_discard_release_exact_accounting() {
+        let _guard = receipt_test_guard();
+        reset_host_output_oracle_receipts_for_test();
+        configure_retention_limits_for_test(1, 8).unwrap();
+        let bytes = vec![13u8; 8];
+        let (consumed_binding, consumed_launch, _) = fixture("request-consume", &bytes);
+        let provisional = record_fixture(&consumed_binding, &consumed_launch, &bytes).unwrap();
+        finalize_fixture(&consumed_binding, &provisional).unwrap();
+
+        consume_host_verified_compute_receipt(
+            &consumed_binding.request_id,
+            &consumed_binding.source_edit_id,
+            &consumed_binding.artifact_content_hash,
+        )
+        .unwrap();
+        assert_eq!(retained_accounting_for_test(), (0, 0));
+
+        let (discarded_binding, discarded_launch, _) = fixture("request-discard", &bytes);
+        record_fixture(&discarded_binding, &discarded_launch, &bytes).unwrap();
+        assert_eq!(retained_accounting_for_test(), (1, bytes.len()));
+        assert!(discard_host_verified_compute_receipt(
+            &discarded_binding.request_id,
+            &discarded_binding.source_edit_id,
+            &discarded_binding.artifact_content_hash,
+        )
+        .unwrap());
+        assert_eq!(retained_accounting_for_test(), (0, 0));
+
+        let (reused_binding, reused_launch, _) = fixture("request-reused-capacity", &bytes);
+        record_fixture(&reused_binding, &reused_launch, &bytes).unwrap();
+        assert_eq!(retained_accounting_for_test(), (1, bytes.len()));
+        with_host_output_oracle_request_binding(&reused_binding, || {
+            assert_eq!(retained_accounting_for_test(), (0, 0));
+        })
+        .unwrap();
+        reset_host_output_oracle_receipts_for_test();
+    }
+
+    #[test]
+    fn duplicate_rejection_does_not_change_accounting() {
+        let _guard = receipt_test_guard();
+        reset_host_output_oracle_receipts_for_test();
+        configure_retention_limits_for_test(2, 32).unwrap();
+        let bytes = vec![14u8; 8];
+        let (binding, launch, _) = fixture("request-duplicate", &bytes);
+
+        with_host_output_oracle_request_binding(&binding, || {
+            record_active_fixture(&binding, &launch, &bytes).unwrap();
+            let before_duplicate = retained_accounting_for_test();
+            assert!(record_active_fixture(&binding, &launch, &bytes)
+                .unwrap_err()
+                .contains("more than one receipt"));
+            assert_eq!(retained_accounting_for_test(), before_duplicate);
+        })
+        .unwrap();
+        assert_eq!(retained_accounting_for_test(), (1, bytes.len()));
+        reset_host_output_oracle_receipts_for_test();
+    }
+
+    #[test]
+    fn accounting_detects_overflow_and_inconsistent_counters() {
+        assert!(checked_retention_after_insert(usize::MAX, 0, 1)
+            .unwrap_err()
+            .contains("receipt count overflow"));
+        assert!(checked_retention_after_insert(0, usize::MAX, 1)
+            .unwrap_err()
+            .contains("byte accounting overflow"));
+
+        let limits = ReceiptRetentionLimits::new(1, 1).unwrap();
+        let inconsistent_count = VerifiedReceiptStore {
+            receipts: VecDeque::new(),
+            retained_receipt_count: 1,
+            retained_readback_bytes: 0,
+            limits,
+        };
+        assert!(inconsistent_count
+            .validate_accounting()
+            .unwrap_err()
+            .contains("count accounting mismatch"));
+        let inconsistent_bytes = VerifiedReceiptStore {
+            receipts: VecDeque::new(),
+            retained_receipt_count: 0,
+            retained_readback_bytes: 1,
+            limits,
+        };
+        assert!(inconsistent_bytes
+            .validate_accounting()
+            .unwrap_err()
+            .contains("byte accounting mismatch"));
+
+        assert!(ReceiptRetentionLimits::new(0, 1).is_err());
+        assert!(ReceiptRetentionLimits::new(1, 0).is_err());
+        assert!(ReceiptRetentionLimits::new(MAX_RETAINED_RECEIPT_COUNT + 1, 1).is_err());
+        assert!(ReceiptRetentionLimits::new(1, MAX_RETAINED_READBACK_BYTES + 1).is_err());
     }
 
     #[test]
