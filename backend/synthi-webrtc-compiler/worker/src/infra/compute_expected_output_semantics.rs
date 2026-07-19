@@ -200,6 +200,20 @@ impl ComputeExpectedOutputSemantics {
         &self.output_target_id
     }
 
+    pub fn expected_evidence_hash(&self) -> &str {
+        match self.comparison_mode.as_str() {
+            "exact_bytes" => self
+                .expected_raw_hash
+                .as_deref()
+                .expect("validated exact-byte semantics require expectedRawHash"),
+            "numeric_tolerance" => self
+                .expected_values_hash
+                .as_deref()
+                .expect("validated numeric semantics require expectedValuesHash"),
+            _ => unreachable!("validated semantics use a known comparison mode"),
+        }
+    }
+
     pub fn derive_contract_v2(
         &self,
         binding: ComputeExpectedOutputContractBindingV2,
@@ -623,10 +637,18 @@ mod tests {
 
     #[test]
     fn semantic_hashes_match_typescript_golden_vectors() {
-        for contract in [exact_contract(), numeric_contract()] {
+        for (contract, expected_evidence_hash) in [
+            (exact_contract(), format!("sha256:{}", "a".repeat(64))),
+            (
+                numeric_contract(),
+                "sha256:e793fbfcf7ce664e5632eaeee3e79cfd1fde4ee4a9db0ff6556647076f036450"
+                    .to_string(),
+            ),
+        ] {
             let parsed: ComputeExpectedOutputSemantics =
                 serde_json::from_value(contract).expect("canonical semantic contract");
             assert_eq!(parsed.semantics_hash(), parsed.canonical_hash());
+            assert_eq!(parsed.expected_evidence_hash(), expected_evidence_hash);
         }
     }
 
