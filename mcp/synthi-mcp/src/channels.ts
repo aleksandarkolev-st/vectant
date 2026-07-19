@@ -1,9 +1,18 @@
 import type { RTCDataChannel } from "werift";
 import { HmrNormalizer } from "./hmr.js";
+import {
+  RuntimeEvidenceTransportReceiptConsumer,
+  SessionRuntimeEvidenceTransportReplayStore,
+  type RuntimeEvidenceTransportKeyPin,
+} from "./runtime_evidence_transport.js";
 import { sendFrames, type SendOptions } from "./wire/input.js";
 import { randomUUID } from "node:crypto";
 
 const DEFAULT_COMPILE_CHUNK_BYTES = 48_000;
+
+export interface SessionChannelsRuntimeEvidenceContext {
+  readonly keyPin: RuntimeEvidenceTransportKeyPin;
+}
 
 function compileChunkMaxBytes(): number {
   const raw = process.env.SYNTHI_MCP_COMPILE_CHUNK_BYTES;
@@ -82,12 +91,20 @@ function chunkDataCharsForLimit(
  */
 export class SessionChannels {
   readonly hmr: HmrNormalizer;
+  private readonly runtimeEvidenceReplayStore: SessionRuntimeEvidenceTransportReplayStore;
+  private readonly runtimeEvidenceReceiptConsumer: RuntimeEvidenceTransportReceiptConsumer;
 
   constructor(
     private readonly terminalDC: RTCDataChannel,
     buildLogDC: RTCDataChannel,
     private readonly compileDC: RTCDataChannel,
+    runtimeEvidenceContext: SessionChannelsRuntimeEvidenceContext,
   ) {
+    this.runtimeEvidenceReplayStore = new SessionRuntimeEvidenceTransportReplayStore();
+    this.runtimeEvidenceReceiptConsumer = new RuntimeEvidenceTransportReceiptConsumer(
+      runtimeEvidenceContext.keyPin,
+      this.runtimeEvidenceReplayStore,
+    );
     this.hmr = new HmrNormalizer(buildLogDC);
   }
 
@@ -172,5 +189,7 @@ export class SessionChannels {
 
   dispose(): void {
     this.hmr.dispose();
+    this.runtimeEvidenceReceiptConsumer.dispose();
+    this.runtimeEvidenceReplayStore.dispose();
   }
 }

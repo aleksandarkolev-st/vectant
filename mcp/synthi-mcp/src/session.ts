@@ -705,7 +705,9 @@ class SessionManager {
     const videoTrack = await peer.ready.videoTrack;
     const frames = new FrameSink(videoTrack);
 
-    const channels = new SessionChannels(terminalDC, buildLogDC, compileDC);
+    const channels = new SessionChannels(terminalDC, buildLogDC, compileDC, {
+      keyPin: peer.runtimeEvidenceTransportKeyPin,
+    });
 
     const attached: AttachedSession = {
       sessionId: opts.sessionId,

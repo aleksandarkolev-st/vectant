@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionChannels } from "../../src/channels.js";
+import { RuntimeEvidenceTransportKeyPin } from "../../src/runtime_evidence_transport.js";
 import type { RTCDataChannel } from "werift";
 
 function makeChannels(sent: string[]): SessionChannels {
@@ -17,7 +18,9 @@ function makeChannels(sent: string[]): SessionChannels {
       sent.push(frame);
     },
   } as unknown as RTCDataChannel;
-  return new SessionChannels(terminalDC, buildLogDC, compileDC);
+  return new SessionChannels(terminalDC, buildLogDC, compileDC, {
+    keyPin: new RuntimeEvidenceTransportKeyPin(),
+  });
 }
 
 describe("SessionChannels compile chunking", () => {
