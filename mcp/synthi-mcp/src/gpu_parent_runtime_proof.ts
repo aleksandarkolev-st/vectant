@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
+import { isProxy } from "node:util/types";
 import type {
+  RuntimeEvidenceTransportPreparedSupportEnvelope,
   RuntimeEvidenceTransportSupportEnvelopeInput,
+  RuntimeEvidenceTransportSupportPreparation,
   RuntimeEvidenceTransportSupportVerification,
 } from "./runtime_evidence_transport.js";
 
@@ -14,6 +17,10 @@ const PREPUBLICATION_OUTPUT_ORACLE_COMMITMENT_SCHEMA =
   "synthi.gpu_hmr.reload_output_oracle_profile_commitment.v1";
 const VALIDATION_SCHEMA =
   "synthi.gpu_hmr.parent_runtime_proof_transport_verification.v1";
+const PREPARATION_SCHEMA =
+  "synthi.gpu_hmr.parent_runtime_proof_transport_preparation.v1";
+const PREPARATION_AUTHORITY =
+  "parent_runtime_proof_preparation_only_not_gpu_hmr_acceptance";
 const PARENT_RECEIPT_PREFIX = "gpu-parent-runtime-proof-receipt:";
 const TRANSPORT_RECEIPT_PREFIX =
   "gpu-hmr-runtime-evidence-transport-receipt:sha256:";
@@ -82,6 +89,16 @@ export interface GpuParentRuntimeProofReceiptConsumer {
   ): RuntimeEvidenceTransportSupportVerification;
 }
 
+export interface GpuParentRuntimeProofTransactionalReceiptConsumer
+extends GpuParentRuntimeProofReceiptConsumer {
+  prepareSupportEnvelope(
+    input: RuntimeEvidenceTransportSupportEnvelopeInput,
+  ): RuntimeEvidenceTransportSupportPreparation;
+  commitPreparedSupportEnvelope(
+    capability: RuntimeEvidenceTransportPreparedSupportEnvelope,
+  ): RuntimeEvidenceTransportSupportVerification;
+}
+
 export interface GpuParentRuntimeProofExpectedBinding {
   readonly requestId: string;
   readonly sourceEditId: string;
@@ -112,6 +129,13 @@ export interface GpuParentRuntimeProofVerificationContext {
   readonly receiptConsumer: GpuParentRuntimeProofReceiptConsumer;
 }
 
+export type GpuParentRuntimeProofTransactionalVerificationContext = Omit<
+  GpuParentRuntimeProofVerificationContext,
+  "receiptConsumer"
+> & {
+  readonly receiptConsumer: GpuParentRuntimeProofTransactionalReceiptConsumer;
+};
+
 export interface GpuParentRuntimeProofValidationEvidence {
   readonly parentReceiptId: string | null;
   readonly transportReceiptId: string | null;
@@ -129,6 +153,58 @@ export interface GpuParentRuntimeProofValidation {
   readonly gpuHmrSuccess: false;
   readonly canSatisfyRuntimeProof: false;
 }
+
+export interface GpuParentRuntimeProofPreparation {
+  readonly schemaVersion: typeof PREPARATION_SCHEMA;
+  readonly proofAuthority: typeof PREPARATION_AUTHORITY;
+  readonly prepared: boolean;
+  readonly code: string;
+  readonly reason: string | null;
+  readonly evidence: GpuParentRuntimeProofValidationEvidence;
+  readonly acceptedForGpuHmr: false;
+  readonly gpuHmrSuccess: false;
+  readonly canSatisfyRuntimeProof: false;
+}
+
+interface PreparedParentRuntimeProofState {
+  readonly capability: RuntimeEvidenceTransportPreparedSupportEnvelope;
+  readonly commitPreparedSupportEnvelope: (
+    capability: RuntimeEvidenceTransportPreparedSupportEnvelope,
+  ) => RuntimeEvidenceTransportSupportVerification;
+  readonly evidence: GpuParentRuntimeProofValidationEvidence;
+}
+
+const preparedParentRuntimeProofStates = new WeakMap<
+  GpuParentRuntimeProofPreparation,
+  PreparedParentRuntimeProofState
+>();
+const retiredParentRuntimeProofPreparations = new WeakSet<
+  GpuParentRuntimeProofPreparation
+>();
+
+const SUPPORT_PREPARATION_KEYS = [
+  "schemaVersion",
+  "proofAuthority",
+  "prepared",
+  "reason",
+  "capability",
+  "receiptId",
+  "observationContextHash",
+  "freshnessChecked",
+  "replayChecked",
+  "acceptedForGpuHmr",
+  "gpuHmrSuccess",
+  "canSatisfyRuntimeProof",
+] as const;
+const SUPPORT_VERIFICATION_KEYS = [
+  "verified",
+  "reason",
+  "receiptId",
+  "observationContextHash",
+  "acceptedForGpuHmr",
+  "gpuHmrSuccess",
+  "canSatisfyRuntimeProof",
+] as const;
 
 interface CanonicalState {
   readonly chunks: string[];
@@ -441,6 +517,158 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
+function captureCallableMethod(
+  receiver: unknown,
+  key: string,
+): ((argument: unknown) => unknown) | null {
+  try {
+    if (
+      receiver === null
+      || typeof receiver !== "object"
+      || Array.isArray(receiver)
+      || isProxy(receiver)
+    ) {
+      return null;
+    }
+    let owner: object | null = receiver;
+    for (let depth = 0; owner !== null && depth < 8; depth += 1) {
+      if (isProxy(owner)) return null;
+      const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+      if (descriptor !== undefined) {
+        if (
+          !("value" in descriptor)
+          || typeof descriptor.value !== "function"
+          || isProxy(descriptor.value)
+        ) {
+          return null;
+        }
+        const method = descriptor.value;
+        return (argument) => Reflect.apply(method, receiver, [argument]);
+      }
+      owner = Object.getPrototypeOf(owner);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function snapshotSupportVerification(
+  value: unknown,
+): RuntimeEvidenceTransportSupportVerification | null {
+  try {
+    if (
+      value === null
+      || typeof value !== "object"
+      || Array.isArray(value)
+      || isProxy(value)
+      || Object.getPrototypeOf(value) !== Object.prototype
+      || !hasExactKeys(value as Record<string, unknown>, SUPPORT_VERIFICATION_KEYS)
+    ) {
+      return null;
+    }
+    const snapshot: Record<string, unknown> = {};
+    for (const key of SUPPORT_VERIFICATION_KEYS) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined
+        || descriptor.enumerable !== true
+        || !("value" in descriptor)
+      ) {
+        return null;
+      }
+      snapshot[key] = descriptor.value;
+    }
+    if (
+      typeof snapshot.verified !== "boolean"
+      || !(snapshot.reason === null || typeof snapshot.reason === "string")
+      || !(snapshot.receiptId === null || typeof snapshot.receiptId === "string")
+      || !(
+        snapshot.observationContextHash === null
+        || typeof snapshot.observationContextHash === "string"
+      )
+      || snapshot.acceptedForGpuHmr !== false
+      || snapshot.gpuHmrSuccess !== false
+      || snapshot.canSatisfyRuntimeProof !== false
+    ) {
+      return null;
+    }
+    return Object.freeze(snapshot) as unknown as
+      RuntimeEvidenceTransportSupportVerification;
+  } catch {
+    return null;
+  }
+}
+
+function snapshotSupportPreparation(
+  value: unknown,
+): RuntimeEvidenceTransportSupportPreparation | null {
+  try {
+    if (
+      value === null
+      || typeof value !== "object"
+      || Array.isArray(value)
+      || isProxy(value)
+      || Object.getPrototypeOf(value) !== Object.prototype
+      || !hasExactKeys(value as Record<string, unknown>, SUPPORT_PREPARATION_KEYS)
+    ) {
+      return null;
+    }
+    const snapshot: Record<string, unknown> = {};
+    for (const key of SUPPORT_PREPARATION_KEYS) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined
+        || descriptor.enumerable !== true
+        || !("value" in descriptor)
+      ) {
+        return null;
+      }
+      snapshot[key] = descriptor.value;
+    }
+    const capability = snapshot.capability;
+    if (
+      snapshot.schemaVersion
+        !== "synthi.gpu_hmr.runtime_evidence_transport_preparation.v1"
+      || snapshot.proofAuthority
+        !== "cryptographic_and_freshness_preparation_only_replay_not_committed"
+      || typeof snapshot.prepared !== "boolean"
+      || !(snapshot.reason === null || typeof snapshot.reason === "string")
+      || !(
+        capability === null
+        || (typeof capability === "object" && !Array.isArray(capability))
+      )
+      || !(snapshot.receiptId === null || typeof snapshot.receiptId === "string")
+      || !(
+        snapshot.observationContextHash === null
+        || typeof snapshot.observationContextHash === "string"
+      )
+      || typeof snapshot.freshnessChecked !== "boolean"
+      || snapshot.replayChecked !== false
+      || snapshot.acceptedForGpuHmr !== false
+      || snapshot.gpuHmrSuccess !== false
+      || snapshot.canSatisfyRuntimeProof !== false
+      || (snapshot.prepared === true && (
+        capability === null
+        || snapshot.reason !== null
+        || typeof snapshot.receiptId !== "string"
+        || !snapshot.receiptId.startsWith(TRANSPORT_RECEIPT_PREFIX)
+        || !canonicalSha256(snapshot.receiptId.slice(
+          "gpu-hmr-runtime-evidence-transport-receipt:".length,
+        ))
+        || !canonicalSha256(snapshot.observationContextHash)
+        || snapshot.freshnessChecked !== true
+      ))
+    ) {
+      return null;
+    }
+    return Object.freeze(snapshot) as unknown as
+      RuntimeEvidenceTransportSupportPreparation;
+  } catch {
+    return null;
+  }
+}
+
 function validation(
   verified: boolean,
   code: string,
@@ -456,6 +684,29 @@ function validation(
     verified,
     code,
     reason: verified ? null : code,
+    evidence: { ...evidence },
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+  });
+}
+
+function preparation(
+  prepared: boolean,
+  code: string,
+  evidence: GpuParentRuntimeProofValidationEvidence = {
+    parentReceiptId: null,
+    transportReceiptId: null,
+    canonicalProofSha256: null,
+    observationContextHash: null,
+  },
+): GpuParentRuntimeProofPreparation {
+  return deepFreeze({
+    schemaVersion: PREPARATION_SCHEMA,
+    proofAuthority: PREPARATION_AUTHORITY,
+    prepared,
+    code,
+    reason: prepared ? null : code,
     evidence: { ...evidence },
     acceptedForGpuHmr: false,
     gpuHmrSuccess: false,
@@ -747,4 +998,184 @@ export function verifyGpuParentRuntimeProofTransport(
     canonicalProofSha256,
     observationContextHash: receiptVerification.observationContextHash,
   });
+}
+
+export function prepareGpuParentRuntimeProofTransport(
+  rawProof: unknown,
+  context: GpuParentRuntimeProofTransactionalVerificationContext,
+): GpuParentRuntimeProofPreparation {
+  const prepareSupportEnvelope = captureCallableMethod(
+    context?.receiptConsumer,
+    "prepareSupportEnvelope",
+  );
+  const commitPreparedSupportEnvelope = captureCallableMethod(
+    context?.receiptConsumer,
+    "commitPreparedSupportEnvelope",
+  );
+  if (
+    prepareSupportEnvelope === null
+    || commitPreparedSupportEnvelope === null
+  ) {
+    return preparation(
+      false,
+      "gpu_parent_runtime_proof_transactional_context_invalid",
+    );
+  }
+
+  let capturedPreparation: RuntimeEvidenceTransportSupportPreparation | null = null;
+  let preparationCallCount = 0;
+  const preparedValidation = verifyGpuParentRuntimeProofTransport(rawProof, {
+    transportSessionId: context.transportSessionId,
+    expectedWorkerProcessId: context.expectedWorkerProcessId,
+    expectedBinding: context.expectedBinding,
+    receiptConsumer: {
+      consumeSupportEnvelope(input) {
+        preparationCallCount += 1;
+        if (preparationCallCount !== 1) {
+          throw new Error("gpu_parent_runtime_proof_transport_prepare_reentered");
+        }
+        const candidate = snapshotSupportPreparation(
+          prepareSupportEnvelope(input),
+        );
+        if (candidate === null) {
+          throw new Error("gpu_parent_runtime_proof_transport_preparation_invalid");
+        }
+        capturedPreparation = candidate;
+        if (!candidate.prepared || candidate.capability === null) {
+          return deepFreeze({
+            verified: false,
+            reason: candidate.reason
+              ?? "runtime_evidence_transport_preparation_failed",
+            receiptId: null,
+            observationContextHash: null,
+            acceptedForGpuHmr: false,
+            gpuHmrSuccess: false,
+            canSatisfyRuntimeProof: false,
+          });
+        }
+        return deepFreeze({
+          verified: true,
+          reason: null,
+          receiptId: candidate.receiptId,
+          observationContextHash: candidate.observationContextHash,
+          acceptedForGpuHmr: false,
+          gpuHmrSuccess: false,
+          canSatisfyRuntimeProof: false,
+        });
+      },
+    },
+  });
+  if (!preparedValidation.verified) {
+    return preparation(
+      false,
+      preparedValidation.code,
+      preparedValidation.evidence,
+    );
+  }
+  const preparedTransport = capturedPreparation as
+    RuntimeEvidenceTransportSupportPreparation | null;
+  if (preparedTransport?.capability === null || preparedTransport === null) {
+    return preparation(
+      false,
+      "gpu_parent_runtime_proof_transport_prepared_capability_missing",
+      preparedValidation.evidence,
+    );
+  }
+
+  const result = preparation(
+    true,
+    "gpu_parent_runtime_proof_prepared",
+    preparedValidation.evidence,
+  );
+  preparedParentRuntimeProofStates.set(result, Object.freeze({
+    capability: preparedTransport.capability,
+    commitPreparedSupportEnvelope: (
+      capability: RuntimeEvidenceTransportPreparedSupportEnvelope,
+    ) => {
+      const rawVerification = commitPreparedSupportEnvelope(capability);
+      const verification = snapshotSupportVerification(rawVerification);
+      if (verification === null) {
+        throw new Error("gpu_parent_runtime_proof_receipt_result_invalid");
+      }
+      return verification;
+    },
+    evidence: preparedValidation.evidence,
+  }));
+  return result;
+}
+
+export function commitPreparedGpuParentRuntimeProofTransport(
+  preparedProof: unknown,
+): GpuParentRuntimeProofValidation {
+  if (preparedProof === null || typeof preparedProof !== "object") {
+    return validation(
+      false,
+      "gpu_parent_runtime_proof_preparation_invalid",
+    );
+  }
+  const preparationObject = preparedProof as GpuParentRuntimeProofPreparation;
+  if (retiredParentRuntimeProofPreparations.has(preparationObject)) {
+    return validation(
+      false,
+      "gpu_parent_runtime_proof_preparation_already_used",
+    );
+  }
+  const state = preparedParentRuntimeProofStates.get(preparationObject);
+  if (state === undefined) {
+    return validation(
+      false,
+      "gpu_parent_runtime_proof_preparation_invalid",
+    );
+  }
+  preparedParentRuntimeProofStates.delete(preparationObject);
+  retiredParentRuntimeProofPreparations.add(preparationObject);
+
+  let receiptVerification: RuntimeEvidenceTransportSupportVerification;
+  try {
+    receiptVerification = state.commitPreparedSupportEnvelope(state.capability);
+  } catch {
+    return validation(
+      false,
+      "gpu_parent_runtime_proof_receipt_consumer_failed",
+    );
+  }
+  if (
+    receiptVerification.verified !== true
+    || receiptVerification.acceptedForGpuHmr !== false
+    || receiptVerification.gpuHmrSuccess !== false
+    || receiptVerification.canSatisfyRuntimeProof !== false
+  ) {
+    return validation(
+      false,
+      "gpu_parent_runtime_proof_receipt_consumer_refused",
+    );
+  }
+  if (
+    typeof receiptVerification.receiptId !== "string"
+    || !receiptVerification.receiptId.startsWith(TRANSPORT_RECEIPT_PREFIX)
+    || !canonicalSha256(receiptVerification.receiptId.slice(
+      "gpu-hmr-runtime-evidence-transport-receipt:".length,
+    ))
+    || !canonicalSha256(receiptVerification.observationContextHash)
+  ) {
+    return validation(
+      false,
+      "gpu_parent_runtime_proof_receipt_result_invalid",
+    );
+  }
+  if (
+    receiptVerification.receiptId !== state.evidence.transportReceiptId
+    || receiptVerification.observationContextHash
+      !== state.evidence.observationContextHash
+  ) {
+    return validation(
+      false,
+      "gpu_parent_runtime_proof_prepared_receipt_evidence_changed",
+    );
+  }
+  return validation(
+    true,
+    "gpu_parent_runtime_proof_verified",
+    state.evidence,
+  );
 }

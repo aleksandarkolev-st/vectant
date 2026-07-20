@@ -7,9 +7,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { RTCDataChannel } from "werift";
 import {
   canonicalizeGpuParentRuntimeProofJson,
+  commitPreparedGpuParentRuntimeProofTransport,
+  prepareGpuParentRuntimeProofTransport,
   verifyGpuParentRuntimeProofTransport,
   type GpuParentRuntimeProofExpectedBinding,
   type GpuParentRuntimeProofReceiptConsumer,
+  type GpuParentRuntimeProofTransactionalReceiptConsumer,
 } from "../../src/gpu_parent_runtime_proof.js";
 import type {
   RuntimeEvidenceTransportSupportEnvelopeInput,
@@ -354,6 +357,18 @@ function verifyFixture(
   });
 }
 
+function prepareFixture(
+  fixture: ReturnType<typeof makeFixture>,
+  receiptConsumer: GpuParentRuntimeProofTransactionalReceiptConsumer,
+) {
+  return prepareGpuParentRuntimeProofTransport(fixture.proof, {
+    transportSessionId: TRANSPORT_SESSION_ID,
+    expectedWorkerProcessId: String(WORKER_PROCESS_ID),
+    expectedBinding: EXPECTED_BINDING,
+    receiptConsumer,
+  });
+}
+
 describe("verifyGpuParentRuntimeProofTransport", () => {
   it("passes exact parent-bound material to the support receipt consumer", () => {
     let received: RuntimeEvidenceTransportSupportEnvelopeInput | null = null;
@@ -693,6 +708,193 @@ describe("verifyGpuParentRuntimeProofTransport", () => {
       acceptedForGpuHmr: false,
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
+    });
+  });
+});
+
+describe("staged GPU parent runtime proof transport", () => {
+  it("prepares without consuming replay state and commits exactly once", () => {
+    const fixture = makeFixture();
+    const signed = attachRealSignedEnvelope(fixture);
+
+    const prepared = prepareFixture(fixture, signed.consumer);
+
+    expect(prepared).toMatchObject({
+      schemaVersion: "synthi.gpu_hmr.parent_runtime_proof_transport_preparation.v1",
+      proofAuthority:
+        "parent_runtime_proof_preparation_only_not_gpu_hmr_acceptance",
+      prepared: true,
+      code: "gpu_parent_runtime_proof_prepared",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+      evidence: {
+        transportReceiptId: signed.receiptId,
+        observationContextHash: signed.observationContextHash,
+      },
+    });
+    expect(Object.isFrozen(prepared)).toBe(true);
+    expect(Object.isFrozen(prepared.evidence)).toBe(true);
+    expect(prepared).not.toHaveProperty("capability");
+    expect(JSON.stringify(prepared)).not.toContain(RUNNER_CHALLENGE);
+
+    expect(commitPreparedGpuParentRuntimeProofTransport(prepared)).toMatchObject({
+      verified: true,
+      code: "gpu_parent_runtime_proof_verified",
+      evidence: {
+        transportReceiptId: signed.receiptId,
+        observationContextHash: signed.observationContextHash,
+      },
+    });
+    expect(commitPreparedGpuParentRuntimeProofTransport(prepared)).toMatchObject({
+      verified: false,
+      code: "gpu_parent_runtime_proof_preparation_already_used",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+  });
+
+  it("does not expose a committable capability through clones or forged data", () => {
+    const fixture = makeFixture();
+    const signed = attachRealSignedEnvelope(fixture);
+    const prepared = prepareFixture(fixture, signed.consumer);
+    const clone = structuredClone(prepared);
+    const forged = Object.freeze({ ...prepared });
+
+    expect(commitPreparedGpuParentRuntimeProofTransport(clone).code)
+      .toBe("gpu_parent_runtime_proof_preparation_invalid");
+    expect(commitPreparedGpuParentRuntimeProofTransport(forged).code)
+      .toBe("gpu_parent_runtime_proof_preparation_invalid");
+    expect(commitPreparedGpuParentRuntimeProofTransport(prepared).verified).toBe(true);
+  });
+
+  it("keeps a refused transport preparation non-authoritative", () => {
+    const fixture = makeFixture();
+    const transactionalConsumer: GpuParentRuntimeProofTransactionalReceiptConsumer = {
+      consumeSupportEnvelope: vi.fn(() => refusedTransportVerification()),
+      prepareSupportEnvelope: vi.fn(() => Object.freeze({
+        schemaVersion:
+          "synthi.gpu_hmr.runtime_evidence_transport_preparation.v1" as const,
+        proofAuthority:
+          "cryptographic_and_freshness_preparation_only_replay_not_committed" as const,
+        prepared: false,
+        reason: "test_receipt_refused",
+        capability: null,
+        receiptId: null,
+        observationContextHash: null,
+        freshnessChecked: false,
+        replayChecked: false as const,
+        acceptedForGpuHmr: false as const,
+        gpuHmrSuccess: false as const,
+        canSatisfyRuntimeProof: false as const,
+      })),
+      commitPreparedSupportEnvelope: vi.fn(() => acceptedTransportVerification()),
+    };
+
+    const prepared = prepareFixture(fixture, transactionalConsumer);
+
+    expect(prepared).toMatchObject({
+      prepared: false,
+      code: "gpu_parent_runtime_proof_receipt_consumer_refused",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(transactionalConsumer.commitPreparedSupportEnvelope).not.toHaveBeenCalled();
+    expect(commitPreparedGpuParentRuntimeProofTransport(prepared).verified).toBe(false);
+  });
+
+  it("rejects accessor and proxy transactional methods without invoking them", () => {
+    const fixture = makeFixture();
+    const prepareGetter = vi.fn(() => () => undefined);
+    const accessorConsumer = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(accessorConsumer, "prepareSupportEnvelope", {
+      enumerable: true,
+      get: prepareGetter,
+    });
+    Object.defineProperty(accessorConsumer, "commitPreparedSupportEnvelope", {
+      enumerable: true,
+      value: vi.fn(),
+    });
+
+    const accessorResult = prepareFixture(
+      fixture,
+      accessorConsumer as unknown as GpuParentRuntimeProofTransactionalReceiptConsumer,
+    );
+    expect(accessorResult).toMatchObject({
+      prepared: false,
+      code: "gpu_parent_runtime_proof_transactional_context_invalid",
+    });
+    expect(prepareGetter).not.toHaveBeenCalled();
+
+    const proxyResult = prepareFixture(
+      fixture,
+      new Proxy({
+        consumeSupportEnvelope: vi.fn(),
+        prepareSupportEnvelope: vi.fn(),
+        commitPreparedSupportEnvelope: vi.fn(),
+      }, {}) as unknown as GpuParentRuntimeProofTransactionalReceiptConsumer,
+    );
+    expect(proxyResult).toMatchObject({
+      prepared: false,
+      code: "gpu_parent_runtime_proof_transactional_context_invalid",
+    });
+  });
+
+  it("retires the parent preparation when the transport commit throws", () => {
+    const fixture = makeFixture();
+    const capability = Object.freeze({});
+    const transactionalConsumer: GpuParentRuntimeProofTransactionalReceiptConsumer = {
+      consumeSupportEnvelope: vi.fn(() => refusedTransportVerification()),
+      prepareSupportEnvelope: vi.fn(() => Object.freeze({
+        schemaVersion:
+          "synthi.gpu_hmr.runtime_evidence_transport_preparation.v1" as const,
+        proofAuthority:
+          "cryptographic_and_freshness_preparation_only_replay_not_committed" as const,
+        prepared: true,
+        reason: null,
+        capability,
+        receiptId: TRANSPORT_RECEIPT_ID,
+        observationContextHash: OBSERVATION_CONTEXT_HASH,
+        freshnessChecked: true,
+        replayChecked: false as const,
+        acceptedForGpuHmr: false as const,
+        gpuHmrSuccess: false as const,
+        canSatisfyRuntimeProof: false as const,
+      })),
+      commitPreparedSupportEnvelope: vi.fn(() => {
+        throw new Error("transport unavailable");
+      }),
+    };
+    const prepared = prepareFixture(fixture, transactionalConsumer);
+
+    expect(prepared.prepared).toBe(true);
+    expect(commitPreparedGpuParentRuntimeProofTransport(prepared)).toMatchObject({
+      verified: false,
+      code: "gpu_parent_runtime_proof_receipt_consumer_failed",
+    });
+    expect(commitPreparedGpuParentRuntimeProofTransport(prepared)).toMatchObject({
+      verified: false,
+      code: "gpu_parent_runtime_proof_preparation_already_used",
+    });
+    expect(transactionalConsumer.commitPreparedSupportEnvelope).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when the transport consumer is disposed after prepare", () => {
+    const fixture = makeFixture();
+    const signed = attachRealSignedEnvelope(fixture);
+    const prepared = prepareFixture(fixture, signed.consumer);
+
+    expect(prepared.prepared).toBe(true);
+    signed.consumer.dispose();
+    expect(commitPreparedGpuParentRuntimeProofTransport(prepared)).toMatchObject({
+      verified: false,
+      code: "gpu_parent_runtime_proof_receipt_consumer_refused",
+    });
+    expect(commitPreparedGpuParentRuntimeProofTransport(prepared)).toMatchObject({
+      verified: false,
+      code: "gpu_parent_runtime_proof_preparation_already_used",
     });
   });
 });
