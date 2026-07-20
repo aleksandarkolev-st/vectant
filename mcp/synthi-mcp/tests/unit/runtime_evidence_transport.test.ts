@@ -4,8 +4,11 @@ import {
   sign,
   type KeyObject,
 } from "node:crypto";
+import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RTCDataChannel } from "werift";
+import * as sharedOfflineVerifierModule
+  from "../../scripts/lib/gpu-hmr-runtime-evidence-transport-offline-verifier.mjs";
 import {
   RUNTIME_EVIDENCE_TRANSPORT_ALGORITHM,
   RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
@@ -14,8 +17,18 @@ import {
   RuntimeEvidenceTransportReceiptConsumer,
   SessionRuntimeEvidenceTransportReplayStore,
   type RuntimeEvidenceTransportSupportEnvelopeInput,
+  type RuntimeEvidenceTransportVerificationContext,
+  type RuntimeEvidenceTransportVerificationKey,
   parseRuntimeEvidenceTransportVerificationKey,
+  verifyRuntimeEvidenceTransportSupportEnvelopeOffline,
 } from "../../src/runtime_evidence_transport.js";
+
+const verifySharedOffline = (
+  sharedOfflineVerifierModule as unknown as Readonly<{
+    verifyRuntimeEvidenceTransportSupportEnvelopeOffline:
+      typeof verifyRuntimeEvidenceTransportSupportEnvelopeOffline;
+  }>
+).verifyRuntimeEvidenceTransportSupportEnvelopeOffline;
 
 const PRODUCER = "synthi-webrtc-compiler-worker";
 const KEY_ID_PREFIX = "gpu-hmr-runtime-evidence-transport-key:sha256:";
@@ -86,6 +99,84 @@ function pinAnnouncement(announcement: Record<string, unknown>): RuntimeEvidence
   channel.emit(JSON.stringify(announcement));
   expect(pin.snapshot().status).toBe("pinned");
   return pin;
+}
+
+function signingIdentity(seed: number): {
+  announcement: Record<string, unknown>;
+  privateKey: KeyObject;
+} {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const spki = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+  return {
+    announcement: keyAnnouncement(seed, spki.subarray(spki.length - 32)),
+    privateKey,
+  };
+}
+
+function parsedVerificationKey(
+  announcement: Record<string, unknown>,
+): RuntimeEvidenceTransportVerificationKey {
+  const key = parseRuntimeEvidenceTransportVerificationKey(announcement);
+  if (key === null) throw new Error("test verification key fixture is invalid");
+  return key;
+}
+
+function verificationContext(
+  input: RuntimeEvidenceTransportSupportEnvelopeInput,
+): RuntimeEvidenceTransportVerificationContext {
+  return {
+    runnerProcessId: input.runnerProcessId,
+    runtimeSessionId: input.runtimeSessionId,
+    runnerChallenge: input.runnerChallenge,
+    transportSessionId: input.transportSessionId,
+    requestId: input.requestId,
+    sourceEditId: input.sourceEditId,
+    subjectIdentityNamespace: input.subjectIdentityNamespace,
+    subjectCanonicalBytes: input.subjectCanonicalBytes,
+    artifactContentHash: input.artifactContentHash,
+    observedRuntimeProofId: input.observedRuntimeProofId,
+    observedProofLedgerId: input.observedProofLedgerId,
+  };
+}
+
+function crossRealmUint8Array(value: Uint8Array): Uint8Array {
+  return runInNewContext(
+    `new Uint8Array([${Array.from(value).join(",")}])`,
+  ) as Uint8Array;
+}
+
+function installStatefulGetter(
+  target: Record<string, unknown>,
+  key: string,
+  firstValue: unknown,
+  laterValue: unknown,
+): () => number {
+  let reads = 0;
+  Object.defineProperty(target, key, {
+    enumerable: true,
+    configurable: true,
+    get() {
+      reads += 1;
+      return reads === 1 ? firstValue : laterValue;
+    },
+  });
+  return () => reads;
+}
+
+function verifyOffline(
+  key: RuntimeEvidenceTransportVerificationKey,
+  fixture: SignedEnvelopeFixture,
+  overrides: {
+    readonly observedPayload?: Uint8Array | string;
+    readonly context?: RuntimeEvidenceTransportVerificationContext;
+  } = {},
+) {
+  return verifyRuntimeEvidenceTransportSupportEnvelopeOffline(
+    key,
+    fixture.input.envelope,
+    overrides.observedPayload ?? fixture.input.observedPayload,
+    overrides.context ?? verificationContext(fixture.input),
+  );
 }
 
 interface SignedEnvelopeFixture {
@@ -545,18 +636,452 @@ describe("RuntimeEvidenceTransportKeyPin", () => {
   });
 });
 
-describe("RuntimeEvidenceTransportReceiptConsumer", () => {
-  function signingIdentity(seed: number): {
-    announcement: Record<string, unknown>;
-    privateKey: KeyObject;
-  } {
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    const spki = publicKey.export({ format: "der", type: "spki" }) as Buffer;
-    return {
-      announcement: keyAnnouncement(seed, spki.subarray(spki.length - 32)),
-      privateKey,
+describe("verifyRuntimeEvidenceTransportSupportEnvelopeOffline", () => {
+  it("matches the direct MJS export and online verification for valid evidence", () => {
+    const identity = signingIdentity(31);
+    const key = parsedVerificationKey(identity.announcement);
+    const fixture = signedEnvelopeFixture(identity);
+    const context = verificationContext(fixture.input);
+    const directMjsVerification = verifySharedOffline(
+      key,
+      fixture.input.envelope,
+      fixture.input.observedPayload,
+      context,
+    );
+    const typedVerification = verifyOffline(key, fixture);
+    const onlineVerification = new RuntimeEvidenceTransportReceiptConsumer(
+      pinAnnouncement(identity.announcement),
+      new SessionRuntimeEvidenceTransportReplayStore(),
+      () => NOW_NS,
+    ).consumeSupportEnvelope(fixture.input);
+
+    expect(typedVerification).toEqual(directMjsVerification);
+    expect(typedVerification).toEqual(onlineVerification);
+    expect(typedVerification).toEqual({
+      verified: true,
+      reason: null,
+      receiptId: fixture.receipt.receiptId,
+      observationContextHash: fixture.receipt.observationContextHash,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(Object.isFrozen(typedVerification)).toBe(true);
+  });
+
+  it("omits wall-clock freshness and mutable replay policy", () => {
+    const identity = signingIdentity(32);
+    const key = parsedVerificationKey(identity.announcement);
+    const pin = pinAnnouncement(identity.announcement);
+    const freshnessCases = [
+      {
+        fixture: signedEnvelopeFixture({
+          ...identity,
+          issuedAtUnixNs: NOW_NS - 300_000_000_001n,
+        }),
+        reason: "runtime_evidence_transport_receipt_expired",
+      },
+      {
+        fixture: signedEnvelopeFixture({
+          ...identity,
+          issuedAtUnixNs: NOW_NS + 30_000_000_001n,
+          nonceSeed: "7",
+        }),
+        reason: "runtime_evidence_transport_receipt_from_future",
+      },
+    ];
+    for (const { fixture, reason } of freshnessCases) {
+      expect(verifyOffline(key, fixture).verified).toBe(true);
+      const online = new RuntimeEvidenceTransportReceiptConsumer(
+        pin,
+        new SessionRuntimeEvidenceTransportReplayStore(),
+        () => NOW_NS,
+      );
+      expect(online.consumeSupportEnvelope(fixture.input).reason).toBe(reason);
+    }
+
+    const replayed = signedEnvelopeFixture({
+      ...identity,
+      sequence: 2n,
+      nonceSeed: "8",
+    });
+    expect(verifyOffline(key, replayed).verified).toBe(true);
+    expect(verifyOffline(key, replayed).verified).toBe(true);
+    const online = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      new SessionRuntimeEvidenceTransportReplayStore(),
+      () => NOW_NS,
+    );
+    expect(online.consumeSupportEnvelope(replayed.input).verified).toBe(true);
+    expect(online.consumeSupportEnvelope(replayed.input).reason)
+      .toBe("runtime_evidence_transport_receipt_replayed");
+  });
+
+  it("recomputes key identity and rejects substitution or extra key aliases", () => {
+    const identity = signingIdentity(33);
+    const otherIdentity = signingIdentity(34);
+    const key = parsedVerificationKey(identity.announcement);
+    const otherKey = parsedVerificationKey(otherIdentity.announcement);
+    const fixture = signedEnvelopeFixture(identity);
+    const alteredKeys = [
+      { ...key, keyId: `${KEY_ID_PREFIX}${"f".repeat(64)}` },
+      {
+        ...key,
+        keyAnnouncementId: `${KEY_ANNOUNCEMENT_ID_PREFIX}${"f".repeat(64)}`,
+      },
+      { ...key, publicKey: otherKey.publicKey },
+      { ...key, key_id: key.keyId },
+    ];
+
+    for (const alteredKey of alteredKeys) {
+      expect(verifyOffline(
+        alteredKey as RuntimeEvidenceTransportVerificationKey,
+        fixture,
+      ).reason).toBe("runtime_evidence_transport_verification_key_invalid");
+    }
+    expect(verifyOffline(otherKey, fixture).reason)
+      .toBe("runtime_evidence_transport_verification_context_mismatch");
+  });
+
+  it("rejects altered signatures, payloads, subjects, and transport context", () => {
+    const identity = signingIdentity(35);
+    const key = parsedVerificationKey(identity.announcement);
+    const forged = signedEnvelopeFixture(identity);
+    forged.receipt.signature = `ed25519:${Buffer.alloc(64).toString("base64url")}`;
+    expect(verifyOffline(key, forged).reason)
+      .toBe("runtime_evidence_transport_signature_mismatch");
+
+    const fixture = signedEnvelopeFixture(identity);
+    expect(verifyOffline(key, fixture, {
+      observedPayload: `${fixture.input.observedPayload} `,
+    }).reason).toBe("runtime_evidence_transport_observed_payload_hash_mismatch");
+
+    const context = verificationContext(fixture.input);
+    const alteredContexts: RuntimeEvidenceTransportVerificationContext[] = [
+      { ...context, subjectCanonicalBytes: "different-subject" },
+      { ...context, subjectIdentityNamespace: "synthi.test.other_subject.v1" },
+      { ...context, runnerProcessId: context.runnerProcessId + 1 },
+      { ...context, runtimeSessionId: "runner-runtime-session-other-01" },
+      { ...context, runnerChallenge: "b".repeat(32) },
+      { ...context, transportSessionId: "session-other-source-tree-01" },
+    ];
+    for (const alteredContext of alteredContexts) {
+      expect(verifyOffline(key, fixture, { context: alteredContext }).reason)
+        .toBe("runtime_evidence_transport_verification_context_mismatch");
+    }
+  });
+
+  it("rejects altered IDs and non-exact envelope, receipt, and context shapes", () => {
+    const identity = signingIdentity(36);
+    const key = parsedVerificationKey(identity.announcement);
+
+    const alteredReceiptId = signedEnvelopeFixture(identity);
+    alteredReceiptId.receipt.receiptId =
+      `gpu-hmr-runtime-evidence-transport-receipt:sha256:${"f".repeat(64)}`;
+    expect(verifyOffline(key, alteredReceiptId).reason)
+      .toBe("runtime_evidence_transport_receipt_id_mismatch");
+
+    const alteredContextHash = signedEnvelopeFixture(identity);
+    alteredContextHash.receipt.observationContextHash = `sha256:${"f".repeat(64)}`;
+    expect(verifyOffline(key, alteredContextHash).reason)
+      .toBe("runtime_evidence_transport_verification_context_hash_mismatch");
+
+    const fixture = signedEnvelopeFixture(identity);
+    const context = verificationContext(fixture.input);
+    const alteredIdentityContexts: RuntimeEvidenceTransportVerificationContext[] = [
+      { ...context, requestId: `gpu-reload:request:${"e".repeat(32)}` },
+      { ...context, sourceEditId: `source-edit:sha256:${"e".repeat(64)}` },
+      { ...context, observedRuntimeProofId: `gpu-runtime-proof:sha256:${"e".repeat(64)}` },
+      { ...context, observedProofLedgerId: `gpu-ledger-proof:sha256:${"e".repeat(64)}` },
+    ];
+    for (const alteredContext of alteredIdentityContexts) {
+      expect(verifyOffline(key, fixture, { context: alteredContext }).reason)
+        .toBe("runtime_evidence_transport_verification_context_mismatch");
+    }
+
+    const aliasedReceipt = signedEnvelopeFixture(identity);
+    const receiptId = aliasedReceipt.receipt.receiptId;
+    delete aliasedReceipt.receipt.receiptId;
+    aliasedReceipt.receipt.receipt_id = receiptId;
+    expect(verifyOffline(key, aliasedReceipt).reason)
+      .toBe("runtime_evidence_transport_receipt_field_shape_invalid");
+
+    const extraEnvelopeField = signedEnvelopeFixture(identity);
+    (extraEnvelopeField.input.envelope as Record<string, unknown>).verified = true;
+    expect(verifyOffline(key, extraEnvelopeField).reason)
+      .toBe("observed_runtime_evidence_envelope_shape_invalid");
+
+    const contextWithAlias = {
+      ...verificationContext(fixture.input),
+      runner_process_id: fixture.input.runnerProcessId,
+    } as RuntimeEvidenceTransportVerificationContext;
+    expect(verifyOffline(key, fixture, { context: contextWithAlias }).reason)
+      .toBe("runtime_evidence_transport_verification_context_invalid");
+  });
+
+  it("rejects stateful accessors without reading substitution values", () => {
+    const identity = signingIdentity(38);
+    const otherIdentity = signingIdentity(39);
+    const key = parsedVerificationKey(identity.announcement);
+    const otherKey = parsedVerificationKey(otherIdentity.announcement);
+    const fixture = signedEnvelopeFixture(identity);
+    const getterReadCounts: Array<() => number> = [];
+
+    const accessorKey = { ...key } as Record<string, unknown>;
+    getterReadCounts.push(installStatefulGetter(
+      accessorKey,
+      "keyId",
+      key.keyId,
+      otherKey.keyId,
+    ));
+    expect(verifyOffline(
+      accessorKey as unknown as RuntimeEvidenceTransportVerificationKey,
+      fixture,
+    ).reason).toBe("runtime_evidence_transport_verification_key_invalid");
+
+    const accessorContext = {
+      ...verificationContext(fixture.input),
+    } as Record<string, unknown>;
+    getterReadCounts.push(installStatefulGetter(
+      accessorContext,
+      "requestId",
+      fixture.input.requestId,
+      `gpu-reload:request:${"f".repeat(32)}`,
+    ));
+    expect(verifyOffline(key, fixture, {
+      context: accessorContext as unknown as RuntimeEvidenceTransportVerificationContext,
+    }).reason).toBe("runtime_evidence_transport_verification_context_invalid");
+
+    const accessorEnvelopeFixture = signedEnvelopeFixture(identity);
+    const envelope = accessorEnvelopeFixture.input.envelope as Record<string, unknown>;
+    getterReadCounts.push(installStatefulGetter(
+      envelope,
+      "runtimeEvidenceTransportReceipt",
+      accessorEnvelopeFixture.receipt,
+      signedEnvelopeFixture(otherIdentity).receipt,
+    ));
+    expect(verifyOffline(key, accessorEnvelopeFixture).reason)
+      .toBe("observed_runtime_evidence_envelope_shape_invalid");
+
+    for (const field of ["nonce", "signature", "receiptId"] as const) {
+      const accessorReceiptFixture = signedEnvelopeFixture(identity);
+      const firstValue = accessorReceiptFixture.receipt[field];
+      const laterValue = field === "nonce"
+        ? "f".repeat(64)
+        : field === "signature"
+          ? `ed25519:${Buffer.alloc(64).toString("base64url")}`
+          : `gpu-hmr-runtime-evidence-transport-receipt:sha256:${"f".repeat(64)}`;
+      getterReadCounts.push(installStatefulGetter(
+        accessorReceiptFixture.receipt,
+        field,
+        firstValue,
+        laterValue,
+      ));
+      expect(verifyOffline(key, accessorReceiptFixture).reason)
+        .toBe("runtime_evidence_transport_receipt_field_shape_invalid");
+    }
+
+    const onlineFixture = signedEnvelopeFixture(identity);
+    const onlineInput = { ...onlineFixture.input } as Record<string, unknown>;
+    getterReadCounts.push(installStatefulGetter(
+      onlineInput,
+      "runnerProcessId",
+      onlineFixture.input.runnerProcessId,
+      onlineFixture.input.runnerProcessId + 1,
+    ));
+    const online = new RuntimeEvidenceTransportReceiptConsumer(
+      pinAnnouncement(identity.announcement),
+      new SessionRuntimeEvidenceTransportReplayStore(),
+      () => NOW_NS,
+    );
+    expect(online.consumeSupportEnvelope(
+      onlineInput as unknown as RuntimeEvidenceTransportSupportEnvelopeInput,
+    ).reason).toBe("runtime_evidence_transport_verification_context_invalid");
+
+    expect(getterReadCounts.map((readCount) => readCount()))
+      .toEqual(new Array(getterReadCounts.length).fill(0));
+  });
+
+  it("rejects symbols, hidden fields, wrong prototypes, and proxies without traps", () => {
+    const identity = signingIdentity(40);
+    const key = parsedVerificationKey(identity.announcement);
+    const fixture = signedEnvelopeFixture(identity);
+
+    const symbolKey = { ...key } as Record<PropertyKey, unknown>;
+    symbolKey[Symbol("key-alias")] = key.keyId;
+    expect(verifyOffline(
+      symbolKey as unknown as RuntimeEvidenceTransportVerificationKey,
+      fixture,
+    ).reason).toBe("runtime_evidence_transport_verification_key_invalid");
+
+    const hiddenContext = {
+      ...verificationContext(fixture.input),
+    } as Record<string, unknown>;
+    Object.defineProperty(hiddenContext, "requestId", {
+      value: fixture.input.requestId,
+      enumerable: false,
+    });
+    expect(verifyOffline(key, fixture, {
+      context: hiddenContext as unknown as RuntimeEvidenceTransportVerificationContext,
+    }).reason).toBe("runtime_evidence_transport_verification_context_invalid");
+
+    const symbolEnvelopeFixture = signedEnvelopeFixture(identity);
+    const symbolEnvelope = symbolEnvelopeFixture.input.envelope as Record<PropertyKey, unknown>;
+    symbolEnvelope[Symbol("verified")] = true;
+    expect(verifyOffline(key, symbolEnvelopeFixture).reason)
+      .toBe("observed_runtime_evidence_envelope_shape_invalid");
+
+    const hiddenReceiptFixture = signedEnvelopeFixture(identity);
+    Object.defineProperty(hiddenReceiptFixture.receipt, "nonce", {
+      value: hiddenReceiptFixture.receipt.nonce,
+      enumerable: false,
+    });
+    expect(verifyOffline(key, hiddenReceiptFixture).reason)
+      .toBe("runtime_evidence_transport_receipt_field_shape_invalid");
+
+    const wrongPrototypeKey = Object.assign(Object.create({}), key);
+    expect(verifyOffline(
+      wrongPrototypeKey as RuntimeEvidenceTransportVerificationKey,
+      fixture,
+    ).reason).toBe("runtime_evidence_transport_verification_key_invalid");
+
+    const wrongPrototypeContext = Object.assign(
+      Object.create({}),
+      verificationContext(fixture.input),
+    ) as RuntimeEvidenceTransportVerificationContext;
+    expect(verifyOffline(key, fixture, { context: wrongPrototypeContext }).reason)
+      .toBe("runtime_evidence_transport_verification_context_invalid");
+
+    const proxiedEnvelopeFixture = signedEnvelopeFixture(identity);
+    let trapCalls = 0;
+    const failTrap = (): never => {
+      trapCalls += 1;
+      throw new Error("proxy trap must not run");
     };
-  }
+    const proxiedEnvelope = new Proxy(
+      proxiedEnvelopeFixture.input.envelope as Record<string, unknown>,
+      {
+        get: failTrap,
+        getOwnPropertyDescriptor: failTrap,
+        getPrototypeOf: failTrap,
+        ownKeys: failTrap,
+      },
+    );
+    expect(verifyRuntimeEvidenceTransportSupportEnvelopeOffline(
+      key,
+      proxiedEnvelope,
+      proxiedEnvelopeFixture.input.observedPayload,
+      verificationContext(proxiedEnvelopeFixture.input),
+    ).reason).toBe("observed_runtime_evidence_envelope_shape_invalid");
+    expect(trapCalls).toBe(0);
+
+    const revokedEnvelopeFixture = signedEnvelopeFixture(identity);
+    const revokedEnvelope = Proxy.revocable(
+      revokedEnvelopeFixture.input.envelope as Record<string, unknown>,
+      {},
+    );
+    revokedEnvelope.revoke();
+    expect(verifyRuntimeEvidenceTransportSupportEnvelopeOffline(
+      key,
+      revokedEnvelope.proxy,
+      revokedEnvelopeFixture.input.observedPayload,
+      verificationContext(revokedEnvelopeFixture.input),
+    ).reason).toBe("observed_runtime_evidence_envelope_shape_invalid");
+  });
+
+  it("matches same-realm verification for VM-realm Uint8Array inputs", () => {
+    const identity = signingIdentity(41);
+    const key = parsedVerificationKey(identity.announcement);
+    const fixture = signedEnvelopeFixture(identity);
+    const context = verificationContext(fixture.input);
+    const sameRealmPayload = Uint8Array.from(Buffer.from(fixture.input.observedPayload));
+    const sameRealmSubject = Uint8Array.from(Buffer.from(context.subjectCanonicalBytes));
+    const crossRealmPayload = crossRealmUint8Array(sameRealmPayload);
+    const crossRealmSubject = crossRealmUint8Array(sameRealmSubject);
+
+    expect(crossRealmPayload instanceof Uint8Array).toBe(false);
+    expect(crossRealmSubject instanceof Uint8Array).toBe(false);
+    const sameRealm = verifyOffline(key, fixture, {
+      observedPayload: sameRealmPayload,
+      context: { ...context, subjectCanonicalBytes: sameRealmSubject },
+    });
+    const crossRealmPayloadOnly = verifyOffline(key, fixture, {
+      observedPayload: crossRealmPayload,
+      context: { ...context, subjectCanonicalBytes: sameRealmSubject },
+    });
+    const crossRealmSubjectOnly = verifyOffline(key, fixture, {
+      observedPayload: sameRealmPayload,
+      context: { ...context, subjectCanonicalBytes: crossRealmSubject },
+    });
+    const crossRealmBoth = verifyOffline(key, fixture, {
+      observedPayload: crossRealmPayload,
+      context: { ...context, subjectCanonicalBytes: crossRealmSubject },
+    });
+
+    expect(sameRealm.verified).toBe(true);
+    expect(crossRealmPayloadOnly).toEqual(sameRealm);
+    expect(crossRealmSubjectOnly).toEqual(sameRealm);
+    expect(crossRealmBoth).toEqual(sameRealm);
+  });
+
+  it("rejects DataView and non-Uint8 typed-array byte inputs", () => {
+    const identity = signingIdentity(42);
+    const key = parsedVerificationKey(identity.announcement);
+    const fixture = signedEnvelopeFixture(identity);
+    const context = verificationContext(fixture.input);
+    const invalidPayloads = [
+      new DataView(new ArrayBuffer(8)),
+      new Uint16Array([1, 2]),
+      new Uint8ClampedArray([1, 2]),
+    ];
+    for (const observedPayload of invalidPayloads) {
+      expect(verifyOffline(key, fixture, {
+        observedPayload: observedPayload as unknown as Uint8Array,
+      }).reason).toBe("runtime_evidence_transport_verification_context_invalid");
+    }
+
+    const invalidSubjects = [
+      new DataView(new ArrayBuffer(8)),
+      new Int8Array([1, 2]),
+      new Uint32Array([1, 2]),
+    ];
+    for (const subjectCanonicalBytes of invalidSubjects) {
+      expect(verifyOffline(key, fixture, {
+        context: {
+          ...context,
+          subjectCanonicalBytes: subjectCanonicalBytes as unknown as Uint8Array,
+        },
+      }).reason).toBe("runtime_evidence_transport_verification_context_invalid");
+    }
+  });
+
+  it("rejects serialized success-authority claims and always returns support-only flags", () => {
+    const identity = signingIdentity(37);
+    const key = parsedVerificationKey(identity.announcement);
+    const claims: Array<Readonly<{ field: string; value: unknown }>> = [
+      { field: "proofAuthority", value: "worker_signed_gpu_hmr_acceptance" },
+      { field: "acceptedForGpuHmr", value: true },
+      { field: "gpuHmrSuccess", value: true },
+      { field: "canSatisfyRuntimeProof", value: true },
+    ];
+
+    for (const claim of claims) {
+      const fixture = signedEnvelopeFixture(identity);
+      (fixture.input.envelope as Record<string, unknown>)[claim.field] = claim.value;
+      expect(verifyOffline(key, fixture)).toEqual({
+        verified: false,
+        reason: "observed_runtime_evidence_envelope_shape_invalid",
+        receiptId: null,
+        observationContextHash: null,
+        acceptedForGpuHmr: false,
+        gpuHmrSuccess: false,
+        canSatisfyRuntimeProof: false,
+      });
+    }
+  });
+});
+
+describe("RuntimeEvidenceTransportReceiptConsumer", () => {
 
   it("verifies a fresh receipt against only the live channel-pinned key", () => {
     const identity = signingIdentity(11);
