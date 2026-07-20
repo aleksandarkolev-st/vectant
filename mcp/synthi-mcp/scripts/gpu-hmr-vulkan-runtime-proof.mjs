@@ -9,11 +9,13 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import {
   buildGpuHmrProofLedger,
+  GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
   queryGpuHmrLedgerInvariants,
 } from './lib/gpu-hmr-proof-ledger.mjs';
 import {
   evaluateGpuHmrAcceptanceContract,
   evaluateGpuHmrAcceptanceContractConsistency,
+  recomputeGpuHmrAcceptanceContractHash,
 } from './lib/gpu-hmr-acceptance-contract.mjs';
 import { evaluateGpuHmrDeterministicVisualMode } from './lib/gpu-hmr-visual-evidence.mjs';
 import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
@@ -1457,7 +1459,7 @@ function buildContract({
       field_evidence_refs: fieldEvidenceRefs(vulkanFields, evidenceRefs),
     },
   };
-  contract.contract_hash = sha256Text(stableJson(contract));
+  contract.contract_hash = recomputeGpuHmrAcceptanceContractHash(contract);
   contract.contract_id = `vulkan-contract:${contract.contract_hash}`;
   return contract;
 }
@@ -1583,6 +1585,7 @@ function buildLedgerRecord({
   const outputTargetId = VULKAN_VISUAL_OUTPUT_TARGET_ID;
   const deterministicMode = deterministicVisualMode({ beforeHash: frames.beforeHash, afterHash: frames.afterHash });
   return {
+    schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     project_id: CFG.targetId,
     edit_id: runMode.edit_id,
     edit_hash: runMode.edit_hash,
@@ -1996,7 +1999,11 @@ async function buildAcceptedSelfCheckProof(outDir) {
   const proofLedger = buildGpuHmrProofLedger(ledgerRecord);
   const ledger = queryGpuHmrLedgerInvariants(proofLedger);
   const contractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
-  const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({ before: contract, after: contract });
+  const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
+    explicitContract: contract,
+    derivedContract: contract,
+    derivedEvaluation: contractEvaluation,
+  });
   const nativeApiEvidence = nativeVulkanApiEvidence({
     counts: {
       vkCreateShaderModule: 2,
@@ -2249,7 +2256,11 @@ async function buildLiveWindowsProof({ outDir, preflight }) {
   const proofLedger = buildGpuHmrProofLedger(ledgerRecord);
   const ledger = queryGpuHmrLedgerInvariants(proofLedger);
   const contractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
-  const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({ before: contract, after: contract });
+  const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
+    explicitContract: contract,
+    derivedContract: contract,
+    derivedEvaluation: contractEvaluation,
+  });
   const nativeApiEvidence = {
     ...traceValidation.nativeEvidence,
     source: 'native_vulkan_windows_runtime_trace',
@@ -2478,11 +2489,17 @@ async function buildLiveRefusal(outDir) {
 async function selfCheck() {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'synthi-vulkan-runtime-self-check-'));
   const proof = await buildAcceptedSelfCheckProof(tmp);
-  if (proof.runtimeProofArtifact?.gpuHmrSuccess !== true) {
+  const contractConsistency = proof.runtimeProofArtifact?.acceptanceContractConsistency;
+  if (
+    proof.runtimeProofArtifact?.gpuHmrSuccess !== true
+    || contractConsistency?.accepted !== true
+    || contractConsistency?.checked !== true
+  ) {
     throw new Error(`self-check strict artifact rejected: ${JSON.stringify({
       strictGate: proof.runtimeProofArtifact?.strictGate,
       ledger: proof.ledger,
       contractEvaluation: proof.contractEvaluation,
+      contractConsistency,
       limitations: proof.runtimeProofArtifact?.limitations,
     }, null, 2)}`);
   }

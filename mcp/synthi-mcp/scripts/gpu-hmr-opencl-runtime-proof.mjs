@@ -9,11 +9,13 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import {
   buildGpuHmrProofLedger,
+  GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
   queryGpuHmrLedgerInvariants,
 } from './lib/gpu-hmr-proof-ledger.mjs';
 import {
   evaluateGpuHmrAcceptanceContract,
   evaluateGpuHmrAcceptanceContractConsistency,
+  recomputeGpuHmrAcceptanceContractHash,
 } from './lib/gpu-hmr-acceptance-contract.mjs';
 import {
   runtimeProofArtifactStrictGate,
@@ -1314,7 +1316,7 @@ function buildContract({ beforeHash, afterHash, runtimeTrace, runMode }) {
       field_evidence_refs: fieldEvidenceRefs(openclFields, evidenceRefs),
     },
   };
-  contract.contract_hash = sha256Text(stableJson(contract));
+  contract.contract_hash = recomputeGpuHmrAcceptanceContractHash(contract);
   contract.contract_id = `opencl-contract:${contract.contract_hash}`;
   return contract;
 }
@@ -1482,6 +1484,7 @@ function buildProofLedgerRecord({ beforeHash, afterHash, runtimeTrace, contract,
   const processId = runtimeTrace.processId;
   const outputTargetId = OPENCL_OUTPUT_TARGET_ID;
   return {
+    schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     project_id: CFG.targetId,
     edit_id: runMode.edit_id,
     edit_hash: runMode.edit_hash,
@@ -1988,7 +1991,11 @@ async function buildProof() {
   timings.total_validator_wall_time = durationNs(totalStart, process.hrtime.bigint());
   const contract = buildContract({ beforeHash, afterHash, runtimeTrace, runMode });
   const contractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
-  const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({ before: contract, after: contract });
+  const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
+    explicitContract: contract,
+    derivedContract: contract,
+    derivedEvaluation: contractEvaluation,
+  });
   const ledgerRecord = buildProofLedgerRecord({
     beforeHash,
     afterHash,
@@ -2162,7 +2169,11 @@ async function selfCheck() {
     const oracle = await writeComputeOracleArtifacts({ outDir: tmp, rawAfterPath, runtimeTrace, timings });
     const contract = buildContract({ beforeHash, afterHash, runtimeTrace, runMode });
     const contractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
-    const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({ before: contract, after: contract });
+    const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
+      explicitContract: contract,
+      derivedContract: contract,
+      derivedEvaluation: contractEvaluation,
+    });
     const ledgerRecord = buildProofLedgerRecord({
       beforeHash,
       afterHash,
@@ -2189,7 +2200,11 @@ async function selfCheck() {
       oracleValidation: oracle.validation,
       nativeApiEvidence,
     });
-    if (artifact.gpuHmrSuccess !== true) {
+    if (
+      artifact.gpuHmrSuccess !== true
+      || contractConsistency.accepted !== true
+      || contractConsistency.checked !== true
+    ) {
       throw new Error(`self-check strict artifact rejected: ${JSON.stringify({
         strictGate: artifact.strictGate,
         ledger,

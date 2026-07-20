@@ -14,11 +14,14 @@ import {
   buildGpuHmrFrameGateRuntimeBinding,
   buildGpuHmrProofLedger,
   buildGpuHmrVisualCaptureRuntimeBinding,
+  GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
   queryGpuHmrLedgerInvariants,
 } from './lib/gpu-hmr-proof-ledger.mjs';
 import {
   evaluateGpuHmrAcceptanceContract,
+  evaluateGpuHmrAcceptanceContractConsistency,
   GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
+  recomputeGpuHmrAcceptanceContractHash,
 } from './lib/gpu-hmr-acceptance-contract.mjs';
 import { writeArtifactToCas } from './lib/gpu-hmr-artifact-cas.mjs';
 
@@ -346,6 +349,7 @@ function timingMetrics(overrides = {}) {
 
 function ledgerRecord(overrides = {}) {
   return {
+    schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     project_id: 'strict-generic-gpu-project',
     edit_id: 'gpu-artifact-edit',
     backend: 'hip',
@@ -533,9 +537,8 @@ function boundVisualLedgerRecord(overrides = {}) {
 }
 
 function acceptanceContract(overrides = {}) {
-  return {
+  const contract = {
     contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
-    contract_hash: HASH_C,
     project_id: 'strict-generic-gpu-project',
     edit_id: 'gpu-artifact-edit',
     backend: 'hip',
@@ -671,12 +674,21 @@ function acceptanceContract(overrides = {}) {
     },
     ...overrides,
   };
+  contract.contract_hash = recomputeGpuHmrAcceptanceContractHash(contract);
+  return contract;
 }
 
 function runtimeArtifact(overrides = {}) {
-  const proofLedger = buildGpuHmrProofLedger(ledgerRecord());
   const contract = acceptanceContract();
+  const proofLedger = buildGpuHmrProofLedger(ledgerRecord({
+    contract_hash: contract.contract_hash,
+  }));
   const contractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
+  const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
+    explicitContract: contract,
+    derivedContract: contract,
+    derivedEvaluation: contractEvaluation,
+  });
   const hardwareTargetEvidence = {
     schemaVersion: 'synthi.gpu_hmr.hip_module_hardware_target_evidence.v1',
     accepted: true,
@@ -711,7 +723,7 @@ function runtimeArtifact(overrides = {}) {
     },
     acceptanceContract: contract,
     acceptanceContractEvaluation: contractEvaluation,
-    acceptanceContractConsistency: { accepted: true },
+    acceptanceContractConsistency: contractConsistency,
     hardwareTargetEvidence,
     hardware_target_evidence: hardwareTargetEvidence,
     ...overrides,
@@ -781,6 +793,7 @@ const casOnlyVisualArtifact = runtimeArtifact({
 
 assert.equal(adversarialPreflightStrictGate(passingPreflight).status, 'pass');
 assert.equal(runtimeProofArtifactStrictGate(passingArtifact).status, 'pass');
+assert.equal(passingArtifact.acceptanceContractConsistency.checked, true);
 assert.equal(runtimeProofArtifactStrictGate(runtimeArtifact({
   proofLedger: webgpuComputeOnlyLedger,
   proofLedgerQuery: webgpuComputeOnlyLedger.query,
@@ -949,6 +962,21 @@ assert.match(
 assert.match(
   runtimeProofArtifactStrictGate({ ...passingArtifact, acceptanceContractConsistency: null }).detail,
   /acceptance_contract_consistency_missing/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...passingArtifact,
+    acceptanceContractConsistency: { accepted: true, checked: false },
+  }).detail,
+  /acceptance_contract_consistency_unchecked/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...passingArtifact,
+    acceptanceContractConsistency: { accepted: true, checked: true },
+    acceptance_contract_consistency: { accepted: true, checked: false },
+  }).detail,
+  /acceptance_contract_consistency_alias_mismatch/,
 );
 assert.match(
   runtimeProofArtifactStrictGate((() => {

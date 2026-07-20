@@ -1597,10 +1597,20 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       artifact.acceptanceContractEvaluation,
       artifact.acceptance_contract_evaluation,
     );
+    const acceptanceContractConsistencyCamel = isObject(artifact.acceptanceContractConsistency)
+      ? artifact.acceptanceContractConsistency
+      : null;
+    const acceptanceContractConsistencySnake = isObject(artifact.acceptance_contract_consistency)
+      ? artifact.acceptance_contract_consistency
+      : null;
     const acceptanceContractConsistency = firstObject(
-      artifact.acceptanceContractConsistency,
-      artifact.acceptance_contract_consistency,
+      acceptanceContractConsistencyCamel,
+      acceptanceContractConsistencySnake,
     );
+    const acceptanceContractConsistencyAliasMismatch =
+      acceptanceContractConsistencyCamel
+      && acceptanceContractConsistencySnake
+      && stableJson(acceptanceContractConsistencyCamel) !== stableJson(acceptanceContractConsistencySnake);
     const proofLedgerSourceConsistency = firstObject(
       artifact.proofLedgerSourceConsistency,
       artifact.proof_ledger_source_consistency,
@@ -1700,10 +1710,15 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
     } else if (acceptanceContractEvaluation.accepted !== true) {
       failures.push('acceptance_contract_rejected');
     }
+    if (acceptanceContractConsistencyAliasMismatch) {
+      failures.push('acceptance_contract_consistency_alias_mismatch');
+    }
     if (!acceptanceContractConsistency) {
       failures.push('acceptance_contract_consistency_missing');
     } else if (acceptanceContractConsistency.accepted !== true) {
       failures.push('acceptance_contract_consistency_rejected');
+    } else if (acceptanceContractConsistency.checked !== true) {
+      failures.push('acceptance_contract_consistency_unchecked');
     }
     if (!proofLedgerSourceConsistency) {
       failures.push('proof_ledger_source_consistency_missing');
