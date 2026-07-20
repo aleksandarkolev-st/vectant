@@ -65,7 +65,11 @@ import {
   GPU_HMR_COLD_SOURCE_SPLIT_COMPILE_SUPPORT_AUTHORITY,
 } from './gpu-hmr-cold-source-matrix-support.mjs';
 import {
+  commitGpuHmrMcpAdmissionReceiptForMatrix,
   createGpuHmrMcpAdmissionReplayRegistry,
+  discardGpuHmrMcpAdmissionReceiptForMatrix,
+  stageGpuHmrMcpAdmissionReceiptForMatrix,
+  stagedGpuHmrMcpAdmissionReceiptProjection,
   verifiedGpuHmrMcpAdmissionReceiptProjection,
   verifyGpuHmrMcpAdmissionReceiptForMatrix,
 } from './gpu-hmr-mcp-admission-receipt-matrix-verifier.mjs';
@@ -32271,6 +32275,52 @@ function matrixMcpAdmissionVerificationDiagnostic({
   };
 }
 
+function matrixCommittedMcpAdmissionDiagnostic(diagnostic, stagedVerification) {
+  const verification = {
+    schemaVersion: 'synthi.gpu_hmr.mcp_admission_matrix_commit_summary.v1',
+    schema_version: 'synthi.gpu_hmr.mcp_admission_matrix_commit_summary.v1',
+    accepted: true,
+    reason: null,
+    proofAuthority:
+      'matrix_observed_successful_replay_commit_support_only_not_gpu_hmr_acceptance',
+    proof_authority:
+      'matrix_observed_successful_replay_commit_support_only_not_gpu_hmr_acceptance',
+    signatureVerified: stagedVerification.signatureVerified === true,
+    challengeBound: stagedVerification.challengeBound === true,
+    bindingChecked: stagedVerification.bindingChecked === true,
+    freshnessChecked: stagedVerification.freshnessChecked === true,
+    replayChecked: stagedVerification.replayChecked === true,
+    replayCommitted: true,
+    replay_committed: true,
+    receiptId: stagedVerification.receiptId ?? null,
+    signerKeyId: stagedVerification.signerKeyId ?? null,
+    replayScopeId: stagedVerification.replayScopeId ?? null,
+    admittedAtUnixNs: stagedVerification.admittedAtUnixNs ?? null,
+    sequence: stagedVerification.sequence ?? null,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+  return {
+    ...diagnostic,
+    accepted: true,
+    reason: null,
+    verification,
+  };
+}
+
+function matrixRejectedMcpAdmissionDiagnostic(diagnostic, verification, reason) {
+  return {
+    ...diagnostic,
+    accepted: false,
+    reason: verification?.reason ?? reason,
+    verification,
+  };
+}
+
 function matrixMcpAdmissionVerificationForCompute({
   proofLedger,
   computeRecord,
@@ -32413,7 +32463,7 @@ function matrixMcpAdmissionVerificationForCompute({
     'transport_session_id',
     'transportSessionId',
   ).value;
-  const verification = verifyGpuHmrMcpAdmissionReceiptForMatrix({
+  const verification = stageGpuHmrMcpAdmissionReceiptForMatrix({
     trustedVerificationKey: trust.verificationKey,
     validationRunChallenge: trust.validationRunChallenge,
     receipt,
@@ -32432,14 +32482,20 @@ function matrixMcpAdmissionVerificationForCompute({
       runnerRuntimeSessionId: binding.runtimeSessionId,
     },
   });
+  const stagedVerification = stagedGpuHmrMcpAdmissionReceiptProjection(verification)
+    ? verification
+    : null;
   return {
     required,
     verification,
+    stagedVerification,
     diagnostic: matrixMcpAdmissionVerificationDiagnostic({
       required,
       materials,
       matchingMaterials,
-      reason: verification.reason,
+      reason: stagedVerification
+        ? 'gpu_hmr_mcp_admission_receipt_staged_pending_compute_proof'
+        : verification.reason,
       verification,
     }),
   };
@@ -32591,7 +32647,7 @@ function computeExpectedOutputV2Evidence(
   const ledgerRecord = compactObject(record);
   const context = verifiedGpuHmrMcpAdmissionReceiptProjection(
     mcpAdmissionVerification,
-  );
+  ) ?? stagedGpuHmrMcpAdmissionReceiptProjection(mcpAdmissionVerification);
   const contextRequired = mcpAdmissionReceiptRequired === true
     || context?.required === true;
   const parentAliasConflict = computeExpectedOutputV2ParentAliasConflict(ledgerRecord);
@@ -32839,6 +32895,21 @@ function computeExpectedOutputV2Evidence(
     compile_transport_nonce: contract?.binding?.compileTransportNonce ?? null,
     runtimeSessionId: contract?.binding?.runtimeSessionId ?? null,
     runtime_session_id: contract?.binding?.runtimeSessionId ?? null,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function computeExpectedOutputV2RejectedForAdmission(value) {
+  const evidence = compactObject(value);
+  const failedGates = failedGateObjects([
+    ...(evidence.failedGates ?? evidence.failed_gates ?? [])
+      .map((failure) => firstText(failure?.code, failure)),
+    'compute_expected_output_v2_mcp_admission_not_committed',
+  ]);
+  return {
+    ...evidence,
+    accepted: false,
     failedGates,
     failed_gates: failedGates,
   };
@@ -33153,6 +33224,8 @@ async function realRocmComputeOracleFileIntegrityFacet(
       options.mcpAdmissionMaterialScanTruncated === true
       || options.mcp_admission_material_scan_truncated === true,
   });
+  const stagedMcpAdmissionVerification = mcpAdmission.stagedVerification ?? null;
+  try {
   const computeExpectedOutputV2 = computeExpectedOutputV2Evidence(
     computeRecord,
     acceptanceContractEvidence.expectedOutputContract,
@@ -33336,16 +33409,36 @@ async function realRocmComputeOracleFileIntegrityFacet(
     renderedCard.decoded ? null : 'compute_oracle_rendered_card_decode_failed',
     renderedCard.decoded && renderedCard.format === 'png' ? null : 'compute_oracle_rendered_card_not_png',
   ]).map((code) => ({ code }))];
-  const failedGates = [...fileFailedGates, ...semanticFailedGates];
-  return {
+  const buildComputeFacet = ({
+    admissionDiagnostic,
+    expectedOutputV2 = computeExpectedOutputV2,
+    admissionRejected = false,
+  }) => {
+    const finalSemanticFailedGates = [
+      ...semanticFailedGates,
+      ...failedGateObjects([
+        admissionRejected
+          ? 'compute_oracle_mcp_admission_receipt_not_accepted'
+          : null,
+        admissionRejected && expectedOutputV2.required === true
+          ? 'compute_expected_output_v2_not_accepted'
+          : null,
+        ...(admissionRejected
+          ? (expectedOutputV2.failedGates ?? expectedOutputV2.failed_gates ?? [])
+            .map((failure) => firstText(failure?.code, failure))
+          : []),
+      ]),
+    ];
+    const failedGates = [...fileFailedGates, ...finalSemanticFailedGates];
+    return {
     present: true,
     accepted: failedGates.length === 0,
     source: 'matrix_verified_compute_oracle_files',
     failedGates,
     fileIntegrityAccepted: fileFailedGates.length === 0,
     file_integrity_accepted: fileFailedGates.length === 0,
-    semanticAccepted: semanticFailedGates.length === 0,
-    semantic_accepted: semanticFailedGates.length === 0,
+    semanticAccepted: finalSemanticFailedGates.length === 0,
+    semantic_accepted: finalSemanticFailedGates.length === 0,
     rawReadbackHash: firstText(enriched?.raw_readback_hash, enriched?.rawReadbackHash),
     rawReadbackByteLength,
     rawReadbackHashVerified: hashVerified,
@@ -33368,10 +33461,10 @@ async function realRocmComputeOracleFileIntegrityFacet(
     compute_oracle_semantic_verification: Object.keys(semanticVerification).length > 0
       ? semanticVerification
       : null,
-    computeExpectedOutputV2,
-    compute_expected_output_v2: computeExpectedOutputV2,
-    mcpAdmissionVerification: mcpAdmission.diagnostic,
-    mcp_admission_verification: mcpAdmission.diagnostic,
+    computeExpectedOutputV2: expectedOutputV2,
+    compute_expected_output_v2: expectedOutputV2,
+    mcpAdmissionVerification: admissionDiagnostic,
+    mcp_admission_verification: admissionDiagnostic,
     acceptanceContractBinding: {
       present: acceptanceContractEvidence.present,
       hashVerified: acceptanceContractEvidence.hashVerified,
@@ -33410,7 +33503,63 @@ async function realRocmComputeOracleFileIntegrityFacet(
     compute_artifact_cas_resolution: Object.keys(computeArtifactCasResolution).length > 0
       ? computeArtifactCasResolution
       : null,
+    };
   };
+
+  if (!stagedMcpAdmissionVerification) {
+    const admissionRejected = mcpAdmission.required === true
+      && mcpAdmission.verification?.accepted !== true;
+    return buildComputeFacet({
+      admissionDiagnostic: mcpAdmission.diagnostic,
+      expectedOutputV2: admissionRejected
+        ? computeExpectedOutputV2RejectedForAdmission(computeExpectedOutputV2)
+        : computeExpectedOutputV2,
+      admissionRejected,
+    });
+  }
+
+  if (fileFailedGates.length > 0 || semanticFailedGates.length > 0) {
+    return buildComputeFacet({
+      admissionDiagnostic: matrixRejectedMcpAdmissionDiagnostic(
+        mcpAdmission.diagnostic,
+        stagedMcpAdmissionVerification,
+        'gpu_hmr_mcp_admission_receipt_not_committed_due_to_compute_proof_failure',
+      ),
+      expectedOutputV2: computeExpectedOutputV2RejectedForAdmission(
+        computeExpectedOutputV2,
+      ),
+      admissionRejected: true,
+    });
+  }
+
+  const committedAdmissionDiagnostic = matrixCommittedMcpAdmissionDiagnostic(
+    mcpAdmission.diagnostic,
+    stagedMcpAdmissionVerification,
+  );
+  const committedFacet = buildComputeFacet({
+    admissionDiagnostic: committedAdmissionDiagnostic,
+  });
+  const committedVerification = commitGpuHmrMcpAdmissionReceiptForMatrix(
+    stagedMcpAdmissionVerification,
+  );
+  if (committedVerification.accepted === true) return committedFacet;
+
+  return buildComputeFacet({
+    admissionDiagnostic: matrixRejectedMcpAdmissionDiagnostic(
+      mcpAdmission.diagnostic,
+      committedVerification,
+      committedVerification.reason,
+    ),
+    expectedOutputV2: computeExpectedOutputV2RejectedForAdmission(
+      computeExpectedOutputV2,
+    ),
+    admissionRejected: true,
+  });
+  } finally {
+    if (stagedMcpAdmissionVerification) {
+      discardGpuHmrMcpAdmissionReceiptForMatrix(stagedMcpAdmissionVerification);
+    }
+  }
 }
 
 function runtimeChainOutputOracleBindingOverlay(runtimeChain) {
@@ -34509,6 +34658,173 @@ export async function selfCheckGenericOutputOracleLedger() {
       && acceptedV2Facet.compute?.mcpAdmissionVerification?.accepted === true,
     `signed production V2 facet should accept: ${JSON.stringify(acceptedV2Facet.failedGates)}`,
   );
+
+  const transactionalAdmission = verifiedAdmissionForContract(
+    v2Contract,
+    'v2-transactional-retry',
+  );
+  const transactionalTrust = {
+    ...transactionalAdmission.trust,
+    replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+  };
+  const transactionalFacet = () => ledgerOutputOracleFacet(
+    {
+      present: true,
+      source: 'recomputed_ledger',
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    },
+    v2ProofLedger,
+    {},
+    dir,
+    dir,
+    {
+      acceptanceContract,
+      runtimeProofArtifact: { proof_id: v2FullRuntimeProofId },
+      mcpAdmissionMaterials: [{
+        receipt: transactionalAdmission.material.mcpAdmissionReceipt,
+        transportContext: transactionalAdmission.material.transportContext,
+      }],
+      mcpAdmissionTrust: transactionalTrust,
+      mcpAdmissionTrustSupplied: true,
+    },
+  );
+  let invalidTransactionalFacet;
+  try {
+    await fs.writeFile(rawPath, Buffer.from([0]));
+    invalidTransactionalFacet = await transactionalFacet();
+  } finally {
+    await fs.writeFile(rawPath, rawBytes);
+  }
+  assertGenericOutputOracleSelfCheck(
+    invalidTransactionalFacet.accepted === false
+      && invalidTransactionalFacet.compute?.mcpAdmissionVerification?.accepted === false
+      && invalidTransactionalFacet.compute?.mcpAdmissionVerification?.reason
+        === 'gpu_hmr_mcp_admission_receipt_not_committed_due_to_compute_proof_failure',
+    `invalid compute bytes should discard staged admission: ${JSON.stringify(invalidTransactionalFacet)}`,
+  );
+  const acceptedTransactionalRetry = await transactionalFacet();
+  assertGenericOutputOracleSelfCheck(
+    acceptedTransactionalRetry.accepted === true
+      && acceptedTransactionalRetry.compute?.mcpAdmissionVerification?.accepted === true,
+    `valid compute retry should commit the unconsumed admission receipt: ${JSON.stringify(acceptedTransactionalRetry)}`,
+  );
+  const replayedTransactionalFacet = await transactionalFacet();
+  assertGenericOutputOracleSelfCheck(
+    replayedTransactionalFacet.accepted === false
+      && replayedTransactionalFacet.compute?.mcpAdmissionVerification?.accepted === false
+      && replayedTransactionalFacet.compute?.mcpAdmissionVerification?.reason
+        === 'gpu_hmr_mcp_admission_receipt_replayed',
+    `a committed compute admission receipt should reject replay: ${JSON.stringify(replayedTransactionalFacet)}`,
+  );
+
+  const concurrentAdmission = verifiedAdmissionForContract(
+    v2Contract,
+    'v2-concurrent-commit',
+  );
+  const concurrentTrust = {
+    ...concurrentAdmission.trust,
+    replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+  };
+  const concurrentFacet = () => ledgerOutputOracleFacet(
+    {
+      present: true,
+      source: 'recomputed_ledger',
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    },
+    v2ProofLedger,
+    {},
+    dir,
+    dir,
+    {
+      acceptanceContract,
+      runtimeProofArtifact: { proof_id: v2FullRuntimeProofId },
+      mcpAdmissionMaterials: [{
+        receipt: concurrentAdmission.material.mcpAdmissionReceipt,
+        transportContext: concurrentAdmission.material.transportContext,
+      }],
+      mcpAdmissionTrust: concurrentTrust,
+      mcpAdmissionTrustSupplied: true,
+    },
+  );
+  const concurrentFacets = await Promise.all([concurrentFacet(), concurrentFacet()]);
+  const concurrentAccepted = concurrentFacets.filter((facet) => facet.accepted === true);
+  const concurrentRejected = concurrentFacets.filter((facet) => facet.accepted === false);
+  assertGenericOutputOracleSelfCheck(
+    concurrentAccepted.length === 1
+      && concurrentRejected.length === 1
+      && concurrentRejected[0].compute?.mcpAdmissionVerification?.reason
+        === 'gpu_hmr_mcp_admission_receipt_replayed'
+      && concurrentRejected[0].compute?.computeExpectedOutputV2?.accepted === false
+      && concurrentRejected[0].compute?.computeExpectedOutputV2?.failedGates
+        ?.some(({ code }) => code === 'compute_expected_output_v2_mcp_admission_not_committed'),
+    `concurrent staged compute commits should accept once and reject once: ${JSON.stringify(concurrentFacets)}`,
+  );
+
+  const exceptionAdmission = verifiedAdmissionForContract(
+    v2Contract,
+    'v2-exception-discard',
+  );
+  const exceptionTrust = {
+    ...exceptionAdmission.trust,
+    replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+  };
+  const throwingProofLedger = structuredClone(v2ProofLedger);
+  Object.defineProperty(throwingProofLedger.records[0], 'evidence_refs', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      throw new Error('self_check_post_stage_compute_exception');
+    },
+  });
+  const exceptionFacetOptions = {
+    acceptanceContract,
+    runtimeProofArtifact: { proof_id: v2FullRuntimeProofId },
+    mcpAdmissionMaterials: [{
+      receipt: exceptionAdmission.material.mcpAdmissionReceipt,
+      transportContext: exceptionAdmission.material.transportContext,
+    }],
+    mcpAdmissionTrust: exceptionTrust,
+    mcpAdmissionTrustSupplied: true,
+  };
+  let postStageExceptionObserved = false;
+  try {
+    await ledgerOutputOracleFacet(
+      {
+        present: true,
+        source: 'recomputed_ledger',
+        gpuHmrSuccess: true,
+        failedInvariants: [],
+      },
+      throwingProofLedger,
+      {},
+      dir,
+      dir,
+      exceptionFacetOptions,
+    );
+  } catch (error) {
+    postStageExceptionObserved = error?.message === 'self_check_post_stage_compute_exception';
+  }
+  const acceptedAfterPostStageException = await ledgerOutputOracleFacet(
+    {
+      present: true,
+      source: 'recomputed_ledger',
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    },
+    v2ProofLedger,
+    {},
+    dir,
+    dir,
+    exceptionFacetOptions,
+  );
+  assertGenericOutputOracleSelfCheck(
+    postStageExceptionObserved
+      && acceptedAfterPostStageException.accepted === true
+      && acceptedAfterPostStageException.compute?.mcpAdmissionVerification?.accepted === true,
+    `post-stage exceptions should discard admission for a valid retry: ${JSON.stringify({ postStageExceptionObserved, acceptedAfterPostStageException })}`,
+  );
   const mixedOracleProofLedger = structuredClone(v2ProofLedger);
   mixedOracleProofLedger.records.push({
     oracle_artifacts: {
@@ -35077,6 +35393,11 @@ export async function selfCheckGenericOutputOracleLedger() {
     v2MatrixRecomputationAccepted: true,
     signedMcpAdmissionAccepted: true,
     forgedSerializedAdmissionRejected: true,
+    invalidComputeAdmissionDiscarded: true,
+    validComputeAdmissionRetryCommitted: true,
+    committedComputeAdmissionReplayRejected: true,
+    concurrentComputeAdmissionCommitRaceRejected: true,
+    postStageComputeExceptionDiscarded: true,
     collectorReceiptReplayRejected: true,
     collectorTrustKeyChangeRejected: true,
     collectorTrustChallengeChangeRejected: true,

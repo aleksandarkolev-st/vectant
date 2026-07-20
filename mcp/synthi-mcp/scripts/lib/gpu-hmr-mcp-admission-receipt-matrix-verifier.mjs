@@ -424,6 +424,7 @@ export function commitGpuHmrMcpAdmissionReceiptForMatrix(stagedValue) {
       "gpu_hmr_mcp_admission_matrix_staged_verification_invalid",
     );
   }
+  const acceptedVerification = accepted(state.verification, state.receipt);
   stagedVerificationStates.delete(stagedValue);
   retiredStagedVerifications.add(stagedValue);
 
@@ -447,7 +448,7 @@ export function commitGpuHmrMcpAdmissionReceiptForMatrix(stagedValue) {
       sequence: verification.sequence.toString(),
     });
   }
-  return accepted(verification, receipt);
+  return acceptedVerification;
 }
 
 export function verifyGpuHmrMcpAdmissionReceiptForMatrix(contextValue) {
