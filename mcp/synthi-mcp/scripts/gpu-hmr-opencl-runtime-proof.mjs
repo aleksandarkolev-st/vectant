@@ -2,6 +2,7 @@
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -115,35 +116,83 @@ function relRepo(filePath) {
   return path.relative(REPO_ROOT, filePath).replace(/\\/g, '/');
 }
 
-function proofArtifactPath(value) {
-  const text = typeof value === 'string' ? value.trim() : '';
-  if (!text) return null;
-  if (/^[a-z][a-z0-9+.-]*:/iu.test(text)) return null;
-  return text;
+function computeOracleStrictGateOptions(trustedArtifactRoot) {
+  if (typeof trustedArtifactRoot !== 'string' || !trustedArtifactRoot.trim()) {
+    throw new Error('trusted compute oracle artifact root is required');
+  }
+  return {
+    allowedArtifactRoots: [path.resolve(trustedArtifactRoot)],
+    computeArtifactPathBaseRoots: [REPO_ROOT],
+  };
 }
 
-function computeOracleStrictGateOptions(oracleArtifacts = {}) {
-  const artifactPaths = [
-    oracleArtifacts.raw_readback_bin,
-    oracleArtifacts.rawReadbackBin,
-    oracleArtifacts.before_raw_readback_bin,
-    oracleArtifacts.beforeRawReadbackBin,
-    oracleArtifacts.readback_schema_json,
-    oracleArtifacts.readbackSchemaJson,
-    oracleArtifacts.rendered_card_png,
-    oracleArtifacts.renderedCardPng,
-    oracleArtifacts.raw_readback_cas_manifest,
-    oracleArtifacts.rawReadbackCasManifest,
-  ].map(proofArtifactPath).filter(Boolean);
-  const allowedArtifactRoots = [...new Set(artifactPaths.map((artifactPath) => {
-    const resolved = path.isAbsolute(artifactPath)
-      ? artifactPath
-      : path.resolve(REPO_ROOT, artifactPath);
-    return path.dirname(resolved);
-  }))];
+function pathInsideOrSame(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (
+    relative
+    && !relative.startsWith('..')
+    && !path.isAbsolute(relative)
+  );
+}
+
+function computeOracleImplementationRootFailures(record, trustedArtifactRoot) {
+  let trustedRoot;
+  try {
+    trustedRoot = realpathSync(path.resolve(trustedArtifactRoot));
+  } catch {
+    return ['compute_oracle_trusted_artifact_root_invalid'];
+  }
+  const failures = [];
+  const visited = new Set();
+  const declarationKeys = [
+    'oracle_implementation_artifact',
+    'oracleImplementationArtifact',
+    'semantic_oracle_implementation_artifact',
+    'semanticOracleImplementationArtifact',
+  ];
+  const walk = (value) => {
+    if (!value || typeof value !== 'object' || visited.has(value)) return;
+    visited.add(value);
+    for (const key of declarationKeys) {
+      const declaration = Object.prototype.hasOwnProperty.call(value, key)
+        ? value[key]
+        : null;
+      if (!declaration || typeof declaration !== 'object') continue;
+      const declaredPath = declaration.path ?? declaration.file_path ?? declaration.filePath;
+      if (typeof declaredPath !== 'string' || !declaredPath.trim()) continue;
+      const resolvedPath = path.isAbsolute(declaredPath)
+        ? path.resolve(declaredPath)
+        : path.resolve(REPO_ROOT, declaredPath);
+      try {
+        if (!pathInsideOrSame(trustedRoot, realpathSync(resolvedPath))) {
+          failures.push('compute_oracle_implementation_artifact_root_escape');
+        }
+      } catch {
+        // The strict gate reports missing or unreadable declaration paths.
+      }
+    }
+    for (const child of Object.values(value)) walk(child);
+  };
+  walk(record);
+  return [...new Set(failures)];
+}
+
+function trustedRuntimeProofArtifactStrictGate(record, trustedArtifactRoot) {
+  const gate = runtimeProofArtifactStrictGate(
+    record,
+    computeOracleStrictGateOptions(trustedArtifactRoot),
+  );
+  const failures = [...new Set([
+    ...gate.failures,
+    ...computeOracleImplementationRootFailures(record, trustedArtifactRoot),
+  ])];
+  if (failures.length === gate.failures.length) return gate;
   return {
-    allowedArtifactRoots,
-    computeArtifactPathBaseRoots: [REPO_ROOT],
+    ...gate,
+    status: 'fail',
+    accepted: false,
+    failures,
+    detail: `failures=${failures.join(',')}`,
   };
 }
 
@@ -274,7 +323,7 @@ function semanticOracleImplementationIdentity() {
   };
 }
 
-function computeSemanticOracleCodeHash({
+function semanticOracleImplementationBytes({
   implementation,
   inputValues,
   operation,
@@ -290,7 +339,7 @@ function computeSemanticOracleCodeHash({
     inputValues: canonicalInputValues,
     tolerance: Number(tolerance),
   });
-  return sha256Text(stableJson({
+  return Buffer.from(stableJson({
     schemaVersion: COMPUTE_SEMANTIC_ORACLE_IDENTITY_SCHEMA_VERSION,
     implementation,
     declaration: {
@@ -307,6 +356,20 @@ function computeSemanticOracleCodeHash({
         expectedValues: expectedValues(canonicalInputValues, canonicalOperation),
       },
     },
+  }), 'utf8');
+}
+
+function computeSemanticOracleCodeHash({
+  implementation,
+  inputValues,
+  operation,
+  tolerance,
+}) {
+  return sha256Bytes(semanticOracleImplementationBytes({
+    implementation,
+    inputValues,
+    operation,
+    tolerance,
   }));
 }
 
@@ -1470,6 +1533,7 @@ async function writeComputeOracleArtifacts({
   timings,
   expectedOutputContract,
   oracleCodeHash,
+  oracleImplementationBytes,
 }) {
   const oracleStart = process.hrtime.bigint();
   const afterBytes = await readFile(rawAfterPath);
@@ -1482,7 +1546,13 @@ async function writeComputeOracleArtifacts({
   const beforeRawPath = path.join(outDir, `${safeSlug(projectId)}-before-readback.bin`);
   const schemaPath = path.join(outDir, `${safeSlug(projectId)}-readback-schema.json`);
   const cardPath = path.join(outDir, `${safeSlug(projectId)}-compute-card.png`);
+  const implementationPath = path.join(outDir, `${safeSlug(projectId)}-semantic-oracle-implementation.json`);
+  const implementationHash = sha256Bytes(oracleImplementationBytes);
+  if (implementationHash !== oracleCodeHash) {
+    throw new Error('semantic oracle implementation bytes do not match oracleCodeHash');
+  }
   await writeFile(beforeRawPath, beforeBytes);
+  await writeFile(implementationPath, oracleImplementationBytes);
   const rawHash = sha256Bytes(afterBytes);
   const beforeHash = sha256Bytes(beforeBytes);
   const expectedAfter = expectedOutputContract.expectedValues;
@@ -1533,6 +1603,13 @@ async function writeComputeOracleArtifacts({
   });
   const schemaHash = sha256Bytes(await readFile(schemaPath));
   const cardHash = sha256Bytes(await readFile(cardPath));
+  const persistedImplementationBytes = await readFile(implementationPath);
+  if (
+    sha256Bytes(persistedImplementationBytes) !== oracleCodeHash
+    || persistedImplementationBytes.length !== oracleImplementationBytes.length
+  ) {
+    throw new Error('persisted semantic oracle implementation artifact does not match canonical bytes');
+  }
   const artifacts = {
     raw_readback_bin: relRepo(rawAfterPath),
     rawReadbackBin: relRepo(rawAfterPath),
@@ -1562,6 +1639,15 @@ async function writeComputeOracleArtifacts({
     deterministic_slice_hash: sliceHash,
     deterministic_slice_hash_verified: true,
     oracle_code_hash: oracleCodeHash,
+    semantic_oracle_implementation: relRepo(implementationPath),
+    semantic_oracle_implementation_hash: oracleCodeHash,
+    oracle_implementation_artifact: {
+      schemaVersion: 'synthi.gpu_hmr.oracle_implementation_artifact.v1',
+      role: 'oracle_implementation',
+      path: relRepo(implementationPath),
+      content_hash: oracleCodeHash,
+      byte_length: persistedImplementationBytes.length,
+    },
     rendered_card_png: relRepo(cardPath),
     renderedCardPng: relRepo(cardPath),
     rendered_card_hash: cardHash,
@@ -1680,6 +1766,7 @@ function buildProofLedgerRecord({
       epoch: afterEpoch,
       output_target_id: outputTargetId,
       outputTargetId,
+      oracle_code_hash: oracleArtifacts.oracle_code_hash,
       timestamp_monotonic_ns: timings.outputTimestampNs,
       process_id: processId,
       output_oracle: {
@@ -1773,7 +1860,7 @@ function nativeOpenClApiEvidence(runtimeTrace) {
   };
 }
 
-function runtimeProofArtifact({ beforeHash, afterHash, runtimeTrace, proofLedger, ledger, contract, contractEvaluation, contractConsistency, oracleArtifacts, oracleValidation, nativeApiEvidence }) {
+function runtimeProofArtifact({ beforeHash, afterHash, runtimeTrace, proofLedger, ledger, contract, contractEvaluation, contractConsistency, oracleArtifacts, oracleValidation, nativeApiEvidence, trustedArtifactRoot }) {
   const record = proofLedger.records?.[0] ?? {};
   const dispatchId = record.dispatch_event?.id;
   const proofLedgerSourceConsistency = {
@@ -1869,10 +1956,7 @@ function runtimeProofArtifact({ beforeHash, afterHash, runtimeTrace, proofLedger
     processContinuity,
     process_continuity: processContinuity,
   };
-  const strictGate = runtimeProofArtifactStrictGate(
-    artifact,
-    computeOracleStrictGateOptions(oracleArtifacts),
-  );
+  const strictGate = trustedRuntimeProofArtifactStrictGate(artifact, trustedArtifactRoot);
   return {
     ...artifact,
     strictGate,
@@ -2111,11 +2195,20 @@ async function buildProof() {
   const beforeHash = await sha256File(beforePath);
   const afterHash = await sha256File(afterPath);
   const runMode = runModeFor({ projectId, afterHash });
+  const oracleImplementationBytes = semanticOracleImplementationBytes({
+    implementation: semanticOracleImplementationIdentity(),
+    inputValues: INPUT_VALUES,
+    operation: afterOperation,
+    tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
+  });
   const oracleCodeHash = semanticOracleCodeHash({
     inputValues: INPUT_VALUES,
     operation: afterOperation,
     tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
   });
+  if (sha256Bytes(oracleImplementationBytes) !== oracleCodeHash) {
+    throw new Error('semantic oracle implementation bytes do not match computed oracleCodeHash');
+  }
   const expectedOutputContract = buildDeclaredExpectedOutputContract({
     projectId,
     editId: runMode.edit_id,
@@ -2155,6 +2248,7 @@ async function buildProof() {
     timings,
     expectedOutputContract,
     oracleCodeHash,
+    oracleImplementationBytes,
   });
   timings.oracle_analysis_time = oracle.oracleDurationNs;
   timings.total_validator_wall_time = durationNs(totalStart, process.hrtime.bigint());
@@ -2200,6 +2294,7 @@ async function buildProof() {
     oracleArtifacts: oracle.artifacts,
     oracleValidation: oracle.validation,
     nativeApiEvidence,
+    trustedArtifactRoot: outDir,
   });
   const fullRuntimeProven = runtimeProof.fullRuntimeProven === true;
   const negativeEditRefusal = buildNegativeRefusal({ beforeSource, negativeSource });
@@ -2314,11 +2409,20 @@ async function selfCheck() {
       multiplier: CFG.afterMultiplier,
       bias: CFG.afterBias,
     };
+    const oracleImplementationBytes = semanticOracleImplementationBytes({
+      implementation: semanticOracleImplementationIdentity(),
+      inputValues: INPUT_VALUES,
+      operation: afterOperation,
+      tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
+    });
     const oracleCodeHash = semanticOracleCodeHash({
       inputValues: INPUT_VALUES,
       operation: afterOperation,
       tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
     });
+    if (sha256Bytes(oracleImplementationBytes) !== oracleCodeHash) {
+      throw new Error('self-check semantic oracle implementation bytes do not match oracleCodeHash');
+    }
     const expectedOutputContract = buildDeclaredExpectedOutputContract({
       projectId,
       editId: runMode.edit_id,
@@ -2374,6 +2478,7 @@ async function selfCheck() {
       timings,
       expectedOutputContract,
       oracleCodeHash,
+      oracleImplementationBytes,
     });
     const contract = buildContract({
       projectId,
@@ -2417,6 +2522,7 @@ async function selfCheck() {
       oracleArtifacts: oracle.artifacts,
       oracleValidation: oracle.validation,
       nativeApiEvidence,
+      trustedArtifactRoot: tmp,
     });
     if (
       artifact.gpuHmrSuccess !== true
@@ -2432,6 +2538,115 @@ async function selfCheck() {
         nativeApiEvidence,
         limitations: artifact.limitations,
       }, null, 2)}`);
+    }
+    const strictGateOptions = computeOracleStrictGateOptions(tmp);
+    if (
+      strictGateOptions.allowedArtifactRoots.length !== 1
+      || strictGateOptions.allowedArtifactRoots[0] !== path.resolve(tmp)
+    ) {
+      throw new Error('self-check strict gate options did not retain the runner-owned artifact root');
+    }
+    const directImplementationGate = trustedRuntimeProofArtifactStrictGate(artifact, tmp);
+    if (directImplementationGate.status !== 'pass') {
+      throw new Error(`self-check direct semantic oracle implementation bytes rejected: ${JSON.stringify(directImplementationGate)}`);
+    }
+    const mutateImplementationArtifactDeclarations = (candidate, mutate) => {
+      const visited = new Set();
+      const walk = (value) => {
+        if (!value || typeof value !== 'object' || visited.has(value)) return;
+        visited.add(value);
+        if (value.oracle_implementation_artifact && typeof value.oracle_implementation_artifact === 'object') {
+          mutate(value.oracle_implementation_artifact, value);
+        }
+        for (const child of Object.values(value)) walk(child);
+      };
+      walk(candidate);
+    };
+    const assertStrictImplementationRejected = (name, candidate, expectedFailure) => {
+      const gate = trustedRuntimeProofArtifactStrictGate(candidate, tmp);
+      if (gate.status !== 'fail' || !gate.failures.includes(expectedFailure)) {
+        throw new Error(`self-check ${name} semantic oracle implementation evidence was accepted: ${JSON.stringify(gate)}`);
+      }
+    };
+    const missingImplementationArtifact = structuredClone(artifact);
+    mutateImplementationArtifactDeclarations(missingImplementationArtifact, (_declaration, source) => {
+      delete source.oracle_implementation_artifact;
+      delete source.oracleImplementationArtifact;
+      delete source.semantic_oracle_implementation_artifact;
+      delete source.semanticOracleImplementationArtifact;
+    });
+    assertStrictImplementationRejected(
+      'missing',
+      missingImplementationArtifact,
+      'compute_oracle_implementation_byte_artifact_missing',
+    );
+    const forgedImplementationArtifact = structuredClone(artifact);
+    mutateImplementationArtifactDeclarations(forgedImplementationArtifact, (declaration, source) => {
+      declaration.path = source.raw_readback_bin;
+      declaration.content_hash = source.raw_readback_hash;
+      declaration.byte_length = source.raw_readback_byte_length;
+    });
+    assertStrictImplementationRejected(
+      'forged',
+      forgedImplementationArtifact,
+      'compute_oracle_implementation_oracle_code_hash_mismatch',
+    );
+    const implementationPath = path.resolve(
+      REPO_ROOT,
+      oracle.artifacts.oracle_implementation_artifact.path,
+    );
+    const persistedImplementationBytes = await readFile(implementationPath);
+    if (!persistedImplementationBytes.equals(oracleImplementationBytes)) {
+      throw new Error('self-check persisted semantic oracle implementation bytes differ from the canonical bytes');
+    }
+    const externalImplementationRoot = await mkdtemp(path.join(
+      os.tmpdir(),
+      'synthi-opencl-runtime-root-escape-',
+    ));
+    const externalImplementationPath = path.join(
+      externalImplementationRoot,
+      'semantic-oracle-implementation.json',
+    );
+    await writeFile(externalImplementationPath, persistedImplementationBytes);
+    const externalImplementationBytes = await readFile(externalImplementationPath);
+    const externalImplementationHash = sha256Bytes(externalImplementationBytes);
+    const externalRelativeToTrustedRoot = path.relative(
+      path.resolve(tmp),
+      path.resolve(externalImplementationPath),
+    );
+    if (
+      !externalImplementationBytes.equals(persistedImplementationBytes)
+      || externalImplementationHash !== oracleCodeHash
+      || (!externalRelativeToTrustedRoot.startsWith('..')
+        && !path.isAbsolute(externalRelativeToTrustedRoot))
+    ) {
+      throw new Error('self-check external semantic oracle implementation setup was not coherent and outside the trusted root');
+    }
+    const escapedImplementationArtifact = structuredClone(artifact);
+    mutateImplementationArtifactDeclarations(escapedImplementationArtifact, (declaration, source) => {
+      declaration.path = externalImplementationPath;
+      declaration.content_hash = externalImplementationHash;
+      declaration.byte_length = externalImplementationBytes.length;
+      source.semantic_oracle_implementation = externalImplementationPath;
+      source.semantic_oracle_implementation_hash = externalImplementationHash;
+      source.oracle_code_hash = externalImplementationHash;
+    });
+    assertStrictImplementationRejected(
+      'root-escaped',
+      escapedImplementationArtifact,
+      'compute_oracle_implementation_artifact_root_escape',
+    );
+    const substitutedImplementationBytes = Buffer.from(persistedImplementationBytes);
+    substitutedImplementationBytes[0] ^= 1;
+    try {
+      await writeFile(implementationPath, substitutedImplementationBytes);
+      assertStrictImplementationRejected(
+        'substituted',
+        artifact,
+        'compute_oracle_implementation_artifact_hash_mismatch',
+      );
+    } finally {
+      await writeFile(implementationPath, persistedImplementationBytes);
     }
     const proof = {
       schemaVersion: SCHEMA,
@@ -2506,7 +2721,11 @@ async function selfCheck() {
         fissionOutputOracleContract: contract.fission_report?.output_oracle_contract,
       }, null, 2)}`);
     }
-    const buildAdversarialExpectedContractProof = ({ proofId, candidateExpectedOutputContract }) => {
+    const buildAdversarialExpectedContractProof = ({
+      proofId,
+      candidateExpectedOutputContract,
+      expectedStrictFailure,
+    }) => {
       const candidateContract = buildContract({
         projectId,
         beforeHash,
@@ -2548,9 +2767,14 @@ async function selfCheck() {
         oracleArtifacts: oracle.artifacts,
         oracleValidation: oracle.validation,
         nativeApiEvidence,
+        trustedArtifactRoot: tmp,
       });
-      if (candidateArtifact.gpuHmrSuccess !== true) {
-        throw new Error(`adversarial expected-contract setup rejected before semantic verification: ${JSON.stringify({
+      if (
+        candidateArtifact.gpuHmrSuccess === true
+        || !candidateArtifact.strictGate?.failures?.includes(expectedStrictFailure)
+      ) {
+        throw new Error(`adversarial expected-contract setup did not fail closed at the strict semantic gate: ${JSON.stringify({
+          expectedStrictFailure,
           strictGate: candidateArtifact.strictGate,
           limitations: candidateArtifact.limitations,
         })}`);
@@ -2578,6 +2802,7 @@ async function selfCheck() {
     const reboundProof = buildAdversarialExpectedContractProof({
       proofId: reboundProofId,
       candidateExpectedOutputContract: reboundExpectedOutputContract,
+      expectedStrictFailure: 'compute_oracle_binding_edit_id_mismatch',
     });
     await writeFile(
       path.join(tmp, 'opencl-runtime-proof-rebound-expected-contract.json'),
@@ -2616,6 +2841,7 @@ async function selfCheck() {
     const implementationMutationProof = buildAdversarialExpectedContractProof({
       proofId: implementationMutationProofId,
       candidateExpectedOutputContract: implementationMutationExpectedOutputContract,
+      expectedStrictFailure: 'compute_oracle_binding_oracle_code_hash_mismatch',
     });
     await writeFile(
       path.join(tmp, 'opencl-runtime-proof-semantic-implementation-mutation.json'),
@@ -2644,6 +2870,7 @@ async function selfCheck() {
     const tamperedProof = buildAdversarialExpectedContractProof({
       proofId: tamperedProofId,
       candidateExpectedOutputContract: tamperedExpectedOutputContract,
+      expectedStrictFailure: 'compute_oracle_binding_oracle_code_hash_mismatch',
     });
     await writeFile(
       path.join(tmp, 'opencl-runtime-proof-tampered-expected-contract.json'),
@@ -2737,6 +2964,11 @@ async function selfCheck() {
       matrixProofId: matrix.proofId,
       rowId: row.rowId,
       forgedRejected: true,
+      directImplementationBytesAccepted: true,
+      missingImplementationBytesRejected: true,
+      forgedImplementationBytesRejected: true,
+      substitutedImplementationBytesRejected: true,
+      externalImplementationRootEscapeRejected: true,
       reboundExpectedContractRejected: true,
       semanticImplementationMutationRejected: true,
       semanticDeclarationMutationRejected: true,
