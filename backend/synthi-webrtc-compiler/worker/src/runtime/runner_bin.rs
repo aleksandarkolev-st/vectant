@@ -1481,6 +1481,17 @@ fn matching_strict_gpu_runtime_proof_id(
             process_id: &expected_process_id,
             runtime_session_id: expected_runtime_session_id,
             compute_expected_output_contract_hash: None,
+            compute_expected_output_semantics_hash: Some(
+                receipt.compute_expected_output_semantics_hash.as_str(),
+            ),
+            compute_expected_output_contract_v2: Some(&receipt.compute_expected_output_contract_v2),
+            compile_transport_nonce: Some(
+                receipt
+                    .compute_expected_output_contract_v2
+                    .binding()
+                    .compile_transport_nonce
+                    .as_str(),
+            ),
             enforce_compute_expected_output_contract_hash: false,
         },
     )?;
@@ -5713,6 +5724,8 @@ mod tests {
             format!("source-edit-id:{source_edit_id}"),
             publication_id.clone(),
             dispatcher_registration_id.clone(),
+            format!("compute-expected-output-contract:{compute_expected_output_contract_hash}"),
+            format!("compute-expected-output-semantics:{compute_expected_output_semantics_hash}"),
         ];
         let record = serde_json::json!({
             "schemaVersion": RUNNER_GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
@@ -5914,7 +5927,7 @@ mod tests {
             Some(&runner_challenge),
         )
         .unwrap();
-        assert_eq!(terminal.status, "applied");
+        assert_eq!(terminal.status, "applied", "{:?}", terminal.reason);
         assert_eq!(
             terminal.full_runtime_proof_id.as_deref(),
             Some(proof_id.as_str())

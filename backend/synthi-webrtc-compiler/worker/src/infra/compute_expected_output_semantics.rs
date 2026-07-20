@@ -216,6 +216,10 @@ impl ComputeExpectedOutputSemantics {
         &self.dtype
     }
 
+    pub fn shape(&self) -> &[u64] {
+        &self.shape
+    }
+
     pub fn element_count(&self) -> u64 {
         self.element_count
     }

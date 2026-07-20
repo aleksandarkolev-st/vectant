@@ -1,5 +1,8 @@
 use crate::hmr::gpu_proof::sha256_hex_bytes;
-use crate::infra::messages::compute_expected_output_contract_hash_valid;
+use crate::infra::compute_expected_output_semantics::ComputeExpectedOutputContractV2;
+use crate::infra::messages::{
+    compute_expected_output_contract_hash_valid, gpu_proof_transport_request_nonce_valid,
+};
 use crate::runtime::runner_protocol::canonical_sha256_content_hash;
 use std::collections::HashSet;
 
@@ -28,6 +31,9 @@ pub struct StrictGpuRuntimeProofExpectation<'a> {
     pub process_id: &'a str,
     pub runtime_session_id: &'a str,
     pub compute_expected_output_contract_hash: Option<&'a str>,
+    pub compute_expected_output_semantics_hash: Option<&'a str>,
+    pub compute_expected_output_contract_v2: Option<&'a ComputeExpectedOutputContractV2>,
+    pub compile_transport_nonce: Option<&'a str>,
     pub enforce_compute_expected_output_contract_hash: bool,
 }
 
@@ -36,6 +42,9 @@ pub struct VerifiedGpuRuntimeProof {
     pub proof_id: String,
     pub ledger_proof_id: String,
     pub compute_expected_output_contract_hash: Option<String>,
+    pub compute_expected_output_semantics_hash: Option<String>,
+    pub compute_expected_output_contract_v2_hash: Option<String>,
+    pub compute_expected_output_compile_transport_nonce: Option<String>,
 }
 
 fn stable_json(value: &serde_json::Value) -> String {
@@ -678,6 +687,168 @@ fn canonical_compute_expected_output_contract_hash(
     )
 }
 
+fn legacy_expected_output_contract_matches_v2(
+    legacy_contract: &serde_json::Value,
+    derived_contract: &ComputeExpectedOutputContractV2,
+) -> bool {
+    let semantics = derived_contract.semantics();
+    let binding = derived_contract.binding();
+    let Some(shape) = legacy_contract
+        .get("shape")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|shape| {
+            shape
+                .iter()
+                .map(serde_json::Value::as_u64)
+                .collect::<Option<Vec<_>>>()
+        })
+    else {
+        return false;
+    };
+    let Some(legacy_binding) = legacy_contract
+        .get("binding")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    let Some(legacy_artifact_hash) = legacy_binding
+        .get("artifactAfterHash")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    let derived_artifact_id = format!("artifact:{}", binding.artifact_after_hash);
+
+    semantics.comparison_mode() == "exact_bytes"
+        && legacy_contract
+            .get("comparisonMode")
+            .and_then(serde_json::Value::as_str)
+            == Some(semantics.comparison_mode())
+        && legacy_contract
+            .get("dtype")
+            .and_then(serde_json::Value::as_str)
+            == Some(semantics.dtype())
+        && shape.as_slice() == semantics.shape()
+        && legacy_contract
+            .get("elementCount")
+            .and_then(serde_json::Value::as_u64)
+            == Some(semantics.element_count())
+        && legacy_contract
+            .get("byteOrder")
+            .and_then(serde_json::Value::as_str)
+            == Some(semantics.byte_order())
+        && legacy_contract
+            .get("tolerance")
+            .and_then(serde_json::Value::as_f64)
+            == Some(0.0)
+        && legacy_contract
+            .get("expectedRawHash")
+            .and_then(serde_json::Value::as_str)
+            == Some(semantics.expected_evidence_hash())
+        && legacy_binding
+            .get("projectId")
+            .and_then(serde_json::Value::as_str)
+            == Some(binding.project_id.as_str())
+        && legacy_binding
+            .get("editId")
+            .and_then(serde_json::Value::as_str)
+            == Some(binding.edit_id.as_str())
+        && (legacy_artifact_hash == binding.artifact_after_hash
+            || legacy_artifact_hash == derived_artifact_id)
+        && legacy_binding
+            .get("outputTargetId")
+            .and_then(serde_json::Value::as_str)
+            == Some(binding.output_target_id.as_str())
+        && legacy_binding
+            .get("oracleCodeHash")
+            .and_then(serde_json::Value::as_str)
+            == Some(binding.oracle_code_hash.as_str())
+}
+
+fn verified_compute_expected_output_v2(
+    record: &serde_json::Value,
+    legacy_contract: Option<&serde_json::Value>,
+    expectation: &StrictGpuRuntimeProofExpectation<'_>,
+) -> Option<(Option<String>, Option<String>, Option<String>)> {
+    let oracle_artifacts = record
+        .get("oracle_artifacts")
+        .and_then(serde_json::Value::as_object)?;
+    let serialized_contract = oracle_artifacts.get("compute_expected_output_contract_v2");
+    let declared_contract_hash = oracle_artifacts
+        .get("compute_expected_output_contract_hash")
+        .and_then(serde_json::Value::as_str);
+    let declared_semantics_hash = oracle_artifacts
+        .get("compute_expected_output_semantics_hash")
+        .and_then(serde_json::Value::as_str);
+
+    let (expected_contract, expected_semantics_hash) = match (
+        expectation.compute_expected_output_contract_v2,
+        expectation.compute_expected_output_semantics_hash,
+    ) {
+        (None, None) => {
+            return (serialized_contract.is_none()
+                && declared_contract_hash.is_none()
+                && declared_semantics_hash.is_none())
+            .then_some((None, None, None));
+        }
+        (Some(contract), Some(semantics_hash)) => (contract, semantics_hash),
+        _ => return None,
+    };
+
+    let ledger_contract: ComputeExpectedOutputContractV2 =
+        serde_json::from_value(serialized_contract?.clone()).ok()?;
+    let contract_hash = expected_contract.contract_hash();
+    let semantics_hash = expected_contract.semantics().semantics_hash();
+    let binding = expected_contract.binding();
+    let expected_compile_transport_nonce = expectation.compile_transport_nonce?;
+    if !canonical_sha256_content_hash(expected_semantics_hash)
+        || !gpu_proof_transport_request_nonce_valid(expected_compile_transport_nonce)
+        || expected_semantics_hash != semantics_hash
+        || expected_contract.canonical_hash() != contract_hash
+        || expected_contract.semantics().canonical_hash() != semantics_hash
+        || &ledger_contract != expected_contract
+        || declared_contract_hash != Some(contract_hash)
+        || declared_semantics_hash != Some(semantics_hash)
+        || binding.edit_id != expectation.source_edit_id
+        || binding.artifact_after_hash != expectation.artifact_content_hash
+        || binding.output_target_id != expected_contract.semantics().output_target_id()
+        || binding.compile_transport_nonce != expected_compile_transport_nonce
+        || oracle_artifacts
+            .get("proof_runtime_session_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(binding.runtime_session_id.as_str())
+        || record.pointer("/output_event/oracle_artifacts") != record.get("oracle_artifacts")
+        || record.pointer("/output_event/output_oracle/oracle_artifacts")
+            != record.get("oracle_artifacts")
+        || legacy_contract.is_some_and(|legacy| {
+            !legacy_expected_output_contract_matches_v2(legacy, expected_contract)
+        })
+    {
+        return None;
+    }
+
+    let evidence_refs = record
+        .get("evidence_refs")
+        .and_then(serde_json::Value::as_array)?;
+    let contract_evidence_ref = format!("compute-expected-output-contract:{contract_hash}");
+    let semantics_evidence_ref = format!("compute-expected-output-semantics:{semantics_hash}");
+    if !evidence_refs
+        .iter()
+        .any(|value| value.as_str() == Some(contract_evidence_ref.as_str()))
+        || !evidence_refs
+            .iter()
+            .any(|value| value.as_str() == Some(semantics_evidence_ref.as_str()))
+    {
+        return None;
+    }
+
+    Some((
+        Some(contract_hash.to_string()),
+        Some(semantics_hash.to_string()),
+        Some(binding.compile_transport_nonce.clone()),
+    ))
+}
+
 pub fn runtime_record_chain_matches(
     record: &serde_json::Value,
     expectation: &StrictGpuRuntimeProofExpectation<'_>,
@@ -1069,6 +1240,15 @@ pub fn verify_strict_gpu_runtime_proof(
                 None => None,
             }
         };
+    let (
+        verified_compute_expected_output_contract_v2_hash,
+        verified_compute_expected_output_semantics_hash,
+        verified_compute_expected_output_compile_transport_nonce,
+    ) = verified_compute_expected_output_v2(
+        record,
+        declared_expected_output_contract,
+        expectation,
+    )?;
     let evidence_refs = record
         .get("evidence_refs")
         .and_then(serde_json::Value::as_array)?;
@@ -1086,6 +1266,10 @@ pub fn verify_strict_gpu_runtime_proof(
         proof_id: proof_id.to_string(),
         ledger_proof_id: expected_ledger_proof_id,
         compute_expected_output_contract_hash: verified_expected_output_contract_hash,
+        compute_expected_output_semantics_hash: verified_compute_expected_output_semantics_hash,
+        compute_expected_output_contract_v2_hash: verified_compute_expected_output_contract_v2_hash,
+        compute_expected_output_compile_transport_nonce:
+            verified_compute_expected_output_compile_transport_nonce,
     })
 }
 

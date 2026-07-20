@@ -29,6 +29,7 @@ use crate::hmr::runtime_evidence_transport::{
     global_runtime_evidence_transport_signer, ObservedRuntimeEvidenceEnvelope,
     RuntimeEvidenceTransportReceiptInput, RuntimeEvidenceTransportSigner,
 };
+use crate::infra::compute_expected_output_semantics::ComputeExpectedOutputContractV2;
 use crate::infra::constants::GUI_TOOLS;
 use crate::infra::messages::{gpu_proof_transport_request_nonce_valid, CompileRequest};
 use crate::runtime::gpu_runtime_proof::{
@@ -549,6 +550,8 @@ struct StrictGpuTerminalExpectation {
     command_envelope_sha256: String,
     compute_expected_output_contract_hash: Option<String>,
     compute_expected_output_semantics_hash: Option<String>,
+    compute_expected_output_contract_v2: Option<ComputeExpectedOutputContractV2>,
+    compile_transport_nonce: Option<String>,
     prepublication_output_oracle_commitment: Option<ReloadOutputOracleProfileCommitment>,
 }
 
@@ -586,6 +589,7 @@ pub struct VerifiedHotGpuReloadReceipt {
     command_envelope_sha256: String,
     compute_expected_output_contract_hash: Option<String>,
     compute_expected_output_semantics_hash: Option<String>,
+    compute_expected_output_compile_transport_nonce: Option<String>,
     prepublication_output_oracle_commitment: Option<ReloadOutputOracleProfileCommitment>,
     proof: serde_json::Value,
 }
@@ -628,6 +632,15 @@ impl VerifiedHotGpuReloadReceipt {
         }
         if !gpu_proof_transport_request_nonce_valid(compile_request_nonce) {
             anyhow::bail!("parent GPU runtime-proof control binding nonce is invalid");
+        }
+        if self
+            .compute_expected_output_compile_transport_nonce
+            .as_deref()
+            .is_some_and(|verified_nonce| verified_nonce != compile_request_nonce)
+        {
+            anyhow::bail!(
+                "parent GPU runtime-proof control binding nonce does not match the verified expected-output contract"
+            );
         }
 
         let canonical_proof_sha256 = canonical_gpu_runtime_proof_json_sha256(&self.proof);
@@ -889,22 +902,56 @@ struct RunnerCommandProofContext<'a> {
     runner_challenge: &'a str,
     compute_expected_output_contract_hash: Option<&'a str>,
     compute_expected_output_semantics_hash: Option<&'a str>,
+    compile_transport_nonce: Option<&'a str>,
 }
 
-fn prepublication_output_oracle_commitment_from_capsule(
+fn prepublication_output_oracle_binding_from_capsule(
     capsule_token: Option<&str>,
     proof_runtime_session_id: Option<&str>,
     artifact_content_hash: &str,
     source_edit_id: &str,
     compute_expected_output_semantics_hash: Option<&str>,
-) -> Result<Option<ReloadOutputOracleProfileCommitment>> {
+    compile_transport_nonce: Option<&str>,
+) -> Result<(
+    Option<ReloadOutputOracleProfileCommitment>,
+    Option<ComputeExpectedOutputContractV2>,
+)> {
     let Some(capsule_token) = capsule_token else {
-        return Ok(None);
+        if compute_expected_output_semantics_hash.is_some() {
+            anyhow::bail!("prepublication expected-output semantics require a proof capsule");
+        }
+        return Ok((None, None));
     };
     let metadata = decode_reload_capsule_metadata_token(capsule_token)
         .context("strict GPU reload carried an invalid capsule metadata token")?;
+    if !reload_compute_expected_output_semantics_binding_valid(
+        &metadata,
+        compute_expected_output_semantics_hash,
+    ) {
+        anyhow::bail!(
+            "prepublication output-oracle capsule does not match the independently transported expected-output semantics"
+        );
+    }
+    let expected_output_contract_v2 = metadata.compute_expected_output_contract_v2.clone();
+    if let Some(contract) = expected_output_contract_v2.as_ref() {
+        let compile_transport_nonce = compile_transport_nonce.context(
+            "prepublication expected-output contract requires an independent compile transport nonce",
+        )?;
+        if !gpu_proof_transport_request_nonce_valid(compile_transport_nonce)
+            || contract.binding().compile_transport_nonce != compile_transport_nonce
+        {
+            anyhow::bail!(
+                "prepublication expected-output contract does not match the independently transported compile nonce"
+            );
+        }
+    }
     let Some(commitment) = metadata.output_oracle_profile_commitment.clone() else {
-        return Ok(None);
+        if expected_output_contract_v2.is_some() {
+            anyhow::bail!(
+                "prepublication expected-output contract requires an output-oracle commitment"
+            );
+        }
+        return Ok((None, None));
     };
     let proof_runtime_session_id = proof_runtime_session_id.context(
         "prepublication output-oracle commitment requires an independent proof runtime session",
@@ -919,15 +966,7 @@ fn prepublication_output_oracle_commitment_from_capsule(
             "prepublication output-oracle commitment does not match the independently transported reload identity"
         );
     }
-    if !reload_compute_expected_output_semantics_binding_valid(
-        &metadata,
-        compute_expected_output_semantics_hash,
-    ) {
-        anyhow::bail!(
-            "prepublication output-oracle capsule does not match the independently transported expected-output semantics"
-        );
-    }
-    Ok(Some(commitment))
+    Ok((Some(commitment), expected_output_contract_v2))
 }
 
 fn runner_load_command(
@@ -1056,13 +1095,14 @@ fn runner_load_command(
             .map_err(anyhow::Error::msg)?;
             let encoded = payload.encode().map_err(anyhow::Error::msg)?;
             let gpu_terminal = if strict_hot_reload {
-                let prepublication_output_oracle_commitment =
-                    prepublication_output_oracle_commitment_from_capsule(
+                let (prepublication_output_oracle_commitment, compute_expected_output_contract_v2) =
+                    prepublication_output_oracle_binding_from_capsule(
                         payload.capsule_token.as_deref(),
                         payload.proof_runtime_session_id.as_deref(),
                         &payload.artifact_content_hash,
                         &payload.source_edit_id,
                         payload.compute_expected_output_semantics_hash.as_deref(),
+                        proof_context.compile_transport_nonce,
                     )?;
                 RunnerGpuTerminalExpectation::HotReload(StrictGpuTerminalExpectation {
                     identity: validated_identity,
@@ -1075,6 +1115,10 @@ fn runner_load_command(
                         .map(str::to_string),
                     compute_expected_output_semantics_hash: proof_context
                         .compute_expected_output_semantics_hash
+                        .map(str::to_string),
+                    compute_expected_output_contract_v2,
+                    compile_transport_nonce: proof_context
+                        .compile_transport_nonce
                         .map(str::to_string),
                     prepublication_output_oracle_commitment,
                 })
@@ -1341,9 +1385,10 @@ async fn wait_for_gpu_command_terminals(
                     command_envelope_sha256: expectation.command_envelope_sha256.clone(),
                     compute_expected_output_contract_hash: verified_proof
                         .compute_expected_output_contract_hash,
-                    compute_expected_output_semantics_hash: expectation
-                        .compute_expected_output_semantics_hash
-                        .clone(),
+                    compute_expected_output_semantics_hash: verified_proof
+                        .compute_expected_output_semantics_hash,
+                    compute_expected_output_compile_transport_nonce: verified_proof
+                        .compute_expected_output_compile_transport_nonce,
                     prepublication_output_oracle_commitment: expectation
                         .prepublication_output_oracle_commitment
                         .clone(),
@@ -1446,6 +1491,13 @@ fn verify_applied_gpu_terminal_proof(
             compute_expected_output_contract_hash: expectation
                 .compute_expected_output_contract_hash
                 .as_deref(),
+            compute_expected_output_semantics_hash: expectation
+                .compute_expected_output_semantics_hash
+                .as_deref(),
+            compute_expected_output_contract_v2: expectation
+                .compute_expected_output_contract_v2
+                .as_ref(),
+            compile_transport_nonce: expectation.compile_transport_nonce.as_deref(),
             enforce_compute_expected_output_contract_hash: true,
         },
     )
@@ -2914,6 +2966,7 @@ pub async fn handle_runner_execution(
                                 .compute_expected_output_semantics
                                 .as_ref()
                                 .map(|semantics| semantics.semantics_hash()),
+                            compile_transport_nonce: req.gpu_proof_transport_nonce.as_deref(),
                         });
                 let load_commands = modules_to_load
                     .iter()
@@ -3114,6 +3167,10 @@ mod tests {
         RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
     };
     use crate::hmr::runtime_evidence_transport::RuntimeEvidenceTransportSigner;
+    use crate::infra::compute_expected_output_semantics::{
+        ComputeExpectedOutputContractBindingV2, ComputeExpectedOutputContractV2,
+        ComputeExpectedOutputSemantics, COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+    };
     use crate::runtime::gpu_runtime_proof::{
         canonical_gpu_runtime_proof_json_sha256, canonical_runtime_ledger_proof_id,
         recomputed_runtime_proof_id, GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
@@ -3158,6 +3215,9 @@ mod tests {
             runner_challenge: "11111111111111111111111111111111",
             compute_expected_output_contract_hash: None,
             compute_expected_output_semantics_hash: None,
+            compile_transport_nonce: Some(
+                "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+            ),
         }
     }
 
@@ -3213,6 +3273,8 @@ mod tests {
             command_envelope_sha256: format!("sha256:{}", "e".repeat(64)),
             compute_expected_output_contract_hash: None,
             compute_expected_output_semantics_hash: None,
+            compute_expected_output_contract_v2: None,
+            compile_transport_nonce: context.compile_transport_nonce.map(str::to_string),
             prepublication_output_oracle_commitment: None,
         }
     }
@@ -3245,6 +3307,74 @@ mod tests {
         let contract_hash = canonical_gpu_runtime_proof_json_sha256(&contract);
         contract["contractHash"] = serde_json::Value::String(contract_hash);
         contract
+    }
+
+    fn strict_compute_expected_output_contract_v2(
+        expectation: &StrictGpuTerminalExpectation,
+    ) -> ComputeExpectedOutputContractV2 {
+        strict_compute_expected_output_contract_v2_with_raw_hash(
+            expectation,
+            &format!("sha256:{}", "7".repeat(64)),
+        )
+    }
+
+    fn strict_compute_expected_output_contract_v2_with_raw_hash(
+        expectation: &StrictGpuTerminalExpectation,
+        expected_raw_hash: &str,
+    ) -> ComputeExpectedOutputContractV2 {
+        let semantic_material = serde_json::json!([
+            COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "exact_bytes",
+            "output:generic-parent-proof",
+            "0",
+            "32",
+            "u8",
+            ["32"],
+            "32",
+            "not_applicable",
+            "0",
+            null,
+            null,
+            expected_raw_hash,
+        ]);
+        let mut hash_material =
+            b"synthi.gpu_hmr.compute_expected_output_semantics_hash.v1\0".to_vec();
+        hash_material.extend(
+            serde_json::to_vec(&semantic_material)
+                .expect("serialize parent expected-output semantics"),
+        );
+        let semantics_hash = format!("sha256:{}", sha256_hex_local(&hash_material));
+        let semantics: ComputeExpectedOutputSemantics = serde_json::from_value(serde_json::json!({
+            "schemaVersion": COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "comparisonMode": "exact_bytes",
+            "outputTargetId": "output:generic-parent-proof",
+            "byteOffset": 0,
+            "byteLength": 32,
+            "dtype": "u8",
+            "shape": [32],
+            "elementCount": 32,
+            "byteOrder": "not_applicable",
+            "toleranceDecimal": "0",
+            "expectedValuesDecimal": null,
+            "expectedValuesHash": null,
+            "expectedRawHash": expected_raw_hash,
+            "semanticsHash": semantics_hash,
+        }))
+        .expect("canonical parent expected-output semantics");
+        semantics
+            .derive_contract_v2(ComputeExpectedOutputContractBindingV2 {
+                project_id: "generic-parent-proof-verification".to_string(),
+                edit_id: expectation.identity.source_edit_id.clone(),
+                artifact_after_hash: expectation.identity.artifact_content_hash.clone(),
+                output_target_id: "output:generic-parent-proof".to_string(),
+                oracle_code_hash: format!("sha256:{}", "5".repeat(64)),
+                compile_transport_nonce: expectation
+                    .compile_transport_nonce
+                    .clone()
+                    .expect("parent expected-output compile transport nonce"),
+                runtime_session_id: "runtime-session:test".to_string(),
+            })
+            .expect("derived parent expected-output contract")
     }
 
     fn strict_output_oracle_contract(
@@ -3293,7 +3423,7 @@ mod tests {
         let publication_id = format!("dispatcher-publication:sha256:{}", "8".repeat(64));
         let registration_id = format!("dispatcher:sha256:{}", "9".repeat(64));
         let dispatch_id = format!("dispatch:sha256:{}", "6".repeat(64));
-        let oracle_artifacts = expectation
+        let mut oracle_artifacts = expectation
             .prepublication_output_oracle_commitment
             .as_ref()
             .map(|commitment| {
@@ -3304,6 +3434,57 @@ mod tests {
                 })
             })
             .unwrap_or_else(|| serde_json::json!({}));
+        if let Some(contract) = expectation.compute_expected_output_contract_v2.as_ref() {
+            let artifacts = oracle_artifacts
+                .as_object_mut()
+                .expect("parent proof oracle artifacts object");
+            artifacts.insert(
+                "proof_runtime_session_id".to_string(),
+                serde_json::Value::String(contract.binding().runtime_session_id.clone()),
+            );
+            artifacts.insert(
+                "compute_expected_output_contract_v2".to_string(),
+                serde_json::to_value(contract).expect("serialize parent expected-output contract"),
+            );
+            artifacts.insert(
+                "compute_expected_output_contract_hash".to_string(),
+                serde_json::Value::String(contract.contract_hash().to_string()),
+            );
+            artifacts.insert(
+                "compute_expected_output_semantics_hash".to_string(),
+                serde_json::Value::String(contract.semantics().semantics_hash().to_string()),
+            );
+        }
+        let output_event = serde_json::json!({
+            "id": "output:2",
+            "passed": true,
+            "after_dispatch_id": dispatch_id,
+            "epoch": "2",
+            "artifact_id": artifact_id,
+            "artifact_hash": artifact_id,
+            "timestamp_monotonic_ns": 40,
+            "process_id": process_id,
+            "oracle_artifacts": oracle_artifacts.clone(),
+            "output_oracle": {
+                "oracle_artifacts": oracle_artifacts.clone(),
+            },
+        });
+        let mut evidence_refs = vec![
+            serde_json::json!(format!("reload:{}", identity.request_id)),
+            serde_json::json!(format!("source-edit-id:{}", identity.source_edit_id)),
+            serde_json::json!(publication_id),
+            serde_json::json!(registration_id),
+        ];
+        if let Some(contract) = expectation.compute_expected_output_contract_v2.as_ref() {
+            evidence_refs.push(serde_json::json!(format!(
+                "compute-expected-output-contract:{}",
+                contract.contract_hash()
+            )));
+            evidence_refs.push(serde_json::json!(format!(
+                "compute-expected-output-semantics:{}",
+                contract.semantics().semantics_hash()
+            )));
+        }
         let record = serde_json::json!({
             "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
             "proof_canonical_profile": GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE,
@@ -3359,16 +3540,7 @@ mod tests {
                 "timestamp_monotonic_ns": 30,
                 "process_id": process_id,
             },
-            "output_event": {
-                "id": "output:2",
-                "passed": true,
-                "after_dispatch_id": dispatch_id,
-                "epoch": "2",
-                "artifact_id": artifact_id,
-                "artifact_hash": artifact_id,
-                "timestamp_monotonic_ns": 40,
-                "process_id": process_id,
-            },
+            "output_event": output_event,
             "retirement_event": {
                 "id": "retirement:1",
                 "epoch": "1",
@@ -3395,12 +3567,7 @@ mod tests {
                 "process_id_before": process_id,
                 "process_id_after": process_id,
             },
-            "evidence_refs": [
-                format!("reload:{}", identity.request_id),
-                format!("source-edit-id:{}", identity.source_edit_id),
-                publication_id,
-                registration_id,
-            ],
+            "evidence_refs": evidence_refs,
         });
         let ledger_proof_id = canonical_runtime_ledger_proof_id(&record);
         let proof_ledger = serde_json::json!({
@@ -3500,6 +3667,23 @@ mod tests {
         proof["proofId"] = serde_json::Value::String(proof_id.clone());
         proof["runtimeProofArtifact"]["proofId"] = serde_json::Value::String(proof_id.clone());
         proof_id
+    }
+
+    fn replace_runtime_proof_record(
+        proof: &mut serde_json::Value,
+        record: serde_json::Value,
+    ) -> String {
+        let ledger_proof_id = canonical_runtime_ledger_proof_id(&record);
+        proof["proofLedger"]["records"][0] = record.clone();
+        proof["proofLedger"]["proofId"] = serde_json::Value::String(ledger_proof_id.clone());
+        proof["runtimeProofArtifact"]["proofLedger"]["records"][0] = record.clone();
+        proof["runtimeProofArtifact"]["proofLedger"]["proofId"] =
+            serde_json::Value::String(ledger_proof_id.clone());
+        proof["runtimeProofArtifact"]["proofLedgerQuery"]["proofId"] =
+            serde_json::Value::String(ledger_proof_id);
+        proof["runtimeProofArtifact"]["explicitProofLedgerRecord"] = record.clone();
+        proof["runtimeProofArtifact"]["derivedProofLedgerRecord"] = record;
+        refresh_runtime_proof_id(proof)
     }
 
     fn decode_gpu_v4_command(command: &str, expected_verb: &str) -> (String, GpuReloadV4Payload) {
@@ -3668,9 +3852,15 @@ mod tests {
         .unwrap();
         let expectation = strict_terminal_expectation(identity);
         let commitment = strict_output_oracle_commitment(&expectation);
+        let expected_output_contract_v2 = strict_compute_expected_output_contract_v2(&expectation);
+        let expected_semantics_hash = expected_output_contract_v2
+            .semantics()
+            .semantics_hash()
+            .to_string();
         let proof_id = format!("gpu-proof:{}", "c".repeat(64));
         let mut metadata = ReloadCapsuleMetadata {
             fission_output_oracle_contract: Some(strict_output_oracle_contract(&expectation)),
+            compute_expected_output_contract_v2: Some(expected_output_contract_v2.clone()),
             output_oracle_profile_commitment: Some(commitment.clone()),
             proof_hash: Some(format!("sha256:{}", "c".repeat(64))),
             ..ReloadCapsuleMetadata::default()
@@ -3690,8 +3880,10 @@ mod tests {
             encoded_proof_runtime_session_id(),
         );
 
+        let mut context = proof_context();
+        context.compute_expected_output_semantics_hash = Some(expected_semantics_hash.as_str());
         let command =
-            runner_load_command(&marker, "/tmp/device.hsaco", true, Some(proof_context())).unwrap();
+            runner_load_command(&marker, "/tmp/device.hsaco", true, Some(context)).unwrap();
         let Some(RunnerGpuTerminalExpectation::HotReload(observed)) = command.gpu_terminal else {
             panic!("expected strict GPU terminal context");
         };
@@ -3699,6 +3891,22 @@ mod tests {
             observed.prepublication_output_oracle_commitment,
             Some(commitment)
         );
+        assert_eq!(
+            observed.compute_expected_output_contract_v2,
+            Some(expected_output_contract_v2)
+        );
+
+        let mut mismatched_context = proof_context();
+        mismatched_context.compute_expected_output_semantics_hash =
+            Some(expected_semantics_hash.as_str());
+        mismatched_context.compile_transport_nonce =
+            Some("gpu-proof-transport-request:fedcba9876543210fedcba9876543210");
+        let error =
+            runner_load_command(&marker, "/tmp/device.hsaco", true, Some(mismatched_context))
+                .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("does not match the independently transported compile nonce"));
     }
 
     #[test]
@@ -4093,8 +4301,15 @@ mod tests {
             "sha256:6560f7869645acbdd1957e10376df9bd7b253e661f40d16568fd80c13d9df02f"
         );
         expectation.compute_expected_output_contract_hash = Some(expected_contract_hash.clone());
-        let expected_semantics_hash = format!("sha256:{}", "c".repeat(64));
+        let expected_output_contract_v2 = strict_compute_expected_output_contract_v2(&expectation);
+        let expected_semantics_hash = expected_output_contract_v2
+            .semantics()
+            .semantics_hash()
+            .to_string();
         expectation.compute_expected_output_semantics_hash = Some(expected_semantics_hash.clone());
+        expectation.compute_expected_output_contract_v2 = Some(expected_output_contract_v2.clone());
+        expectation.prepublication_output_oracle_commitment =
+            Some(strict_output_oracle_commitment(&expectation));
 
         let (proof, proof_id) = strict_runtime_proof_fixture(&expectation);
         let terminal = GpuReloadV2Result::applied(
@@ -4111,6 +4326,30 @@ mod tests {
             verified.compute_expected_output_contract_hash.as_deref(),
             Some(expected_contract_hash.as_str())
         );
+        assert_eq!(
+            verified.compute_expected_output_semantics_hash.as_deref(),
+            Some(expected_semantics_hash.as_str())
+        );
+        assert_eq!(
+            verified.compute_expected_output_contract_v2_hash.as_deref(),
+            Some(expected_output_contract_v2.contract_hash())
+        );
+        assert_eq!(
+            verified
+                .compute_expected_output_compile_transport_nonce
+                .as_deref(),
+            expectation.compile_transport_nonce.as_deref()
+        );
+
+        let mut nonce_mismatch = expectation.clone();
+        nonce_mismatch.compile_transport_nonce =
+            Some("gpu-proof-transport-request:fedcba9876543210fedcba9876543210".to_string());
+        assert!(
+            verify_applied_gpu_terminal_proof(&terminal, &nonce_mismatch)
+                .unwrap_err()
+                .to_string()
+                .contains("parent rejected strict GPU runtime proof semantics")
+        );
 
         let signer = RuntimeEvidenceTransportSigner::generate(std::process::id()).unwrap();
         let receipt = VerifiedHotGpuReloadReceipt {
@@ -4125,12 +4364,21 @@ mod tests {
             runner_challenge: expectation.runner_challenge.clone(),
             command_envelope_sha256: expectation.command_envelope_sha256.clone(),
             compute_expected_output_contract_hash: verified.compute_expected_output_contract_hash,
-            compute_expected_output_semantics_hash: expectation
-                .compute_expected_output_semantics_hash
-                .clone(),
+            compute_expected_output_semantics_hash: verified.compute_expected_output_semantics_hash,
+            compute_expected_output_compile_transport_nonce: verified
+                .compute_expected_output_compile_transport_nonce,
             prepublication_output_oracle_commitment: None,
             proof: verified_proof,
         };
+        assert!(receipt
+            .parent_control_binding_message_with_signer(
+                "compile-session:test",
+                "gpu-proof-transport-request:fedcba9876543210fedcba9876543210",
+                &signer,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("does not match the verified expected-output contract"));
         let control: serde_json::Value = serde_json::from_str(
             &receipt
                 .parent_control_binding_message_with_signer(
@@ -4181,7 +4429,7 @@ mod tests {
             verify_applied_gpu_terminal_proof(&missing_terminal, &expectation)
                 .unwrap_err()
                 .to_string()
-                .contains("parent rejected strict GPU runtime proof semantics")
+                .contains("does not match the prepublication capsule commitment")
         );
 
         let mut unsolicited_expectation = expectation.clone();
@@ -4230,8 +4478,187 @@ mod tests {
             verify_applied_gpu_terminal_proof(&substituted_terminal, &expectation)
                 .unwrap_err()
                 .to_string()
+                .contains("does not match the prepublication capsule commitment")
+        );
+    }
+
+    #[test]
+    fn parent_rejects_canonical_v2_contract_substitution_and_removal() {
+        let mut expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "b".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "d".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let expected_contract = strict_compute_expected_output_contract_v2(&expectation);
+        expectation.compute_expected_output_semantics_hash =
+            Some(expected_contract.semantics().semantics_hash().to_string());
+        expectation.compute_expected_output_contract_v2 = Some(expected_contract.clone());
+
+        let (proof, proof_id) = strict_runtime_proof_fixture(&expectation);
+        let terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &proof_id,
+            proof_material(&expectation, &proof, &proof_id),
+        )
+        .unwrap();
+        verify_applied_gpu_terminal_proof(&terminal, &expectation).unwrap();
+
+        let substituted_contract = strict_compute_expected_output_contract_v2_with_raw_hash(
+            &expectation,
+            &format!("sha256:{}", "6".repeat(64)),
+        );
+        let mut substituted_proof = proof.clone();
+        let mut substituted_record = substituted_proof
+            .pointer("/runtimeProofArtifact/proofLedger/records/0")
+            .cloned()
+            .unwrap();
+        let mut substituted_artifacts = substituted_record["oracle_artifacts"].clone();
+        substituted_artifacts["compute_expected_output_contract_v2"] =
+            serde_json::to_value(&substituted_contract).unwrap();
+        substituted_artifacts["compute_expected_output_contract_hash"] =
+            serde_json::Value::String(substituted_contract.contract_hash().to_string());
+        substituted_artifacts["compute_expected_output_semantics_hash"] = serde_json::Value::String(
+            substituted_contract
+                .semantics()
+                .semantics_hash()
+                .to_string(),
+        );
+        substituted_record["oracle_artifacts"] = substituted_artifacts.clone();
+        substituted_record["output_event"]["oracle_artifacts"] = substituted_artifacts.clone();
+        substituted_record["output_event"]["output_oracle"]["oracle_artifacts"] =
+            substituted_artifacts;
+        let evidence_refs = substituted_record["evidence_refs"].as_array_mut().unwrap();
+        evidence_refs.retain(|value| {
+            value.as_str().is_none_or(|value| {
+                !value.starts_with("compute-expected-output-contract:")
+                    && !value.starts_with("compute-expected-output-semantics:")
+            })
+        });
+        evidence_refs.push(serde_json::json!(format!(
+            "compute-expected-output-contract:{}",
+            substituted_contract.contract_hash()
+        )));
+        evidence_refs.push(serde_json::json!(format!(
+            "compute-expected-output-semantics:{}",
+            substituted_contract.semantics().semantics_hash()
+        )));
+        let substituted_proof_id =
+            replace_runtime_proof_record(&mut substituted_proof, substituted_record);
+        let substituted_terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &substituted_proof_id,
+            proof_material(&expectation, &substituted_proof, &substituted_proof_id),
+        )
+        .unwrap();
+        assert!(
+            verify_applied_gpu_terminal_proof(&substituted_terminal, &expectation)
+                .unwrap_err()
+                .to_string()
                 .contains("parent rejected strict GPU runtime proof semantics")
         );
+
+        let mut missing_proof = proof.clone();
+        let mut missing_record = missing_proof
+            .pointer("/runtimeProofArtifact/proofLedger/records/0")
+            .cloned()
+            .unwrap();
+        let missing_artifacts = missing_record["oracle_artifacts"].as_object_mut().unwrap();
+        missing_artifacts.remove("compute_expected_output_contract_v2");
+        missing_artifacts.remove("compute_expected_output_contract_hash");
+        missing_artifacts.remove("compute_expected_output_semantics_hash");
+        let missing_artifacts = missing_record["oracle_artifacts"].clone();
+        missing_record["output_event"]["oracle_artifacts"] = missing_artifacts.clone();
+        missing_record["output_event"]["output_oracle"]["oracle_artifacts"] = missing_artifacts;
+        missing_record["evidence_refs"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|value| {
+                value.as_str().is_none_or(|value| {
+                    !value.starts_with("compute-expected-output-contract:")
+                        && !value.starts_with("compute-expected-output-semantics:")
+                })
+            });
+        let missing_proof_id = replace_runtime_proof_record(&mut missing_proof, missing_record);
+        let missing_terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &missing_proof_id,
+            proof_material(&expectation, &missing_proof, &missing_proof_id),
+        )
+        .unwrap();
+        assert!(
+            verify_applied_gpu_terminal_proof(&missing_terminal, &expectation)
+                .unwrap_err()
+                .to_string()
+                .contains("parent rejected strict GPU runtime proof semantics")
+        );
+    }
+
+    #[test]
+    fn parent_rejects_canonical_legacy_and_v2_semantic_disagreement() {
+        let mut expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "c".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "d".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let expected_v2 = strict_compute_expected_output_contract_v2(&expectation);
+        expectation.compute_expected_output_semantics_hash =
+            Some(expected_v2.semantics().semantics_hash().to_string());
+        expectation.compute_expected_output_contract_v2 = Some(expected_v2);
+        let expected_legacy = strict_compute_expected_output_contract(&expectation);
+        expectation.compute_expected_output_contract_hash =
+            expected_legacy["contractHash"].as_str().map(str::to_string);
+
+        let (proof, _) = strict_runtime_proof_fixture(&expectation);
+        let mut disagreement = proof.clone();
+        let legacy_contract = disagreement
+            .pointer_mut(
+                "/runtimeProofArtifact/acceptanceContract/fission_report/output_oracle_contract/expected_output_contract",
+            )
+            .unwrap();
+        legacy_contract["shape"] = serde_json::json!([16, 2]);
+        let mut legacy_material = legacy_contract.clone();
+        legacy_material
+            .as_object_mut()
+            .unwrap()
+            .remove("contractHash");
+        let disagreement_hash = canonical_gpu_runtime_proof_json_sha256(&legacy_material);
+        legacy_contract["contractHash"] = serde_json::Value::String(disagreement_hash.clone());
+        disagreement["runtimeProofArtifact"]["derivedAcceptanceContract"] =
+            disagreement["runtimeProofArtifact"]["acceptanceContract"].clone();
+        let disagreement_proof_id = refresh_runtime_proof_id(&mut disagreement);
+        let mut disagreement_expectation = expectation.clone();
+        disagreement_expectation.compute_expected_output_contract_hash = Some(disagreement_hash);
+        let disagreement_terminal = GpuReloadV2Result::applied(
+            &disagreement_expectation.identity.request_id,
+            &disagreement_expectation.identity.source_edit_id,
+            &disagreement_expectation.identity.artifact_content_hash,
+            &disagreement_proof_id,
+            proof_material(
+                &disagreement_expectation,
+                &disagreement,
+                &disagreement_proof_id,
+            ),
+        )
+        .unwrap();
+        assert!(verify_applied_gpu_terminal_proof(
+            &disagreement_terminal,
+            &disagreement_expectation,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("parent rejected strict GPU runtime proof semantics"));
     }
 
     #[test]
@@ -4277,8 +4704,11 @@ mod tests {
             compute_expected_output_contract_hash: verified
                 .compute_expected_output_contract_hash
                 .clone(),
-            compute_expected_output_semantics_hash: expectation
+            compute_expected_output_semantics_hash: verified
                 .compute_expected_output_semantics_hash
+                .clone(),
+            compute_expected_output_compile_transport_nonce: verified
+                .compute_expected_output_compile_transport_nonce
                 .clone(),
             prepublication_output_oracle_commitment: expectation
                 .prepublication_output_oracle_commitment
@@ -4579,9 +5009,10 @@ mod tests {
             command_envelope_sha256: expectation.command_envelope_sha256.clone(),
             compute_expected_output_contract_hash: preclaimed_verified
                 .compute_expected_output_contract_hash,
-            compute_expected_output_semantics_hash: expectation
-                .compute_expected_output_semantics_hash
-                .clone(),
+            compute_expected_output_semantics_hash: preclaimed_verified
+                .compute_expected_output_semantics_hash,
+            compute_expected_output_compile_transport_nonce: preclaimed_verified
+                .compute_expected_output_compile_transport_nonce,
             prepublication_output_oracle_commitment: expectation
                 .prepublication_output_oracle_commitment
                 .clone(),
@@ -4736,9 +5167,9 @@ mod tests {
             runner_challenge: expectation.runner_challenge.clone(),
             command_envelope_sha256: expectation.command_envelope_sha256.clone(),
             compute_expected_output_contract_hash: verified.compute_expected_output_contract_hash,
-            compute_expected_output_semantics_hash: expectation
-                .compute_expected_output_semantics_hash
-                .clone(),
+            compute_expected_output_semantics_hash: verified.compute_expected_output_semantics_hash,
+            compute_expected_output_compile_transport_nonce: verified
+                .compute_expected_output_compile_transport_nonce,
             prepublication_output_oracle_commitment: Some(accepted_commitment.clone()),
             proof: verified_proof,
         };
