@@ -1,4 +1,8 @@
-import { createHash } from 'node:crypto';
+import {
+  createHash,
+  generateKeyPairSync,
+  sign as signBytes,
+} from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,7 +23,13 @@ import {
 import { classifyGpuHmrFissionProof } from './gpu-hmr-runtime-proof.mjs';
 import { runtimeProofArtifactStrictGate } from './gpu-hmr-proof-strict-gates.mjs';
 import { computeOracleArtifactsFromFiles } from './gpu-hmr-validation-proof-artifact.mjs';
-import { buildComputeExpectedOutputContract } from './gpu-hmr-compute-oracle-semantics.mjs';
+import {
+  COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+  buildComputeExpectedOutputContract,
+  computeExpectedOutputSemanticsHash,
+  deriveComputeExpectedOutputContractV2,
+  validateComputeExpectedOutputContractV2,
+} from './gpu-hmr-compute-oracle-semantics.mjs';
 import {
   evaluateGpuHmrDeterministicVisualMode,
   GPU_HMR_ASYNC_VISUAL_PROOF_JOB_AUTHORITY,
@@ -54,6 +64,21 @@ import {
   evaluateColdSourceSplitCompileSupport,
   GPU_HMR_COLD_SOURCE_SPLIT_COMPILE_SUPPORT_AUTHORITY,
 } from './gpu-hmr-cold-source-matrix-support.mjs';
+import {
+  createGpuHmrMcpAdmissionReplayRegistry,
+  verifiedGpuHmrMcpAdmissionReceiptProjection,
+  verifyGpuHmrMcpAdmissionReceiptForMatrix,
+} from './gpu-hmr-mcp-admission-receipt-matrix-verifier.mjs';
+import {
+  GPU_HMR_MCP_ADMISSION_ALGORITHM,
+  GPU_HMR_MCP_ADMISSION_PRODUCER,
+  GPU_HMR_MCP_ADMISSION_RECEIPT_AUTHORITY,
+  GPU_HMR_MCP_ADMISSION_RECEIPT_SCHEMA,
+  createGpuHmrMcpAdmissionReceiptSigningBytes,
+  createGpuHmrMcpAdmissionVerificationKey,
+  finalizeGpuHmrMcpAdmissionReceipt,
+  hashGpuHmrMcpValidationRunChallenge,
+} from './gpu-hmr-mcp-admission-receipt-verifier.mjs';
 
 const coldBuildContainerCommand = coldBuildLauncherCommand;
 const coldBuildContainerEntrypoint = coldBuildLauncherEntrypoint;
@@ -25068,7 +25093,10 @@ async function runtimeProofRow(json, filePath, context) {
     visual,
     context.repoRoot,
     path.dirname(filePath),
-    { acceptanceContract: contract },
+    {
+      ...matrixMcpAdmissionFacetOptions(context, runtimeProofArtifactRaw),
+      acceptanceContract: contract,
+    },
   );
   const accepted =
     baseAccepted
@@ -25619,6 +25647,7 @@ async function agentSplitRow(records, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     {
+      ...matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact),
       acceptanceContract: compactObject(
         runtimeProofArtifact.acceptanceContract
         ?? runtimeProofArtifact.acceptance_contract,
@@ -26102,6 +26131,7 @@ async function hiprtWarmRow(json, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     {
+      ...matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact),
       acceptanceContract,
       supplementalBindings: compactObjectList([contractOutputOracleTargetBinding]),
     },
@@ -26344,6 +26374,7 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     {
+      ...matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact),
       acceptanceContract: compactObject(
         json.contract
         ?? json.acceptanceContract
@@ -26602,7 +26633,10 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     { present: false, accepted: false },
     context.repoRoot,
     path.dirname(filePath),
-    { acceptanceContract: contract },
+    {
+      ...matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact),
+      acceptanceContract: contract,
+    },
   );
   const directComputeArtifacts = compactObject(
     json.computeOracleArtifacts
@@ -26795,7 +26829,10 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     { present: false, accepted: false },
     context.repoRoot,
     path.dirname(filePath),
-    { acceptanceContract: contract },
+    {
+      ...matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact),
+      acceptanceContract: contract,
+    },
   );
   const directComputeArtifacts = compactObject(
     json.computeOracleArtifacts
@@ -27082,7 +27119,10 @@ async function openClRuntimeRow(json, filePath, context) {
     { present: false, accepted: false },
     context.repoRoot,
     path.dirname(filePath),
-    { acceptanceContract: contract },
+    {
+      ...matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact),
+      acceptanceContract: contract,
+    },
   );
   const directComputeArtifacts = compactObject(
     json.computeOracleArtifacts
@@ -27398,7 +27438,10 @@ async function vulkanRuntimeRow(json, filePath, context) {
     visual,
     context.repoRoot,
     path.dirname(filePath),
-    { acceptanceContract: contract },
+    {
+      ...matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact),
+      acceptanceContract: contract,
+    },
   );
   const artifactAfterHash = firstText(
     json.compiler?.afterShaderModuleHash,
@@ -31874,6 +31917,813 @@ function ledgerRecordComputeOracleArtifacts(record) {
   );
 }
 
+function aliasedOwnValue(source, snakeName, camelName) {
+  const object = compactObject(source);
+  const snakePresent = Object.prototype.hasOwnProperty.call(object, snakeName);
+  const camelPresent = Object.prototype.hasOwnProperty.call(object, camelName);
+  const snakeValue = snakePresent ? object[snakeName] : undefined;
+  const camelValue = camelPresent ? object[camelName] : undefined;
+  return {
+    present: snakePresent || camelPresent,
+    conflict: snakePresent && camelPresent && stableJson(snakeValue) !== stableJson(camelValue),
+    value: snakePresent ? snakeValue : camelValue,
+  };
+}
+
+function exactAliasedText(source, snakeName, camelName) {
+  const aliased = aliasedOwnValue(source, snakeName, camelName);
+  return {
+    ...aliased,
+    value: typeof aliased.value === 'string' && aliased.value.length > 0
+      ? aliased.value
+      : null,
+  };
+}
+
+function exactOwnText(source, name) {
+  const object = compactObject(source);
+  const present = Object.prototype.hasOwnProperty.call(object, name);
+  const value = present ? object[name] : undefined;
+  return {
+    present,
+    value: typeof value === 'string' && value.length > 0 ? value : null,
+  };
+}
+
+function exactNormalizedArtifactHash(value) {
+  if (typeof value !== 'string') return null;
+  const match = value.match(/^(?:artifact:)?(sha256:[a-f0-9]{64})$/);
+  return match ? match[1] : null;
+}
+
+function exactStringArray(value) {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+    ? [...value]
+    : [];
+}
+
+const MATRIX_MCP_ADMISSION_TRUST_KEYS = Object.freeze([
+  'verificationKey',
+  'validationRunChallenge',
+  'replayRegistry',
+  'nowUnixNs',
+  'maxAgeNs',
+  'maxFutureSkewNs',
+  'requireReceiptForCompute',
+]);
+const MATRIX_MCP_PARENT_CONTROL_MATERIAL_SCHEMA =
+  'synthi.gpu_hmr.parent_control_verification_material.v2';
+const MATRIX_MCP_ADMISSION_MATERIAL_SCAN_LIMIT = 100_000;
+
+function snapshotMatrixMcpAdmissionTrust(value) {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    if (Object.getPrototypeOf(value) !== Object.prototype) return null;
+    const ownKeys = Reflect.ownKeys(value);
+    const required = new Set(MATRIX_MCP_ADMISSION_TRUST_KEYS);
+    if (
+      ownKeys.length !== MATRIX_MCP_ADMISSION_TRUST_KEYS.length
+      || ownKeys.some((key) => typeof key !== 'string' || !required.has(key))
+    ) {
+      return null;
+    }
+    const snapshot = {};
+    for (const key of MATRIX_MCP_ADMISSION_TRUST_KEYS) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined
+        || descriptor.enumerable !== true
+        || !Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        || Object.prototype.hasOwnProperty.call(descriptor, 'get')
+        || Object.prototype.hasOwnProperty.call(descriptor, 'set')
+      ) {
+        return null;
+      }
+      snapshot[key] = descriptor.value;
+    }
+    return snapshot.requireReceiptForCompute === true
+      ? Object.freeze(snapshot)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function matrixMcpAdmissionMaterialsFromArtifact(root) {
+  const pending = [root];
+  const seen = new WeakSet();
+  const fingerprints = new Set();
+  const materials = [];
+  let visited = 0;
+  let truncated = false;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object') continue;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    visited += 1;
+    if (visited > MATRIX_MCP_ADMISSION_MATERIAL_SCAN_LIMIT) {
+      truncated = true;
+      break;
+    }
+    let descriptors;
+    try {
+      descriptors = Object.getOwnPropertyDescriptors(current);
+    } catch {
+      truncated = true;
+      continue;
+    }
+    const schema = descriptors.schemaVersion?.value;
+    const receipt = descriptors.mcpAdmissionReceipt?.value;
+    const transportContext = descriptors.transportContext?.value;
+    if (
+      schema === MATRIX_MCP_PARENT_CONTROL_MATERIAL_SCHEMA
+      && receipt
+      && typeof receipt === 'object'
+      && receipt.schemaVersion === GPU_HMR_MCP_ADMISSION_RECEIPT_SCHEMA
+      && transportContext
+      && typeof transportContext === 'object'
+    ) {
+      try {
+        const fingerprint = stableJsonHash({ receipt, transportContext });
+        if (!fingerprints.has(fingerprint)) {
+          fingerprints.add(fingerprint);
+          materials.push({ receipt, transportContext });
+        }
+      } catch {
+        truncated = true;
+      }
+    }
+    for (const descriptor of Object.values(descriptors)) {
+      if (
+        descriptor.enumerable === true
+        && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        && descriptor.value
+        && typeof descriptor.value === 'object'
+      ) {
+        pending.push(descriptor.value);
+      }
+    }
+  }
+  return Object.freeze({
+    materials: Object.freeze(materials),
+    truncated,
+    visited,
+  });
+}
+
+function matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact) {
+  return {
+    mcpAdmissionTrustSupplied: context.mcpAdmissionTrustSupplied === true,
+    mcpAdmissionTrust: context.mcpAdmissionTrust ?? null,
+    mcpAdmissionMaterials: context.mcpAdmissionMaterials ?? [],
+    mcpAdmissionMaterialScanTruncated:
+      context.mcpAdmissionMaterialScanTruncated === true,
+    runtimeProofArtifact,
+  };
+}
+
+function computeExpectedOutputV2Triplet(artifacts) {
+  const contract = aliasedOwnValue(
+    artifacts,
+    'compute_expected_output_contract_v2',
+    'computeExpectedOutputContractV2',
+  );
+  const contractHash = exactAliasedText(
+    artifacts,
+    'compute_expected_output_contract_hash',
+    'computeExpectedOutputContractHash',
+  );
+  const semanticsHash = exactAliasedText(
+    artifacts,
+    'compute_expected_output_semantics_hash',
+    'computeExpectedOutputSemanticsHash',
+  );
+  const runtimeSessionId = exactAliasedText(
+    artifacts,
+    'proof_runtime_session_id',
+    'proofRuntimeSessionId',
+  );
+  return {
+    present: contract.present
+      || contractHash.present
+      || semanticsHash.present
+      || runtimeSessionId.present,
+    complete: contract.present && contractHash.present && semanticsHash.present,
+    aliasConflict: contract.conflict || contractHash.conflict || semanticsHash.conflict
+      || runtimeSessionId.conflict,
+    contract: contract.value,
+    contractHash: contractHash.value,
+    semanticsHash: semanticsHash.value,
+    runtimeSessionId: runtimeSessionId.value,
+  };
+}
+
+function matrixMcpAdmissionVerificationDiagnostic({
+  required,
+  materials,
+  matchingMaterials,
+  reason,
+  verification = null,
+  scanTruncated = false,
+}) {
+  return {
+    schemaVersion: 'synthi.gpu_hmr.mcp_admission_matrix_binding.v1',
+    schema_version: 'synthi.gpu_hmr.mcp_admission_matrix_binding.v1',
+    present: materials.length > 0,
+    required,
+    accepted: verification?.accepted === true,
+    reason: verification?.reason ?? reason,
+    proofAuthority:
+      'matrix_recomputed_mcp_admission_binding_support_only_not_gpu_hmr_acceptance',
+    proof_authority:
+      'matrix_recomputed_mcp_admission_binding_support_only_not_gpu_hmr_acceptance',
+    materialCount: materials.length,
+    material_count: materials.length,
+    matchingMaterialCount: matchingMaterials.length,
+    matching_material_count: matchingMaterials.length,
+    scanTruncated,
+    scan_truncated: scanTruncated,
+    verification,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+}
+
+function matrixMcpAdmissionVerificationForCompute({
+  proofLedger,
+  computeRecord,
+  runtimeProofArtifact,
+  materials: materialValues,
+  trust,
+  trustSupplied,
+  scanTruncated,
+}) {
+  const materials = (Array.isArray(materialValues) ? materialValues : [])
+    .filter((material) => (
+      material
+      && typeof material === 'object'
+      && material.receipt
+      && typeof material.receipt === 'object'
+      && material.transportContext
+      && typeof material.transportContext === 'object'
+    ));
+  const receiptRequiresV2 = materials.some(({ receipt }) => (
+    receipt?.computeExpectedOutputContractHash != null
+    || receipt?.computeExpectedOutputSemanticsHash != null
+  ));
+  const required = trustSupplied === true || receiptRequiresV2;
+  const computeArtifacts = ledgerRecordComputeOracleArtifacts(computeRecord);
+  const triplet = computeExpectedOutputV2Triplet(computeArtifacts);
+  const contract = compactObject(triplet.contract);
+  const binding = compactObject(contract.binding);
+  const recordArtifactHash = exactAliasedText(
+    computeRecord,
+    'artifact_after_hash',
+    'artifactAfterHash',
+  );
+  const runtimeProofId = exactAliasedText(
+    runtimeProofArtifact,
+    'proof_id',
+    'proofId',
+  );
+  const ledgerProofId = exactAliasedText(proofLedger, 'proof_id', 'proofId');
+  const independentlyBound = Boolean(
+    triplet.complete
+    && triplet.aliasConflict === false
+    && triplet.contractHash
+    && triplet.semanticsHash
+    && binding.compileTransportNonce
+    && binding.runtimeSessionId
+    && exactNormalizedArtifactHash(recordArtifactHash.value)
+    && recordArtifactHash.conflict === false
+    && runtimeProofId.value
+    && runtimeProofId.conflict === false
+    && ledgerProofId.value
+    && ledgerProofId.conflict === false,
+  );
+  const matchingMaterials = independentlyBound
+    ? materials.filter(({ receipt, transportContext }) => {
+      const transportSession = exactAliasedText(
+        transportContext,
+        'transport_session_id',
+        'transportSessionId',
+      );
+      const transportNonce = exactAliasedText(
+        transportContext,
+        'compile_request_nonce',
+        'compileRequestNonce',
+      );
+      return transportSession.conflict === false
+        && transportNonce.conflict === false
+        && transportSession.value
+        && transportNonce.value === binding.compileTransportNonce
+        && receipt.transportSessionId === transportSession.value
+        && receipt.compileRequestNonce === binding.compileTransportNonce
+        && receipt.computeExpectedOutputContractHash === triplet.contractHash
+        && receipt.computeExpectedOutputSemanticsHash === triplet.semanticsHash
+        && receipt.artifactContentHash
+          === exactNormalizedArtifactHash(recordArtifactHash.value)
+        && receipt.fullRuntimeProofId === runtimeProofId.value
+        && receipt.proofLedgerId === ledgerProofId.value
+        && receipt.runnerRuntimeSessionId === binding.runtimeSessionId;
+    })
+    : [];
+  if (scanTruncated) {
+    return {
+      required,
+      verification: null,
+      diagnostic: matrixMcpAdmissionVerificationDiagnostic({
+        required,
+        materials,
+        matchingMaterials,
+        reason: 'gpu_hmr_mcp_admission_material_scan_truncated',
+        scanTruncated: true,
+      }),
+    };
+  }
+  if (!independentlyBound) {
+    return {
+      required,
+      verification: null,
+      diagnostic: matrixMcpAdmissionVerificationDiagnostic({
+        required,
+        materials,
+        matchingMaterials,
+        reason: 'gpu_hmr_mcp_admission_expected_binding_incomplete',
+      }),
+    };
+  }
+  if (!trust) {
+    return {
+      required,
+      verification: null,
+      diagnostic: matrixMcpAdmissionVerificationDiagnostic({
+        required,
+        materials,
+        matchingMaterials,
+        reason: trustSupplied
+          ? 'gpu_hmr_mcp_admission_external_trust_invalid'
+          : 'gpu_hmr_mcp_admission_external_trust_missing',
+      }),
+    };
+  }
+  if (matchingMaterials.length !== 1) {
+    return {
+      required,
+      verification: null,
+      diagnostic: matrixMcpAdmissionVerificationDiagnostic({
+        required,
+        materials,
+        matchingMaterials,
+        reason: matchingMaterials.length === 0
+          ? 'gpu_hmr_mcp_admission_matching_material_missing'
+          : 'gpu_hmr_mcp_admission_matching_material_ambiguous',
+      }),
+    };
+  }
+
+  const [{ receipt, transportContext }] = matchingMaterials;
+  const transportSessionId = exactAliasedText(
+    transportContext,
+    'transport_session_id',
+    'transportSessionId',
+  ).value;
+  const verification = verifyGpuHmrMcpAdmissionReceiptForMatrix({
+    trustedVerificationKey: trust.verificationKey,
+    validationRunChallenge: trust.validationRunChallenge,
+    receipt,
+    nowUnixNs: trust.nowUnixNs,
+    maxAgeNs: trust.maxAgeNs,
+    maxFutureSkewNs: trust.maxFutureSkewNs,
+    replayRegistry: trust.replayRegistry,
+    expectedBinding: {
+      transportSessionId,
+      compileRequestNonce: binding.compileTransportNonce,
+      computeExpectedOutputContractHash: triplet.contractHash,
+      computeExpectedOutputSemanticsHash: triplet.semanticsHash,
+      artifactContentHash: exactNormalizedArtifactHash(recordArtifactHash.value),
+      fullRuntimeProofId: runtimeProofId.value,
+      proofLedgerId: ledgerProofId.value,
+      runnerRuntimeSessionId: binding.runtimeSessionId,
+    },
+  });
+  return {
+    required,
+    verification,
+    diagnostic: matrixMcpAdmissionVerificationDiagnostic({
+      required,
+      materials,
+      matchingMaterials,
+      reason: verification.reason,
+      verification,
+    }),
+  };
+}
+
+function computeExpectedOutputV2ParentAliasConflict(record) {
+  const ledgerRecord = compactObject(record);
+  const outputEventAlias = aliasedOwnValue(ledgerRecord, 'output_event', 'outputEvent');
+  const recordArtifactsAlias = aliasedOwnValue(
+    ledgerRecord,
+    'oracle_artifacts',
+    'oracleArtifacts',
+  );
+  const outputEvent = compactObject(outputEventAlias.value);
+  const outputOracleAlias = aliasedOwnValue(outputEvent, 'output_oracle', 'outputOracle');
+  const outputArtifactsAlias = aliasedOwnValue(
+    outputEvent,
+    'oracle_artifacts',
+    'oracleArtifacts',
+  );
+  const outputOracle = compactObject(outputOracleAlias.value);
+  const nestedArtifactsAlias = aliasedOwnValue(
+    outputOracle,
+    'oracle_artifacts',
+    'oracleArtifacts',
+  );
+  return outputEventAlias.conflict
+    || recordArtifactsAlias.conflict
+    || outputOracleAlias.conflict
+    || outputArtifactsAlias.conflict
+    || nestedArtifactsAlias.conflict;
+}
+
+function canonicalComputeExpectedOutputV2Copies(record) {
+  const ledgerRecord = compactObject(record);
+  const outputEvent = compactObject(ledgerRecord.output_event ?? ledgerRecord.outputEvent);
+  const outputOracle = compactObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+  return [
+    {
+      role: 'record_oracle_artifacts',
+      artifacts: compactObject(ledgerRecord.oracle_artifacts ?? ledgerRecord.oracleArtifacts),
+    },
+    {
+      role: 'output_event_oracle_artifacts',
+      artifacts: compactObject(outputEvent.oracle_artifacts ?? outputEvent.oracleArtifacts),
+    },
+    {
+      role: 'output_oracle_oracle_artifacts',
+      artifacts: compactObject(outputOracle.oracle_artifacts ?? outputOracle.oracleArtifacts),
+    },
+  ];
+}
+
+function recordHasComputeExpectedOutputV2Signal(record) {
+  const ledgerRecord = compactObject(record);
+  const outputEvent = compactObject(ledgerRecord.output_event ?? ledgerRecord.outputEvent);
+  const outputOracle = compactObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+  const candidates = [
+    ...canonicalComputeExpectedOutputV2Copies(ledgerRecord).map(({ artifacts }) => artifacts),
+    computeOracleArtifactObject(ledgerRecord.oracle_artifacts ?? ledgerRecord.oracleArtifacts),
+    computeOracleArtifactObject(outputEvent),
+    computeOracleArtifactObject(outputOracle),
+    computeOracleArtifactObject(
+      outputOracle.oracle_artifacts
+      ?? outputOracle.oracleArtifacts,
+    ),
+  ];
+  return candidates.some((artifacts) => computeExpectedOutputV2Triplet(artifacts).present);
+}
+
+function legacyExpectedOutputContractMatchesV2(
+  legacyValue,
+  contractV2,
+  recordArtifactAfterHash,
+) {
+  const legacy = compactObject(legacyValue);
+  const binding = compactObject(legacy.binding);
+  const semantics = contractV2?.semantics;
+  const v2Binding = contractV2?.binding;
+  if (
+    Object.keys(legacy).length === 0
+    || !semantics
+    || !v2Binding
+    || semantics.comparisonMode !== 'exact_bytes'
+  ) {
+    return false;
+  }
+  const legacyMode = exactOwnText(legacy, 'comparisonMode');
+  const legacyDtype = exactOwnText(legacy, 'dtype');
+  const legacyElementCountPresent = Object.prototype.hasOwnProperty.call(
+    legacy,
+    'elementCount',
+  );
+  const legacyElementCount = legacyElementCountPresent ? legacy.elementCount : undefined;
+  const legacyByteOrder = exactOwnText(legacy, 'byteOrder');
+  const legacyExpectedRawHash = exactOwnText(legacy, 'expectedRawHash');
+  const legacyProjectId = exactOwnText(binding, 'projectId');
+  const legacyEditId = exactOwnText(binding, 'editId');
+  const legacyArtifact = exactOwnText(binding, 'artifactAfterHash');
+  const legacyOutputTargetId = exactOwnText(binding, 'outputTargetId');
+  const legacyOracleCodeHash = exactOwnText(binding, 'oracleCodeHash');
+  const nonCanonicalAliasPresent = [
+    'comparison_mode',
+    'dataType',
+    'data_type',
+    'element_count',
+    'byte_order',
+    'expected_raw_hash',
+  ].some((name) => Object.prototype.hasOwnProperty.call(legacy, name))
+    || [
+      'project_id',
+      'edit_id',
+      'artifact_after_hash',
+      'output_target_id',
+      'oracle_code_hash',
+    ].some((name) => Object.prototype.hasOwnProperty.call(binding, name));
+  const legacyArtifactHash = exactNormalizedArtifactHash(legacyArtifact.value);
+  const v2ArtifactHash = exactNormalizedArtifactHash(v2Binding.artifactAfterHash);
+  const recordArtifactHash = exactNormalizedArtifactHash(recordArtifactAfterHash);
+  return !nonCanonicalAliasPresent
+    && legacyMode.value === 'exact_bytes'
+    && legacyDtype.value === semantics.dtype
+    && stableJson(legacy.shape) === stableJson(semantics.shape)
+    && legacyElementCountPresent
+    && typeof legacyElementCount === 'number'
+    && Number.isSafeInteger(legacyElementCount)
+    && legacyElementCount === semantics.elementCount
+    && legacyByteOrder.value === semantics.byteOrder
+    && typeof legacy.tolerance === 'number'
+    && Number.isFinite(legacy.tolerance)
+    && legacy.tolerance === 0
+    && semantics.byteOffset === 0
+    && legacyExpectedRawHash.value === semantics.expectedRawHash
+    && legacyProjectId.value === v2Binding.projectId
+    && legacyEditId.value === v2Binding.editId
+    && legacyArtifactHash === v2ArtifactHash
+    && (!recordArtifactHash || recordArtifactHash === v2ArtifactHash)
+    && legacyOutputTargetId.value === v2Binding.outputTargetId
+    && legacyOracleCodeHash.value === v2Binding.oracleCodeHash;
+}
+
+function computeExpectedOutputV2Evidence(
+  record,
+  legacyExpectedOutputContract,
+  observedBinding,
+  mcpAdmissionVerification = null,
+  mcpAdmissionReceiptRequired = false,
+) {
+  const ledgerRecord = compactObject(record);
+  const context = verifiedGpuHmrMcpAdmissionReceiptProjection(
+    mcpAdmissionVerification,
+  );
+  const contextRequired = mcpAdmissionReceiptRequired === true
+    || context?.required === true;
+  const parentAliasConflict = computeExpectedOutputV2ParentAliasConflict(ledgerRecord);
+  const present = recordHasComputeExpectedOutputV2Signal(ledgerRecord);
+  const required = present || contextRequired || parentAliasConflict;
+  if (!required) {
+    return {
+      schemaVersion: 'synthi.gpu_hmr.compute_expected_output_v2_matrix_evidence.v1',
+      schema_version: 'synthi.gpu_hmr.compute_expected_output_v2_matrix_evidence.v1',
+      present: false,
+      required: false,
+      accepted: true,
+      proofAuthority: 'matrix_recomputed_v2_semantics_support_only',
+      proof_authority: 'matrix_recomputed_v2_semantics_support_only',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+
+  const failures = [];
+  if (parentAliasConflict) {
+    failures.push('compute_expected_output_v2_parent_alias_conflict');
+  }
+  const copies = canonicalComputeExpectedOutputV2Copies(ledgerRecord).map((copy) => {
+    const triplet = computeExpectedOutputV2Triplet(copy.artifacts);
+    const validation = triplet.complete && !triplet.aliasConflict
+      ? validateComputeExpectedOutputContractV2(triplet.contract)
+      : { accepted: false, reason: 'v2 triplet missing or aliases conflict' };
+    if (!triplet.present) failures.push(`compute_expected_output_v2_${copy.role}_missing`);
+    if (triplet.present && !triplet.complete) {
+      failures.push(`compute_expected_output_v2_${copy.role}_partial`);
+    }
+    if (triplet.aliasConflict) {
+      failures.push(`compute_expected_output_v2_${copy.role}_alias_conflict`);
+    }
+    if (triplet.complete && !validation.accepted) {
+      failures.push(`compute_expected_output_v2_${copy.role}_contract_invalid`);
+    }
+    const contract = validation.accepted ? validation.value : null;
+    if (contract && triplet.contractHash !== contract.contractHash) {
+      failures.push(`compute_expected_output_v2_${copy.role}_contract_hash_mismatch`);
+    }
+    if (contract && triplet.semanticsHash !== contract.semantics.semanticsHash) {
+      failures.push(`compute_expected_output_v2_${copy.role}_semantics_hash_mismatch`);
+    }
+    if (contract && triplet.runtimeSessionId !== contract.binding.runtimeSessionId) {
+      failures.push(`compute_expected_output_v2_${copy.role}_runtime_session_mismatch`);
+    }
+    return { ...copy, triplet, validation, contract };
+  });
+
+  const firstArtifacts = copies[0]?.artifacts ?? {};
+  if (copies.some(({ artifacts }) => stableJson(artifacts) !== stableJson(firstArtifacts))) {
+    failures.push('compute_expected_output_v2_artifact_copies_mismatch');
+  }
+  const contracts = copies.map(({ contract }) => contract).filter(Boolean);
+  const contract = contracts[0] ?? null;
+  if (
+    contracts.length !== copies.length
+    || contracts.some((candidate) => stableJson(candidate) !== stableJson(contract))
+  ) {
+    failures.push('compute_expected_output_v2_contract_copies_mismatch');
+  }
+
+  const outputEvent = compactObject(ledgerRecord.output_event ?? ledgerRecord.outputEvent);
+  const processIdentity = compactObject(
+    ledgerRecord.process_identity
+    ?? ledgerRecord.processIdentity,
+  );
+  const recordRuntimeSession = exactAliasedText(
+    ledgerRecord,
+    'runtime_session_id',
+    'runtimeSessionId',
+  );
+  const processRuntimeSession = exactAliasedText(
+    processIdentity,
+    'runtime_session_id',
+    'runtimeSessionId',
+  );
+  const outputRuntimeSession = exactAliasedText(
+    outputEvent,
+    'runtime_session_id',
+    'runtimeSessionId',
+  );
+  const runtimeSessionIds = [...new Set([
+    recordRuntimeSession.value,
+    processRuntimeSession.value,
+    outputRuntimeSession.value,
+    ...copies.map(({ triplet }) => triplet.runtimeSessionId),
+  ].filter((value) => value !== null))];
+  if (
+    recordRuntimeSession.conflict
+    || processRuntimeSession.conflict
+    || outputRuntimeSession.conflict
+  ) {
+    failures.push('compute_expected_output_v2_runtime_session_alias_conflict');
+  }
+  if (!processRuntimeSession.value) {
+    failures.push('compute_expected_output_v2_process_runtime_session_missing');
+  }
+  if (contract) {
+    const binding = contract.binding;
+    const semantics = contract.semantics;
+    const recordProjectId = exactAliasedText(ledgerRecord, 'project_id', 'projectId');
+    const recordEditId = exactAliasedText(ledgerRecord, 'edit_id', 'editId');
+    const recordArtifactAfterHash = exactAliasedText(
+      ledgerRecord,
+      'artifact_after_hash',
+      'artifactAfterHash',
+    );
+    const outputTargetId = exactAliasedText(
+      outputEvent,
+      'output_target_id',
+      'outputTargetId',
+    );
+    const oracleCodeHash = exactAliasedText(
+      firstArtifacts,
+      'oracle_code_hash',
+      'oracleCodeHash',
+    );
+    if (
+      recordProjectId.conflict
+      || recordEditId.conflict
+      || recordArtifactAfterHash.conflict
+      || outputTargetId.conflict
+      || oracleCodeHash.conflict
+    ) {
+      failures.push('compute_expected_output_v2_record_binding_alias_conflict');
+    }
+    if (binding.projectId !== recordProjectId.value) {
+      failures.push('compute_expected_output_v2_project_id_mismatch');
+    }
+    if (binding.editId !== recordEditId.value) {
+      failures.push('compute_expected_output_v2_edit_id_mismatch');
+    }
+    if (
+      exactNormalizedArtifactHash(binding.artifactAfterHash)
+      !== exactNormalizedArtifactHash(recordArtifactAfterHash.value)
+    ) {
+      failures.push('compute_expected_output_v2_artifact_hash_mismatch');
+    }
+    if (
+      binding.outputTargetId !== outputTargetId.value
+      || binding.outputTargetId !== observedBinding?.outputTargetId
+    ) {
+      failures.push('compute_expected_output_v2_output_target_mismatch');
+    }
+    if (
+      binding.oracleCodeHash !== oracleCodeHash.value
+      || binding.oracleCodeHash !== observedBinding?.oracleCodeHash
+    ) {
+      failures.push('compute_expected_output_v2_oracle_code_hash_mismatch');
+    }
+    if (binding.outputTargetId !== semantics.outputTargetId) {
+      failures.push('compute_expected_output_v2_semantics_target_mismatch');
+    }
+    if (
+      runtimeSessionIds.length !== 1
+      || runtimeSessionIds[0] !== binding.runtimeSessionId
+    ) {
+      failures.push('compute_expected_output_v2_runtime_session_chain_mismatch');
+    }
+    if (!legacyExpectedOutputContractMatchesV2(
+      legacyExpectedOutputContract,
+      contract,
+      recordArtifactAfterHash.value,
+    )) {
+      failures.push('compute_expected_output_v1_v2_disagreement');
+    }
+    const evidenceRefsAlias = aliasedOwnValue(
+      ledgerRecord,
+      'evidence_refs',
+      'evidenceRefs',
+    );
+    const evidenceRefs = exactStringArray(evidenceRefsAlias.value);
+    if (evidenceRefsAlias.conflict) {
+      failures.push('compute_expected_output_v2_evidence_refs_alias_conflict');
+    }
+    if (!evidenceRefs.includes(`compute-expected-output-contract:${contract.contractHash}`)) {
+      failures.push('compute_expected_output_v2_contract_evidence_ref_missing');
+    }
+    if (!evidenceRefs.includes(
+      `compute-expected-output-semantics:${semantics.semanticsHash}`,
+    )) {
+      failures.push('compute_expected_output_v2_semantics_evidence_ref_missing');
+    }
+  }
+
+  const contextVerified = context !== null;
+  if (!contextVerified) {
+    failures.push('compute_expected_output_v2_compile_nonce_authority_missing');
+  } else if (contract) {
+    if (context.contractHash !== contract.contractHash) {
+      failures.push('compute_expected_output_v2_authenticated_contract_hash_mismatch');
+    }
+    if (context.semanticsHash !== contract.semantics.semanticsHash) {
+      failures.push('compute_expected_output_v2_authenticated_semantics_hash_mismatch');
+    }
+    if (context.compileTransportNonce !== contract.binding.compileTransportNonce) {
+      failures.push('compute_expected_output_v2_authenticated_compile_nonce_mismatch');
+    }
+    if (
+      context.artifactContentHash
+      !== exactNormalizedArtifactHash(ledgerRecord.artifact_after_hash ?? ledgerRecord.artifactAfterHash)
+    ) {
+      failures.push('compute_expected_output_v2_authenticated_artifact_hash_mismatch');
+    }
+    if (
+      context.runtimeSessionId !== undefined
+      && context.runtimeSessionId !== null
+      && context.runtimeSessionId !== contract.binding.runtimeSessionId
+    ) {
+      failures.push('compute_expected_output_v2_authenticated_runtime_session_mismatch');
+    }
+  }
+
+  const failedGates = failedGateObjects(failures);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.compute_expected_output_v2_matrix_evidence.v1',
+    schema_version: 'synthi.gpu_hmr.compute_expected_output_v2_matrix_evidence.v1',
+    present,
+    required,
+    accepted: failedGates.length === 0,
+    proofAuthority: 'matrix_recomputed_v2_semantics_support_only',
+    proof_authority: 'matrix_recomputed_v2_semantics_support_only',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    copyCount: copies.length,
+    copy_count: copies.length,
+    contractHash: contract?.contractHash ?? null,
+    contract_hash: contract?.contractHash ?? null,
+    semanticsHash: contract?.semantics?.semanticsHash ?? null,
+    semantics_hash: contract?.semantics?.semanticsHash ?? null,
+    compileTransportNonce: contract?.binding?.compileTransportNonce ?? null,
+    compile_transport_nonce: contract?.binding?.compileTransportNonce ?? null,
+    runtimeSessionId: contract?.binding?.runtimeSessionId ?? null,
+    runtime_session_id: contract?.binding?.runtimeSessionId ?? null,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function ledgerRecordVisualOracleArtifacts(record) {
   const outputEvent = compactObject(record.output_event ?? record.outputEvent);
   const oracleArtifacts = compactObject(record.oracle_artifacts ?? record.oracleArtifacts);
@@ -32160,6 +33010,33 @@ async function realRocmComputeOracleFileIntegrityFacet(
     resolvedArtifacts,
     outputBinding,
   );
+  const mcpAdmission = matrixMcpAdmissionVerificationForCompute({
+    proofLedger,
+    computeRecord,
+    runtimeProofArtifact: compactObject(
+      options.runtimeProofArtifact
+      ?? options.runtime_proof_artifact,
+    ),
+    materials:
+      options.mcpAdmissionMaterials
+      ?? options.mcp_admission_materials,
+    trust:
+      options.mcpAdmissionTrust
+      ?? options.mcp_admission_trust,
+    trustSupplied:
+      options.mcpAdmissionTrustSupplied === true
+      || options.mcp_admission_trust_supplied === true,
+    scanTruncated:
+      options.mcpAdmissionMaterialScanTruncated === true
+      || options.mcp_admission_material_scan_truncated === true,
+  });
+  const computeExpectedOutputV2 = computeExpectedOutputV2Evidence(
+    computeRecord,
+    acceptanceContractEvidence.expectedOutputContract,
+    observedBinding,
+    mcpAdmission.verification,
+    mcpAdmission.required,
+  );
   const enriched = await computeOracleArtifactsFromFiles(resolvedArtifacts, {
     allowedRoots: computeArtifactCasAllowedRoots(repoRoot, baseDir, resolvedArtifacts),
     artifactRoot: trustedComputeArtifactCasRoot(repoRoot, baseDir),
@@ -32302,6 +33179,12 @@ async function realRocmComputeOracleFileIntegrityFacet(
       ? null
       : 'compute_oracle_semantic_verification_not_accepted',
     ...semanticVerificationFailedGates,
+    computeExpectedOutputV2.required === true && computeExpectedOutputV2.accepted !== true
+      ? 'compute_expected_output_v2_not_accepted'
+      : null,
+    ...compactStringList(
+      (computeExpectedOutputV2.failedGates ?? []).map((failure) => failure.code ?? failure),
+    ),
     declaredRawReadbackHash ? null : 'compute_oracle_raw_readback_hash_declared_missing',
     schemaHash ? null : 'compute_oracle_readback_schema_hash_missing',
     deterministicSliceHash ? null : 'compute_oracle_deterministic_slice_hash_missing',
@@ -32362,6 +33245,10 @@ async function realRocmComputeOracleFileIntegrityFacet(
     compute_oracle_semantic_verification: Object.keys(semanticVerification).length > 0
       ? semanticVerification
       : null,
+    computeExpectedOutputV2,
+    compute_expected_output_v2: computeExpectedOutputV2,
+    mcpAdmissionVerification: mcpAdmission.diagnostic,
+    mcp_admission_verification: mcpAdmission.diagnostic,
     acceptanceContractBinding: {
       present: acceptanceContractEvidence.present,
       hashVerified: acceptanceContractEvidence.hashVerified,
@@ -32644,7 +33531,23 @@ async function ledgerOutputOracleFacet(ledger, proofLedger, visual, repoRoot, ba
       failedGates: [{ code: 'proof_ledger_success_required' }],
     };
   }
-  const visualLedgerOutput = ledgerRecordsFromValue(proofLedger).some(ledgerRecordHasVisualOutput);
+  const ledgerRecords = ledgerRecordsFromValue(proofLedger);
+  const visualLedgerOutput = ledgerRecords.some(ledgerRecordHasVisualOutput);
+  const computeLedgerOutput = ledgerRecords.some((record) => (
+    Object.keys(ledgerRecordComputeOracleArtifacts(record)).length > 0
+  ));
+  if (visualLedgerOutput && computeLedgerOutput) {
+    const failedGates = [{ code: 'mixed_visual_compute_oracle_ledger_ambiguous' }];
+    return {
+      accepted: false,
+      kind: 'mixed_oracle_rejected',
+      compute: null,
+      outputBinding,
+      output_binding: outputBinding,
+      failedGates,
+      failed_gates: failedGates,
+    };
+  }
   if (visualLedgerOutput) {
     const visualArtifactBinding = ledgerVisualOracleArtifactBindingEvidence(proofLedger, visual);
     const failedGates = failedGateObjects([
@@ -32861,6 +33764,105 @@ function assertGenericOutputOracleSelfCheck(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function genericOutputOracleSelfCheckMcpAdmissionSigner() {
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const publicKeyDer = Buffer.from(publicKey.export({ format: 'der', type: 'spki' }));
+  const verificationKey = createGpuHmrMcpAdmissionVerificationKey(
+    publicKeyDer.subarray(publicKeyDer.length - 32).toString('base64url'),
+  );
+  const validationRunChallenge = Buffer.alloc(32, 0x4d).toString('base64url');
+  const validationRunChallengeSha256 = hashGpuHmrMcpValidationRunChallenge(
+    validationRunChallenge,
+  );
+  const admittedAtUnixNs = 1_784_500_000_123_456_789n;
+  let sequence = 0n;
+  assertGenericOutputOracleSelfCheck(
+    verificationKey !== null && validationRunChallengeSha256 !== null,
+    'generic output-oracle admission signer should initialize',
+  );
+
+  return Object.freeze({
+    verificationKey,
+    validationRunChallenge,
+    admittedAtUnixNs,
+    sign(binding) {
+      sequence += 1n;
+      const controlBindingCanonicalSha256 = stableJsonHash({
+        selfCheck: 'generic-output-oracle-control-binding',
+        sequence: sequence.toString(),
+      });
+      const signed = {
+        schemaVersion: GPU_HMR_MCP_ADMISSION_RECEIPT_SCHEMA,
+        algorithm: GPU_HMR_MCP_ADMISSION_ALGORITHM,
+        signerKeyId: verificationKey.keyId,
+        producer: GPU_HMR_MCP_ADMISSION_PRODUCER,
+        proofAuthority: GPU_HMR_MCP_ADMISSION_RECEIPT_AUTHORITY,
+        controlStageAdmitted: true,
+        parentProofStageAdmitted: true,
+        acceptedForGpuHmr: false,
+        gpuHmrSuccess: false,
+        canSatisfyRuntimeProof: false,
+        validationRunChallengeSha256,
+        transportSessionId: binding.transportSessionId,
+        compileRequestNonce: binding.compileRequestNonce,
+        computeExpectedOutputContractHash: binding.computeExpectedOutputContractHash,
+        computeExpectedOutputSemanticsHash: binding.computeExpectedOutputSemanticsHash,
+        workerKeyId:
+          `gpu-hmr-runtime-evidence-transport-key:${stableJsonHash({ selfCheck: 'worker-key' })}`,
+        workerKeyAnnouncementId:
+          `gpu-hmr-runtime-evidence-transport-key-announcement:${stableJsonHash({ selfCheck: 'worker-key-announcement' })}`,
+        workerProcessId: '9123',
+        controlBindingId:
+          `gpu-parent-runtime-proof-control-binding:${controlBindingCanonicalSha256}`,
+        controlBindingCanonicalSha256,
+        controlTransportReceiptId:
+          `gpu-hmr-runtime-evidence-transport-receipt:${stableJsonHash({ selfCheck: 'control-transport-receipt' })}`,
+        controlObservationContextHash:
+          stableJsonHash({ selfCheck: 'control-observation-context' }),
+        parentReceiptId:
+          `gpu-parent-runtime-proof-receipt:${stableJsonHash({ selfCheck: 'parent-receipt' })}`,
+        parentTransportReceiptId:
+          `gpu-hmr-runtime-evidence-transport-receipt:${stableJsonHash({ selfCheck: 'parent-transport-receipt' })}`,
+        parentCanonicalProofSha256:
+          stableJsonHash({ selfCheck: 'parent-canonical-proof' }),
+        parentObservationContextHash:
+          stableJsonHash({ selfCheck: 'parent-observation-context' }),
+        requestId: `gpu-reload:request:${'c'.repeat(32)}`,
+        sourceEditId:
+          `source-edit:${stableJsonHash({ selfCheck: 'source-edit' })}`,
+        artifactContentHash: binding.artifactContentHash,
+        fullRuntimeProofId: binding.fullRuntimeProofId,
+        proofLedgerId: binding.proofLedgerId,
+        runnerProcessId: 8123,
+        runnerRuntimeSessionId: binding.runnerRuntimeSessionId,
+        runnerChallenge: 'd'.repeat(32),
+        commandEnvelopeSha256:
+          stableJsonHash({ selfCheck: 'command-envelope' }),
+        protectedProofJsonSha256:
+          stableJsonHash({ selfCheck: 'protected-proof-json' }),
+        admittedAtUnixNs: admittedAtUnixNs.toString(),
+        sequence: sequence.toString(),
+        nonce: Buffer.alloc(32, Number(sequence % 251n) + 1).toString('base64url'),
+      };
+      const signingBytes = createGpuHmrMcpAdmissionReceiptSigningBytes(signed);
+      assertGenericOutputOracleSelfCheck(
+        signingBytes !== null,
+        'generic output-oracle admission receipt should have canonical signing bytes',
+      );
+      const signature = signBytes(null, signingBytes, privateKey);
+      const receipt = finalizeGpuHmrMcpAdmissionReceipt(
+        signed,
+        `ed25519:${signature.toString('base64url')}`,
+      );
+      assertGenericOutputOracleSelfCheck(
+        receipt !== null,
+        'generic output-oracle admission receipt should finalize',
+      );
+      return receipt;
+    },
+  });
+}
+
 export async function selfCheckGenericOutputOracleLedger() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'synthi-generic-output-oracle-'));
   const rawPath = path.join(dir, 'raw-readback.bin');
@@ -33003,6 +34005,732 @@ export async function selfCheckGenericOutputOracleLedger() {
     `direct production compute artifact layout should accept: ${JSON.stringify(directFacet.failedGates)}`,
   );
 
+  const compileTransportNonce =
+    'gpu-proof-transport-request:0123456789abcdef0123456789abcdef';
+  const v2SemanticsMaterial = {
+    schemaVersion: COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+    comparisonMode: 'exact_bytes',
+    outputTargetId: 'output-target:generic-compute-buffer',
+    byteOffset: 0,
+    byteLength: rawBytes.length,
+    dtype: 'u8',
+    shape: [rawBytes.length],
+    elementCount: rawBytes.length,
+    byteOrder: 'not_applicable',
+    toleranceDecimal: '0',
+    expectedValuesDecimal: null,
+    expectedValuesHash: null,
+    expectedRawHash: sha256BufferHash(rawBytes),
+  };
+  const v2Semantics = {
+    ...v2SemanticsMaterial,
+    semanticsHash: computeExpectedOutputSemanticsHash(v2SemanticsMaterial),
+  };
+  const v2Binding = {
+    projectId: 'generic-output-oracle-self-check',
+    editId: 'generic-output-oracle-edit',
+    artifactAfterHash,
+    outputTargetId: v2Semantics.outputTargetId,
+    oracleCodeHash,
+    compileTransportNonce,
+    runtimeSessionId: 'runtime-session:generic-output-oracle-self-check',
+  };
+  const v2Contract = deriveComputeExpectedOutputContractV2(v2Semantics, v2Binding);
+  const v2ArtifactsForContract = (contract) => ({
+    ...computeOracleArtifacts,
+    proof_runtime_session_id: contract.binding.runtimeSessionId,
+    compute_expected_output_contract_v2: structuredClone(contract),
+    compute_expected_output_contract_hash: contract.contractHash,
+    compute_expected_output_semantics_hash: contract.semantics.semanticsHash,
+  });
+  const directV2RecordForContract = (contract) => {
+    const artifacts = v2ArtifactsForContract(contract);
+    const value = genericOutputOracleSelfCheckRecord(artifacts, acceptanceContract);
+    delete value.output_event.compute_oracle_artifacts;
+    value.oracle_artifacts = structuredClone(artifacts);
+    value.output_event.oracle_artifacts = structuredClone(artifacts);
+    value.output_event.output_oracle = {
+      oracle_id: 'oracle:generic-output-oracle-v2',
+      kind: 'buffer_checksum',
+      passed: true,
+      output_oracle_target: structuredClone(value.output_oracle_target),
+      oracle_artifacts: structuredClone(artifacts),
+    };
+    value.evidence_refs = compactStringList([
+      ...(value.evidence_refs ?? []),
+      `compute-expected-output-contract:${contract.contractHash}`,
+      `compute-expected-output-semantics:${contract.semantics.semanticsHash}`,
+    ]);
+    return value;
+  };
+  const v2Record = directV2RecordForContract(v2Contract);
+  const v2ProofLedger = buildGpuHmrProofLedger(v2Record);
+  const v2ProofLedgerId = firstText(v2ProofLedger.proofId, v2ProofLedger.proof_id);
+  const v2FullRuntimeProofId = `gpu-runtime-proof:sha256:${'f'.repeat(64)}`;
+  const mcpAdmissionSigner = genericOutputOracleSelfCheckMcpAdmissionSigner();
+  const verifiedAdmissionForContract = (
+    contract,
+    transportSuffix,
+    proofLedgerId = v2ProofLedgerId,
+  ) => {
+    const expectedBinding = {
+      transportSessionId: `opaque-transport-session:${transportSuffix}`,
+      compileRequestNonce: contract.binding.compileTransportNonce,
+      computeExpectedOutputContractHash: contract.contractHash,
+      computeExpectedOutputSemanticsHash: contract.semantics.semanticsHash,
+      artifactContentHash: contract.binding.artifactAfterHash,
+      fullRuntimeProofId: v2FullRuntimeProofId,
+      proofLedgerId,
+      runnerRuntimeSessionId: contract.binding.runtimeSessionId,
+    };
+    const receipt = mcpAdmissionSigner.sign(expectedBinding);
+    const replayRegistry = createGpuHmrMcpAdmissionReplayRegistry();
+    const trust = {
+      verificationKey: mcpAdmissionSigner.verificationKey,
+      validationRunChallenge: mcpAdmissionSigner.validationRunChallenge,
+      replayRegistry,
+      nowUnixNs: mcpAdmissionSigner.admittedAtUnixNs,
+      maxAgeNs: 30_000_000_000n,
+      maxFutureSkewNs: 1_000_000_000n,
+      requireReceiptForCompute: true,
+    };
+    const verification = verifyGpuHmrMcpAdmissionReceiptForMatrix({
+      trustedVerificationKey: trust.verificationKey,
+      validationRunChallenge: trust.validationRunChallenge,
+      receipt,
+      nowUnixNs: trust.nowUnixNs,
+      maxAgeNs: trust.maxAgeNs,
+      maxFutureSkewNs: trust.maxFutureSkewNs,
+      replayRegistry,
+      expectedBinding,
+    });
+    return {
+      expectedBinding,
+      receipt,
+      trust,
+      verification,
+      material: {
+        schemaVersion: MATRIX_MCP_PARENT_CONTROL_MATERIAL_SCHEMA,
+        mcpAdmissionReceipt: receipt,
+        transportContext: {
+          transportSessionId: expectedBinding.transportSessionId,
+          compileRequestNonce: expectedBinding.compileRequestNonce,
+        },
+      },
+    };
+  };
+  const verifiedV2Admission = verifiedAdmissionForContract(v2Contract, 'v2-direct');
+  const verifiedV2Context = verifiedV2Admission.verification;
+  assertGenericOutputOracleSelfCheck(
+    verifiedV2Context.accepted === true
+      && verifiedGpuHmrMcpAdmissionReceiptProjection(verifiedV2Context) !== null,
+    `signed V2 admission should verify: ${verifiedV2Context.reason}`,
+  );
+  const v2ObservedBinding = observedComputeOracleBinding(
+    v2Record,
+    v2Record.oracle_artifacts,
+    { outputTargetId: v2Binding.outputTargetId },
+  );
+  const acceptedV2Evidence = computeExpectedOutputV2Evidence(
+    v2Record,
+    expectedOutputContract,
+    v2ObservedBinding,
+    verifiedV2Context,
+  );
+  assertGenericOutputOracleSelfCheck(
+    acceptedV2Evidence.accepted === true,
+    `fully bound V2 artifact copies should recompute: ${JSON.stringify(acceptedV2Evidence.failedGates)}`,
+  );
+  const forgedSerializedVerificationEvidence = computeExpectedOutputV2Evidence(
+    v2Record,
+    expectedOutputContract,
+    v2ObservedBinding,
+    {
+      accepted: true,
+      verified: true,
+      contractHash: v2Contract.contractHash,
+      semanticsHash: v2Contract.semantics.semanticsHash,
+      compileTransportNonce,
+      runtimeSessionId: v2Binding.runtimeSessionId,
+    },
+    true,
+  );
+  assertGenericOutputOracleSelfCheck(
+    forgedSerializedVerificationEvidence.accepted === false
+      && forgedSerializedVerificationEvidence.failedGates.some(({ code }) => (
+        code === 'compute_expected_output_v2_compile_nonce_authority_missing'
+      )),
+    'serialized accepted/verified fields should not impersonate matrix admission authority',
+  );
+  const canonicalV2ArtifactCopies = (value) => [
+    value.oracle_artifacts,
+    value.output_event.oracle_artifacts,
+    value.output_event.output_oracle.oracle_artifacts,
+  ];
+  const v2EvidenceForRecord = (
+    value,
+    legacyContract = expectedOutputContract,
+    context = verifiedV2Context,
+  ) => computeExpectedOutputV2Evidence(
+    value,
+    legacyContract,
+    observedComputeOracleBinding(
+      value,
+      value.oracle_artifacts,
+      { outputTargetId: v2Binding.outputTargetId },
+    ),
+    context,
+  );
+  const assertV2RejectedWith = (value, expectedCode, message, options = {}) => {
+    const evidence = v2EvidenceForRecord(
+      value,
+      options.legacyContract ?? expectedOutputContract,
+      options.context ?? verifiedV2Context,
+    );
+    const codes = evidence.failedGates.map(({ code }) => code);
+    assertGenericOutputOracleSelfCheck(
+      evidence.accepted === false && codes.includes(expectedCode),
+      `${message}: ${codes.join(',')}`,
+    );
+  };
+
+  const paddedContractHashRecord = structuredClone(v2Record);
+  canonicalV2ArtifactCopies(paddedContractHashRecord).forEach((artifacts) => {
+    artifacts.compute_expected_output_contract_hash = ` ${v2Contract.contractHash}`;
+  });
+  assertV2RejectedWith(
+    paddedContractHashRecord,
+    'compute_expected_output_v2_record_oracle_artifacts_contract_hash_mismatch',
+    'whitespace-padded V2 contract hashes should reject',
+  );
+
+  const paddedSessionRecord = structuredClone(v2Record);
+  canonicalV2ArtifactCopies(paddedSessionRecord).forEach((artifacts) => {
+    artifacts.proof_runtime_session_id = `${v2Binding.runtimeSessionId} `;
+  });
+  assertV2RejectedWith(
+    paddedSessionRecord,
+    'compute_expected_output_v2_record_oracle_artifacts_runtime_session_mismatch',
+    'whitespace-padded runtime sessions should reject',
+  );
+
+  const paddedEvidenceRefRecord = structuredClone(v2Record);
+  paddedEvidenceRefRecord.evidence_refs = paddedEvidenceRefRecord.evidence_refs.map((ref) => (
+    ref.startsWith('compute-expected-output-') ? ` ${ref}` : ref
+  ));
+  assertV2RejectedWith(
+    paddedEvidenceRefRecord,
+    'compute_expected_output_v2_contract_evidence_ref_missing',
+    'whitespace-padded evidence refs should reject',
+  );
+
+  const stringElementCountContract = structuredClone(expectedOutputContract);
+  stringElementCountContract.elementCount = String(stringElementCountContract.elementCount);
+  assertV2RejectedWith(
+    v2Record,
+    'compute_expected_output_v1_v2_disagreement',
+    'string-coerced V1 element counts should reject',
+    { legacyContract: stringElementCountContract },
+  );
+
+  const stringToleranceContract = structuredClone(expectedOutputContract);
+  stringToleranceContract.tolerance = String(stringToleranceContract.tolerance);
+  assertV2RejectedWith(
+    v2Record,
+    'compute_expected_output_v1_v2_disagreement',
+    'string-coerced V1 tolerances should reject',
+    { legacyContract: stringToleranceContract },
+  );
+
+  const missingProcessSessionRecord = structuredClone(v2Record);
+  delete missingProcessSessionRecord.process_identity.runtime_session_id;
+  assertV2RejectedWith(
+    missingProcessSessionRecord,
+    'compute_expected_output_v2_process_runtime_session_missing',
+    'missing process runtime sessions should reject',
+  );
+
+  const conflictingEvidenceRefsRecord = structuredClone(v2Record);
+  conflictingEvidenceRefsRecord.evidenceRefs = ['conflicting:evidence-ref-alias'];
+  assertV2RejectedWith(
+    conflictingEvidenceRefsRecord,
+    'compute_expected_output_v2_evidence_refs_alias_conflict',
+    'conflicting evidence-ref aliases should reject',
+  );
+
+  const hiddenConflictingParentRecord = genericOutputOracleSelfCheckRecord(
+    computeOracleArtifacts,
+    acceptanceContract,
+  );
+  hiddenConflictingParentRecord.outputEvent = {
+    outputOracle: {
+      oracleArtifacts: v2ArtifactsForContract(v2Contract),
+    },
+  };
+  assertV2RejectedWith(
+    hiddenConflictingParentRecord,
+    'compute_expected_output_v2_parent_alias_conflict',
+    'V2 signals hidden behind conflicting parent aliases should reject',
+  );
+
+  const wrappedV2SignalRecord = genericOutputOracleSelfCheckRecord(
+    computeOracleArtifacts,
+    acceptanceContract,
+  );
+  wrappedV2SignalRecord.output_event.output_oracle = {
+    oracle_artifacts: {
+      compute_oracle_artifacts: v2ArtifactsForContract(v2Contract),
+    },
+  };
+  assertV2RejectedWith(
+    wrappedV2SignalRecord,
+    'compute_expected_output_v2_record_oracle_artifacts_missing',
+    'V2 signals nested inside wrapped output-oracle artifacts should reject without canonical copies',
+  );
+
+  const sessionOnlyV2Record = structuredClone(v2Record);
+  canonicalV2ArtifactCopies(sessionOnlyV2Record).forEach((artifacts) => {
+    delete artifacts.compute_expected_output_contract_v2;
+    delete artifacts.compute_expected_output_contract_hash;
+    delete artifacts.compute_expected_output_semantics_hash;
+  });
+  assertV2RejectedWith(
+    sessionOnlyV2Record,
+    'compute_expected_output_v2_record_oracle_artifacts_partial',
+    'a remaining V2 runtime-session marker should prevent triplet stripping',
+  );
+
+  const nonCanonicalDtypeContract = structuredClone(expectedOutputContract);
+  nonCanonicalDtypeContract.dataType = nonCanonicalDtypeContract.dtype;
+  assertV2RejectedWith(
+    v2Record,
+    'compute_expected_output_v1_v2_disagreement',
+    'noncanonical V1 dtype aliases should reject at the V1/V2 bridge',
+    { legacyContract: nonCanonicalDtypeContract },
+  );
+
+  const substitutedProjectRecord = structuredClone(v2Record);
+  substitutedProjectRecord.project_id = 'substituted-project';
+  assertV2RejectedWith(
+    substitutedProjectRecord,
+    'compute_expected_output_v2_project_id_mismatch',
+    'record project substitution should reject',
+  );
+
+  const substitutedEditRecord = structuredClone(v2Record);
+  substitutedEditRecord.edit_id = 'substituted-edit';
+  assertV2RejectedWith(
+    substitutedEditRecord,
+    'compute_expected_output_v2_edit_id_mismatch',
+    'record edit substitution should reject',
+  );
+
+  const substitutedArtifactRecord = structuredClone(v2Record);
+  substitutedArtifactRecord.artifact_after_hash = stableJsonHash({ substituted: 'artifact' });
+  assertV2RejectedWith(
+    substitutedArtifactRecord,
+    'compute_expected_output_v2_artifact_hash_mismatch',
+    'record artifact substitution should reject',
+  );
+
+  const substitutedTargetRecord = structuredClone(v2Record);
+  substitutedTargetRecord.output_event.output_target_id = 'output-target:substituted';
+  assertV2RejectedWith(
+    substitutedTargetRecord,
+    'compute_expected_output_v2_output_target_mismatch',
+    'record output-target substitution should reject',
+  );
+
+  const substitutedOracleRecord = structuredClone(v2Record);
+  canonicalV2ArtifactCopies(substitutedOracleRecord).forEach((artifacts) => {
+    artifacts.oracle_code_hash = stableJsonHash({ substituted: 'oracle-code' });
+  });
+  assertV2RejectedWith(
+    substitutedOracleRecord,
+    'compute_expected_output_v2_oracle_code_hash_mismatch',
+    'record oracle-code substitution should reject',
+  );
+
+  const productionV2Admission = verifiedAdmissionForContract(
+    v2Contract,
+    'v2-production-facet',
+  );
+  const productionV2Trust = {
+    ...productionV2Admission.trust,
+    replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+  };
+  const acceptedV2Facet = await ledgerOutputOracleFacet(
+    {
+      present: true,
+      source: 'recomputed_ledger',
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    },
+    v2ProofLedger,
+    {},
+    dir,
+    dir,
+    {
+      acceptanceContract,
+      runtimeProofArtifact: { proof_id: v2FullRuntimeProofId },
+      mcpAdmissionMaterials: [{
+        receipt: productionV2Admission.material.mcpAdmissionReceipt,
+        transportContext: productionV2Admission.material.transportContext,
+      }],
+      mcpAdmissionTrust: productionV2Trust,
+      mcpAdmissionTrustSupplied: true,
+    },
+  );
+  assertGenericOutputOracleSelfCheck(
+    acceptedV2Facet.accepted === true
+      && acceptedV2Facet.compute?.mcpAdmissionVerification?.accepted === true,
+    `signed production V2 facet should accept: ${JSON.stringify(acceptedV2Facet.failedGates)}`,
+  );
+  const mixedOracleProofLedger = structuredClone(v2ProofLedger);
+  mixedOracleProofLedger.records.push({
+    oracle_artifacts: {
+      visual_oracle_artifacts: {
+        before_image: 'untrusted-mixed-oracle-before.png',
+      },
+    },
+  });
+  const mixedOracleFacet = await ledgerOutputOracleFacet(
+    {
+      present: true,
+      source: 'recomputed_ledger',
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    },
+    mixedOracleProofLedger,
+    {},
+    dir,
+    dir,
+    { acceptanceContract },
+  );
+  assertGenericOutputOracleSelfCheck(
+    mixedOracleFacet.accepted === false
+      && mixedOracleFacet.failedGates.some(({ code }) => (
+        code === 'mixed_visual_compute_oracle_ledger_ambiguous'
+      )),
+    'adding visual artifacts to a compute ledger should not bypass compute admission',
+  );
+
+  const collectorRoot = path.join(dir, 'matrix-collector-receipt');
+  await fs.mkdir(collectorRoot, { recursive: true });
+  const collectorV2Artifacts = v2ArtifactsForContract(v2Contract);
+  const collectorV2Record = genericOutputOracleSelfCheckRecord(
+    collectorV2Artifacts,
+    acceptanceContract,
+  );
+  const collectorV2ArtifactContainer = {
+    compute_oracle_artifacts: structuredClone(collectorV2Artifacts),
+    oracle_code_hash: oracleCodeHash,
+    proof_runtime_session_id: v2Contract.binding.runtimeSessionId,
+    compute_expected_output_contract_v2: structuredClone(v2Contract),
+    compute_expected_output_contract_hash: v2Contract.contractHash,
+    compute_expected_output_semantics_hash: v2Contract.semantics.semanticsHash,
+  };
+  collectorV2Record.oracle_artifacts = structuredClone(collectorV2ArtifactContainer);
+  collectorV2Record.output_event.oracle_artifacts = structuredClone(
+    collectorV2ArtifactContainer,
+  );
+  collectorV2Record.output_event.output_oracle = {
+    oracle_id: 'oracle:generic-output-oracle-v2-collector',
+    kind: 'buffer_checksum',
+    passed: true,
+    oracle_artifacts: structuredClone(collectorV2ArtifactContainer),
+  };
+  collectorV2Record.evidence_refs = compactStringList([
+    ...(collectorV2Record.evidence_refs ?? []),
+    `compute-expected-output-contract:${v2Contract.contractHash}`,
+    `compute-expected-output-semantics:${v2Contract.semantics.semanticsHash}`,
+  ]);
+  const collectorV2ProofLedger = buildGpuHmrProofLedger(collectorV2Record);
+  const collectorV2ProofLedgerId = firstText(
+    collectorV2ProofLedger.proofId,
+    collectorV2ProofLedger.proof_id,
+  );
+  const collectorV2LedgerQuery = queryGpuHmrLedgerInvariants(collectorV2ProofLedger);
+  assertGenericOutputOracleSelfCheck(
+    collectorV2LedgerQuery.gpuHmrSuccess === true,
+    `collector V2 fixture ledger should recompute: ${JSON.stringify(collectorV2LedgerQuery.failedInvariants)}`,
+  );
+  const collectorAdmission = verifiedAdmissionForContract(
+    v2Contract,
+    'v2-collector',
+    collectorV2ProofLedgerId,
+  );
+  const collectorArtifact = {
+    schemaVersion: 'synthi.gpu.hmr.proof.v1',
+    gpuHmrSuccess: true,
+    fullRuntimeProven: true,
+    resultState: 'gpu-hmr-full-runtime-proven',
+    acceptanceContract,
+    proofLedger: collectorV2ProofLedger,
+    runtimeProofArtifact: {
+      proof_id: v2FullRuntimeProofId,
+    },
+    parentControlVerificationMaterial: collectorAdmission.material,
+  };
+  const collectorArtifactPath = path.join(collectorRoot, 'runtime-proof.json');
+  await fs.writeFile(
+    collectorArtifactPath,
+    `${JSON.stringify(collectorArtifact, null, 2)}\n`,
+  );
+  const collectorTrust = {
+    ...collectorAdmission.trust,
+    replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+  };
+  const collectWithTrust = (trust, roots = [collectorRoot]) => (
+    collectGpuHmrValidationMatrixLedger({
+      repoRoot: dir,
+      mcpRoot: dir,
+      roots,
+      latestPerTarget: false,
+      includeUnproven: true,
+      mcpAdmissionTrust: trust,
+    })
+  );
+  const computeFacetFromCollectedLedger = (value) => (
+    value.rows.find((row) => row.outputOracleFacet?.kind === 'compute_oracle')
+      ?.outputOracleFacet?.compute
+    ?? null
+  );
+  const firstCollectedLedger = await collectWithTrust(collectorTrust);
+  const firstCollectedCompute = computeFacetFromCollectedLedger(firstCollectedLedger);
+  assertGenericOutputOracleSelfCheck(
+    firstCollectedCompute?.mcpAdmissionVerification?.accepted === true
+      && firstCollectedCompute?.computeExpectedOutputV2?.accepted === true,
+    `collector should independently accept a fresh signed V2 receipt: ${JSON.stringify({ compute: firstCollectedCompute, rows: firstCollectedLedger.rows })}`,
+  );
+
+  const replayedCollectedLedger = await collectWithTrust(collectorTrust);
+  const replayedCollectedCompute = computeFacetFromCollectedLedger(replayedCollectedLedger);
+  assertGenericOutputOracleSelfCheck(
+    replayedCollectedCompute?.mcpAdmissionVerification?.accepted === false
+      && replayedCollectedCompute?.mcpAdmissionVerification?.reason
+        === 'gpu_hmr_mcp_admission_receipt_replayed',
+    `collector cache should not hide receipt replay: ${JSON.stringify(replayedCollectedCompute)}`,
+  );
+
+  const otherSigner = genericOutputOracleSelfCheckMcpAdmissionSigner();
+  const wrongKeyCollectedLedger = await collectWithTrust({
+    ...collectorAdmission.trust,
+    verificationKey: otherSigner.verificationKey,
+    replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+  });
+  const wrongKeyCollectedCompute = computeFacetFromCollectedLedger(wrongKeyCollectedLedger);
+  assertGenericOutputOracleSelfCheck(
+    wrongKeyCollectedCompute?.mcpAdmissionVerification?.reason
+      === 'gpu_hmr_mcp_admission_signer_key_mismatch',
+    `collector cache should not hide a changed verification key: ${JSON.stringify(wrongKeyCollectedCompute)}`,
+  );
+
+  const wrongChallengeCollectedLedger = await collectWithTrust({
+    ...collectorAdmission.trust,
+    validationRunChallenge: Buffer.alloc(32, 0x5e).toString('base64url'),
+    replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+  });
+  const wrongChallengeCollectedCompute = computeFacetFromCollectedLedger(
+    wrongChallengeCollectedLedger,
+  );
+  assertGenericOutputOracleSelfCheck(
+    wrongChallengeCollectedCompute?.mcpAdmissionVerification?.reason
+      === 'gpu_hmr_mcp_admission_validation_run_challenge_mismatch',
+    `collector cache should not hide a changed challenge: ${JSON.stringify(wrongChallengeCollectedCompute)}`,
+  );
+
+  const staleCollectedLedger = await collectWithTrust({
+    ...collectorAdmission.trust,
+    replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+    nowUnixNs:
+      collectorAdmission.trust.nowUnixNs
+      + collectorAdmission.trust.maxAgeNs
+      + 1n,
+  });
+  const staleCollectedCompute = computeFacetFromCollectedLedger(staleCollectedLedger);
+  assertGenericOutputOracleSelfCheck(
+    staleCollectedCompute?.mcpAdmissionVerification?.reason
+      === 'gpu_hmr_mcp_admission_receipt_stale',
+    `collector cache should not hide receipt expiry: ${JSON.stringify(staleCollectedCompute)}`,
+  );
+
+  const artifactSuppliedTrustLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [collectorRoot],
+    latestPerTarget: false,
+    includeUnproven: true,
+  });
+  const artifactSuppliedTrustCompute = computeFacetFromCollectedLedger(
+    artifactSuppliedTrustLedger,
+  );
+  assertGenericOutputOracleSelfCheck(
+    artifactSuppliedTrustCompute?.mcpAdmissionVerification?.accepted === false
+      && artifactSuppliedTrustCompute?.mcpAdmissionVerification?.reason
+        === 'gpu_hmr_mcp_admission_external_trust_missing',
+    `artifact-carried receipt data should not supply matrix trust: ${JSON.stringify(artifactSuppliedTrustCompute)}`,
+  );
+
+  const strippedCollectorRoot = path.join(dir, 'matrix-collector-stripped-v2');
+  await fs.mkdir(strippedCollectorRoot, { recursive: true });
+  const strippedCollectorArtifact = structuredClone(collectorArtifact);
+  strippedCollectorArtifact.proofLedger = buildGpuHmrProofLedger(
+    genericOutputOracleSelfCheckRecord(computeOracleArtifacts, acceptanceContract),
+  );
+  await fs.writeFile(
+    path.join(strippedCollectorRoot, 'runtime-proof.json'),
+    `${JSON.stringify(strippedCollectorArtifact, null, 2)}\n`,
+  );
+  const strippedCollectedLedger = await collectWithTrust({
+    ...collectorAdmission.trust,
+    replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+  }, [strippedCollectorRoot]);
+  const strippedCollectedCompute = computeFacetFromCollectedLedger(strippedCollectedLedger);
+  assertGenericOutputOracleSelfCheck(
+    strippedCollectedCompute?.computeExpectedOutputV2?.required === true
+      && strippedCollectedCompute?.computeExpectedOutputV2?.accepted === false,
+    `live receipt policy should reject a stripped V2 artifact: ${JSON.stringify(strippedCollectedCompute)}`,
+  );
+
+  const unboundV2Facet = await ledgerOutputOracleFacet(
+    {
+      present: true,
+      source: 'recomputed_ledger',
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    },
+    v2ProofLedger,
+    {},
+    dir,
+    dir,
+    { acceptanceContract },
+  );
+  const unboundV2Codes = compactStringList(
+    unboundV2Facet.failedGates.map((failure) => failure.code),
+  );
+  assertGenericOutputOracleSelfCheck(
+    unboundV2Facet.accepted === false
+      && unboundV2Codes.includes('compute_expected_output_v2_compile_nonce_authority_missing'),
+    `V2 evidence without authenticated compile context should fail closed: ${unboundV2Codes.join(',')}`,
+  );
+
+  const oneCopyMissing = structuredClone(v2Record);
+  delete oneCopyMissing.output_event.output_oracle.oracle_artifacts
+    .compute_expected_output_contract_v2;
+  const oneCopyMissingEvidence = computeExpectedOutputV2Evidence(
+    oneCopyMissing,
+    expectedOutputContract,
+    v2ObservedBinding,
+    verifiedV2Context,
+    true,
+  );
+  assertGenericOutputOracleSelfCheck(
+    oneCopyMissingEvidence.accepted === false
+      && oneCopyMissingEvidence.failedGates.some(({ code }) => (
+        code === 'compute_expected_output_v2_output_oracle_oracle_artifacts_partial'
+      )),
+    'removing V2 from one ledger copy should reject',
+  );
+
+  const allCopiesMissing = genericOutputOracleSelfCheckRecord(
+    computeOracleArtifacts,
+    acceptanceContract,
+  );
+  const allCopiesMissingEvidence = computeExpectedOutputV2Evidence(
+    allCopiesMissing,
+    expectedOutputContract,
+    observedComputeOracleBinding(
+      allCopiesMissing,
+      computeOracleArtifacts,
+      { outputTargetId: v2Binding.outputTargetId },
+    ),
+    verifiedV2Context,
+    true,
+  );
+  assertGenericOutputOracleSelfCheck(
+    allCopiesMissingEvidence.accepted === false
+      && allCopiesMissingEvidence.failedGates.some(({ code }) => (
+        code === 'compute_expected_output_v2_record_oracle_artifacts_missing'
+      )),
+    'removing every required V2 copy should reject',
+  );
+
+  const substitutedContract = deriveComputeExpectedOutputContractV2(v2Semantics, {
+    ...v2Binding,
+    compileTransportNonce: 'gpu-proof-transport-request:fedcba9876543210fedcba9876543210',
+  });
+  const substitutedRecord = directV2RecordForContract(substitutedContract);
+  const substitutedEvidence = computeExpectedOutputV2Evidence(
+    substitutedRecord,
+    expectedOutputContract,
+    observedComputeOracleBinding(
+      substitutedRecord,
+      substitutedRecord.oracle_artifacts,
+      { outputTargetId: v2Binding.outputTargetId },
+    ),
+    verifiedV2Context,
+  );
+  assertGenericOutputOracleSelfCheck(
+    substitutedEvidence.accepted === false
+      && substitutedEvidence.failedGates.some(({ code }) => (
+        code === 'compute_expected_output_v2_authenticated_compile_nonce_mismatch'
+      )),
+    'fully rehashed V2 nonce substitution should reject',
+  );
+
+  const disagreementMaterial = {
+    ...v2SemanticsMaterial,
+    shape: [2, rawBytes.length / 2],
+  };
+  const disagreementSemantics = {
+    ...disagreementMaterial,
+    semanticsHash: computeExpectedOutputSemanticsHash(disagreementMaterial),
+  };
+  const disagreementContract = deriveComputeExpectedOutputContractV2(
+    disagreementSemantics,
+    v2Binding,
+  );
+  const disagreementRecord = directV2RecordForContract(disagreementContract);
+  const disagreementAdmission = verifiedAdmissionForContract(
+    disagreementContract,
+    'v2-disagreement',
+  );
+  const disagreementEvidence = computeExpectedOutputV2Evidence(
+    disagreementRecord,
+    expectedOutputContract,
+    observedComputeOracleBinding(
+      disagreementRecord,
+      disagreementRecord.oracle_artifacts,
+      { outputTargetId: v2Binding.outputTargetId },
+    ),
+    disagreementAdmission.verification,
+  );
+  assertGenericOutputOracleSelfCheck(
+    disagreementEvidence.accepted === false
+      && disagreementEvidence.failedGates.some(({ code }) => (
+        code === 'compute_expected_output_v1_v2_disagreement'
+      )),
+    'independently valid but disagreeing V1 and V2 contracts should reject',
+  );
+
+  const mismatchedCopyRecord = structuredClone(v2Record);
+  mismatchedCopyRecord.output_event.output_oracle.oracle_artifacts.checksum_before =
+    stableJsonHash({ checksum: 'copy-mismatch' });
+  const mismatchedCopyEvidence = computeExpectedOutputV2Evidence(
+    mismatchedCopyRecord,
+    expectedOutputContract,
+    v2ObservedBinding,
+    verifiedV2Context,
+  );
+  assertGenericOutputOracleSelfCheck(
+    mismatchedCopyEvidence.accepted === false
+      && mismatchedCopyEvidence.failedGates.some(({ code }) => (
+        code === 'compute_expected_output_v2_artifact_copies_mismatch'
+      )),
+    'divergent oracle artifact copies should reject',
+  );
+
   const forgedArtifacts = {
     ...computeOracleArtifacts,
     raw_readback_hash: `sha256:${'0'.repeat(64)}`,
@@ -33100,6 +34828,29 @@ export async function selfCheckGenericOutputOracleLedger() {
       computeAccepted: acceptedFacet.compute?.accepted === true,
     },
     directProductionArtifactLayoutAccepted: true,
+    v2MatrixRecomputationAccepted: true,
+    signedMcpAdmissionAccepted: true,
+    forgedSerializedAdmissionRejected: true,
+    collectorReceiptReplayRejected: true,
+    collectorTrustKeyChangeRejected: true,
+    collectorTrustChallengeChangeRejected: true,
+    collectorReceiptExpiryRejected: true,
+    artifactSuppliedTrustRejected: true,
+    collectorV2DowngradeRejected: true,
+    mixedVisualComputeOracleRejected: true,
+    v2WithoutCompileAuthorityRejected: true,
+    v2CopyRemovalRejected: true,
+    v2AllCopyRemovalRejectedWhenRequired: true,
+    v2NonceSubstitutionRejected: true,
+    v1V2DisagreementRejected: true,
+    v2ArtifactCopyMismatchRejected: true,
+    v2ExactCanonicalizationRejected: true,
+    v2ProcessSessionMissingRejected: true,
+    v2AliasConflictsRejected: true,
+    v2RecordBindingSubstitutionsRejected: true,
+    v2WrappedSignalDowngradeRejected: true,
+    v2SessionMarkerDowngradeRejected: true,
+    v2NonCanonicalLegacyAliasRejected: true,
     forgedRejected: true,
     selfConsistentWrongBytesRejected: true,
     failedGateCoverage: forgedCodes,
@@ -33276,7 +35027,26 @@ function normalizedTargetProgressionEntryPhase(entry) {
   )).phase;
 }
 
-async function targetProgressionSmallOracleLedgerEvidence(entry, repoRoot, baseDir) {
+function targetProgressionEntryRuntimeProofArtifact(entry) {
+  const nested = runtimeProofArtifactFromValue(entry);
+  if (firstText(nested.proofId, nested.proof_id)) return nested;
+  const strictRuntimeProofId = firstText(
+    entry.strictRuntimeProofId,
+    entry.strict_runtime_proof_id,
+    entry.fullRuntimeProofId,
+    entry.full_runtime_proof_id,
+    entry.runtimeProofId,
+    entry.runtime_proof_id,
+  );
+  return strictRuntimeProofId ? { proof_id: strictRuntimeProofId } : {};
+}
+
+async function targetProgressionSmallOracleLedgerEvidence(
+  entry,
+  repoRoot,
+  baseDir,
+  mcpAdmissionOptions = {},
+) {
   const declaredComputeArtifacts = compactObject(
     entry.compute_oracle_artifacts
     ?? entry.computeOracleArtifacts,
@@ -33352,6 +35122,8 @@ async function targetProgressionSmallOracleLedgerEvidence(entry, repoRoot, baseD
       repoRoot,
       baseDir,
       {
+        ...mcpAdmissionOptions,
+        runtimeProofArtifact: targetProgressionEntryRuntimeProofArtifact(entry),
         acceptanceContract: compactObject(
           entry.acceptanceContract
           ?? entry.acceptance_contract,
@@ -33407,7 +35179,11 @@ async function targetProgressionSmallOracleLedgerEvidence(entry, repoRoot, baseD
   };
 }
 
-async function targetProgressionLedgerPhaseResult(ledger, phase, { repoRoot, baseDir } = {}) {
+async function targetProgressionLedgerPhaseResult(
+  ledger,
+  phase,
+  { repoRoot, baseDir, mcpAdmissionOptions = {} } = {},
+) {
   const normalizedPhase = normalizeTargetProgressionPhase(phase).phase;
   const entries = targetProgressionLedgerEntries(ledger)
     .filter((entry) => normalizedTargetProgressionEntryPhase(entry) === normalizedPhase);
@@ -33422,6 +35198,7 @@ async function targetProgressionLedgerPhaseResult(ledger, phase, { repoRoot, bas
         entry,
         repoRoot,
         baseDir,
+        mcpAdmissionOptions,
       );
       if (!structuredReference) {
         failureDetails.push('small-oracle structured proof reference missing');
@@ -33559,6 +35336,7 @@ async function recomputeTargetProgressionGateRows({
   ledger = {},
   repoRoot,
   baseDir,
+  mcpAdmissionOptions = {},
 } = {}) {
   const progression = normalizeTargetProgressionMetadata(targetProgression, { targetName });
   const rows = [];
@@ -33661,7 +35439,7 @@ async function recomputeTargetProgressionGateRows({
         const ledgerPhase = await targetProgressionLedgerPhaseResult(
           targetProgressionLedger,
           phase,
-          { repoRoot, baseDir },
+          { repoRoot, baseDir, mcpAdmissionOptions },
         );
         rows.push({
           name: `target progression prior ${phase}`,
@@ -34856,6 +36634,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     {
+      ...matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact),
       runtimeChain: realRocmRuntimeChain,
       acceptanceContract,
     },
@@ -35042,6 +36821,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ledger,
     repoRoot: context.repoRoot,
     baseDir: path.dirname(filePath),
+    mcpAdmissionOptions: matrixMcpAdmissionFacetOptions(
+      context,
+      runtimeProofArtifact,
+    ),
   });
   const targetProgressionGates = mergeTargetProgressionGateRows(
     reportedTargetProgressionGates,
@@ -35855,7 +37638,10 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
         visual,
         context.repoRoot,
         path.dirname(filePath),
-        { acceptanceContract },
+        {
+          ...matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact),
+          acceptanceContract,
+        },
       );
   outputOracleFacet.declaredOutputOracleFacet = Object.keys(declaredOutputOracleFacet).length > 0
     ? declaredOutputOracleFacet
@@ -37172,6 +38958,10 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
         context.repoRoot,
         path.dirname(filePath),
         {
+          ...matrixMcpAdmissionFacetOptions(
+            context,
+            randomColdImportedRuntimeProofArtifact,
+          ),
           runtimeChain: randomColdRealRocmRuntimeChain,
           acceptanceContract: compactObject(
             randomColdImportedRuntimeProofArtifact.acceptanceContract
@@ -45463,10 +47253,18 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   const mcpRoot = path.resolve(options.mcpRoot ?? path.join(repoRoot, 'mcp', 'synthi-mcp'));
   const roots = options.roots ?? defaultValidationMatrixRoots({ repoRoot, mcpRoot });
+  const mcpAdmissionTrustSupplied = Object.prototype.hasOwnProperty.call(
+    options,
+    'mcpAdmissionTrust',
+  );
+  const mcpAdmissionTrust = mcpAdmissionTrustSupplied
+    ? snapshotMatrixMcpAdmissionTrust(options.mcpAdmissionTrust)
+    : null;
   const files = [];
   for (const root of roots) {
     files.push(...await walkJsonFiles(path.resolve(root)));
   }
+  files.sort((left, right) => left.localeCompare(right));
   const rows = [];
   const testTimingV2Entries = [];
   for (const filePath of files) {
@@ -45492,7 +47290,15 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
       artifact.json,
       GPU_HMR_ARTIFACT_CAS_MANIFEST_SCHEMA_VERSION,
     );
-    const cachedRows = dependsOnExternalCasBytes
+    const mcpAdmissionMaterialScan = matrixMcpAdmissionMaterialsFromArtifact(
+      artifact.json,
+    );
+    const dependsOnLiveMcpAdmissionState = Boolean(
+      mcpAdmissionTrustSupplied
+      || mcpAdmissionMaterialScan.materials.length > 0
+      || mcpAdmissionMaterialScan.truncated,
+    );
+    const cachedRows = dependsOnExternalCasBytes || dependsOnLiveMcpAdmissionState
       ? null
       : cachedClassifiedJsonArtifactRows(cacheKey);
     if (cachedRows) {
@@ -45503,6 +47309,10 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
       repoRoot,
       mcpRoot,
       updatedAt: stat.mtime.toISOString(),
+      mcpAdmissionTrustSupplied,
+      mcpAdmissionTrust,
+      mcpAdmissionMaterials: mcpAdmissionMaterialScan.materials,
+      mcpAdmissionMaterialScanTruncated: mcpAdmissionMaterialScan.truncated,
     });
     const classifiedRows = (Array.isArray(classified) ? classified : [classified])
       .filter(Boolean)
@@ -45513,7 +47323,7 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
             test_timing_v2: testTimingV2,
           }
         : row);
-    if (!dependsOnExternalCasBytes) {
+    if (!dependsOnExternalCasBytes && !dependsOnLiveMcpAdmissionState) {
       rememberClassifiedJsonArtifactRows(cacheKey, classifiedRows);
     }
     rows.push(...classifiedRows);
