@@ -7,6 +7,10 @@ export const GPU_HMR_MCP_ADMISSION_MATRIX_VERIFICATION_SCHEMA =
   "synthi.gpu_hmr.mcp_admission_matrix_verification.v1";
 export const GPU_HMR_MCP_ADMISSION_MATRIX_VERIFICATION_AUTHORITY =
   "matrix_external_trust_signature_challenge_binding_freshness_and_replay_verification_support_only_not_gpu_hmr_acceptance";
+export const GPU_HMR_MCP_ADMISSION_MATRIX_STAGED_VERIFICATION_SCHEMA =
+  "synthi.gpu_hmr.mcp_admission_matrix_staged_verification.v1";
+export const GPU_HMR_MCP_ADMISSION_MATRIX_STAGED_VERIFICATION_AUTHORITY =
+  "matrix_external_trust_signature_challenge_binding_freshness_and_replay_precheck_only_replay_not_committed_support_only_not_gpu_hmr_acceptance";
 export const GPU_HMR_MCP_ADMISSION_REPLAY_REGISTRY_SCHEMA =
   "synthi.gpu_hmr.mcp_admission_replay_registry.v1";
 
@@ -40,6 +44,8 @@ const EXPECTED_BINDING_KEYS = Object.freeze([
 
 const replayRegistryStates = new WeakMap();
 const verifiedProjections = new WeakMap();
+const stagedVerificationStates = new WeakMap();
+const retiredStagedVerifications = new WeakSet();
 
 function snapshotExactDataObject(value, requiredKeys) {
   try {
@@ -175,17 +181,42 @@ function accepted(verification, receipt) {
   return result;
 }
 
+function staged(verification, receipt, replayRegistry) {
+  const result = Object.freeze({
+    schemaVersion: GPU_HMR_MCP_ADMISSION_MATRIX_STAGED_VERIFICATION_SCHEMA,
+    staged: true,
+    reason: null,
+    proofAuthority:
+      GPU_HMR_MCP_ADMISSION_MATRIX_STAGED_VERIFICATION_AUTHORITY,
+    signatureVerified: true,
+    challengeBound: true,
+    bindingChecked: true,
+    freshnessChecked: true,
+    replayChecked: true,
+    receiptId: verification.receiptId,
+    signerKeyId: verification.replayScope.signerKeyId,
+    replayScopeId: verification.replayScope.replayScopeId,
+    admittedAtUnixNs: verification.admittedAtUnixNs.toString(),
+    sequence: verification.sequence.toString(),
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+  });
+  stagedVerificationStates.set(result, Object.freeze({
+    verification,
+    receipt,
+    replayRegistry,
+  }));
+  return result;
+}
+
 function matchingExpectedBinding(receipt, expectedBinding) {
   return EXPECTED_BINDING_KEYS.every(
     (key) => receipt[key] === expectedBinding[key],
   );
 }
 
-function consumeReplayState(registry, verification, receipt) {
-  const registryState = replayRegistryStates.get(registry);
-  if (registryState === undefined) {
-    return "gpu_hmr_mcp_admission_replay_registry_invalid";
-  }
+function replayConstraintFailure(registryState, verification, receipt) {
   const scopeId = verification.replayScope.replayScopeId;
   const scope = registryState.scopes.get(scopeId);
   if (scope?.highestReceiptId === verification.receiptId) {
@@ -197,20 +228,45 @@ function consumeReplayState(registry, verification, receipt) {
   if (scope?.nonces.has(receipt.nonce)) {
     return "gpu_hmr_mcp_admission_nonce_replayed";
   }
-
   if (scope === undefined) {
     if (registryState.scopes.size >= registryState.maxScopes) {
       return "gpu_hmr_mcp_admission_replay_scope_capacity_exhausted";
     }
+  } else if (scope.nonces.size >= registryState.maxReceiptsPerScope) {
+    return "gpu_hmr_mcp_admission_replay_scope_receipt_capacity_exhausted";
+  }
+  return null;
+}
+
+function replayStateFailure(registry, verification, receipt) {
+  const registryState = replayRegistryStates.get(registry);
+  if (registryState === undefined) {
+    return "gpu_hmr_mcp_admission_replay_registry_invalid";
+  }
+  return replayConstraintFailure(registryState, verification, receipt);
+}
+
+function consumeReplayState(registry, verification, receipt) {
+  const registryState = replayRegistryStates.get(registry);
+  if (registryState === undefined) {
+    return "gpu_hmr_mcp_admission_replay_registry_invalid";
+  }
+  const replayReason = replayConstraintFailure(
+    registryState,
+    verification,
+    receipt,
+  );
+  if (replayReason !== null) return replayReason;
+
+  const scopeId = verification.replayScope.replayScopeId;
+  const scope = registryState.scopes.get(scopeId);
+  if (scope === undefined) {
     registryState.scopes.set(scopeId, {
       highestSequence: verification.sequence,
       highestReceiptId: verification.receiptId,
       nonces: new Set([receipt.nonce]),
     });
   } else {
-    if (scope.nonces.size >= registryState.maxReceiptsPerScope) {
-      return "gpu_hmr_mcp_admission_replay_scope_receipt_capacity_exhausted";
-    }
     scope.highestSequence = verification.sequence;
     scope.highestReceiptId = verification.receiptId;
     scope.nonces.add(receipt.nonce);
@@ -249,7 +305,7 @@ export function createGpuHmrMcpAdmissionReplayRegistry(optionsValue = {}) {
   return registry;
 }
 
-export function verifyGpuHmrMcpAdmissionReceiptForMatrix(contextValue) {
+export function stageGpuHmrMcpAdmissionReceiptForMatrix(contextValue) {
   const context = snapshotExactDataObject(
     contextValue,
     VERIFICATION_CONTEXT_KEYS,
@@ -322,7 +378,7 @@ export function verifyGpuHmrMcpAdmissionReceiptForMatrix(contextValue) {
     });
   }
 
-  const replayReason = consumeReplayState(
+  const replayReason = replayStateFailure(
     context.replayRegistry,
     verification,
     receipt,
@@ -335,7 +391,68 @@ export function verifyGpuHmrMcpAdmissionReceiptForMatrix(contextValue) {
       replayChecked: true,
     });
   }
+  return staged(verification, receipt, context.replayRegistry);
+}
+
+export function discardGpuHmrMcpAdmissionReceiptForMatrix(stagedValue) {
+  if (stagedValue === null || typeof stagedValue !== "object") return false;
+  if (retiredStagedVerifications.has(stagedValue)) return false;
+  if (!stagedVerificationStates.delete(stagedValue)) return false;
+  retiredStagedVerifications.add(stagedValue);
+  return true;
+}
+
+export function commitGpuHmrMcpAdmissionReceiptForMatrix(stagedValue) {
+  if (stagedValue === null || typeof stagedValue !== "object") {
+    return refused(
+      "gpu_hmr_mcp_admission_matrix_staged_verification_invalid",
+    );
+  }
+  if (retiredStagedVerifications.has(stagedValue)) {
+    return refused(
+      "gpu_hmr_mcp_admission_matrix_staged_verification_already_used",
+    );
+  }
+  const state = stagedVerificationStates.get(stagedValue);
+  if (state === undefined) {
+    return refused(
+      "gpu_hmr_mcp_admission_matrix_staged_verification_invalid",
+    );
+  }
+  stagedVerificationStates.delete(stagedValue);
+  retiredStagedVerifications.add(stagedValue);
+
+  const { verification, receipt, replayRegistry } = state;
+  const replayReason = consumeReplayState(
+    replayRegistry,
+    verification,
+    receipt,
+  );
+  if (replayReason !== null) {
+    return refused(replayReason, {
+      signatureVerified: true,
+      challengeBound: true,
+      bindingChecked: true,
+      freshnessChecked: true,
+      replayChecked: true,
+      receiptId: verification.receiptId,
+      signerKeyId: verification.replayScope.signerKeyId,
+      replayScopeId: verification.replayScope.replayScopeId,
+      admittedAtUnixNs: verification.admittedAtUnixNs.toString(),
+      sequence: verification.sequence.toString(),
+    });
+  }
   return accepted(verification, receipt);
+}
+
+export function verifyGpuHmrMcpAdmissionReceiptForMatrix(contextValue) {
+  const stagedVerification = stageGpuHmrMcpAdmissionReceiptForMatrix(
+    contextValue,
+  );
+  if (!stagedVerificationStates.has(stagedVerification)) {
+    return stagedVerification;
+  }
+  return commitGpuHmrMcpAdmissionReceiptForMatrix(stagedVerification);
 }
 
 export function verifiedGpuHmrMcpAdmissionReceiptProjection(value) {

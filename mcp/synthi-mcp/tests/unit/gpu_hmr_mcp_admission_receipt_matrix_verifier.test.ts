@@ -5,8 +5,13 @@ import {
   type GpuParentRuntimeProofAdmissionReceiptInput,
 } from "../../src/gpu_parent_runtime_proof_admission_receipt.js";
 import {
+  commitGpuHmrMcpAdmissionReceiptForMatrix,
   createGpuHmrMcpAdmissionReplayRegistry,
+  discardGpuHmrMcpAdmissionReceiptForMatrix,
+  GPU_HMR_MCP_ADMISSION_MATRIX_STAGED_VERIFICATION_AUTHORITY,
+  GPU_HMR_MCP_ADMISSION_MATRIX_STAGED_VERIFICATION_SCHEMA,
   GPU_HMR_MCP_ADMISSION_MATRIX_VERIFICATION_AUTHORITY,
+  stageGpuHmrMcpAdmissionReceiptForMatrix,
   verifiedGpuHmrMcpAdmissionReceiptProjection,
   verifyGpuHmrMcpAdmissionReceiptForMatrix,
 } from "../../scripts/lib/gpu-hmr-mcp-admission-receipt-matrix-verifier.mjs";
@@ -134,6 +139,131 @@ function expectSupportOnly(result: ReturnType<
 }
 
 describe("MCP admission receipt matrix verifier", () => {
+  it("stages without replay mutation and commits an accepted projection once", () => {
+    const context = verificationContext();
+    const staged = stageGpuHmrMcpAdmissionReceiptForMatrix(context);
+
+    expect(staged).toMatchObject({
+      schemaVersion: GPU_HMR_MCP_ADMISSION_MATRIX_STAGED_VERIFICATION_SCHEMA,
+      staged: true,
+      reason: null,
+      proofAuthority:
+        GPU_HMR_MCP_ADMISSION_MATRIX_STAGED_VERIFICATION_AUTHORITY,
+      signatureVerified: true,
+      challengeBound: true,
+      bindingChecked: true,
+      freshnessChecked: true,
+      replayChecked: true,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(Object.isFrozen(staged)).toBe(true);
+    expect(staged).not.toHaveProperty("accepted");
+    expect(verifiedGpuHmrMcpAdmissionReceiptProjection(staged)).toBeNull();
+
+    const committed = commitGpuHmrMcpAdmissionReceiptForMatrix(staged);
+    expect(committed).toMatchObject({
+      accepted: true,
+      reason: null,
+      replayChecked: true,
+    });
+    expect(verifiedGpuHmrMcpAdmissionReceiptProjection(committed)).toMatchObject({
+      receiptId: committed.receiptId,
+      contractHash: hash("a"),
+      semanticsHash: hash("b"),
+    });
+    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(staged)).toMatchObject({
+      accepted: false,
+      reason:
+        "gpu_hmr_mcp_admission_matrix_staged_verification_already_used",
+    });
+    expect(discardGpuHmrMcpAdmissionReceiptForMatrix(staged)).toBe(false);
+  });
+
+  it("rejects serialized staged forgeries without retiring the real token", () => {
+    const staged = stageGpuHmrMcpAdmissionReceiptForMatrix(
+      verificationContext(),
+    );
+    const serialized = JSON.parse(JSON.stringify(staged));
+
+    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(serialized)).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_matrix_staged_verification_invalid",
+    });
+    expect(discardGpuHmrMcpAdmissionReceiptForMatrix(serialized)).toBe(false);
+    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(staged).accepted).toBe(true);
+  });
+
+  it("discards a failed semantic consumer without consuming replay", () => {
+    const context = verificationContext();
+    const staged = stageGpuHmrMcpAdmissionReceiptForMatrix(context);
+    const semanticConsumerAccepted =
+      context.expectedBinding.computeExpectedOutputSemanticsHash === hash("0");
+
+    expect(semanticConsumerAccepted).toBe(false);
+    expect(discardGpuHmrMcpAdmissionReceiptForMatrix(staged)).toBe(true);
+    expect(discardGpuHmrMcpAdmissionReceiptForMatrix(staged)).toBe(false);
+    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(staged)).toMatchObject({
+      accepted: false,
+      reason:
+        "gpu_hmr_mcp_admission_matrix_staged_verification_already_used",
+    });
+
+    const retry = stageGpuHmrMcpAdmissionReceiptForMatrix(context);
+    expect(retry).toMatchObject({ staged: true });
+    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(retry).accepted).toBe(true);
+  });
+
+  it("atomically rechecks replay constraints when staged receipts commit", () => {
+    const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey);
+    const input = admissionInput();
+    const firstReceipt = signer.sign(input);
+    const secondReceipt = signer.sign(input);
+    const replayRegistry = createGpuHmrMcpAdmissionReplayRegistry();
+    const firstContext = verificationContext({
+      signer,
+      input,
+      receipt: firstReceipt,
+      replayRegistry,
+    });
+    const duplicate = stageGpuHmrMcpAdmissionReceiptForMatrix(firstContext);
+    const first = stageGpuHmrMcpAdmissionReceiptForMatrix(firstContext);
+    const second = stageGpuHmrMcpAdmissionReceiptForMatrix({
+      ...firstContext,
+      receipt: secondReceipt,
+    });
+
+    expect(first).toMatchObject({ staged: true });
+    expect(duplicate).toMatchObject({ staged: true });
+    expect(second).toMatchObject({ staged: true });
+    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(first).accepted).toBe(true);
+    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(duplicate)).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_receipt_replayed",
+      replayChecked: true,
+    });
+    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(second).accepted).toBe(true);
+
+    const rollbackRegistry = createGpuHmrMcpAdmissionReplayRegistry();
+    const stagedFirst = stageGpuHmrMcpAdmissionReceiptForMatrix({
+      ...firstContext,
+      replayRegistry: rollbackRegistry,
+    });
+    const stagedSecond = stageGpuHmrMcpAdmissionReceiptForMatrix({
+      ...firstContext,
+      receipt: secondReceipt,
+      replayRegistry: rollbackRegistry,
+    });
+    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(stagedSecond).accepted)
+      .toBe(true);
+    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(stagedFirst)).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_sequence_not_increasing",
+      replayChecked: true,
+    });
+  });
+
   it("accepts fresh externally trusted receipts and exposes only branded projections", () => {
     const result = verifyGpuHmrMcpAdmissionReceiptForMatrix(
       verificationContext(),
