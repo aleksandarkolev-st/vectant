@@ -3042,6 +3042,15 @@ function buildTargetProgressionLedgerEntry({
   const gateRows = mergeTargetProgressionGateRows(reportedGateRows, derivedGateRows);
   const failedGates = gateRows.filter((row) => row?.status === 'fail');
   const runtimeProofArtifact = report.runtime_proof_artifact ?? {};
+  const strictRuntimeProofIdCandidate = stringField(
+    runtimeProofArtifact,
+    ['proofId', 'proof_id'],
+  );
+  const strictRuntimeProofId = /^gpu-runtime-proof:sha256:[a-f0-9]{64}$/.test(
+    strictRuntimeProofIdCandidate,
+  )
+    ? strictRuntimeProofIdCandidate
+    : null;
   const visualContentHashes = compactStringList(
     visualArtifacts.map((artifact) => artifact.contentHash ?? artifact.content_hash),
   );
@@ -3061,6 +3070,8 @@ function buildTargetProgressionLedgerEntry({
     status: failedGates.length === 0 ? 'pass' : 'fail',
     failureCount: failedGates.length,
     proofId: runtimeProofArtifact.proofId ?? null,
+    strictRuntimeProofId,
+    strict_runtime_proof_id: strictRuntimeProofId,
     proofArtifactPath: runtimeProofArtifact.path ?? report.runtime_proof_artifact_path ?? null,
     proofArtifactSchemaVersion:
       runtimeProofArtifact.schemaVersion ?? 'synthi.gpu.hmr.validation-proof.v1',
@@ -25925,13 +25936,54 @@ int main()
     const ledgerVisualArtifact = ledgerArtifact.entries?.[0]?.visualEvidenceArtifacts
       ?.find((artifact) => artifact.path === visualPath);
     if (
-      ledgerVisualArtifact?.contentHash !== expectedVisualHash
+      ledgerArtifact.entries?.[0]?.proofId !== written.artifact.proofId
+      || ledgerArtifact.entries?.[0]?.strictRuntimeProofId !== written.artifact.proofId
+      || ledgerArtifact.entries?.[0]?.strict_runtime_proof_id !== written.artifact.proofId
+      || ledgerVisualArtifact?.contentHash !== expectedVisualHash
       || !ledgerArtifact.entries?.[0]?.visualEvidenceContentHashes?.includes(expectedVisualHash)
       || ledgerVisualArtifact?.acceptedAsImageEvidence !== true
       || ledgerVisualArtifact?.acceptedAsRuntimeVisualProof !== false
       || ledgerArtifact.entries?.[0]?.visualEvidenceAcceptedCount !== 0
     ) {
-      throw new Error('target progression ledger self-check did not hash visual file bytes');
+      throw new Error('target progression ledger identity/visual artifact self-check failed');
+    }
+    const snakeRuntimeProofId = `gpu-runtime-proof:sha256:${'d'.repeat(64)}`;
+    const snakeRuntimeProofIdentityEntry = buildTargetProgressionLedgerEntry({
+      report: {
+        ...ledgerReport,
+        project_name: 'generic-project-self-check',
+        backend_name: 'generic-backend-self-check',
+        runtime_proof_artifact: {
+          proof_id: snakeRuntimeProofId,
+        },
+      },
+    });
+    const missingRuntimeProofIdentityEntry = buildTargetProgressionLedgerEntry({
+      report: {
+        ...ledgerReport,
+        project_name: 'must-not-be-used-as-runtime-proof-id',
+        backend_name: 'must-not-be-used-as-runtime-proof-id',
+        runtime_proof_artifact: {},
+      },
+    });
+    const malformedRuntimeProofIdentityEntry = buildTargetProgressionLedgerEntry({
+      report: {
+        ...ledgerReport,
+        runtime_proof_artifact: {
+          proofId: 'gpu-runtime-proof:sha256:not-a-content-address',
+        },
+      },
+    });
+    if (
+      snakeRuntimeProofIdentityEntry?.proofId !== null
+      || snakeRuntimeProofIdentityEntry?.strictRuntimeProofId !== snakeRuntimeProofId
+      || snakeRuntimeProofIdentityEntry?.strict_runtime_proof_id !== snakeRuntimeProofId
+      || missingRuntimeProofIdentityEntry?.strictRuntimeProofId !== null
+      || missingRuntimeProofIdentityEntry?.strict_runtime_proof_id !== null
+      || malformedRuntimeProofIdentityEntry?.strictRuntimeProofId !== null
+      || malformedRuntimeProofIdentityEntry?.strict_runtime_proof_id !== null
+    ) {
+      throw new Error('target progression ledger runtime proof identity self-check failed');
     }
     const rejectedVisualPath = path.join(visualSelfCheckDir, 'flat-frame.png');
     const rejectedRaw = Buffer.alloc(visualWidth * visualHeight * 3, 3);
