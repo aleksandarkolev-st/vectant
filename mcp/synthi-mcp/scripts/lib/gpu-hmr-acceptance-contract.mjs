@@ -1495,7 +1495,7 @@ function hipContractFromVerifiedProofs({
   const dispatchRefs = evidenceRefsFromProofs(dispatchProof, selectedIsland);
   const abiRefs = evidenceRefsFromProofs(abiProof);
   const outputRefs = evidenceRefsFromProofs(outputProof, outputOracle);
-  return {
+  return compactObject({
     kernel_name: firstText(
       dispatchProof?.kernelName,
       dispatchProof?.kernel_name,
@@ -1560,7 +1560,7 @@ function hipContractFromVerifiedProofs({
         readback_oracle: outputRefs,
       },
     ),
-  };
+  });
 }
 
 function hiprtContractFromVerifiedProofs({
@@ -1596,7 +1596,7 @@ function hiprtContractFromVerifiedProofs({
 function openclContractFromVerifiedProofs({ outputProof, artifactHashBefore, artifactHashAfter, entryPoints, backendContractProof }) {
   const contract = backendSpecificContractFromProof(backendContractProof, 'opencl');
   const outputOracle = firstObject(outputProof?.outputOracle, outputProof?.output_oracle);
-  return {
+  return compactObject({
     program_hash_before: artifactHashBefore,
     program_hash_after: artifactHashAfter,
     kernel_name: firstText(contract.kernelName, contract.kernel_name, entryPoints[0]),
@@ -1618,12 +1618,12 @@ function openclContractFromVerifiedProofs({ outputProof, artifactHashBefore, art
       'opencl',
       BACKEND_CONTRACT_COMPARABLE_FIELDS.opencl.fields,
     ),
-  };
+  });
 }
 
 function vulkanContractFromVerifiedProofs({ artifactHashBefore, artifactHashAfter, entryPoints, backendContractProof }) {
   const contract = backendSpecificContractFromProof(backendContractProof, 'vulkan');
-  return {
+  return compactObject({
     shader_module_hash_before: firstText(contract.shaderModuleHashBefore, contract.shader_module_hash_before, artifactHashBefore),
     shader_module_hash_after: firstText(contract.shaderModuleHashAfter, contract.shader_module_hash_after, artifactHashAfter),
     entry_point: firstText(contract.entryPoint, contract.entry_point, entryPoints[0]),
@@ -1642,12 +1642,12 @@ function vulkanContractFromVerifiedProofs({ artifactHashBefore, artifactHashAfte
       'vulkan',
       BACKEND_CONTRACT_COMPARABLE_FIELDS.vulkan.fields,
     ),
-  };
+  });
 }
 
 function webgpuContractFromVerifiedProofs({ artifactHashBefore, artifactHashAfter, entryPoints, epochProof, backendContractProof, backend }) {
   const contract = backendSpecificContractFromProof(backendContractProof, backend === 'bevy_wgsl' ? 'bevy_wgsl' : 'webgpu');
-  return {
+  return compactObject({
     wgsl_hash_before: firstText(contract.wgslHashBefore, contract.wgsl_hash_before, artifactHashBefore),
     wgsl_hash_after: firstText(contract.wgslHashAfter, contract.wgsl_hash_after, artifactHashAfter),
     shader_module_epoch: firstText(contract.shaderModuleEpoch, contract.shader_module_epoch, epochProof?.activeEpoch),
@@ -1670,7 +1670,7 @@ function webgpuContractFromVerifiedProofs({ artifactHashBefore, artifactHashAfte
       backend === 'bevy_wgsl' ? 'bevy_wgsl' : 'webgpu',
       BACKEND_CONTRACT_COMPARABLE_FIELDS[backend === 'bevy_wgsl' ? 'bevy_wgsl' : 'webgpu'].fields,
     ),
-  };
+  });
 }
 
 function evidenceRefsFromProofs(...proofs) {

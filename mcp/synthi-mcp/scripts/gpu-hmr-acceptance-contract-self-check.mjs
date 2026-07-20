@@ -21,6 +21,25 @@ const HIP_FIELD_EVIDENCE_REFS = {
   readback_oracle: ['runtime:readback-oracle'],
 };
 
+function undefinedPaths(value) {
+  const paths = [];
+  const seen = new Set();
+  const pending = [{ value, path: '$' }];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current.value === undefined) {
+      paths.push(current.path);
+      continue;
+    }
+    if (!current.value || typeof current.value !== 'object' || seen.has(current.value)) continue;
+    seen.add(current.value);
+    for (const key of Reflect.ownKeys(current.value)) {
+      pending.push({ value: current.value[key], path: `${current.path}.${String(key)}` });
+    }
+  }
+  return paths.sort();
+}
+
 function contract(overrides = {}) {
   return {
     contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
@@ -737,6 +756,11 @@ const derivedProofInput = {
 };
 
 const derivedWithoutFirewall = deriveGpuHmrAcceptanceContractFromVerifiedProofs(derivedProofInput);
+assert.deepEqual(
+  undefinedPaths(derivedWithoutFirewall),
+  [],
+  'derived acceptance contracts must be stable plain JSON data without undefined backend fields',
+);
 assert.ok(
   derivedWithoutFirewall.classification.blocking_gaps.includes('route_classifier_not_verified'),
   `derived contract unexpectedly lacked route firewall gap: ${derivedWithoutFirewall.classification.blocking_gaps.join(',')}`,
