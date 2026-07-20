@@ -786,6 +786,16 @@ export class RuntimeEvidenceTransportReceiptConsumer {
     return this.commitPreparedSupportEnvelopeInternal(capability, true);
   }
 
+  discardPreparedSupportEnvelope(
+    capability: RuntimeEvidenceTransportPreparedSupportEnvelope,
+  ): boolean {
+    if (capability === null || typeof capability !== "object") return false;
+    if (this.#retiredCapabilities.has(capability)) return false;
+    if (!this.#preparedStates.delete(capability)) return false;
+    this.#retiredCapabilities.add(capability);
+    return true;
+  }
+
   private commitPreparedSupportEnvelopeInternal(
     capability: RuntimeEvidenceTransportPreparedSupportEnvelope,
     recheckFreshness: boolean,

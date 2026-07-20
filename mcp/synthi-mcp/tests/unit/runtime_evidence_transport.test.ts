@@ -1144,6 +1144,45 @@ describe("RuntimeEvidenceTransportReceiptConsumer", () => {
     expect(consumeIfNewer).toHaveBeenCalledTimes(1);
   });
 
+  it("discards prepared capabilities without consuming replay or retaining capacity", () => {
+    const identity = signingIdentity(46);
+    const pin = pinAnnouncement(identity.announcement);
+    const consumeIfNewer = vi.fn(() => null);
+    const consumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer },
+      () => NOW_NS,
+    );
+    const fixture = signedEnvelopeFixture(identity);
+
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      const preparation = consumer.prepareSupportEnvelope(fixture.input);
+      if (preparation.capability === null) throw new Error("preparation failed");
+      expect(consumer.discardPreparedSupportEnvelope(preparation.capability)).toBe(true);
+      expect(consumer.discardPreparedSupportEnvelope(preparation.capability)).toBe(false);
+      expect(consumer.commitPreparedSupportEnvelope(preparation.capability)).toMatchObject({
+        verified: false,
+        reason: "runtime_evidence_transport_prepared_capability_already_used",
+      });
+    }
+    expect(consumeIfNewer).not.toHaveBeenCalled();
+
+    const finalPreparation = consumer.prepareSupportEnvelope(fixture.input);
+    if (finalPreparation.capability === null) throw new Error("preparation failed");
+    const serializedCapability = structuredClone(finalPreparation.capability);
+    const foreignConsumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer: vi.fn(() => null) },
+      () => NOW_NS,
+    );
+    expect(consumer.discardPreparedSupportEnvelope(serializedCapability)).toBe(false);
+    expect(foreignConsumer.discardPreparedSupportEnvelope(finalPreparation.capability))
+      .toBe(false);
+    expect(consumer.commitPreparedSupportEnvelope(finalPreparation.capability).verified)
+      .toBe(true);
+    expect(consumeIfNewer).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses replay at commit after an independently prepared duplicate", () => {
     const identity = signingIdentity(23);
     const pin = pinAnnouncement(identity.announcement);
