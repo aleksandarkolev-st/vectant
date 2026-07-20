@@ -149,6 +149,8 @@ export async function attachTool(args: unknown, ctx: ToolContext): Promise<ToolR
         server_supports: serverSupports,
       },
       capabilities: manifest,
+      gpu_parent_runtime_proof_admission_trust:
+        session.getGpuParentRuntimeProofAdmissionTrustMaterial(),
       session: ((): Record<string, unknown> => {
         const presence = session.getPresenceCounts();
         const warming = session.getWarmingProgress();
