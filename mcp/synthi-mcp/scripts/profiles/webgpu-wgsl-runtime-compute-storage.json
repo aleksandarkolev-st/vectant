@@ -1,6 +1,7 @@
 {
   "schemaVersion": "synthi.gpu.hmr.webgpu_compute_profile.v1",
   "id": "webgpu-wgsl-runtime-compute-storage",
+  "targetId": "webgpu-wgsl-runtime-compute-storage",
   "project": {
     "name": "WebGPU WGSL compute readback HMR proof",
     "kind": "gpu_project"
@@ -10,6 +11,25 @@
     "beforePath": "webgpu/compute-before.wgsl",
     "afterPath": "webgpu/compute-after.wgsl",
     "entryPoint": "main"
+  },
+  "webgpuSelection": {
+    "adapter": {
+      "requestOptions": {
+        "powerPreference": "high-performance",
+        "forceFallbackAdapter": false
+      },
+      "requiredInfo": {}
+    },
+    "device": {
+      "requestDescriptor": {
+        "label": "webgpu-wgsl-runtime-compute-storage-device",
+        "requiredFeatures": [],
+        "requiredLimits": {},
+        "defaultQueue": {
+          "label": "webgpu-wgsl-runtime-compute-storage-queue"
+        }
+      }
+    }
   },
   "pipeline": {
     "layout": "explicit-compute-profiled",
@@ -67,6 +87,13 @@
   },
   "computeOracle": {
     "claim": "The mapped output storage buffer changes after the WebGPU compute epoch dispatch.",
+    "outputTarget": {
+      "id": "webgpu-wgsl-runtime-compute-storage-readback"
+    },
+    "outputResource": {
+      "group": 0,
+      "binding": 1
+    },
     "readbackResource": {
       "group": 0,
       "binding": 1
