@@ -13,6 +13,9 @@ import {
   GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
   type GpuParentRuntimeProofControlVerificationMaterial,
 } from "../../src/gpu_parent_runtime_proof_admission.js";
+import {
+  gpuParentRuntimeProofAdmissionReceiptFixture,
+} from "./gpu_parent_runtime_proof_admission_fixture.js";
 
 const HASH_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -46,6 +49,7 @@ function parentControlVerificationMaterialFixture():
       compileRequestNonce: `gpu-proof-transport-request:${"6".repeat(32)}`,
       expectedWorkerProcessId: "809",
     },
+    mcpAdmissionReceipt: gpuParentRuntimeProofAdmissionReceiptFixture(),
   };
 }
 const HIP_FIELD_EVIDENCE_REFS = {
@@ -577,6 +581,9 @@ describe("GPU HMR proof-state validation", () => {
     expect(Object.isFrozen(proof?.parentControlVerificationMaterial)).toBe(true);
     expect(Object.isFrozen(
       proof?.parentControlVerificationMaterial?.controlBinding,
+    )).toBe(true);
+    expect(Object.isFrozen(
+      proof?.parentControlVerificationMaterial?.mcpAdmissionReceipt,
     )).toBe(true);
     expect(proof?.decisions).toEqual(baseline?.decisions);
     expect(proof?.frameGateSeed).toEqual(baseline?.frameGateSeed);

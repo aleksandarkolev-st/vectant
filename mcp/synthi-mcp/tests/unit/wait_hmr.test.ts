@@ -16,6 +16,9 @@ import {
   GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
   type GpuParentRuntimeProofControlVerificationMaterial,
 } from "../../src/gpu_parent_runtime_proof_admission.js";
+import {
+  gpuParentRuntimeProofAdmissionReceiptFixture,
+} from "./gpu_parent_runtime_proof_admission_fixture.js";
 
 const HASH_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -49,6 +52,7 @@ function parentControlVerificationMaterialFixture():
       compileRequestNonce: `gpu-proof-transport-request:${"8".repeat(32)}`,
       expectedWorkerProcessId: "877",
     },
+    mcpAdmissionReceipt: gpuParentRuntimeProofAdmissionReceiptFixture(),
   };
 }
 const HIP_FIELD_EVIDENCE_REFS = {

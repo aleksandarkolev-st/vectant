@@ -11,6 +11,9 @@ import {
   GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
   type GpuParentRuntimeProofControlVerificationMaterial,
 } from "../../src/gpu_parent_runtime_proof_admission.js";
+import {
+  gpuParentRuntimeProofAdmissionReceiptFixture,
+} from "./gpu_parent_runtime_proof_admission_fixture.js";
 
 /**
  * Minimal DC mock: extends EventTarget and dispatches synthetic message events.
@@ -57,6 +60,7 @@ function parentControlVerificationMaterialFixture():
       compileRequestNonce: `gpu-proof-transport-request:${"4".repeat(32)}`,
       expectedWorkerProcessId: "731",
     },
+    mcpAdmissionReceipt: gpuParentRuntimeProofAdmissionReceiptFixture(),
   };
 }
 
@@ -379,6 +383,7 @@ describe("HmrNormalizer preclassification gate", () => {
       canonicalMaterial?.runtimeEvidenceTransportVerificationKey,
     )).toBe(true);
     expect(Object.isFrozen(canonicalMaterial?.transportContext)).toBe(true);
+    expect(Object.isFrozen(canonicalMaterial?.mcpAdmissionReceipt)).toBe(true);
     expect(Object.isFrozen(material)).toBe(false);
     expect(publicMessages).toEqual([wireMessage]);
     expect(JSON.stringify(publicMessages[0])).toBe(wireBytes);
