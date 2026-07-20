@@ -32191,6 +32191,232 @@ function matrixMcpAdmissionMaterialsFromArtifact(root) {
   });
 }
 
+function matrixMcpAdmissionProofLedgersFromArtifact(root) {
+  const pending = [root];
+  const seen = new WeakSet();
+  const ledgers = [];
+  let visited = 0;
+  let truncated = false;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object') continue;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    visited += 1;
+    if (visited > MATRIX_MCP_ADMISSION_MATERIAL_SCAN_LIMIT) {
+      truncated = true;
+      break;
+    }
+    let descriptors;
+    try {
+      descriptors = Object.getOwnPropertyDescriptors(current);
+    } catch {
+      truncated = true;
+      continue;
+    }
+    const camelSchema = descriptors.schemaVersion?.value;
+    const snakeSchema = descriptors.schema_version?.value;
+    const schemaConflict = camelSchema !== undefined
+      && snakeSchema !== undefined
+      && camelSchema !== snakeSchema;
+    const records = descriptors.records?.value;
+    if (
+      !schemaConflict
+      && (camelSchema ?? snakeSchema) === GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION
+      && Array.isArray(records)
+    ) {
+      try {
+        stableJsonHash(current);
+        ledgers.push(current);
+      } catch {
+        truncated = true;
+      }
+    }
+    const explicitRecord = descriptors.proofLedgerRecord?.value
+      ?? descriptors.proof_ledger_record?.value;
+    if (
+      explicitRecord
+      && typeof explicitRecord === 'object'
+      && Object.keys(ledgerRecordComputeOracleArtifacts(explicitRecord)).length > 0
+    ) {
+      try {
+        ledgers.push(buildGpuHmrProofLedger(explicitRecord));
+      } catch {
+        truncated = true;
+      }
+    }
+    const suppliedLedger = descriptors.proofLedger?.value
+      ?? descriptors.proof_ledger?.value;
+    if (suppliedLedger && typeof suppliedLedger === 'object') {
+      const suppliedSchema = suppliedLedger.schemaVersion
+        ?? suppliedLedger.schema_version;
+      const canonicalLedger = suppliedSchema === GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION
+        && Array.isArray(suppliedLedger.records);
+      const suppliedRecord = ledgerRecordsFromValue(suppliedLedger)[0];
+      if (
+        !canonicalLedger
+        && suppliedRecord
+        && Object.keys(ledgerRecordComputeOracleArtifacts(suppliedRecord)).length > 0
+      ) {
+        try {
+          ledgers.push(buildGpuHmrProofLedger(suppliedRecord));
+        } catch {
+          truncated = true;
+        }
+      }
+    }
+    for (const descriptor of Object.values(descriptors)) {
+      if (
+        descriptor.enumerable === true
+        && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        && descriptor.value
+        && typeof descriptor.value === 'object'
+      ) {
+        pending.push(descriptor.value);
+      }
+    }
+  }
+  return Object.freeze({
+    ledgers: Object.freeze(ledgers),
+    truncated,
+    visited,
+  });
+}
+
+function matrixMcpAdmissionOrderingForArtifact({
+  artifact,
+  materialScan,
+  trust,
+}) {
+  const materials = materialScan.materials ?? [];
+  if (!trust) {
+    return Object.freeze({
+      authenticated: false,
+      key: null,
+      authenticatedKeys: Object.freeze([]),
+      blockedReason: null,
+      preflightReasons: Object.freeze([]),
+    });
+  }
+  if (materialScan.truncated === true) {
+    return Object.freeze({
+      authenticated: false,
+      key: null,
+      authenticatedKeys: Object.freeze([]),
+      blockedReason: 'gpu_hmr_mcp_admission_material_scan_truncated',
+      preflightReasons: Object.freeze([
+        'gpu_hmr_mcp_admission_material_scan_truncated',
+      ]),
+    });
+  }
+  if (materials.length === 0) {
+    return Object.freeze({
+      authenticated: false,
+      key: null,
+      authenticatedKeys: Object.freeze([]),
+      blockedReason: null,
+      preflightReasons: Object.freeze([]),
+    });
+  }
+  const ledgerScan = matrixMcpAdmissionProofLedgersFromArtifact(artifact);
+  if (ledgerScan.truncated === true) {
+    return Object.freeze({
+      authenticated: false,
+      key: null,
+      authenticatedKeys: Object.freeze([]),
+      blockedReason: 'gpu_hmr_mcp_admission_ordering_ledger_scan_truncated',
+      preflightReasons: Object.freeze([
+        'gpu_hmr_mcp_admission_ordering_ledger_scan_truncated',
+      ]),
+    });
+  }
+  const keyMatches = new Map();
+  const preflightReasons = [];
+  for (const proofLedger of ledgerScan.ledgers) {
+    for (const computeRecord of ledgerRecordsFromValue(proofLedger)) {
+      if (Object.keys(ledgerRecordComputeOracleArtifacts(computeRecord)).length === 0) {
+        continue;
+      }
+      for (const material of materials) {
+        const runtimeProofId = firstText(material.receipt?.fullRuntimeProofId);
+        if (!runtimeProofId) {
+          preflightReasons.push(
+            'gpu_hmr_mcp_admission_runtime_proof_id_missing',
+          );
+          continue;
+        }
+        const preflight = matrixMcpAdmissionVerificationForCompute({
+          proofLedger,
+          computeRecord,
+          runtimeProofArtifact: { proof_id: runtimeProofId },
+          materials: [material],
+          trust,
+          trustSupplied: true,
+          admissionRequired: true,
+          scanTruncated: false,
+        });
+        const stagedVerification = preflight.stagedVerification ?? null;
+        if (!stagedVerification) {
+          preflightReasons.push(preflight.diagnostic.reason);
+          continue;
+        }
+        try {
+          if (
+            typeof stagedVerification.receiptId === 'string'
+            && typeof stagedVerification.replayScopeId === 'string'
+            && typeof stagedVerification.sequence === 'string'
+            && /^(?:0|[1-9][0-9]*)$/.test(stagedVerification.sequence)
+          ) {
+            const key = Object.freeze({
+              replayScopeId: stagedVerification.replayScopeId,
+              sequence: BigInt(stagedVerification.sequence),
+              sequenceText: stagedVerification.sequence,
+              receiptId: stagedVerification.receiptId,
+            });
+            const previous = keyMatches.get(stagedVerification.receiptId);
+            keyMatches.set(stagedVerification.receiptId, {
+              key,
+              matchCount: (previous?.matchCount ?? 0) + 1,
+            });
+          } else {
+            preflightReasons.push(
+              'gpu_hmr_mcp_admission_authenticated_ordering_key_invalid',
+            );
+          }
+        } finally {
+          discardGpuHmrMcpAdmissionReceiptForMatrix(stagedVerification);
+        }
+      }
+    }
+  }
+  const authenticatedKeys = [...keyMatches.values()].map(({ key }) => key);
+  const authenticatedCandidateAmbiguous = [...keyMatches.values()]
+    .some(({ matchCount }) => matchCount !== 1);
+  if (authenticatedKeys.length === 1 && !authenticatedCandidateAmbiguous) {
+    return Object.freeze({
+      authenticated: true,
+      key: authenticatedKeys[0],
+      authenticatedKeys: Object.freeze(authenticatedKeys),
+      blockedReason: null,
+      preflightReasons: Object.freeze(compactStringList(preflightReasons)),
+    });
+  }
+  const uniquePreflightReasons = compactStringList(preflightReasons);
+  return Object.freeze({
+    authenticated: false,
+    key: null,
+    authenticatedKeys: Object.freeze(authenticatedKeys),
+    blockedReason: authenticatedCandidateAmbiguous
+      ? 'gpu_hmr_mcp_admission_authenticated_candidate_ambiguous'
+      : authenticatedKeys.length > 1
+        ? 'gpu_hmr_mcp_admission_authenticated_ordering_key_ambiguous'
+      : uniquePreflightReasons.length === 1
+        ? uniquePreflightReasons[0]
+        : 'gpu_hmr_mcp_admission_authenticated_ordering_key_missing',
+    preflightReasons: Object.freeze(uniquePreflightReasons),
+  });
+}
+
 function matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact) {
   return {
     requireMcpAdmissionReceiptForCompute:
@@ -32200,6 +32426,8 @@ function matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact) {
     mcpAdmissionMaterials: context.mcpAdmissionMaterials ?? [],
     mcpAdmissionMaterialScanTruncated:
       context.mcpAdmissionMaterialScanTruncated === true,
+    mcpAdmissionOrderingBlockedReason:
+      firstText(context.mcpAdmissionOrderingBlockedReason),
     runtimeProofArtifact,
   };
 }
@@ -32330,6 +32558,7 @@ function matrixMcpAdmissionVerificationForCompute({
   trustSupplied,
   admissionRequired,
   scanTruncated,
+  orderingBlockedReason = null,
 }) {
   const materials = (Array.isArray(materialValues) ? materialValues : [])
     .filter((material) => (
@@ -32403,6 +32632,19 @@ function matrixMcpAdmissionVerificationForCompute({
         && receipt.runnerRuntimeSessionId === binding.runtimeSessionId;
     })
     : [];
+  if (orderingBlockedReason) {
+    return {
+      required: true,
+      verification: null,
+      stagedVerification: null,
+      diagnostic: matrixMcpAdmissionVerificationDiagnostic({
+        required: true,
+        materials,
+        matchingMaterials,
+        reason: orderingBlockedReason,
+      }),
+    };
+  }
   if (scanTruncated) {
     return {
       required,
@@ -33223,6 +33465,10 @@ async function realRocmComputeOracleFileIntegrityFacet(
     scanTruncated:
       options.mcpAdmissionMaterialScanTruncated === true
       || options.mcp_admission_material_scan_truncated === true,
+    orderingBlockedReason: firstText(
+      options.mcpAdmissionOrderingBlockedReason,
+      options.mcp_admission_ordering_blocked_reason,
+    ),
   });
   const stagedMcpAdmissionVerification = mcpAdmission.stagedVerification ?? null;
   try {
@@ -34057,11 +34303,17 @@ function genericOutputOracleSelfCheckMcpAdmissionSigner() {
     verificationKey,
     validationRunChallenge,
     admittedAtUnixNs,
-    sign(binding) {
-      sequence += 1n;
+    sign(binding, options = {}) {
+      const requestedSequence = options.sequence;
+      const issuedSequence = requestedSequence === undefined
+        ? sequence + 1n
+        : BigInt(requestedSequence);
+      if (requestedSequence === undefined) sequence = issuedSequence;
+      const nonceByte = options.nonceByte
+        ?? (Number(issuedSequence % 251n) + 1);
       const controlBindingCanonicalSha256 = stableJsonHash({
         selfCheck: 'generic-output-oracle-control-binding',
-        sequence: sequence.toString(),
+        sequence: issuedSequence.toString(),
       });
       const signed = {
         schemaVersion: GPU_HMR_MCP_ADMISSION_RECEIPT_SCHEMA,
@@ -34113,8 +34365,8 @@ function genericOutputOracleSelfCheckMcpAdmissionSigner() {
         protectedProofJsonSha256:
           stableJsonHash({ selfCheck: 'protected-proof-json' }),
         admittedAtUnixNs: admittedAtUnixNs.toString(),
-        sequence: sequence.toString(),
-        nonce: Buffer.alloc(32, Number(sequence % 251n) + 1).toString('base64url'),
+        sequence: issuedSequence.toString(),
+        nonce: Buffer.alloc(32, nonceByte).toString('base64url'),
       };
       const signingBytes = createGpuHmrMcpAdmissionReceiptSigningBytes(signed);
       assertGenericOutputOracleSelfCheck(
@@ -34943,6 +35195,394 @@ export async function selfCheckGenericOutputOracleLedger() {
     `collector should independently accept a fresh signed V2 receipt: ${JSON.stringify({ compute: firstCollectedCompute, rows: firstCollectedLedger.rows })}`,
   );
 
+  const orderingRoot = path.join(dir, 'matrix-collector-ordering');
+  const orderingLowerRoot = path.join(orderingRoot, 'z-lower-root');
+  const orderingHigherRoot = path.join(orderingRoot, 'a-higher-root');
+  await fs.mkdir(orderingLowerRoot, { recursive: true });
+  await fs.mkdir(orderingHigherRoot, { recursive: true });
+  const orderingLowerAdmission = verifiedAdmissionForContract(
+    v2Contract,
+    'v2-collector-ordering',
+    collectorV2ProofLedgerId,
+  );
+  const orderingHigherAdmission = verifiedAdmissionForContract(
+    v2Contract,
+    'v2-collector-ordering',
+    collectorV2ProofLedgerId,
+  );
+  const orderingArtifact = (admission) => ({
+    ...collectorArtifact,
+    parentControlVerificationMaterial: admission.material,
+  });
+  await fs.writeFile(
+    path.join(orderingLowerRoot, 'z-signed-sequence-lower.json'),
+    `${JSON.stringify(orderingArtifact(orderingLowerAdmission), null, 2)}\n`,
+  );
+  await fs.writeFile(
+    path.join(orderingHigherRoot, 'a-signed-sequence-higher.json'),
+    `${JSON.stringify(orderingArtifact(orderingHigherAdmission), null, 2)}\n`,
+  );
+  const collectOrderedArtifacts = (roots) => collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots,
+    latestPerTarget: false,
+    includeUnproven: true,
+    mcpAdmissionTrust: {
+      ...orderingLowerAdmission.trust,
+      replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+    },
+  });
+  const orderedComputeFacets = (ledgerValue) => ledgerValue.rows
+    .map((row) => row.outputOracleFacet?.compute)
+    .filter(Boolean);
+  const reverseRootOrderLedger = await collectOrderedArtifacts([
+    orderingHigherRoot,
+    orderingLowerRoot,
+  ]);
+  const forwardRootOrderLedger = await collectOrderedArtifacts([
+    orderingLowerRoot,
+    orderingHigherRoot,
+  ]);
+  const overlappingRootLedger = await collectOrderedArtifacts([
+    orderingRoot,
+    orderingLowerRoot,
+    orderingHigherRoot,
+  ]);
+  const reverseRootCompute = orderedComputeFacets(reverseRootOrderLedger);
+  const forwardRootCompute = orderedComputeFacets(forwardRootOrderLedger);
+  assertGenericOutputOracleSelfCheck(
+    reverseRootCompute.length === 2
+      && reverseRootCompute.every((facet) => facet.mcpAdmissionVerification?.accepted === true)
+      && forwardRootCompute.length === 2
+      && forwardRootCompute.every((facet) => facet.mcpAdmissionVerification?.accepted === true)
+      && reverseRootOrderLedger.mcpAdmissionOrdering?.orderingHash
+        === forwardRootOrderLedger.mcpAdmissionOrdering?.orderingHash
+      && overlappingRootLedger.mcpAdmissionOrdering?.receiptBearingArtifactCount === 2
+      && overlappingRootLedger.mcpAdmissionOrdering?.authenticatedArtifactCount === 2,
+    `signed receipt order should ignore filenames, root order, and overlapping roots: ${JSON.stringify({ reverseRootOrderLedger, forwardRootOrderLedger, overlappingRootLedger })}`,
+  );
+  const nonLiveOverlappingRootLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [orderingRoot, orderingLowerRoot, orderingHigherRoot],
+    latestPerTarget: false,
+    includeInvalidated: true,
+    includeUnproven: true,
+  });
+  assertGenericOutputOracleSelfCheck(
+    nonLiveOverlappingRootLedger.mcpAdmissionOrdering === undefined
+      && nonLiveOverlappingRootLedger.mcp_admission_ordering === undefined
+      && nonLiveOverlappingRootLedger.rows.length === 4,
+    `non-live collection ordering and overlapping-root behavior should remain unchanged: ${JSON.stringify(nonLiveOverlappingRootLedger)}`,
+  );
+
+  const equivocationRoot = path.join(dir, 'matrix-collector-equivocation');
+  await fs.mkdir(equivocationRoot, { recursive: true });
+  const equivocatedReceipt = mcpAdmissionSigner.sign(
+    orderingLowerAdmission.expectedBinding,
+    {
+      sequence: BigInt(orderingLowerAdmission.receipt.sequence),
+      nonceByte: 250,
+    },
+  );
+  const equivocatedAdmission = {
+    ...orderingLowerAdmission,
+    receipt: equivocatedReceipt,
+    material: {
+      schemaVersion: MATRIX_MCP_PARENT_CONTROL_MATERIAL_SCHEMA,
+      mcpAdmissionReceipt: equivocatedReceipt,
+      transportContext: orderingLowerAdmission.material.transportContext,
+    },
+  };
+  await fs.writeFile(
+    path.join(equivocationRoot, 'first.json'),
+    `${JSON.stringify({
+      ...orderingArtifact(orderingLowerAdmission),
+      additionalParentControlVerificationMaterial: orderingHigherAdmission.material,
+    }, null, 2)}\n`,
+  );
+  await fs.writeFile(
+    path.join(equivocationRoot, 'second.json'),
+    `${JSON.stringify(orderingArtifact(equivocatedAdmission), null, 2)}\n`,
+  );
+  const equivocationLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [equivocationRoot],
+    latestPerTarget: false,
+    includeInvalidated: true,
+    includeUnproven: true,
+    mcpAdmissionTrust: {
+      ...orderingLowerAdmission.trust,
+      replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+    },
+  });
+  assertGenericOutputOracleSelfCheck(
+    equivocationLedger.mcpAdmissionOrdering?.blockedArtifactCount === 2
+      && equivocationLedger.mcpAdmissionOrdering?.blockingReasons?.includes(
+        'gpu_hmr_mcp_admission_authenticated_sequence_equivocation',
+      )
+      && orderedComputeFacets(equivocationLedger)
+        .every((facet) => facet.mcpAdmissionVerification?.accepted === false),
+    `authenticated sequence equivocation should fail closed: ${JSON.stringify(equivocationLedger)}`,
+  );
+
+  const duplicateReceiptRoot = path.join(dir, 'matrix-collector-duplicate-receipt');
+  const duplicateReceiptFirstRoot = path.join(duplicateReceiptRoot, 'first');
+  const duplicateReceiptSecondRoot = path.join(duplicateReceiptRoot, 'second');
+  await fs.mkdir(duplicateReceiptFirstRoot, { recursive: true });
+  await fs.mkdir(duplicateReceiptSecondRoot, { recursive: true });
+  await fs.writeFile(
+    path.join(duplicateReceiptFirstRoot, 'receipt.json'),
+    `${JSON.stringify(orderingArtifact(orderingLowerAdmission), null, 2)}\n`,
+  );
+  await fs.writeFile(
+    path.join(duplicateReceiptSecondRoot, 'receipt.json'),
+    `${JSON.stringify(orderingArtifact(orderingLowerAdmission), null, 2)}\n`,
+  );
+  const duplicateReceiptLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [duplicateReceiptFirstRoot, duplicateReceiptSecondRoot],
+    latestPerTarget: false,
+    includeInvalidated: true,
+    includeUnproven: true,
+    mcpAdmissionTrust: {
+      ...orderingLowerAdmission.trust,
+      replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+    },
+  });
+  assertGenericOutputOracleSelfCheck(
+    duplicateReceiptLedger.mcpAdmissionOrdering?.blockedArtifactCount === 2
+      && duplicateReceiptLedger.mcpAdmissionOrdering?.blockingReasons?.includes(
+        'gpu_hmr_mcp_admission_duplicate_receipt_reference_ambiguous',
+      )
+      && orderedComputeFacets(duplicateReceiptLedger)
+        .every((facet) => facet.mcpAdmissionVerification?.accepted === false),
+    `duplicate signed receipt references should fail closed: ${JSON.stringify(duplicateReceiptLedger)}`,
+  );
+
+  const invalidatedDuplicateRoot = path.join(
+    dir,
+    'matrix-collector-invalidated-duplicate-receipt',
+  );
+  const invalidatedDuplicateHiddenRoot = path.join(
+    invalidatedDuplicateRoot,
+    'invalidated',
+  );
+  await fs.mkdir(invalidatedDuplicateHiddenRoot, { recursive: true });
+  await fs.writeFile(
+    path.join(invalidatedDuplicateRoot, 'visible.json'),
+    `${JSON.stringify(orderingArtifact(orderingLowerAdmission), null, 2)}\n`,
+  );
+  await fs.writeFile(
+    path.join(invalidatedDuplicateHiddenRoot, 'hidden.json'),
+    `${JSON.stringify(orderingArtifact(orderingLowerAdmission), null, 2)}\n`,
+  );
+  const invalidatedDuplicateLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [invalidatedDuplicateRoot],
+    latestPerTarget: false,
+    includeUnproven: true,
+    mcpAdmissionTrust: {
+      ...orderingLowerAdmission.trust,
+      replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+    },
+  });
+  const invalidatedDuplicateFacets = orderedComputeFacets(invalidatedDuplicateLedger);
+  assertGenericOutputOracleSelfCheck(
+    invalidatedDuplicateLedger.mcpAdmissionOrdering?.receiptBearingArtifactCount === 2
+      && invalidatedDuplicateLedger.mcpAdmissionOrdering?.blockedArtifactCount === 2
+      && invalidatedDuplicateLedger.mcpAdmissionOrdering?.blockingReasons?.includes(
+        'gpu_hmr_mcp_admission_duplicate_receipt_reference_ambiguous',
+      )
+      && invalidatedDuplicateFacets.length >= 1
+      && invalidatedDuplicateFacets
+        .every((facet) => facet.mcpAdmissionVerification?.accepted === false),
+    `invalidated row visibility must not remove artifacts from live receipt conflict scanning: ${JSON.stringify(invalidatedDuplicateLedger)}`,
+  );
+
+  const ambiguousCandidateRoot = path.join(
+    dir,
+    'matrix-collector-ambiguous-receipt-candidate',
+  );
+  await fs.mkdir(ambiguousCandidateRoot, { recursive: true });
+  await fs.writeFile(
+    path.join(ambiguousCandidateRoot, 'ambiguous.json'),
+    `${JSON.stringify({
+      ...orderingArtifact(orderingLowerAdmission),
+      duplicateProofLedger: structuredClone(collectorV2ProofLedger),
+    }, null, 2)}\n`,
+  );
+  const ambiguousCandidateLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [ambiguousCandidateRoot],
+    latestPerTarget: false,
+    includeInvalidated: true,
+    includeUnproven: true,
+    mcpAdmissionTrust: {
+      ...orderingLowerAdmission.trust,
+      replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+    },
+  });
+  const ambiguousCandidateFacets = orderedComputeFacets(ambiguousCandidateLedger);
+  assertGenericOutputOracleSelfCheck(
+    ambiguousCandidateLedger.mcpAdmissionOrdering?.blockedArtifactCount === 1
+      && ambiguousCandidateLedger.mcpAdmissionOrdering?.blockingReasons?.includes(
+        'gpu_hmr_mcp_admission_authenticated_candidate_ambiguous',
+      )
+      && ambiguousCandidateFacets.length >= 1
+      && ambiguousCandidateFacets
+        .every((facet) => facet.mcpAdmissionVerification?.accepted === false),
+    `one signed receipt must not authorize multiple in-artifact proof candidates: ${JSON.stringify(ambiguousCandidateLedger)}`,
+  );
+
+  const ambiguousBareRecordRoot = path.join(
+    dir,
+    'matrix-collector-ambiguous-bare-record-candidate',
+  );
+  await fs.mkdir(ambiguousBareRecordRoot, { recursive: true });
+  await fs.writeFile(
+    path.join(ambiguousBareRecordRoot, 'ambiguous.json'),
+    `${JSON.stringify({
+      parentControlVerificationMaterial: orderingLowerAdmission.material,
+      candidates: [
+        { proofLedgerRecord: structuredClone(collectorV2Record) },
+        { proof_ledger_record: structuredClone(collectorV2Record) },
+      ],
+    }, null, 2)}\n`,
+  );
+  const bareRecordReplayRegistry = createGpuHmrMcpAdmissionReplayRegistry();
+  const ambiguousBareRecordLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [ambiguousBareRecordRoot],
+    latestPerTarget: false,
+    includeInvalidated: true,
+    includeUnproven: true,
+    mcpAdmissionTrust: {
+      ...orderingLowerAdmission.trust,
+      replayRegistry: bareRecordReplayRegistry,
+    },
+  });
+  const bareRecordRetryLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [orderingLowerRoot],
+    latestPerTarget: false,
+    includeInvalidated: true,
+    includeUnproven: true,
+    mcpAdmissionTrust: {
+      ...orderingLowerAdmission.trust,
+      replayRegistry: bareRecordReplayRegistry,
+    },
+  });
+  assertGenericOutputOracleSelfCheck(
+    ambiguousBareRecordLedger.mcpAdmissionOrdering?.blockedArtifactCount === 1
+      && ambiguousBareRecordLedger.mcpAdmissionOrdering?.blockingReasons?.includes(
+        'gpu_hmr_mcp_admission_authenticated_candidate_ambiguous',
+      )
+      && orderedComputeFacets(bareRecordRetryLedger)
+        .every((facet) => facet.mcpAdmissionVerification?.accepted === true),
+    `bare proof-ledger records must participate in candidate cardinality without consuming admission: ${JSON.stringify({ ambiguousBareRecordLedger, bareRecordRetryLedger })}`,
+  );
+
+  const ambiguousBareLedgerRoot = path.join(
+    dir,
+    'matrix-collector-ambiguous-bare-ledger-candidate',
+  );
+  await fs.mkdir(ambiguousBareLedgerRoot, { recursive: true });
+  await fs.writeFile(
+    path.join(ambiguousBareLedgerRoot, 'ambiguous.json'),
+    `${JSON.stringify({
+      parentControlVerificationMaterial: orderingLowerAdmission.material,
+      candidates: [
+        { proofLedger: structuredClone(collectorV2Record) },
+        { proof_ledger: structuredClone(collectorV2Record) },
+      ],
+    }, null, 2)}\n`,
+  );
+  const bareLedgerReplayRegistry = createGpuHmrMcpAdmissionReplayRegistry();
+  const ambiguousBareLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [ambiguousBareLedgerRoot],
+    latestPerTarget: false,
+    includeInvalidated: true,
+    includeUnproven: true,
+    mcpAdmissionTrust: {
+      ...orderingLowerAdmission.trust,
+      replayRegistry: bareLedgerReplayRegistry,
+    },
+  });
+  const bareLedgerRetryLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [orderingLowerRoot],
+    latestPerTarget: false,
+    includeInvalidated: true,
+    includeUnproven: true,
+    mcpAdmissionTrust: {
+      ...orderingLowerAdmission.trust,
+      replayRegistry: bareLedgerReplayRegistry,
+    },
+  });
+  assertGenericOutputOracleSelfCheck(
+    ambiguousBareLedger.mcpAdmissionOrdering?.blockedArtifactCount === 1
+      && ambiguousBareLedger.mcpAdmissionOrdering?.blockingReasons?.includes(
+        'gpu_hmr_mcp_admission_authenticated_candidate_ambiguous',
+      )
+      && orderedComputeFacets(bareLedgerRetryLedger)
+        .every((facet) => facet.mcpAdmissionVerification?.accepted === true),
+    `schema-less proof-ledger values must participate in candidate cardinality without consuming admission: ${JSON.stringify({ ambiguousBareLedger, bareLedgerRetryLedger })}`,
+  );
+
+  const truncatedDuplicateRoot = path.join(
+    dir,
+    'matrix-collector-truncated-duplicate-receipt',
+  );
+  await fs.mkdir(truncatedDuplicateRoot, { recursive: true });
+  await fs.writeFile(
+    path.join(truncatedDuplicateRoot, 'clean.json'),
+    `${JSON.stringify(orderingArtifact(orderingLowerAdmission), null, 2)}\n`,
+  );
+  await fs.writeFile(
+    path.join(truncatedDuplicateRoot, 'padded.json'),
+    `${JSON.stringify({
+      hiddenReceiptArtifact: orderingArtifact(orderingLowerAdmission),
+      unsignedPadding: Array.from(
+        { length: MATRIX_MCP_ADMISSION_MATERIAL_SCAN_LIMIT + 1 },
+        () => ({}),
+      ),
+    })}\n`,
+  );
+  const truncatedDuplicateLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [truncatedDuplicateRoot],
+    latestPerTarget: false,
+    includeInvalidated: true,
+    includeUnproven: true,
+    mcpAdmissionTrust: {
+      ...orderingLowerAdmission.trust,
+      replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+    },
+  });
+  const truncatedDuplicateFacets = orderedComputeFacets(truncatedDuplicateLedger);
+  assertGenericOutputOracleSelfCheck(
+    truncatedDuplicateLedger.mcpAdmissionOrdering?.blockedArtifactCount === 2
+      && truncatedDuplicateLedger.mcpAdmissionOrdering?.blockingReasons?.includes(
+        'gpu_hmr_mcp_admission_collection_ordering_scan_incomplete',
+      )
+      && truncatedDuplicateFacets.length >= 1
+      && truncatedDuplicateFacets
+        .every((facet) => facet.mcpAdmissionVerification?.accepted === false),
+    `an incomplete live ordering scan must block every receipt in the collection: ${JSON.stringify(truncatedDuplicateLedger)}`,
+  );
+
   const replayedCollectedLedger = await collectWithTrust(collectorTrust);
   const replayedCollectedCompute = computeFacetFromCollectedLedger(replayedCollectedLedger);
   assertGenericOutputOracleSelfCheck(
@@ -35399,6 +36039,18 @@ export async function selfCheckGenericOutputOracleLedger() {
     concurrentComputeAdmissionCommitRaceRejected: true,
     postStageComputeExceptionDiscarded: true,
     collectorReceiptReplayRejected: true,
+    collectorSignedSequenceOrderingAccepted: true,
+    collectorRootOrderInvariant: true,
+    collectorOverlappingRootsDeduplicated: true,
+    collectorSequenceEquivocationRejected: true,
+    collectorHiddenSequenceEquivocationRejected: true,
+    collectorDuplicateReceiptReferencesRejected: true,
+    collectorInvalidatedDuplicateReceiptRejected: true,
+    collectorAmbiguousReceiptCandidatesRejected: true,
+    collectorAmbiguousBareRecordCandidatesRejected: true,
+    collectorAmbiguousBareLedgerCandidatesRejected: true,
+    collectorScanTruncationBlocksCollection: true,
+    collectorNonLiveOrderingUnchanged: true,
     collectorTrustKeyChangeRejected: true,
     collectorTrustChallengeChangeRejected: true,
     collectorReceiptExpiryRejected: true,
@@ -47874,6 +48526,138 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
   );
 }
 
+function orderedMatrixArtifactEntries(entries) {
+  const collectionOrderingScanIncomplete = entries.some((entry) => (
+    entry.mcpAdmissionOrderingBlockedReason
+      === 'gpu_hmr_mcp_admission_material_scan_truncated'
+    || entry.mcpAdmissionOrderingBlockedReason
+      === 'gpu_hmr_mcp_admission_ordering_ledger_scan_truncated'
+  ));
+  const receiptIdsBySequence = new Map();
+  const artifactIdentitiesByReceiptId = new Map();
+  for (const entry of entries) {
+    for (const key of entry.mcpAdmissionOrdering?.authenticatedKeys ?? []) {
+      const sequenceKey = `${key.replayScopeId}\u0000${key.sequenceText}`;
+      if (!receiptIdsBySequence.has(sequenceKey)) {
+        receiptIdsBySequence.set(sequenceKey, new Set());
+      }
+      receiptIdsBySequence.get(sequenceKey).add(key.receiptId);
+      if (!artifactIdentitiesByReceiptId.has(key.receiptId)) {
+        artifactIdentitiesByReceiptId.set(key.receiptId, new Set());
+      }
+      artifactIdentitiesByReceiptId.get(key.receiptId).add(entry.fileIdentity);
+    }
+  }
+  const ordered = entries.map((entry) => {
+    const authenticatedKeys = entry.mcpAdmissionOrdering?.authenticatedKeys ?? [];
+    const equivocated = authenticatedKeys.some((key) => {
+      const sequenceKey = `${key.replayScopeId}\u0000${key.sequenceText}`;
+      return receiptIdsBySequence.get(sequenceKey)?.size > 1;
+    });
+    const duplicateReference = authenticatedKeys.some((key) => (
+      artifactIdentitiesByReceiptId.get(key.receiptId)?.size > 1
+    ));
+    return collectionOrderingScanIncomplete || equivocated || duplicateReference
+      ? {
+          ...entry,
+          mcpAdmissionOrderingBlockedReason:
+            collectionOrderingScanIncomplete
+              ? 'gpu_hmr_mcp_admission_collection_ordering_scan_incomplete'
+              : equivocated
+              ? 'gpu_hmr_mcp_admission_authenticated_sequence_equivocation'
+              : 'gpu_hmr_mcp_admission_duplicate_receipt_reference_ambiguous',
+        }
+      : entry;
+  });
+  ordered.sort((left, right) => {
+    const leftKey = left.mcpAdmissionOrdering?.key;
+    const rightKey = right.mcpAdmissionOrdering?.key;
+    if (leftKey && rightKey) {
+      const scopeOrder = leftKey.replayScopeId.localeCompare(rightKey.replayScopeId);
+      if (scopeOrder !== 0) return scopeOrder;
+      if (leftKey.sequence < rightKey.sequence) return -1;
+      if (leftKey.sequence > rightKey.sequence) return 1;
+      const receiptOrder = leftKey.receiptId.localeCompare(rightKey.receiptId);
+      if (receiptOrder !== 0) return receiptOrder;
+    } else if (leftKey) {
+      return -1;
+    } else if (rightKey) {
+      return 1;
+    }
+    const contentOrder = left.artifact.contentHash.localeCompare(
+      right.artifact.contentHash,
+    );
+    return contentOrder !== 0
+      ? contentOrder
+      : left.filePath.localeCompare(right.filePath);
+  });
+  return ordered;
+}
+
+function matrixMcpAdmissionOrderingFacet(entries, trustSupplied) {
+  const authenticatedEntries = entries.filter((entry) => (
+    (entry.mcpAdmissionOrdering?.authenticatedKeys?.length ?? 0) > 0
+  ));
+  const receiptBearingEntries = entries.filter((entry) => (
+    (entry.mcpAdmissionMaterialScan?.materials?.length ?? 0) > 0
+  ));
+  const blockedEntries = entries.filter((entry) => (
+    Boolean(entry.mcpAdmissionOrderingBlockedReason)
+  ));
+  const order = authenticatedEntries.flatMap((entry) => (
+    entry.mcpAdmissionOrdering.authenticatedKeys.map((key) => ({
+      replayScopeId: key.replayScopeId,
+      replay_scope_id: key.replayScopeId,
+      sequence: key.sequenceText,
+      receiptId: key.receiptId,
+      receipt_id: key.receiptId,
+      artifactContentHash: entry.artifact.contentHash,
+      artifact_content_hash: entry.artifact.contentHash,
+    }))
+  )).sort((left, right) => (
+    left.replayScopeId.localeCompare(right.replayScopeId)
+    || (BigInt(left.sequence) < BigInt(right.sequence) ? -1 : 0)
+    || (BigInt(left.sequence) > BigInt(right.sequence) ? 1 : 0)
+    || left.receiptId.localeCompare(right.receiptId)
+    || left.artifactContentHash.localeCompare(right.artifactContentHash)
+  ));
+  return {
+    schemaVersion: 'synthi.gpu_hmr.mcp_admission_artifact_ordering.v1',
+    schema_version: 'synthi.gpu_hmr.mcp_admission_artifact_ordering.v1',
+    present: receiptBearingEntries.length > 0,
+    externalTrustSupplied: trustSupplied === true,
+    external_trust_supplied: trustSupplied === true,
+    receiptBearingArtifactCount: receiptBearingEntries.length,
+    receipt_bearing_artifact_count: receiptBearingEntries.length,
+    authenticatedArtifactCount: authenticatedEntries.length,
+    authenticated_artifact_count: authenticatedEntries.length,
+    authenticatedReceiptCount: order.length,
+    authenticated_receipt_count: order.length,
+    blockedArtifactCount: blockedEntries.length,
+    blocked_artifact_count: blockedEntries.length,
+    pathIndependentOrderingApplied: authenticatedEntries.length > 0,
+    path_independent_ordering_applied: authenticatedEntries.length > 0,
+    orderingHash: stableJsonHash(order),
+    ordering_hash: stableJsonHash(order),
+    blockingReasons: compactStringList(
+      blockedEntries.map((entry) => entry.mcpAdmissionOrderingBlockedReason),
+    ),
+    blocking_reasons: compactStringList(
+      blockedEntries.map((entry) => entry.mcpAdmissionOrderingBlockedReason),
+    ),
+    proofAuthority:
+      'authenticated_receipt_ordering_support_only_not_gpu_hmr_acceptance',
+    proof_authority:
+      'authenticated_receipt_ordering_support_only_not_gpu_hmr_acceptance',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+}
+
 export async function collectGpuHmrValidationMatrixLedger(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   const mcpRoot = path.resolve(options.mcpRoot ?? path.join(repoRoot, 'mcp', 'synthi-mcp'));
@@ -47918,18 +48702,83 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
         trust: mcpAdmissionTrust,
         trustSupplied: mcpAdmissionTrust !== null,
       });
-  const files = [];
+  const authenticatedOrderingEnabled = mcpAdmissionTrust !== null;
+  const filesByIdentity = new Map();
+  const filesWithoutAuthenticatedOrdering = [];
   for (const root of roots) {
-    files.push(...await walkJsonFiles(path.resolve(root)));
+    for (const candidate of await walkJsonFiles(path.resolve(root))) {
+      const filePath = path.resolve(candidate);
+      if (!authenticatedOrderingEnabled) {
+        filesWithoutAuthenticatedOrdering.push(filePath);
+        continue;
+      }
+      let canonicalPath;
+      try {
+        canonicalPath = await fs.realpath(filePath);
+      } catch {
+        canonicalPath = filePath;
+      }
+      const identity = path.normalize(canonicalPath);
+      if (!filesByIdentity.has(identity)) {
+        filesByIdentity.set(identity, canonicalPath);
+      }
+    }
   }
-  files.sort((left, right) => left.localeCompare(right));
-  const rows = [];
-  const testTimingV2Entries = [];
+  const artifactEntries = [];
+  const files = (authenticatedOrderingEnabled
+    ? [...filesByIdentity.values()]
+    : filesWithoutAuthenticatedOrdering)
+    .sort((left, right) => left.localeCompare(right));
   for (const filePath of files) {
-    if (options.includeInvalidated !== true && filePath.split(path.sep).includes('invalidated')) continue;
+    const invalidatedExcluded = (
+      options.includeInvalidated !== true
+      && filePath.split(path.sep).includes('invalidated')
+    );
+    if (invalidatedExcluded && !authenticatedOrderingEnabled) {
+      continue;
+    }
+    if (!authenticatedOrderingEnabled) {
+      artifactEntries.push({ filePath });
+      continue;
+    }
     const stat = await fs.stat(filePath);
     const artifact = await readJsonArtifact(filePath);
     if (artifact === null) continue;
+    const mcpAdmissionMaterialScan = matrixMcpAdmissionMaterialsFromArtifact(
+      artifact.json,
+    );
+    const mcpAdmissionOrdering = matrixMcpAdmissionOrderingForArtifact({
+      artifact: artifact.json,
+      materialScan: mcpAdmissionMaterialScan,
+      trust: authenticatedOrderingEnabled ? mcpAdmissionTrust : null,
+    });
+    artifactEntries.push({
+      filePath,
+      fileIdentity: path.normalize(filePath),
+      visibleForClassification: !invalidatedExcluded,
+      stat,
+      artifact,
+      mcpAdmissionMaterialScan,
+      mcpAdmissionOrdering,
+      mcpAdmissionOrderingBlockedReason: mcpAdmissionOrdering.blockedReason,
+    });
+  }
+  const orderedArtifactEntries = authenticatedOrderingEnabled
+    ? orderedMatrixArtifactEntries(artifactEntries)
+    : artifactEntries;
+  const rows = [];
+  const testTimingV2Entries = [];
+  for (const entry of orderedArtifactEntries) {
+    if (entry.visibleForClassification === false) continue;
+    const { filePath } = entry;
+    const stat = entry.stat ?? await fs.stat(filePath);
+    const artifact = entry.artifact ?? await readJsonArtifact(filePath);
+    if (artifact === null) continue;
+    const mcpAdmissionMaterialScan = entry.mcpAdmissionMaterialScan
+      ?? matrixMcpAdmissionMaterialsFromArtifact(artifact.json);
+    const mcpAdmissionOrderingBlockedReason = firstText(
+      entry.mcpAdmissionOrderingBlockedReason,
+    );
     const testTimingV2 = recomputeGpuHmrTestTimingV2Facet(artifact.json);
     if (testTimingV2.present) {
       testTimingV2Entries.push({
@@ -47947,9 +48796,6 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
     const dependsOnExternalCasBytes = jsonContainsSchemaVersion(
       artifact.json,
       GPU_HMR_ARTIFACT_CAS_MANIFEST_SCHEMA_VERSION,
-    );
-    const mcpAdmissionMaterialScan = matrixMcpAdmissionMaterialsFromArtifact(
-      artifact.json,
     );
     const dependsOnLiveMcpAdmissionState = Boolean(
       requireMcpAdmissionReceiptForCompute
@@ -47973,6 +48819,7 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
       mcpAdmissionTrust,
       mcpAdmissionMaterials: mcpAdmissionMaterialScan.materials,
       mcpAdmissionMaterialScanTruncated: mcpAdmissionMaterialScan.truncated,
+      mcpAdmissionOrderingBlockedReason,
     });
     const classifiedRows = (Array.isArray(classified) ? classified : [classified])
       .filter(Boolean)
@@ -48010,10 +48857,22 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
     liveAdmissionVerifiedValidationMatrixLedgers.add(ledger);
   }
   const testTimingV2 = gpuHmrTestTimingV2LedgerDiagnostics(testTimingV2Entries);
+  const mcpAdmissionOrdering = authenticatedOrderingEnabled
+    ? matrixMcpAdmissionOrderingFacet(
+        orderedArtifactEntries,
+        mcpAdmissionTrustSupplied,
+      )
+    : null;
   const result = {
     ...ledger,
     testTimingV2,
     test_timing_v2: testTimingV2,
+    ...(mcpAdmissionOrdering === null
+      ? {}
+      : {
+          mcpAdmissionOrdering,
+          mcp_admission_ordering: mcpAdmissionOrdering,
+        }),
   };
   if (policyMode === 'live-required' && mcpAdmissionTrust !== null) {
     liveAdmissionVerifiedValidationMatrixLedgers.add(result);
