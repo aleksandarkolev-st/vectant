@@ -31835,20 +31835,42 @@ function ledgerRecordHasVisualOutput(record) {
     || Object.keys(visualArtifacts).length > 0;
 }
 
+function computeOracleArtifactObject(value) {
+  const object = compactObject(value);
+  const wrapped = nestedArtifactObject(
+    object.compute_oracle_artifacts,
+    object.computeOracleArtifacts,
+  );
+  if (Object.keys(wrapped).length > 0) return wrapped;
+  const directMarker = firstText(
+    object.raw_readback_bin,
+    object.rawReadbackBin,
+    object.readback_schema_json,
+    object.readbackSchemaJson,
+    object.raw_readback_hash,
+    object.rawReadbackHash,
+    object.compute_expected_output_contract_hash,
+    object.computeExpectedOutputContractHash,
+    object.compute_expected_output_semantics_hash,
+    object.computeExpectedOutputSemanticsHash,
+  );
+  const directContract = compactObject(
+    object.compute_expected_output_contract_v2
+    ?? object.computeExpectedOutputContractV2,
+  );
+  return directMarker || Object.keys(directContract).length > 0 ? object : {};
+}
+
 function ledgerRecordComputeOracleArtifacts(record) {
   const outputEvent = compactObject(record.output_event ?? record.outputEvent);
   const oracleArtifacts = compactObject(record.oracle_artifacts ?? record.oracleArtifacts);
   const outputOracle = compactObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
   const outputOracleArtifacts = compactObject(outputOracle.oracle_artifacts ?? outputOracle.oracleArtifacts);
   return nestedArtifactObject(
-    oracleArtifacts.compute_oracle_artifacts,
-    oracleArtifacts.computeOracleArtifacts,
-    outputEvent.compute_oracle_artifacts,
-    outputEvent.computeOracleArtifacts,
-    outputOracle.compute_oracle_artifacts,
-    outputOracle.computeOracleArtifacts,
-    outputOracleArtifacts.compute_oracle_artifacts,
-    outputOracleArtifacts.computeOracleArtifacts,
+    computeOracleArtifactObject(oracleArtifacts),
+    computeOracleArtifactObject(outputEvent),
+    computeOracleArtifactObject(outputOracle),
+    computeOracleArtifactObject(outputOracleArtifacts),
   );
 }
 
@@ -32948,6 +32970,39 @@ export async function selfCheckGenericOutputOracleLedger() {
     `generic compute file evidence should be verified: ${JSON.stringify(acceptedFacet.compute)}`,
   );
 
+  const directRecord = genericOutputOracleSelfCheckRecord(
+    computeOracleArtifacts,
+    acceptanceContract,
+  );
+  delete directRecord.output_event.compute_oracle_artifacts;
+  directRecord.oracle_artifacts = structuredClone(computeOracleArtifacts);
+  directRecord.output_event.oracle_artifacts = structuredClone(computeOracleArtifacts);
+  directRecord.output_event.output_oracle = {
+    oracle_id: 'oracle:generic-output-oracle',
+    kind: 'buffer_checksum',
+    passed: true,
+    output_oracle_target: structuredClone(directRecord.output_oracle_target),
+    oracle_artifacts: structuredClone(computeOracleArtifacts),
+  };
+  const directProofLedger = buildGpuHmrProofLedger(directRecord);
+  const directFacet = await ledgerOutputOracleFacet(
+    {
+      present: true,
+      source: 'recomputed_ledger',
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    },
+    directProofLedger,
+    {},
+    dir,
+    dir,
+    { acceptanceContract },
+  );
+  assertGenericOutputOracleSelfCheck(
+    directFacet.accepted === true && directFacet.compute?.accepted === true,
+    `direct production compute artifact layout should accept: ${JSON.stringify(directFacet.failedGates)}`,
+  );
+
   const forgedArtifacts = {
     ...computeOracleArtifacts,
     raw_readback_hash: `sha256:${'0'.repeat(64)}`,
@@ -33044,6 +33099,7 @@ export async function selfCheckGenericOutputOracleLedger() {
       outputBindingAccepted: acceptedFacet.outputBinding?.accepted === true,
       computeAccepted: acceptedFacet.compute?.accepted === true,
     },
+    directProductionArtifactLayoutAccepted: true,
     forgedRejected: true,
     selfConsistentWrongBytesRejected: true,
     failedGateCoverage: forgedCodes,
