@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import {
   createHash,
   createPublicKey,
@@ -6,6 +7,7 @@ import {
   sign as signBytes,
   verify as verifySignature,
 } from "node:crypto";
+import { channel } from "node:diagnostics_channel";
 import { chmod, lstat, unlink } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import os from "node:os";
@@ -74,19 +76,28 @@ const REPLAY_SCOPE_DOMAIN =
   "synthi.gpu_hmr.mcp_admission_receipt_replay_scope.v1";
 const WIRE_REQUEST_SCHEMA =
   "synthi.gpu_hmr.mcp_admission_online_replay_wire_request.v1";
+const WORKER_START_SCHEMA =
+  "synthi.gpu_hmr.mcp_admission_online_replay_worker_start.v1";
+const WORKER_READY_SCHEMA =
+  "synthi.gpu_hmr.mcp_admission_online_replay_worker_ready.v1";
+const WORKER_STOP_SCHEMA =
+  "synthi.gpu_hmr.mcp_admission_online_replay_worker_stop.v1";
 const DEFAULT_MAX_AGE_NS = 30_000_000_000n;
 const DEFAULT_MAX_FUTURE_SKEW_NS = 1_000_000_000n;
 const DEFAULT_MAX_SCOPES = 4_096;
 const DEFAULT_MAX_RECEIPTS_PER_SCOPE = 65_536;
 const DEFAULT_MAX_OPERATIONS = 131_072;
-const DEFAULT_OPERATION_TIMEOUT_MS = 5_000;
+const DEFAULT_OPERATION_TIMEOUT_MS = 15_000;
 const MAX_OPERATION_TIMEOUT_MS = 60_000;
+// Signed pre-probe, exchange, post-probe, and final post-verification probe.
+const CLIENT_OPERATION_STAGE_COUNT = 4n;
 const HARD_MAX_SCOPES = 65_536;
 const HARD_MAX_RECEIPTS_PER_SCOPE = 65_536;
 const HARD_MAX_OPERATIONS = 262_144;
 const MAX_CONCURRENT_CONNECTIONS = 128;
 const MAX_REQUEST_FRAME_BYTES = 64 * 1024;
 const MAX_RESPONSE_FRAME_BYTES = 32 * 1024;
+const WORKER_TERMINATION_TIMEOUT_MS = 5_000;
 const MAX_JSON_DEPTH = 8;
 const U64_MAX = 18_446_744_073_709_551_615n;
 const MAX_PROCESS_ID = 0xffff_ffff;
@@ -113,6 +124,9 @@ const ABORTED_GETTER = Object.getOwnPropertyDescriptor(
   AbortSignal.prototype,
   "aborted",
 )?.get;
+const AUTHORITY_LIFECYCLE_DIAGNOSTICS = channel(
+  "gpu-hmr-mcp-admission-online-replay-authority.lifecycle.v1",
+);
 
 const START_REQUIRED_OPTION_KEYS = Object.freeze([
   "trustedVerificationKey",
@@ -333,10 +347,59 @@ function prefixedRandomId(prefix, domain) {
   }
 }
 
-const PARENT_START_IDENTITY = prefixedRandomId(
-  PARENT_START_ID_PREFIX,
-  "synthi.gpu_hmr.mcp_admission_online_replay_parent_start.v1",
-);
+function publishAuthorityLifecycle(details) {
+  if (!AUTHORITY_LIFECYCLE_DIAGNOSTICS.hasSubscribers) return;
+  try {
+    AUTHORITY_LIFECYCLE_DIAGNOSTICS.publish(Object.freeze({ ...details }));
+  } catch {
+    // Diagnostics cannot participate in lifecycle or trust decisions.
+  }
+}
+
+function operationTimeoutError(cause) {
+  return onlineReplayError("authority_timeout", cause, true);
+}
+
+function createClientOperation(signal, timeoutMs) {
+  const startedAtMonotonicNs = process.hrtime.bigint();
+  const stageBudgetNs = BigInt(timeoutMs) * 1_000_000n;
+  return Object.freeze({
+    signal,
+    stageBudgetNs,
+    deadlineMonotonicNs: startedAtMonotonicNs
+      + stageBudgetNs * CLIENT_OPERATION_STAGE_COUNT,
+  });
+}
+
+function throwIfOperationCancelled(operation) {
+  if (
+    operation.signal !== null
+    && nativeAbortSignalAborted(operation.signal)
+  ) {
+    throw abortError();
+  }
+  if (process.hrtime.bigint() >= operation.deadlineMonotonicNs) {
+    throw operationTimeoutError();
+  }
+}
+
+function remainingOperationTimeoutMs(operation) {
+  throwIfOperationCancelled(operation);
+  const remainingNs = operation.deadlineMonotonicNs - process.hrtime.bigint();
+  if (remainingNs <= 0n) throw operationTimeoutError();
+  return Number((remainingNs + 999_999n) / 1_000_000n);
+}
+
+function nextOperationStage(operation) {
+  throwIfOperationCancelled(operation);
+  const stageDeadline = process.hrtime.bigint() + operation.stageBudgetNs;
+  return Object.freeze({
+    signal: operation.signal,
+    deadlineMonotonicNs: stageDeadline < operation.deadlineMonotonicNs
+      ? stageDeadline
+      : operation.deadlineMonotonicNs,
+  });
+}
 
 function snapshotDataObject(value, requiredKeys, optionalKeys = []) {
   try {
@@ -948,8 +1011,8 @@ function responseBase(state, request, requestDigest, claims, details) {
     authorityId: state.authorityId,
     authorityGenerationId: state.authorityGenerationId,
     responseKeyId: state.responseVerificationKey.keyId,
-    parentPid: process.pid,
-    parentStartIdentity: PARENT_START_IDENTITY,
+    parentPid: state.parentPid,
+    parentStartIdentity: state.parentStartIdentity,
     requestId: request.requestId,
     requestHash: requestDigest,
     replayOperationId: request.replayOperationId,
@@ -1218,8 +1281,8 @@ function processProbeRequest(state, value) {
     authorityId: state.authorityId,
     authorityGenerationId: state.authorityGenerationId,
     responseKeyId: state.responseVerificationKey.keyId,
-    parentPid: process.pid,
-    parentStartIdentity: PARENT_START_IDENTITY,
+    parentPid: state.parentPid,
+    parentStartIdentity: state.parentStartIdentity,
     probeId: request.probeId,
     probeHash: probeRequestHash(request),
     authorityClass: GPU_HMR_MCP_ADMISSION_ONLINE_REPLAY_AUTHORITY_CLASS,
@@ -1241,12 +1304,19 @@ function processProbeRequest(state, value) {
 }
 
 function processWireMessage(state, value) {
+  if (!parentChannelIsLive(state)) return null;
   return processWireRequest(state, value) ?? processProbeRequest(state, value);
+}
+
+function parentChannelIsLive(state) {
+  return state.parentChannelAlive
+    && (state.parentLiveness === null || state.parentLiveness() === true);
 }
 
 function handleConnection(state, socket) {
   if (
     state.disposed
+    || !parentChannelIsLive(state)
     || !state.accepting
     || state.connections.size >= MAX_CONCURRENT_CONNECTIONS
   ) {
@@ -1262,7 +1332,13 @@ function handleConnection(state, socket) {
   let finished = false;
   const processFrame = () => {
     processingScheduled = false;
-    if (invalid || finished || state.disposed || !newlineSeen) {
+    if (
+      invalid
+      || finished
+      || state.disposed
+      || !parentChannelIsLive(state)
+      || !newlineSeen
+    ) {
       if (!finished) socket.destroy();
       return;
     }
@@ -1323,7 +1399,12 @@ function handleConnection(state, socket) {
     }
   });
   socket.on("end", () => {
-    if (invalid || state.disposed || !newlineSeen) {
+    if (
+      invalid
+      || state.disposed
+      || !parentChannelIsLive(state)
+      || !newlineSeen
+    ) {
       socket.destroy();
       return;
     }
@@ -1385,10 +1466,18 @@ function serverPublicValue(authorityId) {
   });
 }
 
-export async function startGpuHmrMcpAdmissionOnlineReplayAuthorityServer(
+async function startLocalAuthorityServer(
   optionsValue,
+  parentPid,
+  parentStartIdentity,
 ) {
   const options = parseStartOptions(optionsValue);
+  if (
+    !boundedPositiveInteger(parentPid, MAX_PROCESS_ID)
+    || !PARENT_START_ID_PATTERN.test(parentStartIdentity ?? "")
+  ) {
+    throw onlineReplayError("parent_process_identity_invalid");
+  }
   const authorityId = prefixedRandomId(
     AUTHORITY_ID_PREFIX,
     "synthi.gpu_hmr.mcp_admission_online_replay_authority_id.v1",
@@ -1411,8 +1500,8 @@ export async function startGpuHmrMcpAdmissionOnlineReplayAuthorityServer(
     authorityGenerationId,
     responseVerificationKey: responseKey,
     endpoint: endpointDetails.endpoint,
-    parentPid: process.pid,
-    parentStartIdentity: PARENT_START_IDENTITY,
+    parentPid,
+    parentStartIdentity,
     transport: endpointDetails.transport,
     operationTimeoutMs: options.operationTimeoutMs,
     ...policy,
@@ -1421,8 +1510,8 @@ export async function startGpuHmrMcpAdmissionOnlineReplayAuthorityServer(
     authorityId,
     authorityGenerationId,
     responseKeyId: responseKey.keyId,
-    parentPid: process.pid,
-    parentStartIdentity: PARENT_START_IDENTITY,
+    parentPid,
+    parentStartIdentity,
     policyHash: policy.policyHash,
   });
   const encodedGenesis = canonicalJson(genesisMaterial);
@@ -1430,6 +1519,8 @@ export async function startGpuHmrMcpAdmissionOnlineReplayAuthorityServer(
   const state = {
     authorityId,
     authorityGenerationId,
+    parentPid,
+    parentStartIdentity,
     endpoint: endpointDetails.endpoint,
     transport: endpointDetails.transport,
     operationTimeoutMs: options.operationTimeoutMs,
@@ -1453,6 +1544,8 @@ export async function startGpuHmrMcpAdmissionOnlineReplayAuthorityServer(
     unixSocketIdentity: null,
     nodeServer: null,
     accepting: false,
+    parentChannelAlive: true,
+    parentLiveness: null,
     disposed: false,
   };
   const nodeServer = createServer({ allowHalfOpen: true }, (socket) => {
@@ -1500,6 +1593,267 @@ export async function startGpuHmrMcpAdmissionOnlineReplayAuthorityServer(
   return server;
 }
 
+function workerStartOptions(options) {
+  return Object.freeze({
+    trustedVerificationKey: options.trustedVerificationKey,
+    validationRunChallenge: options.validationRunChallenge,
+    maxReceiptAgeNs: options.maxAgeNs,
+    maxFutureSkewNs: options.maxFutureSkewNs,
+    maxScopes: options.maxScopes,
+    maxReceiptsPerScope: options.maxReceiptsPerScope,
+    maxOperations: options.maxOperations,
+    operationTimeoutMs: options.operationTimeoutMs,
+  });
+}
+
+function createWorkerExitTracker(child) {
+  const tracker = {
+    child,
+    exitObserved: false,
+    exitInfo: null,
+    exitPromise: null,
+  };
+  tracker.exitPromise = new Promise((resolve) => {
+    child.once("exit", (code, signal) => {
+      tracker.exitObserved = true;
+      tracker.exitInfo = Object.freeze({ code, signal });
+      publishAuthorityLifecycle({
+        phase: "exit_observed",
+        processId: child.pid ?? null,
+        code,
+        signal,
+      });
+      resolve(tracker.exitInfo);
+    });
+  });
+  return tracker;
+}
+
+function boundedDelay(timeoutMs) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    timer.unref?.();
+  });
+}
+
+async function stopWorkerAndObserveExit(tracker) {
+  if (tracker.exitObserved) return tracker.exitInfo;
+  tracker.child.ref();
+  tracker.child.channel?.ref?.();
+  const deadline = Date.now() + WORKER_TERMINATION_TIMEOUT_MS;
+  try {
+    try {
+      if (tracker.child.connected) {
+        tracker.child.send(Object.freeze({ schemaVersion: WORKER_STOP_SCHEMA }));
+      }
+    } catch {
+      // A failed send is not exit evidence; the exit event remains authoritative.
+    }
+    await Promise.race([
+      tracker.exitPromise,
+      boundedDelay(Math.min(1_000, WORKER_TERMINATION_TIMEOUT_MS)),
+    ]);
+    if (!tracker.exitObserved) {
+      try {
+        tracker.child.kill("SIGKILL");
+      } catch {
+        // Kill acceptance is not exit evidence.
+      }
+    }
+    const remainingMs = deadline - Date.now();
+    if (!tracker.exitObserved && remainingMs > 0) {
+      await Promise.race([tracker.exitPromise, boundedDelay(remainingMs)]);
+    }
+    if (!tracker.exitObserved) {
+      throw onlineReplayError(
+        "authority_termination_indeterminate",
+        undefined,
+        true,
+      );
+    }
+    return tracker.exitInfo;
+  } finally {
+    tracker.child.channel?.unref?.();
+    tracker.child.unref();
+  }
+}
+
+function spawnAuthorityWorker() {
+  const program = [
+    `import(${JSON.stringify(import.meta.url)})`,
+    ".then((module) => module.runGpuHmrMcpAdmissionOnlineReplayAuthorityWorker())",
+    ".catch(() => { process.exitCode = 70; });",
+  ].join("");
+  return spawn(process.execPath, ["--input-type=module", "--eval", program], {
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    serialization: "advanced",
+    windowsHide: true,
+  });
+}
+
+export async function startGpuHmrMcpAdmissionOnlineReplayAuthorityServer(
+  optionsValue,
+) {
+  const options = parseStartOptions(optionsValue);
+  const child = spawnAuthorityWorker();
+  const tracker = createWorkerExitTracker(child);
+  publishAuthorityLifecycle({
+    phase: "spawned",
+    processId: child.pid ?? null,
+    parentPid: process.pid,
+  });
+  let timer;
+  let onMessage;
+  let onError;
+  let onExit;
+  const ready = new Promise((resolve, reject) => {
+    const finish = (error, value) => {
+      if (timer !== undefined) clearTimeout(timer);
+      child.off("message", onMessage);
+      child.off("error", onError);
+      child.off("exit", onExit);
+      if (error === null) resolve(value);
+      else reject(error);
+    };
+    onMessage = (message) => {
+      if (
+        message?.schemaVersion !== WORKER_READY_SCHEMA
+        || message.parentPid !== process.pid
+      ) {
+        finish(onlineReplayError("worker_ready_invalid"));
+        return;
+      }
+      const parsed = serverProjectionSnapshot(message.projection);
+      if (
+        parsed === null
+        || parsed.projection.parentPid !== process.pid
+        || parsed.projection.operationTimeoutMs !== options.operationTimeoutMs
+      ) {
+        finish(onlineReplayError("worker_ready_invalid"));
+        return;
+      }
+      finish(null, parsed.projection);
+    };
+    onError = (error) => finish(onlineReplayError("worker_start_failed", error));
+    onExit = (code, signal) => finish(onlineReplayError(
+      "worker_exited_during_start",
+      new Error(`authority worker exited (${String(code)}, ${String(signal)})`),
+    ));
+    child.on("message", onMessage);
+    child.once("error", onError);
+    child.once("exit", onExit);
+    timer = setTimeout(() => {
+      finish(onlineReplayError("worker_start_timeout"));
+    }, options.operationTimeoutMs);
+  });
+
+  try {
+    child.send(Object.freeze({
+      schemaVersion: WORKER_START_SCHEMA,
+      parentPid: process.pid,
+      options: workerStartOptions(options),
+    }));
+    const projection = await ready;
+    child.unref();
+    child.channel?.unref?.();
+    const server = serverPublicValue(projection.authorityId);
+    serverStates.set(server, {
+      projection,
+      tracker,
+      remoteWorker: true,
+      disposed: false,
+      disposalPromise: null,
+    });
+    publishAuthorityLifecycle({
+      phase: "ready",
+      processId: child.pid ?? null,
+      parentPid: process.pid,
+      authorityGenerationId: projection.authorityGenerationId,
+    });
+    return server;
+  } catch (error) {
+    try {
+      await stopWorkerAndObserveExit(tracker);
+    } catch (terminationError) {
+      throw terminationError;
+    }
+    throw error;
+  }
+}
+
+export async function runGpuHmrMcpAdmissionOnlineReplayAuthorityWorker() {
+  if (
+    typeof process.send !== "function"
+    || process.connected !== true
+    || !boundedPositiveInteger(process.ppid, MAX_PROCESS_ID)
+  ) {
+    throw onlineReplayError("worker_parent_channel_invalid");
+  }
+  let server = null;
+  let stopping = false;
+  const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
+    if (server !== null) {
+      const state = serverStates.get(server);
+      if (state !== undefined) state.parentChannelAlive = false;
+      await disposeGpuHmrMcpAdmissionOnlineReplayAuthorityServer(server);
+    }
+    if (process.connected) process.disconnect();
+    process.exitCode = 0;
+  };
+  process.once("disconnect", () => {
+    void shutdown().catch(() => { process.exitCode = 71; });
+  });
+  process.on("message", (message) => {
+    if (message?.schemaVersion === WORKER_STOP_SCHEMA) {
+      void shutdown().catch(() => { process.exitCode = 71; });
+      return;
+    }
+    if (server !== null || stopping) return;
+    if (
+      message?.schemaVersion !== WORKER_START_SCHEMA
+      || message.parentPid !== process.ppid
+      || process.connected !== true
+    ) {
+      void shutdown().catch(() => { process.exitCode = 71; });
+      return;
+    }
+    void (async () => {
+      const parentStartIdentity = prefixedRandomId(
+        PARENT_START_ID_PREFIX,
+        "synthi.gpu_hmr.mcp_admission_online_replay_parent_channel.v1",
+      );
+      server = await startLocalAuthorityServer(
+        message.options,
+        process.ppid,
+        parentStartIdentity,
+      );
+      const workerState = serverStates.get(server);
+      if (workerState === undefined) {
+        await shutdown();
+        return;
+      }
+      workerState.parentLiveness = () => process.connected === true
+        && process.ppid === workerState.parentPid;
+      const projection = gpuHmrMcpAdmissionOnlineReplayAuthorityServerProjection(
+        server,
+      );
+      if (projection === null || process.connected !== true) {
+        await shutdown();
+        return;
+      }
+      process.send(Object.freeze({
+        schemaVersion: WORKER_READY_SCHEMA,
+        parentPid: process.ppid,
+        projection,
+      }));
+    })().catch(() => {
+      void shutdown().catch(() => { process.exitCode = 71; });
+    });
+  });
+}
+
 export function gpuHmrMcpAdmissionOnlineReplayAuthorityServerProjection(value) {
   return serverStates.get(value)?.projection ?? null;
 }
@@ -1508,9 +1862,26 @@ export async function disposeGpuHmrMcpAdmissionOnlineReplayAuthorityServer(
   value,
 ) {
   const state = serverStates.get(value);
-  if (state === undefined || state.disposed) return false;
+  if (state === undefined) return false;
+  if (state.remoteWorker === true) {
+    if (state.disposed) return false;
+    if (state.disposalPromise !== null) return await state.disposalPromise;
+    const disposal = (async () => {
+      await stopWorkerAndObserveExit(state.tracker);
+      state.disposed = true;
+      return true;
+    })();
+    state.disposalPromise = disposal;
+    try {
+      return await disposal;
+    } finally {
+      if (!state.disposed) state.disposalPromise = null;
+    }
+  }
+  if (state.disposed) return false;
   state.disposed = true;
   state.accepting = false;
+  state.parentChannelAlive = false;
   state.responsePrivateKey = null;
   for (const socket of state.connections) socket.destroy();
   await new Promise((resolve) => {
@@ -1682,11 +2053,7 @@ function verifySignedResponse(state, responseValue, request) {
   if (!signatureValid) throw onlineReplayError("response_signature_invalid");
 
   const revision = BigInt(response.revision);
-  if (revision > state.highestRevision) {
-    state.highestRevision = revision;
-    state.highestCommitHash = response.commitHash;
-  }
-  return Object.freeze({
+  const value = Object.freeze({
     schemaVersion: GPU_HMR_MCP_ADMISSION_ONLINE_REPLAY_CAS_RESULT_SCHEMA,
     authorityId: response.authorityId,
     authorityGenerationId: response.authorityGenerationId,
@@ -1720,6 +2087,12 @@ function verifySignedResponse(state, responseValue, request) {
     acceptedForGpuHmr: response.acceptedForGpuHmr,
     gpuHmrSuccess: response.gpuHmrSuccess,
     canSatisfyRuntimeProof: response.canSatisfyRuntimeProof,
+  });
+  return Object.freeze({
+    value,
+    revision,
+    commitHash: response.commitHash,
+    rejectRollback: false,
   });
 }
 
@@ -1796,21 +2169,37 @@ function verifyProbeResponse(state, responseValue, request) {
   ) {
     throw onlineReplayError("probe_response_rollback_detected");
   }
-  if (revision > state.highestRevision) {
-    state.highestRevision = revision;
-    state.highestCommitHash = response.commitHash;
-  }
-  return Object.freeze({ ...response });
+  return Object.freeze({
+    value: Object.freeze({ ...response }),
+    revision,
+    commitHash: response.commitHash,
+    rejectRollback: true,
+  });
 }
 
-function exchangeWire(state, wire, signalValue, verifyResponseValue) {
-  const inspectedSignal = signalState(signalValue);
-  if (inspectedSignal.aborted) return Promise.reject(abortError());
-  const requestFrame = frameFor(wire, MAX_REQUEST_FRAME_BYTES);
-  if (requestFrame === null) {
-    return Promise.reject(onlineReplayError("request_frame_invalid"));
+function acceptVerifiedResponse(state, verified) {
+  if (
+    verified.rejectRollback
+    && (
+      verified.revision < state.highestRevision
+      || (
+        verified.revision === state.highestRevision
+        && verified.commitHash !== state.highestCommitHash
+      )
+    )
+  ) {
+    throw onlineReplayError("probe_response_rollback_detected");
   }
+  if (verified.revision > state.highestRevision) {
+    state.highestRevision = verified.revision;
+    state.highestCommitHash = verified.commitHash;
+  }
+  return verified.value;
+}
 
+function exchangeFrame(state, requestFrame, operation) {
+  throwIfOperationCancelled(operation);
+  const timeoutMs = remainingOperationTimeoutMs(operation);
   return new Promise((resolve, reject) => {
     let settled = false;
     let connected = false;
@@ -1822,8 +2211,8 @@ function exchangeWire(state, wire, signalValue, verifyResponseValue) {
       if (settled) return;
       settled = true;
       if (timer !== undefined) clearTimeout(timer);
-      if (inspectedSignal.signal !== null) {
-        removeAbortListener(inspectedSignal.signal, onAbort);
+      if (operation.signal !== null) {
+        removeAbortListener(operation.signal, onAbort);
       }
       socket.destroy();
       if (error === null) resolve(value);
@@ -1852,11 +2241,7 @@ function exchangeWire(state, wire, signalValue, verifyResponseValue) {
         finish(onlineReplayError("response_frame_invalid"));
         return;
       }
-      try {
-        finish(null, verifyResponseValue(parsed));
-      } catch (error) {
-        finish(error);
-      }
+      finish(null, parsed);
     });
     socket.on("error", (error) => {
       finish(onlineReplayError(
@@ -1876,30 +2261,29 @@ function exchangeWire(state, wire, signalValue, verifyResponseValue) {
     });
     timer = setTimeout(() => {
       finish(onlineReplayError("authority_timeout", undefined, true));
-    }, state.metadata.operationTimeoutMs);
-    if (inspectedSignal.signal !== null) {
-      addAbortListener(inspectedSignal.signal, onAbort);
-      if (nativeAbortSignalAborted(inspectedSignal.signal)) onAbort();
+    }, timeoutMs);
+    if (operation.signal !== null) {
+      addAbortListener(operation.signal, onAbort);
+      if (nativeAbortSignalAborted(operation.signal)) onAbort();
     }
   });
 }
 
-function exchange(state, request, signalValue) {
-  const wire = Object.freeze({
-    schemaVersion: WIRE_REQUEST_SCHEMA,
-    authorityGenerationId: state.metadata.authorityGenerationId,
-    request,
-  });
-  return exchangeWire(
-    state,
-    wire,
-    signalValue,
-    (response) => verifySignedResponse(state, response, request),
-  );
+function markIndeterminate(error) {
+  if (error !== null && typeof error === "object") {
+    try {
+      error.outcome = "indeterminate";
+      error.failClosed = true;
+      return error;
+    } catch {
+      // Fall through to a typed wrapper for non-extensible foreign errors.
+    }
+  }
+  return onlineReplayError("operation_indeterminate", error, true);
 }
 
-function probe(state, signalValue) {
-  const request = Object.freeze({
+function createProbeRequest(state) {
+  return Object.freeze({
     schemaVersion: GPU_HMR_MCP_ADMISSION_ONLINE_REPLAY_PROBE_REQUEST_SCHEMA,
     authorityId: state.metadata.authorityId,
     authorityGenerationId: state.metadata.authorityGenerationId,
@@ -1907,12 +2291,85 @@ function probe(state, signalValue) {
     policyHash: state.metadata.policyHash,
     probeId: randomBytes(32).toString("base64url"),
   });
-  return exchangeWire(
-    state,
-    request,
-    signalValue,
-    (response) => verifyProbeResponse(state, response, request),
+}
+
+async function signedProbeStage(state, operation, indeterminate) {
+  const request = createProbeRequest(state);
+  const frame = frameFor(request, MAX_REQUEST_FRAME_BYTES);
+  if (frame === null) throw onlineReplayError("probe_request_frame_invalid");
+  try {
+    const response = await exchangeFrame(state, frame, operation);
+    throwIfOperationCancelled(operation);
+    return acceptVerifiedResponse(
+      state,
+      verifyProbeResponse(state, response, request),
+    );
+  } catch (error) {
+    throw indeterminate ? markIndeterminate(error) : error;
+  }
+}
+
+async function exchange(state, request, signalValue) {
+  const inspectedSignal = signalState(signalValue);
+  if (inspectedSignal.aborted) throw abortError();
+  const operation = createClientOperation(
+    inspectedSignal.signal,
+    state.metadata.operationTimeoutMs,
   );
+  const wire = Object.freeze({
+    schemaVersion: WIRE_REQUEST_SCHEMA,
+    authorityGenerationId: state.metadata.authorityGenerationId,
+    request,
+  });
+  const requestFrame = frameFor(wire, MAX_REQUEST_FRAME_BYTES);
+  if (requestFrame === null) throw onlineReplayError("request_frame_invalid");
+
+  await signedProbeStage(state, nextOperationStage(operation), false);
+  let responseValue;
+  try {
+    responseValue = await exchangeFrame(
+      state,
+      requestFrame,
+      nextOperationStage(operation),
+    );
+  } catch (error) {
+    throw markIndeterminate(error);
+  }
+  const postProbe = await signedProbeStage(
+    state,
+    nextOperationStage(operation),
+    true,
+  );
+  let verified;
+  try {
+    throwIfOperationCancelled(operation);
+    verified = verifySignedResponse(state, responseValue, request);
+    if (verified.revision > BigInt(postProbe.revision)) {
+      throw onlineReplayError("post_commit_probe_precedes_response");
+    }
+  } catch (error) {
+    throw markIndeterminate(error);
+  }
+  const finalProbe = await signedProbeStage(
+    state,
+    nextOperationStage(operation),
+    true,
+  );
+  if (BigInt(finalProbe.revision) < verified.revision) {
+    throw onlineReplayError("final_probe_precedes_response", undefined, true);
+  }
+  throwIfOperationCancelled(operation);
+  return acceptVerifiedResponse(state, verified);
+}
+
+async function probe(state, signalValue) {
+  const inspectedSignal = signalState(signalValue);
+  if (inspectedSignal.aborted) throw abortError();
+  const operation = createClientOperation(
+    inspectedSignal.signal,
+    state.metadata.operationTimeoutMs,
+  );
+  return await signedProbeStage(state, nextOperationStage(operation), false);
 }
 
 function clientPublicValue(authorityId) {

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { ChildProcess, spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes, type KeyObject } from "node:crypto";
 import {
   chmodSync,
@@ -6,6 +6,7 @@ import {
   lstatSync,
   unlinkSync,
 } from "node:fs";
+import { channel } from "node:diagnostics_channel";
 import {
   createConnection,
   createServer as createNetServer,
@@ -184,7 +185,7 @@ async function startAuthority(
     maxScopes: overrides.maxScopes ?? 16,
     maxReceiptsPerScope: overrides.maxReceiptsPerScope ?? 32,
     maxOperations: overrides.maxOperations ?? 128,
-    operationTimeoutMs: overrides.operationTimeoutMs ?? 1_000,
+    operationTimeoutMs: overrides.operationTimeoutMs ?? 5_000,
   });
   authorityServers.push(server);
   const metadata = gpuHmrMcpAdmissionOnlineReplayAuthorityServerProjection(
@@ -276,9 +277,13 @@ async function startRelay(
   options: Partial<{
     delayMs: number;
     corruptSignature: boolean;
+    dropConnection: number;
   }> = {},
 ): Promise<string> {
+  let connectionNumber = 0;
   return await startLocalServer((downstream) => {
+    connectionNumber += 1;
+    const thisConnection = connectionNumber;
     const requestChunks: Buffer[] = [];
     let forwarding = false;
     const forward = () => {
@@ -316,7 +321,10 @@ async function startRelay(
     };
     downstream.on("data", (chunk: Buffer) => {
       requestChunks.push(Buffer.from(chunk));
-      if (chunk.includes(0x0a)) setImmediate(forward);
+      if (chunk.includes(0x0a)) {
+        if (options.dropConnection === thisConnection) downstream.destroy();
+        else setImmediate(forward);
+      }
     });
   });
 }
@@ -354,6 +362,23 @@ function rawExchange(endpoint: string, frame: Buffer | string): Promise<Buffer> 
     socket.on("error", finish);
     setTimeout(finish, 1_000).unref();
   });
+}
+
+function processExists(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+async function waitForProcessExit(processId: number, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  while (processExists(processId) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return !processExists(processId);
 }
 
 function childCompareAndSet(
@@ -492,6 +517,10 @@ describe("online parent admission replay authority", () => {
       maxScopes: 16,
       maxReceiptsPerScope: 32,
     });
+    expect(fixture.metadata.parentPid).toBe(process.pid);
+    expect(fixture.metadata.parentStartIdentity).toMatch(
+      /^gpu-hmr-mcp-online-replay-parent-start:sha256:[a-f0-9]{64}$/,
+    );
     expect(fixture.metadata.policyHash).toBe(
       hashGpuHmrMcpAdmissionOnlineReplayPolicy({
         maxReceiptAgeNs: fixture.metadata.maxReceiptAgeNs,
@@ -521,6 +550,26 @@ describe("online parent admission replay authority", () => {
       ...fixture.metadata,
       maxScopes: fixture.metadata.maxScopes + 1,
     })).toThrow("server_projection_invalid");
+    expect(() => createGpuHmrMcpAdmissionOnlineReplayAuthorityClient({
+      ...fixture.metadata,
+      parentStartIdentity: "malformed",
+    })).toThrow("server_projection_invalid");
+    const mismatchedParentIdentity = clientForMetadata({
+      ...fixture.metadata,
+      parentStartIdentity: `${fixture.metadata.parentStartIdentity.slice(0, -1)}${
+        fixture.metadata.parentStartIdentity.endsWith("0") ? "1" : "0"
+      }`,
+    });
+    await expect(mismatchedParentIdentity.projection.probe()).rejects.toThrow(
+      "probe_response_invalid",
+    );
+    const unavailableParentIdentity = clientForMetadata({
+      ...fixture.metadata,
+      parentPid: 0x7fff_ffff,
+    });
+    await expect(unavailableParentIdentity.projection.probe()).rejects.toThrow(
+      "probe_response_invalid",
+    );
     const substitutedPolicy = {
       maxReceiptAgeNs: fixture.metadata.maxReceiptAgeNs,
       maxFutureSkewNs: fixture.metadata.maxFutureSkewNs,
@@ -625,6 +674,256 @@ describe("online parent admission replay authority", () => {
       new Proxy({}, { get: trap, ownKeys: trap }),
     )).rejects.toThrow("request_invalid");
     expect(traps).toBe(0);
+  });
+
+  it("observes actual worker exit on cleanup and leaves no authority process", async () => {
+    const lifecycle = channel(
+      "gpu-hmr-mcp-admission-online-replay-authority.lifecycle.v1",
+    );
+    const events: any[] = [];
+    const subscriber = (message: any) => events.push(message);
+    lifecycle.subscribe(subscriber);
+    let fixture: Awaited<ReturnType<typeof startAuthority>>;
+    try {
+      fixture = await startAuthority();
+      const spawned = events.find((event) => event.phase === "spawned");
+      expect(spawned).toMatchObject({ parentPid: process.pid });
+      expect(Number.isSafeInteger(spawned.processId)).toBe(true);
+
+      const [firstDispose, concurrentDispose] = await Promise.all([
+        disposeGpuHmrMcpAdmissionOnlineReplayAuthorityServer(fixture.server),
+        disposeGpuHmrMcpAdmissionOnlineReplayAuthorityServer(fixture.server),
+      ]);
+      expect(firstDispose).toBe(true);
+      expect(concurrentDispose).toBe(true);
+      expect(await disposeGpuHmrMcpAdmissionOnlineReplayAuthorityServer(
+        fixture.server,
+      )).toBe(false);
+      expect(events).toContainEqual(expect.objectContaining({
+        phase: "exit_observed",
+        processId: spawned.processId,
+      }));
+      expect(processExists(spawned.processId)).toBe(false);
+      await expect(fixture.projection.probe()).rejects.toThrow(
+        "authority_unavailable",
+      );
+    } finally {
+      lifecycle.unsubscribe(subscriber);
+    }
+  });
+
+  it("fails closed on non-observed termination, unrefs uncertain handles, and retries after late exit", async () => {
+    let worker: ChildProcess | null = null;
+    const nativeChildUnref = ChildProcess.prototype.unref;
+    const childUnref = vi.spyOn(ChildProcess.prototype, "unref")
+      .mockImplementation(function (this: ChildProcess) {
+        worker = this;
+        return Reflect.apply(nativeChildUnref, this, []);
+      });
+    const fixture = await startAuthority();
+    expect(worker).not.toBeNull();
+    childUnref.mockClear();
+    const channelUnref = vi.spyOn(worker!.channel!, "unref");
+    const send = vi.spyOn(worker!, "send")
+      .mockImplementation(function (this: ChildProcess, message: any) {
+        expect(message).toEqual({
+          schemaVersion:
+            "synthi.gpu_hmr.mcp_admission_online_replay_worker_stop.v1",
+        });
+        return true;
+      } as any);
+    const kill = vi.spyOn(worker!, "kill")
+      .mockImplementation(function () {
+        return true;
+      });
+
+    vi.useFakeTimers();
+    try {
+      const firstDispose =
+        disposeGpuHmrMcpAdmissionOnlineReplayAuthorityServer(fixture.server);
+      const concurrentDispose =
+        disposeGpuHmrMcpAdmissionOnlineReplayAuthorityServer(fixture.server);
+      const disposalResults = Promise.allSettled([
+        firstDispose,
+        concurrentDispose,
+      ]);
+      await vi.advanceTimersByTimeAsync(5_100);
+      const results = await disposalResults;
+
+      expect(results[0].status).toBe("rejected");
+      expect(results[1].status).toBe("rejected");
+      if (results[0].status === "rejected" && results[1].status === "rejected") {
+        expect(results[0].reason).toMatchObject({
+          code:
+            "GPU_HMR_MCP_ADMISSION_ONLINE_REPLAY_AUTHORITY_TERMINATION_INDETERMINATE",
+          outcome: "indeterminate",
+          failClosed: true,
+        });
+        expect(results[1].reason).toBe(results[0].reason);
+      }
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(kill).toHaveBeenCalledTimes(1);
+      expect(childUnref).toHaveBeenCalledTimes(1);
+      expect(channelUnref).toHaveBeenCalledTimes(1);
+
+      vi.useRealTimers();
+      send.mockRestore();
+      kill.mockRestore();
+      const lateExit = new Promise<void>((resolve) => {
+        worker!.once("exit", () => resolve());
+      });
+      expect(worker!.kill("SIGKILL")).toBe(true);
+      await lateExit;
+
+      expect(await disposeGpuHmrMcpAdmissionOnlineReplayAuthorityServer(
+        fixture.server,
+      )).toBe(true);
+      expect(await disposeGpuHmrMcpAdmissionOnlineReplayAuthorityServer(
+        fixture.server,
+      )).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      send.mockRestore();
+      kill.mockRestore();
+      if (worker !== null && processExists(worker.pid ?? 0)) {
+        worker.kill("SIGKILL");
+        await waitForProcessExit(worker.pid ?? 0, 5_000);
+      }
+    }
+  }, 20_000);
+
+  it("terminates the authority when its immediate parent channel closes", async () => {
+    const receiptSigner = signer();
+    const input = Buffer.from(JSON.stringify({
+      moduleUrl: MODULE_URL,
+      trustedVerificationKey: receiptSigner.exportVerificationKey(),
+      validationRunChallenge: CHALLENGE,
+    })).toString("base64url");
+    const program = `
+const { channel } = await import("node:diagnostics_channel");
+const input = JSON.parse(Buffer.from(
+  process.env.ONLINE_REPLAY_HOST_INPUT ?? "",
+  "base64url",
+).toString("utf8"));
+let workerPid = null;
+channel("gpu-hmr-mcp-admission-online-replay-authority.lifecycle.v1")
+  .subscribe((message) => {
+    if (message.phase === "spawned") workerPid = message.processId;
+  });
+const authority = await import(input.moduleUrl);
+const server = await authority
+  .startGpuHmrMcpAdmissionOnlineReplayAuthorityServer({
+    trustedVerificationKey: input.trustedVerificationKey,
+    validationRunChallenge: input.validationRunChallenge,
+    operationTimeoutMs: 5000,
+  });
+const projection = authority
+  .gpuHmrMcpAdmissionOnlineReplayAuthorityServerProjection(server);
+process.stdout.write(JSON.stringify({ workerPid, projection }) + "\\n");
+setInterval(() => {}, 1000);
+`;
+    const host = spawn(
+      process.execPath,
+      ["--input-type=module", "--eval", program],
+      {
+        env: { ...process.env, ONLINE_REPLAY_HOST_INPUT: input },
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      },
+    );
+    let workerPid = 0;
+    try {
+      const ready = await new Promise<any>((resolve, reject) => {
+        let stdout = "";
+        let stderr = "";
+        const timer = setTimeout(
+          () => reject(new Error("authority host startup timed out")),
+          10_000,
+        );
+        host.stdout.setEncoding("utf8");
+        host.stderr.setEncoding("utf8");
+        host.stderr.on("data", (chunk: string) => { stderr += chunk; });
+        host.stdout.on("data", (chunk: string) => {
+          stdout += chunk;
+          const newline = stdout.indexOf("\n");
+          if (newline === -1) return;
+          clearTimeout(timer);
+          try {
+            resolve(JSON.parse(stdout.slice(0, newline)));
+          } catch (error) {
+            reject(new Error(`authority host output invalid: ${stderr}`, {
+              cause: error,
+            }));
+          }
+        });
+        host.once("error", reject);
+        host.once("exit", (code, signal) => reject(new Error(
+          `authority host exited before ready (${String(code)}, ${String(signal)}): ${stderr}`,
+        )));
+      });
+      workerPid = ready.workerPid;
+      expect(ready.projection.parentPid).toBe(host.pid);
+      expect(processExists(workerPid)).toBe(true);
+      const remoteClient = clientForMetadata(ready.projection);
+      await expect(remoteClient.projection.probe()).resolves.toMatchObject({
+        revision: "0",
+      });
+
+      const hostExited = new Promise<void>((resolve) => {
+        host.once("exit", () => resolve());
+      });
+      host.kill("SIGKILL");
+      await hostExited;
+      expect(await waitForProcessExit(workerPid, 5_000)).toBe(true);
+      await expect(remoteClient.projection.probe()).rejects.toThrow(
+        /authority_unavailable|response_frame_invalid/,
+      );
+    } finally {
+      if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL");
+      if (workerPid > 0 && processExists(workerPid)) {
+        process.kill(workerPid, "SIGKILL");
+        await waitForProcessExit(workerPid, 5_000);
+      }
+    }
+  }, 20_000);
+
+  it("gives concurrent starts independent startup timeout budgets", async () => {
+    const short = startAuthority(signer(), { operationTimeoutMs: 1 });
+    const long = startAuthority(signer(), { operationTimeoutMs: 5_000 });
+    const [shortResult, longResult] = await Promise.allSettled([short, long]);
+
+    expect(shortResult.status).toBe("rejected");
+    if (shortResult.status === "rejected") {
+      expect(shortResult.reason).toMatchObject({
+        code: "GPU_HMR_MCP_ADMISSION_ONLINE_REPLAY_WORKER_START_TIMEOUT",
+      });
+    }
+    expect(longResult.status).toBe("fulfilled");
+    if (longResult.status === "fulfilled") {
+      expect(longResult.value.metadata.operationTimeoutMs).toBe(5_000);
+      expect(longResult.value.metadata.parentPid).toBe(process.pid);
+    }
+  });
+
+  it("keeps a committed result indeterminate until the final signed probe", async () => {
+    const fixture = await startAuthority();
+    const relay = await startRelay(fixture.metadata.endpoint, {
+      dropConnection: 4,
+    });
+    const relayed = clientForMetadata(metadataWith(
+      fixture.metadata,
+      relay,
+      1_000,
+    ));
+    const request = casRequest(
+      fixture.metadata.authorityId,
+      fixture.receiptSigner.sign(admissionInput()),
+    );
+
+    await expect(relayed.projection.compareAndSet(request)).rejects
+      .toMatchObject({ outcome: "indeterminate", failClosed: true });
+    await expect(fixture.projection.compareAndSet(request)).resolves
+      .toMatchObject({ outcome: "applied", revision: "1" });
   });
 
   it("shares replay state with two clients and a real child-process client", async () => {
@@ -785,7 +1084,7 @@ describe("online parent admission replay authority", () => {
     const forged = clientForMetadata(metadataWith(
       fixture.metadata,
       relay,
-      500,
+      5_000,
     ));
     const receipt = fixture.receiptSigner.sign(admissionInput());
     const request = casRequest(fixture.metadata.authorityId, receipt);
@@ -863,7 +1162,7 @@ describe("online parent admission replay authority", () => {
 
   it("fails closed on abort and timeout, then resolves an indeterminate commit by ID", async () => {
     const fixture = await startAuthority(undefined, {
-      operationTimeoutMs: 1_000,
+      operationTimeoutMs: 5_000,
     });
     const receipt = fixture.receiptSigner.sign(admissionInput());
     const request = casRequest(fixture.metadata.authorityId, receipt);
@@ -930,12 +1229,12 @@ describe("online parent admission replay authority", () => {
       .toMatchObject({ name: "AbortError", outcome: "indeterminate" });
 
     const delayedEndpoint = await startRelay(fixture.metadata.endpoint, {
-      delayMs: 150,
+      delayMs: 4_000,
     });
     const timed = clientForMetadata(metadataWith(
       fixture.metadata,
       delayedEndpoint,
-      25,
+      2_500,
     ));
     let timeoutError: any = null;
     try {
