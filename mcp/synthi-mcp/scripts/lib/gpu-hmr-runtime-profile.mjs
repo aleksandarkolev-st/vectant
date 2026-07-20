@@ -370,6 +370,25 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
   const visual = raw.visualProof && typeof raw.visualProof === 'object' ? raw.visualProof : {};
   const build = raw.build && typeof raw.build === 'object' ? raw.build : {};
 
+  const adapterAuthorityKeys = [
+    'acceptedForGpuHmr',
+    'accepted_for_gpu_hmr',
+    'gpuHmrSuccess',
+    'gpu_hmr_success',
+    'canSatisfyRuntimeProof',
+    'can_satisfy_runtime_proof',
+    'canSatisfyDispatchProof',
+    'can_satisfy_dispatch_proof',
+  ];
+  for (const key of adapterAuthorityKeys) {
+    if (Object.hasOwn(adapter, key) && typeof adapter[key] !== 'boolean') {
+      throw new Error(`runtime profile adapter.${key} must be boolean when declared`);
+    }
+  }
+  if (adapterAuthorityKeys.some((key) => adapter[key] === true)) {
+    throw new Error('runtime profile adapter must not claim GPU HMR authority');
+  }
+
   const id = nonEmptyString(pick(raw.id, opts.defaultId, 'custom-runtime-profile'), 'id');
   const adapterFamily = nonEmptyString(
     pick(adapter.family, raw.adapterFamily, opts.defaultAdapterFamily, 'hiprt-path-tracer'),
