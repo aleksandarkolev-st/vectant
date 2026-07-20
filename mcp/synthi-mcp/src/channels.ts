@@ -19,6 +19,27 @@ import { randomUUID } from "node:crypto";
 const DEFAULT_COMPILE_CHUNK_BYTES = 48_000;
 const GPU_PROOF_KEY_PIN_WAIT_MS = 4_000;
 const CANONICAL_SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const GPU_FULL_RUNTIME_PROOF_STATE = "gpu-hmr-full-runtime-proven";
+const GPU_TYPED_PROOF_MESSAGE = "gpu_hmr_proof";
+
+function strictParentRuntimeProofId(
+  message: Record<string, unknown>,
+): string | null {
+  if (message.type !== GPU_TYPED_PROOF_MESSAGE) return null;
+  if (
+    (message.resultState ?? message.result_state)
+    !== GPU_FULL_RUNTIME_PROOF_STATE
+  ) {
+    return null;
+  }
+  const parent = message.parentVerification;
+  if (parent === null || typeof parent !== "object" || Array.isArray(parent)) {
+    return null;
+  }
+  const fullRuntimeProofId = (parent as Record<string, unknown>)
+    .fullRuntimeProofId;
+  return typeof fullRuntimeProofId === "string" ? fullRuntimeProofId : null;
+}
 
 export interface SessionChannelsRuntimeEvidenceContext {
   readonly keyPin: RuntimeEvidenceTransportKeyPin;
@@ -154,8 +175,25 @@ export class SessionChannels {
       receiptConsumer: this.runtimeEvidenceReceiptConsumer,
     });
     this.hmr = new HmrNormalizer(buildLogDC, {
-      beforeClassify: (message, observedAt) =>
-        this.gpuParentRuntimeProofAdmission.beforeClassify(message, observedAt),
+      beforeClassify: (message, observedAt) => {
+        const include = this.gpuParentRuntimeProofAdmission.beforeClassify(
+          message,
+          observedAt,
+        );
+        if (!include) return false;
+
+        const fullRuntimeProofId = strictParentRuntimeProofId(message);
+        if (fullRuntimeProofId === null) return true;
+        const parentControlVerificationMaterial =
+          this.gpuParentRuntimeProofAdmission
+            .takeControlVerificationMaterial(fullRuntimeProofId);
+        return parentControlVerificationMaterial === null
+          ? false
+          : {
+              include: true,
+              parentControlVerificationMaterial,
+            };
+      },
     });
     this.runtimeEvidenceKeyPinUnsubscribe = runtimeEvidenceContext.keyPin.onChange(
       (snapshot) => {

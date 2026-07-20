@@ -12,10 +12,45 @@ import {
 } from "../../src/gpu_proof.js";
 import { queryGpuHmrLedgerInvariants } from "../../src/gpu_proof_ledger.js";
 import { normalizeGpuHmrAcceptanceContract } from "../../scripts/lib/gpu-hmr-acceptance-contract.mjs";
+import {
+  GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
+  type GpuParentRuntimeProofControlVerificationMaterial,
+} from "../../src/gpu_parent_runtime_proof_admission.js";
 
 const HASH_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const HASH_C = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+function parentControlVerificationMaterialFixture():
+  GpuParentRuntimeProofControlVerificationMaterial {
+  return {
+    schemaVersion:
+      GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
+    controlBinding: {
+      type: "gpu_hmr_parent_runtime_proof_control_binding",
+      signedEvidence: {
+        algorithm: "ed25519",
+        signature: "c2lnbmVkLXB1YmxpYy1ldmlkZW5jZQ",
+      },
+    },
+    runtimeEvidenceTransportVerificationKey: {
+      schemaVersion:
+        "synthi.gpu_hmr.runtime_evidence_transport_verification_key.v1",
+      algorithm: "ed25519",
+      keyId: "runtime-evidence-key:fixture",
+      producer: "synthi-webrtc-compiler-worker",
+      workerInstanceId: "runtime-worker:fixture",
+      workerProcessId: "877",
+      publicKey: "cHVibGljLWV2aWRlbmNl",
+      keyAnnouncementId: "runtime-evidence-key-announcement:fixture",
+    },
+    transportContext: {
+      transportSessionId: "transport-session:fixture",
+      compileRequestNonce: `gpu-proof-transport-request:${"8".repeat(32)}`,
+      expectedWorkerProcessId: "877",
+    },
+  };
+}
 const HIP_FIELD_EVIDENCE_REFS = {
   kernel_name: ["runtime:dispatch-kernel"],
   launch_api: ["runtime:dispatch-launch-api"],
@@ -421,7 +456,11 @@ function installFakeAttached(
     dimensions?: () => { width: number; height: number };
   }
 ): {
-  feedHmr: (msg: Record<string, unknown>) => void;
+  feedHmr: (
+    msg: Record<string, unknown>,
+    parentControlVerificationMaterial?:
+      GpuParentRuntimeProofControlVerificationMaterial,
+  ) => void;
   invalidateProofTrust: (
     reasonClass?: GpuProofTrustInvalidation["reasonClass"],
   ) => void;
@@ -490,8 +529,12 @@ function installFakeAttached(
     },
   };
   return {
-    feedHmr: (msg: Record<string, unknown>) => {
-      const proof = classifyGpuHmrProofMessage(msg);
+    feedHmr: (msg, parentControlVerificationMaterial) => {
+      const proof = classifyGpuHmrProofMessage(
+        msg,
+        Date.now(),
+        parentControlVerificationMaterial ?? null,
+      );
       if (proof !== null && proofTrustInvalidation !== null) return;
       for (const listener of [...proofListeners]) {
         if (gpuHmrProofMatches(proof, listener.opts)) listener.cb(proof);
@@ -1054,6 +1097,112 @@ describe("synthi_wait_hmr", () => {
     expect(consumed.evidence_binding_hash).toBe(body.frame_gate.evidence_binding_hash);
   });
 
+  it("pins a satisfying strict proof while a lower proof arrives during the frame wait", async () => {
+    const ledger = passingProofLedger();
+    const parentControlVerificationMaterial =
+      parentControlVerificationMaterialFixture();
+    const budget = resolvePipelineBudgetMs();
+    const frameClockBase = Date.now();
+    session.setFrameAdvance(1, frameClockBase);
+
+    const issueInputs: Array<Parameters<typeof session.issueFrameGateToken>[0]> = [];
+    const issueFrameGateToken = session.issueFrameGateToken.bind(session);
+    vi.spyOn(session, "issueFrameGateToken").mockImplementation((input) => {
+      issueInputs.push(input);
+      return issueFrameGateToken(input);
+    });
+
+    const awaitFrameAdvanceAtOrAfter =
+      session.awaitFrameAdvanceAtOrAfter.bind(session);
+    let resolveFrameWaitStarted!: () => void;
+    const frameWaitStarted = new Promise<void>((resolve) => {
+      resolveFrameWaitStarted = resolve;
+    });
+    vi.spyOn(session, "awaitFrameAdvanceAtOrAfter").mockImplementation(
+      (minTsMs, timeoutMs, signal) => {
+        resolveFrameWaitStarted();
+        return awaitFrameAdvanceAtOrAfter(minTsMs, timeoutMs, signal);
+      },
+    );
+
+    let lowerProofEmittedDuringFrameWait = false;
+    const fake = installFakeAttached((opts) => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+        proofId: `gpu-proof:${"a".repeat(64)}`,
+        proofArtifactPath: ".synthi/gpu-hmr/proofs/full-runtime.json",
+        proofLedger: ledger,
+        runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
+      }, parentControlVerificationMaterial);
+      void frameWaitStarted.then(() => {
+        lowerProofEmittedDuringFrameWait = true;
+        fake.feedHmr({
+          status: "gpu-proof-state",
+          resultState: "gpu-hmr-symbol-bound",
+          proofId: `gpu-proof:${"b".repeat(64)}`,
+          proofArtifactPath: ".synthi/gpu-hmr/proofs/symbol-bound.json",
+        });
+        session.setFrameAdvance(2, Date.now() + budget + 1);
+      });
+      return new Promise((resolve) => {
+        opts?.signal?.addEventListener("abort", () => resolve({
+          status: "applied",
+          source: "hmr_status",
+          elapsedMs: 250,
+        }), { once: true });
+      });
+    });
+
+    const res = await waitHmrTool({
+      timeoutMs: Math.max(1_000, budget + 500),
+      requireGpuFullRuntimeProof: true,
+    });
+
+    expect(lowerProofEmittedDuringFrameWait).toBe(true);
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      detail?: { proofRef?: string | null; resultState?: string };
+      gpu_proof_validation?: { satisfied?: boolean };
+      gpu_proof_telemetry?: {
+        proofRef?: string | null;
+        resultState?: string;
+        observedAt?: number;
+        parentControlVerificationMaterial?:
+          GpuParentRuntimeProofControlVerificationMaterial;
+      };
+      gpu_proof?: {
+        proofRef?: string | null;
+        resultState?: string;
+        observedAt?: number;
+        parentControlVerificationMaterial?:
+          GpuParentRuntimeProofControlVerificationMaterial;
+      };
+      frame_gate: {
+        runtime_binding_status?: string;
+        runtime_proof_ref?: string;
+      };
+    };
+    expect(body.gpu_proof_validation?.satisfied).toBe(true);
+    expect(body.detail?.resultState).toBe("gpu-hmr-full-runtime-proven");
+    expect(body.gpu_proof?.resultState).toBe("gpu-hmr-full-runtime-proven");
+    expect(body.detail?.proofRef).toBe(body.gpu_proof?.proofRef);
+    expect(body.gpu_proof_telemetry?.proofRef).toBe(body.gpu_proof?.proofRef);
+    expect(body.gpu_proof?.parentControlVerificationMaterial)
+      .toEqual(parentControlVerificationMaterial);
+    expect(body.gpu_proof?.parentControlVerificationMaterial)
+      .toBe(body.gpu_proof_telemetry?.parentControlVerificationMaterial);
+    expect(issueInputs).toHaveLength(1);
+    expect(issueInputs[0]?.evidence_binding).toMatchObject({
+      runtime_proof_state: "gpu-hmr-full-runtime-proven",
+      runtime_proof_observed_at_ms: body.gpu_proof?.observedAt,
+    });
+    expect(body.frame_gate.runtime_binding_status).toBe("bound");
+    expect(body.frame_gate.runtime_proof_ref).toBe(
+      issueInputs[0]?.evidence_binding?.runtime_proof_ref,
+    );
+  });
+
   it("does not mint a legacy token when accepted strict proof lacks runtime binding material", async () => {
     const ledger = passingProofLedger();
     delete ledger.records[0]!.output_event.runtime_session_id;
@@ -1423,6 +1572,8 @@ describe("synthi_wait_hmr", () => {
 
   it("accepts full runtime proof only with recomputed ledger and runtime artifact success", async () => {
     const ledger = passingProofLedger();
+    const parentControlVerificationMaterial =
+      parentControlVerificationMaterialFixture();
     const fake = installFakeAttached(async () => {
       setTimeout(
         () => fake.feedHmr({
@@ -1430,7 +1581,7 @@ describe("synthi_wait_hmr", () => {
           resultState: "gpu-hmr-full-runtime-proven",
           proofLedger: ledger,
           runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
-        }),
+        }, parentControlVerificationMaterial),
         10
       );
       return { status: "applied", source: "hmr_status", elapsedMs: 10 };
@@ -1445,10 +1596,34 @@ describe("synthi_wait_hmr", () => {
         runtimeProofArtifactValidation?: { accepted?: boolean };
       };
       gpu_proof_ledger_validation?: { gpuHmrSuccess?: boolean };
+      gpu_proof_telemetry?: {
+        parentControlVerificationMaterial?:
+          GpuParentRuntimeProofControlVerificationMaterial;
+      };
+      gpu_proof?: {
+        parentControlVerificationMaterial?:
+          GpuParentRuntimeProofControlVerificationMaterial;
+      };
     };
     expect(body.gpu_proof_validation?.satisfied).toBe(true);
     expect(body.gpu_proof_ledger_validation?.gpuHmrSuccess).toBe(true);
     expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.accepted).toBe(true);
+    expect(body.gpu_proof_telemetry?.parentControlVerificationMaterial)
+      .toEqual(parentControlVerificationMaterial);
+    expect(body.gpu_proof?.parentControlVerificationMaterial)
+      .toBe(body.gpu_proof_telemetry?.parentControlVerificationMaterial);
+    expect(body.gpu_proof?.parentControlVerificationMaterial)
+      .not.toHaveProperty("verified");
+    expect(body.gpu_proof?.parentControlVerificationMaterial)
+      .not.toHaveProperty("accepted");
+    expect(body.gpu_proof?.parentControlVerificationMaterial)
+      .not.toHaveProperty("success");
+    expect(body.gpu_proof?.parentControlVerificationMaterial)
+      .not.toHaveProperty("authority");
+    expect(body.gpu_proof?.parentControlVerificationMaterial)
+      .not.toHaveProperty("acceptedForGpuHmr");
+    expect(body.gpu_proof?.parentControlVerificationMaterial)
+      .not.toHaveProperty("gpuHmrSuccess");
   });
 
   it("rejects full runtime proof when compute readback is digest-derived", async () => {

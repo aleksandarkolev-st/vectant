@@ -9,10 +9,45 @@ import {
 import { buildGpuHmrFrameGateEvidenceBinding } from "../../src/gpu_frame_gate_binding.js";
 import { queryGpuHmrLedgerInvariants } from "../../src/gpu_proof_ledger.js";
 import { normalizeGpuHmrAcceptanceContract } from "../../scripts/lib/gpu-hmr-acceptance-contract.mjs";
+import {
+  GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
+  type GpuParentRuntimeProofControlVerificationMaterial,
+} from "../../src/gpu_parent_runtime_proof_admission.js";
 
 const HASH_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const HASH_C = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+function parentControlVerificationMaterialFixture():
+  GpuParentRuntimeProofControlVerificationMaterial {
+  return {
+    schemaVersion:
+      GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
+    controlBinding: {
+      type: "gpu_hmr_parent_runtime_proof_control_binding",
+      signedEvidence: {
+        algorithm: "ed25519",
+        signature: "c2lnbmVkLXB1YmxpYy1ldmlkZW5jZQ",
+      },
+    },
+    runtimeEvidenceTransportVerificationKey: {
+      schemaVersion:
+        "synthi.gpu_hmr.runtime_evidence_transport_verification_key.v1",
+      algorithm: "ed25519",
+      keyId: "runtime-evidence-key:fixture",
+      producer: "synthi-webrtc-compiler-worker",
+      workerInstanceId: "runtime-worker:fixture",
+      workerProcessId: "809",
+      publicKey: "cHVibGljLWV2aWRlbmNl",
+      keyAnnouncementId: "runtime-evidence-key-announcement:fixture",
+    },
+    transportContext: {
+      transportSessionId: "transport-session:fixture",
+      compileRequestNonce: `gpu-proof-transport-request:${"6".repeat(32)}`,
+      expectedWorkerProcessId: "809",
+    },
+  };
+}
 const HIP_FIELD_EVIDENCE_REFS = {
   kernel_name: ["runtime:dispatch-kernel"],
   launch_api: ["runtime:dispatch-launch-api"],
@@ -517,6 +552,40 @@ describe("GPU HMR proof-state validation", () => {
 
     expect(proof?.source).toBe("gpu_hmr_proof");
     expect(proof?.resultState).toBe("gpu-hmr-compile-proven");
+  });
+
+  it("canonicalizes a separate parent-control sidecar without changing proof decisions", () => {
+    const wireMessage = {
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-full-runtime-proven",
+      parentVerification: {
+        fullRuntimeProofId: `gpu-runtime-proof:sha256:${"7".repeat(64)}`,
+      },
+    };
+    const wireBytes = JSON.stringify(wireMessage);
+    const material = parentControlVerificationMaterialFixture();
+    const observedAt = 1_234;
+    const baseline = classifyGpuHmrProofMessage(wireMessage, observedAt);
+    const proof = classifyGpuHmrProofMessage(
+      wireMessage,
+      observedAt,
+      material,
+    );
+
+    expect(proof?.parentControlVerificationMaterial).toEqual(material);
+    expect(proof?.parentControlVerificationMaterial).not.toBe(material);
+    expect(Object.isFrozen(proof?.parentControlVerificationMaterial)).toBe(true);
+    expect(Object.isFrozen(
+      proof?.parentControlVerificationMaterial?.controlBinding,
+    )).toBe(true);
+    expect(proof?.decisions).toEqual(baseline?.decisions);
+    expect(proof?.frameGateSeed).toEqual(baseline?.frameGateSeed);
+    expect(baseline).not.toHaveProperty("parentControlVerificationMaterial");
+    expect(JSON.stringify(wireMessage)).toBe(wireBytes);
+    expect(wireMessage).not.toHaveProperty(
+      "parentControlVerificationMaterial",
+    );
+    expect(Object.isFrozen(wireMessage)).toBe(false);
   });
 
   it("retains immutable decisions instead of mutable raw proof material", () => {

@@ -6,6 +6,9 @@ import {
   type GpuHmrProofMatchOpts,
   type GpuHmrProofTelemetry,
 } from "./gpu_proof.js";
+import type {
+  GpuParentRuntimeProofControlVerificationMaterial,
+} from "./gpu_parent_runtime_proof_admission.js";
 
 /**
  * HMR normalizer. Parses the four wire families emitted by the worker on the
@@ -59,13 +62,26 @@ export interface HmrTerminalEvent {
 
 export type WireMessage = Record<string, unknown>;
 
+export interface HmrPreclassificationDecision {
+  readonly include: boolean;
+  readonly parentControlVerificationMaterial?:
+    GpuParentRuntimeProofControlVerificationMaterial;
+}
+
+export type HmrPreclassificationResult =
+  | boolean
+  | HmrPreclassificationDecision;
+
 export interface HmrNormalizerOptions {
   /**
    * Runs after wire parsing and structured-chunk reassembly, but before any
    * terminal/proof classification or public listener notification. Returning
    * false suppresses the message. Exceptions also fail closed.
    */
-  readonly beforeClassify?: (message: WireMessage, observedAt: number) => boolean;
+  readonly beforeClassify?: (
+    message: WireMessage,
+    observedAt: number,
+  ) => HmrPreclassificationResult;
 }
 
 interface StructuredJsonChunk {
@@ -525,14 +541,27 @@ export class HmrNormalizer {
     parsed: WireMessage,
     observedAt: number,
   ): void {
+    let parentControlVerificationMaterial:
+      GpuParentRuntimeProofControlVerificationMaterial | undefined;
     if (this.beforeClassify !== undefined) {
       try {
-        if (!this.beforeClassify(parsed, observedAt)) return;
+        const decision = this.beforeClassify(parsed, observedAt);
+        if (typeof decision === "boolean") {
+          if (!decision) return;
+        } else {
+          if (!decision.include) return;
+          parentControlVerificationMaterial =
+            decision.parentControlVerificationMaterial;
+        }
       } catch {
         return;
       }
     }
-    const proof = classifyGpuHmrProofMessage(parsed, observedAt);
+    const proof = classifyGpuHmrProofMessage(
+      parsed,
+      observedAt,
+      parentControlVerificationMaterial ?? null,
+    );
     if (proof !== null && this.proofTrustInvalidation !== null) return;
     const cls = classifyHmrMessage(parsed);
     if (cls) this.rememberTerminal(cls, observedAt);

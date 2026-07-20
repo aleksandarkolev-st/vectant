@@ -7,6 +7,10 @@ import {
   projectPublicHmrEvent,
   type WireMessage,
 } from "../../src/hmr.js";
+import {
+  GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
+  type GpuParentRuntimeProofControlVerificationMaterial,
+} from "../../src/gpu_parent_runtime_proof_admission.js";
 
 /**
  * Minimal DC mock: extends EventTarget and dispatches synthetic message events.
@@ -23,6 +27,37 @@ class MockDC extends EventTarget {
 
 function dc(): MockDC {
   return new MockDC();
+}
+
+function parentControlVerificationMaterialFixture():
+  GpuParentRuntimeProofControlVerificationMaterial {
+  return {
+    schemaVersion:
+      GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
+    controlBinding: {
+      type: "gpu_hmr_parent_runtime_proof_control_binding",
+      signedEvidence: {
+        algorithm: "ed25519",
+        signature: "c2lnbmVkLXB1YmxpYy1ldmlkZW5jZQ",
+      },
+    },
+    runtimeEvidenceTransportVerificationKey: {
+      schemaVersion:
+        "synthi.gpu_hmr.runtime_evidence_transport_verification_key.v1",
+      algorithm: "ed25519",
+      keyId: "runtime-evidence-key:fixture",
+      producer: "synthi-webrtc-compiler-worker",
+      workerInstanceId: "runtime-worker:fixture",
+      workerProcessId: "731",
+      publicKey: "cHVibGljLWV2aWRlbmNl",
+      keyAnnouncementId: "runtime-evidence-key-announcement:fixture",
+    },
+    transportContext: {
+      transportSessionId: "transport-session:fixture",
+      compileRequestNonce: `gpu-proof-transport-request:${"4".repeat(32)}`,
+      expectedWorkerProcessId: "731",
+    },
+  };
 }
 
 function chunkWireMessage(msg: WireMessage, chunkBytes = 128): string[] {
@@ -293,7 +328,7 @@ describe("HmrNormalizer preclassification gate", () => {
     normalizer.dispose();
   });
 
-  it("passes admitted messages through unchanged", () => {
+  it("retains exact boolean callback behavior for admitted messages", () => {
     const mockDC = dc();
     const normalizer = new HmrNormalizer(
       mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0],
@@ -305,6 +340,76 @@ describe("HmrNormalizer preclassification gate", () => {
     mockDC.emit(JSON.stringify({ status: "applied", module: "arbitrary-module" }));
 
     expect(publicMessages).toEqual([{ status: "applied", module: "arbitrary-module" }]);
+    normalizer.dispose();
+  });
+
+  it("attaches an included parent-control sidecar without changing proof wire data", () => {
+    const mockDC = dc();
+    const material = parentControlVerificationMaterialFixture();
+    const wireMessage = {
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-full-runtime-proven",
+      parentVerification: {
+        fullRuntimeProofId: `gpu-runtime-proof:sha256:${"5".repeat(64)}`,
+      },
+    };
+    const wireBytes = JSON.stringify(wireMessage);
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0],
+      {
+        beforeClassify: () => ({
+          include: true,
+          parentControlVerificationMaterial: material,
+        }),
+      },
+    );
+    const publicMessages: WireMessage[] = [];
+    normalizer.onMessage((message) => publicMessages.push(message));
+
+    mockDC.emit(wireBytes);
+
+    const proof = normalizer.latestGpuProof();
+    const canonicalMaterial = proof?.parentControlVerificationMaterial;
+    expect(proof).not.toBeNull();
+    expect(canonicalMaterial).toEqual(material);
+    expect(canonicalMaterial).not.toBe(material);
+    expect(Object.isFrozen(canonicalMaterial)).toBe(true);
+    expect(Object.isFrozen(canonicalMaterial?.controlBinding)).toBe(true);
+    expect(Object.isFrozen(
+      canonicalMaterial?.runtimeEvidenceTransportVerificationKey,
+    )).toBe(true);
+    expect(Object.isFrozen(canonicalMaterial?.transportContext)).toBe(true);
+    expect(Object.isFrozen(material)).toBe(false);
+    expect(publicMessages).toEqual([wireMessage]);
+    expect(JSON.stringify(publicMessages[0])).toBe(wireBytes);
+    expect(publicMessages[0]).not.toHaveProperty(
+      "parentControlVerificationMaterial",
+    );
+    normalizer.dispose();
+  });
+
+  it("suppresses typed preclassification decisions", () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0],
+      {
+        beforeClassify: () => ({
+          include: false,
+          parentControlVerificationMaterial:
+            parentControlVerificationMaterialFixture(),
+        }),
+      },
+    );
+    const publicListener = vi.fn();
+    normalizer.onMessage(publicListener);
+
+    mockDC.emit(JSON.stringify({
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-full-runtime-proven",
+    }));
+
+    expect(publicListener).not.toHaveBeenCalled();
+    expect(normalizer.latestGpuProof()).toBeNull();
     normalizer.dispose();
   });
 

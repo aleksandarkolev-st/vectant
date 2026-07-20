@@ -123,6 +123,12 @@ function gpuProofPayload(proof: GpuHmrProofTelemetry | null): Record<string, unk
     degradedState: proof.degradedState,
     source: proof.source,
     observedAt: proof.observedAt,
+    ...(proof.parentControlVerificationMaterial === undefined
+      ? {}
+      : {
+          parentControlVerificationMaterial:
+            proof.parentControlVerificationMaterial,
+        }),
   };
 }
 
@@ -421,6 +427,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     };
     waitContract.proof_since_ts = proofSinceTs;
     let latestGpuProof = latestGpuProofFromAttached(attached, proofMatchOpts);
+    let satisfyingGpuProof: GpuHmrProofTelemetry | null = null;
     let sawAppliedTerminal = false;
     let postApplyTerminal: HmrClassification | null = null;
     let notifyPostApplyTerminal: (() => void) | null = null;
@@ -431,15 +438,39 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     const proofTrustInvalidationSignal = new Promise<GpuProofTrustInvalidation>((resolve) => {
       resolveProofTrustInvalidation = resolve;
     });
-    const requiredProofSatisfied = (minObservedAt?: number): boolean => {
-      return proofTrustInvalidation === null
-        && requiredProofState !== null
+    const satisfyingRequiredProof = (
+      minObservedAt?: number,
+    ): GpuHmrProofTelemetry | null => {
+      if (proofTrustInvalidation !== null || requiredProofState === null) return null;
+      if (
+        satisfyingGpuProof !== null
         && validateGpuHmrProofAtOrAfter(
-          latestGpuProof,
+          satisfyingGpuProof,
           requiredProofState,
           minObservedAt,
-        ).satisfied;
+        ).satisfied
+      ) {
+        return satisfyingGpuProof;
+      }
+
+      satisfyingGpuProof = null;
+      const candidate = latestGpuProof;
+      if (
+        candidate !== null
+        && validateGpuHmrProofAtOrAfter(
+          candidate,
+          requiredProofState,
+          minObservedAt,
+        ).satisfied
+      ) {
+        satisfyingGpuProof = candidate;
+      }
+      return satisfyingGpuProof;
     };
+    const requiredProofSatisfied = (minObservedAt?: number): boolean =>
+      satisfyingRequiredProof(minObservedAt) !== null;
+    const gpuProofForCurrentWait = (): GpuHmrProofTelemetry | null =>
+      satisfyingGpuProof ?? latestGpuProof;
     const requiredProofStructuralGap = (minObservedAt?: number): string | null => {
       if (requiredProofState === null || proofTrustInvalidation !== null) return null;
       if (
@@ -464,6 +495,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       if (proofTrustInvalidation !== null) return;
       proofTrustInvalidation = event;
       latestGpuProof = null;
+      satisfyingGpuProof = null;
       resolveProofTrustInvalidation?.(event);
       resolveProofTrustInvalidation = null;
       notifyRequiredProof?.();
@@ -687,8 +719,13 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       if (outcome.kind === "proof" && outcome.proofStatus === "proof_trust_invalidated") {
         return proofTrustInvalidationResponse("terminal_or_proof_wait")!;
       }
-      if (outcome.kind === "proof" && outcome.proofStatus === "satisfied" && latestGpuProof !== null) {
-        result = terminalEventFromGpuProof(latestGpuProof, Date.now() - start);
+      const terminalSatisfyingProof = satisfyingGpuProof;
+      if (
+        outcome.kind === "proof"
+        && outcome.proofStatus === "satisfied"
+        && terminalSatisfyingProof !== null
+      ) {
+        result = terminalEventFromGpuProof(terminalSatisfyingProof, Date.now() - start);
       } else {
         result = outcome.kind === "terminal"
           ? outcome.terminal
@@ -701,8 +738,9 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
           if (lateProofOutcome === "proof_trust_invalidated") {
             return proofTrustInvalidationResponse("late_proof_wait")!;
           }
-          if (lateProofOutcome === "satisfied" && latestGpuProof !== null) {
-            result = terminalEventFromGpuProof(latestGpuProof, Date.now() - start);
+          const lateSatisfyingProof = satisfyingGpuProof;
+          if (lateProofOutcome === "satisfied" && lateSatisfyingProof !== null) {
+            result = terminalEventFromGpuProof(lateSatisfyingProof, Date.now() - start);
           }
         }
       }
@@ -756,7 +794,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
             detail: late.detail ?? null,
             post_apply_terminal: true,
             wait_contract: waitContract,
-          }, latestGpuProof, requiredProofState);
+          }, gpuProofForCurrentWait(), requiredProofState);
         }
         if (outcome.kind === "terminal") {
           frameGate = {
@@ -833,7 +871,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
             detail: late.detail ?? null,
             post_apply_terminal: true,
             wait_contract: waitContract,
-          }, latestGpuProof, requiredProofState);
+          }, gpuProofForCurrentWait(), requiredProofState);
         }
         const satisfiedBy = outcome.kind === "decoded_frame" ? outcome.satisfiedBy : null;
         frameGateObservation = satisfiedBy;
@@ -893,25 +931,26 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
           post_apply_terminal: true,
           wait_contract: waitContract,
           ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
-        }, latestGpuProof, requiredProofState);
+        }, gpuProofForCurrentWait(), requiredProofState);
       }
     }
 
     const requiresFullRuntimeFrameBinding = requiredProofState !== null
       && gpuHmrProofStateRank(requiredProofState)
         >= gpuHmrProofStateRank("gpu-hmr-full-runtime-proven");
+    const frameBindingGpuProof = gpuProofForCurrentWait();
     if (
       result.status === "applied"
       && requiresFullRuntimeFrameBinding
       && frameGate !== undefined
       && frameGateObservation !== null
-      && latestGpuProof !== null
-      && frameGateObservation.ts_ms < latestGpuProof.observedAt
+      && frameBindingGpuProof !== null
+      && frameGateObservation.ts_ms < frameBindingGpuProof.observedAt
     ) {
       const remaining = Math.max(0, timeoutMs - (Date.now() - start));
       const minFrameObservedAt = Math.max(
-        latestGpuProof.observedAt,
-        (hmrObservedAtForFrameGate ?? latestGpuProof.observedAt) + session.pipelineBudgetMs(),
+        frameBindingGpuProof.observedAt,
+        (hmrObservedAtForFrameGate ?? frameBindingGpuProof.observedAt) + session.pipelineBudgetMs(),
       );
       const postProofObservationOutcome = await raceWithProofTrustInvalidation(
         session.frameSeqGateEnabled()
@@ -945,7 +984,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         frameGate["frame_seq"] = postProofObservation.frame_seq;
         frameGate["ts_ms"] = postProofObservation.ts_ms;
         frameGate["capture_reacquired_after_proof"] = true;
-        frameGate["proof_observed_at_ms"] = latestGpuProof.observedAt;
+        frameGate["proof_observed_at_ms"] = frameBindingGpuProof.observedAt;
       }
     }
 
@@ -960,7 +999,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         attached,
         frameGate,
         observation: frameGateObservation,
-        proof: latestGpuProof,
+        proof: gpuProofForCurrentWait(),
         requiredProofState,
         hmrObservedAtMs: hmrObservedAtForFrameGate,
         proofMatchOpts,
@@ -983,7 +1022,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         terminal_sequence: result.sequence ?? null,
       } : {}),
       ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
-    }, latestGpuProof, requiredProofState, result.status === "applied"
+    }, gpuProofForCurrentWait(), requiredProofState, result.status === "applied"
       ? hmrObservedAtForFrameGate ?? undefined
       : undefined);
   } catch (err) {

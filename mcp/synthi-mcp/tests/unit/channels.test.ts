@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionChannels } from "../../src/channels.js";
 import {
   COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
@@ -13,6 +13,10 @@ import {
   RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA,
   RuntimeEvidenceTransportKeyPin,
 } from "../../src/runtime_evidence_transport.js";
+import {
+  GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
+  type GpuParentRuntimeProofControlVerificationMaterial,
+} from "../../src/gpu_parent_runtime_proof_admission.js";
 import type { RTCDataChannel } from "werift";
 
 const TRANSPORT_SESSION_ID = "opaque-compile-session:unit-01";
@@ -90,6 +94,31 @@ function verificationKeyAnnouncement(fill: number): Record<string, unknown> {
     publicKey,
     keyAnnouncementId:
       `gpu-hmr-runtime-evidence-transport-key-announcement:sha256:${sha256Hex(announcementMaterial)}`,
+  };
+}
+
+function parentControlVerificationMaterialFixture():
+  GpuParentRuntimeProofControlVerificationMaterial {
+  return {
+    schemaVersion:
+      GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
+    controlBinding: {
+      type: "gpu_hmr_parent_runtime_proof_control_binding",
+      signedEvidence: {
+        algorithm: RUNTIME_EVIDENCE_TRANSPORT_ALGORITHM,
+        signature: "c2lnbmVkLXB1YmxpYy1ldmlkZW5jZQ",
+      },
+    },
+    runtimeEvidenceTransportVerificationKey:
+      verificationKeyAnnouncement(7) as unknown as
+        GpuParentRuntimeProofControlVerificationMaterial[
+          "runtimeEvidenceTransportVerificationKey"
+        ],
+    transportContext: {
+      transportSessionId: TRANSPORT_SESSION_ID,
+      compileRequestNonce: `gpu-proof-transport-request:${"1".repeat(32)}`,
+      expectedWorkerProcessId: "9123",
+    },
   };
 }
 
@@ -367,6 +396,169 @@ describe("SessionChannels compile chunking", () => {
     });
     expect(channels.hmr.latestGpuProof()?.resultState).toBe("gpu-hmr-compile-proven");
     expect(publicMessages).toHaveLength(1);
+    channels.dispose();
+  });
+
+  it("takes parent-control material only for the admitted strict parent proof", () => {
+    const buildLog = new MockBuildLogDataChannel();
+    const transport = pinnedTransport();
+    const channels = makeChannels(
+      [],
+      () => undefined,
+      buildLog,
+      transport.pin,
+    );
+    const admission = (channels as unknown as {
+      gpuParentRuntimeProofAdmission: {
+        beforeClassify: (
+          message: Record<string, unknown>,
+          observedAt: number,
+        ) => boolean;
+        takeControlVerificationMaterial: (
+          fullRuntimeProofId: string,
+        ) => GpuParentRuntimeProofControlVerificationMaterial | null;
+      };
+    }).gpuParentRuntimeProofAdmission;
+    const beforeClassify = vi.spyOn(admission, "beforeClassify");
+    const takeMaterial = vi.spyOn(
+      admission,
+      "takeControlVerificationMaterial",
+    );
+    const material = parentControlVerificationMaterialFixture();
+    takeMaterial.mockReturnValue(material);
+    beforeClassify
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false);
+
+    const admittedProofId = `gpu-runtime-proof:sha256:${"2".repeat(64)}`;
+    const admittedProof = {
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-full-runtime-proven",
+      parentVerification: { fullRuntimeProofId: admittedProofId },
+    };
+    const publicMessages: Record<string, unknown>[] = [];
+    const retainedProofs: NonNullable<
+      ReturnType<typeof channels.hmr.latestGpuProof>
+    >[] = [];
+    channels.hmr.onMessage((message) => publicMessages.push(message));
+    channels.hmr.onGpuProof({}, (proof) => retainedProofs.push(proof));
+
+    buildLog.emit({
+      type: "gpu_hmr_parent_runtime_proof_control_binding",
+      fullRuntimeProofId: admittedProofId,
+    });
+    buildLog.emit({ type: "ordinary-event", value: 1 });
+    buildLog.emit({
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-compile-proven",
+    });
+    buildLog.emit({
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-full-runtime-proven",
+      parentVerification: { fullRuntimeProofId: admittedProofId },
+      runtimeEvidenceTransportReceipt: { signature: "rejected" },
+    });
+    buildLog.emit({
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-full-runtime-proven",
+      parentVerification: {
+        fullRuntimeProofId: `gpu-runtime-proof:sha256:${"3".repeat(64)}`,
+      },
+    });
+    const admittedWireBytes = JSON.stringify(admittedProof);
+    buildLog.emit(admittedProof);
+    buildLog.emit(admittedProof);
+
+    expect(beforeClassify).toHaveBeenCalledTimes(7);
+    expect(takeMaterial).toHaveBeenCalledTimes(1);
+    expect(takeMaterial).toHaveBeenCalledWith(admittedProofId);
+    expect(beforeClassify.mock.invocationCallOrder[5])
+      .toBeLessThan(takeMaterial.mock.invocationCallOrder[0]!);
+    expect(retainedProofs).toHaveLength(2);
+    expect(retainedProofs[0]).not.toHaveProperty(
+      "parentControlVerificationMaterial",
+    );
+    expect(retainedProofs[1]?.parentControlVerificationMaterial)
+      .toEqual(material);
+    expect(Object.isFrozen(
+      retainedProofs[1]?.parentControlVerificationMaterial?.controlBinding,
+    )).toBe(true);
+    expect(publicMessages).toEqual([
+      { type: "ordinary-event", value: 1 },
+      { type: "gpu_hmr_proof", resultState: "gpu-hmr-compile-proven" },
+      admittedProof,
+    ]);
+    expect(JSON.stringify(publicMessages[2])).toBe(admittedWireBytes);
+    expect(publicMessages[2]).not.toHaveProperty(
+      "parentControlVerificationMaterial",
+    );
+
+    beforeClassify.mockRestore();
+    takeMaterial.mockClear();
+    transport.channel.close();
+    buildLog.emit(admittedProof);
+    expect(takeMaterial).not.toHaveBeenCalled();
+    expect(channels.hmr.latestGpuProof()).toBeNull();
+    channels.dispose();
+  });
+
+  it("suppresses an admitted-looking strict parent proof when its material is missing", () => {
+    const buildLog = new MockBuildLogDataChannel();
+    const channels = makeChannels([], () => undefined, buildLog);
+    const admission = (channels as unknown as {
+      gpuParentRuntimeProofAdmission: {
+        beforeClassify: (
+          message: Record<string, unknown>,
+          observedAt: number,
+        ) => boolean;
+        takeControlVerificationMaterial: (
+          fullRuntimeProofId: string,
+        ) => GpuParentRuntimeProofControlVerificationMaterial | null;
+      };
+    }).gpuParentRuntimeProofAdmission;
+    const beforeClassify = vi.spyOn(admission, "beforeClassify")
+      .mockReturnValue(true);
+    const takeMaterial = vi.spyOn(
+      admission,
+      "takeControlVerificationMaterial",
+    ).mockReturnValue(null);
+    const publicMessages: Record<string, unknown>[] = [];
+    const retainedProofs: NonNullable<
+      ReturnType<typeof channels.hmr.latestGpuProof>
+    >[] = [];
+    channels.hmr.onMessage((message) => publicMessages.push(message));
+    channels.hmr.onGpuProof({}, (proof) => retainedProofs.push(proof));
+    const ordinaryMessage = { type: "ordinary-event", value: 2 };
+    const nonStrictProof = {
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-compile-proven",
+    };
+    const fullRuntimeProofId =
+      `gpu-runtime-proof:sha256:${"9".repeat(64)}`;
+
+    buildLog.emit(ordinaryMessage);
+    buildLog.emit(nonStrictProof);
+    buildLog.emit({
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-full-runtime-proven",
+      parentVerification: { fullRuntimeProofId },
+    });
+
+    expect(beforeClassify).toHaveBeenCalledTimes(3);
+    expect(takeMaterial).toHaveBeenCalledTimes(1);
+    expect(takeMaterial).toHaveBeenCalledWith(fullRuntimeProofId);
+    expect(publicMessages).toEqual([ordinaryMessage, nonStrictProof]);
+    expect(retainedProofs).toHaveLength(1);
+    expect(retainedProofs[0]?.resultState).toBe("gpu-hmr-compile-proven");
+    expect(retainedProofs[0]).not.toHaveProperty(
+      "parentControlVerificationMaterial",
+    );
+    expect(channels.hmr.latestGpuProof()).toBe(retainedProofs[0]);
     channels.dispose();
   });
 

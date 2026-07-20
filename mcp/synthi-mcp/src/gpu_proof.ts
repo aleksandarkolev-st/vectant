@@ -12,6 +12,9 @@ import {
   evaluateGpuHmrAcceptanceContract,
   evaluateGpuHmrAcceptanceContractConsistency,
 } from "../scripts/lib/gpu-hmr-acceptance-contract.mjs";
+import type {
+  GpuParentRuntimeProofControlVerificationMaterial,
+} from "./gpu_parent_runtime_proof_admission.js";
 
 export const GPU_HMR_PROOF_SCHEMA_VERSION = "synthi.gpu.hmr.proof.v1";
 
@@ -71,6 +74,8 @@ export interface GpuHmrProofTelemetry {
   previewRef: string | null;
   decisions: Readonly<Record<GpuHmrProofState, GpuHmrProofValidation>>;
   frameGateSeed: GpuHmrFrameGateSeed;
+  parentControlVerificationMaterial?:
+    GpuParentRuntimeProofControlVerificationMaterial;
 }
 
 export interface GpuHmrProofValidation {
@@ -171,6 +176,10 @@ function deepFreeze<T>(value: T): Readonly<T> {
     Object.freeze(value);
   }
   return value;
+}
+
+function cloneAndDeepFreeze<T>(value: T): Readonly<T> {
+  return deepFreeze(structuredClone(value));
 }
 
 function stringOrNull(value: unknown): string | null {
@@ -848,7 +857,9 @@ function sanitizeGpuHmrProofValidation(
 
 export function classifyGpuHmrProofMessage(
   msg: Record<string, unknown>,
-  observedAt = Date.now()
+  observedAt = Date.now(),
+  parentControlVerificationMaterial:
+    GpuParentRuntimeProofControlVerificationMaterial | null = null,
 ): GpuHmrProofTelemetry | null {
   const source =
     msg.type === "gpu_hmr_proof"
@@ -886,6 +897,17 @@ export function classifyGpuHmrProofMessage(
   const proofId = rawProof.proofId;
   const module = nestedString(msg, "module");
   const previewId = nestedString(msg, "preview_id") ?? nestedString(msg, "previewId");
+  const frameGateSeed = deriveGpuHmrFrameGateSeed({
+    rawProof: msg,
+    resultState,
+    proofId,
+    observedAt,
+    fullRuntimeValidation: rawDecisions["gpu-hmr-full-runtime-proven"],
+  });
+  const canonicalParentControlVerificationMaterial =
+    parentControlVerificationMaterial === null
+      ? null
+      : cloneAndDeepFreeze(parentControlVerificationMaterial);
   return deepFreeze({
     schemaVersion: rawProof.schemaVersion === GPU_HMR_PROOF_SCHEMA_VERSION
       ? GPU_HMR_PROOF_SCHEMA_VERSION
@@ -904,13 +926,13 @@ export function classifyGpuHmrProofMessage(
     moduleRef: proofIdentityRef("module", module),
     previewRef: proofIdentityRef("preview", previewId),
     decisions,
-    frameGateSeed: deriveGpuHmrFrameGateSeed({
-      rawProof: msg,
-      resultState,
-      proofId,
-      observedAt,
-      fullRuntimeValidation: rawDecisions["gpu-hmr-full-runtime-proven"],
-    }),
+    frameGateSeed,
+    ...(canonicalParentControlVerificationMaterial === null
+      ? {}
+      : {
+          parentControlVerificationMaterial:
+            canonicalParentControlVerificationMaterial,
+        }),
   }) as GpuHmrProofTelemetry;
 }
 
