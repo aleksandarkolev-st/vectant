@@ -3,6 +3,10 @@ import type { RTCDataChannel } from "werift";
 import { SignalingClient } from "./signaling.js";
 import { Peer } from "./peer.js";
 import type { RuntimeEvidenceTransportKeyPin } from "./runtime_evidence_transport.js";
+import {
+  GpuParentRuntimeProofAdmissionAuthority,
+  type GpuParentRuntimeProofAdmissionTrustMaterial,
+} from "./gpu_parent_runtime_proof_admission_authority.js";
 import { FrameSink } from "./frames.js";
 import { SessionChannels } from "./channels.js";
 import { projectPublicHmrEvent } from "./hmr.js";
@@ -278,6 +282,8 @@ function parseProducerViewport(msg: Record<string, unknown>): ProducerViewport |
 }
 
 class SessionManager {
+  readonly #gpuParentRuntimeProofAdmissionAuthority =
+    new GpuParentRuntimeProofAdmissionAuthority();
   private attached: AttachedSession | null = null;
   private state: SessionState = "detached";
   private attachPromise: Promise<AttachedSession> | null = null;
@@ -307,6 +313,11 @@ class SessionManager {
 
   getWireStateTs(): number {
     return this.wireStateTs;
+  }
+
+  getGpuParentRuntimeProofAdmissionTrustMaterial():
+    GpuParentRuntimeProofAdmissionTrustMaterial {
+    return this.#gpuParentRuntimeProofAdmissionAuthority.trustMaterial();
   }
 
   isUnsafeMode(): boolean {
@@ -756,6 +767,8 @@ class SessionManager {
     const channels = new SessionChannels(terminalDC, buildLogDC, compileDC, {
       keyPin: peer.runtimeEvidenceTransportKeyPin,
       transportSessionId: opts.sessionId,
+      admissionReceiptSigner:
+        this.#gpuParentRuntimeProofAdmissionAuthority.signer(),
     });
     const unsubFrameGateTokenRevocation = this.bindFrameGateTokenRevocation(channels.hmr);
     this.unsubscribers.push(unsubFrameGateTokenRevocation);

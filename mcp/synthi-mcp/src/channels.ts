@@ -6,6 +6,7 @@ import {
 import { HmrNormalizer } from "./hmr.js";
 import {
   SessionGpuParentRuntimeProofAdmission,
+  type GpuParentRuntimeProofAdmissionReceiptSigner,
   type GpuParentRuntimeProofAdmissionSnapshot,
 } from "./gpu_parent_runtime_proof_admission.js";
 import {
@@ -44,6 +45,7 @@ function strictParentRuntimeProofId(
 export interface SessionChannelsRuntimeEvidenceContext {
   readonly keyPin: RuntimeEvidenceTransportKeyPin;
   readonly transportSessionId: string;
+  readonly admissionReceiptSigner: GpuParentRuntimeProofAdmissionReceiptSigner;
 }
 
 export interface CompileDispatchReceipt {
@@ -173,6 +175,7 @@ export class SessionChannels {
       transportSessionId: runtimeEvidenceContext.transportSessionId,
       keyPin: runtimeEvidenceContext.keyPin,
       receiptConsumer: this.runtimeEvidenceReceiptConsumer,
+      admissionReceiptSigner: runtimeEvidenceContext.admissionReceiptSigner,
     });
     this.hmr = new HmrNormalizer(buildLogDC, {
       beforeClassify: (message, observedAt) => {

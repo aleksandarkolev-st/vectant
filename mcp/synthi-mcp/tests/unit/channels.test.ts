@@ -17,10 +17,17 @@ import {
   GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
   type GpuParentRuntimeProofControlVerificationMaterial,
 } from "../../src/gpu_parent_runtime_proof_admission.js";
+import {
+  GpuParentRuntimeProofAdmissionAuthority,
+} from "../../src/gpu_parent_runtime_proof_admission_authority.js";
+import {
+  gpuParentRuntimeProofAdmissionReceiptFixture,
+} from "./gpu_parent_runtime_proof_admission_fixture.js";
 import type { RTCDataChannel } from "werift";
 
 const TRANSPORT_SESSION_ID = "opaque-compile-session:unit-01";
 const EXPECTED_OUTPUT_CONTRACT_HASH = `sha256:${"a".repeat(64)}`;
+const ADMISSION_AUTHORITY = new GpuParentRuntimeProofAdmissionAuthority();
 
 function exactOutputSemantics(): ComputeExpectedOutputSemantics {
   const material: ComputeExpectedOutputSemanticsMaterial = {
@@ -119,6 +126,7 @@ function parentControlVerificationMaterialFixture():
       compileRequestNonce: `gpu-proof-transport-request:${"1".repeat(32)}`,
       expectedWorkerProcessId: "9123",
     },
+    mcpAdmissionReceipt: gpuParentRuntimeProofAdmissionReceiptFixture(),
   };
 }
 
@@ -166,6 +174,7 @@ function makeChannels(
   return new SessionChannels(terminalDC, buildLogDC as unknown as RTCDataChannel, compileDC, {
     keyPin,
     transportSessionId: TRANSPORT_SESSION_ID,
+    admissionReceiptSigner: ADMISSION_AUTHORITY.signer(),
   });
 }
 
@@ -487,6 +496,10 @@ describe("SessionChannels compile chunking", () => {
       .toEqual(material);
     expect(Object.isFrozen(
       retainedProofs[1]?.parentControlVerificationMaterial?.controlBinding,
+    )).toBe(true);
+    expect(Object.isFrozen(
+      retainedProofs[1]?.parentControlVerificationMaterial
+        ?.mcpAdmissionReceipt,
     )).toBe(true);
     expect(publicMessages).toEqual([
       { type: "ordinary-event", value: 1 },
