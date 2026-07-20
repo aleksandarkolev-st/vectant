@@ -1,11 +1,16 @@
-import { generateKeyPairSync, type KeyObject } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { generateKeyPairSync, randomBytes, type KeyObject } from "node:crypto";
+import { chmod, lstat, unlink } from "node:fs/promises";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   GpuParentRuntimeProofAdmissionReceiptSigner,
   type GpuParentRuntimeProofAdmissionReceiptInput,
 } from "../../src/gpu_parent_runtime_proof_admission_receipt.js";
 import {
   commitGpuHmrMcpAdmissionReceiptForMatrix,
+  createGpuHmrMcpAdmissionOnlineReplayRegistry,
   createGpuHmrMcpAdmissionReplayRegistry,
   discardGpuHmrMcpAdmissionReceiptForMatrix,
   GPU_HMR_MCP_ADMISSION_MATRIX_STAGED_VERIFICATION_AUTHORITY,
@@ -16,13 +21,27 @@ import {
   verifiedGpuHmrMcpAdmissionReceiptProjection,
   verifyGpuHmrMcpAdmissionReceiptForMatrix,
 } from "../../scripts/lib/gpu-hmr-mcp-admission-receipt-matrix-verifier.mjs";
+import {
+  createGpuHmrMcpAdmissionOnlineReplayAuthorityClient,
+  disposeGpuHmrMcpAdmissionOnlineReplayAuthorityServer,
+  gpuHmrMcpAdmissionOnlineReplayAuthorityClientProjection,
+  gpuHmrMcpAdmissionOnlineReplayAuthorityServerProjection,
+  GPU_HMR_MCP_ADMISSION_ONLINE_REPLAY_AUTHORITY_CLASS,
+  startGpuHmrMcpAdmissionOnlineReplayAuthorityServer,
+} from "../../scripts/lib/gpu-hmr-mcp-admission-online-replay-authority.mjs";
 
-const NOW_NS = 1_784_500_000_123_456_789n;
+const NOW_NS = BigInt(Date.now()) * 1_000_000n;
 const MAX_AGE_NS = 30_000_000_000n;
 const MAX_FUTURE_SKEW_NS = 1_000_000_000n;
 const CHALLENGE = Buffer.alloc(32, 0x27).toString("base64url");
 const OTHER_CHALLENGE = Buffer.alloc(32, 0x28).toString("base64url");
-
+const onlineServers: object[] = [];
+const relayServers: Array<{
+  server: Server;
+  endpoint: string;
+  sockets: Set<Socket>;
+  timers: Set<ReturnType<typeof setTimeout>>;
+}> = [];
 function hash(digit: string): string {
   return `sha256:${digit.repeat(64)}`;
 }
@@ -128,9 +147,9 @@ function verificationContext(options: Partial<{
   };
 }
 
-function expectSupportOnly(result: ReturnType<
+function expectSupportOnly(result: Awaited<ReturnType<
   typeof verifyGpuHmrMcpAdmissionReceiptForMatrix
->): void {
+>>): void {
   expect(result).toMatchObject({
     proofAuthority: GPU_HMR_MCP_ADMISSION_MATRIX_VERIFICATION_AUTHORITY,
     acceptedForGpuHmr: false,
@@ -139,8 +158,146 @@ function expectSupportOnly(result: ReturnType<
   });
 }
 
+async function onlineRegistry(
+  signer: GpuParentRuntimeProofAdmissionReceiptSigner,
+  metadataTransform: (
+    metadata: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>> = async (metadata) => metadata,
+) {
+  const server = await startGpuHmrMcpAdmissionOnlineReplayAuthorityServer({
+    trustedVerificationKey: signer.exportVerificationKey(),
+    validationRunChallenge: CHALLENGE,
+    maxReceiptAgeNs: MAX_AGE_NS,
+    maxFutureSkewNs: MAX_FUTURE_SKEW_NS,
+    maxScopes: 16,
+    maxReceiptsPerScope: 32,
+    maxOperations: 128,
+    operationTimeoutMs: 1_000,
+  });
+  onlineServers.push(server);
+  const metadata = gpuHmrMcpAdmissionOnlineReplayAuthorityServerProjection(
+    server,
+  );
+  if (metadata === null) throw new Error("online authority metadata unavailable");
+  const transformed = await metadataTransform({
+    ...metadata,
+    responseVerificationKey: { ...metadata.responseVerificationKey },
+  });
+  const client = createGpuHmrMcpAdmissionOnlineReplayAuthorityClient(
+    transformed,
+  );
+  const projection = gpuHmrMcpAdmissionOnlineReplayAuthorityClientProjection(
+    client,
+  );
+  if (projection === null) throw new Error("online client projection unavailable");
+  return {
+    metadata,
+    client,
+    projection,
+    replayRegistry: await createGpuHmrMcpAdmissionOnlineReplayRegistry(client),
+  };
+}
+
+function relayEndpoint() {
+  const capability = randomBytes(32).toString("hex");
+  return process.platform === "win32"
+    ? `\\\\.\\pipe\\${capability}`
+    : path.join(os.tmpdir(), `${capability}.sock`);
+}
+
+async function startDelayingCasRelay(
+  targetEndpoint: string,
+  delayMode: boolean | number,
+) {
+  const endpoint = relayEndpoint();
+  const sockets = new Set<Socket>();
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  let casCount = 0;
+  const server = createServer({ allowHalfOpen: true }, (downstream) => {
+    sockets.add(downstream);
+    downstream.on("error", () => {});
+    downstream.on("close", () => sockets.delete(downstream));
+    const requestChunks: Buffer[] = [];
+    let forwarded = false;
+    downstream.on("data", (chunk: Buffer) => {
+      requestChunks.push(Buffer.from(chunk));
+      if (forwarded || !chunk.includes(0x0a)) return;
+      forwarded = true;
+      const requestBytes = Buffer.concat(requestChunks);
+      let isCas = false;
+      try {
+        const parsed = JSON.parse(requestBytes.toString("utf8"));
+        isCas = parsed?.request?.schemaVersion
+          === "synthi.gpu_hmr.mcp_admission_online_replay_cas_request.v1";
+      } catch {
+        isCas = false;
+      }
+      if (isCas) casCount += 1;
+      const upstream = createConnection({ path: targetEndpoint });
+      sockets.add(upstream);
+      upstream.on("error", () => downstream.destroy());
+      upstream.on("close", () => sockets.delete(upstream));
+      const responseChunks: Buffer[] = [];
+      upstream.on("data", (response: Buffer) => {
+        responseChunks.push(Buffer.from(response));
+      });
+      upstream.on("end", () => {
+        const response = Buffer.concat(responseChunks);
+        const shouldDelay = isCas && (
+          typeof delayMode === "number"
+            ? casCount <= delayMode
+            : delayMode || casCount === 1
+        );
+        if (!shouldDelay) {
+          if (!downstream.destroyed) downstream.end(response);
+          return;
+        }
+        const timer = setTimeout(() => {
+          timers.delete(timer);
+          if (!downstream.destroyed) downstream.end(response);
+        }, 1_500);
+        timers.add(timer);
+      });
+      upstream.on("connect", () => upstream.write(requestBytes));
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(endpoint, () => resolve());
+  });
+  if (process.platform !== "win32") await chmod(endpoint, 0o600);
+  relayServers.push({ server, endpoint, sockets, timers });
+  return endpoint;
+}
+
+afterEach(async () => {
+  for (const relay of relayServers.splice(0)) {
+    for (const timer of relay.timers) clearTimeout(timer);
+    for (const socket of relay.sockets) socket.destroy();
+    await new Promise<void>((resolve) => {
+      if (!relay.server.listening) {
+        resolve();
+        return;
+      }
+      relay.server.close(() => resolve());
+    });
+    if (process.platform !== "win32") {
+      try {
+        if ((await lstat(relay.endpoint)).isSocket()) await unlink(relay.endpoint);
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+          throw error;
+        }
+      }
+    }
+  }
+  for (const server of onlineServers.splice(0)) {
+    await disposeGpuHmrMcpAdmissionOnlineReplayAuthorityServer(server);
+  }
+});
+
 describe("MCP admission receipt matrix verifier", () => {
-  it("stages without replay mutation and commits an accepted projection once", () => {
+  it("stages without replay mutation and commits an accepted projection once", async () => {
     const context = verificationContext();
     const staged = stageGpuHmrMcpAdmissionReceiptForMatrix(context);
 
@@ -154,7 +311,7 @@ describe("MCP admission receipt matrix verifier", () => {
       challengeBound: true,
       bindingChecked: true,
       freshnessChecked: true,
-      replayChecked: true,
+      replayChecked: false,
       acceptedForGpuHmr: false,
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
@@ -169,18 +326,21 @@ describe("MCP admission receipt matrix verifier", () => {
       semanticsHash: hash("b"),
     });
 
-    const committed = commitGpuHmrMcpAdmissionReceiptForMatrix(staged);
+    const committed = await commitGpuHmrMcpAdmissionReceiptForMatrix(staged);
     expect(committed).toMatchObject({
       accepted: true,
       reason: null,
+      commitFreshnessChecked: true,
       replayChecked: true,
+      replayCommitted: true,
     });
+    expect(committed.replayCommittedAtUnixNs).toMatch(/^[1-9][0-9]*$/);
     expect(verifiedGpuHmrMcpAdmissionReceiptProjection(committed)).toMatchObject({
       receiptId: committed.receiptId,
       contractHash: hash("a"),
       semanticsHash: hash("b"),
     });
-    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(staged)).toMatchObject({
+    expect(await commitGpuHmrMcpAdmissionReceiptForMatrix(staged)).toMatchObject({
       accepted: false,
       reason:
         "gpu_hmr_mcp_admission_matrix_staged_verification_already_used",
@@ -189,22 +349,23 @@ describe("MCP admission receipt matrix verifier", () => {
     expect(discardGpuHmrMcpAdmissionReceiptForMatrix(staged)).toBe(false);
   });
 
-  it("rejects serialized staged forgeries without retiring the real token", () => {
+  it("rejects serialized staged forgeries without retiring the real token", async () => {
     const staged = stageGpuHmrMcpAdmissionReceiptForMatrix(
       verificationContext(),
     );
     const serialized = JSON.parse(JSON.stringify(staged));
 
-    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(serialized)).toMatchObject({
+    expect(await commitGpuHmrMcpAdmissionReceiptForMatrix(serialized)).toMatchObject({
       accepted: false,
       reason: "gpu_hmr_mcp_admission_matrix_staged_verification_invalid",
     });
     expect(discardGpuHmrMcpAdmissionReceiptForMatrix(serialized)).toBe(false);
     expect(stagedGpuHmrMcpAdmissionReceiptProjection(serialized)).toBeNull();
-    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(staged).accepted).toBe(true);
+    expect((await commitGpuHmrMcpAdmissionReceiptForMatrix(staged)).accepted)
+      .toBe(true);
   });
 
-  it("discards a failed semantic consumer without consuming replay", () => {
+  it("discards a failed semantic consumer without consuming replay", async () => {
     const context = verificationContext();
     const staged = stageGpuHmrMcpAdmissionReceiptForMatrix(context);
     const semanticConsumerAccepted =
@@ -213,7 +374,7 @@ describe("MCP admission receipt matrix verifier", () => {
     expect(semanticConsumerAccepted).toBe(false);
     expect(discardGpuHmrMcpAdmissionReceiptForMatrix(staged)).toBe(true);
     expect(discardGpuHmrMcpAdmissionReceiptForMatrix(staged)).toBe(false);
-    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(staged)).toMatchObject({
+    expect(await commitGpuHmrMcpAdmissionReceiptForMatrix(staged)).toMatchObject({
       accepted: false,
       reason:
         "gpu_hmr_mcp_admission_matrix_staged_verification_already_used",
@@ -221,10 +382,49 @@ describe("MCP admission receipt matrix verifier", () => {
 
     const retry = stageGpuHmrMcpAdmissionReceiptForMatrix(context);
     expect(retry).toMatchObject({ staged: true });
-    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(retry).accepted).toBe(true);
+    expect((await commitGpuHmrMcpAdmissionReceiptForMatrix(retry)).accepted)
+      .toBe(true);
   });
 
-  it("atomically rechecks replay constraints when staged receipts commit", () => {
+  it("rechecks freshness before replay commit without consuming an expired receipt", async () => {
+    const privateKey = generateKeyPairSync("ed25519").privateKey;
+    const admittedAt = BigInt(Date.now()) * 1_000_000n;
+    const signer = receiptSigner(privateKey, {
+      clockUnixNs: () => admittedAt,
+    });
+    const input = admissionInput();
+    const receipt = signer.sign(input);
+    const replayRegistry = createGpuHmrMcpAdmissionReplayRegistry();
+    const expiringContext = verificationContext({
+      signer,
+      input,
+      receipt,
+      nowUnixNs: admittedAt,
+      maxAgeNs: 1_000_000n,
+      replayRegistry,
+    });
+    const staged = stageGpuHmrMcpAdmissionReceiptForMatrix(expiringContext);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await commitGpuHmrMcpAdmissionReceiptForMatrix(staged)).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_receipt_stale",
+      freshnessChecked: true,
+      replayChecked: false,
+      replayCommitAttempted: false,
+      replayCommitted: false,
+    });
+
+    const retry = stageGpuHmrMcpAdmissionReceiptForMatrix({
+      ...expiringContext,
+      nowUnixNs: BigInt(Date.now()) * 1_000_000n,
+      maxAgeNs: MAX_AGE_NS,
+    });
+    expect((await commitGpuHmrMcpAdmissionReceiptForMatrix(retry)).accepted)
+      .toBe(true);
+  });
+
+  it("atomically rechecks replay constraints when staged receipts commit", async () => {
     const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey);
     const input = admissionInput();
     const firstReceipt = signer.sign(input);
@@ -246,13 +446,15 @@ describe("MCP admission receipt matrix verifier", () => {
     expect(first).toMatchObject({ staged: true });
     expect(duplicate).toMatchObject({ staged: true });
     expect(second).toMatchObject({ staged: true });
-    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(first).accepted).toBe(true);
-    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(duplicate)).toMatchObject({
+    expect((await commitGpuHmrMcpAdmissionReceiptForMatrix(first)).accepted)
+      .toBe(true);
+    expect(await commitGpuHmrMcpAdmissionReceiptForMatrix(duplicate)).toMatchObject({
       accepted: false,
       reason: "gpu_hmr_mcp_admission_receipt_replayed",
       replayChecked: true,
     });
-    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(second).accepted).toBe(true);
+    expect((await commitGpuHmrMcpAdmissionReceiptForMatrix(second)).accepted)
+      .toBe(true);
 
     const rollbackRegistry = createGpuHmrMcpAdmissionReplayRegistry();
     const stagedFirst = stageGpuHmrMcpAdmissionReceiptForMatrix({
@@ -264,17 +466,59 @@ describe("MCP admission receipt matrix verifier", () => {
       receipt: secondReceipt,
       replayRegistry: rollbackRegistry,
     });
-    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(stagedSecond).accepted)
+    expect((await commitGpuHmrMcpAdmissionReceiptForMatrix(stagedSecond)).accepted)
       .toBe(true);
-    expect(commitGpuHmrMcpAdmissionReceiptForMatrix(stagedFirst)).toMatchObject({
+    expect(await commitGpuHmrMcpAdmissionReceiptForMatrix(stagedFirst)).toMatchObject({
       accepted: false,
       reason: "gpu_hmr_mcp_admission_sequence_not_increasing",
       replayChecked: true,
     });
   });
 
-  it("accepts fresh externally trusted receipts and exposes only branded projections", () => {
-    const result = verifyGpuHmrMcpAdmissionReceiptForMatrix(
+  it("uses deterministic operation identities and admits one concurrent replay", async () => {
+    const replayRegistry = createGpuHmrMcpAdmissionReplayRegistry();
+    const context = verificationContext({ replayRegistry });
+    const first = stageGpuHmrMcpAdmissionReceiptForMatrix(context);
+    const second = stageGpuHmrMcpAdmissionReceiptForMatrix(context);
+
+    expect(first).toMatchObject({
+      replayChecked: false,
+      replayCommitAttempted: false,
+      replayAuthorityDurable: false,
+    });
+    expect(first.replayOperationId).toMatch(
+      /^gpu-hmr-mcp-replay-operation:sha256:[a-f0-9]{64}$/,
+    );
+    expect(second.replayOperationId).toMatch(
+      /^gpu-hmr-mcp-replay-operation:sha256:[a-f0-9]{64}$/,
+    );
+    expect(second.replayOperationId).toBe(first.replayOperationId);
+    expect(second.replayRequestId).toBe(first.replayRequestId);
+
+    const results = await Promise.all([
+      commitGpuHmrMcpAdmissionReceiptForMatrix(first),
+      commitGpuHmrMcpAdmissionReceiptForMatrix(second),
+    ]);
+
+    expect(results.filter((result) => result.accepted)).toHaveLength(1);
+    expect(results.filter((result) => !result.accepted)).toEqual([
+      expect.objectContaining({
+        reason: "gpu_hmr_mcp_admission_receipt_replayed",
+        replayChecked: true,
+        replayCommitAttempted: false,
+        replayCommitted: false,
+        replayAuthorityDurable: false,
+      }),
+    ]);
+    for (const result of results) {
+      expect(result.replayOperationId).toMatch(
+        /^gpu-hmr-mcp-replay-operation:sha256:[a-f0-9]{64}$/,
+      );
+    }
+  });
+
+  it("accepts fresh externally trusted receipts and exposes only branded projections", async () => {
+    const result = await verifyGpuHmrMcpAdmissionReceiptForMatrix(
       verificationContext(),
     );
 
@@ -305,13 +549,364 @@ describe("MCP admission receipt matrix verifier", () => {
     })).toBeNull();
   });
 
-  it("rejects wrong keys, wrong challenges, and self-signed receipts", () => {
+  it("uses signed parent freshness with no matrix-local clock", async () => {
+    const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey, {
+      clockUnixNs: () => BigInt(Date.now()) * 1_000_000n,
+    });
+    const input = admissionInput();
+    const receipt = signer.sign(input);
+    const online = await onlineRegistry(signer);
+    const result = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
+      trustedVerificationKey: signer.exportVerificationKey(),
+      validationRunChallenge: CHALLENGE,
+      receipt,
+      replayRegistry: online.replayRegistry,
+      expectedBinding: expectedBinding(input),
+    });
+
+    expect(result).toMatchObject({
+      accepted: true,
+      reason: null,
+      freshnessChecked: true,
+      commitFreshnessChecked: true,
+      replayChecked: true,
+      replayCommitted: true,
+      replayCommitKnown: true,
+      replayCommitState: "applied",
+      replayOperationCommitted: true,
+      replayDurable: false,
+      replayAuthorityDurable: false,
+      replayAuthorityClass:
+        GPU_HMR_MCP_ADMISSION_ONLINE_REPLAY_AUTHORITY_CLASS,
+      replayOnlineRequired: true,
+      replayOnlineVerified: true,
+      replayRollbackProtected: true,
+      replaySignedProbeVerified: true,
+      replaySignedResponseVerified: true,
+      replayAuthorityGenerationId: online.metadata.authorityGenerationId,
+      replayAuthorityProcessId: online.metadata.parentPid,
+      replayAuthorityParentStartIdentity:
+        online.metadata.parentStartIdentity,
+      replayAuthorityPolicyHash: online.metadata.policyHash,
+      replayResponseKeyId: online.metadata.responseVerificationKey.keyId,
+      replayAttemptCount: 1,
+      replayIndeterminateRetryUsed: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(result.replayRequestHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(result.replayPreviousCommitHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(result.replayCommitHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(result.replayResponseSignature).toMatch(
+      /^ed25519:[A-Za-z0-9_-]{86}$/,
+    );
+
+    const replayed = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
+      trustedVerificationKey: signer.exportVerificationKey(),
+      validationRunChallenge: CHALLENGE,
+      receipt,
+      replayRegistry: online.replayRegistry,
+      expectedBinding: expectedBinding(input),
+    });
+    expect(replayed).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_receipt_replayed",
+      replayCommitState: "rejected",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+    });
+  });
+
+  it("gives independent online registries distinct parent operations", async () => {
+    const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey, {
+      clockUnixNs: () => BigInt(Date.now()) * 1_000_000n,
+    });
+    const online = await onlineRegistry(signer);
+    const otherRegistry =
+      await createGpuHmrMcpAdmissionOnlineReplayRegistry(online.client);
+    const input = admissionInput();
+    const receipt = signer.sign(input);
+    const common = {
+      trustedVerificationKey: signer.exportVerificationKey(),
+      validationRunChallenge: CHALLENGE,
+      receipt,
+      expectedBinding: expectedBinding(input),
+    };
+    const first = stageGpuHmrMcpAdmissionReceiptForMatrix({
+      ...common,
+      replayRegistry: online.replayRegistry,
+    });
+    const second = stageGpuHmrMcpAdmissionReceiptForMatrix({
+      ...common,
+      replayRegistry: otherRegistry,
+    });
+
+    expect(first.replayOperationId).not.toBe(second.replayOperationId);
+    expect(first.replayRequestId).not.toBe(second.replayRequestId);
+
+    const results = await Promise.all([
+      commitGpuHmrMcpAdmissionReceiptForMatrix(first),
+      commitGpuHmrMcpAdmissionReceiptForMatrix(second),
+    ]);
+    expect(results.filter((result) => result.accepted)).toHaveLength(1);
+    expect(results.filter((result) => !result.accepted)).toEqual([
+      expect.objectContaining({
+        reason: "gpu_hmr_mcp_admission_receipt_replayed",
+        replayCommitAttempted: true,
+        replayCommitKnown: true,
+        replayCommitState: "rejected",
+        replayOperationCommitted: true,
+        replaySignedResponseVerified: true,
+      }),
+    ]);
+  });
+
+  it("keeps a concurrent online operation pending until a signed result returns", async () => {
+    const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey, {
+      clockUnixNs: () => BigInt(Date.now()) * 1_000_000n,
+    });
+    const online = await onlineRegistry(signer, async (metadata) => ({
+      ...metadata,
+      endpoint: await startDelayingCasRelay(metadata.endpoint as string, false),
+      operationTimeoutMs: 1_000,
+    }));
+    const input = admissionInput();
+    const receipt = signer.sign(input);
+    const context = {
+      trustedVerificationKey: signer.exportVerificationKey(),
+      validationRunChallenge: CHALLENGE,
+      receipt,
+      replayRegistry: online.replayRegistry,
+      expectedBinding: expectedBinding(input),
+    };
+    const first = stageGpuHmrMcpAdmissionReceiptForMatrix(context);
+    const concurrent = stageGpuHmrMcpAdmissionReceiptForMatrix(context);
+
+    const firstResultPromise = commitGpuHmrMcpAdmissionReceiptForMatrix(first);
+    const concurrentResult =
+      await commitGpuHmrMcpAdmissionReceiptForMatrix(concurrent);
+    expect(concurrentResult).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_replay_authority_indeterminate",
+      replayChecked: false,
+      replayCommitAttempted: false,
+      replayCommitKnown: false,
+      replayCommitState: "pending",
+      replayOperationCommitted: null,
+    });
+    await expect(firstResultPromise).resolves.toMatchObject({
+      accepted: true,
+      replayCommitKnown: true,
+      replayCommitState: "applied",
+      replayAttemptCount: 2,
+      replayIndeterminateRetryUsed: true,
+    });
+  });
+
+  it("requires the branded async factory and rejects caller-supplied probes", async () => {
+    const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey, {
+      clockUnixNs: () => BigInt(Date.now()) * 1_000_000n,
+    });
+    const online = await onlineRegistry(signer);
+    const rawProbe = await online.projection.probe();
+    const fabricatedRawProbe = {
+      ...rawProbe,
+      revision: (BigInt(rawProbe.revision) + 1n).toString(),
+    };
+    expect(() => createGpuHmrMcpAdmissionReplayRegistry({
+      authority: online.client,
+      authorityProbe: rawProbe,
+    })).toThrow("gpu_hmr_mcp_admission_replay_authority_invalid");
+    expect(() => createGpuHmrMcpAdmissionReplayRegistry({
+      authority: online.client,
+      authorityProbe: fabricatedRawProbe,
+    })).toThrow("gpu_hmr_mcp_admission_replay_authority_invalid");
+    expect(() => createGpuHmrMcpAdmissionReplayRegistry({
+      authorityProbe: fabricatedRawProbe,
+    })).toThrow("gpu_hmr_mcp_admission_replay_authority_invalid");
+    expect(() => createGpuHmrMcpAdmissionReplayRegistry({
+      authority: {},
+      authorityProbe: {},
+    })).toThrow("gpu_hmr_mcp_admission_replay_authority_invalid");
+    await expect(createGpuHmrMcpAdmissionOnlineReplayRegistry({})).rejects
+      .toThrow("gpu_hmr_mcp_admission_replay_authority_invalid");
+
+    const input = admissionInput();
+    const receipt = signer.sign(input);
+    const mismatch = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
+      trustedVerificationKey: signer.exportVerificationKey(),
+      validationRunChallenge: CHALLENGE,
+      receipt,
+      maxAgeNs: MAX_AGE_NS + 1n,
+      replayRegistry: online.replayRegistry,
+      expectedBinding: expectedBinding(input),
+    });
+    expect(mismatch).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_replay_authority_policy_mismatch",
+      replayOnlineVerified: true,
+      replaySignedProbeVerified: true,
+    });
+  });
+
+  it("retries one indeterminate online commit with the exact operation", async () => {
+    const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey, {
+      clockUnixNs: () => BigInt(Date.now()) * 1_000_000n,
+    });
+    const online = await onlineRegistry(signer, async (metadata) => ({
+      ...metadata,
+      endpoint: await startDelayingCasRelay(
+        metadata.endpoint as string,
+        false,
+      ),
+      operationTimeoutMs: 1_000,
+    }));
+    const input = admissionInput();
+    const result = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
+      trustedVerificationKey: signer.exportVerificationKey(),
+      validationRunChallenge: CHALLENGE,
+      receipt: signer.sign(input),
+      replayRegistry: online.replayRegistry,
+      expectedBinding: expectedBinding(input),
+    });
+
+    expect(result).toMatchObject({
+      accepted: true,
+      replayCommitKnown: true,
+      replayCommitState: "applied",
+      replayAttemptCount: 2,
+      replayIndeterminateRetryUsed: true,
+      replaySignedResponseVerified: true,
+    });
+  });
+
+  it("fails closed without claiming an indeterminate commit was absent", async () => {
+    const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey, {
+      clockUnixNs: () => BigInt(Date.now()) * 1_000_000n,
+    });
+    const online = await onlineRegistry(signer, async (metadata) => ({
+      ...metadata,
+      endpoint: await startDelayingCasRelay(
+        metadata.endpoint as string,
+        true,
+      ),
+      operationTimeoutMs: 1_000,
+    }));
+    const input = admissionInput();
+    const result = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
+      trustedVerificationKey: signer.exportVerificationKey(),
+      validationRunChallenge: CHALLENGE,
+      receipt: signer.sign(input),
+      replayRegistry: online.replayRegistry,
+      expectedBinding: expectedBinding(input),
+    });
+
+    expect(result).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_replay_authority_indeterminate",
+      replayCommitKnown: false,
+      replayCommitState: "indeterminate",
+      replayOperationCommitted: null,
+      replayAttemptCount: 2,
+      replayIndeterminateRetryUsed: true,
+      replaySignedResponseVerified: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+    });
+  });
+
+  it("restages an indeterminate online operation with the exact identity", async () => {
+    const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey, {
+      clockUnixNs: () => BigInt(Date.now()) * 1_000_000n,
+    });
+    const online = await onlineRegistry(signer, async (metadata) => ({
+      ...metadata,
+      endpoint: await startDelayingCasRelay(metadata.endpoint as string, 2),
+      operationTimeoutMs: 1_000,
+    }));
+    const input = admissionInput();
+    const context = {
+      trustedVerificationKey: signer.exportVerificationKey(),
+      validationRunChallenge: CHALLENGE,
+      receipt: signer.sign(input),
+      replayRegistry: online.replayRegistry,
+      expectedBinding: expectedBinding(input),
+    };
+
+    const indeterminate =
+      await verifyGpuHmrMcpAdmissionReceiptForMatrix(context);
+    expect(indeterminate).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_replay_authority_indeterminate",
+      replayCommitKnown: false,
+      replayCommitState: "indeterminate",
+      replayAttemptCount: 2,
+    });
+
+    const resolved = await verifyGpuHmrMcpAdmissionReceiptForMatrix(context);
+    expect(resolved).toMatchObject({
+      accepted: true,
+      replayCommitKnown: true,
+      replayCommitState: "applied",
+      replayAttemptCount: 1,
+      replaySignedResponseVerified: true,
+    });
+    expect(resolved.replayOperationId).toBe(indeterminate.replayOperationId);
+    expect(resolved.replayRequestId).toBe(indeterminate.replayRequestId);
+
+    expect(await verifyGpuHmrMcpAdmissionReceiptForMatrix(context)).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_receipt_replayed",
+      replayCommitAttempted: false,
+      replayCommitKnown: true,
+      replayCommitState: "rejected",
+    });
+  });
+
+  it("replays a known signed rejection without relabeling it as receipt replay", async () => {
+    const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey, {
+      clockUnixNs: () =>
+        BigInt(Date.now()) * 1_000_000n - MAX_AGE_NS - 1_000_000_000n,
+    });
+    const online = await onlineRegistry(signer);
+    const input = admissionInput();
+    const context = {
+      trustedVerificationKey: signer.exportVerificationKey(),
+      validationRunChallenge: CHALLENGE,
+      receipt: signer.sign(input),
+      replayRegistry: online.replayRegistry,
+      expectedBinding: expectedBinding(input),
+    };
+
+    const first = await verifyGpuHmrMcpAdmissionReceiptForMatrix(context);
+    expect(first).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_receipt_expired_before_replay_commit",
+      replayCommitAttempted: true,
+      replayCommitKnown: true,
+      replayCommitState: "rejected",
+      replaySignedResponseVerified: true,
+    });
+    const repeated = await verifyGpuHmrMcpAdmissionReceiptForMatrix(context);
+    expect(repeated).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_receipt_expired_before_replay_commit",
+      replayCommitAttempted: false,
+      replayCommitKnown: true,
+      replayCommitState: "rejected",
+      replayAttemptCount: 0,
+      replaySignedResponseVerified: true,
+    });
+  });
+
+  it("rejects wrong keys, wrong challenges, and self-signed receipts", async () => {
     const trustedSigner = receiptSigner(generateKeyPairSync("ed25519").privateKey);
     const attackerSigner = receiptSigner(generateKeyPairSync("ed25519").privateKey);
     const input = admissionInput();
     const attackerReceipt = attackerSigner.sign(input);
 
-    const wrongKey = verifyGpuHmrMcpAdmissionReceiptForMatrix({
+    const wrongKey = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
       ...verificationContext({ signer: trustedSigner, input }),
       receipt: attackerReceipt,
     });
@@ -321,7 +916,7 @@ describe("MCP admission receipt matrix verifier", () => {
     });
     expectSupportOnly(wrongKey);
 
-    const wrongChallenge = verifyGpuHmrMcpAdmissionReceiptForMatrix({
+    const wrongChallenge = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
       ...verificationContext({ signer: trustedSigner, input }),
       validationRunChallenge: OTHER_CHALLENGE,
     });
@@ -331,8 +926,8 @@ describe("MCP admission receipt matrix verifier", () => {
     });
   });
 
-  it("rejects stale and excessively future-dated receipts", () => {
-    const stale = verifyGpuHmrMcpAdmissionReceiptForMatrix(
+  it("rejects stale and excessively future-dated receipts", async () => {
+    const stale = await verifyGpuHmrMcpAdmissionReceiptForMatrix(
       verificationContext({ nowUnixNs: NOW_NS + MAX_AGE_NS + 1n }),
     );
     expect(stale).toMatchObject({
@@ -344,7 +939,7 @@ describe("MCP admission receipt matrix verifier", () => {
     const futureSigner = receiptSigner(generateKeyPairSync("ed25519").privateKey, {
       clockUnixNs: () => NOW_NS + MAX_FUTURE_SKEW_NS + 1n,
     });
-    const future = verifyGpuHmrMcpAdmissionReceiptForMatrix(
+    const future = await verifyGpuHmrMcpAdmissionReceiptForMatrix(
       verificationContext({ signer: futureSigner }),
     );
     expect(future).toMatchObject({
@@ -354,9 +949,9 @@ describe("MCP admission receipt matrix verifier", () => {
     });
   });
 
-  it("rejects cross-ledger and other signed binding substitution", () => {
+  it("rejects cross-ledger and other signed binding substitution", async () => {
     const context = verificationContext();
-    const crossLedger = verifyGpuHmrMcpAdmissionReceiptForMatrix({
+    const crossLedger = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
       ...context,
       expectedBinding: {
         ...context.expectedBinding,
@@ -370,7 +965,7 @@ describe("MCP admission receipt matrix verifier", () => {
     });
 
     const context2 = verificationContext();
-    const artifactSubstitution = verifyGpuHmrMcpAdmissionReceiptForMatrix({
+    const artifactSubstitution = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
       ...context2,
       expectedBinding: {
         ...context2.expectedBinding,
@@ -395,14 +990,14 @@ describe("MCP admission receipt matrix verifier", () => {
       receipt: second,
       replayRegistry: registry,
     });
-    expect(verifyGpuHmrMcpAdmissionReceiptForMatrix(secondContext).accepted)
+    expect((await verifyGpuHmrMcpAdmissionReceiptForMatrix(secondContext)).accepted)
       .toBe(true);
-    expect(verifyGpuHmrMcpAdmissionReceiptForMatrix(secondContext)).toMatchObject({
+    expect(await verifyGpuHmrMcpAdmissionReceiptForMatrix(secondContext)).toMatchObject({
       accepted: false,
       reason: "gpu_hmr_mcp_admission_receipt_replayed",
       replayChecked: true,
     });
-    expect(verifyGpuHmrMcpAdmissionReceiptForMatrix({
+    expect(await verifyGpuHmrMcpAdmissionReceiptForMatrix({
       ...secondContext,
       receipt: first,
     })).toMatchObject({
@@ -419,10 +1014,8 @@ describe("MCP admission receipt matrix verifier", () => {
       replayRegistry: parallelRegistry,
     });
     const parallel = await Promise.all([
-      Promise.resolve().then(() =>
-        verifyGpuHmrMcpAdmissionReceiptForMatrix(parallelContext)),
-      Promise.resolve().then(() =>
-        verifyGpuHmrMcpAdmissionReceiptForMatrix(parallelContext)),
+      verifyGpuHmrMcpAdmissionReceiptForMatrix(parallelContext),
+      verifyGpuHmrMcpAdmissionReceiptForMatrix(parallelContext),
     ]);
     expect(parallel.filter((result) => result.accepted)).toHaveLength(1);
     expect(parallel.filter((result) => !result.accepted)).toEqual([
@@ -432,7 +1025,7 @@ describe("MCP admission receipt matrix verifier", () => {
     ]);
   });
 
-  it("rejects nonce reuse even when the signed sequence increases", () => {
+  it("rejects nonce reuse even when the signed sequence increases", async () => {
     const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey, {
       nonceBytes: () => Buffer.alloc(32, 0x77),
     });
@@ -441,10 +1034,10 @@ describe("MCP admission receipt matrix verifier", () => {
     const second = signer.sign(input);
     const replayRegistry = createGpuHmrMcpAdmissionReplayRegistry();
 
-    expect(verifyGpuHmrMcpAdmissionReceiptForMatrix(
+    expect((await verifyGpuHmrMcpAdmissionReceiptForMatrix(
       verificationContext({ signer, input, receipt: first, replayRegistry }),
-    ).accepted).toBe(true);
-    expect(verifyGpuHmrMcpAdmissionReceiptForMatrix(
+    )).accepted).toBe(true);
+    expect(await verifyGpuHmrMcpAdmissionReceiptForMatrix(
       verificationContext({ signer, input, receipt: second, replayRegistry }),
     )).toMatchObject({
       accepted: false,
@@ -452,7 +1045,7 @@ describe("MCP admission receipt matrix verifier", () => {
     });
   });
 
-  it("fails closed when bounded replay state reaches capacity", () => {
+  it("fails closed when bounded replay state reaches capacity", async () => {
     const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey);
     const input = admissionInput();
     const replayRegistry = createGpuHmrMcpAdmissionReplayRegistry({
@@ -460,13 +1053,13 @@ describe("MCP admission receipt matrix verifier", () => {
       maxReceiptsPerScope: 2,
     });
     const receipts = [signer.sign(input), signer.sign(input), signer.sign(input)];
-    expect(verifyGpuHmrMcpAdmissionReceiptForMatrix(
+    expect((await verifyGpuHmrMcpAdmissionReceiptForMatrix(
       verificationContext({ signer, input, receipt: receipts[0], replayRegistry }),
-    ).accepted).toBe(true);
-    expect(verifyGpuHmrMcpAdmissionReceiptForMatrix(
+    )).accepted).toBe(true);
+    expect((await verifyGpuHmrMcpAdmissionReceiptForMatrix(
       verificationContext({ signer, input, receipt: receipts[1], replayRegistry }),
-    ).accepted).toBe(true);
-    expect(verifyGpuHmrMcpAdmissionReceiptForMatrix(
+    )).accepted).toBe(true);
+    expect(await verifyGpuHmrMcpAdmissionReceiptForMatrix(
       verificationContext({ signer, input, receipt: receipts[2], replayRegistry }),
     )).toMatchObject({
       accepted: false,
@@ -476,7 +1069,7 @@ describe("MCP admission receipt matrix verifier", () => {
     const otherSessionInput = admissionInput({
       transportSessionId: "opaque-transport-session:matrix-02",
     });
-    expect(verifyGpuHmrMcpAdmissionReceiptForMatrix(
+    expect(await verifyGpuHmrMcpAdmissionReceiptForMatrix(
       verificationContext({
         signer,
         input: otherSessionInput,
@@ -491,11 +1084,16 @@ describe("MCP admission receipt matrix verifier", () => {
       maxScopes: 0,
       maxReceiptsPerScope: 1,
     })).toThrow("gpu_hmr_mcp_admission_replay_registry_capacity_invalid");
+    expect(() => createGpuHmrMcpAdmissionReplayRegistry({
+      maxScopes: 1,
+      maxReceiptsPerScope: 1,
+      authority: {},
+    })).toThrow("gpu_hmr_mcp_admission_replay_authority_invalid");
   });
 
-  it("rejects forged registries, malformed freshness, and accessor contexts", () => {
+  it("rejects forged registries, malformed freshness, and accessor contexts", async () => {
     const base = verificationContext();
-    expect(verifyGpuHmrMcpAdmissionReceiptForMatrix({
+    expect(await verifyGpuHmrMcpAdmissionReceiptForMatrix({
       ...base,
       replayRegistry: {
         schemaVersion: "synthi.gpu_hmr.mcp_admission_replay_registry.v1",
@@ -504,7 +1102,7 @@ describe("MCP admission receipt matrix verifier", () => {
       accepted: false,
       reason: "gpu_hmr_mcp_admission_replay_registry_invalid",
     });
-    expect(verifyGpuHmrMcpAdmissionReceiptForMatrix({
+    expect(await verifyGpuHmrMcpAdmissionReceiptForMatrix({
       ...base,
       nowUnixNs: Number(NOW_NS),
     })).toMatchObject({
@@ -520,7 +1118,7 @@ describe("MCP admission receipt matrix verifier", () => {
         ...(key === "receipt" ? { get: () => value } : { value }),
       });
     }
-    expect(verifyGpuHmrMcpAdmissionReceiptForMatrix(accessorContext)).toMatchObject({
+    expect(await verifyGpuHmrMcpAdmissionReceiptForMatrix(accessorContext)).toMatchObject({
       accepted: false,
       reason: "gpu_hmr_mcp_admission_matrix_context_invalid",
     });
