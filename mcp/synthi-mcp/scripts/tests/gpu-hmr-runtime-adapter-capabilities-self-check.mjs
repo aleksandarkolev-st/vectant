@@ -7,6 +7,7 @@ import {
   GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_AUTHORITY,
   GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_SCHEMA_VERSION,
   GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_SCHEMA_VERSION,
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS,
   GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_INPUT_FIELDS,
   GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_OBLIGATIONS,
   GPU_HMR_RUNTIME_ADAPTER_COMMAND_RECORDING_MODELS,
@@ -17,6 +18,7 @@ import {
   GPU_HMR_RUNTIME_ADAPTER_PIPELINE_CACHE_OWNERS,
   GPU_HMR_RUNTIME_ADAPTER_PUBLICATION_MODELS,
   createGpuHmrRuntimeAdapterCapabilities,
+  deriveGpuHmrRuntimeAdapterCapabilityObligations,
   evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity,
 } from '../lib/gpu-hmr-runtime-adapter-capabilities.mjs';
 import {
@@ -45,8 +47,28 @@ function capabilityInput(overrides = {}) {
   };
 }
 
+function capabilityFacts(overrides = {}) {
+  const input = capabilityInput(overrides);
+  return Object.fromEntries(
+    GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS.map(
+      (field) => [field, input[field]],
+    ),
+  );
+}
+
 function createFacet(overrides = {}) {
-  const facet = createGpuHmrRuntimeAdapterCapabilities(capabilityInput(overrides));
+  const input = capabilityInput(overrides);
+  const facet = createGpuHmrRuntimeAdapterCapabilities(input);
+  assert.deepEqual(
+    deriveGpuHmrRuntimeAdapterCapabilityObligations(
+      Object.fromEntries(
+        GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS.map(
+          (field) => [field, input[field]],
+        ),
+      ),
+    ),
+    facet.obligations,
+  );
   facets.push(facet);
   return facet;
 }
@@ -74,6 +96,14 @@ assert.deepEqual([...GPU_HMR_RUNTIME_ADAPTER_ARTIFACT_FORMATS], [
 assert.deepEqual([...GPU_HMR_RUNTIME_ADAPTER_OUTPUT_MODALITIES], [
   'compute',
   'visual',
+]);
+assert.deepEqual([...GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS], [
+  'artifactFormat',
+  'outputModality',
+  'oracleKind',
+  'publicationModel',
+  'commandRecordingModel',
+  'pipelineCacheOwner',
 ]);
 assert.deepEqual([...GPU_HMR_RUNTIME_ADAPTER_PUBLICATION_MODELS], [
   'dispatch_table_epoch',
@@ -619,6 +649,89 @@ assert.deepEqual(differentEvidence.obligations, baseline.obligations);
 assert.equal(differentEvidence.obligationsHash, baseline.obligationsHash);
 assert.notEqual(differentEvidence.capabilitiesHash, baseline.capabilitiesHash);
 
+const baselineDerivedObligations = deriveGpuHmrRuntimeAdapterCapabilityObligations(
+  capabilityFacts(),
+);
+assert.deepEqual(baselineDerivedObligations, baseline.obligations);
+assert.equal(Object.isFrozen(baselineDerivedObligations), true);
+assert.equal(Object.hasOwn(baselineDerivedObligations, 'authority'), false);
+assert.equal(Object.hasOwn(baselineDerivedObligations, 'acceptedForGpuHmr'), false);
+assert.equal(Object.hasOwn(baselineDerivedObligations, 'gpuHmrSuccess'), false);
+
+for (const field of GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS) {
+  const missing = capabilityFacts();
+  delete missing[field];
+  assert.throws(
+    () => deriveGpuHmrRuntimeAdapterCapabilityObligations(missing),
+    /facts_missing_field/,
+    field,
+  );
+}
+
+for (const field of [
+  'evidenceRefs',
+  'artifact_format',
+  'output_modality',
+  'oracle_kind',
+  'publication_model',
+  'command_recording_model',
+  'pipeline_cache_owner',
+  'callerName',
+  'project',
+  'target',
+  'backend',
+  'profile',
+  'fixture',
+  'library',
+  'family',
+  'scenario',
+]) {
+  assert.throws(
+    () => deriveGpuHmrRuntimeAdapterCapabilityObligations({
+      ...capabilityFacts(),
+      [field]: 'not-a-mechanism-fact',
+    }),
+    /facts_unknown_field/,
+    field,
+  );
+}
+
+let factsProxyTrapCalled = false;
+const proxiedFacts = new Proxy(capabilityFacts(), {
+  ownKeys() {
+    factsProxyTrapCalled = true;
+    throw new Error('proxy trap must not run');
+  },
+});
+assert.throws(
+  () => deriveGpuHmrRuntimeAdapterCapabilityObligations(proxiedFacts),
+  /facts_proxy_forbidden/,
+);
+assert.equal(factsProxyTrapCalled, false);
+
+let factsGetterCalled = false;
+const accessorFacts = capabilityFacts();
+Object.defineProperty(accessorFacts, 'artifactFormat', {
+  configurable: true,
+  enumerable: true,
+  get() {
+    factsGetterCalled = true;
+    return 'native_binary';
+  },
+});
+assert.throws(
+  () => deriveGpuHmrRuntimeAdapterCapabilityObligations(accessorFacts),
+  /facts_accessor_forbidden/,
+);
+assert.equal(factsGetterCalled, false);
+
+assert.throws(
+  () => deriveGpuHmrRuntimeAdapterCapabilityObligations(
+    Object.assign(Object.create(null), capabilityFacts()),
+  ),
+  /facts_must_be_plain_data_record/,
+);
+
 for (const field of GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_INPUT_FIELDS) {
   const missing = capabilityInput();
   delete missing[field];
@@ -671,7 +784,16 @@ for (const field of unknownFields) {
   );
 }
 
-const identityTerms = ['backend', 'project', 'target', 'profile', 'fixture'];
+const identityTerms = [
+  'backend',
+  'project',
+  'target',
+  'profile',
+  'fixture',
+  'library',
+  'family',
+  'scenario',
+];
 for (const field of identityTerms) {
   assert.throws(
     () => createGpuHmrRuntimeAdapterCapabilities({

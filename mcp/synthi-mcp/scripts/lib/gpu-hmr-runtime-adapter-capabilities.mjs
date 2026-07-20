@@ -58,6 +58,12 @@ export const GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_INPUT_FIELDS = Object.freeze([
   'evidenceRefs',
 ]);
 
+export const GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS = Object.freeze(
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_INPUT_FIELDS.filter(
+    (field) => field !== 'evidenceRefs',
+  ),
+);
+
 export const GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_OBLIGATIONS = Object.freeze({
   verifiedArtifactTransport: 'verified_artifact_transport',
   changedArtifactLoadIntoTargetProcess: 'changed_artifact_load_into_target_process',
@@ -133,6 +139,9 @@ export const GPU_HMR_RUNTIME_ADAPTER_MAX_EVIDENCE_REF_BYTES = 1024;
 export const GPU_HMR_RUNTIME_ADAPTER_MAX_EVIDENCE_REFS_BYTES = 32 * 1024;
 
 const INPUT_FIELD_SET = new Set(GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_INPUT_FIELDS);
+const CAPABILITY_FACT_FIELD_SET = new Set(
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS,
+);
 const ARTIFACT_FORMAT_SET = new Set(GPU_HMR_RUNTIME_ADAPTER_ARTIFACT_FORMATS);
 const OUTPUT_MODALITY_SET = new Set(GPU_HMR_RUNTIME_ADAPTER_OUTPUT_MODALITIES);
 const PUBLICATION_MODEL_SET = new Set(GPU_HMR_RUNTIME_ADAPTER_PUBLICATION_MODELS);
@@ -406,6 +415,37 @@ function descriptorIsAccessor(descriptor) {
   return Object.hasOwn(descriptor, 'get') || Object.hasOwn(descriptor, 'set');
 }
 
+function requireExactCapabilityFacts(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    fail('facts_must_be_plain_data_record');
+  }
+  if (utilTypes.isProxy(value)) fail('facts_proxy_forbidden');
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    fail('facts_must_be_plain_data_record');
+  }
+
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const ownKeys = Reflect.ownKeys(descriptors);
+  for (const key of ownKeys) {
+    if (typeof key !== 'string') fail('facts_symbol_key_forbidden');
+    const descriptor = descriptors[key];
+    if (descriptorIsAccessor(descriptor)) fail('facts_accessor_forbidden', key);
+    if (descriptor.enumerable !== true) fail('facts_non_enumerable_field', key);
+    if (!CAPABILITY_FACT_FIELD_SET.has(key)) fail('facts_unknown_field', key);
+  }
+  for (const field of GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS) {
+    if (!Object.hasOwn(descriptors, field)) fail('facts_missing_field', field);
+  }
+  if (ownKeys.length !== GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS.length) {
+    fail('facts_shape_invalid');
+  }
+  return Object.fromEntries(
+    GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS.map(
+      (field) => [field, descriptors[field].value],
+    ),
+  );
+}
+
 function requireExactPlainInput(value) {
   if (value === null || typeof value !== 'object') {
     fail('input_must_be_plain_data_record');
@@ -540,7 +580,37 @@ function requiresExplicitRuntimeBoundary(capabilities) {
     || BOUNDARY_PIPELINE_CACHE_OWNERS.has(capabilities.pipelineCacheOwner);
 }
 
-function deriveObligations(capabilities) {
+export function deriveGpuHmrRuntimeAdapterCapabilityObligations(input) {
+  const source = requireExactCapabilityFacts(input);
+  const outputModality = requireEnum(
+    source.outputModality,
+    OUTPUT_MODALITY_SET,
+    'output_modality',
+  );
+  const capabilities = Object.freeze({
+    artifactFormat: requireEnum(
+      source.artifactFormat,
+      ARTIFACT_FORMAT_SET,
+      'artifact_format',
+    ),
+    outputModality,
+    oracleKind: requireOracleKind(source.oracleKind, outputModality),
+    publicationModel: requireEnum(
+      source.publicationModel,
+      PUBLICATION_MODEL_SET,
+      'publication_model',
+    ),
+    commandRecordingModel: requireEnum(
+      source.commandRecordingModel,
+      COMMAND_RECORDING_MODEL_SET,
+      'command_recording_model',
+    ),
+    pipelineCacheOwner: requireEnum(
+      source.pipelineCacheOwner,
+      PIPELINE_CACHE_OWNER_SET,
+      'pipeline_cache_owner',
+    ),
+  });
   const selected = new Set(ALWAYS_OBLIGATIONS);
 
   if (capabilities.artifactFormat === 'runtime_source') {
@@ -609,7 +679,13 @@ export function createGpuHmrRuntimeAdapterCapabilities(input) {
     pipelineCacheOwner,
     evidenceRefs,
   });
-  const obligations = deriveObligations(capabilities);
+  const obligations = deriveGpuHmrRuntimeAdapterCapabilityObligations(
+    Object.fromEntries(
+      GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS.map(
+        (field) => [field, capabilities[field]],
+      ),
+    ),
+  );
   const capabilitiesHash = canonicalSha256({
     domain: `${GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_SCHEMA_VERSION}.capabilities`,
     capabilities,
