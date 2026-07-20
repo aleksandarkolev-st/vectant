@@ -392,7 +392,10 @@ export function validateComputeExpectedOutputSemantics(
   if (!canonicalSafeInteger(record.byteLength, false)) {
     return { accepted: false, reason: "byte length is invalid" };
   }
-  if (typeof record.dtype !== "string" || !(record.dtype in DTYPE_BYTES)) {
+  if (
+    typeof record.dtype !== "string"
+    || !Object.prototype.hasOwnProperty.call(DTYPE_BYTES, record.dtype)
+  ) {
     return { accepted: false, reason: "dtype is invalid" };
   }
   const dtype = record.dtype as ComputeDtype;

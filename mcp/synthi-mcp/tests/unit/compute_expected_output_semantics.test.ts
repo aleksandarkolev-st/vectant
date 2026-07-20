@@ -199,6 +199,27 @@ describe("compute expected-output semantic commitments", () => {
       reason: "expected exact semantic-contract fields",
     });
   });
+
+  it("rejects dtype names inherited from the dtype table prototype", () => {
+    Object.defineProperty(Object.prototype, "inheritedFourByteDtype", {
+      configurable: true,
+      value: 4,
+    });
+    try {
+      const material = {
+        ...exactMaterial(),
+        dtype: "inheritedFourByteDtype",
+      } as unknown as ComputeExpectedOutputSemanticsMaterial;
+      const value = {
+        ...material,
+        semanticsHash: computeExpectedOutputSemanticsHash(material),
+      };
+
+      expect(validateComputeExpectedOutputSemantics(value).accepted).toBe(false);
+    } finally {
+      delete (Object.prototype as Record<string, unknown>).inheritedFourByteDtype;
+    }
+  });
 });
 
 describe("compute expected-output v2 derivation", () => {
