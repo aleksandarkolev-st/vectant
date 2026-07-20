@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { types as utilTypes } from 'node:util';
 import {
   deriveGpuHmrAcceptanceContractFromVerifiedProofs,
 } from './gpu-hmr-acceptance-contract.mjs';
@@ -220,6 +221,441 @@ function compactStringList(values) {
 
 function objectOrNull(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function plainDataObjectOrNull(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || utilTypes.isProxy(value)) {
+    return null;
+  }
+  if (Object.getPrototypeOf(value) !== Object.prototype) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(descriptors).some((key) => {
+    const descriptor = descriptors[key];
+    return typeof key !== 'string'
+      || Object.hasOwn(descriptor, 'get')
+      || Object.hasOwn(descriptor, 'set');
+  })) {
+    return null;
+  }
+  return value;
+}
+
+function plainDataIdentity(value, ancestors = new Set()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? JSON.stringify(value) : null;
+  if (!value || typeof value !== 'object' || utilTypes.isProxy(value) || ancestors.has(value)) {
+    return null;
+  }
+  const nextAncestors = new Set(ancestors).add(value);
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const length = descriptors.length?.value;
+    if (!Number.isInteger(length) || length < 0) return null;
+    const items = [];
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) return null;
+      const identity = plainDataIdentity(descriptor.value, nextAncestors);
+      if (identity === null) return null;
+      items.push(identity);
+    }
+    const expectedKeys = new Set(['length', ...items.map((_, index) => String(index))]);
+    if (Reflect.ownKeys(descriptors).some((key) => typeof key !== 'string' || !expectedKeys.has(key))) {
+      return null;
+    }
+    return `[${items.join(',')}]`;
+  }
+  const record = plainDataObjectOrNull(value);
+  if (!record) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(record);
+  const entries = [];
+  for (const key of Object.keys(descriptors).sort()) {
+    const descriptor = descriptors[key];
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) return null;
+    const identity = plainDataIdentity(descriptor.value, nextAncestors);
+    if (identity === null) return null;
+    entries.push(`${JSON.stringify(key)}:${identity}`);
+  }
+  return `{${entries.join(',')}}`;
+}
+
+function runtimeBoundaryEventTreeFailures(events) {
+  const failures = [];
+  const addFailure = (code) => {
+    if (!failures.includes(code)) failures.push(code);
+  };
+  const visit = (value, ancestors = new Set()) => {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) addFailure('runtime_boundary_event_tree_nonfinite_number');
+      if (Object.is(value, -0)) addFailure('runtime_boundary_event_tree_negative_zero');
+      return;
+    }
+    if (typeof value === 'bigint') {
+      addFailure('runtime_boundary_event_tree_bigint');
+      return;
+    }
+    if (typeof value === 'symbol') {
+      addFailure('runtime_boundary_event_tree_symbol');
+      return;
+    }
+    if (value === undefined || typeof value === 'function') {
+      addFailure('runtime_boundary_event_tree_unsupported_value');
+      return;
+    }
+    if (utilTypes.isProxy(value)) {
+      addFailure('runtime_boundary_event_tree_proxy');
+      return;
+    }
+    if (ancestors.has(value)) {
+      addFailure('runtime_boundary_event_tree_cycle');
+      return;
+    }
+
+    let prototype;
+    let descriptors;
+    try {
+      prototype = Object.getPrototypeOf(value);
+      descriptors = Object.getOwnPropertyDescriptors(value);
+    } catch {
+      addFailure('runtime_boundary_event_tree_inspection_failed');
+      return;
+    }
+    const nextAncestors = new Set(ancestors).add(value);
+    const ownKeys = Reflect.ownKeys(descriptors);
+    if (ownKeys.some((key) => typeof key === 'symbol')) {
+      addFailure('runtime_boundary_event_tree_symbol_key');
+    }
+
+    if (Array.isArray(value)) {
+      if (prototype !== Array.prototype) {
+        addFailure('runtime_boundary_event_tree_prototype_invalid');
+        return;
+      }
+      const lengthDescriptor = descriptors.length;
+      const length = lengthDescriptor?.value;
+      if (!Number.isInteger(length) || length < 0) {
+        addFailure('runtime_boundary_event_tree_array_length_invalid');
+        return;
+      }
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+          addFailure('runtime_boundary_event_tree_sparse_array');
+          continue;
+        }
+        if (!descriptor.enumerable) {
+          addFailure('runtime_boundary_event_tree_property_invalid');
+        }
+        visit(descriptor.value, nextAncestors);
+      }
+      const expectedKeys = new Set(['length', ...Array.from({ length }, (_, index) => String(index))]);
+      if (ownKeys.some((key) => typeof key !== 'string' || !expectedKeys.has(key))) {
+        addFailure('runtime_boundary_event_tree_array_property_invalid');
+      }
+      return;
+    }
+
+    if (prototype !== Object.prototype) {
+      addFailure('runtime_boundary_event_tree_prototype_invalid');
+      return;
+    }
+    for (const key of ownKeys.filter((candidate) => typeof candidate === 'string').sort()) {
+      const descriptor = descriptors[key];
+      if (Object.hasOwn(descriptor, 'get') || Object.hasOwn(descriptor, 'set')) {
+        addFailure('runtime_boundary_event_tree_accessor');
+        continue;
+      }
+      if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+        addFailure('runtime_boundary_event_tree_property_invalid');
+        continue;
+      }
+      visit(descriptor.value, nextAncestors);
+    }
+  };
+
+  if (events && typeof events === 'object' && utilTypes.isProxy(events)) {
+    return [
+      'runtime_boundary_event_tree_invalid',
+      'runtime_boundary_event_tree_proxy',
+    ];
+  }
+  if (!Array.isArray(events)) {
+    return [
+      'runtime_boundary_event_tree_invalid',
+      'runtime_boundary_event_tree_not_array',
+    ];
+  }
+  visit(events);
+  if (failures.length === 0 && events.some((event) => !plainDataObjectOrNull(event))) {
+    addFailure('runtime_boundary_event_tree_event_object_invalid');
+  }
+  return failures.length > 0
+    ? ['runtime_boundary_event_tree_invalid', ...failures]
+    : [];
+}
+
+function invalidRuntimeBoundaryTreeEvent(failures) {
+  return {
+    index: -1,
+    raw: {},
+    kind: null,
+    eventType: null,
+    event_type: null,
+    stage: null,
+    lineHash: null,
+    line_hash: null,
+    successAuthorityClaimed: false,
+    success_authority_claimed: false,
+    identityAliasConflicts: [],
+    identity_alias_conflicts: [],
+    treeValidationFailures: failures,
+    tree_validation_failures: failures,
+    evidenceRefs: [],
+    evidence_refs: [],
+  };
+}
+
+function ownAliasValue(record, aliases, normalize = firstText) {
+  const descriptors = Object.getOwnPropertyDescriptors(record);
+  const values = aliases.flatMap((alias) => {
+    const descriptor = descriptors[alias];
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) return [];
+    const normalized = normalize(descriptor.value);
+    return normalized === null || normalized === undefined ? [] : [normalized];
+  });
+  const distinctValues = [...new Set(values)];
+  return {
+    value: distinctValues.length === 1 ? distinctValues[0] : null,
+    conflict: distinctValues.length > 1,
+  };
+}
+
+function ownObjectAliasValue(record, aliases) {
+  const source = plainDataObjectOrNull(record);
+  if (!source) return { value: null, conflict: true, present: false };
+  const descriptors = Object.getOwnPropertyDescriptors(source);
+  const candidates = aliases.flatMap((alias) => {
+    const descriptor = descriptors[alias];
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) return [];
+    const candidate = plainDataObjectOrNull(descriptor.value);
+    const identity = candidate ? plainDataIdentity(candidate) : null;
+    return candidate && identity ? [{ candidate, identity }] : [];
+  });
+  const distinct = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (seen.has(candidate.identity)) continue;
+    seen.add(candidate.identity);
+    distinct.push(candidate.candidate);
+  }
+  return {
+    value: distinct.length === 1 ? distinct[0] : null,
+    conflict: distinct.length > 1,
+    present: candidates.length > 0,
+  };
+}
+
+function normalizedAliasConflict(record, aliases, normalize = firstText) {
+  const source = plainDataObjectOrNull(record);
+  if (!source) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(source);
+  const values = [];
+  let hasInvalidAlias = false;
+  for (const alias of aliases) {
+    const descriptor = descriptors[alias];
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) continue;
+    if (descriptor.value === null || descriptor.value === undefined || descriptor.value === '') {
+      continue;
+    }
+    const normalized = normalize(descriptor.value);
+    if (normalized === null || normalized === undefined) {
+      hasInvalidAlias = true;
+      continue;
+    }
+    values.push(normalized);
+  }
+  return new Set(values).size > 1 || (hasInvalidAlias && values.length > 0);
+}
+
+function textAliasValue(value) {
+  return firstText(value);
+}
+
+function hashAliasValue(value) {
+  return normalizeSha256(firstText(value));
+}
+
+function generationAliasValue(value) {
+  const generation = generationInteger(value);
+  return generation === null ? null : String(generation);
+}
+
+function structuredAliasValue(value) {
+  return plainDataIdentity(value);
+}
+
+function genericIdentityAliasValue(key, value) {
+  if (key.includes('hash') || key.includes('sha256')) return hashAliasValue(value);
+  if (key.includes('backend')) return firstText(value)?.toLowerCase() ?? null;
+  if (key.includes('generation')) return generationAliasValue(value);
+  if (key.includes('epoch')) return textAliasValue(value);
+  if (key.includes('timestamp')) {
+    const timestamp = firstTimestamp(value);
+    return timestamp === null ? null : String(timestamp);
+  }
+  if (key.endsWith('_id') || key.includes('identity')) return textAliasValue(value);
+  return structuredAliasValue(value);
+}
+
+const RUNTIME_BOUNDARY_IDENTITY_ALIAS_FAMILIES = Object.freeze([
+  ['runtime_boundary_event_id_alias_conflict', ['eventId', 'event_id', 'id'], textAliasValue],
+  ['runtime_boundary_artifact_hash_alias_conflict', [
+    'artifactHash', 'artifact_hash', 'artifactSha256', 'artifact_sha256',
+    'loadedArtifactHash', 'loaded_artifact_hash',
+    'publishedArtifactHash', 'published_artifact_hash',
+  ], hashAliasValue],
+  ['runtime_boundary_artifact_id_alias_conflict', ['artifactId', 'artifact_id'], textAliasValue],
+  ['runtime_boundary_old_artifact_hash_alias_conflict', [
+    'oldArtifactHash', 'old_artifact_hash', 'retiredArtifactHash', 'retired_artifact_hash',
+    'previousArtifactHash', 'previous_artifact_hash',
+  ], hashAliasValue],
+  ['runtime_boundary_epoch_alias_conflict', ['epoch', 'epochId', 'epoch_id'], textAliasValue],
+  ['runtime_boundary_previous_epoch_alias_conflict', [
+    'previousEpoch', 'previous_epoch', 'retiredEpoch', 'retired_epoch',
+  ], textAliasValue],
+  ['runtime_boundary_active_generation_alias_conflict', [
+    'activeGeneration', 'active_generation', 'candidateGeneration', 'candidate_generation',
+  ], generationAliasValue],
+  ['runtime_boundary_previous_generation_alias_conflict', [
+    'previousGeneration', 'previous_generation', 'retiredGeneration', 'retired_generation',
+  ], generationAliasValue],
+  ['runtime_boundary_stream_epoch_counters_alias_conflict', [
+    'streamEpochCounters', 'stream_epoch_counters',
+  ], structuredAliasValue],
+  ['runtime_boundary_dispatch_id_alias_conflict', [
+    'dispatchId', 'dispatch_id', 'afterDispatchId', 'after_dispatch_id',
+  ], textAliasValue],
+  ['runtime_boundary_process_id_alias_conflict', ['processId', 'process_id', 'pid'], textAliasValue],
+  ['runtime_boundary_runtime_session_alias_conflict', [
+    'runtimeSessionId', 'runtime_session_id', 'runtimeSession', 'runtime_session',
+  ], textAliasValue],
+  ['runtime_boundary_device_uuid_alias_conflict', ['deviceUuid', 'device_uuid'], textAliasValue],
+  ['runtime_boundary_backend_alias_conflict', [
+    'runtimeBackend', 'runtime_backend', 'deviceBackend', 'device_backend', 'backend',
+  ], (value) => firstText(value)?.toLowerCase() ?? null],
+  ['runtime_boundary_context_id_alias_conflict', [
+    'contextId', 'context_id', 'contextHandle', 'context_handle',
+  ], textAliasValue],
+  ['runtime_boundary_queue_or_stream_alias_conflict', [
+    'queueOrStream', 'queue_or_stream', 'stream', 'streamId', 'stream_id',
+    'dispatchStream', 'dispatch_stream', 'dispatchStreamId', 'dispatch_stream_id',
+    'queue', 'queueId', 'queue_id',
+  ], textAliasValue],
+  ['runtime_boundary_dispatch_table_entry_alias_conflict', [
+    'dispatchTableEntry', 'dispatch_table_entry',
+  ], textAliasValue],
+  ['runtime_boundary_dispatch_table_hash_before_alias_conflict', [
+    'dispatchTableHashBefore', 'dispatch_table_hash_before',
+  ], hashAliasValue],
+  ['runtime_boundary_dispatch_table_hash_after_alias_conflict', [
+    'dispatchTableHashAfter', 'dispatch_table_hash_after',
+  ], hashAliasValue],
+  ['output_oracle_output_target_alias_conflict', [
+    'outputTargetId', 'output_target_id', 'outputTarget', 'output_target',
+  ], textAliasValue],
+  ['output_oracle_oracle_code_hash_alias_conflict', [
+    'oracleCodeHash', 'oracle_code_hash',
+  ], hashAliasValue],
+  ['runtime_boundary_camera_state_hash_alias_conflict', [
+    'cameraStateHash', 'camera_state_hash',
+  ], hashAliasValue],
+  ['runtime_boundary_swapchain_size_alias_conflict', [
+    'swapchainSize', 'swapchain_size',
+  ], (value) => {
+    const size = normalizeSwapchainSize(value);
+    return size ? `${size[0]}x${size[1]}` : null;
+  }],
+  ['runtime_boundary_frame_number_alias_conflict', ['frameNumber', 'frame_number'], generationAliasValue],
+  ['runtime_boundary_capture_backend_alias_conflict', ['captureBackend', 'capture_backend'], textAliasValue],
+  ['runtime_boundary_framebuffer_identity_alias_conflict', [
+    'swapchainOrFramebufferIdentity', 'swapchain_or_framebuffer_identity',
+    'framebufferIdentity', 'framebuffer_identity', 'framebufferHandle', 'framebuffer_handle',
+    'swapchainImageId', 'swapchain_image_id',
+  ], textAliasValue],
+  ['runtime_boundary_timestamp_alias_conflict', [
+    'timestampMonotonicNs', 'timestamp_monotonic_ns', 'timestamp', 'timestampNs', 'timestamp_ns',
+  ], (value) => {
+    const timestamp = firstTimestamp(value);
+    return timestamp === null ? null : String(timestamp);
+  }],
+  ['runtime_boundary_retirement_proof_alias_conflict', [
+    'retirementProof', 'retirement_proof', 'proof',
+  ], normalizedEnumText],
+  ['runtime_boundary_retirement_result_alias_conflict', [
+    'retirementResult', 'retirement_result', 'result', 'status',
+  ], normalizedEnumText],
+  ['runtime_boundary_retirement_strategy_alias_conflict', [
+    'retirementStrategy', 'retirement_strategy',
+  ], normalizedEnumText],
+]);
+
+function camelSnakeIdentityAliasConflict(value, ancestors = new Set()) {
+  if (!value || typeof value !== 'object' || ancestors.has(value)) return false;
+  const nextAncestors = new Set(ancestors).add(value);
+  if (Array.isArray(value)) {
+    return value.some((item) => camelSnakeIdentityAliasConflict(item, nextAncestors));
+  }
+  const record = plainDataObjectOrNull(value);
+  if (!record) return false;
+  const groups = new Map();
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(record))) {
+    if (!Object.hasOwn(descriptor, 'value')) continue;
+    const normalizedKey = snakeKey(key);
+    const keys = groups.get(normalizedKey) ?? [];
+    keys.push({ key, value: descriptor.value });
+    groups.set(normalizedKey, keys);
+  }
+  for (const entries of groups.values()) {
+    if (entries.length < 2) continue;
+    const identities = entries.map(({ key, value: entryValue }) =>
+      genericIdentityAliasValue(snakeKey(key), entryValue)
+    );
+    if (identities.some((identity) => identity === null) || new Set(identities).size > 1) {
+      return true;
+    }
+  }
+  return Object.values(record).some((entryValue) =>
+    camelSnakeIdentityAliasConflict(entryValue, nextAncestors)
+  );
+}
+
+function runtimeBoundaryIdentityAliasConflicts(event, eventType) {
+  return compactStringList([
+    ...RUNTIME_BOUNDARY_IDENTITY_ALIAS_FAMILIES.flatMap(([code, aliases, normalize]) =>
+      normalizedAliasConflict(event, aliases, normalize) ? [code] : []
+    ),
+    eventType === 'epoch_publication' && normalizedAliasConflict(
+      event,
+      ['generation', 'activeGeneration', 'active_generation', 'candidateGeneration', 'candidate_generation'],
+      generationAliasValue,
+    )
+      ? 'runtime_boundary_active_generation_alias_conflict'
+      : null,
+    eventType === RETIREMENT_RECEIPT_EVENT_TYPE && normalizedAliasConflict(
+      event,
+      ['generation', 'previousGeneration', 'previous_generation', 'retiredGeneration', 'retired_generation'],
+      generationAliasValue,
+    )
+      ? 'runtime_boundary_previous_generation_alias_conflict'
+      : null,
+    camelSnakeIdentityAliasConflict(event)
+      ? 'runtime_boundary_nested_identity_alias_conflict'
+      : null,
+  ]);
 }
 
 function compactObjectList(value) {
@@ -1080,9 +1516,12 @@ function canonicalBoundaryEventType(kind, event) {
 }
 
 export function normalizeRuntimeBoundaryEvents(events = []) {
-  return (Array.isArray(events) ? events : [])
-    .map((event, index) => ({ event: objectOrNull(event), index }))
-    .filter(({ event }) => event)
+  const treeValidationFailures = runtimeBoundaryEventTreeFailures(events);
+  if (treeValidationFailures.length > 0) {
+    return [invalidRuntimeBoundaryTreeEvent(treeValidationFailures)];
+  }
+  return events
+    .map((event, index) => ({ event: plainDataObjectOrNull(event), index }))
     .map(({ event, index }) => {
       const kind = eventKind(event);
       const eventType = canonicalBoundaryEventType(kind, event);
@@ -1111,17 +1550,12 @@ export function normalizeRuntimeBoundaryEvents(events = []) {
         event.epoch,
         event.epochId,
         event.epoch_id,
-        event.generation,
-        eventType === RETIREMENT_RECEIPT_EVENT_TYPE ? event.previousEpoch : null,
-        eventType === RETIREMENT_RECEIPT_EVENT_TYPE ? event.previous_epoch : null,
       );
       const previousEpoch = firstText(
         event.previousEpoch,
         event.previous_epoch,
         event.retiredEpoch,
         event.retired_epoch,
-        event.previousGeneration,
-        event.previous_generation,
       );
       const activeGeneration = generationInteger(
         event.activeGeneration,
@@ -1129,16 +1563,13 @@ export function normalizeRuntimeBoundaryEvents(events = []) {
         event.candidateGeneration,
         event.candidate_generation,
         eventType === 'epoch_publication' ? event.generation : null,
-        eventType === 'epoch_publication' ? epoch : null,
       );
       const previousGeneration = generationInteger(
         event.previousGeneration,
         event.previous_generation,
         event.retiredGeneration,
         event.retired_generation,
-        previousEpoch,
         eventType === RETIREMENT_RECEIPT_EVENT_TYPE ? event.generation : null,
-        eventType === RETIREMENT_RECEIPT_EVENT_TYPE ? epoch : null,
       );
       const retirementFenceIds = compactStringList([
         ...(Array.isArray(event.retirementFenceIds) ? event.retirementFenceIds : []),
@@ -1148,6 +1579,23 @@ export function normalizeRuntimeBoundaryEvents(events = []) {
         event.fenceId,
         event.fence_id,
       ]);
+      const outputTargetAlias = ownAliasValue(event, [
+        'outputTargetId',
+        'output_target_id',
+        'outputTarget',
+        'output_target',
+      ]);
+      const oracleCodeHashAlias = ownAliasValue(
+        event,
+        ['oracleCodeHash', 'oracle_code_hash'],
+        (value) => normalizeSha256(firstText(value)),
+      );
+      const runtimeBackendAlias = ownAliasValue(
+        event,
+        ['runtimeBackend', 'runtime_backend', 'deviceBackend', 'device_backend', 'backend'],
+        (value) => firstText(value)?.toLowerCase() ?? null,
+      );
+      const identityAliasConflicts = runtimeBoundaryIdentityAliasConflicts(event, eventType);
       return {
         index,
         raw: event,
@@ -1192,6 +1640,8 @@ export function normalizeRuntimeBoundaryEvents(events = []) {
         runtime_session_id: firstText(event.runtimeSessionId, event.runtime_session_id, event.runtimeSession, event.runtime_session),
         deviceUuid: firstText(event.deviceUuid, event.device_uuid),
         device_uuid: firstText(event.deviceUuid, event.device_uuid),
+        runtimeBackend: runtimeBackendAlias.value,
+        runtime_backend: runtimeBackendAlias.value,
         contextId: firstText(event.contextId, event.context_id, event.contextHandle, event.context_handle),
         context_id: firstText(event.contextId, event.context_id, event.contextHandle, event.context_handle),
         queueOrStream: firstText(
@@ -1228,8 +1678,12 @@ export function normalizeRuntimeBoundaryEvents(events = []) {
         dispatch_table_hash_before: normalizeSha256(firstText(event.dispatchTableHashBefore, event.dispatch_table_hash_before)),
         dispatchTableHashAfter: normalizeSha256(firstText(event.dispatchTableHashAfter, event.dispatch_table_hash_after)),
         dispatch_table_hash_after: normalizeSha256(firstText(event.dispatchTableHashAfter, event.dispatch_table_hash_after)),
-        outputTargetId: firstText(event.outputTargetId, event.output_target_id, event.outputTarget, event.output_target),
-        output_target_id: firstText(event.outputTargetId, event.output_target_id, event.outputTarget, event.output_target),
+        outputTargetId: outputTargetAlias.value,
+        output_target_id: outputTargetAlias.value,
+        oracleCodeHash: oracleCodeHashAlias.value,
+        oracle_code_hash: oracleCodeHashAlias.value,
+        identityAliasConflicts,
+        identity_alias_conflicts: identityAliasConflicts,
         oracleKind: firstText(event.oracleKind, event.oracle_kind, event.outputKind, event.output_kind, event.kind),
         oracle_kind: firstText(event.oracleKind, event.oracle_kind, event.outputKind, event.output_kind, event.kind),
         cameraStateHash: normalizeSha256(firstText(event.cameraStateHash, event.camera_state_hash)),
@@ -1374,6 +1828,7 @@ function canonicalBoundaryLineFields(event) {
   addLineField(fields, 'runtime_session', event.runtimeSessionId);
   addLineField(fields, 'runtime_session_id', event.runtimeSessionId);
   addLineField(fields, 'device_uuid', event.deviceUuid);
+  addLineField(fields, 'runtime_backend', event.runtimeBackend);
   addLineField(fields, 'context_id', event.contextId);
   addLineField(fields, 'queue_or_stream_id', event.queueOrStream);
   addLineField(fields, 'stream_id', event.queueOrStream);
@@ -1382,6 +1837,7 @@ function canonicalBoundaryLineFields(event) {
   addLineField(fields, 'dispatch_table_hash_after', event.dispatchTableHashAfter);
   addLineField(fields, 'output_target', event.outputTargetId);
   addLineField(fields, 'output_target_id', event.outputTargetId);
+  addLineField(fields, 'oracle_code_hash', event.oracleCodeHash);
   addLineField(fields, 'oracle_kind', event.oracleKind);
   addLineField(fields, 'camera_state_hash', event.cameraStateHash);
   addLineField(fields, 'frame_number', event.frameNumber);
@@ -1438,6 +1894,7 @@ export function materializeRuntimeBoundaryEventLines(events = []) {
   const boundaryLineHashes = materializedEvents.map((entry) => entry.boundaryLineHash);
   const sourceEventHashes = materializedEvents.map((entry) => entry.sourceEventHash);
   const failedGates = [
+    ...normalizedEvents.flatMap((event) => event.treeValidationFailures ?? []),
     normalizedEvents.length > 0 ? null : 'runtime_boundary_materialization_events_missing',
     ...materializedEvents.flatMap((entry) => [
       entry.eventType ? null : 'runtime_boundary_materialization_stage_unknown',
@@ -1512,6 +1969,7 @@ function retirementReceiptEvents(events) {
 function runtimeBoundaryFieldFailures(stage, event) {
   if (!event) return [`runtime_boundary_stage_${stage}_missing`];
   const failures = [];
+  failures.push(...compactStringList(event.identityAliasConflicts));
   if (event.successAuthorityClaimed) failures.push('runtime_boundary_event_claims_success_authority');
   if (event.evidenceRefs.length === 0) failures.push(`${stage}_evidence_refs_missing`);
   if (!event.processId) failures.push(`${stage}_process_id_missing`);
@@ -1545,6 +2003,7 @@ function runtimeBoundaryFieldFailures(stage, event) {
     if (!event.queueOrStream) failures.push('dispatch_trace_queue_or_stream_missing');
   }
   if (stage === 'host_identity') {
+    if (!event.runtimeBackend) failures.push('host_identity_runtime_backend_missing');
     if (!event.deviceUuid) failures.push('host_identity_device_uuid_missing');
     if (!event.contextId) failures.push('host_identity_context_id_missing');
     if (!event.queueOrStream) failures.push('host_identity_queue_or_stream_missing');
@@ -1556,6 +2015,8 @@ function runtimeBoundaryFieldFailures(stage, event) {
     const oracleKindClassification = classifyGpuHmrOutputOracleKind(event.oracleKind);
     if (oracleKindClassification.accepted !== true) {
       failures.push(oracleKindClassification.failureCode);
+    } else if (oracleKindClassification.modality === 'compute' && !event.oracleCodeHash) {
+      failures.push('output_oracle_compute_oracle_code_hash_missing');
     }
     if (isVisualOracleKind(event.oracleKind)) {
       if (!event.cameraStateHash) failures.push('output_oracle_visual_camera_state_hash_missing');
@@ -1573,6 +2034,7 @@ function runtimeBoundaryFieldFailures(stage, event) {
 function runtimeBoundaryRetirementFailures(event) {
   if (!event) return ['runtime_boundary_retirement_receipt_missing'];
   const failures = [];
+  failures.push(...compactStringList(event.identityAliasConflicts));
   if (event.successAuthorityClaimed) failures.push('runtime_boundary_event_claims_success_authority');
   if (!event.eventId) failures.push('runtime_boundary_retirement_event_id_missing');
   if (!event.oldArtifactHash) failures.push('runtime_boundary_retirement_old_artifact_hash_missing');
@@ -1635,7 +2097,10 @@ export function buildRuntimeBoundaryStageEvidence(events = []) {
   const eventGroups = boundaryEventsByStage(normalizedEvents);
   const retirementReceipts = retirementReceiptEvents(normalizedEvents);
   const retirementReceipt = retirementReceipts[0] ?? null;
-  const failedGates = [];
+  const failedGates = normalizedEvents.flatMap((event) => [
+    ...(event.treeValidationFailures ?? []),
+    ...event.identityAliasConflicts,
+  ]);
   for (const event of normalizedEvents) {
     if (!event.eventType) failedGates.push('runtime_boundary_event_stage_unknown');
     if (event.successAuthorityClaimed) failedGates.push('runtime_boundary_event_claims_success_authority');
@@ -1655,6 +2120,10 @@ export function buildRuntimeBoundaryStageEvidence(events = []) {
   if (runtimeSessions.length > 1) failedGates.push('runtime_boundary_session_mismatch');
   const processIds = compactStringList(normalizedEvents.map((event) => event.processId));
   if (processIds.length > 1) failedGates.push('runtime_boundary_process_mismatch');
+  const runtimeBackends = compactStringList(
+    normalizedEvents.map((event) => event.runtimeBackend),
+  );
+  if (runtimeBackends.length > 1) failedGates.push('runtime_boundary_backend_mismatch');
   const afterArtifactIds = compactStringList(
     REQUIRED_BOUNDARY_STAGES
       .map((stage) => eventMap.get(stage)?.artifactId)
@@ -1775,6 +2244,8 @@ export function buildRuntimeBoundaryStageEvidence(events = []) {
     boundary_line_hashes: normalizedEvents.map((event) => event.lineHash),
     artifactHashAfter: afterArtifactHashes[0] ?? null,
     artifact_hash_after: afterArtifactHashes[0] ?? null,
+    runtimeBackend: runtimeBackends[0] ?? null,
+    runtime_backend: runtimeBackends[0] ?? null,
     failedGates: [...new Set(failedGates)],
     failed_gates: [...new Set(failedGates)],
   };
@@ -2196,6 +2667,10 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
   const requestedOracleKindClassification = requestedOracleKind
     ? classifyGpuHmrOutputOracleKind(requestedOracleKind)
     : null;
+  const expectedOutputContractAlias = ownObjectAliasValue(
+    input,
+    ['expectedOutputContract', 'expected_output_contract'],
+  );
   const visualOracleRequested =
     Boolean(visualOracleArtifacts)
     || observedOracleKindClassification.modality === 'visual'
@@ -2227,6 +2702,9 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
       : null,
     computeOracleArtifacts && observedOracleKindClassification.modality === 'visual'
       ? 'runtime_boundary_output_oracle_artifact_modality_mismatch'
+      : null,
+    expectedOutputContractAlias.conflict
+      ? 'runtime_boundary_expected_output_contract_alias_conflict'
       : null,
     sourcePaths.length > 0 ? null : 'runtime_boundary_source_paths_missing',
     sourceManifestHash ? null : 'runtime_boundary_source_manifest_hash_missing',
@@ -2316,6 +2794,12 @@ function buildRuntimeBoundaryInputStageBindingEvidence(inputEvidence, stageEvide
       && retirementReceipt.oldArtifactHash !== inputEvidence.artifactHashBefore
       ? 'runtime_boundary_retirement_old_artifact_hash_mismatch'
       : null,
+    stageEvidence.runtimeBackend ? null : 'runtime_boundary_observed_backend_missing',
+    inputEvidence.backend
+      && stageEvidence.runtimeBackend
+      && inputEvidence.backend.toLowerCase() !== stageEvidence.runtimeBackend
+      ? 'runtime_boundary_input_backend_mismatch'
+      : null,
   ].filter(Boolean);
   return {
     schemaVersion: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION,
@@ -2333,6 +2817,10 @@ function buildRuntimeBoundaryInputStageBindingEvidence(inputEvidence, stageEvide
     observed_artifact_hash_after: stageEvidence.artifactHashAfter,
     observedRetirementArtifactHash: retirementReceipt?.oldArtifactHash ?? null,
     observed_retirement_artifact_hash: retirementReceipt?.oldArtifactHash ?? null,
+    inputBackend: inputEvidence.backend,
+    input_backend: inputEvidence.backend,
+    observedBackend: stageEvidence.runtimeBackend,
+    observed_backend: stageEvidence.runtimeBackend,
     failedGates,
     failed_gates: failedGates,
   };
@@ -2426,18 +2914,20 @@ function buildBoundaryProofComponents(input, stageEvidence) {
   const host = stages.host_identity;
   const output = stages.output_oracle;
   const retirement = stageEvidence.retirementReceipt;
-  const backend = firstText(input.backend);
+  const backend = firstText(input.backend)?.toLowerCase() ?? null;
+  const runtimeBackend = stageEvidence.runtimeBackend;
   let visualOracleArtifacts = visualOracleArtifactsFromInput(input, output);
   const oracleKindClassification = classifyGpuHmrOutputOracleKind(output?.oracleKind);
   if (oracleKindClassification.accepted !== true) {
     throw new Error(`runtime boundary output oracle kind rejected: ${oracleKindClassification.failureCode}`);
   }
   const oracleMode = oracleKindClassification.modality;
+  const expectedOutputContractAlias = ownObjectAliasValue(
+    input,
+    ['expectedOutputContract', 'expected_output_contract'],
+  );
   const expectedOutputContract = oracleMode === 'compute'
-    ? objectOrNull(
-      input.expectedOutputContract
-      ?? input.expected_output_contract,
-    )
+    ? expectedOutputContractAlias.value
     : null;
   const artifactAfterHash = normalizeSha256(firstText(input.artifactHashAfter, input.artifact_hash_after));
   const artifactBeforeHash = normalizeSha256(firstText(input.artifactHashBefore, input.artifact_hash_before));
@@ -2831,6 +3321,8 @@ function buildBoundaryProofComponents(input, stageEvidence) {
       readbackTimestamp: output.timestampMonotonicNs,
       runtimeSessionId,
       outputTargetId,
+      oracleCodeHash: output.oracleCodeHash,
+      oracle_code_hash: output.oracleCodeHash,
       producer: 'runtime_boundary_proof_adapter',
       passed: outputOraclePassed,
       expected: outputOracleExpected,
@@ -2883,6 +3375,7 @@ function buildBoundaryProofComponents(input, stageEvidence) {
   });
   return {
     backend,
+    runtimeBackend,
     projectId: firstText(input.projectId, input.project_id, input.workspaceSlug, input.workspace_slug),
     editId: firstText(input.editId, input.edit_id, input.sourceEditId, input.source_edit_id),
     targetId: firstText(input.targetId, input.target_id),
@@ -2962,6 +3455,10 @@ function buildBoundaryValidationRuntimeProofArtifact({
     processId: components.processId,
     runtimeSessionId: components.runtimeSessionId,
     deviceUuid: components.deviceUuid,
+    deviceIdentity: {
+      backend: components.runtimeBackend,
+      device_uuid: components.deviceUuid,
+    },
     contextHandle: components.contextHandle,
     classification: components.classification,
     cpuHmrUsed: components.firewallEvidence.cpu_hmr_used,
@@ -3151,6 +3648,10 @@ export function buildRuntimeBoundaryRunModeProof(input = {}) {
     metric_scope: firstText(input.metricScope, input.metric_scope, objectOrNull(input.timings)?.metric_scope) ?? 'hot_delta_1',
     cache_state: firstText(input.cacheState, input.cache_state, objectOrNull(input.timings)?.cache_state) ?? 'compiler_cache_warm',
   };
+  const suppliedRuntimeBoundaryEvents = input.runtimeBoundaryEvents ?? input.runtime_boundary_events ?? [];
+  const runtimeBoundaryEvents = adapter.failedGates.includes('runtime_boundary_event_tree_invalid')
+    ? adapter.stageEvidence.normalizedEvents
+    : suppliedRuntimeBoundaryEvents;
   const material = {
     schemaVersion: RUNTIME_RUN_MODE_PROOF_SCHEMA_VERSION,
     schema: RUNTIME_RUN_MODE_PROOF_SCHEMA_VERSION,
@@ -3183,8 +3684,8 @@ export function buildRuntimeBoundaryRunModeProof(input = {}) {
     runtime_proof_artifact: artifact,
     runtimeBoundaryProofAdapter: adapter,
     runtime_boundary_proof_adapter: adapter,
-    runtimeBoundaryEvents: input.runtimeBoundaryEvents ?? input.runtime_boundary_events ?? [],
-    runtime_boundary_events: input.runtimeBoundaryEvents ?? input.runtime_boundary_events ?? [],
+    runtimeBoundaryEvents,
+    runtime_boundary_events: runtimeBoundaryEvents,
     outputOracleFacet: {
       accepted: adapter.accepted,
       proofAuthority: 'strict_runtime_boundary_adapter_output_oracle_binding',

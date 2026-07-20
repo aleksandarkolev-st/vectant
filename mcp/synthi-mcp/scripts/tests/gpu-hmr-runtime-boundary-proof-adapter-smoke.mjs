@@ -11,6 +11,7 @@ import {
   buildRuntimeBoundaryRunModeProof,
   buildRuntimeBoundaryStageEvidence,
   materializeRuntimeBoundaryEventLines,
+  normalizeRuntimeBoundaryEvents,
 } from '../lib/gpu-hmr-runtime-boundary-proof-adapter.mjs';
 import {
   buildGpuHmrFrameGateRuntimeBinding,
@@ -93,6 +94,33 @@ writeFileSync(COMPUTE_RAW_PATH, COMPUTE_RAW_BYTES);
 const COMPUTE_RAW_HASH = sha256Buffer(COMPUTE_RAW_BYTES);
 const COMPUTE_SLICE_BYTES = COMPUTE_RAW_BYTES.subarray(0, 64);
 const COMPUTE_SLICE_HASH = sha256Buffer(COMPUTE_SLICE_BYTES);
+const COMPUTE_ORACLE_IMPLEMENTATION_BYTES = Buffer.from(
+  'runtime-boundary-compute-oracle-implementation-v1',
+  'utf8',
+);
+const COMPUTE_ORACLE_CODE_HASH = sha256Buffer(COMPUTE_ORACLE_IMPLEMENTATION_BYTES);
+const COMPUTE_ORACLE_IMPLEMENTATION_PATH = path.join(
+  path.dirname(COMPUTE_RAW_PATH),
+  'oracle-implementation.mjs',
+);
+writeFileSync(COMPUTE_ORACLE_IMPLEMENTATION_PATH, COMPUTE_ORACLE_IMPLEMENTATION_BYTES);
+const COMPUTE_SCHEMA_PATH = path.join(path.dirname(COMPUTE_RAW_PATH), 'readback.schema.json');
+const COMPUTE_SCHEMA_BYTES = Buffer.from(`${JSON.stringify({
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  elementCount: COMPUTE_RAW_BYTES.length,
+  byteLength: COMPUTE_RAW_BYTES.length,
+  shape: [COMPUTE_RAW_BYTES.length],
+  byteOrder: 'not_applicable',
+  rawReadbackHash: COMPUTE_RAW_HASH,
+  deterministicSlice: {
+    offset: 0,
+    length: COMPUTE_SLICE_BYTES.length,
+    hash: COMPUTE_SLICE_HASH,
+  },
+}, null, 2)}\n`);
+writeFileSync(COMPUTE_SCHEMA_PATH, COMPUTE_SCHEMA_BYTES);
+const COMPUTE_SCHEMA_HASH = sha256Buffer(COMPUTE_SCHEMA_BYTES);
 
 function writeVisualFixturePngs() {
   const fixtureParent = path.resolve('.gpu-hmr-test-logs');
@@ -177,6 +205,7 @@ function boundaryEvents(overrides = {}) {
   const session = overrides.session ?? 'runtime-session-1';
   const processId = overrides.processId ?? 'pid-1';
   const deviceUuid = overrides.deviceUuid ?? 'device-1';
+  const runtimeBackend = overrides.runtimeBackend ?? 'hip';
   const artifactHash = overrides.artifactHash ?? HASH_B;
   const oldArtifactHash = overrides.oldArtifactHash ?? HASH_A;
   const epoch = overrides.epoch ?? 'epoch-7';
@@ -196,6 +225,7 @@ function boundaryEvents(overrides = {}) {
         processId,
         runtimeSession: session,
         deviceUuid,
+        runtimeBackend,
         stream,
         retirementProof: 'stream_event_proven',
         retirementResult: 'retired_after_quiescent',
@@ -213,6 +243,7 @@ function boundaryEvents(overrides = {}) {
       processId,
       runtimeSession: session,
       deviceUuid,
+      runtimeBackend,
       timestampMonotonicNs: 100,
       evidenceRefs: ['runtime-boundary:artifact-transport'],
       ...(overrides.artifactTransport ?? {}),
@@ -229,6 +260,7 @@ function boundaryEvents(overrides = {}) {
       processId,
       runtimeSession: session,
       deviceUuid,
+      runtimeBackend,
       timestampMonotonicNs: 200,
       dispatchTableHashBefore: HASH_D,
       dispatchTableHashAfter: HASH_E,
@@ -244,6 +276,7 @@ function boundaryEvents(overrides = {}) {
       processId,
       runtimeSession: session,
       deviceUuid,
+      runtimeBackend,
       stream,
       dispatchTableEntry: 'generic_kernel:epoch-7',
       timestampMonotonicNs: 300,
@@ -259,6 +292,7 @@ function boundaryEvents(overrides = {}) {
       processId,
       runtimeSession: session,
       deviceUuid,
+      runtimeBackend,
       contextId: 'ctx-1',
       stream,
       timestampMonotonicNs: 310,
@@ -281,7 +315,9 @@ function boundaryEvents(overrides = {}) {
       processId,
       runtimeSession: session,
       deviceUuid,
+      runtimeBackend,
       outputTargetId: 'allocation-1',
+      oracleCodeHash: COMPUTE_ORACLE_CODE_HASH,
       oracleKind: 'buffer_checksum',
       timestampMonotonicNs: 400,
       evidenceRefs: [`worker-log:output_oracle:${session}:${dispatchId}`],
@@ -292,7 +328,7 @@ function boundaryEvents(overrides = {}) {
 }
 
 function computeOracle() {
-  return buildComputeOracleArtifactsFromByteEvidence({
+  const artifacts = buildComputeOracleArtifactsFromByteEvidence({
     rawReadbackBin: COMPUTE_RAW_PATH,
     rawReadbackHash: COMPUTE_RAW_HASH,
     checksumBefore: HASH_A,
@@ -310,6 +346,22 @@ function computeOracle() {
     expectedOutputChange: true,
     evidenceRefs: ['compute-oracle:raw-readback-bytes'],
   });
+  return {
+    ...artifacts,
+    readback_schema_json: COMPUTE_SCHEMA_PATH,
+    readbackSchemaJson: COMPUTE_SCHEMA_PATH,
+    readback_schema_hash: COMPUTE_SCHEMA_HASH,
+    readbackSchemaHash: COMPUTE_SCHEMA_HASH,
+    oracle_code_hash: COMPUTE_ORACLE_CODE_HASH,
+    oracleCodeHash: COMPUTE_ORACLE_CODE_HASH,
+    oracle_implementation_artifact: {
+      schema_version: 'synthi.gpu_hmr.oracle_implementation_artifact.v1',
+      role: 'oracle_implementation',
+      path: COMPUTE_ORACLE_IMPLEMENTATION_PATH,
+      hash: COMPUTE_ORACLE_CODE_HASH,
+      byte_length: COMPUTE_ORACLE_IMPLEMENTATION_BYTES.length,
+    },
+  };
 }
 
 function computeExpectedOutputContract() {
@@ -325,7 +377,7 @@ function computeExpectedOutputContract() {
       editId: 'gpu-artifact-edit',
       artifactAfterHash: `artifact:${HASH_B}`,
       outputTargetId: 'allocation-1',
-      oracleCodeHash: COMPUTE_SLICE_HASH,
+      oracleCodeHash: COMPUTE_ORACLE_CODE_HASH,
     },
     evidenceRefs: ['compute-oracle:expected-output-contract'],
   });
@@ -507,7 +559,9 @@ assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[
 assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] dispatcher_epoch ')));
 assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] synthi_gpu_launch ')));
 assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] host_identity ')));
+assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('runtime_backend=hip')));
 assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] output_oracle ')));
+assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes(`oracle_code_hash=${COMPUTE_ORACLE_CODE_HASH}`)));
 assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] retirement_receipt ')));
 assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('host_identity_previous_generation=1')));
 assert.ok(materializedLines.bindingHash.startsWith('sha256:'));
@@ -520,6 +574,13 @@ assert.equal(accepted.fullRuntimeProof.fullRuntimeProven, true);
 assert.equal(accepted.runtimeProofArtifact.gpuHmrSuccess, true);
 assert.equal(accepted.strictGate.status, 'pass', accepted.strictGate.detail);
 assert.equal(accepted.runtimeProofArtifact.proofLedgerQuery.gpuHmrSuccess, true);
+assert.equal(
+  (
+    accepted.runtimeProofArtifact.proofLedger.records[0].device_identity
+    ?? accepted.runtimeProofArtifact.proofLedger.records[0].deviceIdentity
+  ).backend,
+  'hip',
+);
 assert.equal(accepted.runtimeProofArtifact.acceptanceContractEvaluation.accepted, true);
 assert.deepEqual(
   accepted.runtimeProofArtifact.acceptanceContract.fission_report
@@ -578,6 +639,7 @@ const visualInputWithoutCaptureManifest = adapterInput({
   events: {
     outputOracle: {
       outputTargetId: 'framebuffer-1',
+      oracleCodeHash: null,
       oracleKind: 'render_target_hash',
       cameraStateHash: HASH_C,
       swapchainSize: [1, 1],
@@ -1029,6 +1091,321 @@ assert.ok(
   missingOutput.failedGates.join(','),
 );
 assert.equal(missingOutput.runtimeProofArtifact, null);
+
+const missingComputeOracleCodeHash = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { outputOracle: { oracleCodeHash: null } },
+}));
+assert.equal(missingComputeOracleCodeHash.accepted, false);
+assert.ok(
+  missingComputeOracleCodeHash.failedGates.includes('output_oracle_compute_oracle_code_hash_missing'),
+  missingComputeOracleCodeHash.failedGates.join(','),
+);
+
+const missingObservedBackend = buildRuntimeBoundaryProofAdapter(adapterInput({
+  events: { hostIdentity: { runtimeBackend: null } },
+}));
+assert.equal(missingObservedBackend.accepted, false);
+assert.ok(
+  missingObservedBackend.failedGates.includes('host_identity_runtime_backend_missing'),
+  missingObservedBackend.failedGates.join(','),
+);
+
+const mismatchedObservedBackend = buildRuntimeBoundaryProofAdapter(adapterInput({
+  backend: 'opencl',
+}));
+assert.equal(mismatchedObservedBackend.accepted, false);
+assert.ok(
+  mismatchedObservedBackend.failedGates.includes('runtime_boundary_input_backend_mismatch'),
+  mismatchedObservedBackend.failedGates.join(','),
+);
+
+function assertRuntimeBoundaryAliasConflict(events, expectedFailure) {
+  const result = buildRuntimeBoundaryStageEvidence(events);
+  assert.equal(result.accepted, false);
+  assert.ok(result.failedGates.includes(expectedFailure), result.failedGates.join(','));
+}
+
+assertRuntimeBoundaryAliasConflict(boundaryEvents({
+  artifactTransport: { artifact_hash: HASH_C },
+}), 'runtime_boundary_artifact_hash_alias_conflict');
+assertRuntimeBoundaryAliasConflict(boundaryEvents({
+  epochPublication: { epoch_id: 'epoch-8' },
+}), 'runtime_boundary_epoch_alias_conflict');
+assertRuntimeBoundaryAliasConflict(boundaryEvents({
+  dispatchTrace: { dispatch_id: 'dispatch-2' },
+}), 'runtime_boundary_dispatch_id_alias_conflict');
+assertRuntimeBoundaryAliasConflict(boundaryEvents({
+  hostIdentity: { process_id: 'pid-2' },
+}), 'runtime_boundary_process_id_alias_conflict');
+for (const nestedIdentity of [
+  { loaderId: 'loader-1', loader_id: 'loader-2' },
+  { functionId: 'function-1', function_id: 'function-2' },
+  { symbolId: 'symbol-1', symbol_id: 'symbol-2' },
+  { resourceId: 'resource-1', resource_id: 'resource-2' },
+]) {
+  assertRuntimeBoundaryAliasConflict(boundaryEvents({
+    hostIdentity: { fields: nestedIdentity },
+  }), 'runtime_boundary_nested_identity_alias_conflict');
+}
+
+const equalIdentityAliasEvents = boundaryEvents().map((event) => {
+  if (event.kind === 'artifact_transport') return { ...event, artifact_hash: HASH_B };
+  if (event.kind === 'epoch_publication') {
+    return { ...event, epoch_id: 'epoch-7', generation: 7 };
+  }
+  if (event.kind === 'synthi_gpu_launch') {
+    return { ...event, dispatch_id: 'dispatch-1', process_id: 'pid-1' };
+  }
+  if (event.kind === 'host_identity') {
+    return {
+      ...event,
+      runtime_session_id: 'runtime-session-1',
+      fields: {
+        loaderId: 'loader-1',
+        loader_id: 'loader-1',
+        functionId: 'function-1',
+        function_id: 'function-1',
+        symbolId: 'symbol-1',
+        symbol_id: 'symbol-1',
+        resourceId: 'resource-1',
+        resource_id: 'resource-1',
+      },
+    };
+  }
+  if (event.kind === 'output_oracle') {
+    return {
+      ...event,
+      output_target_id: 'allocation-1',
+      oracle_code_hash: COMPUTE_ORACLE_CODE_HASH.toUpperCase(),
+    };
+  }
+  return event;
+});
+const equalIdentityAliasEvidence = buildRuntimeBoundaryStageEvidence(equalIdentityAliasEvents);
+assert.equal(
+  equalIdentityAliasEvidence.accepted,
+  true,
+  equalIdentityAliasEvidence.failedGates.join(','),
+);
+assert.equal(
+  equalIdentityAliasEvidence.stageEvents.output_oracle.oracleCodeHash,
+  COMPUTE_ORACLE_CODE_HASH,
+);
+
+const simultaneousEpochAndGenerationEvidence = buildRuntimeBoundaryStageEvidence(boundaryEvents({
+  epoch: 'release-current',
+  previousEpoch: 'release-previous',
+  epochPublication: {
+    epoch_id: 'release-current',
+    previous_epoch: 'release-previous',
+    generation: 7,
+  },
+}));
+assert.equal(
+  simultaneousEpochAndGenerationEvidence.accepted,
+  true,
+  simultaneousEpochAndGenerationEvidence.failedGates.join(','),
+);
+assert.equal(
+  simultaneousEpochAndGenerationEvidence.stageEvents.epoch_publication.epoch,
+  'release-current',
+);
+assert.equal(
+  simultaneousEpochAndGenerationEvidence.stageEvents.epoch_publication.activeGeneration,
+  7,
+);
+assert.equal(
+  simultaneousEpochAndGenerationEvidence.stageEvents.epoch_publication.previousEpoch,
+  'release-previous',
+);
+assert.equal(
+  simultaneousEpochAndGenerationEvidence.stageEvents.epoch_publication.previousGeneration,
+  6,
+);
+
+function assertRuntimeBoundaryEventTreeRejected(events, expectedFailure) {
+  let normalizedEvents;
+  assert.doesNotThrow(() => {
+    normalizedEvents = normalizeRuntimeBoundaryEvents(events);
+  });
+  assert.ok(
+    normalizedEvents[0].treeValidationFailures.includes(expectedFailure),
+    normalizedEvents[0].treeValidationFailures.join(','),
+  );
+  let materialized;
+  assert.doesNotThrow(() => {
+    materialized = materializeRuntimeBoundaryEventLines(events);
+  });
+  assert.equal(materialized.accepted, false);
+  assert.ok(materialized.failedGates.includes(expectedFailure), materialized.failedGates.join(','));
+  let result;
+  assert.doesNotThrow(() => {
+    result = buildRuntimeBoundaryProofAdapter({
+      ...adapterInput(),
+      runtimeBoundaryEvents: events,
+    });
+  });
+  assert.equal(result.accepted, false);
+  assert.equal(result.runtimeProofArtifact, null);
+  assert.ok(
+    result.failedGates.includes('runtime_boundary_event_tree_invalid'),
+    result.failedGates.join(','),
+  );
+  assert.ok(result.failedGates.includes(expectedFailure), result.failedGates.join(','));
+  const repeated = buildRuntimeBoundaryProofAdapter({
+    ...adapterInput(),
+    runtimeBoundaryEvents: events,
+  });
+  assert.deepEqual(repeated.failedGates, result.failedGates);
+  let runModeProof;
+  assert.doesNotThrow(() => {
+    runModeProof = buildRuntimeBoundaryRunModeProof({
+      ...adapterInput(),
+      runtimeBoundaryEvents: events,
+    });
+  });
+  assert.equal(runModeProof.accepted, false);
+  assert.ok(runModeProof.failedGates.includes(expectedFailure), runModeProof.failedGates.join(','));
+}
+
+const nestedProxyEvents = boundaryEvents();
+const nestedProxyHost = nestedProxyEvents.find((event) => event.kind === 'host_identity');
+nestedProxyHost.fields = {
+  loaderIdentity: new Proxy({ loaderId: 'loader-1' }, {
+    get() {
+      throw new Error('nested proxy must not be evaluated');
+    },
+  }),
+};
+assertRuntimeBoundaryEventTreeRejected(
+  nestedProxyEvents,
+  'runtime_boundary_event_tree_proxy',
+);
+
+let nestedAccessorReads = 0;
+const nestedAccessorEvents = boundaryEvents();
+const nestedAccessorHost = nestedAccessorEvents.find((event) => event.kind === 'host_identity');
+const accessorIdentity = {};
+Object.defineProperty(accessorIdentity, 'loaderId', {
+  enumerable: true,
+  get() {
+    nestedAccessorReads += 1;
+    throw new Error('nested accessor must not be evaluated');
+  },
+});
+nestedAccessorHost.fields = { loaderIdentity: accessorIdentity };
+assertRuntimeBoundaryEventTreeRejected(
+  nestedAccessorEvents,
+  'runtime_boundary_event_tree_accessor',
+);
+assert.equal(nestedAccessorReads, 0);
+
+const rootCycleEvents = boundaryEvents();
+rootCycleEvents[0].self = rootCycleEvents[0];
+assertRuntimeBoundaryEventTreeRejected(
+  rootCycleEvents,
+  'runtime_boundary_event_tree_cycle',
+);
+
+const nestedCycleEvents = boundaryEvents();
+const nestedCycleHost = nestedCycleEvents.find((event) => event.kind === 'host_identity');
+const nestedCycleIdentity = { loaderId: 'loader-1' };
+nestedCycleIdentity.self = nestedCycleIdentity;
+nestedCycleHost.fields = { loaderIdentity: nestedCycleIdentity };
+assertRuntimeBoundaryEventTreeRejected(
+  nestedCycleEvents,
+  'runtime_boundary_event_tree_cycle',
+);
+
+const invalidEventEntryEvents = boundaryEvents();
+invalidEventEntryEvents[0] = 'not-an-event-object';
+assertRuntimeBoundaryEventTreeRejected(
+  invalidEventEntryEvents,
+  'runtime_boundary_event_tree_event_object_invalid',
+);
+
+const sparseIdentity = [];
+sparseIdentity.length = 2;
+sparseIdentity[1] = 'loader-1';
+for (const [malformedValue, expectedFailure] of [
+  [Symbol('loader-identity'), 'runtime_boundary_event_tree_symbol'],
+  [1n, 'runtime_boundary_event_tree_bigint'],
+  [Number.NaN, 'runtime_boundary_event_tree_nonfinite_number'],
+  [Number.POSITIVE_INFINITY, 'runtime_boundary_event_tree_nonfinite_number'],
+  [-0, 'runtime_boundary_event_tree_negative_zero'],
+  [sparseIdentity, 'runtime_boundary_event_tree_sparse_array'],
+]) {
+  const malformedEvents = boundaryEvents();
+  const malformedHost = malformedEvents.find((event) => event.kind === 'host_identity');
+  malformedHost.fields = { loaderIdentity: malformedValue };
+  assertRuntimeBoundaryEventTreeRejected(malformedEvents, expectedFailure);
+}
+
+const conflictingBackendEvents = boundaryEvents();
+const conflictingBackendEvent = conflictingBackendEvents.find(
+  (event) => event.kind === 'host_identity',
+);
+conflictingBackendEvent.backend = 'opencl';
+const conflictingObservedBackend = buildRuntimeBoundaryProofAdapter(adapterInput({
+  runtimeBoundaryEvents: conflictingBackendEvents,
+}));
+assert.equal(conflictingObservedBackend.accepted, false);
+assert.ok(
+  conflictingObservedBackend.failedGates.includes('runtime_boundary_backend_alias_conflict'),
+  conflictingObservedBackend.failedGates.join(','),
+);
+assert.equal(
+  adapterInput({ events: { outputOracle: { oracleCodeHash: null } } })
+    .computeOracleArtifacts.oracleCodeHash,
+  COMPUTE_ORACLE_CODE_HASH,
+  'declared compute metadata must not replace a missing runtime-observed oracle identity',
+);
+
+const inheritedIdentityEvents = boundaryEvents();
+const inheritedIdentityIndex = inheritedIdentityEvents.findIndex(
+  (event) => event.kind === 'output_oracle',
+);
+const inheritedIdentityEvent = { ...inheritedIdentityEvents[inheritedIdentityIndex] };
+delete inheritedIdentityEvent.oracleCodeHash;
+Object.setPrototypeOf(inheritedIdentityEvent, { oracleCodeHash: COMPUTE_ORACLE_CODE_HASH });
+inheritedIdentityEvents[inheritedIdentityIndex] = inheritedIdentityEvent;
+const inheritedComputeOracleCodeHash = buildRuntimeBoundaryProofAdapter(adapterInput({
+  runtimeBoundaryEvents: inheritedIdentityEvents,
+}));
+assert.equal(inheritedComputeOracleCodeHash.accepted, false);
+assert.ok(
+  inheritedComputeOracleCodeHash.failedGates.includes('runtime_boundary_stage_output_oracle_missing'),
+  inheritedComputeOracleCodeHash.failedGates.join(','),
+);
+
+const conflictingIdentityEvents = boundaryEvents();
+const conflictingIdentityEvent = conflictingIdentityEvents.find(
+  (event) => event.kind === 'output_oracle',
+);
+conflictingIdentityEvent.oracle_code_hash = HASH_E;
+const conflictingComputeOracleCodeHash = buildRuntimeBoundaryProofAdapter(adapterInput({
+  runtimeBoundaryEvents: conflictingIdentityEvents,
+}));
+assert.equal(conflictingComputeOracleCodeHash.accepted, false);
+assert.ok(
+  conflictingComputeOracleCodeHash.failedGates.includes('output_oracle_oracle_code_hash_alias_conflict'),
+  conflictingComputeOracleCodeHash.failedGates.join(','),
+);
+
+const snakeOnlyIdentityEvents = boundaryEvents();
+const snakeOnlyIdentityEvent = snakeOnlyIdentityEvents.find(
+  (event) => event.kind === 'output_oracle',
+);
+delete snakeOnlyIdentityEvent.oracleCodeHash;
+snakeOnlyIdentityEvent.oracle_code_hash = COMPUTE_ORACLE_CODE_HASH;
+const snakeOnlyComputeOracleCodeHash = buildRuntimeBoundaryProofAdapter(adapterInput({
+  runtimeBoundaryEvents: snakeOnlyIdentityEvents,
+}));
+assert.equal(
+  snakeOnlyComputeOracleCodeHash.accepted,
+  true,
+  snakeOnlyComputeOracleCodeHash.failedGates.join(','),
+);
 
 const forgedSuccess = buildRuntimeBoundaryProofAdapter(adapterInput({
   events: {
