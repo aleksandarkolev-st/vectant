@@ -364,35 +364,11 @@ function relRepo(filePath) {
   return path.relative(REPO_ROOT, filePath).replace(/\\/g, '/');
 }
 
-function proofArtifactPath(value) {
-  const text = firstText(value);
-  if (!text) return null;
-  if (/^[a-z][a-z0-9+.-]*:/iu.test(text)) return null;
-  return text;
-}
-
-function computeOracleStrictGateOptions(oracleArtifacts = {}) {
-  rejectConflictingSnakeCamelAliases(oracleArtifacts, 'HIP readback oracle artifacts');
-  const artifactPaths = [
-    oracleArtifacts.raw_readback_bin,
-    oracleArtifacts.rawReadbackBin,
-    oracleArtifacts.before_raw_readback_bin,
-    oracleArtifacts.beforeRawReadbackBin,
-    oracleArtifacts.readback_schema_json,
-    oracleArtifacts.readbackSchemaJson,
-    oracleArtifacts.rendered_card_png,
-    oracleArtifacts.renderedCardPng,
-    oracleArtifacts.raw_readback_cas_manifest,
-    oracleArtifacts.rawReadbackCasManifest,
-  ].map(proofArtifactPath).filter(Boolean);
-  const allowedArtifactRoots = [...new Set(artifactPaths.map((artifactPath) => {
-    const resolved = path.isAbsolute(artifactPath)
-      ? artifactPath
-      : path.resolve(REPO_ROOT, artifactPath);
-    return path.dirname(resolved);
-  }))];
+function computeOracleStrictGateOptions(trustedArtifactRoot) {
+  const root = firstText(trustedArtifactRoot);
+  if (!root) throw new Error('HIP strict proof requires a runner-established artifact root');
   return {
-    allowedArtifactRoots,
+    allowedArtifactRoots: [path.resolve(root)],
     computeArtifactPathBaseRoots: [REPO_ROOT],
   };
 }
@@ -3489,6 +3465,13 @@ async function writeComputeOracleArtifacts({
     oracle_code_hash: implementationHash,
     semantic_oracle_implementation: relRepo(implementationPath),
     semantic_oracle_implementation_hash: implementationHash,
+    oracle_implementation_artifact: {
+      schemaVersion: 'synthi.gpu_hmr.oracle_implementation_artifact.v1',
+      role: 'oracle_implementation',
+      path: relRepo(implementationPath),
+      content_hash: implementationHash,
+      byte_length: implementationBytes.length,
+    },
     semantic_oracle_request_json: relRepo(requestPath),
     semantic_oracle_request_hash: requestHash,
     semantic_oracle_result_json: relRepo(resultPath),
@@ -4104,6 +4087,7 @@ function hipModuleHardwareTargetEvidence({ profile, runtimeTrace, contract }) {
 }
 
 function buildRuntimeProofArtifact({
+  artifactRoot,
   profile,
   compiled,
   runtimeTrace,
@@ -4269,7 +4253,7 @@ function buildRuntimeProofArtifact({
   };
   const strictGate = runtimeProofArtifactStrictGate(
     runtimeProofArtifact,
-    computeOracleStrictGateOptions(oracleArtifacts),
+    computeOracleStrictGateOptions(artifactRoot),
   );
   return {
     ...runtimeProofArtifact,
@@ -4496,6 +4480,7 @@ async function buildSyntheticRuntimeProofFixture(profile) {
   const runMode = runModeMetadata(profile);
   const compiled = {
     kernelIdentity: profile.kernel.name,
+    afterSourceHash: profile.afterHash,
     beforeHsacoHash: sha256Text(`${profile.targetId}:before-hsaco`),
     afterHsacoHash: sha256Text(`${profile.targetId}:after-hsaco`),
     commands: {
@@ -4759,6 +4744,7 @@ async function buildSyntheticRuntimeProofFixture(profile) {
   const ledger = queryGpuHmrLedgerInvariants(proofLedger);
   const nativeApiEvidence = nativeHipApiEvidence(runtimeTrace);
   const runtimeProofArtifact = buildRuntimeProofArtifact({
+    artifactRoot: selfCheckArtifactDir,
     profile,
     compiled,
     runtimeTrace,
@@ -4772,6 +4758,7 @@ async function buildSyntheticRuntimeProofFixture(profile) {
     nativeApiEvidence,
   });
   return {
+    artifactRoot: selfCheckArtifactDir,
     runtimeProofArtifact,
     contract,
     proofLedger,
@@ -5339,7 +5326,7 @@ async function selfCheck() {
     ok: Object.values(conflictingAliasAdversarial).every(Boolean),
     detail: conflictingAliasAdversarial,
   });
-  const strictGateOptions = computeOracleStrictGateOptions(syntheticProof.oracleArtifacts);
+  const strictGateOptions = computeOracleStrictGateOptions(syntheticProof.artifactRoot);
   checks.push({
     name: 'runtime-proof-artifact-strictly-accepted',
     ok:
@@ -5348,6 +5335,40 @@ async function selfCheck() {
       && syntheticProof.runtimeProofArtifact.strictGate?.status === 'pass'
       && syntheticProof.runtimeProofArtifact.proofLedgerSourceConsistency?.mode === 'derived_only',
     detail: syntheticProof.runtimeProofArtifact.strictGate,
+  });
+  const externalArtifactRoot = path.join(ARTIFACT_DIR, 'self-check-external-root');
+  const externalImplementationPath = path.join(externalArtifactRoot, 'semantic-oracle.mjs');
+  await mkdir(externalArtifactRoot, { recursive: true });
+  await writeFile(externalImplementationPath, syntheticProof.semanticOracle.implementationBytes);
+  const externalImplementationArtifact = JSON.parse(
+    JSON.stringify(syntheticProof.runtimeProofArtifact),
+  );
+  mutateComputeArtifacts(externalImplementationArtifact, (artifacts) => {
+    artifacts.semantic_oracle_implementation = relRepo(externalImplementationPath);
+    artifacts.semanticOracleImplementation = relRepo(externalImplementationPath);
+    for (const key of [
+      'oracle_implementation_artifact',
+      'oracleImplementationArtifact',
+      'semantic_oracle_implementation_artifact',
+      'semanticOracleImplementationArtifact',
+    ]) {
+      if (artifacts[key] && typeof artifacts[key] === 'object') {
+        artifacts[key].path = relRepo(externalImplementationPath);
+      }
+    }
+  });
+  const externalImplementationGate = runtimeProofArtifactStrictGate(
+    externalImplementationArtifact,
+    strictGateOptions,
+  );
+  checks.push({
+    name: 'strict-gate-rejects-proof-selected-external-oracle-root',
+    ok:
+      externalImplementationGate.status === 'fail'
+      && externalImplementationGate.failures.includes(
+        'compute_oracle_implementation_artifact_path_unreadable',
+      ),
+    detail: externalImplementationGate,
   });
   checks.push({
     name: 'runtime-proof-output-target-bound',
@@ -5962,6 +5983,7 @@ async function main(testTimingRecorder) {
   const ledgerEvaluation = evaluateGpuHmrProofLedger(proofLedger.records[0]);
   const nativeApiEvidence = nativeHipApiEvidence(runtime.runtimeTrace);
   const runtimeProofArtifact = buildRuntimeProofArtifact({
+    artifactRoot: outDir,
     profile,
     compiled,
     runtimeTrace: runtime.runtimeTrace,
