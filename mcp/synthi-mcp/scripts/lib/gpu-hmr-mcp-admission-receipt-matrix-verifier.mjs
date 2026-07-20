@@ -167,7 +167,12 @@ function accepted(verification, receipt) {
     gpuHmrSuccess: false,
     canSatisfyRuntimeProof: false,
   });
-  verifiedProjections.set(result, Object.freeze({
+  verifiedProjections.set(result, admissionProjection(verification, receipt));
+  return result;
+}
+
+function admissionProjection(verification, receipt) {
+  return Object.freeze({
     required: true,
     receiptId: verification.receiptId,
     contractHash: receipt.computeExpectedOutputContractHash,
@@ -177,8 +182,7 @@ function accepted(verification, receipt) {
     fullRuntimeProofId: receipt.fullRuntimeProofId,
     proofLedgerId: receipt.proofLedgerId,
     runtimeSessionId: receipt.runnerRuntimeSessionId,
-  }));
-  return result;
+  });
 }
 
 function staged(verification, receipt, replayRegistry) {
@@ -206,6 +210,7 @@ function staged(verification, receipt, replayRegistry) {
     verification,
     receipt,
     replayRegistry,
+    projection: admissionProjection(verification, receipt),
   }));
   return result;
 }
@@ -457,4 +462,8 @@ export function verifyGpuHmrMcpAdmissionReceiptForMatrix(contextValue) {
 
 export function verifiedGpuHmrMcpAdmissionReceiptProjection(value) {
   return verifiedProjections.get(value) ?? null;
+}
+
+export function stagedGpuHmrMcpAdmissionReceiptProjection(value) {
+  return stagedVerificationStates.get(value)?.projection ?? null;
 }

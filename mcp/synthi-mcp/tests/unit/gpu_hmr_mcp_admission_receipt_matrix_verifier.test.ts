@@ -12,6 +12,7 @@ import {
   GPU_HMR_MCP_ADMISSION_MATRIX_STAGED_VERIFICATION_SCHEMA,
   GPU_HMR_MCP_ADMISSION_MATRIX_VERIFICATION_AUTHORITY,
   stageGpuHmrMcpAdmissionReceiptForMatrix,
+  stagedGpuHmrMcpAdmissionReceiptProjection,
   verifiedGpuHmrMcpAdmissionReceiptProjection,
   verifyGpuHmrMcpAdmissionReceiptForMatrix,
 } from "../../scripts/lib/gpu-hmr-mcp-admission-receipt-matrix-verifier.mjs";
@@ -161,6 +162,12 @@ describe("MCP admission receipt matrix verifier", () => {
     expect(Object.isFrozen(staged)).toBe(true);
     expect(staged).not.toHaveProperty("accepted");
     expect(verifiedGpuHmrMcpAdmissionReceiptProjection(staged)).toBeNull();
+    expect(stagedGpuHmrMcpAdmissionReceiptProjection(staged)).toMatchObject({
+      required: true,
+      receiptId: staged.receiptId,
+      contractHash: hash("a"),
+      semanticsHash: hash("b"),
+    });
 
     const committed = commitGpuHmrMcpAdmissionReceiptForMatrix(staged);
     expect(committed).toMatchObject({
@@ -178,6 +185,7 @@ describe("MCP admission receipt matrix verifier", () => {
       reason:
         "gpu_hmr_mcp_admission_matrix_staged_verification_already_used",
     });
+    expect(stagedGpuHmrMcpAdmissionReceiptProjection(staged)).toBeNull();
     expect(discardGpuHmrMcpAdmissionReceiptForMatrix(staged)).toBe(false);
   });
 
@@ -192,6 +200,7 @@ describe("MCP admission receipt matrix verifier", () => {
       reason: "gpu_hmr_mcp_admission_matrix_staged_verification_invalid",
     });
     expect(discardGpuHmrMcpAdmissionReceiptForMatrix(serialized)).toBe(false);
+    expect(stagedGpuHmrMcpAdmissionReceiptProjection(serialized)).toBeNull();
     expect(commitGpuHmrMcpAdmissionReceiptForMatrix(staged).accepted).toBe(true);
   });
 
