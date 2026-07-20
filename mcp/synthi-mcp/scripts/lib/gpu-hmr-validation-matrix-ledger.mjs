@@ -116,7 +116,7 @@ export const GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION =
 export const GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation_matrix_row.v1';
 export const GPU_HMR_VALIDATION_MATRIX_MCP_ADMISSION_POLICY_SCHEMA =
-  'synthi.gpu_hmr.validation_matrix_mcp_admission_policy.v1';
+  'synthi.gpu_hmr.validation_matrix_mcp_admission_policy.v2';
 export const GPU_HMR_VALIDATION_MATRIX_MCP_ADMISSION_POLICY_AUTHORITY =
   'matrix_collection_policy_only_not_gpu_hmr_acceptance';
 export const GPU_HMR_TEST_TIMING_V2_FACET_SCHEMA_VERSION =
