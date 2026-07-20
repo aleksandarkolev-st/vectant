@@ -8,6 +8,7 @@ import {
   GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION,
   loadRuntimeProofProfileFromEnv,
   normalizeRuntimeProofProfile,
+  runtimeProfileToLegacyHiprtWarmProfile,
   runtimeProfileToHiprtWarmEnv,
 } from './lib/gpu-hmr-runtime-profile.mjs';
 import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
@@ -812,7 +813,6 @@ function runtimeBoundaryAdapterInputFromProfileAndManifest(profile, manifest) {
       source.gpuBackend,
       source.gpu_backend,
       profile.runtime.backend.orochiApi,
-      'hip',
     ),
     projectId: firstString(source.projectId, source.project_id, source.workspaceSlug, source.workspace_slug, profile.id),
     editId: firstString(source.editId, source.edit_id, source.sourceEditId, source.source_edit_id),
@@ -1963,19 +1963,59 @@ async function selfCheck() {
       runtimeBoundaryEventManifestPath: path.relative(REPO_ROOT, runtimeBoundaryManifestPath).replace(/\\/g, '/'),
     },
     runtime: {
-      ...baseProfile.runtime,
       targetName: 'generic-runtime-boundary-target',
-      requiredKernels: ['generic_kernel'],
-      reload: {
-        kernelName: 'generic_kernel',
-        kernelSymbol: 'generic_kernel',
-      },
     },
     source: {
       file: 'src/kernels/generic.hip',
-      before: 'return 1;',
-      after: 'return 2;',
     },
+    visualProof: null,
+  });
+  let runtimeBoundaryHiprtEnvironmentRejected = false;
+  try {
+    runtimeProfileToHiprtWarmEnv(runtimeBoundaryProfile);
+  } catch (error) {
+    runtimeBoundaryHiprtEnvironmentRejected = String(error?.message ?? error)
+      .includes('runtime-boundary proof adapter profiles cannot be converted');
+  }
+  let runtimeBoundaryLegacyProfileRejected = false;
+  try {
+    runtimeProfileToLegacyHiprtWarmProfile(runtimeBoundaryProfile);
+  } catch (error) {
+    runtimeBoundaryLegacyProfileRejected = String(error?.message ?? error)
+      .includes('runtime-boundary proof adapter profiles cannot be converted');
+  }
+  const runnerKindBoundaryProfile = normalizeRuntimeProofProfile({
+    schemaVersion: GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION,
+    id: 'generic-runtime-boundary-runner-kind-smoke',
+    adapter: {
+      family: 'generic-runtime-boundary-runner-kind-smoke',
+      proofRunner: 'custom',
+      runnerKind: 'runtime-boundary-proof-adapter',
+    },
+    runtime: { targetName: 'generic-runtime-boundary-target' },
+    source: { file: 'src/kernels/generic.hip' },
+  });
+  let ordinaryMissingFieldsRejected = false;
+  try {
+    normalizeRuntimeProofProfile({
+      schemaVersion: GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION,
+      id: 'ordinary-runtime-profile-missing-fields',
+      adapter: { family: 'ordinary', proofRunner: 'custom' },
+      runtime: { targetName: 'ordinary-target' },
+      source: { file: 'src/main.cpp' },
+    });
+  } catch {
+    ordinaryMissingFieldsRejected = true;
+  }
+  const acceptedRuntimeBoundaryManifest = await readRuntimeBoundaryEventManifest(
+    runtimeBoundaryProfile,
+  );
+  const missingBackendAdapterProof = buildRuntimeBoundaryProofAdapter({
+    ...runtimeBoundaryAdapterInputFromProfileAndManifest(
+      runtimeBoundaryProfile,
+      acceptedRuntimeBoundaryManifest,
+    ),
+    backend: null,
   });
   const runtimeBoundaryAdapter = adapterForProfile(runtimeBoundaryProfile);
   const runtimeBoundaryResultPath = path.join(runtimeBoundaryDir, 'runtime-boundary-result.json');
@@ -1997,6 +2037,24 @@ async function selfCheck() {
     name: 'generic-runtime-boundary-profile-adapter-accepts-strict-proof',
     ok:
       runtimeBoundaryAdapter.runnerKind === 'runtime-boundary-proof-adapter'
+      && runtimeBoundaryProfile.runtime.requiredKernels.length === 0
+      && runtimeBoundaryProfile.runtime.reload.kernelName === null
+      && runtimeBoundaryProfile.runtime.reload.kernelSymbol === null
+      && runtimeBoundaryProfile.source.before === null
+      && runtimeBoundaryProfile.source.after === null
+      && runtimeBoundaryProfile.visualProof === null
+      && runtimeBoundaryHiprtEnvironmentRejected === true
+      && runtimeBoundaryLegacyProfileRejected === true
+      && runnerKindBoundaryProfile.runtime.requiredKernels.length === 0
+      && runnerKindBoundaryProfile.runtime.reload.kernelName === null
+      && runnerKindBoundaryProfile.runtime.reload.kernelSymbol === null
+      && runnerKindBoundaryProfile.source.before === null
+      && runnerKindBoundaryProfile.source.after === null
+      && runnerKindBoundaryProfile.visualProof === null
+      && ordinaryMissingFieldsRejected === true
+      && missingBackendAdapterProof.accepted === false
+      && !missingBackendAdapterProof.runtimeProofArtifact
+      && missingBackendAdapterProof.failedGates.includes('runtime_boundary_backend_missing')
       && runtimeBoundaryResult.strictRuntimeProofAccepted === true
       && runtimeBoundaryResult.proofLedgerId
       && runtimeBoundaryResult.runtimeBoundaryProofAdapterAccepted === true

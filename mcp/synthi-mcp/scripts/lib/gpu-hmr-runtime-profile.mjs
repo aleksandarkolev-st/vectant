@@ -379,6 +379,17 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
     pick(adapter.proofRunner, raw.proofRunner, opts.defaultProofRunner, 'hiprt-warm-visual'),
     'adapter.proofRunner',
   ).toLowerCase();
+  const runnerKind = optionalString(adapter.runnerKind, 'adapter.runnerKind')?.toLowerCase() ?? null;
+  const runtimeBoundaryAdapterProfile =
+    proofRunner === 'runtime-boundary-proof-adapter'
+    || runnerKind === 'runtime-boundary-proof-adapter';
+  const visualProofDeclared = Object.keys(visual).length > 0 || [
+    raw.claim,
+    raw.width,
+    raw.height,
+    raw.minChangedPixelRatio,
+    raw.minMeanAbsDelta8bit,
+  ].some((value) => value !== undefined && value !== null);
   const targetName = nonEmptyString(
     pick(runtime.targetName, raw.targetName, opts.defaultTargetName),
     'runtime.targetName',
@@ -387,24 +398,46 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
     pick(source.file, source.path, raw.sourceRel, raw.sourceFile),
     'source.file',
   ).replace(/\\/g, '/');
-  const before = nonEmptyString(pick(source.before, raw.before), 'source.before');
-  const after = nonEmptyString(pick(source.after, raw.after), 'source.after');
-  if (before === after) {
+  const before = runtimeBoundaryAdapterProfile
+    ? optionalString(pick(source.before, raw.before), 'source.before')
+    : nonEmptyString(pick(source.before, raw.before), 'source.before');
+  const after = runtimeBoundaryAdapterProfile
+    ? optionalString(pick(source.after, raw.after), 'source.after')
+    : nonEmptyString(pick(source.after, raw.after), 'source.after');
+  if ((before === null) !== (after === null)) {
+    throw new Error('runtime profile source.before and source.after must both be present or both be absent');
+  }
+  if (before !== null && before === after) {
     throw new Error('runtime profile source.before and source.after must differ');
   }
 
-  const requiredKernels = stringList(
-    pick(runtime.requiredKernels, raw.requiredKernels, opts.defaultRequiredKernels),
-    'runtime.requiredKernels',
-  );
-  const reloadKernelName = nonEmptyString(
-    pick(reload.kernelName, reload.kernel, raw.reloadKernelName),
-    'runtime.reload.kernelName',
-  );
-  const reloadKernelSymbol = nonEmptyString(
-    pick(reload.kernelSymbol, reload.symbol, raw.reloadKernelSymbol),
-    'runtime.reload.kernelSymbol',
-  );
+  const requiredKernels = runtimeBoundaryAdapterProfile
+    ? optionalStringList(
+      pick(runtime.requiredKernels, raw.requiredKernels, opts.defaultRequiredKernels),
+      'runtime.requiredKernels',
+    )
+    : stringList(
+      pick(runtime.requiredKernels, raw.requiredKernels, opts.defaultRequiredKernels),
+      'runtime.requiredKernels',
+    );
+  const reloadKernelName = runtimeBoundaryAdapterProfile
+    ? optionalString(
+      pick(reload.kernelName, reload.kernel, raw.reloadKernelName),
+      'runtime.reload.kernelName',
+    )
+    : nonEmptyString(
+      pick(reload.kernelName, reload.kernel, raw.reloadKernelName),
+      'runtime.reload.kernelName',
+    );
+  const reloadKernelSymbol = runtimeBoundaryAdapterProfile
+    ? optionalString(
+      pick(reload.kernelSymbol, reload.symbol, raw.reloadKernelSymbol),
+      'runtime.reload.kernelSymbol',
+    )
+    : nonEmptyString(
+      pick(reload.kernelSymbol, reload.symbol, raw.reloadKernelSymbol),
+      'runtime.reload.kernelSymbol',
+    );
 
   const normalized = {
     schemaVersion: raw.schemaVersion ?? GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION,
@@ -412,7 +445,7 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
     adapter: {
       family: adapterFamily,
       proofRunner,
-      runnerKind: optionalString(adapter.runnerKind, 'adapter.runnerKind')?.toLowerCase(),
+      runnerKind,
       runnerPath: optionalString(adapter.runnerPath ?? adapter.runner, 'adapter.runnerPath')?.replace(/\\/g, '/'),
       runnerArgs: Array.isArray(adapter.runnerArgs)
         ? adapter.runnerArgs.map((item, index) => nonEmptyString(item, `adapter.runnerArgs[${index}]`))
@@ -473,7 +506,7 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
       before,
       after,
     },
-    visualProof: {
+    visualProof: runtimeBoundaryAdapterProfile && !visualProofDeclared ? null : {
       claim: nonEmptyString(
         pick(visual.claim, raw.claim, 'A runtime source delta materially changes the visual output.'),
         'visualProof.claim',
@@ -519,6 +552,12 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
 
 export function runtimeProfileToLegacyHiprtWarmProfile(profile) {
   const normalized = normalizeRuntimeProofProfile(profile);
+  if (
+    normalized.adapter.proofRunner === 'runtime-boundary-proof-adapter'
+    || normalized.adapter.runnerKind === 'runtime-boundary-proof-adapter'
+  ) {
+    throw new Error('runtime-boundary proof adapter profiles cannot be converted to HIPRT warm profiles');
+  }
   return {
     id: normalized.id,
     targetName: normalized.runtime.targetName,
@@ -551,6 +590,12 @@ export function runtimeProfileToLegacyHiprtWarmProfile(profile) {
 
 export function runtimeProfileToHiprtWarmEnv(profile) {
   const normalized = normalizeRuntimeProofProfile(profile);
+  if (
+    normalized.adapter.proofRunner === 'runtime-boundary-proof-adapter'
+    || normalized.adapter.runnerKind === 'runtime-boundary-proof-adapter'
+  ) {
+    throw new Error('runtime-boundary proof adapter profiles cannot be converted to HIPRT warm environment variables');
+  }
   const env = {
     SYNTHI_HIPRT_WARM_PROFILE_ID: normalized.id,
     SYNTHI_HIPRT_WARM_TARGET: normalized.runtime.targetName,
