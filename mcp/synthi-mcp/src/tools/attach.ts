@@ -138,6 +138,8 @@ export async function attachTool(args: unknown, ctx: ToolContext): Promise<ToolR
     const manifest = buildManifest(ADVERTISED_TOOLS, {
       frame_seq_gate_enabled: session.frameSeqGateEnabled(),
     });
+    const gpuParentRuntimeProofAdmissionTrust =
+      await session.getGpuParentRuntimeProofAdmissionTrustMaterial();
     return jsonResponse({
       ok: true,
       connected: true,
@@ -150,7 +152,7 @@ export async function attachTool(args: unknown, ctx: ToolContext): Promise<ToolR
       },
       capabilities: manifest,
       gpu_parent_runtime_proof_admission_trust:
-        session.getGpuParentRuntimeProofAdmissionTrustMaterial(),
+        gpuParentRuntimeProofAdmissionTrust,
       session: ((): Record<string, unknown> => {
         const presence = session.getPresenceCounts();
         const warming = session.getWarmingProgress();

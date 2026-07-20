@@ -284,6 +284,8 @@ function parseProducerViewport(msg: Record<string, unknown>): ProducerViewport |
 class SessionManager {
   readonly #gpuParentRuntimeProofAdmissionAuthority =
     new GpuParentRuntimeProofAdmissionAuthority();
+  #gpuParentRuntimeProofAdmissionTrustMaterialPromise:
+    Promise<GpuParentRuntimeProofAdmissionTrustMaterial> | null = null;
   private attached: AttachedSession | null = null;
   private state: SessionState = "detached";
   private attachPromise: Promise<AttachedSession> | null = null;
@@ -316,8 +318,12 @@ class SessionManager {
   }
 
   getGpuParentRuntimeProofAdmissionTrustMaterial():
-    GpuParentRuntimeProofAdmissionTrustMaterial {
-    return this.#gpuParentRuntimeProofAdmissionAuthority.trustMaterial();
+    Promise<GpuParentRuntimeProofAdmissionTrustMaterial> {
+    if (this.#gpuParentRuntimeProofAdmissionTrustMaterialPromise === null) {
+      this.#gpuParentRuntimeProofAdmissionTrustMaterialPromise =
+        this.#gpuParentRuntimeProofAdmissionAuthority.trustMaterial();
+    }
+    return this.#gpuParentRuntimeProofAdmissionTrustMaterialPromise;
   }
 
   isUnsafeMode(): boolean {
