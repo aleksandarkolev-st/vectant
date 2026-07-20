@@ -79,7 +79,7 @@ function assertContains(actual, expected) {
 
 function assertSupportOnly(facet) {
   assert.equal(facet.valid, true);
-  assert.equal(facet.acceptedAsSupportEvidence, true);
+  assert.equal(facet.acceptedAsSupportEvidence, false);
   assert.equal(facet.acceptedForGpuHmr, false);
   assert.equal(facet.gpuHmrSuccess, false);
   assert.equal(facet.canSatisfyRuntimeProof, false);
@@ -192,7 +192,7 @@ assert.equal(
   GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_AUTHORITY,
 );
 assert.equal(baselineIntegrity.valid, true);
-assert.equal(baselineIntegrity.acceptedAsSupportEvidence, true);
+assert.equal(baselineIntegrity.acceptedAsSupportEvidence, false);
 assert.equal(baselineIntegrity.acceptedForGpuHmr, false);
 assert.equal(baselineIntegrity.gpuHmrSuccess, false);
 assert.equal(baselineIntegrity.canSatisfyRuntimeProof, false);
@@ -203,14 +203,14 @@ assert.deepEqual(baselineIntegrity.recomputedFacet, baseline);
 const serializedBaselineIntegrity = evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity(
   JSON.parse(JSON.stringify(baseline)),
 );
-assert.equal(serializedBaselineIntegrity.acceptedAsSupportEvidence, true);
+assert.equal(serializedBaselineIntegrity.acceptedAsSupportEvidence, false);
 assert.deepEqual(serializedBaselineIntegrity.recomputedFacet, baseline);
 const reorderedSerializedBaseline = Object.fromEntries(
   Object.entries(JSON.parse(JSON.stringify(baseline))).reverse(),
 );
 assert.equal(
   evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity(reorderedSerializedBaseline)
-    .acceptedAsSupportEvidence,
+    .valid,
   true,
 );
 
@@ -231,6 +231,13 @@ forgedSuccessFacet.gpuHmrSuccess = true;
 assertFacetIntegrityRejected(
   forgedSuccessFacet,
   'runtime_adapter_capabilities_facet_success_authority_forbidden',
+);
+
+const forgedSupportFacet = JSON.parse(JSON.stringify(baseline));
+forgedSupportFacet.acceptedAsSupportEvidence = true;
+assertFacetIntegrityRejected(
+  forgedSupportFacet,
+  'runtime_adapter_capabilities_facet_support_state_invalid',
 );
 
 const forgedCapabilitiesHashFacet = JSON.parse(JSON.stringify(baseline));

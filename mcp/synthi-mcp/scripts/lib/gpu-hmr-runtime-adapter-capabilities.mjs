@@ -6,11 +6,11 @@ import { classifyGpuHmrOutputOracleKind } from './gpu-hmr-output-oracle-kind.mjs
 export const GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_SCHEMA_VERSION =
   'synthi.gpu_hmr.runtime_adapter_capabilities.v1';
 export const GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_AUTHORITY =
-  'runtime_adapter_capability_obligations_only_not_gpu_hmr_success';
+  'caller_declared_capability_obligations_only_not_evidence_or_gpu_hmr_success';
 export const GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_SCHEMA_VERSION =
   'synthi.gpu_hmr.runtime_adapter_capabilities_integrity.v1';
 export const GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_AUTHORITY =
-  'runtime_adapter_capability_integrity_only_not_gpu_hmr_success';
+  'capability_declaration_integrity_only_not_evidence_or_gpu_hmr_success';
 
 export const GPU_HMR_RUNTIME_ADAPTER_ARTIFACT_FORMATS = Object.freeze([
   'native_binary',
@@ -396,18 +396,18 @@ function plainDataTreeFailure(value) {
 
 function capabilityFacetIntegrityResult(failures, recomputedFacet = null) {
   const uniqueFailures = Object.freeze([...new Set(failures)]);
-  const acceptedAsSupportEvidence = uniqueFailures.length === 0 && recomputedFacet !== null;
+  const valid = uniqueFailures.length === 0 && recomputedFacet !== null;
   return Object.freeze({
     schemaVersion: GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_SCHEMA_VERSION,
     authority: GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_AUTHORITY,
-    valid: acceptedAsSupportEvidence,
-    acceptedAsSupportEvidence,
+    valid,
+    acceptedAsSupportEvidence: false,
     acceptedForGpuHmr: false,
     gpuHmrSuccess: false,
     canSatisfyRuntimeProof: false,
     canSatisfyDispatchProof: false,
     failures: uniqueFailures,
-    recomputedFacet: acceptedAsSupportEvidence ? recomputedFacet : null,
+    recomputedFacet: valid ? recomputedFacet : null,
   });
 }
 
@@ -713,7 +713,7 @@ export function createGpuHmrRuntimeAdapterCapabilities(input) {
     bindingHash,
     proofId: `runtime-adapter-capabilities:${bindingHash}`,
     valid: true,
-    acceptedAsSupportEvidence: true,
+    acceptedAsSupportEvidence: false,
     acceptedForGpuHmr: false,
     gpuHmrSuccess: false,
     canSatisfyRuntimeProof: false,
@@ -765,7 +765,7 @@ export function evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity(facet) {
   ) {
     failures.push('runtime_adapter_capabilities_facet_success_authority_forbidden');
   }
-  if (facet.valid !== true || facet.acceptedAsSupportEvidence !== true) {
+  if (facet.valid !== true || facet.acceptedAsSupportEvidence !== false) {
     failures.push('runtime_adapter_capabilities_facet_support_state_invalid');
   }
   for (const field of CAPABILITY_FACET_FIELDS) {
