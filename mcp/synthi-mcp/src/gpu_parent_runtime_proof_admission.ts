@@ -11,6 +11,7 @@ import {
 } from "./gpu_parent_runtime_proof.js";
 import type {
   RuntimeEvidenceTransportKeyPin,
+  RuntimeEvidenceTransportVerificationKey,
 } from "./runtime_evidence_transport.js";
 
 const COMPILE_NONCE_PREFIX = "gpu-proof-transport-request:";
@@ -24,6 +25,9 @@ const DEFAULT_MAX_ISSUED_NONCES = 4_096;
 const DEFAULT_INTENT_TTL_MS = 30 * 60_000;
 const DEFAULT_BINDING_TTL_MS = 5 * 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+export const GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION =
+  "synthi.gpu_hmr.parent_control_verification_material.v1";
 
 export type GpuParentRuntimeProofAdmissionReceiptConsumer =
   GpuParentRuntimeProofControlBindingReceiptConsumer
@@ -51,6 +55,22 @@ export interface GpuParentRuntimeProofCompileIntent {
   readonly correlationId: string;
   readonly computeExpectedOutputContractHash: string | null;
   readonly computeExpectedOutputSemanticsHash: string | null;
+}
+
+export interface GpuParentRuntimeProofControlVerificationTransportContext {
+  readonly transportSessionId: string;
+  readonly compileRequestNonce: string;
+  readonly expectedWorkerProcessId: string;
+}
+
+export interface GpuParentRuntimeProofControlVerificationMaterial {
+  readonly schemaVersion:
+    typeof GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION;
+  readonly controlBinding: Readonly<Record<string, unknown>>;
+  readonly runtimeEvidenceTransportVerificationKey:
+    RuntimeEvidenceTransportVerificationKey;
+  readonly transportContext:
+    GpuParentRuntimeProofControlVerificationTransportContext;
 }
 
 export type GpuParentRuntimeProofTrustInvalidationReason =
@@ -84,6 +104,16 @@ interface VerifiedBinding {
   readonly expectedBinding: GpuParentRuntimeProofExpectedBinding;
   readonly protectedProofJsonSha256: string;
   readonly canonicalProofSha256: string;
+  readonly controlBinding: Readonly<Record<string, unknown>>;
+  readonly runtimeEvidenceTransportVerificationKey:
+    RuntimeEvidenceTransportVerificationKey;
+  readonly transportContext:
+    GpuParentRuntimeProofControlVerificationTransportContext;
+  readonly expiresAt: number;
+}
+
+interface RetainedControlVerificationMaterial {
+  readonly material: GpuParentRuntimeProofControlVerificationMaterial;
   readonly expiresAt: number;
 }
 
@@ -173,6 +203,26 @@ function freezeExpectedBinding(
   });
 }
 
+function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  if (seen.has(value)) return value;
+  seen.add(value);
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor !== undefined && "value" in descriptor) {
+      deepFreeze(descriptor.value, seen);
+    }
+  }
+  Object.freeze(value);
+  return value;
+}
+
+function cloneAndDeepFreeze<T>(value: T): T {
+  return deepFreeze(structuredClone(value));
+}
+
 export class SessionGpuParentRuntimeProofAdmission {
   private readonly transportSessionId: string;
   private readonly keyPin: RuntimeEvidenceTransportKeyPin;
@@ -188,6 +238,8 @@ export class SessionGpuParentRuntimeProofAdmission {
   private readonly issuedNonceHashes = new Set<string>();
   private readonly bindingsByProofId = new Map<string, VerifiedBinding>();
   private readonly bindingProofIdByRequestId = new Map<string, string>();
+  private readonly retainedControlVerificationMaterials =
+    new Map<string, RetainedControlVerificationMaterial>();
   private disposed = false;
   private failureReason: string | null = null;
   private lastDecisionCode: string | null = null;
@@ -295,6 +347,19 @@ export class SessionGpuParentRuntimeProofAdmission {
     }
   }
 
+  takeControlVerificationMaterial(
+    fullRuntimeProofId: string,
+  ): GpuParentRuntimeProofControlVerificationMaterial | null {
+    if (this.disposed || this.failureReason !== null) return null;
+    this.prune(this.currentTime());
+    const retained = this.retainedControlVerificationMaterials.get(
+      fullRuntimeProofId,
+    );
+    if (retained === undefined) return null;
+    this.retainedControlVerificationMaterials.delete(fullRuntimeProofId);
+    return retained.material;
+  }
+
   invalidateTrust(reason: GpuParentRuntimeProofTrustInvalidationReason): void {
     if (this.disposed || this.failureReason !== null) return;
     this.fail(`gpu_parent_runtime_proof_admission_${reason}`);
@@ -330,7 +395,7 @@ export class SessionGpuParentRuntimeProofAdmission {
         this.lastDecisionCode = "gpu_parent_runtime_proof_parent_state_invalid";
         return false;
       }
-      return this.consumeParentProof(message);
+      return this.consumeParentProof(message, now);
     }
     if (reservedFullRuntimeClaim) {
       this.lastDecisionCode = "gpu_parent_runtime_proof_unbound_full_runtime_claim_suppressed";
@@ -362,6 +427,7 @@ export class SessionGpuParentRuntimeProofAdmission {
     this.issuedNonceHashes.clear();
     this.bindingsByProofId.clear();
     this.bindingProofIdByRequestId.clear();
+    this.retainedControlVerificationMaterials.clear();
     this.disposed = true;
     this.lastDecisionCode = "gpu_parent_runtime_proof_admission_disposed";
   }
@@ -391,7 +457,24 @@ export class SessionGpuParentRuntimeProofAdmission {
       return;
     }
 
-    const validation = verifyGpuParentRuntimeProofControlBinding(message, {
+    let controlBinding: Readonly<Record<string, unknown>>;
+    let runtimeEvidenceTransportVerificationKey:
+      RuntimeEvidenceTransportVerificationKey;
+    try {
+      controlBinding = cloneAndDeepFreeze(message);
+      runtimeEvidenceTransportVerificationKey = cloneAndDeepFreeze(pin.key);
+    } catch {
+      this.lastDecisionCode =
+        "gpu_parent_runtime_proof_control_verification_material_capture_failed";
+      return;
+    }
+    const transportContext = deepFreeze({
+      transportSessionId: this.transportSessionId,
+      compileRequestNonce: nonce,
+      expectedWorkerProcessId: pin.key.workerProcessId,
+    });
+
+    const validation = verifyGpuParentRuntimeProofControlBinding(controlBinding, {
       transportSessionId: this.transportSessionId,
       compileRequestNonce: nonce,
       expectedWorkerProcessId: pin.key.workerProcessId,
@@ -424,6 +507,7 @@ export class SessionGpuParentRuntimeProofAdmission {
     const requestId = validation.expectedBinding.requestId;
     if (
       this.bindingsByProofId.has(proofId)
+      || this.retainedControlVerificationMaterials.has(proofId)
       || this.bindingProofIdByRequestId.has(requestId)
     ) {
       this.fail("gpu_parent_runtime_proof_authenticated_binding_identity_collision");
@@ -437,8 +521,12 @@ export class SessionGpuParentRuntimeProofAdmission {
     const binding = Object.freeze({
       bindingId,
       expectedBinding: freezeExpectedBinding(validation.expectedBinding),
-      protectedProofJsonSha256: message.protectedProofJsonSha256 as string,
-      canonicalProofSha256: message.canonicalProofSha256 as string,
+      protectedProofJsonSha256:
+        controlBinding.protectedProofJsonSha256 as string,
+      canonicalProofSha256: controlBinding.canonicalProofSha256 as string,
+      controlBinding,
+      runtimeEvidenceTransportVerificationKey,
+      transportContext,
       expiresAt: now + this.bindingTtlMs,
     });
     this.bindingsByProofId.set(proofId, binding);
@@ -447,7 +535,10 @@ export class SessionGpuParentRuntimeProofAdmission {
     this.lastDecisionCode = "gpu_parent_runtime_proof_control_admitted";
   }
 
-  private consumeParentProof(message: Record<string, unknown>): boolean {
+  private consumeParentProof(
+    message: Record<string, unknown>,
+    now: number,
+  ): boolean {
     if (this.failureReason !== null) return false;
     const pin = this.keyPin.snapshot();
     if (pin.status !== "pinned" || pin.key === null) {
@@ -472,6 +563,21 @@ export class SessionGpuParentRuntimeProofAdmission {
       this.lastDecisionCode = "gpu_parent_runtime_proof_control_parent_hash_mismatch";
       return false;
     }
+    if (
+      pin.key.keyAnnouncementId
+      !== binding.runtimeEvidenceTransportVerificationKey.keyAnnouncementId
+    ) {
+      this.fail("gpu_parent_runtime_proof_transport_verification_key_changed");
+      return false;
+    }
+    if (
+      this.retainedControlVerificationMaterials.size
+      >= this.maxVerifiedBindings
+    ) {
+      this.lastDecisionCode =
+        "gpu_parent_runtime_proof_control_verification_material_capacity_exhausted";
+      return false;
+    }
 
     const validation = verifyGpuParentRuntimeProofTransport(message, {
       transportSessionId: this.transportSessionId,
@@ -484,6 +590,18 @@ export class SessionGpuParentRuntimeProofAdmission {
       return false;
     }
 
+    const material: GpuParentRuntimeProofControlVerificationMaterial = deepFreeze({
+      schemaVersion:
+        GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
+      controlBinding: binding.controlBinding,
+      runtimeEvidenceTransportVerificationKey:
+        binding.runtimeEvidenceTransportVerificationKey,
+      transportContext: binding.transportContext,
+    });
+    this.retainedControlVerificationMaterials.set(proofId, Object.freeze({
+      material,
+      expiresAt: now + this.bindingTtlMs,
+    }));
     this.removeBinding(binding.expectedBinding);
     this.admittedProofCount += 1;
     this.lastDecisionCode = "gpu_parent_runtime_proof_parent_admitted";
@@ -504,6 +622,11 @@ export class SessionGpuParentRuntimeProofAdmission {
       this.bindingsByProofId.delete(proofId);
       this.bindingProofIdByRequestId.delete(binding.expectedBinding.requestId);
     }
+    for (const [proofId, retained] of this.retainedControlVerificationMaterials) {
+      if (retained.expiresAt <= now) {
+        this.retainedControlVerificationMaterials.delete(proofId);
+      }
+    }
   }
 
   private currentTime(): number {
@@ -520,6 +643,7 @@ export class SessionGpuParentRuntimeProofAdmission {
     this.issuedNonceHashes.clear();
     this.bindingsByProofId.clear();
     this.bindingProofIdByRequestId.clear();
+    this.retainedControlVerificationMaterials.clear();
     this.lastDecisionCode = reason;
   }
 

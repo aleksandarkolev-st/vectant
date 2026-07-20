@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { RTCDataChannel } from "werift";
 import {
+  GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
   SessionGpuParentRuntimeProofAdmission,
   type GpuParentRuntimeProofAdmissionReceiptConsumer,
 } from "../../src/gpu_parent_runtime_proof_admission.js";
@@ -127,7 +128,13 @@ function makePair(
     parentPid: WORKER_PROCESS_ID,
     bindingCanonicalSha256: "",
     bindingId: "",
-    runtimeEvidenceTransportEnvelope: { schemaVersion: "opaque.control.envelope.v1" },
+    runtimeEvidenceTransportEnvelope: {
+      schemaVersion: "opaque.control.envelope.v1",
+      runtimeEvidenceTransportReceipt: {
+        receiptId: `opaque-control-receipt-${discriminator}`,
+        signature: `ed25519:opaque-control-signature-${discriminator}`,
+      },
+    },
   };
   sealControl(control);
   const parent: Record<string, unknown> = {
@@ -218,6 +225,29 @@ function acceptedSupportVerification(sequence: number): RuntimeEvidenceTransport
     gpuHmrSuccess: false,
     canSatisfyRuntimeProof: false,
   });
+}
+
+function refusedSupportVerification(
+  reason = "test_signature_refused",
+): RuntimeEvidenceTransportSupportVerification {
+  return Object.freeze({
+    verified: false,
+    reason,
+    receiptId: null,
+    observationContextHash: null,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+  });
+}
+
+function expectDeepFrozen(value: unknown, seen = new WeakSet<object>()): void {
+  if (value === null || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  expect(Object.isFrozen(value)).toBe(true);
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    expectDeepFrozen(nested, seen);
+  }
 }
 
 function receiptConsumer(): GpuParentRuntimeProofAdmissionReceiptConsumer & {
@@ -374,15 +404,7 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
 
   it("refuses an unauthenticated expected-output mismatch without failing the intent epoch", () => {
     const consumer = receiptConsumer();
-    consumer.consumeSupportEnvelope.mockReturnValue(Object.freeze({
-      verified: false,
-      reason: "test_signature_refused",
-      receiptId: null,
-      observationContextHash: null,
-      acceptedForGpuHmr: false,
-      gpuHmrSuccess: false,
-      canSatisfyRuntimeProof: false,
-    }));
+    consumer.consumeSupportEnvelope.mockReturnValue(refusedSupportVerification());
     const gate = admission({ consumer });
     const intent = gate.issueCompileIntent(
       EXPECTED_OUTPUT_CONTRACT_HASH,
@@ -403,13 +425,22 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
       failureReason: null,
     });
     expect(consumer.consumeSupportEnvelope).toHaveBeenCalledTimes(1);
+    expect(gate.takeControlVerificationMaterial(
+      pair.control.fullRuntimeProofId as string,
+    )).toBeNull();
   });
 
-  it("suppresses control records, then admits the matching parent proof exactly once", () => {
+  it("retains complete generic verification material only after the valid two-stage sequence", () => {
     const consumer = receiptConsumer();
-    const gate = admission({ consumer });
+    const keyPin = pinnedKeyPin();
+    const pinnedKey = keyPin.snapshot().key;
+    const gate = admission({ consumer, keyPin });
     const intent = gate.issueCompileIntent();
     const pair = makePair(intent.compileRequestNonce);
+    const fullRuntimeProofId = pair.control.fullRuntimeProofId as string;
+    const wrongProofId = `gpu-runtime-proof:sha256:${"f".repeat(64)}`;
+
+    expect(gate.takeControlVerificationMaterial(fullRuntimeProofId)).toBeNull();
 
     expect(gate.beforeClassify(pair.control, 1_001)).toBe(false);
     expect(gate.snapshot()).toMatchObject({
@@ -418,14 +449,99 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
       admittedProofCount: 0,
       lastDecisionCode: "gpu_parent_runtime_proof_control_admitted",
     });
+    expect(gate.takeControlVerificationMaterial(fullRuntimeProofId)).toBeNull();
     expect(gate.beforeClassify(pair.proof, 1_002)).toBe(true);
     expect(gate.snapshot()).toMatchObject({
       verifiedBindingCount: 0,
       admittedProofCount: 1,
       lastDecisionCode: "gpu_parent_runtime_proof_parent_admitted",
     });
+    expect(gate.takeControlVerificationMaterial(wrongProofId)).toBeNull();
+    const material = gate.takeControlVerificationMaterial(fullRuntimeProofId);
+    expect(material).toEqual({
+      schemaVersion:
+        GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
+      controlBinding: pair.control,
+      runtimeEvidenceTransportVerificationKey: pinnedKey,
+      transportContext: {
+        transportSessionId: TRANSPORT_SESSION_ID,
+        compileRequestNonce: intent.compileRequestNonce,
+        expectedWorkerProcessId: String(WORKER_PROCESS_ID),
+      },
+    });
+    expect(material).not.toHaveProperty("proofAuthority");
+    expect(material).not.toHaveProperty("verified");
+    expect(material).not.toHaveProperty("acceptedForGpuHmr");
+    expect(material).not.toHaveProperty("gpuHmrSuccess");
+    expect(material).not.toHaveProperty("canSatisfyRuntimeProof");
+    expect(gate.takeControlVerificationMaterial(fullRuntimeProofId)).toBeNull();
     expect(gate.beforeClassify(pair.proof, 1_003)).toBe(false);
     expect(consumer.consumeSupportEnvelope).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not expose material for a verified control without its parent proof", () => {
+    const gate = admission();
+    const intent = gate.issueCompileIntent();
+    const pair = makePair(intent.compileRequestNonce, "2");
+    const fullRuntimeProofId = pair.control.fullRuntimeProofId as string;
+
+    expect(gate.beforeClassify(pair.control, 1)).toBe(false);
+    expect(gate.takeControlVerificationMaterial(fullRuntimeProofId)).toBeNull();
+    expect(gate.snapshot().verifiedBindingCount).toBe(1);
+  });
+
+  it("does not retain material when matching parent transport verification is refused", () => {
+    const consumer = receiptConsumer();
+    consumer.consumeSupportEnvelope
+      .mockImplementationOnce(() => acceptedSupportVerification(1))
+      .mockImplementationOnce(() => refusedSupportVerification());
+    const gate = admission({ consumer });
+    const intent = gate.issueCompileIntent();
+    const pair = makePair(intent.compileRequestNonce, "3");
+    const fullRuntimeProofId = pair.control.fullRuntimeProofId as string;
+
+    expect(gate.beforeClassify(pair.control, 1)).toBe(false);
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(false);
+    expect(gate.takeControlVerificationMaterial(fullRuntimeProofId)).toBeNull();
+    expect(gate.snapshot()).toMatchObject({
+      verifiedBindingCount: 1,
+      admittedProofCount: 0,
+      lastDecisionCode: "gpu_parent_runtime_proof_receipt_consumer_refused",
+    });
+  });
+
+  it("deep-clones and deep-freezes the exact control, key, and transport context", () => {
+    const keyPin = pinnedKeyPin();
+    const pinnedKey = keyPin.snapshot().key;
+    const gate = admission({ keyPin });
+    const intent = gate.issueCompileIntent();
+    const pair = makePair(intent.compileRequestNonce, "4");
+    const originalControl = structuredClone(pair.control);
+    const fullRuntimeProofId = pair.control.fullRuntimeProofId as string;
+
+    expect(gate.beforeClassify(pair.control, 1)).toBe(false);
+    const sourceEnvelope = pair.control
+      .runtimeEvidenceTransportEnvelope as Record<string, unknown>;
+    const sourceReceipt = sourceEnvelope
+      .runtimeEvidenceTransportReceipt as Record<string, unknown>;
+    sourceReceipt.signature = "ed25519:mutated-after-control-verification";
+    sourceEnvelope.unverifiedMutation = { nested: true };
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(true);
+
+    const material = gate.takeControlVerificationMaterial(fullRuntimeProofId);
+    expect(material).not.toBeNull();
+    expect(material?.controlBinding).toEqual(originalControl);
+    expect(material?.controlBinding).not.toBe(pair.control);
+    expect(material?.runtimeEvidenceTransportVerificationKey).toEqual(pinnedKey);
+    expect(material?.runtimeEvidenceTransportVerificationKey).not.toBe(pinnedKey);
+    expectDeepFrozen(material);
+    expect(() => {
+      const retainedEnvelope = material?.controlBinding
+        .runtimeEvidenceTransportEnvelope as Record<string, unknown>;
+      const retainedReceipt = retainedEnvelope
+        .runtimeEvidenceTransportReceipt as Record<string, unknown>;
+      retainedReceipt.signature = "ed25519:mutation-must-fail";
+    }).toThrow(TypeError);
   });
 
   it("passes ordinary and lower proof messages but suppresses unbound authority claims", () => {
@@ -483,6 +599,9 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
       verifiedBindingCount: 1,
       lastDecisionCode: "gpu_parent_runtime_proof_control_parent_hash_mismatch",
     });
+    expect(gate.takeControlVerificationMaterial(
+      first.control.fullRuntimeProofId as string,
+    )).toBeNull();
     expect(consumer.consumeSupportEnvelope).toHaveBeenCalledTimes(1);
     expect(gate.beforeClassify(first.proof, 3)).toBe(true);
   });
@@ -600,7 +719,38 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
     expect(gate.beforeClassify(first.proof, 3)).toBe(true);
   });
 
-  it("expires intents and verified bindings without evicting live entries", () => {
+  it("bounds retained material without evicting an untaken capsule", () => {
+    const consumer = receiptConsumer();
+    const gate = admission({
+      consumer,
+      limits: { maxVerifiedBindings: 1 },
+    });
+    const firstIntent = gate.issueCompileIntent();
+    const first = makePair(firstIntent.compileRequestNonce, "5");
+    const firstProofId = first.control.fullRuntimeProofId as string;
+    gate.beforeClassify(first.control, 1);
+    expect(gate.beforeClassify(first.proof, 2)).toBe(true);
+
+    const secondIntent = gate.issueCompileIntent();
+    const second = makePair(secondIntent.compileRequestNonce, "6");
+    const secondProofId = second.control.fullRuntimeProofId as string;
+    gate.beforeClassify(second.control, 3);
+    expect(gate.beforeClassify(second.proof, 4)).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      verifiedBindingCount: 1,
+      admittedProofCount: 1,
+      lastDecisionCode:
+        "gpu_parent_runtime_proof_control_verification_material_capacity_exhausted",
+    });
+    expect(consumer.consumeSupportEnvelope).toHaveBeenCalledTimes(3);
+
+    expect(gate.takeControlVerificationMaterial(firstProofId)).not.toBeNull();
+    expect(gate.beforeClassify(second.proof, 5)).toBe(true);
+    expect(gate.takeControlVerificationMaterial(secondProofId)).not.toBeNull();
+    expect(consumer.consumeSupportEnvelope).toHaveBeenCalledTimes(4);
+  });
+
+  it("expires intents, verified bindings, and retained material", () => {
     let now = 100;
     const consumer = receiptConsumer();
     const gate = admission({
@@ -621,6 +771,14 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
     now = 122;
     expect(gate.beforeClassify(livePair.proof, now)).toBe(false);
     expect(gate.snapshot().verifiedBindingCount).toBe(0);
+
+    const admittedIntent = gate.issueCompileIntent();
+    const admittedPair = makePair(admittedIntent.compileRequestNonce, "a");
+    const admittedProofId = admittedPair.control.fullRuntimeProofId as string;
+    gate.beforeClassify(admittedPair.control, now);
+    expect(gate.beforeClassify(admittedPair.proof, now)).toBe(true);
+    now = 133;
+    expect(gate.takeControlVerificationMaterial(admittedProofId)).toBeNull();
   });
 
   it("refuses controls until an authenticated key is pinned", () => {
@@ -643,13 +801,18 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
 
   it("clears proof state on trust invalidation while passing unrelated messages", () => {
     const gate = admission();
+    const admittedIntent = gate.issueCompileIntent();
     const boundIntent = gate.issueCompileIntent();
     const pendingIntent = gate.issueCompileIntent();
+    const admittedPair = makePair(admittedIntent.compileRequestNonce, "b");
     const pair = makePair(boundIntent.compileRequestNonce, "c");
+    expect(gate.beforeClassify(admittedPair.control, 1)).toBe(false);
+    expect(gate.beforeClassify(admittedPair.proof, 2)).toBe(true);
     expect(gate.beforeClassify(pair.control, 1)).toBe(false);
     expect(gate.snapshot()).toMatchObject({
       pendingIntentCount: 1,
       verifiedBindingCount: 1,
+      admittedProofCount: 1,
     });
 
     gate.invalidateTrust("runtime_evidence_transport_failed");
@@ -665,6 +828,9 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
     });
+    expect(gate.takeControlVerificationMaterial(
+      admittedPair.control.fullRuntimeProofId as string,
+    )).toBeNull();
     expect(gate.beforeClassify({ type: "ordinary-event", value: 1 }, 2)).toBe(true);
     expect(gate.beforeClassify({
       type: "gpu_hmr_proof",
@@ -678,6 +844,10 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
 
   it("reports only frozen support diagnostics and clears state on disposal", () => {
     const gate = admission();
+    const admittedIntent = gate.issueCompileIntent();
+    const admittedPair = makePair(admittedIntent.compileRequestNonce, "d");
+    gate.beforeClassify(admittedPair.control, 1);
+    expect(gate.beforeClassify(admittedPair.proof, 2)).toBe(true);
     gate.issueCompileIntent();
     const active = gate.snapshot();
 
@@ -696,6 +866,9 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
       pendingIntentCount: 0,
       verifiedBindingCount: 0,
     });
+    expect(gate.takeControlVerificationMaterial(
+      admittedPair.control.fullRuntimeProofId as string,
+    )).toBeNull();
     expect(gate.beforeClassify({ type: "ordinary-event" }, 1)).toBe(false);
     expect(() => gate.issueCompileIntent())
       .toThrow("gpu_parent_runtime_proof_admission_disposed");
