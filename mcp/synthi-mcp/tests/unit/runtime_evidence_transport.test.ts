@@ -1082,14 +1082,346 @@ describe("verifyRuntimeEvidenceTransportSupportEnvelopeOffline", () => {
 });
 
 describe("RuntimeEvidenceTransportReceiptConsumer", () => {
+  it("prepares verified support without consuming replay state", () => {
+    const identity = signingIdentity(21);
+    const pin = pinAnnouncement(identity.announcement);
+    const consumeIfNewer = vi.fn(() => null);
+    const consumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer },
+      () => NOW_NS,
+    );
+    const fixture = signedEnvelopeFixture(identity);
+
+    const preparation = consumer.prepareSupportEnvelope(fixture.input);
+
+    expect(preparation).toMatchObject({
+      schemaVersion: "synthi.gpu_hmr.runtime_evidence_transport_preparation.v1",
+      proofAuthority:
+        "cryptographic_and_freshness_preparation_only_replay_not_committed",
+      prepared: true,
+      reason: null,
+      freshnessChecked: true,
+      replayChecked: false,
+      receiptId: fixture.receipt.receiptId,
+      observationContextHash: fixture.receipt.observationContextHash,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(preparation).not.toHaveProperty("verified");
+    expect(preparation).not.toHaveProperty("verification");
+    expect(preparation.capability).not.toBeNull();
+    expect(consumeIfNewer).not.toHaveBeenCalled();
+  });
+
+  it("commits one prepared capability exactly once", () => {
+    const identity = signingIdentity(22);
+    const pin = pinAnnouncement(identity.announcement);
+    const consumeIfNewer = vi.fn(() => null);
+    const consumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer },
+      () => NOW_NS,
+    );
+    const fixture = signedEnvelopeFixture(identity);
+    const preparation = consumer.prepareSupportEnvelope(fixture.input);
+    if (preparation.capability === null) throw new Error("preparation failed");
+
+    expect(consumer.commitPreparedSupportEnvelope(preparation.capability)).toMatchObject({
+      verified: true,
+      receiptId: preparation.receiptId,
+      observationContextHash: preparation.observationContextHash,
+    });
+    expect(consumeIfNewer).toHaveBeenCalledTimes(1);
+    expect(consumer.commitPreparedSupportEnvelope(preparation.capability)).toMatchObject({
+      verified: false,
+      reason: "runtime_evidence_transport_prepared_capability_already_used",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(consumeIfNewer).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses replay at commit after an independently prepared duplicate", () => {
+    const identity = signingIdentity(23);
+    const pin = pinAnnouncement(identity.announcement);
+    const replayStore = new SessionRuntimeEvidenceTransportReplayStore();
+    const consumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      replayStore,
+      () => NOW_NS,
+    );
+    const fixture = signedEnvelopeFixture(identity);
+    const first = consumer.prepareSupportEnvelope(fixture.input);
+    const duplicate = consumer.prepareSupportEnvelope(fixture.input);
+    if (first.capability === null || duplicate.capability === null) {
+      throw new Error("preparation failed");
+    }
+
+    expect(consumer.commitPreparedSupportEnvelope(first.capability).verified).toBe(true);
+    expect(consumer.commitPreparedSupportEnvelope(duplicate.capability)).toMatchObject({
+      verified: false,
+      reason: "runtime_evidence_transport_receipt_replayed",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+  });
+
+  it("rejects foreign and serialized capability identities", () => {
+    const identity = signingIdentity(24);
+    const pin = pinAnnouncement(identity.announcement);
+    const ownerConsumeIfNewer = vi.fn(() => null);
+    const foreignConsumeIfNewer = vi.fn(() => null);
+    const owner = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer: ownerConsumeIfNewer },
+      () => NOW_NS,
+    );
+    const foreign = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer: foreignConsumeIfNewer },
+      () => NOW_NS,
+    );
+    const preparation = owner.prepareSupportEnvelope(signedEnvelopeFixture(identity).input);
+    if (preparation.capability === null) throw new Error("preparation failed");
+    const serialized = JSON.parse(JSON.stringify(preparation.capability)) as
+      typeof preparation.capability;
+    const trapCapability = new Proxy({}, {
+      get() {
+        throw new Error("capability properties must not be inspected");
+      },
+      ownKeys() {
+        throw new Error("capability keys must not be inspected");
+      },
+    }) as typeof preparation.capability;
+
+    expect(foreign.commitPreparedSupportEnvelope(preparation.capability).reason)
+      .toBe("runtime_evidence_transport_prepared_capability_invalid");
+    expect(owner.commitPreparedSupportEnvelope(serialized).reason)
+      .toBe("runtime_evidence_transport_prepared_capability_invalid");
+    expect(owner.commitPreparedSupportEnvelope(trapCapability).reason)
+      .toBe("runtime_evidence_transport_prepared_capability_invalid");
+    expect(foreignConsumeIfNewer).not.toHaveBeenCalled();
+    expect(ownerConsumeIfNewer).not.toHaveBeenCalled();
+    expect(owner.commitPreparedSupportEnvelope(preparation.capability).verified).toBe(true);
+    expect(ownerConsumeIfNewer).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses commit after the pinned key is invalidated", () => {
+    const identity = signingIdentity(25);
+    const pin = pinAnnouncement(identity.announcement);
+    const consumeIfNewer = vi.fn(() => null);
+    const consumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer },
+      () => NOW_NS,
+    );
+    const preparation = consumer.prepareSupportEnvelope(signedEnvelopeFixture(identity).input);
+    if (preparation.capability === null) throw new Error("preparation failed");
+
+    pin.dispose();
+
+    expect(consumer.commitPreparedSupportEnvelope(preparation.capability)).toMatchObject({
+      verified: false,
+      reason: "runtime_evidence_transport_verification_key_not_pinned",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(consumeIfNewer).not.toHaveBeenCalled();
+    expect(consumer.commitPreparedSupportEnvelope(preparation.capability).reason)
+      .toBe("runtime_evidence_transport_prepared_capability_already_used");
+  });
+
+  it("refuses clock-callback trust invalidation before replay commit", () => {
+    const identity = signingIdentity(27);
+    const pin = pinAnnouncement(identity.announcement);
+    const consumeIfNewer = vi.fn(() => null);
+    let clockCalls = 0;
+    const consumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer },
+      () => {
+        clockCalls += 1;
+        if (clockCalls === 2) pin.dispose();
+        return NOW_NS;
+      },
+    );
+    const preparation = consumer.prepareSupportEnvelope(
+      signedEnvelopeFixture(identity).input,
+    );
+    if (preparation.capability === null) throw new Error("preparation failed");
+
+    expect(consumer.commitPreparedSupportEnvelope(preparation.capability)).toMatchObject({
+      verified: false,
+      reason: "runtime_evidence_transport_verification_key_not_pinned",
+    });
+    expect(consumeIfNewer).not.toHaveBeenCalled();
+  });
+
+  it("refuses replay-callback disposal after consuming replay state", () => {
+    const identity = signingIdentity(28);
+    const pin = pinAnnouncement(identity.announcement);
+    let consumer!: RuntimeEvidenceTransportReceiptConsumer;
+    const consumeIfNewer = vi.fn(() => {
+      consumer.dispose();
+      return null;
+    });
+    consumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer },
+      () => NOW_NS,
+    );
+    const preparation = consumer.prepareSupportEnvelope(
+      signedEnvelopeFixture(identity).input,
+    );
+    if (preparation.capability === null) throw new Error("preparation failed");
+
+    expect(consumer.commitPreparedSupportEnvelope(preparation.capability)).toMatchObject({
+      verified: false,
+      reason: "runtime_evidence_transport_consumer_disposed",
+    });
+    expect(consumeIfNewer).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks freshness before committing prepared support", () => {
+    const identity = signingIdentity(26);
+    const pin = pinAnnouncement(identity.announcement);
+    const consumeIfNewer = vi.fn(() => null);
+    let nowUnixNs = NOW_NS;
+    const consumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer },
+      () => nowUnixNs,
+    );
+    const preparation = consumer.prepareSupportEnvelope(signedEnvelopeFixture(identity).input);
+    if (preparation.capability === null) throw new Error("preparation failed");
+
+    nowUnixNs = NOW_NS + 300_000_000_001n;
+
+    expect(consumer.commitPreparedSupportEnvelope(preparation.capability)).toMatchObject({
+      verified: false,
+      reason: "runtime_evidence_transport_prepared_capability_expired",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(consumeIfNewer).not.toHaveBeenCalled();
+  });
+
+  it("bounds abandoned preparations and prunes them after their lifetime", () => {
+    const identity = signingIdentity(29);
+    const pin = pinAnnouncement(identity.announcement);
+    let nowUnixNs = NOW_NS;
+    const consumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer: vi.fn(() => null) },
+      () => nowUnixNs,
+    );
+    const fixture = signedEnvelopeFixture(identity);
+    const retained = Array.from({ length: 255 }, () =>
+      consumer.prepareSupportEnvelope(fixture.input));
+    expect(retained.every((item) => item.prepared)).toBe(true);
+
+    expect(consumer.prepareSupportEnvelope(fixture.input)).toMatchObject({
+      prepared: false,
+      reason: "runtime_evidence_transport_prepared_capability_capacity_exhausted",
+      replayChecked: false,
+    });
+    expect(consumer.consumeSupportEnvelope(fixture.input)).toMatchObject({
+      verified: true,
+      reason: null,
+    });
+
+    nowUnixNs += 30_000_000_001n;
+    expect(consumer.prepareSupportEnvelope(fixture.input)).toMatchObject({
+      prepared: true,
+      reason: null,
+      replayChecked: false,
+    });
+  });
+
+  it("keeps the compatibility consume path to one clock observation", () => {
+    const identity = signingIdentity(30);
+    const pin = pinAnnouncement(identity.announcement);
+    const clockUnixNs = vi.fn(() => NOW_NS);
+    const consumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer: vi.fn(() => null) },
+      clockUnixNs,
+    );
+
+    expect(consumer.consumeSupportEnvelope(signedEnvelopeFixture(identity).input).verified)
+      .toBe(true);
+    expect(clockUnixNs).toHaveBeenCalledTimes(1);
+  });
+
+  it("suppresses compatibility-consume reentry from injected callbacks", () => {
+    const identity = signingIdentity(31);
+    const pin = pinAnnouncement(identity.announcement);
+    const fixture = signedEnvelopeFixture(identity);
+    let consumer!: RuntimeEvidenceTransportReceiptConsumer;
+    let recursive: RuntimeEvidenceTransportSupportVerification | null = null;
+    const clockUnixNs = vi.fn(() => {
+      if (recursive === null) {
+        recursive = consumer.consumeSupportEnvelope(fixture.input);
+      }
+      return NOW_NS;
+    });
+    consumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer: vi.fn(() => null) },
+      clockUnixNs,
+    );
+
+    expect(consumer.consumeSupportEnvelope(fixture.input).verified).toBe(true);
+    expect(recursive).toMatchObject({
+      verified: false,
+      reason: "runtime_evidence_transport_compatibility_consume_reentry_suppressed",
+    });
+    expect(clockUnixNs).toHaveBeenCalledTimes(1);
+  });
+
+  it("suppresses preparation reentry before pending state is installed", () => {
+    const identity = signingIdentity(32);
+    const pin = pinAnnouncement(identity.announcement);
+    const fixture = signedEnvelopeFixture(identity);
+    let consumer!: RuntimeEvidenceTransportReceiptConsumer;
+    let recursive: ReturnType<
+      RuntimeEvidenceTransportReceiptConsumer["prepareSupportEnvelope"]
+    > | null = null;
+    const clockUnixNs = vi.fn(() => {
+      if (recursive === null) {
+        recursive = consumer.prepareSupportEnvelope(fixture.input);
+      }
+      return NOW_NS;
+    });
+    consumer = new RuntimeEvidenceTransportReceiptConsumer(
+      pin,
+      { consumeIfNewer: vi.fn(() => null) },
+      clockUnixNs,
+    );
+
+    expect(consumer.prepareSupportEnvelope(fixture.input).prepared).toBe(true);
+    expect(recursive).toMatchObject({
+      prepared: false,
+      reason: "runtime_evidence_transport_preparation_reentry_suppressed",
+      replayChecked: false,
+    });
+    expect(clockUnixNs).toHaveBeenCalledTimes(1);
+  });
 
   it("verifies a fresh receipt against only the live channel-pinned key", () => {
     const identity = signingIdentity(11);
     const pin = pinAnnouncement(identity.announcement);
     const fixture = signedEnvelopeFixture(identity);
+    const consumeIfNewer = vi.fn(() => null);
     const consumer = new RuntimeEvidenceTransportReceiptConsumer(
       pin,
-      new SessionRuntimeEvidenceTransportReplayStore(),
+      { consumeIfNewer },
       () => NOW_NS,
     );
 
@@ -1102,6 +1434,7 @@ describe("RuntimeEvidenceTransportReceiptConsumer", () => {
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
     });
+    expect(consumeIfNewer).toHaveBeenCalledTimes(1);
   });
 
   it("rejects key substitution, signature forgery, and extra receipt fields", () => {

@@ -30,6 +30,14 @@ const RUNTIME_EVIDENCE_TRANSPORT_PRODUCER:
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const MAX_RECEIPT_AGE_NS = 300_000_000_000n;
 const MAX_FUTURE_SKEW_NS = 30_000_000_000n;
+const MAX_PENDING_PREPARED_SUPPORT_ENVELOPES = 256;
+const MAX_RETAINED_CALLER_PREPARED_SUPPORT_ENVELOPES =
+  MAX_PENDING_PREPARED_SUPPORT_ENVELOPES - 1;
+const PREPARED_SUPPORT_ENVELOPE_TTL_NS = 30_000_000_000n;
+const SUPPORT_PREPARATION_SCHEMA =
+  "synthi.gpu_hmr.runtime_evidence_transport_preparation.v1" as const;
+const SUPPORT_PREPARATION_AUTHORITY =
+  "cryptographic_and_freshness_preparation_only_replay_not_committed" as const;
 
 export interface RuntimeEvidenceTransportVerificationKey {
   readonly schemaVersion: typeof RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA;
@@ -73,6 +81,27 @@ export interface RuntimeEvidenceTransportSupportVerification {
   readonly reason: string | null;
   readonly receiptId: string | null;
   readonly observationContextHash: string | null;
+  readonly acceptedForGpuHmr: false;
+  readonly gpuHmrSuccess: false;
+  readonly canSatisfyRuntimeProof: false;
+}
+
+export interface RuntimeEvidenceTransportPreparedSupportEnvelope {
+  readonly acceptedForGpuHmr: false;
+  readonly gpuHmrSuccess: false;
+  readonly canSatisfyRuntimeProof: false;
+}
+
+export interface RuntimeEvidenceTransportSupportPreparation {
+  readonly schemaVersion: typeof SUPPORT_PREPARATION_SCHEMA;
+  readonly proofAuthority: typeof SUPPORT_PREPARATION_AUTHORITY;
+  readonly prepared: boolean;
+  readonly reason: string | null;
+  readonly capability: RuntimeEvidenceTransportPreparedSupportEnvelope | null;
+  readonly receiptId: string | null;
+  readonly observationContextHash: string | null;
+  readonly freshnessChecked: boolean;
+  readonly replayChecked: false;
   readonly acceptedForGpuHmr: false;
   readonly gpuHmrSuccess: false;
   readonly canSatisfyRuntimeProof: false;
@@ -136,6 +165,24 @@ interface RuntimeEvidenceTransportSharedCoreResult {
   readonly onlinePolicy: RuntimeEvidenceTransportOnlinePolicy | null;
 }
 
+interface RuntimeEvidenceTransportVerificationKeyIdentity {
+  readonly schemaVersion: typeof RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA;
+  readonly algorithm: typeof RUNTIME_EVIDENCE_TRANSPORT_ALGORITHM;
+  readonly keyId: string;
+  readonly producer: typeof RUNTIME_EVIDENCE_TRANSPORT_PRODUCER;
+  readonly workerInstanceId: string;
+  readonly workerProcessId: string;
+  readonly publicKey: string;
+  readonly keyAnnouncementId: string;
+}
+
+interface RuntimeEvidenceTransportPreparedState {
+  readonly verification: RuntimeEvidenceTransportSupportVerification;
+  readonly onlinePolicy: RuntimeEvidenceTransportOnlinePolicy;
+  readonly keyIdentity: RuntimeEvidenceTransportVerificationKeyIdentity;
+  readonly expiresAtUnixNs: bigint;
+}
+
 interface RuntimeEvidenceTransportSupportEnvelopeInputSnapshot {
   readonly envelope: unknown;
   readonly observedPayload: Uint8Array | string;
@@ -173,6 +220,73 @@ function supportVerification(
     gpuHmrSuccess: false,
     canSatisfyRuntimeProof: false,
   });
+}
+
+function supportPreparation(
+  prepared: boolean,
+  reason: string | null,
+  capability: RuntimeEvidenceTransportPreparedSupportEnvelope | null,
+  receiptId: string | null = null,
+  observationContextHash: string | null = null,
+  freshnessChecked = false,
+): RuntimeEvidenceTransportSupportPreparation {
+  return Object.freeze({
+    schemaVersion: SUPPORT_PREPARATION_SCHEMA,
+    proofAuthority: SUPPORT_PREPARATION_AUTHORITY,
+    prepared,
+    reason,
+    capability,
+    receiptId,
+    observationContextHash,
+    freshnessChecked,
+    replayChecked: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+  });
+}
+
+function preparedSupportEnvelopeCapability(): RuntimeEvidenceTransportPreparedSupportEnvelope {
+  return Object.freeze({
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+  });
+}
+
+function verificationKeyIdentity(
+  key: RuntimeEvidenceTransportVerificationKey,
+): RuntimeEvidenceTransportVerificationKeyIdentity | null {
+  try {
+    const parsed = parseRuntimeEvidenceTransportVerificationKey(key);
+    if (parsed === null) return null;
+    return Object.freeze({
+      schemaVersion: parsed.schemaVersion,
+      algorithm: parsed.algorithm,
+      keyId: parsed.keyId,
+      producer: parsed.producer,
+      workerInstanceId: parsed.workerInstanceId,
+      workerProcessId: parsed.workerProcessId,
+      publicKey: parsed.publicKey,
+      keyAnnouncementId: parsed.keyAnnouncementId,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function sameVerificationKeyIdentity(
+  left: RuntimeEvidenceTransportVerificationKeyIdentity,
+  right: RuntimeEvidenceTransportVerificationKeyIdentity,
+): boolean {
+  return left.schemaVersion === right.schemaVersion
+    && left.algorithm === right.algorithm
+    && left.keyId === right.keyId
+    && left.producer === right.producer
+    && left.workerInstanceId === right.workerInstanceId
+    && left.workerProcessId === right.workerProcessId
+    && left.publicKey === right.publicKey
+    && left.keyAnnouncementId === right.keyAnnouncementId;
 }
 
 export function parseRuntimeEvidenceTransportVerificationKey(
@@ -483,6 +597,15 @@ export class RuntimeEvidenceTransportKeyPin {
 
 export class RuntimeEvidenceTransportReceiptConsumer {
   private disposed = false;
+  private compatibilityConsumeInFlight = false;
+  private preparationInFlight = false;
+  readonly #preparedStates = new Map<
+    RuntimeEvidenceTransportPreparedSupportEnvelope,
+    RuntimeEvidenceTransportPreparedState
+  >();
+  readonly #retiredCapabilities = new WeakSet<
+    RuntimeEvidenceTransportPreparedSupportEnvelope
+  >();
 
   constructor(
     private readonly keyPin: RuntimeEvidenceTransportKeyPin,
@@ -493,63 +616,309 @@ export class RuntimeEvidenceTransportReceiptConsumer {
   consumeSupportEnvelope(
     input: RuntimeEvidenceTransportSupportEnvelopeInput,
   ): RuntimeEvidenceTransportSupportVerification {
-    if (this.disposed) {
-      return supportVerification(false, "runtime_evidence_transport_consumer_disposed");
-    }
-    const pin = this.keyPin.snapshot();
-    if (pin.status !== "pinned" || pin.key === null) {
+    if (this.compatibilityConsumeInFlight) {
       return supportVerification(
         false,
+        "runtime_evidence_transport_compatibility_consume_reentry_suppressed",
+      );
+    }
+    this.compatibilityConsumeInFlight = true;
+    try {
+      const preparation = this.prepareSupportEnvelopeGuarded(input, true);
+      if (preparation.capability === null) {
+        return supportVerification(
+          false,
+          preparation.reason ?? "runtime_evidence_transport_preparation_failed",
+        );
+      }
+      return this.commitPreparedSupportEnvelopeInternal(
+        preparation.capability,
+        false,
+      );
+    } finally {
+      this.compatibilityConsumeInFlight = false;
+    }
+  }
+
+  prepareSupportEnvelope(
+    input: RuntimeEvidenceTransportSupportEnvelopeInput,
+  ): RuntimeEvidenceTransportSupportPreparation {
+    return this.prepareSupportEnvelopeGuarded(input, false);
+  }
+
+  private prepareSupportEnvelopeGuarded(
+    input: RuntimeEvidenceTransportSupportEnvelopeInput,
+    reservedCompatibilitySlot: boolean,
+  ): RuntimeEvidenceTransportSupportPreparation {
+    if (this.preparationInFlight) {
+      return supportPreparation(
+        false,
+        "runtime_evidence_transport_preparation_reentry_suppressed",
+        null,
+      );
+    }
+    this.preparationInFlight = true;
+    try {
+      return this.prepareSupportEnvelopeInternal(
+        input,
+        reservedCompatibilitySlot,
+      );
+    } finally {
+      this.preparationInFlight = false;
+    }
+  }
+
+  private prepareSupportEnvelopeInternal(
+    input: RuntimeEvidenceTransportSupportEnvelopeInput,
+    reservedCompatibilitySlot: boolean,
+  ): RuntimeEvidenceTransportSupportPreparation {
+    if (this.disposed) {
+      return supportPreparation(
+        false,
+        "runtime_evidence_transport_consumer_disposed",
+        null,
+      );
+    }
+    let pin: RuntimeEvidenceTransportKeyPinSnapshot;
+    try {
+      pin = this.keyPin.snapshot();
+    } catch {
+      return supportPreparation(
+        false,
+        "runtime_evidence_transport_verification_key_not_pinned",
+        null,
+      );
+    }
+    if (pin.status !== "pinned" || pin.key === null) {
+      return supportPreparation(
+        false,
         pin.failureReason ?? "runtime_evidence_transport_verification_key_not_pinned",
+        null,
+      );
+    }
+    const keyIdentity = verificationKeyIdentity(pin.key);
+    if (keyIdentity === null) {
+      return supportPreparation(
+        false,
+        "runtime_evidence_transport_verification_key_invalid",
+        null,
       );
     }
     const inputSnapshot = snapshotSupportEnvelopeInput(input);
     if (inputSnapshot === null) {
-      return supportVerification(
+      return supportPreparation(
         false,
         "runtime_evidence_transport_verification_context_invalid",
+        null,
       );
     }
-    const core = verifyRuntimeEvidenceTransportSupportEnvelopeCryptographicCore(
-      pin.key,
-      inputSnapshot.envelope,
-      inputSnapshot.observedPayload,
-      inputSnapshot.context,
-    );
-    if (core.onlinePolicy === null) return core.verification;
+    let core: RuntimeEvidenceTransportSharedCoreResult;
+    try {
+      core = verifyRuntimeEvidenceTransportSupportEnvelopeCryptographicCore(
+        pin.key,
+        inputSnapshot.envelope,
+        inputSnapshot.observedPayload,
+        inputSnapshot.context,
+      );
+    } catch {
+      return supportPreparation(
+        false,
+        "runtime_evidence_transport_verification_failed",
+        null,
+      );
+    }
+    if (core.onlinePolicy === null) {
+      return supportPreparation(
+        false,
+        core.verification.reason ?? "runtime_evidence_transport_verification_failed",
+        null,
+      );
+    }
     const policy = core.onlinePolicy;
+    const nowUnixNs = this.currentUnixNs();
+    if (nowUnixNs === null) {
+      return supportPreparation(
+        false,
+        "runtime_evidence_transport_clock_failed",
+        null,
+      );
+    }
+    const freshnessFailure = this.freshnessFailure(policy, nowUnixNs);
+    if (freshnessFailure !== null) {
+      return supportPreparation(false, freshnessFailure, null);
+    }
+    const postClockTrustFailure = this.trustFailure(keyIdentity);
+    if (postClockTrustFailure !== null) {
+      return supportPreparation(false, postClockTrustFailure, null);
+    }
+    this.prunePreparedStates(nowUnixNs);
+    const capacity = reservedCompatibilitySlot
+      ? MAX_PENDING_PREPARED_SUPPORT_ENVELOPES
+      : MAX_RETAINED_CALLER_PREPARED_SUPPORT_ENVELOPES;
+    if (this.#preparedStates.size >= capacity) {
+      return supportPreparation(
+        false,
+        "runtime_evidence_transport_prepared_capability_capacity_exhausted",
+        null,
+      );
+    }
 
+    const capability = preparedSupportEnvelopeCapability();
+    this.#preparedStates.set(capability, Object.freeze({
+      verification: core.verification,
+      onlinePolicy: policy,
+      keyIdentity,
+      expiresAtUnixNs: nowUnixNs + PREPARED_SUPPORT_ENVELOPE_TTL_NS,
+    }));
+    return supportPreparation(
+      true,
+      null,
+      capability,
+      core.verification.receiptId,
+      core.verification.observationContextHash,
+      true,
+    );
+  }
+
+  commitPreparedSupportEnvelope(
+    capability: RuntimeEvidenceTransportPreparedSupportEnvelope,
+  ): RuntimeEvidenceTransportSupportVerification {
+    return this.commitPreparedSupportEnvelopeInternal(capability, true);
+  }
+
+  private commitPreparedSupportEnvelopeInternal(
+    capability: RuntimeEvidenceTransportPreparedSupportEnvelope,
+    recheckFreshness: boolean,
+  ): RuntimeEvidenceTransportSupportVerification {
+    if (capability === null || typeof capability !== "object") {
+      return supportVerification(
+        false,
+        "runtime_evidence_transport_prepared_capability_invalid",
+      );
+    }
+    if (this.#retiredCapabilities.has(capability)) {
+      return supportVerification(
+        false,
+        "runtime_evidence_transport_prepared_capability_already_used",
+      );
+    }
+    const prepared = this.#preparedStates.get(capability);
+    if (prepared === undefined) {
+      return supportVerification(
+        false,
+        "runtime_evidence_transport_prepared_capability_invalid",
+      );
+    }
+    this.#preparedStates.delete(capability);
+    this.#retiredCapabilities.add(capability);
+
+    const initialTrustFailure = this.trustFailure(prepared.keyIdentity);
+    if (initialTrustFailure !== null) {
+      return supportVerification(false, initialTrustFailure);
+    }
+
+    const policy = prepared.onlinePolicy;
+    if (recheckFreshness) {
+      const nowUnixNs = this.currentUnixNs();
+      if (nowUnixNs === null) {
+        return supportVerification(false, "runtime_evidence_transport_clock_failed");
+      }
+      if (nowUnixNs > prepared.expiresAtUnixNs) {
+        return supportVerification(
+          false,
+          "runtime_evidence_transport_prepared_capability_expired",
+        );
+      }
+      const freshnessFailure = this.freshnessFailure(policy, nowUnixNs);
+      if (freshnessFailure !== null) {
+        return supportVerification(false, freshnessFailure);
+      }
+      const postClockTrustFailure = this.trustFailure(prepared.keyIdentity);
+      if (postClockTrustFailure !== null) {
+        return supportVerification(false, postClockTrustFailure);
+      }
+    }
+
+    let replayFailure: string | null;
+    try {
+      replayFailure = this.replayStore.consumeIfNewer(
+        policy.keyId,
+        policy.workerInstanceId,
+        policy.transportSessionBindingSha256,
+        policy.sequence,
+        policy.receiptId,
+      );
+    } catch {
+      return supportVerification(false, "runtime_evidence_transport_replay_store_failed");
+    }
+    if (replayFailure !== null) return supportVerification(false, replayFailure);
+    const postReplayTrustFailure = this.trustFailure(prepared.keyIdentity);
+    if (postReplayTrustFailure !== null) {
+      return supportVerification(false, postReplayTrustFailure);
+    }
+    return prepared.verification;
+  }
+
+  private currentUnixNs(): bigint | null {
     let nowUnixNs: bigint;
     try {
       nowUnixNs = this.clockUnixNs();
     } catch {
-      return supportVerification(false, "runtime_evidence_transport_clock_failed");
+      return null;
     }
-    if (nowUnixNs < 0n) {
-      return supportVerification(false, "runtime_evidence_transport_clock_before_epoch");
-    }
+    return typeof nowUnixNs === "bigint" ? nowUnixNs : null;
+  }
+
+  private freshnessFailure(
+    policy: RuntimeEvidenceTransportOnlinePolicy,
+    nowUnixNs: bigint,
+  ): string | null {
+    if (nowUnixNs < 0n) return "runtime_evidence_transport_clock_before_epoch";
     if (policy.issuedAtUnixNs > nowUnixNs + MAX_FUTURE_SKEW_NS) {
-      return supportVerification(false, "runtime_evidence_transport_receipt_from_future");
+      return "runtime_evidence_transport_receipt_from_future";
     }
     if (
       policy.issuedAtUnixNs <= nowUnixNs
       && nowUnixNs - policy.issuedAtUnixNs > MAX_RECEIPT_AGE_NS
     ) {
-      return supportVerification(false, "runtime_evidence_transport_receipt_expired");
+      return "runtime_evidence_transport_receipt_expired";
     }
+    return null;
+  }
 
-    const replayFailure = this.replayStore.consumeIfNewer(
-      policy.keyId,
-      policy.workerInstanceId,
-      policy.transportSessionBindingSha256,
-      policy.sequence,
-      policy.receiptId,
-    );
-    if (replayFailure !== null) return supportVerification(false, replayFailure);
-    return core.verification;
+  private trustFailure(
+    expectedKeyIdentity: RuntimeEvidenceTransportVerificationKeyIdentity,
+  ): string | null {
+    if (this.disposed) return "runtime_evidence_transport_consumer_disposed";
+    let pin: RuntimeEvidenceTransportKeyPinSnapshot;
+    try {
+      pin = this.keyPin.snapshot();
+    } catch {
+      return "runtime_evidence_transport_verification_key_not_pinned";
+    }
+    if (pin.status !== "pinned" || pin.key === null) {
+      return pin.failureReason
+        ?? "runtime_evidence_transport_verification_key_not_pinned";
+    }
+    const currentKeyIdentity = verificationKeyIdentity(pin.key);
+    if (currentKeyIdentity === null) {
+      return "runtime_evidence_transport_verification_key_invalid";
+    }
+    return sameVerificationKeyIdentity(expectedKeyIdentity, currentKeyIdentity)
+      ? null
+      : "runtime_evidence_transport_verification_key_changed_after_prepare";
+  }
+
+  private prunePreparedStates(nowUnixNs: bigint): void {
+    for (const [capability, prepared] of this.#preparedStates) {
+      if (prepared.expiresAtUnixNs >= nowUnixNs) continue;
+      this.#preparedStates.delete(capability);
+      this.#retiredCapabilities.add(capability);
+    }
   }
 
   dispose(): void {
+    this.#preparedStates.clear();
     this.disposed = true;
   }
 }
