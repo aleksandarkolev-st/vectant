@@ -45,6 +45,20 @@ function firstArray(...values) {
   return values.find((value) => Array.isArray(value)) ?? null;
 }
 
+function ownValue(value, key) {
+  return isObject(value) && Object.prototype.hasOwnProperty.call(value, key)
+    ? value[key]
+    : undefined;
+}
+
+function firstOwnObject(value, ...keys) {
+  return firstObject(...keys.map((key) => ownValue(value, key)));
+}
+
+function firstOwnArray(value, ...keys) {
+  return firstArray(...keys.map((key) => ownValue(value, key)));
+}
+
 const VISUAL_OR_ENGINE_BACKENDS = new Set(['hiprt', 'vulkan', 'webgpu', 'bevy_wgsl']);
 const ACCEPTED_PROOF_LEDGER_SOURCE_CONSISTENCY_MODES = new Set([
   'derived_only',
@@ -101,7 +115,7 @@ function gateRow(name, failures, successDetail) {
 }
 
 function proofArtifactFromRecord(record) {
-  if (isObject(record?.artifact)) return record.artifact;
+  if (isObject(ownValue(record, 'artifact'))) return record.artifact;
   if (isObject(record)) return record;
   return null;
 }
@@ -119,9 +133,47 @@ function proofArtifactLabel(record, index) {
 
 function ledgerRecords(ledger) {
   if (!isObject(ledger)) return [];
-  if (Array.isArray(ledger.records)) return ledger.records.filter(isObject);
-  if (isObject(ledger.record)) return [ledger.record];
-  return [];
+  if (Object.prototype.hasOwnProperty.call(ledger, 'records')) {
+    return Array.isArray(ledger.records) ? ledger.records.filter(isObject) : [];
+  }
+  if (isObject(ownValue(ledger, 'record'))) return [ledger.record];
+  return [ledger];
+}
+
+function topLevelObjectAliasMismatch(value, camelKey, snakeKey) {
+  if (!isObject(value)) return false;
+  const hasCamel = Object.prototype.hasOwnProperty.call(value, camelKey);
+  const hasSnake = Object.prototype.hasOwnProperty.call(value, snakeKey);
+  return hasCamel
+    && hasSnake
+    && stableJson(value[camelKey]) !== stableJson(value[snakeKey]);
+}
+
+function acceptanceContractLedgerBindingFailures(proofLedger, recomputedContractHash) {
+  if (!recomputedContractHash || !isObject(proofLedger)) return [];
+  const records = ledgerRecords(proofLedger);
+  if (records.length === 0) return ['proof_ledger_acceptance_contract_binding_record_missing'];
+  const failures = [];
+  for (const record of records) {
+    const hasCamelHash = Object.prototype.hasOwnProperty.call(record, 'contractHash');
+    const hasSnakeHash = Object.prototype.hasOwnProperty.call(record, 'contract_hash');
+    const camelHash = hasCamelHash ? firstString(record.contractHash) : null;
+    const snakeHash = hasSnakeHash ? firstString(record.contract_hash) : null;
+    if (
+      hasCamelHash
+      && hasSnakeHash
+      && stableJson(record.contractHash) !== stableJson(record.contract_hash)
+    ) {
+      failures.push('proof_ledger_acceptance_contract_hash_alias_mismatch');
+    }
+    const recordHash = camelHash ?? snakeHash;
+    if (!recordHash) {
+      failures.push('proof_ledger_acceptance_contract_hash_missing');
+    } else if (recordHash !== recomputedContractHash) {
+      failures.push('proof_ledger_acceptance_contract_hash_mismatch');
+    }
+  }
+  return failures;
 }
 
 function normalizedText(...values) {
@@ -1581,27 +1633,45 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
   if (!artifact) {
     failures.push('runtime_proof_artifact_missing');
   } else {
-    const proofLedgerQuery = firstObject(
-      artifact.proofLedgerQuery,
-      artifact.proof_ledger_query,
+    const proofLedgerQuery = firstOwnObject(
+      artifact,
+      'proofLedgerQuery',
+      'proof_ledger_query',
     );
-    const proofLedger = firstObject(
-      artifact.proofLedger,
-      artifact.proof_ledger,
+    const proofLedger = firstOwnObject(
+      artifact,
+      'proofLedger',
+      'proof_ledger',
     );
-    const acceptanceContract = firstObject(
-      artifact.acceptanceContract,
-      artifact.acceptance_contract,
+    const proofLedgerAliasMismatch = topLevelObjectAliasMismatch(
+      artifact,
+      'proofLedger',
+      'proof_ledger',
     );
-    const acceptanceContractEvaluation = firstObject(
-      artifact.acceptanceContractEvaluation,
-      artifact.acceptance_contract_evaluation,
+    const acceptanceContract = firstOwnObject(
+      artifact,
+      'acceptanceContract',
+      'acceptance_contract',
     );
-    const acceptanceContractConsistencyCamel = isObject(artifact.acceptanceContractConsistency)
-      ? artifact.acceptanceContractConsistency
+    const acceptanceContractAliasMismatch = topLevelObjectAliasMismatch(
+      artifact,
+      'acceptanceContract',
+      'acceptance_contract',
+    );
+    const acceptanceContractEvaluation = firstOwnObject(
+      artifact,
+      'acceptanceContractEvaluation',
+      'acceptance_contract_evaluation',
+    );
+    const acceptanceContractConsistencyCamel = isObject(
+      ownValue(artifact, 'acceptanceContractConsistency'),
+    )
+      ? ownValue(artifact, 'acceptanceContractConsistency')
       : null;
-    const acceptanceContractConsistencySnake = isObject(artifact.acceptance_contract_consistency)
-      ? artifact.acceptance_contract_consistency
+    const acceptanceContractConsistencySnake = isObject(
+      ownValue(artifact, 'acceptance_contract_consistency'),
+    )
+      ? ownValue(artifact, 'acceptance_contract_consistency')
       : null;
     const acceptanceContractConsistency = firstObject(
       acceptanceContractConsistencyCamel,
@@ -1611,24 +1681,28 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       acceptanceContractConsistencyCamel
       && acceptanceContractConsistencySnake
       && stableJson(acceptanceContractConsistencyCamel) !== stableJson(acceptanceContractConsistencySnake);
-    const proofLedgerSourceConsistency = firstObject(
-      artifact.proofLedgerSourceConsistency,
-      artifact.proof_ledger_source_consistency,
+    const proofLedgerSourceConsistency = firstOwnObject(
+      artifact,
+      'proofLedgerSourceConsistency',
+      'proof_ledger_source_consistency',
     );
-    const deterministicVisualModeEvaluation = firstObject(
-      artifact.deterministicVisualModeEvaluation,
-      artifact.deterministic_visual_mode_evaluation,
+    const deterministicVisualModeEvaluation = firstOwnObject(
+      artifact,
+      'deterministicVisualModeEvaluation',
+      'deterministic_visual_mode_evaluation',
     );
-    const stageResults = firstArray(
-      artifact.stageResults,
-      artifact.stage_results,
+    const stageResults = firstOwnArray(
+      artifact,
+      'stageResults',
+      'stage_results',
     );
-    const limitations = firstArray(artifact.limitations);
-    const gpuHmrSuccess = artifact.gpuHmrSuccess === true
-      || artifact.gpu_hmr_success === true;
+    const limitations = firstOwnArray(artifact, 'limitations');
+    const gpuHmrSuccess = ownValue(artifact, 'gpuHmrSuccess') === true
+      || ownValue(artifact, 'gpu_hmr_success') === true;
     const visualLedgerRequiresDeterministicMode =
       proofLedger && ledgerRequiresDeterministicVisualMode(proofLedger);
     let recomputedProofLedgerQuery = null;
+    let recomputedAcceptanceContractHash = null;
     let visualOverlayUsed = false;
     failures.push(...hipModuleHardwareTargetFailures({
       artifact,
@@ -1636,7 +1710,10 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       proofLedger,
     }));
 
-    if (artifact.fullRuntimeProven !== true && artifact.full_runtime_proven !== true) {
+    if (
+      ownValue(artifact, 'fullRuntimeProven') !== true
+      && ownValue(artifact, 'full_runtime_proven') !== true
+    ) {
       failures.push('runtime_full_proof_not_proven');
     }
     if (!gpuHmrSuccess) failures.push('runtime_proof_artifact_gpu_hmr_success_false');
@@ -1683,6 +1760,9 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       failures.push(...visualOracleDeclarationFailures(proofLedger, options));
       failures.push(...computeOracleDeclarationFailures(proofLedger, options));
     }
+    if (proofLedgerAliasMismatch) {
+      failures.push('proof_ledger_alias_mismatch');
+    }
     if (!proofLedgerQuery) {
       failures.push('proof_ledger_query_missing');
     } else if (proofLedgerQuery.gpuHmrSuccess !== true) {
@@ -1692,6 +1772,7 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       failures.push('acceptance_contract_missing');
     } else {
       const recomputedAcceptance = evaluateGpuHmrAcceptanceContract(acceptanceContract);
+      recomputedAcceptanceContractHash = recomputedAcceptance.recomputedContractHash;
       if (recomputedAcceptance.accepted !== true) {
         failures.push('acceptance_contract_recomputed_rejected');
       }
@@ -1705,6 +1786,13 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
         failures.push('acceptance_contract_evaluation_mismatch');
       }
     }
+    if (acceptanceContractAliasMismatch) {
+      failures.push('acceptance_contract_alias_mismatch');
+    }
+    failures.push(...acceptanceContractLedgerBindingFailures(
+      proofLedger,
+      recomputedAcceptanceContractHash,
+    ));
     if (!acceptanceContractEvaluation) {
       failures.push('acceptance_contract_evaluation_missing');
     } else if (acceptanceContractEvaluation.accepted !== true) {

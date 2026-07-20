@@ -730,8 +730,24 @@ function runtimeArtifact(overrides = {}) {
   };
 }
 
+function proofLedgerFromRecords(records) {
+  const ledger = {
+    schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+    records: structuredClone(records),
+  };
+  const query = queryGpuHmrLedgerInvariants(ledger);
+  return {
+    ...ledger,
+    proofId: query.proofId,
+    query,
+    gpuHmrSuccess: query.gpuHmrSuccess,
+    gpu_hmr_success: query.gpuHmrSuccess,
+  };
+}
+
 const passingArtifact = runtimeArtifact();
 const webgpuComputeOnlyLedger = buildGpuHmrProofLedger(ledgerRecord({
+  contract_hash: passingArtifact.acceptanceContract.contract_hash,
   backend: 'webgpu',
   output_event: {
     id: 'output-webgpu-compute-1',
@@ -751,6 +767,7 @@ const webgpuComputeOnlyLedger = buildGpuHmrProofLedger(ledgerRecord({
   },
 }));
 const byteBackedVisualLedger = buildGpuHmrProofLedger(boundVisualLedgerRecord({
+  contract_hash: passingArtifact.acceptanceContract.contract_hash,
   oracle_artifacts: {
     visual_oracle_artifacts: byteBackedVisualOracleArtifacts(),
   },
@@ -762,6 +779,7 @@ const byteBackedVisualArtifact = runtimeArtifact({
   deterministicVisualModeEvaluation: { accepted: true },
 });
 const casOnlyVisualLedger = buildGpuHmrProofLedger(boundVisualLedgerRecord({
+  contract_hash: passingArtifact.acceptanceContract.contract_hash,
   oracle_artifacts: {
     visual_oracle_artifacts: casOnlyVisualOracleArtifacts(),
   },
@@ -792,7 +810,8 @@ const casOnlyVisualArtifact = runtimeArtifact({
 });
 
 assert.equal(adversarialPreflightStrictGate(passingPreflight).status, 'pass');
-assert.equal(runtimeProofArtifactStrictGate(passingArtifact).status, 'pass');
+const passingStrictGate = runtimeProofArtifactStrictGate(passingArtifact);
+assert.equal(passingStrictGate.status, 'pass', passingStrictGate.detail);
 assert.equal(passingArtifact.acceptanceContractConsistency.checked, true);
 assert.equal(runtimeProofArtifactStrictGate(runtimeArtifact({
   proofLedger: webgpuComputeOnlyLedger,
@@ -977,6 +996,149 @@ assert.match(
     acceptance_contract_consistency: { accepted: true, checked: false },
   }).detail,
   /acceptance_contract_consistency_alias_mismatch/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact((() => {
+    const proofLedger = buildGpuHmrProofLedger(ledgerRecord({
+      contract_hash: HASH_A,
+    }));
+    return {
+      proofLedger,
+      proofLedgerQuery: proofLedger.query,
+    };
+  })())).detail,
+  /proof_ledger_acceptance_contract_hash_mismatch/,
+);
+const directRecordLedger = structuredClone(passingArtifact.proofLedger.records[0]);
+const directRecordLedgerQuery = queryGpuHmrLedgerInvariants(directRecordLedger);
+assert.equal(directRecordLedgerQuery.gpuHmrSuccess, true);
+assert.equal(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofLedger: directRecordLedger,
+    proofLedgerQuery: directRecordLedgerQuery,
+  })).accepted,
+  true,
+);
+const multiRecordOne = buildGpuHmrProofLedger(ledgerRecord({
+  contract_hash: passingArtifact.acceptanceContract.contract_hash,
+  evidence_refs: [
+    'runtime:module-load',
+    'runtime:epoch-publish',
+    'runtime:dispatch',
+    'runtime:output-oracle',
+    'runtime:proof-observation:one',
+  ],
+})).records[0];
+const multiRecordTwo = buildGpuHmrProofLedger(ledgerRecord({
+  contract_hash: passingArtifact.acceptanceContract.contract_hash,
+  evidence_refs: [
+    'runtime:module-load',
+    'runtime:epoch-publish',
+    'runtime:dispatch',
+    'runtime:output-oracle',
+    'runtime:proof-observation:two',
+  ],
+})).records[0];
+const passingMultiRecordLedger = proofLedgerFromRecords([multiRecordOne, multiRecordTwo]);
+assert.equal(passingMultiRecordLedger.query.gpuHmrSuccess, true);
+assert.equal(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofLedger: passingMultiRecordLedger,
+    proofLedgerQuery: passingMultiRecordLedger.query,
+  })).accepted,
+  true,
+);
+const mismatchedSecondRecordLedger = proofLedgerFromRecords([
+  multiRecordOne,
+  buildGpuHmrProofLedger(ledgerRecord({
+    contract_hash: HASH_A,
+    evidence_refs: [
+      'runtime:module-load',
+      'runtime:epoch-publish',
+      'runtime:dispatch',
+      'runtime:output-oracle',
+      'runtime:proof-observation:mismatched-contract',
+    ],
+  })).records[0],
+]);
+assert.equal(mismatchedSecondRecordLedger.query.gpuHmrSuccess, true);
+assert.deepEqual(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofLedger: mismatchedSecondRecordLedger,
+    proofLedgerQuery: mismatchedSecondRecordLedger.query,
+  })).failures,
+  ['proof_ledger_acceptance_contract_hash_mismatch'],
+);
+assert.match(
+  runtimeProofArtifactStrictGate((() => {
+    const recordWithoutContractHash = structuredClone(multiRecordTwo);
+    delete recordWithoutContractHash.contractHash;
+    delete recordWithoutContractHash.contract_hash;
+    const proofLedger = proofLedgerFromRecords([multiRecordOne, recordWithoutContractHash]);
+    return runtimeArtifact({
+      proofLedger,
+      proofLedgerQuery: proofLedger.query,
+    });
+  })()).detail,
+  /proof_ledger_acceptance_contract_hash_missing/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate((() => {
+    const recordWithConflictingAlias = structuredClone(multiRecordTwo);
+    recordWithConflictingAlias.contract_hash = HASH_A;
+    const proofLedger = proofLedgerFromRecords([multiRecordOne, recordWithConflictingAlias]);
+    return runtimeArtifact({
+      proofLedger,
+      proofLedgerQuery: proofLedger.query,
+    });
+  })()).detail,
+  /proof_ledger_acceptance_contract_hash_alias_mismatch/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...passingArtifact,
+    proof_ledger: buildGpuHmrProofLedger(ledgerRecord({ contract_hash: HASH_A })),
+  }).detail,
+  /proof_ledger_alias_mismatch/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...passingArtifact,
+    acceptance_contract: acceptanceContract({ project_id: 'alternate-generic-project' }),
+  }).detail,
+  /acceptance_contract_alias_mismatch/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate((() => {
+    const record = structuredClone(passingArtifact.proofLedger.records[0]);
+    delete record.contractHash;
+    delete record.contract_hash;
+    Object.setPrototypeOf(record, {
+      contractHash: passingArtifact.acceptanceContract.contract_hash,
+    });
+    return runtimeArtifact({
+      proofLedger: record,
+      proofLedgerQuery: queryGpuHmrLedgerInvariants(record),
+    });
+  })()).detail,
+  /proof_ledger_acceptance_contract_hash_missing/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate((() => {
+    const maliciousLedger = buildGpuHmrProofLedger(ledgerRecord({ contract_hash: HASH_A }));
+    const artifact = runtimeArtifact({
+      proof_ledger: maliciousLedger,
+      proof_ledger_query: maliciousLedger.query,
+    });
+    delete artifact.proofLedger;
+    delete artifact.proofLedgerQuery;
+    Object.setPrototypeOf(artifact, {
+      proofLedger: passingArtifact.proofLedger,
+      proofLedgerQuery: passingArtifact.proofLedgerQuery,
+    });
+    return artifact;
+  })()).detail,
+  /proof_ledger_acceptance_contract_hash_mismatch/,
 );
 assert.match(
   runtimeProofArtifactStrictGate((() => {
