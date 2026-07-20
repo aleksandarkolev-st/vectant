@@ -97,6 +97,9 @@ extends GpuParentRuntimeProofReceiptConsumer {
   commitPreparedSupportEnvelope(
     capability: RuntimeEvidenceTransportPreparedSupportEnvelope,
   ): RuntimeEvidenceTransportSupportVerification;
+  discardPreparedSupportEnvelope(
+    capability: RuntimeEvidenceTransportPreparedSupportEnvelope,
+  ): boolean;
 }
 
 export interface GpuParentRuntimeProofExpectedBinding {
@@ -171,6 +174,9 @@ interface PreparedParentRuntimeProofState {
   readonly commitPreparedSupportEnvelope: (
     capability: RuntimeEvidenceTransportPreparedSupportEnvelope,
   ) => RuntimeEvidenceTransportSupportVerification;
+  readonly discardPreparedSupportEnvelope: (
+    capability: RuntimeEvidenceTransportPreparedSupportEnvelope,
+  ) => boolean;
   readonly evidence: GpuParentRuntimeProofValidationEvidence;
 }
 
@@ -1012,9 +1018,14 @@ export function prepareGpuParentRuntimeProofTransport(
     context?.receiptConsumer,
     "commitPreparedSupportEnvelope",
   );
+  const discardPreparedSupportEnvelope = captureCallableMethod(
+    context?.receiptConsumer,
+    "discardPreparedSupportEnvelope",
+  );
   if (
     prepareSupportEnvelope === null
     || commitPreparedSupportEnvelope === null
+    || discardPreparedSupportEnvelope === null
   ) {
     return preparation(
       false,
@@ -1066,6 +1077,16 @@ export function prepareGpuParentRuntimeProofTransport(
     },
   });
   if (!preparedValidation.verified) {
+    const refusedTransport = capturedPreparation as
+      RuntimeEvidenceTransportSupportPreparation | null;
+    const preparedCapability = refusedTransport?.capability;
+    if (preparedCapability !== null && preparedCapability !== undefined) {
+      try {
+        discardPreparedSupportEnvelope(preparedCapability);
+      } catch {
+        // The public preparation remains refused even when cleanup fails.
+      }
+    }
     return preparation(
       false,
       preparedValidation.code,
@@ -1099,9 +1120,29 @@ export function prepareGpuParentRuntimeProofTransport(
       }
       return verification;
     },
+    discardPreparedSupportEnvelope: (
+      capability: RuntimeEvidenceTransportPreparedSupportEnvelope,
+    ) => discardPreparedSupportEnvelope(capability) === true,
     evidence: preparedValidation.evidence,
   }));
   return result;
+}
+
+export function discardPreparedGpuParentRuntimeProofTransport(
+  preparedProof: unknown,
+): boolean {
+  if (preparedProof === null || typeof preparedProof !== "object") return false;
+  const preparationObject = preparedProof as GpuParentRuntimeProofPreparation;
+  if (retiredParentRuntimeProofPreparations.has(preparationObject)) return false;
+  const state = preparedParentRuntimeProofStates.get(preparationObject);
+  if (state === undefined) return false;
+  preparedParentRuntimeProofStates.delete(preparationObject);
+  retiredParentRuntimeProofPreparations.add(preparationObject);
+  try {
+    return state.discardPreparedSupportEnvelope(state.capability);
+  } catch {
+    return false;
+  }
 }
 
 export function commitPreparedGpuParentRuntimeProofTransport(

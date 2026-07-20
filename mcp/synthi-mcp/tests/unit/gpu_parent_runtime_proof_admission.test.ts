@@ -1,11 +1,17 @@
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { RTCDataChannel } from "werift";
 import {
   GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
   SessionGpuParentRuntimeProofAdmission,
   type GpuParentRuntimeProofAdmissionReceiptConsumer,
+  type GpuParentRuntimeProofAdmissionReceiptSigner,
 } from "../../src/gpu_parent_runtime_proof_admission.js";
+import {
+  GpuParentRuntimeProofAdmissionReceiptSigner as Ed25519AdmissionReceiptSigner,
+  verifyGpuParentRuntimeProofAdmissionReceipt,
+  type GpuParentRuntimeProofAdmissionReceiptInput,
+} from "../../src/gpu_parent_runtime_proof_admission_receipt.js";
 import {
   GPU_PARENT_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY,
   GPU_PARENT_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION,
@@ -17,6 +23,7 @@ import {
   RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
   RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA,
   RuntimeEvidenceTransportKeyPin,
+  type RuntimeEvidenceTransportPreparedSupportEnvelope,
   type RuntimeEvidenceTransportSupportEnvelopeInput,
   type RuntimeEvidenceTransportSupportVerification,
 } from "../../src/runtime_evidence_transport.js";
@@ -29,6 +36,7 @@ const RUNNER_CHALLENGE = "0123456789abcdef0123456789abcdef";
 const COMMAND_ENVELOPE_HASH = `sha256:${"7".repeat(64)}`;
 const EXPECTED_OUTPUT_CONTRACT_HASH = `sha256:${"a".repeat(64)}`;
 const EXPECTED_OUTPUT_SEMANTICS_HASH = `sha256:${"b".repeat(64)}`;
+const MCP_VALIDATION_RUN_CHALLENGE = Buffer.alloc(32, 0x17).toString("base64url");
 const BINDING_ID_PREFIX = "gpu-parent-runtime-proof-control-binding:";
 const PARENT_RECEIPT_PREFIX = "gpu-parent-runtime-proof-receipt:";
 const CONTROL_METADATA_KEYS = new Set([
@@ -251,7 +259,89 @@ function expectDeepFrozen(value: unknown, seen = new WeakSet<object>()): void {
   }
 }
 
-function receiptConsumer(): GpuParentRuntimeProofAdmissionReceiptConsumer & {
+type TestReceiptConsumer = {
+  consumeSupportEnvelope(
+    input: RuntimeEvidenceTransportSupportEnvelopeInput,
+  ): RuntimeEvidenceTransportSupportVerification;
+};
+
+function transactionalTestReceiptConsumer(
+  delegate: TestReceiptConsumer,
+): GpuParentRuntimeProofAdmissionReceiptConsumer {
+  if (
+    typeof (delegate as Partial<GpuParentRuntimeProofAdmissionReceiptConsumer>)
+      .prepareSupportEnvelope === "function"
+    && typeof (delegate as Partial<GpuParentRuntimeProofAdmissionReceiptConsumer>)
+      .commitPreparedSupportEnvelope === "function"
+    && typeof (delegate as Partial<GpuParentRuntimeProofAdmissionReceiptConsumer>)
+      .discardPreparedSupportEnvelope === "function"
+  ) {
+    return delegate as GpuParentRuntimeProofAdmissionReceiptConsumer;
+  }
+  const prepared = new WeakMap<
+    RuntimeEvidenceTransportPreparedSupportEnvelope,
+    RuntimeEvidenceTransportSupportVerification
+  >();
+  return {
+    consumeSupportEnvelope: (input) => delegate.consumeSupportEnvelope(input),
+    prepareSupportEnvelope(input) {
+      const verification = delegate.consumeSupportEnvelope(input);
+      if (!verification.verified) {
+        return Object.freeze({
+          schemaVersion:
+            "synthi.gpu_hmr.runtime_evidence_transport_preparation.v1" as const,
+          proofAuthority:
+            "cryptographic_and_freshness_preparation_only_replay_not_committed" as const,
+          prepared: false,
+          reason: verification.reason ?? "test_receipt_refused",
+          capability: null,
+          receiptId: null,
+          observationContextHash: null,
+          freshnessChecked: false,
+          replayChecked: false as const,
+          acceptedForGpuHmr: false as const,
+          gpuHmrSuccess: false as const,
+          canSatisfyRuntimeProof: false as const,
+        });
+      }
+      const capability = Object.freeze({
+        acceptedForGpuHmr: false as const,
+        gpuHmrSuccess: false as const,
+        canSatisfyRuntimeProof: false as const,
+      });
+      prepared.set(capability, verification);
+      return Object.freeze({
+        schemaVersion:
+          "synthi.gpu_hmr.runtime_evidence_transport_preparation.v1" as const,
+        proofAuthority:
+          "cryptographic_and_freshness_preparation_only_replay_not_committed" as const,
+        prepared: true,
+        reason: null,
+        capability,
+        receiptId: verification.receiptId,
+        observationContextHash: verification.observationContextHash,
+        freshnessChecked: true,
+        replayChecked: false as const,
+        acceptedForGpuHmr: false as const,
+        gpuHmrSuccess: false as const,
+        canSatisfyRuntimeProof: false as const,
+      });
+    },
+    commitPreparedSupportEnvelope(capability) {
+      const verification = prepared.get(capability);
+      prepared.delete(capability);
+      return verification
+        ?? refusedSupportVerification(
+          "runtime_evidence_transport_prepared_capability_invalid",
+        );
+    },
+    discardPreparedSupportEnvelope(capability) {
+      return prepared.delete(capability);
+    },
+  };
+}
+
+function receiptConsumer(): TestReceiptConsumer & {
   consumeSupportEnvelope: ReturnType<typeof vi.fn>;
 } {
   let sequence = 0;
@@ -271,9 +361,19 @@ function nonceSource(): () => Uint8Array {
   };
 }
 
+function admissionReceiptSigner(): Ed25519AdmissionReceiptSigner {
+  return new Ed25519AdmissionReceiptSigner({
+    privateKey: generateKeyPairSync("ed25519").privateKey,
+    validationRunChallenge: MCP_VALIDATION_RUN_CHALLENGE,
+    clockUnixNs: () => 1_784_500_000_123_456_789n,
+    nonceBytes: () => Buffer.alloc(32, 0x31),
+  });
+}
+
 function admission(options: Partial<{
   keyPin: RuntimeEvidenceTransportKeyPin;
-  consumer: GpuParentRuntimeProofAdmissionReceiptConsumer;
+  consumer: TestReceiptConsumer;
+  admissionReceiptSigner: GpuParentRuntimeProofAdmissionReceiptSigner;
   now: () => number;
   nonceBytes: () => Uint8Array;
   limits: {
@@ -287,7 +387,11 @@ function admission(options: Partial<{
   return new SessionGpuParentRuntimeProofAdmission({
     transportSessionId: TRANSPORT_SESSION_ID,
     keyPin: options.keyPin ?? pinnedKeyPin(),
-    receiptConsumer: options.consumer ?? receiptConsumer(),
+    receiptConsumer: transactionalTestReceiptConsumer(
+      options.consumer ?? receiptConsumer(),
+    ),
+    admissionReceiptSigner:
+      options.admissionReceiptSigner ?? admissionReceiptSigner(),
     now: options.now ?? (() => 1_000),
     nonceBytes: options.nonceBytes ?? nonceSource(),
     limits: options.limits,
@@ -295,6 +399,23 @@ function admission(options: Partial<{
 }
 
 describe("SessionGpuParentRuntimeProofAdmission", () => {
+  it("rejects an accessor-backed admission signer without invoking it", () => {
+    let accessorCalls = 0;
+    const signer = {} as GpuParentRuntimeProofAdmissionReceiptSigner;
+    Object.defineProperty(signer, "signAdmissionReceipt", {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        accessorCalls += 1;
+        return admissionReceiptSigner().signAdmissionReceipt;
+      },
+    });
+
+    expect(() => admission({ admissionReceiptSigner: signer }))
+      .toThrow("gpu_parent_runtime_proof_admission_receipt_signer_invalid");
+    expect(accessorCalls).toBe(0);
+  });
+
   it("issues bounded one-shot nonces and opaque support correlations", () => {
     const gate = admission();
     const first = gate.issueCompileIntent(
@@ -459,7 +580,7 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
     });
     expect(gate.takeControlVerificationMaterial(wrongProofId)).toBeNull();
     const material = gate.takeControlVerificationMaterial(fullRuntimeProofId);
-    expect(material).toEqual({
+    expect(material).toMatchObject({
       schemaVersion:
         GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
       controlBinding: pair.control,
@@ -469,7 +590,20 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
         compileRequestNonce: intent.compileRequestNonce,
         expectedWorkerProcessId: String(WORKER_PROCESS_ID),
       },
+      mcpAdmissionReceipt: {
+        controlStageAdmitted: true,
+        parentProofStageAdmitted: true,
+        acceptedForGpuHmr: false,
+        gpuHmrSuccess: false,
+        canSatisfyRuntimeProof: false,
+        fullRuntimeProofId,
+      },
     });
+    expect(material?.mcpAdmissionReceipt).not.toHaveProperty("publicKey");
+    expect(material?.mcpAdmissionReceipt).not.toHaveProperty("verificationKey");
+    expect(material?.mcpAdmissionReceipt).not.toHaveProperty(
+      "validationRunChallenge",
+    );
     expect(material).not.toHaveProperty("proofAuthority");
     expect(material).not.toHaveProperty("verified");
     expect(material).not.toHaveProperty("acceptedForGpuHmr");
@@ -478,6 +612,84 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
     expect(gate.takeControlVerificationMaterial(fullRuntimeProofId)).toBeNull();
     expect(gate.beforeClassify(pair.proof, 1_003)).toBe(false);
     expect(consumer.consumeSupportEnvelope).toHaveBeenCalledTimes(2);
+  });
+
+  it("signs the exact verifier-derived control and parent admission fields", () => {
+    const keyPin = pinnedKeyPin();
+    const pinnedKey = keyPin.snapshot().key;
+    expect(pinnedKey).not.toBeNull();
+    const concreteSigner = admissionReceiptSigner();
+    let observedInput: GpuParentRuntimeProofAdmissionReceiptInput | null = null;
+    const injectedSigner: GpuParentRuntimeProofAdmissionReceiptSigner = {
+      signAdmissionReceipt: vi.fn((input) => {
+        observedInput = input;
+        return concreteSigner.signAdmissionReceipt(input);
+      }),
+    };
+    const gate = admission({
+      keyPin,
+      admissionReceiptSigner: injectedSigner,
+    });
+    const intent = gate.issueCompileIntent(
+      EXPECTED_OUTPUT_CONTRACT_HASH,
+      EXPECTED_OUTPUT_SEMANTICS_HASH,
+    );
+    const pair = makePair(intent.compileRequestNonce, "e", {
+      computeExpectedOutputContractHash: EXPECTED_OUTPUT_CONTRACT_HASH,
+      computeExpectedOutputSemanticsHash: EXPECTED_OUTPUT_SEMANTICS_HASH,
+    });
+    const control = pair.control;
+    const parent = pair.proof.parentVerification as Record<string, unknown>;
+
+    expect(gate.beforeClassify(control, 1)).toBe(false);
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(true);
+    expect(observedInput).toEqual({
+      transportSessionId: TRANSPORT_SESSION_ID,
+      compileRequestNonce: intent.compileRequestNonce,
+      computeExpectedOutputContractHash: EXPECTED_OUTPUT_CONTRACT_HASH,
+      computeExpectedOutputSemanticsHash: EXPECTED_OUTPUT_SEMANTICS_HASH,
+      workerKeyId: pinnedKey?.keyId,
+      workerKeyAnnouncementId: pinnedKey?.keyAnnouncementId,
+      workerProcessId: pinnedKey?.workerProcessId,
+      controlBindingId: control.bindingId,
+      controlBindingCanonicalSha256: control.bindingCanonicalSha256,
+      controlTransportReceiptId:
+        `gpu-hmr-runtime-evidence-transport-receipt:sha256:${"1".repeat(64)}`,
+      controlObservationContextHash: `sha256:${"1".repeat(64)}`,
+      parentReceiptId: parent.receiptId,
+      parentTransportReceiptId:
+        `gpu-hmr-runtime-evidence-transport-receipt:sha256:${"2".repeat(64)}`,
+      parentCanonicalProofSha256: parent.canonicalProofSha256,
+      parentObservationContextHash: `sha256:${"2".repeat(64)}`,
+      requestId: control.requestId,
+      sourceEditId: control.sourceEditId,
+      artifactContentHash: control.artifactContentHash,
+      fullRuntimeProofId: control.fullRuntimeProofId,
+      proofLedgerId: control.proofLedgerId,
+      runnerProcessId: RUNNER_PROCESS_ID,
+      runnerRuntimeSessionId: RUNTIME_SESSION_ID,
+      runnerChallenge: RUNNER_CHALLENGE,
+      commandEnvelopeSha256: COMMAND_ENVELOPE_HASH,
+      protectedProofJsonSha256: control.protectedProofJsonSha256,
+    });
+    expect(Object.isFrozen(observedInput)).toBe(true);
+
+    const material = gate.takeControlVerificationMaterial(
+      control.fullRuntimeProofId as string,
+    );
+    expect(material).not.toBeNull();
+    expect(verifyGpuParentRuntimeProofAdmissionReceipt(
+      concreteSigner.exportVerificationKey(),
+      material?.mcpAdmissionReceipt,
+      MCP_VALIDATION_RUN_CHALLENGE,
+    )).toMatchObject({
+      verified: true,
+      replayChecked: false,
+      freshnessChecked: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
   });
 
   it("does not expose material for a verified control without its parent proof", () => {
@@ -701,6 +913,454 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
     expect(consumer.consumeSupportEnvelope).toHaveBeenCalledTimes(2);
     expect(gate.snapshot().admittedProofCount).toBe(1);
     expect(gate.takeControlVerificationMaterial(proofId)).not.toBeNull();
+    expect(gate.takeControlVerificationMaterial(proofId)).toBeNull();
+  });
+
+  it("keeps the parent binding transactional when the admission signer throws", () => {
+    const injectedSigner: GpuParentRuntimeProofAdmissionReceiptSigner = {
+      signAdmissionReceipt: vi.fn(() => {
+        throw new Error("opaque-signing-failure");
+      }),
+    };
+    const gate = admission({ admissionReceiptSigner: injectedSigner });
+    const intent = gate.issueCompileIntent();
+    const pair = makePair(intent.compileRequestNonce, "d");
+    const proofId = pair.control.fullRuntimeProofId as string;
+    gate.beforeClassify(pair.control, 1);
+
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      status: "active",
+      verifiedBindingCount: 1,
+      admittedProofCount: 0,
+      lastDecisionCode:
+        "gpu_parent_runtime_proof_admission_receipt_signer_failed",
+    });
+    expect(gate.takeControlVerificationMaterial(proofId)).toBeNull();
+    expect(injectedSigner.signAdmissionReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not commit replay state when signing fails and commits one clean retry", () => {
+    const concreteSigner = admissionReceiptSigner();
+    let signerCalls = 0;
+    const injectedSigner: GpuParentRuntimeProofAdmissionReceiptSigner = {
+      signAdmissionReceipt: vi.fn((input) => {
+        signerCalls += 1;
+        if (signerCalls === 1) throw new Error("opaque-signing-failure");
+        return concreteSigner.signAdmissionReceipt(input);
+      }),
+    };
+    let sequence = 0;
+    const prepared = new WeakMap<
+      RuntimeEvidenceTransportPreparedSupportEnvelope,
+      RuntimeEvidenceTransportSupportVerification
+    >();
+    const consumer: GpuParentRuntimeProofAdmissionReceiptConsumer = {
+      consumeSupportEnvelope: vi.fn(() =>
+        acceptedSupportVerification(++sequence)),
+      prepareSupportEnvelope: vi.fn(() => {
+        const verification = acceptedSupportVerification(++sequence);
+        const capability = Object.freeze({
+          acceptedForGpuHmr: false as const,
+          gpuHmrSuccess: false as const,
+          canSatisfyRuntimeProof: false as const,
+        });
+        prepared.set(capability, verification);
+        return Object.freeze({
+          schemaVersion:
+            "synthi.gpu_hmr.runtime_evidence_transport_preparation.v1" as const,
+          proofAuthority:
+            "cryptographic_and_freshness_preparation_only_replay_not_committed" as const,
+          prepared: true,
+          reason: null,
+          capability,
+          receiptId: verification.receiptId,
+          observationContextHash: verification.observationContextHash,
+          freshnessChecked: true,
+          replayChecked: false as const,
+          acceptedForGpuHmr: false as const,
+          gpuHmrSuccess: false as const,
+          canSatisfyRuntimeProof: false as const,
+        });
+      }),
+      commitPreparedSupportEnvelope: vi.fn((capability) => {
+        const verification = prepared.get(capability);
+        prepared.delete(capability);
+        return verification
+          ?? refusedSupportVerification(
+            "runtime_evidence_transport_prepared_capability_invalid",
+          );
+      }),
+      discardPreparedSupportEnvelope: vi.fn((capability) =>
+        prepared.delete(capability)),
+    };
+    const gate = admission({ consumer, admissionReceiptSigner: injectedSigner });
+    const intent = gate.issueCompileIntent();
+    const pair = makePair(intent.compileRequestNonce, "d");
+    const proofId = pair.control.fullRuntimeProofId as string;
+    gate.beforeClassify(pair.control, 1);
+
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(false);
+    expect(consumer.prepareSupportEnvelope).toHaveBeenCalledTimes(1);
+    expect(consumer.commitPreparedSupportEnvelope).not.toHaveBeenCalled();
+    expect(consumer.discardPreparedSupportEnvelope).toHaveBeenCalledTimes(1);
+    expect(gate.snapshot().verifiedBindingCount).toBe(1);
+
+    expect(gate.beforeClassify(pair.proof, 3)).toBe(true);
+    expect(consumer.prepareSupportEnvelope).toHaveBeenCalledTimes(2);
+    expect(consumer.commitPreparedSupportEnvelope).toHaveBeenCalledTimes(1);
+    expect(consumer.discardPreparedSupportEnvelope).toHaveBeenCalledTimes(1);
+    expect(gate.takeControlVerificationMaterial(proofId)).not.toBeNull();
+  });
+
+  it("releases every failed signer preparation before a later admission", () => {
+    const concreteSigner = admissionReceiptSigner();
+    let failuresRemaining = 300;
+    const injectedSigner: GpuParentRuntimeProofAdmissionReceiptSigner = {
+      signAdmissionReceipt: vi.fn((input) => {
+        if (failuresRemaining > 0) {
+          failuresRemaining -= 1;
+          throw new Error("opaque-signing-failure");
+        }
+        return concreteSigner.signAdmissionReceipt(input);
+      }),
+    };
+    let sequence = 0;
+    let pendingCount = 0;
+    let maximumPendingCount = 0;
+    const prepared = new WeakMap<
+      RuntimeEvidenceTransportPreparedSupportEnvelope,
+      RuntimeEvidenceTransportSupportVerification
+    >();
+    const consumer: GpuParentRuntimeProofAdmissionReceiptConsumer = {
+      consumeSupportEnvelope: vi.fn(() =>
+        acceptedSupportVerification(++sequence)),
+      prepareSupportEnvelope: vi.fn(() => {
+        if (pendingCount >= 2) {
+          return Object.freeze({
+            schemaVersion:
+              "synthi.gpu_hmr.runtime_evidence_transport_preparation.v1" as const,
+            proofAuthority:
+              "cryptographic_and_freshness_preparation_only_replay_not_committed" as const,
+            prepared: false,
+            reason:
+              "runtime_evidence_transport_prepared_capability_capacity_exhausted",
+            capability: null,
+            receiptId: null,
+            observationContextHash: null,
+            freshnessChecked: false,
+            replayChecked: false as const,
+            acceptedForGpuHmr: false as const,
+            gpuHmrSuccess: false as const,
+            canSatisfyRuntimeProof: false as const,
+          });
+        }
+        const verification = acceptedSupportVerification(++sequence);
+        const capability = Object.freeze({
+          acceptedForGpuHmr: false as const,
+          gpuHmrSuccess: false as const,
+          canSatisfyRuntimeProof: false as const,
+        });
+        prepared.set(capability, verification);
+        pendingCount += 1;
+        maximumPendingCount = Math.max(maximumPendingCount, pendingCount);
+        return Object.freeze({
+          schemaVersion:
+            "synthi.gpu_hmr.runtime_evidence_transport_preparation.v1" as const,
+          proofAuthority:
+            "cryptographic_and_freshness_preparation_only_replay_not_committed" as const,
+          prepared: true,
+          reason: null,
+          capability,
+          receiptId: verification.receiptId,
+          observationContextHash: verification.observationContextHash,
+          freshnessChecked: true,
+          replayChecked: false as const,
+          acceptedForGpuHmr: false as const,
+          gpuHmrSuccess: false as const,
+          canSatisfyRuntimeProof: false as const,
+        });
+      }),
+      commitPreparedSupportEnvelope: vi.fn((capability) => {
+        const verification = prepared.get(capability);
+        if (prepared.delete(capability)) pendingCount -= 1;
+        return verification
+          ?? refusedSupportVerification(
+            "runtime_evidence_transport_prepared_capability_invalid",
+          );
+      }),
+      discardPreparedSupportEnvelope: vi.fn((capability) => {
+        if (!prepared.delete(capability)) return false;
+        pendingCount -= 1;
+        return true;
+      }),
+    };
+    const gate = admission({ consumer, admissionReceiptSigner: injectedSigner });
+    const intent = gate.issueCompileIntent();
+    const pair = makePair(intent.compileRequestNonce, "e");
+    const proofId = pair.control.fullRuntimeProofId as string;
+    gate.beforeClassify(pair.control, 1);
+
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      expect(gate.beforeClassify(pair.proof, attempt + 2)).toBe(false);
+      expect(pendingCount).toBe(0);
+    }
+    expect(maximumPendingCount).toBe(1);
+    expect(consumer.discardPreparedSupportEnvelope).toHaveBeenCalledTimes(300);
+
+    expect(gate.beforeClassify(pair.proof, 302)).toBe(true);
+    expect(pendingCount).toBe(0);
+    expect(consumer.commitPreparedSupportEnvelope).toHaveBeenCalledTimes(1);
+    expect(gate.takeControlVerificationMaterial(proofId)).not.toBeNull();
+  });
+
+  it("rejects signer-phase same-proof reentry without consuming the binding", () => {
+    const concreteSigner = admissionReceiptSigner();
+    let gate!: SessionGpuParentRuntimeProofAdmission;
+    let pair!: ProofPair;
+    let recursiveResult: boolean | null = null;
+    let reenter = true;
+    const injectedSigner: GpuParentRuntimeProofAdmissionReceiptSigner = {
+      signAdmissionReceipt: vi.fn((input) => {
+        if (reenter) {
+          reenter = false;
+          recursiveResult = gate.beforeClassify(pair.proof, 3);
+        }
+        return concreteSigner.signAdmissionReceipt(input);
+      }),
+    };
+    gate = admission({ admissionReceiptSigner: injectedSigner });
+    const intent = gate.issueCompileIntent();
+    pair = makePair(intent.compileRequestNonce, "c");
+    const proofId = pair.control.fullRuntimeProofId as string;
+    gate.beforeClassify(pair.control, 1);
+
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(false);
+    expect(recursiveResult).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      verifiedBindingCount: 1,
+      admittedProofCount: 0,
+      lastDecisionCode:
+        "gpu_parent_runtime_proof_admission_receipt_signer_reentry_suppressed",
+    });
+    expect(gate.takeControlVerificationMaterial(proofId)).toBeNull();
+
+    expect(gate.beforeClassify(pair.proof, 4)).toBe(true);
+    expect(gate.snapshot()).toMatchObject({
+      verifiedBindingCount: 0,
+      admittedProofCount: 1,
+    });
+    expect(gate.takeControlVerificationMaterial(proofId)).not.toBeNull();
+  });
+
+  it("rejects signer-phase cross-proof reentry without consuming either binding", () => {
+    const concreteSigner = admissionReceiptSigner();
+    let gate!: SessionGpuParentRuntimeProofAdmission;
+    let secondPair!: ProofPair;
+    let recursiveResult: boolean | null = null;
+    let reenter = true;
+    const injectedSigner: GpuParentRuntimeProofAdmissionReceiptSigner = {
+      signAdmissionReceipt: vi.fn((input) => {
+        if (reenter) {
+          reenter = false;
+          recursiveResult = gate.beforeClassify(secondPair.proof, 5);
+        }
+        return concreteSigner.signAdmissionReceipt(input);
+      }),
+    };
+    gate = admission({ admissionReceiptSigner: injectedSigner });
+    const firstIntent = gate.issueCompileIntent();
+    const secondIntent = gate.issueCompileIntent();
+    const firstPair = makePair(firstIntent.compileRequestNonce, "1");
+    secondPair = makePair(secondIntent.compileRequestNonce, "2");
+    gate.beforeClassify(firstPair.control, 1);
+    gate.beforeClassify(secondPair.control, 2);
+
+    expect(gate.beforeClassify(firstPair.proof, 3)).toBe(false);
+    expect(recursiveResult).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      verifiedBindingCount: 2,
+      admittedProofCount: 0,
+      lastDecisionCode:
+        "gpu_parent_runtime_proof_admission_receipt_signer_reentry_suppressed",
+    });
+
+    expect(gate.beforeClassify(firstPair.proof, 6)).toBe(true);
+    expect(gate.beforeClassify(secondPair.proof, 7)).toBe(true);
+    expect(gate.snapshot()).toMatchObject({
+      verifiedBindingCount: 0,
+      admittedProofCount: 2,
+    });
+  });
+
+  it("rejects admission state mutation during signing and permits a clean retry", () => {
+    const concreteSigner = admissionReceiptSigner();
+    let gate!: SessionGpuParentRuntimeProofAdmission;
+    let mutateState = true;
+    const injectedSigner: GpuParentRuntimeProofAdmissionReceiptSigner = {
+      signAdmissionReceipt: vi.fn((input) => {
+        if (mutateState) {
+          mutateState = false;
+          gate.issueCompileIntent();
+        }
+        return concreteSigner.signAdmissionReceipt(input);
+      }),
+    };
+    gate = admission({ admissionReceiptSigner: injectedSigner });
+    const intent = gate.issueCompileIntent();
+    const pair = makePair(intent.compileRequestNonce, "b");
+    const proofId = pair.control.fullRuntimeProofId as string;
+    gate.beforeClassify(pair.control, 1);
+
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      pendingIntentCount: 1,
+      verifiedBindingCount: 1,
+      admittedProofCount: 0,
+      lastDecisionCode:
+        "gpu_parent_runtime_proof_admission_receipt_signer_state_changed",
+    });
+    expect(gate.takeControlVerificationMaterial(proofId)).toBeNull();
+
+    expect(gate.beforeClassify(pair.proof, 3)).toBe(true);
+    expect(gate.takeControlVerificationMaterial(proofId)).not.toBeNull();
+  });
+
+  it("rejects signer-time binding expiry without retaining partial material", () => {
+    const concreteSigner = admissionReceiptSigner();
+    let gate!: SessionGpuParentRuntimeProofAdmission;
+    let now = 1_000;
+    const injectedSigner: GpuParentRuntimeProofAdmissionReceiptSigner = {
+      signAdmissionReceipt: vi.fn((input) => {
+        now = 1_006;
+        gate.snapshot();
+        return concreteSigner.signAdmissionReceipt(input);
+      }),
+    };
+    gate = admission({
+      admissionReceiptSigner: injectedSigner,
+      now: () => now,
+      limits: { bindingTtlMs: 5 },
+    });
+    const intent = gate.issueCompileIntent();
+    const pair = makePair(intent.compileRequestNonce, "a");
+    const proofId = pair.control.fullRuntimeProofId as string;
+    gate.beforeClassify(pair.control, 1);
+
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      verifiedBindingCount: 0,
+      admittedProofCount: 0,
+      lastDecisionCode:
+        "gpu_parent_runtime_proof_admission_receipt_signer_state_changed",
+    });
+    expect(gate.takeControlVerificationMaterial(proofId)).toBeNull();
+  });
+
+  it("rejects signer-time worker key invalidation without committing material", () => {
+    const keyPin = pinnedKeyPin();
+    const concreteSigner = admissionReceiptSigner();
+    const injectedSigner: GpuParentRuntimeProofAdmissionReceiptSigner = {
+      signAdmissionReceipt: vi.fn((input) => {
+        keyPin.dispose();
+        return concreteSigner.signAdmissionReceipt(input);
+      }),
+    };
+    const gate = admission({ keyPin, admissionReceiptSigner: injectedSigner });
+    const intent = gate.issueCompileIntent();
+    const pair = makePair(intent.compileRequestNonce, "9");
+    const proofId = pair.control.fullRuntimeProofId as string;
+    gate.beforeClassify(pair.control, 1);
+
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      verifiedBindingCount: 1,
+      admittedProofCount: 0,
+      lastDecisionCode: "gpu_parent_runtime_proof_parent_key_not_pinned",
+    });
+    expect(gate.takeControlVerificationMaterial(proofId)).toBeNull();
+  });
+
+  it("rejects a malformed admission signer result without consuming the binding", () => {
+    const concreteSigner = admissionReceiptSigner();
+    const injectedSigner: GpuParentRuntimeProofAdmissionReceiptSigner = {
+      signAdmissionReceipt: vi.fn((input) => {
+        const malformed = structuredClone(
+          concreteSigner.signAdmissionReceipt(input),
+        ) as Record<string, unknown>;
+        delete malformed.signature;
+        return malformed as never;
+      }),
+    };
+    const gate = admission({ admissionReceiptSigner: injectedSigner });
+    const intent = gate.issueCompileIntent();
+    const pair = makePair(intent.compileRequestNonce, "8");
+    const proofId = pair.control.fullRuntimeProofId as string;
+    gate.beforeClassify(pair.control, 1);
+
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      verifiedBindingCount: 1,
+      admittedProofCount: 0,
+      lastDecisionCode:
+        "gpu_parent_runtime_proof_admission_receipt_signer_result_invalid",
+    });
+    expect(gate.takeControlVerificationMaterial(proofId)).toBeNull();
+  });
+
+  it("bounds signer decimal fields before attempting U64 parsing", () => {
+    const concreteSigner = admissionReceiptSigner();
+    const injectedSigner: GpuParentRuntimeProofAdmissionReceiptSigner = {
+      signAdmissionReceipt: vi.fn((input) => {
+        const malformed = structuredClone(
+          concreteSigner.signAdmissionReceipt(input),
+        ) as Record<string, unknown>;
+        malformed.admittedAtUnixNs = "9".repeat(100_000);
+        return malformed as never;
+      }),
+    };
+    const gate = admission({ admissionReceiptSigner: injectedSigner });
+    const intent = gate.issueCompileIntent();
+    const pair = makePair(intent.compileRequestNonce, "7");
+    const proofId = pair.control.fullRuntimeProofId as string;
+    gate.beforeClassify(pair.control, 1);
+
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      verifiedBindingCount: 1,
+      admittedProofCount: 0,
+      lastDecisionCode:
+        "gpu_parent_runtime_proof_admission_receipt_signer_result_invalid",
+    });
+    expect(gate.takeControlVerificationMaterial(proofId)).toBeNull();
+  });
+
+  it("bounds signer result width without materializing all property names", () => {
+    const concreteSigner = admissionReceiptSigner();
+    const injectedSigner: GpuParentRuntimeProofAdmissionReceiptSigner = {
+      signAdmissionReceipt: vi.fn((input) => {
+        const malformed = structuredClone(
+          concreteSigner.signAdmissionReceipt(input),
+        ) as Record<string, unknown>;
+        for (let index = 0; index < 10_000; index += 1) {
+          malformed[`untrusted-${index}`] = index;
+        }
+        return malformed as never;
+      }),
+    };
+    const gate = admission({ admissionReceiptSigner: injectedSigner });
+    const intent = gate.issueCompileIntent();
+    const pair = makePair(intent.compileRequestNonce, "6");
+    const proofId = pair.control.fullRuntimeProofId as string;
+    gate.beforeClassify(pair.control, 1);
+
+    expect(gate.beforeClassify(pair.proof, 2)).toBe(false);
+    expect(gate.snapshot()).toMatchObject({
+      verifiedBindingCount: 1,
+      admittedProofCount: 0,
+      lastDecisionCode:
+        "gpu_parent_runtime_proof_admission_receipt_signer_result_invalid",
+    });
     expect(gate.takeControlVerificationMaterial(proofId)).toBeNull();
   });
 

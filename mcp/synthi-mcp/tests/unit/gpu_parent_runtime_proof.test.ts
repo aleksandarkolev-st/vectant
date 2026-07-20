@@ -8,6 +8,7 @@ import type { RTCDataChannel } from "werift";
 import {
   canonicalizeGpuParentRuntimeProofJson,
   commitPreparedGpuParentRuntimeProofTransport,
+  discardPreparedGpuParentRuntimeProofTransport,
   prepareGpuParentRuntimeProofTransport,
   verifyGpuParentRuntimeProofTransport,
   type GpuParentRuntimeProofExpectedBinding,
@@ -790,6 +791,7 @@ describe("staged GPU parent runtime proof transport", () => {
         canSatisfyRuntimeProof: false as const,
       })),
       commitPreparedSupportEnvelope: vi.fn(() => acceptedTransportVerification()),
+      discardPreparedSupportEnvelope: vi.fn(() => true),
     };
 
     const prepared = prepareFixture(fixture, transactionalConsumer);
@@ -834,6 +836,7 @@ describe("staged GPU parent runtime proof transport", () => {
         consumeSupportEnvelope: vi.fn(),
         prepareSupportEnvelope: vi.fn(),
         commitPreparedSupportEnvelope: vi.fn(),
+        discardPreparedSupportEnvelope: vi.fn(),
       }, {}) as unknown as GpuParentRuntimeProofTransactionalReceiptConsumer,
     );
     expect(proxyResult).toMatchObject({
@@ -866,6 +869,7 @@ describe("staged GPU parent runtime proof transport", () => {
       commitPreparedSupportEnvelope: vi.fn(() => {
         throw new Error("transport unavailable");
       }),
+      discardPreparedSupportEnvelope: vi.fn(() => true),
     };
     const prepared = prepareFixture(fixture, transactionalConsumer);
 
@@ -896,6 +900,26 @@ describe("staged GPU parent runtime proof transport", () => {
       verified: false,
       code: "gpu_parent_runtime_proof_preparation_already_used",
     });
+  });
+
+  it("discards an abandoned parent preparation without consuming replay", () => {
+    const fixture = makeFixture();
+    const signed = attachRealSignedEnvelope(fixture);
+    const prepared = prepareFixture(fixture, signed.consumer);
+
+    expect(prepared.prepared).toBe(true);
+    expect(discardPreparedGpuParentRuntimeProofTransport(structuredClone(prepared)))
+      .toBe(false);
+    expect(discardPreparedGpuParentRuntimeProofTransport(prepared)).toBe(true);
+    expect(discardPreparedGpuParentRuntimeProofTransport(prepared)).toBe(false);
+    expect(commitPreparedGpuParentRuntimeProofTransport(prepared)).toMatchObject({
+      verified: false,
+      code: "gpu_parent_runtime_proof_preparation_already_used",
+    });
+
+    const retry = prepareFixture(fixture, signed.consumer);
+    expect(retry.prepared).toBe(true);
+    expect(commitPreparedGpuParentRuntimeProofTransport(retry).verified).toBe(true);
   });
 });
 

@@ -1,13 +1,25 @@
 import { createHash, randomBytes } from "node:crypto";
+import { isProxy } from "node:util/types";
+import {
+  GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_ALGORITHM,
+  GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_AUTHORITY,
+  GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_PRODUCER,
+  GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_SCHEMA,
+  type GpuParentRuntimeProofAdmissionReceipt,
+  type GpuParentRuntimeProofAdmissionReceiptInput,
+  type GpuParentRuntimeProofAdmissionReceiptSigner as GpuParentRuntimeProofAdmissionReceiptSignerApi,
+} from "./gpu_parent_runtime_proof_admission_receipt.js";
 import {
   GPU_PARENT_RUNTIME_PROOF_CONTROL_BINDING_TYPE,
   verifyGpuParentRuntimeProofControlBinding,
   type GpuParentRuntimeProofControlBindingReceiptConsumer,
 } from "./gpu_parent_runtime_proof_control_binding.js";
 import {
-  verifyGpuParentRuntimeProofTransport,
+  commitPreparedGpuParentRuntimeProofTransport,
+  discardPreparedGpuParentRuntimeProofTransport,
+  prepareGpuParentRuntimeProofTransport,
   type GpuParentRuntimeProofExpectedBinding,
-  type GpuParentRuntimeProofReceiptConsumer,
+  type GpuParentRuntimeProofTransactionalReceiptConsumer,
 } from "./gpu_parent_runtime_proof.js";
 import type {
   RuntimeEvidenceTransportKeyPin,
@@ -25,13 +37,20 @@ const DEFAULT_MAX_ISSUED_NONCES = 4_096;
 const DEFAULT_INTENT_TTL_MS = 30 * 60_000;
 const DEFAULT_BINDING_TTL_MS = 5 * 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const U64_MAX = 18_446_744_073_709_551_615n;
+const U64_DECIMAL_DIGITS = U64_MAX.toString().length;
 
 export const GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION =
-  "synthi.gpu_hmr.parent_control_verification_material.v1";
+  "synthi.gpu_hmr.parent_control_verification_material.v2";
 
 export type GpuParentRuntimeProofAdmissionReceiptConsumer =
   GpuParentRuntimeProofControlBindingReceiptConsumer
-  & GpuParentRuntimeProofReceiptConsumer;
+  & GpuParentRuntimeProofTransactionalReceiptConsumer;
+
+export type GpuParentRuntimeProofAdmissionReceiptSigner = Pick<
+  GpuParentRuntimeProofAdmissionReceiptSignerApi,
+  "signAdmissionReceipt"
+>;
 
 export interface GpuParentRuntimeProofAdmissionLimits {
   readonly maxPendingIntents?: number;
@@ -45,6 +64,7 @@ export interface GpuParentRuntimeProofAdmissionContext {
   readonly transportSessionId: string;
   readonly keyPin: RuntimeEvidenceTransportKeyPin;
   readonly receiptConsumer: GpuParentRuntimeProofAdmissionReceiptConsumer;
+  readonly admissionReceiptSigner: GpuParentRuntimeProofAdmissionReceiptSigner;
   readonly limits?: GpuParentRuntimeProofAdmissionLimits;
   readonly now?: () => number;
   readonly nonceBytes?: () => Uint8Array;
@@ -71,6 +91,7 @@ export interface GpuParentRuntimeProofControlVerificationMaterial {
     RuntimeEvidenceTransportVerificationKey;
   readonly transportContext:
     GpuParentRuntimeProofControlVerificationTransportContext;
+  readonly mcpAdmissionReceipt: GpuParentRuntimeProofAdmissionReceipt;
 }
 
 export type GpuParentRuntimeProofTrustInvalidationReason =
@@ -101,6 +122,11 @@ interface PendingIntent {
 
 interface VerifiedBinding {
   readonly bindingId: string;
+  readonly bindingCanonicalSha256: string;
+  readonly controlTransportReceiptId: string;
+  readonly controlObservationContextHash: string;
+  readonly computeExpectedOutputContractHash: string | null;
+  readonly computeExpectedOutputSemanticsHash: string | null;
   readonly expectedBinding: GpuParentRuntimeProofExpectedBinding;
   readonly protectedProofJsonSha256: string;
   readonly canonicalProofSha256: string;
@@ -161,6 +187,10 @@ function validOptionalCanonicalSha256(
     || (typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value));
 }
 
+function canonicalSha256(value: unknown): value is string {
+  return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
+}
+
 function plainRecord(value: unknown): Record<string, unknown> | null {
   if (
     value === null
@@ -182,6 +212,44 @@ function ownEnumerableDataProperty(
     if (descriptor === undefined) return { present: false, value: undefined };
     if (!("value" in descriptor) || descriptor.enumerable !== true) return null;
     return { present: true, value: descriptor.value };
+  } catch {
+    return null;
+  }
+}
+
+function captureCallableDataMethod(
+  receiver: unknown,
+  key: string,
+): ((input: GpuParentRuntimeProofAdmissionReceiptInput) => unknown) | null {
+  try {
+    if (
+      receiver === null
+      || typeof receiver !== "object"
+      || Array.isArray(receiver)
+      || isProxy(receiver)
+    ) {
+      return null;
+    }
+    let owner: object | null = receiver;
+    for (let depth = 0; owner !== null && depth < 8; depth += 1) {
+      if (isProxy(owner)) return null;
+      const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+      if (descriptor !== undefined) {
+        if (
+          !Object.prototype.hasOwnProperty.call(descriptor, "value")
+          || Object.prototype.hasOwnProperty.call(descriptor, "get")
+          || Object.prototype.hasOwnProperty.call(descriptor, "set")
+          || typeof descriptor.value !== "function"
+          || isProxy(descriptor.value)
+        ) {
+          return null;
+        }
+        const method = descriptor.value;
+        return (input) => Reflect.apply(method, receiver, [input]);
+      }
+      owner = Object.getPrototypeOf(owner);
+    }
+    return null;
   } catch {
     return null;
   }
@@ -313,10 +381,177 @@ function sameTransportVerificationKey(
     && left.keyAnnouncementId === right.keyAnnouncementId;
 }
 
+const MCP_ADMISSION_RECEIPT_INPUT_KEYS = [
+  "transportSessionId",
+  "compileRequestNonce",
+  "computeExpectedOutputContractHash",
+  "computeExpectedOutputSemanticsHash",
+  "workerKeyId",
+  "workerKeyAnnouncementId",
+  "workerProcessId",
+  "controlBindingId",
+  "controlBindingCanonicalSha256",
+  "controlTransportReceiptId",
+  "controlObservationContextHash",
+  "parentReceiptId",
+  "parentTransportReceiptId",
+  "parentCanonicalProofSha256",
+  "parentObservationContextHash",
+  "requestId",
+  "sourceEditId",
+  "artifactContentHash",
+  "fullRuntimeProofId",
+  "proofLedgerId",
+  "runnerProcessId",
+  "runnerRuntimeSessionId",
+  "runnerChallenge",
+  "commandEnvelopeSha256",
+  "protectedProofJsonSha256",
+] as const;
+
+const MCP_ADMISSION_RECEIPT_KEYS = [
+  "schemaVersion",
+  "algorithm",
+  "signerKeyId",
+  "producer",
+  "proofAuthority",
+  "controlStageAdmitted",
+  "parentProofStageAdmitted",
+  "acceptedForGpuHmr",
+  "gpuHmrSuccess",
+  "canSatisfyRuntimeProof",
+  "validationRunChallengeSha256",
+  ...MCP_ADMISSION_RECEIPT_INPUT_KEYS,
+  "admittedAtUnixNs",
+  "sequence",
+  "nonce",
+  "receiptId",
+  "signature",
+] as const;
+
+function canonicalDecimalU64(value: unknown, allowZero: boolean): boolean {
+  if (
+    typeof value !== "string"
+    || value.length > U64_DECIMAL_DIGITS
+    || !(allowZero ? /^(0|[1-9][0-9]*)$/ : /^[1-9][0-9]*$/).test(value)
+  ) {
+    return false;
+  }
+  try {
+    return BigInt(value) <= U64_MAX;
+  } catch {
+    return false;
+  }
+}
+
+function canonicalBase64Url(value: unknown, byteLength: number): boolean {
+  const encodedLength = Math.ceil((byteLength * 8) / 6);
+  if (
+    typeof value !== "string"
+    || value.length !== encodedLength
+    || !/^[A-Za-z0-9_-]+$/.test(value)
+  ) {
+    return false;
+  }
+  try {
+    const bytes = Buffer.from(value, "base64url");
+    return bytes.byteLength === byteLength
+      && bytes.toString("base64url") === value;
+  } catch {
+    return false;
+  }
+}
+
+// The shared verifier intentionally exposes only key/challenge-backed receipt
+// verification. Admission still needs a trap-safe snapshot of signer output.
+function snapshotMcpAdmissionReceipt(
+  value: unknown,
+  expectedInput: GpuParentRuntimeProofAdmissionReceiptInput,
+): GpuParentRuntimeProofAdmissionReceipt | null {
+  try {
+    if (
+      value === null
+      || typeof value !== "object"
+      || isProxy(value)
+      || Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Object.prototype
+    ) {
+      return null;
+    }
+    const requiredKeys = new Set<string>(MCP_ADMISSION_RECEIPT_KEYS);
+    let enumerableKeyCount = 0;
+    for (const key in value) {
+      if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+      enumerableKeyCount += 1;
+      if (
+        enumerableKeyCount > MCP_ADMISSION_RECEIPT_KEYS.length
+        || !requiredKeys.has(key)
+      ) {
+        return null;
+      }
+    }
+    if (enumerableKeyCount !== MCP_ADMISSION_RECEIPT_KEYS.length) return null;
+
+    const snapshot: Record<string, unknown> = {};
+    for (const key of MCP_ADMISSION_RECEIPT_KEYS) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined
+        || descriptor.enumerable !== true
+        || !Object.prototype.hasOwnProperty.call(descriptor, "value")
+        || Object.prototype.hasOwnProperty.call(descriptor, "get")
+        || Object.prototype.hasOwnProperty.call(descriptor, "set")
+      ) {
+        return null;
+      }
+      snapshot[key] = descriptor.value;
+    }
+    for (const key of MCP_ADMISSION_RECEIPT_INPUT_KEYS) {
+      if (snapshot[key] !== expectedInput[key]) return null;
+    }
+    const signature = snapshot.signature;
+    if (
+      snapshot.schemaVersion !== GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_SCHEMA
+      || snapshot.algorithm !== GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_ALGORITHM
+      || typeof snapshot.signerKeyId !== "string"
+      || !/^gpu-hmr-mcp-admission-key:sha256:[a-f0-9]{64}$/.test(
+        snapshot.signerKeyId,
+      )
+      || snapshot.producer !== GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_PRODUCER
+      || snapshot.proofAuthority !== GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_AUTHORITY
+      || snapshot.controlStageAdmitted !== true
+      || snapshot.parentProofStageAdmitted !== true
+      || snapshot.acceptedForGpuHmr !== false
+      || snapshot.gpuHmrSuccess !== false
+      || snapshot.canSatisfyRuntimeProof !== false
+      || !canonicalSha256(snapshot.validationRunChallengeSha256)
+      || !canonicalDecimalU64(snapshot.admittedAtUnixNs, true)
+      || !canonicalDecimalU64(snapshot.sequence, false)
+      || !canonicalBase64Url(snapshot.nonce, 32)
+      || typeof snapshot.receiptId !== "string"
+      || !/^gpu-hmr-mcp-admission-receipt:sha256:[a-f0-9]{64}$/.test(
+        snapshot.receiptId,
+      )
+      || typeof signature !== "string"
+      || !signature.startsWith("ed25519:")
+      || !canonicalBase64Url(signature.slice("ed25519:".length), 64)
+    ) {
+      return null;
+    }
+    return Object.freeze(snapshot) as unknown as
+      GpuParentRuntimeProofAdmissionReceipt;
+  } catch {
+    return null;
+  }
+}
+
 export class SessionGpuParentRuntimeProofAdmission {
   private readonly transportSessionId: string;
   private readonly keyPin: RuntimeEvidenceTransportKeyPin;
   private readonly receiptConsumer: GpuParentRuntimeProofAdmissionReceiptConsumer;
+  private readonly signAdmissionReceipt: (
+    input: GpuParentRuntimeProofAdmissionReceiptInput,
+  ) => unknown;
   private readonly now: () => number;
   private readonly nonceBytes: () => Uint8Array;
   private readonly maxPendingIntents: number;
@@ -332,11 +567,14 @@ export class SessionGpuParentRuntimeProofAdmission {
   private readonly retainedControlVerificationMaterials =
     new Map<string, RetainedControlVerificationMaterial>();
   private readonly controlNoncesInFlight = new Set<string>();
-  private readonly parentProofIdsInFlight = new Set<string>();
+  private parentProofTransactionInFlight = false;
+  private parentProofSignerActive = false;
+  private parentProofSignerReentryDetected = false;
   private disposed = false;
   private failureReason: string | null = null;
   private lastDecisionCode: string | null = null;
   private admittedProofCount = 0;
+  private stateRevision = 0;
 
   constructor(context: GpuParentRuntimeProofAdmissionContext) {
     if (!canonicalToken(context.transportSessionId)) {
@@ -345,6 +583,14 @@ export class SessionGpuParentRuntimeProofAdmission {
     this.transportSessionId = context.transportSessionId;
     this.keyPin = context.keyPin;
     this.receiptConsumer = context.receiptConsumer;
+    const signAdmissionReceipt = captureCallableDataMethod(
+      context.admissionReceiptSigner,
+      "signAdmissionReceipt",
+    );
+    if (signAdmissionReceipt === null) {
+      throw new Error("gpu_parent_runtime_proof_admission_receipt_signer_invalid");
+    }
+    this.signAdmissionReceipt = signAdmissionReceipt;
     this.now = context.now ?? Date.now;
     this.nonceBytes = context.nonceBytes ?? (() => randomBytes(16));
     const limits = context.limits ?? {};
@@ -417,6 +663,7 @@ export class SessionGpuParentRuntimeProofAdmission {
         });
         this.issuedNonceHashes.add(nonceHash);
         this.pendingIntents.set(nonce, intent);
+        this.stateRevision += 1;
         this.lastDecisionCode = "gpu_parent_runtime_proof_compile_intent_issued";
         return Object.freeze({
           compileRequestNonce: intent.compileRequestNonce,
@@ -436,6 +683,7 @@ export class SessionGpuParentRuntimeProofAdmission {
   cancelCompileIntent(compileRequestNonce: string): void {
     if (!validCompileRequestNonce(compileRequestNonce)) return;
     if (this.pendingIntents.delete(compileRequestNonce)) {
+      this.stateRevision += 1;
       this.lastDecisionCode = "gpu_parent_runtime_proof_compile_intent_cancelled";
     }
   }
@@ -451,6 +699,7 @@ export class SessionGpuParentRuntimeProofAdmission {
     if (retained === undefined) return null;
     this.retainedControlVerificationMaterials.delete(fullRuntimeProofId);
     this.releaseRequestIdReservation(retained.requestId, fullRuntimeProofId);
+    this.stateRevision += 1;
     return retained.material;
   }
 
@@ -461,6 +710,13 @@ export class SessionGpuParentRuntimeProofAdmission {
 
   beforeClassify(message: Record<string, unknown>, _observedAt: number): boolean {
     if (this.disposed) return false;
+    if (this.parentProofTransactionInFlight) {
+      if (this.parentProofSignerActive) {
+        this.parentProofSignerReentryDetected = true;
+      }
+      this.lastDecisionCode = "gpu_parent_runtime_proof_parent_reentry_suppressed";
+      return false;
+    }
     const now = this.currentTime();
     this.prune(now);
 
@@ -552,8 +808,11 @@ export class SessionGpuParentRuntimeProofAdmission {
     this.reservedProofIdByRequestId.clear();
     this.retainedControlVerificationMaterials.clear();
     this.controlNoncesInFlight.clear();
-    this.parentProofIdsInFlight.clear();
+    this.parentProofTransactionInFlight = false;
+    this.parentProofSignerActive = false;
+    this.parentProofSignerReentryDetected = false;
     this.disposed = true;
+    this.stateRevision += 1;
     this.lastDecisionCode = "gpu_parent_runtime_proof_admission_disposed";
   }
 
@@ -688,13 +947,30 @@ export class SessionGpuParentRuntimeProofAdmission {
       this.lastDecisionCode = "gpu_parent_runtime_proof_binding_capacity_exhausted";
       return;
     }
-    const bindingId = validation.evidence.bindingId;
-    if (bindingId === null) {
-      this.fail("gpu_parent_runtime_proof_verified_control_binding_id_missing");
+    const {
+      bindingId,
+      bindingCanonicalSha256,
+      transportReceiptId: controlTransportReceiptId,
+      observationContextHash: controlObservationContextHash,
+    } = validation.evidence;
+    if (
+      bindingId === null
+      || bindingCanonicalSha256 === null
+      || controlTransportReceiptId === null
+      || controlObservationContextHash === null
+    ) {
+      this.fail("gpu_parent_runtime_proof_verified_control_evidence_incomplete");
       return;
     }
     const binding = Object.freeze({
       bindingId,
+      bindingCanonicalSha256,
+      controlTransportReceiptId,
+      controlObservationContextHash,
+      computeExpectedOutputContractHash:
+        validation.computeExpectedOutputContractHash,
+      computeExpectedOutputSemanticsHash:
+        validation.computeExpectedOutputSemanticsHash,
       expectedBinding: freezeExpectedBinding(validation.expectedBinding),
       protectedProofJsonSha256:
         controlBinding.protectedProofJsonSha256 as string,
@@ -709,6 +985,7 @@ export class SessionGpuParentRuntimeProofAdmission {
     this.admittedControlIdentityHistory.add(proofIdentityHistoryKey);
     this.admittedControlIdentityHistory.add(requestIdentityHistoryKey);
     this.pendingIntents.delete(nonce);
+    this.stateRevision += 1;
     this.lastDecisionCode = "gpu_parent_runtime_proof_control_admitted";
   }
 
@@ -732,10 +1009,6 @@ export class SessionGpuParentRuntimeProofAdmission {
       this.lastDecisionCode = "gpu_parent_runtime_proof_parent_binding_identity_missing";
       return false;
     }
-    if (this.parentProofIdsInFlight.has(proofId)) {
-      this.lastDecisionCode = "gpu_parent_runtime_proof_parent_reentry_suppressed";
-      return false;
-    }
     const binding = this.bindingsByProofId.get(proofId);
     if (binding === undefined) {
       this.lastDecisionCode = "gpu_parent_runtime_proof_parent_binding_missing";
@@ -756,81 +1029,235 @@ export class SessionGpuParentRuntimeProofAdmission {
       return false;
     }
 
-    let validation: ReturnType<typeof verifyGpuParentRuntimeProofTransport>;
-    this.parentProofIdsInFlight.add(proofId);
+    this.parentProofTransactionInFlight = true;
+    this.parentProofSignerReentryDetected = false;
+    let preparedParentProof: ReturnType<
+      typeof prepareGpuParentRuntimeProofTransport
+    > | null = null;
     try {
-      validation = verifyGpuParentRuntimeProofTransport(message, {
+      preparedParentProof = prepareGpuParentRuntimeProofTransport(message, {
         transportSessionId: this.transportSessionId,
         expectedWorkerProcessId: pin.key.workerProcessId,
         expectedBinding: binding.expectedBinding,
         receiptConsumer: this.receiptConsumer,
       });
-    } finally {
-      this.parentProofIdsInFlight.delete(proofId);
-    }
-    if (!this.isActive()) return false;
-    if (!validation.verified) {
-      this.lastDecisionCode = validation.code;
-      return false;
-    }
-    const commitNow = this.currentTime();
-    this.prune(commitNow);
-    if (!this.isActive()) return false;
-    if (this.bindingsByProofId.get(proofId) !== binding) {
-      this.lastDecisionCode =
-        "gpu_parent_runtime_proof_parent_transaction_state_changed";
-      return false;
-    }
-    const currentPin = this.keyPin.snapshot();
-    if (currentPin.status !== "pinned" || currentPin.key === null) {
-      this.lastDecisionCode = "gpu_parent_runtime_proof_parent_key_not_pinned";
-      return false;
-    }
-    if (!sameTransportVerificationKey(
-      currentPin.key,
-      binding.runtimeEvidenceTransportVerificationKey,
-    )) {
-      this.fail("gpu_parent_runtime_proof_transport_verification_key_changed");
-      return false;
-    }
-    if (
-      this.retainedControlVerificationMaterials.has(proofId)
-      || this.reservedProofIdByRequestId.get(
-        binding.expectedBinding.requestId,
-      ) !== proofId
-      || this.reservedCapsuleCount() > this.maxVerifiedBindings
-    ) {
-      this.fail("gpu_parent_runtime_proof_capsule_reservation_invariant_failed");
-      return false;
-    }
+      if (!this.isActive()) return false;
+      if (!preparedParentProof.prepared) {
+        this.lastDecisionCode = preparedParentProof.code;
+        return false;
+      }
 
-    const material: GpuParentRuntimeProofControlVerificationMaterial = deepFreeze({
-      schemaVersion:
-        GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
-      controlBinding: binding.controlBinding,
-      runtimeEvidenceTransportVerificationKey:
+      const preSignNow = this.currentTime();
+      this.prune(preSignNow);
+      if (!this.isActive()) return false;
+      if (this.bindingsByProofId.get(proofId) !== binding) {
+        this.lastDecisionCode =
+          "gpu_parent_runtime_proof_parent_transaction_state_changed";
+        return false;
+      }
+      const preSignPin = this.keyPin.snapshot();
+      if (preSignPin.status !== "pinned" || preSignPin.key === null) {
+        this.lastDecisionCode = "gpu_parent_runtime_proof_parent_key_not_pinned";
+        return false;
+      }
+      if (!sameTransportVerificationKey(
+        preSignPin.key,
         binding.runtimeEvidenceTransportVerificationKey,
-      transportContext: binding.transportContext,
-    });
-    this.bindingsByProofId.delete(proofId);
-    this.retainedControlVerificationMaterials.set(proofId, Object.freeze({
-      material,
-      requestId: binding.expectedBinding.requestId,
-      expiresAt: commitNow + this.bindingTtlMs,
-    }));
-    this.admittedProofCount += 1;
-    this.lastDecisionCode = "gpu_parent_runtime_proof_parent_admitted";
-    return true;
+      )) {
+        this.fail("gpu_parent_runtime_proof_transport_verification_key_changed");
+        return false;
+      }
+      if (
+        this.retainedControlVerificationMaterials.has(proofId)
+        || this.reservedProofIdByRequestId.get(
+          binding.expectedBinding.requestId,
+        ) !== proofId
+        || this.reservedCapsuleCount() > this.maxVerifiedBindings
+      ) {
+        this.fail("gpu_parent_runtime_proof_capsule_reservation_invariant_failed");
+        return false;
+      }
+
+      const {
+        parentReceiptId,
+        transportReceiptId: parentTransportReceiptId,
+        canonicalProofSha256: parentCanonicalProofSha256,
+        observationContextHash: parentObservationContextHash,
+      } = preparedParentProof.evidence;
+      if (
+        parentReceiptId === null
+        || parentTransportReceiptId === null
+        || parentCanonicalProofSha256 === null
+        || parentObservationContextHash === null
+      ) {
+        this.lastDecisionCode =
+          "gpu_parent_runtime_proof_verified_parent_evidence_incomplete";
+        return false;
+      }
+
+      const receiptInput: GpuParentRuntimeProofAdmissionReceiptInput =
+        Object.freeze({
+          transportSessionId: this.transportSessionId,
+          compileRequestNonce: binding.transportContext.compileRequestNonce,
+          computeExpectedOutputContractHash:
+            binding.computeExpectedOutputContractHash,
+          computeExpectedOutputSemanticsHash:
+            binding.computeExpectedOutputSemanticsHash,
+          workerKeyId: binding.runtimeEvidenceTransportVerificationKey.keyId,
+          workerKeyAnnouncementId:
+            binding.runtimeEvidenceTransportVerificationKey.keyAnnouncementId,
+          workerProcessId:
+            binding.runtimeEvidenceTransportVerificationKey.workerProcessId,
+          controlBindingId: binding.bindingId,
+          controlBindingCanonicalSha256: binding.bindingCanonicalSha256,
+          controlTransportReceiptId: binding.controlTransportReceiptId,
+          controlObservationContextHash: binding.controlObservationContextHash,
+          parentReceiptId,
+          parentTransportReceiptId,
+          parentCanonicalProofSha256,
+          parentObservationContextHash,
+          requestId: binding.expectedBinding.requestId,
+          sourceEditId: binding.expectedBinding.sourceEditId,
+          artifactContentHash: binding.expectedBinding.artifactContentHash,
+          fullRuntimeProofId: binding.expectedBinding.fullRuntimeProofId,
+          proofLedgerId: binding.expectedBinding.proofLedgerId,
+          runnerProcessId: binding.expectedBinding.runnerProcessId,
+          runnerRuntimeSessionId:
+            binding.expectedBinding.runnerRuntimeSessionId,
+          runnerChallenge: binding.expectedBinding.runnerChallenge,
+          commandEnvelopeSha256:
+            binding.expectedBinding.commandEnvelopeSha256,
+          protectedProofJsonSha256: binding.protectedProofJsonSha256,
+        });
+      const signerStateRevision = this.stateRevision;
+      let receiptValue: unknown = null;
+      let signerFailed = false;
+      this.parentProofSignerActive = true;
+      try {
+        receiptValue = this.signAdmissionReceipt(receiptInput);
+      } catch {
+        signerFailed = true;
+      } finally {
+        this.parentProofSignerActive = false;
+      }
+      if (this.parentProofSignerReentryDetected) {
+        this.lastDecisionCode =
+          "gpu_parent_runtime_proof_admission_receipt_signer_reentry_suppressed";
+        return false;
+      }
+      if (!this.isActive()) return false;
+      if (signerFailed) {
+        this.lastDecisionCode =
+          "gpu_parent_runtime_proof_admission_receipt_signer_failed";
+        return false;
+      }
+      if (this.stateRevision !== signerStateRevision) {
+        this.lastDecisionCode =
+          "gpu_parent_runtime_proof_admission_receipt_signer_state_changed";
+        return false;
+      }
+      const mcpAdmissionReceipt = snapshotMcpAdmissionReceipt(
+        receiptValue,
+        receiptInput,
+      );
+      if (mcpAdmissionReceipt === null) {
+        this.lastDecisionCode =
+          "gpu_parent_runtime_proof_admission_receipt_signer_result_invalid";
+        return false;
+      }
+
+      const commitNow = this.currentTime();
+      this.prune(commitNow);
+      if (!this.isActive()) return false;
+      if (this.stateRevision !== signerStateRevision) {
+        this.lastDecisionCode =
+          "gpu_parent_runtime_proof_admission_receipt_signer_state_changed";
+        return false;
+      }
+      if (this.bindingsByProofId.get(proofId) !== binding) {
+        this.lastDecisionCode =
+          "gpu_parent_runtime_proof_parent_transaction_state_changed";
+        return false;
+      }
+      const currentPin = this.keyPin.snapshot();
+      if (currentPin.status !== "pinned" || currentPin.key === null) {
+        this.lastDecisionCode = "gpu_parent_runtime_proof_parent_key_not_pinned";
+        return false;
+      }
+      if (!sameTransportVerificationKey(
+        currentPin.key,
+        binding.runtimeEvidenceTransportVerificationKey,
+      )) {
+        this.fail("gpu_parent_runtime_proof_transport_verification_key_changed");
+        return false;
+      }
+      if (
+        this.retainedControlVerificationMaterials.has(proofId)
+        || this.reservedProofIdByRequestId.get(
+          binding.expectedBinding.requestId,
+        ) !== proofId
+        || this.reservedCapsuleCount() > this.maxVerifiedBindings
+      ) {
+        this.fail("gpu_parent_runtime_proof_capsule_reservation_invariant_failed");
+        return false;
+      }
+
+      const material: GpuParentRuntimeProofControlVerificationMaterial =
+        deepFreeze({
+          schemaVersion:
+            GPU_PARENT_RUNTIME_PROOF_CONTROL_VERIFICATION_MATERIAL_SCHEMA_VERSION,
+          controlBinding: binding.controlBinding,
+          runtimeEvidenceTransportVerificationKey:
+            binding.runtimeEvidenceTransportVerificationKey,
+          transportContext: binding.transportContext,
+          mcpAdmissionReceipt,
+        });
+      const committedParentProof =
+        commitPreparedGpuParentRuntimeProofTransport(preparedParentProof);
+      if (!committedParentProof.verified) {
+        this.lastDecisionCode = committedParentProof.code;
+        return false;
+      }
+      if (!this.isActive()) return false;
+      if (
+        this.stateRevision !== signerStateRevision
+        || this.bindingsByProofId.get(proofId) !== binding
+      ) {
+        this.fail("gpu_parent_runtime_proof_post_commit_state_changed");
+        return false;
+      }
+      this.bindingsByProofId.delete(proofId);
+      this.retainedControlVerificationMaterials.set(proofId, Object.freeze({
+        material,
+        requestId: binding.expectedBinding.requestId,
+        expiresAt: commitNow + this.bindingTtlMs,
+      }));
+      this.admittedProofCount += 1;
+      this.stateRevision += 1;
+      this.lastDecisionCode = "gpu_parent_runtime_proof_parent_admitted";
+      return true;
+    } finally {
+      if (preparedParentProof !== null) {
+        discardPreparedGpuParentRuntimeProofTransport(preparedParentProof);
+      }
+      this.parentProofSignerActive = false;
+      this.parentProofSignerReentryDetected = false;
+      this.parentProofTransactionInFlight = false;
+    }
   }
 
   private removeBinding(binding: GpuParentRuntimeProofExpectedBinding): void {
-    this.bindingsByProofId.delete(binding.fullRuntimeProofId);
+    if (this.bindingsByProofId.delete(binding.fullRuntimeProofId)) {
+      this.stateRevision += 1;
+    }
     this.releaseRequestIdReservation(binding.requestId, binding.fullRuntimeProofId);
   }
 
   private prune(now: number): void {
     for (const [nonce, intent] of this.pendingIntents) {
-      if (intent.expiresAt <= now) this.pendingIntents.delete(nonce);
+      if (intent.expiresAt <= now && this.pendingIntents.delete(nonce)) {
+        this.stateRevision += 1;
+      }
     }
     for (const binding of this.bindingsByProofId.values()) {
       if (binding.expiresAt > now) continue;
@@ -839,6 +1266,7 @@ export class SessionGpuParentRuntimeProofAdmission {
     for (const [proofId, retained] of this.retainedControlVerificationMaterials) {
       if (retained.expiresAt <= now) {
         this.retainedControlVerificationMaterials.delete(proofId);
+        this.stateRevision += 1;
         this.releaseRequestIdReservation(retained.requestId, proofId);
       }
     }
@@ -852,6 +1280,7 @@ export class SessionGpuParentRuntimeProofAdmission {
   private releaseRequestIdReservation(requestId: string, proofId: string): void {
     if (this.reservedProofIdByRequestId.get(requestId) === proofId) {
       this.reservedProofIdByRequestId.delete(requestId);
+      this.stateRevision += 1;
     }
   }
 
@@ -876,7 +1305,10 @@ export class SessionGpuParentRuntimeProofAdmission {
     this.reservedProofIdByRequestId.clear();
     this.retainedControlVerificationMaterials.clear();
     this.controlNoncesInFlight.clear();
-    this.parentProofIdsInFlight.clear();
+    this.parentProofTransactionInFlight = false;
+    this.parentProofSignerActive = false;
+    this.parentProofSignerReentryDetected = false;
+    this.stateRevision += 1;
     this.lastDecisionCode = reason;
   }
 
