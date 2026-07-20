@@ -23,6 +23,10 @@ import {
 import {
   collectGpuHmrValidationMatrixLedger,
 } from './lib/gpu-hmr-validation-matrix-ledger.mjs';
+import {
+  COMPUTE_EXPECTED_OUTPUT_CONTRACT_SCHEMA_VERSION,
+  buildComputeExpectedOutputContract,
+} from './lib/gpu-hmr-compute-oracle-semantics.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -74,6 +78,10 @@ const INPUT_VALUES = Object.freeze([1, 2.5, 4, 8, 16, 32, 64, 128]);
 const BEFORE_MULTIPLIER = 2;
 const BEFORE_BIAS = 0.5;
 const OPENCL_OUTPUT_TARGET_ID = 'opencl-buffer:output';
+const OPENCL_EXPECTED_OUTPUT_TOLERANCE = 0.0001;
+const EXPECTED_VALUE_DECIMAL_PLACES = 6;
+const COMPUTE_SEMANTIC_ORACLE_IDENTITY_SCHEMA_VERSION =
+  'synthi.gpu_hmr.compute_semantic_oracle_identity.v1';
 
 function nowSlugDate() {
   return new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
@@ -211,8 +219,104 @@ function decodeFloat32(bytes) {
   return out;
 }
 
-function expectedValues(multiplier, bias) {
-  return INPUT_VALUES.map((value) => Number((value * multiplier + bias).toFixed(6)));
+function expectedValues(inputValues, { multiplier, bias }) {
+  return inputValues.map((value) => Number(
+    (value * multiplier + bias).toFixed(EXPECTED_VALUE_DECIMAL_PLACES),
+  ));
+}
+
+function declaredExpectedOutputContractSemantics({ inputValues, tolerance }) {
+  return {
+    comparisonMode: 'numeric_tolerance',
+    dtype: 'f32',
+    shape: [inputValues.length],
+    elementCount: inputValues.length,
+    byteOrder: 'little_endian',
+    tolerance,
+  };
+}
+
+function buildDeclaredExpectedOutputContract({
+  projectId,
+  editId,
+  artifactAfterHash,
+  outputTargetId,
+  oracleCodeHash,
+  inputValues,
+  operation,
+  tolerance,
+}) {
+  const declaredExpectedValues = expectedValues(inputValues, operation);
+  const workloadDeclarationHash = sha256Text(stableJson({ inputValues, operation }));
+  return buildComputeExpectedOutputContract({
+    ...declaredExpectedOutputContractSemantics({ inputValues, tolerance }),
+    expectedValues: declaredExpectedValues,
+    binding: {
+      projectId,
+      editId,
+      artifactAfterHash,
+      outputTargetId,
+      oracleCodeHash,
+    },
+    evidenceRefs: [
+      `contract:pre-dispatch:compute-affine-workload:${workloadDeclarationHash}`,
+    ],
+  });
+}
+
+function semanticOracleImplementationIdentity() {
+  return {
+    expectedValueTransformation: expectedValues.toString(),
+    expectedContractSemantics: declaredExpectedOutputContractSemantics.toString(),
+    expectedContractDeclarationBuilder: buildDeclaredExpectedOutputContract.toString(),
+    canonicalExpectedContractBuilder: buildComputeExpectedOutputContract.toString(),
+    numericComparator: compareNumericValues.toString(),
+  };
+}
+
+function computeSemanticOracleCodeHash({
+  implementation,
+  inputValues,
+  operation,
+  tolerance,
+}) {
+  const canonicalInputValues = inputValues.map(Number);
+  const canonicalOperation = {
+    kind: 'affine',
+    multiplier: Number(operation.multiplier),
+    bias: Number(operation.bias),
+  };
+  const expectedContractSemantics = declaredExpectedOutputContractSemantics({
+    inputValues: canonicalInputValues,
+    tolerance: Number(tolerance),
+  });
+  return sha256Text(stableJson({
+    schemaVersion: COMPUTE_SEMANTIC_ORACLE_IDENTITY_SCHEMA_VERSION,
+    implementation,
+    declaration: {
+      inputValues: canonicalInputValues,
+      operation: canonicalOperation,
+      expectedValueTransformation: {
+        expression: 'input * multiplier + bias',
+        roundingMode: 'decimal_places',
+        decimalPlaces: EXPECTED_VALUE_DECIMAL_PLACES,
+      },
+      expectedOutputContract: {
+        schemaVersion: COMPUTE_EXPECTED_OUTPUT_CONTRACT_SCHEMA_VERSION,
+        ...expectedContractSemantics,
+        expectedValues: expectedValues(canonicalInputValues, canonicalOperation),
+      },
+    },
+  }));
+}
+
+function semanticOracleCodeHash({ inputValues, operation, tolerance }) {
+  return computeSemanticOracleCodeHash({
+    implementation: semanticOracleImplementationIdentity(),
+    inputValues,
+    operation,
+    tolerance,
+  });
 }
 
 function compareNumericValues(actual, expected, tolerance) {
@@ -1049,14 +1153,14 @@ exit $exitCode
 `;
 }
 
-function runModeFor({ afterHash }) {
+function runModeFor({ projectId, afterHash }) {
   const scope = CFG.metricScope;
   return {
     metric_clock: 'monotonic_ns',
     metric_scope: scope,
     cache_state: CFG.cacheState,
-    edit_id: `${CFG.targetId}-opencl-${scope}`,
-    edit_hash: sha256Text(`${CFG.targetId}:${scope}:${afterHash}`),
+    edit_id: `${projectId}-opencl-${scope}`,
+    edit_hash: sha256Text(`${projectId}:${scope}:${afterHash}`),
     edit_kind: 'gpu_artifact_edit',
     different_edit: CFG.differentEdit,
   };
@@ -1140,7 +1244,15 @@ function fieldEvidenceRefs(fields, refs) {
   return Object.fromEntries(fields.map((field) => [field, refs]));
 }
 
-function buildContract({ beforeHash, afterHash, runtimeTrace, runMode }) {
+function buildContract({
+  projectId,
+  beforeHash,
+  afterHash,
+  outputTargetId,
+  expectedOutputContract,
+  runtimeTrace,
+  runMode,
+}) {
   const sourcePaths = ['kernels/opencl-before.cl', 'kernels/opencl-after.cl'];
   const evidenceRefs = [
     beforeHash,
@@ -1152,10 +1264,11 @@ function buildContract({ beforeHash, afterHash, runtimeTrace, runMode }) {
   const processId = runtimeTrace.processId ?? 'opencl-runtime-process';
   const outputOracleContract = {
     kind: 'compute',
-    target_id: OPENCL_OUTPUT_TARGET_ID,
+    target_id: outputTargetId,
     epoch: 2,
     readback_resource: 'output',
     expected_output_verified_by: 'raw_float32_readback_schema',
+    expected_output_contract: expectedOutputContract,
     evidence_refs: ['runtime:opencl:clEnqueueReadBuffer'],
   };
   const fissionVerifierEvidenceId = `runtime:fission-verifier-report:opencl:${sha256Text(stableJson({
@@ -1187,7 +1300,7 @@ function buildContract({ beforeHash, afterHash, runtimeTrace, runMode }) {
   ];
   const contract = {
     contract_version: 'synthi.gpu_hmr.contract.v1',
-    project_id: CFG.targetId,
+    project_id: projectId,
     edit_id: runMode.edit_id,
     backend: 'opencl',
     confidence: 0.96,
@@ -1247,7 +1360,7 @@ function buildContract({ beforeHash, afterHash, runtimeTrace, runMode }) {
     },
     output_oracle_target: {
       kind: 'compute',
-      target_id: OPENCL_OUTPUT_TARGET_ID,
+      target_id: outputTargetId,
       compute_only_target_verified: true,
       evidence_refs: ['runtime:opencl:clEnqueueReadBuffer', 'runtime:opencl:raw-readback'],
     },
@@ -1349,22 +1462,37 @@ async function renderComputeCard({ filePath, afterValues, rawHash, sliceHash, ex
   await sharp(Buffer.from(svg)).png().toFile(filePath);
 }
 
-async function writeComputeOracleArtifacts({ outDir, rawAfterPath, runtimeTrace, timings }) {
+async function writeComputeOracleArtifacts({
+  projectId,
+  outDir,
+  rawAfterPath,
+  runtimeTrace,
+  timings,
+  expectedOutputContract,
+  oracleCodeHash,
+}) {
   const oracleStart = process.hrtime.bigint();
   const afterBytes = await readFile(rawAfterPath);
   const afterValues = decodeFloat32(afterBytes);
-  const beforeValues = runtimeTrace.outputEvents?.[0]?.values ?? expectedValues(BEFORE_MULTIPLIER, BEFORE_BIAS);
+  const beforeValues = runtimeTrace.outputEvents?.[0]?.values ?? expectedValues(
+    INPUT_VALUES,
+    { multiplier: BEFORE_MULTIPLIER, bias: BEFORE_BIAS },
+  );
   const beforeBytes = encodeFloat32(beforeValues);
-  const beforeRawPath = path.join(outDir, `${safeSlug(CFG.targetId)}-before-readback.bin`);
-  const schemaPath = path.join(outDir, `${safeSlug(CFG.targetId)}-readback-schema.json`);
-  const cardPath = path.join(outDir, `${safeSlug(CFG.targetId)}-compute-card.png`);
+  const beforeRawPath = path.join(outDir, `${safeSlug(projectId)}-before-readback.bin`);
+  const schemaPath = path.join(outDir, `${safeSlug(projectId)}-readback-schema.json`);
+  const cardPath = path.join(outDir, `${safeSlug(projectId)}-compute-card.png`);
   await writeFile(beforeRawPath, beforeBytes);
   const rawHash = sha256Bytes(afterBytes);
   const beforeHash = sha256Bytes(beforeBytes);
-  const expectedAfter = expectedValues(CFG.afterMultiplier, CFG.afterBias);
+  const expectedAfter = expectedOutputContract.expectedValues;
   const expectedBytes = encodeFloat32(expectedAfter);
   const expectedHash = sha256Bytes(expectedBytes);
-  const expectedVerification = compareNumericValues(afterValues, expectedAfter, 0.0001);
+  const expectedVerification = compareNumericValues(
+    afterValues,
+    expectedAfter,
+    expectedOutputContract.tolerance,
+  );
   const sliceOffset = 0;
   const sliceLength = afterBytes.length;
   const sliceHash = sha256Bytes(afterBytes.subarray(sliceOffset, sliceOffset + sliceLength));
@@ -1374,6 +1502,8 @@ async function writeComputeOracleArtifacts({ outDir, rawAfterPath, runtimeTrace,
     dataType: 'float32',
     byteLength: afterBytes.length,
     elementCount: afterValues.length,
+    shape: expectedOutputContract.shape,
+    byteOrder: expectedOutputContract.byteOrder,
     readbackResource: 'output',
     dispatchId: runtimeTrace.dispatchEvents?.[1]?.id,
     epoch: 2,
@@ -1381,7 +1511,7 @@ async function writeComputeOracleArtifacts({ outDir, rawAfterPath, runtimeTrace,
     expectedOutput: {
       dataType: 'float32',
       values: expectedAfter,
-      tolerance: 0.0001,
+      tolerance: expectedOutputContract.tolerance,
       expectedHash,
       verified: expectedVerification.matched,
       maxAbsDelta: expectedVerification.maxAbsDelta,
@@ -1423,7 +1553,7 @@ async function writeComputeOracleArtifacts({ outDir, rawAfterPath, runtimeTrace,
     expected_output_data_type: 'float32',
     expected_output_values: expectedAfter,
     expected_output_hash: expectedHash,
-    expected_output_tolerance: 0.0001,
+    expected_output_tolerance: expectedOutputContract.tolerance,
     expected_output_verified: expectedVerification.matched,
     expected_output_max_abs_delta: expectedVerification.maxAbsDelta,
     expected_output_compared: expectedVerification.compared,
@@ -1431,7 +1561,7 @@ async function writeComputeOracleArtifacts({ outDir, rawAfterPath, runtimeTrace,
     deterministic_slice: { offset: sliceOffset, length: sliceLength, hash: sliceHash, source: 'runtime_raw_readback' },
     deterministic_slice_hash: sliceHash,
     deterministic_slice_hash_verified: true,
-    oracle_code_hash: sha256Text(renderComputeCard.toString()),
+    oracle_code_hash: oracleCodeHash,
     rendered_card_png: relRepo(cardPath),
     renderedCardPng: relRepo(cardPath),
     rendered_card_hash: cardHash,
@@ -1477,15 +1607,25 @@ function computeOracleValidation(artifacts) {
   };
 }
 
-function buildProofLedgerRecord({ beforeHash, afterHash, runtimeTrace, contract, runMode, timings, oracleArtifacts, oracleValidation }) {
+function buildProofLedgerRecord({
+  projectId,
+  beforeHash,
+  afterHash,
+  outputTargetId,
+  runtimeTrace,
+  contract,
+  runMode,
+  timings,
+  oracleArtifacts,
+  oracleValidation,
+}) {
   const afterEpoch = '2';
   const beforeEpoch = '1';
   const dispatchId = runtimeTrace.dispatchEvents?.[1]?.id ?? 'opencl-dispatch-epoch-2';
   const processId = runtimeTrace.processId;
-  const outputTargetId = OPENCL_OUTPUT_TARGET_ID;
   return {
     schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
-    project_id: CFG.targetId,
+    project_id: projectId,
     edit_id: runMode.edit_id,
     edit_hash: runMode.edit_hash,
     edit_kind: runMode.edit_kind,
@@ -1583,7 +1723,7 @@ function buildProofLedgerRecord({ beforeHash, afterHash, runtimeTrace, contract,
     },
     output_oracle_target: {
       kind: 'compute',
-      target_id: OPENCL_OUTPUT_TARGET_ID,
+      target_id: outputTargetId,
       compute_only_target_verified: true,
       evidence_refs: [oracleArtifacts.raw_readback_hash, oracleArtifacts.rendered_card_png],
     },
@@ -1953,9 +2093,15 @@ async function buildProof() {
   const totalStart = process.hrtime.bigint();
   const outDir = path.join(ARTIFACT_DIR, safeSlug(CFG.slug));
   await mkdir(outDir, { recursive: true });
+  const projectId = CFG.targetId;
+  const outputTargetId = OPENCL_OUTPUT_TARGET_ID;
+  const afterOperation = {
+    multiplier: CFG.afterMultiplier,
+    bias: CFG.afterBias,
+  };
   const beforeSource = kernelSource({ multiplier: BEFORE_MULTIPLIER, bias: BEFORE_BIAS });
-  const afterSource = kernelSource({ multiplier: CFG.afterMultiplier, bias: CFG.afterBias });
-  const negativeSource = kernelSource({ multiplier: CFG.afterMultiplier, bias: CFG.afterBias, extraArg: true });
+  const afterSource = kernelSource(afterOperation);
+  const negativeSource = kernelSource({ ...afterOperation, extraArg: true });
   const beforePath = path.join(outDir, 'opencl-before.cl');
   const afterPath = path.join(outDir, 'opencl-after.cl');
   const negativePath = path.join(outDir, 'opencl-after-abi-layout-changed.cl');
@@ -1964,9 +2110,24 @@ async function buildProof() {
   await writeFile(negativePath, negativeSource);
   const beforeHash = await sha256File(beforePath);
   const afterHash = await sha256File(afterPath);
-  const runMode = runModeFor({ afterHash });
-  const rawAfterPath = path.join(outDir, `${safeSlug(CFG.targetId)}-after-readback.bin`);
-  const tracePath = path.join(outDir, `${safeSlug(CFG.targetId)}-runtime-trace.json`);
+  const runMode = runModeFor({ projectId, afterHash });
+  const oracleCodeHash = semanticOracleCodeHash({
+    inputValues: INPUT_VALUES,
+    operation: afterOperation,
+    tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
+  });
+  const expectedOutputContract = buildDeclaredExpectedOutputContract({
+    projectId,
+    editId: runMode.edit_id,
+    artifactAfterHash: afterHash,
+    outputTargetId,
+    oracleCodeHash,
+    inputValues: INPUT_VALUES,
+    operation: afterOperation,
+    tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
+  });
+  const rawAfterPath = path.join(outDir, `${safeSlug(projectId)}-after-readback.bin`);
+  const tracePath = path.join(outDir, `${safeSlug(projectId)}-runtime-trace.json`);
   const probe = await compileAndRunProbe({ outDir, beforePath, afterPath, beforeHash, afterHash, rawAfterPath, tracePath });
   if (!probe.ok) {
     const reasons = [
@@ -1986,10 +2147,26 @@ async function buildProof() {
     oracleNs: 0,
     runMode,
   });
-  const oracle = await writeComputeOracleArtifacts({ outDir, rawAfterPath, runtimeTrace, timings });
+  const oracle = await writeComputeOracleArtifacts({
+    projectId,
+    outDir,
+    rawAfterPath,
+    runtimeTrace,
+    timings,
+    expectedOutputContract,
+    oracleCodeHash,
+  });
   timings.oracle_analysis_time = oracle.oracleDurationNs;
   timings.total_validator_wall_time = durationNs(totalStart, process.hrtime.bigint());
-  const contract = buildContract({ beforeHash, afterHash, runtimeTrace, runMode });
+  const contract = buildContract({
+    projectId,
+    beforeHash,
+    afterHash,
+    outputTargetId,
+    expectedOutputContract,
+    runtimeTrace,
+    runMode,
+  });
   const contractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
   const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
     explicitContract: contract,
@@ -1997,8 +2174,10 @@ async function buildProof() {
     derivedEvaluation: contractEvaluation,
   });
   const ledgerRecord = buildProofLedgerRecord({
+    projectId,
     beforeHash,
     afterHash,
+    outputTargetId,
     runtimeTrace,
     contract,
     runMode,
@@ -2126,6 +2305,30 @@ async function selfCheck() {
     if (windowsProbeChecks.length > 0) {
       throw new Error(`Windows OpenCL probe source failed self-checks: ${windowsProbeChecks.join(',')}`);
     }
+    const projectId = CFG.targetId;
+    const outputTargetId = OPENCL_OUTPUT_TARGET_ID;
+    const beforeHash = sha256Text('before');
+    const afterHash = sha256Text('after');
+    const runMode = runModeFor({ projectId, afterHash });
+    const afterOperation = {
+      multiplier: CFG.afterMultiplier,
+      bias: CFG.afterBias,
+    };
+    const oracleCodeHash = semanticOracleCodeHash({
+      inputValues: INPUT_VALUES,
+      operation: afterOperation,
+      tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
+    });
+    const expectedOutputContract = buildDeclaredExpectedOutputContract({
+      projectId,
+      editId: runMode.edit_id,
+      artifactAfterHash: afterHash,
+      outputTargetId,
+      oracleCodeHash,
+      inputValues: INPUT_VALUES,
+      operation: afterOperation,
+      tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
+    });
     const runtimeTrace = {
       processId: 'pid:1234',
       sameProcess: true,
@@ -2154,20 +2357,33 @@ async function selfCheck() {
         { id: 'opencl-dispatch-epoch-2', artifact_hash: sha256Text('after'), epoch: '2', timestamp_monotonic_ns: 60, output_target_id: OPENCL_OUTPUT_TARGET_ID },
       ],
       outputEvents: [
-        { id: 'opencl-output-epoch-1', passed: true, after_dispatch_id: 'opencl-dispatch-epoch-1', artifact_hash: sha256Text('before'), epoch: '1', timestamp_monotonic_ns: 70, output_target_id: OPENCL_OUTPUT_TARGET_ID, values: expectedValues(BEFORE_MULTIPLIER, BEFORE_BIAS) },
-        { id: 'opencl-output-epoch-2', passed: true, after_dispatch_id: 'opencl-dispatch-epoch-2', artifact_hash: sha256Text('after'), epoch: '2', timestamp_monotonic_ns: 80, output_target_id: OPENCL_OUTPUT_TARGET_ID, values: expectedValues(CFG.afterMultiplier, CFG.afterBias) },
+        { id: 'opencl-output-epoch-1', passed: true, after_dispatch_id: 'opencl-dispatch-epoch-1', artifact_hash: sha256Text('before'), epoch: '1', timestamp_monotonic_ns: 70, output_target_id: outputTargetId, values: expectedValues(INPUT_VALUES, { multiplier: BEFORE_MULTIPLIER, bias: BEFORE_BIAS }) },
+        { id: 'opencl-output-epoch-2', passed: true, after_dispatch_id: 'opencl-dispatch-epoch-2', artifact_hash: sha256Text('after'), epoch: '2', timestamp_monotonic_ns: 80, output_target_id: outputTargetId, values: expectedValues(INPUT_VALUES, afterOperation) },
       ],
       retirementEvent: { id: 'opencl-retire-epoch-1', status: 'queue_idle_proven', retired_epoch: '1', timestamp_monotonic_ns: 90 },
       nativeApiCounts: { clBuildProgram: 2, clCreateKernel: 2, clEnqueueNDRangeKernel: 2, clEnqueueReadBuffer: 2, clFinish: 2 },
     };
     const rawAfterPath = path.join(tmp, 'after-readback.bin');
-    await writeFile(rawAfterPath, encodeFloat32(expectedValues(CFG.afterMultiplier, CFG.afterBias)));
-    const beforeHash = sha256Text('before');
-    const afterHash = sha256Text('after');
-    const runMode = runModeFor({ afterHash });
+    await writeFile(rawAfterPath, encodeFloat32(expectedValues(INPUT_VALUES, afterOperation)));
     const timings = timingFields({ runtimeTrace, compileNs: 1, runtimeNs: 100, oracleNs: 1, runMode });
-    const oracle = await writeComputeOracleArtifacts({ outDir: tmp, rawAfterPath, runtimeTrace, timings });
-    const contract = buildContract({ beforeHash, afterHash, runtimeTrace, runMode });
+    const oracle = await writeComputeOracleArtifacts({
+      projectId,
+      outDir: tmp,
+      rawAfterPath,
+      runtimeTrace,
+      timings,
+      expectedOutputContract,
+      oracleCodeHash,
+    });
+    const contract = buildContract({
+      projectId,
+      beforeHash,
+      afterHash,
+      outputTargetId,
+      expectedOutputContract,
+      runtimeTrace,
+      runMode,
+    });
     const contractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
     const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
       explicitContract: contract,
@@ -2175,8 +2391,10 @@ async function selfCheck() {
       derivedEvaluation: contractEvaluation,
     });
     const ledgerRecord = buildProofLedgerRecord({
+      projectId,
       beforeHash,
       afterHash,
+      outputTargetId,
       runtimeTrace,
       contract,
       runMode,
@@ -2218,9 +2436,9 @@ async function selfCheck() {
     const proof = {
       schemaVersion: SCHEMA,
       schema: SCHEMA,
-      targetId: CFG.targetId,
+      targetId: projectId,
       backend: 'opencl',
-      profile: { id: CFG.targetId, targetId: CFG.targetId, validationScope: 'opencl_declared_compute_readback' },
+      profile: { id: projectId, targetId: projectId, validationScope: 'opencl_declared_compute_readback' },
       resultState: 'gpu-hmr-full-runtime-proven',
       fullRuntimeProven: true,
       gpuHmrSuccess: true,
@@ -2241,8 +2459,8 @@ async function selfCheck() {
         evidenceAuthority: 'runtime_probe_execution_transport_only_not_gpu_hmr_success',
       },
       negativeEditRefusal: buildNegativeRefusal({
-        beforeSource: kernelSource({ multiplier: CFG.afterMultiplier, bias: CFG.afterBias }),
-        negativeSource: kernelSource({ multiplier: CFG.afterMultiplier, bias: CFG.afterBias, extraArg: true }),
+        beforeSource: kernelSource(afterOperation),
+        negativeSource: kernelSource({ ...afterOperation, extraArg: true }),
       }),
       timings,
       runMode,
@@ -2258,7 +2476,7 @@ async function selfCheck() {
       includeUnproven: true,
       generatedAt: '2026-06-30T00:00:00.000Z',
     });
-    const row = matrix.rows.find((entry) => entry.targetId === CFG.targetId && entry.backend === 'opencl');
+    const row = matrix.rows.find((entry) => entry.targetId === projectId && entry.backend === 'opencl');
     if (!row || row.matrixOutcome !== 'full_runtime_gpu_hmr' || row.acceptanceScope !== 'opencl_declared_compute_readback') {
       throw new Error(`self-check matrix row rejected: ${JSON.stringify({
         openGaps: row?.openGaps,
@@ -2277,10 +2495,10 @@ async function selfCheck() {
     if (
       row.outputOracleFacet?.accepted !== true
       || outputBinding.accepted !== true
-      || outputBinding.dispatchOutputTargetId !== OPENCL_OUTPUT_TARGET_ID
-      || outputBinding.oracleOutputTargetId !== OPENCL_OUTPUT_TARGET_ID
-      || contract.output_oracle_target?.target_id !== OPENCL_OUTPUT_TARGET_ID
-      || contract.fission_report?.output_oracle_contract?.target_id !== OPENCL_OUTPUT_TARGET_ID
+      || outputBinding.dispatchOutputTargetId !== outputTargetId
+      || outputBinding.oracleOutputTargetId !== outputTargetId
+      || contract.output_oracle_target?.target_id !== outputTargetId
+      || contract.fission_report?.output_oracle_contract?.target_id !== outputTargetId
     ) {
       throw new Error(`self-check output target binding rejected: ${JSON.stringify({
         outputOracleFacet: row.outputOracleFacet,
@@ -2288,6 +2506,149 @@ async function selfCheck() {
         fissionOutputOracleContract: contract.fission_report?.output_oracle_contract,
       }, null, 2)}`);
     }
+    const buildAdversarialExpectedContractProof = ({ proofId, candidateExpectedOutputContract }) => {
+      const candidateContract = buildContract({
+        projectId,
+        beforeHash,
+        afterHash,
+        outputTargetId,
+        expectedOutputContract: candidateExpectedOutputContract,
+        runtimeTrace,
+        runMode,
+      });
+      const candidateContractEvaluation = evaluateGpuHmrAcceptanceContract(candidateContract);
+      const candidateContractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
+        explicitContract: candidateContract,
+        derivedContract: candidateContract,
+        derivedEvaluation: candidateContractEvaluation,
+      });
+      const candidateLedgerRecord = buildProofLedgerRecord({
+        projectId,
+        beforeHash,
+        afterHash,
+        outputTargetId,
+        runtimeTrace,
+        contract: candidateContract,
+        runMode,
+        timings,
+        oracleArtifacts: oracle.artifacts,
+        oracleValidation: oracle.validation,
+      });
+      const candidateProofLedger = buildGpuHmrProofLedger(candidateLedgerRecord);
+      const candidateLedger = queryGpuHmrLedgerInvariants(candidateProofLedger);
+      const candidateArtifact = runtimeProofArtifact({
+        beforeHash,
+        afterHash,
+        runtimeTrace,
+        proofLedger: candidateProofLedger,
+        ledger: candidateLedger,
+        contract: candidateContract,
+        contractEvaluation: candidateContractEvaluation,
+        contractConsistency: candidateContractConsistency,
+        oracleArtifacts: oracle.artifacts,
+        oracleValidation: oracle.validation,
+        nativeApiEvidence,
+      });
+      if (candidateArtifact.gpuHmrSuccess !== true) {
+        throw new Error(`adversarial expected-contract setup rejected before semantic verification: ${JSON.stringify({
+          strictGate: candidateArtifact.strictGate,
+          limitations: candidateArtifact.limitations,
+        })}`);
+      }
+      return {
+        ...structuredClone(proof),
+        proofId,
+        contract: candidateContract,
+        acceptanceContract: candidateContract,
+        proofLedger: candidateProofLedger,
+        runtimeProofArtifact: candidateArtifact,
+      };
+    };
+    const reboundProofId = `opencl-runtime-proof:${sha256Text('self-check-rebound-expected-contract')}`;
+    const reboundExpectedOutputContract = buildDeclaredExpectedOutputContract({
+      projectId,
+      editId: `${runMode.edit_id}:rebound`,
+      artifactAfterHash: afterHash,
+      outputTargetId,
+      oracleCodeHash,
+      inputValues: INPUT_VALUES,
+      operation: afterOperation,
+      tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
+    });
+    const reboundProof = buildAdversarialExpectedContractProof({
+      proofId: reboundProofId,
+      candidateExpectedOutputContract: reboundExpectedOutputContract,
+    });
+    await writeFile(
+      path.join(tmp, 'opencl-runtime-proof-rebound-expected-contract.json'),
+      `${JSON.stringify(reboundProof, null, 2)}\n`,
+    );
+    const semanticImplementation = semanticOracleImplementationIdentity();
+    const mutatedExpectedValueTransformation = semanticImplementation
+      .expectedValueTransformation
+      .replace('value * multiplier + bias', 'value * multiplier - bias');
+    if (mutatedExpectedValueTransformation === semanticImplementation.expectedValueTransformation) {
+      throw new Error('semantic oracle implementation mutation was not applied');
+    }
+    const implementationMutationOracleCodeHash = computeSemanticOracleCodeHash({
+      implementation: {
+        ...semanticImplementation,
+        expectedValueTransformation: mutatedExpectedValueTransformation,
+      },
+      inputValues: INPUT_VALUES,
+      operation: afterOperation,
+      tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
+    });
+    if (implementationMutationOracleCodeHash === oracleCodeHash) {
+      throw new Error('semantic oracle implementation mutation did not change oracleCodeHash');
+    }
+    const implementationMutationProofId = `opencl-runtime-proof:${sha256Text('self-check-semantic-implementation-mutation')}`;
+    const implementationMutationExpectedOutputContract = buildDeclaredExpectedOutputContract({
+      projectId,
+      editId: runMode.edit_id,
+      artifactAfterHash: afterHash,
+      outputTargetId,
+      oracleCodeHash: implementationMutationOracleCodeHash,
+      inputValues: INPUT_VALUES,
+      operation: afterOperation,
+      tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
+    });
+    const implementationMutationProof = buildAdversarialExpectedContractProof({
+      proofId: implementationMutationProofId,
+      candidateExpectedOutputContract: implementationMutationExpectedOutputContract,
+    });
+    await writeFile(
+      path.join(tmp, 'opencl-runtime-proof-semantic-implementation-mutation.json'),
+      `${JSON.stringify(implementationMutationProof, null, 2)}\n`,
+    );
+    const tamperedProofId = `opencl-runtime-proof:${sha256Text('self-check-tampered-expected-contract')}`;
+    const tamperedOperation = { ...afterOperation, bias: afterOperation.bias + 1 };
+    const tamperedDeclarationOracleCodeHash = semanticOracleCodeHash({
+      inputValues: INPUT_VALUES,
+      operation: tamperedOperation,
+      tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
+    });
+    if (tamperedDeclarationOracleCodeHash === oracleCodeHash) {
+      throw new Error('semantic oracle declaration mutation did not change oracleCodeHash');
+    }
+    const tamperedExpectedOutputContract = buildDeclaredExpectedOutputContract({
+      projectId,
+      editId: runMode.edit_id,
+      artifactAfterHash: afterHash,
+      outputTargetId,
+      oracleCodeHash: tamperedDeclarationOracleCodeHash,
+      inputValues: INPUT_VALUES,
+      operation: tamperedOperation,
+      tolerance: OPENCL_EXPECTED_OUTPUT_TOLERANCE,
+    });
+    const tamperedProof = buildAdversarialExpectedContractProof({
+      proofId: tamperedProofId,
+      candidateExpectedOutputContract: tamperedExpectedOutputContract,
+    });
+    await writeFile(
+      path.join(tmp, 'opencl-runtime-proof-tampered-expected-contract.json'),
+      `${JSON.stringify(tamperedProof, null, 2)}\n`,
+    );
     const forged = JSON.parse(JSON.stringify(proof));
     forged.proofId = 'opencl-runtime-proof:sha256:forged';
     forged.computeOracleArtifacts.raw_readback_hash = sha256Text('forged');
@@ -2320,6 +2681,55 @@ async function selfCheck() {
     if (forgedRow?.matrixOutcome === 'full_runtime_gpu_hmr') {
       throw new Error('forged OpenCL raw readback hash was accepted');
     }
+    const expectedContractFailureCodes = (candidateRow) => new Set([
+      ...(candidateRow?.reasons ?? []),
+      ...(candidateRow?.outputOracleFacet?.failedGates ?? []).map((failure) => (
+        typeof failure === 'string' ? failure : failure?.code
+      )),
+    ].filter(Boolean));
+    const reboundRow = forgedMatrix.rows.find((entry) => entry.proofIds?.includes(reboundProofId));
+    const reboundFailureCodes = expectedContractFailureCodes(reboundRow);
+    if (
+      !reboundRow
+      || reboundRow.matrixOutcome === 'full_runtime_gpu_hmr'
+      || !reboundFailureCodes.has('compute_oracle_binding_edit_id_mismatch')
+    ) {
+      throw new Error(`rebound OpenCL expected-output contract was not refused by binding: ${JSON.stringify({
+        matrixOutcome: reboundRow?.matrixOutcome,
+        failureCodes: [...reboundFailureCodes],
+      })}`);
+    }
+    const implementationMutationRow = forgedMatrix.rows.find((entry) => (
+      entry.proofIds?.includes(implementationMutationProofId)
+    ));
+    const implementationMutationFailureCodes = expectedContractFailureCodes(
+      implementationMutationRow,
+    );
+    if (
+      !implementationMutationRow
+      || implementationMutationRow.matrixOutcome === 'full_runtime_gpu_hmr'
+      || !implementationMutationFailureCodes.has(
+        'compute_oracle_binding_oracle_code_hash_mismatch',
+      )
+    ) {
+      throw new Error(`mutated semantic oracle implementation was not refused by identity: ${JSON.stringify({
+        matrixOutcome: implementationMutationRow?.matrixOutcome,
+        failureCodes: [...implementationMutationFailureCodes],
+      })}`);
+    }
+    const tamperedRow = forgedMatrix.rows.find((entry) => entry.proofIds?.includes(tamperedProofId));
+    const tamperedFailureCodes = expectedContractFailureCodes(tamperedRow);
+    if (
+      !tamperedRow
+      || tamperedRow.matrixOutcome === 'full_runtime_gpu_hmr'
+      || !tamperedFailureCodes.has('compute_oracle_binding_oracle_code_hash_mismatch')
+      || !tamperedFailureCodes.has('compute_oracle_numeric_values_mismatch')
+    ) {
+      throw new Error(`tampered OpenCL expected-output contract was not refused semantically: ${JSON.stringify({
+        matrixOutcome: tamperedRow?.matrixOutcome,
+        failureCodes: [...tamperedFailureCodes],
+      })}`);
+    }
     console.log(JSON.stringify({
       ok: true,
       schemaVersion: SCHEMA,
@@ -2327,6 +2737,10 @@ async function selfCheck() {
       matrixProofId: matrix.proofId,
       rowId: row.rowId,
       forgedRejected: true,
+      reboundExpectedContractRejected: true,
+      semanticImplementationMutationRejected: true,
+      semanticDeclarationMutationRejected: true,
+      tamperedExpectedContractRejected: true,
       windowsProbeSourceChecked: true,
     }, null, 2));
   } finally {
