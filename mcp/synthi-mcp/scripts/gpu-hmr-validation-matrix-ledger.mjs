@@ -8,11 +8,22 @@ import {
   GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   selfCheckGenericOutputOracleLedger,
 } from './lib/gpu-hmr-validation-matrix-ledger.mjs';
+import {
+  createGpuHmrMcpAdmissionMatrixTrust,
+  loadGpuHmrMcpAdmissionMatrixTrust,
+} from './lib/gpu-hmr-mcp-admission-matrix-trust.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptsDir = path.dirname(__filename);
 const mcpRoot = path.resolve(scriptsDir, '..');
 const repoRoot = path.resolve(mcpRoot, '..', '..');
+const MCP_ADMISSION_TRUST_JSON_ENV = 'SYNTHI_GPU_HMR_MCP_ADMISSION_TRUST_JSON';
+const MCP_ADMISSION_MAX_AGE_MS_ENV =
+  'SYNTHI_GPU_HMR_MCP_ADMISSION_MAX_AGE_MS';
+const MCP_ADMISSION_MAX_FUTURE_SKEW_MS_ENV =
+  'SYNTHI_GPU_HMR_MCP_ADMISSION_MAX_FUTURE_SKEW_MS';
+const DEFAULT_MCP_ADMISSION_MAX_AGE_MS = 300_000;
+const DEFAULT_MCP_ADMISSION_MAX_FUTURE_SKEW_MS = 30_000;
 
 function parseArgs(argv) {
   const args = {
@@ -23,6 +34,10 @@ function parseArgs(argv) {
     includeUnproven: false,
     outputOracleSelfCheck: false,
     selfCheck: false,
+    historicalAdmissionAudit: false,
+    mcpAdmissionTrustPath: null,
+    mcpAdmissionMaxAgeMs: null,
+    mcpAdmissionMaxFutureSkewMs: null,
     roots: [],
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -45,6 +60,22 @@ function parseArgs(argv) {
       args.selfCheck = true;
     } else if (arg === '--output-oracle-self-check') {
       args.outputOracleSelfCheck = true;
+    } else if (arg === '--historical-admission-audit') {
+      args.historicalAdmissionAudit = true;
+    } else if (arg === '--mcp-admission-trust') {
+      const trustPath = argv[++i];
+      if (!trustPath) throw new Error('--mcp-admission-trust requires a JSON file');
+      args.mcpAdmissionTrustPath = path.resolve(trustPath);
+    } else if (arg === '--mcp-admission-max-age-ms') {
+      args.mcpAdmissionMaxAgeMs = parsePositiveIntegerArg(
+        argv[++i],
+        '--mcp-admission-max-age-ms',
+      );
+    } else if (arg === '--mcp-admission-max-future-skew-ms') {
+      args.mcpAdmissionMaxFutureSkewMs = parseNonNegativeIntegerArg(
+        argv[++i],
+        '--mcp-admission-max-future-skew-ms',
+      );
     } else if (arg === '--help') {
       args.help = true;
     } else {
@@ -54,12 +85,58 @@ function parseArgs(argv) {
   return args;
 }
 
+function parseNonNegativeIntegerArg(value, name) {
+  if (!/^\d+$/.test(value ?? '')) throw new Error(`${name} requires an integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} is out of range`);
+  }
+  return parsed;
+}
+
+function parsePositiveIntegerArg(value, name) {
+  const parsed = parseNonNegativeIntegerArg(value, name);
+  if (parsed === 0) throw new Error(`${name} must be greater than zero`);
+  return parsed;
+}
+
+function resolvedPolicyMilliseconds(cliValue, envName, fallback, positive) {
+  if (cliValue !== null) return cliValue;
+  const envValue = process.env[envName];
+  if (envValue === undefined || envValue === '') return fallback;
+  return positive
+    ? parsePositiveIntegerArg(envValue, envName)
+    : parseNonNegativeIntegerArg(envValue, envName);
+}
+
+function pathIsWithin(root, target) {
+  const relative = path.relative(root, target);
+  return relative === ''
+    || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+async function externalTrustFilePath(filePath, scannedRoots) {
+  const realFilePath = await fs.realpath(filePath).catch(() => {
+    throw new Error('gpu_hmr_mcp_admission_trust_file_invalid');
+  });
+  const forbiddenRoots = [repoRoot, ...scannedRoots];
+  for (const root of forbiddenRoots) {
+    const realRoot = await fs.realpath(root).catch(() => path.resolve(root));
+    if (pathIsWithin(realRoot, realFilePath)) {
+      throw new Error('gpu_hmr_mcp_admission_trust_file_inside_artifact_root');
+    }
+  }
+  return realFilePath;
+}
+
 function usage() {
   return [
-    'Usage: node scripts/gpu-hmr-validation-matrix-ledger.mjs [--all] [--include-invalidated] [--include-unproven] [--format json|markdown|both] [--output-dir DIR] [--root PATH] [--self-check] [--output-oracle-self-check]',
+    'Usage: node scripts/gpu-hmr-validation-matrix-ledger.mjs [--all] [--include-invalidated] [--include-unproven] [--format json|markdown|both] [--output-dir DIR] [--root PATH] [--mcp-admission-trust FILE] [--mcp-admission-max-age-ms N] [--mcp-admission-max-future-skew-ms N] [--historical-admission-audit] [--self-check] [--output-oracle-self-check]',
     '',
     'Collects GPU HMR proof artifacts into a matrix ledger. The collector records accepted full-runtime proof, visual-profile proof, preflight-only evidence, and structured refusals separately.',
     'When --root is provided one or more times, collection is restricted to those artifact roots. A root may be a directory or a single JSON artifact file.',
+    'Live compute-proof acceptance requires --mcp-admission-trust with trust material returned by synthi_attach over the control channel. Without it, compute receipts fail closed.',
+    '--historical-admission-audit permits writing or inspecting a rejected legacy ledger; it never restores legacy compute acceptance.',
   ].join('\n');
 }
 
@@ -69,7 +146,11 @@ function value(input) {
   return String(input).replace(/\|/g, '\\|');
 }
 
-function markdownTable(rows) {
+function markdownTable(ledger) {
+  const rows = Array.isArray(ledger.rows) ? ledger.rows : [];
+  const admissionPolicy = ledger.mcpAdmissionReceiptPolicy
+    ?? ledger.mcp_admission_receipt_policy
+    ?? null;
   const columns = [
     'backend',
     'targetId',
@@ -104,6 +185,10 @@ function markdownTable(rows) {
     '# GPU HMR Validation Matrix Ledger',
     '',
     `Schema: \`${GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION}\``,
+    '',
+    `MCP admission policy: \`${admissionPolicy?.mode ?? 'not-recorded'}\``,
+    '',
+    `Current GPU HMR acceptance eligible: \`${admissionPolicy?.historicalAdmissionAudit === true ? 'false' : String(ledger.query?.accepted === true)}\``,
     '',
     header,
     divider,
@@ -1215,7 +1300,7 @@ async function writeLedger(ledger, args) {
     );
   }
   if (args.format === 'markdown' || args.format === 'both') {
-    await fs.writeFile(markdownPath, markdownTable(ledger.rows));
+    await fs.writeFile(markdownPath, markdownTable(ledger));
   }
   return {
     jsonPath: args.format === 'markdown' ? null : jsonPath,
@@ -1237,22 +1322,90 @@ async function main() {
     console.log(JSON.stringify(await selfCheckGenericOutputOracleLedger(), matrixOutputJsonReplacer, 2));
     return;
   }
-  const ledger = await collectGpuHmrValidationMatrixLedger({
+  const trustJson = process.env[MCP_ADMISSION_TRUST_JSON_ENV];
+  const hasTrustJson = typeof trustJson === 'string' && trustJson.length > 0;
+  if (args.mcpAdmissionTrustPath !== null && hasTrustJson) {
+    throw new Error('gpu_hmr_mcp_admission_trust_sources_ambiguous');
+  }
+  if (
+    args.historicalAdmissionAudit
+    && (args.mcpAdmissionTrustPath !== null || hasTrustJson)
+  ) {
+    throw new Error('historical admission audit cannot consume live MCP trust');
+  }
+  if (
+    !args.historicalAdmissionAudit
+    && args.mcpAdmissionTrustPath === null
+    && !hasTrustJson
+  ) {
+    throw new Error(
+      `live matrix acceptance requires --mcp-admission-trust or ${MCP_ADMISSION_TRUST_JSON_ENV}`,
+    );
+  }
+  const maxAgeMs = resolvedPolicyMilliseconds(
+    args.mcpAdmissionMaxAgeMs,
+    MCP_ADMISSION_MAX_AGE_MS_ENV,
+    DEFAULT_MCP_ADMISSION_MAX_AGE_MS,
+    true,
+  );
+  const maxFutureSkewMs = resolvedPolicyMilliseconds(
+    args.mcpAdmissionMaxFutureSkewMs,
+    MCP_ADMISSION_MAX_FUTURE_SKEW_MS_ENV,
+    DEFAULT_MCP_ADMISSION_MAX_FUTURE_SKEW_MS,
+    false,
+  );
+  const policy = {
+    nowUnixNs: BigInt(Date.now()) * 1_000_000n,
+    maxAgeNs: BigInt(maxAgeMs) * 1_000_000n,
+    maxFutureSkewNs: BigInt(maxFutureSkewMs) * 1_000_000n,
+  };
+  const scannedRoots = args.roots.length > 0 ? args.roots : [];
+  let mcpAdmissionTrust = null;
+  if (!args.historicalAdmissionAudit && hasTrustJson) {
+    let material;
+    try {
+      material = JSON.parse(trustJson);
+    } catch {
+      throw new Error(`${MCP_ADMISSION_TRUST_JSON_ENV} is not valid JSON`);
+    }
+    mcpAdmissionTrust = createGpuHmrMcpAdmissionMatrixTrust(material, policy);
+  } else if (!args.historicalAdmissionAudit && args.mcpAdmissionTrustPath !== null) {
+    const trustPath = await externalTrustFilePath(
+      args.mcpAdmissionTrustPath,
+      scannedRoots,
+    );
+    mcpAdmissionTrust = await loadGpuHmrMcpAdmissionMatrixTrust(trustPath, policy);
+  }
+  const collectionOptions = {
     repoRoot,
     mcpRoot,
     latestPerTarget: args.latestPerTarget,
     includeInvalidated: args.includeInvalidated,
     includeUnproven: args.includeUnproven,
     roots: args.roots.length > 0 ? args.roots : undefined,
-  });
-  if (!ledger.query.accepted) {
+    requireMcpAdmissionReceiptForCompute: true,
+    mcpAdmissionReceiptPolicy: args.historicalAdmissionAudit
+      ? 'historical-audit'
+      : 'live-required',
+    ...(mcpAdmissionTrust === null ? {} : { mcpAdmissionTrust }),
+  };
+  const ledger = await collectGpuHmrValidationMatrixLedger(collectionOptions);
+  if (
+    !ledger.query.accepted
+    && (!args.historicalAdmissionAudit || args.selfCheck)
+  ) {
     const failures = ledger.query.failedGates.map((failure) => failure.code).join(',');
     throw new Error(`GPU HMR validation matrix rejected collected rows: ${failures}`);
   }
   if (args.selfCheck) {
     console.log(JSON.stringify(
       {
-        ok: true,
+        ok: ledger.query.accepted,
+        historicalAdmissionAudit: args.historicalAdmissionAudit,
+        currentGpuHmrAcceptance:
+          !args.historicalAdmissionAudit && ledger.query.accepted,
+        mcpAdmissionReceiptPolicy:
+          ledger.mcpAdmissionReceiptPolicy ?? null,
         schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
         proofId: ledger.proofId,
         summary: matrixSummaryForConsole(ledger.summary),
@@ -1266,7 +1419,12 @@ async function main() {
   const consolePaths = pathsForConsole(paths);
   console.log(JSON.stringify(
     {
-      ok: true,
+      ok: ledger.query.accepted,
+      historicalAdmissionAudit: args.historicalAdmissionAudit,
+      currentGpuHmrAcceptance:
+        !args.historicalAdmissionAudit && ledger.query.accepted,
+      mcpAdmissionReceiptPolicy:
+        ledger.mcpAdmissionReceiptPolicy ?? null,
       schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
       proofId: ledger.proofId,
       summary: matrixSummaryForConsole(ledger.summary),

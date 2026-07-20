@@ -377,18 +377,23 @@ function withRecomputedRowId(row) {
 
 const authoritativeId = 'runtime-identity:authoritative';
 const baseline = withRecomputedRowId(acceptedRow(authoritativeId));
-const baselineQuery = queryGpuHmrValidationMatrixLedger({
+const unscopedSerializedQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [baseline],
 });
-assert.equal(baselineQuery.accepted, true, JSON.stringify(baselineQuery.failedGates, null, 2));
-assert.equal(baselineQuery.summary.acceptedFullRuntimeGpuHmrRows, 1);
+assert.equal(unscopedSerializedQuery.accepted, false);
+assert.ok(unscopedSerializedQuery.failedGates.some(({ code }) => (
+  code === 'validation_matrix_mcp_admission_policy_missing'
+)));
 
 const builtBaseline = buildGpuHmrValidationMatrixLedger([baseline], {
   includeInvalidated: true,
   includeUnproven: true,
   latestPerTarget: false,
 });
+const baselineQuery = queryGpuHmrValidationMatrixLedger(builtBaseline);
+assert.equal(baselineQuery.accepted, true, JSON.stringify(baselineQuery.failedGates, null, 2));
+assert.equal(baselineQuery.summary.acceptedFullRuntimeGpuHmrRows, 1);
 const acceptedBaseline = builtBaseline.rows[0];
 assert.equal(acceptedBaseline.safety.accepted, true);
 const authoritativeHash =

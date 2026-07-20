@@ -84,6 +84,8 @@ const coldBuildContainerCommand = coldBuildLauncherCommand;
 const coldBuildContainerEntrypoint = coldBuildLauncherEntrypoint;
 
 let activeValidationMatrixOperationCache = null;
+const inProcessPolicylessValidationMatrixLedgers = new WeakSet();
+const liveAdmissionVerifiedValidationMatrixLedgers = new WeakSet();
 
 function withValidationMatrixOperationCache(callback) {
   if (activeValidationMatrixOperationCache) return callback();
@@ -109,6 +111,10 @@ export const GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation_matrix_ledger.v1';
 export const GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation_matrix_row.v1';
+export const GPU_HMR_VALIDATION_MATRIX_MCP_ADMISSION_POLICY_SCHEMA =
+  'synthi.gpu_hmr.validation_matrix_mcp_admission_policy.v1';
+export const GPU_HMR_VALIDATION_MATRIX_MCP_ADMISSION_POLICY_AUTHORITY =
+  'matrix_collection_policy_only_not_gpu_hmr_acceptance';
 export const GPU_HMR_TEST_TIMING_V2_FACET_SCHEMA_VERSION =
   'synthi.gpu_hmr.test_timing_matrix_facet.v1';
 export const GPU_HMR_TEST_TIMING_V2_FACET_AUTHORITY =
@@ -31974,6 +31980,115 @@ const MATRIX_MCP_ADMISSION_TRUST_KEYS = Object.freeze([
 const MATRIX_MCP_PARENT_CONTROL_MATERIAL_SCHEMA =
   'synthi.gpu_hmr.parent_control_verification_material.v2';
 const MATRIX_MCP_ADMISSION_MATERIAL_SCAN_LIMIT = 100_000;
+const MATRIX_MCP_ADMISSION_POLICY_MODES = new Set([
+  'live-required',
+  'historical-audit',
+]);
+const MATRIX_MCP_ADMISSION_COLLECTION_POLICY_KEYS = new Set([
+  'schemaVersion',
+  'proofAuthority',
+  'mode',
+  'requireReceiptForCompute',
+  'historicalAdmissionAudit',
+  'externalTrustSupplied',
+  'trustedSignerKeyId',
+  'validationRunChallengeSha256',
+  'policyClockUnixNs',
+  'maxAgeNs',
+  'maxFutureSkewNs',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+]);
+
+function matrixMcpAdmissionCollectionPolicy({
+  mode,
+  requiredForCompute,
+  trust,
+  trustSupplied,
+}) {
+  const historicalAdmissionAudit = mode === 'historical-audit';
+  const verificationKey = compactObject(trust?.verificationKey);
+  const validationRunChallengeSha256 = trust
+    ? hashGpuHmrMcpValidationRunChallenge(trust.validationRunChallenge)
+    : null;
+  return Object.freeze({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_MCP_ADMISSION_POLICY_SCHEMA,
+    proofAuthority: GPU_HMR_VALIDATION_MATRIX_MCP_ADMISSION_POLICY_AUTHORITY,
+    mode,
+    requireReceiptForCompute: requiredForCompute === true,
+    historicalAdmissionAudit,
+    externalTrustSupplied: trustSupplied === true,
+    trustedSignerKeyId: firstText(verificationKey.keyId),
+    validationRunChallengeSha256,
+    policyClockUnixNs:
+      typeof trust?.nowUnixNs === 'bigint' ? trust.nowUnixNs.toString() : null,
+    maxAgeNs: typeof trust?.maxAgeNs === 'bigint' ? trust.maxAgeNs.toString() : null,
+    maxFutureSkewNs:
+      typeof trust?.maxFutureSkewNs === 'bigint'
+        ? trust.maxFutureSkewNs.toString()
+        : null,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+  });
+}
+
+function matrixMcpAdmissionPolicyFailures(policyValue) {
+  const policy = compactObject(policyValue);
+  if (Object.keys(policy).length === 0) return [];
+  const failures = [];
+  const canonicalDecimal = (value, positive = false) => (
+    typeof value === 'string'
+    && /^(?:0|[1-9][0-9]*)$/.test(value)
+    && (!positive || value !== '0')
+    && BigInt(value) <= 18_446_744_073_709_551_615n
+  );
+  const exactKeys = Reflect.ownKeys(policy).length
+    === MATRIX_MCP_ADMISSION_COLLECTION_POLICY_KEYS.size
+    && Reflect.ownKeys(policy).every((key) => (
+      typeof key === 'string'
+      && MATRIX_MCP_ADMISSION_COLLECTION_POLICY_KEYS.has(key)
+    ));
+  const commonAccepted = exactKeys && policy.schemaVersion
+    === GPU_HMR_VALIDATION_MATRIX_MCP_ADMISSION_POLICY_SCHEMA
+    && policy.proofAuthority
+      === GPU_HMR_VALIDATION_MATRIX_MCP_ADMISSION_POLICY_AUTHORITY
+    && MATRIX_MCP_ADMISSION_POLICY_MODES.has(policy.mode)
+    && policy.requireReceiptForCompute === true
+    && policy.acceptedForGpuHmr === false
+    && policy.gpuHmrSuccess === false
+    && policy.canSatisfyRuntimeProof === false;
+  const liveAccepted = policy.mode !== 'live-required' || (
+    policy.historicalAdmissionAudit === false
+    && policy.externalTrustSupplied === true
+    && /^gpu-hmr-mcp-admission-key:sha256:[a-f0-9]{64}$/.test(
+      policy.trustedSignerKeyId ?? '',
+    )
+    && /^sha256:[a-f0-9]{64}$/.test(policy.validationRunChallengeSha256 ?? '')
+    && canonicalDecimal(policy.policyClockUnixNs)
+    && canonicalDecimal(policy.maxAgeNs, true)
+    && canonicalDecimal(policy.maxFutureSkewNs)
+  );
+  const historicalAccepted = policy.mode !== 'historical-audit' || (
+    policy.historicalAdmissionAudit === true
+    && policy.externalTrustSupplied === false
+    && policy.trustedSignerKeyId == null
+    && policy.validationRunChallengeSha256 == null
+    && policy.policyClockUnixNs == null
+    && policy.maxAgeNs == null
+    && policy.maxFutureSkewNs == null
+  );
+  if (!commonAccepted || !liveAccepted || !historicalAccepted) {
+    failures.push({ code: 'validation_matrix_mcp_admission_policy_invalid' });
+  }
+  if (policy.mode === 'historical-audit') {
+    failures.push({
+      code: 'validation_matrix_historical_admission_audit_not_current_acceptance',
+    });
+  }
+  return failures;
+}
 
 function snapshotMatrixMcpAdmissionTrust(value) {
   try {
@@ -32074,6 +32189,8 @@ function matrixMcpAdmissionMaterialsFromArtifact(root) {
 
 function matrixMcpAdmissionFacetOptions(context, runtimeProofArtifact) {
   return {
+    requireMcpAdmissionReceiptForCompute:
+      context.requireMcpAdmissionReceiptForCompute === true,
     mcpAdmissionTrustSupplied: context.mcpAdmissionTrustSupplied === true,
     mcpAdmissionTrust: context.mcpAdmissionTrust ?? null,
     mcpAdmissionMaterials: context.mcpAdmissionMaterials ?? [],
@@ -32161,6 +32278,7 @@ function matrixMcpAdmissionVerificationForCompute({
   materials: materialValues,
   trust,
   trustSupplied,
+  admissionRequired,
   scanTruncated,
 }) {
   const materials = (Array.isArray(materialValues) ? materialValues : [])
@@ -32176,7 +32294,9 @@ function matrixMcpAdmissionVerificationForCompute({
     receipt?.computeExpectedOutputContractHash != null
     || receipt?.computeExpectedOutputSemanticsHash != null
   ));
-  const required = trustSupplied === true || receiptRequiresV2;
+  const required = admissionRequired === true
+    || trustSupplied === true
+    || receiptRequiresV2;
   const computeArtifacts = ledgerRecordComputeOracleArtifacts(computeRecord);
   const triplet = computeExpectedOutputV2Triplet(computeArtifacts);
   const contract = compactObject(triplet.contract);
@@ -33026,6 +33146,9 @@ async function realRocmComputeOracleFileIntegrityFacet(
     trustSupplied:
       options.mcpAdmissionTrustSupplied === true
       || options.mcp_admission_trust_supplied === true,
+    admissionRequired:
+      options.requireMcpAdmissionReceiptForCompute === true
+      || options.require_mcp_admission_receipt_for_compute === true,
     scanTruncated:
       options.mcpAdmissionMaterialScanTruncated === true
       || options.mcp_admission_material_scan_truncated === true,
@@ -34593,6 +34716,129 @@ export async function selfCheckGenericOutputOracleLedger() {
     `live receipt policy should reject a stripped V2 artifact: ${JSON.stringify(strippedCollectedCompute)}`,
   );
 
+  let missingLiveTrustRejected = false;
+  try {
+    await collectGpuHmrValidationMatrixLedger({
+      repoRoot: dir,
+      mcpRoot: dir,
+      roots: [collectorRoot],
+      latestPerTarget: false,
+      includeUnproven: true,
+      requireMcpAdmissionReceiptForCompute: true,
+      mcpAdmissionReceiptPolicy: 'live-required',
+    });
+  } catch (error) {
+    missingLiveTrustRejected = error?.message
+      === 'validation_matrix_live_mcp_admission_trust_required';
+  }
+  assertGenericOutputOracleSelfCheck(
+    missingLiveTrustRejected,
+    'live matrix policy should fail before collection without external trust',
+  );
+  let explicitNullLiveTrustRejected = false;
+  try {
+    await collectGpuHmrValidationMatrixLedger({
+      repoRoot: dir,
+      mcpRoot: dir,
+      roots: [collectorRoot],
+      latestPerTarget: false,
+      includeUnproven: true,
+      requireMcpAdmissionReceiptForCompute: true,
+      mcpAdmissionReceiptPolicy: 'live-required',
+      mcpAdmissionTrust: null,
+    });
+  } catch (error) {
+    explicitNullLiveTrustRejected = error?.message
+      === 'validation_matrix_live_mcp_admission_trust_required';
+  }
+  assertGenericOutputOracleSelfCheck(
+    explicitNullLiveTrustRejected,
+    'explicit null live trust must not weaken matrix receipt enforcement',
+  );
+  const historicalAdmissionLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [collectorRoot],
+    latestPerTarget: false,
+    includeUnproven: true,
+    requireMcpAdmissionReceiptForCompute: true,
+    mcpAdmissionReceiptPolicy: 'historical-audit',
+  });
+  assertGenericOutputOracleSelfCheck(
+    historicalAdmissionLedger.query.accepted === false
+      && historicalAdmissionLedger.mcpAdmissionReceiptPolicy?.mode
+        === 'historical-audit'
+      && historicalAdmissionLedger.query.failedGates.some(({ code }) => (
+        code === 'validation_matrix_historical_admission_audit_not_current_acceptance'
+      )),
+    `historical admission policy must be proof-bound and non-current: ${JSON.stringify(historicalAdmissionLedger.query)}`,
+  );
+  const validLivePolicyLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: dir,
+    mcpRoot: dir,
+    roots: [collectorRoot],
+    latestPerTarget: false,
+    includeUnproven: true,
+    requireMcpAdmissionReceiptForCompute: true,
+    mcpAdmissionReceiptPolicy: 'live-required',
+    mcpAdmissionTrust: {
+      ...collectorAdmission.trust,
+      replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+    },
+  });
+  assertGenericOutputOracleSelfCheck(
+    validLivePolicyLedger.mcpAdmissionReceiptPolicy?.mode === 'live-required'
+      && validLivePolicyLedger.mcpAdmissionReceiptPolicy?.externalTrustSupplied === true
+      && validLivePolicyLedger.mcpAdmissionReceiptPolicy?.requireReceiptForCompute === true
+      && !validLivePolicyLedger.query.failedGates.some(({ code }) => (
+        code.startsWith('validation_matrix_mcp_admission_policy')
+      )),
+    `live admission policy should be proof-bound: ${JSON.stringify(validLivePolicyLedger.query)}`,
+  );
+  const serializedLivePolicyQuery = queryGpuHmrValidationMatrixLedger(
+    structuredClone(validLivePolicyLedger),
+  );
+  assertGenericOutputOracleSelfCheck(
+    serializedLivePolicyQuery.accepted === false
+      && serializedLivePolicyQuery.failedGates.some(({ code }) => (
+        code === 'validation_matrix_live_admission_external_trust_reverification_required'
+      )),
+    'serialized live policy must be reverified with external trust before acceptance',
+  );
+  const strippedPolicyLedger = structuredClone(validLivePolicyLedger);
+  delete strippedPolicyLedger.mcpAdmissionReceiptPolicy;
+  delete strippedPolicyLedger.mcp_admission_receipt_policy;
+  delete strippedPolicyLedger.proofId;
+  const strippedPolicyInitialQuery = queryGpuHmrValidationMatrixLedger(
+    strippedPolicyLedger,
+  );
+  strippedPolicyLedger.proofId = strippedPolicyInitialQuery.proofId;
+  const strippedPolicyRehashedQuery = queryGpuHmrValidationMatrixLedger(
+    strippedPolicyLedger,
+  );
+  assertGenericOutputOracleSelfCheck(
+    strippedPolicyRehashedQuery.accepted === false
+      && strippedPolicyRehashedQuery.failedGates.some(({ code }) => (
+        code === 'validation_matrix_mcp_admission_policy_missing'
+      )),
+    'removing and rehashing a persisted admission policy should reject',
+  );
+  const forgedHistoricalPolicyLedger = structuredClone(historicalAdmissionLedger);
+  forgedHistoricalPolicyLedger.mcp_admission_receipt_policy = {
+    ...forgedHistoricalPolicyLedger.mcp_admission_receipt_policy,
+    mode: 'live-required',
+  };
+  const forgedHistoricalPolicyQuery = queryGpuHmrValidationMatrixLedger(
+    forgedHistoricalPolicyLedger,
+  );
+  assertGenericOutputOracleSelfCheck(
+    forgedHistoricalPolicyQuery.accepted === false
+      && forgedHistoricalPolicyQuery.failedGates.some(({ code }) => (
+        code === 'validation_matrix_mcp_admission_policy_alias_conflict'
+      )),
+    'conflicting serialized admission policy aliases should reject',
+  );
+
   const unboundV2Facet = await ledgerOutputOracleFacet(
     {
       present: true,
@@ -34837,6 +35083,12 @@ export async function selfCheckGenericOutputOracleLedger() {
     collectorReceiptExpiryRejected: true,
     artifactSuppliedTrustRejected: true,
     collectorV2DowngradeRejected: true,
+    liveAdmissionPolicyRequiresExternalTrust: true,
+    liveAdmissionPolicyRejectsExplicitNullTrust: true,
+    historicalAdmissionPolicyNotCurrentAcceptance: true,
+    serializedLiveAdmissionRequiresExternalTrustReverification: true,
+    admissionPolicyAliasConflictRejected: true,
+    admissionPolicyRemovalRejected: true,
     mixedVisualComputeOracleRejected: true,
     v2WithoutCompileAuthorityRejected: true,
     v2CopyRemovalRejected: true,
@@ -47000,6 +47252,34 @@ function queryGpuHmrValidationMatrixLedgerUncached(ledger = {}) {
     })
   );
   const failures = [];
+  const camelAdmissionPolicy = compactObject(ledger.mcpAdmissionReceiptPolicy);
+  const snakeAdmissionPolicy = compactObject(ledger.mcp_admission_receipt_policy);
+  if (
+    Object.keys(camelAdmissionPolicy).length > 0
+    && Object.keys(snakeAdmissionPolicy).length > 0
+    && stableJsonHash(camelAdmissionPolicy) !== stableJsonHash(snakeAdmissionPolicy)
+  ) {
+    failures.push({ code: 'validation_matrix_mcp_admission_policy_alias_conflict' });
+  }
+  const suppliedAdmissionPolicy = Object.keys(camelAdmissionPolicy).length > 0
+    ? camelAdmissionPolicy
+    : snakeAdmissionPolicy;
+  if (
+    Object.keys(suppliedAdmissionPolicy).length === 0
+    && !inProcessPolicylessValidationMatrixLedgers.has(ledger)
+  ) {
+    failures.push({ code: 'validation_matrix_mcp_admission_policy_missing' });
+  } else {
+    failures.push(...matrixMcpAdmissionPolicyFailures(suppliedAdmissionPolicy));
+  }
+  if (
+    suppliedAdmissionPolicy.mode === 'live-required'
+    && !liveAdmissionVerifiedValidationMatrixLedgers.has(ledger)
+  ) {
+    failures.push({
+      code: 'validation_matrix_live_admission_external_trust_reverification_required',
+    });
+  }
   if (ledger.schemaVersion !== GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION) {
     failures.push({
       code: 'validation_matrix_schema_mismatch',
@@ -47077,6 +47357,9 @@ function queryGpuHmrValidationMatrixLedgerUncached(ledger = {}) {
     rows: rows.map((row) => row.rowId),
     summary: summaryForProofId,
     attemptHistory: suppliedAttemptHistory,
+    ...(Object.keys(suppliedAdmissionPolicy).length > 0
+      ? { mcpAdmissionReceiptPolicy: suppliedAdmissionPolicy }
+      : {}),
   });
   if (ledger.proofId && ledger.proofId !== recomputedProofId) {
     failures.push({
@@ -47215,6 +47498,11 @@ function buildGpuHmrValidationMatrixLedgerUncached(rows, options = {}) {
     omittedUnprovenRows,
     omitted_unproven_rows: omittedUnprovenRows,
   };
+  const mcpAdmissionReceiptPolicy = compactObject(
+    options.mcpAdmissionReceiptPolicy
+    ?? options.mcp_admission_receipt_policy,
+  );
+  const hasMcpAdmissionReceiptPolicy = Object.keys(mcpAdmissionReceiptPolicy).length > 0;
   const seed = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
     generatedAt,
@@ -47225,6 +47513,12 @@ function buildGpuHmrValidationMatrixLedgerUncached(rows, options = {}) {
     summary,
     attemptHistory,
     attempt_history: attemptHistory,
+    ...(hasMcpAdmissionReceiptPolicy
+      ? {
+          mcpAdmissionReceiptPolicy,
+          mcp_admission_receipt_policy: mcpAdmissionReceiptPolicy,
+        }
+      : {}),
     rows: includedRows,
   };
   const proofId = proofIdFor('gpu-validation-matrix-ledger', {
@@ -47232,15 +47526,25 @@ function buildGpuHmrValidationMatrixLedgerUncached(rows, options = {}) {
     rows: includedRows.map((row) => row.rowId),
     summary,
     attemptHistory,
+    ...(hasMcpAdmissionReceiptPolicy
+      ? { mcpAdmissionReceiptPolicy }
+      : {}),
   });
   const ledger = {
     ...seed,
     proofId,
   };
-  return {
+  if (!hasMcpAdmissionReceiptPolicy) {
+    inProcessPolicylessValidationMatrixLedgers.add(ledger);
+  }
+  const result = {
     ...ledger,
     query: queryGpuHmrValidationMatrixLedger(ledger),
   };
+  if (!hasMcpAdmissionReceiptPolicy) {
+    inProcessPolicylessValidationMatrixLedgers.add(result);
+  }
+  return result;
 }
 
 export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
@@ -47260,6 +47564,39 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
   const mcpAdmissionTrust = mcpAdmissionTrustSupplied
     ? snapshotMatrixMcpAdmissionTrust(options.mcpAdmissionTrust)
     : null;
+  const requireMcpAdmissionReceiptForCompute =
+    options.requireMcpAdmissionReceiptForCompute === true;
+  const mcpAdmissionReceiptPolicyMode = firstText(
+    options.mcpAdmissionReceiptPolicy,
+  );
+  const policyMode = MATRIX_MCP_ADMISSION_POLICY_MODES.has(
+    mcpAdmissionReceiptPolicyMode,
+  )
+    ? mcpAdmissionReceiptPolicyMode
+    : null;
+  if (
+    mcpAdmissionReceiptPolicyMode
+    && policyMode === null
+  ) {
+    throw new Error('validation_matrix_mcp_admission_policy_mode_invalid');
+  }
+  if (policyMode !== null && !requireMcpAdmissionReceiptForCompute) {
+    throw new Error('validation_matrix_mcp_admission_policy_not_enforced');
+  }
+  if (policyMode === 'live-required' && mcpAdmissionTrust === null) {
+    throw new Error('validation_matrix_live_mcp_admission_trust_required');
+  }
+  if (policyMode === 'historical-audit' && mcpAdmissionTrustSupplied) {
+    throw new Error('validation_matrix_historical_mcp_admission_trust_forbidden');
+  }
+  const mcpAdmissionCollectionPolicy = policyMode === null
+    ? null
+    : matrixMcpAdmissionCollectionPolicy({
+        mode: policyMode,
+        requiredForCompute: requireMcpAdmissionReceiptForCompute,
+        trust: mcpAdmissionTrust,
+        trustSupplied: mcpAdmissionTrust !== null,
+      });
   const files = [];
   for (const root of roots) {
     files.push(...await walkJsonFiles(path.resolve(root)));
@@ -47294,7 +47631,8 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
       artifact.json,
     );
     const dependsOnLiveMcpAdmissionState = Boolean(
-      mcpAdmissionTrustSupplied
+      requireMcpAdmissionReceiptForCompute
+      || mcpAdmissionTrustSupplied
       || mcpAdmissionMaterialScan.materials.length > 0
       || mcpAdmissionMaterialScan.truncated,
     );
@@ -47309,6 +47647,7 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
       repoRoot,
       mcpRoot,
       updatedAt: stat.mtime.toISOString(),
+      requireMcpAdmissionReceiptForCompute,
       mcpAdmissionTrustSupplied,
       mcpAdmissionTrust,
       mcpAdmissionMaterials: mcpAdmissionMaterialScan.materials,
@@ -47328,19 +47667,35 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
     }
     rows.push(...classifiedRows);
   }
-  const ledger = buildGpuHmrValidationMatrixLedger(rows, {
+  let ledger = buildGpuHmrValidationMatrixLedger(rows, {
     latestPerTarget: options.latestPerTarget !== false,
     includeInvalidated: options.includeInvalidated === true,
     includeUnproven: options.includeUnproven === true,
     sourceRoots: roots.map((root) => relPath(root, repoRoot)),
+    ...(mcpAdmissionCollectionPolicy === null
+      ? {}
+      : { mcpAdmissionReceiptPolicy: mcpAdmissionCollectionPolicy }),
     generatedAt: options.generatedAt,
     repoRoot,
     mcpRoot,
   });
+  if (policyMode === 'live-required' && mcpAdmissionTrust !== null) {
+    liveAdmissionVerifiedValidationMatrixLedgers.add(ledger);
+    const liveQuery = queryGpuHmrValidationMatrixLedger(ledger);
+    ledger = {
+      ...ledger,
+      query: liveQuery,
+    };
+    liveAdmissionVerifiedValidationMatrixLedgers.add(ledger);
+  }
   const testTimingV2 = gpuHmrTestTimingV2LedgerDiagnostics(testTimingV2Entries);
-  return {
+  const result = {
     ...ledger,
     testTimingV2,
     test_timing_v2: testTimingV2,
   };
+  if (policyMode === 'live-required' && mcpAdmissionTrust !== null) {
+    liveAdmissionVerifiedValidationMatrixLedgers.add(result);
+  }
+  return result;
 }
