@@ -2,8 +2,8 @@
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { realpathSync } from 'node:fs';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
@@ -56,7 +56,7 @@ const MODEL_REGISTRY = Object.freeze({
 });
 
 const CFG = {
-  slug: process.env.SLUG ?? `vulkan-runtime-frame-${nowSlugDate()}`,
+  slug: safeSlug(process.env.SLUG ?? `vulkan-runtime-frame-${nowSlugDate()}`),
   workerContainer: process.env.SYNTHI_VULKAN_WORKER_CONTAINER
     ?? process.env.WORKER_CONTAINER
     ?? 'vectant-ade-worker-1',
@@ -94,7 +94,12 @@ async function sha256File(filePath) {
 }
 
 function safeSlug(value) {
-  return String(value || 'vulkan-runtime').replace(/[^a-zA-Z0-9_.-]+/g, '-');
+  const sanitized = String(value || 'vulkan-runtime')
+    .trim()
+    .replace(/[^a-zA-Z0-9_.-]+/g, '-')
+    .replace(/^\.+|\.+$/g, '')
+    .slice(0, 128);
+  return sanitized || 'vulkan-runtime';
 }
 
 function relRepo(filePath) {
@@ -104,6 +109,21 @@ function relRepo(filePath) {
     return relative.replace(/\\/g, '/');
   }
   return resolved;
+}
+
+function pathIsStrictlyInside(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return Boolean(relative)
+    && !relative.startsWith('..')
+    && !path.isAbsolute(relative);
+}
+
+function vulkanArtifactOutputDir(slug) {
+  const outputDir = path.resolve(ARTIFACT_DIR, safeSlug(slug));
+  if (!pathIsStrictlyInside(ARTIFACT_DIR, outputDir)) {
+    throw new Error('vulkan_artifact_output_path_outside_configured_root');
+  }
+  return outputDir;
 }
 
 function firstText(...values) {
@@ -1524,6 +1544,25 @@ async function renderSelfCheckFrames(outDir) {
   };
 }
 
+function approvedVisualArtifactRoots(frames) {
+  const artifactRoot = realpathSync(ARTIFACT_DIR);
+  const artifactPaths = [
+    frames?.beforePath,
+    frames?.afterPath,
+    frames?.diffPath,
+  ];
+  if (artifactPaths.some((artifactPath) => typeof artifactPath !== 'string' || !artifactPath.trim())) {
+    throw new Error('vulkan_visual_artifact_path_missing');
+  }
+  for (const artifactPath of artifactPaths) {
+    const artifactRealPath = realpathSync(path.resolve(artifactPath));
+    if (!pathIsStrictlyInside(artifactRoot, artifactRealPath)) {
+      throw new Error(`vulkan_visual_artifact_outside_configured_root:${artifactRealPath}`);
+    }
+  }
+  return [artifactRoot];
+}
+
 function buildVisualOracleArtifacts({ frames, dispatchId, artifactHash, timestamp }) {
   const trace = `epoch=2 dispatch=${dispatchId} artifact=${artifactHash}`;
   return {
@@ -1746,6 +1785,52 @@ function negativeLayoutRefusal() {
   };
 }
 
+function applyRuntimeProofArtifactStrictGate(artifact, frames) {
+  const strictGate = runtimeProofArtifactStrictGate(artifact, {
+    visualArtifactRoots: approvedVisualArtifactRoots(frames),
+  });
+  const strictGatePassed = strictGate.accepted === true && strictGate.status === 'pass';
+  const strictFailureCodes = strictGatePassed
+    ? []
+    : [...new Set((strictGate.failures ?? []).map((code) => String(code)).filter(Boolean))];
+  const strictSuccess = artifact.fullRuntimeProven === true
+    && artifact.gpuHmrSuccess === true
+    && strictGatePassed;
+  const strictStage = {
+    stageId: 'vulkan-strict-runtime-proof-gate',
+    status: strictGatePassed ? 'passed' : 'failed',
+    evidenceRefs: [artifact.proofId],
+    failureCodes: strictFailureCodes,
+    failedGates: strictFailureCodes.map((code) => ({ code })),
+  };
+  const stageResults = [
+    ...(Array.isArray(artifact.stageResults) ? artifact.stageResults : []),
+    strictStage,
+  ];
+  const limitations = [...(Array.isArray(artifact.limitations) ? artifact.limitations : [])];
+  const limitationCodes = new Set(limitations.map((limitation) => limitation?.code).filter(Boolean));
+  for (const code of strictFailureCodes) {
+    if (limitationCodes.has(code)) continue;
+    limitations.push({ code, source: 'runtime_proof_artifact_strict_gate' });
+    limitationCodes.add(code);
+  }
+  return {
+    ...artifact,
+    strictGate,
+    strict_gate: strictGate,
+    resultState: strictSuccess
+      ? 'gpu-hmr-full-runtime-proven'
+      : 'gpu-hmr-runtime-proof-rejected',
+    fullRuntimeProven: strictSuccess,
+    full_runtime_proven: strictSuccess,
+    gpuHmrSuccess: strictSuccess,
+    gpu_hmr_success: strictSuccess,
+    stageResults,
+    stage_results: stageResults,
+    limitations,
+  };
+}
+
 function runtimeProofArtifact({ beforeHash, afterHash, proofLedger, ledger, contract, contractEvaluation, contractConsistency, frames, visualArtifacts, nativeApiEvidence, runMode }) {
   const record = proofLedger.records?.[0] ?? {};
   const deterministicVisualModeEvaluation = evaluateGpuHmrDeterministicVisualMode(record.deterministicVisualMode);
@@ -1845,9 +1930,7 @@ function runtimeProofArtifact({ beforeHash, afterHash, proofLedger, ledger, cont
     runMode,
     run_mode: runMode,
   };
-  artifact.strictGate = runtimeProofArtifactStrictGate(artifact);
-  artifact.strict_gate = artifact.strictGate;
-  return artifact;
+  return applyRuntimeProofArtifactStrictGate(artifact, frames);
 }
 
 function findTraceEvent(events, epoch, expectedHash) {
@@ -1953,7 +2036,7 @@ function validateVulkanRuntimeTrace({ runtimeTrace, beforeHash, afterHash }) {
   };
 }
 
-async function buildAcceptedSelfCheckProof(outDir) {
+async function buildSelfCheckProof(outDir) {
   await mkdir(outDir, { recursive: true });
   const beforeHash = sha256Text('vulkan-before-spirv');
   const afterHash = sha256Text('vulkan-after-spirv');
@@ -2486,21 +2569,90 @@ async function buildLiveRefusal(outDir) {
   return { proof, proofPath };
 }
 
-async function selfCheck() {
-  const tmp = await mkdtemp(path.join(os.tmpdir(), 'synthi-vulkan-runtime-self-check-'));
-  const proof = await buildAcceptedSelfCheckProof(tmp);
+async function runSelfCheck(tmp) {
+  const proof = await buildSelfCheckProof(tmp);
   const contractConsistency = proof.runtimeProofArtifact?.acceptanceContractConsistency;
+  const storedStrictGate = proof.runtimeProofArtifact?.strictGate;
+  const strictFailureCodes = storedStrictGate?.failures ?? [];
+  const strictStage = proof.runtimeProofArtifact?.stageResults
+    ?.find((stage) => stage?.stageId === 'vulkan-strict-runtime-proof-gate');
+  const limitationCodes = new Set(
+    (proof.runtimeProofArtifact?.limitations ?? []).map((limitation) => limitation?.code),
+  );
+  const captureBindingQuery = queryGpuHmrLedgerInvariants(proof.proofLedger, {
+    requireVisualCaptureRuntimeBinding: true,
+  });
+  const captureBindingFailureCodes = captureBindingQuery.failedInvariants
+    .map((failure) => failure?.code);
   if (
-    proof.runtimeProofArtifact?.gpuHmrSuccess !== true
+    proof.runtimeProofArtifact?.gpuHmrSuccess !== false
+    || proof.runtimeProofArtifact?.gpu_hmr_success !== false
+    || proof.runtimeProofArtifact?.fullRuntimeProven !== false
+    || proof.runtimeProofArtifact?.full_runtime_proven !== false
+    || proof.runtimeProofArtifact?.resultState !== 'gpu-hmr-runtime-proof-rejected'
+    || proof.gpuHmrSuccess !== false
+    || proof.fullRuntimeProven !== false
+    || proof.acceptedForGpuHmr !== false
+    || storedStrictGate?.accepted !== false
+    || storedStrictGate?.status !== 'fail'
+    || strictFailureCodes.length === 0
+    || strictFailureCodes.some((code) => !limitationCodes.has(code))
+    || strictStage?.status !== 'failed'
+    || strictFailureCodes.some((code) => !strictStage.failureCodes?.includes(code))
+    || !captureBindingFailureCodes.includes('visual_capture_manifest_missing')
+    || !captureBindingFailureCodes.includes('visual_capture_runtime_binding_missing')
     || contractConsistency?.accepted !== true
     || contractConsistency?.checked !== true
   ) {
-    throw new Error(`self-check strict artifact rejected: ${JSON.stringify({
+    throw new Error(`self-check honest strict refusal missing: ${JSON.stringify({
       strictGate: proof.runtimeProofArtifact?.strictGate,
+      strictStage,
       ledger: proof.ledger,
+      captureBindingQuery,
       contractEvaluation: proof.contractEvaluation,
       contractConsistency,
       limitations: proof.runtimeProofArtifact?.limitations,
+    }, null, 2)}`);
+  }
+  const selfCheckFrames = {
+    beforePath: path.join(tmp, 'vulkan-before-frame.png'),
+    afterPath: path.join(tmp, 'vulkan-after-frame.png'),
+    diffPath: path.join(tmp, 'vulkan-diff-frame.png'),
+  };
+  const originalAfterImage = await readFile(selfCheckFrames.afterPath);
+  const beforeImage = await readFile(selfCheckFrames.beforePath);
+  let tamperedArtifact;
+  try {
+    await writeFile(selfCheckFrames.afterPath, beforeImage);
+    tamperedArtifact = applyRuntimeProofArtifactStrictGate(
+      proof.runtimeProofArtifact,
+      selfCheckFrames,
+    );
+  } finally {
+    await writeFile(selfCheckFrames.afterPath, originalAfterImage);
+  }
+  if (
+    storedStrictGate.failures.includes('visual_oracle_after_image_hash_mismatch')
+    || tamperedArtifact.strictGate?.accepted !== false
+    || tamperedArtifact.strictGate?.status !== 'fail'
+    || !tamperedArtifact.strictGate?.failures?.includes('visual_oracle_after_image_hash_mismatch')
+    || tamperedArtifact.fullRuntimeProven !== false
+    || tamperedArtifact.full_runtime_proven !== false
+    || tamperedArtifact.gpuHmrSuccess !== false
+    || tamperedArtifact.gpu_hmr_success !== false
+    || !tamperedArtifact.limitations
+      ?.some((limitation) => limitation?.code === 'visual_oracle_after_image_hash_mismatch')
+    || !tamperedArtifact.stageResults
+      ?.some((stage) =>
+        stage?.status === 'failed'
+        && stage?.failureCodes?.includes('visual_oracle_after_image_hash_mismatch')
+      )
+  ) {
+    throw new Error(`self-check PNG byte tampering was not rejected: ${JSON.stringify({
+      baselineStrictGate: storedStrictGate,
+      tamperedStrictGate: tamperedArtifact.strictGate,
+      fullRuntimeProven: tamperedArtifact.fullRuntimeProven,
+      gpuHmrSuccess: tamperedArtifact.gpuHmrSuccess,
     }, null, 2)}`);
   }
   const proofPath = path.join(tmp, 'vulkan-runtime-proof.json');
@@ -2514,8 +2666,12 @@ async function selfCheck() {
     generatedAt: '2026-06-30T00:00:00.000Z',
   });
   const row = matrix.rows.find((entry) => entry.targetId === CFG.targetId && entry.backend === 'vulkan');
-  if (!row || row.matrixOutcome !== 'full_runtime_gpu_hmr' || row.acceptanceScope !== 'vulkan_declared_pipeline_visual') {
-    throw new Error(`self-check matrix row rejected: ${JSON.stringify({
+  if (
+    !row
+    || row.matrixOutcome === 'full_runtime_gpu_hmr'
+    || row.runtimeProofArtifact?.accepted !== false
+  ) {
+    throw new Error(`self-check matrix row did not preserve strict refusal: ${JSON.stringify({
       openGaps: row?.openGaps,
       reasons: row?.reasons,
       ledger: row?.ledger,
@@ -2575,7 +2731,7 @@ async function selfCheck() {
     generatedAt: '2026-06-30T00:00:00.000Z',
   });
   const forgedRow = forgedMatrix.rows.find((entry) => entry.proofIds?.includes('vulkan-runtime-proof:sha256:forged'));
-  if (forgedRow?.matrixOutcome === 'full_runtime_gpu_hmr') {
+  if (!forgedRow || forgedRow.matrixOutcome === 'full_runtime_gpu_hmr') {
     throw new Error('forged Vulkan visual frame hash was accepted');
   }
   console.log(JSON.stringify({
@@ -2584,8 +2740,25 @@ async function selfCheck() {
     proofId: proof.proofId,
     matrixProofId: matrix.proofId,
     rowId: row.rowId,
+    matrixOutcome: row.matrixOutcome,
+    storedStrictGate: storedStrictGate.status,
+    honestStrictRefusal: true,
+    pngTamperingRejected: true,
     forgedRejected: true,
   }, null, 2));
+}
+
+async function selfCheck() {
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const tmp = await mkdtemp(path.join(ARTIFACT_DIR, 'self-check-'));
+  try {
+    await runSelfCheck(tmp);
+  } finally {
+    if (!pathIsStrictlyInside(ARTIFACT_DIR, tmp)) {
+      throw new Error(`refusing to clean Vulkan self-check path outside artifact root: ${tmp}`);
+    }
+    await rm(tmp, { recursive: true, force: true });
+  }
 }
 
 async function main() {
@@ -2593,7 +2766,7 @@ async function main() {
     await selfCheck();
     return;
   }
-  const outDir = path.join(ARTIFACT_DIR, CFG.slug);
+  const outDir = vulkanArtifactOutputDir(CFG.slug);
   const { proof, proofPath } = await buildLiveRefusal(outDir);
   console.log(JSON.stringify({
     ok: proof.gpuHmrSuccess === true,
