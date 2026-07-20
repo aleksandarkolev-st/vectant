@@ -5,11 +5,15 @@ import {
   mergeClassificationWithBuildMetadataContent,
   summarizeBuildMetadataContent,
 } from '../gpu-hmr-random-large-project-cold-path.mjs';
+import { gpuHmrSourceExtensionMetadata } from '../lib/gpu-hmr-source-extension-registry.mjs';
 
 const BUILD_PATH = 'CMakeLists.txt';
 
-function classifyCmake(text, { accepted = true, authority } = {}) {
-  const listingClassification = classifySourceListing([{ path: BUILD_PATH }]);
+function classifyCmake(text, { accepted = true, authority, sourcePaths = [] } = {}) {
+  const listingClassification = classifySourceListing([
+    { path: BUILD_PATH },
+    ...sourcePaths.map((path) => ({ path })),
+  ]);
   const summary = summarizeBuildMetadataContent(BUILD_PATH, text);
   const semanticSummary = authority === undefined
     ? summary
@@ -62,6 +66,71 @@ const namedPathOnly = classifySourceListing([
   { path: 'src/metal/notes.cpp' },
 ]);
 assert.deepEqual(namedPathOnly.backendCandidates, []);
+
+const hlslPath = 'src/shader.hlsl';
+assert.equal(gpuHmrSourceExtensionMetadata(hlslPath)?.requestLanguage, 'hlsl');
+assert.equal(gpuHmrSourceExtensionMetadata(hlslPath)?.canEstablishGpuCapability, false);
+
+const bareHlslListing = classifySourceListing([{ path: hlslPath }]);
+assert.equal(bareHlslListing.gpuSourceSignalCount, 1);
+assert.deepEqual(bareHlslListing.backendCandidates, []);
+assert.equal(bareHlslListing.backendSignals.vulkan, undefined);
+assert.equal(bareHlslListing.backendSignals.directx, undefined);
+
+const bareHlslMetadata = classifyCmake(
+  'set(SHADER_SOURCE src/shader.hlsl)',
+  { sourcePaths: [hlslPath] },
+);
+assert.deepEqual(bareHlslMetadata.summary.backendSignalCandidates, []);
+assert.deepEqual(bareHlslMetadata.classification.backendCandidates, []);
+
+for (const extension of ['dxil', 'dxbc']) {
+  const hlslWithCompiledTarget = classifySourceListing([
+    { path: hlslPath },
+    { path: `build/shader.${extension}` },
+  ]);
+  assert.deepEqual(hlslWithCompiledTarget.backendCandidates, ['directx']);
+  assert.deepEqual(hlslWithCompiledTarget.backendSignals.directx, [{
+    path: `build/shader.${extension}`,
+    reason: 'compiled_target_extension',
+  }]);
+}
+
+const hlslWithDxc = classifyCmake([
+  'add_custom_command(',
+  '  OUTPUT build/shader.bin',
+  '  COMMAND dxc -T cs_6_0 -E main -Fo build/shader.bin src/shader.hlsl',
+  ')',
+].join('\n'), { sourcePaths: [hlslPath] });
+assert.deepEqual(hlslWithDxc.summary.backendSignalCandidates, ['directx']);
+assert.deepEqual(hlslWithDxc.classification.backendCandidates, ['directx']);
+
+const hlslWithFxc = classifyCmake(
+  'add_custom_command(COMMAND fxc /T cs_5_0 /Fo build/shader.bin src/shader.hlsl)',
+  { sourcePaths: [hlslPath] },
+);
+assert.deepEqual(hlslWithFxc.summary.backendSignalCandidates, ['directx']);
+assert.deepEqual(hlslWithFxc.classification.backendCandidates, ['directx']);
+
+const hlslWithD3dTarget = classifyCmake(
+  'target_link_libraries(shader_runtime PRIVATE d3d12)',
+  { sourcePaths: [hlslPath] },
+);
+assert.deepEqual(hlslWithD3dTarget.classification.backendCandidates, ['directx']);
+
+const hlslWithSpirv = classifyCmake([
+  'add_custom_command(',
+  '  OUTPUT build/shader.spv',
+  '  COMMAND dxc -spirv -fspv-target-env=vulkan1.2 -T cs_6_0 -E main',
+  '          -Fo build/shader.spv src/shader.hlsl',
+  ')',
+].join('\n'), { sourcePaths: [hlslPath] });
+assert.deepEqual(hlslWithSpirv.summary.backendSignalCandidates, ['vulkan']);
+assert.deepEqual(hlslWithSpirv.classification.backendCandidates, ['vulkan']);
+assert.equal(
+  hlslWithSpirv.summary.backendSignals.some((signal) => signal.backend === 'directx'),
+  false,
+);
 
 const hipLanguage = classifyCmake([
   'cmake_minimum_required(VERSION 3.24)',

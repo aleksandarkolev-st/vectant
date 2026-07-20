@@ -4438,6 +4438,8 @@ export function classifySourceListing(files) {
     '.wgsl',
     '.glsl',
     '.hlsl',
+    '.dxil',
+    '.dxbc',
     '.spv',
     '.metal',
     '.comp',
@@ -4536,8 +4538,11 @@ export function classifySourceListing(files) {
     if (ext === '.cu' || ext === '.cuh') addBackend('cuda', pathName, 'device_source_extension');
     if (ext === '.cl' || ext === '.clh') addBackend('opencl', pathName, 'device_source_extension');
     if (ext === '.wgsl') addBackend('webgpu_wgsl', pathName, 'device_source_extension');
+    if (ext === '.dxil' || ext === '.dxbc') {
+      addBackend('directx', pathName, 'compiled_target_extension');
+    }
     if (
-      ['.spv', '.glsl', '.hlsl', '.comp', '.vert', '.frag', '.geom', '.tesc', '.tese'].includes(ext)
+      ['.spv', '.glsl', '.comp', '.vert', '.frag', '.geom', '.tesc', '.tese'].includes(ext)
     ) addBackend('vulkan', pathName, 'device_source_extension');
     if (ext === '.metal') addBackend('metal', pathName, 'device_source_extension');
   }
@@ -4645,10 +4650,28 @@ function buildMetadataBackendSignals(pathName, text) {
     'opencl_language_compiler_or_device_source_semantics',
     /(?:\.clh?\b|(?:^|[\s"'=;|&])-x\s+cl\b|\bcl_khr_[A-Z0-9_]+\b|\bcl(?:Enqueue|Create|SetKernelArg)[A-Z0-9_]*\b|(?:^|["'=;|&]\s*)clspv(?:\.exe)?\s+(?:-[^\s"']+|[^\s"']+))/im,
   );
+  const dxcCompilerEvidence =
+    /(?:^\s*|[;&|]\s*|\bCOMMAND\s+)dxc(?:\.exe)?(?:\s|$)/im.test(source);
+  const fxcCompilerEvidence =
+    /(?:^\s*|[;&|]\s*|\bCOMMAND\s+)fxc(?:\.exe)?(?:\s|$)/im.test(source);
+  const dxcSpirvTargetEvidence =
+    /(?:^|[\s"'=;|&])-(?:spirv\b|fspv-target-env(?:=|\s+)vulkan(?:\d+(?:\.\d+)*)?\b)/im.test(source);
+  const directxTargetEvidence =
+    /(?:\.(?:dxil|dxbc)\b|\bD3DCompile(?:2|FromFile)?\s*\(|\bD3D(?:11|12)CreateDevice\s*\(|\bD3D(?:11|12)_[A-Z0-9_]+\b|\bID3D(?:11|12)[A-Z0-9_]*\b|(?:^|[\s"'=;])(?:d3d11|d3d12|d3dcompiler|dxcompiler)(?:\.lib)?(?=$|[\s"';)]))/im.test(source);
+  if (
+    directxTargetEvidence
+    || fxcCompilerEvidence
+    || (dxcCompilerEvidence && !dxcSpirvTargetEvidence)
+  ) {
+    signals.push({
+      backend: 'directx',
+      reason: 'directx_dxil_dxbc_dxc_fxc_or_d3d_target_semantics',
+    });
+  }
   add(
     'vulkan',
     'vulkan_compiler_or_device_source_semantics',
-    /(?:\.(?:spv|glsl|hlsl|comp|vert|frag|geom|tesc|tese)\b|--target-env(?:=|\s+)vulkan\b|(?:^|[\s"'=;|&])-spirv\b|(?:^|["'=;|&]\s*)(?:glslangValidator|spirv-(?:as|opt|link|val))(?:\.exe)?\s+(?:-[^\s"']+|[^\s"']+))/im,
+    /(?:\.(?:spv|glsl|comp|vert|frag|geom|tesc|tese)\b|--target-env(?:=|\s+)vulkan(?:\d+(?:\.\d+)*)?\b|(?:^|[\s"'=;|&])-(?:spirv\b|fspv-target-env(?:=|\s+)vulkan(?:\d+(?:\.\d+)*)?\b)|(?:^|["'=;|&]\s*)(?:glslangValidator|spirv-(?:as|opt|link|val))(?:\.exe)?\s+(?:-[^\s"']+|[^\s"']+))/im,
   );
   add(
     'webgpu_wgsl',
