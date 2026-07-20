@@ -549,7 +549,7 @@ export class SessionGpuParentRuntimeProofAdmission {
   private readonly transportSessionId: string;
   private readonly keyPin: RuntimeEvidenceTransportKeyPin;
   private readonly receiptConsumer: GpuParentRuntimeProofAdmissionReceiptConsumer;
-  private readonly signAdmissionReceipt: (
+  readonly #signAdmissionReceipt: (
     input: GpuParentRuntimeProofAdmissionReceiptInput,
   ) => unknown;
   private readonly now: () => number;
@@ -590,7 +590,7 @@ export class SessionGpuParentRuntimeProofAdmission {
     if (signAdmissionReceipt === null) {
       throw new Error("gpu_parent_runtime_proof_admission_receipt_signer_invalid");
     }
-    this.signAdmissionReceipt = signAdmissionReceipt;
+    this.#signAdmissionReceipt = signAdmissionReceipt;
     this.now = context.now ?? Date.now;
     this.nonceBytes = context.nonceBytes ?? (() => randomBytes(16));
     const limits = context.limits ?? {};
@@ -1134,7 +1134,7 @@ export class SessionGpuParentRuntimeProofAdmission {
       let signerFailed = false;
       this.parentProofSignerActive = true;
       try {
-        receiptValue = this.signAdmissionReceipt(receiptInput);
+        receiptValue = this.#signAdmissionReceipt(receiptInput);
       } catch {
         signerFailed = true;
       } finally {

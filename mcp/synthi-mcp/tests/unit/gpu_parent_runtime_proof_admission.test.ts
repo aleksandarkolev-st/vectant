@@ -416,6 +416,12 @@ describe("SessionGpuParentRuntimeProofAdmission", () => {
     expect(accessorCalls).toBe(0);
   });
 
+  it("keeps the captured signer capability out of reflective instance state", () => {
+    const gate = admission();
+
+    expect(Reflect.ownKeys(gate)).not.toContain("signAdmissionReceipt");
+  });
+
   it("issues bounded one-shot nonces and opaque support correlations", () => {
     const gate = admission();
     const first = gate.issueCompileIntent(

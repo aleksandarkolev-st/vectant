@@ -105,11 +105,11 @@ function validCallback(value: unknown): value is () => unknown {
 }
 
 export class GpuParentRuntimeProofAdmissionAuthority {
-  private readonly receiptSigner:
+  readonly #receiptSigner:
     GpuParentRuntimeProofAdmissionReceiptSigner;
-  private readonly exportedTrustMaterial:
+  readonly #exportedTrustMaterial:
     GpuParentRuntimeProofAdmissionTrustMaterial;
-  private disposed = false;
+  #disposed = false;
 
   constructor(contextValue: GpuParentRuntimeProofAdmissionAuthorityContext = {}) {
     const context = snapshotContext(contextValue);
@@ -140,7 +140,7 @@ export class GpuParentRuntimeProofAdmissionAuthority {
     })();
 
     try {
-      this.receiptSigner = new GpuParentRuntimeProofAdmissionReceiptSigner({
+      this.#receiptSigner = new GpuParentRuntimeProofAdmissionReceiptSigner({
         privateKey,
         validationRunChallenge,
         ...(context.clockUnixNs === undefined
@@ -163,11 +163,11 @@ export class GpuParentRuntimeProofAdmissionAuthority {
       generatedChallenge?.fill(0);
     }
 
-    this.exportedTrustMaterial = Object.freeze({
+    this.#exportedTrustMaterial = Object.freeze({
       schemaVersion: GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_SCHEMA,
       proofAuthority:
         GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_AUTHORITY,
-      verificationKey: this.receiptSigner.exportVerificationKey(),
+      verificationKey: this.#receiptSigner.exportVerificationKey(),
       validationRunChallenge,
       replayPolicyRequired: true,
       freshnessPolicyRequired: true,
@@ -178,19 +178,19 @@ export class GpuParentRuntimeProofAdmissionAuthority {
   }
 
   signer(): GpuParentRuntimeProofAdmissionReceiptSigner {
-    if (this.disposed) {
+    if (this.#disposed) {
       throw new Error("gpu_parent_runtime_proof_admission_authority_disposed");
     }
-    return this.receiptSigner;
+    return this.#receiptSigner;
   }
 
   trustMaterial(): GpuParentRuntimeProofAdmissionTrustMaterial {
-    return this.exportedTrustMaterial;
+    return this.#exportedTrustMaterial;
   }
 
   dispose(): void {
-    if (this.disposed) return;
-    this.receiptSigner.dispose();
-    this.disposed = true;
+    if (this.#disposed) return;
+    this.#receiptSigner.dispose();
+    this.#disposed = true;
   }
 }

@@ -330,15 +330,15 @@ export function verifyGpuParentRuntimeProofAdmissionReceipt(
 }
 
 export class GpuParentRuntimeProofAdmissionReceiptSigner {
-  private privateKey: KeyObject | null;
-  private readonly exportedVerificationKey:
+  #privateKey: KeyObject | null;
+  readonly #exportedVerificationKey:
     GpuParentRuntimeProofAdmissionReceiptVerificationKey;
-  private readonly validationRunChallengeSha256: string;
-  private readonly clockUnixNs: () => bigint;
-  private readonly nonceBytes: () => Uint8Array;
-  private sequence = 0n;
-  private disposed = false;
-  private signing = false;
+  readonly #validationRunChallengeSha256: string;
+  readonly #clockUnixNs: () => bigint;
+  readonly #nonceBytes: () => Uint8Array;
+  #sequence = 0n;
+  #disposed = false;
+  #signing = false;
 
   constructor(contextValue: GpuParentRuntimeProofAdmissionReceiptSignerContext) {
     const context = snapshotSignerContext(contextValue);
@@ -385,24 +385,24 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
       );
     }
 
-    this.privateKey = context.privateKey;
-    this.exportedVerificationKey = deriveVerificationKey(context.privateKey);
-    this.validationRunChallengeSha256 = challengeHash;
-    this.clockUnixNs = (context.clockUnixNs as (() => bigint) | undefined)
+    this.#privateKey = context.privateKey;
+    this.#exportedVerificationKey = deriveVerificationKey(context.privateKey);
+    this.#validationRunChallengeSha256 = challengeHash;
+    this.#clockUnixNs = (context.clockUnixNs as (() => bigint) | undefined)
       ?? (() => BigInt(Date.now()) * 1_000_000n);
-    this.nonceBytes = (context.nonceBytes as (() => Uint8Array) | undefined)
+    this.#nonceBytes = (context.nonceBytes as (() => Uint8Array) | undefined)
       ?? (() => randomBytes(32));
   }
 
   exportVerificationKey(): GpuParentRuntimeProofAdmissionReceiptVerificationKey {
-    return this.exportedVerificationKey;
+    return this.#exportedVerificationKey;
   }
 
   signAdmissionReceipt(
     inputValue: GpuParentRuntimeProofAdmissionReceiptInput,
   ): GpuParentRuntimeProofAdmissionReceipt {
     this.assertActive();
-    if (this.signing) {
+    if (this.#signing) {
       throw new Error(
         "gpu_parent_runtime_proof_admission_receipt_signer_busy",
       );
@@ -415,18 +415,18 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
         "gpu_parent_runtime_proof_admission_receipt_input_invalid",
       );
     }
-    if (this.sequence >= U64_MAX) {
+    if (this.#sequence >= U64_MAX) {
       throw new Error(
         "gpu_parent_runtime_proof_admission_receipt_sequence_exhausted",
       );
     }
 
-    this.signing = true;
+    this.#signing = true;
     let nonce: Buffer | null = null;
     try {
       let admittedAtUnixNs: bigint;
       try {
-        admittedAtUnixNs = this.clockUnixNs();
+        admittedAtUnixNs = this.#clockUnixNs();
       } catch {
         throw new Error(
           "gpu_parent_runtime_proof_admission_receipt_clock_failed",
@@ -445,7 +445,7 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
 
       let rawNonce: unknown;
       try {
-        rawNonce = this.nonceBytes();
+        rawNonce = this.#nonceBytes();
       } catch {
         throw new Error(
           "gpu_parent_runtime_proof_admission_receipt_nonce_source_failed",
@@ -459,11 +459,11 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
       }
       this.assertActive();
 
-      const nextSequence = this.sequence + 1n;
+      const nextSequence = this.#sequence + 1n;
       const unsignedReceipt = Object.freeze({
         schemaVersion: GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_SCHEMA,
         algorithm: GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_ALGORITHM,
-        signerKeyId: this.exportedVerificationKey.keyId,
+        signerKeyId: this.#exportedVerificationKey.keyId,
         producer: GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_PRODUCER,
         proofAuthority: GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_AUTHORITY,
         controlStageAdmitted: true as const,
@@ -471,7 +471,7 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
         acceptedForGpuHmr: false as const,
         gpuHmrSuccess: false as const,
         canSatisfyRuntimeProof: false as const,
-        validationRunChallengeSha256: this.validationRunChallengeSha256,
+        validationRunChallengeSha256: this.#validationRunChallengeSha256,
         ...input,
         admittedAtUnixNs: admittedAtUnixNs.toString(),
         sequence: nextSequence.toString(),
@@ -484,8 +484,8 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
           "gpu_parent_runtime_proof_admission_receipt_signing_material_invalid",
         );
       }
-      const privateKey = this.privateKey;
-      if (privateKey === null || this.disposed) {
+      const privateKey = this.#privateKey;
+      if (privateKey === null || this.#disposed) {
         throw new Error(
           "gpu_parent_runtime_proof_admission_receipt_signer_disposed",
         );
@@ -511,11 +511,11 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
           "gpu_parent_runtime_proof_admission_receipt_signing_failed",
         );
       }
-      this.sequence = nextSequence;
+      this.#sequence = nextSequence;
       return receipt;
     } finally {
       nonce?.fill(0);
-      this.signing = false;
+      this.#signing = false;
     }
   }
 
@@ -526,13 +526,13 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
   }
 
   dispose(): void {
-    if (this.disposed) return;
-    this.privateKey = null;
-    this.disposed = true;
+    if (this.#disposed) return;
+    this.#privateKey = null;
+    this.#disposed = true;
   }
 
   private assertActive(): void {
-    if (this.disposed || this.privateKey === null) {
+    if (this.#disposed || this.#privateKey === null) {
       throw new Error(
         "gpu_parent_runtime_proof_admission_receipt_signer_disposed",
       );

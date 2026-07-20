@@ -144,6 +144,9 @@ describe("GpuParentRuntimeProofAdmissionReceiptSigner", () => {
     const first = receiptSigner.signAdmissionReceipt(admissionInput());
     const second = receiptSigner.signAdmissionReceipt(admissionInput());
 
+    expect(Reflect.ownKeys(receiptSigner)).not.toContain("privateKey");
+    expect(Reflect.ownKeys(receiptSigner)).not.toContain("sequence");
+    expect(Reflect.ownKeys(receiptSigner)).not.toContain("nonceBytes");
     const rawPublicKey = Buffer.from(trustedKey.publicKey, "base64url");
     expect(trustedKey).toEqual({
       schemaVersion:

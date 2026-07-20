@@ -80,6 +80,9 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
     expect(Object.isFrozen(firstMaterial.verificationKey)).toBe(true);
     expect(firstMaterial).not.toHaveProperty("privateKey");
     expect(firstMaterial).not.toHaveProperty("signer");
+    expect(Reflect.ownKeys(first)).not.toContain("receiptSigner");
+    expect(Reflect.ownKeys(first)).not.toContain("exportedTrustMaterial");
+    expect(Reflect.ownKeys(first)).not.toContain("disposed");
   });
 
   it("binds deterministic live trust material to signed admission receipts", () => {
