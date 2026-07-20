@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath, URL as NodeURL } from 'node:url';
+import { types as utilTypes } from 'node:util';
 import sharp from 'sharp';
 import {
   GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
@@ -29,7 +31,6 @@ import {
   isGpuHmrVisualOutputOracleKind,
 } from './gpu-hmr-output-oracle-kind.mjs';
 import {
-  CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION,
   collectArtifactLocators,
   defaultCasRootFromEnv,
   validateArtifactCasManifest,
@@ -37,6 +38,10 @@ import {
 import {
   verifyComputeOracleSemantics,
 } from './gpu-hmr-compute-oracle-semantics.mjs';
+import {
+  COMPUTE_ORACLE_ARTIFACT_BUNDLE_VERIFICATION_SCHEMA_VERSION,
+  verifyComputeOracleArtifactBundle as verifyComputeOracleArtifactBundleUnchecked,
+} from './gpu-hmr-compute-oracle-artifact-bundle.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
 
@@ -68,6 +73,194 @@ function stableJson(value) {
   return `{${Object.keys(value).sort().map((key) =>
     `${JSON.stringify(key)}:${stableJson(value[key])}`
   ).join(',')}}`;
+}
+
+function plainDataTreeFailure(value) {
+  const pending = [{ value, leave: false }];
+  const active = new Set();
+  const complete = new Set();
+  while (pending.length > 0) {
+    const entry = pending.pop();
+    const current = entry.value;
+    if (current === null || typeof current === 'string' || typeof current === 'boolean') continue;
+    if (typeof current === 'number') {
+      if (!Number.isFinite(current)) return 'nonfinite_number';
+      if (Object.is(current, -0)) return 'negative_zero';
+      continue;
+    }
+    if (typeof current === 'bigint') return 'bigint';
+    if (typeof current === 'symbol') return 'symbol_value';
+    if (typeof current === 'undefined') return 'undefined_value';
+    if (typeof current === 'function') return 'function_value';
+    if (typeof current !== 'object') return 'unsupported_value';
+    try {
+      if (utilTypes.isProxy(current)) return 'proxy';
+    } catch {
+      return 'introspection_failed';
+    }
+    if (entry.leave) {
+      active.delete(current);
+      complete.add(current);
+      continue;
+    }
+    if (complete.has(current)) continue;
+    if (active.has(current)) return 'cycle';
+    active.add(current);
+    pending.push({ value: current, leave: true });
+    let prototype;
+    let descriptors;
+    let keys;
+    let array;
+    try {
+      array = Array.isArray(current);
+      prototype = Object.getPrototypeOf(current);
+      descriptors = Object.getOwnPropertyDescriptors(current);
+      keys = Reflect.ownKeys(descriptors);
+    } catch {
+      return 'introspection_failed';
+    }
+    if (prototype === NodeURL.prototype) {
+      if (array || keys.length !== 0) return 'file_url_shape';
+      try {
+        fileURLToPath(current);
+      } catch {
+        return 'file_url_invalid';
+      }
+      continue;
+    }
+    if (keys.some((key) => typeof key === 'symbol')) return 'symbol_property';
+    if (array) {
+      if (prototype !== Array.prototype) return 'array_prototype';
+      const names = keys;
+      const lengthDescriptor = descriptors.length;
+      const length = lengthDescriptor?.value;
+      if (
+        !lengthDescriptor
+        || !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value')
+        || !Number.isSafeInteger(length)
+        || length < 0
+        || names.length !== length + 1
+        || names.some((name) => name !== 'length' && !/^(?:0|[1-9][0-9]*)$/u.test(name))
+      ) {
+        return 'array_shape';
+      }
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor) return 'array_shape';
+        if (!('value' in descriptor)) return 'array_element_accessor';
+        if (descriptor.enumerable !== true) {
+          return 'array_element_descriptor';
+        }
+        pending.push({ value: descriptor.value, leave: false });
+      }
+      continue;
+    }
+    if (prototype !== Object.prototype && prototype !== null) return 'object_prototype';
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (!('value' in descriptor)) return 'accessor_property';
+      if (descriptor.enumerable !== true) {
+        return 'object_property_descriptor';
+      }
+      pending.push({ value: descriptor.value, leave: false });
+    }
+  }
+  return null;
+}
+
+const VALIDATION_ARTIFACT_BOUNDARY_FAILURE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.validation_artifact_boundary_failure.v1';
+
+function validationRuntimeProofBoundaryFailure(code) {
+  return {
+    schemaVersion: GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
+    proofId: 'gpu-runtime-proof:boundary-refusal',
+    resultState: 'gpu-hmr-validation-input-rejected',
+    degradedState: 'gpu-hmr-validation-boundary-refused',
+    degradedReason: code,
+    fullRuntimeProven: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    stageResults: [{
+      stageId: 'validation-artifact-boundary',
+      stage_id: 'validation-artifact-boundary',
+      status: 'blocked',
+      degradedReason: code,
+      degraded_reason: code,
+    }],
+    limitations: [{
+      code,
+      source: 'validation_artifact_boundary',
+    }],
+    failedGates: [code],
+    failed_gates: [code],
+    accepted: false,
+  };
+}
+
+function visualEvidenceBoundaryFailure(code) {
+  return [{
+    schemaVersion: VALIDATION_ARTIFACT_BOUNDARY_FAILURE_SCHEMA_VERSION,
+    schema_version: VALIDATION_ARTIFACT_BOUNDARY_FAILURE_SCHEMA_VERSION,
+    kind: 'visual-artifact-boundary-refusal',
+    role: 'boundary_refusal',
+    accepted: false,
+    acceptedAsVisualEvidence: false,
+    accepted_as_visual_evidence: false,
+    acceptedAsImageEvidence: false,
+    accepted_as_image_evidence: false,
+    acceptedAsRuntimeVisualProof: false,
+    accepted_as_runtime_visual_proof: false,
+    failedGates: [code],
+    failed_gates: [code],
+    limitations: [code],
+  }];
+}
+
+function visualOracleArtifactBoundaryFailure(code) {
+  const verification = {
+    accepted: false,
+    failedGates: [code],
+    failed_gates: [code],
+  };
+  return {
+    schemaVersion: VALIDATION_ARTIFACT_BOUNDARY_FAILURE_SCHEMA_VERSION,
+    schema_version: VALIDATION_ARTIFACT_BOUNDARY_FAILURE_SCHEMA_VERSION,
+    accepted: false,
+    acceptedAsRuntimeVisualProof: false,
+    accepted_as_runtime_visual_proof: false,
+    failedGates: [code],
+    failed_gates: [code],
+    visualPixelVerification: verification,
+    visual_pixel_verification: verification,
+  };
+}
+
+function computeOracleBundleBoundaryFailure(code) {
+  const failedGates = [{ code }];
+  return {
+    schemaVersion: COMPUTE_ORACLE_ARTIFACT_BUNDLE_VERIFICATION_SCHEMA_VERSION,
+    schema_version: COMPUTE_ORACLE_ARTIFACT_BUNDLE_VERIFICATION_SCHEMA_VERSION,
+    verificationId: 'compute-oracle-artifact-bundle:boundary-refusal',
+    verification_id: 'compute-oracle-artifact-bundle:boundary-refusal',
+    present: false,
+    accepted: false,
+    acceptedAsComputeOracleArtifactEvidence: false,
+    accepted_as_compute_oracle_artifact_evidence: false,
+    reasons: [code],
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function writtenValidationRuntimeProofBoundaryFailure(code) {
+  return {
+    path: null,
+    artifact: validationRuntimeProofBoundaryFailure(code),
+    accepted: false,
+    failedGates: [code],
+    failed_gates: [code],
+  };
 }
 
 function compactStringList(values) {
@@ -2221,7 +2414,7 @@ function bindRuntimeVisualProofArtifacts(artifacts, {
   });
 }
 
-export function visualEvidenceArtifactsFromVisualOracleArtifacts(visualOracleArtifacts, {
+function visualEvidenceArtifactsFromVisualOracleArtifactsValidated(visualOracleArtifacts, {
   proofLedgerQuery,
   proofLedgerRecord,
   producerSubsystem = 'mcp.gpu_hmr_validation',
@@ -2272,6 +2465,46 @@ export function visualEvidenceArtifactsFromVisualOracleArtifacts(visualOracleArt
     proofLedgerQuery,
     proofLedgerRecord,
   });
+}
+
+export function visualEvidenceArtifactsFromVisualOracleArtifacts(
+  visualOracleArtifacts,
+  options,
+) {
+  try {
+    const resolvedOptions = arguments.length >= 2 ? options : {};
+    const sourceFailure = plainDataTreeFailure(visualOracleArtifacts);
+    if (sourceFailure) {
+      return visualEvidenceBoundaryFailure(
+        `visual_oracle_evidence_plain_data_${sourceFailure}`,
+      );
+    }
+    if (
+      visualOracleArtifacts !== null
+      && (typeof visualOracleArtifacts !== 'object' || Array.isArray(visualOracleArtifacts))
+    ) {
+      return visualEvidenceBoundaryFailure('visual_oracle_evidence_input_not_object');
+    }
+    const optionsFailure = plainDataTreeFailure(resolvedOptions);
+    if (optionsFailure) {
+      return visualEvidenceBoundaryFailure(
+        `visual_oracle_evidence_options_plain_data_${optionsFailure}`,
+      );
+    }
+    if (
+      resolvedOptions === null
+      || typeof resolvedOptions !== 'object'
+      || Array.isArray(resolvedOptions)
+    ) {
+      return visualEvidenceBoundaryFailure('visual_oracle_evidence_options_not_object');
+    }
+    return visualEvidenceArtifactsFromVisualOracleArtifactsValidated(
+      visualOracleArtifacts,
+      resolvedOptions,
+    );
+  } catch {
+    return visualEvidenceBoundaryFailure('visual_oracle_evidence_boundary_exception');
+  }
 }
 
 function visualLedgerOracleLimitations({
@@ -2360,6 +2593,44 @@ function adversarialPreflightLimitations(facet) {
 
 function hasOwn(object, key) {
   return object && typeof object === 'object' && Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function plainOwnDataDescriptors(record) {
+  if (!record || typeof record !== 'object' || Array.isArray(record) || utilTypes.isProxy(record)) {
+    return null;
+  }
+  if (Object.getPrototypeOf(record) !== Object.prototype) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(record);
+  if (Reflect.ownKeys(descriptors).some((key) => {
+    const descriptor = descriptors[key];
+    return typeof key !== 'string'
+      || Object.hasOwn(descriptor, 'get')
+      || Object.hasOwn(descriptor, 'set');
+  })) {
+    return null;
+  }
+  return descriptors;
+}
+
+function ownStringAliasValue(records, aliases) {
+  const values = [];
+  let invalidRecord = false;
+  for (const record of records) {
+    if (record === null || record === undefined) continue;
+    const descriptors = plainOwnDataDescriptors(record);
+    if (!descriptors) {
+      invalidRecord = true;
+      continue;
+    }
+    for (const alias of aliases) {
+      const descriptor = descriptors[alias];
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) continue;
+      const value = firstString(descriptor.value);
+      if (value) values.push(value);
+    }
+  }
+  const distinctValues = [...new Set(values)];
+  return invalidRecord || distinctValues.length !== 1 ? null : distinctValues[0];
 }
 
 function firstPresent(...entries) {
@@ -3102,6 +3373,14 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
   const outputComputeArtifacts = objectOrNull(outputArtifacts.compute_oracle_artifacts)
     ?? objectOrNull(outputArtifacts.computeOracleArtifacts)
     ?? {};
+  const runtimeObservedOutputTargetId = ownStringAliasValue(
+    [outputOracle, outputProof],
+    ['outputTargetId', 'output_target_id'],
+  );
+  const runtimeObservedOracleCodeHash = ownStringAliasValue(
+    [outputOracle, outputProof],
+    ['oracleCodeHash', 'oracle_code_hash'],
+  );
   const timingMetrics = objectOrNull(input.timingMetrics)
     ?? objectOrNull(input.timing_metrics)
     ?? objectOrNull(input.timings?.timingMetrics)
@@ -3249,6 +3528,8 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
         outputOracle.dispatchId,
         outputOracle.dispatch_id,
       ),
+      output_target_id: runtimeObservedOutputTargetId,
+      oracle_code_hash: runtimeObservedOracleCodeHash,
       timestamp_monotonic_ns: outputTimestamp,
       passed: outputProof?.resultState === 'gpu-hmr-output-oracle-proven' || outputOracle.passed === true,
     },
@@ -3397,7 +3678,7 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
   return record;
 }
 
-export function buildValidationRuntimeProofArtifact(input = {}) {
+function buildValidationRuntimeProofArtifactValidated(input) {
   const createdAt = input.createdAt ?? new Date().toISOString();
   const fullRuntimeProof = input.fullRuntimeProof && typeof input.fullRuntimeProof === 'object'
     ? input.fullRuntimeProof
@@ -3777,7 +4058,29 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   };
 }
 
-export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts = []) {
+export function buildValidationRuntimeProofArtifact(input) {
+  try {
+    const resolvedInput = arguments.length >= 1 ? input : {};
+    const inputFailure = plainDataTreeFailure(resolvedInput);
+    if (inputFailure) {
+      return validationRuntimeProofBoundaryFailure(
+        `validation_runtime_proof_plain_data_${inputFailure}`,
+      );
+    }
+    if (
+      resolvedInput === null
+      || typeof resolvedInput !== 'object'
+      || Array.isArray(resolvedInput)
+    ) {
+      return validationRuntimeProofBoundaryFailure('validation_runtime_proof_input_not_object');
+    }
+    return buildValidationRuntimeProofArtifactValidated(resolvedInput);
+  } catch {
+    return validationRuntimeProofBoundaryFailure('validation_runtime_proof_boundary_exception');
+  }
+}
+
+async function visualEvidenceArtifactsFromFilesValidated(paths, existingArtifacts) {
   const existingByPath = visualArtifactMap(existingArtifacts);
   const records = [];
   for (const artifactPath of compactStringList(paths)) {
@@ -3864,12 +4167,39 @@ export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts 
   return records;
 }
 
+export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts) {
+  try {
+    const resolvedExistingArtifacts = arguments.length >= 2 ? existingArtifacts : [];
+    const pathsFailure = plainDataTreeFailure(paths);
+    if (pathsFailure) {
+      return visualEvidenceBoundaryFailure(
+        `visual_evidence_paths_plain_data_${pathsFailure}`,
+      );
+    }
+    const existingFailure = plainDataTreeFailure(resolvedExistingArtifacts);
+    if (existingFailure) {
+      return visualEvidenceBoundaryFailure(
+        `visual_evidence_existing_artifacts_plain_data_${existingFailure}`,
+      );
+    }
+    if (!Array.isArray(paths)) {
+      return visualEvidenceBoundaryFailure('visual_evidence_paths_not_array');
+    }
+    if (!Array.isArray(resolvedExistingArtifacts)) {
+      return visualEvidenceBoundaryFailure('visual_evidence_existing_artifacts_not_array');
+    }
+    return await visualEvidenceArtifactsFromFilesValidated(paths, resolvedExistingArtifacts);
+  } catch {
+    return visualEvidenceBoundaryFailure('visual_evidence_files_boundary_exception');
+  }
+}
+
 function fileArtifactPath(value) {
   const ref = firstString(value);
   if (!ref) return null;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(ref) && !ref.toLowerCase().startsWith('file://')) return null;
   if (ref.toLowerCase().startsWith('file://')) {
-    return new URL(ref);
+    return new NodeURL(ref);
   }
   return ref;
 }
@@ -3925,6 +4255,15 @@ function normalizedComputeArtifactRole(value) {
   ].includes(role)) {
     return 'rendered_card';
   }
+  if ([
+    'oracle_code',
+    'oracle_implementation',
+    'semantic_oracle_implementation',
+    'compute_oracle_implementation',
+    'runtime_compute_oracle_implementation',
+  ].includes(role)) {
+    return 'oracle_implementation';
+  }
   return null;
 }
 
@@ -3950,18 +4289,17 @@ function computeArtifactLocatorHash(locator) {
 }
 
 function computeArtifactCasLocators(source) {
-  const locators = collectArtifactLocators(source).filter((locator) => {
-    if ((locator.schemaVersion ?? locator.schema_version) !== CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION) return false;
-    return computeArtifactLocatorRole(locator) !== null;
-  });
+  const genericDeclarations = [
+    source.artifact_cas_locators,
+    source.artifactCasLocators,
+    source.artifact_cas_locator,
+    source.artifactCasLocator,
+  ].flatMap((value) => Array.isArray(value) ? value : [value]).filter(objectOrNull);
+  const locators = [...genericDeclarations, ...collectArtifactLocators(source)];
   const seen = new Set();
   return locators.filter((locator) => {
-    const role = computeArtifactLocatorRole(locator) ?? 'artifact';
-    const hash = computeArtifactLocatorHash(locator) ?? 'unknown';
-    const manifestHash = firstString(locator.manifestHash, locator.manifest_hash) ?? 'no-manifest';
-    const key = `${role}:${hash}:${manifestHash}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
+    if (seen.has(locator)) return false;
+    seen.add(locator);
     return true;
   });
 }
@@ -4001,20 +4339,58 @@ function computeArtifactCasExpectedHash(source, role) {
       ),
     );
   }
+  if (role === 'oracle_implementation') {
+    return normalizeOptionalSha256(
+      firstString(
+        source.oracle_code_hash,
+        source.oracleCodeHash,
+        source.semantic_oracle_implementation_hash,
+        source.semanticOracleImplementationHash,
+      ),
+    );
+  }
   return null;
 }
 
 function computeArtifactCasAllowedRoots(source = {}, options = {}) {
-  const envRoot = defaultCasRootFromEnv();
-  const trustedRoots = compactStringList([
+  const explicitRootKeys = [
+    'allowedRoots',
+    'allowed_roots',
+    'allowedArtifactRoots',
+    'allowed_artifact_roots',
+    'allowedCasRoots',
+    'allowed_cas_roots',
+    'computeArtifactRoots',
+    'compute_artifact_roots',
+    'artifactRoot',
+    'artifact_root',
+    'artifactCasRoot',
+    'artifact_cas_root',
+    'casRoot',
+    'cas_root',
+  ];
+  const explicitRootsSupplied = explicitRootKeys.some((key) =>
+    Object.prototype.hasOwnProperty.call(options, key)
+  );
+  const explicitRoots = compactStringList([
     ...(Array.isArray(options.allowedRoots) ? options.allowedRoots : []),
+    ...(Array.isArray(options.allowed_roots) ? options.allowed_roots : []),
     ...(Array.isArray(options.allowedArtifactRoots) ? options.allowedArtifactRoots : []),
+    ...(Array.isArray(options.allowed_artifact_roots) ? options.allowed_artifact_roots : []),
     ...(Array.isArray(options.allowedCasRoots) ? options.allowedCasRoots : []),
+    ...(Array.isArray(options.allowed_cas_roots) ? options.allowed_cas_roots : []),
+    ...(Array.isArray(options.computeArtifactRoots) ? options.computeArtifactRoots : []),
+    ...(Array.isArray(options.compute_artifact_roots) ? options.compute_artifact_roots : []),
     options.artifactRoot,
+    options.artifact_root,
     options.artifactCasRoot,
+    options.artifact_cas_root,
     options.casRoot,
-    envRoot,
-  ]).map((root) => path.resolve(root));
+    options.cas_root,
+  ]);
+  const trustedRoots = compactStringList(
+    explicitRootsSupplied ? explicitRoots : [defaultCasRootFromEnv()],
+  ).map((root) => path.resolve(root));
   if (trustedRoots.length === 0) return [];
 
   const sourceRoots = compactStringList([
@@ -4039,14 +4415,44 @@ function computeArtifactCasAllowedRoots(source = {}, options = {}) {
 }
 
 function computeArtifactTrustedCasRoot(options = {}) {
-  return compactStringList([
+  const explicitRootKeys = [
+    'allowedRoots',
+    'allowed_roots',
+    'allowedArtifactRoots',
+    'allowed_artifact_roots',
+    'allowedCasRoots',
+    'allowed_cas_roots',
+    'computeArtifactRoots',
+    'compute_artifact_roots',
+    'artifactRoot',
+    'artifact_root',
+    'artifactCasRoot',
+    'artifact_cas_root',
+    'casRoot',
+    'cas_root',
+  ];
+  const explicitRootsSupplied = explicitRootKeys.some((key) =>
+    Object.prototype.hasOwnProperty.call(options, key)
+  );
+  const explicitRoots = compactStringList([
+    ...(Array.isArray(options.allowedRoots) ? options.allowedRoots : []),
+    ...(Array.isArray(options.allowed_roots) ? options.allowed_roots : []),
     options.artifactRoot,
+    options.artifact_root,
     options.artifactCasRoot,
+    options.artifact_cas_root,
     options.casRoot,
+    options.cas_root,
     ...(Array.isArray(options.allowedArtifactRoots) ? options.allowedArtifactRoots : []),
+    ...(Array.isArray(options.allowed_artifact_roots) ? options.allowed_artifact_roots : []),
     ...(Array.isArray(options.allowedCasRoots) ? options.allowedCasRoots : []),
-    defaultCasRootFromEnv(),
-  ]).map((root) => path.resolve(root))[0] ?? null;
+    ...(Array.isArray(options.allowed_cas_roots) ? options.allowed_cas_roots : []),
+    ...(Array.isArray(options.computeArtifactRoots) ? options.computeArtifactRoots : []),
+    ...(Array.isArray(options.compute_artifact_roots) ? options.compute_artifact_roots : []),
+  ]);
+  return compactStringList(
+    explicitRootsSupplied ? explicitRoots : [defaultCasRootFromEnv()],
+  ).map((root) => path.resolve(root))[0] ?? null;
 }
 
 function isPathInsideOrSame(child, root) {
@@ -4082,26 +4488,34 @@ async function readComputeArtifactCasManifest(value, role) {
   }
 }
 
-function computeArtifactCasLocatorForRole(locators, role, expectedHash) {
-  const normalizedRole = normalizedComputeArtifactRole(role);
-  const normalizedHash = normalizeOptionalSha256(expectedHash);
-  const roleMatches = locators.filter((locator) => {
-    const locatorRole = computeArtifactLocatorRole(locator);
-    return !normalizedRole || !locatorRole || locatorRole === normalizedRole;
-  });
-  return roleMatches.find((locator) => {
-    const locatorHash = computeArtifactLocatorHash(locator);
-    return !normalizedHash || !locatorHash || locatorHash === normalizedHash;
-  }) ?? roleMatches[0] ?? null;
-}
-
-async function validateComputeArtifactCasLocator(locator, source, options) {
+async function validateComputeArtifactCasLocator(
+  locator,
+  source,
+  options,
+  expectedRole = null,
+  expectedHash = null,
+) {
   try {
-    return await validateArtifactCasManifest(locator, {
+    const validation = await validateArtifactCasManifest(locator, {
       allowedRoots: computeArtifactCasAllowedRoots(source, options),
       artifactRoot: computeArtifactTrustedCasRoot(options),
       requireReadableBytes: true,
     });
+    const reasons = Array.isArray(validation.reasons) ? [...validation.reasons] : [];
+    if (expectedRole && computeArtifactLocatorRole(locator) !== expectedRole) {
+      reasons.push('compute_oracle_artifact_cas_role_mismatch');
+    }
+    const normalizedExpectedHash = normalizeOptionalSha256(expectedHash);
+    if (normalizedExpectedHash && validation.contentHash !== normalizedExpectedHash) {
+      reasons.push('compute_oracle_artifact_cas_expected_hash_mismatch');
+    }
+    return {
+      ...validation,
+      accepted: validation.accepted === true && reasons.length === 0,
+      acceptedAsTransportEvidence:
+        validation.acceptedAsTransportEvidence === true && reasons.length === 0,
+      reasons,
+    };
   } catch (error) {
     return {
       accepted: false,
@@ -4126,6 +4540,27 @@ async function resolveComputeArtifactCasPaths(source, options = {}) {
   const out = { ...source };
   const embeddedLocators = computeArtifactCasLocators(source);
   const entries = [];
+  const malformedGenericLocatorCount = [
+    source.artifact_cas_locators,
+    source.artifactCasLocators,
+    source.artifact_cas_locator,
+    source.artifactCasLocator,
+  ].filter((value) => value !== undefined && value !== null)
+    .flatMap((value) => Array.isArray(value) ? value : [value])
+    .filter((value) => !objectOrNull(value)).length;
+  for (let index = 0; index < malformedGenericLocatorCount; index += 1) {
+    entries.push({
+      role: 'untyped',
+      accepted: false,
+      path: null,
+      contentHash: null,
+      content_hash: null,
+      manifestHash: null,
+      manifest_hash: null,
+      reasons: ['compute_oracle_artifact_cas_declared_locator_malformed'],
+      gaps: [],
+    });
+  }
   const roleFields = [
     {
       role: 'raw_readback',
@@ -4159,11 +4594,51 @@ async function resolveComputeArtifactCasPaths(source, options = {}) {
         'renderedCardLocator',
       ],
     },
+    {
+      role: 'oracle_implementation',
+      snakeName: 'semantic_oracle_implementation',
+      camelName: 'semanticOracleImplementation',
+      manifestFields: [
+        'oracle_implementation_cas_manifest',
+        'oracleImplementationCasManifest',
+        'semantic_oracle_implementation_cas_manifest',
+        'semanticOracleImplementationCasManifest',
+        'oracle_implementation_locator',
+        'oracleImplementationLocator',
+        'semantic_oracle_implementation_locator',
+        'semanticOracleImplementationLocator',
+      ],
+    },
   ];
+  const explicitlyDeclaredLocators = new Set();
+  const unresolvedEmbedded = embeddedLocators.filter((locator) => {
+    const role = computeArtifactLocatorRole(locator);
+    return !roleFields.some((entry) => entry.role === role);
+  });
+  for (const locator of unresolvedEmbedded) {
+    const validation = await validateComputeArtifactCasLocator(locator, source, options);
+    entries.push({
+      role: computeArtifactLocatorRole(locator) ?? 'untyped',
+      accepted: false,
+      path: null,
+      contentHash: validation?.contentHash ?? computeArtifactLocatorHash(locator),
+      content_hash: validation?.contentHash ?? computeArtifactLocatorHash(locator),
+      manifestHash: validation?.manifestHash ?? null,
+      manifest_hash: validation?.manifestHash ?? null,
+      reasons: [
+        ...(validation?.reasons ?? []),
+        'compute_oracle_artifact_cas_role_invalid',
+      ],
+      gaps: validation?.gaps ?? [],
+    });
+  }
   for (const { role, snakeName, camelName, manifestFields } of roleFields) {
-    let locator = null;
-    const manifestValue = manifestFields.map((field) => out[field]).find((value) => value !== null && value !== undefined);
-    if (manifestValue !== undefined) {
+    const candidates = [];
+    for (const field of manifestFields) {
+      if (!Object.prototype.hasOwnProperty.call(out, field)) continue;
+      const manifestValue = out[field];
+      if (manifestValue === undefined || manifestValue === null) continue;
+      if (objectOrNull(manifestValue)) explicitlyDeclaredLocators.add(manifestValue);
       const loaded = await readComputeArtifactCasManifest(manifestValue, role);
       if (loaded.readError) {
         entries.push({
@@ -4179,56 +4654,88 @@ async function resolveComputeArtifactCasPaths(source, options = {}) {
           reasons: ['compute_oracle_artifact_cas_manifest_unreadable'],
           gaps: [],
         });
-        delete out[snakeName];
-        delete out[camelName];
         continue;
       }
-      locator = loaded.manifest;
+      if (!loaded.manifest) {
+        entries.push({
+          role,
+          accepted: false,
+          path: null,
+          contentHash: null,
+          content_hash: null,
+          manifestHash: null,
+          manifest_hash: null,
+          reasons: ['compute_oracle_artifact_cas_manifest_invalid'],
+          gaps: [],
+        });
+        continue;
+      }
+      candidates.push(loaded.manifest);
     }
-    if (!locator) {
-      locator = computeArtifactCasLocatorForRole(
-        embeddedLocators,
+    for (const locator of embeddedLocators) {
+      if (explicitlyDeclaredLocators.has(locator)) continue;
+      if (computeArtifactLocatorRole(locator) === role) candidates.push(locator);
+    }
+    const expectedHash = computeArtifactCasExpectedHash(source, role);
+    const validations = [];
+    for (const locator of candidates) {
+      const validation = await validateComputeArtifactCasLocator(
+        locator,
+        source,
+        options,
         role,
-        computeArtifactCasExpectedHash(source, role),
+        expectedHash,
       );
+      validations.push(validation);
+      entries.push({
+        role,
+        accepted: validation?.accepted === true && Boolean(firstString(
+          validation.localPath,
+          validation.local_path,
+        )),
+        path: validation?.accepted === true
+          ? firstString(validation.localPath, validation.local_path)
+          : null,
+        contentHash: validation?.contentHash ?? null,
+        content_hash: validation?.contentHash ?? null,
+        manifestHash: validation?.manifestHash ?? null,
+        manifest_hash: validation?.manifestHash ?? null,
+        reasons: validation?.reasons ?? [],
+        gaps: validation?.gaps ?? [],
+      });
     }
-    if (!locator) continue;
-    const locatorRole = computeArtifactLocatorRole(locator);
-    if (locatorRole !== role) {
+    const peerHashes = new Set(validations.map((validation) => validation?.contentHash).filter(Boolean));
+    if (peerHashes.size > 1) {
       entries.push({
         role,
         accepted: false,
         path: null,
-        contentHash: computeArtifactLocatorHash(locator),
-        content_hash: computeArtifactLocatorHash(locator),
-        manifestHash: firstString(locator?.manifestHash, locator?.manifest_hash),
-        manifest_hash: firstString(locator?.manifestHash, locator?.manifest_hash),
-        reasons: ['compute_oracle_artifact_cas_role_mismatch'],
+        contentHash: null,
+        content_hash: null,
+        manifestHash: null,
+        manifest_hash: null,
+        reasons: ['compute_oracle_artifact_cas_conflicting_peer_hashes'],
         gaps: [],
       });
-      delete out[snakeName];
-      delete out[camelName];
-      continue;
     }
-    const validation = await validateComputeArtifactCasLocator(locator, source, options);
-    const pathValue = validation?.accepted === true
-      ? firstString(validation.localPath, validation.local_path)
-      : null;
-    entries.push({
-      role,
-      accepted: Boolean(pathValue),
-      path: pathValue,
-      contentHash: validation?.contentHash ?? null,
-      content_hash: validation?.contentHash ?? null,
-      manifestHash: validation?.manifestHash ?? null,
-      manifest_hash: validation?.manifestHash ?? null,
-      reasons: validation?.reasons ?? [],
-      gaps: validation?.gaps ?? [],
-    });
-    if (pathValue) {
+    const allRoleEntriesAccepted = entries
+      .filter((entry) => entry.role === role)
+      .every((entry) => entry.accepted === true);
+    const pathValue = validations
+      .map((validation) => validation?.accepted === true
+        ? firstString(validation.localPath, validation.local_path)
+        : null)
+      .find(Boolean) ?? null;
+    if (candidates.length > 0 && allRoleEntriesAccepted && pathValue) {
       out[snakeName] = pathValue;
       out[camelName] = pathValue;
-    } else {
+    } else if (candidates.length > 0 || !allRoleEntriesAccepted) {
+      delete out[snakeName];
+      delete out[camelName];
+    }
+  }
+  if (entries.some((entry) => entry.accepted !== true)) {
+    for (const { snakeName, camelName } of roleFields) {
       delete out[snakeName];
       delete out[camelName];
     }
@@ -4263,11 +4770,82 @@ async function resolveComputeArtifactCasPaths(source, options = {}) {
   return out;
 }
 
-export {
-  verifyComputeOracleArtifactBundle,
-} from './gpu-hmr-compute-oracle-artifact-bundle.mjs';
+export async function verifyComputeOracleArtifactBundle(computeArtifacts, options) {
+  try {
+    const resolvedComputeArtifacts = arguments.length >= 1 ? computeArtifacts : null;
+    const resolvedOptions = arguments.length >= 2 ? options : {};
+    const sourceFailure = plainDataTreeFailure(resolvedComputeArtifacts);
+    if (sourceFailure) {
+      return computeOracleBundleBoundaryFailure(
+        `compute_oracle_artifact_bundle_plain_data_${sourceFailure}`,
+      );
+    }
+    if (
+      resolvedComputeArtifacts !== null
+      && (
+        typeof resolvedComputeArtifacts !== 'object'
+        || Array.isArray(resolvedComputeArtifacts)
+      )
+    ) {
+      return computeOracleBundleBoundaryFailure(
+        'compute_oracle_artifact_bundle_input_not_object',
+      );
+    }
+    const optionsFailure = plainDataTreeFailure(resolvedOptions);
+    if (optionsFailure) {
+      return computeOracleBundleBoundaryFailure(
+        `compute_oracle_artifact_bundle_options_plain_data_${optionsFailure}`,
+      );
+    }
+    if (
+      resolvedOptions === null
+      || typeof resolvedOptions !== 'object'
+      || Array.isArray(resolvedOptions)
+    ) {
+      return computeOracleBundleBoundaryFailure(
+        'compute_oracle_artifact_bundle_options_not_object',
+      );
+    }
+    return await verifyComputeOracleArtifactBundleUnchecked(
+      resolvedComputeArtifacts,
+      resolvedOptions,
+    );
+  } catch {
+    return computeOracleBundleBoundaryFailure(
+      'compute_oracle_artifact_bundle_boundary_exception',
+    );
+  }
+}
 
-export async function computeOracleArtifactsFromFiles(computeArtifacts = null, options = {}) {
+const COMPUTE_ORACLE_ARTIFACT_BOUNDARY_FAILURE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.compute_oracle_artifact_boundary_failure.v1';
+
+function computeOracleArtifactBoundaryFailure(code) {
+  const validation = {
+    schemaVersion: COMPUTE_ORACLE_ARTIFACT_BOUNDARY_FAILURE_SCHEMA_VERSION,
+    schema_version: COMPUTE_ORACLE_ARTIFACT_BOUNDARY_FAILURE_SCHEMA_VERSION,
+    accepted: false,
+    failedGates: [code],
+    failed_gates: [code],
+  };
+  return {
+    schemaVersion: COMPUTE_ORACLE_ARTIFACT_BOUNDARY_FAILURE_SCHEMA_VERSION,
+    schema_version: COMPUTE_ORACLE_ARTIFACT_BOUNDARY_FAILURE_SCHEMA_VERSION,
+    accepted: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: 'none',
+    proof_authority: 'none',
+    failedGates: [code],
+    failed_gates: [code],
+    computeArtifactInputValidation: validation,
+    compute_artifact_input_validation: validation,
+  };
+}
+
+async function computeOracleArtifactsFromFilesValidated(computeArtifacts, options) {
   const source = objectOrNull(computeArtifacts);
   if (!source) return null;
   const resolvedSource = await resolveComputeArtifactCasPaths(source, options);
@@ -4355,6 +4933,45 @@ export async function computeOracleArtifactsFromFiles(computeArtifacts = null, o
   return enriched;
 }
 
+export async function computeOracleArtifactsFromFiles(computeArtifacts, options) {
+  try {
+    const resolvedComputeArtifacts = arguments.length >= 1 ? computeArtifacts : null;
+    const resolvedOptions = arguments.length >= 2 ? options : {};
+    const sourceFailure = plainDataTreeFailure(resolvedComputeArtifacts);
+    if (sourceFailure) {
+      return computeOracleArtifactBoundaryFailure(
+        `compute_oracle_artifacts_plain_data_${sourceFailure}`,
+      );
+    }
+    const optionsFailure = plainDataTreeFailure(resolvedOptions);
+    if (optionsFailure) {
+      return computeOracleArtifactBoundaryFailure(
+        `compute_oracle_artifacts_options_plain_data_${optionsFailure}`,
+      );
+    }
+    if (resolvedComputeArtifacts === null) return null;
+    if (
+      typeof resolvedComputeArtifacts !== 'object'
+      || Array.isArray(resolvedComputeArtifacts)
+    ) {
+      return computeOracleArtifactBoundaryFailure('compute_oracle_artifacts_input_not_object');
+    }
+    if (
+      resolvedOptions === null
+      || typeof resolvedOptions !== 'object'
+      || Array.isArray(resolvedOptions)
+    ) {
+      return computeOracleArtifactBoundaryFailure('compute_oracle_artifacts_options_not_object');
+    }
+    return await computeOracleArtifactsFromFilesValidated(
+      resolvedComputeArtifacts,
+      resolvedOptions,
+    );
+  } catch {
+    return computeOracleArtifactBoundaryFailure('compute_oracle_artifacts_boundary_exception');
+  }
+}
+
 async function imageRawRgb(imagePath) {
   const { data, info } = await sharp(imagePath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   return { data, width: info.width, height: info.height, channels: info.channels };
@@ -4372,7 +4989,7 @@ function visiblePixelCount(raw) {
   return visible;
 }
 
-export async function visualOracleArtifactsFromFiles(visualArtifacts = null) {
+async function visualOracleArtifactsFromFilesValidated(visualArtifacts) {
   const source = objectOrNull(visualArtifacts);
   if (!source) return null;
   const beforePath = fileArtifactPath(firstString(source.before_image, source.beforeImage));
@@ -4448,10 +5065,31 @@ export async function visualOracleArtifactsFromFiles(visualArtifacts = null) {
   return enriched;
 }
 
-export async function writeValidationRuntimeProofArtifact(outputDir, input = {}) {
+export async function visualOracleArtifactsFromFiles(visualArtifacts) {
+  try {
+    const resolvedVisualArtifacts = arguments.length >= 1 ? visualArtifacts : null;
+    const sourceFailure = plainDataTreeFailure(resolvedVisualArtifacts);
+    if (sourceFailure) {
+      return visualOracleArtifactBoundaryFailure(
+        `visual_oracle_artifacts_plain_data_${sourceFailure}`,
+      );
+    }
+    if (
+      resolvedVisualArtifacts !== null
+      && (typeof resolvedVisualArtifacts !== 'object' || Array.isArray(resolvedVisualArtifacts))
+    ) {
+      return visualOracleArtifactBoundaryFailure('visual_oracle_artifacts_input_not_object');
+    }
+    return await visualOracleArtifactsFromFilesValidated(resolvedVisualArtifacts);
+  } catch {
+    return visualOracleArtifactBoundaryFailure('visual_oracle_artifacts_boundary_exception');
+  }
+}
+
+async function writeValidationRuntimeProofArtifactValidated(outputDir, input) {
   const visualEvidenceArtifacts = await visualEvidenceArtifactsFromFiles(
-    input.visualEvidenceRefs,
-    input.visualEvidenceArtifacts,
+    input.visualEvidenceRefs ?? [],
+    input.visualEvidenceArtifacts ?? [],
   );
   const visualOracleArtifacts = await visualOracleArtifactsFromFiles(
     input.visualOracleArtifacts
@@ -4484,4 +5122,54 @@ export async function writeValidationRuntimeProofArtifact(outputDir, input = {})
   const filePath = path.join(outputDir, `${workspace}-${label}-${hash}.json`);
   await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
   return { path: filePath, artifact };
+}
+
+export async function writeValidationRuntimeProofArtifact(outputDir, input) {
+  try {
+    const resolvedInput = arguments.length >= 2 ? input : {};
+    const outputFailure = plainDataTreeFailure(outputDir);
+    if (outputFailure) {
+      return writtenValidationRuntimeProofBoundaryFailure(
+        `validation_runtime_proof_output_path_plain_data_${outputFailure}`,
+      );
+    }
+    const inputFailure = plainDataTreeFailure(resolvedInput);
+    if (inputFailure) {
+      return writtenValidationRuntimeProofBoundaryFailure(
+        `validation_runtime_proof_write_input_plain_data_${inputFailure}`,
+      );
+    }
+    if (typeof outputDir !== 'string' || !outputDir.trim() || outputDir.includes('\0')) {
+      return writtenValidationRuntimeProofBoundaryFailure(
+        'validation_runtime_proof_output_path_invalid',
+      );
+    }
+    let resolvedOutputDir;
+    try {
+      resolvedOutputDir = path.resolve(outputDir);
+    } catch {
+      return writtenValidationRuntimeProofBoundaryFailure(
+        'validation_runtime_proof_output_path_invalid',
+      );
+    }
+    if (resolvedOutputDir === path.parse(resolvedOutputDir).root) {
+      return writtenValidationRuntimeProofBoundaryFailure(
+        'validation_runtime_proof_output_path_filesystem_root_forbidden',
+      );
+    }
+    if (
+      resolvedInput === null
+      || typeof resolvedInput !== 'object'
+      || Array.isArray(resolvedInput)
+    ) {
+      return writtenValidationRuntimeProofBoundaryFailure(
+        'validation_runtime_proof_write_input_not_object',
+      );
+    }
+    return await writeValidationRuntimeProofArtifactValidated(outputDir, resolvedInput);
+  } catch {
+    return writtenValidationRuntimeProofBoundaryFailure(
+      'validation_runtime_proof_write_boundary_exception',
+    );
+  }
 }

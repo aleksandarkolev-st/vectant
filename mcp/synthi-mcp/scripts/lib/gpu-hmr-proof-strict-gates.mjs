@@ -7,6 +7,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { types as utilTypes } from 'node:util';
 
 import { evaluateGpuHmrAcceptanceContract } from './gpu-hmr-acceptance-contract.mjs';
 import {
@@ -19,13 +20,14 @@ import {
   stableJson,
 } from './gpu-hmr-artifact-cas.mjs';
 import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
+import { verifyComputeOracleSemantics } from './gpu-hmr-compute-oracle-semantics.mjs';
 import {
   classifyGpuHmrOutputOracleKind,
   isGpuHmrVisualOutputOracleKind,
 } from './gpu-hmr-output-oracle-kind.mjs';
 
 export const GPU_HMR_STRICT_PROOF_GATES_SCHEMA_VERSION =
-  'synthi.gpu_hmr.strict_proof_gates.v1';
+  'synthi.gpu_hmr.strict_proof_gates.v2';
 
 function isObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
@@ -57,6 +59,146 @@ function firstOwnObject(value, ...keys) {
 
 function firstOwnArray(value, ...keys) {
   return firstArray(...keys.map((key) => ownValue(value, key)));
+}
+
+function plainDataTreeFailure(value) {
+  const pending = [{ value, leave: false }];
+  const active = new Set();
+  const complete = new Set();
+  while (pending.length > 0) {
+    const entry = pending.pop();
+    const current = entry.value;
+    if (current === null || typeof current === 'string' || typeof current === 'boolean') continue;
+    if (typeof current === 'number') {
+      if (!Number.isFinite(current)) return 'nonfinite_number';
+      if (Object.is(current, -0)) return 'negative_zero';
+      continue;
+    }
+    if (typeof current === 'bigint') return 'bigint';
+    if (typeof current === 'symbol') return 'symbol_value';
+    if (typeof current === 'undefined') return 'undefined_value';
+    if (typeof current === 'function') return 'function_value';
+    if (typeof current !== 'object') return 'unsupported_value';
+    try {
+      if (utilTypes.isProxy(current)) return 'proxy';
+    } catch {
+      return 'introspection_failed';
+    }
+    if (entry.leave) {
+      active.delete(current);
+      complete.add(current);
+      continue;
+    }
+    if (complete.has(current)) continue;
+    if (active.has(current)) return 'cycle';
+    active.add(current);
+    pending.push({ value: current, leave: true });
+    let prototype;
+    let descriptors;
+    let keys;
+    let array;
+    try {
+      array = Array.isArray(current);
+      prototype = Object.getPrototypeOf(current);
+      descriptors = Object.getOwnPropertyDescriptors(current);
+      keys = Reflect.ownKeys(descriptors);
+    } catch {
+      return 'introspection_failed';
+    }
+    if (keys.some((key) => typeof key === 'symbol')) return 'symbol_property';
+    if (array) {
+      if (prototype !== Array.prototype) return 'array_prototype';
+      const names = keys;
+      const lengthDescriptor = descriptors.length;
+      const length = lengthDescriptor?.value;
+      if (
+        !lengthDescriptor
+        || !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value')
+        || !Number.isSafeInteger(length)
+        || length < 0
+        || names.length !== length + 1
+        || names.some((name) => name !== 'length' && !/^(?:0|[1-9][0-9]*)$/u.test(name))
+      ) {
+        return 'array_shape';
+      }
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor) return 'array_shape';
+        if (!('value' in descriptor)) return 'array_element_accessor';
+        if (descriptor.enumerable !== true) {
+          return 'array_element_descriptor';
+        }
+        pending.push({ value: descriptor.value, leave: false });
+      }
+      continue;
+    }
+    if (prototype !== Object.prototype && prototype !== null) return 'object_prototype';
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (!('value' in descriptor)) return 'accessor_property';
+      if (descriptor.enumerable !== true) {
+        return 'object_property_descriptor';
+      }
+      pending.push({ value: descriptor.value, leave: false });
+    }
+  }
+  return null;
+}
+
+function stableDataEqual(left, right) {
+  if (plainDataTreeFailure(left) || plainDataTreeFailure(right)) return false;
+  try {
+    return stableJson(left) === stableJson(right);
+  } catch {
+    return false;
+  }
+}
+
+function strictOwnAliasedValue(source, keys, failures, code) {
+  if (!isObject(source)) {
+    failures.push(`${code}_container_missing`);
+    return undefined;
+  }
+  for (const key of keys) {
+    if (key in source && !Object.prototype.hasOwnProperty.call(source, key)) {
+      failures.push(`${code}_prototype_inherited`);
+    }
+  }
+  const present = keys.flatMap((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (!descriptor) return [];
+    if (!('value' in descriptor) || descriptor.enumerable !== true) {
+      failures.push(`${code}_property_descriptor_invalid`);
+      return [];
+    }
+    return [{ key, value: descriptor.value }];
+  });
+  if (
+    present.length > 1
+    && present.some((entry) => !stableDataEqual(entry.value, present[0].value))
+  ) {
+    failures.push(`${code}_alias_conflict`);
+  }
+  return present[0]?.value;
+}
+
+function strictOwnAliasedObject(source, keys, failures, code) {
+  const value = strictOwnAliasedValue(source, keys, failures, code);
+  if (value === undefined) return null;
+  if (!isObject(value)) {
+    failures.push(`${code}_invalid`);
+    return null;
+  }
+  const shapeFailure = plainDataTreeFailure(value);
+  if (shapeFailure) failures.push(`${code}_${shapeFailure}`);
+  return value;
+}
+
+function strictOwnAliasedString(source, keys, failures, code) {
+  const value = strictOwnAliasedValue(source, keys, failures, code);
+  const normalized = typeof value === 'string' && value.trim() ? value.trim() : null;
+  if (value !== undefined && !normalized) failures.push(`${code}_invalid`);
+  return normalized;
 }
 
 const VISUAL_OR_ENGINE_BACKENDS = new Set(['hiprt', 'vulkan', 'webgpu', 'bevy_wgsl']);
@@ -146,7 +288,7 @@ function topLevelObjectAliasMismatch(value, camelKey, snakeKey) {
   const hasSnake = Object.prototype.hasOwnProperty.call(value, snakeKey);
   return hasCamel
     && hasSnake
-    && stableJson(value[camelKey]) !== stableJson(value[snakeKey]);
+    && !stableDataEqual(value[camelKey], value[snakeKey]);
 }
 
 function acceptanceContractLedgerBindingFailures(proofLedger, recomputedContractHash) {
@@ -162,7 +304,7 @@ function acceptanceContractLedgerBindingFailures(proofLedger, recomputedContract
     if (
       hasCamelHash
       && hasSnakeHash
-      && stableJson(record.contractHash) !== stableJson(record.contract_hash)
+      && !stableDataEqual(record.contractHash, record.contract_hash)
     ) {
       failures.push('proof_ledger_acceptance_contract_hash_alias_mismatch');
     }
@@ -467,13 +609,51 @@ function visualArtifactRoots(options = {}) {
   ]);
 }
 
+const COMPUTE_ARTIFACT_ROOT_OPTION_SPECS = Object.freeze([
+  ['computeArtifactRoots', true],
+  ['compute_artifact_roots', true],
+  ['allowedRoots', true],
+  ['allowed_roots', true],
+  ['allowedArtifactRoots', true],
+  ['allowed_artifact_roots', true],
+  ['allowedCasRoots', true],
+  ['allowed_cas_roots', true],
+  ['artifactRoot', false],
+  ['artifact_root', false],
+  ['artifactCasRoot', false],
+  ['artifact_cas_root', false],
+  ['casRoot', false],
+  ['cas_root', false],
+]);
+
+function explicitComputeArtifactRootSelection(options = {}) {
+  let supplied = false;
+  let malformed = false;
+  const roots = [];
+  for (const [key, list] of COMPUTE_ARTIFACT_ROOT_OPTION_SPECS) {
+    if (!Object.prototype.hasOwnProperty.call(options, key)) continue;
+    supplied = true;
+    const declared = options[key];
+    const values = list
+      ? (Array.isArray(declared) ? declared : null)
+      : [declared];
+    if (values === null || values.some((value) => typeof value !== 'string' || !value.trim())) {
+      malformed = true;
+      continue;
+    }
+    roots.push(...values.map((value) => value.trim()));
+  }
+  return {
+    supplied,
+    roots: malformed ? [] : [...new Set(roots)],
+  };
+}
+
 function computeArtifactRoots(options = {}) {
-  return uniqueRealRoots([
-    ...DEFAULT_VISUAL_ARTIFACT_ROOTS,
-    ...compactStrings(options.computeArtifactRoots ?? options.compute_artifact_roots),
-    ...compactStrings(options.allowedArtifactRoots ?? options.allowed_artifact_roots),
-    ...compactStrings(options.allowedCasRoots ?? options.allowed_cas_roots),
-  ]);
+  const explicit = explicitComputeArtifactRootSelection(options);
+  return uniqueRealRoots(
+    explicit.supplied ? explicit.roots : DEFAULT_VISUAL_ARTIFACT_ROOTS,
+  );
 }
 
 function computeArtifactPathBaseRoots(options = {}) {
@@ -579,6 +759,15 @@ function normalizedComputeArtifactRole(value) {
   ].includes(role)) {
     return 'rendered_card';
   }
+  if ([
+    'oracle_code',
+    'oracle_implementation',
+    'semantic_oracle_implementation',
+    'compute_oracle_implementation',
+    'runtime_compute_oracle_implementation',
+  ].includes(role)) {
+    return 'oracle_implementation';
+  }
   return null;
 }
 
@@ -607,7 +796,12 @@ function computeArtifactLocatorHash(locator) {
   }
 }
 
-function computeArtifactLocatorValidation(locator, roots, expectedHash = null) {
+function computeArtifactLocatorValidation(
+  locator,
+  roots,
+  expectedHash = null,
+  expectedRole = 'raw_readback',
+) {
   if (!isObject(locator)) return null;
   const reasons = [];
   const fail = (reason) => reasons.push(reason);
@@ -623,11 +817,16 @@ function computeArtifactLocatorValidation(locator, roots, expectedHash = null) {
     byteLength: null,
     reasons,
   };
+  const locatorShapeFailure = plainDataTreeFailure(locator);
+  if (locatorShapeFailure) {
+    fail(`artifact_cas_manifest_${locatorShapeFailure}`);
+    return result;
+  }
   if (firstString(locator.schemaVersion, locator.schema_version) !== CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION) {
     fail('artifact_cas_manifest_schema_invalid');
   }
   const role = computeArtifactLocatorRole(locator);
-  if (role !== 'raw_readback') fail('artifact_cas_compute_role_not_raw_readback');
+  if (role !== expectedRole) fail(`artifact_cas_compute_role_not_${expectedRole}`);
   const contentHash = computeArtifactLocatorHash(locator);
   if (!contentHash) fail('artifact_cas_content_hash_invalid');
   result.contentHash = contentHash;
@@ -718,7 +917,12 @@ function readComputeArtifactLocatorManifest(value, role, roots, pathBaseRoots = 
     };
   }
   const manifestPath = resolveReadableComputeArtifactPath(value, roots, pathBaseRoots);
-  if (!manifestPath) return { manifest: null, readError: null };
+  if (!manifestPath) {
+    return {
+      manifest: null,
+      readError: 'artifact_cas_manifest_unreadable_or_outside_allowed_roots',
+    };
+  }
   try {
     const parsed = JSON.parse(readFileSync(manifestPath, 'utf8'));
     return {
@@ -754,6 +958,227 @@ function computeRawReadbackLocators(source, roots, pathBaseRoots = roots) {
     ...manifestLocators,
     ...computeArtifactCasLocators(source, 'raw_readback'),
   ];
+}
+
+function computeReadbackSchemaLocators(source, roots, pathBaseRoots = roots) {
+  const manifestValues = [
+    source.readback_schema_cas_manifest,
+    source.readbackSchemaCasManifest,
+    source.readback_schema_locator,
+    source.readbackSchemaLocator,
+  ].filter((value) => value !== undefined && value !== null);
+  const manifestLocators = manifestValues.flatMap((value) => {
+    const loaded = readComputeArtifactLocatorManifest(value, 'readback_schema', roots, pathBaseRoots);
+    return loaded.manifest ? [loaded.manifest] : [];
+  });
+  return [
+    ...manifestLocators,
+    ...computeArtifactCasLocators(source, 'readback_schema'),
+  ];
+}
+
+function computeOracleImplementationLocators(source, roots, pathBaseRoots = roots) {
+  const manifestValues = [
+    source.oracle_implementation_cas_manifest,
+    source.oracleImplementationCasManifest,
+    source.semantic_oracle_implementation_cas_manifest,
+    source.semanticOracleImplementationCasManifest,
+    source.oracle_implementation_locator,
+    source.oracleImplementationLocator,
+    source.semantic_oracle_implementation_locator,
+    source.semanticOracleImplementationLocator,
+  ].filter((value) => value !== undefined && value !== null);
+  const manifestLocators = manifestValues.flatMap((value) => {
+    const loaded = readComputeArtifactLocatorManifest(
+      value,
+      'oracle_implementation',
+      roots,
+      pathBaseRoots,
+    );
+    return loaded.manifest ? [loaded.manifest] : [];
+  });
+  return [
+    ...manifestLocators,
+    ...computeArtifactCasLocators(source, 'oracle_implementation'),
+  ];
+}
+
+const COMPUTE_CAS_ROLE_DECLARATIONS = Object.freeze([
+  {
+    role: 'raw_readback',
+    fields: [
+      'raw_readback_cas_manifest',
+      'rawReadbackCasManifest',
+      'raw_readback_locator',
+      'rawReadbackLocator',
+    ],
+  },
+  {
+    role: 'readback_schema',
+    fields: [
+      'readback_schema_cas_manifest',
+      'readbackSchemaCasManifest',
+      'schema_cas_manifest',
+      'schemaCasManifest',
+      'readback_schema_locator',
+      'readbackSchemaLocator',
+    ],
+  },
+  {
+    role: 'rendered_card',
+    fields: [
+      'rendered_card_cas_manifest',
+      'renderedCardCasManifest',
+      'proof_card_cas_manifest',
+      'proofCardCasManifest',
+      'rendered_card_locator',
+      'renderedCardLocator',
+    ],
+  },
+  {
+    role: 'oracle_implementation',
+    fields: [
+      'oracle_implementation_cas_manifest',
+      'oracleImplementationCasManifest',
+      'semantic_oracle_implementation_cas_manifest',
+      'semanticOracleImplementationCasManifest',
+      'oracle_implementation_locator',
+      'oracleImplementationLocator',
+      'semantic_oracle_implementation_locator',
+      'semanticOracleImplementationLocator',
+    ],
+  },
+]);
+
+function computeArtifactExpectedHash(source, role) {
+  if (role === 'raw_readback') {
+    return normalizeSha256(firstString(
+      source.raw_readback_hash,
+      source.rawReadbackHash,
+      source.readback_hash,
+      source.readbackHash,
+    ));
+  }
+  if (role === 'readback_schema') {
+    return normalizeSha256(firstString(
+      source.readback_schema_hash,
+      source.readbackSchemaHash,
+      source.schema_hash,
+      source.schemaHash,
+    ));
+  }
+  if (role === 'oracle_implementation') {
+    return normalizeSha256(firstString(
+      source.oracle_code_hash,
+      source.oracleCodeHash,
+      source.semantic_oracle_implementation_hash,
+      source.semanticOracleImplementationHash,
+    ));
+  }
+  return null;
+}
+
+function computeArtifactCasAudit(source, roots, pathBaseRoots = roots) {
+  const candidates = [];
+  const explicitlyDeclared = new Set();
+  for (const field of [
+    'artifact_cas_locators',
+    'artifactCasLocators',
+    'artifact_cas_locator',
+    'artifactCasLocator',
+  ]) {
+    if (!Object.prototype.hasOwnProperty.call(source, field)) continue;
+    const declared = Array.isArray(source[field]) ? source[field] : [source[field]];
+    for (const locator of declared) {
+      if (!isObject(locator)) {
+        candidates.push({
+          expectedRole: null,
+          locator: null,
+          readError: 'artifact_cas_declared_locator_malformed',
+        });
+        continue;
+      }
+      explicitlyDeclared.add(locator);
+      candidates.push({
+        expectedRole: computeArtifactLocatorRole(locator),
+        locator,
+        readError: null,
+      });
+    }
+  }
+  for (const declaration of COMPUTE_CAS_ROLE_DECLARATIONS) {
+    for (const field of declaration.fields) {
+      if (!Object.prototype.hasOwnProperty.call(source, field)) continue;
+      const value = source[field];
+      if (value === undefined || value === null) continue;
+      if (isObject(value)) explicitlyDeclared.add(value);
+      const loaded = readComputeArtifactLocatorManifest(
+        value,
+        declaration.role,
+        roots,
+        pathBaseRoots,
+      );
+      candidates.push({
+        expectedRole: declaration.role,
+        locator: loaded.manifest,
+        readError: loaded.readError,
+      });
+    }
+  }
+  for (const locator of collectArtifactLocators(source)) {
+    if (explicitlyDeclared.has(locator)) continue;
+    candidates.push({
+      expectedRole: computeArtifactLocatorRole(locator),
+      locator,
+      readError: null,
+    });
+  }
+
+  const validations = candidates.map((candidate) => {
+    if (candidate.readError || !candidate.locator || !candidate.expectedRole) {
+      return {
+        accepted: false,
+        role: candidate.expectedRole,
+        reasons: [candidate.readError ?? 'artifact_cas_compute_role_invalid'],
+      };
+    }
+    return {
+      ...computeArtifactLocatorValidation(
+        candidate.locator,
+        roots,
+        computeArtifactExpectedHash(source, candidate.expectedRole),
+        candidate.expectedRole,
+      ),
+      role: candidate.expectedRole,
+    };
+  });
+  const hashesByRole = new Map();
+  for (const validation of validations) {
+    if (!validation.role || !validation.contentHash) continue;
+    const hashes = hashesByRole.get(validation.role) ?? new Set();
+    hashes.add(validation.contentHash);
+    hashesByRole.set(validation.role, hashes);
+  }
+  for (const [role, hashes] of hashesByRole) {
+    if (hashes.size <= 1) continue;
+    validations.push({
+      accepted: false,
+      role,
+      reasons: ['artifact_cas_conflicting_peer_content_hashes'],
+    });
+  }
+  return validations;
+}
+
+function computeArtifactCasAuditFailures(source, roots, pathBaseRoots = roots) {
+  return compactStrings(computeArtifactCasAudit(source, roots, pathBaseRoots)
+    .filter((validation) => validation.accepted !== true)
+    .flatMap((validation) => [
+      'compute_oracle_artifact_cas_locator_invalid',
+      validation.role
+        ? `compute_oracle_${validation.role}_cas_locator_invalid`
+        : 'compute_oracle_untyped_cas_locator_invalid',
+    ]));
 }
 
 function computeOracleArtifactObjects(record) {
@@ -1453,18 +1878,840 @@ function computeOracleRawReadbackBytes(source, roots, expectedHash = null, pathB
   }
 }
 
-function computeOracleDeclarationFailures(proofLedger, options = {}) {
-  const records = ledgerRecords(proofLedger).filter((record) =>
-    computeArtifactsPresent(record) && !recordClaimsVisualOutput(record)
+function computeOracleReadbackSchemaBytes(source, roots, expectedHash = null, pathBaseRoots = roots) {
+  const schemaPath = firstString(source.readback_schema_json, source.readbackSchemaJson);
+  const resolvedPath = resolveReadableComputeArtifactPath(schemaPath, roots, pathBaseRoots);
+  if (resolvedPath) {
+    try {
+      return {
+        path: resolvedPath,
+        bytes: readFileSync(resolvedPath),
+        casValidation: null,
+      };
+    } catch {
+      return null;
+    }
+  }
+  const validations = computeReadbackSchemaLocators(source, roots, pathBaseRoots)
+    .map((locator) => computeArtifactLocatorValidation(
+      locator,
+      roots,
+      expectedHash,
+      'readback_schema',
+    ))
+    .filter(Boolean);
+  const accepted = validations.find((validation) => validation.accepted === true && validation.localPath);
+  if (!accepted) {
+    return validations.length > 0
+      ? { path: null, bytes: null, casValidations: validations }
+      : null;
+  }
+  try {
+    return {
+      path: accepted.localPath,
+      bytes: readFileSync(accepted.localPath),
+      casValidation: accepted,
+    };
+  } catch {
+    return { path: accepted.localPath, bytes: null, casValidation: accepted };
+  }
+}
+
+function computeOracleImplementationBytes(source, roots, pathBaseRoots, failures) {
+  const directArtifact = strictOwnAliasedObject(
+    source,
+    [
+      'oracle_implementation_artifact',
+      'oracleImplementationArtifact',
+      'semantic_oracle_implementation_artifact',
+      'semanticOracleImplementationArtifact',
+    ],
+    failures,
+    'compute_oracle_implementation_artifact',
   );
+  const expectedHash = normalizeSha256(strictOwnAliasedString(
+    source,
+    [
+      'oracle_code_hash',
+      'oracleCodeHash',
+      'semantic_oracle_implementation_hash',
+      'semanticOracleImplementationHash',
+    ],
+    failures,
+    'compute_oracle_implementation_declared_hash',
+  ));
+  let directBytes = null;
+  let directPath = null;
+  if (directArtifact) {
+    const shapeFailure = plainDataTreeFailure(directArtifact);
+    if (shapeFailure) {
+      failures.push(`compute_oracle_implementation_artifact_${shapeFailure}`);
+    }
+    const schemaVersion = strictOwnAliasedString(
+      directArtifact,
+      ['schema_version', 'schemaVersion'],
+      failures,
+      'compute_oracle_implementation_artifact_schema',
+    );
+    if (schemaVersion !== 'synthi.gpu_hmr.oracle_implementation_artifact.v1') {
+      failures.push('compute_oracle_implementation_artifact_schema_invalid');
+    }
+    const role = normalizedComputeArtifactRole(strictOwnAliasedString(
+      directArtifact,
+      ['role', 'artifact_role', 'artifactRole'],
+      failures,
+      'compute_oracle_implementation_artifact_role',
+    ));
+    if (role !== 'oracle_implementation') {
+      failures.push('compute_oracle_implementation_artifact_role_invalid');
+    }
+    const artifactPath = strictOwnAliasedString(
+      directArtifact,
+      ['path', 'file_path', 'filePath'],
+      failures,
+      'compute_oracle_implementation_artifact_path',
+    );
+    const artifactHash = normalizeSha256(strictOwnAliasedString(
+      directArtifact,
+      ['hash', 'content_hash', 'contentHash'],
+      failures,
+      'compute_oracle_implementation_artifact_hash',
+    ));
+    const byteLength = positiveInteger(strictOwnAliasedValue(
+      directArtifact,
+      ['byte_length', 'byteLength'],
+      failures,
+      'compute_oracle_implementation_artifact_byte_length',
+    ));
+    directPath = resolveReadableComputeArtifactPath(artifactPath, roots, pathBaseRoots);
+    if (!directPath) {
+      failures.push('compute_oracle_implementation_artifact_path_unreadable');
+    } else {
+      try {
+        directBytes = readFileSync(directPath);
+      } catch {
+        failures.push('compute_oracle_implementation_artifact_bytes_unreadable');
+      }
+    }
+    if (!artifactHash) failures.push('compute_oracle_implementation_artifact_hash_invalid');
+    if (byteLength === null) failures.push('compute_oracle_implementation_artifact_byte_length_invalid');
+    if (Buffer.isBuffer(directBytes)) {
+      const actualHash = sha256Bytes(directBytes);
+      if (artifactHash && actualHash !== artifactHash) {
+        failures.push('compute_oracle_implementation_artifact_hash_mismatch');
+      }
+      if (expectedHash && actualHash !== expectedHash) {
+        failures.push('compute_oracle_implementation_oracle_code_hash_mismatch');
+      }
+      if (byteLength !== null && directBytes.length !== byteLength) {
+        failures.push('compute_oracle_implementation_artifact_byte_length_mismatch');
+      }
+    }
+  }
+
+  const casValidations = computeOracleImplementationLocators(source, roots, pathBaseRoots)
+    .map((locator) => computeArtifactLocatorValidation(
+      locator,
+      roots,
+      expectedHash,
+      'oracle_implementation',
+    ))
+    .filter(Boolean);
+  const acceptedCas = casValidations.find((validation) =>
+    validation.accepted === true && validation.localPath
+  );
+  let casBytes = null;
+  if (acceptedCas) {
+    try {
+      casBytes = readFileSync(acceptedCas.localPath);
+    } catch {
+      failures.push('compute_oracle_implementation_cas_bytes_unreadable');
+    }
+  }
+  if (!directArtifact && casValidations.length === 0) {
+    failures.push('compute_oracle_implementation_byte_artifact_missing');
+  }
+  if (!directArtifact && casValidations.length > 0 && !acceptedCas) {
+    failures.push('compute_oracle_implementation_cas_locator_invalid');
+  }
+  const bytes = directBytes ?? casBytes;
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+    failures.push('compute_oracle_implementation_bytes_unreadable');
+    return { bytes: null, hash: null, path: directPath ?? acceptedCas?.localPath ?? null };
+  }
+  const hash = sha256Bytes(bytes);
+  if (expectedHash && hash !== expectedHash) {
+    failures.push('compute_oracle_implementation_oracle_code_hash_mismatch');
+  }
+  return {
+    bytes,
+    hash,
+    path: directPath ?? acceptedCas?.localPath ?? null,
+    casValidations,
+  };
+}
+
+function strictComputeOracleArtifactObjects(record, failures) {
+  const oracleArtifacts = strictOwnAliasedObject(
+    record,
+    ['oracle_artifacts', 'oracleArtifacts'],
+    failures,
+    'compute_oracle_ledger_oracle_artifacts',
+  );
+  const outputEvent = strictOwnAliasedObject(
+    record,
+    ['output_event', 'outputEvent'],
+    failures,
+    'compute_oracle_ledger_output_event',
+  ) ?? {};
+  const outputArtifacts = strictOwnAliasedObject(
+    outputEvent,
+    ['oracle_artifacts', 'oracleArtifacts'],
+    failures,
+    'compute_oracle_output_event_oracle_artifacts',
+  );
+  const outputOracle = strictOwnAliasedObject(
+    outputEvent,
+    ['output_oracle', 'outputOracle'],
+    failures,
+    'compute_oracle_output_event_oracle',
+  ) ?? {};
+  const outputOracleArtifacts = strictOwnAliasedObject(
+    outputOracle,
+    ['oracle_artifacts', 'oracleArtifacts'],
+    failures,
+    'compute_oracle_output_oracle_artifacts',
+  );
+  return [
+    [oracleArtifacts, 'compute_oracle_ledger_artifacts'],
+    [outputArtifacts, 'compute_oracle_output_event_artifacts'],
+    [outputEvent, 'compute_oracle_output_event'],
+    [outputOracle, 'compute_oracle_output_oracle'],
+    [outputOracleArtifacts, 'compute_oracle_nested_output_oracle_artifacts'],
+  ].flatMap(([container, code]) => {
+    if (!isObject(container)) return [];
+    const artifacts = strictOwnAliasedObject(
+      container,
+      ['compute_oracle_artifacts', 'computeOracleArtifacts'],
+      failures,
+      code,
+    );
+    return artifacts ? [artifacts] : [];
+  });
+}
+
+function computeExpectedOutputContractEvidence(
+  rawAcceptanceContract,
+  recomputedAcceptanceContract,
+) {
+  const failures = [];
+  const rawContractShape = plainDataTreeFailure(rawAcceptanceContract);
+  if (rawContractShape) failures.push(`compute_oracle_acceptance_contract_${rawContractShape}`);
+  const rawFission = strictOwnAliasedObject(
+    rawAcceptanceContract,
+    ['fission_report', 'fissionReport'],
+    failures,
+    'compute_oracle_acceptance_fission_report',
+  );
+  const rawOutputOracle = strictOwnAliasedObject(
+    rawFission,
+    ['output_oracle_contract', 'outputOracleContract'],
+    failures,
+    'compute_oracle_acceptance_output_oracle_contract',
+  );
+  const rawExpected = strictOwnAliasedObject(
+    rawOutputOracle,
+    ['expected_output_contract', 'expectedOutputContract'],
+    failures,
+    'compute_oracle_expected_output_contract',
+  );
+
+  const recomputedFission = strictOwnAliasedObject(
+    recomputedAcceptanceContract,
+    ['fission_report', 'fissionReport'],
+    failures,
+    'compute_oracle_recomputed_fission_report',
+  );
+  const recomputedOutputOracle = strictOwnAliasedObject(
+    recomputedFission,
+    ['output_oracle_contract', 'outputOracleContract'],
+    failures,
+    'compute_oracle_recomputed_output_oracle_contract',
+  );
+  const recomputedExpected = strictOwnAliasedObject(
+    recomputedOutputOracle,
+    ['expected_output_contract', 'expectedOutputContract'],
+    failures,
+    'compute_oracle_recomputed_expected_output_contract',
+  );
+  if (!rawExpected || !recomputedExpected) {
+    failures.push('compute_oracle_expected_output_contract_missing');
+  } else if (!stableDataEqual(rawExpected, recomputedExpected)) {
+    failures.push('compute_oracle_expected_output_contract_recompute_mismatch');
+  }
+  return {
+    expectedOutputContract: recomputedExpected,
+    outputOracleContract: recomputedOutputOracle,
+    failures: compactStrings(failures),
+  };
+}
+
+function acceptanceContractOracleModalityEvidence(
+  rawAcceptanceContract,
+  recomputedAcceptanceContract,
+) {
+  const failures = [];
+  const contractModality = (contract, prefix) => {
+    const fission = strictOwnAliasedObject(
+      contract,
+      ['fission_report', 'fissionReport'],
+      failures,
+      `${prefix}_fission_report`,
+    );
+    const outputOracle = strictOwnAliasedObject(
+      fission,
+      ['output_oracle_contract', 'outputOracleContract'],
+      failures,
+      `${prefix}_output_oracle_contract`,
+    );
+    const kind = strictOwnAliasedString(
+      outputOracle,
+      ['kind', 'oracle_kind', 'oracleKind'],
+      failures,
+      `${prefix}_output_oracle_kind`,
+    );
+    const classification = classifyGpuHmrOutputOracleKind(kind);
+    if (classification.accepted !== true) {
+      failures.push(`${prefix}_${classification.failureCode ?? 'output_oracle_kind_invalid'}`);
+    }
+    return classification.modality;
+  };
+  const rawModality = contractModality(rawAcceptanceContract, 'acceptance_contract');
+  const recomputedModality = contractModality(
+    recomputedAcceptanceContract,
+    'recomputed_acceptance_contract',
+  );
+  if (rawModality && recomputedModality && rawModality !== recomputedModality) {
+    failures.push('acceptance_contract_output_oracle_modality_recompute_mismatch');
+  }
+  return {
+    modality: recomputedModality,
+    failures: compactStrings(failures),
+  };
+}
+
+function ledgerOracleModalityFailures(proofLedger, requiredModality) {
+  if (!requiredModality) return ['acceptance_contract_output_oracle_modality_unverified'];
+  const records = ledgerRecords(proofLedger);
+  const hasComputeArtifacts = records.some(computeArtifactsPresent);
+  const hasVisualArtifacts = records.some(visualArtifactsPresent);
+  const eventModalities = compactStrings(records.map((record) => {
+    const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
+    return classifyGpuHmrOutputOracleKind(
+      normalizedText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind),
+    ).modality;
+  }));
+  const failures = [];
+  if (!eventModalities.includes(requiredModality)) {
+    failures.push(`${requiredModality}_oracle_required_ledger_event_missing`);
+  }
+  if (eventModalities.some((modality) => modality !== requiredModality)) {
+    failures.push('acceptance_contract_ledger_oracle_modality_mismatch');
+  }
+  if (requiredModality === 'compute') {
+    if (!hasComputeArtifacts) failures.push('compute_oracle_required_ledger_artifacts_missing');
+    if (hasVisualArtifacts) failures.push('compute_oracle_contract_visual_artifacts_forbidden');
+  } else if (requiredModality === 'visual') {
+    if (!hasVisualArtifacts) failures.push('visual_oracle_required_ledger_artifacts_missing');
+    if (hasComputeArtifacts) failures.push('visual_oracle_contract_compute_artifacts_forbidden');
+  }
+  return compactStrings(failures);
+}
+
+function declaredRuntimeIdentityValue({
+  declaredValue,
+  runtimeValues,
+  failures,
+  code,
+}) {
+  if (!declaredValue) failures.push(`${code}_declaration_missing`);
+  const observed = compactStrings(runtimeValues);
+  if (observed.length === 0) {
+    failures.push(`${code}_runtime_observation_missing`);
+    return null;
+  }
+  if (observed.length > 1) failures.push(`${code}_runtime_observation_mismatch`);
+  if (declaredValue && observed[0] !== declaredValue) {
+    failures.push(`${code}_declaration_runtime_mismatch`);
+  }
+  return observed[0];
+}
+
+function runtimeIdentityValue({ runtimeValues, failures, code }) {
+  const observed = compactStrings(runtimeValues);
+  if (observed.length === 0) {
+    failures.push(`${code}_runtime_observation_missing`);
+    return null;
+  }
+  if (observed.length > 1) failures.push(`${code}_runtime_observation_mismatch`);
+  return observed[0];
+}
+
+function computeObservedSemanticBinding({
+  record,
+  artifacts,
+  acceptanceContract,
+  outputOracleContract,
+  recomputedOracleCodeHash,
+  failures,
+}) {
+  const outputEvent = strictOwnAliasedObject(
+    record,
+    ['output_event', 'outputEvent'],
+    failures,
+    'compute_oracle_semantic_output_event',
+  ) ?? {};
+  const dispatchEvent = strictOwnAliasedObject(
+    record,
+    ['dispatch_event', 'dispatchEvent'],
+    failures,
+    'compute_oracle_semantic_dispatch_event',
+  ) ?? {};
+  const outputOracle = strictOwnAliasedObject(
+    outputEvent,
+    ['output_oracle', 'outputOracle'],
+    failures,
+    'compute_oracle_semantic_output_oracle',
+  ) ?? {};
+  const outputTarget = strictOwnAliasedObject(
+    record,
+    ['output_oracle_target', 'outputOracleTarget'],
+    failures,
+    'compute_oracle_semantic_output_target',
+  ) ?? {};
+  const deviceIdentity = strictOwnAliasedObject(
+    record,
+    ['device_identity', 'deviceIdentity'],
+    failures,
+    'compute_oracle_semantic_device_identity',
+  ) ?? {};
+
+  const contractBackend = strictOwnAliasedString(
+    acceptanceContract,
+    ['backend'],
+    failures,
+    'compute_oracle_contract_backend',
+  );
+  const contractProjectId = strictOwnAliasedString(
+    acceptanceContract,
+    ['project_id', 'projectId'],
+    failures,
+    'compute_oracle_contract_project_id',
+  );
+  const contractEditId = strictOwnAliasedString(
+    acceptanceContract,
+    ['edit_id', 'editId'],
+    failures,
+    'compute_oracle_contract_edit_id',
+  );
+  const contractArtifactAfterHash = strictOwnAliasedString(
+    acceptanceContract,
+    ['artifact_hash_after', 'artifactHashAfter'],
+    failures,
+    'compute_oracle_contract_artifact_after_hash',
+  );
+  const ledgerBackend = strictOwnAliasedString(
+    record,
+    ['backend'],
+    failures,
+    'compute_oracle_ledger_backend',
+  );
+  const deviceBackend = strictOwnAliasedString(
+    deviceIdentity,
+    ['backend'],
+    failures,
+    'compute_oracle_device_identity_backend',
+  );
+  const ledgerProjectId = strictOwnAliasedString(
+    record,
+    ['project_id', 'projectId'],
+    failures,
+    'compute_oracle_ledger_project_id',
+  );
+  const ledgerEditId = strictOwnAliasedString(
+    record,
+    ['edit_id', 'editId'],
+    failures,
+    'compute_oracle_ledger_edit_id',
+  );
+  const ledgerArtifactAfterHash = strictOwnAliasedString(
+    record,
+    ['artifact_after_hash', 'artifactAfterHash'],
+    failures,
+    'compute_oracle_ledger_artifact_after_hash',
+  );
+  if (!deviceBackend) {
+    failures.push('compute_oracle_semantic_backend_device_identity_missing');
+  }
+  const backend = declaredRuntimeIdentityValue({
+    declaredValue: contractBackend,
+    runtimeValues: [ledgerBackend, deviceBackend],
+    failures,
+    code: 'compute_oracle_semantic_backend',
+  });
+  const projectId = declaredRuntimeIdentityValue({
+    declaredValue: contractProjectId,
+    runtimeValues: [ledgerProjectId],
+    failures,
+    code: 'compute_oracle_semantic_project_id',
+  });
+  const editId = declaredRuntimeIdentityValue({
+    declaredValue: contractEditId,
+    runtimeValues: [ledgerEditId],
+    failures,
+    code: 'compute_oracle_semantic_edit_id',
+  });
+  const artifactAfterHash = declaredRuntimeIdentityValue({
+    declaredValue: contractArtifactAfterHash,
+    runtimeValues: [ledgerArtifactAfterHash],
+    failures,
+    code: 'compute_oracle_semantic_artifact_after_hash',
+  });
+  const outputEventTargetId = strictOwnAliasedString(
+    outputEvent,
+    ['output_target_id', 'outputTargetId'],
+    failures,
+    'compute_oracle_output_event_target_id',
+  );
+  const declaredOutputTargetId = strictOwnAliasedString(
+    outputOracleContract,
+    ['target_id', 'targetId', 'output_target_id', 'outputTargetId'],
+    failures,
+    'compute_oracle_contract_output_target_id',
+  );
+  if (!outputEventTargetId) {
+    failures.push('compute_oracle_semantic_output_target_id_output_event_missing');
+  }
+  const outputTargetId = declaredRuntimeIdentityValue({
+    declaredValue: declaredOutputTargetId,
+    runtimeValues: [
+      outputEventTargetId,
+      strictOwnAliasedString(
+        dispatchEvent,
+        ['output_target_id', 'outputTargetId'],
+      failures,
+      'compute_oracle_dispatch_event_target_id',
+    ),
+    strictOwnAliasedString(
+      outputOracle,
+      ['output_target_id', 'outputTargetId', 'target_id', 'targetId'],
+      failures,
+      'compute_oracle_output_oracle_target_id',
+    ),
+    strictOwnAliasedString(
+      outputTarget,
+      ['target_id', 'targetId', 'output_target_id', 'outputTargetId'],
+      failures,
+      'compute_oracle_ledger_output_target_id',
+    ),
+    ],
+    failures,
+    code: 'compute_oracle_semantic_output_target_id',
+  });
+  const outputEventOracleCodeHash = strictOwnAliasedString(
+    outputEvent,
+    ['oracle_code_hash', 'oracleCodeHash'],
+    failures,
+    'compute_oracle_output_event_oracle_code_hash',
+  );
+  if (!outputEventOracleCodeHash) {
+    failures.push('compute_oracle_semantic_oracle_code_hash_output_event_missing');
+  }
+  const declaredOracleCodeHash = runtimeIdentityValue({
+    runtimeValues: [
+      outputEventOracleCodeHash,
+      strictOwnAliasedString(
+        outputOracle,
+        ['oracle_code_hash', 'oracleCodeHash'],
+      failures,
+      'compute_oracle_output_oracle_code_hash',
+    ),
+    strictOwnAliasedString(
+      artifacts,
+      ['oracle_code_hash', 'oracleCodeHash'],
+      failures,
+      'compute_oracle_artifacts_oracle_code_hash',
+    ),
+    ],
+    failures,
+    code: 'compute_oracle_semantic_oracle_code_hash',
+  });
+  if (!recomputedOracleCodeHash) {
+    failures.push('compute_oracle_semantic_oracle_code_hash_bytes_unverified');
+  } else if (
+    !normalizeSha256(declaredOracleCodeHash)
+    || normalizeSha256(declaredOracleCodeHash) !== recomputedOracleCodeHash
+  ) {
+    failures.push('compute_oracle_semantic_oracle_code_hash_byte_binding_mismatch');
+  }
+  return {
+    backend,
+    projectId,
+    editId,
+    artifactAfterHash,
+    outputTargetId,
+    oracleCodeHash: recomputedOracleCodeHash,
+  };
+}
+
+function computeSemanticSliceFailures(artifacts, rawBytes, schemaBytes) {
+  const failures = [];
+  const slice = strictOwnAliasedObject(
+    artifacts,
+    ['deterministic_slice', 'deterministicSlice'],
+    failures,
+    'compute_oracle_semantic_deterministic_slice',
+  );
+  if (!slice || !Buffer.isBuffer(rawBytes)) {
+    if (!slice) failures.push('compute_oracle_semantic_deterministic_slice_missing');
+    return compactStrings(failures);
+  }
+  const offset = zeroOrPositiveInteger(strictOwnAliasedValue(
+    slice,
+    ['offset', 'byte_offset', 'byteOffset'],
+    failures,
+    'compute_oracle_semantic_deterministic_slice_offset',
+  ));
+  const length = positiveInteger(strictOwnAliasedValue(
+    slice,
+    ['length', 'byte_length', 'byteLength'],
+    failures,
+    'compute_oracle_semantic_deterministic_slice_length',
+  ));
+  const declaredHash = normalizeSha256(strictOwnAliasedString(
+    slice,
+    ['hash', 'sha256', 'slice_hash', 'sliceHash'],
+    failures,
+    'compute_oracle_semantic_deterministic_slice_hash',
+  ));
+  if (offset === null || length === null || offset + length > rawBytes.length) {
+    failures.push('compute_oracle_semantic_deterministic_slice_bounds_invalid');
+    return compactStrings(failures);
+  }
+  const actualHash = sha256Bytes(rawBytes.subarray(offset, offset + length));
+  if (!declaredHash || declaredHash !== actualHash) {
+    failures.push('compute_oracle_semantic_deterministic_slice_hash_mismatch');
+  }
+  if (Buffer.isBuffer(schemaBytes)) {
+    try {
+      const schema = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(schemaBytes));
+      const schemaSlice = strictOwnAliasedObject(
+        schema,
+        ['deterministic_slice', 'deterministicSlice'],
+        failures,
+        'compute_oracle_readback_schema_deterministic_slice',
+      );
+      if (schemaSlice) {
+        const schemaOffset = zeroOrPositiveInteger(strictOwnAliasedValue(
+          schemaSlice,
+          ['offset', 'byte_offset', 'byteOffset'],
+          failures,
+          'compute_oracle_readback_schema_deterministic_slice_offset',
+        ));
+        const schemaLength = positiveInteger(strictOwnAliasedValue(
+          schemaSlice,
+          ['length', 'byte_length', 'byteLength'],
+          failures,
+          'compute_oracle_readback_schema_deterministic_slice_length',
+        ));
+        const schemaHash = normalizeSha256(strictOwnAliasedString(
+          schemaSlice,
+          ['hash', 'sha256', 'slice_hash', 'sliceHash'],
+          failures,
+          'compute_oracle_readback_schema_deterministic_slice_hash',
+        ));
+        if (schemaOffset !== offset || schemaLength !== length || schemaHash !== declaredHash) {
+          failures.push('compute_oracle_deterministic_slice_schema_mismatch');
+        }
+      }
+    } catch {
+      failures.push('compute_oracle_readback_schema_invalid_json');
+    }
+  }
+  return compactStrings(failures);
+}
+
+function computeOracleSemanticFailures({
+  proofLedger,
+  rawAcceptanceContract,
+  recomputedAcceptance,
+  requiredModality,
+  options,
+}) {
+  const records = ledgerRecords(proofLedger).filter(computeArtifactsPresent);
+  if (records.length === 0) {
+    return requiredModality === 'compute'
+      ? ['compute_oracle_required_ledger_artifacts_missing']
+      : [];
+  }
+  const failures = [];
+  if (records.some(recordClaimsVisualOutput)) {
+    failures.push('compute_oracle_mixed_visual_compute_modality_ambiguous');
+  }
+  if (!recomputedAcceptance || recomputedAcceptance.accepted !== true) {
+    failures.push('compute_oracle_acceptance_contract_not_verified');
+  }
+  const contractEvidence = computeExpectedOutputContractEvidence(
+    rawAcceptanceContract,
+    recomputedAcceptance?.contract,
+  );
+  failures.push(...contractEvidence.failures);
+  const roots = computeArtifactRoots(options);
+  const pathBaseRoots = computeArtifactPathBaseRoots(options);
+  for (const record of records) {
+    const artifactsList = strictComputeOracleArtifactObjects(record, failures);
+    if (artifactsList.length === 0) {
+      failures.push('compute_oracle_artifacts_missing');
+      continue;
+    }
+    for (const artifacts of artifactsList) {
+      const artifactShapeFailure = plainDataTreeFailure(artifacts);
+      if (artifactShapeFailure) {
+        failures.push(`compute_oracle_artifacts_${artifactShapeFailure}`);
+        continue;
+      }
+      failures.push(...computeArtifactCasAuditFailures(artifacts, roots, pathBaseRoots));
+      const declaredRawHash = normalizeSha256(strictOwnAliasedString(
+        artifacts,
+        ['raw_readback_hash', 'rawReadbackHash', 'readback_hash', 'readbackHash'],
+        failures,
+        'compute_oracle_semantic_raw_readback_hash',
+      ));
+      const rawPath = strictOwnAliasedString(
+        artifacts,
+        ['raw_readback_bin', 'rawReadbackBin'],
+        failures,
+        'compute_oracle_semantic_raw_readback_path',
+      );
+      const schemaPath = strictOwnAliasedString(
+        artifacts,
+        ['readback_schema_json', 'readbackSchemaJson'],
+        failures,
+        'compute_oracle_semantic_readback_schema_path',
+      );
+      if (!rawPath && computeRawReadbackLocators(artifacts, roots, pathBaseRoots).length === 0) {
+        failures.push('compute_oracle_semantic_raw_readback_artifact_missing');
+      }
+      if (!schemaPath && computeReadbackSchemaLocators(artifacts, roots, pathBaseRoots).length === 0) {
+        failures.push('compute_oracle_semantic_readback_schema_artifact_missing');
+      }
+      const declaredSchemaHash = normalizeSha256(strictOwnAliasedString(
+        artifacts,
+        ['readback_schema_hash', 'readbackSchemaHash'],
+        failures,
+        'compute_oracle_semantic_readback_schema_hash',
+      ));
+      if (!declaredSchemaHash) {
+        failures.push('compute_oracle_semantic_readback_schema_hash_missing');
+      }
+      const rawEvidence = computeOracleRawReadbackBytes(
+        artifacts,
+        roots,
+        declaredRawHash,
+        pathBaseRoots,
+      );
+      const schemaEvidence = computeOracleReadbackSchemaBytes(
+        artifacts,
+        roots,
+        declaredSchemaHash,
+        pathBaseRoots,
+      );
+      const rawCasValidations = [
+        ...(rawEvidence?.casValidation ? [rawEvidence.casValidation] : []),
+        ...(Array.isArray(rawEvidence?.casValidations) ? rawEvidence.casValidations : []),
+      ];
+      const schemaCasValidations = [
+        ...(schemaEvidence?.casValidation ? [schemaEvidence.casValidation] : []),
+        ...(Array.isArray(schemaEvidence?.casValidations) ? schemaEvidence.casValidations : []),
+      ];
+      if (rawCasValidations.some((validation) => validation.accepted !== true)) {
+        failures.push('compute_oracle_semantic_raw_readback_cas_locator_invalid');
+      }
+      if (schemaCasValidations.some((validation) => validation.accepted !== true)) {
+        failures.push('compute_oracle_semantic_readback_schema_cas_locator_invalid');
+      }
+      const rawBytes = rawEvidence?.bytes;
+      const schemaBytes = schemaEvidence?.bytes;
+      if (!Buffer.isBuffer(rawBytes) || rawBytes.length === 0) {
+        failures.push('compute_oracle_semantic_raw_readback_bytes_unreadable');
+        continue;
+      }
+      if (!Buffer.isBuffer(schemaBytes) || schemaBytes.length === 0) {
+        failures.push('compute_oracle_semantic_readback_schema_bytes_unreadable');
+        continue;
+      }
+      if (declaredRawHash && sha256Bytes(rawBytes) !== declaredRawHash) {
+        failures.push('compute_oracle_semantic_raw_readback_hash_mismatch');
+      }
+      if (declaredSchemaHash && sha256Bytes(schemaBytes) !== declaredSchemaHash) {
+        failures.push('compute_oracle_semantic_readback_schema_hash_mismatch');
+      }
+      failures.push(...computeSemanticSliceFailures(artifacts, rawBytes, schemaBytes));
+      const oracleImplementation = computeOracleImplementationBytes(
+        artifacts,
+        roots,
+        pathBaseRoots,
+        failures,
+      );
+      const observedBinding = computeObservedSemanticBinding({
+        record,
+        artifacts,
+        acceptanceContract: recomputedAcceptance?.contract ?? {},
+        outputOracleContract: contractEvidence.outputOracleContract ?? {},
+        recomputedOracleCodeHash: oracleImplementation.hash,
+        failures,
+      });
+      const verification = verifyComputeOracleSemantics({
+        rawBytes,
+        readbackSchema: schemaBytes,
+        expectedOutputContract: contractEvidence.expectedOutputContract,
+        observedBinding: {
+          projectId: observedBinding.projectId,
+          editId: observedBinding.editId,
+          artifactAfterHash: observedBinding.artifactAfterHash,
+          outputTargetId: observedBinding.outputTargetId,
+          oracleCodeHash: observedBinding.oracleCodeHash,
+        },
+      });
+      if (verification.accepted !== true) {
+        failures.push('compute_oracle_semantic_verification_rejected');
+        failures.push(...(verification.failedGates ?? verification.failed_gates ?? [])
+          .map((failure) => failure?.code ?? failure));
+      }
+    }
+  }
+  return compactStrings(failures);
+}
+
+function computeOracleDeclarationFailures(proofLedger, options = {}) {
+  const records = ledgerRecords(proofLedger).filter(computeArtifactsPresent);
   if (records.length === 0) return [];
   const roots = computeArtifactRoots(options);
   const pathBaseRoots = computeArtifactPathBaseRoots(options);
   const failures = [];
+  if (records.some(recordClaimsVisualOutput)) {
+    failures.push('compute_oracle_mixed_visual_compute_modality_ambiguous');
+  }
   const addFailure = (code) => {
     if (code) failures.push(code);
   };
   for (const artifacts of records.flatMap(computeOracleArtifactObjects)) {
+    const artifactShapeFailure = plainDataTreeFailure(artifacts);
+    if (artifactShapeFailure) {
+      addFailure(`compute_oracle_artifacts_${artifactShapeFailure}`);
+      continue;
+    }
+    failures.push(...computeArtifactCasAuditFailures(artifacts, roots, pathBaseRoots));
     const declaredHash = computeDeclaredRawHash(artifacts);
     const declaredByteLength = computeDeclaredRawByteLength(artifacts);
     const byteEvidence = computeOracleRawReadbackBytes(artifacts, roots, declaredHash, pathBaseRoots);
@@ -1599,7 +2846,7 @@ function proofLedgerSourceConsistencyMode(sourceConsistency) {
   return normalizedText(sourceConsistency?.mode);
 }
 
-export function adversarialPreflightStrictGate(preflight, options = {}) {
+function adversarialPreflightStrictGateValidated(preflight, options) {
   const failures = [];
   if (!isObject(preflight)) {
     failures.push('adversarial_preflight_missing');
@@ -1627,7 +2874,38 @@ export function adversarialPreflightStrictGate(preflight, options = {}) {
   );
 }
 
-export function runtimeProofArtifactStrictGate(record, options = {}) {
+function adversarialPreflightBoundaryFailure(code) {
+  return gateRow(
+    'strict adversarial preflight acceptance',
+    [code],
+    'adversarial preflight boundary input accepted',
+  );
+}
+
+export function adversarialPreflightStrictGate(preflight, options = {}) {
+  try {
+    const preflightFailure = plainDataTreeFailure(preflight);
+    if (preflightFailure) {
+      return adversarialPreflightBoundaryFailure(
+        `adversarial_preflight_plain_data_${preflightFailure}`,
+      );
+    }
+    const optionsFailure = plainDataTreeFailure(options);
+    if (optionsFailure) {
+      return adversarialPreflightBoundaryFailure(
+        `adversarial_preflight_options_plain_data_${optionsFailure}`,
+      );
+    }
+    if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+      return adversarialPreflightBoundaryFailure('adversarial_preflight_options_not_object');
+    }
+    return adversarialPreflightStrictGateValidated(preflight, options);
+  } catch {
+    return adversarialPreflightBoundaryFailure('adversarial_preflight_boundary_exception');
+  }
+}
+
+function runtimeProofArtifactStrictGateValidated(record, options) {
   const artifact = proofArtifactFromRecord(record);
   const failures = [];
   if (!artifact) {
@@ -1658,6 +2936,9 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       'acceptanceContract',
       'acceptance_contract',
     );
+    const acceptanceContractShapeFailure = acceptanceContract
+      ? plainDataTreeFailure(acceptanceContract)
+      : null;
     const acceptanceContractEvaluation = firstOwnObject(
       artifact,
       'acceptanceContractEvaluation',
@@ -1680,7 +2961,10 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
     const acceptanceContractConsistencyAliasMismatch =
       acceptanceContractConsistencyCamel
       && acceptanceContractConsistencySnake
-      && stableJson(acceptanceContractConsistencyCamel) !== stableJson(acceptanceContractConsistencySnake);
+      && !stableDataEqual(
+        acceptanceContractConsistencyCamel,
+        acceptanceContractConsistencySnake,
+      );
     const proofLedgerSourceConsistency = firstOwnObject(
       artifact,
       'proofLedgerSourceConsistency',
@@ -1703,6 +2987,8 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       proofLedger && ledgerRequiresDeterministicVisualMode(proofLedger);
     let recomputedProofLedgerQuery = null;
     let recomputedAcceptanceContractHash = null;
+    let recomputedAcceptance = null;
+    let requiredOracleModality = null;
     let visualOverlayUsed = false;
     failures.push(...hipModuleHardwareTargetFailures({
       artifact,
@@ -1770,8 +3056,10 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
     }
     if (!acceptanceContract) {
       failures.push('acceptance_contract_missing');
+    } else if (acceptanceContractShapeFailure) {
+      failures.push(`acceptance_contract_${acceptanceContractShapeFailure}`);
     } else {
-      const recomputedAcceptance = evaluateGpuHmrAcceptanceContract(acceptanceContract);
+      recomputedAcceptance = evaluateGpuHmrAcceptanceContract(acceptanceContract);
       recomputedAcceptanceContractHash = recomputedAcceptance.recomputedContractHash;
       if (recomputedAcceptance.accepted !== true) {
         failures.push('acceptance_contract_recomputed_rejected');
@@ -1785,6 +3073,12 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       ) {
         failures.push('acceptance_contract_evaluation_mismatch');
       }
+      const modalityEvidence = acceptanceContractOracleModalityEvidence(
+        acceptanceContract,
+        recomputedAcceptance.contract,
+      );
+      requiredOracleModality = modalityEvidence.modality;
+      failures.push(...modalityEvidence.failures);
     }
     if (acceptanceContractAliasMismatch) {
       failures.push('acceptance_contract_alias_mismatch');
@@ -1793,6 +3087,16 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       proofLedger,
       recomputedAcceptanceContractHash,
     ));
+    if (proofLedger) {
+      failures.push(...ledgerOracleModalityFailures(proofLedger, requiredOracleModality));
+      failures.push(...computeOracleSemanticFailures({
+        proofLedger,
+        rawAcceptanceContract: acceptanceContract,
+        recomputedAcceptance,
+        requiredModality: requiredOracleModality,
+        options,
+      }));
+    }
     if (!acceptanceContractEvaluation) {
       failures.push('acceptance_contract_evaluation_missing');
     } else if (acceptanceContractEvaluation.accepted !== true) {
@@ -1834,7 +3138,38 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
   );
 }
 
-export function runtimeProofArtifactStrictGates(records, options = {}) {
+function runtimeProofArtifactBoundaryFailure(code) {
+  return gateRow(
+    'strict runtime proof artifact acceptance',
+    [code],
+    'runtime proof artifact boundary input accepted',
+  );
+}
+
+export function runtimeProofArtifactStrictGate(record, options = {}) {
+  try {
+    const recordFailure = plainDataTreeFailure(record);
+    if (recordFailure) {
+      return runtimeProofArtifactBoundaryFailure(
+        `runtime_proof_artifact_plain_data_${recordFailure}`,
+      );
+    }
+    const optionsFailure = plainDataTreeFailure(options);
+    if (optionsFailure) {
+      return runtimeProofArtifactBoundaryFailure(
+        `runtime_proof_artifact_options_plain_data_${optionsFailure}`,
+      );
+    }
+    if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+      return runtimeProofArtifactBoundaryFailure('runtime_proof_artifact_options_not_object');
+    }
+    return runtimeProofArtifactStrictGateValidated(record, options);
+  } catch {
+    return runtimeProofArtifactBoundaryFailure('runtime_proof_artifact_boundary_exception');
+  }
+}
+
+function runtimeProofArtifactStrictGatesValidated(records, options) {
   const list = Array.isArray(records) ? records.filter(Boolean) : [];
   if (list.length === 0 && options.requireAtLeastOne !== false) {
     return [
@@ -1851,6 +3186,63 @@ export function runtimeProofArtifactStrictGates(records, options = {}) {
   }));
 }
 
-export function strictProofGateFailures(rows) {
+function runtimeProofArtifactStrictGatesBoundaryFailure(code) {
+  return [gateRow(
+    'strict runtime proof artifact acceptance',
+    [code],
+    'runtime proof artifacts boundary input accepted',
+  )];
+}
+
+export function runtimeProofArtifactStrictGates(records, options = {}) {
+  try {
+    const recordsFailure = plainDataTreeFailure(records);
+    if (recordsFailure) {
+      return runtimeProofArtifactStrictGatesBoundaryFailure(
+        `runtime_proof_artifacts_plain_data_${recordsFailure}`,
+      );
+    }
+    const optionsFailure = plainDataTreeFailure(options);
+    if (optionsFailure) {
+      return runtimeProofArtifactStrictGatesBoundaryFailure(
+        `runtime_proof_artifacts_options_plain_data_${optionsFailure}`,
+      );
+    }
+    if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+      return runtimeProofArtifactStrictGatesBoundaryFailure(
+        'runtime_proof_artifacts_options_not_object',
+      );
+    }
+    return runtimeProofArtifactStrictGatesValidated(records, options);
+  } catch {
+    return runtimeProofArtifactStrictGatesBoundaryFailure(
+      'runtime_proof_artifacts_boundary_exception',
+    );
+  }
+}
+
+function strictProofGateFailuresValidated(rows) {
   return (Array.isArray(rows) ? rows : []).filter((row) => row?.status === 'fail');
+}
+
+function strictProofGateFailuresBoundaryFailure(code) {
+  return [gateRow(
+    'strict proof gate failure filtering',
+    [code],
+    'strict proof gate rows boundary input accepted',
+  )];
+}
+
+export function strictProofGateFailures(rows) {
+  try {
+    const rowsFailure = plainDataTreeFailure(rows);
+    if (rowsFailure) {
+      return strictProofGateFailuresBoundaryFailure(
+        `strict_proof_gate_rows_plain_data_${rowsFailure}`,
+      );
+    }
+    return strictProofGateFailuresValidated(rows);
+  } catch {
+    return strictProofGateFailuresBoundaryFailure('strict_proof_gate_rows_boundary_exception');
+  }
 }

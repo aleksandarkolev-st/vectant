@@ -396,7 +396,7 @@ function epochGenerationGraph({
     retirement_timestamp_monotonic_ns: retirementTimestampMonotonicNs,
     retirementFenceIds,
     delayedUnloadResult,
-    retirementStrategy,
+    ...(retirementStrategy ? { retirementStrategy } : {}),
   };
   return {
     schemaVersion: "synthi.gpu.epoch_graph.v1",
@@ -7012,8 +7012,8 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(evaluation.accepted).toBe(false);
     expect(derived.classification.blocking_gaps).toContain("backend_contract_not_verified");
-    expect(derived.vulkan_contract.descriptor_set_layout_hash).toBeNull();
-    expect(derived.vulkan_contract.pipeline_layout_hash).toBeNull();
+    expect(derived.vulkan_contract).not.toHaveProperty("descriptor_set_layout_hash");
+    expect(derived.vulkan_contract).not.toHaveProperty("pipeline_layout_hash");
     expect(evaluation.failedGates.map((gate) => gate.code)).toEqual(
       expect.arrayContaining([
         "classification_blocking_gaps_present",
@@ -7484,12 +7484,9 @@ describe("GPU HMR runtime output proof classification", () => {
   });
 
   it("does not mark runtime artifacts successful without adversarial refusal preflight proof", () => {
-    const artifact = buildValidationRuntimeProofArtifact(
-      acceptedValidationRuntimeInput({
-        adversarialPreflight: undefined,
-        adversarial_preflight: undefined,
-      }),
-    );
+    const input = acceptedValidationRuntimeInput();
+    delete (input as Record<string, unknown>).adversarialPreflight;
+    const artifact = buildValidationRuntimeProofArtifact(input);
 
     expect(artifact.proofLedgerQuery.gpuHmrSuccess).toBe(true);
     expect(artifact.acceptanceContractEvaluation.accepted).toBe(true);
