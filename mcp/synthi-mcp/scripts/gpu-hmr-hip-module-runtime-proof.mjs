@@ -2,8 +2,7 @@
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, open, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
@@ -16,6 +15,7 @@ import {
 import {
   evaluateGpuHmrAcceptanceContract,
   evaluateGpuHmrAcceptanceContractConsistency,
+  recomputeGpuHmrAcceptanceContractHash,
 } from './lib/gpu-hmr-acceptance-contract.mjs';
 import {
   hipModuleRuntimeTimingMetrics,
@@ -23,6 +23,9 @@ import {
 import {
   runtimeProofArtifactStrictGate,
 } from './lib/gpu-hmr-proof-strict-gates.mjs';
+import {
+  buildComputeExpectedOutputContract,
+} from './lib/gpu-hmr-compute-oracle-semantics.mjs';
 import {
   GPU_HMR_TEST_TIMING_PHASE_KEYS,
   GPU_HMR_TEST_TIMING_SCHEMA,
@@ -56,6 +59,49 @@ const TEST_TIMING_RETIREMENT_GAP_REASON =
 const TEST_TIMING_TERMINAL_PASS_REASON = 'hip_module_runtime_completed';
 const TEST_TIMING_TERMINAL_REFUSAL_REASON = 'hip_module_runtime_refused';
 const TEST_TIMING_TERMINAL_FAILURE_REASON = 'hip_module_runtime_failed';
+const COMPUTE_SEMANTIC_ORACLE_IDENTITY_SCHEMA_VERSION =
+  'synthi.gpu_hmr.compute_semantic_oracle_identity.v1';
+const INDEPENDENT_SEMANTIC_ORACLE_REQUEST_SCHEMA =
+  'synthi.gpu_hmr.independent_semantic_oracle_request.v1';
+const INDEPENDENT_SEMANTIC_ORACLE_RESULT_SCHEMA =
+  'synthi.gpu_hmr.independent_semantic_oracle_result.v1';
+const SEMANTIC_ORACLE_BINDING_FIELDS = Object.freeze([
+  'projectId',
+  'editId',
+  'targetId',
+  'requestId',
+  'artifactAfterHash',
+  'artifactSourceHash',
+  'artifactBindingHash',
+  'compileManifestHash',
+  'outputTargetId',
+  'outputResourceId',
+  'backend',
+  'runtimeSessionId',
+  'dispatchId',
+  'traceArtifactHash',
+  'resourceOrPlanHash',
+  'resourceTraceHash',
+  'observedReadbackHash',
+  'trustedOracleImplementationHash',
+]);
+const OBSERVED_RUNTIME_BINDING_FIELDS = Object.freeze([
+  'artifactAfterHash',
+  'outputTargetId',
+  'outputResourceId',
+  'backend',
+  'runtimeSessionId',
+  'dispatchId',
+  'traceArtifactHash',
+  'resourceOrPlanHash',
+  'resourceTraceHash',
+  'observedReadbackHash',
+]);
+const SEMANTIC_ORACLE_RECEIPT_FIELDS = Object.freeze([
+  ...SEMANTIC_ORACLE_BINDING_FIELDS,
+  'semanticRequestHash',
+  'oracleImplementationHash',
+]);
 const TEST_TIMING_CHILD_PHASES = Object.freeze([
   'load',
   'epoch_publication',
@@ -110,6 +156,63 @@ function stableJson(value) {
   return `{${Object.keys(value).sort().map((key) =>
     `${JSON.stringify(key)}:${stableJson(value[key])}`
   ).join(',')}}`;
+}
+
+function snakeToCamel(key) {
+  return key.replace(/_([a-z0-9])/gu, (_, char) => char.toUpperCase());
+}
+
+function rejectConflictingSnakeCamelAliases(value, context = 'value') {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => rejectConflictingSnakeCamelAliases(entry, `${context}[${index}]`));
+    return value;
+  }
+  if (!value || typeof value !== 'object' || Buffer.isBuffer(value)) return value;
+  for (const key of Object.keys(value)) {
+    if (key.includes('_')) {
+      const camelKey = snakeToCamel(key);
+      if (
+        camelKey !== key
+        && Object.hasOwn(value, camelKey)
+        && stableJson(value[key]) !== stableJson(value[camelKey])
+      ) {
+        throw new Error(`${context} aliases ${key}/${camelKey} conflict`);
+      }
+    }
+    rejectConflictingSnakeCamelAliases(value[key], `${context}.${key}`);
+  }
+  return value;
+}
+
+function authoritativeAlias(record, keys, context) {
+  const source = objectOrEmpty(record);
+  const present = keys
+    .filter((key) => Object.hasOwn(source, key) && source[key] !== undefined && source[key] !== null)
+    .map((key) => ({ key, value: source[key] }));
+  if (present.length > 1) {
+    const canonical = stableJson(present[0].value);
+    const conflict = present.find((entry) => stableJson(entry.value) !== canonical);
+    if (conflict) {
+      throw new Error(`${context} aliases ${present.map((entry) => entry.key).join('/')} conflict`);
+    }
+  }
+  return present[0]?.value ?? null;
+}
+
+function authoritativeText(record, keys, context, { required = false } = {}) {
+  const raw = authoritativeAlias(record, keys, context);
+  const value = typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+  if (required && !value) throw new Error(`${context} is required`);
+  return value;
+}
+
+function authoritativeNumber(record, keys, context, { required = false } = {}) {
+  const raw = authoritativeAlias(record, keys, context);
+  const value = raw === null ? null : Number(raw);
+  if ((required && !Number.isFinite(value)) || (raw !== null && !Number.isFinite(value))) {
+    throw new Error(`${context} must be finite`);
+  }
+  return value;
 }
 
 export function createHipModuleRuntimeTimingV2Recorder(options = {}) {
@@ -269,6 +372,7 @@ function proofArtifactPath(value) {
 }
 
 function computeOracleStrictGateOptions(oracleArtifacts = {}) {
+  rejectConflictingSnakeCamelAliases(oracleArtifacts, 'HIP readback oracle artifacts');
   const artifactPaths = [
     oracleArtifacts.raw_readback_bin,
     oracleArtifacts.rawReadbackBin,
@@ -363,34 +467,156 @@ function isSupportedScope(scope) {
   return SUPPORTED_SCOPES.has(scope);
 }
 
-function regexEscape(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function lexHipStructure(source) {
+  const tokens = [];
+  let index = 0;
+  const isIdentStart = (char) => char === '_'
+    || (char >= 'A' && char <= 'Z')
+    || (char >= 'a' && char <= 'z');
+  const isIdentPart = (char) => isIdentStart(char) || (char >= '0' && char <= '9');
+  while (index < source.length) {
+    const char = source[index];
+    if (char === ' ' || char === '\t' || char === '\r' || char === '\n') {
+      index += 1;
+      continue;
+    }
+    if (char === '#') {
+      while (index < source.length && source[index] !== '\n') index += 1;
+      continue;
+    }
+    if (char === '/' && source[index + 1] === '/') {
+      index += 2;
+      while (index < source.length && source[index] !== '\n') index += 1;
+      continue;
+    }
+    if (char === '/' && source[index + 1] === '*') {
+      const start = index;
+      index += 2;
+      while (index + 1 < source.length && !(source[index] === '*' && source[index + 1] === '/')) index += 1;
+      if (index + 1 >= source.length) throw new Error(`unterminated HIP block comment at byte ${start}`);
+      index += 2;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const quote = char;
+      const start = index;
+      index += 1;
+      while (index < source.length && source[index] !== quote) {
+        if (source[index] === '\\') index += 2;
+        else index += 1;
+      }
+      if (source[index] !== quote) throw new Error(`unterminated HIP literal at byte ${start}`);
+      index += 1;
+      tokens.push({ kind: 'literal', value: '<literal>', start });
+      continue;
+    }
+    if (isIdentStart(char)) {
+      const start = index;
+      index += 1;
+      while (index < source.length && isIdentPart(source[index])) index += 1;
+      tokens.push({ kind: 'identifier', value: source.slice(start, index), start });
+      continue;
+    }
+    if ('(){}[],*&='.includes(char)) {
+      tokens.push({ kind: 'punct', value: char, start: index });
+      index += 1;
+      continue;
+    }
+    tokens.push({ kind: 'other', value: char, start: index });
+    index += 1;
+  }
+  return tokens;
 }
 
-function normalizeKernelParam(param) {
-  const text = String(param ?? '').replace(/\s+/g, ' ').trim();
-  if (!text || text === 'void') return null;
-  const cleaned = text.replace(/\s*=\s*[^,]+$/u, '').trim();
-  const match = cleaned.match(/^(.+?)([A-Za-z_][A-Za-z0-9_]*)$/u);
-  if (!match) return { raw: cleaned, type: cleaned, name: '' };
-  const type = match[1]
-    .trim()
-    .replace(/\s*([*&])\s*/gu, '$1')
-    .replace(/\s+/gu, ' ');
-  return { raw: cleaned, type, name: match[2] };
+function matchingHipStructureToken(tokens, start, open, close, context) {
+  if (tokens[start]?.value !== open) throw new Error(`${context} is missing ${open}`);
+  let depth = 0;
+  for (let index = start; index < tokens.length; index += 1) {
+    if (tokens[index].value === open) depth += 1;
+    else if (tokens[index].value === close) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  throw new Error(`${context} has unbalanced ${open}${close}`);
+}
+
+function normalizeKernelParamTokens(tokens, parameterIndex) {
+  if (tokens.length === 1 && tokens[0].value === 'void') return null;
+  if (tokens.length < 2 || tokens.some((token) => token.kind === 'other' || token.value === '=')) {
+    throw new Error(`unsupported HIP kernel parameter ${parameterIndex}`);
+  }
+  const name = tokens.at(-1);
+  const typeTokens = tokens.slice(0, -1);
+  if (
+    name.kind !== 'identifier'
+    || typeTokens.some((token) => token.kind !== 'identifier' && !['*', '&'].includes(token.value))
+  ) {
+    throw new Error(`malformed HIP kernel parameter ${parameterIndex}`);
+  }
+  let type = '';
+  for (const token of typeTokens) {
+    if (token.value === '*' || token.value === '&') type += token.value;
+    else type += `${type && !type.endsWith('*') && !type.endsWith('&') ? ' ' : ''}${token.value}`;
+  }
+  return {
+    raw: [...typeTokens.map((token) => token.value), name.value].join(' '),
+    type,
+    name: name.value,
+  };
 }
 
 function extractKernelSignature(source, kernelName) {
-  const pattern = new RegExp(
-    `(?:extern\\s+"C"\\s+)?__global__\\s+void\\s+${regexEscape(kernelName)}\\s*\\(([^)]*)\\)`,
-    'su',
-  );
-  const match = String(source ?? '').match(pattern);
-  const params = match
-    ? match[1].split(',').map(normalizeKernelParam).filter(Boolean)
-    : [];
+  const tokens = lexHipStructure(String(source ?? ''));
+  const matches = [];
+  let braceDepth = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.value === '{') {
+      braceDepth += 1;
+      continue;
+    }
+    if (token.value === '}') {
+      braceDepth -= 1;
+      if (braceDepth < 0) throw new Error('HIP source has unbalanced top-level braces');
+      continue;
+    }
+    if (braceDepth !== 0 || token.value !== '__global__') continue;
+    const returnType = tokens[index + 1];
+    const name = tokens[index + 2];
+    if (returnType?.value !== 'void' || name?.kind !== 'identifier') {
+      throw new Error('HIP __global__ declaration must be a named void function');
+    }
+    if (tokens[index + 3]?.value !== '(') throw new Error(`HIP kernel ${name.value} parameter list is missing`);
+    const paramsEnd = matchingHipStructureToken(tokens, index + 3, '(', ')', `HIP kernel ${name.value}`);
+    if (tokens[paramsEnd + 1]?.value !== '{') throw new Error(`HIP kernel ${name.value} body is missing`);
+    const bodyEnd = matchingHipStructureToken(tokens, paramsEnd + 1, '{', '}', `HIP kernel ${name.value}`);
+    if (name.value === kernelName) {
+      const parameterTokens = tokens.slice(index + 4, paramsEnd);
+      const parts = [];
+      let start = 0;
+      let nested = 0;
+      parameterTokens.forEach((parameterToken, parameterIndex) => {
+        if (parameterToken.value === '(' || parameterToken.value === '[') nested += 1;
+        else if (parameterToken.value === ')' || parameterToken.value === ']') nested -= 1;
+        if (parameterToken.value === ',' && nested === 0) {
+          parts.push(parameterTokens.slice(start, parameterIndex));
+          start = parameterIndex + 1;
+        }
+      });
+      parts.push(parameterTokens.slice(start));
+      const params = parts.length === 1 && parts[0].length === 0
+        ? []
+        : parts.map(normalizeKernelParamTokens).filter(Boolean);
+      matches.push(params);
+    }
+    index = bodyEnd;
+  }
+  if (braceDepth !== 0) throw new Error('HIP source has unbalanced top-level braces');
+  if (matches.length > 1) throw new Error(`HIP source has duplicate kernel ${kernelName}`);
+  const params = matches[0] ?? [];
   return {
-    found: Boolean(match),
+    found: matches.length === 1,
     params,
     signatureHash: sha256Text(stableJson(params.map((param) => ({ type: param.type, name: param.name })))),
   };
@@ -418,26 +644,33 @@ function normalizeDim(raw, fallback = {}) {
 
 function compareNumericValues(actual, expected, tolerance) {
   const mismatches = [];
-  const compared = Math.min(actual.length, expected.length);
+  const actualValues = Array.isArray(actual) ? actual : [];
+  const expectedValues = Array.isArray(expected) ? expected : [];
+  const compared = Math.min(actualValues.length, expectedValues.length);
   let maxAbsDelta = 0;
   for (let index = 0; index < compared; index += 1) {
-    const delta = Math.abs(Number(actual[index]) - Number(expected[index]));
-    maxAbsDelta = Math.max(maxAbsDelta, delta);
-    if (delta > tolerance) {
+    const actualValue = Number(actualValues[index]);
+    const expectedValue = Number(expectedValues[index]);
+    const finite = Number.isFinite(actualValue) && Number.isFinite(expectedValue);
+    const delta = finite ? Math.abs(actualValue - expectedValue) : null;
+    if (delta !== null) maxAbsDelta = Math.max(maxAbsDelta, delta);
+    if (!finite || delta > tolerance) {
       mismatches.push({
         index,
-        actual: actual[index],
-        expected: expected[index],
+        actual: actualValues[index],
+        expected: expectedValues[index],
         abs_delta: delta,
+        reason: finite ? 'tolerance_exceeded' : 'non_finite_value',
       });
     }
   }
-  if (actual.length !== expected.length) {
+  if (actualValues.length !== expectedValues.length) {
     mismatches.push({
       index: compared,
-      actual_length: actual.length,
-      expected_length: expected.length,
+      actual_length: actualValues.length,
+      expected_length: expectedValues.length,
       abs_delta: null,
+      reason: 'length_mismatch',
     });
   }
   return {
@@ -447,6 +680,1549 @@ function compareNumericValues(actual, expected, tolerance) {
     maxAbsDelta,
     mismatches,
   };
+}
+
+function independentlyEncodeTypedValues(values, dataType) {
+  if (!Array.isArray(values) || values.length === 0) {
+    throw new Error('independent typed-byte verifier requires non-empty expected values');
+  }
+  const byteWidth = { float32: 4, uint32: 4, int32: 4 }[dataType];
+  if (!byteWidth) throw new Error(`independent typed-byte verifier does not support ${dataType}`);
+  const view = new DataView(new ArrayBuffer(values.length * byteWidth));
+  values.forEach((rawValue, index) => {
+    const value = Number(rawValue);
+    const offset = index * byteWidth;
+    if (!Number.isFinite(value)) throw new Error(`expected value ${index} is not finite`);
+    if (dataType === 'float32') view.setFloat32(offset, value, true);
+    else if (dataType === 'uint32') {
+      if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+        throw new Error(`expected value ${index} is not uint32`);
+      }
+      view.setUint32(offset, value, true);
+    } else {
+      if (!Number.isInteger(value) || value < -2147483648 || value > 2147483647) {
+        throw new Error(`expected value ${index} is not int32`);
+      }
+      view.setInt32(offset, value, true);
+    }
+  });
+  return Buffer.from(view.buffer);
+}
+
+function verifyExactTypedReadback({ observedBytes, expectedValues, expectedBytes, expectedRawHash, dataType }) {
+  const canonicalExpected = independentlyEncodeTypedValues(expectedValues, dataType);
+  const declaredExpected = Buffer.from(Array.isArray(expectedBytes) ? expectedBytes : []);
+  const observed = Buffer.from(observedBytes);
+  const failures = [];
+  const mismatches = [];
+  if (!declaredExpected.equals(canonicalExpected)) {
+    failures.push('semantic_oracle_expected_bytes_not_canonical');
+  }
+  if (expectedRawHash !== sha256Bytes(canonicalExpected)) {
+    failures.push('semantic_oracle_expected_raw_hash_mismatch');
+  }
+  if (observed.length !== canonicalExpected.length) {
+    failures.push('semantic_oracle_observed_byte_length_mismatch');
+    failures.push('semantic_oracle_observed_element_count_mismatch');
+  }
+  const compared = Math.min(observed.length, canonicalExpected.length);
+  for (let index = 0; index < compared; index += 1) {
+    if (observed[index] !== canonicalExpected[index]) {
+      mismatches.push({ index, actualByte: observed[index], expectedByte: canonicalExpected[index] });
+    }
+  }
+  if (observed.length !== canonicalExpected.length) {
+    mismatches.push({ index: compared, actualLength: observed.length, expectedLength: canonicalExpected.length });
+  }
+  return {
+    matched: failures.length === 0 && mismatches.length === 0,
+    failures,
+    mismatches,
+    expectedByteLength: canonicalExpected.length,
+    expectedElementCount: expectedValues.length,
+  };
+}
+
+function hipSemanticOracleImplementation(request) {
+  const fail = (message) => {
+    throw new Error(`hip semantic oracle: ${message}`);
+  };
+  const positiveDim = (value, name) => {
+    if (
+      !value
+      || !Number.isSafeInteger(value.x)
+      || !Number.isSafeInteger(value.y)
+      || !Number.isSafeInteger(value.z)
+      || value.x <= 0
+      || value.y <= 0
+      || value.z <= 0
+    ) {
+      fail(`${name} must contain positive integer x/y/z dimensions`);
+    }
+    return value;
+  };
+  const dataTypeFor = (type) => {
+    if (type === 'f32') return 'float32';
+    if (type === 'u32') return 'uint32';
+    if (type === 'i32') return 'int32';
+    fail(`unsupported storage type ${type}`);
+  };
+  const sourceTypeFor = (tokens, context) => {
+    const words = tokens
+      .map((token) => token.value)
+      .filter((value) => !['const', 'volatile', '__restrict__', '__restrict', 'restrict'].includes(value));
+    const pointerDepth = words.filter((value) => value === '*').length;
+    const baseWords = words.filter((value) => value !== '*');
+    let type = null;
+    if (baseWords.length === 1 && baseWords[0] === 'float') type = 'f32';
+    else if (baseWords.length === 1 && baseWords[0] === 'int') type = 'i32';
+    else if (baseWords.length === 1 && baseWords[0] === 'int32_t') type = 'i32';
+    else if (baseWords.length === 1 && baseWords[0] === 'uint32_t') type = 'u32';
+    else if (baseWords.length === 2 && baseWords[0] === 'unsigned' && baseWords[1] === 'int') type = 'u32';
+    if (!type || pointerDepth > 1) fail(`unsupported ${context} type ${words.join(' ')}`);
+    return {
+      type,
+      pointer: pointerDepth === 1,
+      constQualified: tokens.some((token) => token.value === 'const'),
+    };
+  };
+  const isIdentStart = (char) => (
+    char === '_'
+    || (char >= 'A' && char <= 'Z')
+    || (char >= 'a' && char <= 'z')
+  );
+  const isIdentPart = (char) => isIdentStart(char) || (char >= '0' && char <= '9');
+  const isDigit = (char) => char >= '0' && char <= '9';
+  const lex = (source) => {
+    const tokens = [];
+    let index = 0;
+    while (index < source.length) {
+      const char = source[index];
+      if (char === ' ' || char === '\t' || char === '\r' || char === '\n') {
+        index += 1;
+        continue;
+      }
+      if (char === '#') {
+        while (index < source.length && source[index] !== '\n') index += 1;
+        continue;
+      }
+      if (char === '/' && source[index + 1] === '/') {
+        index += 2;
+        while (index < source.length && source[index] !== '\n') index += 1;
+        continue;
+      }
+      if (char === '/' && source[index + 1] === '*') {
+        const start = index;
+        index += 2;
+        while (index + 1 < source.length && !(source[index] === '*' && source[index + 1] === '/')) {
+          index += 1;
+        }
+        if (index + 1 >= source.length) fail(`unterminated block comment at byte ${start}`);
+        index += 2;
+        continue;
+      }
+      if (char === '"') {
+        const start = index;
+        index += 1;
+        let value = '';
+        while (index < source.length && source[index] !== '"') {
+          if (source[index] === '\\') {
+            if (index + 1 >= source.length) fail(`unterminated string at byte ${start}`);
+            value += source[index + 1];
+            index += 2;
+          } else {
+            value += source[index];
+            index += 1;
+          }
+        }
+        if (source[index] !== '"') fail(`unterminated string at byte ${start}`);
+        index += 1;
+        tokens.push({ kind: 'string', value, start });
+        continue;
+      }
+      if (isIdentStart(char)) {
+        const start = index;
+        index += 1;
+        while (index < source.length && isIdentPart(source[index])) index += 1;
+        tokens.push({ kind: 'identifier', value: source.slice(start, index), start });
+        continue;
+      }
+      if (isDigit(char) || (char === '.' && isDigit(source[index + 1]))) {
+        const start = index;
+        let sawDot = false;
+        if (char === '.') {
+          sawDot = true;
+          index += 1;
+        }
+        while (isDigit(source[index])) index += 1;
+        if (!sawDot && source[index] === '.') {
+          index += 1;
+          while (isDigit(source[index])) index += 1;
+        }
+        if (source[index] === 'e' || source[index] === 'E') {
+          index += 1;
+          if (source[index] === '+' || source[index] === '-') index += 1;
+          const exponentStart = index;
+          while (isDigit(source[index])) index += 1;
+          if (index === exponentStart) fail(`invalid numeric exponent at byte ${start}`);
+        }
+        if ('fFuU'.includes(source[index] ?? '')) index += 1;
+        tokens.push({ kind: 'number', value: source.slice(start, index), start });
+        continue;
+      }
+      const pair = source.slice(index, index + 2);
+      if (['>=', '<=', '==', '!=', '&&', '||', '::'].includes(pair)) {
+        tokens.push({ kind: 'punct', value: pair, start: index });
+        index += 2;
+        continue;
+      }
+      if ('(){}[];,.*+-/%<>=&'.includes(char)) {
+        tokens.push({ kind: 'punct', value: char, start: index });
+        index += 1;
+        continue;
+      }
+      fail(`unsupported token ${JSON.stringify(char)} at byte ${index}`);
+    }
+    return tokens;
+  };
+  const matchingIndex = (tokens, start, open, close, context) => {
+    if (tokens[start]?.value !== open) fail(`${context} is missing ${open}`);
+    let depth = 0;
+    for (let index = start; index < tokens.length; index += 1) {
+      if (tokens[index].value === open) depth += 1;
+      else if (tokens[index].value === close) {
+        depth -= 1;
+        if (depth === 0) return index;
+      }
+    }
+    fail(`${context} has unbalanced ${open}${close}`);
+  };
+  const splitTopLevel = (tokens, separator) => {
+    const parts = [];
+    let start = 0;
+    let round = 0;
+    let square = 0;
+    let angle = 0;
+    tokens.forEach((token, index) => {
+      if (token.value === '(') round += 1;
+      else if (token.value === ')') round -= 1;
+      else if (token.value === '[') square += 1;
+      else if (token.value === ']') square -= 1;
+      else if (token.value === '<') angle += 1;
+      else if (token.value === '>') angle -= 1;
+      if (token.value === separator && round === 0 && square === 0 && angle === 0) {
+        parts.push(tokens.slice(start, index));
+        start = index + 1;
+      }
+    });
+    parts.push(tokens.slice(start));
+    return parts;
+  };
+  const parseKernel = (source, entryPoint) => {
+    const tokens = lex(source);
+    const matches = [];
+    let braceDepth = 0;
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      if (token.value === '{') {
+        braceDepth += 1;
+        continue;
+      }
+      if (token.value === '}') {
+        braceDepth -= 1;
+        if (braceDepth < 0) fail('unbalanced top-level braces');
+        continue;
+      }
+      if (braceDepth !== 0 || token.value !== '__global__') continue;
+      if (tokens[index + 1]?.value !== 'void') fail('__global__ entry must return void');
+      const nameToken = tokens[index + 2];
+      if (nameToken?.kind !== 'identifier') fail('__global__ entry name is missing');
+      if (tokens[index + 3]?.value !== '(') fail(`kernel ${nameToken.value} parameter list is missing`);
+      const paramsEnd = matchingIndex(tokens, index + 3, '(', ')', `kernel ${nameToken.value}`);
+      if (tokens[paramsEnd + 1]?.value !== '{') fail(`kernel ${nameToken.value} body is missing`);
+      const bodyEnd = matchingIndex(tokens, paramsEnd + 1, '{', '}', `kernel ${nameToken.value}`);
+      if (nameToken.value === entryPoint) {
+        matches.push({
+          name: nameToken.value,
+          parameterTokens: tokens.slice(index + 4, paramsEnd),
+          bodyTokens: tokens.slice(paramsEnd + 1, bodyEnd + 1),
+        });
+      }
+      index = bodyEnd;
+    }
+    if (braceDepth !== 0) fail('unbalanced top-level braces');
+    if (matches.length !== 1) fail(`expected exactly one __global__ entry named ${entryPoint}, found ${matches.length}`);
+    const kernel = matches[0];
+    const parameterParts = kernel.parameterTokens.length === 0
+      ? []
+      : splitTopLevel(kernel.parameterTokens, ',');
+    kernel.parameters = parameterParts.map((part, parameterIndex) => {
+      if (part.length < 2) fail(`kernel parameter ${parameterIndex} is malformed`);
+      const nameToken = part.at(-1);
+      if (nameToken.kind !== 'identifier') fail(`kernel parameter ${parameterIndex} name is missing`);
+      const sourceType = sourceTypeFor(part.slice(0, -1), `kernel parameter ${nameToken.value}`);
+      return { name: nameToken.value, ...sourceType };
+    });
+    return kernel;
+  };
+  const parseBody = (bodyTokens) => {
+    let position = 0;
+    const peek = (offset = 0) => bodyTokens[position + offset];
+    const take = (value = null) => {
+      const token = peek();
+      if (!token || (value !== null && token.value !== value)) {
+        fail(`expected ${value ?? 'token'} in kernel body, found ${token?.value ?? 'end of body'}`);
+      }
+      position += 1;
+      return token;
+    };
+    let parseExpression;
+    let parseBlock;
+    const parsePrimary = () => {
+      const token = peek();
+      if (!token) fail('expression ended unexpectedly');
+      if (token.value === 'static_cast') {
+        take('static_cast');
+        take('<');
+        const typeTokens = [];
+        while (peek()?.value !== '>') typeTokens.push(take());
+        take('>');
+        const target = sourceTypeFor(typeTokens, 'static_cast target');
+        if (target.pointer) fail('pointer static_cast is unsupported');
+        take('(');
+        const value = parseExpression();
+        take(')');
+        return { kind: 'cast', targetType: target.type, value };
+      }
+      if (token.value === '(') {
+        take('(');
+        const value = parseExpression();
+        take(')');
+        return value;
+      }
+      if (token.kind === 'number') {
+        take();
+        return { kind: 'number', raw: token.value };
+      }
+      if (token.kind === 'identifier') {
+        take();
+        return { kind: 'identifier', name: token.value };
+      }
+      fail(`unsupported primary expression token ${token.value}`);
+    };
+    const parsePostfix = () => {
+      let value = parsePrimary();
+      while (true) {
+        if (peek()?.value === '.') {
+          take('.');
+          const member = take();
+          if (member.kind !== 'identifier') fail('member name is missing');
+          value = { kind: 'member', object: value, member: member.value };
+        } else if (peek()?.value === '[') {
+          take('[');
+          const index = parseExpression();
+          take(']');
+          value = { kind: 'index', object: value, index };
+        } else {
+          break;
+        }
+      }
+      return value;
+    };
+    const parseUnary = () => {
+      if (['+', '-', '&'].includes(peek()?.value)) {
+        const operator = take().value;
+        return { kind: 'unary', operator, value: parseUnary() };
+      }
+      return parsePostfix();
+    };
+    const parseMultiplicative = () => {
+      let value = parseUnary();
+      while (['*', '/', '%'].includes(peek()?.value)) {
+        const operator = take().value;
+        value = { kind: 'binary', operator, left: value, right: parseUnary() };
+      }
+      return value;
+    };
+    const parseAdditive = () => {
+      let value = parseMultiplicative();
+      while (['+', '-'].includes(peek()?.value)) {
+        const operator = take().value;
+        value = { kind: 'binary', operator, left: value, right: parseMultiplicative() };
+      }
+      return value;
+    };
+    const parseRelational = () => {
+      let value = parseAdditive();
+      while (['<', '<=', '>', '>=', '==', '!='].includes(peek()?.value)) {
+        const operator = take().value;
+        value = { kind: 'binary', operator, left: value, right: parseAdditive() };
+      }
+      return value;
+    };
+    parseExpression = () => parseRelational();
+    const declarationStart = () => ['const', 'float', 'int', 'unsigned', 'uint32_t', 'int32_t', 'auto'].includes(peek()?.value);
+    const parseStatement = () => {
+      if (peek()?.value === '{') return parseBlock();
+      if (peek()?.value === 'return') {
+        take('return');
+        take(';');
+        return { kind: 'return' };
+      }
+      if (peek()?.value === 'if') {
+        take('if');
+        take('(');
+        const condition = parseExpression();
+        take(')');
+        const consequent = parseStatement();
+        if (peek()?.value === 'else') fail('else statements are unsupported');
+        return { kind: 'if', condition, consequent };
+      }
+      if (declarationStart()) {
+        const typeTokens = [];
+        if (peek()?.value === 'const') typeTokens.push(take());
+        while (!(peek()?.kind === 'identifier' && peek(1)?.value === '=')) {
+          const token = take();
+          if ([';', '{', '}'].includes(token.value)) fail('malformed local declaration');
+          typeTokens.push(token);
+        }
+        const name = take().value;
+        take('=');
+        const initializer = parseExpression();
+        take(';');
+        const declaredType = typeTokens.some((token) => token.value === 'auto')
+          ? null
+          : sourceTypeFor(typeTokens, `local ${name}`).type;
+        return { kind: 'declaration', name, declaredType, initializer };
+      }
+      const target = parseExpression();
+      take('=');
+      const value = parseExpression();
+      take(';');
+      if (target.kind !== 'index' || target.object.kind !== 'identifier') {
+        fail('only direct buffer element assignments are supported');
+      }
+      return { kind: 'assignment', target, value };
+    };
+    parseBlock = () => {
+      take('{');
+      const statements = [];
+      while (peek()?.value !== '}') {
+        if (!peek()) fail('kernel body block is unterminated');
+        statements.push(parseStatement());
+      }
+      take('}');
+      return { kind: 'block', statements };
+    };
+    const body = parseBlock();
+    if (position !== bodyTokens.length) fail('kernel body contains trailing syntax');
+    return body;
+  };
+  const i32Min = -2147483648n;
+  const i32Max = 2147483647n;
+  const u32Mod = 4294967296n;
+  const typed = (type, value) => ({ type, value });
+  const assertFinite = (value) => {
+    if (!Number.isFinite(value)) fail('floating-point operation produced a non-finite value');
+    return value;
+  };
+  const convert = (input, targetType, explicit = false) => {
+    if (input.type === targetType) return input;
+    if (targetType === 'f32') return typed('f32', Math.fround(assertFinite(Number(input.value))));
+    if (targetType === 'f64') return typed('f64', assertFinite(Number(input.value)));
+    if (!explicit && (input.type === 'f32' || input.type === 'f64')) {
+      fail(`implicit floating-point to ${targetType} conversion is unsupported`);
+    }
+    const numeric = input.type === 'f32' || input.type === 'f64'
+      ? Math.trunc(assertFinite(input.value))
+      : Number(input.value);
+    if (!Number.isSafeInteger(numeric)) fail(`value cannot be represented as ${targetType}`);
+    const integer = BigInt(numeric);
+    if (targetType === 'u32') {
+      if (explicit) return typed('u32', ((integer % u32Mod) + u32Mod) % u32Mod);
+      if (integer < 0n || integer >= u32Mod) fail('implicit uint32 conversion is out of range');
+      return typed('u32', integer);
+    }
+    if (targetType === 'i32') {
+      if (integer < i32Min || integer > i32Max) fail('int32 conversion is out of range');
+      return typed('i32', integer);
+    }
+    fail(`unsupported conversion to ${targetType}`);
+  };
+  const commonType = (left, right) => {
+    if (left.type === 'f64' || right.type === 'f64') return 'f64';
+    if (left.type === 'f32' || right.type === 'f32') return 'f32';
+    if (left.type === 'u32' || right.type === 'u32') return 'u32';
+    if (left.type === 'i32' && right.type === 'i32') return 'i32';
+    fail(`arithmetic operands ${left.type} and ${right.type} are unsupported`);
+  };
+  const integerOperation = (operator, left, right, type) => {
+    if ((operator === '/' || operator === '%') && right === 0n) fail('integer division by zero');
+    let result;
+    if (operator === '+') result = left + right;
+    else if (operator === '-') result = left - right;
+    else if (operator === '*') result = left * right;
+    else if (operator === '/') result = left / right;
+    else if (operator === '%') result = left % right;
+    else fail(`unsupported integer operator ${operator}`);
+    if (type === 'u32') return ((result % u32Mod) + u32Mod) % u32Mod;
+    if (result < i32Min || result > i32Max) fail('signed int32 overflow has undefined HIP C++ semantics');
+    return result;
+  };
+  const binary = (operator, rawLeft, rawRight) => {
+    if (rawLeft.type === 'bool' || rawRight.type === 'bool') fail('boolean arithmetic is unsupported');
+    const type = commonType(rawLeft, rawRight);
+    const left = convert(rawLeft, type);
+    const right = convert(rawRight, type);
+    if (['<', '<=', '>', '>=', '==', '!='].includes(operator)) {
+      const a = left.value;
+      const b = right.value;
+      if (operator === '<') return typed('bool', a < b);
+      if (operator === '<=') return typed('bool', a <= b);
+      if (operator === '>') return typed('bool', a > b);
+      if (operator === '>=') return typed('bool', a >= b);
+      if (operator === '==') return typed('bool', a === b);
+      return typed('bool', a !== b);
+    }
+    if (type === 'u32' || type === 'i32') {
+      return typed(type, integerOperation(operator, left.value, right.value, type));
+    }
+    let result;
+    if (operator === '+') result = left.value + right.value;
+    else if (operator === '-') result = left.value - right.value;
+    else if (operator === '*') result = left.value * right.value;
+    else if (operator === '/') result = left.value / right.value;
+    else if (operator === '%') result = left.value % right.value;
+    else fail(`unsupported floating-point operator ${operator}`);
+    assertFinite(result);
+    return typed(type, type === 'f32' ? Math.fround(result) : result);
+  };
+  const numberValue = (raw) => {
+    const suffix = raw.at(-1);
+    const hasFloatSuffix = suffix === 'f' || suffix === 'F';
+    const hasUnsignedSuffix = suffix === 'u' || suffix === 'U';
+    const text = hasFloatSuffix || hasUnsignedSuffix ? raw.slice(0, -1) : raw;
+    const floating = text.includes('.') || text.includes('e') || text.includes('E');
+    if (hasUnsignedSuffix && floating) fail(`invalid unsigned literal ${raw}`);
+    if (floating) {
+      const value = assertFinite(Number(text));
+      return typed(hasFloatSuffix ? 'f32' : 'f64', hasFloatSuffix ? Math.fround(value) : value);
+    }
+    const value = BigInt(text);
+    if (hasFloatSuffix) return typed('f32', Math.fround(Number(value)));
+    if (hasUnsignedSuffix) {
+      if (value < 0n || value >= u32Mod) fail(`uint32 literal ${raw} is out of range`);
+      return typed('u32', value);
+    }
+    if (value < i32Min || value > i32Max) fail(`unsuffixed integer literal ${raw} is outside int32`);
+    return typed('i32', value);
+  };
+  const decode = (bytes, dataType) => {
+    if (!Array.isArray(bytes) || bytes.length === 0 || bytes.length % 4 !== 0) {
+      fail('resource bytes must be a non-empty aligned byte array');
+    }
+    if (bytes.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+      fail('resource bytes contain a non-byte value');
+    }
+    const raw = Uint8Array.from(bytes);
+    const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+    const values = [];
+    for (let offset = 0; offset < raw.byteLength; offset += 4) {
+      if (dataType === 'float32') values.push(typed('f32', view.getFloat32(offset, true)));
+      else if (dataType === 'uint32') values.push(typed('u32', BigInt(view.getUint32(offset, true))));
+      else if (dataType === 'int32') values.push(typed('i32', BigInt(view.getInt32(offset, true))));
+      else fail(`unsupported data type ${dataType}`);
+    }
+    return values;
+  };
+  const encode = (values, dataType) => {
+    const bytes = new Uint8Array(values.length * 4);
+    const view = new DataView(bytes.buffer);
+    const targetType = dataType === 'float32' ? 'f32' : dataType === 'uint32' ? 'u32' : 'i32';
+    values.forEach((value, index) => {
+      const converted = convert(value, targetType, true);
+      if (dataType === 'float32') view.setFloat32(index * 4, converted.value, true);
+      else if (dataType === 'uint32') view.setUint32(index * 4, Number(converted.value), true);
+      else if (dataType === 'int32') view.setInt32(index * 4, Number(converted.value), true);
+    });
+    return Array.from(bytes);
+  };
+  if (!request || request.schemaVersion !== 'synthi.gpu_hmr.independent_semantic_oracle_request.v1') {
+    fail('request schema is invalid');
+  }
+  const source = request.artifact?.source;
+  const entryPoint = request.artifact?.entryPoint;
+  if (typeof source !== 'string' || source.length === 0 || typeof entryPoint !== 'string') {
+    fail('HIP source or entry point is missing');
+  }
+  const kernel = parseKernel(source, entryPoint);
+  const body = parseBody(kernel.bodyTokens);
+  const resources = Array.isArray(request.resources) ? request.resources : [];
+  const parameters = Array.isArray(request.launch?.parameters) ? request.launch.parameters : [];
+  if (kernel.parameters.length !== parameters.length) fail('source and launch parameter counts differ');
+  const resourcesByName = new Map();
+  for (const resource of resources) {
+    if (typeof resource?.name !== 'string' || resourcesByName.has(resource.name)) {
+      fail('resource names must be present and unique');
+    }
+    resourcesByName.set(resource.name, resource);
+  }
+  const parameterBindings = new Map();
+  kernel.parameters.forEach((sourceParameter, index) => {
+    const declared = parameters[index];
+    if (!declared || declared.name !== sourceParameter.name) {
+      fail(`launch parameter ${index} does not match source parameter ${sourceParameter.name}`);
+    }
+    const expectedKind = sourceParameter.pointer ? 'buffer' : 'scalar';
+    if (declared.kind !== expectedKind) fail(`launch parameter ${declared.name} kind mismatches source`);
+    const sourceDataType = dataTypeFor(sourceParameter.type);
+    if (declared.dataType !== sourceDataType) fail(`launch parameter ${declared.name} dtype mismatches source ${sourceDataType}`);
+    if (sourceParameter.pointer) {
+      const resource = resourcesByName.get(declared.buffer);
+      if (!resource) fail(`launch parameter ${declared.name} references a missing resource`);
+      if (resource.dataType !== sourceDataType) fail(`resource ${resource.name} dtype mismatches source ${sourceDataType}`);
+      parameterBindings.set(sourceParameter.name, { sourceParameter, declared, resource });
+    } else {
+      parameterBindings.set(sourceParameter.name, { sourceParameter, declared });
+    }
+  });
+  const outputResourceId = request.binding?.outputResourceId ?? request.binding?.outputTargetId;
+  const outputBindings = [...parameterBindings.values()].filter((binding) => (
+    binding.sourceParameter.pointer && binding.resource?.name === outputResourceId
+  ));
+  if (outputBindings.length !== 1) fail('runtime output resource does not select exactly one kernel parameter');
+  const outputBinding = outputBindings[0];
+  if (outputBinding.sourceParameter.constQualified) fail('runtime output parameter is const-qualified');
+  const inputBindings = [...parameterBindings.values()].filter((binding) => (
+    binding.sourceParameter.pointer
+    && binding.sourceParameter.constQualified
+    && binding.resource?.name !== outputResourceId
+  ));
+  if (inputBindings.length !== 1) fail('target kernel must have exactly one const input buffer in the supported subset');
+  const inputBinding = inputBindings[0];
+  if (inputBinding.sourceParameter.type !== outputBinding.sourceParameter.type) {
+    fail('input and output source element types differ');
+  }
+  const dataType = dataTypeFor(outputBinding.sourceParameter.type);
+  const gridDim = positiveDim(request.launch?.gridDim, 'grid dimensions');
+  const blockDim = positiveDim(request.launch?.blockDim, 'block dimensions');
+  if (gridDim.y !== 1 || gridDim.z !== 1 || blockDim.y !== 1 || blockDim.z !== 1) {
+    fail('only one-dimensional HIP launches are supported');
+  }
+  const inputValues = decode(inputBinding.resource.initialBytes, dataType);
+  const outputValues = decode(outputBinding.resource.initialBytes, dataType);
+  const invocationCount = gridDim.x * blockDim.x;
+  const evaluate = (node, environment, builtins) => {
+    if (node.kind === 'number') return numberValue(node.raw);
+    if (node.kind === 'identifier') {
+      if (!environment.has(node.name)) fail(`unknown semantic symbol ${node.name}`);
+      return environment.get(node.name);
+    }
+    if (node.kind === 'member') {
+      if (node.object.kind !== 'identifier' || node.member !== 'x') fail('only HIP builtin .x members are supported');
+      const value = builtins[node.object.name];
+      if (value === undefined) fail(`unsupported HIP builtin ${node.object.name}.${node.member}`);
+      return typed('u32', BigInt(value));
+    }
+    if (node.kind === 'index') {
+      if (node.object.kind !== 'identifier') fail('nested buffer indexing is unsupported');
+      const buffer = environment.get(node.object.name);
+      if (!buffer || buffer.kind !== 'buffer') fail(`${node.object.name} is not a buffer`);
+      const indexValue = convert(evaluate(node.index, environment, builtins), 'u32');
+      const index = Number(indexValue.value);
+      if (!Number.isSafeInteger(index) || index < 0 || index >= buffer.values.length) {
+        fail(`buffer ${node.object.name} index ${index} is out of bounds`);
+      }
+      return buffer.values[index];
+    }
+    if (node.kind === 'cast') return convert(evaluate(node.value, environment, builtins), node.targetType, true);
+    if (node.kind === 'unary') {
+      if (node.operator === '&') fail('address-of is unsupported in HIP arithmetic');
+      const value = evaluate(node.value, environment, builtins);
+      if (node.operator === '+') return value;
+      if (value.type === 'u32') return typed('u32', (u32Mod - value.value) % u32Mod);
+      if (value.type === 'i32') {
+        if (value.value === i32Min) fail('signed unary negation overflows int32');
+        return typed('i32', -value.value);
+      }
+      return typed(value.type, value.type === 'f32' ? Math.fround(-value.value) : -value.value);
+    }
+    if (node.kind === 'binary') {
+      return binary(node.operator, evaluate(node.left, environment, builtins), evaluate(node.right, environment, builtins));
+    }
+    fail(`unsupported expression node ${node.kind}`);
+  };
+  const written = new Set();
+  const executeStatement = (statement, environment, builtins) => {
+    if (statement.kind === 'block') {
+      for (const child of statement.statements) {
+        const signal = executeStatement(child, environment, builtins);
+        if (signal) return signal;
+      }
+      return null;
+    }
+    if (statement.kind === 'return') return 'return';
+    if (statement.kind === 'if') {
+      const condition = evaluate(statement.condition, environment, builtins);
+      if (condition.type !== 'bool') fail('if condition is not boolean');
+      return condition.value ? executeStatement(statement.consequent, environment, builtins) : null;
+    }
+    if (statement.kind === 'declaration') {
+      if (environment.has(statement.name)) fail(`local ${statement.name} shadows an existing symbol`);
+      let value = evaluate(statement.initializer, environment, builtins);
+      if (statement.declaredType) value = convert(value, statement.declaredType);
+      environment.set(statement.name, value);
+      return null;
+    }
+    if (statement.kind === 'assignment') {
+      const bufferName = statement.target.object.name;
+      if (bufferName !== outputBinding.sourceParameter.name) fail(`write to non-output buffer ${bufferName}`);
+      const outputIndex = Number(convert(evaluate(statement.target.index, environment, builtins), 'u32').value);
+      if (!Number.isSafeInteger(outputIndex) || outputIndex < 0 || outputIndex >= outputValues.length) {
+        fail(`output index ${outputIndex} is out of bounds`);
+      }
+      if (written.has(outputIndex)) fail(`multiple invocations write output index ${outputIndex}`);
+      outputValues[outputIndex] = convert(evaluate(statement.value, environment, builtins), outputBinding.sourceParameter.type);
+      written.add(outputIndex);
+      return null;
+    }
+    fail(`unsupported statement ${statement.kind}`);
+  };
+  for (let globalIndex = 0; globalIndex < invocationCount; globalIndex += 1) {
+    const environment = new Map();
+    for (const [name, binding] of parameterBindings) {
+      if (binding.sourceParameter.pointer) {
+        environment.set(name, {
+          kind: 'buffer',
+          type: binding.sourceParameter.type,
+          values: binding.resource === outputBinding.resource ? outputValues : inputValues,
+        });
+      } else {
+        const value = binding.declared.value;
+        if (!Number.isFinite(Number(value))) fail(`scalar ${name} is not finite`);
+        const sourceType = binding.sourceParameter.type;
+        if (sourceType === 'f32') environment.set(name, typed('f32', Math.fround(Number(value))));
+        else {
+          if (!Number.isSafeInteger(Number(value))) fail(`scalar ${name} is not an integer`);
+          environment.set(name, convert(typed('i32', BigInt(Number(value))), sourceType, true));
+        }
+      }
+    }
+    executeStatement(body, environment, {
+      blockIdx: Math.floor(globalIndex / blockDim.x),
+      blockDim: blockDim.x,
+      threadIdx: globalIndex % blockDim.x,
+    });
+  }
+  if (written.size === 0) fail('target kernel produced no output writes');
+  const plainValues = outputValues.map((value) => Number(value.value));
+  return {
+    schemaVersion: 'synthi.gpu_hmr.independent_semantic_oracle_result.v1',
+    dataType,
+    elementCount: outputValues.length,
+    shape: [outputValues.length],
+    byteOrder: 'little_endian',
+    tolerance: dataType === 'float32' ? 0.00001 : 0,
+    expectedValues: plainValues,
+    expectedBytes: encode(outputValues, dataType),
+    semanticProgram: {
+      language: 'hip-cpp',
+      entryPoint,
+      parser: 'strict-token-ast-v1',
+      inputParameter: inputBinding.sourceParameter.name,
+      outputParameter: outputBinding.sourceParameter.name,
+      sourceDataType: dataType,
+      selectedBody: kernel.bodyTokens.map((token) => token.value).join(' '),
+      gridDim,
+      blockDim,
+      invocationCount,
+      outputWriteCount: written.size,
+    },
+  };
+}
+
+function semanticOracleImplementationBytes() {
+  return Buffer.from(`export default ${hipSemanticOracleImplementation.toString()};\n`, 'utf8');
+}
+
+function semanticOracleCodeHash() {
+  return sha256Bytes(semanticOracleImplementationBytes());
+}
+
+function buildHipLaunchObservation(profile) {
+  const resources = profile.buffers.all.map((buffer) => {
+    const bytes = buffer.values.length > 0
+      ? encodeNumericValues(buffer.values, buffer.dataType)
+      : Buffer.alloc(buffer.byteLength);
+    return {
+      name: buffer.name,
+      role: buffer.role,
+      dataType: buffer.dataType,
+      byteLength: buffer.byteLength,
+      initialBytes: Array.from(bytes),
+      initialBytesHash: sha256Bytes(bytes),
+    };
+  });
+  return {
+    resources,
+    parameters: profile.abi.params.map((param) => (
+      param.launch_kind === 'buffer'
+        ? { name: param.name, kind: 'buffer', buffer: param.buffer, dataType: param.data_type }
+        : { name: param.name, kind: 'scalar', dataType: param.scalar_type, value: param.scalar_value }
+    )),
+    gridDim: profile.launch.gridDim,
+    blockDim: profile.launch.blockDim,
+    sharedMemBytes: profile.launch.sharedMemBytes,
+    stream: profile.launch.stream,
+  };
+}
+
+function hipResourceTraceFromLaunchObservation({ launchObservation, planHash }) {
+  if (!/^sha256:[0-9a-f]{64}$/u.test(planHash ?? '')) {
+    throw new Error('HIP resource trace requires a content-addressed probe plan');
+  }
+  const resources = firstArray(launchObservation?.resources).map((resource) => {
+    const initialBytes = firstArray(resource?.initialBytes).map(Number);
+    const initialBytesHash = sha256Bytes(Buffer.from(initialBytes));
+    if (
+      !firstText(resource?.name)
+      || initialBytes.length !== resource.byteLength
+      || initialBytesHash !== resource.initialBytesHash
+    ) {
+      throw new Error('HIP resource trace contains an invalid launch resource');
+    }
+    return {
+      name: resource.name,
+      role: resource.role,
+      dataType: resource.dataType,
+      byteLength: resource.byteLength,
+      initialBytes,
+      initialBytesHash,
+      ...(firstText(resource.resourceId) ? { resourceId: resource.resourceId } : {}),
+      ...(firstText(resource.devicePointer) ? { devicePointer: resource.devicePointer } : {}),
+    };
+  });
+  const parameters = firstArray(launchObservation?.parameters).map((parameter, index) => ({
+    ...parameter,
+    index: nonNegativeInteger(parameter?.index, index),
+  }));
+  const material = {
+    schemaVersion: 'synthi.gpu_hmr.hip_runtime_resource_trace.v1',
+    planHash,
+    resources,
+    parameters,
+  };
+  return {
+    ...material,
+    resourceTraceHash: sha256Text(stableJson(material)),
+  };
+}
+
+function bindHipRuntimeInvocationEvidence({
+  runtimeTrace,
+  planHash,
+  observedReadbackHash,
+  expectedKernelIdentity,
+  expectedArtifactHash,
+  epoch = '2',
+}) {
+  rejectConflictingSnakeCamelAliases(runtimeTrace, 'HIP native runtime trace');
+  if (!/^sha256:[0-9a-f]{64}$/u.test(observedReadbackHash ?? '')) {
+    throw new Error('HIP runtime invocation evidence requires the observed readback hash');
+  }
+  const dispatch = oneTraceFact(
+    runtimeTrace?.dispatchEvents,
+    (event) => String(event?.epoch) === String(epoch),
+    `epoch-${epoch} dispatch`,
+  );
+  const dispatchId = authoritativeText(dispatch, ['id'], `epoch-${epoch} dispatch.id`, { required: true });
+  const output = oneTraceFact(
+    runtimeTrace?.outputEvents,
+    (event) => authoritativeText(
+      event,
+      ['after_dispatch_id', 'afterDispatchId'],
+      `epoch-${epoch} output.afterDispatchId`,
+    ) === dispatchId,
+    `output for dispatch ${dispatchId}`,
+  );
+  const loader = oneTraceFact(
+    runtimeTrace?.loaderEvents,
+    (event) => String(event?.epoch) === String(epoch),
+    `epoch-${epoch} loader`,
+  );
+  const symbol = oneTraceFact(
+    runtimeTrace?.symbolEvents,
+    (event) => String(event?.epoch) === String(epoch),
+    `epoch-${epoch} symbol resolution`,
+  );
+  const requiredText = (record, keys, field) => authoritativeText(record, keys, field, { required: true });
+  const loaderId = requiredText(loader, ['id'], `epoch-${epoch} loader.id`);
+  const symbolId = requiredText(symbol, ['id'], `epoch-${epoch} symbol.id`);
+  const outputId = requiredText(output, ['id'], `epoch-${epoch} output.id`);
+  const artifactHash = requiredText(dispatch, ['artifact_hash', 'artifactHash'], `epoch-${epoch} dispatch.artifactHash`);
+  const loaderArtifactHash = requiredText(loader, ['artifact_hash', 'artifactHash'], `epoch-${epoch} loader.artifactHash`);
+  const outputResourceId = requiredText(output, ['output_target_id', 'outputTargetId'], `epoch-${epoch} output.outputTargetId`);
+  const dispatchOutputResourceId = requiredText(dispatch, ['output_target_id', 'outputTargetId'], `epoch-${epoch} dispatch.outputTargetId`);
+  const loadedBytesHash = requiredText(loader, ['loaded_bytes_hash', 'loadedBytesHash'], `epoch-${epoch} loader.loadedBytesHash`);
+  const requestedSymbol = requiredText(
+    symbol,
+    ['requested_symbol', 'requestedSymbol', 'kernel_name', 'kernelName'],
+    `epoch-${epoch} symbol.requestedSymbol`,
+  );
+  const resolvedSymbol = requiredText(symbol, ['resolved_symbol', 'resolvedSymbol'], `epoch-${epoch} symbol.resolvedSymbol`);
+  const dispatchSymbol = requiredText(
+    dispatch,
+    ['resolved_symbol', 'resolvedSymbol', 'kernel_name', 'kernelName'],
+    `epoch-${epoch} dispatch.resolvedSymbol`,
+  );
+  const functionId = requiredText(symbol, ['function_id', 'functionId'], `epoch-${epoch} symbol.functionId`);
+  const dispatchFunctionId = requiredText(dispatch, ['function_id', 'functionId'], `epoch-${epoch} dispatch.functionId`);
+  const resolvedFunctionAddress = requiredText(
+    symbol,
+    ['resolved_function_address', 'resolvedFunctionAddress'],
+    `epoch-${epoch} symbol.resolvedFunctionAddress`,
+  );
+  const dispatchFunctionAddress = requiredText(
+    dispatch,
+    ['resolved_function_address', 'resolvedFunctionAddress'],
+    `epoch-${epoch} dispatch.resolvedFunctionAddress`,
+  );
+  const outputReadbackHash = requiredText(output, ['readback_hash', 'readbackHash'], `epoch-${epoch} output.readbackHash`);
+  const outputReadbackByteLength = authoritativeNumber(
+    output,
+    ['readback_byte_length', 'readbackByteLength'],
+    `epoch-${epoch} output.readbackByteLength`,
+    { required: true },
+  );
+  const expectedFunctionId = `hip-function:${sha256Text(stableJson({
+    loadedBytesHash,
+    requestedSymbol,
+    resolvedFunctionAddress,
+    resolvedSymbol,
+  }))}`;
+  if (
+    artifactHash !== loaderArtifactHash
+    || outputResourceId !== dispatchOutputResourceId
+    || artifactHash !== expectedArtifactHash
+    || loadedBytesHash !== expectedArtifactHash
+    || authoritativeNumber(loader, ['loaded_byte_length', 'loadedByteLength'], `epoch-${epoch} loader.loadedByteLength`, { required: true }) <= 0
+    || requestedSymbol !== expectedKernelIdentity
+    || resolvedSymbol !== expectedKernelIdentity
+    || dispatchSymbol !== expectedKernelIdentity
+    || dispatchFunctionId !== functionId
+    || functionId !== expectedFunctionId
+    || !/^0x[0-9a-f]+$/u.test(resolvedFunctionAddress)
+    || resolvedFunctionAddress === '0x0'
+    || dispatchFunctionAddress !== resolvedFunctionAddress
+    || outputReadbackHash !== observedReadbackHash
+    || !Number.isSafeInteger(outputReadbackByteLength)
+    || outputReadbackByteLength <= 0
+  ) {
+    throw new Error('HIP runtime invocation evidence disagrees on loaded bytes, symbol, function address, dispatch, artifact, output resource, or readback');
+  }
+  const invocation = objectOrEmpty(runtimeTrace?.probeInvocation);
+  if (invocation.producer !== 'native_hip_module_runtime_probe') {
+    throw new Error('HIP runtime invocation evidence is missing an independent native probe producer');
+  }
+  const resourceTrace = hipResourceTraceFromLaunchObservation({
+    launchObservation: { resources: invocation.resources, parameters: invocation.parameters },
+    planHash,
+  });
+  const resourcesById = new Map();
+  const pointers = new Set();
+  for (const resource of resourceTrace.resources) {
+    if (
+      !firstText(resource.resourceId)
+      || !firstText(resource.devicePointer)
+      || resourcesById.has(resource.resourceId)
+      || pointers.has(resource.devicePointer)
+    ) throw new Error('HIP native resource trace requires unique resource IDs and device pointers');
+    resourcesById.set(resource.resourceId, resource);
+    pointers.add(resource.devicePointer);
+  }
+  for (const parameter of resourceTrace.parameters) {
+    if (!firstText(parameter.name) || !firstText(parameter.argumentAddress)) {
+      throw new Error('HIP native parameter trace requires names and argument addresses');
+    }
+    if (parameter.kind === 'buffer') {
+      const resource = resourcesById.get(parameter.resourceId);
+      if (!resource || resource.devicePointer !== parameter.devicePointer) {
+        throw new Error(`HIP pointer parameter ${parameter.name} is not bound to a traced runtime resource`);
+      }
+    } else if (
+      parameter.kind !== 'scalar'
+      || !Number.isFinite(Number(parameter.value))
+      || !/^sha256:[0-9a-f]{64}$/u.test(parameter.encodedBytesHash ?? '')
+    ) {
+      throw new Error(`HIP scalar parameter ${parameter.name} is missing runtime value evidence`);
+    }
+  }
+  const parameterTraceHash = sha256Text(stableJson(resourceTrace.parameters));
+  const outputRuntimeResources = resourceTrace.resources.filter((resource) => resource.name === outputResourceId);
+  if (outputRuntimeResources.length !== 1) {
+    throw new Error('HIP readback identity does not select exactly one traced runtime resource');
+  }
+  const [outputRuntimeResource] = outputRuntimeResources;
+  const invocationFunctionId = requiredText(invocation, ['functionId', 'function_id'], 'probeInvocation.functionId');
+  const invocationFunctionAddress = requiredText(
+    invocation,
+    ['resolvedFunctionAddress', 'resolved_function_address'],
+    'probeInvocation.resolvedFunctionAddress',
+  );
+  if (
+    requiredText(invocation, ['planHash', 'plan_hash'], 'probeInvocation.planHash') !== planHash
+    || requiredText(invocation, ['resourceTraceHash', 'resource_trace_hash'], 'probeInvocation.resourceTraceHash') !== resourceTrace.resourceTraceHash
+    || requiredText(invocation, ['parameterTraceHash', 'parameter_trace_hash'], 'probeInvocation.parameterTraceHash') !== parameterTraceHash
+    || requiredText(invocation, ['dispatchId', 'dispatch_id'], 'probeInvocation.dispatchId') !== dispatchId
+    || requiredText(invocation, ['artifactHash', 'artifact_hash'], 'probeInvocation.artifactHash') !== artifactHash
+    || requiredText(invocation, ['loadedBytesHash', 'loaded_bytes_hash'], 'probeInvocation.loadedBytesHash') !== loadedBytesHash
+    || requiredText(invocation, ['kernelIdentity', 'kernel_identity'], 'probeInvocation.kernelIdentity') !== expectedKernelIdentity
+    || requiredText(invocation, ['resolvedSymbol', 'resolved_symbol'], 'probeInvocation.resolvedSymbol') !== resolvedSymbol
+    || invocationFunctionId !== functionId
+    || invocationFunctionAddress !== resolvedFunctionAddress
+    || requiredText(invocation, ['loaderEventId', 'loader_event_id'], 'probeInvocation.loaderEventId') !== loaderId
+    || requiredText(invocation, ['symbolEventId', 'symbol_event_id'], 'probeInvocation.symbolEventId') !== symbolId
+    || requiredText(invocation, ['outputEventId', 'output_event_id'], 'probeInvocation.outputEventId') !== outputId
+    || requiredText(invocation, ['outputResourceId', 'output_resource_id'], 'probeInvocation.outputResourceId') !== outputResourceId
+    || requiredText(invocation, ['outputRuntimeResourceId', 'output_runtime_resource_id'], 'probeInvocation.outputRuntimeResourceId') !== outputRuntimeResource.resourceId
+    || requiredText(invocation, ['outputDevicePointer', 'output_device_pointer'], 'probeInvocation.outputDevicePointer') !== outputRuntimeResource.devicePointer
+    || requiredText(invocation, ['observedReadbackHash', 'observed_readback_hash'], 'probeInvocation.observedReadbackHash') !== observedReadbackHash
+    || authoritativeNumber(invocation, ['readbackByteLength', 'readback_byte_length'], 'probeInvocation.readbackByteLength', { required: true }) !== outputReadbackByteLength
+    || outputReadbackByteLength !== outputRuntimeResource.byteLength
+    || requiredText(dispatch, ['resource_trace_hash', 'resourceTraceHash'], `epoch-${epoch} dispatch.resourceTraceHash`) !== resourceTrace.resourceTraceHash
+    || requiredText(dispatch, ['parameter_trace_hash', 'parameterTraceHash'], `epoch-${epoch} dispatch.parameterTraceHash`) !== parameterTraceHash
+  ) {
+    throw new Error('HIP native invocation trace is not exactly bound to the loader, symbol, parameters, resources, dispatch, and readback');
+  }
+  return invocation;
+}
+
+function hipRuntimeSessionId(runtimeTrace) {
+  const runtimeSessionId = firstText(runtimeTrace?.runtimeSessionId, runtimeTrace?.runtime_session_id);
+  if (!runtimeSessionId) throw new Error('HIP semantic oracle requires an observed runtime session id');
+  return runtimeSessionId;
+}
+
+function canonicalRuntimeTraceBytes(runtimeTrace) {
+  return Buffer.from(stableJson(runtimeTrace), 'utf8');
+}
+
+function canonicalRuntimeTraceHash(runtimeTrace) {
+  return sha256Bytes(canonicalRuntimeTraceBytes(runtimeTrace));
+}
+
+async function persistCanonicalRuntimeTrace({ outDir, targetId, runtimeTrace }) {
+  const tracePath = path.join(outDir, `${safeSlug(targetId)}-canonical-runtime-trace.json`);
+  const bytes = canonicalRuntimeTraceBytes(runtimeTrace);
+  const hash = sha256Bytes(bytes);
+  await writeFile(tracePath, bytes);
+  if (sha256Bytes(await readFile(tracePath)) !== hash) {
+    throw new Error('HIP canonical runtime trace artifact changed after persistence');
+  }
+  return { path: tracePath, hash };
+}
+
+function oneTraceFact(items, predicate, context) {
+  const matches = firstArray(items).filter(predicate);
+  if (matches.length !== 1) {
+    throw new Error(`HIP observed binding requires exactly one ${context}; found ${matches.length}`);
+  }
+  return matches[0];
+}
+
+function deriveHipObservedBinding({
+  runtimeTrace,
+  traceArtifactHash,
+  planHash,
+  resourceTraceHash = null,
+  observedReadbackHash = null,
+  epoch = '2',
+  expectedArtifactHash = null,
+}) {
+  rejectConflictingSnakeCamelAliases(runtimeTrace, 'HIP observed runtime trace');
+  const canonicalHash = canonicalRuntimeTraceHash(runtimeTrace);
+  if (traceArtifactHash !== canonicalHash) {
+    throw new Error('HIP runtime trace artifact hash does not match the observed trace bytes');
+  }
+  if (!/^sha256:[0-9a-f]{64}$/u.test(planHash ?? '')) {
+    throw new Error('HIP observed binding requires a content-addressed probe plan hash');
+  }
+  if (!/^sha256:[0-9a-f]{64}$/u.test(resourceTraceHash ?? '')) {
+    throw new Error('HIP observed binding requires a content-addressed resource trace');
+  }
+  const dispatch = oneTraceFact(
+    runtimeTrace?.dispatchEvents,
+    (event) => String(event?.epoch) === String(epoch),
+    `epoch-${epoch} dispatch`,
+  );
+  const dispatchId = firstText(dispatch.id);
+  if (!dispatchId) throw new Error('HIP observed dispatch id is missing');
+  const output = oneTraceFact(
+    runtimeTrace?.outputEvents,
+    (event) => firstText(event?.after_dispatch_id, event?.afterDispatchId) === dispatchId,
+    `output for dispatch ${dispatchId}`,
+  );
+  const loader = oneTraceFact(
+    runtimeTrace?.loaderEvents,
+    (event) => String(event?.epoch) === String(epoch),
+    `epoch-${epoch} loader`,
+  );
+  const backend = firstText(runtimeTrace?.device?.backend);
+  const outputTargetId = firstText(dispatch.output_target_id, dispatch.outputTargetId);
+  const outputResourceId = firstText(output.output_target_id, output.outputTargetId);
+  const artifactHashes = [
+    firstText(loader.artifact_hash, loader.artifactHash),
+    firstText(dispatch.artifact_hash, dispatch.artifactHash),
+    firstText(output.artifact_hash, output.artifactHash),
+  ];
+  if (!backend || !outputTargetId || !outputResourceId || artifactHashes.some((value) => !value)) {
+    throw new Error('HIP runtime trace is missing backend, output-resource, or artifact facts');
+  }
+  if (outputTargetId !== outputResourceId) {
+    throw new Error('HIP dispatch and readback output resources differ');
+  }
+  if (new Set(artifactHashes).size !== 1) {
+    throw new Error('HIP loader, dispatch, and output artifact hashes differ');
+  }
+  if (expectedArtifactHash && artifactHashes[0] !== expectedArtifactHash) {
+    throw new Error('HIP observed artifact hash does not match the verified HSACO');
+  }
+  const boundReadbackHash = observedReadbackHash ?? sha256Text(stableJson({
+    outputEvent: output,
+    outputTargetId: outputResourceId,
+  }));
+  if (!/^sha256:[0-9a-f]{64}$/u.test(boundReadbackHash)) {
+    throw new Error('HIP observed binding requires a content-addressed readback identity');
+  }
+  const invocation = objectOrEmpty(runtimeTrace?.probeInvocation);
+  if (observedReadbackHash !== null && Object.keys(invocation).length === 0) {
+    throw new Error('HIP observed readback is not bound to runtime invocation evidence');
+  }
+  if (Object.keys(invocation).length > 0 && (
+    invocation.planHash !== planHash
+    || invocation.resourceTraceHash !== resourceTraceHash
+    || invocation.dispatchId !== dispatchId
+    || invocation.artifactHash !== artifactHashes[0]
+    || invocation.outputResourceId !== outputResourceId
+    || invocation.observedReadbackHash !== boundReadbackHash
+  )) {
+    throw new Error('HIP runtime invocation evidence does not match dispatch, artifact, resource, or readback facts');
+  }
+  return {
+    artifactAfterHash: artifactHashes[0],
+    outputTargetId,
+    outputResourceId,
+    backend,
+    runtimeSessionId: hipRuntimeSessionId(runtimeTrace),
+    dispatchId,
+    traceArtifactHash,
+    resourceOrPlanHash: planHash,
+    resourceTraceHash,
+    observedReadbackHash: boundReadbackHash,
+  };
+}
+
+function buildHipSemanticOracleRequest({
+  profile,
+  runMode,
+  artifactAfterHash,
+  artifactSource = profile.afterSource,
+  artifactSourceHash = profile.afterHash,
+  runtimeTrace,
+  launchObservation,
+  compiled,
+  planHash = null,
+  observedReadbackHash = null,
+  traceArtifactHash = canonicalRuntimeTraceHash(runtimeTrace),
+  trustedOracleImplementationHash = semanticOracleCodeHash(),
+  epoch = '2',
+}) {
+  rejectConflictingSnakeCamelAliases(runtimeTrace, 'HIP semantic request runtime trace');
+  rejectConflictingSnakeCamelAliases(launchObservation, 'HIP semantic request launch observation');
+  const effectivePlanHash = planHash ?? sha256Text(stableJson({
+    kind: 'hip-semantic-planning-input',
+    artifactAfterHash,
+    launchObservation,
+  }));
+  const plannedResourceTrace = hipResourceTraceFromLaunchObservation({
+    launchObservation,
+    planHash: effectivePlanHash,
+  });
+  const runtimeInvocation = observedReadbackHash === null
+    ? null
+    : bindHipRuntimeInvocationEvidence({
+      runtimeTrace,
+      planHash: effectivePlanHash,
+      observedReadbackHash,
+      expectedKernelIdentity: profile.kernel.name,
+      expectedArtifactHash: artifactAfterHash,
+      epoch,
+    });
+  const boundResourceTrace = runtimeInvocation
+    ? hipResourceTraceFromLaunchObservation({
+      launchObservation: {
+        resources: runtimeInvocation.resources,
+        parameters: runtimeInvocation.parameters,
+      },
+      planHash: effectivePlanHash,
+    })
+    : plannedResourceTrace;
+  const observedBinding = deriveHipObservedBinding({
+    runtimeTrace,
+    traceArtifactHash,
+    planHash: effectivePlanHash,
+    resourceTraceHash: boundResourceTrace.resourceTraceHash,
+    observedReadbackHash,
+    epoch,
+    expectedArtifactHash: artifactAfterHash,
+  });
+  const dispatch = oneTraceFact(
+    runtimeTrace?.dispatchEvents,
+    (event) => String(event?.epoch) === String(epoch),
+    `epoch-${epoch} dispatch`,
+  );
+  const gridDim = objectOrEmpty(dispatch.grid_dim ?? dispatch.gridDim);
+  const blockDim = objectOrEmpty(dispatch.block_dim ?? dispatch.blockDim);
+  if (!gridDim.x || !blockDim.x) {
+    throw new Error('HIP semantic request requires observed dispatch dimensions');
+  }
+  const compileManifestHash = compiled?.compileManifestHash;
+  const artifactBindingHash = compileManifestHash
+    ? sha256Text(stableJson({
+      sourceHash: artifactSourceHash,
+      compiledArtifactHash: artifactAfterHash,
+      compileManifestHash,
+      entryPoint: profile.kernel.entryPoint,
+    }))
+    : null;
+  return {
+    schemaVersion: INDEPENDENT_SEMANTIC_ORACLE_REQUEST_SCHEMA,
+    binding: {
+      projectId: profile.targetId,
+      editId: runMode.edit_id,
+      targetId: runMode.target_id,
+      requestId: runMode.request_id,
+      artifactSourceHash,
+      artifactBindingHash,
+      compileManifestHash,
+      ...observedBinding,
+      trustedOracleImplementationHash,
+    },
+    artifact: {
+      kind: 'hip-source',
+      source: artifactSource,
+      sourceHash: artifactSourceHash,
+      entryPoint: profile.kernel.entryPoint,
+      compiledArtifactHash: artifactAfterHash,
+      compileManifest: compiled?.compileManifest ?? null,
+      compileManifestHash: compileManifestHash ?? null,
+      sourceArtifactBindingHash: artifactBindingHash,
+    },
+    resources: runtimeInvocation?.resources ?? plannedResourceTrace.resources,
+    launch: {
+      api: firstText(dispatch.launch_api, dispatch.launchApi),
+      dispatchId: observedBinding.dispatchId,
+      gridDim,
+      blockDim,
+      sharedMemBytes: nonNegativeInteger(dispatch.shared_mem_bytes ?? dispatch.sharedMemBytes, null),
+      stream: firstText(dispatch.stream),
+      parameters: runtimeInvocation?.parameters ?? plannedResourceTrace.parameters,
+      planHash: effectivePlanHash,
+      resourceTraceHash: boundResourceTrace.resourceTraceHash,
+    },
+  };
+}
+
+function validateSemanticOracleRequest(request) {
+  rejectConflictingSnakeCamelAliases(request, 'HIP semantic oracle request');
+  if (request?.schemaVersion !== INDEPENDENT_SEMANTIC_ORACLE_REQUEST_SCHEMA) {
+    throw new Error('HIP semantic oracle request schema is invalid');
+  }
+  if (request.binding?.backend !== 'hip') {
+    throw new Error('HIP semantic oracle request backend binding is invalid');
+  }
+  for (const field of SEMANTIC_ORACLE_BINDING_FIELDS) {
+    if (!firstText(request.binding?.[field])) {
+      throw new Error(`HIP semantic oracle binding ${field} is missing`);
+    }
+  }
+  for (const field of [
+    'artifactAfterHash',
+    'artifactSourceHash',
+    'artifactBindingHash',
+    'compileManifestHash',
+    'traceArtifactHash',
+    'resourceOrPlanHash',
+    'resourceTraceHash',
+    'observedReadbackHash',
+    'trustedOracleImplementationHash',
+  ]) {
+    if (!/^sha256:[0-9a-f]{64}$/u.test(request.binding[field])) {
+      throw new Error(`HIP semantic oracle binding ${field} is not a sha256 identity`);
+    }
+  }
+  if (sha256Text(request.artifact?.source ?? '') !== request.artifact?.sourceHash) {
+    throw new Error('HIP semantic oracle artifact source hash mismatch');
+  }
+  if (
+    request.binding.targetId !== request.binding.projectId
+    || request.binding.artifactSourceHash !== request.artifact.sourceHash
+  ) {
+    throw new Error('HIP semantic oracle target or source identity binding mismatch');
+  }
+  if (request.artifact?.compiledArtifactHash !== request.binding.artifactAfterHash) {
+    throw new Error('HIP semantic oracle source/compiled artifact binding mismatch');
+  }
+  const compileManifest = request.artifact?.compileManifest;
+  if (
+    !compileManifest
+    || sha256Text(stableJson(compileManifest)) !== request.artifact.compileManifestHash
+    || request.artifact.compileManifestHash !== request.binding.compileManifestHash
+  ) {
+    throw new Error('HIP semantic oracle compile manifest is missing or content mismatched');
+  }
+  const boundSources = firstArray(compileManifest.sourceInputs)
+    .filter((entry) => entry?.sha256 === request.artifact.sourceHash);
+  const boundHsacos = firstArray(compileManifest.outputs)
+    .filter((entry) => entry?.sha256 === request.artifact.compiledArtifactHash);
+  if (
+    compileManifest.entryPoint !== request.artifact.entryPoint
+    || boundSources.length !== 1
+    || boundHsacos.length !== 1
+  ) {
+    throw new Error('HIP semantic oracle compile manifest does not bind the exact source, entry, and HSACO');
+  }
+  const artifactBindingHash = sha256Text(stableJson({
+    sourceHash: request.artifact.sourceHash,
+    compiledArtifactHash: request.artifact.compiledArtifactHash,
+    compileManifestHash: request.artifact.compileManifestHash,
+    entryPoint: request.artifact.entryPoint,
+  }));
+  if (
+    artifactBindingHash !== request.artifact.sourceArtifactBindingHash
+    || artifactBindingHash !== request.binding.artifactBindingHash
+  ) {
+    throw new Error('HIP semantic oracle source-to-HSACO binding hash mismatch');
+  }
+  if (
+    request.launch?.dispatchId !== request.binding.dispatchId
+    || request.launch?.planHash !== request.binding.resourceOrPlanHash
+    || request.launch?.resourceTraceHash !== request.binding.resourceTraceHash
+  ) {
+    throw new Error('HIP semantic oracle dispatch/plan binding mismatch');
+  }
+  if (!Array.isArray(request.resources) || request.resources.length === 0) {
+    throw new Error('HIP semantic oracle observed resources are missing');
+  }
+  const resourceNames = new Set();
+  for (const resource of request.resources) {
+    const declaredBytes = firstArray(resource.initialBytes);
+    if (
+      !firstText(resource.name)
+      || resourceNames.has(resource.name)
+      || declaredBytes.some((value) => !Number.isInteger(value) || value < 0 || value > 255)
+    ) {
+      throw new Error('HIP semantic oracle resources must have unique names and byte-valued contents');
+    }
+    resourceNames.add(resource.name);
+    const bytes = Buffer.from(declaredBytes);
+    if (
+      bytes.length !== resource.byteLength
+      || sha256Bytes(bytes) !== resource.initialBytesHash
+    ) {
+      throw new Error(`HIP semantic oracle input bytes mismatch for ${resource.name}`);
+    }
+  }
+  const recomputedResourceTrace = hipResourceTraceFromLaunchObservation({
+    launchObservation: {
+      resources: request.resources,
+      parameters: firstArray(request.launch?.parameters),
+    },
+    planHash: request.launch.planHash,
+  });
+  if (recomputedResourceTrace.resourceTraceHash !== request.binding.resourceTraceHash) {
+    throw new Error('HIP semantic oracle resources and parameters do not match the bound resource trace');
+  }
+}
+
+async function executeSemanticOracle(request, implementationBytes = semanticOracleImplementationBytes()) {
+  validateSemanticOracleRequest(request);
+  const implementationHash = sha256Bytes(implementationBytes);
+  if (implementationHash !== request.binding.trustedOracleImplementationHash) {
+    throw new Error('HIP semantic oracle implementation is not the trusted request-bound implementation');
+  }
+  const moduleUrl = `data:text/javascript;base64,${implementationBytes.toString('base64')}#${implementationHash.slice(-16)}`;
+  const oracleModule = await import(moduleUrl);
+  const result = await oracleModule.default(JSON.parse(JSON.stringify(request)));
+  if (
+    result?.schemaVersion !== INDEPENDENT_SEMANTIC_ORACLE_RESULT_SCHEMA
+    || !Array.isArray(result.expectedValues)
+    || !Array.isArray(result.expectedBytes)
+    || result.expectedValues.length === 0
+  ) {
+    throw new Error('HIP semantic oracle returned an invalid result');
+  }
+  const expectedBytes = Buffer.from(result.expectedBytes);
+  const canonicalBytes = encodeNumericValues(result.expectedValues, result.dataType);
+  if (!expectedBytes.equals(canonicalBytes)) {
+    throw new Error('HIP semantic oracle result bytes do not match its values');
+  }
+  const semanticRequestHash = sha256Text(stableJson(request));
+  const bindingReceipt = {
+    ...request.binding,
+    semanticRequestHash,
+    oracleImplementationHash: implementationHash,
+  };
+  return {
+    ...result,
+    implementationSchemaVersion: COMPUTE_SEMANTIC_ORACLE_IDENTITY_SCHEMA_VERSION,
+    implementationHash,
+    requestHash: semanticRequestHash,
+    semanticRequestHash,
+    bindingHash: sha256Text(stableJson(request.binding)),
+    bindingReceipt,
+    bindingReceiptHash: sha256Text(stableJson(bindingReceipt)),
+    expectedRawHash: sha256Bytes(expectedBytes),
+  };
+}
+
+async function verifyIndependentSemanticOracle({
+  implementationBytes,
+  request,
+  execution,
+  observedBytes,
+  observedBinding,
+}) {
+  const failures = [];
+  const implementationHash = sha256Bytes(implementationBytes);
+  const semanticRequestHash = sha256Text(stableJson(request));
+  if (execution?.implementationHash !== implementationHash) {
+    failures.push('semantic_oracle_implementation_hash_mismatch');
+  }
+  if (
+    request?.binding?.trustedOracleImplementationHash !== implementationHash
+    || execution?.bindingReceipt?.oracleImplementationHash !== implementationHash
+  ) {
+    failures.push('semantic_oracle_trusted_implementation_binding_mismatch');
+  }
+  if (
+    execution?.requestHash !== semanticRequestHash
+    || execution?.semanticRequestHash !== semanticRequestHash
+    || execution?.bindingReceipt?.semanticRequestHash !== semanticRequestHash
+  ) {
+    failures.push('semantic_oracle_request_hash_mismatch');
+  }
+  for (const field of OBSERVED_RUNTIME_BINDING_FIELDS) {
+    if (request?.binding?.[field] !== observedBinding?.[field]) {
+      failures.push(`semantic_oracle_binding_${field}_mismatch`);
+    }
+  }
+  for (const field of SEMANTIC_ORACLE_BINDING_FIELDS) {
+    if (request?.binding?.[field] !== execution?.bindingReceipt?.[field]) {
+      failures.push(`semantic_oracle_receipt_${field}_mismatch`);
+    }
+  }
+  if (
+    execution?.bindingReceiptHash !== sha256Text(stableJson(execution?.bindingReceipt))
+    || SEMANTIC_ORACLE_RECEIPT_FIELDS.some((field) => !firstText(execution?.bindingReceipt?.[field]))
+  ) {
+    failures.push('semantic_oracle_binding_receipt_invalid');
+  }
+  let comparison = { matched: false, mismatches: [], failures: [] };
+  try {
+    comparison = verifyExactTypedReadback({
+      observedBytes,
+      expectedValues: execution?.expectedValues,
+      expectedBytes: execution?.expectedBytes,
+      expectedRawHash: execution?.expectedRawHash,
+      dataType: execution?.dataType,
+    });
+    failures.push(...comparison.failures);
+  } catch (error) {
+    failures.push(`semantic_oracle_observed_output_verification_failed:${String(error?.message ?? error)}`);
+  }
+  if (comparison.matched !== true) failures.push('semantic_oracle_observed_output_mismatch');
+  return {
+    schemaVersion: 'synthi.gpu_hmr.independent_semantic_oracle_verification.v1',
+    accepted: failures.length === 0,
+    implementationHash,
+    requestHash: semanticRequestHash,
+    bindingHash: sha256Text(stableJson(request?.binding)),
+    expectedRawHash: execution?.expectedRawHash ?? null,
+    observedRawHash: sha256Bytes(Buffer.from(observedBytes)),
+    mismatchCount: comparison.mismatches.length,
+    maxAbsDelta: null,
+    verificationMethod: 'independent_dataview_typed_byte_comparison_without_oracle_execution',
+    failures,
+  };
+}
+
+function buildSemanticOracleIdentity(binding) {
+  for (const field of SEMANTIC_ORACLE_BINDING_FIELDS) {
+    if (!firstText(binding?.[field])) {
+      throw new Error(`HIP semantic oracle identity is missing ${field}`);
+    }
+  }
+  const identity = {
+    schema_version: COMPUTE_SEMANTIC_ORACLE_IDENTITY_SCHEMA_VERSION,
+    backend: binding.backend,
+    project_id: binding.projectId,
+    edit_id: binding.editId,
+    target_id: binding.targetId,
+    request_id: binding.requestId,
+    runtime_session_id: binding.runtimeSessionId,
+    dispatch_id: binding.dispatchId,
+    output_target_id: binding.outputTargetId,
+    output_resource_id: binding.outputResourceId,
+    artifact_after_hash: binding.artifactAfterHash,
+    artifact_source_hash: binding.artifactSourceHash,
+    artifact_binding_hash: binding.artifactBindingHash,
+    compile_manifest_hash: binding.compileManifestHash,
+    trace_artifact_hash: binding.traceArtifactHash,
+    resource_or_plan_hash: binding.resourceOrPlanHash,
+    resource_trace_hash: binding.resourceTraceHash,
+    observed_readback_hash: binding.observedReadbackHash,
+    trusted_oracle_implementation_hash: binding.trustedOracleImplementationHash,
+  };
+  return {
+    ...identity,
+    identity_hash: sha256Text(stableJson(identity)),
+  };
+}
+
+function semanticOracleIdentityVerified(identity, binding) {
+  try {
+    return stableJson(identity) === stableJson(buildSemanticOracleIdentity(binding));
+  } catch {
+    return false;
+  }
+}
+
+function buildExpectedOutputContract({ semanticOracle }) {
+  const { request, execution } = semanticOracle;
+  return buildComputeExpectedOutputContract({
+    comparisonMode: 'numeric_tolerance',
+    dtype: execution.dataType,
+    shape: execution.shape,
+    elementCount: execution.elementCount,
+    byteOrder: execution.byteOrder,
+    tolerance: execution.tolerance,
+    expectedValues: execution.expectedValues,
+    binding: {
+      projectId: request.binding.projectId,
+      editId: request.binding.editId,
+      artifactAfterHash: request.binding.artifactAfterHash,
+      outputTargetId: request.binding.outputTargetId,
+      oracleCodeHash: execution.implementationHash,
+    },
+    evidenceRefs: [
+      request.artifact.sourceHash,
+      execution.requestHash,
+      execution.bindingHash,
+      `runtime:hip-module:semantic-oracle:${execution.implementationHash}`,
+      ...request.resources.map((resource) => resource.initialBytesHash),
+    ],
+  });
 }
 
 function modelRegistryStatus(model) {
@@ -538,6 +2314,7 @@ function afterEpochTraceEvents(runtimeTrace) {
 
 function normalizeProfileBuffer(buffer, field) {
   const raw = objectOrEmpty(buffer);
+  rejectConflictingSnakeCamelAliases(raw, field);
   const dataType = normalizeDataType(raw.dataType ?? raw.data_type, `${field}.dataType`);
   const values = Array.isArray(raw.values)
     ? normalizeNumericValues(raw.values, `${field}.values`, dataType)
@@ -547,9 +2324,15 @@ function normalizeProfileBuffer(buffer, field) {
     values.length > 0 ? values.length * byteWidthForDataType(dataType) : null,
   );
   if (!byteLength) throw new Error(`${field}.byteLength is required when values are not declared`);
+  const name = authoritativeText(raw, ['name'], `${field}.resourceIdentity`, {
+    required: true,
+  });
+  const role = authoritativeText(raw, ['role', 'resourceRole', 'resource_role'], `${field}.resourceRole`, {
+    required: true,
+  });
   return {
-    name: firstText(raw.name) ?? field,
-    role: firstText(raw.role) ?? 'storage',
+    name,
+    role,
     dataType,
     byteLength,
     values,
@@ -573,7 +2356,11 @@ function scalarDataTypeFromParam(param) {
 }
 
 function bufferForParam(param, buffers) {
-  const explicitName = firstText(param.buffer, param.bufferName, param.buffer_name);
+  const explicitName = authoritativeText(
+    param,
+    ['buffer', 'bufferName', 'buffer_name'],
+    `kernel param ${firstText(param.name) ?? 'arg'}.buffer`,
+  );
   if (explicitName) {
     const explicit = buffers.find((buffer) => buffer.name === explicitName);
     if (!explicit) throw new Error(`kernel param ${param.name} references missing buffer ${explicitName}`);
@@ -584,22 +2371,13 @@ function bufferForParam(param, buffers) {
     const direct = buffers.find((buffer) => buffer.name === name);
     if (direct) return direct;
   }
-  const access = firstText(param.access) ?? 'unknown';
-  if (access === 'write') {
-    const writeBuffer = buffers.find((buffer) => buffer.role === 'readback' || buffer.role === 'output');
-    if (writeBuffer) return writeBuffer;
-  }
-  if (access === 'read') {
-    const readBuffer = buffers.find((buffer) => buffer.role === 'input');
-    if (readBuffer) return readBuffer;
-  }
-  throw new Error(`kernel param ${name ?? 'arg'} must map to a declared buffer`);
+  throw new Error(`kernel pointer param ${name ?? 'arg'} must explicitly map to a declared buffer`);
 }
 
 function normalizeAbiParams(rawParams, buffers, constants, elementCount) {
   const params = firstArray(rawParams);
   if (params.length === 0) throw new Error('abi.params must declare kernel launch parameters');
-  return params.map((rawParam, index) => {
+  const normalized = params.map((rawParam, index) => {
     const param = objectOrEmpty(rawParam);
     const kind = normalizedParamKind(param);
     if (kind === 'unsupported') {
@@ -628,8 +2406,13 @@ function normalizeAbiParams(rawParams, buffers, constants, elementCount) {
       firstText(param.scalarDataType, param.scalar_data_type) ?? scalarDataTypeFromParam(base),
       `abi.params[${index}].scalarDataType`,
     );
+    const declaredScalarValue = authoritativeAlias(
+      param,
+      ['value', 'scalarValue', 'scalar_value'],
+      `abi.params[${index}].scalarValue`,
+    );
     const scalarValue = finiteNumber(
-      param.value ?? param.scalarValue ?? param.scalar_value ?? constants[base.name],
+      declaredScalarValue ?? constants[base.name],
       base.name === 'n' ? elementCount : null,
     );
     if (scalarValue === null) throw new Error(`scalar kernel param ${base.name} must declare a value or matching constant`);
@@ -641,6 +2424,29 @@ function normalizeAbiParams(rawParams, buffers, constants, elementCount) {
       scalar_value: scalarValue,
     };
   });
+  const pointerParams = normalized.filter((param) => param.launch_kind === 'buffer');
+  const pointerBindings = new Map();
+  for (const param of pointerParams) {
+    const prior = pointerBindings.get(param.buffer);
+    if (prior) {
+      throw new Error(`unsupported HIP multi-pointer alias: ${prior} and ${param.name} both map to ${param.buffer}`);
+    }
+    pointerBindings.set(param.buffer, param.name);
+    if (!['read', 'write'].includes(param.access)) {
+      throw new Error(`kernel pointer param ${param.name} must declare read or write access`);
+    }
+  }
+  const writable = pointerParams.filter((param) => param.access === 'write');
+  const readable = pointerParams.filter((param) => param.access === 'read');
+  if (writable.length !== 1 || readable.length !== 1 || pointerParams.length !== 2) {
+    throw new Error('unsupported HIP multi-resource semantics: exactly one read pointer and one write pointer are required');
+  }
+  const output = buffers.find((buffer) => buffer.name === writable[0].buffer);
+  const input = buffers.find((buffer) => buffer.name === readable[0].buffer);
+  if (!output || !['readback', 'output'].includes(output.role) || !input || input.role !== 'input') {
+    throw new Error('HIP pointer roles must bind one input resource and one readback/output resource');
+  }
+  return normalized;
 }
 
 function validateProfileAbiSignatures({ abiParams, beforeSource, afterSource, negativeSourceAfter, kernelName }) {
@@ -667,14 +2473,36 @@ function validateProfileAbiSignatures({ abiParams, beforeSource, afterSource, ne
   };
 }
 
+function resolveHipKernelIdentity(rawKernel) {
+  const kernel = objectOrEmpty(rawKernel);
+  rejectConflictingSnakeCamelAliases(kernel, 'profile.kernel');
+  const name = authoritativeText(
+    kernel,
+    ['name', 'kernelName', 'kernel_name'],
+    'profile.kernel.name',
+    { required: true },
+  );
+  const entryPoint = authoritativeText(
+    kernel,
+    ['entryPoint', 'entry_point'],
+    'profile.kernel.entryPoint',
+    { required: true },
+  );
+  if (name !== entryPoint) {
+    throw new Error(`HIP kernel identity mismatch: kernel.name=${name} entryPoint=${entryPoint}`);
+  }
+  return name;
+}
+
 async function loadProfile(profilePath) {
   const resolvedPath = path.resolve(profilePath);
   const profileDir = path.dirname(resolvedPath);
   const raw = JSON.parse(await readFile(resolvedPath, 'utf8'));
+  rejectConflictingSnakeCamelAliases(raw, 'HIP module profile');
   const compile = objectOrEmpty(raw.compile);
   const kernel = objectOrEmpty(raw.kernel);
   const launch = objectOrEmpty(raw.launch);
-  const oracle = objectOrEmpty(raw.outputOracle ?? raw.output_oracle);
+  const oracle = objectOrEmpty(authoritativeAlias(raw, ['outputOracle', 'output_oracle'], 'profile.outputOracle'));
   const constants = objectOrEmpty(raw.constants);
   const abi = objectOrEmpty(raw.abi);
   const beforePath = resolveRelative(profileDir, firstText(
@@ -691,44 +2519,63 @@ async function loadProfile(profilePath) {
   ));
   if (!beforePath || !afterPath) throw new Error('profile compile.sourceBeforePath and compile.sourceAfterPath are required');
   const buffers = firstArray(raw.buffers).map((buffer, index) => normalizeProfileBuffer(buffer, `buffers[${index}]`));
-  const inputBuffer = buffers.find((buffer) => buffer.role === 'input')
-    ?? buffers.find((buffer) => buffer.name === 'input');
-  const readbackBuffer = buffers.find((buffer) => buffer.role === 'readback')
-    ?? buffers.find((buffer) => buffer.name === firstText(oracle.readbackBuffer, oracle.readback_buffer));
-  if (!inputBuffer || !readbackBuffer) throw new Error('profile must declare input and readback buffers');
+  const inputBuffers = buffers.filter((buffer) => buffer.role === 'input');
+  const readbackIdentity = authoritativeText(
+    oracle,
+    ['readbackBuffer', 'readback_buffer'],
+    'profile.outputOracle.readbackBuffer',
+    { required: true },
+  );
+  const readbackBuffers = buffers.filter((buffer) => (
+    buffer.name === readbackIdentity && ['readback', 'output'].includes(buffer.role)
+  ));
+  if (inputBuffers.length !== 1 || readbackBuffers.length !== 1) {
+    throw new Error('profile must explicitly identify exactly one input role and one readback resource role/identity');
+  }
+  const [inputBuffer] = inputBuffers;
+  const [readbackBuffer] = readbackBuffers;
   const readbackDataType = readbackBuffer.dataType;
-  const expectedBeforeValues = normalizeNumericValues(
-    firstArray(oracle.expectedBeforeValues, oracle.expected_before_values),
-    'outputOracle.expectedBeforeValues',
-    readbackDataType,
+  const expectedBeforeHintRaw = authoritativeAlias(
+    oracle,
+    ['expectedBeforeValues', 'expected_before_values'],
+    'profile.outputOracle.expectedBeforeValues',
   );
-  const expectedAfterValues = normalizeNumericValues(
-    firstArray(oracle.expectedAfterValues, oracle.expected_after_values, oracle.expectedValues, oracle.expected_values),
-    'outputOracle.expectedAfterValues',
-    readbackDataType,
+  const expectedAfterHintRaw = authoritativeAlias(
+    oracle,
+    ['expectedAfterValues', 'expected_after_values', 'expectedValues', 'expected_values'],
+    'profile.outputOracle.expectedAfterValues',
   );
-  if (oracle.expectedOutputRequired === false || oracle.expected_output_required === false) {
-    throw new Error('outputOracle.expectedOutputRequired must be true for HIP module runtime acceptance');
+  const expectedBeforeHint = expectedBeforeHintRaw === null ? [] : expectedBeforeHintRaw;
+  const expectedAfterHint = expectedAfterHintRaw === null ? [] : expectedAfterHintRaw;
+  if (!Array.isArray(expectedBeforeHint) || !Array.isArray(expectedAfterHint)) {
+    throw new Error('profile outputOracle expected-value hints must be arrays');
   }
-  const elementCount = expectedAfterValues.length;
-  if (expectedBeforeValues.length !== elementCount) {
-    throw new Error('expected-before and expected-after arrays must have the same length');
+  const expectedBeforeValues = expectedBeforeHint.length > 0
+    ? normalizeNumericValues(expectedBeforeHint, 'outputOracle.expectedBeforeValuesHint', readbackDataType)
+    : [];
+  const expectedAfterValues = expectedAfterHint.length > 0
+    ? normalizeNumericValues(expectedAfterHint, 'outputOracle.expectedAfterValuesHint', readbackDataType)
+    : [];
+  const dataTypeWidth = byteWidthForDataType(readbackDataType);
+  if (readbackBuffer.byteLength % dataTypeWidth !== 0) {
+    throw new Error('readback byte length must align to its declared data type');
   }
-  if (readbackBuffer.byteLength !== elementCount * byteWidthForDataType(readbackDataType)) {
-    throw new Error('readback byte length must match expected output data type and length');
-  }
-  const [beforeSource, afterSource, beforeHash, afterHash] = await Promise.all([
-    readFile(beforePath, 'utf8'),
-    readFile(afterPath, 'utf8'),
-    sha256File(beforePath),
-    sha256File(afterPath),
+  const elementCount = readbackBuffer.byteLength / dataTypeWidth;
+  const [beforeSourceBytes, afterSourceBytes] = await Promise.all([
+    readFile(beforePath),
+    readFile(afterPath),
   ]);
+  const beforeSource = beforeSourceBytes.toString('utf8');
+  const afterSource = afterSourceBytes.toString('utf8');
+  const beforeHash = sha256Bytes(beforeSourceBytes);
+  const afterHash = sha256Bytes(afterSourceBytes);
   const targetId = firstText(raw.targetId, raw.target_id, raw.id) ?? safeSlug(path.basename(resolvedPath, '.json'));
   const deterministicSlice = objectOrEmpty(oracle.deterministicSlice ?? oracle.deterministic_slice);
   const runMode = objectOrEmpty(raw.runMode ?? raw.run_mode);
   const negativeEdit = objectOrEmpty(raw.negativeEdit ?? raw.negative_edit);
   const constantsRecord = Object.fromEntries(Object.entries(constants).map(([key, value]) => [key, Number(value)]));
-  const kernelName = firstText(kernel.name, kernel.kernelName, kernel.kernel_name) ?? 'synthi_hmr_float32_epoch_kernel';
+  const kernelName = resolveHipKernelIdentity(kernel);
+  const kernelEntryPoint = kernelName;
   const abiParams = normalizeAbiParams(firstArray(abi.params, abi.args), buffers, constantsRecord, elementCount);
   const negativeSourceAfterPath = resolveRelative(profileDir, firstText(
     negativeEdit.sourceAfterPath,
@@ -774,7 +2621,8 @@ async function loadProfile(profilePath) {
     },
     kernel: {
       name: kernelName,
-      entryPoint: firstText(kernel.entryPoint, kernel.entry_point, kernel.name) ?? kernelName,
+      entryPoint: kernelEntryPoint,
+      resolvedSymbol: kernelName,
       launchApi: firstText(kernel.launchApi, kernel.launch_api) ?? 'hipModuleLaunchKernel',
     },
     launch: {
@@ -808,6 +2656,8 @@ async function loadProfile(profilePath) {
       expectedBeforeValues,
       expectedAfterValues,
       expectedOutputRequired: true,
+      profileExpectedOutputRequiredHint:
+        oracle.expectedOutputRequired !== false && oracle.expected_output_required !== false,
       expectedOutputChange: oracle.expectedOutputChange !== false && oracle.expected_output_change !== false,
       tolerance: Math.max(0, finiteNumber(oracle.tolerance, 0.00001)),
       dataType: readbackDataType,
@@ -838,6 +2688,14 @@ async function loadProfile(profilePath) {
 }
 
 function runModeMetadata(profile) {
+  const editId = `${profile.targetId}-hip-module-${profile.runMode.metricScope}`;
+  const requestId = `hip-module-request:${sha256Text(stableJson({
+    targetId: profile.targetId,
+    editId,
+    editHash: profile.afterHash,
+    metricScope: profile.runMode.metricScope,
+    differentEdit: profile.runMode.differentEdit,
+  })).replace(/^sha256:/, '')}`;
   return {
     metric_clock: 'monotonic_ns',
     metricClock: 'monotonic_ns',
@@ -845,8 +2703,12 @@ function runModeMetadata(profile) {
     metricScope: profile.runMode.metricScope,
     cache_state: profile.runMode.cacheState,
     cacheState: profile.runMode.cacheState,
-    edit_id: `${profile.targetId}-hip-module-${profile.runMode.metricScope}`,
-    editId: `${profile.targetId}-hip-module-${profile.runMode.metricScope}`,
+    target_id: profile.targetId,
+    targetId: profile.targetId,
+    request_id: requestId,
+    requestId,
+    edit_id: editId,
+    editId,
     edit_hash: profile.afterHash,
     editHash: profile.afterHash,
     edit_kind: 'gpu_artifact_edit',
@@ -923,10 +2785,224 @@ function probeExecutablePath(outDir) {
     : path.join(outDir, 'hip_module_runtime_probe');
 }
 
+async function readVerifiedSha256(filePath, expectedHash, label) {
+  const bytes = await readFile(filePath);
+  const observedHash = sha256Bytes(bytes);
+  if (observedHash !== expectedHash) {
+    throw new Error(`${label} hash mismatch: expected ${expectedHash}, observed ${observedHash}`);
+  }
+  return bytes;
+}
+
+async function verifyHipProfileSourceInputs(profile) {
+  const [beforeBytes, afterBytes] = await Promise.all([
+    readVerifiedSha256(profile.beforePath, profile.beforeHash, 'HIP before source input'),
+    readVerifiedSha256(profile.afterPath, profile.afterHash, 'HIP after source input'),
+  ]);
+  return { beforeBytes, afterBytes };
+}
+
+function compileManifestRole(entries, role, label) {
+  const matches = firstArray(entries).filter((entry) => entry?.role === role);
+  if (matches.length !== 1) {
+    throw new Error(`HIP compile manifest must contain exactly one ${label} entry`);
+  }
+  return matches[0];
+}
+
+async function verifyHipCompiledArtifactsForLoad(compiled) {
+  const manifest = compiled?.compileManifest;
+  if (
+    !manifest
+    || sha256Text(stableJson(manifest)) !== compiled.compileManifestHash
+    || manifest.entryPoint !== compiled.kernelIdentity
+  ) {
+    throw new Error('HIP compile manifest or exact kernel identity is missing or invalid before module load');
+  }
+  const beforeInput = compileManifestRole(manifest.sourceInputs, 'before', 'before source');
+  const afterInput = compileManifestRole(manifest.sourceInputs, 'after', 'after source');
+  const beforeOutput = compileManifestRole(manifest.outputs, 'before_hsaco', 'before HSACO');
+  const afterOutput = compileManifestRole(manifest.outputs, 'after_hsaco', 'after HSACO');
+  if (
+    beforeInput.sha256 !== compiled.beforeSourceHash
+    || afterInput.sha256 !== compiled.afterSourceHash
+    || beforeOutput.sha256 !== compiled.beforeHsacoHash
+    || afterOutput.sha256 !== compiled.afterHsacoHash
+  ) {
+    throw new Error('HIP compile manifest no longer binds the staged sources and HSACO outputs');
+  }
+  const [beforeSourceBytes, afterSourceBytes, beforeHsacoBytes, afterHsacoBytes] = await Promise.all([
+    readVerifiedSha256(compiled.beforeSourceSnapshot, beforeInput.sha256, 'HIP staged before source'),
+    readVerifiedSha256(compiled.afterSourceSnapshot, afterInput.sha256, 'HIP staged after source'),
+    readVerifiedSha256(compiled.beforeHsaco, beforeOutput.sha256, 'HIP before HSACO'),
+    readVerifiedSha256(compiled.afterHsaco, afterOutput.sha256, 'HIP after HSACO'),
+  ]);
+  const sourceArtifactBindingHash = sha256Text(stableJson({
+    sourceHash: afterInput.sha256,
+    compiledArtifactHash: afterOutput.sha256,
+    compileManifestHash: compiled.compileManifestHash,
+    entryPoint: manifest.entryPoint,
+  }));
+  if (sourceArtifactBindingHash !== compiled.sourceArtifactBindingHash) {
+    throw new Error('HIP source-to-HSACO binding changed before module load');
+  }
+  if (compiled.compileManifestPath) {
+    const persisted = JSON.parse(await readFile(compiled.compileManifestPath, 'utf8'));
+    const persistedManifest = {
+      schemaVersion: persisted.schemaVersion,
+      compiler: persisted.compiler,
+      compileTarget: persisted.compileTarget,
+      entryPoint: persisted.entryPoint,
+      sourceInputs: persisted.sourceInputs,
+      commands: persisted.commands,
+      outputs: persisted.outputs,
+    };
+    if (
+      persisted.compileManifestHash !== compiled.compileManifestHash
+      || persisted.sourceArtifactBindingHash !== compiled.sourceArtifactBindingHash
+      || stableJson(persistedManifest) !== stableJson(manifest)
+    ) {
+      throw new Error('HIP persisted compile manifest changed before module load');
+    }
+  }
+  return { beforeSourceBytes, afterSourceBytes, beforeHsacoBytes, afterHsacoBytes };
+}
+
+async function writePrivateHipCasObject({ casDir, bytes, expectedHash, role }) {
+  if (sha256Bytes(bytes) !== expectedHash) {
+    throw new Error(`HIP ${role} CAS input bytes do not match ${expectedHash}`);
+  }
+  const casPath = path.join(casDir, `${expectedHash.slice('sha256:'.length)}.hsaco`);
+  const handle = await open(casPath, 'wx', 0o400);
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await chmod(casPath, 0o400);
+  await readVerifiedSha256(casPath, expectedHash, `HIP private ${role} CAS object`);
+  return casPath;
+}
+
+async function stagePrivateHipLoaderCas({ compiled, outDir }) {
+  const verified = await verifyHipCompiledArtifactsForLoad(compiled);
+  const casDir = await mkdtemp(path.join(outDir, '.hip-loader-cas-'));
+  await chmod(casDir, 0o700);
+  const beforePath = await writePrivateHipCasObject({
+    casDir,
+    bytes: verified.beforeHsacoBytes,
+    expectedHash: compiled.beforeHsacoHash,
+    role: 'before HSACO',
+  });
+  const afterPath = await writePrivateHipCasObject({
+    casDir,
+    bytes: verified.afterHsacoBytes,
+    expectedHash: compiled.afterHsacoHash,
+    role: 'after HSACO',
+  });
+  return {
+    schemaVersion: 'synthi.gpu_hmr.hip_loader_cas.v1',
+    casDir,
+    beforePath,
+    afterPath,
+    beforeHash: compiled.beforeHsacoHash,
+    afterHash: compiled.afterHsacoHash,
+  };
+}
+
+async function stageRemoteHipLoaderCas({ compiled, localCas }) {
+  const remoteCasDir = `${compiled.remoteDir}/loader-cas-${safeSlug(path.basename(localCas.casDir))}`;
+  await dockerExec(CFG.execContainer, ['mkdir', '-m', '700', remoteCasDir], { timeout: CFG.timeoutMs });
+  const remoteBeforePath = `${remoteCasDir}/${path.basename(localCas.beforePath)}`;
+  const remoteAfterPath = `${remoteCasDir}/${path.basename(localCas.afterPath)}`;
+  await dockerCpTo(CFG.execContainer, localCas.beforePath, remoteBeforePath);
+  await dockerCpTo(CFG.execContainer, localCas.afterPath, remoteAfterPath);
+  await dockerExec(CFG.execContainer, ['chmod', '400', remoteBeforePath, remoteAfterPath], { timeout: CFG.timeoutMs });
+  await Promise.all([
+    verifyRemoteSha256(CFG.execContainer, remoteBeforePath, localCas.beforeHash, 'HIP remote before loader CAS'),
+    verifyRemoteSha256(CFG.execContainer, remoteAfterPath, localCas.afterHash, 'HIP remote after loader CAS'),
+  ]);
+  return { remoteCasDir, remoteBeforePath, remoteAfterPath };
+}
+
+async function verifyRemoteSha256(container, filePath, expectedHash, label) {
+  const result = await dockerExec(container, ['sha256sum', filePath], { timeout: CFG.timeoutMs });
+  const observed = firstText(result.stdout)?.trim().split(/\s+/u)[0];
+  if (!observed || `sha256:${observed.toLowerCase()}` !== expectedHash) {
+    throw new Error(`${label} remote hash mismatch before HIP operation`);
+  }
+}
+
+async function finalizeHipCompiledArtifacts({ profile, outDir, compiled }) {
+  const [beforeSnapshotHash, afterSnapshotHash, beforeHsacoHash, afterHsacoHash] = await Promise.all([
+    sha256File(compiled.beforeSourceSnapshot),
+    sha256File(compiled.afterSourceSnapshot),
+    sha256File(compiled.beforeHsaco),
+    sha256File(compiled.afterHsaco),
+  ]);
+  if (beforeSnapshotHash !== profile.beforeHash || afterSnapshotHash !== profile.afterHash) {
+    throw new Error('HIP source snapshot hash changed before compile-manifest finalization');
+  }
+  const manifest = {
+    schemaVersion: 'synthi.gpu_hmr.hip_source_hsaco_compile_manifest.v1',
+    compiler: compiled.compiler,
+    compileTarget: profile.compile.gpuArch || profile.compile.compileTarget,
+    entryPoint: profile.kernel.entryPoint,
+    sourceInputs: [
+      { role: 'before', path: relRepo(compiled.beforeSourceSnapshot), sha256: beforeSnapshotHash },
+      { role: 'after', path: relRepo(compiled.afterSourceSnapshot), sha256: afterSnapshotHash },
+    ],
+    commands: compiled.commands,
+    outputs: [
+      { role: 'before_hsaco', path: relRepo(compiled.beforeHsaco), sha256: beforeHsacoHash },
+      { role: 'after_hsaco', path: relRepo(compiled.afterHsaco), sha256: afterHsacoHash },
+    ],
+  };
+  const compileManifestHash = sha256Text(stableJson(manifest));
+  const sourceArtifactBindingHash = sha256Text(stableJson({
+    sourceHash: afterSnapshotHash,
+    compiledArtifactHash: afterHsacoHash,
+    compileManifestHash,
+    entryPoint: profile.kernel.entryPoint,
+  }));
+  const compileManifestPath = path.join(outDir, `${safeSlug(profile.targetId)}-compile-manifest.json`);
+  await writeFile(compileManifestPath, `${JSON.stringify({
+    ...manifest,
+    compileManifestHash,
+    sourceArtifactBindingHash,
+  }, null, 2)}\n`);
+  return {
+    ...compiled,
+    kernelIdentity: profile.kernel.name,
+    beforeHsacoHash,
+    afterHsacoHash,
+    beforeSourceHash: beforeSnapshotHash,
+    afterSourceHash: afterSnapshotHash,
+    compileManifest: manifest,
+    compileManifestHash,
+    compileManifestPath,
+    sourceArtifactBindingHash,
+  };
+}
+
 async function compileRuntimeArtifacts({ profile, outDir }) {
   const hostPath = probeExecutablePath(outDir);
   const beforeHsaco = path.join(outDir, `${safeSlug(profile.targetId)}-before.hsaco`);
   const afterHsaco = path.join(outDir, `${safeSlug(profile.targetId)}-after.hsaco`);
+  const beforeSourceSnapshot = path.join(outDir, `${safeSlug(profile.targetId)}-before-source.hip`);
+  const afterSourceSnapshot = path.join(outDir, `${safeSlug(profile.targetId)}-after-source.hip`);
+  const sourceInputs = await verifyHipProfileSourceInputs(profile);
+  await Promise.all([
+    writeFile(beforeSourceSnapshot, sourceInputs.beforeBytes),
+    writeFile(afterSourceSnapshot, sourceInputs.afterBytes),
+  ]);
+  if (
+    await sha256File(beforeSourceSnapshot) !== profile.beforeHash
+    || await sha256File(afterSourceSnapshot) !== profile.afterHash
+  ) {
+    throw new Error('HIP immutable source snapshot hash does not match cold-intake bytes');
+  }
   const compileStart = process.hrtime.bigint();
   if (CFG.execContainer) {
     const remoteDir = remoteDirFor(outDir);
@@ -942,8 +3018,12 @@ async function compileRuntimeArtifacts({ profile, outDir }) {
       `rm -rf ${shellQuote(remoteDir)} && mkdir -p ${shellQuote(remoteDir)}`,
     ], { timeout: CFG.timeoutMs });
     await dockerCpTo(CFG.execContainer, PROBE_SOURCE_PATH, remoteProbeSource);
-    await dockerCpTo(CFG.execContainer, profile.beforePath, remoteBeforeSource);
-    await dockerCpTo(CFG.execContainer, profile.afterPath, remoteAfterSource);
+    await dockerCpTo(CFG.execContainer, beforeSourceSnapshot, remoteBeforeSource);
+    await dockerCpTo(CFG.execContainer, afterSourceSnapshot, remoteAfterSource);
+    await Promise.all([
+      verifyRemoteSha256(CFG.execContainer, remoteBeforeSource, profile.beforeHash, 'HIP before compile source'),
+      verifyRemoteSha256(CFG.execContainer, remoteAfterSource, profile.afterHash, 'HIP after compile source'),
+    ]);
     const hostArgs = ['-std=c++17', '-O2', remoteProbeSource, '-o', remoteHostPath];
     const beforeArgs = hipccArgsForHsaco({
       sourcePath: remoteBeforeSource,
@@ -956,18 +3036,25 @@ async function compileRuntimeArtifacts({ profile, outDir }) {
       gpuArch: profile.compile.gpuArch,
     });
     await dockerExec(CFG.execContainer, [CFG.hipcc, ...hostArgs], { timeout: CFG.timeoutMs });
+    await verifyRemoteSha256(CFG.execContainer, remoteBeforeSource, profile.beforeHash, 'HIP before compile source');
     await dockerExec(CFG.execContainer, [CFG.hipcc, ...beforeArgs], { timeout: CFG.timeoutMs });
+    await verifyRemoteSha256(CFG.execContainer, remoteBeforeSource, profile.beforeHash, 'HIP before compile source');
+    await verifyRemoteSha256(CFG.execContainer, remoteAfterSource, profile.afterHash, 'HIP after compile source');
     await dockerExec(CFG.execContainer, [CFG.hipcc, ...afterArgs], { timeout: CFG.timeoutMs });
+    await verifyRemoteSha256(CFG.execContainer, remoteAfterSource, profile.afterHash, 'HIP after compile source');
     await dockerCpFrom(CFG.execContainer, remoteBeforeHsaco, beforeHsaco);
     await dockerCpFrom(CFG.execContainer, remoteAfterHsaco, afterHsaco);
+    await verifyHipProfileSourceInputs(profile);
     const compileEnd = process.hrtime.bigint();
-    return {
+    const finalized = await finalizeHipCompiledArtifacts({ profile, outDir, compiled: {
       transport: 'docker_exec_container',
       container: CFG.execContainer,
       hostPath,
       remoteHostPath,
       beforeHsaco,
       afterHsaco,
+      beforeSourceSnapshot,
+      afterSourceSnapshot,
       remoteBeforeHsaco,
       remoteAfterHsaco,
       remoteDir,
@@ -978,30 +3065,37 @@ async function compileRuntimeArtifacts({ profile, outDir }) {
         after: ['docker', 'exec', '-u', 'root', '-w', '/tmp', CFG.execContainer, CFG.hipcc, ...afterArgs],
       },
       compileDurationNs: durationNs(compileStart, compileEnd),
-      beforeHsacoHash: await sha256File(beforeHsaco),
-      afterHsacoHash: await sha256File(afterHsaco),
-    };
+    } });
+    await verifyHipCompiledArtifactsForLoad(finalized);
+    return finalized;
   }
   const hostArgs = ['-std=c++17', '-O2', PROBE_SOURCE_PATH, '-o', hostPath];
   const beforeArgs = hipccArgsForHsaco({
-    sourcePath: profile.beforePath,
+    sourcePath: beforeSourceSnapshot,
     outputPath: beforeHsaco,
     gpuArch: profile.compile.gpuArch,
   });
   const afterArgs = hipccArgsForHsaco({
-    sourcePath: profile.afterPath,
+    sourcePath: afterSourceSnapshot,
     outputPath: afterHsaco,
     gpuArch: profile.compile.gpuArch,
   });
   await execFileChecked(CFG.hipcc, hostArgs);
+  await readVerifiedSha256(beforeSourceSnapshot, profile.beforeHash, 'HIP staged before source');
   await execFileChecked(CFG.hipcc, beforeArgs);
+  await readVerifiedSha256(beforeSourceSnapshot, profile.beforeHash, 'HIP staged before source');
+  await readVerifiedSha256(afterSourceSnapshot, profile.afterHash, 'HIP staged after source');
   await execFileChecked(CFG.hipcc, afterArgs);
+  await readVerifiedSha256(afterSourceSnapshot, profile.afterHash, 'HIP staged after source');
+  await verifyHipProfileSourceInputs(profile);
   const compileEnd = process.hrtime.bigint();
-  return {
+  const finalized = await finalizeHipCompiledArtifacts({ profile, outDir, compiled: {
     transport: 'local_process',
     hostPath,
     beforeHsaco,
     afterHsaco,
+    beforeSourceSnapshot,
+    afterSourceSnapshot,
     compiler: CFG.hipcc,
     commands: {
       host: [CFG.hipcc, ...hostArgs],
@@ -1009,40 +3103,55 @@ async function compileRuntimeArtifacts({ profile, outDir }) {
       after: [CFG.hipcc, ...afterArgs],
     },
     compileDurationNs: durationNs(compileStart, compileEnd),
-    beforeHsacoHash: await sha256File(beforeHsaco),
-    afterHsacoHash: await sha256File(afterHsaco),
-  };
+  } });
+  await verifyHipCompiledArtifactsForLoad(finalized);
+  return finalized;
 }
 
 function csv(values) {
   return values.map((value) => Number(value).toString()).join(',');
 }
 
-async function writeProbePlan({ profile, outDir, beforeHsacoHash, afterHsacoHash }) {
+async function writeProbePlan({
+  profile,
+  outDir,
+  beforeHsacoHash,
+  afterHsacoHash,
+  launchObservation,
+  probeOracle,
+}) {
   const planPath = path.join(outDir, `${safeSlug(profile.targetId)}-probe-plan.env`);
-  const bufferLines = profile.buffers.all.flatMap((buffer, index) => [
+  const bufferLines = launchObservation.resources.flatMap((buffer, index) => [
     `buffer_${index}_name=${buffer.name}`,
     `buffer_${index}_role=${buffer.role}`,
     `buffer_${index}_data_type=${buffer.dataType}`,
     `buffer_${index}_byte_length=${buffer.byteLength}`,
-    `buffer_${index}_values=${csv(buffer.values)}`,
+    `buffer_${index}_values=${csv(decodeNumericValues(Buffer.from(buffer.initialBytes), buffer.dataType))}`,
+    `buffer_${index}_initial_bytes_hash=${buffer.initialBytesHash}`,
   ]);
-  const paramLines = profile.abi.params.flatMap((param, index) => {
+  const paramLines = launchObservation.parameters.flatMap((param, index) => {
     const base = [
       `param_${index}_name=${param.name}`,
-      `param_${index}_type=${param.type}`,
-      `param_${index}_value_kind=${param.value_kind}`,
-      `param_${index}_access=${param.access}`,
+      `param_${index}_type=${profile.abi.params[index].type}`,
+      `param_${index}_value_kind=${param.kind === 'buffer' ? 'global_buffer' : 'by_value'}`,
+      `param_${index}_access=${profile.abi.params[index].access}`,
     ];
-    if (param.launch_kind === 'buffer') {
+    if (param.kind === 'buffer') {
       return [...base, `param_${index}_buffer=${param.buffer}`];
     }
     return [
       ...base,
-      `param_${index}_scalar_type=${param.scalar_type}`,
-      `param_${index}_scalar_value=${param.scalar_value}`,
+      `param_${index}_scalar_type=${param.dataType}`,
+      `param_${index}_scalar_value=${param.value}`,
     ];
   });
+  if (
+    probeOracle.before.elementCount !== probeOracle.after.elementCount
+    || probeOracle.before.dataType !== probeOracle.after.dataType
+    || probeOracle.before.tolerance !== probeOracle.after.tolerance
+  ) {
+    throw new Error('HIP probe semantic-oracle epochs disagree on output schema');
+  }
   const lines = [
     `kernel_name=${profile.kernel.name}`,
     `artifact_hash_before=${beforeHsacoHash}`,
@@ -1051,46 +3160,58 @@ async function writeProbePlan({ profile, outDir, beforeHsacoHash, afterHsacoHash
     `compile_target=${profile.compile.gpuArch || profile.compile.compileTarget}`,
     `readback_buffer=${profile.buffers.readback.name}`,
     `readback_data_type=${profile.buffers.readback.dataType}`,
-    `grid_x=${profile.launch.gridDim.x}`,
-    `grid_y=${profile.launch.gridDim.y}`,
-    `grid_z=${profile.launch.gridDim.z}`,
-    `block_x=${profile.launch.blockDim.x}`,
-    `block_y=${profile.launch.blockDim.y}`,
-    `block_z=${profile.launch.blockDim.z}`,
-    `shared_mem_bytes=${profile.launch.sharedMemBytes}`,
-    `element_count=${profile.outputOracle.expectedAfterValues.length}`,
-    `tolerance=${profile.outputOracle.tolerance}`,
-    `buffer_count=${profile.buffers.all.length}`,
+    `grid_x=${launchObservation.gridDim.x}`,
+    `grid_y=${launchObservation.gridDim.y}`,
+    `grid_z=${launchObservation.gridDim.z}`,
+    `block_x=${launchObservation.blockDim.x}`,
+    `block_y=${launchObservation.blockDim.y}`,
+    `block_z=${launchObservation.blockDim.z}`,
+    `shared_mem_bytes=${launchObservation.sharedMemBytes}`,
+    `element_count=${probeOracle.after.elementCount}`,
+    `tolerance=${probeOracle.after.tolerance}`,
+    `buffer_count=${launchObservation.resources.length}`,
     ...bufferLines,
-    `param_count=${profile.abi.params.length}`,
+    `param_count=${launchObservation.parameters.length}`,
     ...paramLines,
-    `expected_before_values=${csv(profile.outputOracle.expectedBeforeValues)}`,
-    `expected_after_values=${csv(profile.outputOracle.expectedAfterValues)}`,
+    `expected_before_values=${csv(probeOracle.before.expectedValues)}`,
+    `expected_after_values=${csv(probeOracle.after.expectedValues)}`,
+    `semantic_oracle_implementation_hash=${probeOracle.after.implementationHash}`,
+    `semantic_oracle_before_request_hash=${probeOracle.before.requestHash}`,
+    `semantic_oracle_after_request_hash=${probeOracle.after.requestHash}`,
   ];
-  await writeFile(planPath, `${lines.join('\n')}\n`);
-  return planPath;
+  const planBytes = Buffer.from(`${lines.join('\n')}\n`, 'utf8');
+  const planHash = sha256Bytes(planBytes);
+  await writeFile(planPath, planBytes);
+  await readVerifiedSha256(planPath, planHash, 'HIP probe plan');
+  return { planPath, planHash };
 }
 
-async function runHipProbe({ profile, compiled, outDir }) {
+async function runHipProbe({ profile, compiled, outDir, launchObservation, probeOracle }) {
   const rawAfterPath = path.join(outDir, `${safeSlug(profile.targetId)}-after-readback.bin`);
   const runtimeTracePath = path.join(outDir, `${safeSlug(profile.targetId)}-runtime-trace.json`);
-  const planPath = await writeProbePlan({
+  const { planPath, planHash } = await writeProbePlan({
     profile,
     outDir,
     beforeHsacoHash: compiled.beforeHsacoHash,
     afterHsacoHash: compiled.afterHsacoHash,
+    launchObservation,
+    probeOracle,
   });
+  await readVerifiedSha256(planPath, planHash, 'HIP probe plan');
+  const loaderCas = await stagePrivateHipLoaderCas({ compiled, outDir });
   const runtimeStart = process.hrtime.bigint();
   if (compiled.transport === 'docker_exec_container') {
     const remotePlanPath = `${compiled.remoteDir}/probe-plan.env`;
     const remoteRawAfterPath = `${compiled.remoteDir}/after-readback.bin`;
     const remoteRuntimeTracePath = `${compiled.remoteDir}/runtime-trace.json`;
     await dockerCpTo(CFG.execContainer, planPath, remotePlanPath);
+    await verifyRemoteSha256(CFG.execContainer, remotePlanPath, planHash, 'HIP probe plan');
+    const remoteLoaderCas = await stageRemoteHipLoaderCas({ compiled, localCas: loaderCas });
     const run = await dockerExec(CFG.execContainer, [
       compiled.remoteHostPath,
       remotePlanPath,
-      compiled.remoteBeforeHsaco,
-      compiled.remoteAfterHsaco,
+      remoteLoaderCas.remoteBeforePath,
+      remoteLoaderCas.remoteAfterPath,
       remoteRawAfterPath,
       remoteRuntimeTracePath,
     ], {
@@ -1102,6 +3223,9 @@ async function runHipProbe({ profile, compiled, outDir }) {
     const runtimeTrace = JSON.parse(await readFile(runtimeTracePath, 'utf8'));
     return {
       planPath,
+      planHash,
+      loaderCas: { ...loaderCas, ...remoteLoaderCas },
+      launchObservation,
       rawAfterPath,
       runtimeTracePath,
       runtimeTrace,
@@ -1112,8 +3236,8 @@ async function runHipProbe({ profile, compiled, outDir }) {
   }
   const run = await execFileChecked(compiled.hostPath, [
     planPath,
-    compiled.beforeHsaco,
-    compiled.afterHsaco,
+    loaderCas.beforePath,
+    loaderCas.afterPath,
     rawAfterPath,
     runtimeTracePath,
   ], {
@@ -1123,6 +3247,9 @@ async function runHipProbe({ profile, compiled, outDir }) {
   const runtimeTrace = JSON.parse(await readFile(runtimeTracePath, 'utf8'));
   return {
     planPath,
+    planHash,
+    loaderCas,
+    launchObservation,
     rawAfterPath,
     runtimeTracePath,
     runtimeTrace,
@@ -1175,25 +3302,88 @@ async function renderComputeCard({
   await sharp(Buffer.from(svg)).png().toFile(filePath);
 }
 
-async function writeComputeOracleArtifacts({ outDir, profile, runtimeTrace, rawAfterPath }) {
-  const dataType = profile.outputOracle.dataType;
+async function writeComputeOracleArtifacts({
+  outDir,
+  profile,
+  runtimeTrace,
+  rawAfterPath,
+  expectedOutputContract,
+  semanticOracle,
+}) {
+  const { implementationBytes, request, execution } = semanticOracle;
+  const traceArtifact = semanticOracle.traceArtifact;
+  if (
+    !traceArtifact?.path
+    || traceArtifact.hash !== request.binding.traceArtifactHash
+    || traceArtifact.hash !== canonicalRuntimeTraceHash(runtimeTrace)
+    || sha256Bytes(await readFile(traceArtifact.path)) !== traceArtifact.hash
+  ) {
+    throw new Error('HIP semantic oracle runtime trace artifact binding is stale or invalid');
+  }
+  const dataType = execution.dataType;
   const afterBytes = await readFile(rawAfterPath);
+  const rawHash = sha256Bytes(afterBytes);
   const afterValues = decodeNumericValues(afterBytes, dataType);
-  const beforeValues = runtimeTrace.outputEvents?.[0]?.values ?? profile.outputOracle.expectedBeforeValues;
+  const beforeValues = firstArray(runtimeTrace.outputEvents)?.[0]?.values;
+  if (!Array.isArray(beforeValues) || beforeValues.length === 0) {
+    throw new Error('HIP runtime trace is missing observed before-epoch readback values');
+  }
   const beforeBytes = encodeNumericValues(beforeValues, dataType);
   const beforeRawPath = path.join(outDir, `${safeSlug(profile.targetId)}-before-readback.bin`);
   const schemaPath = path.join(outDir, `${safeSlug(profile.targetId)}-readback-schema.json`);
   const cardPath = path.join(outDir, `${safeSlug(profile.targetId)}-compute-card.png`);
+  const implementationPath = path.join(outDir, `${safeSlug(profile.targetId)}-semantic-oracle.mjs`);
+  const requestPath = path.join(outDir, `${safeSlug(profile.targetId)}-semantic-oracle-request.json`);
+  const resultPath = path.join(outDir, `${safeSlug(profile.targetId)}-semantic-oracle-result.json`);
   await writeFile(beforeRawPath, beforeBytes);
-  const rawHash = sha256Bytes(afterBytes);
+  const requestBytes = Buffer.from(stableJson(request), 'utf8');
+  const resultBytes = Buffer.from(stableJson(execution), 'utf8');
+  await writeFile(implementationPath, implementationBytes);
+  await writeFile(requestPath, requestBytes);
+  await writeFile(resultPath, resultBytes);
+  const implementationHash = sha256Bytes(await readFile(implementationPath));
+  const requestHash = sha256Bytes(await readFile(requestPath));
+  const resultHash = sha256Bytes(await readFile(resultPath));
+  if (
+    implementationHash !== execution.implementationHash
+    || requestHash !== execution.requestHash
+  ) {
+    throw new Error('HIP semantic oracle content-addressed artifacts failed hash verification');
+  }
   const beforeHash = sha256Bytes(beforeBytes);
-  const expectedBytes = encodeNumericValues(profile.outputOracle.expectedAfterValues, dataType);
+  const expectedValues = expectedOutputContract.expectedValues;
+  const expectedBytes = encodeNumericValues(expectedValues, dataType);
   const expectedHash = sha256Bytes(expectedBytes);
+  if (expectedHash !== execution.expectedRawHash) {
+    throw new Error('HIP expected-output contract does not match independent semantic oracle bytes');
+  }
   const expectedVerification = compareNumericValues(
     afterValues,
-    profile.outputOracle.expectedAfterValues,
-    profile.outputOracle.tolerance,
+    expectedValues,
+    expectedOutputContract.tolerance,
   );
+  const independentVerification = await verifyIndependentSemanticOracle({
+    implementationBytes,
+    request,
+    execution,
+    observedBytes: afterBytes,
+    observedBinding: deriveHipObservedBinding({
+      runtimeTrace,
+      traceArtifactHash: semanticOracle.traceArtifact.hash,
+      planHash: request.binding.resourceOrPlanHash,
+      resourceTraceHash: request.binding.resourceTraceHash,
+      observedReadbackHash: rawHash,
+      expectedArtifactHash: request.binding.artifactAfterHash,
+    }),
+  });
+  const profileHintValues = profile.outputOracle.expectedAfterValues;
+  const profileHintVerification = Array.isArray(profileHintValues) && profileHintValues.length > 0
+    ? compareNumericValues(
+      execution.expectedValues,
+      profileHintValues,
+      profile.outputOracle.tolerance,
+    )
+    : { declared: false, matched: null, compared: 0, maxAbsDelta: null, mismatches: [] };
   const sliceOffset = Math.min(profile.outputOracle.deterministicSlice.offset, Math.max(0, afterBytes.length - 1));
   const sliceLength = Math.min(profile.outputOracle.deterministicSlice.length, afterBytes.length - sliceOffset);
   const sliceBytes = afterBytes.subarray(sliceOffset, sliceOffset + sliceLength);
@@ -1204,19 +3394,36 @@ async function writeComputeOracleArtifacts({ outDir, profile, runtimeTrace, rawA
     dataType,
     byteLength: afterBytes.length,
     elementCount: afterValues.length,
+    shape: expectedOutputContract.shape,
+    byteOrder: expectedOutputContract.byteOrder,
     readbackResource: profile.buffers.readback.name,
     dispatchId: runtimeTrace.outputEvents?.[1]?.after_dispatch_id ?? runtimeTrace.dispatchEvents?.[1]?.id,
     epoch: 2,
     rawReadbackHash: rawHash,
     expectedOutput: {
+      authority: 'content_addressed_semantic_oracle',
       dataType,
-      values: profile.outputOracle.expectedAfterValues,
-      tolerance: profile.outputOracle.tolerance,
+      values: expectedValues,
+      tolerance: expectedOutputContract.tolerance,
       expectedHash,
       verified: expectedVerification.matched,
       maxAbsDelta: expectedVerification.maxAbsDelta,
       compared: expectedVerification.compared,
       mismatches: expectedVerification.mismatches,
+    },
+    profileExpectedOutputHint: {
+      authority: 'diagnostic_hint_only',
+      values: profileHintValues,
+      tolerance: profile.outputOracle.tolerance,
+      matchedIndependentOracle: profileHintVerification.matched,
+    },
+    semanticOracle: {
+      implementationHash,
+      requestHash,
+      resultHash,
+      binding: request.binding,
+      expectedRawHash: execution.expectedRawHash,
+      recomputed: independentVerification.accepted,
     },
     deterministicSlice: {
       offset: sliceOffset,
@@ -1237,6 +3444,11 @@ async function writeComputeOracleArtifacts({ outDir, profile, runtimeTrace, rawA
     expectedVerification,
     runtimeTrace,
   });
+  const schemaHash = sha256Bytes(await readFile(schemaPath));
+  const cardHash = sha256Bytes(await readFile(cardPath));
+  if ([rawHash, beforeHash, expectedHash, sliceHash].includes(implementationHash)) {
+    throw new Error('HIP semantic oracle implementation hash aliases readback/data evidence');
+  }
   return {
     raw_readback_bin: relRepo(rawAfterPath),
     rawReadbackBin: relRepo(rawAfterPath),
@@ -1248,20 +3460,24 @@ async function writeComputeOracleArtifacts({ outDir, profile, runtimeTrace, rawA
     raw_readback_hash_verified: true,
     raw_readback_source: 'runtime_raw_readback',
     raw_readback_byte_length: afterBytes.length,
-    readback_schema_hash: sha256Bytes(await readFile(schemaPath)),
+    readback_schema_hash: schemaHash,
     checksum_before: beforeHash,
     checksum_after: rawHash,
-    output_change_expected: profile.outputOracle.expectedOutputChange,
+    output_change_expected: true,
+    profile_output_change_hint: profile.outputOracle.expectedOutputChange,
     expected_output_declared: true,
-    expected_output_required: profile.outputOracle.expectedOutputRequired,
+    expected_output_required: true,
+    expected_output_source: 'content_addressed_semantic_oracle',
     expected_output_data_type: dataType,
-    expected_output_values: profile.outputOracle.expectedAfterValues,
+    expected_output_values: expectedValues,
     expected_output_hash: expectedHash,
-    expected_output_tolerance: profile.outputOracle.tolerance,
+    expected_output_tolerance: expectedOutputContract.tolerance,
     expected_output_verified: expectedVerification.matched,
     expected_output_max_abs_delta: expectedVerification.maxAbsDelta,
     expected_output_compared: expectedVerification.compared,
     expected_output_mismatches: expectedVerification.mismatches,
+    profile_expected_output_hint_declared: profileHintVerification.declared,
+    profile_expected_output_hint_matched: profileHintVerification.matched,
     deterministic_slice: {
       offset: sliceOffset,
       length: sliceLength,
@@ -1270,10 +3486,28 @@ async function writeComputeOracleArtifacts({ outDir, profile, runtimeTrace, rawA
     },
     deterministic_slice_hash: sliceHash,
     deterministic_slice_hash_verified: true,
-    oracle_code_hash: sha256Text(renderComputeCard.toString()),
+    oracle_code_hash: implementationHash,
+    semantic_oracle_implementation: relRepo(implementationPath),
+    semantic_oracle_implementation_hash: implementationHash,
+    semantic_oracle_request_json: relRepo(requestPath),
+    semantic_oracle_request_hash: requestHash,
+    semantic_oracle_result_json: relRepo(resultPath),
+    semantic_oracle_result_hash: resultHash,
+    semantic_oracle_binding: request.binding,
+    semantic_oracle_binding_hash: execution.bindingHash,
+    semantic_oracle_binding_receipt: execution.bindingReceipt,
+    semantic_oracle_binding_receipt_hash: execution.bindingReceiptHash,
+    semantic_oracle_identity: buildSemanticOracleIdentity(request.binding),
+    semantic_oracle_semantic_request_hash: execution.semanticRequestHash,
+    semantic_oracle_trusted_implementation_hash: request.binding.trustedOracleImplementationHash,
+    runtime_trace_artifact: relRepo(traceArtifact.path),
+    runtime_trace_artifact_hash: traceArtifact.hash,
+    semantic_oracle_expected_raw_hash: execution.expectedRawHash,
+    semantic_oracle_recomputed: independentVerification.accepted,
+    semantic_oracle_verification: independentVerification,
     rendered_card_png: relRepo(cardPath),
     renderedCardPng: relRepo(cardPath),
-    rendered_card_hash: sha256Bytes(await readFile(cardPath)),
+    rendered_card_hash: cardHash,
     producer: 'hip_module_runtime_proof',
     timestamp_after_dispatch: null,
     epoch: 2,
@@ -1283,20 +3517,50 @@ async function writeComputeOracleArtifacts({ outDir, profile, runtimeTrace, rawA
       byte_length: afterBytes.length,
       deterministic_slice_hash: sliceHash,
       deterministic_slice_hash_verified: true,
-      readback_schema_hash: sha256Bytes(await readFile(schemaPath)),
+      readback_schema_hash: schemaHash,
     },
   };
 }
 
-function computeOracleValidation({ artifacts }) {
+function computeOracleValidation({ artifacts, observedBinding }) {
+  rejectConflictingSnakeCamelAliases(artifacts, 'HIP readback validation artifacts');
   const changed = artifacts.checksum_before !== artifacts.checksum_after;
-  const expectedVerified = artifacts.expected_output_declared === true && artifacts.expected_output_verified === true;
+  const expectedVerified = artifacts.expected_output_declared === true
+    && artifacts.expected_output_verified === true
+    && artifacts.expected_output_source === 'content_addressed_semantic_oracle';
+  const bindingVerified = OBSERVED_RUNTIME_BINDING_FIELDS.every((field) => (
+    artifacts.semantic_oracle_binding?.[field] === observedBinding?.[field]
+  ));
+  const schemaDeclared = firstText(artifacts.readback_schema_json, artifacts.readbackSchemaJson) !== null;
+  const schemaHashDeclared = /^sha256:[0-9a-f]{64}$/u.test(artifacts.readback_schema_hash ?? '');
+  const sliceDeclared = artifacts.deterministic_slice
+    && Number.isInteger(artifacts.deterministic_slice.offset)
+    && Number.isInteger(artifacts.deterministic_slice.length)
+    && /^sha256:[0-9a-f]{64}$/u.test(artifacts.deterministic_slice.hash ?? '');
+  const implementationVerified =
+    /^sha256:[0-9a-f]{64}$/u.test(artifacts.semantic_oracle_implementation_hash ?? '')
+    && artifacts.semantic_oracle_implementation_hash === artifacts.oracle_code_hash
+    && artifacts.semantic_oracle_recomputed === true
+    && artifacts.semantic_oracle_verification?.accepted === true;
+  const identityVerified = semanticOracleIdentityVerified(
+    artifacts.semantic_oracle_identity,
+    artifacts.semantic_oracle_binding,
+  ) && artifacts.semantic_oracle_identity?.trusted_oracle_implementation_hash
+    === artifacts.oracle_code_hash;
+  const failedGates = [
+    changed ? null : 'compute_oracle_checksum_unchanged',
+    artifacts.raw_readback_hash_verified === true ? null : 'compute_oracle_raw_readback_hash_unverified',
+    artifacts.deterministic_slice_hash_verified === true ? null : 'compute_oracle_deterministic_slice_hash_unverified',
+    expectedVerified ? null : 'compute_oracle_expected_output_not_verified',
+    schemaDeclared ? null : 'compute_oracle_readback_schema_missing',
+    schemaHashDeclared ? null : 'compute_oracle_readback_schema_hash_missing',
+    sliceDeclared ? null : 'compute_oracle_deterministic_slice_missing',
+    implementationVerified ? null : 'compute_oracle_independent_semantic_recompute_unverified',
+    bindingVerified ? null : 'compute_oracle_independent_semantic_binding_mismatch',
+    identityVerified ? null : 'compute_oracle_semantic_oracle_identity_unverified',
+  ].filter(Boolean);
   return {
-    accepted:
-      changed
-      && artifacts.raw_readback_hash_verified === true
-      && artifacts.deterministic_slice_hash_verified === true
-      && expectedVerified,
+    accepted: failedGates.length === 0,
     checksumChanged: changed,
     rawReadbackHashVerified: artifacts.raw_readback_hash_verified === true,
     deterministicSliceHashVerified: artifacts.deterministic_slice_hash_verified === true,
@@ -1305,12 +3569,10 @@ function computeOracleValidation({ artifacts }) {
     expectedOutputRequired: artifacts.expected_output_required !== false,
     expectedOutputHash: artifacts.expected_output_hash,
     expectedOutputMaxAbsDelta: artifacts.expected_output_max_abs_delta,
-    failedGates: [
-      changed ? null : 'compute_oracle_checksum_unchanged',
-      artifacts.raw_readback_hash_verified === true ? null : 'compute_oracle_raw_readback_hash_unverified',
-      artifacts.deterministic_slice_hash_verified === true ? null : 'compute_oracle_deterministic_slice_hash_unverified',
-      expectedVerified ? null : 'compute_oracle_expected_output_not_verified',
-    ].filter(Boolean),
+    semanticOracleRecomputed: implementationVerified,
+    semanticOracleBindingVerified: bindingVerified,
+    semanticOracleIdentityVerified: identityVerified,
+    failedGates,
   };
 }
 
@@ -1318,7 +3580,13 @@ function evidenceRefsForFields(fields, evidenceRefs) {
   return Object.fromEntries(fields.map((field) => [field, evidenceRefs]));
 }
 
-function buildFissionReport({ profile, compiled, runtimeTrace, oracleArtifacts }) {
+function buildFissionReport({
+  profile,
+  compiled,
+  runtimeTrace,
+  oracleArtifacts,
+  expectedOutputContract,
+}) {
   const decision = {
     targetId: profile.targetId,
     beforeHsacoHash: compiled.beforeHsacoHash,
@@ -1357,6 +3625,9 @@ function buildFissionReport({ profile, compiled, runtimeTrace, oracleArtifacts }
       raw_readback_hash: oracleArtifacts.raw_readback_hash,
       expected_output_hash: oracleArtifacts.expected_output_hash,
       expected_output_verified: oracleArtifacts.expected_output_verified,
+      expected_output_contract: expectedOutputContract,
+      semantic_oracle_binding: oracleArtifacts.semantic_oracle_binding,
+      semantic_oracle_request_hash: oracleArtifacts.semantic_oracle_request_hash,
       deterministic_slice: oracleArtifacts.deterministic_slice,
     },
     evidence_refs: [
@@ -1368,8 +3639,19 @@ function buildFissionReport({ profile, compiled, runtimeTrace, oracleArtifacts }
   };
 }
 
-function buildContract({ profile, compiled, runtimeTrace, runMode, oracleArtifacts }) {
+function buildContract({
+  profile,
+  compiled,
+  runtimeTrace,
+  runMode,
+  oracleArtifacts,
+  expectedOutputContract,
+}) {
   const afterDispatch = runtimeTrace.dispatchEvents?.[1] ?? {};
+  const semanticOracleIdentity = oracleArtifacts.semantic_oracle_identity;
+  if (!semanticOracleIdentityVerified(semanticOracleIdentity, oracleArtifacts.semantic_oracle_binding)) {
+    throw new Error('HIP contract requires a verified semantic oracle identity');
+  }
   const fieldEvidenceRefs = [
     profile.profileHash,
     compiled.beforeHsacoHash,
@@ -1402,6 +3684,9 @@ function buildContract({ profile, compiled, runtimeTrace, runMode, oracleArtifac
       compiler: CFG.hipcc,
       compiler_args_hash: sha256Text(stableJson(compiled.commands)),
       supported_pipeline_scope: profile.validationScope,
+      source_hash_after: compiled.afterSourceHash,
+      compile_manifest_hash: compiled.compileManifestHash,
+      source_artifact_binding_hash: compiled.sourceArtifactBindingHash,
     },
     artifact_hash_before: compiled.beforeHsacoHash,
     artifact_hash_after: compiled.afterHsacoHash,
@@ -1458,6 +3743,7 @@ function buildContract({ profile, compiled, runtimeTrace, runMode, oracleArtifac
     },
     dispatch_trace_required: true,
     oracle_trace_required: true,
+    semantic_oracle_identity: semanticOracleIdentity,
     state_preservation_checks: {
       process_id: runtimeTrace.processId,
       device_uuid: runtimeTrace.device?.device_uuid,
@@ -1471,7 +3757,13 @@ function buildContract({ profile, compiled, runtimeTrace, runMode, oracleArtifac
       camera_state_hash: 'not-applicable:hip-module-compute',
       swapchain_or_framebuffer_identity: `hip-readback:${profile.buffers.readback.name}:${profile.buffers.readback.byteLength}`,
     },
-    fission_report: buildFissionReport({ profile, compiled, runtimeTrace, oracleArtifacts }),
+    fission_report: buildFissionReport({
+      profile,
+      compiled,
+      runtimeTrace,
+      oracleArtifacts,
+      expectedOutputContract,
+    }),
     epoch_policy: {
       publish_mechanism: 'same-process-hip-module-dispatch-slot',
       dispatch_binding: `hipModuleLaunchKernel:${profile.kernel.name}`,
@@ -1506,6 +3798,9 @@ function buildContract({ profile, compiled, runtimeTrace, runMode, oracleArtifac
         after_dispatch_id: afterDispatch.id,
       },
       supported_pipeline_scope: profile.validationScope,
+      semantic_oracle_identity_hash: semanticOracleIdentity.identity_hash,
+      trusted_oracle_implementation_hash:
+        semanticOracleIdentity.trusted_oracle_implementation_hash,
       field_evidence_refs: evidenceRefsForFields([
         'kernel_name',
         'launch_api',
@@ -1520,7 +3815,7 @@ function buildContract({ profile, compiled, runtimeTrace, runMode, oracleArtifac
       ], fieldEvidenceRefs),
     },
   };
-  contract.contract_hash = sha256Text(stableJson(contract));
+  contract.contract_hash = recomputeGpuHmrAcceptanceContractHash(contract);
   contract.contract_id = `hip-module-contract:${contract.contract_hash}`;
   return contract;
 }
@@ -1540,7 +3835,12 @@ function buildProofLedgerRecord({
   const beforeEpoch = '1';
   const dispatchId = runtimeTrace.dispatchEvents?.[1]?.id ?? 'hip-module-dispatch-epoch-2';
   const processId = runtimeTrace.processId;
+  const runtimeSessionId = hipRuntimeSessionId(runtimeTrace);
   const outputTargetId = profile.buffers.readback.name;
+  const semanticOracleIdentity = oracleArtifacts.semantic_oracle_identity;
+  if (!semanticOracleIdentityVerified(semanticOracleIdentity, oracleArtifacts.semantic_oracle_binding)) {
+    throw new Error('HIP proof ledger requires a verified semantic oracle identity');
+  }
   const outputEvent = {
     id: `hip-module-output-${afterEpoch}`,
     kind: 'compute_readback',
@@ -1550,10 +3850,24 @@ function buildProofLedgerRecord({
     epoch: afterEpoch,
     output_target_id: outputTargetId,
     outputTargetId,
+    oracle_code_hash: oracleArtifacts.oracle_code_hash,
+    semantic_oracle_identity: semanticOracleIdentity,
+    semantic_oracle_identity_hash: semanticOracleIdentity.identity_hash,
+    request_id: semanticOracleIdentity.request_id,
+    edit_id: semanticOracleIdentity.edit_id,
+    target_id: semanticOracleIdentity.target_id,
+    output_resource_id: semanticOracleIdentity.output_resource_id,
+    trusted_oracle_implementation_hash:
+      semanticOracleIdentity.trusted_oracle_implementation_hash,
+    runtime_session_id: runtimeSessionId,
+    backend: 'hip',
     timestamp_monotonic_ns: timings.outputTimestampNs,
     process_id: processId,
     output_oracle: {
       kind: 'compute_oracle',
+      output_target_id: outputTargetId,
+      oracle_code_hash: oracleArtifacts.oracle_code_hash,
+      runtime_session_id: runtimeSessionId,
       oracle_artifacts: {
         compute_oracle_artifacts: {
           ...oracleArtifacts,
@@ -1570,12 +3884,14 @@ function buildProofLedgerRecord({
     edit_kind: runMode.edit_kind,
     different_edit: runMode.different_edit,
     backend: 'hip',
+    runtime_session_id: runtimeSessionId,
     classification: {
       project_kind: 'gpu_project',
       edit_kind: 'gpu_artifact_edit',
       route: 'gpu_hmr',
     },
     contract_hash: contract.contract_hash,
+    semantic_oracle_identity: semanticOracleIdentity,
     artifact_before_hash: compiled.beforeHsacoHash,
     artifact_after_hash: compiled.afterHsacoHash,
     loader_event: {
@@ -1584,7 +3900,13 @@ function buildProofLedgerRecord({
       epoch: afterEpoch,
       timestamp_monotonic_ns: timings.loaderTimestampNs,
       process_id: processId,
+      runtime_session_id: runtimeSessionId,
       source: 'hipModuleLoadData',
+      artifact_source_hash: semanticOracleIdentity.artifact_source_hash,
+      compile_manifest_hash: semanticOracleIdentity.compile_manifest_hash,
+      source_artifact_binding_hash: semanticOracleIdentity.artifact_binding_hash,
+      semantic_oracle_identity: semanticOracleIdentity,
+      semantic_oracle_identity_hash: semanticOracleIdentity.identity_hash,
     },
     epoch_publish_event: {
       id: `hip-module-publish-${afterEpoch}`,
@@ -1592,6 +3914,7 @@ function buildProofLedgerRecord({
       epoch: afterEpoch,
       timestamp_monotonic_ns: timings.publishTimestampNs,
       process_id: processId,
+      runtime_session_id: runtimeSessionId,
       dispatch_binding: `hipModuleLaunchKernel:${profile.kernel.name}`,
     },
     dispatch_event: {
@@ -1600,6 +3923,7 @@ function buildProofLedgerRecord({
       epoch: afterEpoch,
       timestamp_monotonic_ns: timings.dispatchTimestampNs,
       process_id: processId,
+      runtime_session_id: runtimeSessionId,
       launch_api: 'hipModuleLaunchKernel',
       kernel_name: profile.kernel.name,
       grid_dim: profile.launch.gridDim,
@@ -1610,6 +3934,15 @@ function buildProofLedgerRecord({
       output_target_id: outputTargetId,
       outputTargetId,
       command: 'hipModuleLaunchKernel',
+      request_id: semanticOracleIdentity.request_id,
+      edit_id: semanticOracleIdentity.edit_id,
+      target_id: semanticOracleIdentity.target_id,
+      output_resource_id: semanticOracleIdentity.output_resource_id,
+      trace_artifact_hash: semanticOracleIdentity.trace_artifact_hash,
+      resource_or_plan_hash: semanticOracleIdentity.resource_or_plan_hash,
+      resource_trace_hash: semanticOracleIdentity.resource_trace_hash,
+      semantic_oracle_identity: semanticOracleIdentity,
+      semantic_oracle_identity_hash: semanticOracleIdentity.identity_hash,
     },
     output_event: outputEvent,
     retirement_event: {
@@ -1617,6 +3950,7 @@ function buildProofLedgerRecord({
       status: 'stream_event_proven',
       timestamp_monotonic_ns: timings.retirementTimestampNs,
       process_id: processId,
+      runtime_session_id: runtimeSessionId,
       retired_epoch: beforeEpoch,
       evidence_refs: [dispatchId, 'runtime:hip-module:hipEventRecord', 'runtime:hip-module:hipStreamSynchronize', 'runtime:hip-module:hipModuleUnload'],
     },
@@ -1624,6 +3958,7 @@ function buildProofLedgerRecord({
       process_id: processId,
       host_pid: processId,
       same_process: runtimeTrace.sameProcess === true,
+      runtime_session_id: runtimeSessionId,
     },
     device_identity: {
       backend: 'hip',
@@ -1676,6 +4011,7 @@ function buildProofLedgerRecord({
 }
 
 function nativeHipApiEvidence(runtimeTrace) {
+  rejectConflictingSnakeCamelAliases(runtimeTrace, 'HIP native API trace');
   const loaders = Array.isArray(runtimeTrace.loaderEvents) ? runtimeTrace.loaderEvents : [];
   const symbols = Array.isArray(runtimeTrace.symbolEvents) ? runtimeTrace.symbolEvents : [];
   const dispatches = Array.isArray(runtimeTrace.dispatchEvents) ? runtimeTrace.dispatchEvents : [];
@@ -1683,7 +4019,9 @@ function nativeHipApiEvidence(runtimeTrace) {
   const counts = {
     hipModuleLoadData: loaders.filter((entry) => entry?.api === 'hipModuleLoadData').length,
     hipModuleGetFunction: symbols.filter((entry) => entry?.api === 'hipModuleGetFunction').length,
-    hipModuleLaunchKernel: dispatches.filter((entry) => entry?.launch_api === 'hipModuleLaunchKernel').length,
+    hipModuleLaunchKernel: dispatches.filter((entry) => (
+      authoritativeText(entry, ['launch_api', 'launchApi'], 'dispatch.launchApi') === 'hipModuleLaunchKernel'
+    )).length,
     outputReadback: outputs.filter((entry) => entry?.passed === true).length,
   };
   const failedGates = [
@@ -2040,9 +4378,124 @@ function declaredHipModuleNegativeRefusalTestTiming() {
   });
 }
 
-function buildSyntheticRuntimeProofFixture(profile) {
+function emitSyntheticHipRuntimeInvocationEvidence({
+  runtimeTrace,
+  launchObservation,
+  planHash,
+  observedReadbackHash,
+  kernelIdentity,
+  beforeArtifactHash,
+  afterArtifactHash,
+}) {
+  const resources = launchObservation.resources.map((resource, index) => ({
+    ...resource,
+    resourceId: `hip-resource-${index}-${resource.initialBytesHash.slice(-12)}`,
+    devicePointer: `0x${(0x1000 + index * 0x100).toString(16)}`,
+  }));
+  const byName = new Map(resources.map((resource) => [resource.name, resource]));
+  const parameters = launchObservation.parameters.map((parameter, index) => {
+    const argumentAddress = `0x${(0x4000 + index * 0x20).toString(16)}`;
+    if (parameter.kind === 'buffer') {
+      const resource = byName.get(parameter.buffer);
+      if (!resource) throw new Error(`synthetic HIP trace param ${parameter.name} has no resource`);
+      return {
+        ...parameter,
+        index,
+        argumentAddress,
+        resourceId: resource.resourceId,
+        devicePointer: resource.devicePointer,
+      };
+    }
+    const encodedBytes = encodeNumericValues([parameter.value], parameter.dataType);
+    return {
+      ...parameter,
+      index,
+      argumentAddress,
+      encodedBytes: Array.from(encodedBytes),
+      encodedBytesHash: sha256Bytes(encodedBytes),
+    };
+  });
+  const resourceTrace = hipResourceTraceFromLaunchObservation({
+    launchObservation: { resources, parameters },
+    planHash,
+  });
+  const parameterTraceHash = sha256Text(stableJson(resourceTrace.parameters));
+  let afterFunctionId = null;
+  let afterFunctionAddress = null;
+  for (const [index, artifactHash] of [beforeArtifactHash, afterArtifactHash].entries()) {
+    const epoch = String(index + 1);
+    const loader = oneTraceFact(runtimeTrace.loaderEvents, (event) => String(event.epoch) === epoch, `epoch-${epoch} loader`);
+    loader.id ??= `hip-module-self-check-loader-${epoch}`;
+    loader.loaded_bytes_hash = artifactHash;
+    loader.loaded_byte_length = 4096 + index;
+    const symbol = oneTraceFact(runtimeTrace.symbolEvents, (event) => String(event.epoch) === epoch, `epoch-${epoch} symbol`);
+    symbol.id ??= `hip-module-self-check-symbol-${epoch}`;
+    symbol.requested_symbol = kernelIdentity;
+    symbol.resolved_symbol = kernelIdentity;
+    const functionAddress = `0x${(0x9000 + index * 0x100).toString(16)}`;
+    const functionId = `hip-function:${sha256Text(stableJson({
+      loadedBytesHash: artifactHash,
+      requestedSymbol: kernelIdentity,
+      resolvedFunctionAddress: functionAddress,
+      resolvedSymbol: kernelIdentity,
+    }))}`;
+    symbol.function_id = functionId;
+    symbol.resolved_function_address = functionAddress;
+    const dispatch = oneTraceFact(runtimeTrace.dispatchEvents, (event) => String(event.epoch) === epoch, `epoch-${epoch} dispatch`);
+    dispatch.kernel_name = kernelIdentity;
+    dispatch.resolved_symbol = kernelIdentity;
+    dispatch.function_id = functionId;
+    dispatch.resolved_function_address = functionAddress;
+    dispatch.resource_trace_hash = resourceTrace.resourceTraceHash;
+    dispatch.parameter_trace_hash = parameterTraceHash;
+    const output = oneTraceFact(runtimeTrace.outputEvents, (event) => String(event.epoch) === epoch, `epoch-${epoch} output`);
+    output.readback_hash = epoch === '2'
+      ? observedReadbackHash
+      : sha256Bytes(encodeNumericValues(output.values, resources.find((resource) => resource.name === output.output_target_id).dataType));
+    output.readback_byte_length = resources.find((resource) => resource.name === output.output_target_id).byteLength;
+    if (epoch === '2') {
+      afterFunctionId = functionId;
+      afterFunctionAddress = functionAddress;
+    }
+  }
+  const dispatch = oneTraceFact(runtimeTrace.dispatchEvents, (event) => String(event.epoch) === '2', 'epoch-2 dispatch');
+  const loader = oneTraceFact(runtimeTrace.loaderEvents, (event) => String(event.epoch) === '2', 'epoch-2 loader');
+  const symbol = oneTraceFact(runtimeTrace.symbolEvents, (event) => String(event.epoch) === '2', 'epoch-2 symbol');
+  const output = oneTraceFact(runtimeTrace.outputEvents, (event) => String(event.epoch) === '2', 'epoch-2 output');
+  const outputResourceId = firstText(dispatch.output_target_id, dispatch.outputTargetId);
+  const outputResource = byName.get(outputResourceId);
+  if (!outputResource) throw new Error('synthetic HIP trace output has no runtime resource');
+  runtimeTrace.probeInvocation = {
+    schemaVersion: 'synthi.gpu_hmr.hip_runtime_invocation_evidence.v1',
+    producer: 'native_hip_module_runtime_probe',
+    planHash,
+    resourceTraceHash: resourceTrace.resourceTraceHash,
+    parameterTraceHash,
+    resources,
+    parameters,
+    loaderEventId: loader.id,
+    symbolEventId: symbol.id,
+    dispatchId: dispatch.id,
+    artifactHash: afterArtifactHash,
+    loadedBytesHash: afterArtifactHash,
+    kernelIdentity,
+    resolvedSymbol: kernelIdentity,
+    functionId: afterFunctionId,
+    resolvedFunctionAddress: afterFunctionAddress,
+    outputEventId: output.id,
+    outputResourceId,
+    outputRuntimeResourceId: outputResource.resourceId,
+    outputDevicePointer: outputResource.devicePointer,
+    observedReadbackHash,
+    readbackByteLength: outputResource.byteLength,
+  };
+  return runtimeTrace.probeInvocation;
+}
+
+async function buildSyntheticRuntimeProofFixture(profile) {
   const runMode = runModeMetadata(profile);
   const compiled = {
+    kernelIdentity: profile.kernel.name,
     beforeHsacoHash: sha256Text(`${profile.targetId}:before-hsaco`),
     afterHsacoHash: sha256Text(`${profile.targetId}:after-hsaco`),
     commands: {
@@ -2051,10 +4504,41 @@ function buildSyntheticRuntimeProofFixture(profile) {
       after: ['hipcc', '--genco', profile.afterPath],
     },
   };
+  compiled.compileManifest = {
+    schemaVersion: 'synthi.gpu_hmr.hip_source_hsaco_compile_manifest.v1',
+    compiler: 'hipcc',
+    compileTarget: profile.compile.gpuArch || profile.compile.compileTarget,
+    entryPoint: profile.kernel.entryPoint,
+    sourceInputs: [
+      { role: 'before', path: relRepo(profile.beforePath), sha256: profile.beforeHash },
+      { role: 'after', path: relRepo(profile.afterPath), sha256: profile.afterHash },
+    ],
+    commands: compiled.commands,
+    outputs: [
+      { role: 'before_hsaco', path: 'self-check/before.hsaco', sha256: compiled.beforeHsacoHash },
+      { role: 'after_hsaco', path: 'self-check/after.hsaco', sha256: compiled.afterHsacoHash },
+    ],
+  };
+  compiled.compileManifestHash = sha256Text(stableJson(compiled.compileManifest));
+  compiled.sourceArtifactBindingHash = sha256Text(stableJson({
+    sourceHash: profile.afterHash,
+    compiledArtifactHash: compiled.afterHsacoHash,
+    compileManifestHash: compiled.compileManifestHash,
+    entryPoint: profile.kernel.entryPoint,
+  }));
+  const implementationBytes = semanticOracleImplementationBytes();
+  const launchObservation = buildHipLaunchObservation(profile);
   const dispatchBefore = 'hip-module-self-check-dispatch-1';
   const dispatchAfter = 'hip-module-self-check-dispatch-2';
   const outputTargetId = profile.buffers.readback.name;
+  const syntheticPlanHash = sha256Text(stableJson({
+    kind: 'hip-self-check-probe-plan',
+    launchObservation,
+    beforeHsacoHash: compiled.beforeHsacoHash,
+    afterHsacoHash: compiled.afterHsacoHash,
+  }));
   const runtimeTrace = {
+    runtimeSessionId: 'hip-module-self-check-session',
     processId: 'hip-module-self-check-process',
     sameProcess: true,
     processRestarted: false,
@@ -2079,12 +4563,54 @@ function buildSyntheticRuntimeProofFixture(profile) {
       { epoch: '2', artifact_hash: compiled.afterHsacoHash, timestamp_monotonic_ns: 140 },
     ],
     dispatchEvents: [
-      { id: dispatchBefore, launch_api: 'hipModuleLaunchKernel', epoch: '1', artifact_hash: compiled.beforeHsacoHash, timestamp_monotonic_ns: 50, output_target_id: outputTargetId, outputTargetId },
-      { id: dispatchAfter, launch_api: 'hipModuleLaunchKernel', epoch: '2', artifact_hash: compiled.afterHsacoHash, timestamp_monotonic_ns: 150, output_target_id: outputTargetId, outputTargetId },
+      {
+        id: dispatchBefore,
+        launch_api: 'hipModuleLaunchKernel',
+        epoch: '1',
+        artifact_hash: compiled.beforeHsacoHash,
+        timestamp_monotonic_ns: 50,
+        output_target_id: outputTargetId,
+        outputTargetId,
+        grid_dim: launchObservation.gridDim,
+        block_dim: launchObservation.blockDim,
+        shared_mem_bytes: launchObservation.sharedMemBytes,
+        stream: launchObservation.stream,
+      },
+      {
+        id: dispatchAfter,
+        launch_api: 'hipModuleLaunchKernel',
+        epoch: '2',
+        artifact_hash: compiled.afterHsacoHash,
+        timestamp_monotonic_ns: 150,
+        output_target_id: outputTargetId,
+        outputTargetId,
+        grid_dim: launchObservation.gridDim,
+        block_dim: launchObservation.blockDim,
+        shared_mem_bytes: launchObservation.sharedMemBytes,
+        stream: launchObservation.stream,
+      },
     ],
     outputEvents: [
-      { id: 'hip-module-self-check-output-1', passed: true, values: profile.outputOracle.expectedBeforeValues, after_dispatch_id: dispatchBefore, epoch: '1', timestamp_monotonic_ns: 60, output_target_id: outputTargetId, outputTargetId },
-      { id: 'hip-module-self-check-output-2', passed: true, values: profile.outputOracle.expectedAfterValues, after_dispatch_id: dispatchAfter, epoch: '2', timestamp_monotonic_ns: 160, output_target_id: outputTargetId, outputTargetId },
+      {
+        id: 'hip-module-self-check-output-1',
+        passed: true,
+        after_dispatch_id: dispatchBefore,
+        artifact_hash: compiled.beforeHsacoHash,
+        epoch: '1',
+        timestamp_monotonic_ns: 60,
+        output_target_id: outputTargetId,
+        outputTargetId,
+      },
+      {
+        id: 'hip-module-self-check-output-2',
+        passed: true,
+        after_dispatch_id: dispatchAfter,
+        artifact_hash: compiled.afterHsacoHash,
+        epoch: '2',
+        timestamp_monotonic_ns: 160,
+        output_target_id: outputTargetId,
+        outputTargetId,
+      },
     ],
     retirementEvent: {
       id: 'hip-module-self-check-retire-1',
@@ -2093,83 +4619,90 @@ function buildSyntheticRuntimeProofFixture(profile) {
       timestamp_monotonic_ns: 170,
     },
   };
-  const expectedBytes = encodeNumericValues(profile.outputOracle.expectedAfterValues, profile.outputOracle.dataType);
-  const beforeBytes = encodeNumericValues(profile.outputOracle.expectedBeforeValues, profile.outputOracle.dataType);
-  const deterministicSliceBytes = expectedBytes.subarray(
-    profile.outputOracle.deterministicSlice.offset,
-    profile.outputOracle.deterministicSlice.offset + profile.outputOracle.deterministicSlice.length,
-  );
-  const rawReadbackHash = sha256Bytes(expectedBytes);
-  const beforeHash = sha256Bytes(beforeBytes);
-  const sliceHash = sha256Bytes(deterministicSliceBytes);
+  const beforeRequest = buildHipSemanticOracleRequest({
+    profile,
+    runMode,
+    artifactAfterHash: compiled.beforeHsacoHash,
+    artifactSource: profile.beforeSource,
+    artifactSourceHash: profile.beforeHash,
+    runtimeTrace,
+    launchObservation,
+    compiled,
+    planHash: syntheticPlanHash,
+    epoch: '1',
+  });
+  const beforeExecution = await executeSemanticOracle(beforeRequest, implementationBytes);
+  const afterPlanningRequest = buildHipSemanticOracleRequest({
+    profile,
+    runMode,
+    artifactAfterHash: compiled.afterHsacoHash,
+    runtimeTrace,
+    launchObservation,
+    compiled,
+    planHash: syntheticPlanHash,
+  });
+  const afterPlanningExecution = await executeSemanticOracle(afterPlanningRequest, implementationBytes);
+  runtimeTrace.outputEvents[0].values = beforeExecution.expectedValues;
+  runtimeTrace.outputEvents[1].values = afterPlanningExecution.expectedValues;
+  const syntheticReadbackHash = sha256Bytes(Buffer.from(afterPlanningExecution.expectedBytes));
+  emitSyntheticHipRuntimeInvocationEvidence({
+    runtimeTrace,
+    launchObservation,
+    planHash: syntheticPlanHash,
+    observedReadbackHash: syntheticReadbackHash,
+    kernelIdentity: profile.kernel.name,
+    beforeArtifactHash: compiled.beforeHsacoHash,
+    afterArtifactHash: compiled.afterHsacoHash,
+  });
   const selfCheckArtifactDir = path.join(ARTIFACT_DIR, 'self-check');
-  mkdirSync(selfCheckArtifactDir, { recursive: true });
-  const rawAfterPath = path.join(selfCheckArtifactDir, 'after-readback.bin');
-  const rawBeforePath = path.join(selfCheckArtifactDir, 'before-readback.bin');
-  const schemaPath = path.join(selfCheckArtifactDir, 'readback-schema.json');
-  const cardPath = path.join(selfCheckArtifactDir, 'compute-card.png');
-  const schemaBytes = Buffer.from(`${stableJson({
-    dataType: profile.outputOracle.dataType,
-    byteLength: expectedBytes.length,
-    targetId: profile.buffers.readback.name,
-  })}\n`);
-  const cardBytes = Buffer.from('hip module self-check compute card\n');
-  writeFileSync(rawAfterPath, expectedBytes);
-  writeFileSync(rawBeforePath, beforeBytes);
-  writeFileSync(schemaPath, schemaBytes);
-  writeFileSync(cardPath, cardBytes);
-  const readbackSchemaHash = sha256Bytes(schemaBytes);
-  const renderedCardHash = sha256Bytes(cardBytes);
-  const oracleArtifacts = {
-    raw_readback_bin: relRepo(rawAfterPath),
-    rawReadbackBin: relRepo(rawAfterPath),
-    before_raw_readback_bin: relRepo(rawBeforePath),
-    readback_schema_json: relRepo(schemaPath),
-    readbackSchemaJson: relRepo(schemaPath),
-    raw_readback_hash: rawReadbackHash,
-    rawReadbackHash: rawReadbackHash,
-    raw_readback_hash_verified: true,
-    raw_readback_source: 'runtime_raw_readback',
-    raw_readback_byte_length: expectedBytes.length,
-    readback_schema_hash: readbackSchemaHash,
-    checksum_before: beforeHash,
-    checksum_after: rawReadbackHash,
-    output_change_expected: true,
-    expected_output_declared: true,
-    expected_output_required: true,
-    expected_output_data_type: profile.outputOracle.dataType,
-    expected_output_values: profile.outputOracle.expectedAfterValues,
-    expected_output_hash: sha256Bytes(expectedBytes),
-    expected_output_tolerance: profile.outputOracle.tolerance,
-    expected_output_verified: true,
-    expected_output_max_abs_delta: 0,
-    expected_output_compared: profile.outputOracle.expectedAfterValues.length,
-    expected_output_mismatches: [],
-    deterministic_slice: {
-      offset: profile.outputOracle.deterministicSlice.offset,
-      length: profile.outputOracle.deterministicSlice.length,
-      hash: sliceHash,
-      source: 'runtime_raw_readback',
-    },
-    deterministic_slice_hash: sliceHash,
-    deterministic_slice_hash_verified: true,
-    oracle_code_hash: sha256Text('hip_module_self_check_oracle_code'),
-    rendered_card_png: relRepo(cardPath),
-    renderedCardPng: relRepo(cardPath),
-    rendered_card_hash: renderedCardHash,
-    producer: 'hip_module_runtime_proof_self_check',
-    timestamp_after_dispatch: 160,
-    epoch: 2,
-    raw_readback_verification: {
-      raw_readback_hash: rawReadbackHash,
-      hash_verified: true,
-      byte_length: expectedBytes.length,
-      deterministic_slice_hash: sliceHash,
-      deterministic_slice_hash_verified: true,
-      readback_schema_hash: readbackSchemaHash,
-    },
+  await mkdir(selfCheckArtifactDir, { recursive: true });
+  const traceArtifact = await persistCanonicalRuntimeTrace({
+    outDir: selfCheckArtifactDir,
+    targetId: profile.targetId,
+    runtimeTrace,
+  });
+  const semanticRequest = buildHipSemanticOracleRequest({
+    profile,
+    runMode,
+    artifactAfterHash: compiled.afterHsacoHash,
+    runtimeTrace,
+    launchObservation,
+    compiled,
+    planHash: syntheticPlanHash,
+    observedReadbackHash: syntheticReadbackHash,
+    traceArtifactHash: traceArtifact.hash,
+  });
+  const semanticExecution = await executeSemanticOracle(semanticRequest, implementationBytes);
+  const semanticOracle = {
+    implementationBytes,
+    request: semanticRequest,
+    execution: semanticExecution,
+    runMode,
+    traceArtifact,
   };
-  const oracleValidation = computeOracleValidation({ artifacts: oracleArtifacts });
+  const expectedOutputContract = buildExpectedOutputContract({ semanticOracle });
+  const rawAfterPath = path.join(
+    selfCheckArtifactDir,
+    `${safeSlug(profile.targetId)}-after-readback.bin`,
+  );
+  await writeFile(rawAfterPath, Buffer.from(semanticExecution.expectedBytes));
+  const oracleArtifacts = await writeComputeOracleArtifacts({
+    outDir: selfCheckArtifactDir,
+    profile,
+    runtimeTrace,
+    rawAfterPath,
+    expectedOutputContract,
+    semanticOracle,
+  });
+  const observedBinding = deriveHipObservedBinding({
+    runtimeTrace,
+    traceArtifactHash: traceArtifact.hash,
+    planHash: syntheticPlanHash,
+    resourceTraceHash: semanticRequest.binding.resourceTraceHash,
+    observedReadbackHash: syntheticReadbackHash,
+    expectedArtifactHash: compiled.afterHsacoHash,
+  });
+  const oracleValidation = computeOracleValidation({ artifacts: oracleArtifacts, observedBinding });
   const timings = timingFields({
     staticDiscovery: 1,
     aiContractSynthesis: 0,
@@ -2192,11 +4725,20 @@ function buildSyntheticRuntimeProofFixture(profile) {
   timings.dispatchTimestampNs = 150;
   timings.outputTimestampNs = 160;
   timings.retirementTimestampNs = 170;
-  const contract = buildContract({ profile, compiled, runtimeTrace, runMode, oracleArtifacts });
+  oracleArtifacts.timestamp_after_dispatch = timings.outputTimestampNs;
+  const contract = buildContract({
+    profile,
+    compiled,
+    runtimeTrace,
+    runMode,
+    oracleArtifacts,
+    expectedOutputContract,
+  });
   const contractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
   const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
-    before: contract,
-    after: contract,
+    explicitContract: contract,
+    derivedContract: contract,
+    derivedEvaluation: contractEvaluation,
   });
   const ledgerRecord = buildProofLedgerRecord({
     profile,
@@ -2231,13 +4773,294 @@ function buildSyntheticRuntimeProofFixture(profile) {
   });
   return {
     runtimeProofArtifact,
+    contract,
     proofLedger,
     ledger,
     contractEvaluation,
     contractConsistency,
     oracleValidation,
     nativeApiEvidence,
+    oracleArtifacts,
+    semanticOracle,
+    observedBinding,
+    runtimeTrace,
+    launchObservation,
+    compiled,
   };
+}
+
+function mutateComputeArtifacts(runtimeProofArtifact, mutation) {
+  const visit = (value) => {
+    if (!value || typeof value !== 'object') return;
+    if (
+      Object.prototype.hasOwnProperty.call(value, 'raw_readback_bin')
+      || Object.prototype.hasOwnProperty.call(value, 'rawReadbackBin')
+    ) {
+      mutation(value);
+    }
+    Object.values(value).forEach(visit);
+  };
+  visit(runtimeProofArtifact);
+}
+
+function hipGoldenRequest({ source, entryPoint, dataType, inputBytes }) {
+  return {
+    schemaVersion: INDEPENDENT_SEMANTIC_ORACLE_REQUEST_SCHEMA,
+    binding: {
+      outputTargetId: 'output',
+      outputResourceId: 'output',
+    },
+    artifact: { kind: 'hip_cpp', source, entryPoint },
+    resources: [
+      {
+        name: 'input',
+        role: 'input',
+        dataType,
+        initialBytes: inputBytes,
+      },
+      {
+        name: 'output',
+        role: 'readback',
+        dataType,
+        initialBytes: [0, 0, 0, 0],
+      },
+    ],
+    launch: {
+      parameters: [
+        { name: 'input', kind: 'buffer', buffer: 'input', dataType },
+        { name: 'n', kind: 'scalar', dataType: 'uint32', value: 1 },
+        { name: 'output', kind: 'buffer', buffer: 'output', dataType },
+      ],
+      gridDim: { x: 1, y: 1, z: 1 },
+      blockDim: { x: 1, y: 1, z: 1 },
+    },
+  };
+}
+
+function runHipHandComputedSemanticGoldens() {
+  const u32DivisionSource = `
+// __global__ void golden_div(const unsigned int*, unsigned int, unsigned int*) { output[0] = 91u; }
+__device__ unsigned int dead_helper(unsigned int value) { return value + 97u; }
+__global__ void second_entry(const unsigned int* input, unsigned int n, unsigned int* output) {
+  const unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  output[i] = 77u;
+}
+extern "C" __global__ void golden_div(const unsigned int* input, unsigned int n, unsigned int* output) {
+  const unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  /* dead_helper(input[i]) / 0u and second_entry are not selected */
+  output[i] = input[i] / 2u * 2u;
+}`;
+  const divisionRequest = hipGoldenRequest({
+    source: u32DivisionSource,
+    entryPoint: 'golden_div',
+    dataType: 'uint32',
+    inputBytes: [3, 0, 0, 0],
+  });
+  const division = hipSemanticOracleImplementation(divisionRequest);
+  if (
+    stableJson(division.expectedValues) !== stableJson([2])
+    || stableJson(division.expectedBytes) !== stableJson([2, 0, 0, 0])
+    || division.semanticProgram.selectedBody.includes('second_entry')
+    || division.semanticProgram.selectedBody.includes('dead_helper')
+  ) {
+    throw new Error('HIP hand-computed 3 / 2 * 2 or exact-entry golden failed');
+  }
+
+  const wrapRequest = hipGoldenRequest({
+    source: `__global__ void golden_wrap(const unsigned int* input, unsigned int n, unsigned int* output) {
+      const unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+      if (i >= n) return;
+      output[i] = input[i] + 1u;
+    }`,
+    entryPoint: 'golden_wrap',
+    dataType: 'uint32',
+    inputBytes: [255, 255, 255, 255],
+  });
+  const wrap = hipSemanticOracleImplementation(wrapRequest);
+  if (
+    stableJson(wrap.expectedValues) !== stableJson([0])
+    || stableJson(wrap.expectedBytes) !== stableJson([0, 0, 0, 0])
+  ) throw new Error('HIP hand-computed uint32 wrap golden failed');
+
+  const signedDivisionRequest = hipGoldenRequest({
+    source: `__global__ void golden_signed(const int* input, unsigned int n, int* output) {
+      const unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+      if (i >= n) return;
+      output[i] = input[i] / 2 * 2;
+    }`,
+    entryPoint: 'golden_signed',
+    dataType: 'int32',
+    inputBytes: [253, 255, 255, 255],
+  });
+  const signedDivision = hipSemanticOracleImplementation(signedDivisionRequest);
+  if (
+    stableJson(signedDivision.expectedValues) !== stableJson([-2])
+    || stableJson(signedDivision.expectedBytes) !== stableJson([254, 255, 255, 255])
+  ) throw new Error('HIP hand-computed signed division golden failed');
+
+  const f32Request = hipGoldenRequest({
+    source: `__global__ void golden_f32(const float* input, unsigned int n, float* output) {
+      const unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+      if (i >= n) return;
+      output[i] = (input[i] + 1.0f) + 1.0f;
+    }`,
+    entryPoint: 'golden_f32',
+    dataType: 'float32',
+    inputBytes: [0, 0, 128, 75],
+  });
+  const f32 = hipSemanticOracleImplementation(f32Request);
+  if (
+    stableJson(f32.expectedValues) !== stableJson([16777216])
+    || stableJson(f32.expectedBytes) !== stableJson([0, 0, 128, 75])
+  ) throw new Error('HIP hand-computed per-operation f32 rounding golden failed');
+
+  let dtypeMismatchRejected = false;
+  try {
+    const mismatch = JSON.parse(JSON.stringify(divisionRequest));
+    mismatch.launch.parameters[0].dataType = 'int32';
+    hipSemanticOracleImplementation(mismatch);
+  } catch {
+    dtypeMismatchRejected = true;
+  }
+  let unsupportedSyntaxRejected = false;
+  try {
+    const unsupported = JSON.parse(JSON.stringify(divisionRequest));
+    unsupported.artifact.source = unsupported.artifact.source.replace(
+      'input[i] / 2u * 2u',
+      'input[i] > 0u ? input[i] : 0u',
+    );
+    hipSemanticOracleImplementation(unsupported);
+  } catch {
+    unsupportedSyntaxRejected = true;
+  }
+  let wrongEntrypointRejected = false;
+  try {
+    const wrong = JSON.parse(JSON.stringify(divisionRequest));
+    wrong.artifact.entryPoint = `missing_${sha256Text(wrong.artifact.source).slice(7, 19)}`;
+    hipSemanticOracleImplementation(wrong);
+  } catch {
+    wrongEntrypointRejected = true;
+  }
+  if (!dtypeMismatchRejected || !unsupportedSyntaxRejected || !wrongEntrypointRejected) {
+    throw new Error('HIP semantic oracle did not fail closed for dtype, syntax, or entry-point mismatch');
+  }
+  return {
+    integerDivision: division.expectedValues,
+    uint32Wrap: wrap.expectedValues,
+    signedDivision: signedDivision.expectedValues,
+    f32Rounding: f32.expectedValues,
+    exactEntryPointSelected: true,
+    dtypeMismatchRejected,
+    unsupportedSyntaxRejected,
+    wrongEntrypointRejected,
+  };
+}
+
+async function runHipSourceAndHsacoToctouChecks(outDir) {
+  const sourceBeforePath = path.join(outDir, 'toctou-original-before.hip');
+  const sourceAfterPath = path.join(outDir, 'toctou-original-after.hip');
+  const beforeSourceSnapshot = path.join(outDir, 'toctou-staged-before.hip');
+  const afterSourceSnapshot = path.join(outDir, 'toctou-staged-after.hip');
+  const beforeHsaco = path.join(outDir, 'toctou-before.hsaco');
+  const afterHsaco = path.join(outDir, 'toctou-after.hsaco');
+  const compileManifestPath = path.join(outDir, 'toctou-compile-manifest.json');
+  const beforeSourceBytes = Buffer.from('before-source-bytes\n', 'utf8');
+  const afterSourceBytes = Buffer.from('after-source-bytes\n', 'utf8');
+  const beforeHsacoBytes = Buffer.from([1, 2, 3, 4]);
+  const afterHsacoBytes = Buffer.from([5, 6, 7, 8]);
+  await Promise.all([
+    writeFile(sourceBeforePath, beforeSourceBytes),
+    writeFile(sourceAfterPath, afterSourceBytes),
+    writeFile(beforeSourceSnapshot, beforeSourceBytes),
+    writeFile(afterSourceSnapshot, afterSourceBytes),
+    writeFile(beforeHsaco, beforeHsacoBytes),
+    writeFile(afterHsaco, afterHsacoBytes),
+  ]);
+  const profile = {
+    beforePath: sourceBeforePath,
+    afterPath: sourceAfterPath,
+    beforeHash: 'sha256:33fd75289cfbd78a0f196b6931ed2a2daf28c7bf03040c699870a5c6aa2e0031',
+    afterHash: 'sha256:b371413926130c705fca2de6c78e3cb20b34a63df97263d5eaa7d8184349544b',
+  };
+  profile.beforeHash = sha256Bytes(beforeSourceBytes);
+  profile.afterHash = sha256Bytes(afterSourceBytes);
+  await verifyHipProfileSourceInputs(profile);
+  await writeFile(sourceAfterPath, Buffer.from('swapped-source\n', 'utf8'));
+  let sourceSwapRejected = false;
+  try {
+    await verifyHipProfileSourceInputs(profile);
+  } catch {
+    sourceSwapRejected = true;
+  }
+  await writeFile(sourceAfterPath, afterSourceBytes);
+
+  const manifest = {
+    schemaVersion: 'synthi.gpu_hmr.hip_source_hsaco_compile_manifest.v1',
+    compiler: 'self-check-compiler',
+    compileTarget: 'self-check-target',
+    entryPoint: 'self_check_kernel',
+    sourceInputs: [
+      { role: 'before', path: relRepo(beforeSourceSnapshot), sha256: profile.beforeHash },
+      { role: 'after', path: relRepo(afterSourceSnapshot), sha256: profile.afterHash },
+    ],
+    commands: { before: ['self-check'], after: ['self-check'] },
+    outputs: [
+      { role: 'before_hsaco', path: relRepo(beforeHsaco), sha256: sha256Bytes(beforeHsacoBytes) },
+      { role: 'after_hsaco', path: relRepo(afterHsaco), sha256: sha256Bytes(afterHsacoBytes) },
+    ],
+  };
+  const compileManifestHash = sha256Text(stableJson(manifest));
+  const sourceArtifactBindingHash = sha256Text(stableJson({
+    sourceHash: profile.afterHash,
+    compiledArtifactHash: sha256Bytes(afterHsacoBytes),
+    compileManifestHash,
+    entryPoint: manifest.entryPoint,
+  }));
+  const compiled = {
+    kernelIdentity: manifest.entryPoint,
+    beforeSourceSnapshot,
+    afterSourceSnapshot,
+    beforeHsaco,
+    afterHsaco,
+    beforeSourceHash: profile.beforeHash,
+    afterSourceHash: profile.afterHash,
+    beforeHsacoHash: sha256Bytes(beforeHsacoBytes),
+    afterHsacoHash: sha256Bytes(afterHsacoBytes),
+    compileManifest: manifest,
+    compileManifestHash,
+    compileManifestPath,
+    sourceArtifactBindingHash,
+  };
+  await writeFile(compileManifestPath, `${JSON.stringify({
+    ...manifest,
+    compileManifestHash,
+    sourceArtifactBindingHash,
+  }, null, 2)}\n`);
+  await verifyHipCompiledArtifactsForLoad(compiled);
+  const loaderCas = await stagePrivateHipLoaderCas({ compiled, outDir });
+  await writeFile(afterHsaco, Buffer.from([9, 9, 9, 9]));
+  const casSnapshotStable = sha256Bytes(await readFile(loaderCas.afterPath)) === compiled.afterHsacoHash;
+  let hsacoSwapRejected = false;
+  try {
+    await verifyHipCompiledArtifactsForLoad(compiled);
+  } catch {
+    hsacoSwapRejected = true;
+  }
+  await writeFile(afterHsaco, afterHsacoBytes);
+  await writeFile(afterSourceSnapshot, Buffer.from('swapped-staged-source\n', 'utf8'));
+  let stagedSourceSwapRejected = false;
+  try {
+    await verifyHipCompiledArtifactsForLoad(compiled);
+  } catch {
+    stagedSourceSwapRejected = true;
+  }
+  await writeFile(afterSourceSnapshot, afterSourceBytes);
+  if (!sourceSwapRejected || !hsacoSwapRejected || !stagedSourceSwapRejected || !casSnapshotStable) {
+    throw new Error('HIP source/HSACO TOCTOU self-check did not reject every swap');
+  }
+  return { sourceSwapRejected, stagedSourceSwapRejected, hsacoSwapRejected, casSnapshotStable };
 }
 
 async function selfCheck() {
@@ -2257,8 +5080,8 @@ async function selfCheck() {
   checks.push({
     name: 'declared-profile-abi-signature-validated',
     ok:
-      profile.abi.signatureValidation?.matched === true
-      && profile.abi.signatureValidation?.blockingGaps?.length === 0,
+      declaredProfile.abi.signatureValidation?.matched === true
+      && declaredProfile.abi.signatureValidation?.blockingGaps?.length === 0,
   });
   checks.push({
     name: 'profile-params-drive-launch-plan',
@@ -2277,7 +5100,7 @@ async function selfCheck() {
       && declaredProfile.abi.params[3]?.buffer === declaredProfile.buffers.readback.name,
   });
   checks.push({
-    name: 'profile-declares-expected-output',
+    name: 'profile-expected-output-is-available-as-diagnostic-hint',
     ok:
       profile.outputOracle.expectedOutputRequired === true
       && profile.outputOracle.expectedAfterValues.length * byteWidthForDataType(profile.outputOracle.dataType) === profile.buffers.readback.byteLength,
@@ -2287,6 +5110,108 @@ async function selfCheck() {
     ok:
       runMode.metric_scope === 'hot_delta_1'
       && runMode.cache_state === 'compiler_cache_warm',
+  });
+  const numericComparatorAdversarial = {
+    nanActualRejected: !compareNumericValues([Number.NaN], [0], 1).matched,
+    infinityExpectedRejected: !compareNumericValues([1], [Number.POSITIVE_INFINITY], Number.MAX_VALUE).matched,
+    trailingActualRejected: !compareNumericValues([1, 2], [1], 0).matched,
+    trailingExpectedRejected: !compareNumericValues([1], [1, 2], 0).matched,
+  };
+  checks.push({
+    name: 'numeric-comparison-rejects-non-finite-and-length-mismatch',
+    ok: Object.values(numericComparatorAdversarial).every(Boolean),
+    detail: numericComparatorAdversarial,
+  });
+  const comparatorDivergenceGolden = verifyExactTypedReadback({
+    observedBytes: encodeNumericValues([1.0001], 'float32'),
+    expectedValues: [1],
+    expectedBytes: Array.from(encodeNumericValues([1], 'float32')),
+    expectedRawHash: sha256Bytes(encodeNumericValues([1], 'float32')),
+    dataType: 'float32',
+  });
+  checks.push({
+    name: 'independent-typed-byte-verifier-diverges-from-tolerant-primary-comparator',
+    ok:
+      compareNumericValues([1.0001], [1], 0.1).matched === true
+      && comparatorDivergenceGolden.matched === false
+      && comparatorDivergenceGolden.mismatches.length > 0,
+    detail: comparatorDivergenceGolden,
+  });
+  let splitKernelIdentityRejected = false;
+  try {
+    resolveHipKernelIdentity({ name: 'resolved_symbol', entryPoint: 'semantic_entry' });
+  } catch {
+    splitKernelIdentityRejected = true;
+  }
+  checks.push({
+    name: 'kernel-name-entry-point-split-rejected-before-execution',
+    ok: splitKernelIdentityRejected,
+  });
+  let missingKernelIdentityRejected = false;
+  let missingEntryPointRejected = false;
+  try {
+    resolveHipKernelIdentity({});
+  } catch {
+    missingKernelIdentityRejected = true;
+  }
+  try {
+    resolveHipKernelIdentity({ name: 'generic_explicit_kernel' });
+  } catch {
+    missingEntryPointRejected = true;
+  }
+  let missingResourceIdentityRejected = false;
+  let missingResourceRoleRejected = false;
+  try {
+    normalizeProfileBuffer({ role: 'input', dataType: 'float32', values: [1] }, 'adversarial.resource');
+  } catch {
+    missingResourceIdentityRejected = true;
+  }
+  try {
+    normalizeProfileBuffer({ name: 'input', dataType: 'float32', values: [1] }, 'adversarial.resource');
+  } catch {
+    missingResourceRoleRejected = true;
+  }
+  checks.push({
+    name: 'kernel-entry-point-and-resource-role-identity-have-no-fallbacks',
+    ok:
+      missingKernelIdentityRejected
+      && missingEntryPointRejected
+      && missingResourceIdentityRejected
+      && missingResourceRoleRejected,
+    detail: {
+      missingKernelIdentityRejected,
+      missingEntryPointRejected,
+      missingResourceIdentityRejected,
+      missingResourceRoleRejected,
+    },
+  });
+  let extraPointerRejected = false;
+  try {
+    normalizeAbiParams([
+      { name: 'output', type: 'float*', valueKind: 'global_buffer', access: 'write' },
+      { name: 'input', type: 'const float*', valueKind: 'global_buffer', access: 'read' },
+      { name: 'scratch', type: 'float*', valueKind: 'global_buffer', access: 'write' },
+    ], [
+      ...profile.buffers.all,
+      { name: 'scratch', role: 'scratch', dataType: 'float32', byteLength: 4, values: [] },
+    ], {}, profile.outputOracle.elementCount);
+  } catch {
+    extraPointerRejected = true;
+  }
+  let pointerAliasRejected = false;
+  try {
+    normalizeAbiParams([
+      { name: 'output', type: 'float*', valueKind: 'global_buffer', access: 'write' },
+      { name: 'input', type: 'const float*', valueKind: 'global_buffer', access: 'read' },
+      { name: 'alias', type: 'const float*', valueKind: 'global_buffer', access: 'read', buffer: 'input' },
+    ], profile.buffers.all, {}, profile.outputOracle.elementCount);
+  } catch {
+    pointerAliasRejected = true;
+  }
+  checks.push({
+    name: 'unsupported-extra-and-aliased-pointer-semantics-fail-closed',
+    ok: extraPointerRejected && pointerAliasRejected,
+    detail: { extraPointerRejected, pointerAliasRejected },
   });
   checks.push({
     name: 'negative-edit-refuses-before-load',
@@ -2302,7 +5227,119 @@ async function selfCheck() {
       return !isSupportedScope(copy.validationScope);
     })(),
   });
-  const syntheticProof = buildSyntheticRuntimeProofFixture(profile);
+  const semanticGoldens = runHipHandComputedSemanticGoldens();
+  checks.push({
+    name: 'hand-computed-typed-semantics-and-exact-entry-goldens',
+    ok:
+      semanticGoldens.integerDivision[0] === 2
+      && semanticGoldens.uint32Wrap[0] === 0
+      && semanticGoldens.signedDivision[0] === -2
+      && semanticGoldens.f32Rounding[0] === 16777216
+      && semanticGoldens.exactEntryPointSelected === true
+      && semanticGoldens.dtypeMismatchRejected === true
+      && semanticGoldens.unsupportedSyntaxRejected === true
+      && semanticGoldens.wrongEntrypointRejected === true,
+    detail: semanticGoldens,
+  });
+  const toctouArtifactDir = path.join(ARTIFACT_DIR, 'self-check', 'hip-source-hsaco-toctou');
+  await mkdir(toctouArtifactDir, { recursive: true });
+  const toctouChecks = await runHipSourceAndHsacoToctouChecks(toctouArtifactDir);
+  checks.push({
+    name: 'source-staging-and-hsaco-swaps-are-rejected',
+    ok:
+      toctouChecks.sourceSwapRejected === true
+      && toctouChecks.stagedSourceSwapRejected === true
+      && toctouChecks.hsacoSwapRejected === true
+      && toctouChecks.casSnapshotStable === true,
+    detail: toctouChecks,
+  });
+  const syntheticProof = await buildSyntheticRuntimeProofFixture(profile);
+  const assertRuntimeInvocationRejected = (mutation) => {
+    const trace = JSON.parse(JSON.stringify(syntheticProof.runtimeTrace));
+    mutation(trace);
+    try {
+      bindHipRuntimeInvocationEvidence({
+        runtimeTrace: trace,
+        planHash: syntheticProof.semanticOracle.request.binding.resourceOrPlanHash,
+        observedReadbackHash: syntheticProof.semanticOracle.request.binding.observedReadbackHash,
+        expectedKernelIdentity: profile.kernel.name,
+        expectedArtifactHash: syntheticProof.compiled.afterHsacoHash,
+      });
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  const runtimeEvidenceAdversarial = {
+    missingTraceRejected: assertRuntimeInvocationRejected((trace) => { delete trace.probeInvocation; }),
+    replacedLoadedBytesRejected: assertRuntimeInvocationRejected((trace) => {
+      trace.loaderEvents.find((event) => String(event.epoch) === '2').loaded_bytes_hash = sha256Text('replacement');
+    }),
+    wrongResolvedSymbolRejected: assertRuntimeInvocationRejected((trace) => {
+      trace.symbolEvents.find((event) => String(event.epoch) === '2').resolved_symbol = 'other_symbol';
+    }),
+    missingResolvedFunctionAddressRejected: assertRuntimeInvocationRejected((trace) => {
+      delete trace.symbolEvents.find((event) => String(event.epoch) === '2').resolved_function_address;
+    }),
+    missingDispatchFunctionAddressRejected: assertRuntimeInvocationRejected((trace) => {
+      delete trace.dispatchEvents.find((event) => String(event.epoch) === '2').resolved_function_address;
+    }),
+    missingInvocationFunctionAddressRejected: assertRuntimeInvocationRejected((trace) => {
+      delete trace.probeInvocation.resolvedFunctionAddress;
+    }),
+    mismatchedSymbolFunctionAddressRejected: assertRuntimeInvocationRejected((trace) => {
+      trace.symbolEvents.find((event) => String(event.epoch) === '2').resolved_function_address = '0xdeadbeef';
+    }),
+    mismatchedDispatchFunctionAddressRejected: assertRuntimeInvocationRejected((trace) => {
+      trace.dispatchEvents.find((event) => String(event.epoch) === '2').resolved_function_address = '0xdeadbeef';
+    }),
+    mismatchedInvocationFunctionAddressRejected: assertRuntimeInvocationRejected((trace) => {
+      trace.probeInvocation.resolvedFunctionAddress = '0xdeadbeef';
+    }),
+    pointerRebindingRejected: assertRuntimeInvocationRejected((trace) => {
+      trace.probeInvocation.parameters.find((parameter) => parameter.kind === 'buffer').devicePointer = '0xdeadbeef';
+    }),
+    crossPairedPointerResourceRejected: assertRuntimeInvocationRejected((trace) => {
+      const [firstBuffer, secondBuffer] = trace.probeInvocation.parameters.filter(
+        (parameter) => parameter.kind === 'buffer',
+      );
+      firstBuffer.resourceId = secondBuffer.resourceId;
+    }),
+    missingParameterTraceRejected: assertRuntimeInvocationRejected((trace) => {
+      delete trace.dispatchEvents.find((event) => String(event.epoch) === '2').parameter_trace_hash;
+    }),
+  };
+  checks.push({
+    name: 'native-loaded-byte-symbol-function-address-pointer-resource-and-parameter-evidence-is-mandatory',
+    ok: Object.values(runtimeEvidenceAdversarial).every(Boolean),
+    detail: runtimeEvidenceAdversarial,
+  });
+  const conflictingAliasAdversarial = {
+    loaderRejected: assertRuntimeInvocationRejected((trace) => {
+      trace.loaderEvents.find((event) => String(event.epoch) === '2').artifactHash = sha256Text('conflicting-loader-alias');
+    }),
+    symbolRejected: assertRuntimeInvocationRejected((trace) => {
+      trace.symbolEvents.find((event) => String(event.epoch) === '2').resolvedFunctionAddress = '0xdeadbeef';
+    }),
+    resourceRejected: assertRuntimeInvocationRejected((trace) => {
+      trace.probeInvocation.resources[0].device_pointer = '0xdeadbeef';
+    }),
+    parameterRejected: assertRuntimeInvocationRejected((trace) => {
+      trace.probeInvocation.parameters[0].argument_address = '0xdeadbeef';
+    }),
+    dispatchRejected: assertRuntimeInvocationRejected((trace) => {
+      trace.dispatchEvents.find((event) => String(event.epoch) === '2').resourceTraceHash = sha256Text('conflicting-dispatch-alias');
+    }),
+    readbackRejected: assertRuntimeInvocationRejected((trace) => {
+      trace.outputEvents.find((event) => String(event.epoch) === '2').readbackHash = sha256Text('conflicting-readback-alias');
+    }),
+  };
+  checks.push({
+    name: 'conflicting-loader-symbol-resource-parameter-dispatch-and-readback-aliases-fail-closed',
+    ok: Object.values(conflictingAliasAdversarial).every(Boolean),
+    detail: conflictingAliasAdversarial,
+  });
+  const strictGateOptions = computeOracleStrictGateOptions(syntheticProof.oracleArtifacts);
   checks.push({
     name: 'runtime-proof-artifact-strictly-accepted',
     ok:
@@ -2331,11 +5368,292 @@ async function selfCheck() {
       const forged = JSON.parse(JSON.stringify(syntheticProof.runtimeProofArtifact));
       forged.proofLedger.records[0].cpu_hmr_used = true;
       forged.proof_ledger.records[0].cpu_hmr_used = true;
-      const gate = runtimeProofArtifactStrictGate(forged);
+      const gate = runtimeProofArtifactStrictGate(forged, strictGateOptions);
       return gate.status === 'fail'
         && gate.failures.some((failure) => failure === 'proof_ledger_recomputed_query_rejected');
     })(),
   });
+  const { semanticOracle, observedBinding } = syntheticProof;
+  const oracleCodeHash = semanticOracleCodeHash();
+  const semanticExpectedOutputContract = buildExpectedOutputContract({ semanticOracle });
+  const semanticIdentity = buildSemanticOracleIdentity(semanticOracle.request.binding);
+  const ledgerRecord = syntheticProof.proofLedger.records?.[0] ?? {};
+  const semanticLoaderEvent = ledgerRecord.loader_event ?? ledgerRecord.loaderEvent ?? {};
+  const semanticDispatchEvent = ledgerRecord.dispatch_event ?? ledgerRecord.dispatchEvent ?? {};
+  const semanticOutputEvent = ledgerRecord.output_event ?? ledgerRecord.outputEvent ?? {};
+  checks.push({
+    name: 'independent-semantic-oracle-is-content-addressed-and-fully-bound',
+    ok:
+      oracleCodeHash === semanticOracle.execution.implementationHash
+      && semanticExpectedOutputContract.binding.projectId === profile.targetId
+      && semanticExpectedOutputContract.binding.editId === runMode.edit_id
+      && semanticExpectedOutputContract.binding.artifactAfterHash === syntheticProof.compiled.afterHsacoHash
+      && semanticExpectedOutputContract.binding.outputTargetId === profile.buffers.readback.name
+      && semanticExpectedOutputContract.binding.oracleCodeHash === oracleCodeHash
+      && observedBinding.backend === 'hip'
+      && observedBinding.runtimeSessionId === hipRuntimeSessionId(syntheticProof.runtimeTrace),
+  });
+  const nonExecutableImplementationVerification = await verifyIndependentSemanticOracle({
+    implementationBytes: Buffer.from('this is intentionally not executable JavaScript', 'utf8'),
+    request: semanticOracle.request,
+    execution: semanticOracle.execution,
+    observedBytes: semanticOracle.execution.expectedBytes,
+    observedBinding,
+  });
+  const forbiddenFixtureNames = [profile.id, profile.kernel.name, declaredProfile.id, declaredProfile.kernel.name];
+  const verificationImplementationSource = [
+    verifyIndependentSemanticOracle,
+    verifyExactTypedReadback,
+    independentlyEncodeTypedValues,
+  ].map((implementation) => implementation.toString()).join('\n');
+  checks.push({
+    name: 'semantic-verification-does-not-execute-production-oracle-or-branch-on-fixture-identity',
+    ok:
+      !verifyIndependentSemanticOracle.toString().includes('executeSemanticOracle(')
+      && nonExecutableImplementationVerification.accepted === false
+      && nonExecutableImplementationVerification.verificationMethod
+        === 'independent_dataview_typed_byte_comparison_without_oracle_execution'
+      && !nonExecutableImplementationVerification.failures.some((failure) => failure.includes('recompute'))
+      && forbiddenFixtureNames.every((name) => !verificationImplementationSource.includes(name)),
+    detail: nonExecutableImplementationVerification,
+  });
+  checks.push({
+    name: 'semantic-identity-persists-through-contract-loader-dispatch-output-and-ledger',
+    ok:
+      stableJson(syntheticProof.contract.semantic_oracle_identity) === stableJson(semanticIdentity)
+      && stableJson(semanticLoaderEvent.semantic_oracle_identity) === stableJson(semanticIdentity)
+      && stableJson(semanticDispatchEvent.semantic_oracle_identity) === stableJson(semanticIdentity)
+      && stableJson(semanticOutputEvent.semantic_oracle_identity) === stableJson(semanticIdentity)
+      && semanticLoaderEvent.semantic_oracle_identity_hash === semanticIdentity.identity_hash
+      && semanticLoaderEvent.compile_manifest_hash === semanticIdentity.compile_manifest_hash
+      && semanticDispatchEvent.semantic_oracle_identity_hash === semanticIdentity.identity_hash
+      && semanticDispatchEvent.request_id === semanticIdentity.request_id
+      && semanticDispatchEvent.output_resource_id === semanticIdentity.output_resource_id
+      && semanticOutputEvent.semantic_oracle_identity_hash === semanticIdentity.identity_hash
+      && semanticOutputEvent.trusted_oracle_implementation_hash
+        === semanticIdentity.trusted_oracle_implementation_hash,
+  });
+
+  const forgedValues = [...semanticOracle.execution.expectedValues];
+  forgedValues[0] = forgedValues[0] + 97;
+  const forgedObservedBytes = encodeNumericValues(
+    forgedValues,
+    semanticOracle.execution.dataType,
+  );
+  const forgedProfile = {
+    ...profile,
+    outputOracle: {
+      ...profile.outputOracle,
+      expectedAfterValues: forgedValues,
+      tolerance: Number.MAX_SAFE_INTEGER,
+    },
+  };
+  const forgedRequest = buildHipSemanticOracleRequest({
+    profile: forgedProfile,
+    runMode,
+    artifactAfterHash: syntheticProof.compiled.afterHsacoHash,
+    runtimeTrace: syntheticProof.runtimeTrace,
+    launchObservation: syntheticProof.launchObservation,
+    compiled: syntheticProof.compiled,
+    planHash: semanticOracle.request.binding.resourceOrPlanHash,
+    observedReadbackHash: semanticOracle.request.binding.observedReadbackHash,
+    traceArtifactHash: semanticOracle.request.binding.traceArtifactHash,
+  });
+  const forgedDeclarationMatches = compareNumericValues(
+    forgedValues,
+    forgedProfile.outputOracle.expectedAfterValues,
+    forgedProfile.outputOracle.tolerance,
+  ).matched;
+  const forgedExecution = await executeSemanticOracle(
+    forgedRequest,
+    semanticOracle.implementationBytes,
+  );
+  const forgedVerification = await verifyIndependentSemanticOracle({
+    implementationBytes: semanticOracle.implementationBytes,
+    request: forgedRequest,
+    execution: forgedExecution,
+    observedBytes: forgedObservedBytes,
+    observedBinding,
+  });
+  checks.push({
+    name: 'matched-byte-profile-declaration-forgery-rejected',
+    ok:
+      forgedDeclarationMatches === true
+      && forgedVerification.accepted === false
+      && forgedVerification.failures.includes('semantic_oracle_observed_output_mismatch')
+      && forgedExecution.expectedRawHash === semanticOracle.execution.expectedRawHash
+      && forgedExecution.requestHash === semanticOracle.execution.requestHash
+      && forgedExecution.implementationHash === semanticOracle.execution.implementationHash,
+    detail: forgedVerification,
+  });
+
+  let resourceTraceTamperRejected = false;
+  try {
+    const tamperedRequest = JSON.parse(JSON.stringify(semanticOracle.request));
+    const tamperedResource = tamperedRequest.resources.find((resource) => resource.role === 'input');
+    tamperedResource.initialBytes[0] ^= 1;
+    tamperedResource.initialBytesHash = sha256Bytes(Buffer.from(tamperedResource.initialBytes));
+    await executeSemanticOracle(tamperedRequest, semanticOracle.implementationBytes);
+  } catch {
+    resourceTraceTamperRejected = true;
+  }
+  let parameterTraceTamperRejected = false;
+  try {
+    const tamperedRequest = JSON.parse(JSON.stringify(semanticOracle.request));
+    const scalar = tamperedRequest.launch.parameters.find((parameter) => parameter.kind === 'scalar');
+    scalar.value = Number(scalar.value) + 1;
+    await executeSemanticOracle(tamperedRequest, semanticOracle.implementationBytes);
+  } catch {
+    parameterTraceTamperRejected = true;
+  }
+  checks.push({
+    name: 'resource-and-parameter-plan-trace-tampering-is-rejected',
+    ok: resourceTraceTamperRejected && parameterTraceTamperRejected,
+    detail: { resourceTraceTamperRejected, parameterTraceTamperRejected },
+  });
+
+  const rebindingFailures = {};
+  let allRebindingsRejected = true;
+  for (const field of SEMANTIC_ORACLE_BINDING_FIELDS) {
+    const runtimeObservedField = OBSERVED_RUNTIME_BINDING_FIELDS.includes(field);
+    const reboundBinding = runtimeObservedField
+      ? { ...observedBinding, [field]: `${observedBinding[field]}:rebound` }
+      : observedBinding;
+    const reboundExecution = JSON.parse(JSON.stringify(semanticOracle.execution));
+    if (!runtimeObservedField) {
+      reboundExecution.bindingReceipt[field] = `${reboundExecution.bindingReceipt[field]}:rebound`;
+      reboundExecution.bindingReceiptHash = sha256Text(stableJson(reboundExecution.bindingReceipt));
+    }
+    const verification = await verifyIndependentSemanticOracle({
+      implementationBytes: semanticOracle.implementationBytes,
+      request: semanticOracle.request,
+      execution: reboundExecution,
+      observedBytes: semanticOracle.execution.expectedBytes,
+      observedBinding: reboundBinding,
+    });
+    const failure = runtimeObservedField
+      ? `semantic_oracle_binding_${field}_mismatch`
+      : `semantic_oracle_receipt_${field}_mismatch`;
+    rebindingFailures[field] = verification.failures;
+    if (verification.accepted !== false || !verification.failures.includes(failure)) {
+      allRebindingsRejected = false;
+    }
+  }
+  checks.push({
+    name: 'semantic-oracle-rejects-project-edit-artifact-target-backend-runtime-rebinding',
+    ok: allRebindingsRejected,
+    detail: rebindingFailures,
+  });
+  const staleRuntimeTrace = JSON.parse(JSON.stringify(syntheticProof.runtimeTrace));
+  staleRuntimeTrace.staleArtifactMarker = true;
+  let staleTraceArtifactRejected = false;
+  try {
+    deriveHipObservedBinding({
+      runtimeTrace: staleRuntimeTrace,
+      traceArtifactHash: semanticOracle.request.binding.traceArtifactHash,
+      planHash: semanticOracle.request.binding.resourceOrPlanHash,
+      resourceTraceHash: semanticOracle.request.binding.resourceTraceHash,
+    });
+  } catch {
+    staleTraceArtifactRejected = true;
+  }
+  const staleArtifactRequest = JSON.parse(JSON.stringify(semanticOracle.request));
+  staleArtifactRequest.artifact.compiledArtifactHash = sha256Text('stale-hip-artifact-self-check');
+  let staleArtifactRejected = false;
+  try {
+    await executeSemanticOracle(staleArtifactRequest, semanticOracle.implementationBytes);
+  } catch {
+    staleArtifactRejected = true;
+  }
+  const replayVerification = await verifyIndependentSemanticOracle({
+    implementationBytes: semanticOracle.implementationBytes,
+    request: semanticOracle.request,
+    execution: semanticOracle.execution,
+    observedBytes: semanticOracle.execution.expectedBytes,
+    observedBinding: {
+      ...observedBinding,
+      runtimeSessionId: `${observedBinding.runtimeSessionId}:replayed-session`,
+    },
+  });
+  const wrongResourceVerification = await verifyIndependentSemanticOracle({
+    implementationBytes: semanticOracle.implementationBytes,
+    request: semanticOracle.request,
+    execution: semanticOracle.execution,
+    observedBytes: semanticOracle.execution.expectedBytes,
+    observedBinding: {
+      ...observedBinding,
+      outputResourceId: `${observedBinding.outputResourceId}:wrong-resource`,
+    },
+  });
+  checks.push({
+    name: 'stale-trace-session-replay-and-wrong-resource-are-rejected',
+    ok:
+      staleTraceArtifactRejected === true
+      && staleArtifactRejected === true
+      && replayVerification.accepted === false
+      && replayVerification.failures.includes('semantic_oracle_binding_runtimeSessionId_mismatch')
+      && wrongResourceVerification.accepted === false
+      && wrongResourceVerification.failures.includes('semantic_oracle_binding_outputResourceId_mismatch'),
+    detail: {
+      staleTraceArtifactRejected,
+      staleArtifactRejected,
+      replayFailures: replayVerification.failures,
+      wrongResourceFailures: wrongResourceVerification.failures,
+    },
+  });
+
+  const strictForgeryFailures = {};
+  const checkStrictForgery = (name, mutation, expectedFailure) => {
+    const forged = JSON.parse(JSON.stringify(syntheticProof.runtimeProofArtifact));
+    mutation(forged);
+    const gate = runtimeProofArtifactStrictGate(forged, strictGateOptions);
+    strictForgeryFailures[name] = gate.failures;
+    checks.push({
+      name: `strict-gate-rejects-${name}`,
+      ok: gate.status === 'fail' && gate.failures.includes(expectedFailure),
+      detail: gate,
+    });
+  };
+  checkStrictForgery(
+    'missing-output-event-oracle-code-hash',
+    (forged) => {
+      for (const ledgerKey of ['proofLedger', 'proof_ledger']) {
+        for (const record of forged?.[ledgerKey]?.records ?? []) {
+          delete record.output_event?.oracle_code_hash;
+          delete record.output_event?.oracleCodeHash;
+          delete record.outputEvent?.oracle_code_hash;
+          delete record.outputEvent?.oracleCodeHash;
+        }
+      }
+    },
+    'compute_oracle_semantic_oracle_code_hash_output_event_missing',
+  );
+  checkStrictForgery(
+    'missing-readback-schema',
+    (forged) => mutateComputeArtifacts(forged, (artifacts) => {
+      delete artifacts.readback_schema_json;
+      delete artifacts.readbackSchemaJson;
+    }),
+    'compute_oracle_semantic_readback_schema_artifact_missing',
+  );
+  checkStrictForgery(
+    'missing-readback-schema-hash',
+    (forged) => mutateComputeArtifacts(forged, (artifacts) => {
+      delete artifacts.readback_schema_hash;
+      delete artifacts.readbackSchemaHash;
+    }),
+    'compute_oracle_semantic_readback_schema_hash_missing',
+  );
+  checkStrictForgery(
+    'missing-deterministic-slice',
+    (forged) => mutateComputeArtifacts(forged, (artifacts) => {
+      delete artifacts.deterministic_slice;
+      delete artifacts.deterministicSlice;
+      delete artifacts.deterministic_slice_hash;
+      delete artifacts.deterministicSliceHash;
+    }),
+    'compute_oracle_semantic_deterministic_slice_missing',
+  );
   let timingClock = 0n;
   const timingRecorder = createHipModuleRuntimeTimingV2Recorder({
     clock: () => {
@@ -2390,6 +5708,10 @@ async function selfCheck() {
   console.log(JSON.stringify({
     schema: 'synthi.gpu_hmr.hip_module_runtime_self_check.v1',
     checks,
+    semanticOracleImplementationHash: oracleCodeHash,
+    matchedByteDeclarationForgeryRejected: forgedVerification.accepted === false,
+    semanticOracleRebindingFailures: rebindingFailures,
+    strictSemanticForgeryFailures: strictForgeryFailures,
     timingSchema: testTiming.schema,
     timingAuthorityForgeryRejected,
     passed: failed.length === 0,
@@ -2438,18 +5760,146 @@ async function main(testTimingRecorder) {
     'compile',
     () => compileRuntimeArtifacts({ profile, outDir }),
   );
-  const runtime = await runHipProbe({ profile, compiled, outDir });
+  const runMode = runModeMetadata(profile);
+  const implementationBytes = semanticOracleImplementationBytes();
+  const launchObservation = buildHipLaunchObservation(profile);
+  const planningOutputTargetId = profile.buffers.readback.name;
+  const planningTrace = {
+    runtimeSessionId: `hip-module-probe-plan:${compiled.afterHsacoHash}`,
+    device: { backend: 'hip' },
+    loaderEvents: [
+      { id: 'hip-module-probe-plan-loader-1', epoch: 1, artifact_hash: compiled.beforeHsacoHash },
+      { id: 'hip-module-probe-plan-loader-2', epoch: 2, artifact_hash: compiled.afterHsacoHash },
+    ],
+    dispatchEvents: [
+      {
+        id: 'hip-module-probe-plan-dispatch-1',
+        epoch: 1,
+        artifact_hash: compiled.beforeHsacoHash,
+        output_target_id: planningOutputTargetId,
+        launch_api: profile.kernel.launchApi,
+        grid_dim: launchObservation.gridDim,
+        block_dim: launchObservation.blockDim,
+        shared_mem_bytes: launchObservation.sharedMemBytes,
+        stream: launchObservation.stream,
+      },
+      {
+        id: 'hip-module-probe-plan-dispatch-2',
+        epoch: 2,
+        artifact_hash: compiled.afterHsacoHash,
+        output_target_id: planningOutputTargetId,
+        launch_api: profile.kernel.launchApi,
+        grid_dim: launchObservation.gridDim,
+        block_dim: launchObservation.blockDim,
+        shared_mem_bytes: launchObservation.sharedMemBytes,
+        stream: launchObservation.stream,
+      },
+    ],
+    outputEvents: [
+      {
+        id: 'hip-module-probe-plan-output-1',
+        epoch: 1,
+        artifact_hash: compiled.beforeHsacoHash,
+        after_dispatch_id: 'hip-module-probe-plan-dispatch-1',
+        output_target_id: planningOutputTargetId,
+      },
+      {
+        id: 'hip-module-probe-plan-output-2',
+        epoch: 2,
+        artifact_hash: compiled.afterHsacoHash,
+        after_dispatch_id: 'hip-module-probe-plan-dispatch-2',
+        output_target_id: planningOutputTargetId,
+      },
+    ],
+  };
+  const beforePlanningRequest = buildHipSemanticOracleRequest({
+    profile,
+    runMode,
+    artifactAfterHash: compiled.beforeHsacoHash,
+    artifactSource: profile.beforeSource,
+    artifactSourceHash: profile.beforeHash,
+    runtimeTrace: planningTrace,
+    launchObservation,
+    compiled,
+    epoch: '1',
+  });
+  const afterPlanningRequest = buildHipSemanticOracleRequest({
+    profile,
+    runMode,
+    artifactAfterHash: compiled.afterHsacoHash,
+    runtimeTrace: planningTrace,
+    launchObservation,
+    compiled,
+  });
+  const probeOracle = {
+    before: await executeSemanticOracle(beforePlanningRequest, implementationBytes),
+    after: await executeSemanticOracle(afterPlanningRequest, implementationBytes),
+  };
+  const runtime = await runHipProbe({
+    profile,
+    compiled,
+    outDir,
+    launchObservation,
+    probeOracle,
+  });
   testTimingRecorder.startPhase('proof_finalization');
   const oracleStart = process.hrtime.bigint();
+  const observedReadbackHash = await sha256File(runtime.rawAfterPath);
+  if (sha256Bytes(await readFile(runtime.planPath)) !== runtime.planHash) {
+    throw new Error('HIP executed probe plan bytes no longer match the bound plan hash');
+  }
+  bindHipRuntimeInvocationEvidence({
+    runtimeTrace: runtime.runtimeTrace,
+    planHash: runtime.planHash,
+    observedReadbackHash,
+    expectedKernelIdentity: profile.kernel.name,
+    expectedArtifactHash: compiled.afterHsacoHash,
+  });
+  const traceArtifact = await persistCanonicalRuntimeTrace({
+    outDir,
+    targetId: profile.targetId,
+    runtimeTrace: runtime.runtimeTrace,
+  });
+  const semanticRequest = buildHipSemanticOracleRequest({
+    profile,
+    runMode,
+    artifactAfterHash: compiled.afterHsacoHash,
+    runtimeTrace: runtime.runtimeTrace,
+    launchObservation: runtime.launchObservation,
+    compiled,
+    planHash: runtime.planHash,
+    observedReadbackHash,
+    traceArtifactHash: traceArtifact.hash,
+  });
+  const semanticExecution = await executeSemanticOracle(semanticRequest, implementationBytes);
+  const semanticOracle = {
+    implementationBytes,
+    request: semanticRequest,
+    execution: semanticExecution,
+    runMode,
+    traceArtifact,
+  };
+  const expectedOutputContract = buildExpectedOutputContract({ semanticOracle });
   const oracleArtifacts = await writeComputeOracleArtifacts({
     outDir,
     profile,
     runtimeTrace: runtime.runtimeTrace,
     rawAfterPath: runtime.rawAfterPath,
+    expectedOutputContract,
+    semanticOracle,
   });
-  const oracleValidation = computeOracleValidation({ artifacts: oracleArtifacts });
+  const oracleValidation = computeOracleValidation({
+    artifacts: oracleArtifacts,
+    observedBinding: deriveHipObservedBinding({
+      runtimeTrace: runtime.runtimeTrace,
+      traceArtifactHash: traceArtifact.hash,
+      planHash: runtime.planHash,
+      resourceTraceHash: semanticRequest.binding.resourceTraceHash,
+      observedReadbackHash,
+      expectedArtifactHash: compiled.afterHsacoHash,
+    }),
+  });
   const oracleEnd = process.hrtime.bigint();
-  const runMode = runModeMetadata(profile);
   const traceEvents = afterEpochTraceEvents(runtime.runtimeTrace);
   const loaderStartNs = eventNs(traceEvents.loader, 'start_timestamp_monotonic_ns');
   const loaderEndNs = eventNs(traceEvents.loader);
@@ -2488,11 +5938,13 @@ async function main(testTimingRecorder) {
     runtimeTrace: runtime.runtimeTrace,
     runMode,
     oracleArtifacts,
+    expectedOutputContract,
   });
   const contractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
   const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
-    before: contract,
-    after: contract,
+    explicitContract: contract,
+    derivedContract: contract,
+    derivedEvaluation: contractEvaluation,
   });
   const ledgerRecord = buildProofLedgerRecord({
     profile,
