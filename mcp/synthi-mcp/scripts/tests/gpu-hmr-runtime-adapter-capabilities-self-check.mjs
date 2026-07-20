@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import {
   GPU_HMR_RUNTIME_ADAPTER_ARTIFACT_FORMATS,
   GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_AUTHORITY,
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_AUTHORITY,
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_SCHEMA_VERSION,
   GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_SCHEMA_VERSION,
   GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_INPUT_FIELDS,
   GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_OBLIGATIONS,
@@ -15,6 +17,7 @@ import {
   GPU_HMR_RUNTIME_ADAPTER_PIPELINE_CACHE_OWNERS,
   GPU_HMR_RUNTIME_ADAPTER_PUBLICATION_MODELS,
   createGpuHmrRuntimeAdapterCapabilities,
+  evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity,
 } from '../lib/gpu-hmr-runtime-adapter-capabilities.mjs';
 import {
   GPU_HMR_COMPUTE_OUTPUT_ORACLE_KINDS,
@@ -149,6 +152,143 @@ const preRecordedRequired = [
 ];
 
 const baseline = createFacet();
+const baselineIntegrity = evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity(baseline);
+assert.equal(
+  baselineIntegrity.schemaVersion,
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_SCHEMA_VERSION,
+);
+assert.equal(
+  baselineIntegrity.authority,
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_AUTHORITY,
+);
+assert.equal(baselineIntegrity.valid, true);
+assert.equal(baselineIntegrity.acceptedAsSupportEvidence, true);
+assert.equal(baselineIntegrity.acceptedForGpuHmr, false);
+assert.equal(baselineIntegrity.gpuHmrSuccess, false);
+assert.equal(baselineIntegrity.canSatisfyRuntimeProof, false);
+assert.equal(baselineIntegrity.canSatisfyDispatchProof, false);
+assert.deepEqual(baselineIntegrity.failures, []);
+assert.deepEqual(baselineIntegrity.recomputedFacet, baseline);
+
+const serializedBaselineIntegrity = evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity(
+  JSON.parse(JSON.stringify(baseline)),
+);
+assert.equal(serializedBaselineIntegrity.acceptedAsSupportEvidence, true);
+assert.deepEqual(serializedBaselineIntegrity.recomputedFacet, baseline);
+const reorderedSerializedBaseline = Object.fromEntries(
+  Object.entries(JSON.parse(JSON.stringify(baseline))).reverse(),
+);
+assert.equal(
+  evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity(reorderedSerializedBaseline)
+    .acceptedAsSupportEvidence,
+  true,
+);
+
+function assertFacetIntegrityRejected(candidate, expectedFailure) {
+  const evaluation = evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity(candidate);
+  assert.equal(evaluation.valid, false);
+  assert.equal(evaluation.acceptedAsSupportEvidence, false);
+  assert.equal(evaluation.acceptedForGpuHmr, false);
+  assert.equal(evaluation.gpuHmrSuccess, false);
+  assert.equal(evaluation.canSatisfyRuntimeProof, false);
+  assert.equal(evaluation.canSatisfyDispatchProof, false);
+  assert.equal(evaluation.recomputedFacet, null);
+  assert.ok(evaluation.failures.includes(expectedFailure), JSON.stringify(evaluation));
+}
+
+const forgedSuccessFacet = JSON.parse(JSON.stringify(baseline));
+forgedSuccessFacet.gpuHmrSuccess = true;
+assertFacetIntegrityRejected(
+  forgedSuccessFacet,
+  'runtime_adapter_capabilities_facet_success_authority_forbidden',
+);
+
+const forgedCapabilitiesHashFacet = JSON.parse(JSON.stringify(baseline));
+forgedCapabilitiesHashFacet.capabilitiesHash = `sha256:${'0'.repeat(64)}`;
+assertFacetIntegrityRejected(
+  forgedCapabilitiesHashFacet,
+  'runtime_adapter_capabilities_facet_capabilitiesHash_mismatch',
+);
+
+for (const [field, value] of [
+  ['obligationsHash', `sha256:${'1'.repeat(64)}`],
+  ['bindingHash', `sha256:${'2'.repeat(64)}`],
+  ['proofId', `runtime-adapter-capabilities:sha256:${'3'.repeat(64)}`],
+]) {
+  const forgedFacet = JSON.parse(JSON.stringify(baseline));
+  forgedFacet[field] = value;
+  assertFacetIntegrityRejected(
+    forgedFacet,
+    `runtime_adapter_capabilities_facet_${field}_mismatch`,
+  );
+}
+
+const missingObligationFacet = JSON.parse(JSON.stringify(baseline));
+missingObligationFacet.obligations.pop();
+assertFacetIntegrityRejected(
+  missingObligationFacet,
+  'runtime_adapter_capabilities_facet_obligations_mismatch',
+);
+
+for (const identityField of ['backend', 'project', 'profile', 'target', 'fixture']) {
+  const identityFacet = JSON.parse(JSON.stringify(baseline));
+  identityFacet[identityField] = `identity:${identityField}`;
+  assertFacetIntegrityRejected(
+    identityFacet,
+    'runtime_adapter_capabilities_facet_field_set_mismatch',
+  );
+}
+
+assertFacetIntegrityRejected(
+  new Proxy(JSON.parse(JSON.stringify(baseline)), {}),
+  'runtime_adapter_capabilities_facet_plain_data_proxy',
+);
+
+const nestedProxyFacet = JSON.parse(JSON.stringify(baseline));
+nestedProxyFacet.evidenceRefs = new Proxy(nestedProxyFacet.evidenceRefs, {});
+assertFacetIntegrityRejected(
+  nestedProxyFacet,
+  'runtime_adapter_capabilities_facet_plain_data_proxy',
+);
+
+const cyclicFacet = JSON.parse(JSON.stringify(baseline));
+cyclicFacet.evidenceRefs.push(cyclicFacet);
+assertFacetIntegrityRejected(
+  cyclicFacet,
+  'runtime_adapter_capabilities_facet_plain_data_cycle',
+);
+
+const topLevelAccessorFacet = JSON.parse(JSON.stringify(baseline));
+let topLevelAccessorCalled = false;
+Object.defineProperty(topLevelAccessorFacet, 'schemaVersion', {
+  enumerable: true,
+  configurable: true,
+  get() {
+    topLevelAccessorCalled = true;
+    return GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_SCHEMA_VERSION;
+  },
+});
+assertFacetIntegrityRejected(
+  topLevelAccessorFacet,
+  'runtime_adapter_capabilities_facet_plain_data_accessor_property',
+);
+assert.equal(topLevelAccessorCalled, false);
+
+const nestedAccessorFacet = JSON.parse(JSON.stringify(baseline));
+let nestedAccessorCalled = false;
+Object.defineProperty(nestedAccessorFacet.evidenceRefs, '0', {
+  enumerable: true,
+  configurable: true,
+  get() {
+    nestedAccessorCalled = true;
+    return 'evidence:oracle:primary';
+  },
+});
+assertFacetIntegrityRejected(
+  nestedAccessorFacet,
+  'runtime_adapter_capabilities_facet_plain_data_array_accessor',
+);
+assert.equal(nestedAccessorCalled, false);
 assert.equal(
   baseline.schemaVersion,
   GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_SCHEMA_VERSION,

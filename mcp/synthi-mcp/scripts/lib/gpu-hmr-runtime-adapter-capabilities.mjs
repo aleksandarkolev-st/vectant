@@ -7,6 +7,10 @@ export const GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_SCHEMA_VERSION =
   'synthi.gpu_hmr.runtime_adapter_capabilities.v1';
 export const GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_AUTHORITY =
   'runtime_adapter_capability_obligations_only_not_gpu_hmr_success';
+export const GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_adapter_capabilities_integrity.v1';
+export const GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_AUTHORITY =
+  'runtime_adapter_capability_integrity_only_not_gpu_hmr_success';
 
 export const GPU_HMR_RUNTIME_ADAPTER_ARTIFACT_FORMATS = Object.freeze([
   'native_binary',
@@ -136,6 +140,23 @@ const COMMAND_RECORDING_MODEL_SET = new Set(
   GPU_HMR_RUNTIME_ADAPTER_COMMAND_RECORDING_MODELS,
 );
 const PIPELINE_CACHE_OWNER_SET = new Set(GPU_HMR_RUNTIME_ADAPTER_PIPELINE_CACHE_OWNERS);
+const CAPABILITY_FACET_FIELDS = Object.freeze([
+  'schemaVersion',
+  'authority',
+  ...GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_INPUT_FIELDS,
+  'obligations',
+  'capabilitiesHash',
+  'obligationsHash',
+  'bindingHash',
+  'proofId',
+  'valid',
+  'acceptedAsSupportEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+]);
+const CAPABILITY_FACET_FIELD_SET = new Set(CAPABILITY_FACET_FIELDS);
 
 const {
   verifiedArtifactTransport,
@@ -286,6 +307,99 @@ function stableJson(value) {
 
 function canonicalSha256(value) {
   return `sha256:${createHash('sha256').update(stableJson(value)).digest('hex')}`;
+}
+
+function plainDataTreeFailure(value) {
+  const pending = [{ value, leave: false }];
+  const active = new Set();
+  const complete = new Set();
+  while (pending.length > 0) {
+    const entry = pending.pop();
+    const current = entry.value;
+    if (current === null || typeof current === 'string' || typeof current === 'boolean') continue;
+    if (typeof current === 'number') {
+      if (!Number.isFinite(current)) return 'nonfinite_number';
+      if (Object.is(current, -0)) return 'negative_zero';
+      continue;
+    }
+    if (typeof current === 'undefined') return 'undefined_value';
+    if (typeof current === 'bigint') return 'bigint';
+    if (typeof current === 'symbol') return 'symbol_value';
+    if (typeof current === 'function') return 'function_value';
+    if (typeof current !== 'object') return 'unsupported_value';
+    try {
+      if (utilTypes.isProxy(current)) return 'proxy';
+    } catch {
+      return 'introspection_failed';
+    }
+    if (entry.leave) {
+      active.delete(current);
+      complete.add(current);
+      continue;
+    }
+    if (complete.has(current)) continue;
+    if (active.has(current)) return 'cycle';
+    active.add(current);
+    pending.push({ value: current, leave: true });
+
+    let descriptors;
+    let keys;
+    let prototype;
+    let array;
+    try {
+      descriptors = Object.getOwnPropertyDescriptors(current);
+      keys = Reflect.ownKeys(descriptors);
+      prototype = Object.getPrototypeOf(current);
+      array = Array.isArray(current);
+    } catch {
+      return 'introspection_failed';
+    }
+    if (keys.some((key) => typeof key !== 'string')) return 'symbol_property';
+    if (array) {
+      if (prototype !== Array.prototype) return 'array_prototype';
+      const lengthDescriptor = descriptors.length;
+      const length = lengthDescriptor?.value;
+      if (
+        !lengthDescriptor
+        || !Object.hasOwn(lengthDescriptor, 'value')
+        || !Number.isSafeInteger(length)
+        || length < 0
+        || keys.length !== length + 1
+      ) return 'array_shape';
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor || !Object.hasOwn(descriptor, 'value')) return 'array_accessor';
+        if (descriptor.enumerable !== true) return 'array_descriptor';
+        pending.push({ value: descriptor.value, leave: false });
+      }
+      continue;
+    }
+    if (prototype !== Object.prototype) return 'object_prototype';
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (!Object.hasOwn(descriptor, 'value')) return 'accessor_property';
+      if (descriptor.enumerable !== true) return 'object_property_descriptor';
+      pending.push({ value: descriptor.value, leave: false });
+    }
+  }
+  return null;
+}
+
+function capabilityFacetIntegrityResult(failures, recomputedFacet = null) {
+  const uniqueFailures = Object.freeze([...new Set(failures)]);
+  const acceptedAsSupportEvidence = uniqueFailures.length === 0 && recomputedFacet !== null;
+  return Object.freeze({
+    schemaVersion: GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_SCHEMA_VERSION,
+    authority: GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_INTEGRITY_AUTHORITY,
+    valid: acceptedAsSupportEvidence,
+    acceptedAsSupportEvidence,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+    failures: uniqueFailures,
+    recomputedFacet: acceptedAsSupportEvidence ? recomputedFacet : null,
+  });
 }
 
 function descriptorIsAccessor(descriptor) {
@@ -529,4 +643,59 @@ export function createGpuHmrRuntimeAdapterCapabilities(input) {
     canSatisfyRuntimeProof: false,
     canSatisfyDispatchProof: false,
   });
+}
+
+export function evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity(facet) {
+  const shapeFailure = plainDataTreeFailure(facet);
+  if (shapeFailure) {
+    return capabilityFacetIntegrityResult([
+      `runtime_adapter_capabilities_facet_plain_data_${shapeFailure}`,
+    ]);
+  }
+  if (facet === null || typeof facet !== 'object' || Array.isArray(facet)) {
+    return capabilityFacetIntegrityResult(['runtime_adapter_capabilities_facet_not_object']);
+  }
+
+  const keys = Object.keys(facet);
+  if (
+    keys.length !== CAPABILITY_FACET_FIELDS.length
+    || keys.some((key) => !CAPABILITY_FACET_FIELD_SET.has(key))
+    || CAPABILITY_FACET_FIELDS.some((key) => !Object.hasOwn(facet, key))
+  ) {
+    return capabilityFacetIntegrityResult(['runtime_adapter_capabilities_facet_field_set_mismatch']);
+  }
+
+  let recomputedFacet;
+  try {
+    recomputedFacet = createGpuHmrRuntimeAdapterCapabilities(Object.fromEntries(
+      GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_INPUT_FIELDS.map((field) => [field, facet[field]]),
+    ));
+  } catch {
+    return capabilityFacetIntegrityResult(['runtime_adapter_capabilities_facet_input_invalid']);
+  }
+
+  const failures = [];
+  if (facet.schemaVersion !== GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_SCHEMA_VERSION) {
+    failures.push('runtime_adapter_capabilities_facet_schema_mismatch');
+  }
+  if (facet.authority !== GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_AUTHORITY) {
+    failures.push('runtime_adapter_capabilities_facet_authority_mismatch');
+  }
+  if (
+    facet.acceptedForGpuHmr !== false
+    || facet.gpuHmrSuccess !== false
+    || facet.canSatisfyRuntimeProof !== false
+    || facet.canSatisfyDispatchProof !== false
+  ) {
+    failures.push('runtime_adapter_capabilities_facet_success_authority_forbidden');
+  }
+  if (facet.valid !== true || facet.acceptedAsSupportEvidence !== true) {
+    failures.push('runtime_adapter_capabilities_facet_support_state_invalid');
+  }
+  for (const field of CAPABILITY_FACET_FIELDS) {
+    if (stableJson(facet[field]) !== stableJson(recomputedFacet[field])) {
+      failures.push(`runtime_adapter_capabilities_facet_${field}_mismatch`);
+    }
+  }
+  return capabilityFacetIntegrityResult(failures, failures.length === 0 ? recomputedFacet : null);
 }
