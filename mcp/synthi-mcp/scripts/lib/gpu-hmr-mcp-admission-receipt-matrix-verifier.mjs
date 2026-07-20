@@ -427,9 +427,23 @@ function verifiedReceiptDetails(verification) {
 }
 
 function deterministicReplayIdentities(state, receiptId, bindingHash) {
+  const authorityIdentity = state.kind === "online_parent"
+    ? {
+      authorityId: state.authorityId,
+      authorityGenerationId: state.authorityGenerationId,
+      authorityClass: state.authorityClass,
+      parentPid: state.parentPid,
+      parentStartIdentity: state.parentStartIdentity,
+      policyHash: state.policyHash,
+      responseKeyId: state.responseKeyId,
+    }
+    : {
+      authorityId: state.authorityId,
+      registryClaimantIdentity: state.claimantIdentity,
+    };
   const operationMaterial = JSON.stringify({
-    authorityId: state.authorityId,
-    registryClaimantIdentity: state.claimantIdentity,
+    schemaVersion: GPU_HMR_MCP_ADMISSION_REPLAY_CAS_REQUEST_SCHEMA,
+    ...authorityIdentity,
     receiptId,
     expectedBindingHash: bindingHash,
   });
@@ -437,17 +451,18 @@ function deterministicReplayIdentities(state, receiptId, bindingHash) {
     "gpu-hmr-mcp-replay-operation",
     operationMaterial,
   );
+  const requestMaterial = JSON.stringify({
+    schemaVersion: GPU_HMR_MCP_ADMISSION_REPLAY_CAS_REQUEST_SCHEMA,
+    ...authorityIdentity,
+    replayOperationId,
+    receiptId,
+    expectedBindingHash: bindingHash,
+  });
   return Object.freeze({
     replayOperationId,
     requestId: sha256Id(
       "gpu-hmr-mcp-replay-cas-request",
-      JSON.stringify({
-        replayOperationId,
-        authorityId: state.authorityId,
-        registryClaimantIdentity: state.claimantIdentity,
-        receiptId,
-        expectedBindingHash: bindingHash,
-      }),
+      requestMaterial,
     ),
   });
 }

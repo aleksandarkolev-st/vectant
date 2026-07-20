@@ -480,6 +480,10 @@ describe("MCP admission receipt matrix verifier", () => {
     const context = verificationContext({ replayRegistry });
     const first = stageGpuHmrMcpAdmissionReceiptForMatrix(context);
     const second = stageGpuHmrMcpAdmissionReceiptForMatrix(context);
+    const isolated = stageGpuHmrMcpAdmissionReceiptForMatrix({
+      ...context,
+      replayRegistry: createGpuHmrMcpAdmissionReplayRegistry(),
+    });
 
     expect(first).toMatchObject({
       replayChecked: false,
@@ -494,6 +498,9 @@ describe("MCP admission receipt matrix verifier", () => {
     );
     expect(second.replayOperationId).toBe(first.replayOperationId);
     expect(second.replayRequestId).toBe(first.replayRequestId);
+    expect(isolated.replayOperationId).not.toBe(first.replayOperationId);
+    expect(isolated.replayRequestId).not.toBe(first.replayRequestId);
+    expect(discardGpuHmrMcpAdmissionReceiptForMatrix(isolated)).toBe(true);
 
     const results = await Promise.all([
       commitGpuHmrMcpAdmissionReceiptForMatrix(first),
@@ -618,13 +625,13 @@ describe("MCP admission receipt matrix verifier", () => {
     });
   });
 
-  it("gives independent online registries distinct parent operations", async () => {
-    const signer = receiptSigner(generateKeyPairSync("ed25519").privateKey, {
+  it("observes an exact online commit idempotently across independent registries", async () => {
+    const privateKey = generateKeyPairSync("ed25519").privateKey;
+    const signer = receiptSigner(privateKey, {
       clockUnixNs: () => BigInt(Date.now()) * 1_000_000n,
+      nonceBytes: () => Buffer.alloc(32, 0x71),
     });
     const online = await onlineRegistry(signer);
-    const otherRegistry =
-      await createGpuHmrMcpAdmissionOnlineReplayRegistry(online.client);
     const input = admissionInput();
     const receipt = signer.sign(input);
     const common = {
@@ -633,33 +640,141 @@ describe("MCP admission receipt matrix verifier", () => {
       receipt,
       expectedBinding: expectedBinding(input),
     };
-    const first = stageGpuHmrMcpAdmissionReceiptForMatrix({
+    const first = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
       ...common,
       replayRegistry: online.replayRegistry,
     });
-    const second = stageGpuHmrMcpAdmissionReceiptForMatrix({
-      ...common,
-      replayRegistry: otherRegistry,
+    expect(first).toMatchObject({
+      accepted: true,
+      replayCommitAttempted: true,
+      replayCommitKnown: true,
+      replayCommitState: "applied",
+      replayOperationCommitted: true,
+      replaySignedResponseVerified: true,
     });
 
-    expect(first.replayOperationId).not.toBe(second.replayOperationId);
-    expect(first.replayRequestId).not.toBe(second.replayRequestId);
+    const independentClient =
+      createGpuHmrMcpAdmissionOnlineReplayAuthorityClient({
+        ...online.metadata,
+        responseVerificationKey: {
+          ...online.metadata.responseVerificationKey,
+        },
+      });
+    const independentRegistry =
+      await createGpuHmrMcpAdmissionOnlineReplayRegistry(independentClient);
+    const exactRetry = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
+      ...common,
+      trustedVerificationKey: {
+        ...signer.exportVerificationKey(),
+      },
+      replayRegistry: independentRegistry,
+    });
+    expect(exactRetry).toMatchObject({
+      accepted: true,
+      replayCommitAttempted: true,
+      replayCommitKnown: true,
+      replayCommitState: "applied",
+      replayOperationCommitted: true,
+      replaySignedResponseVerified: true,
+    });
+    expect(exactRetry.replayOperationId).toBe(first.replayOperationId);
+    expect(exactRetry.replayRequestId).toBe(first.replayRequestId);
+    expect(exactRetry.replayRequestHash).toBe(first.replayRequestHash);
+    expect(exactRetry.replayRevision).toBe(first.replayRevision);
+    expect(exactRetry.replayCommittedAtUnixNs).toBe(
+      first.replayCommittedAtUnixNs,
+    );
+    expect(exactRetry.replayPreviousCommitHash).toBe(
+      first.replayPreviousCommitHash,
+    );
+    expect(exactRetry.replayCommitHash).toBe(first.replayCommitHash);
+    expect(exactRetry.replayResponseSignature).toBe(
+      first.replayResponseSignature,
+    );
 
-    const results = await Promise.all([
-      commitGpuHmrMcpAdmissionReceiptForMatrix(first),
-      commitGpuHmrMcpAdmissionReceiptForMatrix(second),
-    ]);
-    expect(results.filter((result) => result.accepted)).toHaveLength(1);
-    expect(results.filter((result) => !result.accepted)).toEqual([
-      expect.objectContaining({
-        reason: "gpu_hmr_mcp_admission_receipt_replayed",
-        replayCommitAttempted: true,
-        replayCommitKnown: true,
-        replayCommitState: "rejected",
-        replayOperationCommitted: true,
-        replaySignedResponseVerified: true,
+    const conflictingBinding = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
+      ...common,
+      replayRegistry: independentRegistry,
+      expectedBinding: {
+        ...common.expectedBinding,
+        proofLedgerId: `gpu-ledger-proof:sha256:${"2".repeat(64)}`,
+      },
+    });
+    expect(conflictingBinding).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_signed_binding_mismatch",
+      bindingChecked: true,
+      replayCommitAttempted: false,
+    });
+
+    const alteredReceipt = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
+      ...common,
+      replayRegistry: independentRegistry,
+      receipt: {
+        ...receipt,
+        artifactContentHash: hash("0"),
+      },
+      expectedBinding: {
+        ...common.expectedBinding,
+        artifactContentHash: hash("0"),
+      },
+    });
+    expect(alteredReceipt).toMatchObject({
+      accepted: false,
+      signatureVerified: false,
+      replayCommitAttempted: false,
+    });
+
+    const staleSigner = receiptSigner(privateKey, {
+      clockUnixNs: () => BigInt(Date.now()) * 1_000_000n,
+      nonceBytes: () => Buffer.alloc(32, 0x72),
+    });
+    const staleRegistry = await createGpuHmrMcpAdmissionOnlineReplayRegistry(
+      createGpuHmrMcpAdmissionOnlineReplayAuthorityClient({
+        ...online.metadata,
+        responseVerificationKey: {
+          ...online.metadata.responseVerificationKey,
+        },
       }),
-    ]);
+    );
+    const staleReceipt = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
+      ...common,
+      receipt: staleSigner.sign(input),
+      replayRegistry: staleRegistry,
+    });
+    expect(staleReceipt).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_sequence_not_increasing",
+      replayCommitAttempted: true,
+      replayCommitKnown: true,
+      replayCommitState: "rejected",
+      replaySignedResponseVerified: true,
+    });
+    expect(staleReceipt.replayOperationId).not.toBe(first.replayOperationId);
+
+    const nonceReplayRegistry =
+      await createGpuHmrMcpAdmissionOnlineReplayRegistry(
+        createGpuHmrMcpAdmissionOnlineReplayAuthorityClient({
+          ...online.metadata,
+          responseVerificationKey: {
+            ...online.metadata.responseVerificationKey,
+          },
+        }),
+      );
+    const nonceReplay = await verifyGpuHmrMcpAdmissionReceiptForMatrix({
+      ...common,
+      receipt: signer.sign(input),
+      replayRegistry: nonceReplayRegistry,
+    });
+    expect(nonceReplay).toMatchObject({
+      accepted: false,
+      reason: "gpu_hmr_mcp_admission_nonce_replayed",
+      replayCommitAttempted: true,
+      replayCommitKnown: true,
+      replayCommitState: "rejected",
+      replaySignedResponseVerified: true,
+    });
+    expect(nonceReplay.replayOperationId).not.toBe(first.replayOperationId);
   });
 
   it("keeps a concurrent online operation pending until a signed result returns", async () => {
