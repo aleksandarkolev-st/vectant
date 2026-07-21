@@ -17,22 +17,35 @@ import {
   evaluateGpuHmrCapabilityAcceptanceContractIntegrity,
 } from '../lib/gpu-hmr-capability-acceptance-contract.mjs';
 import {
-  GPU_HMR_RUNTIME_ADAPTER_ARTIFACT_FORMATS,
-  GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS,
-  GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_OBLIGATIONS,
-  GPU_HMR_RUNTIME_ADAPTER_COMMAND_RECORDING_MODELS,
-  GPU_HMR_RUNTIME_ADAPTER_OUTPUT_MODALITIES,
-  GPU_HMR_RUNTIME_ADAPTER_PIPELINE_CACHE_OBLIGATIONS,
-  GPU_HMR_RUNTIME_ADAPTER_PIPELINE_CACHE_OWNERS,
-  GPU_HMR_RUNTIME_ADAPTER_PUBLICATION_MODELS,
   createGpuHmrRuntimeAdapterCapabilities,
-  deriveGpuHmrRuntimeAdapterCapabilityObligations,
 } from '../lib/gpu-hmr-runtime-adapter-capabilities.mjs';
+import {
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_V2_SCHEMA_VERSION,
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS_V2,
+  GPU_HMR_RUNTIME_ADAPTER_V2_ARTIFACT_FORMATS,
+  GPU_HMR_RUNTIME_ADAPTER_V2_ARTIFACT_MATERIALIZATION_MODELS,
+  GPU_HMR_RUNTIME_ADAPTER_V2_COMMAND_RECORDING_MODELS,
+  GPU_HMR_RUNTIME_ADAPTER_V2_DEVICE_TOPOLOGIES,
+  GPU_HMR_RUNTIME_ADAPTER_V2_DISPATCH_BINDING_MODELS,
+  GPU_HMR_RUNTIME_ADAPTER_V2_ORACLE_KINDS,
+  GPU_HMR_RUNTIME_ADAPTER_V2_OUTPUT_MODALITIES,
+  GPU_HMR_RUNTIME_ADAPTER_V2_PIPELINE_CACHE_OWNERS,
+  GPU_HMR_RUNTIME_ADAPTER_V2_PIPELINE_REUSE_MODELS,
+  GPU_HMR_RUNTIME_ADAPTER_V2_PUBLICATION_MODELS,
+  GPU_HMR_RUNTIME_ADAPTER_V2_RAY_TRACING_STATE_MODELS,
+  GPU_HMR_RUNTIME_ADAPTER_V2_RESOURCE_BINDING_MODELS,
+  GPU_HMR_RUNTIME_ADAPTER_V2_STATE_CONTINUITY_MODELS,
+  GPU_HMR_RUNTIME_ADAPTER_V2_SYNCHRONIZATION_TOPOLOGIES,
+  createGpuHmrRuntimeAdapterCapabilitiesV2,
+  deriveGpuHmrRuntimeAdapterCapabilityObligationsV2,
+} from '../lib/gpu-hmr-runtime-adapter-capabilities-v2.mjs';
+import {
+  classifyGpuHmrOutputOracleKind,
+} from '../lib/gpu-hmr-output-oracle-kind.mjs';
 
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const PROOF_ID_PATTERN =
   /^gpu-hmr-capability-acceptance-contract:sha256:[0-9a-f]{64}$/;
-const OBLIGATION = GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_OBLIGATIONS;
 const IDENTITY_FIELDS = Object.freeze([
   'project',
   'projectName',
@@ -120,8 +133,21 @@ function subjectBinding(seed = 'baseline') {
 }
 
 function capabilityFacet(overrides = {}) {
-  const outputModality = overrides.outputModality ?? 'compute';
-  return createGpuHmrRuntimeAdapterCapabilities({
+  const classifiedOracle = overrides.oracleKind
+    ? classifyGpuHmrOutputOracleKind(overrides.oracleKind)
+    : null;
+  const outputModality = overrides.outputModality
+    ?? classifiedOracle?.modality
+    ?? 'compute';
+  const pipelineCacheOwner = overrides.pipelineCacheOwner ?? (
+    ['cache', 'cache_and_library'].includes(overrides.pipelineReuseModel)
+      ? 'adapter'
+      : 'none'
+  );
+  const pipelineReuseModel = overrides.pipelineReuseModel ?? (
+    pipelineCacheOwner === 'none' ? 'none' : 'cache'
+  );
+  return createGpuHmrRuntimeAdapterCapabilitiesV2({
     artifactFormat: 'native_binary',
     outputModality,
     oracleKind: outputModality === 'visual'
@@ -129,9 +155,20 @@ function capabilityFacet(overrides = {}) {
       : 'compute_readback',
     publicationModel: 'dispatch_table_epoch',
     commandRecordingModel: 'late_bound_dispatch',
-    pipelineCacheOwner: 'adapter',
+    pipelineCacheOwner,
+    artifactMaterializationModel: 'ahead_of_time',
+    dispatchBindingModel: 'direct',
+    resourceBindingModel: 'fixed_layout',
+    deviceTopology: 'single_device',
+    synchronizationTopology: 'single_queue_ordered',
+    stateContinuityModel: 'stateless',
+    rayTracingStateModel: 'none',
+    pipelineReuseModel,
     evidenceRefs: ['capability-declaration:self-check'],
     ...overrides,
+    outputModality,
+    pipelineCacheOwner,
+    pipelineReuseModel,
   });
 }
 
@@ -145,102 +182,33 @@ function input(overrides = {}) {
 
 function factsFromFacet(facet) {
   return Object.fromEntries(
-    GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS.map(
+    GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS_V2.map(
       (field) => [field, facet[field]],
     ),
   );
 }
 
-function expectedObligations(facts) {
-  const always = [
-    OBLIGATION.verifiedArtifactTransport,
-    OBLIGATION.changedArtifactLoadIntoTargetProcess,
-    OBLIGATION.epochPublication,
-    OBLIGATION.loadedArtifactEpochBinding,
-    OBLIGATION.postPublicationDispatch,
-    OBLIGATION.dispatchEpochArtifactBinding,
-    OBLIGATION.sameProcessHostIdentity,
-    OBLIGATION.outputAfterDispatchOracleBinding,
-    OBLIGATION.retirementSafety,
-    OBLIGATION.abiCompatibility,
-    OBLIGATION.cpuHmrFullRebuildRestartFirewall,
-  ];
-  const boundary = [
-    OBLIGATION.explicitAppHookContract,
-    OBLIGATION.runtimeBoundaryEvidence,
-  ];
-  const compute = [
-    OBLIGATION.computeRawReadbackBytes,
-    OBLIGATION.computeReadbackSchema,
-    OBLIGATION.computeBeforeAfterChecksum,
-    OBLIGATION.computeDeterministicSlice,
-  ];
-  const visual = [
-    OBLIGATION.visualVerifiedBeforeBytes,
-    OBLIGATION.visualVerifiedAfterBytes,
-    OBLIGATION.visualVerifiedDiffBytes,
-    OBLIGATION.visualDeterministicControls,
-    OBLIGATION.visualPostEpochFrameBoundary,
-    OBLIGATION.visualBlankFrameRejection,
-    OBLIGATION.visualStaleFrameRejection,
-    OBLIGATION.visualJitterRejection,
-    OBLIGATION.visualTemporalEffectRejection,
-  ];
-  const pipeline = [
-    OBLIGATION.pipelineRecreation,
-    OBLIGATION.pipelineIdentityEpochBinding,
-  ];
-  const commandOrder = [
-    OBLIGATION.oldCommandInvalidation,
-    OBLIGATION.oldCommandRetirement,
-    OBLIGATION.postPublicationCommandRecording,
-    OBLIGATION.postPublicationCommandRerecord,
-    OBLIGATION.newRecordingChangedArtifactProof,
-  ];
-  const selected = new Set(always);
-
-  if (facts.artifactFormat === 'runtime_source') {
-    selected.add(OBLIGATION.runtimeCompilerSourceToArtifactProof);
-  }
-  if (
-    ['engine_asset', 'opaque_payload'].includes(facts.artifactFormat)
-    || ['engine_managed_epoch', 'opaque_callback_epoch'].includes(
-      facts.publicationModel,
-    )
-    || facts.commandRecordingModel === 'opaque_engine_managed'
-    || ['application', 'engine', 'opaque_external'].includes(facts.pipelineCacheOwner)
-  ) {
-    boundary.forEach((value) => selected.add(value));
-  }
-  (facts.outputModality === 'compute' ? compute : visual)
-    .forEach((value) => selected.add(value));
-  if (facts.publicationModel === 'pipeline_object_epoch') {
-    pipeline.forEach((value) => selected.add(value));
-  }
-  if (facts.commandRecordingModel === 'record_after_publication') {
-    selected.add(OBLIGATION.postPublicationCommandRecording);
-    selected.add(OBLIGATION.newRecordingChangedArtifactProof);
-  }
-  if (facts.commandRecordingModel === 'pre_recorded_commands') {
-    commandOrder.forEach((value) => selected.add(value));
-  }
-  GPU_HMR_RUNTIME_ADAPTER_PIPELINE_CACHE_OBLIGATIONS[facts.pipelineCacheOwner]
-    .forEach((value) => selected.add(value));
-
-  const exactOrder = [
-    ...always,
-    OBLIGATION.runtimeCompilerSourceToArtifactProof,
-    ...boundary,
-    ...compute,
-    ...visual,
-    ...pipeline,
-    ...commandOrder,
-    ...GPU_HMR_RUNTIME_ADAPTER_PIPELINE_CACHE_OWNERS.flatMap(
-      (owner) => GPU_HMR_RUNTIME_ADAPTER_PIPELINE_CACHE_OBLIGATIONS[owner],
-    ),
-  ];
-  return exactOrder.filter((value) => selected.has(value));
-}
+const CAPABILITY_DIMENSIONS = Object.freeze([
+  ['artifactFormat', GPU_HMR_RUNTIME_ADAPTER_V2_ARTIFACT_FORMATS],
+  ['outputModality', GPU_HMR_RUNTIME_ADAPTER_V2_OUTPUT_MODALITIES],
+  ['publicationModel', GPU_HMR_RUNTIME_ADAPTER_V2_PUBLICATION_MODELS],
+  ['commandRecordingModel', GPU_HMR_RUNTIME_ADAPTER_V2_COMMAND_RECORDING_MODELS],
+  ['pipelineCacheOwner', GPU_HMR_RUNTIME_ADAPTER_V2_PIPELINE_CACHE_OWNERS],
+  [
+    'artifactMaterializationModel',
+    GPU_HMR_RUNTIME_ADAPTER_V2_ARTIFACT_MATERIALIZATION_MODELS,
+  ],
+  ['dispatchBindingModel', GPU_HMR_RUNTIME_ADAPTER_V2_DISPATCH_BINDING_MODELS],
+  ['resourceBindingModel', GPU_HMR_RUNTIME_ADAPTER_V2_RESOURCE_BINDING_MODELS],
+  ['deviceTopology', GPU_HMR_RUNTIME_ADAPTER_V2_DEVICE_TOPOLOGIES],
+  [
+    'synchronizationTopology',
+    GPU_HMR_RUNTIME_ADAPTER_V2_SYNCHRONIZATION_TOPOLOGIES,
+  ],
+  ['stateContinuityModel', GPU_HMR_RUNTIME_ADAPTER_V2_STATE_CONTINUITY_MODELS],
+  ['rayTracingStateModel', GPU_HMR_RUNTIME_ADAPTER_V2_RAY_TRACING_STATE_MODELS],
+  ['pipelineReuseModel', GPU_HMR_RUNTIME_ADAPTER_V2_PIPELINE_REUSE_MODELS],
+]);
 
 function assertDeclarationOnly(value) {
   assert.equal(value.valid, true);
@@ -297,6 +265,11 @@ assert.match(GPU_HMR_CAPABILITY_ACCEPTANCE_CONTRACT_AUTHORITY, /not_evidence/);
 assert.match(GPU_HMR_CAPABILITY_ACCEPTANCE_CONTRACT_AUTHORITY, /runtime/);
 assert.match(GPU_HMR_CAPABILITY_ACCEPTANCE_CONTRACT_AUTHORITY, /dispatch/);
 assert.match(GPU_HMR_CAPABILITY_ACCEPTANCE_CONTRACT_AUTHORITY, /gpu_hmr_acceptance/);
+assert.match(GPU_HMR_CAPABILITY_ACCEPTANCE_CONTRACT_SCHEMA_VERSION, /\.v2$/);
+assert.match(
+  GPU_HMR_CAPABILITY_ACCEPTANCE_CONTRACT_INTEGRITY_SCHEMA_VERSION,
+  /\.v2$/,
+);
 
 const baselineInput = input();
 const baseline = createGpuHmrCapabilityAcceptanceContract(baselineInput);
@@ -305,14 +278,14 @@ assert.equal(baseline.authority, GPU_HMR_CAPABILITY_ACCEPTANCE_CONTRACT_AUTHORIT
 assert.deepEqual(Object.keys(baseline), GPU_HMR_CAPABILITY_ACCEPTANCE_CONTRACT_FIELDS);
 assert.deepEqual(baseline.subjectBinding, baselineInput.subjectBinding);
 assert.deepEqual(baseline.capabilityFacet, baselineInput.capabilityFacet);
+assert.equal(
+  baseline.capabilityFacet.schemaVersion,
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_V2_SCHEMA_VERSION,
+);
 assert.equal(baseline.capabilityBindingHash, baseline.capabilityFacet.bindingHash);
 assert.deepEqual(
   baseline.obligations,
-  expectedObligations(factsFromFacet(baseline.capabilityFacet)),
-);
-assert.deepEqual(
-  baseline.obligations,
-  deriveGpuHmrRuntimeAdapterCapabilityObligations(
+  deriveGpuHmrRuntimeAdapterCapabilityObligationsV2(
     factsFromFacet(baseline.capabilityFacet),
   ),
 );
@@ -321,6 +294,42 @@ assert.match(baseline.contractHash, SHA256_PATTERN);
 assert.match(baseline.proofId, PROOF_ID_PATTERN);
 assertDeclarationOnly(baseline);
 assertDeepFrozen(baseline);
+
+const historicalCapabilityFacet = createGpuHmrRuntimeAdapterCapabilities({
+  artifactFormat: 'native_binary',
+  outputModality: 'compute',
+  oracleKind: 'compute_readback',
+  publicationModel: 'dispatch_table_epoch',
+  commandRecordingModel: 'late_bound_dispatch',
+  pipelineCacheOwner: 'adapter',
+  evidenceRefs: ['historical-capability:self-check'],
+});
+assertCreateRejected(
+  {
+    subjectBinding: subjectBinding('historical-v1'),
+    capabilityFacet: clone(historicalCapabilityFacet),
+  },
+  /capability_facet_current_version_required/,
+);
+const mixedVersionCapabilityFacet = clone(historicalCapabilityFacet);
+mixedVersionCapabilityFacet.artifactMaterializationModel = 'ahead_of_time';
+assertCreateRejected({
+  subjectBinding: subjectBinding('mixed-version'),
+  capabilityFacet: mixedVersionCapabilityFacet,
+});
+const legacyShapeWithV2Version = clone(historicalCapabilityFacet);
+legacyShapeWithV2Version.schemaVersion =
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_V2_SCHEMA_VERSION;
+assertCreateRejected({
+  subjectBinding: subjectBinding('v2-version-legacy-shape'),
+  capabilityFacet: legacyShapeWithV2Version,
+});
+const duplicateVersionAliasFacet = clone(baselineInput.capabilityFacet);
+duplicateVersionAliasFacet.schema_version = duplicateVersionAliasFacet.schemaVersion;
+assertCreateRejected({
+  subjectBinding: subjectBinding('duplicate-version-alias'),
+  capabilityFacet: duplicateVersionAliasFacet,
+});
 
 assert.equal(
   baseline.subjectBindingHash,
@@ -375,46 +384,119 @@ assertDeepFrozen(serializedIntegrity);
 
 let capabilityCombinations = 0;
 const combinationContractHashes = new Set();
-for (const artifactFormat of GPU_HMR_RUNTIME_ADAPTER_ARTIFACT_FORMATS) {
-  for (const outputModality of GPU_HMR_RUNTIME_ADAPTER_OUTPUT_MODALITIES) {
-    for (const publicationModel of GPU_HMR_RUNTIME_ADAPTER_PUBLICATION_MODELS) {
-      for (const commandRecordingModel of GPU_HMR_RUNTIME_ADAPTER_COMMAND_RECORDING_MODELS) {
-        for (const pipelineCacheOwner of GPU_HMR_RUNTIME_ADAPTER_PIPELINE_CACHE_OWNERS) {
-          const facet = capabilityFacet({
-            artifactFormat,
-            outputModality,
-            oracleKind: outputModality === 'compute'
-              ? 'compute_readback'
-              : 'visual_frame_readback',
-            publicationModel,
-            commandRecordingModel,
-            pipelineCacheOwner,
-          });
-          const contract = createGpuHmrCapabilityAcceptanceContract({
-            subjectBinding: subjectBinding('all-combinations'),
-            capabilityFacet: clone(facet),
-          });
-          const expected = expectedObligations(factsFromFacet(facet));
-          assert.deepEqual(contract.obligations, expected);
-          assert.deepEqual(
-            deriveGpuHmrRuntimeAdapterCapabilityObligations(factsFromFacet(facet)),
-            expected,
-          );
-          assert.equal(contract.capabilityBindingHash, facet.bindingHash);
-          assertDeclarationOnly(contract);
-          assert.equal(
-            evaluateGpuHmrCapabilityAcceptanceContractIntegrity(clone(contract)).valid,
-            true,
-          );
-          combinationContractHashes.add(contract.contractHash);
-          capabilityCombinations += 1;
-        }
-      }
+const combinationCapabilityHashes = new Set();
+const assertCapabilityContract = (facet) => {
+  const contract = createGpuHmrCapabilityAcceptanceContract({
+    subjectBinding: subjectBinding('capability-dimensions'),
+    capabilityFacet: clone(facet),
+  });
+  const expected = deriveGpuHmrRuntimeAdapterCapabilityObligationsV2(
+    factsFromFacet(facet),
+  );
+  assert.deepEqual(contract.obligations, expected);
+  assert.equal(contract.capabilityBindingHash, facet.bindingHash);
+  assertDeclarationOnly(contract);
+  assert.equal(
+    evaluateGpuHmrCapabilityAcceptanceContractIntegrity(clone(contract)).valid,
+    true,
+  );
+  combinationCapabilityHashes.add(facet.bindingHash);
+  combinationContractHashes.add(contract.contractHash);
+  capabilityCombinations += 1;
+};
+
+for (const [field, values] of CAPABILITY_DIMENSIONS) {
+  for (const value of values) {
+    const overrides = { [field]: value };
+    if (field === 'outputModality') {
+      overrides.oracleKind = value === 'visual'
+        ? 'visual_frame_readback'
+        : 'compute_readback';
     }
+    assertCapabilityContract(capabilityFacet(overrides));
   }
 }
-assert.equal(capabilityCombinations, 960);
-assert.equal(combinationContractHashes.size, 960);
+for (const oracleKind of GPU_HMR_RUNTIME_ADAPTER_V2_ORACLE_KINDS) {
+  const classification = classifyGpuHmrOutputOracleKind(oracleKind);
+  assert.equal(classification.accepted, true);
+  assertCapabilityContract(capabilityFacet({
+    oracleKind,
+    outputModality: classification.modality,
+  }));
+}
+assert.equal(
+  combinationContractHashes.size,
+  combinationCapabilityHashes.size,
+);
+assert.ok(combinationCapabilityHashes.size > CAPABILITY_DIMENSIONS.length);
+
+for (const { overrides, requiredObligations } of [
+  {
+    overrides: { outputModality: 'visual', oracleKind: 'visual_frame_readback' },
+    requiredObligations: [
+      'visual_verified_after_bytes',
+      'visual_post_epoch_frame_boundary',
+      'visual_oracle_dispatch_epoch_artifact_binding',
+    ],
+  },
+  {
+    overrides: { artifactFormat: 'execution_graph', dispatchBindingModel: 'captured_graph' },
+    requiredObligations: [
+      'graph_new_artifact_binding',
+      'graph_executable_epoch_binding',
+      'graph_old_executable_retirement',
+    ],
+  },
+  {
+    overrides: { commandRecordingModel: 'pre_recorded_commands' },
+    requiredObligations: [
+      'old_command_invalidation',
+      'post_publication_command_rerecord',
+      'new_recording_changed_artifact_proof',
+    ],
+  },
+  {
+    overrides: {
+      deviceTopology: 'multi_device',
+      synchronizationTopology: 'multi_device',
+    },
+    requiredObligations: [
+      'multi_device_membership_binding',
+      'per_participant_output_binding',
+      'multi_device_retirement_fence',
+    ],
+  },
+  {
+    overrides: {
+      artifactFormat: 'opaque_payload',
+      publicationModel: 'opaque_callback_epoch',
+      artifactMaterializationModel: 'opaque',
+      dispatchBindingModel: 'opaque',
+      resourceBindingModel: 'opaque',
+    },
+    requiredObligations: [
+      'explicit_app_hook_contract',
+      'runtime_boundary_evidence',
+      'opaque_payload_explicit_app_hook_contract',
+    ],
+  },
+  {
+    overrides: { rayTracingStateModel: 'acceleration_structures_and_shader_tables' },
+    requiredObligations: [
+      'acceleration_structure_identity_epoch_binding',
+      'shader_table_identity_epoch_binding',
+      'acceleration_structure_shader_table_dependency_ordering',
+    ],
+  },
+]) {
+  const contract = createGpuHmrCapabilityAcceptanceContract({
+    subjectBinding: subjectBinding('obligation-sentinels'),
+    capabilityFacet: clone(capabilityFacet(overrides)),
+  });
+  for (const obligation of requiredObligations) {
+    assert.ok(contract.obligations.includes(obligation), obligation);
+  }
+}
 
 const randomContractHashes = new Set();
 for (let iteration = 0; iteration < 64; iteration += 1) {
@@ -427,22 +509,29 @@ for (let iteration = 0; iteration < 64; iteration += 1) {
   if (randomSubject.artifactBeforeHash === randomSubject.artifactAfterHash) {
     randomSubject.artifactAfterHash = hash(`forced-after:${iteration}`);
   }
+  const oracleKind = GPU_HMR_RUNTIME_ADAPTER_V2_ORACLE_KINDS[
+    iteration % GPU_HMR_RUNTIME_ADAPTER_V2_ORACLE_KINDS.length
+  ];
+  const oracleClassification = classifyGpuHmrOutputOracleKind(oracleKind);
+  const capabilityOverrides = {
+    oracleKind,
+    outputModality: oracleClassification.modality,
+  };
+  for (const [field, values] of CAPABILITY_DIMENSIONS) {
+    if (field === 'outputModality') continue;
+    capabilityOverrides[field] = values[iteration % values.length];
+  }
+  if (capabilityOverrides.pipelineReuseModel === 'none') {
+    capabilityOverrides.pipelineCacheOwner = 'none';
+  } else if (
+    ['cache', 'cache_and_library'].includes(capabilityOverrides.pipelineReuseModel)
+    && capabilityOverrides.pipelineCacheOwner === 'none'
+  ) {
+    capabilityOverrides.pipelineCacheOwner = 'adapter';
+  }
   const ordered = {
     subjectBinding: randomSubject,
-    capabilityFacet: clone(capabilityFacet({
-      artifactFormat: GPU_HMR_RUNTIME_ADAPTER_ARTIFACT_FORMATS[
-        iteration % GPU_HMR_RUNTIME_ADAPTER_ARTIFACT_FORMATS.length
-      ],
-      publicationModel: GPU_HMR_RUNTIME_ADAPTER_PUBLICATION_MODELS[
-        iteration % GPU_HMR_RUNTIME_ADAPTER_PUBLICATION_MODELS.length
-      ],
-      commandRecordingModel: GPU_HMR_RUNTIME_ADAPTER_COMMAND_RECORDING_MODELS[
-        iteration % GPU_HMR_RUNTIME_ADAPTER_COMMAND_RECORDING_MODELS.length
-      ],
-      pipelineCacheOwner: GPU_HMR_RUNTIME_ADAPTER_PIPELINE_CACHE_OWNERS[
-        iteration % GPU_HMR_RUNTIME_ADAPTER_PIPELINE_CACHE_OWNERS.length
-      ],
-    })),
+    capabilityFacet: clone(capabilityFacet(capabilityOverrides)),
   };
   const canonical = createGpuHmrCapabilityAcceptanceContract(ordered);
   const shuffled = createGpuHmrCapabilityAcceptanceContract(shuffledClone(ordered));
@@ -694,20 +783,23 @@ const cyclicContract = clone(baseline);
 cyclicContract.subjectBinding.cycle = cyclicContract;
 assertIntegrityRejected(cyclicContract);
 
-const moduleSource = readFileSync(
-  new URL('../lib/gpu-hmr-capability-acceptance-contract.mjs', import.meta.url),
-  'utf8',
-);
-assert.doesNotMatch(moduleSource, /\bbackend(?:Name)?\b/i);
-assert.doesNotMatch(
-  moduleSource,
-  /\b(?:cuda|rocm|vulkan|webgpu|opencl|metal|directx|bevy|unity|unreal)\b/i,
-);
-const identityBranchLines = moduleSource.split(/\r?\n/).filter((line) => (
-  /\b(?:if|switch|case)\b/.test(line)
-  && /\b(?:project|target|profile|fixture|library|scenario|family|backend)\b/i.test(line)
-));
-assert.deepEqual(identityBranchLines, []);
+const capabilityModuleSources = [
+  '../lib/gpu-hmr-capability-acceptance-contract.mjs',
+  '../lib/gpu-hmr-runtime-adapter-capabilities-versioned.mjs',
+  '../lib/gpu-hmr-runtime-adapter-capabilities-v2.mjs',
+].map((relativePath) => readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
+for (const moduleSource of capabilityModuleSources) {
+  assert.doesNotMatch(moduleSource, /\bbackend(?:Name)?\b/i);
+  assert.doesNotMatch(
+    moduleSource,
+    /\b(?:cuda|rocm|vulkan|webgpu|opencl|metal|directx|bevy|unity|unreal)\b/i,
+  );
+  const identityBranchLines = moduleSource.split(/\r?\n/).filter((line) => (
+    /\b(?:if|switch|case)\b/.test(line)
+    && /\b(?:project|target|profile|fixture|library|scenario|family|backend)\b/i.test(line)
+  ));
+  assert.deepEqual(identityBranchLines, []);
+}
 
 process.stdout.write(`${JSON.stringify({
   ok: true,

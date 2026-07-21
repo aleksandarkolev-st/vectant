@@ -2,17 +2,20 @@ import { createHash } from 'node:crypto';
 import { types as utilTypes } from 'node:util';
 
 import {
-  GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS,
-  deriveGpuHmrRuntimeAdapterCapabilityObligations,
-  evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity,
-} from './gpu-hmr-runtime-adapter-capabilities.mjs';
+  evaluateGpuHmrRuntimeAdapterCapabilitiesVersionedIntegrity,
+} from './gpu-hmr-runtime-adapter-capabilities-versioned.mjs';
+import {
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_V2_SCHEMA_VERSION,
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS_V2,
+  deriveGpuHmrRuntimeAdapterCapabilityObligationsV2,
+} from './gpu-hmr-runtime-adapter-capabilities-v2.mjs';
 
 export const GPU_HMR_CAPABILITY_ACCEPTANCE_CONTRACT_SCHEMA_VERSION =
-  'synthi.gpu_hmr.capability_acceptance_contract.v1';
+  'synthi.gpu_hmr.capability_acceptance_contract.v2';
 export const GPU_HMR_CAPABILITY_ACCEPTANCE_CONTRACT_AUTHORITY =
   'capability_derived_declaration_only_not_evidence_runtime_dispatch_or_gpu_hmr_acceptance';
 export const GPU_HMR_CAPABILITY_ACCEPTANCE_CONTRACT_INTEGRITY_SCHEMA_VERSION =
-  'synthi.gpu_hmr.capability_acceptance_contract_integrity.v1';
+  'synthi.gpu_hmr.capability_acceptance_contract_integrity.v2';
 export const GPU_HMR_CAPABILITY_ACCEPTANCE_CONTRACT_INTEGRITY_AUTHORITY =
   'capability_acceptance_contract_integrity_only_not_evidence_runtime_dispatch_or_gpu_hmr_acceptance';
 
@@ -398,20 +401,28 @@ export function createGpuHmrCapabilityAcceptanceContract(input) {
   );
   const subjectBinding = normalizeSubjectBinding(source.subjectBinding);
 
-  const facetIntegrity = evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity(
+  const facetIntegrity = evaluateGpuHmrRuntimeAdapterCapabilitiesVersionedIntegrity(
     source.capabilityFacet,
   );
-  if (!facetIntegrity.valid || facetIntegrity.recomputedFacet === null) {
+  const capabilityEnvelope = facetIntegrity.recomputedEnvelope;
+  if (!facetIntegrity.valid || capabilityEnvelope === null) {
     fail('capability_facet_integrity_invalid');
   }
-  const capabilityFacet = cloneAndFreeze(facetIntegrity.recomputedFacet);
+  if (
+    capabilityEnvelope.historical === true
+    || capabilityEnvelope.schemaVersion
+      !== GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_V2_SCHEMA_VERSION
+  ) {
+    fail('capability_facet_current_version_required');
+  }
+  const capabilityFacet = cloneAndFreeze(capabilityEnvelope.facet);
   const capabilityFacts = Object.fromEntries(
-    GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS.map(
+    GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS_V2.map(
       (field) => [field, capabilityFacet[field]],
     ),
   );
   const obligations = Object.freeze([
-    ...deriveGpuHmrRuntimeAdapterCapabilityObligations(capabilityFacts),
+    ...deriveGpuHmrRuntimeAdapterCapabilityObligationsV2(capabilityFacts),
   ]);
   if (stableJson(obligations) !== stableJson(capabilityFacet.obligations)) {
     fail('capability_obligations_mismatch');
