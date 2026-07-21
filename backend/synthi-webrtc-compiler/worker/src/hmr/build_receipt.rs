@@ -53,6 +53,7 @@ struct ActiveChallenge {
     clock_id: String,
     transaction_context_hash: String,
     issued_monotonic_ns: u64,
+    registered_receipt_ids: HashSet<String>,
 }
 
 /// Owns freshness and clock state for build-observation receipts.
@@ -124,6 +125,7 @@ impl BuildReceiptVerifier {
             clock_id: self.clock_id.clone(),
             transaction_context_hash: transaction_context_hash.to_string(),
             issued_monotonic_ns,
+            registered_receipt_ids: HashSet::new(),
         };
         self.active_challenges
             .insert(challenge_id.clone(), active);
@@ -142,9 +144,61 @@ impl BuildReceiptVerifier {
         manifest: &BuildManifest,
         receipts: &[ObservedBuildStepReceipt],
     ) -> Result<VerifiedReloadBuildTransactionReceipt, BuildReceiptError> {
+        {
+            let active = self
+                .active_challenges
+                .get(challenge.challenge_id.as_str())
+                .ok_or_else(|| {
+                    BuildReceiptError::new("build_transaction_challenge_is_not_active")
+                })?;
+            if challenge.observer_id != self.observer_id
+                || challenge.clock_id != self.clock_id
+                || challenge.observer_id != active.observer_id
+                || challenge.clock_id != active.clock_id
+                || challenge.transaction_context_hash != active.transaction_context_hash
+                || challenge.issued_monotonic_ns != active.issued_monotonic_ns
+            {
+                return Err(BuildReceiptError::new(
+                    "build_transaction_challenge_observer_binding_mismatch",
+                ));
+            }
+            if active.registered_receipt_ids.len() != receipts.len()
+                || receipts.iter().any(|receipt| {
+                    !active
+                        .registered_receipt_ids
+                        .contains(receipt.receipt_id.as_str())
+                })
+            {
+                return Err(BuildReceiptError::new(
+                    "build_transaction_receipt_registry_mismatch",
+                ));
+            }
+        }
+        let verified = verify_reload_transaction_build_receipts(
+            challenge,
+            manifest,
+            receipts,
+            self.monotonic_now_ns(),
+        )?;
+        self.active_challenges
+            .remove(challenge.challenge_id.as_str());
+        Ok(verified)
+    }
+
+    fn monotonic_now_ns(&self) -> u64 {
+        self.origin.elapsed().as_nanos().min(u64::MAX as u128) as u64
+    }
+
+    fn register_observed_receipt(
+        &mut self,
+        challenge: &BuildTransactionChallenge,
+        receipt: &ObservedBuildStepReceipt,
+    ) -> Result<(), BuildReceiptError> {
+        validate_sealed_step_receipt(receipt)?;
+        let verifier_now_monotonic_ns = self.monotonic_now_ns();
         let active = self
             .active_challenges
-            .remove(challenge.challenge_id.as_str())
+            .get_mut(challenge.challenge_id.as_str())
             .ok_or_else(|| BuildReceiptError::new("build_transaction_challenge_is_not_active"))?;
         if challenge.observer_id != self.observer_id
             || challenge.clock_id != self.clock_id
@@ -152,21 +206,32 @@ impl BuildReceiptVerifier {
             || challenge.clock_id != active.clock_id
             || challenge.transaction_context_hash != active.transaction_context_hash
             || challenge.issued_monotonic_ns != active.issued_monotonic_ns
+            || receipt.observer_id != challenge.observer_id
+            || receipt.clock_id != challenge.clock_id
+            || receipt.challenge_id != challenge.challenge_id
+            || receipt.transaction_context_hash != challenge.transaction_context_hash
         {
             return Err(BuildReceiptError::new(
-                "build_transaction_challenge_observer_binding_mismatch",
+                "build_step_receipt_challenge_binding_mismatch",
             ));
         }
-        verify_reload_transaction_build_receipts(
-            challenge,
-            manifest,
-            receipts,
-            self.monotonic_now_ns(),
-        )
-    }
-
-    fn monotonic_now_ns(&self) -> u64 {
-        self.origin.elapsed().as_nanos().min(u64::MAX as u128) as u64
+        if receipt.started_monotonic_ns < challenge.issued_monotonic_ns
+            || receipt.completed_monotonic_ns < receipt.started_monotonic_ns
+            || receipt.completed_monotonic_ns > verifier_now_monotonic_ns
+        {
+            return Err(BuildReceiptError::new(
+                "build_step_receipt_monotonic_interval_is_invalid",
+            ));
+        }
+        if !active
+            .registered_receipt_ids
+            .insert(receipt.receipt_id.clone())
+        {
+            return Err(BuildReceiptError::new(
+                "build_step_receipt_is_already_registered",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1062,6 +1127,16 @@ mod test_support {
     }
 
     pub(super) fn seal_test_observation(
+        verifier: &mut BuildReceiptVerifier,
+        challenge: &BuildTransactionChallenge,
+        observation: TestBuildObservation,
+    ) -> Result<ObservedBuildStepReceipt, BuildReceiptError> {
+        let receipt = seal_unregistered_test_observation(challenge, observation)?;
+        verifier.register_observed_receipt(challenge, &receipt)?;
+        Ok(receipt)
+    }
+
+    pub(super) fn seal_unregistered_test_observation(
         challenge: &BuildTransactionChallenge,
         observation: TestBuildObservation,
     ) -> Result<ObservedBuildStepReceipt, BuildReceiptError> {
@@ -1314,6 +1389,7 @@ mod tests {
         let source = b"source-a";
         let output = b"artifact-a";
         let receipt = seal_test_observation(
+            &mut verifier,
             &challenge,
             observation(&challenge, INPUT_A, source, output, Vec::new(), 1),
         )
@@ -1355,6 +1431,7 @@ mod tests {
         let mut first = BuildReceiptVerifier::new();
         let challenge = first.begin_transaction(CONTEXT).unwrap();
         let receipt = seal_test_observation(
+            &mut first,
             &challenge,
             observation(&challenge, INPUT_A, b"a", b"out", Vec::new(), 1),
         )
@@ -1381,10 +1458,46 @@ mod tests {
     }
 
     #[test]
+    fn self_consistent_but_unregistered_receipt_fails_closed() {
+        let mut verifier = BuildReceiptVerifier::new();
+        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let receipt = seal_unregistered_test_observation(
+            &challenge,
+            observation(&challenge, INPUT_A, b"a", b"out", Vec::new(), 1),
+        )
+        .unwrap();
+        let artifact = artifact(
+            &receipt,
+            "out/a",
+            INPUT_A,
+            b"a",
+            b"out",
+            Vec::new(),
+            Vec::new(),
+        );
+        let manifest = manifest("out/a", &content_hash(b"out"), vec![artifact]);
+
+        assert_eq!(
+            verifier
+                .verify_reload_transaction(&challenge, &manifest, &[receipt.clone()])
+                .unwrap_err()
+                .to_string(),
+            "build_transaction_receipt_registry_mismatch"
+        );
+        verifier
+            .register_observed_receipt(&challenge, &receipt)
+            .unwrap();
+        assert!(verifier
+            .verify_reload_transaction(&challenge, &manifest, &[receipt])
+            .is_ok());
+    }
+
+    #[test]
     fn sealed_receipt_rejects_noncanonical_duplicate_and_unobserved_bindings() {
         let mut verifier = BuildReceiptVerifier::new();
         let challenge = verifier.begin_transaction(CONTEXT).unwrap();
         let base = seal_test_observation(
+            &mut verifier,
             &challenge,
             observation(&challenge, INPUT_A, b"a", b"out", Vec::new(), 1),
         )
@@ -1453,6 +1566,7 @@ mod tests {
         let first_source = b"source-a";
         let first_output = b"artifact-a";
         let first_receipt = seal_test_observation(
+            &mut verifier,
             &challenge,
             observation(
                 &challenge,
@@ -1478,6 +1592,7 @@ mod tests {
         let second_source = b"source-b";
         let second_output = b"artifact-b";
         let second_receipt = seal_test_observation(
+            &mut verifier,
             &challenge,
             observation(
                 &challenge,
@@ -1522,6 +1637,7 @@ mod tests {
         let mut verifier = BuildReceiptVerifier::new();
         let challenge = verifier.begin_transaction(CONTEXT).unwrap();
         let first_receipt = seal_test_observation(
+            &mut verifier,
             &challenge,
             observation(&challenge, INPUT_A, b"a", b"out-a", Vec::new(), 1),
         )
@@ -1537,6 +1653,7 @@ mod tests {
         );
         let first_role_id = first_artifact.reload_role.as_ref().unwrap().role_id.clone();
         let second_receipt = seal_test_observation(
+            &mut verifier,
             &challenge,
             observation(&challenge, INPUT_B, b"b", b"out-b", Vec::new(), 3),
         )
@@ -1578,11 +1695,13 @@ mod tests {
         let mut verifier = BuildReceiptVerifier::new();
         let challenge = verifier.begin_transaction(CONTEXT).unwrap();
         let first_receipt = seal_test_observation(
+            &mut verifier,
             &challenge,
             observation(&challenge, INPUT_A, b"a", b"out-a", Vec::new(), 1),
         )
         .unwrap();
         let second_receipt = seal_test_observation(
+            &mut verifier,
             &challenge,
             observation(&challenge, INPUT_B, b"b", b"out-b", Vec::new(), 3),
         )
@@ -1635,13 +1754,14 @@ mod tests {
         let mut failed = observation(&challenge, INPUT_A, b"a", b"out-a", Vec::new(), 1);
         failed.successful = false;
         assert_eq!(
-            seal_test_observation(&challenge, failed)
+            seal_test_observation(&mut verifier, &challenge, failed)
                 .unwrap_err()
                 .to_string(),
             "build_execution_did_not_succeed"
         );
 
         let receipt = seal_test_observation(
+            &mut verifier,
             &challenge,
             observation(&challenge, INPUT_A, b"a", b"out-a", Vec::new(), 1),
         )
