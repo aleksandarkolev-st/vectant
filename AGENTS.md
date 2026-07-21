@@ -13,6 +13,12 @@ documentation change in this repository.
   are open-vocabulary metadata; every target enters generic capability
   discovery and boundary synthesis, and only observed mechanics or missing
   evidence may produce a precise fail-closed outcome for a particular edit.
+- No architecture, API, language, engine, or framework class may be declared
+  permanently unsupported. When mechanics are opaque, emit versioned
+  capability and boundary requirements, attempt generic instrumentation,
+  interposition, or AI-assisted synthesis, and keep the particular edit
+  fail-closed until those synthesized boundaries are independently observed.
+  The architecture label itself is never a blocker or proof result.
 - Model support through versioned, identity-free execution capabilities and
   compose obligations from observed mechanics. New projects must not require a
   new success branch. A new mechanism may extend the generic capability schema
