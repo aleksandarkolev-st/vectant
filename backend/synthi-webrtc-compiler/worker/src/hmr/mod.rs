@@ -18,6 +18,7 @@ pub mod ai_timeout_guardian;
 pub mod binary_patch;
 pub mod binary_state;
 pub mod build_manifest;
+pub mod build_receipt;
 pub mod cache_writer;
 pub mod candidate;
 pub mod candidate_bridge;
