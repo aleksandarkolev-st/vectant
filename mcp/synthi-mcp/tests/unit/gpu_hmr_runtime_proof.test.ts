@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import sharp from "sharp";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   classifyGpuHmrAbiProof,
   classifyGpuHmrDispatchProof,
@@ -13,6 +14,10 @@ import {
   classifyGpuHmrHostPreservationProof,
   classifyGpuHmrOriginalHostPathProof,
   classifyGpuHmrOutputProof,
+  verifyGpuHmrVisualCaptureProvenance,
+  verifyGpuHmrDispatchTraceEvidence,
+  verifyGpuHmrOutputModalityEvidence,
+  verifyGpuHmrVisualProofBundle,
   summarizeGpuHmrAbiProof,
   summarizeGpuHmrDispatchProof,
   summarizeGpuHmrEpochSwapProof,
@@ -22,6 +27,15 @@ import {
   summarizeGpuHmrOriginalHostPathProof,
   summarizeGpuHmrOutputProof,
 } from "../../scripts/lib/gpu-hmr-runtime-proof.mjs";
+import {
+  createGpuHmrRuntimeAdapterCapabilities,
+} from "../../scripts/lib/gpu-hmr-runtime-adapter-capabilities.mjs";
+import {
+  classifyGpuHmrOutputOracleKind,
+} from "../../scripts/lib/gpu-hmr-output-oracle-kind.mjs";
+import {
+  buildArtifactCasManifest,
+} from "../../scripts/lib/gpu-hmr-artifact-cas.mjs";
 import {
   abiProofFromProofArtifacts,
   artifactTransportProofFromProofArtifacts,
@@ -88,6 +102,30 @@ const TEST_OTHER_ARTIFACT_ID = `artifact:sha256:${"2".repeat(64)}`;
 const TEST_SCALAR_ARTIFACT_ID = `artifact:sha256:${"3".repeat(64)}`;
 const TEST_DISPATCHER_ID = `dispatcher:sha256:${"4".repeat(64)}`;
 
+const outputModalityEvidenceByKind = new Map<string, any>();
+
+function verifiedOutputModalityEvidence(kind: string) {
+  const cached = outputModalityEvidenceByKind.get(kind);
+  if (cached) return cached;
+  const classification = classifyGpuHmrOutputOracleKind(kind);
+  if (!classification.accepted || !classification.modality) {
+    throw new Error(`test output oracle kind is not registered: ${kind}`);
+  }
+  const evidence = verifyGpuHmrOutputModalityEvidence(
+    createGpuHmrRuntimeAdapterCapabilities({
+      artifactFormat: "opaque_payload",
+      outputModality: classification.modality,
+      oracleKind: classification.kind,
+      publicationModel: "opaque_callback_epoch",
+      commandRecordingModel: "opaque_engine_managed",
+      pipelineCacheOwner: "opaque_external",
+      evidenceRefs: [`evidence:runtime-adapter-capability:${classification.kind}`],
+    }),
+  );
+  outputModalityEvidenceByKind.set(kind, evidence);
+  return evidence;
+}
+
 function dispatchEvidenceRefs(runtimeSession = "runtime-session:test", kernel = "shade") {
   return [`worker-log:synthi_gpu_launch:${runtimeSession}:${kernel}`];
 }
@@ -112,6 +150,7 @@ function acceptedAbiProof() {
 }
 
 const TEST_OLD_ARTIFACT_HASH = "a".repeat(64);
+const TEST_OLD_ARTIFACT_ID = `artifact:sha256:${TEST_OLD_ARTIFACT_HASH}`;
 const TEST_NEW_ARTIFACT_HASH = "b".repeat(64);
 const TEST_CAPSULE_HASH = "c".repeat(64);
 const TEST_ABI_HASH = "d".repeat(64);
@@ -445,12 +484,12 @@ function epochGenerationGraph({
   };
 }
 
-function retiredEpochProof() {
+function retiredEpochProof(epochGraphOverrides: Record<string, unknown> = {}) {
   const proof = classifyGpuHmrEpochSwapProof({
     published: true,
     processId: "pid1",
     runtimeSessionIds: ["runtime-session:test"],
-    epochGenerationGraph: epochGenerationGraph(),
+    epochGenerationGraph: epochGenerationGraph(epochGraphOverrides),
     dispatchTableHashObserved: true,
     dispatchTableHashBeforeObserved: true,
     dispatchTableHashAfterObserved: true,
@@ -487,7 +526,29 @@ function safeDispatchProof({
   processId = "pid1",
   epoch = "3",
   dispatchRefs = dispatchEvidenceRefs(runtimeSession),
+  dispatchTraceTimestamp = String(dispatchTimestamp),
+  dispatchTraceDispatchId = dispatchId,
+  dispatchTraceEvidenceRef = dispatchRefs[0],
+  dispatchTraceSourceLineIndex = 15,
+  dispatchTraceSourceLine = null as string | null,
+  dispatchTraceSourceLineHash = null as string | null,
+  dispatchTraceSourceStreamHash = `sha256:${"f".repeat(64)}`,
+  outputTargetId = "framebuffer:main",
+  deviceIdentity = "device:generic-test",
+  includeDispatchTrace = true,
+  epochProof = retiredEpochProof(),
 } = {}) {
+  const traceSourceLine = dispatchTraceSourceLine ?? [
+    "[gpu-runtime-boundary] dispatch_trace",
+    `artifact_id=${artifactId}`,
+    `dispatch_id=${dispatchTraceDispatchId}`,
+    `epoch=${epoch}`,
+    `output_target_id=${outputTargetId}`,
+    `process_id=${processId}`,
+    `runtime_session=${runtimeSession}`,
+    `timestamp_monotonic_ns=${dispatchTraceTimestamp}`,
+    `device_identity=${deviceIdentity}`,
+  ].join(" ");
   return classifyGpuHmrDispatchProof({
     dispatchObserved: true,
     dispatchId,
@@ -513,7 +574,7 @@ function safeDispatchProof({
     argProvenanceRecordComplete: true,
     argProvenanceKnownArgCount: 1,
     abiProof: acceptedAbiProof(),
-    epochProof: retiredEpochProof(),
+    epochProof,
     streamOrderingProven: true,
     replacementScopeProven: true,
     selectedArtifactIds: [artifactId],
@@ -527,7 +588,485 @@ function safeDispatchProof({
     sharedMemoryBytes: [0],
     dispatchTimestamps: [dispatchTimestamp],
     runtimeArtifactMatchesSelected: true,
+    ...(includeDispatchTrace
+      ? {
+          dispatchTraceEvidence: {
+            evidenceRef: dispatchTraceEvidenceRef,
+            sourceLine: traceSourceLine,
+            sourceLineHash: dispatchTraceSourceLineHash
+              ?? `sha256:${createHash("sha256").update(traceSourceLine).digest("hex")}`,
+            sourceLineIndex: dispatchTraceSourceLineIndex,
+            sourceStreamHash: dispatchTraceSourceStreamHash,
+          },
+        }
+      : {}),
   });
+}
+
+const visualFixtureDirectories = new Set<string>();
+const GPU_HMR_SCRIPTS_ROOT = fileURLToPath(new URL("../../scripts/", import.meta.url));
+
+async function recursiveModulePaths(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map(async (entry) => {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) return recursiveModulePaths(entryPath);
+    return entry.isFile() && entry.name.endsWith(".mjs") ? [entryPath] : [];
+  }));
+  return nested.flat();
+}
+
+afterEach(async () => {
+  const directories = [...visualFixtureDirectories];
+  visualFixtureDirectories.clear();
+  await Promise.all(directories.map((directory) => rm(directory, {
+    recursive: true,
+    force: true,
+  })));
+});
+
+async function writeVisualPngFixture({
+  blankAfter = false,
+  same = false,
+  corruptDiff = false,
+  hiddenTransparent = false,
+  alphaOnlyChange = false,
+  width = 320,
+  height = 240,
+} = {}) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "gpu-hmr-visual-proof-"));
+  visualFixtureDirectories.add(directory);
+  const before = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      before[offset] = (x * 3 + y * 5) % 256;
+      before[offset + 1] = (x * 7 + y * 2) % 256;
+      before[offset + 2] = (x + y * 11) % 256;
+      before[offset + 3] = hiddenTransparent ? 0 : 255;
+    }
+  }
+  const after = Buffer.from(before);
+  if (blankAfter) {
+    for (let offset = 0; offset < after.length; offset += 4) {
+      after[offset] = 0;
+      after[offset + 1] = 0;
+      after[offset + 2] = 0;
+      after[offset + 3] = 255;
+    }
+  } else if (hiddenTransparent && !same) {
+    for (let offset = 0; offset < after.length; offset += 4) {
+      after[offset] = 255 - after[offset];
+      after[offset + 1] = (after[offset + 1] + 83) % 256;
+      after[offset + 2] = (after[offset + 2] + 41) % 256;
+    }
+  } else if (!same) {
+    for (let y = 40; y < height - 40; y += 1) {
+      for (let x = 60; x < width - 60; x += 1) {
+        const offset = (y * width + x) * 4;
+        if (alphaOnlyChange) {
+          after[offset + 3] = 96;
+        } else {
+          after[offset] = 255 - before[offset];
+          after[offset + 1] = (before[offset + 1] + 83) % 256;
+          after[offset + 2] = (before[offset + 2] + 41) % 256;
+        }
+      }
+    }
+  }
+  const diff = Buffer.alloc(before.length);
+  for (let offset = 0; offset < diff.length; offset += 4) {
+    const beforeAlpha = before[offset + 3];
+    const afterAlpha = after[offset + 3];
+    const alphaDelta = Math.abs(beforeAlpha - afterAlpha);
+    for (let channel = 0; channel < 3; channel += 1) {
+      const beforeComposited = Math.round((before[offset + channel] * beforeAlpha) / 255);
+      const afterComposited = Math.round((after[offset + channel] * afterAlpha) / 255);
+      diff[offset + channel] = Math.max(
+        Math.abs(beforeComposited - afterComposited),
+        alphaDelta,
+      );
+    }
+    diff[offset + 3] = 255;
+  }
+  if (corruptDiff) diff[0] = (diff[0] + 1) % 256;
+
+  const paths = {
+    before: path.join(directory, "before.png"),
+    after: path.join(directory, "after.png"),
+    diff: path.join(directory, "diff.png"),
+  };
+  await Promise.all([
+    sharp(before, { raw: { width, height, channels: 4 } }).png().toFile(paths.before),
+    sharp(after, { raw: { width, height, channels: 4 } }).png().toFile(paths.after),
+    sharp(diff, { raw: { width, height, channels: 4 } }).png().toFile(paths.diff),
+  ]);
+  const hashes = Object.fromEntries(await Promise.all(
+    Object.entries(paths).map(async ([role, filePath]) => [
+      role,
+      `sha256:${createHash("sha256").update(await readFile(filePath)).digest("hex")}`,
+    ]),
+  ));
+  const decodedHashes = Object.fromEntries(await Promise.all(
+    Object.entries(paths).map(async ([role, filePath]) => {
+      const decoded = await sharp(await readFile(filePath), {
+        animated: false,
+        failOn: "error",
+        limitInputPixels: 64 * 1024 * 1024,
+        sequentialRead: true,
+      }).toColourspace("srgb").ensureAlpha().raw({ depth: "uchar" }).toBuffer();
+      for (let offset = 0; offset < decoded.byteLength; offset += 4) {
+        if (decoded[offset + 3] === 0) {
+          decoded[offset] = 0;
+          decoded[offset + 1] = 0;
+          decoded[offset + 2] = 0;
+        }
+      }
+      return [role, `sha256:${createHash("sha256").update(decoded).digest("hex")}`];
+    }),
+  ));
+  return { directory, paths, hashes, decodedHashes, width, height };
+}
+
+function visualDispatchProof(overrides: Record<string, unknown> = {}) {
+  return safeDispatchProof({ dispatchTimestamp: 1779979999000, ...overrides });
+}
+
+function verifiedDispatchTraceEvidence(
+  dispatchProof: ReturnType<typeof safeDispatchProof>,
+) {
+  return verifyGpuHmrDispatchTraceEvidence({
+    dispatchProof,
+  });
+}
+
+function visualControlSourceLine(
+  phase: "before" | "after",
+  {
+    width,
+    height,
+    timestamp,
+    processId,
+    runtimeSessionId,
+  }: Record<string, any>,
+) {
+  const targetState = {
+    schema_version: "synthi.gpu_hmr.runtime_visual_control_state.v1",
+    proof_authority: "target_process_runtime_visual_control_state",
+    phase,
+    runtime_session: runtimeSessionId,
+    process_id: processId,
+    capture_event_id: `capture:${phase}`,
+    frame_timestamp_monotonic_ns: timestamp,
+    after_epoch_dispatch: phase === "after",
+    capture_synchronized: true,
+    presentation_boundary_observed: true,
+    presentation_boundary_kind: "framebuffer_readback",
+    fixed_seed: true,
+    seed_state_token: "seed:fixed",
+    camera_state_token: "camera:fixed",
+    temporal_accumulation_present: false,
+    temporal_accumulation_disabled: false,
+    temporal_accumulation_not_applicable: true,
+    taa_present: false,
+    taa_disabled: false,
+    taa_not_applicable: true,
+    denoiser_present: false,
+    denoiser_disabled: false,
+    denoiser_not_applicable: true,
+    presentation_image_count: 1,
+    warmup_frames: 1,
+    width,
+    height,
+    accepted_for_gpu_hmr: false,
+    gpu_hmr_success: false,
+    can_satisfy_runtime_proof: false,
+    can_satisfy_dispatch_proof: false,
+  };
+  return `[gpu-runtime-boundary] visual_control_observation ${JSON.stringify(targetState)}`;
+}
+
+function visualCaptureReceiptSourceLine(
+  role: "before" | "after" | "diff",
+  fixture: Awaited<ReturnType<typeof writeVisualPngFixture>>,
+  values: Record<string, any>,
+) {
+  const dispatchId = role === "before" ? values.previousDispatchId : values.dispatchId;
+  const epoch = role === "before" ? values.previousEpoch : values.epoch;
+  const artifactId = role === "before" ? values.previousArtifactId : values.artifactId;
+  return [
+    "[gpu-runtime-boundary] visual_capture_receipt",
+    `role=${role}`,
+    `capture_event_id=capture:${role}`,
+    `encoded_hash=${fixture.hashes[role]}`,
+    `decoded_hash=${fixture.decodedHashes[role]}`,
+    `width=${values.width}`,
+    `height=${values.height}`,
+    `output_target_id=${values.outputTargetId}`,
+    `process_id=${values.processId}`,
+    `runtime_session=${values.runtimeSessionId}`,
+    `device_identity=${values.deviceIdentity}`,
+    `dispatch_id=${dispatchId}`,
+    `epoch=${epoch}`,
+    `artifact_id=${artifactId}`,
+    `timestamp_monotonic_ns=${values.timestamp}`,
+  ].join(" ");
+}
+
+function visualPreviousOutputSourceLine(
+  fixture: Awaited<ReturnType<typeof writeVisualPngFixture>>,
+  values: Record<string, any>,
+) {
+  return [
+    "[gpu-runtime-boundary] visual_output_observation",
+    "output_event_id=output:previous",
+    `encoded_hash=${fixture.hashes.before}`,
+    `decoded_hash=${fixture.decodedHashes.before}`,
+    `width=${fixture.width}`,
+    `height=${fixture.height}`,
+    `output_target_id=${values.outputTargetId}`,
+    `process_id=${values.processId}`,
+    `runtime_session=${values.runtimeSessionId}`,
+    `device_identity=${values.deviceIdentity}`,
+    `dispatch_id=${values.previousDispatchId}`,
+    `epoch=${values.previousEpoch}`,
+    `artifact_id=${values.previousArtifactId}`,
+    `timestamp_monotonic_ns=${values.previousOutputTimestamp}`,
+  ].join(" ");
+}
+
+function visualOutputOracleSourceLine(oracle: Record<string, any>) {
+  return [
+    "[gpu-runtime-boundary] output_oracle",
+    `id=${oracle.oracleId}`,
+    `required_oracle_id=${oracle.requiredOracleId}`,
+    `kind=${oracle.kind}`,
+    `producer=${oracle.producer}`,
+    `expected=${oracle.expected}`,
+    `actual=${oracle.actual}`,
+    `passed=${oracle.passed}`,
+    `before_encoded_hash=${oracle.beforeEncodedHash}`,
+    `after_encoded_hash=${oracle.afterEncodedHash}`,
+    `diff_encoded_hash=${oracle.diffEncodedHash}`,
+    `before_decoded_hash=${oracle.beforeDecodedHash}`,
+    `after_decoded_hash=${oracle.afterDecodedHash}`,
+    `diff_decoded_hash=${oracle.diffDecodedHash}`,
+    `width=${oracle.width}`,
+    `height=${oracle.height}`,
+    `output_target_id=${oracle.outputTargetId}`,
+    `process_id=${oracle.processId}`,
+    `runtime_session=${oracle.runtimeSessionId}`,
+    `device_identity=${oracle.deviceIdentity}`,
+    `after_dispatch_id=${oracle.afterDispatchId}`,
+    `epoch=${oracle.epoch}`,
+    `artifact_id=${oracle.artifactId}`,
+    `readback_timestamp_monotonic_ns=${oracle.readbackTimestamp}`,
+  ].join(" ");
+}
+
+function visualOutputOracle(
+  fixture: Awaited<ReturnType<typeof writeVisualPngFixture>>,
+  outputModalityEvidence: ReturnType<typeof verifiedOutputModalityEvidence>,
+  values: Record<string, any>,
+) {
+  return {
+    oracleId: "oracle:required:visual-output",
+    requiredOracleId: "oracle:required:visual-output",
+    kind: "render_target_hash",
+    outputModalityEvidence,
+    producer: "deterministic_probe",
+    expected: fixture.hashes.after,
+    actual: fixture.hashes.after,
+    passed: true,
+    beforeEncodedHash: fixture.hashes.before,
+    afterEncodedHash: fixture.hashes.after,
+    diffEncodedHash: fixture.hashes.diff,
+    beforeDecodedHash: fixture.decodedHashes.before,
+    afterDecodedHash: fixture.decodedHashes.after,
+    diffDecodedHash: fixture.decodedHashes.diff,
+    width: fixture.width,
+    height: fixture.height,
+    outputTargetId: values.outputTargetId,
+    processId: values.processId,
+    runtimeSessionId: values.runtimeSessionId,
+    deviceIdentity: values.deviceIdentity,
+    afterDispatchId: values.dispatchId,
+    epoch: values.epoch,
+    artifactId: values.artifactId,
+    readbackTimestamp: values.diffTimestamp,
+    probeMode: "fixed_validation_probe",
+    probeConfigHash: `sha256:${"a".repeat(64)}`,
+    probeEvidenceRefs: ["evidence:output-oracle:readback:abc"],
+    evidenceRefs: ["evidence:output-oracle:readback:abc"],
+  };
+}
+
+async function buildVisualProofScenario(
+  fixture: Awaited<ReturnType<typeof writeVisualPngFixture>>,
+  {
+    outputModalityEvidence = verifiedOutputModalityEvidence("render_target_hash"),
+    previousDispatchTimestamp = "1779979996000",
+    previousOutputTimestamp = "1779979996500",
+    beforeTimestamp = "1779979997000",
+    publicationTimestamp = "1779979998600",
+    dispatchTimestamp = "1779979999000",
+    afterTimestamp = "1779980000000",
+    diffTimestamp = "1779980000001",
+    outputTargetId = "framebuffer:main",
+    processId = "pid1",
+    runtimeSessionId = "runtime-session:test",
+    deviceIdentity = "device:generic-test",
+    dispatchId = "dispatch:test:1",
+    previousDispatchId = "dispatch:test:0",
+    epoch = "3",
+    previousEpoch = "2",
+    artifactId = TEST_ARTIFACT_ID,
+    previousArtifactId = TEST_OLD_ARTIFACT_ID,
+    rawOracleOverrides = {},
+    sourceOracleOverrides = {},
+    receiptOverrides = {},
+    mutateLines = null,
+  }: Record<string, any> = {},
+) {
+  const values = {
+    previousDispatchTimestamp,
+    previousOutputTimestamp,
+    beforeTimestamp,
+    publicationTimestamp,
+    dispatchTimestamp,
+    afterTimestamp,
+    diffTimestamp,
+    outputTargetId,
+    processId,
+    runtimeSessionId,
+    deviceIdentity,
+    dispatchId,
+    previousDispatchId,
+    epoch,
+    previousEpoch,
+    artifactId,
+    previousArtifactId,
+  };
+  const outputOracle = {
+    ...visualOutputOracle(fixture, outputModalityEvidence, values),
+    ...rawOracleOverrides,
+  };
+  const sourceOracle = { ...outputOracle, ...sourceOracleOverrides };
+  const lines = Array.from({ length: 24 }, (_, index) => `runtime-source-line-${index}`);
+  lines[5] = [
+    "[gpu-runtime-boundary] dispatch_trace",
+    `artifact_id=${previousArtifactId}`,
+    `dispatch_id=${previousDispatchId}`,
+    `epoch=${previousEpoch}`,
+    `output_target_id=${outputTargetId}`,
+    `process_id=${processId}`,
+    `runtime_session=${runtimeSessionId}`,
+    `timestamp_monotonic_ns=${previousDispatchTimestamp}`,
+    `device_identity=${deviceIdentity}`,
+  ].join(" ");
+  lines[6] = visualPreviousOutputSourceLine(fixture, values);
+  lines[10] = visualControlSourceLine("before", {
+    ...values,
+    width: fixture.width,
+    height: fixture.height,
+    timestamp: beforeTimestamp,
+  });
+  lines[11] = visualCaptureReceiptSourceLine("before", fixture, {
+    ...values,
+    width: fixture.width,
+    height: fixture.height,
+    timestamp: beforeTimestamp,
+    ...(receiptOverrides.before ?? {}),
+  });
+  lines[15] = [
+    "[gpu-runtime-boundary] dispatch_trace",
+    `artifact_id=${artifactId}`,
+    `dispatch_id=${dispatchId}`,
+    `epoch=${epoch}`,
+    `output_target_id=${outputTargetId}`,
+    `process_id=${processId}`,
+    `runtime_session=${runtimeSessionId}`,
+    `timestamp_monotonic_ns=${dispatchTimestamp}`,
+    `device_identity=${deviceIdentity}`,
+  ].join(" ");
+  lines[20] = visualControlSourceLine("after", {
+    ...values,
+    width: fixture.width,
+    height: fixture.height,
+    timestamp: afterTimestamp,
+  });
+  lines[21] = visualCaptureReceiptSourceLine("after", fixture, {
+    ...values,
+    width: fixture.width,
+    height: fixture.height,
+    timestamp: afterTimestamp,
+    ...(receiptOverrides.after ?? {}),
+  });
+  lines[22] = visualCaptureReceiptSourceLine("diff", fixture, {
+    ...values,
+    width: fixture.width,
+    height: fixture.height,
+    timestamp: diffTimestamp,
+    ...(receiptOverrides.diff ?? {}),
+  });
+  lines[23] = visualOutputOracleSourceLine(sourceOracle);
+  if (typeof mutateLines === "function") await mutateLines(lines);
+  const sourceStreamPath = path.join(fixture.directory, "runtime-source.log");
+  const sourceBytes = Buffer.from(lines.join("\n"), "utf8");
+  await writeFile(sourceStreamPath, sourceBytes);
+  const sourceStreamHash = `sha256:${createHash("sha256").update(sourceBytes).digest("hex")}`;
+  const dispatchProof = safeDispatchProof({
+    runtimeSession: runtimeSessionId,
+    artifactId,
+    dispatchTimestamp: Number(dispatchTimestamp),
+    dispatchId,
+    processId,
+    epoch,
+    dispatchTraceTimestamp: dispatchTimestamp,
+    dispatchTraceSourceLine: lines[15],
+    dispatchTraceSourceLineIndex: 15,
+    dispatchTraceSourceStreamHash: sourceStreamHash,
+    outputTargetId,
+    deviceIdentity,
+    epochProof: retiredEpochProof({
+      publishTimestampMonotonicNs: Number(publicationTimestamp),
+    }),
+  });
+  const dispatchTraceEvidence = verifiedDispatchTraceEvidence(dispatchProof);
+  const captureProvenance = await verifyGpuHmrVisualCaptureProvenance({
+    dispatchProof,
+    dispatchTraceEvidence,
+    sourceStreamPath,
+  }, { allowedRoots: [fixture.directory] });
+  return {
+    fixture,
+    outputModalityEvidence,
+    outputOracle,
+    dispatchProof,
+    dispatchTraceEvidence,
+    captureProvenance,
+    sourceStreamPath,
+    lines,
+  };
+}
+
+function visualProofInput(
+  scenario: Awaited<ReturnType<typeof buildVisualProofScenario>>,
+  overrides: Record<string, any> = {},
+) {
+  return {
+    roles: [
+      { role: "before", path: scenario.fixture.paths.before },
+      { role: "after", path: scenario.fixture.paths.after },
+      { role: "diff", path: scenario.fixture.paths.diff },
+    ],
+    dispatchProof: scenario.dispatchProof,
+    dispatchTraceEvidence: scenario.dispatchTraceEvidence,
+    captureProvenance: scenario.captureProvenance,
+    outputModalityEvidence: scenario.outputModalityEvidence,
+    outputOracle: scenario.outputOracle,
+    ...overrides,
+  };
 }
 
 function deterministicOutputOracle({
@@ -536,14 +1075,19 @@ function deterministicOutputOracle({
   dispatchId = "dispatch:test:1",
   processId = "pid1",
   epoch = "3",
+  kind = "sentinel_buffer_value",
+  expected = "expected-sentinel",
+  actual = expected,
+  outputModalityEvidence = null as any,
 } = {}) {
   return {
     oracleId: "oracle:required:test-output",
     requiredOracleId: "oracle:required:test-output",
-    kind: "sentinel_buffer_value",
+    kind,
+    ...(outputModalityEvidence ? { outputModalityEvidence } : {}),
     producer: "deterministic_probe",
-    expected: "expected-sentinel",
-    actual: "expected-sentinel",
+    expected,
+    actual,
     passed: true,
     outputTargetId: "output:sentinel",
     processId,
@@ -589,6 +1133,27 @@ function deterministicOutputOracle({
       },
     },
   };
+}
+
+function classifyVisualOutput({
+  dispatchProof = visualDispatchProof(),
+  outputModalityEvidence = verifiedOutputModalityEvidence("render_target_hash"),
+  outputOracle = null,
+  verifiedVisualEvidence,
+  ...observation
+}: Record<string, any> = {}) {
+  return classifyGpuHmrOutputProof({
+    dispatchProof,
+    deterministicOutputObserved: true,
+    deterministicOracleProvided: true,
+    deterministicOraclePassed: true,
+    outputOracle: outputOracle ?? deterministicOutputOracle({
+      kind: "render_target_hash",
+      outputModalityEvidence,
+    }),
+    ...(verifiedVisualEvidence === undefined ? {} : { verifiedVisualEvidence }),
+    ...observation,
+  });
 }
 
 function acceptedVisualOracleArtifacts() {
@@ -1489,53 +2054,64 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.outputOracle.dispatchArtifactIds).toEqual([TEST_ARTIFACT_ID]);
   });
 
-  it("requires visual evidence for render output oracle kinds", () => {
+  it("keeps a diagnostic visual capture support-only", () => {
+    const outputModalityEvidence = verifiedOutputModalityEvidence("render_target_hash");
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof(),
       deterministicOutputObserved: true,
       deterministicOracleProvided: true,
       deterministicOraclePassed: true,
-      outputOracle: {
-        ...deterministicOutputOracle(),
+      outputOracle: deterministicOutputOracle({
         kind: "render_target_hash",
-        outputTargetId: "render-target:rgba32f",
         expected: `sha256:${"4".repeat(64)}`,
-        actual: `sha256:${"4".repeat(64)}`,
-      },
-      visualFrameObserved: false,
+        outputModalityEvidence,
+      }),
+      visualFrameObserved: true,
+      visualEvidenceRefs: ["diagnostic:capture:path-only.png"],
     });
 
     expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
     expect(proof.degradedState).toBe("gpu-hmr-visual-evidence-missing");
-    expect(proof.degradedReason).toBe("visual_frame_not_observed");
+    expect(proof.degradedReason).toBe("visual_evidence_live_verification_missing");
     expect(proof.renderVisualEvidenceRequired).toBe(true);
     expect(proof.visualEvidenceRequired).toBe(true);
-    expect(proof.outputOracle.passed).toBe(true);
+    expect(proof.outputOracle.passed).toBe(false);
+    expect(proof.visualEvidenceComplete).toBe(false);
   });
 
-  it("accepts render output oracle proof when visual evidence is present", () => {
+  it("fails closed when independent output modality evidence is absent", () => {
+    const { outputModalityEvidence: _modality, ...oracle } = deterministicOutputOracle({
+      kind: "render_target_hash",
+      expected: `sha256:${"4".repeat(64)}`,
+    });
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof(),
       deterministicOutputObserved: true,
       deterministicOracleProvided: true,
       deterministicOraclePassed: true,
-      outputOracle: {
-        ...deterministicOutputOracle(),
-        kind: "selected_pixels",
-        outputTargetId: "render-target:rgba32f",
-        expected: [0.1, 0.2, 0.3, 1],
-        actual: [0.1, 0.2, 0.3, 1],
-        tolerance: 0,
-        visualEvidenceRefs: ["validation:screenshot:after-hmr"],
-      },
-      visualFrameObserved: true,
+      outputOracle: oracle,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedReason).toBe("output_modality_evidence_missing_or_unverified");
+    expect(proof.visualEvidenceRequired).toBe(true);
+    expect(proof.outputOracle.modalityEvidenceAccepted).toBe(false);
+    expect(proof.outputOracle.passed).toBe(false);
+  });
+
+  it("preserves the existing verified compute/readback path during capability migration", () => {
+    const { outputModalityEvidence: _modality, ...oracle } = deterministicOutputOracle();
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: oracle,
     });
 
     expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
-    expect(proof.degradedState).toBeNull();
-    expect(proof.renderVisualEvidenceRequired).toBe(true);
-    expect(proof.visualEvidenceComplete).toBe(true);
-    expect(proof.visualEvidenceRefs).toEqual(["validation:screenshot:after-hmr"]);
+    expect(proof.outputOracle.modality).toBe("compute");
+    expect(proof.outputOracle.modalityEvidenceRequired).toBe(false);
   });
 
   it("rejects raw log snippets as output oracle evidence", () => {
@@ -1659,7 +2235,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(mismatchedRequiredId.outputOracle.requiredContractMatched).toBe(false);
   });
 
-  it("blocks render output proof when required visual evidence is missing", () => {
+  it("does not let a caller force visual requirements onto verified compute output", () => {
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof(),
       deterministicOutputObserved: true,
@@ -1667,36 +2243,14 @@ describe("GPU HMR runtime output proof classification", () => {
       deterministicOraclePassed: true,
       outputOracle: deterministicOutputOracle(),
       visualEvidenceRequired: true,
-      visualFrameObserved: false,
-      visualEvidenceRefs: [],
-    });
-
-    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
-    expect(proof.degradedState).toBe("gpu-hmr-visual-evidence-missing");
-    expect(proof.degradedReason).toBe("visual_frame_not_observed");
-    expect(proof.outputOracle.passed).toBe(true);
-    expect(proof.visualEvidenceComplete).toBe(false);
-  });
-
-  it("accepts render output proof when oracle and visual evidence are both present", () => {
-    const proof = classifyGpuHmrOutputProof({
-      dispatchProof: safeDispatchProof(),
-      deterministicOutputObserved: true,
-      deterministicOracleProvided: true,
-      deterministicOraclePassed: true,
-      outputOracle: deterministicOutputOracle(),
-      visualEvidenceRequired: true,
-      visualFrameObserved: true,
-      visualEvidenceRefs: ["artifacts/frame.png"],
     });
 
     expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
-    expect(proof.degradedState).toBeNull();
-    expect(proof.visualEvidenceComplete).toBe(true);
-    expect(proof.visualEvidenceRefs).toEqual(["artifacts/frame.png"]);
+    expect(proof.visualEvidenceRequired).toBe(false);
+    expect(proof.outputOracle.modality).toBe("compute");
   });
 
-  it("accepts render visual evidence refs carried by the oracle record", () => {
+  it("rejects contradictory modality evidence without migrating legacy compute", () => {
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof(),
       deterministicOutputObserved: true,
@@ -1704,15 +2258,685 @@ describe("GPU HMR runtime output proof classification", () => {
       deterministicOraclePassed: true,
       outputOracle: {
         ...deterministicOutputOracle(),
-        visualEvidenceRef: "artifacts/oracle-frame.png",
+        outputModalityEvidence: verifiedOutputModalityEvidence("render_target_hash"),
       },
-      visualEvidenceRequired: true,
-      visualFrameObserved: true,
     });
 
-    expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
-    expect(proof.visualEvidenceComplete).toBe(true);
-    expect(proof.visualEvidenceRefs).toEqual(["artifacts/oracle-frame.png"]);
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.outputOracle.modalityEvidenceRequired).toBe(false);
+    expect(proof.outputOracle.modalityEvidenceDeclared).toBe(true);
+    expect(proof.degradedReason).toBe("output_modality_evidence_oracle_kind_mismatch");
+  });
+
+  it("does not let a fully synthetic byte-consistent chain mint visual authority", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario),
+      { allowedRoots: [fixture.directory] },
+    );
+    const proof = classifyVisualOutput({
+      dispatchProof: scenario.dispatchProof,
+      outputModalityEvidence: scenario.outputModalityEvidence,
+      outputOracle: scenario.outputOracle,
+      verifiedVisualEvidence: verification,
+    });
+
+    expect(scenario.captureProvenance.accepted).toBe(false);
+    expect(scenario.captureProvenance.supportValidated).toBe(true);
+    expect(scenario.captureProvenance.failedGates).toEqual([
+      "visual_capture_provenance_runner_owned_native_observation_missing",
+    ]);
+    expect(verification.accepted).toBe(false);
+    expect(verification.supportValidated).toBe(true);
+    expect(verification.failedGates).toEqual([
+      "visual_capture_provenance_runner_owned_native_observation_missing",
+    ]);
+    expect(verification.artifacts.map((artifact: any) => artifact.contentHash)).toEqual([
+      fixture.hashes.before,
+      fixture.hashes.after,
+      fixture.hashes.diff,
+    ]);
+    expect(verification.artifacts.map((artifact: any) => artifact.decodedContentHash)).toEqual([
+      fixture.decodedHashes.before,
+      fixture.decodedHashes.after,
+      fixture.decodedHashes.diff,
+    ]);
+    expect(verification.artifacts.every((artifact: any) => (
+      typeof artifact.stableFileIdentity.device === "string"
+      && typeof artifact.stableFileIdentity.inode === "string"
+    ))).toBe(true);
+    expect(verification.sourceStreamStableFileIdentity).toEqual(
+      scenario.captureProvenance.sourceStreamStableFileIdentity,
+    );
+    expect(verification.allowedRoots).toHaveLength(1);
+    expect(verification.allowedRoots[0].identity.stable.device).toBeTypeOf("string");
+    expect(verification.allowedRoots[0].identity.stable.inode).toBeTypeOf("string");
+    expect(verification.sourceStreamAllowedRoot).toEqual(verification.allowedRoots[0]);
+    expect(verification.artifacts.every((artifact: any) => (
+      artifact.allowedRoot.path === verification.allowedRoots[0].path
+      && artifact.allowedRoot.identity.stable.device
+        === verification.allowedRoots[0].identity.stable.device
+      && artifact.allowedRoot.identity.stable.inode
+        === verification.allowedRoots[0].identity.stable.inode
+    ))).toBe(true);
+    expect(scenario.outputOracle.expected).toBe(fixture.hashes.after);
+    expect(scenario.outputOracle.actual).toBe(fixture.hashes.after);
+    expect(verification.width).toBe(fixture.width);
+    expect(verification.height).toBe(fixture.height);
+    expect(verification.metrics.changedPixels).toBeGreaterThan(0);
+    expect(verification.previousDispatch.artifactId).toBe(TEST_OLD_ARTIFACT_ID);
+    expect(verification.previousDispatch.dispatchId).toBe("dispatch:test:0");
+    expect(verification.previousOutput.encodedHash).toBe(fixture.hashes.before);
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.visualEvidenceComplete).toBe(false);
+    expect(proof.degradedReason).toBe(
+      "visual_capture_provenance_runner_owned_native_observation_missing",
+    );
+  });
+
+  it("rejects a missing visual role", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario, {
+        roles: [
+          { role: "before", path: fixture.paths.before },
+          { role: "after", path: fixture.paths.after },
+        ],
+      }),
+      { allowedRoots: [fixture.directory] },
+    );
+
+    expect(verification.accepted).toBe(false);
+    expect(verification.failedGates).toContain("visual_evidence_role_count_invalid");
+    expect(classifyVisualOutput({
+      dispatchProof: scenario.dispatchProof,
+      outputModalityEvidence: scenario.outputModalityEvidence,
+      outputOracle: scenario.outputOracle,
+      verifiedVisualEvidence: verification,
+    }).resultState).toBe("gpu-hmr-dispatch-safe-proven");
+  });
+
+  it("keeps diagnostic paths support-only and rejects a non-existent artifact", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const diagnosticOnly = classifyVisualOutput({
+      dispatchProof: scenario.dispatchProof,
+      outputModalityEvidence: scenario.outputModalityEvidence,
+      outputOracle: scenario.outputOracle,
+      visualFrameObserved: true,
+      visualEvidenceRefs: [fixture.paths.after],
+    });
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario, {
+        roles: [
+          { role: "before", path: fixture.paths.before },
+          { role: "after", path: path.join(fixture.directory, "does-not-exist.png") },
+          { role: "diff", path: fixture.paths.diff },
+        ],
+      }),
+      { allowedRoots: [fixture.directory] },
+    );
+
+    expect(diagnosticOnly.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(diagnosticOnly.degradedReason).toBe("visual_evidence_live_verification_missing");
+    expect(verification.accepted).toBe(false);
+    expect(verification.failedGates).toContain(
+      "visual_evidence_after_byte_verification_failed",
+    );
+  });
+
+  it("rejects decoded blank and same-frame evidence", async () => {
+    const blank = await writeVisualPngFixture({ blankAfter: true });
+    const blankScenario = await buildVisualProofScenario(blank);
+    const blankVerification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(blankScenario),
+      { allowedRoots: [blank.directory] },
+    );
+    const same = await writeVisualPngFixture({ same: true });
+    const sameScenario = await buildVisualProofScenario(same);
+    const sameVerification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(sameScenario),
+      { allowedRoots: [same.directory] },
+    );
+
+    expect(blankVerification.accepted).toBe(false);
+    expect(blankVerification.failedGates).toContain("visual_evidence_after_blank_or_low_quality");
+    expect(sameVerification.accepted).toBe(false);
+    expect(sameVerification.failedGates).toContain("visual_evidence_before_after_same");
+  });
+
+  it("treats hidden RGB under full transparency as blank and unchanged", async () => {
+    const fixture = await writeVisualPngFixture({ hiddenTransparent: true });
+    const scenario = await buildVisualProofScenario(fixture);
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario),
+      { allowedRoots: [fixture.directory] },
+    );
+
+    expect(fixture.hashes.before).not.toBe(fixture.hashes.after);
+    expect(fixture.decodedHashes.before).toBe(fixture.decodedHashes.after);
+    expect(verification.accepted).toBe(false);
+    expect(verification.failedGates).toContain("visual_evidence_before_blank_or_low_quality");
+    expect(verification.failedGates).toContain("visual_evidence_before_after_same");
+  });
+
+  it("validates a real alpha-only composited change as support without granting authority", async () => {
+    const fixture = await writeVisualPngFixture({ alphaOnlyChange: true });
+    const scenario = await buildVisualProofScenario(fixture);
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario),
+      { allowedRoots: [fixture.directory] },
+    );
+
+    expect(verification.accepted).toBe(false);
+    expect(verification.supportValidated).toBe(true);
+    expect(verification.failedGates).toEqual([
+      "visual_capture_provenance_runner_owned_native_observation_missing",
+    ]);
+    expect(verification.metrics.changedPixels).toBeGreaterThan(0);
+    expect(verification.metrics.diffMismatchPixels).toBe(0);
+  });
+
+  it("rejects forged and conflicting CAS hash aliases", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const locator = await buildArtifactCasManifest({
+      bytes: await readFile(fixture.paths.after),
+      localPath: fixture.paths.after,
+      role: "after",
+      artifactKind: "visual_frame",
+      mediaType: "image/png",
+    });
+    const forgedLocator = structuredClone(locator);
+    forgedLocator.contentHash = `sha256:${"0".repeat(64)}`;
+    const conflictingLocator = structuredClone(locator) as Record<string, any>;
+    conflictingLocator.content_hash = `sha256:${"9".repeat(64)}`;
+    const forged = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario, {
+        roles: [
+          { role: "before", path: fixture.paths.before },
+          { role: "after", locator: forgedLocator },
+          { role: "diff", path: fixture.paths.diff },
+        ],
+      }),
+      { allowedRoots: [fixture.directory] },
+    );
+    const conflicting = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario, {
+        roles: [
+          { role: "before", path: fixture.paths.before },
+          { role: "after", locator: conflictingLocator },
+          { role: "diff", path: fixture.paths.diff },
+        ],
+      }),
+      { allowedRoots: [fixture.directory] },
+    );
+
+    expect(forged.failedGates).toContain("visual_evidence_after_locator_unverified");
+    expect(conflicting.failedGates).toContain("visual_evidence_after_locator_unverified");
+  });
+
+  it("rejects duplicate roles and conflicting aliases", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const duplicate = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario, {
+        roles: [
+          { role: "before", path: fixture.paths.before },
+          { role: "after", path: fixture.paths.after },
+          { role: "after", path: fixture.paths.diff },
+        ],
+      }),
+      { allowedRoots: [fixture.directory] },
+    );
+    const valid = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario),
+      { allowedRoots: [fixture.directory] },
+    );
+    const conflictingAlias = structuredClone(valid);
+    conflictingAlias.dispatchId = "dispatch:conflicting-alias";
+    const aliasConflict = classifyVisualOutput({
+      dispatchProof: scenario.dispatchProof,
+      outputModalityEvidence: scenario.outputModalityEvidence,
+      outputOracle: scenario.outputOracle,
+      verifiedVisualEvidence: valid,
+      verified_visual_evidence: conflictingAlias,
+    });
+    const duplicateAlias = classifyVisualOutput({
+      dispatchProof: scenario.dispatchProof,
+      outputModalityEvidence: scenario.outputModalityEvidence,
+      outputOracle: scenario.outputOracle,
+      verifiedVisualEvidence: valid,
+      verified_visual_evidence: valid,
+    });
+    const bundleAlias = await verifyGpuHmrVisualProofBundle({
+      ...visualProofInput(scenario),
+      output_modality_evidence: scenario.outputModalityEvidence,
+    }, { allowedRoots: [fixture.directory] });
+
+    expect(duplicate.accepted).toBe(false);
+    expect(duplicate.failedGates).toContain("visual_evidence_after_role_duplicate");
+    expect(aliasConflict.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(aliasConflict.degradedReason).toBe("visual_evidence_alias_conflict");
+    expect(duplicateAlias.degradedReason).toBe("visual_evidence_duplicate_alias");
+    expect(bundleAlias.failedGates).toContain("visual_evidence_bundle_field_set_invalid");
+  });
+
+  it("rejects a direct path paired with a disagreeing locator and locator role mismatches", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const locator = await buildArtifactCasManifest({
+      bytes: await readFile(fixture.paths.before),
+      localPath: fixture.paths.before,
+      role: "after",
+      artifactKind: "visual_frame",
+      mediaType: "image/png",
+    });
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario, {
+        roles: [
+          { role: "before", path: fixture.paths.before },
+          { role: "after", path: fixture.paths.after, locator },
+          { role: "diff", path: fixture.paths.diff },
+        ],
+      }),
+      { allowedRoots: [fixture.directory] },
+    );
+    const wrongRoleLocator = await buildArtifactCasManifest({
+      bytes: await readFile(fixture.paths.after),
+      localPath: fixture.paths.after,
+      role: "before",
+      artifactKind: "visual_frame",
+      mediaType: "image/png",
+    });
+    const roleMismatch = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario, {
+        roles: [
+          { role: "before", path: fixture.paths.before },
+          { role: "after", locator: wrongRoleLocator },
+          { role: "diff", path: fixture.paths.diff },
+        ],
+      }),
+      { allowedRoots: [fixture.directory] },
+    );
+
+    expect(verification.accepted).toBe(false);
+    expect([
+      "visual_evidence_after_path_locator_mismatch",
+      "visual_evidence_after_locator_unverified",
+      "visual_evidence_after_locator_hash_mismatch",
+    ]).toContain(verification.failedGates[0]);
+    expect(roleMismatch.failedGates).toContain("visual_evidence_after_locator_role_mismatch");
+  });
+
+  it("rejects serialized dispatch, capture, and caller-created control declarations", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const input = visualProofInput(scenario);
+    const serializedTraceVerification = await verifyGpuHmrVisualProofBundle({
+      ...input,
+      dispatchTraceEvidence: structuredClone(input.dispatchTraceEvidence),
+    }, { allowedRoots: [fixture.directory] });
+    const serializedCaptureVerification = await verifyGpuHmrVisualProofBundle({
+      ...input,
+      captureProvenance: structuredClone(input.captureProvenance),
+    }, { allowedRoots: [fixture.directory] });
+    const callerControlPair = await verifyGpuHmrVisualProofBundle({
+      ...input,
+      runtimeVisualControlPair: structuredClone(scenario.captureProvenance.controlPair),
+    }, { allowedRoots: [fixture.directory] });
+    const callerForgedTrace = verifyGpuHmrDispatchTraceEvidence({
+      dispatchProof: scenario.dispatchProof,
+      sourceLine: "caller-supplied-after-classification",
+      sourceLineHash: `sha256:${"0".repeat(64)}`,
+      sourceLineIndex: 15,
+    } as any);
+    const forgedTrace = verifiedDispatchTraceEvidence(visualDispatchProof({
+      dispatchTraceDispatchId: "dispatch:forged",
+    }));
+    const preEpochTrace = verifiedDispatchTraceEvidence(visualDispatchProof({
+      dispatchTraceTimestamp: "1779979998500",
+    }));
+
+    expect(serializedTraceVerification.failedGates).toContain(
+      "visual_evidence_dispatch_receipt_unverified",
+    );
+    expect(serializedCaptureVerification.failedGates).toContain(
+      "visual_evidence_capture_provenance_unverified",
+    );
+    expect(callerControlPair.failedGates).toContain("visual_evidence_bundle_field_set_invalid");
+    expect(callerForgedTrace.failedGates).toContain("dispatch_trace_evidence_field_set_invalid");
+    expect(forgedTrace.failedGates).toContain("dispatch_trace_dispatch_id_mismatch");
+    expect(preEpochTrace.failedGates).toContain("dispatch_trace_precedes_epoch_publication");
+  });
+
+  it("rejects stale, pre-dispatch, and old-but-ordered captures", async () => {
+    const preDispatchFixture = await writeVisualPngFixture();
+    const preDispatchAfter = await buildVisualProofScenario(preDispatchFixture, {
+      afterTimestamp: "1779979999000",
+    });
+    const postDispatchFixture = await writeVisualPngFixture();
+    const postDispatchBefore = await buildVisualProofScenario(postDispatchFixture, {
+      beforeTimestamp: "1779979999500",
+    });
+    const oldOrderedFixture = await writeVisualPngFixture();
+    const oldOrdered = await buildVisualProofScenario(oldOrderedFixture, {
+      publicationTimestamp: "1785979998600",
+      dispatchTimestamp: "1785979999000",
+      afterTimestamp: "1785980000000",
+      diffTimestamp: "1785980000001",
+    });
+
+    expect(preDispatchAfter.captureProvenance.accepted).toBe(false);
+    expect(preDispatchAfter.captureProvenance.failedGates).toContain(
+      "visual_capture_provenance_timestamp_order_unproven",
+    );
+    expect(postDispatchBefore.captureProvenance.failedGates).toContain(
+      "visual_capture_provenance_timestamp_order_unproven",
+    );
+    expect(oldOrdered.captureProvenance.failedGates).toContain(
+      "visual_capture_provenance_before_capture_stale",
+    );
+  });
+
+  it("rejects a before receipt relabeled with the new artifact", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture, {
+      receiptOverrides: {
+        before: { previousArtifactId: TEST_ARTIFACT_ID },
+      },
+    });
+
+    expect(scenario.captureProvenance.supportValidated).toBe(false);
+    expect(scenario.captureProvenance.failedGates).toContain(
+      "visual_capture_provenance_before_artifact_id_mismatch",
+    );
+  });
+
+  it("rejects hard-link aliases across image roles and the source stream", async () => {
+    const roleFixture = await writeVisualPngFixture();
+    const roleScenario = await buildVisualProofScenario(roleFixture);
+    const afterAlias = path.join(roleFixture.directory, "after-hard-link.png");
+    await link(roleFixture.paths.before, afterAlias);
+    const roleAlias = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(roleScenario, {
+        roles: [
+          { role: "before", path: roleFixture.paths.before },
+          { role: "after", path: afterAlias },
+          { role: "diff", path: roleFixture.paths.diff },
+        ],
+      }),
+      { allowedRoots: [roleFixture.directory] },
+    );
+
+    const streamFixture = await writeVisualPngFixture();
+    const streamScenario = await buildVisualProofScenario(streamFixture);
+    const sourceStreamAlias = path.join(streamFixture.directory, "source-stream-hard-link.png");
+    await link(streamScenario.sourceStreamPath, sourceStreamAlias);
+    const streamAlias = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(streamScenario, {
+        roles: [
+          { role: "before", path: sourceStreamAlias },
+          { role: "after", path: streamFixture.paths.after },
+          { role: "diff", path: streamFixture.paths.diff },
+        ],
+      }),
+      { allowedRoots: [streamFixture.directory] },
+    );
+
+    expect(roleAlias.failedGates).toContain(
+      "visual_evidence_cross_role_file_identity_reused",
+    );
+    expect(streamAlias.failedGates).toContain(
+      "visual_evidence_cross_role_file_identity_reused",
+    );
+  });
+
+  it("rejects symlink or reparse-point allowed roots", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const aliasParent = await mkdtemp(path.join(os.tmpdir(), "gpu-hmr-root-alias-"));
+    visualFixtureDirectories.add(aliasParent);
+    const rootAlias = path.join(aliasParent, "visual-root");
+    await symlink(fixture.directory, rootAlias, process.platform === "win32" ? "junction" : "dir");
+
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario),
+      { allowedRoots: [rootAlias] },
+    );
+
+    expect(verification.accepted).toBe(false);
+    expect(verification.failedGates).toContain(
+      "visual_evidence_allowed_root_not_stable_directory",
+    );
+  });
+
+  it("rejects an allowed-root identity replaced after capture verification", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const displacedRoot = `${fixture.directory}-displaced`;
+    await rename(fixture.directory, displacedRoot);
+    visualFixtureDirectories.add(displacedRoot);
+    await mkdir(fixture.directory);
+
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario),
+      { allowedRoots: [fixture.directory] },
+    );
+
+    expect(verification.accepted).toBe(false);
+    expect(verification.failedGates).toContain(
+      "visual_evidence_source_stream_allowed_root_changed",
+    );
+  });
+
+  it("rejects an ancestor replacement after the allowed root is pinned", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const frameDirectory = path.join(fixture.directory, "frames");
+    await mkdir(frameDirectory);
+    for (const role of ["before", "after", "diff"] as const) {
+      const nestedPath = path.join(frameDirectory, `${role}.png`);
+      await rename(fixture.paths[role], nestedPath);
+      fixture.paths[role] = nestedPath;
+    }
+    let ancestorReplaced = false;
+
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario),
+      {
+        allowedRoots: [fixture.directory],
+        afterAllowedRootsPinned: async () => {
+          await rename(frameDirectory, path.join(fixture.directory, "frames-displaced"));
+          await mkdir(frameDirectory);
+          ancestorReplaced = true;
+        },
+      },
+    );
+
+    expect(ancestorReplaced).toBe(true);
+    expect(verification.accepted).toBe(false);
+    expect(verification.failedGates).toContain(
+      "visual_evidence_before_allowed_root_replaced",
+    );
+  });
+
+  it("rejects incorrect diff bytes and decoded dimensions", async () => {
+    const corrupt = await writeVisualPngFixture({ corruptDiff: true });
+    const corruptScenario = await buildVisualProofScenario(corrupt);
+    const corruptVerification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(corruptScenario),
+      { allowedRoots: [corrupt.directory] },
+    );
+    const base = await writeVisualPngFixture();
+    const wrongSize = await writeVisualPngFixture({ width: 321 });
+    const baseScenario = await buildVisualProofScenario(base);
+    const dimensionVerification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(baseScenario, {
+        roles: [
+          { role: "before", path: base.paths.before },
+          { role: "after", path: base.paths.after },
+          { role: "diff", path: wrongSize.paths.diff },
+        ],
+      }),
+      { allowedRoots: [base.directory, wrongSize.directory] },
+    );
+
+    expect(corruptVerification.failedGates).toContain("visual_evidence_diff_bytes_mismatch");
+    expect(dimensionVerification.failedGates).toContain("visual_evidence_decoded_dimensions_mismatch");
+  });
+
+  it.each([
+    ["output target", "outputTargetId", "framebuffer:forged"],
+    ["process", "processId", "pid-forged"],
+    ["epoch", "epoch", "999"],
+    ["dispatch", "afterDispatchId", "dispatch:forged"],
+  ])("rejects raw-oracle %s mismatches", async (_label, field, value) => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const forgedOracle = { ...scenario.outputOracle, [field]: value };
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario, { outputOracle: forgedOracle }),
+      { allowedRoots: [fixture.directory] },
+    );
+
+    expect(verification.failedGates).toContain(
+      "visual_evidence_output_oracle_source_projection_mismatch",
+    );
+  });
+
+  it("rejects missing, forged, and conflicting raw-oracle hashes", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const missing = { ...scenario.outputOracle } as Record<string, any>;
+    delete missing.diffDecodedHash;
+    const forged = {
+      ...scenario.outputOracle,
+      afterDecodedHash: `sha256:${"0".repeat(64)}`,
+    };
+    const conflicting = {
+      ...scenario.outputOracle,
+      after_decoded_hash: `sha256:${"9".repeat(64)}`,
+    };
+    const results = await Promise.all([missing, forged, conflicting].map((outputOracle) => (
+      verifyGpuHmrVisualProofBundle(
+        visualProofInput(scenario, { outputOracle }),
+        { allowedRoots: [fixture.directory] },
+      )
+    )));
+
+    expect(results[0].failedGates).toContain(
+      "visual_evidence_output_oracle_diff_decoded_hash_missing",
+    );
+    expect(results[1].failedGates).toContain(
+      "visual_evidence_output_oracle_source_projection_mismatch",
+    );
+    expect(results[2].failedGates).toContain(
+      "visual_evidence_output_oracle_after_decoded_hash_alias_conflict",
+    );
+  });
+
+  it("binds agreeing generic aliases in support analysis without granting authority", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    scenario.outputOracle.before_image_hash = scenario.outputOracle.beforeEncodedHash;
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario),
+      { allowedRoots: [fixture.directory] },
+    );
+    const accepted = classifyVisualOutput({
+      dispatchProof: scenario.dispatchProof,
+      outputModalityEvidence: scenario.outputModalityEvidence,
+      outputOracle: scenario.outputOracle,
+      verifiedVisualEvidence: verification,
+    });
+    delete scenario.outputOracle.before_image_hash;
+    const changed = classifyVisualOutput({
+      dispatchProof: scenario.dispatchProof,
+      outputModalityEvidence: scenario.outputModalityEvidence,
+      outputOracle: scenario.outputOracle,
+      verifiedVisualEvidence: verification,
+    });
+
+    expect(verification.accepted).toBe(false);
+    expect(verification.supportValidated).toBe(true);
+    expect(verification.outputOracleFieldBinding.beforeEncodedHash).toEqual([
+      { alias: "beforeEncodedHash", value: fixture.hashes.before },
+      { alias: "before_image_hash", value: fixture.hashes.before },
+    ]);
+    expect(accepted.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(changed.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+  });
+
+  it("rejects path replacement after opening the artifact", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    let replaced = false;
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario),
+      {
+        allowedRoots: [fixture.directory],
+        afterFileOpen: async ({ role, requestedPath }: Record<string, any>) => {
+          if (role !== "after" || replaced) return;
+          replaced = true;
+          const bytes = Buffer.from(await readFile(requestedPath));
+          bytes[0] ^= 0xff;
+          await writeFile(requestedPath, bytes);
+        },
+      },
+    );
+
+    expect(replaced).toBe(true);
+    expect(verification.failedGates).toContain(
+      "visual_evidence_after_path_replaced_during_read",
+    );
+  });
+
+  it("rejects encoded-byte and pre-decode dimension limits", async () => {
+    const bytesFixture = await writeVisualPngFixture();
+    const bytesScenario = await buildVisualProofScenario(bytesFixture);
+    const bytesResult = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(bytesScenario),
+      { allowedRoots: [bytesFixture.directory], limits: { maxEncodedBytes: 128 } },
+    );
+    const dimensionsFixture = await writeVisualPngFixture();
+    const dimensionsScenario = await buildVisualProofScenario(dimensionsFixture);
+    const oversizedHeader = Buffer.from(await readFile(dimensionsFixture.paths.before));
+    oversizedHeader.writeUInt32BE(20_000, 16);
+    await writeFile(dimensionsFixture.paths.before, oversizedHeader);
+    const dimensionsResult = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(dimensionsScenario),
+      { allowedRoots: [dimensionsFixture.directory] },
+    );
+
+    expect(bytesResult.failedGates).toContain(
+      "visual_evidence_before_encoded_bytes_limit_exceeded",
+    );
+    expect(dimensionsResult.failedGates).toContain(
+      "visual_evidence_before_dimensions_limit_exceeded",
+    );
+  });
+
+  it("rejects serialized visual verifier output until bytes are reverified", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const verification = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario),
+      { allowedRoots: [fixture.directory] },
+    );
+    const proof = classifyVisualOutput({
+      dispatchProof: scenario.dispatchProof,
+      outputModalityEvidence: scenario.outputModalityEvidence,
+      outputOracle: scenario.outputOracle,
+      verifiedVisualEvidence: structuredClone(verification),
+    });
+
+    expect(verification.accepted).toBe(false);
+    expect(verification.supportValidated).toBe(true);
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedReason).toBe("visual_evidence_live_verification_missing");
   });
 
   it("can prove output from a structured runtime oracle line", () => {
@@ -6297,6 +7521,116 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.postPublicationDecision.aiBlessingAllowed).toBe(false);
     expect(proof.componentStates.artifactIdentityProven).toBe(true);
     expect(proof.componentStates.artifactIdentityCommonArtifactIds).toEqual([TEST_ARTIFACT_ID]);
+    expect(proof.componentStates.visualOutputAuthorityRequired).toBe(false);
+    expect(proof.componentStates.visualOutputAuthorityProven).toBe(true);
+  });
+
+  it("does not accept a caller-declared visual output state without pinned modality authority", () => {
+    const dispatchProof = safeDispatchProof();
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof: {
+        resultState: "gpu-hmr-output-oracle-proven",
+        dispatchProof,
+        artifactId: TEST_ARTIFACT_ID,
+        visualFrameObserved: true,
+        visualEvidenceRequired: true,
+        visualEvidenceRefs: ["artifacts/diagnostic-only.png"],
+        outputOracle: {
+          kind: "render_target_hash",
+          passed: true,
+          artifactId: TEST_ARTIFACT_ID,
+          screenshotPath: "artifacts/diagnostic-only.png",
+        },
+      },
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    expect(proof.fullRuntimeProven).toBe(false);
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-visual-evidence-missing");
+    expect(proof.degradedReason).toBe("output_modality_evidence_missing_or_unverified");
+    expect(proof.componentStates.outputClaimedRank).toBeGreaterThan(
+      proof.componentStates.outputEffectiveRank,
+    );
+    expect(proof.componentStates.visualOutputAuthorityFailedGates).toContain(
+      "visual_capture_provenance_runner_owned_native_observation_missing",
+    );
+  });
+
+  it("keeps a fully verified synthetic visual file chain unproven without runner issuance", async () => {
+    const fixture = await writeVisualPngFixture();
+    const scenario = await buildVisualProofScenario(fixture);
+    const support = await verifyGpuHmrVisualProofBundle(
+      visualProofInput(scenario),
+      { allowedRoots: [fixture.directory] },
+    );
+    const classified = classifyVisualOutput({
+      dispatchProof: scenario.dispatchProof,
+      outputModalityEvidence: scenario.outputModalityEvidence,
+      outputOracle: scenario.outputOracle,
+      verifiedVisualEvidence: support,
+    });
+    const forgedState = {
+      ...classified,
+      resultState: "gpu-hmr-output-oracle-proven",
+      degradedState: null,
+      degradedReason: null,
+    };
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof: scenario.dispatchProof,
+      outputProof: forgedState,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    expect(support.supportValidated).toBe(true);
+    expect(proof.fullRuntimeProven).toBe(false);
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedReason).toBe(
+      "visual_capture_provenance_runner_owned_native_observation_missing",
+    );
+    expect(proof.componentStates.visualOutputAuthorityFailedGates).toEqual([
+      "visual_capture_provenance_runner_owned_native_observation_missing",
+    ]);
+  });
+
+  it("scans all runtime script modules for direct visual authority bypasses", async () => {
+    const modulePaths = await recursiveModulePaths(GPU_HMR_SCRIPTS_ROOT);
+    const modules = await Promise.all(modulePaths.map(async (modulePath) => ({
+      modulePath,
+      source: await readFile(modulePath, "utf8"),
+    })));
+    const forbidden = modules.flatMap(({ modulePath, source }) => {
+      const failures: string[] = [];
+      if (/["']?deterministic(?:OraclePassed|_oracle_passed)["']?\s*:\s*true\b/.test(source)) {
+        failures.push(`${modulePath}:deterministic-oracle-literal`);
+      }
+      if (/buildHiprtNative(?:Dispatch|Output|OriginalHostPath)Proof/.test(source)) {
+        failures.push(`${modulePath}:named-native-proof-bridge`);
+      }
+      return failures;
+    });
+    const boundaryAdapter = modules.find(({ modulePath }) => (
+      modulePath.endsWith("gpu-hmr-runtime-boundary-proof-adapter.mjs")
+    ))?.source ?? "";
+    const runtimeProof = modules.find(({ modulePath }) => (
+      modulePath.endsWith("gpu-hmr-runtime-proof.mjs")
+    ))?.source ?? "";
+
+    expect(forbidden).toEqual([]);
+    expect(boundaryAdapter).toMatch(
+      /oracleMode === 'visual'\s*\? classifyGpuHmrOutputProof\(/,
+    );
+    expect(runtimeProof).toContain("PINNED_RUNNER_VISUAL_OBSERVATIONS");
+    expect(runtimeProof).not.toMatch(/PINNED_RUNNER_VISUAL_OBSERVATIONS\.set\(/);
   });
 
   it("blocks full runtime proof when proof stages refer to different artifacts", () => {
@@ -7183,37 +8517,13 @@ describe("GPU HMR runtime output proof classification", () => {
   it("materializes runtime proof ladder as a structured validation artifact", () => {
     const dispatchProof = safeDispatchProof();
     const sourceProof = acceptedSourceProof();
-    const visualOracleArtifacts = acceptedVisualOracleArtifacts();
-    const visualEvidenceArtifacts = acceptedVisualEvidenceArtifacts();
-    const visualEvidenceRefs = visualEvidenceArtifacts.map((artifact) => artifact.path);
-    const deterministicVisualMode = {
-      fixed_seed: true,
-      frozen_camera: true,
-      temporal_accumulation_disabled: true,
-      taa_disabled: true,
-      denoiser_disabled: true,
-      fixed_resolution: true,
-      fixed_swapchain_image_count: true,
-      frame_capture_after_epoch_dispatch: true,
-      presentation_fence_or_frame_boundary: true,
-    };
+    const visualEvidenceRefs: string[] = [];
     const outputProof = classifyGpuHmrOutputProof({
       dispatchProof,
       deterministicOutputObserved: true,
       deterministicOracleProvided: true,
       deterministicOraclePassed: true,
-      outputOracle: {
-        ...deterministicOutputOracle(),
-        kind: "render_target_hash",
-        outputTargetId: "framebuffer:main",
-        oracleArtifacts: {
-          visualOracleArtifacts,
-        },
-        visualEvidenceRefs,
-      },
-      visualFrameObserved: true,
-      visualEvidenceRefs,
-      deterministicVisualMode,
+      outputOracle: deterministicOutputOracle(),
     });
     const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: [sourceProof],
@@ -7291,9 +8601,6 @@ describe("GPU HMR runtime output proof classification", () => {
           finalAcceptanceTarget: "final-target",
         },
       },
-      visualEvidenceRefs,
-      visualEvidenceArtifacts,
-      deterministicVisualMode,
       createdAt: "2026-05-28T00:00:00.000Z",
     });
 
@@ -9601,22 +10908,14 @@ describe("GPU HMR runtime output proof classification", () => {
   });
 
   it("preserves specific output degraded state in the full ladder", () => {
-    const outputProof = classifyGpuHmrOutputProof({
-      dispatchProof: safeDispatchProof(),
-      deterministicOutputObserved: true,
-      deterministicOracleProvided: true,
-      deterministicOraclePassed: true,
-      outputOracle: deterministicOutputOracle(),
-      visualEvidenceRequired: true,
-      visualFrameObserved: false,
-      visualEvidenceRefs: [],
-    });
+    const dispatchProof = visualDispatchProof();
+    const outputProof = classifyVisualOutput({ dispatchProof });
     const proof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: [acceptedSourceProof()],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
-      dispatchProof: safeDispatchProof(),
+      dispatchProof,
       outputProof,
       hostPreservationProof: preservedHostProof(),
     });
