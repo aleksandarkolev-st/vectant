@@ -1321,18 +1321,45 @@ const materializedOracleCasArtifacts = await computeOracleArtifactsFromFiles(ora
 });
 assert.equal(materializedOracleCasArtifacts.compute_artifact_cas_resolution.accepted, true);
 assert.equal(
-  materializedOracleCasArtifacts.semantic_oracle_implementation,
-  ORACLE_IMPLEMENTATION_CAS.storage.localPath,
+  Object.prototype.hasOwnProperty.call(
+    materializedOracleCasArtifacts,
+    'semantic_oracle_implementation',
+  ),
+  false,
 );
+const materializedOracleCasEntry = materializedOracleCasArtifacts
+  .compute_artifact_cas_resolution.entries
+  .find((entry) => entry.role === 'oracle_implementation');
+assert.ok(materializedOracleCasEntry);
+assert.equal(materializedOracleCasEntry.accepted, true);
+assert.equal(materializedOracleCasEntry.path, null);
+assert.equal(materializedOracleCasEntry.localPath, null);
+assert.equal(typeof materializedOracleCasEntry.supportPath, 'string');
+assert.equal(materializedOracleCasEntry.pathReusableAsProof, false);
+assert.equal(materializedOracleCasEntry.freshReadMatchesSnapshot, true);
+assert.equal(materializedOracleCasEntry.snapshotIdentityStable, true);
 const previousGpuHmrCasRoot = process.env.SYNTHI_GPU_HMR_CAS_ROOT;
 process.env.SYNTHI_GPU_HMR_CAS_ROOT = SELF_CHECK_CAS_ROOT;
 try {
   const ambientRootMaterialization = await computeOracleArtifactsFromFiles(oracleCasArtifacts);
   assert.equal(ambientRootMaterialization.compute_artifact_cas_resolution.accepted, true);
   assert.equal(
-    ambientRootMaterialization.semantic_oracle_implementation,
-    ORACLE_IMPLEMENTATION_CAS.storage.localPath,
+    Object.prototype.hasOwnProperty.call(
+      ambientRootMaterialization,
+      'semantic_oracle_implementation',
+    ),
+    false,
   );
+  const ambientOracleCasEntry = ambientRootMaterialization.compute_artifact_cas_resolution.entries
+    .find((entry) => entry.role === 'oracle_implementation');
+  assert.ok(ambientOracleCasEntry);
+  assert.equal(ambientOracleCasEntry.accepted, true);
+  assert.equal(ambientOracleCasEntry.path, null);
+  assert.equal(ambientOracleCasEntry.localPath, null);
+  assert.equal(typeof ambientOracleCasEntry.supportPath, 'string');
+  assert.equal(ambientOracleCasEntry.pathReusableAsProof, false);
+  assert.equal(ambientOracleCasEntry.freshReadMatchesSnapshot, true);
+  assert.equal(ambientOracleCasEntry.snapshotIdentityStable, true);
 
   const arrayRootAliases = [
     'allowedRoots',
