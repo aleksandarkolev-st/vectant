@@ -12,6 +12,56 @@ import {
   computeAsyncVisualProof,
   validateVisualWorkerResultProofHash,
 } from '../lib/gpu-hmr-visual-proof-worker.mjs';
+import { sameVisualCasSnapshotIdentity } from '../lib/gpu-hmr-visual-proof-worker-thread.mjs';
+
+const windowsSnapshotIdentity = {
+  root: { fileId128: 'root-id', volumeSerialNumber: 'volume-id' },
+  final: { fileId128: 'file-id', volumeSerialNumber: 'volume-id' },
+  components: [{
+    componentIndex: 0,
+    component: 'frame.png',
+    directory: false,
+    fileId128: 'file-id',
+    volumeSerialNumber: 'volume-id',
+  }],
+  before: {
+    allocationSize: '4096',
+    changeTime: '100',
+    creationTime: '90',
+    deletePending: false,
+    directory: false,
+    endOfFile: '1024',
+    fileAttributes: 128,
+    lastAccessTime: '101',
+    lastWriteTime: '99',
+    numberOfLinks: 1,
+  },
+  after: {
+    allocationSize: '4096',
+    changeTime: '100',
+    creationTime: '90',
+    deletePending: false,
+    directory: false,
+    endOfFile: '1024',
+    fileAttributes: 128,
+    lastAccessTime: '102',
+    lastWriteTime: '99',
+    numberOfLinks: 1,
+  },
+};
+const accessTimeOnlySnapshot = structuredClone(windowsSnapshotIdentity);
+accessTimeOnlySnapshot.before.lastAccessTime = '200';
+accessTimeOnlySnapshot.after.lastAccessTime = '201';
+assert.equal(
+  sameVisualCasSnapshotIdentity(windowsSnapshotIdentity, accessTimeOnlySnapshot),
+  true,
+);
+const rewrittenSnapshot = structuredClone(windowsSnapshotIdentity);
+rewrittenSnapshot.after.lastWriteTime = '101';
+assert.equal(sameVisualCasSnapshotIdentity(windowsSnapshotIdentity, rewrittenSnapshot), false);
+const incompleteSnapshot = structuredClone(windowsSnapshotIdentity);
+delete incompleteSnapshot.after.changeTime;
+assert.equal(sameVisualCasSnapshotIdentity(windowsSnapshotIdentity, incompleteSnapshot), false);
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), 'synthi-visual-proof-worker-'));
 const casRoot = path.join(tmp, 'cas');
@@ -87,6 +137,21 @@ assert.ok(proof.inputArtifacts.before.supportPath);
 assert.equal(proof.inputArtifacts.before.localPath, null);
 assert.equal(proof.inputArtifacts.before.pathReusableAsProof, false);
 assert.equal(proof.inputArtifacts.before.freshReadMatchesSnapshot, true);
+assert.ok(proof.inputArtifacts.before.verifiedSnapshotIdentity);
+assert.ok(proof.inputArtifacts.before.postReadSnapshotIdentity);
+assert.equal(proof.inputArtifacts.before.snapshotIdentityStable, true);
+assert.deepEqual(
+  proof.inputArtifacts.before.postReadSnapshotIdentity.root,
+  proof.inputArtifacts.before.verifiedSnapshotIdentity.root,
+);
+assert.deepEqual(
+  proof.inputArtifacts.before.postReadSnapshotIdentity.final,
+  proof.inputArtifacts.before.verifiedSnapshotIdentity.final,
+);
+assert.deepEqual(
+  proof.inputArtifacts.before.postReadSnapshotIdentity.components,
+  proof.inputArtifacts.before.verifiedSnapshotIdentity.components,
+);
 assert.equal(
   proof.inputArtifacts.before.freshReadHash,
   proof.inputArtifacts.before.casValidation.verifiedByteHash

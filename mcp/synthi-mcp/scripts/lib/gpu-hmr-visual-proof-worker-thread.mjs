@@ -409,7 +409,10 @@ async function resolveImageInput(input, role, context) {
       allowedRoots: context.allowedRoots,
       requireReadableBytes: true,
     });
-    if (!validation.accepted) {
+    if (
+      !validation.accepted
+      || validation.acceptedAsTransportEvidence !== true
+    ) {
       context.reasons.push(`${role}_cas_manifest_rejected`);
       context.gaps.push(...validation.reasons.map((reason) => `${role}_${reason}`));
       return {
@@ -423,9 +426,7 @@ async function resolveImageInput(input, role, context) {
     }
     const supportPath = text(
       validation.supportPath
-      ?? validation.support_path
-      ?? validation.localPath
-      ?? validation.local_path,
+      ?? validation.support_path,
     );
     const verifiedHash = text(
       validation.verifiedByteHash
@@ -439,7 +440,17 @@ async function resolveImageInput(input, role, context) {
       ?? validation.readableByteLength
       ?? validation.byteLength,
     );
-    if (!supportPath || !verifiedHash || !Number.isSafeInteger(verifiedByteLength)) {
+    const verifiedSnapshotIdentity = visualSnapshotIdentity(
+      validation.verifiedSnapshotIdentity ?? validation.verified_snapshot_identity,
+    );
+    if (
+      !supportPath
+      || !verifiedHash
+      || !Number.isSafeInteger(verifiedByteLength)
+      || !verifiedSnapshotIdentity
+      || validation.pathReusableAsProof !== false
+      || validation.path_reusable_as_proof !== false
+    ) {
       context.reasons.push(`${role}_cas_snapshot_binding_missing`);
       context.gaps.push(`${role}_cas_snapshot_binding_missing`);
       return {
@@ -449,6 +460,7 @@ async function resolveImageInput(input, role, context) {
           transportKind: manifest?.transport?.kind ?? null,
           supportPath,
           localPath: null,
+          verifiedSnapshotIdentity,
           casValidation: validation,
         },
       };
@@ -487,6 +499,71 @@ async function resolveImageInput(input, role, context) {
         },
       };
     }
+    const postReadValidation = await validateArtifactCasManifest(manifest, {
+      allowedRoots: context.allowedRoots,
+      requireReadableBytes: true,
+    });
+    const postReadHash = text(
+      postReadValidation.verifiedByteHash
+      ?? postReadValidation.verified_byte_hash
+      ?? postReadValidation.readableContentHash
+      ?? postReadValidation.contentHash,
+    );
+    const postReadByteLength = Number(
+      postReadValidation.verifiedByteLength
+      ?? postReadValidation.verified_byte_length
+      ?? postReadValidation.readableByteLength
+      ?? postReadValidation.byteLength,
+    );
+    const postReadSnapshotIdentity = visualSnapshotIdentity(
+      postReadValidation.verifiedSnapshotIdentity
+      ?? postReadValidation.verified_snapshot_identity,
+    );
+    if (
+      postReadValidation.accepted !== true
+      || postReadValidation.acceptedAsTransportEvidence !== true
+    ) {
+      context.reasons.push(`${role}_cas_post_read_validation_rejected`);
+      context.gaps.push(`${role}_cas_post_read_validation_rejected`);
+      return {
+        bytes: null,
+        summary: {
+          role,
+          transportKind: manifest?.transport?.kind ?? null,
+          supportPath,
+          localPath: null,
+          freshReadHash,
+          freshReadByteLength: bytes.byteLength,
+          verifiedSnapshotIdentity,
+          postReadSnapshotIdentity,
+          casValidation: validation,
+          postReadCasValidation: postReadValidation,
+        },
+      };
+    }
+    if (
+      postReadHash !== verifiedHash
+      || postReadByteLength !== verifiedByteLength
+      || !sameVisualCasSnapshotIdentity(postReadSnapshotIdentity, verifiedSnapshotIdentity)
+    ) {
+      context.reasons.push(`${role}_cas_post_read_snapshot_mismatch`);
+      context.gaps.push(`${role}_cas_post_read_snapshot_mismatch`);
+      return {
+        bytes: null,
+        summary: {
+          role,
+          transportKind: manifest?.transport?.kind ?? null,
+          supportPath,
+          localPath: null,
+          freshReadHash,
+          freshReadByteLength: bytes.byteLength,
+          verifiedSnapshotIdentity,
+          postReadSnapshotIdentity,
+          casValidation: validation,
+          postReadCasValidation: postReadValidation,
+        },
+      };
+    }
     return {
       bytes,
       encodedHash: freshReadHash,
@@ -502,7 +579,11 @@ async function resolveImageInput(input, role, context) {
         freshReadHash,
         freshReadByteLength: bytes.byteLength,
         freshReadMatchesSnapshot: true,
+        verifiedSnapshotIdentity,
+        postReadSnapshotIdentity,
+        snapshotIdentityStable: true,
         casValidation: validation,
+        postReadCasValidation: postReadValidation,
       },
     };
   }
@@ -554,6 +635,67 @@ async function resolveImageInput(input, role, context) {
   }
 
   return { bytes: null, summary: { role, transportKind: null } };
+}
+
+function visualSnapshotIdentity(value) {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  return value && typeof value === 'object' && Object.keys(value).length > 0
+    ? value
+    : null;
+}
+
+export function sameVisualCasSnapshotIdentity(left, right) {
+  const stableObservation = (value) => {
+    const observation = firstObject(value);
+    const keys = [
+      'allocationSize',
+      'changeTime',
+      'creationTime',
+      'deletePending',
+      'directory',
+      'endOfFile',
+      'fileAttributes',
+      'lastWriteTime',
+      'numberOfLinks',
+    ];
+    if (!observation || keys.some((key) => !Object.prototype.hasOwnProperty.call(observation, key))) {
+      return null;
+    }
+    return Object.fromEntries(keys.map((key) => [key, observation[key]]));
+  };
+  const stableIdentity = (value) => {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    const identity = visualSnapshotIdentity(value);
+    const root = firstObject(identity?.root);
+    const final = firstObject(identity?.final);
+    const components = Array.isArray(identity?.components) ? identity.components : null;
+    const before = stableObservation(identity?.before);
+    const after = stableObservation(identity?.after);
+    if (root && final && components && before && after) {
+      return stableJson({
+        root: {
+          fileId128: root.fileId128 ?? null,
+          volumeSerialNumber: root.volumeSerialNumber ?? null,
+        },
+        final: {
+          fileId128: final.fileId128 ?? null,
+          volumeSerialNumber: final.volumeSerialNumber ?? null,
+        },
+        components: components.map((component) => ({
+          componentIndex: component?.componentIndex ?? null,
+          component: component?.component ?? null,
+          directory: component?.directory ?? null,
+          fileId128: component?.fileId128 ?? null,
+          volumeSerialNumber: component?.volumeSerialNumber ?? null,
+        })),
+        before,
+        after,
+      });
+    }
+    return null;
+  };
+  const leftIdentity = stableIdentity(left);
+  return Boolean(leftIdentity && leftIdentity === stableIdentity(right));
 }
 
 function computeFullFrameDiff(before, after) {
