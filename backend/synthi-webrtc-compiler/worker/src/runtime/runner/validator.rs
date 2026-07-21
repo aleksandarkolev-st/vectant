@@ -1,4 +1,5 @@
 use libloading::{Library, Symbol};
+use std::collections::HashSet;
 use std::ffi::{c_uint, c_void};
 use std::path::Path;
 
@@ -74,6 +75,31 @@ pub struct LifecycleExportPresence {
 }
 
 impl LifecycleExportPresence {
+    pub fn from_symbol_names<I, S>(symbols: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let symbols = symbols
+            .into_iter()
+            .map(|symbol| symbol.as_ref().to_string())
+            .collect::<HashSet<_>>();
+        let has = |name: &str| symbols.contains(name);
+
+        Self {
+            core_on_load: has("core_on_load"),
+            core_on_update: has("core_on_update"),
+            core_get_api: has("core_get_api"),
+            gui_on_load: has("gui_on_load"),
+            gui_on_render: has("gui_on_render"),
+            on_load: has("on_load"),
+            entrypoint: has("entrypoint"),
+            on_update: has("on_update"),
+            gui_render: has("gui_render"),
+            on_render: has("on_render"),
+        }
+    }
+
     unsafe fn probe(lib: &Library) -> Self {
         type CoreLoadFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
         type CoreUpdateFn = unsafe extern "C" fn(*mut c_void, f64);
@@ -482,6 +508,56 @@ mod tests {
                 Ok(expected.role)
             );
         }
+    }
+
+    #[test]
+    fn observed_symbol_tables_feed_the_same_fail_closed_classifier() {
+        let arbitrary_core_exports = [
+            "tenant_specific_symbol",
+            "core_on_load",
+            "core_on_update",
+            "core_get_api",
+            "another_unrelated_export",
+        ];
+        assert_eq!(
+            classify_resolved_module_contract(LifecycleExportPresence::from_symbol_names(
+                arbitrary_core_exports
+            )),
+            Ok(ResolvedModuleContract {
+                role: EffectiveModuleContract::Core,
+                lifecycle_abi: LifecycleAbi::CorePrefixed,
+            })
+        );
+
+        let legacy_render_exports = ["entrypoint", "on_render", "on_render"];
+        assert_eq!(
+            classify_resolved_module_contract(LifecycleExportPresence::from_symbol_names(
+                legacy_render_exports
+            )),
+            Ok(ResolvedModuleContract {
+                role: EffectiveModuleContract::Gui,
+                lifecycle_abi: LifecycleAbi::GuiLegacy,
+            })
+        );
+
+        let mixed_exports = [
+            "core_on_load",
+            "core_on_update",
+            "core_get_api",
+            "gui_on_load",
+            "gui_on_render",
+        ];
+        assert_eq!(
+            classify_resolved_module_contract(LifecycleExportPresence::from_symbol_names(
+                mixed_exports
+            )),
+            Err(EffectiveModuleContractError::Ambiguous)
+        );
+
+        assert_eq!(
+            LifecycleExportPresence::from_symbol_names(["unrelated_export"]),
+            LifecycleExportPresence::default()
+        );
     }
 
     #[test]
