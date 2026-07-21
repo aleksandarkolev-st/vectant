@@ -7,7 +7,11 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
 use crate::compiler::builder::ModuleHashes;
 use crate::runtime::capability::HmrCapability;
+use crate::runtime::module_map_attestation::{
+    ParentModuleMapAttestationV1, ParentSealedModuleArtifact,
+};
 use crate::runtime::native_runner_codec::NativeRunnerOutputLifecycle;
+use crate::runtime::runner_protocol::{RunnerCapabilityObservationV1, RunnerModuleLoadResultV1};
 
 // RunnerState tracks the state of a running plugin process
 // This is used by the worker to manage HMR, video streaming, and process lifecycle
@@ -30,7 +34,9 @@ pub struct RunnerState {
     // shared Xvfb of the live session (caused XIO error 110 on :99).
     pub session_id: Option<String>,
     pub is_gui: bool,
-    pub is_hmr_capable: bool, // True if runner was started with HMR-capable code (detected from exports)
+    /// True only after the live process observes the required warm-reload
+    /// mechanism. Source exports and compile metadata cannot set this flag.
+    pub is_hmr_capable: bool,
     pub hmr_capability: Option<HmrCapability>, // Detailed capability level
     pub xvfb_process: Option<Child>,
     pub gst_pipeline: Option<gst::Pipeline>,
@@ -47,9 +53,23 @@ pub struct RunnerState {
     pub loaded_core_path: Option<String>,
     pub loaded_gui_path: Option<String>,
     pub loaded_device_abi: Option<String>,
-    /// Random process-incarnation identity used only for authenticated
-    /// parent/runner control acknowledgements.
+    /// Random process-incarnation identity used to correlate parent/runner
+    /// control acknowledgements. It is not a hostile-code authentication key.
     pub runner_runtime_control_session_id: Option<String>,
+    /// Live, nonce-correlated mechanism observations for this process
+    /// incarnation. Keys are open-vocabulary capability identifiers.
+    pub observed_runner_capabilities: HashMap<String, RunnerCapabilityObservationV1>,
+    /// Latest content-bound module-load receipt for each opaque module ID in
+    /// this process incarnation. Receipts identify loader mechanics only, not
+    /// HMR acceptance, and are replaced only by a strictly newer epoch.
+    pub observed_module_load_boundaries: HashMap<String, RunnerModuleLoadResultV1>,
+    /// Parent-owned immutable artifact objects retained for the lifetime of
+    /// each mapped module. Their kernel identity is verified independently
+    /// of runner protocol output before warm reuse is enabled.
+    pub sealed_module_artifacts: HashMap<String, ParentSealedModuleArtifact>,
+    /// Parent/kernel observations that bind each loader receipt to an
+    /// executable mapping of the exact sealed object in the live process.
+    pub module_map_attestations: HashMap<String, ParentModuleMapAttestationV1>,
     pub gpu_runtime_protocol_process_id: Option<u32>,
     pub gpu_runtime_protocol_session_id: Option<String>,
     // Widget-level compilation state
@@ -92,6 +112,10 @@ impl RunnerState {
             loaded_gui_path: None,
             loaded_device_abi: None,
             runner_runtime_control_session_id: None,
+            observed_runner_capabilities: HashMap::new(),
+            observed_module_load_boundaries: HashMap::new(),
+            sealed_module_artifacts: HashMap::new(),
+            module_map_attestations: HashMap::new(),
             gpu_runtime_protocol_process_id: None,
             gpu_runtime_protocol_session_id: None,
             loaded_widget_paths: HashMap::new(),
@@ -104,17 +128,6 @@ impl RunnerState {
         self.is_gui = is_gui;
         self.width = width;
         self.height = height;
-        self
-    }
-
-    /// Set HMR capability information
-    pub fn with_hmr_capability(
-        mut self,
-        is_capable: bool,
-        capability: Option<HmrCapability>,
-    ) -> Self {
-        self.is_hmr_capable = is_capable;
-        self.hmr_capability = capability;
         self
     }
 

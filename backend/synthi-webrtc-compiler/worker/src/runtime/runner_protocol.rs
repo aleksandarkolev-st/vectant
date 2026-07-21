@@ -31,6 +31,16 @@ pub const RUNNER_PROTOCOL_ACK_PREFIX: &str = "[synthi-runner-protocol-ack] ";
 pub const RUNNER_RUNTIME_CONTROL_ACK_SCHEMA_VERSION: &str = "synthi.runner.runtime_control_ack.v1";
 pub const RUNNER_RUNTIME_CONTROL_ACK_PREFIX: &str = "[synthi-runner-runtime-control-ack] ";
 pub const RUNNER_RUNTIME_CONTROL_SESSION_ENV: &str = "SYNTHI_RUNNER_RUNTIME_CONTROL_SESSION_ID";
+pub const RUNNER_CAPABILITY_OBSERVATION_SCHEMA_VERSION: &str =
+    "synthi.runner.capability_observation.v1";
+pub const RUNNER_CAPABILITY_OBSERVATION_AUTHORITY: &str =
+    "runner_observed_mechanism_capability_only_not_hmr_acceptance";
+pub const RUNNER_CAPABILITY_OBSERVATION_PREFIX: &str = "[synthi-runner-capability-observation] ";
+pub const RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY: &str = "runner.content_bound_module_load.v1";
+pub const RUNNER_MODULE_LOAD_RESULT_SCHEMA_VERSION: &str = "synthi.runner.module_load_result.v1";
+pub const RUNNER_MODULE_LOAD_RESULT_AUTHORITY: &str =
+    "runner_observed_content_bound_module_load_only_not_hmr_acceptance";
+pub const RUNNER_MODULE_LOAD_RESULT_PREFIX: &str = "[synthi-runner-module-load-result] ";
 pub const RUNNER_PROTOCOL_CURRENT_VERSION: u32 = 5;
 pub const RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION: u32 = 1;
 pub const RUNNER_PROTOCOL_ACK_MAX_ENCODED_BYTES: usize = 1280;
@@ -641,6 +651,464 @@ pub fn parse_runner_runtime_control_ack(line: &str) -> Option<RunnerRuntimeContr
     let ack: RunnerRuntimeControlAck = serde_json::from_str(json).ok()?;
     ack.validate().ok()?;
     Some(ack)
+}
+
+/// A nonce-correlated observation that a live runner implements a named
+/// mechanism. Capability names are open vocabulary; this record is support
+/// evidence only and cannot authorize HMR or GPU HMR acceptance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunnerCapabilityObservationV1 {
+    pub schema_version: String,
+    pub proof_authority: String,
+    pub observation_id: String,
+    pub request_id: String,
+    pub capability: String,
+    pub runner_pid: u32,
+    pub runner_control_session_id: String,
+    pub observed: bool,
+    pub accepted_for_hmr: bool,
+    pub accepted_for_gpu_hmr: bool,
+    pub hmr_success: bool,
+    pub gpu_hmr_success: bool,
+}
+
+impl RunnerCapabilityObservationV1 {
+    pub fn current(
+        request_id: impl Into<String>,
+        capability: impl Into<String>,
+        runner_control_session_id: impl Into<String>,
+    ) -> Result<Self, String> {
+        let mut observation = Self {
+            schema_version: RUNNER_CAPABILITY_OBSERVATION_SCHEMA_VERSION.to_string(),
+            proof_authority: RUNNER_CAPABILITY_OBSERVATION_AUTHORITY.to_string(),
+            observation_id: String::new(),
+            request_id: request_id.into(),
+            capability: capability.into(),
+            runner_pid: std::process::id(),
+            runner_control_session_id: runner_control_session_id.into(),
+            observed: true,
+            accepted_for_hmr: false,
+            accepted_for_gpu_hmr: false,
+            hmr_success: false,
+            gpu_hmr_success: false,
+        };
+        observation.observation_id = observation.expected_observation_id()?;
+        observation.validate()?;
+        Ok(observation)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != RUNNER_CAPABILITY_OBSERVATION_SCHEMA_VERSION {
+            return Err("runner capability observation schema mismatch".to_string());
+        }
+        if self.proof_authority != RUNNER_CAPABILITY_OBSERVATION_AUTHORITY {
+            return Err("runner capability observation authority is invalid".to_string());
+        }
+        if !canonical_runner_capability_observation_request_id(&self.request_id) {
+            return Err("runner capability observation request identity is invalid".to_string());
+        }
+        if !canonical_runner_capability_name(&self.capability) {
+            return Err("runner capability observation name is invalid".to_string());
+        }
+        if self.runner_pid == 0 {
+            return Err("runner capability observation process identity is invalid".to_string());
+        }
+        if !canonical_runner_runtime_control_session_id(&self.runner_control_session_id) {
+            return Err("runner capability observation control session is invalid".to_string());
+        }
+        if !self.observed
+            || self.accepted_for_hmr
+            || self.accepted_for_gpu_hmr
+            || self.hmr_success
+            || self.gpu_hmr_success
+        {
+            return Err(
+                "runner capability observation has contradictory authority fields".to_string(),
+            );
+        }
+        if self.observation_id != self.expected_observation_id()? {
+            return Err("runner capability observation identity mismatch".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn line(&self) -> Result<String, String> {
+        self.validate()?;
+        serde_json::to_string(self)
+            .map(|json| format!("{RUNNER_CAPABILITY_OBSERVATION_PREFIX}{json}"))
+            .map_err(|error| format!("serializing runner capability observation: {error}"))
+    }
+
+    pub fn matches_expected(
+        &self,
+        request_id: &str,
+        capability: &str,
+        runner_pid: u32,
+        runner_control_session_id: &str,
+    ) -> bool {
+        self.validate().is_ok()
+            && self.request_id == request_id
+            && self.capability == capability
+            && self.runner_pid == runner_pid
+            && self.runner_control_session_id == runner_control_session_id
+    }
+
+    pub fn observes_process_capability(
+        &self,
+        capability: &str,
+        runner_pid: u32,
+        runner_control_session_id: &str,
+    ) -> bool {
+        self.validate().is_ok()
+            && self.capability == capability
+            && self.runner_pid == runner_pid
+            && self.runner_control_session_id == runner_control_session_id
+    }
+
+    fn expected_observation_id(&self) -> Result<String, String> {
+        let material = json!([
+            self.schema_version,
+            self.proof_authority,
+            self.request_id,
+            self.capability,
+            self.runner_pid,
+            self.runner_control_session_id,
+            self.observed,
+            self.accepted_for_hmr,
+            self.accepted_for_gpu_hmr,
+            self.hmr_success,
+            self.gpu_hmr_success,
+        ]);
+        let bytes = serde_json::to_vec(&material).map_err(|error| {
+            format!("serializing runner capability observation identity: {error}")
+        })?;
+        Ok(format!(
+            "runner-capability-observation:sha256:{:x}",
+            Sha256::digest(bytes)
+        ))
+    }
+}
+
+pub fn parse_runner_capability_observation(line: &str) -> Option<RunnerCapabilityObservationV1> {
+    let json = line.strip_prefix(RUNNER_CAPABILITY_OBSERVATION_PREFIX)?;
+    if json.len() > 16 * 1024 {
+        return None;
+    }
+    let observation: RunnerCapabilityObservationV1 = serde_json::from_str(json).ok()?;
+    observation.validate().ok()?;
+    Some(observation)
+}
+
+pub fn canonical_runner_capability_observation_request_id(value: &str) -> bool {
+    let Some(random_hex) = value.strip_prefix("runner-capability:request:") else {
+        return false;
+    };
+    random_hex.len() == 32
+        && random_hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+pub fn canonical_runner_capability_name(value: &str) -> bool {
+    canonical_runner_capability(value)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerModuleLoadStatus {
+    Applied,
+    Rejected,
+}
+
+/// Content-bound acknowledgement emitted by the target runner after a module
+/// load command. This proves only that the runner process observed the loader
+/// mechanics; it cannot authorize HMR or GPU HMR success.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunnerModuleLoadResultV1 {
+    pub schema_version: String,
+    pub proof_authority: String,
+    pub receipt_id: String,
+    pub status: RunnerModuleLoadStatus,
+    pub request_id: String,
+    pub module_id: String,
+    pub artifact_content_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loaded_artifact_content_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loader_epoch: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_staging_mechanism: Option<String>,
+    pub runner_pid: u32,
+    pub runner_control_session_id: String,
+    pub mechanics_observed: bool,
+    pub post_load_hash_verified: bool,
+    pub accepted_for_hmr: bool,
+    pub accepted_for_gpu_hmr: bool,
+    pub hmr_success: bool,
+    pub gpu_hmr_success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl RunnerModuleLoadResultV1 {
+    pub fn applied(
+        request_id: impl Into<String>,
+        module_id: impl Into<String>,
+        artifact_content_hash: impl Into<String>,
+        runner_control_session_id: impl Into<String>,
+        loader_epoch: u64,
+        artifact_staging_mechanism: impl Into<String>,
+    ) -> Result<Self, String> {
+        Self::new(
+            RunnerModuleLoadStatus::Applied,
+            request_id,
+            module_id,
+            artifact_content_hash,
+            runner_control_session_id,
+            Some(loader_epoch),
+            Some(artifact_staging_mechanism.into()),
+            None,
+        )
+    }
+
+    pub fn rejected(
+        request_id: impl Into<String>,
+        module_id: impl Into<String>,
+        artifact_content_hash: impl Into<String>,
+        runner_control_session_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Result<Self, String> {
+        Self::new(
+            RunnerModuleLoadStatus::Rejected,
+            request_id,
+            module_id,
+            artifact_content_hash,
+            runner_control_session_id,
+            None,
+            None,
+            Some(reason.into()),
+        )
+    }
+
+    fn new(
+        status: RunnerModuleLoadStatus,
+        request_id: impl Into<String>,
+        module_id: impl Into<String>,
+        artifact_content_hash: impl Into<String>,
+        runner_control_session_id: impl Into<String>,
+        loader_epoch: Option<u64>,
+        artifact_staging_mechanism: Option<String>,
+        reason: Option<String>,
+    ) -> Result<Self, String> {
+        let artifact_content_hash = artifact_content_hash.into();
+        let mut result = Self {
+            schema_version: RUNNER_MODULE_LOAD_RESULT_SCHEMA_VERSION.to_string(),
+            proof_authority: RUNNER_MODULE_LOAD_RESULT_AUTHORITY.to_string(),
+            receipt_id: String::new(),
+            status,
+            request_id: request_id.into(),
+            module_id: module_id.into(),
+            loaded_artifact_content_hash: (status == RunnerModuleLoadStatus::Applied)
+                .then(|| artifact_content_hash.clone()),
+            artifact_content_hash,
+            loader_epoch,
+            artifact_staging_mechanism,
+            runner_pid: std::process::id(),
+            runner_control_session_id: runner_control_session_id.into(),
+            mechanics_observed: status == RunnerModuleLoadStatus::Applied,
+            post_load_hash_verified: status == RunnerModuleLoadStatus::Applied,
+            accepted_for_hmr: false,
+            accepted_for_gpu_hmr: false,
+            hmr_success: false,
+            gpu_hmr_success: false,
+            reason,
+        };
+        result.receipt_id = result.expected_receipt_id()?;
+        result.validate()?;
+        Ok(result)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != RUNNER_MODULE_LOAD_RESULT_SCHEMA_VERSION {
+            return Err("runner module-load result schema mismatch".to_string());
+        }
+        if self.proof_authority != RUNNER_MODULE_LOAD_RESULT_AUTHORITY {
+            return Err("runner module-load result authority is invalid".to_string());
+        }
+        if !canonical_runner_module_load_request_id(&self.request_id) {
+            return Err("runner module-load request identity is invalid".to_string());
+        }
+        if self.module_id.trim().is_empty()
+            || self.module_id.len() > 256
+            || self.module_id.chars().any(char::is_control)
+        {
+            return Err("runner module-load module identity is invalid".to_string());
+        }
+        if !canonical_sha256_content_hash(&self.artifact_content_hash) {
+            return Err("runner module-load artifact hash is invalid".to_string());
+        }
+        if self
+            .loaded_artifact_content_hash
+            .as_deref()
+            .is_some_and(|hash| {
+                !canonical_sha256_content_hash(hash) || hash != self.artifact_content_hash
+            })
+        {
+            return Err("runner module-load loaded artifact hash is invalid".to_string());
+        }
+        if self.runner_pid == 0 {
+            return Err("runner module-load process identity is invalid".to_string());
+        }
+        if !canonical_runner_runtime_control_session_id(&self.runner_control_session_id) {
+            return Err("runner module-load control session is invalid".to_string());
+        }
+        if self.accepted_for_hmr
+            || self.accepted_for_gpu_hmr
+            || self.hmr_success
+            || self.gpu_hmr_success
+        {
+            return Err("runner module-load result cannot claim HMR authority".to_string());
+        }
+        match self.status {
+            RunnerModuleLoadStatus::Applied => {
+                if !self.mechanics_observed
+                    || !self.post_load_hash_verified
+                    || self.loaded_artifact_content_hash.as_deref()
+                        != Some(self.artifact_content_hash.as_str())
+                    || self.loader_epoch.is_none_or(|epoch| epoch == 0)
+                    || self
+                        .artifact_staging_mechanism
+                        .as_deref()
+                        .is_none_or(|mechanism| {
+                            mechanism.is_empty()
+                                || mechanism.len() > 128
+                                || mechanism.chars().any(|character| {
+                                    character.is_control() || character.is_whitespace()
+                                })
+                        })
+                    || self.reason.is_some()
+                {
+                    return Err(
+                        "applied runner module-load result has contradictory fields".to_string()
+                    );
+                }
+            }
+            RunnerModuleLoadStatus::Rejected => {
+                if self.mechanics_observed
+                    || self.post_load_hash_verified
+                    || self.loaded_artifact_content_hash.is_some()
+                    || self.loader_epoch.is_some()
+                    || self.artifact_staging_mechanism.is_some()
+                    || self.reason.as_deref().is_none_or(|reason| {
+                        reason.trim().is_empty() || reason.chars().any(char::is_control)
+                    })
+                {
+                    return Err(
+                        "rejected runner module-load result has contradictory fields".to_string(),
+                    );
+                }
+            }
+        }
+        if self.receipt_id != self.expected_receipt_id()? {
+            return Err("runner module-load receipt identity mismatch".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn line(&self) -> Result<String, String> {
+        self.validate()?;
+        serde_json::to_string(self)
+            .map(|json| format!("{RUNNER_MODULE_LOAD_RESULT_PREFIX}{json}"))
+            .map_err(|error| format!("serializing runner module-load result: {error}"))
+    }
+
+    pub fn matches_expected(
+        &self,
+        request_id: &str,
+        module_id: &str,
+        artifact_content_hash: &str,
+        runner_pid: u32,
+        runner_control_session_id: &str,
+        loader_epoch: u64,
+        artifact_staging_mechanism: &str,
+    ) -> bool {
+        self.validate().is_ok()
+            && self.status == RunnerModuleLoadStatus::Applied
+            && self.request_id == request_id
+            && self.module_id == module_id
+            && self.artifact_content_hash == artifact_content_hash
+            && self.loaded_artifact_content_hash.as_deref() == Some(artifact_content_hash)
+            && self.loader_epoch == Some(loader_epoch)
+            && self.artifact_staging_mechanism.as_deref() == Some(artifact_staging_mechanism)
+            && self.runner_pid == runner_pid
+            && self.runner_control_session_id == runner_control_session_id
+    }
+
+    fn expected_receipt_id(&self) -> Result<String, String> {
+        let material = json!([
+            self.schema_version,
+            self.proof_authority,
+            self.status,
+            self.request_id,
+            self.module_id,
+            self.artifact_content_hash,
+            self.loaded_artifact_content_hash,
+            self.loader_epoch,
+            self.artifact_staging_mechanism,
+            self.runner_pid,
+            self.runner_control_session_id,
+            self.mechanics_observed,
+            self.post_load_hash_verified,
+            self.accepted_for_hmr,
+            self.accepted_for_gpu_hmr,
+            self.hmr_success,
+            self.gpu_hmr_success,
+            self.reason,
+        ]);
+        let bytes = serde_json::to_vec(&material)
+            .map_err(|error| format!("serializing runner module-load receipt identity: {error}"))?;
+        Ok(format!(
+            "runner-module-load-result:sha256:{:x}",
+            Sha256::digest(bytes)
+        ))
+    }
+}
+
+pub fn parse_runner_module_load_result(line: &str) -> Option<RunnerModuleLoadResultV1> {
+    let json = line.strip_prefix(RUNNER_MODULE_LOAD_RESULT_PREFIX)?;
+    if json.len() > 16 * 1024 {
+        return None;
+    }
+    let result: RunnerModuleLoadResultV1 = serde_json::from_str(json).ok()?;
+    result.validate().ok()?;
+    Some(result)
+}
+
+pub fn canonical_runner_module_load_request_id(value: &str) -> bool {
+    let Some(random_hex) = value.strip_prefix("runner-module-load:request:") else {
+        return false;
+    };
+    random_hex.len() == 32
+        && random_hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+pub fn encode_runner_module_load_token(value: &str) -> String {
+    URL_SAFE_NO_PAD.encode(value.as_bytes())
+}
+
+pub fn decode_runner_module_load_token(value: &str) -> Option<String> {
+    if value.len() > 16 * 1024 {
+        return None;
+    }
+    URL_SAFE_NO_PAD
+        .decode(value)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .filter(|decoded| decoded.len() <= 8 * 1024 && !decoded.chars().any(char::is_control))
 }
 
 pub fn canonical_runner_runtime_control_token(value: &str) -> bool {
@@ -2173,6 +2641,78 @@ mod tests {
     }
 
     #[test]
+    fn capability_observation_is_open_vocabulary_and_process_bound() {
+        let request_id = format!("runner-capability:request:{}", "a".repeat(32));
+        let capability = "runner.unfamiliar_mechanism_42.v9";
+        let control_session = runner_control_session_id();
+        let observation =
+            RunnerCapabilityObservationV1::current(&request_id, capability, &control_session)
+                .unwrap();
+        let line = observation.line().unwrap();
+        let parsed = parse_runner_capability_observation(&line).unwrap();
+
+        assert!(parsed.matches_expected(
+            &request_id,
+            capability,
+            std::process::id(),
+            &control_session,
+        ));
+        assert!(parsed.observes_process_capability(
+            capability,
+            std::process::id(),
+            &control_session,
+        ));
+        assert!(!parsed.matches_expected(
+            &format!("runner-capability:request:{}", "b".repeat(32)),
+            capability,
+            std::process::id(),
+            &control_session,
+        ));
+        assert!(!parsed.observes_process_capability(
+            capability,
+            std::process::id().saturating_add(1),
+            &control_session,
+        ));
+        assert!(!parsed.accepted_for_hmr);
+        assert!(!parsed.accepted_for_gpu_hmr);
+        assert!(!parsed.hmr_success);
+        assert!(!parsed.gpu_hmr_success);
+    }
+
+    #[test]
+    fn capability_observation_rejects_forged_authority_and_identity() {
+        let request_id = format!("runner-capability:request:{}", "c".repeat(32));
+        let observation = RunnerCapabilityObservationV1::current(
+            request_id,
+            RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+            runner_control_session_id(),
+        )
+        .unwrap();
+
+        let mut forged = observation.clone();
+        forged.accepted_for_hmr = true;
+        assert!(forged.validate().is_err());
+
+        let mut replayed = observation.clone();
+        replayed.runner_pid = replayed.runner_pid.saturating_add(1);
+        assert!(replayed.validate().is_err());
+
+        let mut renamed = observation.clone();
+        renamed.capability = "runner.some_other_mechanism.v1".to_string();
+        assert!(renamed.validate().is_err());
+
+        let mut malformed = observation;
+        malformed.request_id = "runner-capability:request:short".to_string();
+        assert!(malformed.validate().is_err());
+        assert!(!canonical_runner_capability_name(
+            "project specific capability"
+        ));
+        assert!(canonical_runner_capability_name(
+            "runner.arbitrary_mechanism.v1"
+        ));
+    }
+
+    #[test]
     fn runtime_control_token_requires_exact_128_bit_lowercase_hex_shape() {
         assert!(canonical_runner_runtime_control_token(
             &runtime_control_token()
@@ -2376,5 +2916,93 @@ mod tests {
         .unwrap();
         assert_eq!(rejected.status, "rejected");
         assert!(!rejected.gpu_hmr_success);
+    }
+
+    #[test]
+    fn module_load_result_is_content_process_and_control_session_bound() {
+        let request_id = format!("runner-module-load:request:{}", "a".repeat(32));
+        let artifact_hash = format!("sha256:{}", "b".repeat(64));
+        let control_session = format!("runner-control-session:{}", "c".repeat(32));
+        let result = RunnerModuleLoadResultV1::applied(
+            &request_id,
+            "open vocabulary module",
+            &artifact_hash,
+            &control_session,
+            7,
+            "linux_sealed_memfd_procfs_v1",
+        )
+        .unwrap();
+        let line = result.line().unwrap();
+        let parsed = parse_runner_module_load_result(&line).unwrap();
+
+        assert!(parsed.matches_expected(
+            &request_id,
+            "open vocabulary module",
+            &artifact_hash,
+            std::process::id(),
+            &control_session,
+            7,
+            "linux_sealed_memfd_procfs_v1",
+        ));
+        assert!(!parsed.matches_expected(
+            &request_id,
+            "open vocabulary module",
+            &artifact_hash,
+            std::process::id(),
+            &control_session,
+            7,
+            "declared_but_unobserved_mechanism_v9",
+        ));
+        assert_eq!(
+            parsed.loaded_artifact_content_hash.as_deref(),
+            Some(artifact_hash.as_str())
+        );
+        assert_eq!(parsed.loader_epoch, Some(7));
+        assert!(parsed.post_load_hash_verified);
+        assert!(!parsed.accepted_for_hmr);
+        assert!(!parsed.accepted_for_gpu_hmr);
+        assert!(!parsed.hmr_success);
+        assert!(!parsed.gpu_hmr_success);
+        assert!(parsed.proof_authority.contains("not_hmr_acceptance"));
+    }
+
+    #[test]
+    fn module_load_result_rejects_forged_authority_and_receipt_identity() {
+        let request_id = format!("runner-module-load:request:{}", "d".repeat(32));
+        let artifact_hash = format!("sha256:{}", "e".repeat(64));
+        let control_session = format!("runner-control-session:{}", "f".repeat(32));
+        let result = RunnerModuleLoadResultV1::applied(
+            request_id,
+            "module",
+            artifact_hash,
+            control_session,
+            1,
+            "linux_sealed_memfd_procfs_v1",
+        )
+        .unwrap();
+
+        let mut forged = result.clone();
+        forged.accepted_for_hmr = true;
+        assert!(forged.validate().is_err());
+
+        let mut replayed = result;
+        replayed.runner_pid = replayed.runner_pid.saturating_add(1);
+        assert!(replayed.validate().is_err());
+
+        let mut forged_epoch = replayed.clone();
+        forged_epoch.runner_pid = std::process::id();
+        forged_epoch.loader_epoch = Some(2);
+        assert!(forged_epoch.validate().is_err());
+    }
+
+    #[test]
+    fn module_load_command_tokens_round_trip_whitespace_without_routing_labels() {
+        let value = "nested path/with spaces/arbitrary.module";
+        let encoded = encode_runner_module_load_token(value);
+        assert!(!encoded.chars().any(char::is_whitespace));
+        assert_eq!(
+            decode_runner_module_load_token(&encoded).as_deref(),
+            Some(value)
+        );
     }
 }

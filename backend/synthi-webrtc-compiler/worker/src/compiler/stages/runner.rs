@@ -7,7 +7,7 @@ use gstreamer_app as gst_app;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,6 +36,10 @@ use crate::runtime::gpu_runtime_proof::{
     canonical_gpu_runtime_proof_json_bytes, canonical_gpu_runtime_proof_json_sha256,
     verify_strict_gpu_runtime_proof, StrictGpuRuntimeProofExpectation, VerifiedGpuRuntimeProof,
 };
+use crate::runtime::module_map_attestation::{
+    create_parent_sealed_module_artifact, verify_parent_observed_module_mapping,
+    ParentModuleMapAttestationV1, ParentSealedModuleArtifact, LINUX_SEALED_MEMFD_MAPPING_MECHANISM,
+};
 use crate::runtime::native_runner_codec::{
     BoundedUtf8RecordReader, NativeRunnerOutputEvent, NativeRunnerOutputLifecycle,
     NativeRunnerOutputStream, NativeRunnerResourceFault, NativeRunnerResourceFaultKind,
@@ -45,13 +49,17 @@ use crate::runtime::native_runner_codec::{
     RUNNER_STDOUT_TEXT_MODE_V1,
 };
 use crate::runtime::runner_protocol::{
-    decode_runner_command_token, parse_runner_protocol_ack, parse_runner_runtime_control_ack,
-    GpuArtifactLoadV1Result, GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload,
-    RunnerProtocolAck, GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
-    GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION, GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
-    GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY, GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+    decode_runner_command_token, encode_runner_module_load_token,
+    parse_runner_capability_observation, parse_runner_module_load_result,
+    parse_runner_protocol_ack, parse_runner_runtime_control_ack, GpuArtifactLoadV1Result,
+    GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload, RunnerCapabilityObservationV1,
+    RunnerModuleLoadResultV1, RunnerModuleLoadStatus, RunnerProtocolAck,
+    GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY, GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION,
+    GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
+    GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
     GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, GPU_RELOAD_V4_RESULT_SCHEMA_VERSION,
-    RUNNER_PROTOCOL_ACK_PREFIX, RUNNER_PROTOCOL_CURRENT_VERSION,
+    RUNNER_CAPABILITY_OBSERVATION_PREFIX, RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+    RUNNER_MODULE_LOAD_RESULT_PREFIX, RUNNER_PROTOCOL_ACK_PREFIX, RUNNER_PROTOCOL_CURRENT_VERSION,
     RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION, RUNNER_RUNTIME_CONTROL_ACK_PREFIX,
     RUNNER_RUNTIME_CONTROL_SESSION_ENV,
 };
@@ -194,6 +202,8 @@ fn runner_line_contains_protected_gpu_evidence(line: &str) -> bool {
             "gpuhmrfullruntimeproven",
             "synthirunnergpureloadresultv3",
             "synthirunnergpureloadresultv4",
+            "synthirunnercapability",
+            "synthirunnermoduleload",
             "runtimeproofmaterial",
             "synthirunnergpuartifactloadresultv1",
         ]
@@ -236,11 +246,18 @@ fn is_legacy_gpu_terminal_candidate(value: &serde_json::Value) -> bool {
 }
 
 fn runner_line_is_private_protocol(line: &str) -> bool {
-    if line.starts_with(RUNNER_PROTOCOL_ACK_PREFIX) {
+    let line = line.trim_start();
+    if parse_runner_protocol_ack(line).is_some() {
         return true;
     }
     if parse_runner_runtime_control_ack(line).is_some() {
         return true;
+    }
+    if line.starts_with(RUNNER_CAPABILITY_OBSERVATION_PREFIX) {
+        return parse_runner_capability_observation(line).is_some();
+    }
+    if line.starts_with(RUNNER_MODULE_LOAD_RESULT_PREFIX) {
+        return parse_runner_module_load_result(line).is_some();
     }
     let Some(payload) = extract_structured_runner_message(line) else {
         return false;
@@ -285,6 +302,8 @@ fn protected_runner_line_log_summary(line: &str) -> String {
         "protocol_ack"
     } else if trimmed.starts_with(RUNNER_RUNTIME_CONTROL_ACK_PREFIX) {
         "runtime_control_ack"
+    } else if trimmed.starts_with(RUNNER_MODULE_LOAD_RESULT_PREFIX) {
+        "module_load_result"
     } else if trimmed.starts_with("Stdin received:")
         || trimmed.starts_with("[Runner] Processing command:")
     {
@@ -523,6 +542,26 @@ async fn clear_stale_x11_processes(display_num: u32) {
 struct RunnerLoadCommand {
     wire: String,
     gpu_terminal: Option<RunnerGpuTerminalExpectation>,
+    module_terminal: Option<RunnerModuleLoadExpectation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunnerModuleLoadExpectation {
+    request_id: String,
+    module_id: String,
+    artifact_content_hash: String,
+    loader_epoch: u64,
+    artifact_staging_mechanism: String,
+    runner_pid: u32,
+    runner_control_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunnerTerminalBarrierExpectation {
+    request_id: String,
+    capability: String,
+    runner_pid: u32,
+    runner_control_session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -905,6 +944,13 @@ struct RunnerCommandProofContext<'a> {
     compile_transport_nonce: Option<&'a str>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RunnerModuleLoadProofContext<'a> {
+    runner_pid: u32,
+    runner_control_session_id: &'a str,
+    observed_boundaries: &'a HashMap<String, RunnerModuleLoadResultV1>,
+}
+
 fn prepublication_output_oracle_binding_from_capsule(
     capsule_token: Option<&str>,
     proof_runtime_session_id: Option<&str>,
@@ -974,6 +1020,16 @@ fn runner_load_command(
     path: &str,
     strict_hot_reload: bool,
     proof_context: Option<RunnerCommandProofContext<'_>>,
+) -> Result<RunnerLoadCommand> {
+    runner_load_command_with_module_observation(name, path, strict_hot_reload, proof_context, None)
+}
+
+fn runner_load_command_with_module_observation(
+    name: &str,
+    path: &str,
+    strict_hot_reload: bool,
+    proof_context: Option<RunnerCommandProofContext<'_>>,
+    module_proof_context: Option<RunnerModuleLoadProofContext<'_>>,
 ) -> Result<RunnerLoadCommand> {
     let gpu_marker = name
         .strip_prefix("__gpu_device_partial:")
@@ -1144,6 +1200,7 @@ fn runner_load_command(
                     encoded
                 ),
                 gpu_terminal: Some(gpu_terminal),
+                module_terminal: None,
             })
         } else if let Some(capsule) = capsule {
             Ok(RunnerLoadCommand {
@@ -1157,22 +1214,73 @@ fn runner_load_command(
                     capsule
                 ),
                 gpu_terminal: None,
+                module_terminal: None,
             })
         } else if let Some(abi) = abi {
             Ok(RunnerLoadCommand {
                 wire: format!("{} {} {} {} {}\n", command, vendor, path, kernels, abi),
                 gpu_terminal: None,
+                module_terminal: None,
             })
         } else {
             Ok(RunnerLoadCommand {
                 wire: format!("{} {} {} {}\n", command, vendor, path, kernels),
                 gpu_terminal: None,
+                module_terminal: None,
             })
         }
+    } else if let Some(context) = module_proof_context {
+        let artifact_bytes = std::fs::read(path)
+            .with_context(|| format!("reading module artifact for content-bound load: {path}"))?;
+        let artifact_content_hash = format!("sha256:{}", sha256_hex_local(&artifact_bytes));
+        let loader_epoch = if let Some(previous) = context.observed_boundaries.get(name) {
+            if previous.validate().is_err()
+                || previous.module_id != name
+                || previous.runner_pid != context.runner_pid
+                || previous.runner_control_session_id != context.runner_control_session_id
+            {
+                anyhow::bail!(
+                    "previous module-load boundary does not match the live runner incarnation"
+                );
+            }
+            previous
+                .loader_epoch
+                .context("previous module-load boundary omitted its loader epoch")?
+                .checked_add(1)
+                .context("module loader epoch overflow")?
+        } else {
+            1
+        };
+        let request_id = format!(
+            "runner-module-load:request:{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        let module_terminal = RunnerModuleLoadExpectation {
+            request_id: request_id.clone(),
+            module_id: name.to_string(),
+            artifact_content_hash: artifact_content_hash.clone(),
+            loader_epoch,
+            artifact_staging_mechanism: LINUX_SEALED_MEMFD_MAPPING_MECHANISM.to_string(),
+            runner_pid: context.runner_pid,
+            runner_control_session_id: context.runner_control_session_id.to_string(),
+        };
+        Ok(RunnerLoadCommand {
+            wire: format!(
+                "load_v2 {} {} {} {} {}\n",
+                request_id,
+                encode_runner_module_load_token(name),
+                encode_runner_module_load_token(path),
+                artifact_content_hash,
+                loader_epoch,
+            ),
+            gpu_terminal: None,
+            module_terminal: Some(module_terminal),
+        })
     } else {
         Ok(RunnerLoadCommand {
             wire: format!("load {} {}\n", name, path),
             gpu_terminal: None,
+            module_terminal: None,
         })
     }
 }
@@ -1221,6 +1329,103 @@ fn runner_has_hot_device_epoch(
     existing_runner_can_hmr && loaded_device_abi.is_some_and(|abi| !abi.is_empty())
 }
 
+fn runner_has_observed_capability(state: &RunnerState, capability: &str) -> bool {
+    let Some(runner_pid) = state.process.as_ref().and_then(|child| child.id()) else {
+        return false;
+    };
+    let Some(control_session_id) = state.runner_runtime_control_session_id.as_deref() else {
+        return false;
+    };
+    state
+        .observed_runner_capabilities
+        .get(capability)
+        .is_some_and(|observation| {
+            observation.observes_process_capability(capability, runner_pid, control_session_id)
+        })
+}
+
+fn runner_has_independently_attested_module_loads(state: &RunnerState) -> bool {
+    let Some(runner_pid) = state.process.as_ref().and_then(|child| child.id()) else {
+        return false;
+    };
+    !state.observed_module_load_boundaries.is_empty()
+        && state
+            .observed_module_load_boundaries
+            .iter()
+            .all(|(module_id, receipt)| {
+                let Some(loader_epoch) = receipt.loader_epoch else {
+                    return false;
+                };
+                let Some(attestation) = state.module_map_attestations.get(module_id) else {
+                    return false;
+                };
+                let Some(artifact) = state.sealed_module_artifacts.get(module_id) else {
+                    return false;
+                };
+                attestation.matches_loaded_boundary(
+                    &receipt.request_id,
+                    module_id,
+                    &receipt.artifact_content_hash,
+                    loader_epoch,
+                    runner_pid,
+                ) && artifact.content_hash == attestation.artifact_content_hash
+                    && artifact.byte_length == attestation.artifact_byte_length
+                    && artifact.device == attestation.artifact_device
+                    && artifact.inode == attestation.artifact_inode
+            })
+}
+
+fn refresh_runner_module_map_attestations(state: &mut RunnerState) -> bool {
+    let Some(runner_pid) = state.process.as_ref().and_then(|child| child.id()) else {
+        state.module_map_attestations.clear();
+        state.is_hmr_capable = false;
+        return false;
+    };
+    if state.observed_module_load_boundaries.is_empty() {
+        state.module_map_attestations.clear();
+        state.is_hmr_capable = false;
+        return false;
+    }
+
+    let refreshed = state
+        .observed_module_load_boundaries
+        .iter()
+        .map(|(module_id, receipt)| {
+            receipt.validate().map_err(anyhow::Error::msg)?;
+            let loader_epoch = receipt
+                .loader_epoch
+                .context("retained module-load receipt omitted its loader epoch")?;
+            let artifact = state
+                .sealed_module_artifacts
+                .get(module_id)
+                .context("retained module-load receipt has no parent-owned sealed artifact")?;
+            verify_parent_observed_module_mapping(
+                runner_pid,
+                &receipt.request_id,
+                module_id,
+                &receipt.artifact_content_hash,
+                loader_epoch,
+                artifact,
+            )
+            .map(|attestation| (module_id.clone(), attestation))
+            .map_err(anyhow::Error::new)
+        })
+        .collect::<Result<HashMap<_, _>>>();
+
+    match refreshed {
+        Ok(attestations) => {
+            state.module_map_attestations = attestations;
+            runner_has_independently_attested_module_loads(state)
+        }
+        Err(error) => {
+            debug_log!("[Main] Live module-map re-attestation refused runner reuse: {error:#}");
+            state.module_map_attestations.clear();
+            state.is_hmr_capable = false;
+            false
+        }
+    }
+}
+
 fn runner_protocol_handshake_timeout() -> Duration {
     const DEFAULT_TIMEOUT_MS: u64 = 2_000;
     const MAX_TIMEOUT_MS: u64 = 30_000;
@@ -1259,6 +1464,48 @@ async fn wait_for_strict_gpu_protocol_ack(
     }
 }
 
+async fn wait_for_runner_capability_observation(
+    receiver: &mut tokio::sync::broadcast::Receiver<String>,
+    request_id: &str,
+    capability: &str,
+    expected_pid: u32,
+    expected_control_session_id: &str,
+) -> Result<Option<RunnerCapabilityObservationV1>> {
+    let deadline = tokio::time::Instant::now() + runner_protocol_handshake_timeout();
+    loop {
+        let line = match tokio::time::timeout_at(deadline, receiver.recv()).await {
+            Err(_) => return Ok(None),
+            Ok(Ok(line)) => line,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
+                anyhow::bail!("runner capability observation channel lagged by {skipped} records");
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                anyhow::bail!("runner capability observation channel closed");
+            }
+        };
+        let line = line.trim_start();
+        if !line.starts_with(RUNNER_CAPABILITY_OBSERVATION_PREFIX) {
+            continue;
+        }
+        let observation = parse_runner_capability_observation(line)
+            .context("runner emitted a malformed capability observation")?;
+        if observation.request_id != request_id {
+            continue;
+        }
+        if !observation.matches_expected(
+            request_id,
+            capability,
+            expected_pid,
+            expected_control_session_id,
+        ) {
+            anyhow::bail!(
+                "runner capability observation failed request, capability, PID, or control-session validation"
+            );
+        }
+        return Ok(Some(observation));
+    }
+}
+
 fn strict_gpu_reload_terminal_timeout() -> Duration {
     const DEFAULT_TIMEOUT_MS: u64 = 30_000;
     const MAX_TIMEOUT_MS: u64 = 300_000;
@@ -1272,16 +1519,171 @@ fn strict_gpu_reload_terminal_timeout() -> Duration {
     Duration::from_millis(timeout_ms)
 }
 
+async fn wait_for_module_load_terminals(
+    receiver: &mut tokio::sync::broadcast::Receiver<String>,
+    expectations: &[RunnerModuleLoadExpectation],
+) -> Result<Vec<RunnerModuleLoadResultV1>> {
+    wait_for_module_load_terminals_until(receiver, expectations, None).await
+}
+
+fn runner_terminal_barrier_observed(
+    line: &str,
+    barrier: &RunnerTerminalBarrierExpectation,
+) -> Result<bool> {
+    let line = line.trim_start();
+    if !line.starts_with(RUNNER_CAPABILITY_OBSERVATION_PREFIX) {
+        return Ok(false);
+    }
+    let observation = parse_runner_capability_observation(line)
+        .context("runner emitted a malformed terminal-barrier observation")?;
+    if observation.request_id != barrier.request_id {
+        return Ok(false);
+    }
+    if !observation.matches_expected(
+        &barrier.request_id,
+        &barrier.capability,
+        barrier.runner_pid,
+        &barrier.runner_control_session_id,
+    ) {
+        anyhow::bail!(
+            "runner terminal-barrier observation failed request, capability, PID, or control-session validation"
+        );
+    }
+    Ok(true)
+}
+
+async fn wait_for_module_load_terminals_until(
+    receiver: &mut tokio::sync::broadcast::Receiver<String>,
+    expectations: &[RunnerModuleLoadExpectation],
+    barrier: Option<&RunnerTerminalBarrierExpectation>,
+) -> Result<Vec<RunnerModuleLoadResultV1>> {
+    if expectations.is_empty() && barrier.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let mut pending = HashMap::new();
+    let mut pending_modules = HashSet::new();
+    for expectation in expectations {
+        if pending
+            .insert(expectation.request_id.clone(), expectation.clone())
+            .is_some()
+        {
+            anyhow::bail!("runner module-load request IDs are not unique");
+        }
+        if !pending_modules.insert(expectation.module_id.clone()) {
+            anyhow::bail!("runner module-load module IDs are not unique within a batch");
+        }
+    }
+
+    let mut receipts = Vec::with_capacity(expectations.len());
+    let mut completed_requests = HashSet::new();
+    let deadline = tokio::time::Instant::now() + strict_gpu_reload_terminal_timeout();
+    let mut barrier_pending = barrier.is_some();
+    while !pending.is_empty() || barrier_pending {
+        let line = tokio::time::timeout_at(deadline, receiver.recv())
+            .await
+            .with_context(|| {
+                format!(
+                    "runner module-load result timed out with pending requests: {}",
+                    pending.keys().cloned().collect::<Vec<_>>().join(",")
+                )
+            })?
+            .context("runner module-load result channel closed")?;
+        if let Some(barrier) = barrier {
+            if runner_terminal_barrier_observed(&line, barrier)? {
+                if !pending.is_empty() {
+                    anyhow::bail!(
+                        "runner terminal barrier arrived before all module-load terminals"
+                    );
+                }
+                barrier_pending = false;
+                continue;
+            }
+        }
+        let line = line.trim_start();
+        if line.starts_with(RUNNER_MODULE_LOAD_RESULT_PREFIX)
+            && parse_runner_module_load_result(line).is_none()
+        {
+            anyhow::bail!("runner emitted a malformed module-load result");
+        }
+        let Some(result) = parse_runner_module_load_result(line) else {
+            continue;
+        };
+        let Some(expectation) = pending.get(&result.request_id) else {
+            if completed_requests.contains(&result.request_id) {
+                anyhow::bail!(
+                    "runner emitted a duplicate module-load result for request {}",
+                    result.request_id
+                );
+            }
+            continue;
+        };
+        let correlation_matches = result.module_id == expectation.module_id
+            && result.artifact_content_hash == expectation.artifact_content_hash
+            && result.runner_pid == expectation.runner_pid
+            && result.runner_control_session_id == expectation.runner_control_session_id;
+        if !correlation_matches {
+            anyhow::bail!(
+                "runner module-load result identity, process, control session, or artifact hash mismatch for request {}",
+                result.request_id
+            );
+        }
+        if result.status == RunnerModuleLoadStatus::Rejected {
+            anyhow::bail!(
+                "runner rejected content-bound module-load request {}: {}",
+                result.request_id,
+                result.reason.as_deref().unwrap_or("reason missing")
+            );
+        }
+        let applied_identity_matches = result.loaded_artifact_content_hash.as_deref()
+            == Some(expectation.artifact_content_hash.as_str())
+            && result.loader_epoch == Some(expectation.loader_epoch);
+        if !applied_identity_matches {
+            anyhow::bail!(
+                "runner module-load applied result omitted the expected loaded hash or epoch for request {}",
+                result.request_id
+            );
+        }
+        if !result.matches_expected(
+            &expectation.request_id,
+            &expectation.module_id,
+            &expectation.artifact_content_hash,
+            expectation.runner_pid,
+            &expectation.runner_control_session_id,
+            expectation.loader_epoch,
+            &expectation.artifact_staging_mechanism,
+        ) {
+            anyhow::bail!(
+                "runner module-load result did not satisfy the expected applied receipt for request {}",
+                result.request_id
+            );
+        }
+        pending.remove(&result.request_id);
+        completed_requests.insert(result.request_id.clone());
+        receipts.push(result);
+    }
+    Ok(receipts)
+}
+
 async fn wait_for_gpu_command_terminals(
     receiver: &mut tokio::sync::broadcast::Receiver<String>,
     expectations: &[RunnerGpuTerminalExpectation],
 ) -> Result<Vec<CorrelatedGpuTerminalReceipt>> {
-    if expectations.is_empty() {
+    wait_for_gpu_command_terminals_until(receiver, expectations, None).await
+}
+
+async fn wait_for_gpu_command_terminals_until(
+    receiver: &mut tokio::sync::broadcast::Receiver<String>,
+    expectations: &[RunnerGpuTerminalExpectation],
+    barrier: Option<&RunnerTerminalBarrierExpectation>,
+) -> Result<Vec<CorrelatedGpuTerminalReceipt>> {
+    if expectations.is_empty() && barrier.is_none() {
         return Ok(Vec::new());
     }
     let mut pending_cold = HashMap::new();
     let mut pending_hot = HashMap::new();
     let mut receipts = Vec::with_capacity(expectations.len());
+    let mut completed_requests = HashSet::new();
     for expectation in expectations {
         let duplicate = match expectation {
             RunnerGpuTerminalExpectation::ColdLoad(expectation) => pending_cold
@@ -1303,7 +1705,8 @@ async fn wait_for_gpu_command_terminals(
     }
 
     let deadline = tokio::time::Instant::now() + strict_gpu_reload_terminal_timeout();
-    while !pending_cold.is_empty() || !pending_hot.is_empty() {
+    let mut barrier_pending = barrier.is_some();
+    while !pending_cold.is_empty() || !pending_hot.is_empty() || barrier_pending {
         let line = tokio::time::timeout_at(deadline, receiver.recv())
             .await
             .with_context(|| {
@@ -1315,11 +1718,28 @@ async fn wait_for_gpu_command_terminals(
                 )
             })?
             .context("GPU runner terminal output channel closed")?;
+        if let Some(barrier) = barrier {
+            if runner_terminal_barrier_observed(&line, barrier)? {
+                if !pending_cold.is_empty() || !pending_hot.is_empty() {
+                    anyhow::bail!(
+                        "runner terminal barrier arrived before all GPU command terminals"
+                    );
+                }
+                barrier_pending = false;
+                continue;
+            }
+        }
         let Some(payload) = extract_structured_runner_message(&line) else {
             continue;
         };
         if let Ok(result) = GpuArtifactLoadV1Result::from_json(payload) {
             let Some(expectation) = pending_cold.get(&result.request_id) else {
+                if completed_requests.contains(&result.request_id) {
+                    anyhow::bail!(
+                        "GPU runner emitted a duplicate cold-load terminal for request {}",
+                        result.request_id
+                    );
+                }
                 continue;
             };
             if !result.matches(
@@ -1350,10 +1770,17 @@ async fn wait_for_gpu_command_terminals(
                 },
             ));
             pending_cold.remove(&result.request_id);
+            completed_requests.insert(result.request_id.clone());
             continue;
         }
         if let Ok(result) = GpuReloadV2Result::from_json(payload) {
             let Some(expectation) = pending_hot.get(&result.request_id) else {
+                if completed_requests.contains(&result.request_id) {
+                    anyhow::bail!(
+                        "GPU runner emitted a duplicate hot-reload terminal for request {}",
+                        result.request_id
+                    );
+                }
                 continue;
             };
             if !result.matches_expectation(&expectation.identity) {
@@ -1396,6 +1823,7 @@ async fn wait_for_gpu_command_terminals(
                 },
             ));
             pending_hot.remove(&result.request_id);
+            completed_requests.insert(result.request_id.clone());
             continue;
         }
 
@@ -1409,6 +1837,30 @@ async fn wait_for_gpu_command_terminals(
         }
     }
     Ok(receipts)
+}
+
+async fn wait_for_runner_command_terminals(
+    mut module_receiver: tokio::sync::broadcast::Receiver<String>,
+    mut gpu_receiver: tokio::sync::broadcast::Receiver<String>,
+    module_expectations: Vec<RunnerModuleLoadExpectation>,
+    gpu_expectations: Vec<RunnerGpuTerminalExpectation>,
+    barrier: Option<RunnerTerminalBarrierExpectation>,
+) -> Result<(
+    Vec<RunnerModuleLoadResultV1>,
+    Vec<CorrelatedGpuTerminalReceipt>,
+)> {
+    tokio::try_join!(
+        wait_for_module_load_terminals_until(
+            &mut module_receiver,
+            &module_expectations,
+            barrier.as_ref(),
+        ),
+        wait_for_gpu_command_terminals_until(
+            &mut gpu_receiver,
+            &gpu_expectations,
+            barrier.as_ref(),
+        ),
+    )
 }
 
 fn verify_applied_gpu_terminal_proof(
@@ -1561,6 +2013,10 @@ async fn invalidate_runner_after_command_failure(state: &mut RunnerState) {
     state.loaded_gui_path = None;
     state.loaded_device_abi = None;
     state.runner_runtime_control_session_id = None;
+    state.observed_runner_capabilities.clear();
+    state.observed_module_load_boundaries.clear();
+    state.sealed_module_artifacts.clear();
+    state.module_map_attestations.clear();
     state.gpu_runtime_protocol_process_id = None;
     state.gpu_runtime_protocol_session_id = None;
     state.loaded_widget_paths.clear();
@@ -1823,6 +2279,11 @@ pub async fn handle_runner_execution(
     }
 
     let mut gpu_terminal_receipts = Vec::new();
+    let mut module_load_receipts = Vec::new();
+    let mut runner_capability_observation = None;
+    let mut pending_sealed_module_artifacts: HashMap<String, ParentSealedModuleArtifact> =
+        HashMap::new();
+    let mut module_map_attestations: Vec<ParentModuleMapAttestationV1> = Vec::new();
 
     let mut guard = ctx.runner_store.lock().await;
 
@@ -1881,6 +2342,10 @@ pub async fn handle_runner_execution(
         let resolution_same = state.width == req_width && state.height == req_height;
         let session_same =
             runner_session_matches(state.session_id.as_deref(), session_id.as_deref());
+        let content_bound_module_load_observed =
+            runner_has_observed_capability(state, RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY);
+        let module_loads_independently_attested =
+            runner_alive && refresh_runner_module_map_attestations(state);
         if !reload_policy.allow_existing_runner_reload {
             pending_abi_breaking_restart_marker = full_device_abi_restart_marker(
                 state.session_id.as_deref(),
@@ -1889,13 +2354,15 @@ pub async fn handle_runner_execution(
                 next_device_abi.as_deref(),
             );
         }
-        debug_log!("[Main] Existing runner: alive={}, native_output_healthy={}, is_gui={}, gui_mode_same={}, resolution_same={}, session_same={}, current_session={:?}, requested_session={:?}, has_on_update={}, reload_policy_allow_existing={}, reload_policy_reasons={}",
-            runner_alive, native_output_healthy, state.is_gui, gui_mode_same, resolution_same, session_same, state.session_id.as_deref(), session_id.as_deref(), has_on_update, reload_policy.allow_existing_runner_reload, reload_policy.reason_summary());
+        debug_log!("[Main] Existing runner: alive={}, native_output_healthy={}, content_bound_module_load_observed={}, module_loads_independently_attested={}, is_gui={}, gui_mode_same={}, resolution_same={}, session_same={}, current_session={:?}, requested_session={:?}, has_on_update={}, reload_policy_allow_existing={}, reload_policy_reasons={}",
+            runner_alive, native_output_healthy, content_bound_module_load_observed, module_loads_independently_attested, state.is_gui, gui_mode_same, resolution_same, session_same, state.session_id.as_deref(), session_id.as_deref(), has_on_update, reload_policy.allow_existing_runner_reload, reload_policy.reason_summary());
 
         // HMR enabled: reuse running process when alive AND GUI mode and
         // resolution/session identity match. Reusing a runner across
         // sessions can send HMR commands into the previous workspace.
         native_output_healthy
+            && content_bound_module_load_observed
+            && module_loads_independently_attested
             && runner_reuse_allowed(
                 &reload_policy,
                 runner_alive,
@@ -2735,7 +3202,7 @@ pub async fn handle_runner_execution(
             native_output_lifecycle: native_output_lifecycle.clone(),
             session_id: session_id.clone(),
             is_gui: req.is_gui,
-            is_hmr_capable: has_on_update,
+            is_hmr_capable: false,
             hmr_capability: None,
             xvfb_process,
             gst_pipeline,
@@ -2751,6 +3218,10 @@ pub async fn handle_runner_execution(
             loaded_gui_path: uncommitted_module_state.loaded_gui_path,
             loaded_device_abi: uncommitted_module_state.loaded_device_abi,
             runner_runtime_control_session_id: Some(runner_runtime_control_session_id.clone()),
+            observed_runner_capabilities: HashMap::new(),
+            observed_module_load_boundaries: HashMap::new(),
+            sealed_module_artifacts: HashMap::new(),
+            module_map_attestations: HashMap::new(),
             gpu_runtime_protocol_process_id: None,
             gpu_runtime_protocol_session_id: None,
             loaded_widget_paths: HashMap::new(),
@@ -2876,7 +3347,7 @@ pub async fn handle_runner_execution(
             );
             let requires_strict_gpu_protocol =
                 strict_gpu_protocol_required_for_batch(&modules_to_load, strict_gpu_hot_reload)?;
-            let mut strict_output_receiver =
+            let mut protocol_output_receiver =
                 requires_strict_gpu_protocol.then(|| state.protocol_tx.subscribe());
             // Check if process is still alive before sending anything.
             // Capture the exit status (signal vs code) so that the bail
@@ -2896,6 +3367,69 @@ pub async fn handle_runner_execution(
             }
 
             if process_alive {
+                let expected_pid = state
+                    .process
+                    .as_ref()
+                    .and_then(|child| child.id())
+                    .context("runner capability observation requires a live PID")?;
+                let expected_control_session_id = state
+                    .runner_runtime_control_session_id
+                    .as_deref()
+                    .context("runner capability observation requires a control session")?
+                    .to_string();
+                let capability_request_id = format!(
+                    "runner-capability:request:{}",
+                    uuid::Uuid::new_v4().simple()
+                );
+                let capability_command = format!(
+                    "observe_capability_v1 {} {}\n",
+                    capability_request_id, RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY
+                );
+                let mut capability_receiver = state.protocol_tx.subscribe();
+                let observed_capability = async {
+                    {
+                        let mut stdin = stdin_arc.lock().await;
+                        debug_log!(
+                            "[Main] Sending runner capability observation {}",
+                            runner_command_log_summary(capability_command.trim_end())
+                        );
+                        stdin
+                            .write_all(capability_command.as_bytes())
+                            .await
+                            .context("writing runner capability observation request")?;
+                        stdin
+                            .flush()
+                            .await
+                            .context("flushing runner capability observation request")?;
+                    }
+                    wait_for_runner_capability_observation(
+                        &mut capability_receiver,
+                        &capability_request_id,
+                        RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+                        expected_pid,
+                        &expected_control_session_id,
+                    )
+                    .await
+                }
+                .await;
+                let observed_capability = match observed_capability {
+                    Ok(Some(observation)) => Some(observation),
+                    Ok(None) if existing_runner_can_hmr => {
+                        invalidate_runner_after_command_failure(state).await;
+                        anyhow::bail!(
+                            "warm runner did not re-observe its content-bound module-load capability"
+                        );
+                    }
+                    Ok(None) => None,
+                    Err(error) => {
+                        invalidate_runner_after_command_failure(state).await;
+                        return Err(error.context(
+                            "runner capability observation failed before loaded module state publication",
+                        ));
+                    }
+                };
+                runner_capability_observation = observed_capability.clone();
+
                 let strict_protocol_ack = if requires_strict_gpu_protocol {
                     let handshake_result = async {
                         let expected_pid = state
@@ -2931,7 +3465,7 @@ pub async fn handle_runner_execution(
                                 .context("flushing strict GPU runner protocol handshake")?;
                         }
                         wait_for_strict_gpu_protocol_ack(
-                            strict_output_receiver
+                            protocol_output_receiver
                                 .as_mut()
                                 .expect("strict output receiver"),
                             &nonce,
@@ -2968,16 +3502,101 @@ pub async fn handle_runner_execution(
                                 .map(|semantics| semantics.semantics_hash()),
                             compile_transport_nonce: req.gpu_proof_transport_nonce.as_deref(),
                         });
-                let load_commands = modules_to_load
+                let module_proof_context =
+                    observed_capability
+                        .as_ref()
+                        .map(|_| RunnerModuleLoadProofContext {
+                            runner_pid: expected_pid,
+                            runner_control_session_id: expected_control_session_id.as_str(),
+                            observed_boundaries: &state.observed_module_load_boundaries,
+                        });
+                let mut load_commands = Vec::with_capacity(modules_to_load.len());
+                for (name, path) in &modules_to_load {
+                    let candidate = runner_load_command_with_module_observation(
+                        name,
+                        path,
+                        strict_gpu_hot_reload,
+                        proof_context,
+                        module_proof_context,
+                    )?;
+                    let command = if let Some(expectation) = candidate.module_terminal.as_ref() {
+                        let artifact = create_parent_sealed_module_artifact(
+                            std::path::Path::new(path),
+                            &expectation.artifact_content_hash,
+                        )
+                        .with_context(|| {
+                            format!(
+                                "creating immutable parent-owned module object for opaque module {}",
+                                name
+                            )
+                        })?;
+                        let peer_path = artifact.peer_path();
+                        let command = runner_load_command_with_module_observation(
+                            name,
+                            &peer_path.to_string_lossy(),
+                            strict_gpu_hot_reload,
+                            proof_context,
+                            module_proof_context,
+                        )?;
+                        if command
+                            .module_terminal
+                            .as_ref()
+                            .is_none_or(|sealed_expectation| {
+                                sealed_expectation.artifact_content_hash
+                                    != expectation.artifact_content_hash
+                                    || sealed_expectation.loader_epoch != expectation.loader_epoch
+                            })
+                        {
+                            anyhow::bail!(
+                                "sealed module object changed the content-bound load expectation"
+                            );
+                        }
+                        if pending_sealed_module_artifacts
+                            .insert(name.clone(), artifact)
+                            .is_some()
+                        {
+                            anyhow::bail!("module-load batch contains duplicate opaque module IDs");
+                        }
+                        command
+                    } else {
+                        candidate
+                    };
+                    load_commands.push(command);
+                }
+                let module_terminal_expectations = load_commands
                     .iter()
-                    .map(|(name, path)| {
-                        runner_load_command(name, path, strict_gpu_hot_reload, proof_context)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                    .filter_map(|command| command.module_terminal.clone())
+                    .collect::<Vec<_>>();
                 let gpu_terminal_expectations = load_commands
                     .iter()
                     .filter_map(|command| command.gpu_terminal.clone())
                     .collect::<Vec<_>>();
+                let terminal_barrier =
+                    observed_capability
+                        .as_ref()
+                        .map(|_| RunnerTerminalBarrierExpectation {
+                            request_id: format!(
+                                "runner-capability:request:{}",
+                                uuid::Uuid::new_v4().simple()
+                            ),
+                            capability: RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY.to_string(),
+                            runner_pid: expected_pid,
+                            runner_control_session_id: expected_control_session_id.clone(),
+                        });
+                let mut terminal_collector = if module_terminal_expectations.is_empty()
+                    && gpu_terminal_expectations.is_empty()
+                    && terminal_barrier.is_none()
+                {
+                    None
+                } else {
+                    Some(tokio::spawn(wait_for_runner_command_terminals(
+                        state.protocol_tx.subscribe(),
+                        state.protocol_tx.subscribe(),
+                        module_terminal_expectations,
+                        gpu_terminal_expectations,
+                        terminal_barrier.clone(),
+                    )))
+                };
 
                 let mut stdin = stdin_arc.lock().await;
                 let mut send_failed = false;
@@ -3038,6 +3657,23 @@ pub async fn handle_runner_execution(
                 }
 
                 if !send_failed {
+                    if let Some(barrier) = &terminal_barrier {
+                        let barrier_command = format!(
+                            "observe_capability_v1 {} {}\n",
+                            barrier.request_id, barrier.capability
+                        );
+                        debug_log!(
+                            "[Main] Sending runner terminal barrier {}",
+                            runner_command_log_summary(barrier_command.trim_end())
+                        );
+                        if let Err(error) = stdin.write_all(barrier_command.as_bytes()).await {
+                            eprintln!("[Main] Failed to write runner terminal barrier: {}", error);
+                            send_failed = true;
+                        }
+                    }
+                }
+
+                if !send_failed {
                     // Single flush pushes all commands at once
                     if let Err(e) = stdin.flush().await {
                         eprintln!("[Main] Failed to flush runner stdin: {}", e);
@@ -3047,20 +3683,66 @@ pub async fn handle_runner_execution(
 
                 if send_failed {
                     drop(stdin);
+                    if let Some(collector) = terminal_collector.take() {
+                        collector.abort();
+                    }
                     invalidate_runner_after_command_failure(state).await;
                     anyhow::bail!("Runner process stdin write failed (process may have crashed)");
                 }
 
                 drop(stdin);
-                if let Some(receiver) = strict_output_receiver.as_mut() {
-                    match wait_for_gpu_command_terminals(receiver, &gpu_terminal_expectations).await
-                    {
-                        Ok(receipts) => gpu_terminal_receipts.extend(receipts),
-                        Err(error) => {
+                if let Some(collector) = terminal_collector.take() {
+                    match collector.await {
+                        Ok(Ok((module_receipts, gpu_receipts))) => {
+                            module_load_receipts.extend(module_receipts);
+                            gpu_terminal_receipts.extend(gpu_receipts);
+                        }
+                        Ok(Err(error)) => {
                             invalidate_runner_after_command_failure(state).await;
                             return Err(error.context(
-                                "GPU runner command failed before loaded module state publication",
+                                "runner terminal collection failed before loaded module state publication",
                             ));
+                        }
+                        Err(error) => {
+                            invalidate_runner_after_command_failure(state).await;
+                            return Err(anyhow::Error::new(error).context(
+                                "runner terminal collector task failed before loaded module state publication",
+                            ));
+                        }
+                    }
+                }
+                if module_load_receipts.len() != pending_sealed_module_artifacts.len() {
+                    invalidate_runner_after_command_failure(state).await;
+                    anyhow::bail!(
+                        "runner module-load receipts did not cover every parent-owned sealed object"
+                    );
+                }
+                for receipt in &module_load_receipts {
+                    let artifact = pending_sealed_module_artifacts
+                        .get(&receipt.module_id)
+                        .context("module-load receipt has no parent-owned sealed object")?;
+                    let loader_epoch = receipt
+                        .loader_epoch
+                        .context("module-load receipt omitted its loader epoch")?;
+                    let attestation = verify_parent_observed_module_mapping(
+                        expected_pid,
+                        &receipt.request_id,
+                        &receipt.module_id,
+                        &receipt.artifact_content_hash,
+                        loader_epoch,
+                        artifact,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "independently attesting mapped bytes for opaque module {}",
+                            receipt.module_id
+                        )
+                    });
+                    match attestation {
+                        Ok(attestation) => module_map_attestations.push(attestation),
+                        Err(error) => {
+                            invalidate_runner_after_command_failure(state).await;
+                            return Err(error);
                         }
                     }
                 }
@@ -3092,7 +3774,46 @@ pub async fn handle_runner_execution(
             }
         }
 
-        // Update RunnerState
+        let mut attestations_by_module = module_map_attestations
+            .into_iter()
+            .map(|attestation| (attestation.module_id.clone(), attestation))
+            .collect::<HashMap<_, _>>();
+        let publication_validation = (|| -> Result<()> {
+            if module_load_receipts.len() != pending_sealed_module_artifacts.len()
+                || module_load_receipts.len() != attestations_by_module.len()
+            {
+                anyhow::bail!("module-load evidence cardinality changed before state publication");
+            }
+            for receipt in &module_load_receipts {
+                let module_id = &receipt.module_id;
+                if !pending_sealed_module_artifacts.contains_key(module_id) {
+                    anyhow::bail!("publishing module boundary without its sealed artifact");
+                }
+                if !attestations_by_module.contains_key(module_id) {
+                    anyhow::bail!("publishing module boundary without parent mapping attestation");
+                }
+                let replace = state
+                    .observed_module_load_boundaries
+                    .get(module_id)
+                    .and_then(|previous| previous.loader_epoch)
+                    .is_none_or(|previous_epoch| {
+                        receipt
+                            .loader_epoch
+                            .is_some_and(|epoch| epoch > previous_epoch)
+                    });
+                if !replace {
+                    anyhow::bail!("module-load evidence did not advance the retained loader epoch");
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = publication_validation {
+            invalidate_runner_after_command_failure(state).await;
+            return Err(error
+                .context("runner evidence publication failed after module mapping attestation"));
+        }
+
+        // Publish only after every receipt, sealed object, and mapping attestation agrees.
         let loaded_module_state = loaded_runner_module_state(
             &new_hashes,
             &core_lib_path,
@@ -3103,6 +3824,42 @@ pub async fn handle_runner_execution(
         state.loaded_core_path = loaded_module_state.loaded_core_path;
         state.loaded_gui_path = loaded_module_state.loaded_gui_path;
         state.loaded_device_abi = loaded_module_state.loaded_device_abi;
+        if let Some(observation) = runner_capability_observation {
+            state
+                .observed_runner_capabilities
+                .insert(observation.capability.clone(), observation);
+        }
+        for receipt in module_load_receipts {
+            let module_id = receipt.module_id.clone();
+            let replace = state
+                .observed_module_load_boundaries
+                .get(&module_id)
+                .and_then(|previous| previous.loader_epoch)
+                .is_none_or(|previous_epoch| {
+                    receipt
+                        .loader_epoch
+                        .is_some_and(|epoch| epoch > previous_epoch)
+                });
+            debug_assert!(replace);
+            let artifact = pending_sealed_module_artifacts
+                .remove(&module_id)
+                .expect("validated sealed artifact publication");
+            let attestation = attestations_by_module
+                .remove(&module_id)
+                .expect("validated parent mapping attestation publication");
+            state
+                .observed_module_load_boundaries
+                .insert(module_id.clone(), receipt);
+            state
+                .sealed_module_artifacts
+                .insert(module_id.clone(), artifact);
+            state.module_map_attestations.insert(module_id, attestation);
+        }
+        debug_assert!(pending_sealed_module_artifacts.is_empty());
+        debug_assert!(attestations_by_module.is_empty());
+        state.is_hmr_capable =
+            runner_has_observed_capability(state, RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY)
+                && runner_has_independently_attested_module_loads(state);
         if let Some(receipt) = gpu_terminal_receipts.first() {
             let (runner_pid, runtime_session_id) = receipt.runner_identity();
             state.gpu_runtime_protocol_process_id = Some(runner_pid);
@@ -3142,14 +3899,18 @@ mod tests {
         next_full_device_abi, protected_runner_line_log_summary, route_runner_output_line,
         runner_command_log_summary, runner_command_requires_strict_gpu_protocol,
         runner_has_hot_device_epoch, runner_line_contains_protected_gpu_evidence,
-        runner_load_command, runner_reuse_allowed, runner_session_matches,
-        same_session_full_device_abi_changed, sha256_hex_local,
+        runner_load_command, runner_load_command_with_module_observation, runner_reuse_allowed,
+        runner_session_matches, same_session_full_device_abi_changed, sha256_hex_local,
         should_forward_runner_stderr_line_to_log_dc, strict_gpu_protocol_required_for_batch,
         structured_log_json_chunks, uncommitted_runner_module_state,
         verify_applied_gpu_terminal_proof, wait_for_gpu_command_terminals,
-        wait_for_strict_gpu_protocol_ack, CorrelatedGpuTerminalReceipt, RunnerCommandProofContext,
-        RunnerExecutionOutcome, RunnerGpuTerminalExpectation, RunnerOutputRoute,
-        RunnerReloadPolicy, StrictGpuTerminalExpectation, VerifiedHotGpuReloadReceipt,
+        wait_for_module_load_terminals, wait_for_module_load_terminals_until,
+        wait_for_runner_capability_observation, wait_for_runner_command_terminals,
+        wait_for_strict_gpu_protocol_ack, CorrelatedGpuTerminalReceipt, GpuArtifactLoadExpectation,
+        RunnerCommandProofContext, RunnerExecutionOutcome, RunnerGpuTerminalExpectation,
+        RunnerModuleLoadExpectation, RunnerModuleLoadProofContext, RunnerOutputRoute,
+        RunnerReloadPolicy, RunnerTerminalBarrierExpectation, StrictGpuTerminalExpectation,
+        VerifiedHotGpuReloadReceipt, LINUX_SEALED_MEMFD_MAPPING_MECHANISM,
         PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY,
         PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_ID_PREFIX,
         PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION,
@@ -3180,13 +3941,16 @@ mod tests {
     };
     use crate::runtime::runner_protocol::{
         GpuArtifactLoadV1Result, GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload,
-        GpuRuntimeProofMaterialV1, RunnerProtocolAck, RunnerRuntimeControlAck,
-        RunnerRuntimeControlStatus, GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+        GpuRuntimeProofMaterialV1, RunnerCapabilityObservationV1, RunnerModuleLoadResultV1,
+        RunnerProtocolAck, RunnerRuntimeControlAck, RunnerRuntimeControlStatus,
+        GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
         GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
         GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
-        GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
+        GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, RUNNER_CAPABILITY_OBSERVATION_PREFIX,
+        RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
     };
     use base64::{engine::general_purpose, Engine as _};
+    use std::collections::HashMap;
 
     fn canonical_source_edit_id() -> String {
         format!("source-edit:sha256:{}", "a".repeat(64))
@@ -3725,6 +4489,161 @@ mod tests {
     }
 
     #[test]
+    fn content_bound_module_command_encodes_open_vocabulary_identity_and_hashes_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifact = directory.path().join("module with spaces.bin");
+        std::fs::write(&artifact, b"runtime module bytes").unwrap();
+        let control_session = format!("runner-control-session:{}", "c".repeat(32));
+        let observed_boundaries = HashMap::new();
+        let command = runner_load_command_with_module_observation(
+            "open vocabulary module",
+            artifact.to_str().unwrap(),
+            false,
+            None,
+            Some(RunnerModuleLoadProofContext {
+                runner_pid: 42,
+                runner_control_session_id: &control_session,
+                observed_boundaries: &observed_boundaries,
+            }),
+        )
+        .unwrap();
+        let expectation = command.module_terminal.as_ref().unwrap();
+
+        assert!(command
+            .wire
+            .starts_with("load_v2 runner-module-load:request:"));
+        assert!(!command.wire.contains("open vocabulary module"));
+        assert!(!command.wire.contains("module with spaces.bin"));
+        assert_eq!(expectation.module_id, "open vocabulary module");
+        assert_eq!(expectation.runner_pid, 42);
+        assert_eq!(expectation.runner_control_session_id, control_session);
+        assert_eq!(expectation.loader_epoch, 1);
+        assert!(command.wire.ends_with(" 1\n"));
+        assert_eq!(
+            expectation.artifact_content_hash,
+            format!("sha256:{}", sha256_hex_local(b"runtime module bytes"))
+        );
+        assert!(command.gpu_terminal.is_none());
+    }
+
+    #[tokio::test]
+    async fn module_load_terminal_wait_requires_exact_process_session_and_hash() {
+        let request_id = format!("runner-module-load:request:{}", "a".repeat(32));
+        let artifact_hash = format!("sha256:{}", "b".repeat(64));
+        let control_session = format!("runner-control-session:{}", "d".repeat(32));
+        let expectation = RunnerModuleLoadExpectation {
+            request_id: request_id.clone(),
+            module_id: "arbitrary module".into(),
+            artifact_content_hash: artifact_hash.clone(),
+            loader_epoch: 1,
+            artifact_staging_mechanism: LINUX_SEALED_MEMFD_MAPPING_MECHANISM.to_string(),
+            runner_pid: std::process::id(),
+            runner_control_session_id: control_session.clone(),
+        };
+        let result = crate::runtime::runner_protocol::RunnerModuleLoadResultV1::applied(
+            &request_id,
+            "arbitrary module",
+            &artifact_hash,
+            &control_session,
+            1,
+            LINUX_SEALED_MEMFD_MAPPING_MECHANISM,
+        )
+        .unwrap();
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(4);
+        sender.send(result.line().unwrap()).unwrap();
+
+        let receipts = wait_for_module_load_terminals(&mut receiver, &[expectation.clone()])
+            .await
+            .unwrap();
+        assert_eq!(receipts.len(), 1);
+
+        let replayed_expectation = RunnerModuleLoadExpectation {
+            runner_pid: expectation.runner_pid.saturating_add(1),
+            ..expectation.clone()
+        };
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(4);
+        sender.send(result.line().unwrap()).unwrap();
+        assert!(
+            wait_for_module_load_terminals(&mut receiver, &[replayed_expectation])
+                .await
+                .is_err()
+        );
+
+        let rejected = RunnerModuleLoadResultV1::rejected(
+            &request_id,
+            "arbitrary module",
+            &artifact_hash,
+            &control_session,
+            "loader refused observed exports",
+        )
+        .unwrap();
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(4);
+        sender.send(rejected.line().unwrap()).unwrap();
+        let error = wait_for_module_load_terminals(&mut receiver, &[expectation])
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("loader refused observed exports"));
+    }
+
+    #[tokio::test]
+    async fn module_load_terminal_wait_rejects_late_contradiction_before_fifo_barrier() {
+        let request_id = format!("runner-module-load:request:{}", "a".repeat(32));
+        let artifact_hash = format!("sha256:{}", "b".repeat(64));
+        let control_session = format!("runner-control-session:{}", "d".repeat(32));
+        let barrier_request_id = format!("runner-capability:request:{}", "e".repeat(32));
+        let expectation = RunnerModuleLoadExpectation {
+            request_id: request_id.clone(),
+            module_id: "opaque module identity".into(),
+            artifact_content_hash: artifact_hash.clone(),
+            loader_epoch: 1,
+            artifact_staging_mechanism: LINUX_SEALED_MEMFD_MAPPING_MECHANISM.to_string(),
+            runner_pid: std::process::id(),
+            runner_control_session_id: control_session.clone(),
+        };
+        let applied = RunnerModuleLoadResultV1::applied(
+            &request_id,
+            &expectation.module_id,
+            &artifact_hash,
+            &control_session,
+            1,
+            LINUX_SEALED_MEMFD_MAPPING_MECHANISM,
+        )
+        .unwrap();
+        let contradicted = RunnerModuleLoadResultV1::rejected(
+            &request_id,
+            &expectation.module_id,
+            &artifact_hash,
+            &control_session,
+            "late loader rejection",
+        )
+        .unwrap();
+        let barrier = RunnerTerminalBarrierExpectation {
+            request_id: barrier_request_id.clone(),
+            capability: RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY.to_string(),
+            runner_pid: std::process::id(),
+            runner_control_session_id: control_session.clone(),
+        };
+        let barrier_observation = RunnerCapabilityObservationV1::current(
+            &barrier_request_id,
+            RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+            &control_session,
+        )
+        .unwrap();
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(8);
+        sender.send(applied.line().unwrap()).unwrap();
+        sender.send(contradicted.line().unwrap()).unwrap();
+        sender.send(barrier_observation.line().unwrap()).unwrap();
+
+        let error =
+            wait_for_module_load_terminals_until(&mut receiver, &[expectation], Some(&barrier))
+                .await
+                .unwrap_err();
+        assert!(error.to_string().contains("duplicate module-load result"));
+    }
+
+    #[test]
     fn gpu_device_load_command_preserves_legacy_shape_without_abi() {
         assert_eq!(
             runner_load_command(
@@ -4020,6 +4939,96 @@ mod tests {
             .await
             .is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn runner_capability_observation_ignores_stale_requests_and_accepts_exact_mechanics() {
+        let request_id = format!("runner-capability:request:{}", "a".repeat(32));
+        let control_session = format!("runner-control-session:{}", "b".repeat(32));
+        let (sender, _) = tokio::sync::broadcast::channel(4);
+        let mut receiver = sender.subscribe();
+        sender
+            .send(
+                RunnerCapabilityObservationV1::current(
+                    format!("runner-capability:request:{}", "c".repeat(32)),
+                    RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+                    &control_session,
+                )
+                .unwrap()
+                .line()
+                .unwrap(),
+            )
+            .unwrap();
+        sender
+            .send(
+                RunnerCapabilityObservationV1::current(
+                    &request_id,
+                    RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+                    &control_session,
+                )
+                .unwrap()
+                .line()
+                .unwrap(),
+            )
+            .unwrap();
+
+        let observation = wait_for_runner_capability_observation(
+            &mut receiver,
+            &request_id,
+            RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+            std::process::id(),
+            &control_session,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            observation.capability,
+            RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY
+        );
+    }
+
+    #[tokio::test]
+    async fn runner_capability_observation_rejects_malformed_or_wrong_process_binding() {
+        let request_id = format!("runner-capability:request:{}", "d".repeat(32));
+        let control_session = format!("runner-control-session:{}", "e".repeat(32));
+        let (sender, _) = tokio::sync::broadcast::channel(4);
+        let mut malformed_receiver = sender.subscribe();
+        sender
+            .send(format!("{RUNNER_CAPABILITY_OBSERVATION_PREFIX}{{}}"))
+            .unwrap();
+        assert!(wait_for_runner_capability_observation(
+            &mut malformed_receiver,
+            &request_id,
+            RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+            std::process::id(),
+            &control_session,
+        )
+        .await
+        .is_err());
+
+        let mut wrong_process_receiver = sender.subscribe();
+        sender
+            .send(
+                RunnerCapabilityObservationV1::current(
+                    &request_id,
+                    RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+                    &control_session,
+                )
+                .unwrap()
+                .line()
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(wait_for_runner_capability_observation(
+            &mut wrong_process_receiver,
+            &request_id,
+            RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+            std::process::id().saturating_add(1),
+            &control_session,
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
@@ -5201,6 +6210,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mixed_module_and_gpu_terminals_are_collected_independently_out_of_order() {
+        let module_request_id = format!("runner-module-load:request:{}", "7".repeat(32));
+        let module_hash = format!("sha256:{}", "8".repeat(64));
+        let control_session = format!("runner-control-session:{}", "9".repeat(32));
+        let module_expectation = RunnerModuleLoadExpectation {
+            request_id: module_request_id.clone(),
+            module_id: "opaque host partition".to_string(),
+            artifact_content_hash: module_hash.clone(),
+            loader_epoch: 1,
+            artifact_staging_mechanism: LINUX_SEALED_MEMFD_MAPPING_MECHANISM.to_string(),
+            runner_pid: std::process::id(),
+            runner_control_session_id: control_session.clone(),
+        };
+        let module_result = RunnerModuleLoadResultV1::applied(
+            &module_request_id,
+            &module_expectation.module_id,
+            &module_hash,
+            &control_session,
+            1,
+            LINUX_SEALED_MEMFD_MAPPING_MECHANISM,
+        )
+        .unwrap();
+
+        let gpu_expectation = RunnerGpuTerminalExpectation::ColdLoad(GpuArtifactLoadExpectation {
+            request_id: format!("gpu-reload:request:{}", "a".repeat(32)),
+            source_edit_id: canonical_source_edit_id(),
+            artifact_content_hash: artifact_content_hash(),
+            runner_pid: std::process::id(),
+            runner_runtime_session_id: "runtime-session:opaque".to_string(),
+            command_envelope_sha256: format!("sha256:{}", "b".repeat(64)),
+        });
+        let RunnerGpuTerminalExpectation::ColdLoad(cold) = &gpu_expectation else {
+            panic!("expected a cold artifact-load terminal");
+        };
+
+        let (sender, _) = tokio::sync::broadcast::channel(8);
+        let module_receiver = sender.subscribe();
+        let gpu_receiver = sender.subscribe();
+        sender
+            .send(format!(
+                "[Runner] [HMR-STATUS] {}",
+                GpuArtifactLoadV1Result::loaded(
+                    &cold.request_id,
+                    &cold.source_edit_id,
+                    &cold.artifact_content_hash,
+                )
+                .unwrap()
+                .to_json()
+                .unwrap()
+            ))
+            .unwrap();
+        sender.send(module_result.line().unwrap()).unwrap();
+        let barrier_request_id = format!("runner-capability:request:{}", "6".repeat(32));
+        let barrier = RunnerTerminalBarrierExpectation {
+            request_id: barrier_request_id.clone(),
+            capability: RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY.to_string(),
+            runner_pid: std::process::id(),
+            runner_control_session_id: control_session.clone(),
+        };
+        sender
+            .send(
+                RunnerCapabilityObservationV1::current(
+                    &barrier_request_id,
+                    RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+                    &control_session,
+                )
+                .unwrap()
+                .line()
+                .unwrap(),
+            )
+            .unwrap();
+
+        let (module_receipts, gpu_receipts) = wait_for_runner_command_terminals(
+            module_receiver,
+            gpu_receiver,
+            vec![module_expectation],
+            vec![gpu_expectation],
+            Some(barrier),
+        )
+        .await
+        .unwrap();
+        assert_eq!(module_receipts.len(), 1);
+        assert_eq!(gpu_receipts.len(), 1);
+    }
+
+    #[tokio::test]
     async fn cold_gpu_load_wait_requires_correlated_hash_bound_terminal() {
         let marker = format!(
             "__gpu_device:rocm:advance:12345:capsulev1_abcd:{}:{}:{}",
@@ -5610,6 +6705,17 @@ mod tests {
         let protocol_lines = [
             ack,
             runtime_control_ack,
+            format!(
+                "  {}",
+                RunnerCapabilityObservationV1::current(
+                    format!("runner-capability:request:{}", "e".repeat(32)),
+                    "runner.opaque_mechanism.v7",
+                    format!("runner-control-session:{}", "d".repeat(32)),
+                )
+                .unwrap()
+                .line()
+                .unwrap()
+            ),
             r#"[Runner] [HMR-STATUS] {"module":"device","status":"applied","runtimeProofMaterial":"sentinel-proof-bytes"}"#.to_string(),
         ];
 
@@ -5654,6 +6760,21 @@ mod tests {
         );
         assert_eq!(
             route_runner_output_line(&malformed_runtime_ack, &general_tx, &protocol_tx),
+            RunnerOutputRoute::ProtectedEvidence
+        );
+        assert!(protocol_rx.try_recv().is_err());
+        assert!(general_rx.try_recv().is_err());
+
+        let malformed_indented_module_receipt = format!(
+            "  {}not-json",
+            crate::runtime::runner_protocol::RUNNER_MODULE_LOAD_RESULT_PREFIX
+        );
+        assert_eq!(
+            route_runner_output_line(
+                &malformed_indented_module_receipt,
+                &general_tx,
+                &protocol_tx
+            ),
             RunnerOutputRoute::ProtectedEvidence
         );
         assert!(protocol_rx.try_recv().is_err());

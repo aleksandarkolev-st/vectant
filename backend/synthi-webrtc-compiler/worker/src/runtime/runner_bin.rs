@@ -2,7 +2,8 @@ use libloading::{Library, Symbol};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_void, CString};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::mpsc;
 #[cfg(feature = "gpu-hmr")]
@@ -52,14 +53,18 @@ use worker::runtime::gpu_runtime_proof::{
     verify_strict_gpu_runtime_proof, StrictGpuRuntimeProofExpectation,
 };
 use worker::runtime::loader;
+use worker::runtime::module_map_attestation::LINUX_SEALED_MEMFD_MAPPING_MECHANISM;
 use worker::runtime::native_runner_codec::{RunnerStdoutMode, RUNNER_STDOUT_MODE_ENV};
 use worker::runtime::runner_command_admission::{
     read_bounded_runner_command_line, RunnerCommandAdmission, RunnerCommandAdmissionClass,
     RunnerCommandAdmissionLease, RunnerCommandWorkBudget,
 };
 use worker::runtime::runner_protocol::{
-    canonical_runner_runtime_control_session_id, RunnerRuntimeControlAck,
-    RunnerRuntimeControlStatus, RUNNER_RUNTIME_CONTROL_SESSION_ENV,
+    canonical_runner_capability_observation_request_id, canonical_runner_module_load_request_id,
+    canonical_runner_runtime_control_session_id, canonical_sha256_content_hash,
+    decode_runner_module_load_token, RunnerCapabilityObservationV1, RunnerModuleLoadResultV1,
+    RunnerRuntimeControlAck, RunnerRuntimeControlStatus,
+    RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY, RUNNER_RUNTIME_CONTROL_SESSION_ENV,
 };
 // use worker::safety::boundary;
 // use worker::compiler::source_map;
@@ -106,6 +111,77 @@ use host_kv::{
 };
 
 const RUNNER_COMMAND_INGRESS_FAILURE_EXIT_CODE: i32 = 74;
+const RUNNER_MODULE_STAGING_MECHANISM: &str = LINUX_SEALED_MEMFD_MAPPING_MECHANISM;
+
+struct PreparedRunnerModuleArtifact {
+    _read_guard: std::fs::File,
+    path: PathBuf,
+    content_hash: String,
+}
+
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_runner_module_artifact(
+    source_path: &Path,
+    expected_content_hash: &str,
+) -> io::Result<PreparedRunnerModuleArtifact> {
+    use std::os::fd::AsRawFd;
+
+    let read_guard = std::fs::File::open(source_path)?;
+    let observed_seals = unsafe { libc::fcntl(read_guard.as_raw_fd(), libc::F_GET_SEALS) };
+    let required_seals =
+        libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+    if observed_seals < 0 || observed_seals & required_seals != required_seals {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "module artifact is not an immutable sealed object",
+        ));
+    }
+    let content_hash = sha256_file(source_path)?;
+    if content_hash != expected_content_hash {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sealed module artifact content hash mismatch",
+        ));
+    }
+    let path = PathBuf::from(format!("/proc/self/fd/{}", read_guard.as_raw_fd()));
+    if sha256_file(&path)? != content_hash {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sealed module artifact identity changed before load",
+        ));
+    }
+
+    Ok(PreparedRunnerModuleArtifact {
+        _read_guard: read_guard,
+        path,
+        content_hash,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn prepare_runner_module_artifact(
+    _source_path: &Path,
+    _expected_content_hash: &str,
+) -> io::Result<PreparedRunnerModuleArtifact> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no immutable externally attestable module object loader is available on this target",
+    ))
+}
 
 fn device_load_abi_version(kernels: &[String], abi_arg: Option<&str>) -> String {
     abi_arg
@@ -163,6 +239,10 @@ fn configured_runner_runtime_control_session_id(value: Option<String>) -> Result
         return Err("runner runtime-control session is invalid".to_string());
     }
     Ok(value)
+}
+
+fn runner_implements_observed_capability(capability: &str) -> bool {
+    cfg!(target_os = "linux") && [RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY].contains(&capability)
 }
 
 fn runtime_control_status_line(
@@ -238,8 +318,8 @@ use worker::hmr::gpu_module_adapter::{
 use worker::hmr::gpu_proof::sha256_hex_bytes;
 #[cfg(feature = "gpu-hmr")]
 use worker::runtime::runner_protocol::{
-    canonical_sha256_content_hash, GpuArtifactLoadV1Result, GpuReloadV2Result, GpuReloadV4Payload,
-    GpuRuntimeProofMaterialV1, RunnerProtocolAck, GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+    GpuArtifactLoadV1Result, GpuReloadV2Result, GpuReloadV4Payload, GpuRuntimeProofMaterialV1,
+    RunnerProtocolAck, GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
     GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
     GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
     GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, RUNNER_PROTOCOL_CURRENT_VERSION,
@@ -2150,8 +2230,10 @@ fn reserved_legacy_runner_command(command_name: Option<&str>) -> bool {
         Some(
             "handshake"
                 | "handshake_v5"
+                | "observe_capability_v1"
                 | "set_session"
                 | "load"
+                | "load_v2"
                 | "reload"
                 | "unload"
                 | "load_device"
@@ -3016,6 +3098,9 @@ fn main() {
 
     let mut modules: HashMap<String, Library> = HashMap::new();
     let mut loaded_paths: HashMap<String, String> = HashMap::new();
+    let mut prepared_module_artifacts: HashMap<String, PreparedRunnerModuleArtifact> =
+        HashMap::new();
+    let mut module_load_epochs: HashMap<String, u64> = HashMap::new();
     // Independent swap: Track state per module
     let mut module_states: HashMap<String, ModuleState> = HashMap::new();
     // Flicker prevention: skip render for one frame after a module load
@@ -3383,6 +3468,25 @@ fn main() {
             }
 
             match parts[0] {
+                "observe_capability_v1" => {
+                    if parts.len() != 3
+                        || !canonical_runner_capability_observation_request_id(parts[1])
+                        || !runner_implements_observed_capability(parts[2])
+                    {
+                        eprintln!("[Runner] Capability observation request rejected");
+                        continue;
+                    }
+                    match RunnerCapabilityObservationV1::current(
+                        parts[1],
+                        parts[2],
+                        &runner_runtime_control_session_id,
+                    )
+                    .and_then(|observation| observation.line())
+                    {
+                        Ok(line) => eprintln!("{line}"),
+                        Err(_) => eprintln!("[Runner] Capability observation emission failed"),
+                    }
+                }
                 "handshake_v5" => {
                     #[cfg(feature = "gpu-hmr")]
                     {
@@ -3643,35 +3747,110 @@ fn main() {
                     }
                     eprintln!("{ack_line}");
                 }
-                "load" => {
-                    // usage: load <name> <path>
-                    // fallback: load <path> -> name="main"
-                    let (name, path) = if parts.len() >= 3 {
-                        (parts[1], parts[2])
+                "load" | "load_v2" => {
+                    // `load_v2` carries encoded open-vocabulary module/path
+                    // fields plus a content hash and correlated request id.
+                    // Legacy `load` remains for generated runners that have
+                    // not yet implemented the versioned receipt contract.
+                    let (name, source_path, module_load_receipt) = if parts[0] == "load_v2" {
+                        if parts.len() != 6
+                            || !canonical_runner_module_load_request_id(parts[1])
+                            || !canonical_sha256_content_hash(parts[4])
+                        {
+                            eprintln!("[Runner] Invalid content-bound load_v2 command format");
+                            continue;
+                        }
+                        let Some(name) = decode_runner_module_load_token(parts[2]) else {
+                            eprintln!("[Runner] Invalid load_v2 module token");
+                            continue;
+                        };
+                        let Some(path) = decode_runner_module_load_token(parts[3]) else {
+                            eprintln!("[Runner] Invalid load_v2 path token");
+                            continue;
+                        };
+                        let Some(loader_epoch) =
+                            parts[5].parse::<u64>().ok().filter(|epoch| *epoch > 0)
+                        else {
+                            eprintln!("[Runner] Invalid load_v2 loader epoch");
+                            continue;
+                        };
+                        (
+                            name,
+                            path,
+                            Some((parts[1].to_string(), parts[4].to_string(), loader_epoch)),
+                        )
+                    } else if parts.len() >= 3 {
+                        (parts[1].to_string(), parts[2].to_string(), None)
                     } else if parts.len() == 2 {
-                        ("main", parts[1])
+                        ("main".to_string(), parts[1].to_string(), None)
                     } else {
                         eprintln!("[Runner] Invalid load command format");
                         continue;
                     };
 
-                    debug_log!("[Runner] Loading module '{}' from {}", name, path);
+                    let next_loader_epoch =
+                        if let Some((request_id, expected_hash, requested_epoch)) =
+                            module_load_receipt.as_ref()
+                        {
+                            let observed_next_epoch = module_load_epochs
+                                .get(&name)
+                                .copied()
+                                .unwrap_or(0)
+                                .checked_add(1);
+                            if observed_next_epoch != Some(*requested_epoch) {
+                                if let Ok(line) = RunnerModuleLoadResultV1::rejected(
+                                    request_id,
+                                    &name,
+                                    expected_hash,
+                                    &runner_runtime_control_session_id,
+                                    "module loader epoch did not match the live runner state",
+                                )
+                                .and_then(|result| result.line())
+                                {
+                                    eprintln!("{line}");
+                                }
+                                continue;
+                            }
+                            Some(*requested_epoch)
+                        } else {
+                            None
+                        };
 
-                    if let Some(current_path) = loaded_paths.get(name) {
-                        if current_path == path {
-                            debug_log!(
-                                "[Runner] Module '{}' already loaded from {}. Skipping.",
-                                name,
-                                path
-                            );
-                            continue;
+                    let mut prepared_artifact = if let Some((request_id, expected_hash, _)) =
+                        module_load_receipt.as_ref()
+                    {
+                        match prepare_runner_module_artifact(Path::new(&source_path), expected_hash)
+                        {
+                            Ok(artifact) => Some(artifact),
+                            Err(error) => {
+                                if let Ok(line) = RunnerModuleLoadResultV1::rejected(
+                                    request_id,
+                                    &name,
+                                    expected_hash,
+                                    &runner_runtime_control_session_id,
+                                    format!("module artifact staging failed: {error}"),
+                                )
+                                .and_then(|result| result.line())
+                                {
+                                    eprintln!("{line}");
+                                }
+                                continue;
+                            }
                         }
-                    }
+                    } else {
+                        None
+                    };
+                    let load_path = prepared_artifact
+                        .as_ref()
+                        .map(|artifact| artifact.path.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| source_path.clone());
 
-                    unsafe {
+                    debug_log!("[Runner] Loading module '{}' from {}", name, load_path);
+
+                    let load_outcome = unsafe {
                         runner_logic::process_load_command(
-                            name,
-                            path,
+                            &name,
+                            &load_path,
                             &mut modules,
                             &mut loaded_paths,
                             &mut module_states,
@@ -3682,11 +3861,100 @@ fn main() {
                             &session_id_cstring,
                             &kv_api,
                             loader_enabled,
-                        );
+                        )
+                    };
+                    if let Some((request_id, expected_hash, requested_epoch)) =
+                        module_load_receipt.as_ref()
+                    {
+                        let post_load_hash = prepared_artifact
+                            .as_ref()
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "content-bound load omitted its staged artifact",
+                                )
+                            })
+                            .and_then(|artifact| sha256_file(&artifact.path));
+                        let active = matches!(
+                            &load_outcome,
+                            runner_logic::ModuleLoadOutcome::Applied { active_path }
+                                if active_path == &load_path
+                        ) && modules.contains_key(&name)
+                            && loaded_paths
+                                .get(&name)
+                                .is_some_and(|loaded| loaded == &load_path)
+                            && prepared_artifact.as_ref().is_some_and(|artifact| {
+                                artifact.content_hash == expected_hash.as_str()
+                                    && post_load_hash
+                                        .as_ref()
+                                        .is_ok_and(|hash| hash == expected_hash)
+                            });
+                        let result = if active {
+                            let loader_epoch = next_loader_epoch.expect("load_v2 epoch");
+                            debug_assert_eq!(loader_epoch, *requested_epoch);
+                            module_load_epochs.insert(name.clone(), loader_epoch);
+                            prepared_module_artifacts.insert(
+                                name.clone(),
+                                prepared_artifact.take().expect("load_v2 staged artifact"),
+                            );
+                            RunnerModuleLoadResultV1::applied(
+                                request_id,
+                                &name,
+                                expected_hash,
+                                &runner_runtime_control_session_id,
+                                loader_epoch,
+                                RUNNER_MODULE_STAGING_MECHANISM,
+                            )
+                        } else {
+                            let reason = match &load_outcome {
+                                runner_logic::ModuleLoadOutcome::Rejected { reason } => {
+                                    reason.clone()
+                                }
+                                runner_logic::ModuleLoadOutcome::SkippedAlreadyActive { .. } => {
+                                    "content-bound module load was skipped instead of swapping a fresh staged artifact".to_string()
+                                }
+                                runner_logic::ModuleLoadOutcome::Applied { .. } => {
+                                    match post_load_hash {
+                                        Ok(hash) => format!(
+                                            "post-load artifact identity mismatch: expected {expected_hash}, observed {hash}"
+                                        ),
+                                        Err(error) => format!(
+                                            "post-load artifact hash verification failed: {error}"
+                                        ),
+                                    }
+                                }
+                            };
+                            RunnerModuleLoadResultV1::rejected(
+                                request_id,
+                                &name,
+                                expected_hash,
+                                &runner_runtime_control_session_id,
+                                reason,
+                            )
+                        }
+                        .and_then(|result| result.line());
+                        if let Ok(line) = result {
+                            eprintln!("{line}");
+                        }
+                        if matches!(
+                            &load_outcome,
+                            runner_logic::ModuleLoadOutcome::Applied { .. }
+                        ) && !active
+                        {
+                            eprintln!(
+                                "[Runner] Content-bound module became active without stable post-load identity; terminating process"
+                            );
+                            return;
+                        }
                     }
                     // Skip render for 1 frame to let on_load initialize state
                     // before on_render uses it — prevents flicker
-                    skip_render_frames = 1;
+                    if matches!(
+                        &load_outcome,
+                        runner_logic::ModuleLoadOutcome::Applied { .. }
+                    ) {
+                        skip_render_frames = 1;
+                    }
                 }
                 "load_device" | "load_device_partial" | "gpu_reload_v4" | "gpu_load_v4" => {
                     #[cfg(feature = "gpu-hmr")]
@@ -4037,6 +4305,7 @@ fn main() {
                                 }
                             }
                             debug_log!("[Runner] Unloaded module {}", name);
+                            prepared_module_artifacts.remove(name);
                         }
                     }
                 }
@@ -4419,9 +4688,10 @@ mod tests {
     use super::{
         admitted_runner_command_to_text, configured_runner_runtime_control_session_id,
         decode_gpu_kernel_command_token, device_load_abi_version, is_runtime_execution_paused,
-        raw_frame_transport_contract_available, runner_command_log_summary,
+        prepare_runner_module_artifact, raw_frame_transport_contract_available,
+        runner_command_log_summary, runner_implements_observed_capability,
         runtime_control_command_ack_line, runtime_control_status_line,
-        send_admitted_runner_command, should_process_runner_command,
+        send_admitted_runner_command, sha256_file, should_process_runner_command,
         take_next_admitted_runner_command, RunnerCommand, RunnerRuntimeControlStatus,
     };
     #[cfg(feature = "gpu-hmr")]
@@ -4450,6 +4720,8 @@ mod tests {
         ComputeExpectedOutputContractBindingV2, ComputeExpectedOutputContractV2,
         ComputeExpectedOutputSemantics, COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
     };
+    #[cfg(target_os = "linux")]
+    use worker::runtime::module_map_attestation::create_parent_sealed_module_artifact;
     use worker::runtime::process_isolation::IpcMessage;
     use worker::runtime::runner_command_admission::{
         RunnerCommandAdmission, RunnerCommandAdmissionClass, RunnerCommandAdmissionLimits,
@@ -4457,9 +4729,34 @@ mod tests {
     };
     #[cfg(feature = "gpu-hmr")]
     use worker::runtime::runner_protocol::GpuReloadV4Payload;
+    use worker::runtime::runner_protocol::RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY;
 
     fn runtime_control_session_id() -> String {
         format!("runner-control-session:{}", "5".repeat(32))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn content_staging_separates_same_path_generations_and_preserves_loaded_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("arbitrary module.bin");
+        std::fs::write(&source, b"generation one").unwrap();
+        let first_hash = sha256_file(&source).unwrap();
+        let first_parent = create_parent_sealed_module_artifact(&source, &first_hash).unwrap();
+        let first = prepare_runner_module_artifact(&first_parent.peer_path(), &first_hash).unwrap();
+
+        std::fs::write(&source, b"generation two").unwrap();
+        let second_hash = sha256_file(&source).unwrap();
+        assert!(prepare_runner_module_artifact(&source, &first_hash).is_err());
+        let second_parent = create_parent_sealed_module_artifact(&source, &second_hash).unwrap();
+        assert!(prepare_runner_module_artifact(&second_parent.peer_path(), &first_hash).is_err());
+        let second =
+            prepare_runner_module_artifact(&second_parent.peer_path(), &second_hash).unwrap();
+
+        assert_ne!(first.path, second.path);
+        assert_ne!(first_hash, second_hash);
+        assert_eq!(sha256_file(&first.path).unwrap(), first_hash);
+        assert_eq!(sha256_file(&second.path).unwrap(), second_hash);
     }
 
     fn test_runner_command_admission() -> RunnerCommandAdmission {
@@ -4486,8 +4783,10 @@ mod tests {
         for command in [
             "handshake 1",
             "handshake_v5 nonce",
+            "observe_capability_v1 runner-capability:request:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa runner.content_bound_module_load.v1",
             "set_session session",
             "load core /tmp/core.so",
+            "load_v2 runner-module-load:request:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Y29yZQ L3RtcC9jb3JlLnNv sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "unload core",
             "load_device_partial hip /tmp/device.hsaco",
             "gpu_reload_v4 request payload",
@@ -4630,6 +4929,17 @@ mod tests {
         ] {
             assert!(!unavailable);
         }
+    }
+
+    #[test]
+    fn runner_capability_selection_is_mechanism_based_not_project_routing() {
+        assert!(runner_implements_observed_capability(
+            RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY
+        ));
+        assert!(!runner_implements_observed_capability(
+            "runner.unfamiliar_future_mechanism.v7"
+        ));
+        assert!(!runner_implements_observed_capability("project-name"));
     }
 
     #[cfg(feature = "gpu-hmr")]
