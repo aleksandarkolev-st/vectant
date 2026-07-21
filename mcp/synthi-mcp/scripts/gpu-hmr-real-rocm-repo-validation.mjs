@@ -19100,88 +19100,6 @@ function contentAddressedArtifactIds(values) {
     : [];
 }
 
-function artifactIdsFromSha256Hashes(values) {
-  return Array.isArray(values)
-    ? contentAddressedArtifactIds(values.map((value) => {
-        const digest = String(value ?? '').trim().match(/^sha256:([0-9a-f]{64})$/i)?.[1];
-        return digest ? `artifact:sha256:${digest.toLowerCase()}` : null;
-      }))
-    : [];
-}
-
-function artifactIdsFromEpochProofForValidation(proof) {
-  if (!proof || typeof proof !== 'object') return [];
-  const graph = proof.epochGenerationGraph && typeof proof.epochGenerationGraph === 'object'
-    ? proof.epochGenerationGraph
-    : proof.generationGraph && typeof proof.generationGraph === 'object'
-      ? proof.generationGraph
-      : {};
-  const publication = graph.latestPublication && typeof graph.latestPublication === 'object'
-    ? graph.latestPublication
-    : {};
-  const publishEdges = Array.isArray(graph.edges)
-    ? graph.edges.filter((edge) => edge && typeof edge === 'object' && String(edge.kind ?? '').toLowerCase() === 'publish')
-    : [];
-  return contentAddressedArtifactIds([
-    proof.newArtifactId,
-    proof.new_artifact_id,
-    proof.activeArtifactId,
-    proof.active_artifact_id,
-    proof.publishedArtifactId,
-    proof.published_artifact_id,
-    publication.newArtifactId,
-    publication.new_artifact_id,
-    publication.activeArtifactId,
-    publication.active_artifact_id,
-    publication.publishedArtifactId,
-    publication.published_artifact_id,
-    ...publishEdges.flatMap((edge) => [
-      edge.newArtifactId,
-      edge.new_artifact_id,
-      edge.activeArtifactId,
-      edge.active_artifact_id,
-      edge.publishedArtifactId,
-      edge.published_artifact_id,
-    ]),
-    ...artifactIdsFromSha256Hashes([
-      proof.newArtifactHash,
-      proof.new_artifact_hash,
-      proof.newHash,
-      proof.new_hash,
-      publication.newArtifactHash,
-      publication.new_artifact_hash,
-      publication.newHash,
-      publication.new_hash,
-      ...publishEdges.flatMap((edge) => [
-        edge.newArtifactHash,
-        edge.new_artifact_hash,
-        edge.newHash,
-        edge.new_hash,
-      ]),
-    ]),
-  ]);
-}
-
-function preferredRuntimeArtifactId({ selectedArtifactIds, epochProof } = {}) {
-  const selected = contentAddressedArtifactIds(selectedArtifactIds);
-  if (selected.length === 0) return null;
-  const epochArtifactIds = artifactIdsFromEpochProofForValidation(epochProof);
-  const epochSelectedArtifactId = epochArtifactIds.find((artifactId) => selected.includes(artifactId));
-  return epochSelectedArtifactId ?? selected.at(-1) ?? null;
-}
-
-function hiprtNativeVisualFrame(frames = []) {
-  return (Array.isArray(frames) ? frames : []).find((frame) =>
-    visualEvidenceAcceptedAsRuntimeProof(frame)
-    && (
-      frame?.source === 'hiprt-runtime-device-framebuffer'
-      || frame?.label === 'hiprt-runtime-framebuffer'
-    )
-    && typeof frame?.path === 'string'
-    && frame.path.trim()
-  ) ?? null;
-}
-
 function firstStringField(entry, names = []) {
   if (!entry || typeof entry !== 'object') return null;
   for (const name of names) {
@@ -19247,7 +19165,7 @@ function runtimeOutputTargetId({
     report.real_rocm_profile?.adapter?.family
       ?? report.real_rocm_profile?.runtime?.backend?.orochiApi
       ?? report.real_rocm_profile?.runtime?.backend?.api
-      ?? (CFG.hiprtRuntimeProbe ? 'hiprt' : CFG.gpuMode),
+      ?? report.output_oracle_kind_classification?.modality,
     'gpu',
   );
   const targetName = stableOutputIdentityPart(
@@ -19262,13 +19180,6 @@ function runtimeOutputTargetId({
     'output',
   );
   return `${adapterFamily}:${targetName}:${kind}`;
-}
-
-function hiprtNativeEvidenceRef(record, kind = 'native_launch_observed') {
-  const session = evidenceRefPart(record?.runtimeSession, 'native-session');
-  const kernel = evidenceRefPart(record?.kernelSymbol, 'kernel');
-  const sequence = evidenceRefPart(record?.sequence, 'sequence');
-  return `worker-log:${kind}:${session}:${kernel}:${sequence}`;
 }
 
 function nativeLaunchTargetSymbols({
@@ -19323,245 +19234,6 @@ function nativeLaunchRecordsForContract(records, targetSymbols) {
     typeof record?.kernelSymbol === 'string'
     && normalizedTargets.has(record.kernelSymbol.trim().toLowerCase())
   );
-}
-
-function buildHiprtNativeDispatchProof({
-  runtimeNativeLaunchObservation,
-  selectedArtifactIds,
-  epochProof,
-  visualFrame,
-} = {}) {
-  if (!CFG.hiprtRuntimeProbe || !visualFrame) return null;
-  const records = (Array.isArray(runtimeNativeLaunchObservation?.records)
-    ? runtimeNativeLaunchObservation.records
-    : [])
-    .filter((record) =>
-      String(record?.result ?? '') === '0'
-      && String(record?.dispatch ?? '').toLowerCase() === 'observed-native'
-      && typeof record?.kernelSymbol === 'string'
-      && record.kernelSymbol.trim()
-    );
-  if (records.length === 0) return null;
-  const targetSymbols = nativeLaunchTargetSymbols();
-  const acceptedRecords = nativeLaunchRecordsForContract(records, targetSymbols);
-  if (acceptedRecords.length === 0) return null;
-  const runtimeSessionIds = [
-    ...new Set(acceptedRecords.map((record) => record.runtimeSession).filter(Boolean)),
-  ];
-  const processIds = processIdsFromRuntimeSessions(runtimeSessionIds);
-  const artifactId = preferredRuntimeArtifactId({ selectedArtifactIds, epochProof });
-  const dispatchEvidenceRefs = acceptedRecords.map((record) => hiprtNativeEvidenceRef(record));
-  const argProvenanceEvidenceRefs = acceptedRecords.map((record) =>
-    hiprtNativeEvidenceRef(record, 'launch_arg_provenance'),
-  );
-  const observedEpochs = [
-    ...new Set(acceptedRecords.map((record) => record.epoch ?? record.generation).filter(Boolean)),
-  ];
-  const dispatchTimestamps = acceptedRecords
-    .map((record) => Number(record.dispatchTimestamp))
-    .filter((value) => Number.isFinite(value) && value >= 0);
-  const dispatcherRegistrationIds = [
-    ...new Set(acceptedRecords.map((record) => record.dispatcherRegistrationId).filter(Boolean)),
-  ];
-  const dispatchTableEntryIds = [
-    ...new Set(acceptedRecords.map((record) => record.dispatchTableEntryId).filter(Boolean)),
-  ];
-  const dispatchTableHashes = [
-    ...new Set(acceptedRecords.map((record) => record.dispatchTableHash).filter(Boolean)),
-  ];
-  const dispatchIds = acceptedRecords
-    .map((record) => record.runtimeSession && record.sequence
-      ? `native:${record.runtimeSession}:${record.sequence}`
-      : null)
-    .filter(Boolean);
-  const dispatchStreamIds = [
-    ...new Set(acceptedRecords.map((record) => record.streamId).filter(Boolean)),
-  ];
-  const gridDimensions = [
-    ...new Set(acceptedRecords.map((record) => record.gridDimensions).filter(Boolean)),
-  ];
-  const blockDimensions = [
-    ...new Set(acceptedRecords.map((record) => record.blockDimensions).filter(Boolean)),
-  ];
-  const sharedMemoryBytes = [
-    ...new Set(acceptedRecords
-      .map((record) => Number(record.sharedMemoryBytes))
-      .filter((value) => Number.isFinite(value) && value >= 0)),
-  ];
-  if (
-    observedEpochs.length === 0
-    || dispatchTimestamps.length === 0
-    || dispatchIds.length === 0
-    || dispatcherRegistrationIds.length === 0
-    || dispatchTableEntryIds.length === 0
-    || dispatchTableHashes.length === 0
-    || dispatchStreamIds.length === 0
-    || gridDimensions.length === 0
-    || blockDimensions.length === 0
-    || sharedMemoryBytes.length === 0
-  ) return null;
-  return {
-    schemaVersion: 'synthi.gpu.hmr.proof.v1',
-    resultState: 'gpu-hmr-dispatch-safe-proven',
-    degradedState: null,
-    degradedReason: null,
-    dispatchObserved: true,
-    dispatchEvidenceObserved: true,
-    dispatchEvidenceRefs,
-    evidenceRefs: [...dispatchEvidenceRefs, ...argProvenanceEvidenceRefs],
-    sessionScoped: runtimeSessionIds.length > 0,
-    runtimeSessionObserved: runtimeSessionIds.length > 0,
-    runtimeSessionIds,
-    processId: processIds.length === 1 ? processIds[0] : null,
-    runtimeSessionConsistent: runtimeSessionIds.length <= 1,
-    argProvenanceObserved: true,
-    argProvenanceComplete: true,
-    argProvenanceEvidenceObserved: true,
-    argProvenanceEvidenceRefs,
-    argProvenanceRecords: acceptedRecords.map((record) => ({
-      argIndex: 0,
-      category: 'device_allocation',
-      provenance: 'native_hip_module_launch_args_ptr',
-      confidence: 'observer_boundary',
-      kernelName: record.kernelSymbol,
-      runtimeSessionId: record.runtimeSession,
-      generation: 'native-upstream-runtime',
-      launchKey: `native:${record.runtimeSession}:${record.sequence}`,
-      expectedArgCount: 1,
-      allocationId: String(record.functionPtr ?? record.kernelSymbol ?? 'native-function'),
-      allocationSize: 1,
-      valueSize: 1,
-    })),
-    unknownArgCount: 0,
-    abiProven: true,
-    epochSwapProven: true,
-    streamOrderingProven: true,
-    replacementScopeProven: true,
-    runtimeTouchedSymbolsMatch: true,
-    runtimeArtifactMatchesSelected: artifactId !== null,
-    selectedArtifactIds: contentAddressedArtifactIds(selectedArtifactIds),
-    runtimeArtifactIds: artifactId ? [artifactId] : [],
-    dispatcherRegistrationIds,
-    dispatchTableEntryIds,
-    dispatchTableHashes,
-    dispatchStreamIds,
-    gridDimensions,
-    blockDimensions,
-    sharedMemoryBytes,
-    dispatchTimestamps,
-    dispatchId: dispatchIds.at(-1) ?? null,
-    epoch: observedEpochs.at(-1) ?? null,
-    generation: observedEpochs.at(-1) ?? null,
-    nativeLaunchObserved: true,
-    nativeLaunchTargetSymbols: targetSymbols,
-    nativeLaunchRecords: acceptedRecords,
-    proofSource: 'hiprt-native-launch-observer',
-  };
-}
-
-function buildHiprtNativeOutputProof({ dispatchProof, visualFrame } = {}) {
-  if (!CFG.hiprtRuntimeProbe || !dispatchProof || !visualFrame) return null;
-  const contentHash = visualFrame.contentHash ?? visualFrame.content_hash;
-  if (!/^sha256:[0-9a-f]{64}$/i.test(String(contentHash ?? ''))) return null;
-  const artifactId = dispatchProof.runtimeArtifactIds?.[0] ?? dispatchProof.selectedArtifactIds?.[0] ?? null;
-  const processId = dispatchProof.processId
-    ?? processIdFromRuntimeSession(dispatchProof.runtimeSessionIds?.[0])
-    ?? null;
-  const visualEvidenceRefs = [visualFrame.path].filter(Boolean);
-  const outputTargetId = runtimeOutputTargetId({ visualFrame, outputKind: 'framebuffer' });
-  if (!outputTargetId) return null;
-  const oracleEvidenceRef = `validation:output-oracle:${contentHash}`;
-  return {
-    schemaVersion: 'synthi.gpu.hmr.proof.v1',
-    resultState: 'gpu-hmr-output-oracle-proven',
-    degradedState: null,
-    degradedReason: null,
-    outputOracle: {
-      provided: true,
-      observed: true,
-      passed: true,
-      evidenceObserved: true,
-      provenanceComplete: true,
-      runtimeSessionMatchesDispatch: true,
-      artifactMatchesDispatch: artifactId !== null,
-      valuesCompatible: true,
-      oracleId: `hiprt-render-target:${contentHash}`,
-      requiredOracleId: `hiprt-render-target:${contentHash}`,
-      contractIdObserved: true,
-      requiredContractObserved: true,
-      requiredContractMatched: true,
-      passStatusObserved: true,
-      reportedPassed: true,
-      kind: 'render_target_hash',
-      kindAccepted: true,
-      expected: contentHash,
-      actual: contentHash,
-      tolerance: null,
-      exactValueMatch: true,
-      evidenceRefs: [oracleEvidenceRef, ...visualEvidenceRefs],
-      producer: 'hiprt-runtime-device-framebuffer',
-      outputTargetId,
-      readbackTimestamp: Date.now(),
-      runtimeSessionId: dispatchProof.runtimeSessionIds?.[0] ?? null,
-      processId,
-      artifactId,
-      probeContractComplete: true,
-      probeContract: {
-        complete: true,
-        mode: 'render_target_hash',
-        configHash: contentHash,
-      },
-    },
-    visualFrameObserved: true,
-    visualEvidenceRequired: true,
-    renderVisualEvidenceRequired: true,
-    visualEvidenceComplete: visualEvidenceRefs.length > 0,
-    visualEvidenceRefs,
-    evidenceRefs: [oracleEvidenceRef, ...visualEvidenceRefs],
-    processId,
-    dispatchProof,
-    artifactId,
-    proofSource: 'hiprt-runtime-device-framebuffer',
-  };
-}
-
-function buildHiprtNativeOriginalHostPathProof({
-  runtimeNativeLaunchObservation,
-  dispatchProof,
-} = {}) {
-  if (!CFG.hiprtRuntimeProbe || !dispatchProof) return null;
-  const records = (Array.isArray(runtimeNativeLaunchObservation?.records)
-    ? runtimeNativeLaunchObservation.records
-    : [])
-    .filter((record) =>
-      String(record?.result ?? '') === '0'
-      && String(record?.dispatch ?? '').toLowerCase() === 'observed-native'
-    );
-  if (records.length === 0) return null;
-  const evidenceRefs = records.map((record) =>
-    hiprtNativeEvidenceRef(record, 'original_host_path'),
-  );
-  const runtimeSessionIds = dispatchProof.runtimeSessionIds ?? [];
-  return {
-    schemaVersion: 'synthi.gpu.hmr.proof.v1',
-    resultState: 'gpu-hmr-original-host-path-proven',
-    degradedState: null,
-    degradedReason: null,
-    required: true,
-    attachmentProven: true,
-    runtimeEvidenceObserved: true,
-    dispatchBoundaryObserved: true,
-    dispatchEntryRuntimeVerified: true,
-    sessionScoped: runtimeSessionIds.length > 0,
-    runtimeSessionConsistent: runtimeSessionIds.length <= 1,
-    runtimeSessionIds,
-    originalHostPathObserved: true,
-    nativeLaunchObserved: true,
-    nativeLaunchObserverReady: runtimeNativeLaunchObservation?.ready === true,
-    evidenceRefs,
-    nativeLaunchRecords: records,
-    proofSource: 'hiprt-native-launch-observer',
-  };
 }
 
 function runtimeArgProvenanceEvidence(workerEvidence) {
@@ -23059,7 +22731,7 @@ int main()
     },
     deterministicOutputObserved: true,
     deterministicOracleProvided: true,
-    deterministicOraclePassed: true,
+    deterministicOraclePassed: epochBoundOutputOracle.passed === true,
     outputOracle: epochBoundOutputOracle,
     evidenceRefs: epochBoundOutputOracle.evidenceRefs,
   });
@@ -23081,7 +22753,7 @@ int main()
     },
     deterministicOutputObserved: true,
     deterministicOracleProvided: true,
-    deterministicOraclePassed: true,
+    deterministicOraclePassed: epochBoundOutputOracle.passed === true,
     outputOracle: {
       ...epochBoundOutputOracle,
       artifactId: selectedOnlyArtifactId,
@@ -23686,8 +23358,12 @@ int main()
     || adapterVisualArtifacts?.after_accepted_as_visual_evidence !== true
     || adapterVisualArtifacts?.diff_accepted_as_visual_evidence !== true
     || adapterVisualArtifacts?.changed_pixel_ratio <= 0
-    || adapterVisualOutputProof.resultState !== 'gpu-hmr-output-oracle-proven'
-    || adapterVisualOutputProof.visualEvidenceComplete !== true
+    || adapterVisualOutputProof.resultState !== 'gpu-hmr-dispatch-safe-proven'
+    || adapterVisualOutputProof.degradedState !== 'gpu-hmr-visual-only'
+    || adapterVisualOutputProof.degradedReason !== 'output_modality_evidence_missing_or_unverified'
+    || adapterVisualOutputProof.visualEvidenceComplete !== false
+    || adapterVisualOutputProof.verifiedVisualEvidence?.reason
+      !== 'visual_evidence_live_verification_missing'
   ) {
     throw new Error('runtime adapter file-backed visual output oracle artifact self-check failed');
   }
@@ -26655,17 +26331,7 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     processId: runtimeDispatch.process_id,
     runtimeArtifactMatchesSelected: report.evidence.runtime_dispatch.runtime_artifact_matches_selected,
   });
-  const hiprtVisualFrame = hiprtNativeVisualFrame(freshVisualFrames);
-  const hiprtNativeDispatchProof = buildHiprtNativeDispatchProof({
-    runtimeNativeLaunchObservation,
-    selectedArtifactIds,
-    epochProof: report.epoch_swap_proof,
-    visualFrame: hiprtVisualFrame,
-  });
-  report.dispatch_proof = hiprtNativeDispatchProof ?? classifiedDispatchProof;
-  if (hiprtNativeDispatchProof) {
-    report.evidence.runtime_dispatch.runtime_artifact_matches_selected = true;
-  }
+  report.dispatch_proof = classifiedDispatchProof;
   const classifiedOutputProof = classifyGpuHmrOutputProof({
     dispatchProof: report.dispatch_proof,
     epochProof: report.epoch_swap_proof,
@@ -26676,25 +26342,15 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     outputOracle: runtimeOutputOracle.output_oracle ?? undefined,
     oracleArtifacts: runtimeOutputOracleArtifacts ?? undefined,
     evidenceRefs: runtimeOutputOracle.evidence_refs,
-    visualEvidenceRequired: renderingVisualEvidenceExpected(),
     visualFrameObserved: freshVisualFrames.length > 0 || runtimeOutputOracleVisualRefs.length > 0,
     visualEvidenceRefs: [
       ...freshVisualFrames.map((shot) => shot.path),
       ...runtimeOutputOracleVisualRefs,
     ],
   });
-  const hiprtNativeOutputProof = buildHiprtNativeOutputProof({
-    dispatchProof: report.dispatch_proof,
-    visualFrame: hiprtVisualFrame,
-  });
-  report.output_proof = hiprtNativeOutputProof ?? classifiedOutputProof;
+  report.output_proof = classifiedOutputProof;
   report.host_preservation_proof = runtimeHostPreservation.proof;
-  const hiprtNativeOriginalHostPathProof = buildHiprtNativeOriginalHostPathProof({
-    runtimeNativeLaunchObservation,
-    dispatchProof: report.dispatch_proof,
-  });
-  report.original_host_path_proof =
-    hiprtNativeOriginalHostPathProof ?? runtimeOriginalHostPath.proof;
+  report.original_host_path_proof = runtimeOriginalHostPath.proof;
   report.full_runtime_proof = classifyGpuHmrFullRuntimeProof({
     sourceProofs: report.source_proofs,
     fissionProof: report.fission_proof,
@@ -27016,17 +26672,6 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
         `sidecar=${report.real_rocm_app_hook_materialization.sidecar_backend ?? 'none'}`,
         `oracle=${report.real_rocm_app_hook_materialization.output_oracle_materialized}`,
         `gaps=${report.real_rocm_app_hook_materialization.blocking_gaps.join(',') || 'none'}`,
-      ].join(' '),
-    );
-  }
-  if (hiprtNativeDispatchProof || hiprtNativeOutputProof || hiprtNativeOriginalHostPathProof) {
-    record(
-      'HIPRT native runtime proof bridge',
-      report.full_runtime_proof.fullRuntimeProven ? 'pass' : 'warn',
-      [
-        `dispatch=${hiprtNativeDispatchProof ? 'native-observed' : 'classified'}`,
-        `output=${hiprtNativeOutputProof ? 'framebuffer-oracle' : 'classified'}`,
-        `original_host_path=${hiprtNativeOriginalHostPathProof ? 'native-observed' : 'classified'}`,
       ].join(' '),
     );
   }
