@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, open, readFile } from 'node:fs/promises';
 import sharp from 'sharp';
 import {
   artifactCasManifestEvidence,
@@ -22,6 +22,10 @@ const MIN_VISIBLE_PIXELS = 500;
 const FLAT_LUMA_STDDEV = 4;
 const FLAT_RGB_SPAN_MEAN = 12;
 const FLAT_UNIQUE_COLOR_SAMPLE_COUNT = 16;
+export const GPU_HMR_IMAGE_EVIDENCE_MAX_ENCODED_BYTES = 32 * 1024 * 1024;
+export const GPU_HMR_IMAGE_EVIDENCE_MAX_DECODED_BYTES = 256 * 1024 * 1024;
+export const GPU_HMR_IMAGE_EVIDENCE_MAX_DIMENSION = 16_384;
+export const GPU_HMR_IMAGE_EVIDENCE_MAX_PIXELS = 64 * 1024 * 1024;
 const MCP_CAPTURE_MANIFEST_SCHEMA_VERSION = 'synthi.mcp.capture_manifest.v1';
 const TARGET_PROCESS_CAMERA_STATE_AUTHORITY =
   'target_process_runtime_camera_state_attestation';
@@ -1639,8 +1643,119 @@ export function visualEvidenceAcceptedAsRuntimeProof(artifact) {
     && bindingAccepted;
 }
 
-export async function analyzeGpuHmrImageEvidence(input) {
-  const { data, info } = await sharp(input).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+function boundedVisualEvidenceLimit(value, hardLimit, label) {
+  if (value === undefined || value === null) return hardLimit;
+  if (!Number.isSafeInteger(value) || value < 1 || value > hardLimit) {
+    throw new TypeError(`gpu_hmr_visual_evidence_${label}_invalid`);
+  }
+  return value;
+}
+
+async function boundedVisualEvidenceBytes(input, maxEncodedBytes) {
+  if (Buffer.isBuffer(input)) {
+    if (input.byteLength > maxEncodedBytes) {
+      throw new RangeError('gpu_hmr_visual_evidence_encoded_byte_limit_exceeded');
+    }
+    return Buffer.from(input);
+  }
+  if (input instanceof Uint8Array) {
+    if (input.byteLength > maxEncodedBytes) {
+      throw new RangeError('gpu_hmr_visual_evidence_encoded_byte_limit_exceeded');
+    }
+    return Buffer.from(input);
+  }
+  if (typeof input !== 'string' || !input.trim()) {
+    throw new TypeError('gpu_hmr_visual_evidence_input_invalid');
+  }
+
+  const handle = await open(input, 'r');
+  try {
+    const initial = await handle.stat();
+    if (!initial.isFile()) {
+      throw new TypeError('gpu_hmr_visual_evidence_input_not_file');
+    }
+    if (initial.size > maxEncodedBytes) {
+      throw new RangeError('gpu_hmr_visual_evidence_encoded_byte_limit_exceeded');
+    }
+    const chunks = [];
+    let byteLength = 0;
+    while (true) {
+      const remaining = maxEncodedBytes - byteLength;
+      const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, remaining + 1));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, null);
+      if (bytesRead === 0) break;
+      byteLength += bytesRead;
+      if (byteLength > maxEncodedBytes) {
+        throw new RangeError('gpu_hmr_visual_evidence_encoded_byte_limit_exceeded');
+      }
+      chunks.push(buffer.subarray(0, bytesRead));
+    }
+    return Buffer.concat(chunks, byteLength);
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function analyzeGpuHmrImageEvidence(input, options = {}) {
+  const maxEncodedBytes = boundedVisualEvidenceLimit(
+    options.maxEncodedBytes,
+    GPU_HMR_IMAGE_EVIDENCE_MAX_ENCODED_BYTES,
+    'max_encoded_bytes',
+  );
+  const maxDecodedBytes = boundedVisualEvidenceLimit(
+    options.maxDecodedBytes,
+    GPU_HMR_IMAGE_EVIDENCE_MAX_DECODED_BYTES,
+    'max_decoded_bytes',
+  );
+  const maxDimension = boundedVisualEvidenceLimit(
+    options.maxDimension,
+    GPU_HMR_IMAGE_EVIDENCE_MAX_DIMENSION,
+    'max_dimension',
+  );
+  const maxPixels = boundedVisualEvidenceLimit(
+    options.maxPixels,
+    GPU_HMR_IMAGE_EVIDENCE_MAX_PIXELS,
+    'max_pixels',
+  );
+  const bytes = await boundedVisualEvidenceBytes(input, maxEncodedBytes);
+  const metadata = await sharp(bytes, {
+    failOn: 'warning',
+    limitInputPixels: false,
+    sequentialRead: true,
+  }).metadata();
+  const width = metadata.width;
+  const height = metadata.height;
+  const pages = metadata.pages ?? 1;
+  if (
+    !Number.isSafeInteger(width)
+    || !Number.isSafeInteger(height)
+    || width < 1
+    || height < 1
+    || width > maxDimension
+    || height > maxDimension
+  ) {
+    throw new RangeError('gpu_hmr_visual_evidence_dimension_limit_exceeded');
+  }
+  if (pages !== 1) {
+    throw new RangeError('gpu_hmr_visual_evidence_multi_page_input_forbidden');
+  }
+  const encodedPixels = width * height;
+  if (!Number.isSafeInteger(encodedPixels) || encodedPixels > maxPixels) {
+    throw new RangeError('gpu_hmr_visual_evidence_decoded_pixel_limit_exceeded');
+  }
+  // Raw Sharp output can retain four channels for non-alpha color spaces.
+  if (encodedPixels * 4 > maxDecodedBytes) {
+    throw new RangeError('gpu_hmr_visual_evidence_decoded_byte_limit_exceeded');
+  }
+  const image = sharp(bytes, {
+    failOn: 'warning',
+    limitInputPixels: maxPixels,
+    sequentialRead: true,
+  });
+  const { data, info } = await image.removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  if (data.byteLength > maxDecodedBytes) {
+    throw new RangeError('gpu_hmr_visual_evidence_decoded_byte_limit_exceeded');
+  }
   let visible = 0;
   let lumaTotal = 0;
   let lumaSquareTotal = 0;

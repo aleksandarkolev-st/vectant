@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { writeArtifactToCas } from '../lib/gpu-hmr-artifact-cas.mjs';
 import {
   buildAsyncVisualProofBundle,
+  analyzeGpuHmrImageEvidence,
   collectVisualArtifactCasLocators,
   completeAsyncVisualProofJob,
   createAsyncVisualProofJob,
@@ -14,6 +15,7 @@ import {
   deterministicVisualModeAccepted,
   evaluateGpuHmrDeterministicVisualMode,
   GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+  GPU_HMR_IMAGE_EVIDENCE_MAX_ENCODED_BYTES,
   GPU_HMR_VISUAL_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION,
   DEFAULT_MCP_FRAME_GATE_TIMEOUT_MS,
   mcpFrameAtOrAfterFrameGate,
@@ -26,6 +28,55 @@ import {
   visualArtifactTransportEvidence,
   visualEvidenceRow,
 } from '../lib/gpu-hmr-visual-evidence.mjs';
+
+const boundedImageRaw = Buffer.from([
+  0, 0, 0, 255,
+  255, 0, 0, 255,
+  0, 255, 0, 255,
+  0, 0, 255, 255,
+]);
+const boundedImagePng = await sharp(boundedImageRaw, {
+  raw: { width: 2, height: 2, channels: 4 },
+}).png().toBuffer();
+const boundedImageStats = await analyzeGpuHmrImageEvidence(boundedImagePng, {
+  maxEncodedBytes: boundedImagePng.byteLength,
+  maxDecodedBytes: 16,
+  maxDimension: 2,
+  maxPixels: 4,
+});
+assert.equal(boundedImageStats.width, 2);
+assert.equal(boundedImageStats.height, 2);
+const mutableImageBytes = Buffer.from(boundedImagePng);
+const snapshottedImageAnalysis = analyzeGpuHmrImageEvidence(mutableImageBytes);
+mutableImageBytes.fill(0);
+assert.equal((await snapshottedImageAnalysis).width, 2);
+await assert.rejects(
+  analyzeGpuHmrImageEvidence(Buffer.alloc(65), { maxEncodedBytes: 64 }),
+  /gpu_hmr_visual_evidence_encoded_byte_limit_exceeded/,
+);
+await assert.rejects(
+  analyzeGpuHmrImageEvidence(boundedImagePng, { maxPixels: 3 }),
+  /gpu_hmr_visual_evidence_decoded_pixel_limit_exceeded/,
+);
+await assert.rejects(
+  analyzeGpuHmrImageEvidence(boundedImagePng, { maxDecodedBytes: 15 }),
+  /gpu_hmr_visual_evidence_decoded_byte_limit_exceeded/,
+);
+await assert.rejects(
+  analyzeGpuHmrImageEvidence(boundedImagePng, {
+    maxEncodedBytes: GPU_HMR_IMAGE_EVIDENCE_MAX_ENCODED_BYTES + 1,
+  }),
+  /gpu_hmr_visual_evidence_max_encoded_bytes_invalid/,
+);
+const boundedImagePathRoot = await mkdtemp(path.join(os.tmpdir(), 'synthi-visual-input-smoke-'));
+const boundedImagePath = path.join(boundedImagePathRoot, 'bounded.png');
+await writeFile(boundedImagePath, boundedImagePng);
+assert.equal(
+  (await analyzeGpuHmrImageEvidence(boundedImagePath, {
+    maxEncodedBytes: boundedImagePng.byteLength,
+  })).width,
+  2,
+);
 
 const deterministicSingleFrame = {
   schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
