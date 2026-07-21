@@ -8,6 +8,11 @@ documentation change in this repository.
 - Do not branch acceptance, success, routing, proof obligations, or adapter
   behavior on project, repository, target, profile, fixture, library, scenario,
   engine, or backend names. Names are test-corpus metadata only.
+- Do not reject an architecture because its name is absent from a closed enum or
+  normalize an unfamiliar API to an unsupported catch-all. Architecture labels
+  are open-vocabulary metadata; every target enters generic capability
+  discovery and boundary synthesis, and only observed mechanics or missing
+  evidence may produce a precise fail-closed outcome for a particular edit.
 - Model support through versioned, identity-free execution capabilities and
   compose obligations from observed mechanics. New projects must not require a
   new success branch. A new mechanism may extend the generic capability schema
