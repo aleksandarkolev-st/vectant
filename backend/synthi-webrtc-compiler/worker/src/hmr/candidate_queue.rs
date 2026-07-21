@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 
-use crate::hmr::build_manifest::BuildManifest;
+use crate::hmr::build_manifest::{ArtifactSetIdentityError, BuildManifest};
 use crate::hmr::candidate::{Candidate, CandidateSummary};
 use crate::hmr::planner_decision::{ReloadDecision, StateStrategy};
 
@@ -44,7 +44,8 @@ impl CandidateQueue {
         mut manifest: BuildManifest,
         decision: ReloadDecision,
         state_strategy: StateStrategy,
-    ) -> u64 {
+    ) -> Result<u64, ArtifactSetIdentityError> {
+        manifest.artifact_set_identity()?;
         self.generation += 1;
         let gen = self.generation;
 
@@ -72,7 +73,7 @@ impl CandidateQueue {
         }
 
         self.pending.push_back(candidate);
-        gen
+        Ok(gen)
     }
 
     /// Take the next pending candidate and make it active.
@@ -159,6 +160,91 @@ impl CandidateQueue {
         if self.completed.len() > self.max_completed_history {
             self.completed.remove(0);
         }
+    }
+}
+
+#[cfg(test)]
+mod artifact_set_tests {
+    use super::*;
+    use crate::hmr::build_manifest::{BuildArtifactIdentity, BuildSlot};
+
+    const SELECTED_HASH: &str =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const OTHER_HASH: &str =
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn malformed_artifact_set_does_not_mutate_queue() {
+        let mut queue = CandidateQueue::new("preview");
+        let valid = BuildManifest::new(
+            "preview",
+            "unfamiliar-label",
+            "observed-mechanism",
+            0,
+            BuildSlot::Full,
+            "/build/selected.bin",
+            SELECTED_HASH,
+        );
+        queue
+            .enqueue(valid, ReloadDecision::WarmReload, StateStrategy::Preserve)
+            .unwrap();
+
+        let generation_before = queue.generation();
+        let pending_before = queue.pending_count();
+        let malformed = BuildManifest::new(
+            "preview",
+            "another-label",
+            "another-mechanism-label",
+            0,
+            BuildSlot::Custom("opaque-slot".into()),
+            "/build/selected.bin",
+            SELECTED_HASH,
+        )
+        .with_artifacts(vec![
+            BuildArtifactIdentity::new("duplicate", "/build/selected.bin", SELECTED_HASH),
+            BuildArtifactIdentity::new("duplicate", "/build/other.bin", OTHER_HASH),
+        ]);
+
+        assert!(queue
+            .enqueue(
+                malformed,
+                ReloadDecision::WarmReload,
+                StateStrategy::Preserve,
+            )
+            .is_err());
+        assert_eq!(queue.generation(), generation_before);
+        assert_eq!(queue.pending_count(), pending_before);
+        assert!(!queue.has_active());
+        assert!(queue.history().is_empty());
+    }
+
+    #[test]
+    fn explicit_empty_artifact_set_is_not_a_legacy_singleton() {
+        let mut queue = CandidateQueue::new("preview");
+        let malformed = BuildManifest::new(
+            "preview",
+            "unfamiliar-label",
+            "observed-mechanism",
+            0,
+            BuildSlot::Full,
+            "/build/selected.bin",
+            SELECTED_HASH,
+        )
+        .with_artifacts(Vec::new());
+
+        assert_eq!(
+            queue
+                .enqueue(
+                    malformed,
+                    ReloadDecision::WarmReload,
+                    StateStrategy::Preserve,
+                )
+                .unwrap_err()
+                .to_string(),
+            "artifact_set_missing_selected_artifact"
+        );
+        assert_eq!(queue.generation(), 0);
+        assert_eq!(queue.pending_count(), 0);
     }
 }
 

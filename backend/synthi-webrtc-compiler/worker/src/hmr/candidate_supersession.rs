@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::hmr::build_manifest::{ArtifactSetIdentityError, BuildManifest};
 use crate::hmr::candidate::{Candidate, CandidateState};
 
 /// Supersession verdict.
@@ -42,35 +43,134 @@ impl Default for SupersessionPolicy {
 /// Decide whether a newer candidate should supersede an active older one.
 pub fn should_supersede(
     active: &Candidate,
-    newer_artifact_hash: &str,
+    newer_manifest: &BuildManifest,
     policy: &SupersessionPolicy,
-) -> SupersessionVerdict {
+) -> Result<SupersessionVerdict, ArtifactSetIdentityError> {
+    let active_identity = active.manifest.artifact_set_identity()?;
+    let newer_identity = newer_manifest.artifact_set_identity()?;
     // Same artifact — no point in replacing.
-    if active.id.artifact_hash == newer_artifact_hash {
-        return SupersessionVerdict::Duplicate;
+    if active_identity == newer_identity {
+        return Ok(SupersessionVerdict::Duplicate);
     }
 
     // Already terminal — nothing to supersede.
     if active.is_terminal() {
-        return SupersessionVerdict::LetFinish;
+        return Ok(SupersessionVerdict::LetFinish);
     }
 
     // Aggressive mode always supersedes.
     if policy.aggressive {
-        return SupersessionVerdict::Supersede;
+        return Ok(SupersessionVerdict::Supersede);
     }
 
     // If validated and policy protects validated, let it finish.
     if policy.protect_validated && active.state == CandidateState::Validated {
-        return SupersessionVerdict::LetFinish;
+        return Ok(SupersessionVerdict::LetFinish);
     }
 
     // In Loading or HealthChecking — supersede with newer.
-    match active.state {
+    Ok(match active.state {
         CandidateState::Built | CandidateState::Loading | CandidateState::HealthChecking => {
             SupersessionVerdict::Supersede
         }
         _ => SupersessionVerdict::LetFinish,
+    })
+}
+
+#[cfg(test)]
+mod artifact_set_tests {
+    use super::*;
+    use crate::hmr::build_manifest::{BuildArtifactIdentity, BuildSlot};
+    use crate::hmr::planner_decision::{ReloadDecision, StateStrategy};
+
+    const SELECTED_HASH: &str =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const BEFORE_HASH: &str =
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const AFTER_HASH: &str =
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const SAME_HASH: &str =
+        "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+    fn candidate(manifest: BuildManifest) -> Candidate {
+        Candidate::new(
+            manifest,
+            1,
+            ReloadDecision::WarmReload,
+            StateStrategy::Preserve,
+        )
+    }
+
+    fn manifest(secondary_hash: &str) -> BuildManifest {
+        BuildManifest::new(
+            "preview",
+            "open-vocabulary-label",
+            "observed-mechanism",
+            0,
+            BuildSlot::Full,
+            "/build/selected.bin",
+            SELECTED_HASH,
+        )
+        .with_artifacts(vec![
+            BuildArtifactIdentity::new(
+                "selected-output",
+                "/build/selected.bin",
+                SELECTED_HASH,
+            ),
+            BuildArtifactIdentity::new(
+                "another-output",
+                "/build/another.bin",
+                secondary_hash,
+            ),
+        ])
+    }
+
+    #[test]
+    fn same_primary_with_changed_secondary_is_not_duplicate() {
+        let mut active = candidate(manifest(BEFORE_HASH));
+        active.begin_load();
+
+        assert_eq!(
+            should_supersede(
+                &active,
+                &manifest(AFTER_HASH),
+                &SupersessionPolicy::default(),
+            )
+            .unwrap(),
+            SupersessionVerdict::Supersede
+        );
+    }
+
+    #[test]
+    fn identical_reordered_artifact_set_is_duplicate() {
+        let active_manifest = manifest(SAME_HASH);
+        let mut reordered = active_manifest.clone();
+        reordered.artifacts.as_mut().unwrap().reverse();
+
+        assert_eq!(
+            should_supersede(
+                &candidate(active_manifest),
+                &reordered,
+                &SupersessionPolicy::default(),
+            )
+            .unwrap(),
+            SupersessionVerdict::Duplicate
+        );
+    }
+
+    #[test]
+    fn malformed_new_artifact_set_is_never_duplicate() {
+        let active_manifest = manifest(SAME_HASH);
+        let mut malformed = active_manifest.clone();
+        let artifacts = malformed.artifacts.as_mut().unwrap();
+        artifacts[1].artifact_id = artifacts[0].artifact_id.clone();
+
+        assert!(should_supersede(
+            &candidate(active_manifest),
+            &malformed,
+            &SupersessionPolicy::default(),
+        )
+        .is_err());
     }
 }
 

@@ -15704,7 +15704,7 @@ async fn handle_compile_request_inner(
             runtime_supports_warm,
         );
 
-        let mut notifications = pipeline.enqueue_candidate(&build_manifest, &planner_output);
+        let mut notifications = pipeline.enqueue_candidate(&build_manifest, &planner_output)?;
         notifications
             .messages
             .extend(pipeline.tick_candidates(current_time_ms()).messages);

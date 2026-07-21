@@ -29,7 +29,7 @@ use crate::hmr::adapter_trait::{
     ReloadArtifactBlob, ReloadCapsuleMetadata, ReloadFirewallEvidence,
 };
 use crate::hmr::ai_gate::{AiGate, AiGateDecision};
-use crate::hmr::build_manifest::BuildManifest;
+use crate::hmr::build_manifest::{ArtifactSetIdentityError, BuildManifest};
 use crate::hmr::candidate::CandidateState;
 use crate::hmr::candidate_bridge::{bridge_tick, BridgeAction, BridgeConfig};
 use crate::hmr::candidate_notification::CandidateNotification;
@@ -264,17 +264,18 @@ impl HmrPipeline {
         &mut self,
         manifest: &BuildManifest,
         planner_output: &PlannerOutput,
-    ) -> PipelineNotifications {
+    ) -> Result<PipelineNotifications, ArtifactSetIdentityError> {
         let mut notifications = PipelineNotifications::new();
+        manifest.artifact_set_identity()?;
 
         if let Some(active) = self.candidate_queue.active() {
             match should_supersede(
                 active,
-                &manifest.artifact_hash,
+                manifest,
                 &self.bridge_config.supersession_policy,
-            ) {
+            )? {
                 SupersessionVerdict::Duplicate => {
-                    return notifications;
+                    return Ok(notifications);
                 }
                 SupersessionVerdict::Supersede => {
                     if let Some(active_candidate) = self.candidate_queue.active_mut() {
@@ -296,7 +297,7 @@ impl HmrPipeline {
             manifest.clone(),
             planner_output.decision,
             planner_output.reason.state_strategy,
-        );
+        )?;
 
         notifications.push_json(&CandidateNotification::Enqueued {
             preview_id: manifest.preview_id.clone(),
@@ -304,7 +305,7 @@ impl HmrPipeline {
             artifact_hash: manifest.artifact_hash.clone(),
         });
 
-        notifications
+        Ok(notifications)
     }
 
     pub fn validate_active_candidate(&mut self, total_reload_ms: u64) -> PipelineNotifications {
@@ -1073,7 +1074,8 @@ mod current_api_tests {
             capability_tier: 2,
             slot: BuildSlot::Core,
             artifact_path: "/tmp/test.so".into(),
-            artifact_hash: "abc123".into(),
+            artifact_hash: format!("sha256:{}", "a".repeat(64)),
+            artifacts: None,
             toolchain_fingerprint: "gcc-12".into(),
             abi_version: "1.0".into(),
             state_schema_hash: "s1".into(),
