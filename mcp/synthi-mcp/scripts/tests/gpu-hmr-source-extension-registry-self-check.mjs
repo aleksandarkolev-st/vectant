@@ -32,7 +32,8 @@ const extensions = GPU_HMR_SOURCE_EXTENSION_REGISTRY.map((entry) => entry.extens
 assert.equal(new Set(extensions).size, extensions.length);
 assert.deepEqual(extensions, [...extensions].sort());
 assert.ok(GPU_HMR_SOURCE_EXTENSION_REGISTRY.every(
-  (entry) => entry.canEstablishGpuCapability === false,
+  (entry) => entry.canEstablishGpuCapability === false
+    && entry.classificationSupportOnly === true,
 ));
 
 const formerlyScannerOnly = new Map([
@@ -63,6 +64,8 @@ for (const [extension, language] of [...formerlyScannerOnly, ...formerlyIntentOn
     files: [source(upperPath)],
   });
   assert.equal(intent.language, language);
+  assert.equal(intent.schemaVersion, 'synthi.gpu_hmr.source_first_request_intent.v2');
+  assert.equal(intent.languageSource, 'manifest_bound_open_vocabulary_hint');
   assert.deepEqual(intent.sourceLanguageEvidence, [
     { path: upperPath, extension, language },
   ]);
@@ -89,14 +92,28 @@ for (const extension of neutralContextExtensions) {
 expectRefusal(() => deriveSourceFirstRequestIntent({
   entryPath: 'include/entry.IPP',
   files: [source('include/entry.IPP'), source('src/fallback.cpp')],
-}), 'source_first_request_intent_entry_language_ambiguous');
+}), 'source_first_request_intent_entry_language_hint_required');
 
-expectRefusal(() => deriveSourceFirstRequestIntent({
+const inventedExtensionIntent = deriveSourceFirstRequestIntent({
   entryPath: 'src/entry.opaque',
+  requestLanguage: 'invented-language-v17',
   files: [source('src/entry.opaque')],
-}), 'source_first_request_intent_language_unknown');
+});
+assert.equal(inventedExtensionIntent.language, 'invented-language-v17');
+assert.deepEqual(inventedExtensionIntent.sourceLanguageEvidence, [
+  { path: 'src/entry.opaque', extension: '.opaque', language: 'invented-language-v17' },
+]);
 assert.equal(gpuHmrSourceExtensionMetadata('src/entry.opaque'), null);
 assert.equal(isGpuHmrSourcePath('src/entry.opaque'), false);
+
+const extensionlessIntent = deriveSourceFirstRequestIntent({
+  entryPath: 'src/entry',
+  requestLanguage: 'ordinary-text-source',
+  files: [source('src/entry')],
+});
+assert.deepEqual(extensionlessIntent.sourceLanguageEvidence, [
+  { path: 'src/entry', extension: null, language: 'ordinary-text-source' },
+]);
 
 const mixedFiles = [
   source('src/view.HLSL'),
@@ -128,5 +145,16 @@ assert.equal(mixedIntent.sourceLanguageEvidence.some(
 assert.equal(reorderedIntent.sourceManifestHash, mixedIntent.sourceManifestHash);
 assert.equal(reorderedIntent.intentHash, mixedIntent.intentHash);
 assert.deepEqual(reorderedIntent.sourceLanguageEvidence, mixedIntent.sourceLanguageEvidence);
+
+const permutedLabelIntent = deriveSourceFirstRequestIntent({
+  entryPath: 'src/entry.opaque',
+  requestLanguage: 'unfamiliar-project-label',
+  files: [source('src/entry.opaque'), source('src/helper.unknown')],
+});
+assert.equal(permutedLabelIntent.language, 'unfamiliar-project-label');
+assert.deepEqual(permutedLabelIntent.languageNeutralSourcePaths, ['src/helper.unknown']);
+assert.equal(permutedLabelIntent.acceptedForGpuHmr, false);
+assert.equal(permutedLabelIntent.gpuHmrSuccess, false);
+assert.equal(permutedLabelIntent.canSatisfyRuntimeProof, false);
 
 console.log('gpu-hmr source extension registry self-check passed');

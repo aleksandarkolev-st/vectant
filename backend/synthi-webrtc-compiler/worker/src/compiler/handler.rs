@@ -34,6 +34,12 @@ const DEFAULT_WORKSPACE_FILE_REF_SEARCH_DEPTH: usize = 8;
 const MAX_WORKSPACE_FILE_REF_SEARCH_DEPTH: usize = 32;
 const DEFAULT_WORKSPACE_FILE_REF_SEARCH_LIMIT: usize = 16_384;
 const MAX_WORKSPACE_FILE_REF_SEARCH_LIMIT: usize = 65_536;
+const DEFAULT_WORKSPACE_FILE_REF_COUNT_LIMIT: usize = 4_096;
+const MAX_WORKSPACE_FILE_REF_COUNT_LIMIT: usize = 16_384;
+const DEFAULT_WORKSPACE_FILE_REF_BYTES_LIMIT: usize = 16 * 1024 * 1024;
+const MAX_WORKSPACE_FILE_REF_BYTES_LIMIT: usize = 256 * 1024 * 1024;
+const DEFAULT_WORKSPACE_FILE_REF_TOTAL_BYTES_LIMIT: usize = 256 * 1024 * 1024;
+const MAX_WORKSPACE_FILE_REF_TOTAL_BYTES_LIMIT: usize = 1024 * 1024 * 1024;
 const RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_ENV: &str =
     "SYNTHI_RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_MS";
 const DEFAULT_RUNNER_RUNTIME_CONTROL_WRITE_TIMEOUT_MS: u64 = 2_000;
@@ -69,7 +75,7 @@ use crate::compiler::stages::runner::{
     VerifiedHotGpuReloadReceipt,
 };
 use crate::runtime::capability::HmrStatus;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn compile_request_relpath(path: &str) -> Result<PathBuf> {
     let normalized = path.trim().replace('\\', "/");
@@ -323,42 +329,102 @@ async fn read_collab_repo_file_ref(
     rel: &Path,
     normalized: &str,
     file_ref: &FileRef,
+    max_file_bytes: usize,
+    collab_bytes_read: &mut usize,
+    collab_total_read_limit: usize,
 ) -> Result<Option<Vec<u8>>> {
     let Some(collab_index) = collab_index else {
         return Ok(None);
     };
-    let mut existing = Vec::new();
+    if file_ref.sha256.is_none() {
+        anyhow::bail!(
+            "collab workspace file ref requires sha256 identity: {}",
+            normalized
+        );
+    }
     for candidate in collab_index.candidates_for(rel).await? {
-        match tokio::fs::read(&candidate).await {
-            Ok(bytes) => existing.push((candidate, bytes)),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("reading collab workspace file ref {}", normalized));
+        let metadata = tokio::fs::metadata(&candidate).await.with_context(|| {
+            format!(
+                "reading collab workspace file ref metadata {}",
+                candidate.display()
+            )
+        })?;
+        if let Some(expected) = file_ref.bytes {
+            if metadata.len() != expected {
+                continue;
             }
         }
-    }
-    if existing.is_empty() {
-        return Ok(None);
-    }
-
-    let matches = existing
-        .iter()
-        .filter(|(_, bytes)| file_ref_bytes_match_integrity(file_ref, bytes))
-        .collect::<Vec<_>>();
-    let selected = if matches.is_empty() {
-        existing.remove(0).1
-    } else {
-        let first = &matches[0].1;
-        if matches
-            .iter()
-            .any(|(_, bytes)| bytes.as_slice() != first.as_slice())
-        {
-            anyhow::bail!("ambiguous collab workspace file ref: {}", normalized);
+        let candidate_bytes = usize::try_from(metadata.len()).map_err(|_| {
+            anyhow::anyhow!("collab workspace file ref byte length is not representable")
+        })?;
+        if candidate_bytes > max_file_bytes {
+            continue;
         }
-        first.clone()
-    };
-    Ok(Some(selected))
+        let remaining_bytes = collab_total_read_limit
+            .checked_sub(*collab_bytes_read)
+            .unwrap_or_default();
+        if candidate_bytes > remaining_bytes {
+            anyhow::bail!(
+                "collab workspace file ref candidate reads exceed aggregate limit: {} > {}",
+                collab_bytes_read.saturating_add(candidate_bytes),
+                collab_total_read_limit
+            );
+        }
+        let bytes = read_bounded_workspace_file_ref(
+            &candidate,
+            normalized,
+            max_file_bytes.min(remaining_bytes),
+        )
+        .await
+        .with_context(|| format!("reading collab workspace file ref {}", normalized))?;
+        *collab_bytes_read = collab_bytes_read
+            .checked_add(bytes.len())
+            .ok_or_else(|| anyhow::anyhow!("collab workspace file ref read byte total overflow"))?;
+        if file_ref_bytes_match_integrity(file_ref, &bytes) {
+            return Ok(Some(bytes));
+        }
+    }
+    Ok(None)
+}
+
+async fn read_bounded_workspace_file_ref(
+    path: &Path,
+    normalized: &str,
+    max_file_bytes: usize,
+) -> Result<Vec<u8>> {
+    let file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("opening workspace file ref {normalized}"))?;
+    let metadata = file
+        .metadata()
+        .await
+        .with_context(|| format!("reading workspace file ref metadata {normalized}"))?;
+    if !metadata.is_file() {
+        anyhow::bail!("workspace file ref is not a regular file: {normalized}");
+    }
+    if metadata.len() > max_file_bytes as u64 {
+        anyhow::bail!(
+            "workspace file ref exceeds per-file byte limit for {}: {} > {}",
+            normalized,
+            metadata.len(),
+            max_file_bytes
+        );
+    }
+    let mut bytes = Vec::with_capacity((metadata.len() as usize).min(max_file_bytes));
+    let mut bounded = file.take(max_file_bytes as u64 + 1);
+    bounded
+        .read_to_end(&mut bytes)
+        .await
+        .with_context(|| format!("reading workspace file ref {normalized}"))?;
+    if bytes.len() > max_file_bytes {
+        anyhow::bail!(
+            "workspace file ref grew beyond per-file byte limit for {}: {} > {}",
+            normalized,
+            bytes.len(),
+            max_file_bytes
+        );
+    }
+    Ok(bytes)
 }
 
 async fn read_workspace_file_ref_bytes(
@@ -368,6 +434,9 @@ async fn read_workspace_file_ref_bytes(
     normalized: &str,
     file_ref: &FileRef,
     collab_index: Option<&CollabFileRefIndex>,
+    max_file_bytes: usize,
+    collab_bytes_read: &mut usize,
+    collab_total_read_limit: usize,
 ) -> Result<Vec<u8>> {
     let path = workspace.join(rel);
     match tokio::fs::canonicalize(&path).await {
@@ -375,25 +444,39 @@ async fn read_workspace_file_ref_bytes(
             if !canonical_path.starts_with(canonical_workspace) {
                 anyhow::bail!("workspace file ref escaped workspace: {}", normalized);
             }
-            let bytes = tokio::fs::read(&canonical_path)
-                .await
-                .with_context(|| format!("reading workspace file ref {}", normalized))?;
+            let bytes =
+                read_bounded_workspace_file_ref(&canonical_path, normalized, max_file_bytes)
+                    .await?;
             if file_ref_bytes_match_integrity(file_ref, &bytes) {
                 return Ok(bytes);
             }
-            if let Some(bytes) =
-                read_collab_repo_file_ref(collab_index, rel, normalized, file_ref).await?
+            if let Some(bytes) = read_collab_repo_file_ref(
+                collab_index,
+                rel,
+                normalized,
+                file_ref,
+                max_file_bytes,
+                collab_bytes_read,
+                collab_total_read_limit,
+            )
+            .await?
             {
-                write_compile_request_file_bytes(workspace, normalized, &bytes).await?;
                 return Ok(bytes);
             }
             Ok(bytes)
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(bytes) =
-                read_collab_repo_file_ref(collab_index, rel, normalized, file_ref).await?
+            if let Some(bytes) = read_collab_repo_file_ref(
+                collab_index,
+                rel,
+                normalized,
+                file_ref,
+                max_file_bytes,
+                collab_bytes_read,
+                collab_total_read_limit,
+            )
+            .await?
             {
-                write_compile_request_file_bytes(workspace, normalized, &bytes).await?;
                 return Ok(bytes);
             }
             Err(err).with_context(|| format!("resolving workspace file ref {}", normalized))
@@ -415,6 +498,54 @@ async fn hydrate_workspace_file_refs(
     let canonical_workspace = tokio::fs::canonicalize(workspace)
         .await
         .with_context(|| format!("canonicalizing workspace {}", workspace.display()))?;
+    let count_limit = bounded_usize_env(
+        "SYNTHI_WORKSPACE_FILE_REF_COUNT_LIMIT",
+        DEFAULT_WORKSPACE_FILE_REF_COUNT_LIMIT,
+        MAX_WORKSPACE_FILE_REF_COUNT_LIMIT,
+    );
+    let max_file_bytes = bounded_usize_env(
+        "SYNTHI_WORKSPACE_FILE_REF_BYTES_LIMIT",
+        DEFAULT_WORKSPACE_FILE_REF_BYTES_LIMIT,
+        MAX_WORKSPACE_FILE_REF_BYTES_LIMIT,
+    );
+    let total_bytes_limit = bounded_usize_env(
+        "SYNTHI_WORKSPACE_FILE_REF_TOTAL_BYTES_LIMIT",
+        DEFAULT_WORKSPACE_FILE_REF_TOTAL_BYTES_LIMIT,
+        MAX_WORKSPACE_FILE_REF_TOTAL_BYTES_LIMIT,
+    );
+    if req.file_refs.len() > count_limit {
+        anyhow::bail!(
+            "workspace file ref count exceeds limit: {} > {}",
+            req.file_refs.len(),
+            count_limit
+        );
+    }
+    let mut declared_total = 0usize;
+    for file_ref in &req.file_refs {
+        if let Some(bytes) = file_ref.bytes {
+            let bytes = usize::try_from(bytes).map_err(|_| {
+                anyhow::anyhow!("workspace file ref byte length is not representable")
+            })?;
+            if bytes > max_file_bytes {
+                anyhow::bail!(
+                    "workspace file ref declared bytes exceed per-file limit for {}: {} > {}",
+                    file_ref.name,
+                    bytes,
+                    max_file_bytes
+                );
+            }
+            declared_total = declared_total.checked_add(bytes).ok_or_else(|| {
+                anyhow::anyhow!("workspace file ref declared byte total overflow")
+            })?;
+            if declared_total > total_bytes_limit {
+                anyhow::bail!(
+                    "workspace file ref declared bytes exceed aggregate limit: {} > {}",
+                    declared_total,
+                    total_bytes_limit
+                );
+            }
+        }
+    }
     let primary_name = normalized_request_filename(&req.filename);
     let mut known_contents: BTreeMap<String, String> = BTreeMap::new();
     if let Some(name) = primary_name.as_ref() {
@@ -437,6 +568,8 @@ async fn hydrate_workspace_file_refs(
 
     let collab_index = CollabFileRefIndex::from_slug(req.slug.as_deref()).await?;
     let mut summary = WorkspaceFileRefSummary::default();
+    let mut hydrated_files = Vec::new();
+    let mut collab_bytes_read = 0usize;
     for file_ref in &req.file_refs {
         let rel = compile_request_relpath(&file_ref.name)?;
         let normalized = rel.to_string_lossy().replace('\\', "/");
@@ -447,6 +580,9 @@ async fn hydrate_workspace_file_refs(
             &normalized,
             file_ref,
             collab_index.as_ref(),
+            max_file_bytes,
+            &mut collab_bytes_read,
+            total_bytes_limit,
         )
         .await?;
         if let Some(expected) = file_ref.bytes {
@@ -482,13 +618,24 @@ async fn hydrate_workspace_file_refs(
             continue;
         }
         summary.count += 1;
-        summary.bytes += content.len();
-        req.files.push(FileEntry {
+        summary.bytes = summary
+            .bytes
+            .checked_add(content.len())
+            .ok_or_else(|| anyhow::anyhow!("workspace file ref aggregate byte count overflow"))?;
+        if summary.bytes > total_bytes_limit {
+            anyhow::bail!(
+                "workspace file ref bytes exceed aggregate limit: {} > {}",
+                summary.bytes,
+                total_bytes_limit
+            );
+        }
+        hydrated_files.push(FileEntry {
             name: normalized.clone(),
             content: content.clone(),
         });
         known_contents.insert(normalized, content);
     }
+    req.files.extend(hydrated_files);
     Ok(summary)
 }
 
@@ -581,19 +728,84 @@ fn compile_request_content_sha256(req: &CompileRequest) -> String {
     )
 }
 
-const SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION: &str =
+const SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1: &str =
     "synthi.gpu_hmr.source_first_request_intent.v1";
+const SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.source_first_request_intent.v2";
 const SOURCE_FIRST_REQUEST_INTENT_AUTHORITY: &str =
     "source_manifest_bound_request_hints_only_not_gpu_hmr_success";
-const SOURCE_FIRST_REQUEST_INTENT_BINDING_SCHEMA_VERSION: &str =
+const SOURCE_FIRST_REQUEST_INTENT_BINDING_SCHEMA_VERSION_V1: &str =
     "synthi.gpu_hmr.source_first_request_intent_worker_binding.v1";
+const SOURCE_FIRST_REQUEST_INTENT_BINDING_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.source_first_request_intent_worker_binding.v2";
 const SOURCE_FIRST_REQUEST_INTENT_BINDING_AUTHORITY: &str =
     "validated_source_manifest_request_binding_only_not_runtime_proof";
-const SOURCE_FIRST_EXTENSION_REGISTRY_SCHEMA_VERSION: &str =
+const SOURCE_FIRST_LANGUAGE_EVIDENCE_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.source_language_evidence.v2";
+const SOURCE_FIRST_LANGUAGE_EVIDENCE_AUTHORITY: &str =
+    "manifest_bound_open_vocabulary_language_hints_only_not_compiler_or_gpu_hmr_proof";
+const SOURCE_FIRST_EXTENSION_REGISTRY_SCHEMA_VERSION_V1: &str =
     "synthi.gpu_hmr.source_extension_registry.v1";
+const SOURCE_FIRST_EXTENSION_REGISTRY_AUTHORITY_V1: &str =
+    "legacy_source_suffix_hints_only_not_compiler_build_or_gpu_hmr_proof";
+
+const SOURCE_FIRST_REQUEST_INTENT_ALLOWED_FIELDS: [&str; 51] = [
+    "schemaVersion",
+    "schema_version",
+    "proofAuthority",
+    "proof_authority",
+    "acceptedAsRequestHints",
+    "accepted_as_request_hints",
+    "acceptedForGpuHmr",
+    "accepted_for_gpu_hmr",
+    "gpuHmrSuccess",
+    "gpu_hmr_success",
+    "canSatisfyRuntimeProof",
+    "can_satisfy_runtime_proof",
+    "canSatisfyDispatchProof",
+    "can_satisfy_dispatch_proof",
+    "language",
+    "languageSource",
+    "language_source",
+    "isGui",
+    "is_gui",
+    "uiMode",
+    "ui_mode",
+    "oracleIntent",
+    "oracle_intent",
+    "outputOracleKind",
+    "output_oracle_kind",
+    "entryPath",
+    "entry_path",
+    "sourceManifestHash",
+    "source_manifest_hash",
+    "declaredSourceManifestHash",
+    "declared_source_manifest_hash",
+    "sourceManifestHashVerified",
+    "source_manifest_hash_verified",
+    "sourceLanguageEvidence",
+    "source_language_evidence",
+    "languageNeutralSourcePaths",
+    "language_neutral_source_paths",
+    "sourcePaths",
+    "source_paths",
+    "buildMetadataPaths",
+    "build_metadata_paths",
+    "buildMetadataHash",
+    "build_metadata_hash",
+    "oracleEvidenceHashes",
+    "oracle_evidence_hashes",
+    "intentHash",
+    "intent_hash",
+    "evidenceRefs",
+    "evidence_refs",
+    "blockingGaps",
+    "blocking_gaps",
+];
 
 #[derive(Debug, Clone)]
 struct ValidatedSourceFirstRequestIntent {
+    schema_version: String,
     record: serde_json::Value,
     intent_hash: String,
     source_manifest_hash: String,
@@ -808,249 +1020,6 @@ fn validate_oracle_evidence_hashes(value: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SourceFirstExtensionRole {
-    TranslationUnit,
-    LanguageContext,
-    NeutralContext,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SourceFirstExtensionMetadata {
-    extension: &'static str,
-    role: SourceFirstExtensionRole,
-    request_language: Option<&'static str>,
-    automatic_entry_candidate: bool,
-    can_establish_gpu_capability: bool,
-}
-
-const SOURCE_FIRST_EXTENSION_REGISTRY: &[SourceFirstExtensionMetadata] = &[
-    SourceFirstExtensionMetadata {
-        extension: ".c",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("c"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".c++",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("cpp"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".cc",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("cpp"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".cl",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("opencl"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".comp",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("glsl"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".cpp",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("cpp"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".cu",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("cuda"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".cuh",
-        role: SourceFirstExtensionRole::LanguageContext,
-        request_language: Some("cuda"),
-        automatic_entry_candidate: false,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".cxx",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("cpp"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".frag",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("glsl"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".geom",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("glsl"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".glsl",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("glsl"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".h",
-        role: SourceFirstExtensionRole::NeutralContext,
-        request_language: None,
-        automatic_entry_candidate: false,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".h++",
-        role: SourceFirstExtensionRole::LanguageContext,
-        request_language: Some("cpp"),
-        automatic_entry_candidate: false,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".hh",
-        role: SourceFirstExtensionRole::LanguageContext,
-        request_language: Some("cpp"),
-        automatic_entry_candidate: false,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".hip",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("hip"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".hlsl",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("hlsl"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".hpp",
-        role: SourceFirstExtensionRole::LanguageContext,
-        request_language: Some("cpp"),
-        automatic_entry_candidate: false,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".hxx",
-        role: SourceFirstExtensionRole::LanguageContext,
-        request_language: Some("cpp"),
-        automatic_entry_candidate: false,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".inc",
-        role: SourceFirstExtensionRole::NeutralContext,
-        request_language: None,
-        automatic_entry_candidate: false,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".inl",
-        role: SourceFirstExtensionRole::NeutralContext,
-        request_language: None,
-        automatic_entry_candidate: false,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".ipp",
-        role: SourceFirstExtensionRole::NeutralContext,
-        request_language: None,
-        automatic_entry_candidate: false,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".metal",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("metal"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".opencl",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("opencl"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".rs",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("rust"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".slang",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("slang"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".tesc",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("glsl"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".tese",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("glsl"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".tpp",
-        role: SourceFirstExtensionRole::NeutralContext,
-        request_language: None,
-        automatic_entry_candidate: false,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".vert",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("glsl"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".wgsl",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("wgsl"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-    SourceFirstExtensionMetadata {
-        extension: ".zig",
-        role: SourceFirstExtensionRole::TranslationUnit,
-        request_language: Some("zig"),
-        automatic_entry_candidate: true,
-        can_establish_gpu_capability: false,
-    },
-];
-
 fn normalize_gpu_hmr_source_extension(value: &str) -> String {
     let normalized = value.trim().replace('\\', "/");
     let Some(basename) = normalized
@@ -1070,14 +1039,40 @@ fn normalize_gpu_hmr_source_extension(value: &str) -> String {
         .unwrap_or_default()
 }
 
-fn gpu_hmr_source_extension_metadata(value: &str) -> Option<&'static SourceFirstExtensionMetadata> {
-    let extension = normalize_gpu_hmr_source_extension(value);
-    SOURCE_FIRST_EXTENSION_REGISTRY
-        .iter()
-        .find(|metadata| metadata.extension == extension && !metadata.can_establish_gpu_capability)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyV1SourceRole {
+    TranslationUnit,
+    LanguageContext,
+    NeutralContext,
 }
 
-fn validate_source_language_evidence(
+// Compatibility decoder for already-issued v1 records. New requests use v2
+// open-vocabulary hints; this table must never select a compiler or adapter.
+fn legacy_v1_source_metadata(value: &str) -> Option<(LegacyV1SourceRole, Option<&'static str>)> {
+    let metadata = match normalize_gpu_hmr_source_extension(value).as_str() {
+        ".c" => (LegacyV1SourceRole::TranslationUnit, Some("c")),
+        ".c++" | ".cc" | ".cpp" | ".cxx" => (LegacyV1SourceRole::TranslationUnit, Some("cpp")),
+        ".cl" | ".opencl" => (LegacyV1SourceRole::TranslationUnit, Some("opencl")),
+        ".comp" | ".frag" | ".geom" | ".glsl" | ".tesc" | ".tese" | ".vert" => {
+            (LegacyV1SourceRole::TranslationUnit, Some("glsl"))
+        }
+        ".cu" => (LegacyV1SourceRole::TranslationUnit, Some("cuda")),
+        ".hip" => (LegacyV1SourceRole::TranslationUnit, Some("hip")),
+        ".hlsl" => (LegacyV1SourceRole::TranslationUnit, Some("hlsl")),
+        ".metal" => (LegacyV1SourceRole::TranslationUnit, Some("metal")),
+        ".rs" => (LegacyV1SourceRole::TranslationUnit, Some("rust")),
+        ".slang" => (LegacyV1SourceRole::TranslationUnit, Some("slang")),
+        ".wgsl" => (LegacyV1SourceRole::TranslationUnit, Some("wgsl")),
+        ".zig" => (LegacyV1SourceRole::TranslationUnit, Some("zig")),
+        ".cuh" => (LegacyV1SourceRole::LanguageContext, Some("cuda")),
+        ".h++" | ".hh" | ".hpp" | ".hxx" => (LegacyV1SourceRole::LanguageContext, Some("cpp")),
+        ".h" | ".inc" | ".inl" | ".ipp" | ".tpp" => (LegacyV1SourceRole::NeutralContext, None),
+        _ => return None,
+    };
+    Some(metadata)
+}
+
+fn validate_source_language_evidence_v2(
     value: &serde_json::Value,
     source_paths: &[String],
     neutral_paths: &[String],
@@ -1097,31 +1092,6 @@ fn validate_source_language_evidence(
             "source_first_request_intent_language_evidence_invalid",
             "language-neutral paths must be declared source paths",
         ));
-    }
-    for path in source_paths {
-        if gpu_hmr_source_extension_metadata(path).is_none() {
-            return Err(source_first_intent_error(
-                "source_first_request_intent_language_evidence_invalid",
-                format!("source path {path} has an unknown protocol extension"),
-            ));
-        }
-    }
-    for path in neutral_paths {
-        let metadata = gpu_hmr_source_extension_metadata(path).ok_or_else(|| {
-            source_first_intent_error(
-                "source_first_request_intent_language_evidence_invalid",
-                format!("neutral path {path} has an unknown protocol extension"),
-            )
-        })?;
-        if metadata.role != SourceFirstExtensionRole::NeutralContext
-            || metadata.request_language.is_some()
-            || metadata.automatic_entry_candidate
-        {
-            return Err(source_first_intent_error(
-                "source_first_request_intent_language_evidence_invalid",
-                format!("neutral path {path} is not registry neutral_context"),
-            ));
-        }
     }
 
     let expected_keys = ["extension", "language", "path"]
@@ -1150,10 +1120,15 @@ fn validate_source_language_evidence(
             )?,
             "sourceLanguageEvidence.path",
         )?;
-        let extension = required_intent_string(
-            object.get("extension").unwrap_or(&serde_json::Value::Null),
-            "sourceLanguageEvidence.extension",
-        )?;
+        let extension_value = object.get("extension").unwrap_or(&serde_json::Value::Null);
+        let extension = if extension_value.is_null() {
+            None
+        } else {
+            Some(required_intent_string(
+                extension_value,
+                "sourceLanguageEvidence.extension",
+            )?)
+        };
         let evidence_language = required_intent_string(
             object.get("language").unwrap_or(&serde_json::Value::Null),
             "sourceLanguageEvidence.language",
@@ -1164,26 +1139,23 @@ fn validate_source_language_evidence(
                 format!("language evidence path {path} is not a typed source path"),
             ));
         }
-        let metadata = gpu_hmr_source_extension_metadata(&path).ok_or_else(|| {
-            source_first_intent_error(
-                "source_first_request_intent_language_evidence_invalid",
-                format!("language evidence path {path} has an unknown protocol extension"),
-            )
-        })?;
-        if extension != metadata.extension {
+        let canonical_extension = normalize_gpu_hmr_source_extension(&path);
+        let extension_matches = if canonical_extension.is_empty() {
+            extension.is_none()
+        } else {
+            extension == Some(canonical_extension.as_str())
+        };
+        if !extension_matches {
             return Err(source_first_intent_error(
                 "source_first_request_intent_language_evidence_invalid",
                 format!(
-                    "language evidence extension {extension} does not match canonical path suffix {} for {path}",
-                    metadata.extension
-                ),
-            ));
-        }
-        if metadata.request_language != Some(evidence_language) {
-            return Err(source_first_intent_error(
-                "source_first_request_intent_language_evidence_invalid",
-                format!(
-                    "language evidence {evidence_language} does not match registry language for {path}"
+                    "language evidence extension {} does not match canonical path suffix {} for {path}",
+                    extension.unwrap_or("null"),
+                    if canonical_extension.is_empty() {
+                        "null"
+                    } else {
+                        canonical_extension.as_str()
+                    }
                 ),
             ));
         }
@@ -1201,25 +1173,292 @@ fn validate_source_language_evidence(
         .union(&neutral_set)
         .cloned()
         .collect::<BTreeSet<_>>();
-    let entry_metadata = gpu_hmr_source_extension_metadata(entry_path).ok_or_else(|| {
-        source_first_intent_error(
-            "source_first_request_intent_language_evidence_invalid",
-            format!("entry path {entry_path} has an unknown protocol extension"),
-        )
-    })?;
-    if entry_metadata.role != SourceFirstExtensionRole::TranslationUnit
-        || !entry_metadata.automatic_entry_candidate
-        || entry_metadata.request_language != Some(language)
-    {
-        return Err(source_first_intent_error(
-            "source_first_request_intent_language_evidence_invalid",
-            format!("entry path {entry_path} is not an automatic translation-unit candidate"),
-        ));
-    }
     if classified_paths != source_set || entry_language.as_deref() != Some(language) {
         return Err(source_first_intent_error(
             "source_first_request_intent_language_evidence_invalid",
             "language evidence must classify every source path and bind the entry language",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_source_language_evidence_v1(
+    value: &serde_json::Value,
+    source_paths: &[String],
+    neutral_paths: &[String],
+    entry_path: &str,
+    language: &str,
+) -> Result<()> {
+    let entries = value.as_array().ok_or_else(|| {
+        source_first_intent_error(
+            "source_first_request_intent_language_evidence_invalid",
+            "sourceLanguageEvidence must be an array",
+        )
+    })?;
+    let source_set = source_paths.iter().cloned().collect::<BTreeSet<_>>();
+    let neutral_set = neutral_paths.iter().cloned().collect::<BTreeSet<_>>();
+    if !neutral_set.is_subset(&source_set) {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_language_evidence_invalid",
+            "language-neutral paths must be declared source paths",
+        ));
+    }
+    for path in source_paths {
+        if legacy_v1_source_metadata(path).is_none() {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("v1 source path {path} has an unknown legacy protocol extension"),
+            ));
+        }
+    }
+    for path in neutral_paths {
+        if legacy_v1_source_metadata(path) != Some((LegacyV1SourceRole::NeutralContext, None)) {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("v1 neutral path {path} is not legacy neutral context"),
+            ));
+        }
+    }
+
+    let expected_keys = ["extension", "language", "path"]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut evidence_paths = BTreeSet::new();
+    let mut entry_language = None;
+    for (index, entry) in entries.iter().enumerate() {
+        let object = entry.as_object().ok_or_else(|| {
+            source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("sourceLanguageEvidence[{index}] must be an object"),
+            )
+        })?;
+        if object.keys().map(String::as_str).collect::<BTreeSet<_>>() != expected_keys {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("sourceLanguageEvidence[{index}] has missing or unknown fields"),
+            ));
+        }
+        let path = exact_source_first_path(
+            required_intent_string(
+                object.get("path").unwrap_or(&serde_json::Value::Null),
+                "sourceLanguageEvidence.path",
+            )?,
+            "sourceLanguageEvidence.path",
+        )?;
+        let extension = required_intent_string(
+            object.get("extension").unwrap_or(&serde_json::Value::Null),
+            "sourceLanguageEvidence.extension",
+        )?;
+        let evidence_language = required_intent_string(
+            object.get("language").unwrap_or(&serde_json::Value::Null),
+            "sourceLanguageEvidence.language",
+        )?;
+        if !source_set.contains(&path) || neutral_set.contains(&path) {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("language evidence path {path} is not a typed v1 source path"),
+            ));
+        }
+        let Some((role, expected_language)) = legacy_v1_source_metadata(&path) else {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("language evidence path {path} has an unknown v1 extension"),
+            ));
+        };
+        let canonical_extension = normalize_gpu_hmr_source_extension(&path);
+        if extension != canonical_extension || expected_language != Some(evidence_language) {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("v1 language evidence does not match legacy metadata for {path}"),
+            ));
+        }
+        if !evidence_paths.insert(path.clone()) {
+            return Err(source_first_intent_error(
+                "source_first_request_intent_language_evidence_invalid",
+                format!("duplicate language evidence path {path}"),
+            ));
+        }
+        if path == entry_path {
+            if role != LegacyV1SourceRole::TranslationUnit {
+                return Err(source_first_intent_error(
+                    "source_first_request_intent_language_evidence_invalid",
+                    "v1 entry path is not a legacy translation unit",
+                ));
+            }
+            entry_language = Some(evidence_language.to_string());
+        }
+    }
+    let classified_paths = evidence_paths
+        .union(&neutral_set)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if classified_paths != source_set || entry_language.as_deref() != Some(language) {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_language_evidence_invalid",
+            "v1 language evidence must classify every source path and bind the entry language",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_source_first_request_intent_pre_hydration(req: &CompileRequest) -> Result<()> {
+    let Some(record) = req.source_first_request_intent.as_ref() else {
+        return Ok(());
+    };
+    let object = record.as_object().ok_or_else(|| {
+        source_first_intent_error(
+            "source_first_request_intent_invalid",
+            "request intent must be an object",
+        )
+    })?;
+    let allowed = SOURCE_FIRST_REQUEST_INTENT_ALLOWED_FIELDS
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if let Some(unknown) = object.keys().find(|key| !allowed.contains(key.as_str())) {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_field_unknown",
+            format!("unknown field {unknown}"),
+        ));
+    }
+
+    let schema = required_intent_string(
+        required_intent_alias(object, "schemaVersion", "schema_version")?,
+        "schemaVersion",
+    )?;
+    if schema != SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION
+        && schema != SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1
+    {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_schema_invalid",
+            format!("unsupported schema {schema}"),
+        ));
+    }
+    let authority = required_intent_string(
+        required_intent_alias(object, "proofAuthority", "proof_authority")?,
+        "proofAuthority",
+    )?;
+    if authority != SOURCE_FIRST_REQUEST_INTENT_AUTHORITY {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_authority_invalid",
+            "proofAuthority is not the support-only request authority",
+        ));
+    }
+    for (camel, snake, expected) in [
+        ("acceptedAsRequestHints", "accepted_as_request_hints", true),
+        ("acceptedForGpuHmr", "accepted_for_gpu_hmr", false),
+        ("gpuHmrSuccess", "gpu_hmr_success", false),
+        ("canSatisfyRuntimeProof", "can_satisfy_runtime_proof", false),
+        (
+            "canSatisfyDispatchProof",
+            "can_satisfy_dispatch_proof",
+            false,
+        ),
+        (
+            "sourceManifestHashVerified",
+            "source_manifest_hash_verified",
+            true,
+        ),
+    ] {
+        required_intent_bool(
+            required_intent_alias(object, camel, snake)?,
+            camel,
+            expected,
+        )?;
+    }
+    let blocking_gaps = required_intent_alias(object, "blockingGaps", "blocking_gaps")?
+        .as_array()
+        .ok_or_else(|| {
+            source_first_intent_error(
+                "source_first_request_intent_field_invalid",
+                "blockingGaps must be an empty array",
+            )
+        })?;
+    if !blocking_gaps.is_empty() {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_blocking_gap_present",
+            "request intent contains blocking gaps",
+        ));
+    }
+
+    let language = required_intent_string(
+        object.get("language").unwrap_or(&serde_json::Value::Null),
+        "language",
+    )?;
+    if language != req.language {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_language_mismatch",
+            "request language does not match the intent entry language",
+        ));
+    }
+    let language_source = required_intent_string(
+        required_intent_alias(object, "languageSource", "language_source")?,
+        "languageSource",
+    )?;
+    let expected_language_source = if schema == SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1 {
+        "exact_source_manifest_entry_extension"
+    } else {
+        "manifest_bound_open_vocabulary_hint"
+    };
+    if language_source != expected_language_source {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_language_source_invalid",
+            format!("languageSource must be {expected_language_source}"),
+        ));
+    }
+
+    let entry_path = exact_source_first_path(
+        required_intent_string(
+            required_intent_alias(object, "entryPath", "entry_path")?,
+            "entryPath",
+        )?,
+        "entryPath",
+    )?;
+    if normalized_request_filename(&req.filename).as_deref() != Some(entry_path.as_str()) {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_entry_mismatch",
+            "compile request filename does not match entryPath",
+        ));
+    }
+    let source_paths = intent_path_array(
+        required_intent_alias(object, "sourcePaths", "source_paths")?,
+        "sourcePaths",
+    )?;
+    let build_paths = intent_path_array(
+        required_intent_alias(object, "buildMetadataPaths", "build_metadata_paths")?,
+        "buildMetadataPaths",
+    )?;
+    let source_set = source_paths.iter().cloned().collect::<BTreeSet<_>>();
+    let build_set = build_paths.iter().cloned().collect::<BTreeSet<_>>();
+    if source_set.is_empty()
+        || !source_set.contains(&entry_path)
+        || !source_set.is_disjoint(&build_set)
+    {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_request_manifest_mismatch",
+            "source/build paths must be disjoint and include the entry source",
+        ));
+    }
+    let declared_set = source_set
+        .union(&build_set)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut available_set = BTreeSet::new();
+    for file in &req.files {
+        available_set.insert(exact_source_first_path(
+            &file.name,
+            "CompileRequest.files.name",
+        )?);
+    }
+    for file_ref in &req.file_refs {
+        available_set.insert(exact_source_first_path(
+            &file_ref.name,
+            "CompileRequest.file_refs.name",
+        )?);
+    }
+    if available_set != declared_set {
+        return Err(source_first_intent_error(
+            "source_first_request_intent_request_manifest_mismatch",
+            "inline files and file refs must cover exactly every declared source/build path",
         ));
     }
     Ok(())
@@ -1238,60 +1477,9 @@ fn validate_source_first_request_intent(
         )
     })?;
 
-    const ALLOWED_FIELDS: [&str; 51] = [
-        "schemaVersion",
-        "schema_version",
-        "proofAuthority",
-        "proof_authority",
-        "acceptedAsRequestHints",
-        "accepted_as_request_hints",
-        "acceptedForGpuHmr",
-        "accepted_for_gpu_hmr",
-        "gpuHmrSuccess",
-        "gpu_hmr_success",
-        "canSatisfyRuntimeProof",
-        "can_satisfy_runtime_proof",
-        "canSatisfyDispatchProof",
-        "can_satisfy_dispatch_proof",
-        "language",
-        "languageSource",
-        "language_source",
-        "isGui",
-        "is_gui",
-        "uiMode",
-        "ui_mode",
-        "oracleIntent",
-        "oracle_intent",
-        "outputOracleKind",
-        "output_oracle_kind",
-        "entryPath",
-        "entry_path",
-        "sourceManifestHash",
-        "source_manifest_hash",
-        "declaredSourceManifestHash",
-        "declared_source_manifest_hash",
-        "sourceManifestHashVerified",
-        "source_manifest_hash_verified",
-        "sourceLanguageEvidence",
-        "source_language_evidence",
-        "languageNeutralSourcePaths",
-        "language_neutral_source_paths",
-        "sourcePaths",
-        "source_paths",
-        "buildMetadataPaths",
-        "build_metadata_paths",
-        "buildMetadataHash",
-        "build_metadata_hash",
-        "oracleEvidenceHashes",
-        "oracle_evidence_hashes",
-        "intentHash",
-        "intent_hash",
-        "evidenceRefs",
-        "evidence_refs",
-        "blockingGaps",
-        "blocking_gaps",
-    ];
-    let allowed = ALLOWED_FIELDS.into_iter().collect::<BTreeSet<_>>();
+    let allowed = SOURCE_FIRST_REQUEST_INTENT_ALLOWED_FIELDS
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     if let Some(unknown) = object.keys().find(|key| !allowed.contains(key.as_str())) {
         return Err(source_first_intent_error(
             "source_first_request_intent_field_unknown",
@@ -1303,7 +1491,9 @@ fn validate_source_first_request_intent(
         required_intent_alias(object, "schemaVersion", "schema_version")?,
         "schemaVersion",
     )?;
-    if schema != SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION {
+    if schema != SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION
+        && schema != SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1
+    {
         return Err(source_first_intent_error(
             "source_first_request_intent_schema_invalid",
             format!("unsupported schema {schema}"),
@@ -1371,10 +1561,15 @@ fn validate_source_first_request_intent(
         required_intent_alias(object, "languageSource", "language_source")?,
         "languageSource",
     )?;
-    if language_source != "exact_source_manifest_entry_extension" {
+    let expected_language_source = if schema == SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1 {
+        "exact_source_manifest_entry_extension"
+    } else {
+        "manifest_bound_open_vocabulary_hint"
+    };
+    if language_source != expected_language_source {
         return Err(source_first_intent_error(
             "source_first_request_intent_language_source_invalid",
-            "languageSource must identify exact entry-extension evidence",
+            format!("languageSource must be {expected_language_source}"),
         ));
     }
 
@@ -1546,13 +1741,23 @@ fn validate_source_first_request_intent(
     )?;
     let language_evidence =
         required_intent_alias(object, "sourceLanguageEvidence", "source_language_evidence")?;
-    validate_source_language_evidence(
-        language_evidence,
-        &source_paths,
-        &neutral_paths,
-        &entry_path,
-        &language,
-    )?;
+    if schema == SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1 {
+        validate_source_language_evidence_v1(
+            language_evidence,
+            &source_paths,
+            &neutral_paths,
+            &entry_path,
+            &language,
+        )?;
+    } else {
+        validate_source_language_evidence_v2(
+            language_evidence,
+            &source_paths,
+            &neutral_paths,
+            &entry_path,
+            &language,
+        )?;
+    }
 
     let is_gui_value = required_intent_alias(object, "isGui", "is_gui")?;
     let is_gui = is_gui_value.as_bool().ok_or_else(|| {
@@ -1668,7 +1873,7 @@ fn validate_source_first_request_intent(
         .collect::<Vec<_>>();
 
     let seed = serde_json::json!({
-        "schemaVersion": SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION,
+        "schemaVersion": schema,
         "entryPath": entry_path,
         "sourceManifestHash": source_manifest_hash,
         "sourcePaths": source_paths,
@@ -1691,6 +1896,7 @@ fn validate_source_first_request_intent(
     }
 
     Ok(Some(ValidatedSourceFirstRequestIntent {
+        schema_version: schema.to_string(),
         record: record.clone(),
         intent_hash,
         source_manifest_hash,
@@ -8804,12 +9010,35 @@ async fn write_device_hmr_proof_artifact_with_intent(
     ];
 
     let source_first_request_intent_evidence = source_first_request_intent.map(|intent| {
+        let legacy_v1 = intent.schema_version == SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1;
+        let binding_schema_version = if legacy_v1 {
+            SOURCE_FIRST_REQUEST_INTENT_BINDING_SCHEMA_VERSION_V1
+        } else {
+            SOURCE_FIRST_REQUEST_INTENT_BINDING_SCHEMA_VERSION
+        };
+        let language_evidence_schema_version = if legacy_v1 {
+            SOURCE_FIRST_EXTENSION_REGISTRY_SCHEMA_VERSION_V1
+        } else {
+            SOURCE_FIRST_LANGUAGE_EVIDENCE_SCHEMA_VERSION
+        };
+        let language_evidence_authority = if legacy_v1 {
+            SOURCE_FIRST_EXTENSION_REGISTRY_AUTHORITY_V1
+        } else {
+            SOURCE_FIRST_LANGUAGE_EVIDENCE_AUTHORITY
+        };
         let binding_metadata = metadata_with_fission_run_binding(
             serde_json::json!({
-                "schemaVersion": SOURCE_FIRST_REQUEST_INTENT_BINDING_SCHEMA_VERSION,
+                "schemaVersion": binding_schema_version,
                 "proofAuthority": SOURCE_FIRST_REQUEST_INTENT_BINDING_AUTHORITY,
-                "sourceExtensionRegistrySchemaVersion": SOURCE_FIRST_EXTENSION_REGISTRY_SCHEMA_VERSION,
-                "sourceExtensionRegistryCanEstablishGpuCapability": false,
+                "requestIntentSchemaVersion": &intent.schema_version,
+                "sourceLanguageEvidenceSchemaVersion": language_evidence_schema_version,
+                "sourceLanguageEvidenceAuthority": language_evidence_authority,
+                "languageEvidenceMode": if legacy_v1 {
+                    "legacy_v1_suffix_compatibility_only"
+                } else {
+                    "manifest_bound_open_vocabulary_hint"
+                },
+                "sourceLanguageLabelsCanEstablishGpuCapability": false,
                 "acceptedAsRequestHints": true,
                 "acceptedForGpuHmr": false,
                 "gpuHmrSuccess": false,
@@ -11707,6 +11936,19 @@ async fn handle_compile_request_inner(
         req.require_ai_provider_call,
         req.user_requested_deterministic,
     )?;
+    validate_source_first_request_intent_pre_hydration(&req)?;
+    if req.language == "java" && req.source_first_request_intent.is_none() {
+        return crate::compiler::java::handler::handle_java_request(ctx, req, session_id).await;
+    }
+
+    let file_ref_summary = hydrate_workspace_file_refs(&ctx.workspace_path, &mut req).await?;
+    if file_ref_summary.count > 0 {
+        eprintln!(
+            "[Compile] hydrated workspace file refs: count={} bytes={}",
+            file_ref_summary.count, file_ref_summary.bytes
+        );
+    }
+    let validated_source_first_request_intent = validate_source_first_request_intent(&req)?;
 
     // ── Language dispatch: route non-C++ languages to dedicated pipelines ──
     if req.language == "java" {
@@ -11726,14 +11968,6 @@ async fn handle_compile_request_inner(
     // Manual logging instead of record_step for now
     debug_log!("[Compile] Step: Handler started");
 
-    let file_ref_summary = hydrate_workspace_file_refs(&ctx.workspace_path, &mut req).await?;
-    if file_ref_summary.count > 0 {
-        eprintln!(
-            "[Compile] hydrated workspace file refs: count={} bytes={}",
-            file_ref_summary.count, file_ref_summary.bytes
-        );
-    }
-    let validated_source_first_request_intent = validate_source_first_request_intent(&req)?;
     sync_compile_request_workspace(ctx, &req).await?;
 
     // ============================================================
@@ -18001,7 +18235,8 @@ mod gpu_host_contract_tests {
         let mut outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
         outcome.artifact_path = artifact_path;
         let proof = device_hmr_proof_telemetry(&outcome);
-        let request = compile_request_with_source_first_intent();
+        let mut request = compile_request_with_source_first_intent();
+        request.source_first_request_intent = Some(source_first_request_intent_v2_fixture());
         let intent = validate_source_first_request_intent(&request)
             .unwrap()
             .unwrap();
@@ -18038,19 +18273,31 @@ mod gpu_host_contract_tests {
         );
         assert_eq!(
             metadata
+                .get("requestIntentSchemaVersion")
+                .and_then(serde_json::Value::as_str),
+            Some(SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            metadata
                 .get("proofAuthority")
                 .and_then(serde_json::Value::as_str),
             Some(SOURCE_FIRST_REQUEST_INTENT_BINDING_AUTHORITY)
         );
         assert_eq!(
             metadata
-                .get("sourceExtensionRegistrySchemaVersion")
+                .get("sourceLanguageEvidenceSchemaVersion")
                 .and_then(serde_json::Value::as_str),
-            Some(SOURCE_FIRST_EXTENSION_REGISTRY_SCHEMA_VERSION)
+            Some(SOURCE_FIRST_LANGUAGE_EVIDENCE_SCHEMA_VERSION)
         );
         assert_eq!(
             metadata
-                .get("sourceExtensionRegistryCanEstablishGpuCapability")
+                .get("sourceLanguageEvidenceAuthority")
+                .and_then(serde_json::Value::as_str),
+            Some(SOURCE_FIRST_LANGUAGE_EVIDENCE_AUTHORITY)
+        );
+        assert_eq!(
+            metadata
+                .get("sourceLanguageLabelsCanEstablishGpuCapability")
                 .and_then(serde_json::Value::as_bool),
             Some(false)
         );
@@ -18094,6 +18341,88 @@ mod gpu_host_contract_tests {
             .stage_results
             .iter()
             .all(|stage| !stage.stage_id.contains("source-first-request-intent")));
+    }
+
+    #[tokio::test]
+    async fn legacy_v1_source_intent_binding_retains_legacy_provenance() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact_path = temp.path().join("device.hsaco");
+        tokio::fs::write(&artifact_path, b"legacy-source-intent-device-artifact")
+            .await
+            .unwrap();
+        let mut outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        outcome.artifact_path = artifact_path;
+        let proof = device_hmr_proof_telemetry(&outcome);
+        let request = compile_request_with_source_first_intent();
+        let intent = validate_source_first_request_intent(&request)
+            .unwrap()
+            .unwrap();
+
+        let written = write_device_hmr_proof_artifact_with_intent(
+            temp.path(),
+            Some("workspace"),
+            "runtime-session",
+            FIXTURE_SOURCE_EDIT_ID,
+            &outcome,
+            None,
+            Some(&intent),
+            &proof,
+        )
+        .await
+        .unwrap();
+        let artifact = crate::hmr::gpu_proof::read_proof_artifact(&written.path)
+            .await
+            .unwrap();
+        let metadata = artifact
+            .evidence_refs
+            .iter()
+            .find(|entry| entry.kind == "source-first-request-intent-binding-support")
+            .and_then(|entry| entry.metadata.as_ref())
+            .expect("legacy support-only request intent metadata");
+
+        assert_eq!(
+            metadata
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_str),
+            Some(SOURCE_FIRST_REQUEST_INTENT_BINDING_SCHEMA_VERSION_V1)
+        );
+        assert_eq!(
+            metadata
+                .get("requestIntentSchemaVersion")
+                .and_then(serde_json::Value::as_str),
+            Some(SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1)
+        );
+        assert_eq!(
+            metadata
+                .get("sourceLanguageEvidenceSchemaVersion")
+                .and_then(serde_json::Value::as_str),
+            Some(SOURCE_FIRST_EXTENSION_REGISTRY_SCHEMA_VERSION_V1)
+        );
+        assert_eq!(
+            metadata
+                .get("sourceLanguageEvidenceAuthority")
+                .and_then(serde_json::Value::as_str),
+            Some(SOURCE_FIRST_EXTENSION_REGISTRY_AUTHORITY_V1)
+        );
+        assert_eq!(
+            metadata
+                .get("languageEvidenceMode")
+                .and_then(serde_json::Value::as_str),
+            Some("legacy_v1_suffix_compatibility_only")
+        );
+        for field in [
+            "acceptedForGpuHmr",
+            "gpuHmrSuccess",
+            "canSatisfyRuntimeProof",
+            "canSatisfyDispatchProof",
+            "sourceLanguageLabelsCanEstablishGpuCapability",
+        ] {
+            assert_eq!(
+                metadata.get(field).and_then(serde_json::Value::as_bool),
+                Some(false),
+                "{field} must remain non-authoritative"
+            );
+        }
     }
 
     #[tokio::test]
@@ -21946,8 +22275,8 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             "runtimeExpectationHash": null
         });
         serde_json::json!({
-            "schemaVersion": SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION,
-            "schema_version": SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION,
+            "schemaVersion": SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1,
+            "schema_version": SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1,
             "proofAuthority": SOURCE_FIRST_REQUEST_INTENT_AUTHORITY,
             "proof_authority": SOURCE_FIRST_REQUEST_INTENT_AUTHORITY,
             "acceptedAsRequestHints": true,
@@ -22031,6 +22360,146 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         object.insert(snake.to_string(), value);
     }
 
+    fn reseal_source_first_intent_for_request(
+        request: &CompileRequest,
+        intent: &mut serde_json::Value,
+    ) {
+        let source_paths = intent["sourcePaths"]
+            .as_array()
+            .expect("source paths")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>();
+        let build_paths = intent["buildMetadataPaths"]
+            .as_array()
+            .expect("build paths")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>();
+        let manifest_entries = request
+            .files
+            .iter()
+            .map(|file| source_first_file_hash_entry(&file.name, &file.content))
+            .collect::<Vec<_>>();
+        let source_manifest_hash =
+            source_first_stable_sha256(&serde_json::Value::Array(manifest_entries));
+        let build_entries = request
+            .files
+            .iter()
+            .filter(|file| build_paths.contains(&file.name))
+            .map(|file| source_first_file_hash_entry(&file.name, &file.content))
+            .collect::<Vec<_>>();
+        let build_metadata_hash = (!build_entries.is_empty())
+            .then(|| source_first_stable_sha256(&serde_json::Value::Array(build_entries)));
+        set_intent_aliases(
+            intent,
+            "sourceManifestHash",
+            "source_manifest_hash",
+            serde_json::json!(source_manifest_hash.clone()),
+        );
+        set_intent_aliases(
+            intent,
+            "buildMetadataHash",
+            "build_metadata_hash",
+            serde_json::json!(build_metadata_hash.clone()),
+        );
+        let schema = intent["schemaVersion"]
+            .as_str()
+            .expect("schema version")
+            .to_string();
+        let entry_path = intent["entryPath"]
+            .as_str()
+            .expect("entry path")
+            .to_string();
+        assert!(source_paths.contains(&entry_path));
+        let oracle_refs = vec!["evidence:fixture-output".to_string()];
+        let seed = serde_json::json!({
+            "schemaVersion": schema,
+            "entryPath": entry_path,
+            "sourceManifestHash": source_manifest_hash,
+            "sourcePaths": intent["sourcePaths"],
+            "buildPaths": intent["buildMetadataPaths"],
+            "buildMetadataHash": build_metadata_hash,
+            "language": intent["language"],
+            "sourceLanguageEvidence": intent["sourceLanguageEvidence"],
+            "languageNeutralSourcePaths": intent["languageNeutralSourcePaths"],
+            "oracleIntent": intent["oracleIntent"],
+            "isGui": intent["isGui"],
+            "oracleEvidenceHashes": intent["oracleEvidenceHashes"],
+            "oracleEvidenceRefs": oracle_refs,
+        });
+        let intent_hash = source_first_stable_sha256(&seed);
+        set_intent_aliases(
+            intent,
+            "intentHash",
+            "intent_hash",
+            serde_json::json!(intent_hash.clone()),
+        );
+        let mut evidence_refs = vec![
+            "evidence:fixture-output".to_string(),
+            format!("evidence:source-first-request-intent:{intent_hash}"),
+            format!("evidence:source-first-request-manifest:{source_manifest_hash}"),
+        ];
+        if let Some(build_metadata_hash) = build_metadata_hash {
+            evidence_refs.push(build_metadata_hash);
+        }
+        evidence_refs.sort();
+        set_intent_aliases(
+            intent,
+            "evidenceRefs",
+            "evidence_refs",
+            serde_json::json!(evidence_refs),
+        );
+    }
+
+    fn source_first_request_intent_v2_fixture() -> serde_json::Value {
+        let mut intent = source_first_request_intent_fixture();
+        set_intent_aliases(
+            &mut intent,
+            "schemaVersion",
+            "schema_version",
+            serde_json::json!(SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION),
+        );
+        set_intent_aliases(
+            &mut intent,
+            "languageSource",
+            "language_source",
+            serde_json::json!("manifest_bound_open_vocabulary_hint"),
+        );
+        let seed = serde_json::json!({
+            "schemaVersion": SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION,
+            "entryPath": intent["entryPath"],
+            "sourceManifestHash": intent["sourceManifestHash"],
+            "sourcePaths": intent["sourcePaths"],
+            "buildPaths": intent["buildMetadataPaths"],
+            "buildMetadataHash": intent["buildMetadataHash"],
+            "language": intent["language"],
+            "sourceLanguageEvidence": intent["sourceLanguageEvidence"],
+            "languageNeutralSourcePaths": intent["languageNeutralSourcePaths"],
+            "oracleIntent": intent["oracleIntent"],
+            "isGui": intent["isGui"],
+            "oracleEvidenceHashes": intent["oracleEvidenceHashes"],
+            "oracleEvidenceRefs": ["evidence:fixture-output"],
+        });
+        let intent_hash = source_first_stable_sha256(&seed);
+        set_intent_aliases(
+            &mut intent,
+            "intentHash",
+            "intent_hash",
+            serde_json::json!(intent_hash.clone()),
+        );
+        let evidence_refs = serde_json::json!([
+            "evidence:fixture-output",
+            format!("evidence:source-first-request-intent:{intent_hash}"),
+            "evidence:source-first-request-manifest:sha256:c11fe4886d728717b396face762e8134311cf627452d3766b28b435fecbb46d9",
+            "sha256:4495fa6134402b03ddf0a2f46fab755ab97a6faabd327c102d5a27a04e58bb23"
+        ]);
+        set_intent_aliases(&mut intent, "evidenceRefs", "evidence_refs", evidence_refs);
+        intent
+    }
+
     #[test]
     fn source_first_request_intent_binds_exact_js_canonical_manifest() {
         let request = compile_request_with_source_first_intent();
@@ -22049,11 +22518,128 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         );
         assert_eq!(validated.entry_path, request.filename);
         assert_eq!(validated.language, request.language);
+        assert_eq!(
+            validated.schema_version,
+            SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1
+        );
         assert!(!validated.is_gui);
     }
 
     #[test]
-    fn source_language_registry_accepts_mixed_case_path_suffix() {
+    fn source_first_request_intent_v2_accepts_open_vocabulary_hints() {
+        let mut request = compile_request_with_source_first_intent();
+        request.source_first_request_intent = Some(source_first_request_intent_v2_fixture());
+
+        let validated = validate_source_first_request_intent(&request)
+            .expect("v2 request intent must validate")
+            .expect("validated v2 intent");
+
+        assert_eq!(validated.language, "cpp");
+        assert_eq!(validated.entry_path, "src/main.cpp");
+        assert_eq!(
+            validated.schema_version,
+            SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn legacy_v1_intent_does_not_inherit_v2_open_vocabulary_semantics() {
+        for entry_path in ["src/main.opaque", "src/extensionless"] {
+            let mut request = compile_request_with_source_first_intent();
+            request.filename = entry_path.to_string();
+            request.language = "unfamiliar-language".to_string();
+            request.files[2].name = entry_path.to_string();
+            request.source = request.files[2].content.clone();
+            let mut intent = source_first_request_intent_fixture();
+            set_intent_aliases(
+                &mut intent,
+                "entryPath",
+                "entry_path",
+                serde_json::json!(entry_path),
+            );
+            set_intent_aliases(
+                &mut intent,
+                "sourcePaths",
+                "source_paths",
+                serde_json::json!(["include/config.h", entry_path]),
+            );
+            intent["language"] = serde_json::json!("unfamiliar-language");
+            let extension = normalize_gpu_hmr_source_extension(entry_path);
+            let extension = if extension.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(extension)
+            };
+            set_intent_aliases(
+                &mut intent,
+                "sourceLanguageEvidence",
+                "source_language_evidence",
+                serde_json::json!([{
+                    "path": entry_path,
+                    "extension": extension,
+                    "language": "unfamiliar-language"
+                }]),
+            );
+            reseal_source_first_intent_for_request(&request, &mut intent);
+            request.source_first_request_intent = Some(intent);
+
+            let error = validate_source_first_request_intent(&request)
+                .expect_err("legacy v1 must retain its original closed compatibility semantics")
+                .to_string();
+            assert!(error.contains("unknown legacy protocol extension"));
+        }
+    }
+
+    #[test]
+    fn full_v2_intent_accepts_manifest_bound_unfamiliar_entry_label() {
+        let entry_path = "src/main.unfamiliar_architecture";
+        let language = "toolchain-observed-language-x";
+        let mut request = compile_request_with_source_first_intent();
+        request.filename = entry_path.to_string();
+        request.language = language.to_string();
+        request.files[2].name = entry_path.to_string();
+        request.source = request.files[2].content.clone();
+        let mut intent = source_first_request_intent_v2_fixture();
+        set_intent_aliases(
+            &mut intent,
+            "entryPath",
+            "entry_path",
+            serde_json::json!(entry_path),
+        );
+        set_intent_aliases(
+            &mut intent,
+            "sourcePaths",
+            "source_paths",
+            serde_json::json!(["include/config.h", entry_path]),
+        );
+        intent["language"] = serde_json::json!(language);
+        set_intent_aliases(
+            &mut intent,
+            "sourceLanguageEvidence",
+            "source_language_evidence",
+            serde_json::json!([{
+                "path": entry_path,
+                "extension": ".unfamiliar_architecture",
+                "language": language
+            }]),
+        );
+        reseal_source_first_intent_for_request(&request, &mut intent);
+        request.source_first_request_intent = Some(intent);
+
+        validate_source_first_request_intent_pre_hydration(&request).expect("v2 request preflight");
+        let validated = validate_source_first_request_intent(&request)
+            .expect("full v2 request must validate")
+            .expect("validated v2 intent");
+        assert_eq!(validated.language, language);
+        assert_eq!(validated.entry_path, entry_path);
+        assert_eq!(
+            validated.schema_version,
+            SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn source_language_hint_accepts_mixed_case_path_suffix() {
         let source_paths = vec!["SRC/MAIN.CPP".to_string()];
         let evidence = serde_json::json!([{
             "path": "SRC/MAIN.CPP",
@@ -22061,12 +22647,12 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             "language": "cpp"
         }]);
 
-        validate_source_language_evidence(&evidence, &source_paths, &[], "SRC/MAIN.CPP", "cpp")
-            .expect("mixed-case path suffix must normalize through the protocol registry");
+        validate_source_language_evidence_v2(&evidence, &source_paths, &[], "SRC/MAIN.CPP", "cpp")
+            .expect("mixed-case path suffix must normalize without a language registry");
     }
 
     #[test]
-    fn source_language_registry_rejects_fake_extension() {
+    fn source_language_hint_rejects_path_suffix_substitution() {
         let source_paths = vec!["src/main.cpp".to_string()];
         let evidence = serde_json::json!([{
             "path": "src/main.cpp",
@@ -22074,16 +22660,21 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             "language": "cpp"
         }]);
 
-        let error =
-            validate_source_language_evidence(&evidence, &source_paths, &[], "src/main.cpp", "cpp")
-                .unwrap_err()
-                .to_string();
+        let error = validate_source_language_evidence_v2(
+            &evidence,
+            &source_paths,
+            &[],
+            "src/main.cpp",
+            "cpp",
+        )
+        .unwrap_err()
+        .to_string();
 
         assert!(error.contains("does not match canonical path suffix"));
     }
 
     #[test]
-    fn source_language_registry_rejects_fake_language() {
+    fn source_language_hint_rejects_entry_language_replay() {
         let source_paths = vec!["src/main.cpp".to_string()];
         let evidence = serde_json::json!([{
             "path": "src/main.cpp",
@@ -22091,56 +22682,63 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             "language": "cuda"
         }]);
 
-        let error =
-            validate_source_language_evidence(&evidence, &source_paths, &[], "src/main.cpp", "cpp")
-                .unwrap_err()
-                .to_string();
-
-        assert!(error.contains("does not match registry language"));
-    }
-
-    #[test]
-    fn source_language_registry_rejects_language_context_as_neutral() {
-        let source_paths = vec!["include/context.hpp".to_string()];
-        let neutral_paths = vec!["include/context.hpp".to_string()];
-
-        let error = validate_source_language_evidence(
-            &serde_json::json!([]),
+        let error = validate_source_language_evidence_v2(
+            &evidence,
             &source_paths,
-            &neutral_paths,
-            "include/context.hpp",
+            &[],
+            "src/main.cpp",
             "cpp",
         )
         .unwrap_err()
         .to_string();
 
-        assert!(error.contains("is not registry neutral_context"));
+        assert!(error.contains("bind the entry language"));
     }
 
     #[test]
-    fn source_language_registry_rejects_unknown_suffix() {
+    fn source_language_hint_accepts_open_neutral_context_labels() {
+        let source_paths = vec![
+            "include/context.proprietary".to_string(),
+            "src/entry.architecture_x".to_string(),
+        ];
+        let neutral_paths = vec!["include/context.proprietary".to_string()];
+        let evidence = serde_json::json!([{
+            "path": "src/entry.architecture_x",
+            "extension": ".architecture_x",
+            "language": "toolchain-observed-language-x"
+        }]);
+
+        validate_source_language_evidence_v2(
+            &evidence,
+            &source_paths,
+            &neutral_paths,
+            "src/entry.architecture_x",
+            "toolchain-observed-language-x",
+        )
+        .expect("neutral context is a manifest-bound hint, not a suffix registry decision");
+    }
+
+    #[test]
+    fn source_language_hint_accepts_unknown_suffix() {
         let source_paths = vec!["src/main.unknown_gpu_source".to_string()];
         let evidence = serde_json::json!([{
             "path": "src/main.unknown_gpu_source",
             "extension": ".unknown_gpu_source",
-            "language": "cpp"
+            "language": "unfamiliar-toolchain-language"
         }]);
 
-        let error = validate_source_language_evidence(
+        validate_source_language_evidence_v2(
             &evidence,
             &source_paths,
             &[],
             "src/main.unknown_gpu_source",
-            "cpp",
+            "unfamiliar-toolchain-language",
         )
-        .unwrap_err()
-        .to_string();
-
-        assert!(error.contains("unknown protocol extension"));
+        .expect("unfamiliar suffixes must remain open-vocabulary request hints");
     }
 
     #[test]
-    fn source_language_registry_rejects_non_translation_unit_entry() {
+    fn source_language_hint_does_not_infer_entry_role_from_suffix() {
         let source_paths = vec!["include/context.hpp".to_string()];
         let evidence = serde_json::json!([{
             "path": "include/context.hpp",
@@ -22148,17 +22746,35 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             "language": "cpp"
         }]);
 
-        let error = validate_source_language_evidence(
+        validate_source_language_evidence_v2(
             &evidence,
             &source_paths,
             &[],
             "include/context.hpp",
             "cpp",
         )
-        .unwrap_err()
-        .to_string();
+        .expect(
+            "suffix metadata must not decide whether an observed toolchain can consume an entry",
+        );
+    }
 
-        assert!(error.contains("is not an automatic translation-unit candidate"));
+    #[test]
+    fn source_language_hint_accepts_extensionless_entry() {
+        let source_paths = vec!["src/device_program".to_string()];
+        let evidence = serde_json::json!([{
+            "path": "src/device_program",
+            "extension": null,
+            "language": "opaque-device-language"
+        }]);
+
+        validate_source_language_evidence_v2(
+            &evidence,
+            &source_paths,
+            &[],
+            "src/device_program",
+            "opaque-device-language",
+        )
+        .expect("extensionless sources must reach toolchain discovery");
     }
 
     #[test]
@@ -22381,11 +22997,11 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             req.files[0].content,
             String::from_utf8_lossy(content).to_string()
         );
-        let materialized =
-            tokio::fs::read(workspace.path().join("inputs").join("runtime-input.json"))
+        assert!(
+            !tokio::fs::try_exists(workspace.path().join("inputs").join("runtime-input.json"))
                 .await
-                .expect("materialized workspace ref");
-        assert_eq!(materialized, content);
+                .unwrap()
+        );
 
         if let Some(value) = previous {
             std::env::set_var("SYNTHI_REPOS_PATH", value);
@@ -22447,15 +23063,108 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             req.files[0].content,
             String::from_utf8_lossy(expected_content).to_string()
         );
-        let materialized = tokio::fs::read(workspace.path().join(&rel))
+        let unchanged_workspace_bytes = tokio::fs::read(workspace.path().join(&rel))
             .await
-            .expect("materialized integrity-matched workspace ref");
-        assert_eq!(materialized, expected_content);
+            .expect("pre-existing workspace ref remains untouched during hydration");
+        assert_eq!(unchanged_workspace_bytes, wrong_content);
 
         if let Some(value) = previous {
             std::env::set_var("SYNTHI_REPOS_PATH", value);
         } else {
             std::env::remove_var("SYNTHI_REPOS_PATH");
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_file_refs_require_hash_identity_for_collab_fallback() {
+        let _env_guard = WORKSPACE_FILE_REF_ENV_LOCK.lock().await;
+        let previous = std::env::var("SYNTHI_REPOS_PATH").ok();
+        let workspace = tempfile::tempdir().expect("workspace");
+        let repos = tempfile::tempdir().expect("repos");
+        let slug = "workspace-ref-hash-required-slug";
+        let collab_file = repos
+            .path()
+            .join(slug)
+            .join("inputs")
+            .join("runtime-input.txt");
+        tokio::fs::create_dir_all(collab_file.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&collab_file, b"unaddressed candidate\n")
+            .await
+            .unwrap();
+        std::env::set_var("SYNTHI_REPOS_PATH", repos.path());
+
+        let mut req = compile_request_with_file_refs(vec![crate::infra::messages::FileRef {
+            name: "inputs/runtime-input.txt".to_string(),
+            sha256: None,
+            bytes: None,
+        }]);
+        req.slug = Some(slug.to_string());
+        let error = hydrate_workspace_file_refs(workspace.path(), &mut req)
+            .await
+            .expect_err("collab fallback without a content hash must fail closed")
+            .to_string();
+        assert!(error.contains("requires sha256 identity"));
+        assert!(req.files.is_empty());
+
+        if let Some(value) = previous {
+            std::env::set_var("SYNTHI_REPOS_PATH", value);
+        } else {
+            std::env::remove_var("SYNTHI_REPOS_PATH");
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_file_refs_bound_collab_candidate_reads() {
+        let _env_guard = WORKSPACE_FILE_REF_ENV_LOCK.lock().await;
+        let previous_repos = std::env::var("SYNTHI_REPOS_PATH").ok();
+        let previous_limit = std::env::var("SYNTHI_WORKSPACE_FILE_REF_TOTAL_BYTES_LIMIT").ok();
+        let workspace = tempfile::tempdir().expect("workspace");
+        let repos = tempfile::tempdir().expect("repos");
+        let slug = "workspace-ref-read-budget-slug";
+        let relative = PathBuf::from("inputs/runtime-input.txt");
+        let wrong = b"candidate wrong\n";
+        let expected = b"candidate right\n";
+        let wrong_file = repos.path().join(slug).join(&relative);
+        let expected_file = repos.path().join(slug).join("nested").join(&relative);
+        tokio::fs::create_dir_all(wrong_file.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(expected_file.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&wrong_file, wrong).await.unwrap();
+        tokio::fs::write(&expected_file, expected).await.unwrap();
+        std::env::set_var("SYNTHI_REPOS_PATH", repos.path());
+        std::env::set_var(
+            "SYNTHI_WORKSPACE_FILE_REF_TOTAL_BYTES_LIMIT",
+            wrong.len().to_string(),
+        );
+        let digest = format!("{:x}", Sha256::digest(expected));
+
+        let mut req = compile_request_with_file_refs(vec![crate::infra::messages::FileRef {
+            name: relative.to_string_lossy().replace('\\', "/"),
+            sha256: Some(format!("sha256:{digest}")),
+            bytes: None,
+        }]);
+        req.slug = Some(slug.to_string());
+        let error = hydrate_workspace_file_refs(workspace.path(), &mut req)
+            .await
+            .expect_err("collab candidate reads must share an aggregate budget")
+            .to_string();
+        assert!(error.contains("candidate reads exceed aggregate limit"));
+        assert!(req.files.is_empty());
+
+        if let Some(value) = previous_repos {
+            std::env::set_var("SYNTHI_REPOS_PATH", value);
+        } else {
+            std::env::remove_var("SYNTHI_REPOS_PATH");
+        }
+        if let Some(value) = previous_limit {
+            std::env::set_var("SYNTHI_WORKSPACE_FILE_REF_TOTAL_BYTES_LIMIT", value);
+        } else {
+            std::env::remove_var("SYNTHI_WORKSPACE_FILE_REF_TOTAL_BYTES_LIMIT");
         }
     }
 
@@ -22490,6 +23199,82 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             .await
             .expect_err("escaped path should fail");
         assert!(err.to_string().contains("workspace-relative"));
+    }
+
+    #[tokio::test]
+    async fn workspace_file_refs_reject_count_and_declared_byte_limits_before_reads() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let too_many = (0..=MAX_WORKSPACE_FILE_REF_COUNT_LIMIT)
+            .map(|index| crate::infra::messages::FileRef {
+                name: format!("inputs/{index}.txt"),
+                sha256: None,
+                bytes: Some(0),
+            })
+            .collect();
+        let mut count_request = compile_request_with_file_refs(too_many);
+        let count_error = hydrate_workspace_file_refs(tmp.path(), &mut count_request)
+            .await
+            .expect_err("excessive file-ref count must fail before reads")
+            .to_string();
+        assert!(count_error.contains("count exceeds limit"));
+
+        let mut oversized_request =
+            compile_request_with_file_refs(vec![crate::infra::messages::FileRef {
+                name: "inputs/oversized.txt".to_string(),
+                sha256: None,
+                bytes: Some((MAX_WORKSPACE_FILE_REF_BYTES_LIMIT + 1) as u64),
+            }]);
+        let size_error = hydrate_workspace_file_refs(tmp.path(), &mut oversized_request)
+            .await
+            .expect_err("oversized declared file ref must fail before reads")
+            .to_string();
+        assert!(size_error.contains("declared bytes exceed per-file limit"));
+    }
+
+    #[tokio::test]
+    async fn workspace_file_ref_failure_does_not_partially_materialize_collab_bytes() {
+        let _env_guard = WORKSPACE_FILE_REF_ENV_LOCK.lock().await;
+        let previous = std::env::var("SYNTHI_REPOS_PATH").ok();
+        let workspace = tempfile::tempdir().expect("workspace");
+        let repos = tempfile::tempdir().expect("repos");
+        let slug = "workspace-ref-transaction-slug";
+        let first_content = b"first verified source\n";
+        let first_path = repos.path().join(slug).join("inputs/first.txt");
+        tokio::fs::create_dir_all(first_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&first_path, first_content).await.unwrap();
+        std::env::set_var("SYNTHI_REPOS_PATH", repos.path());
+
+        let first_digest = format!("{:x}", Sha256::digest(first_content));
+        let mut req = compile_request_with_file_refs(vec![
+            crate::infra::messages::FileRef {
+                name: "inputs/first.txt".to_string(),
+                sha256: Some(format!("sha256:{first_digest}")),
+                bytes: Some(first_content.len() as u64),
+            },
+            crate::infra::messages::FileRef {
+                name: "inputs/missing.txt".to_string(),
+                sha256: Some(format!("sha256:{}", "0".repeat(64))),
+                bytes: Some(1),
+            },
+        ]);
+        req.slug = Some(slug.to_string());
+
+        hydrate_workspace_file_refs(workspace.path(), &mut req)
+            .await
+            .expect_err("later ref failure must reject the entire hydration");
+        assert!(!workspace.path().join("inputs/first.txt").exists());
+        assert!(
+            req.files.is_empty(),
+            "failed hydration must not mutate request files"
+        );
+
+        if let Some(value) = previous {
+            std::env::set_var("SYNTHI_REPOS_PATH", value);
+        } else {
+            std::env::remove_var("SYNTHI_REPOS_PATH");
+        }
     }
 
     #[test]

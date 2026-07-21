@@ -4,6 +4,7 @@ import {
   defaultCasRootFromEnv,
   validateArtifactCasManifest,
 } from './gpu-hmr-artifact-cas.mjs';
+import { gpuHmrSourceExtensionMetadata } from './gpu-hmr-source-extension-registry.mjs';
 
 export const GPU_HMR_COLD_SOURCE_SPLIT_COMPILE_SUPPORT_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_source_split_compile_support.v1';
@@ -18,8 +19,10 @@ const SOURCE_FIRST_SCHEMA_VERSION =
   'synthi.gpu.hmr.agent_split_source_first_ingestion.v1';
 const SOURCE_FIRST_AUTHORITY =
   'source_first_ingestion_provenance_only_not_runtime_proof';
-const SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION =
+const SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1 =
   'synthi.gpu_hmr.source_first_request_intent.v1';
+const SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.source_first_request_intent.v2';
 const SOURCE_FIRST_REQUEST_INTENT_AUTHORITY =
   'source_manifest_bound_request_hints_only_not_gpu_hmr_success';
 const SOURCE_FIRST_COMPILE_REQUEST_SCHEMA_VERSION =
@@ -73,6 +76,7 @@ const RUNNER_TIMING_SCHEMA_VERSION = 'synthi.gpu.hmr.runner_timing_metrics.v1';
 const PROOF_AUTHORITY_BY_SCHEMA = new Map([
   [AGENT_SPLIT_RUN_MODE_SCHEMA_VERSION, COLD_COMPUTE_PROOF_AUTHORITY],
   [SOURCE_FIRST_SCHEMA_VERSION, SOURCE_FIRST_AUTHORITY],
+  [SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1, SOURCE_FIRST_REQUEST_INTENT_AUTHORITY],
   [SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION, SOURCE_FIRST_REQUEST_INTENT_AUTHORITY],
   [SOURCE_FIRST_COMPILE_REQUEST_SCHEMA_VERSION, SOURCE_FIRST_COMPILE_REQUEST_AUTHORITY],
   [COLD_SOURCE_PROFILE_IDENTITY_SCHEMA_VERSION, COLD_SOURCE_PROFILE_IDENTITY_AUTHORITY],
@@ -325,6 +329,104 @@ function normalizedInitialFiles(sourceFirstFacet) {
     .filter((entry) => entry.path);
 }
 
+function sourceSuffixForPath(value) {
+  const normalized = normalizedPath(value);
+  const basename = path.posix.basename(normalized);
+  if (!basename) return null;
+  if (basename.startsWith('.') && !basename.slice(1).includes('.')) {
+    return basename.toLowerCase();
+  }
+  return path.posix.extname(basename).toLowerCase() || null;
+}
+
+function validateRequestIntentLanguageClassification({
+  schemaVersion,
+  entryPath,
+  language,
+  sourcePaths,
+  sourceLanguageEvidence,
+  languageNeutralSourcePaths,
+  gaps,
+}) {
+  const legacyV1 = schemaVersion === SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1;
+  if (!language || !sourcePaths.includes(entryPath)) {
+    addGap(gaps, 'cold_support_request_language_entry_invalid');
+  }
+  if (!Array.isArray(sourceLanguageEvidence) || !Array.isArray(languageNeutralSourcePaths)) {
+    addGap(gaps, 'cold_support_request_language_classification_invalid');
+    return;
+  }
+  const typedPaths = new Set();
+  for (const entry of sourceLanguageEvidence) {
+    if (!isObject(entry)) {
+      addGap(gaps, 'cold_support_request_language_evidence_invalid');
+      continue;
+    }
+    const keys = Object.keys(entry).sort();
+    if (stableJson(keys) !== stableJson(['extension', 'language', 'path'])) {
+      addGap(gaps, 'cold_support_request_language_evidence_shape_invalid');
+      continue;
+    }
+    const filePath = normalizedPath(entry.path);
+    const extension = entry.extension == null ? null : String(entry.extension).trim();
+    const entryLanguage = String(entry.language ?? '').trim();
+    const legacyMetadata = legacyV1 ? gpuHmrSourceExtensionMetadata(filePath) : null;
+    if (
+      !safeRelativePath(filePath)
+      || !sourcePaths.includes(filePath)
+      || typedPaths.has(filePath)
+      || !entryLanguage
+      || extension !== sourceSuffixForPath(filePath)
+      || (legacyV1 && (
+        !legacyMetadata
+        || legacyMetadata.requestLanguage !== entryLanguage
+        || legacyMetadata.extension !== extension
+      ))
+    ) {
+      addGap(gaps, 'cold_support_request_language_evidence_invalid');
+      continue;
+    }
+    typedPaths.add(filePath);
+    if (filePath === entryPath && entryLanguage !== language) {
+      addGap(gaps, 'cold_support_request_entry_language_mismatch');
+    }
+  }
+  const neutralPaths = new Set();
+  for (const rawPath of languageNeutralSourcePaths) {
+    const filePath = normalizedPath(rawPath);
+    const legacyMetadata = legacyV1 ? gpuHmrSourceExtensionMetadata(filePath) : null;
+    if (
+      !safeRelativePath(filePath)
+      || !sourcePaths.includes(filePath)
+      || typedPaths.has(filePath)
+      || neutralPaths.has(filePath)
+      || (legacyV1 && (
+        legacyMetadata?.role !== 'neutral_context'
+        || legacyMetadata?.requestLanguage != null
+      ))
+    ) {
+      addGap(gaps, 'cold_support_request_language_neutral_paths_invalid');
+      continue;
+    }
+    neutralPaths.add(filePath);
+  }
+  if (
+    typedPaths.size + neutralPaths.size !== sourcePaths.length
+    || !typedPaths.has(entryPath)
+    || sourcePaths.some((filePath) => !typedPaths.has(filePath) && !neutralPaths.has(filePath))
+  ) {
+    addGap(gaps, 'cold_support_request_language_classification_incomplete');
+  }
+  if (legacyV1) {
+    const entryMetadata = gpuHmrSourceExtensionMetadata(entryPath);
+    if (
+      entryMetadata?.role !== 'translation_unit'
+      || entryMetadata?.automaticEntryCandidate !== true
+      || entryMetadata?.requestLanguage !== language
+    ) addGap(gaps, 'cold_support_request_language_entry_invalid');
+  }
+}
+
 function requestIntentEvidence(rawSourceFirst, sourceFirstFacet, gaps) {
   const compileContract = readAlias(
     rawSourceFirst,
@@ -346,7 +448,10 @@ function requestIntentEvidence(rawSourceFirst, sourceFirstFacet, gaps) {
   supportFlags(intent, 'cold_support_request_intent', gaps, { requireAccepted: false });
   const schemaVersion = readAlias(intent, ['schemaVersion', 'schema_version'], 'cold_support_request_intent_schema', gaps, { required: true });
   const proofAuthority = readAlias(intent, ['proofAuthority', 'proof_authority'], 'cold_support_request_intent_authority', gaps, { required: true });
-  if (schemaVersion !== SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION) addGap(gaps, 'cold_support_request_intent_schema_invalid');
+  if (
+    schemaVersion !== SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION
+    && schemaVersion !== SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1
+  ) addGap(gaps, 'cold_support_request_intent_schema_invalid');
   if (proofAuthority !== SOURCE_FIRST_REQUEST_INTENT_AUTHORITY) addGap(gaps, 'cold_support_request_intent_authority_invalid');
   const initialFiles = normalizedInitialFiles(sourceFirstFacet);
   const initialPathSet = new Set(initialFiles.map((entry) => entry.path));
@@ -385,16 +490,33 @@ function requestIntentEvidence(rawSourceFirst, sourceFirstFacet, gaps) {
   if (outputOracleKind !== 'compute_oracle' || oracleIntent !== 'compute_oracle' || isGui !== false) {
     addGap(gaps, 'cold_support_request_compute_modality_invalid');
   }
+  const language = String(readAlias(intent, ['language'], 'cold_support_request_language', gaps, { required: true }) ?? '').trim();
+  const languageSource = String(readAlias(intent, ['languageSource', 'language_source'], 'cold_support_request_language_source', gaps, { required: true }) ?? '').trim();
+  const sourceLanguageEvidence = readAlias(intent, ['sourceLanguageEvidence', 'source_language_evidence'], 'cold_support_request_language_evidence', gaps, { required: true });
+  const languageNeutralSourcePaths = readAlias(intent, ['languageNeutralSourcePaths', 'language_neutral_source_paths'], 'cold_support_request_language_neutral_paths', gaps, { required: true });
+  const expectedLanguageSource = schemaVersion === SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1
+    ? 'exact_source_manifest_entry_extension'
+    : 'manifest_bound_open_vocabulary_hint';
+  if (languageSource !== expectedLanguageSource) addGap(gaps, 'cold_support_request_language_source_invalid');
+  validateRequestIntentLanguageClassification({
+    schemaVersion,
+    entryPath,
+    language,
+    sourcePaths: normalizedSourcePaths,
+    sourceLanguageEvidence,
+    languageNeutralSourcePaths,
+    gaps,
+  });
   const seed = {
-    schemaVersion: SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION,
+    schemaVersion,
     entryPath,
     sourceManifestHash,
     sourcePaths: normalizedSourcePaths,
     buildPaths: normalizedBuildPaths,
     buildMetadataHash,
-    language: readAlias(intent, ['language'], 'cold_support_request_language', gaps, { required: true }),
-    sourceLanguageEvidence: readAlias(intent, ['sourceLanguageEvidence', 'source_language_evidence'], 'cold_support_request_language_evidence', gaps, { required: true }),
-    languageNeutralSourcePaths: readAlias(intent, ['languageNeutralSourcePaths', 'language_neutral_source_paths'], 'cold_support_request_language_neutral_paths', gaps, { required: true }),
+    language,
+    sourceLanguageEvidence,
+    languageNeutralSourcePaths,
     oracleIntent,
     isGui,
     oracleEvidenceHashes: readAlias(intent, ['oracleEvidenceHashes', 'oracle_evidence_hashes'], 'cold_support_request_oracle_hashes', gaps, { required: true }),

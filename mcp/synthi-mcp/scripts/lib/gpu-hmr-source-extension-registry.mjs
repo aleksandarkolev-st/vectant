@@ -2,6 +2,8 @@ import path from 'node:path';
 
 export const GPU_HMR_SOURCE_EXTENSION_REGISTRY_SCHEMA_VERSION =
   'synthi.gpu_hmr.source_extension_registry.v1';
+export const GPU_HMR_SOURCE_EXTENSION_REGISTRY_AUTHORITY =
+  'legacy_source_suffix_hints_only_not_compiler_build_or_gpu_hmr_proof';
 
 const definitions = [
   ['.c', 'translation_unit', 'c', true],
@@ -44,6 +46,8 @@ export const GPU_HMR_SOURCE_EXTENSION_REGISTRY = Object.freeze(
     role,
     requestLanguage,
     automaticEntryCandidate,
+    classificationSupportOnly: true,
+    classification_support_only: true,
     canEstablishGpuCapability: false,
   })),
 );
@@ -66,10 +70,32 @@ export function gpuHmrSourceExtensionMetadata(value) {
   return metadataByExtension.get(normalizeGpuHmrSourceExtension(value)) ?? null;
 }
 
+// The registry is intentionally incomplete. Callers may use this result as a
+// compatibility hint, but must not use its absence to reject ordinary text
+// sources or to establish compiler, build, or GPU-HMR authority.
+export function gpuHmrSourceSuffixHint(value) {
+  const extension = normalizeGpuHmrSourceExtension(value) || null;
+  const metadata = extension ? metadataByExtension.get(extension) ?? null : null;
+  return Object.freeze({
+    extension,
+    language: metadata?.requestLanguage ?? null,
+    role: metadata?.role ?? 'open_vocabulary_unknown',
+    registrySchemaVersion: GPU_HMR_SOURCE_EXTENSION_REGISTRY_SCHEMA_VERSION,
+    registry_schema_version: GPU_HMR_SOURCE_EXTENSION_REGISTRY_SCHEMA_VERSION,
+    proofAuthority: GPU_HMR_SOURCE_EXTENSION_REGISTRY_AUTHORITY,
+    proof_authority: GPU_HMR_SOURCE_EXTENSION_REGISTRY_AUTHORITY,
+    classificationSupportOnly: true,
+    classification_support_only: true,
+    canEstablishGpuCapability: false,
+  });
+}
+
 export function isGpuHmrSourcePath(value) {
+  // Compatibility-only predicate. This must not gate source-first intake.
   return gpuHmrSourceExtensionMetadata(value) !== null;
 }
 
 export function isGpuHmrAutomaticEntryCandidate(value) {
+  // Compatibility-only predicate. This must not route source-first entries.
   return gpuHmrSourceExtensionMetadata(value)?.automaticEntryCandidate === true;
 }

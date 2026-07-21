@@ -12,10 +12,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -24,11 +22,6 @@ import { fileURLToPath } from 'node:url';
 import {
   materializeExactCommitGitBlobSnapshot,
 } from './lib/gpu-hmr-direct-source-git-identity.mjs';
-import {
-  gpuHmrSourceExtensionMetadata,
-  isGpuHmrAutomaticEntryCandidate,
-  isGpuHmrSourcePath,
-} from './lib/gpu-hmr-source-extension-registry.mjs';
 
 function readOption(args, name) {
   const prefix = `${name}=`;
@@ -117,51 +110,6 @@ function cleanRel(value) {
   return normalized;
 }
 
-function numericEnv(name, fallback) {
-  const raw = process.env[name];
-  if (raw == null || raw === '') return fallback;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-const IGNORED_SOURCE_DIRS = new Set([
-  '.cache',
-  '.git',
-  '.gpu-hmr-test-logs',
-  '.synthi',
-  '.svn',
-  'bazel-bin',
-  'bazel-out',
-  'bazel-testlogs',
-  'build',
-  'cmake-build-debug',
-  'cmake-build-release',
-  'dist',
-  'node_modules',
-  'out',
-  'target',
-  'third_party',
-  'vendor',
-]);
-
-const ENTRY_PRIORITY = [
-  'src/main.cpp',
-  'main.cpp',
-  'src/main.cc',
-  'main.cc',
-  'src/main.cxx',
-  'main.cxx',
-  'src/main.hip',
-  'main.hip',
-  'src/main.cu',
-  'main.cu',
-  'src/main.cl',
-  'main.cl',
-  'src/main.wgsl',
-  'main.wgsl',
-  'src/lib.rs',
-  'lib.rs',
-];
 const DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_SCHEMA_VERSION =
   'synthi.gpu_hmr.direct_source_runtime_contract_expectation.v1';
 const DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY =
@@ -362,96 +310,6 @@ function directSourceOutputOracleRequest({ outputOracleKind, visualProfilePath }
   return { request, visualMaterial };
 }
 
-function assertInsideRoot(filePath, rootPath) {
-  const rootReal = realpathSync(rootPath);
-  const fileReal = realpathSync(filePath);
-  const rel = path.relative(rootReal, fileReal);
-  if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return;
-  throw new Error(`source root scan escaped root: ${filePath}`);
-}
-
-function sourceFilesForRoot(sourceRoot) {
-  const root = realpathSync(path.resolve(sourceRoot));
-  const maxFiles = numericEnv('SYNTHI_GPU_AGENT_SOURCE_ROOT_MAX_FILES', 512);
-  const maxTotalBytes = numericEnv('SYNTHI_GPU_AGENT_SOURCE_ROOT_MAX_TOTAL_BYTES', 12 * 1024 * 1024);
-  const maxFileBytes = numericEnv('SYNTHI_GPU_AGENT_SOURCE_ROOT_MAX_FILE_BYTES', 2 * 1024 * 1024);
-  const files = [];
-  let totalBytes = 0;
-  const walk = (dir) => {
-    const entries = readdirSync(dir, { withFileTypes: true })
-      .sort((left, right) => left.name.localeCompare(right.name));
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!IGNORED_SOURCE_DIRS.has(entry.name)) walk(fullPath);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      if (!isGpuHmrSourcePath(entry.name)) continue;
-      assertInsideRoot(fullPath, root);
-      const stat = statSync(fullPath);
-      if (stat.size > maxFileBytes) {
-        throw new Error(
-          `source file ${fullPath} exceeds ${maxFileBytes} bytes; provide --source-manifest with the intended source set`,
-        );
-      }
-      totalBytes += stat.size;
-      if (totalBytes > maxTotalBytes) {
-        throw new Error(
-          `source root ${root} exceeds ${maxTotalBytes} bytes of source input; provide --source-manifest with the intended source set`,
-        );
-      }
-      if (files.length >= maxFiles) {
-        throw new Error(
-          `source root ${root} has more than ${maxFiles} source files; provide --source-manifest with the intended source set`,
-        );
-      }
-      const relativePath = cleanRel(path.relative(root, fullPath));
-      const content = readFileSync(fullPath, 'utf8');
-      files.push({
-        path: relativePath,
-        sourcePath: relativePath,
-        source_path: relativePath,
-        contentHash: contentHashForText(content),
-        content_hash: contentHashForText(content),
-        byteLength: Buffer.byteLength(content, 'utf8'),
-        byte_length: Buffer.byteLength(content, 'utf8'),
-      });
-    }
-  };
-  walk(root);
-  return files.sort((left, right) => left.path.localeCompare(right.path));
-}
-
-function inferEntryPath(files, requestedEntry) {
-  if (requestedEntry) {
-    const entryPath = cleanRel(requestedEntry);
-    if (!files.some((file) => file.path === entryPath)) {
-      throw new Error(`--source-entry ${entryPath} is not present in the scanned source root`);
-    }
-    return entryPath;
-  }
-  const byPriority = ENTRY_PRIORITY.find((entryPath) =>
-    files.some((file) => file.path === entryPath)
-  );
-  if (byPriority) return byPriority;
-  const mainCandidates = files.filter((file) => {
-    const base = path.posix.basename(file.path).toLowerCase();
-    const extensionMetadata = gpuHmrSourceExtensionMetadata(base);
-    return extensionMetadata?.automaticEntryCandidate === true
-      && base === `main${extensionMetadata.extension}`;
-  });
-  if (mainCandidates.length === 1) return mainCandidates[0].path;
-  if (mainCandidates.length > 1) {
-    throw new Error(
-      `source root has multiple main entry candidates (${mainCandidates.map((file) => file.path).join(', ')}); provide --source-entry or --source-manifest`,
-    );
-  }
-  const entryCandidates = files.filter((file) => isGpuHmrAutomaticEntryCandidate(file.path));
-  if (entryCandidates.length === 1) return entryCandidates[0].path;
-  throw new Error('source root entry is ambiguous; provide --source-entry or --source-manifest');
-}
-
 function synthesizeSourceManifestFromRoot({
   sourceRoot,
   sourceEntry,
@@ -469,13 +327,11 @@ function synthesizeSourceManifestFromRoot({
   if (!existsSync(root)) throw new Error(`source root not found: ${root}`);
   const explicitSourcePaths = uniqueSortedStrings(selectedSourcePaths).map(cleanRel);
   const explicitBuildPaths = uniqueSortedStrings(selectedBuildPaths).map(cleanRel);
-  const explicitSelection = explicitSourcePaths.length > 0 || explicitBuildPaths.length > 0;
-  const scannedFiles = explicitSelection ? [] : sourceFilesForRoot(root);
-  if (!explicitSelection && scannedFiles.length === 0) {
-    throw new Error(`source root ${root} contains no supported source files`);
+  if (explicitSourcePaths.length === 0) {
+    throw new Error('source-root intake requires at least one explicit --source-file; closed source-root scanning is disabled');
   }
-  if (explicitSelection && explicitSourcePaths.length === 0) {
-    throw new Error('exact-commit source selection requires at least one --source-file');
+  if (!sourceEntry) {
+    throw new Error('source-root intake requires explicit --source-entry; entry routing is not inferred from names');
   }
   const directSourceAuthority = sourceAuthority || 'direct_local_git_repo_path';
   if (!sourceCommit) {
@@ -495,14 +351,11 @@ function synthesizeSourceManifestFromRoot({
   const requestedSourceRootRelativePath = sourceRootRelativePath === '.'
     ? inferredSourceRootRelativePath
     : cleanRel(sourceRootRelativePath);
-  const sourcePaths = explicitSelection
-    ? explicitSourcePaths
-    : scannedFiles.map((file) => file.path);
   const immutableSnapshot = materializeExactCommitGitBlobSnapshot({
     repositoryRoot,
     commitOid: sourceCommit,
     sourceRootRelativePath: requestedSourceRootRelativePath,
-    sourcePaths,
+    sourcePaths: explicitSourcePaths,
     buildPaths: explicitBuildPaths,
   });
   const files = immutableSnapshot.files.map((entry) => ({
@@ -510,7 +363,10 @@ function synthesizeSourceManifestFromRoot({
     name: entry.path,
   }));
   const sourceFiles = files.filter((entry) => entry.kind === 'source');
-  const entryPath = inferEntryPath(sourceFiles, sourceEntry);
+  const entryPath = cleanRel(sourceEntry);
+  if (!sourceFiles.some((file) => file.path === entryPath)) {
+    throw new Error(`--source-entry ${entryPath} is not included in explicit --source-file selection`);
+  }
   const fileManifest = files.map((entry) => ({
     kind: entry.kind,
     path: entry.path,
@@ -537,8 +393,8 @@ function synthesizeSourceManifestFromRoot({
     selected_entry_path: entryPath,
     requestedEntryPath: sourceEntry || null,
     requested_entry_path: sourceEntry || null,
-    candidateFileCount: files.length,
-    candidate_file_count: files.length,
+    selectedSourceFileCount: sourceFiles.length,
+    selected_source_file_count: sourceFiles.length,
     targetNameIndependent: true,
     target_name_independent: true,
     acceptedForGpuHmr: false,
@@ -720,31 +576,11 @@ function selfCheckSourceRootManifest() {
     ]) {
       writeFileSync(path.join(tmpRoot, 'src', fileName), `${fileName}\n`);
     }
-    writeFileSync(path.join(tmpRoot, 'src', 'ignored.opaque'), 'unknown extension\n');
+    writeFileSync(path.join(tmpRoot, 'src', 'entry.opaque'), 'unknown suffix source\n');
+    writeFileSync(path.join(tmpRoot, 'src', 'extensionless'), 'extensionless source\n');
+    writeFileSync(path.join(tmpRoot, 'src', 'binary.sibling'), Buffer.from([0, 1, 2, 3]));
+    writeFileSync(path.join(tmpRoot, 'src', 'oversize.sibling'), 'x'.repeat((2 * 1024 * 1024) + 1));
     writeFileSync(path.join(tmpRoot, 'CMakeLists.txt'), 'cmake_minimum_required(VERSION 3.20)\nproject(cold_source)\n');
-    const scannedPaths = sourceFilesForRoot(tmpRoot).map((entry) => entry.path);
-    const expectedRegistryPaths = [
-      'src/alternate.C++',
-      'src/context.H++',
-      'src/kernel.GEOM',
-      'src/kernel.HLSL',
-      'src/kernel.METAL',
-      'src/kernel.OPENCL',
-      'src/kernel.SLANG',
-      'src/kernel.TESC',
-      'src/kernel.TESE',
-      'src/template.IPP',
-      'src/template.TPP',
-      'src/tool.ZIG',
-    ];
-    if (
-      expectedRegistryPaths.some((filePath) => !scannedPaths.includes(filePath))
-      || scannedPaths.includes('src/ignored.opaque')
-      || scannedPaths.includes('CMakeLists.txt')
-      || scannedPaths.join('\n') !== [...scannedPaths].sort((left, right) => left.localeCompare(right)).join('\n')
-    ) {
-      throw new Error('source-root manifest self-check failed: extension registry scan mismatch');
-    }
     for (const gitArgs of [
       ['init'],
       ['config', 'user.email', 'gpu-hmr-self-check@example.invalid'],
@@ -762,6 +598,25 @@ function selfCheckSourceRootManifest() {
       encoding: 'utf8',
       windowsHide: true,
     })).trim();
+    for (const [options, expectedMessage] of [
+      [{ selectedSourcePaths: ['src/main.cpp'] }, 'explicit --source-entry'],
+      [{ sourceEntry: 'src/main.cpp' }, 'explicit --source-file'],
+    ]) {
+      let refused = false;
+      try {
+        synthesizeSourceManifestFromRoot({
+          sourceRoot: tmpRoot,
+          sourceAuthority: 'user_source_files',
+          sourceCommit,
+          ...options,
+        });
+      } catch (error) {
+        refused = String(error?.message ?? '').includes(expectedMessage);
+      }
+      if (!refused) {
+        throw new Error('source-root manifest self-check failed: ambiguous root selection was not refused');
+      }
+    }
     writeFileSync(path.join(tmpRoot, 'src', 'main.cpp'), 'int dirty_worktree_must_not_reach_provider = 1;\n');
     const generated = synthesizeSourceManifestFromRoot({
       sourceRoot: tmpRoot,
@@ -809,6 +664,26 @@ function selfCheckSourceRootManifest() {
       || generated.manifest.entryInferenceEvidence?.accepted !== true
     ) {
       throw new Error('source-root manifest self-check failed: runtime contract expectation shape mismatch');
+    }
+    const unknownSuffixManifest = synthesizeSourceManifestFromRoot({
+      sourceRoot: tmpRoot,
+      sourceEntry: 'src/entry.opaque',
+      sourceAuthority: 'user_source_files',
+      sourceCommit,
+      selectedSourcePaths: ['src/entry.opaque'],
+    });
+    const extensionlessManifest = synthesizeSourceManifestFromRoot({
+      sourceRoot: tmpRoot,
+      sourceEntry: 'src/extensionless',
+      sourceAuthority: 'user_source_files',
+      sourceCommit,
+      selectedSourcePaths: ['src/extensionless'],
+    });
+    if (
+      unknownSuffixManifest.manifest.entryPath !== 'src/entry.opaque'
+      || extensionlessManifest.manifest.entryPath !== 'src/extensionless'
+    ) {
+      throw new Error('source-root manifest self-check failed: open-vocabulary source selection was rejected');
     }
     writeFileSync(path.join(tmpRoot, 'README.md'), 'identity-only commit change\n');
     execFileSync('git', ['-C', tmpRoot, 'add', 'README.md'], {
@@ -960,6 +835,12 @@ function resolveLauncherInputs(args, env = process.env) {
   if ((selectedSourcePaths.length > 0 || selectedBuildPaths.length > 0) && !sourceCommit) {
     throw new Error('--source-file/--build-file require an explicit full --source-commit');
   }
+  if (sourceRoot && !sourceManifest && selectedSourcePaths.length === 0) {
+    throw new Error('--source-root requires at least one explicit --source-file; closed source-root scanning is disabled');
+  }
+  if (sourceRoot && !sourceManifest && !sourceEntry) {
+    throw new Error('--source-root requires explicit --source-entry; entry routing is not inferred from names');
+  }
   if (outputOracleKind && !sourceRoot) {
     throw new Error(
       '--output-oracle-kind requires --source-root so the request can be sealed into the synthesized source manifest',
@@ -1045,6 +926,8 @@ function selfCheckProfileDirectSourceOverlayPolicy() {
     'user_source_files',
     '--source-commit',
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    '--source-file',
+    'src/main.cpp',
   ], {});
   const env = {
     SYNTHI_GPU_AGENT_FIXTURE: 'flow',

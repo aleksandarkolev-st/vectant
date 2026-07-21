@@ -86,6 +86,7 @@ import {
 } from './lib/gpu-hmr-test-timing-v2.mjs';
 import {
   gpuHmrSourceExtensionMetadata,
+  normalizeGpuHmrSourceExtension,
 } from './lib/gpu-hmr-source-extension-registry.mjs';
 import {
   verifyGpuHmrScreenshotCaptureBinding,
@@ -265,8 +266,10 @@ const CFG = {
 };
 
 const AGENT_VISUAL_PROFILE_SCHEMA_VERSION = 'synthi.gpu_hmr.agent_split_visual_profile.v1';
-const SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION =
+const SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1 =
   'synthi.gpu_hmr.source_first_request_intent.v1';
+const SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.source_first_request_intent.v2';
 const SOURCE_FIRST_REQUEST_INTENT_AUTHORITY =
   'source_manifest_bound_request_hints_only_not_gpu_hmr_success';
 const SOURCE_FIRST_COMPILE_CACHE_REQUEST_SCHEMA_VERSION =
@@ -1917,6 +1920,7 @@ export function deriveSourceFirstRequestIntent({
   files,
   declaredSourceManifestHash = '',
   typedOracleIntent = {},
+  requestLanguage = '',
 } = {}) {
   const normalizedEntryPath = cleanRel(entryPath);
   if (!normalizedEntryPath) {
@@ -1963,36 +1967,32 @@ export function deriveSourceFirstRequestIntent({
     );
   }
 
+  const requestedLanguage = String(requestLanguage ?? '').trim();
   const sourceLanguageEvidence = [];
   const languageNeutralSourcePaths = [];
-  const unknownSourcePaths = [];
   for (const file of normalizedFiles.filter((entry) => entry.kind === 'source')) {
     const extensionMetadata = gpuHmrSourceExtensionMetadata(file.path);
-    if (extensionMetadata?.requestLanguage) {
+    const extension = normalizeGpuHmrSourceExtension(file.path) || null;
+    const language = file.path === normalizedEntryPath && requestedLanguage
+      ? requestedLanguage
+      : extensionMetadata?.requestLanguage ?? null;
+    if (language) {
       sourceLanguageEvidence.push({
         path: file.path,
-        extension: extensionMetadata.extension,
-        language: extensionMetadata.requestLanguage,
+        extension,
+        language,
       });
-    } else if (extensionMetadata?.role === 'neutral_context') {
-      languageNeutralSourcePaths.push(file.path);
     } else {
-      unknownSourcePaths.push(file.path);
+      languageNeutralSourcePaths.push(file.path);
     }
-  }
-  if (unknownSourcePaths.length > 0) {
-    throw sourceFirstRequestIntentError(
-      'source_first_request_intent_language_unknown',
-      `language is unknown for ${unknownSourcePaths.join(',')}`,
-    );
   }
   const entryLanguageEvidence = sourceLanguageEvidence.find(
     (entry) => entry.path === normalizedEntryPath,
   );
   if (!entryLanguageEvidence) {
     throw sourceFirstRequestIntentError(
-      'source_first_request_intent_entry_language_ambiguous',
-      `${normalizedEntryPath} does not establish the selected request language`,
+      'source_first_request_intent_entry_language_hint_required',
+      `${normalizedEntryPath} has no manifest-bound language hint; provide requestLanguage`,
     );
   }
   const entryLanguage = entryLanguageEvidence.language;
@@ -2041,8 +2041,8 @@ export function deriveSourceFirstRequestIntent({
     canSatisfyDispatchProof: false,
     can_satisfy_dispatch_proof: false,
     language: entryLanguage,
-    languageSource: 'exact_source_manifest_entry_extension',
-    language_source: 'exact_source_manifest_entry_extension',
+    languageSource: 'manifest_bound_open_vocabulary_hint',
+    language_source: 'manifest_bound_open_vocabulary_hint',
     isGui: oracle.isGui,
     is_gui: oracle.isGui,
     uiMode: oracle.isGui ? 'typed_visual_oracle' : 'non_visual_request_hint',
@@ -12279,6 +12279,7 @@ export function recomputeColdSourceProducerEvidence(producerMaterial = {}) {
     files: initialCompileArgs.files,
     declaredSourceManifestHash,
     typedOracleIntent,
+    requestLanguage: initialCompileArgs.language,
   });
   assertCanonicalColdEvidence(
     'source_first_request_intent',
@@ -13360,6 +13361,7 @@ function validProviderAvailabilityTimestamp(value) {
 }
 
 const COLD_SOURCE_SUPPORT_PROOF_AUTHORITY_BY_SCHEMA = new Map([
+  [SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1, SOURCE_FIRST_REQUEST_INTENT_AUTHORITY],
   [SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION, SOURCE_FIRST_REQUEST_INTENT_AUTHORITY],
   [SOURCE_FIRST_COMPILE_CACHE_REQUEST_SCHEMA_VERSION, SOURCE_FIRST_COMPILE_CACHE_REQUEST_AUTHORITY],
   [COLD_SOURCE_MODALITY_BINDING_SCHEMA_VERSION, COLD_SOURCE_MODALITY_BINDING_AUTHORITY],
@@ -13735,7 +13737,10 @@ export function buildSourceFirstInitialCompileRequest({
     'bypass_device_compile_cache',
   );
   const requestBlockingGaps = [
-    requestIntent?.schemaVersion === SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION
+    [
+      SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION,
+      SOURCE_FIRST_REQUEST_INTENT_SCHEMA_VERSION_V1,
+    ].includes(requestIntent?.schemaVersion)
       && requestIntent?.proofAuthority === SOURCE_FIRST_REQUEST_INTENT_AUTHORITY
       && requestIntent?.acceptedAsRequestHints === true
       && !supportEvidenceClaimsAuthority(requestIntent)
@@ -15328,6 +15333,11 @@ async function run() {
         ?? ACTIVE_AGENT_PROFILE?.source?.manifest_hash
         ?? '',
       typedOracleIntent: sourceFirstTypedOracleIntentForProfile(ACTIVE_AGENT_PROFILE),
+      requestLanguage:
+        ACTIVE_AGENT_PROFILE?.source?.requestLanguage
+        ?? ACTIVE_AGENT_PROFILE?.source?.request_language
+        ?? ACTIVE_AGENT_PROFILE?.source?.language
+        ?? '',
     });
     activeAgentSplitTestTiming?.declareOracleContract(ACTIVE_SOURCE_FIRST_REQUEST_INTENT);
   } catch (error) {
