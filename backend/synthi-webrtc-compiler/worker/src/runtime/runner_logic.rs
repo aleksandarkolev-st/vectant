@@ -143,7 +143,11 @@ pub unsafe fn process_load_command(
                     name, module_abi_version
                 );
             }
-            if require_gpu_contract && validator::module_requires_gpu_contract(name) {
+            if require_gpu_contract
+                && info
+                    .effective_contract
+                    .is_some_and(validator::module_requires_gpu_contract)
+            {
                 if info.has_gpu_contract {
                     eprintln!(
                         "[Runner] [GPU HMR] Host GPU ABI validated for '{}' (managed_state={})",
