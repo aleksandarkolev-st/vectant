@@ -15,16 +15,35 @@
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use crate::hmr::build_manifest::BuildManifest;
+use crate::hmr::build_manifest::{ArtifactSetIdentityError, BuildManifest};
 use crate::hmr::health_check::HealthCheckResult;
 use crate::hmr::planner_decision::{ReloadDecision, StateStrategy};
 
 /// Identifies a specific candidate within a preview session.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CandidateId {
-    pub preview_id: String,
-    pub generation: u64,
-    pub artifact_hash: String,
+    preview_id: String,
+    generation: u64,
+    artifact_hash: String,
+    artifact_set_identity: String,
+}
+
+impl CandidateId {
+    pub fn preview_id(&self) -> &str {
+        &self.preview_id
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn artifact_hash(&self) -> &str {
+        &self.artifact_hash
+    }
+
+    pub fn artifact_set_identity(&self) -> &str {
+        &self.artifact_set_identity
+    }
 }
 
 /// State of a candidate through its lifecycle.
@@ -49,7 +68,7 @@ pub enum CandidateState {
 /// A single candidate through its lifecycle.
 #[derive(Debug, Clone)]
 pub struct Candidate {
-    pub id: CandidateId,
+    id: CandidateId,
     pub state: CandidateState,
     pub manifest: BuildManifest,
     pub decision: ReloadDecision,
@@ -66,13 +85,15 @@ impl Candidate {
         generation: u64,
         decision: ReloadDecision,
         state_strategy: StateStrategy,
-    ) -> Self {
+    ) -> Result<Self, ArtifactSetIdentityError> {
+        let artifact_set_identity = manifest.artifact_set_identity()?;
         let id = CandidateId {
             preview_id: manifest.preview_id.clone(),
             generation,
             artifact_hash: manifest.artifact_hash.clone(),
+            artifact_set_identity,
         };
-        Self {
+        Ok(Self {
             id,
             state: CandidateState::Built,
             manifest,
@@ -82,7 +103,11 @@ impl Candidate {
             rollback_reason: None,
             created_at: Instant::now(),
             promoted_at: None,
-        }
+        })
+    }
+
+    pub fn id(&self) -> &CandidateId {
+        &self.id
     }
 
     /// Time elapsed since candidate was created.
@@ -145,6 +170,7 @@ pub struct CandidateSummary {
     pub preview_id: String,
     pub generation: u64,
     pub artifact_hash: String,
+    pub artifact_set_identity: String,
     pub state: CandidateState,
     pub decision: String,
     pub rollback_reason: Option<String>,
@@ -154,14 +180,109 @@ pub struct CandidateSummary {
 impl From<&Candidate> for CandidateSummary {
     fn from(c: &Candidate) -> Self {
         Self {
-            preview_id: c.id.preview_id.clone(),
-            generation: c.id.generation,
-            artifact_hash: c.id.artifact_hash.clone(),
+            preview_id: c.id.preview_id().to_string(),
+            generation: c.id.generation(),
+            artifact_hash: c.id.artifact_hash().to_string(),
+            artifact_set_identity: c.id.artifact_set_identity().to_string(),
             state: c.state,
             decision: format!("{:?}", c.decision),
             rollback_reason: c.rollback_reason.clone(),
             age_ms: c.age().as_millis() as u64,
         }
+    }
+}
+
+#[cfg(test)]
+mod artifact_set_identity_tests {
+    use super::*;
+    use crate::hmr::build_manifest::{BuildArtifactIdentity, BuildSlot};
+
+    const SELECTED_HASH: &str =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SECONDARY_HASH: &str =
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const CHANGED_SECONDARY_HASH: &str =
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+    fn manifest(secondary_hash: &str) -> BuildManifest {
+        BuildManifest::new(
+            "preview",
+            "open-vocabulary-label",
+            "observed-mechanism",
+            0,
+            BuildSlot::Custom("opaque-transaction".into()),
+            "/build/selected.bin",
+            SELECTED_HASH,
+        )
+        .with_artifacts(vec![
+            BuildArtifactIdentity::new(
+                "selected-output",
+                "/build/selected.bin",
+                SELECTED_HASH,
+            ),
+            BuildArtifactIdentity::new(
+                "secondary-output",
+                "/build/secondary.bin",
+                secondary_hash,
+            ),
+        ])
+    }
+
+    fn candidate(manifest: BuildManifest) -> Candidate {
+        Candidate::new(
+            manifest,
+            7,
+            ReloadDecision::WarmReload,
+            StateStrategy::Preserve,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn candidate_and_summary_retain_complete_artifact_set_identity() {
+        let manifest = manifest(SECONDARY_HASH);
+        let expected_identity = manifest.artifact_set_identity().unwrap();
+        let candidate = candidate(manifest);
+        let summary = CandidateSummary::from(&candidate);
+
+        assert_eq!(candidate.id().artifact_set_identity(), expected_identity);
+        assert_eq!(summary.artifact_set_identity, expected_identity);
+    }
+
+    #[test]
+    fn changed_secondary_output_changes_candidate_identity() {
+        let before = candidate(manifest(SECONDARY_HASH));
+        let after = candidate(manifest(CHANGED_SECONDARY_HASH));
+
+        assert_eq!(before.id().artifact_hash(), after.id().artifact_hash());
+        assert_ne!(
+            before.id().artifact_set_identity(),
+            after.id().artifact_set_identity()
+        );
+    }
+
+    #[test]
+    fn malformed_artifact_set_cannot_construct_candidate() {
+        let malformed = manifest(SECONDARY_HASH).with_artifacts(vec![
+            BuildArtifactIdentity::new(
+                "duplicate-output",
+                "/build/selected.bin",
+                SELECTED_HASH,
+            ),
+            BuildArtifactIdentity::new(
+                "duplicate-output",
+                "/build/secondary.bin",
+                SECONDARY_HASH,
+            ),
+        ]);
+
+        assert!(Candidate::new(
+            malformed,
+            7,
+            ReloadDecision::WarmReload,
+            StateStrategy::Preserve,
+        )
+        .is_err());
     }
 }
 
@@ -200,7 +321,8 @@ mod tests {
             1,
             ReloadDecision::WarmReload,
             StateStrategy::PreservePointer,
-        );
+        )
+        .unwrap();
         assert_eq!(c.state, CandidateState::Built);
 
         c.begin_load();
@@ -224,7 +346,8 @@ mod tests {
             1,
             ReloadDecision::WarmReload,
             StateStrategy::PreservePointer,
-        );
+        )
+        .unwrap();
         c.begin_load();
         c.begin_health_check();
         c.record_health(HealthCheckResult::Unhealthy {
@@ -243,7 +366,8 @@ mod tests {
             1,
             ReloadDecision::ColdReload,
             StateStrategy::SnapshotRestore,
-        );
+        )
+        .unwrap();
         c.discard();
         assert_eq!(c.state, CandidateState::Discarded);
         assert!(c.is_terminal());
@@ -256,7 +380,8 @@ mod tests {
             42,
             ReloadDecision::WarmReload,
             StateStrategy::PreservePointer,
-        );
+        )
+        .unwrap();
         let summary = CandidateSummary::from(&c);
         assert_eq!(summary.generation, 42);
         assert_eq!(summary.preview_id, "p1");

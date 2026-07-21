@@ -266,7 +266,7 @@ impl HmrPipeline {
         planner_output: &PlannerOutput,
     ) -> Result<PipelineNotifications, ArtifactSetIdentityError> {
         let mut notifications = PipelineNotifications::new();
-        manifest.artifact_set_identity()?;
+        let artifact_set_identity = manifest.artifact_set_identity()?;
 
         if let Some(active) = self.candidate_queue.active() {
             match should_supersede(
@@ -285,6 +285,7 @@ impl HmrPipeline {
                         notifications.push_json(&CandidateNotification::Discarded {
                             preview_id: summary.preview_id,
                             generation: summary.generation,
+                            artifact_set_identity: summary.artifact_set_identity,
                             reason: "superseded_by_newer_candidate".into(),
                         });
                     }
@@ -300,9 +301,10 @@ impl HmrPipeline {
         )?;
 
         notifications.push_json(&CandidateNotification::Enqueued {
-            preview_id: manifest.preview_id.clone(),
+            preview_id: self.candidate_queue.preview_id().to_string(),
             generation,
             artifact_hash: manifest.artifact_hash.clone(),
+            artifact_set_identity,
         });
 
         Ok(notifications)
@@ -316,8 +318,9 @@ impl HmrPipeline {
             if active.state == CandidateState::Loading {
                 active.begin_health_check();
                 notifications.push_json(&CandidateNotification::HealthCheckStarted {
-                    preview_id: active.id.preview_id.clone(),
-                    generation: active.id.generation,
+                    preview_id: active.id().preview_id().to_string(),
+                    generation: active.id().generation(),
+                    artifact_set_identity: active.id().artifact_set_identity().to_string(),
                 });
             }
 
@@ -326,8 +329,9 @@ impl HmrPipeline {
             };
             active.record_health(result.clone());
             notifications.push_json(&CandidateNotification::HealthCheckCompleted {
-                preview_id: active.id.preview_id.clone(),
-                generation: active.id.generation,
+                preview_id: active.id().preview_id().to_string(),
+                generation: active.id().generation(),
+                artifact_set_identity: active.id().artifact_set_identity().to_string(),
                 result,
             });
             validated = true;
@@ -353,6 +357,7 @@ impl HmrPipeline {
             notifications.push_json(&CandidateNotification::RolledBack {
                 preview_id: summary.preview_id,
                 generation: summary.generation,
+                artifact_set_identity: summary.artifact_set_identity,
                 reason,
             });
         }
@@ -839,15 +844,16 @@ impl HmrPipeline {
                 BridgeAction::BeginLoad { .. } => {
                     if let Some(active) = self.candidate_queue.activate_next() {
                         notifications.push_json(&CandidateNotification::Loading {
-                            preview_id: active.id.preview_id.clone(),
-                            generation: active.id.generation,
+                            preview_id: active.id().preview_id().to_string(),
+                            generation: active.id().generation(),
+                            artifact_set_identity: active.id().artifact_set_identity().to_string(),
                         });
                         mutated = true;
                     }
                 }
                 BridgeAction::Promote { generation } => {
                     if let Some(active) = self.candidate_queue.active_mut() {
-                        if active.id.generation == generation {
+                        if active.id().generation() == generation {
                             active.promote();
                             mutated = true;
                         }
@@ -858,6 +864,7 @@ impl HmrPipeline {
                             notifications.push_json(&CandidateNotification::Promoted {
                                 preview_id: summary.preview_id,
                                 generation: summary.generation,
+                                artifact_set_identity: summary.artifact_set_identity,
                                 total_reload_ms: summary.age_ms,
                             });
                         }
@@ -865,7 +872,7 @@ impl HmrPipeline {
                 }
                 BridgeAction::Rollback { generation, reason } => {
                     if let Some(active) = self.candidate_queue.active_mut() {
-                        if active.id.generation == generation {
+                        if active.id().generation() == generation {
                             active.rollback(reason.clone());
                             mutated = true;
                         }
@@ -876,6 +883,7 @@ impl HmrPipeline {
                             notifications.push_json(&CandidateNotification::RolledBack {
                                 preview_id: summary.preview_id,
                                 generation: summary.generation,
+                                artifact_set_identity: summary.artifact_set_identity,
                                 reason,
                             });
                         }
@@ -883,7 +891,7 @@ impl HmrPipeline {
                 }
                 BridgeAction::Discard { generation, reason } => {
                     if let Some(active) = self.candidate_queue.active_mut() {
-                        if active.id.generation == generation {
+                        if active.id().generation() == generation {
                             active.discard();
                             mutated = true;
                         }
@@ -894,6 +902,7 @@ impl HmrPipeline {
                             notifications.push_json(&CandidateNotification::Discarded {
                                 preview_id: summary.preview_id,
                                 generation: summary.generation,
+                                artifact_set_identity: summary.artifact_set_identity,
                                 reason,
                             });
                         }
@@ -1173,6 +1182,33 @@ mod current_api_tests {
         let _ = pipeline.validate_active_candidate(42);
 
         assert_eq!(pipeline.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn enqueue_notification_uses_canonical_preview_and_transaction_identity() {
+        let mut pipeline = HmrPipeline::new("canonical-preview");
+        let mut manifest = make_manifest("open-vocabulary-label");
+        manifest.preview_id = "incoming-preview".into();
+        let expected_identity = manifest.artifact_set_identity().unwrap();
+
+        let notifications = pipeline
+            .enqueue_candidate(&manifest, &warm_planner_output())
+            .unwrap();
+        assert_eq!(notifications.messages.len(), 1);
+        let notification: CandidateNotification =
+            serde_json::from_str(&notifications.messages[0]).unwrap();
+
+        match notification {
+            CandidateNotification::Enqueued {
+                preview_id,
+                artifact_set_identity,
+                ..
+            } => {
+                assert_eq!(preview_id, "canonical-preview");
+                assert_eq!(artifact_set_identity, expected_identity);
+            }
+            other => panic!("expected enqueued notification, got {other:?}"),
+        }
     }
 }
 

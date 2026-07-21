@@ -77,6 +77,7 @@ pub fn bridge_tick(
             return (BridgeAction::Idle, notifications);
         }
     };
+    let active_id = active.id();
 
     // Check watchdog
     let state_duration = active.age(); // simplification: whole age as state duration
@@ -88,13 +89,14 @@ pub fn bridge_tick(
         WatchdogAction::Rollback { state, .. } => {
             let reason = format!("timeout in {:?} state", state);
             notifications.push(CandidateNotification::RolledBack {
-                preview_id: active.id.preview_id.clone(),
-                generation: active.id.generation,
+                preview_id: active_id.preview_id().to_string(),
+                generation: active_id.generation(),
+                artifact_set_identity: active_id.artifact_set_identity().to_string(),
                 reason: reason.clone(),
             });
             return (
                 BridgeAction::Rollback {
-                    generation: active.id.generation,
+                    generation: active_id.generation(),
                     reason,
                 },
                 notifications,
@@ -103,13 +105,14 @@ pub fn bridge_tick(
         WatchdogAction::Discard { .. } => {
             let reason = "total lifetime exceeded".to_string();
             notifications.push(CandidateNotification::Discarded {
-                preview_id: active.id.preview_id.clone(),
-                generation: active.id.generation,
+                preview_id: active_id.preview_id().to_string(),
+                generation: active_id.generation(),
+                artifact_set_identity: active_id.artifact_set_identity().to_string(),
                 reason: reason.clone(),
             });
             return (
                 BridgeAction::Discard {
-                    generation: active.id.generation,
+                    generation: active_id.generation(),
                     reason,
                 },
                 notifications,
@@ -136,21 +139,22 @@ pub fn bridge_tick(
                 active.age().as_millis() as u64,
             );
             notifications.push(CandidateNotification::PromotionDecision {
-                preview_id: active.id.preview_id.clone(),
-                generation: active.id.generation,
+                preview_id: active_id.preview_id().to_string(),
+                generation: active_id.generation(),
+                artifact_set_identity: active_id.artifact_set_identity().to_string(),
                 verdict: verdict.clone(),
             });
             match verdict {
                 PromotionVerdict::Promote => (
                     BridgeAction::Promote {
-                        generation: active.id.generation,
+                        generation: active_id.generation(),
                     },
                     notifications,
                 ),
                 PromotionVerdict::Defer { reason } => (BridgeAction::Idle, notifications),
                 PromotionVerdict::Reject { reason } => (
                     BridgeAction::Rollback {
-                        generation: active.id.generation,
+                        generation: active_id.generation(),
                         reason,
                     },
                     notifications,
@@ -161,7 +165,7 @@ pub fn bridge_tick(
             // Shouldn't be active in Built state, but handle gracefully
             (
                 BridgeAction::BeginLoad {
-                    generation: active.id.generation,
+                    generation: active_id.generation(),
                 },
                 notifications,
             )

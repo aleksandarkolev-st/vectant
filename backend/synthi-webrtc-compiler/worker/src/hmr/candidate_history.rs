@@ -165,6 +165,7 @@ mod tests {
             preview_id: preview.into(),
             generation: gen,
             artifact_hash: format!("h{gen}"),
+            artifact_set_identity: format!("artifact-set:sha256:{gen:064x}"),
             state,
             decision: "WarmReload".into(),
             rollback_reason: None,

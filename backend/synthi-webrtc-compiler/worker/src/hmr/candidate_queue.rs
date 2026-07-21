@@ -45,10 +45,6 @@ impl CandidateQueue {
         decision: ReloadDecision,
         state_strategy: StateStrategy,
     ) -> Result<u64, ArtifactSetIdentityError> {
-        manifest.artifact_set_identity()?;
-        self.generation += 1;
-        let gen = self.generation;
-
         if manifest.preview_id != self.preview_id {
             // Expected when subsequent compiles generate a new session_id on
             // the frontend — the queue keeps its original preview_id as the
@@ -62,7 +58,11 @@ impl CandidateQueue {
             manifest.preview_id = self.preview_id.clone();
         }
 
-        let candidate = Candidate::new(manifest, gen, decision, state_strategy);
+        let gen = self.generation + 1;
+        let candidate = Candidate::new(manifest, gen, decision, state_strategy)?;
+
+        // Commit queue state only after the complete artifact set validates.
+        self.generation = gen;
 
         // If queue is at capacity, discard oldest pending
         while self.pending.len() >= MAX_PENDING {
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(q.generation(), 2);
 
         let active = q.activate_next().unwrap();
-        assert_eq!(active.id.artifact_hash, "a");
+        assert_eq!(active.id().artifact_hash(), "a");
         assert_eq!(active.state, CandidateState::Loading);
 
         // Can't activate another while one is active

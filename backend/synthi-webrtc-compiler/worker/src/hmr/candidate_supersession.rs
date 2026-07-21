@@ -46,10 +46,9 @@ pub fn should_supersede(
     newer_manifest: &BuildManifest,
     policy: &SupersessionPolicy,
 ) -> Result<SupersessionVerdict, ArtifactSetIdentityError> {
-    let active_identity = active.manifest.artifact_set_identity()?;
     let newer_identity = newer_manifest.artifact_set_identity()?;
     // Same artifact — no point in replacing.
-    if active_identity == newer_identity {
+    if active.id().artifact_set_identity() == newer_identity {
         return Ok(SupersessionVerdict::Duplicate);
     }
 
@@ -99,6 +98,7 @@ mod artifact_set_tests {
             ReloadDecision::WarmReload,
             StateStrategy::Preserve,
         )
+        .unwrap()
     }
 
     fn manifest(secondary_hash: &str) -> BuildManifest {
@@ -172,6 +172,24 @@ mod artifact_set_tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn supersession_uses_the_identity_frozen_at_candidate_admission() {
+        let admitted_manifest = manifest(SAME_HASH);
+        let duplicate_manifest = admitted_manifest.clone();
+        let mut active = candidate(admitted_manifest);
+        active.manifest.artifacts.as_mut().unwrap()[1].artifact_hash = AFTER_HASH.into();
+
+        assert_eq!(
+            should_supersede(
+                &active,
+                &duplicate_manifest,
+                &SupersessionPolicy::default(),
+            )
+            .unwrap(),
+            SupersessionVerdict::Duplicate
+        );
+    }
 }
 
 #[cfg(all(test, feature = "legacy_hmr_tests"))]
@@ -208,6 +226,7 @@ mod tests {
             ReloadDecision::WarmReload,
             StateStrategy::PreservePointer,
         )
+        .unwrap()
     }
 
     #[test]
