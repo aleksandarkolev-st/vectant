@@ -9,6 +9,10 @@ use super::build_manifest::{
     BuildManifest, RELOAD_ARTIFACT_INPUT_ID_PREFIX, RELOAD_ARTIFACT_ROLE_ID_PREFIX,
 };
 
+mod command_observer;
+
+pub(crate) use command_observer::{ObservedBuildCommandOutcome, StdinStdoutBuildStepPlan};
+
 pub const OBSERVED_BUILD_STEP_RECEIPT_SCHEMA_VERSION: &str =
     "synthi.observed_build_step_receipt.v1";
 pub const OBSERVED_BUILD_STEP_RECEIPT_ID_PREFIX: &str = "build-step-receipt:sha256:";
@@ -23,6 +27,8 @@ pub const VERIFIED_RELOAD_BUILD_TRANSACTION_AUTHORITY: &str =
 const BUILD_RECEIPT_OBSERVER_ID_PREFIX: &str = "build-observer:sha256:";
 const BUILD_RECEIPT_CLOCK_ID_PREFIX: &str = "build-clock:sha256:";
 const BUILD_TRANSACTION_CHALLENGE_ID_PREFIX: &str = "build-challenge:sha256:";
+const OBSERVED_BUILD_INPUT_CONSUMPTION_PROOF: &str =
+    "observer_owned_input_pipe_drained_after_boundary_quiescence_v1";
 
 /// A single-use challenge minted by one in-process build observer.
 ///
@@ -58,10 +64,9 @@ struct ActiveChallenge {
 
 /// Owns freshness and clock state for build-observation receipts.
 ///
-/// This module intentionally exposes no production receipt constructor yet.
-/// A later observer integration must execute the build boundary and construct
-/// receipts inside this module from bytes it reads itself. Until then, no
-/// production caller can mint `ObservedBuildStepReceipt`.
+/// Production receipts can only be minted by observer-owned execution methods
+/// in this module. Callers provide command intent and input bytes, never status,
+/// output hashes, timings, or a prebuilt process result.
 #[derive(Debug)]
 pub struct BuildReceiptVerifier {
     observer_id: String,
@@ -241,6 +246,7 @@ pub struct ObservedBuildInputReceipt {
     input_id: String,
     content_hash: String,
     byte_length: u64,
+    consumption_proof: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -256,8 +262,12 @@ pub struct ObservedBuildOutputReference {
 #[serde(rename_all = "camelCase")]
 pub struct ObservedBuildOutputReceipt {
     output_ordinal: u32,
-    contributing_input_ids: Vec<String>,
-    contributing_upstream_outputs: Vec<ObservedBuildOutputReference>,
+    /// Observer-owned transport closure, not semantic causality and not proof
+    /// that the intended execution lineage was the only possible consumer.
+    consumed_input_ids: Vec<String>,
+    /// Reserved for verifier-materialized upstream transports. Production
+    /// command observers currently emit no caller-declared upstream edges.
+    consumed_upstream_outputs: Vec<ObservedBuildOutputReference>,
     content_hash: String,
     byte_length: u64,
 }
@@ -275,12 +285,17 @@ pub struct ObservedBuildStepReceipt {
     accepted_for_gpu_hmr: bool,
     gpu_hmr_success: bool,
     can_satisfy_runtime_proof: bool,
+    can_satisfy_build_transaction: bool,
+    input_transport_bound_to_execution_boundary: bool,
+    execution_policy_authorized: bool,
+    execution_runtime_closure_observed: bool,
     observer_id: String,
     clock_id: String,
     challenge_id: String,
     transaction_context_hash: String,
     receipt_id: String,
     executor_hash: String,
+    execution_boundary: String,
     invocation_hash: String,
     started_monotonic_ns: u64,
     completed_monotonic_ns: u64,
@@ -299,6 +314,25 @@ impl ObservedBuildStepReceipt {
 
     pub fn evidence_authority(&self) -> &str {
         &self.evidence_authority
+    }
+
+    pub(crate) fn can_satisfy_build_transaction(&self) -> bool {
+        self.can_satisfy_build_transaction
+    }
+
+    pub(crate) fn output_reference(
+        &self,
+        output_ordinal: u32,
+    ) -> Option<ObservedBuildOutputReference> {
+        self.outputs
+            .iter()
+            .find(|output| output.output_ordinal == output_ordinal)
+            .map(|output| ObservedBuildOutputReference {
+                producer_receipt_id: self.receipt_id.clone(),
+                output_ordinal,
+                content_hash: output.content_hash.clone(),
+                byte_length: output.byte_length,
+            })
     }
 }
 
@@ -321,6 +355,8 @@ pub struct VerifiedReloadBuildTransactionReceipt {
     accepted_for_gpu_hmr: bool,
     gpu_hmr_success: bool,
     can_satisfy_runtime_proof: bool,
+    execution_policy_authorized: bool,
+    execution_runtime_closure_observed: bool,
     receipt_id: String,
     observer_id: String,
     clock_id: String,
@@ -394,6 +430,15 @@ fn verify_reload_transaction_build_receipts(
     let mut outputs_by_receipt = HashMap::new();
     for receipt in receipts {
         validate_sealed_step_receipt(receipt)?;
+        if !receipt.can_satisfy_build_transaction
+            || !receipt.input_transport_bound_to_execution_boundary
+            || !receipt.execution_policy_authorized
+            || !receipt.execution_runtime_closure_observed
+        {
+            return Err(BuildReceiptError::new(
+                "build_step_receipt_dependency_authority_is_insufficient",
+            ));
+        }
         if receipt.observer_id != challenge.observer_id
             || receipt.clock_id != challenge.clock_id
             || receipt.challenge_id != challenge.challenge_id
@@ -462,7 +507,7 @@ fn verify_reload_transaction_build_receipts(
 
     for receipt in receipts {
         for output in &receipt.outputs {
-            for reference in &output.contributing_upstream_outputs {
+            for reference in &output.consumed_upstream_outputs {
                 let (producer_receipt, producer_output) = outputs_by_receipt
                     .get(&(
                         reference.producer_receipt_id.as_str(),
@@ -542,7 +587,7 @@ fn verify_reload_transaction_build_receipts(
         }
 
         let direct_inputs = output
-            .contributing_input_ids
+            .consumed_input_ids
             .iter()
             .map(String::as_str)
             .collect::<HashSet<_>>();
@@ -560,7 +605,7 @@ fn verify_reload_transaction_build_receipts(
             .iter()
             .map(|input| (input.input_id.as_str(), input.content_hash.as_str()))
             .collect::<HashMap<_, _>>();
-        for direct_input in &output.contributing_input_ids {
+        for direct_input in &output.consumed_input_ids {
             if !role_inputs.contains_key(direct_input.as_str()) {
                 return Err(BuildReceiptError::new(
                     "build_transaction_direct_input_missing_from_role_closure",
@@ -613,7 +658,7 @@ fn verify_reload_transaction_build_receipts(
         let binding = role_output_bindings
             .get(role.role_id.as_str())
             .expect("every role was bound above");
-        if binding.output.contributing_upstream_outputs.len()
+        if binding.output.consumed_upstream_outputs.len()
             != role.dependency_role_ids.len()
         {
             return Err(BuildReceiptError::new(
@@ -628,7 +673,7 @@ fn verify_reload_transaction_build_receipts(
                         "build_transaction_dependency_role_output_is_missing",
                     )
                 })?;
-            let observed = binding.output.contributing_upstream_outputs.iter().any(
+            let observed = binding.output.consumed_upstream_outputs.iter().any(
                 |reference| {
                     reference.producer_receipt_id == dependency.receipt.receipt_id
                         && reference.output_ordinal == dependency.output.output_ordinal
@@ -677,7 +722,7 @@ fn verify_reload_transaction_build_receipts(
                 })
                 .collect::<HashMap<_, _>>();
             let mut reachable_inputs = HashMap::new();
-            for input_id in &binding.output.contributing_input_ids {
+            for input_id in &binding.output.consumed_input_ids {
                 let observed = receipt_inputs.get(input_id.as_str()).copied().ok_or_else(|| {
                     BuildReceiptError::new("build_transaction_direct_input_observation_is_missing")
                 })?;
@@ -750,11 +795,19 @@ fn verify_reload_transaction_build_receipts(
         .map(str::to_string)
         .collect::<Vec<_>>();
     build_step_receipt_ids.sort();
+    let execution_policy_authorized = receipts
+        .iter()
+        .all(|receipt| receipt.execution_policy_authorized);
+    let execution_runtime_closure_observed = receipts
+        .iter()
+        .all(|receipt| receipt.execution_runtime_closure_observed);
     let receipt_id = derive_transaction_receipt_id(
         challenge,
         &reload_transaction_commitment_id,
         &build_step_receipt_ids,
         &artifact_bindings,
+        execution_policy_authorized,
+        execution_runtime_closure_observed,
     );
     Ok(VerifiedReloadBuildTransactionReceipt {
         schema_version: VERIFIED_RELOAD_BUILD_TRANSACTION_SCHEMA_VERSION.to_string(),
@@ -762,6 +815,8 @@ fn verify_reload_transaction_build_receipts(
         accepted_for_gpu_hmr: false,
         gpu_hmr_success: false,
         can_satisfy_runtime_proof: false,
+        execution_policy_authorized,
+        execution_runtime_closure_observed,
         receipt_id,
         observer_id: challenge.observer_id.clone(),
         clock_id: challenge.clock_id.clone(),
@@ -812,6 +867,11 @@ fn validate_sealed_step_receipt(receipt: &ObservedBuildStepReceipt) -> Result<()
         &receipt.executor_hash,
         "build_step_executor_hash_is_invalid",
     )?;
+    if receipt.execution_boundary.is_empty() || receipt.execution_boundary.contains('\0') {
+        return Err(BuildReceiptError::new(
+            "build_step_execution_boundary_is_invalid",
+        ));
+    }
     validate_canonical_hash(
         &receipt.invocation_hash,
         "build_step_invocation_hash_is_invalid",
@@ -849,6 +909,11 @@ fn validate_sealed_step_receipt(receipt: &ObservedBuildStepReceipt) -> Result<()
             &input.content_hash,
             "build_step_input_hash_is_invalid",
         )?;
+        if input.consumption_proof != OBSERVED_BUILD_INPUT_CONSUMPTION_PROOF {
+            return Err(BuildReceiptError::new(
+                "build_step_input_consumption_proof_is_invalid",
+            ));
+        }
     }
     let mut canonical_outputs = receipt.outputs.clone();
     canonical_outputs.sort_by_key(|output| output.output_ordinal);
@@ -871,9 +936,9 @@ fn validate_sealed_step_receipt(receipt: &ObservedBuildStepReceipt) -> Result<()
             &output.content_hash,
             "build_step_output_hash_is_invalid",
         )?;
-        let mut direct = output.contributing_input_ids.clone();
+        let mut direct = output.consumed_input_ids.clone();
         direct.sort();
-        if direct != output.contributing_input_ids {
+        if direct != output.consumed_input_ids {
             return Err(BuildReceiptError::new(
                 "build_step_output_inputs_are_not_canonical",
             ));
@@ -883,7 +948,7 @@ fn validate_sealed_step_receipt(receipt: &ObservedBuildStepReceipt) -> Result<()
                 "build_step_output_contains_duplicate_input",
             ));
         }
-        for input_id in &output.contributing_input_ids {
+        for input_id in &output.consumed_input_ids {
             validate_prefixed_hash(
                 input_id,
                 RELOAD_ARTIFACT_INPUT_ID_PREFIX,
@@ -896,13 +961,13 @@ fn validate_sealed_step_receipt(receipt: &ObservedBuildStepReceipt) -> Result<()
             }
             output_bound_input_ids.insert(input_id.as_str());
         }
-        let mut upstream = output.contributing_upstream_outputs.clone();
+        let mut upstream = output.consumed_upstream_outputs.clone();
         upstream.sort_by(|left, right| {
             left.producer_receipt_id
                 .cmp(&right.producer_receipt_id)
                 .then_with(|| left.output_ordinal.cmp(&right.output_ordinal))
         });
-        if upstream != output.contributing_upstream_outputs {
+        if upstream != output.consumed_upstream_outputs {
             return Err(BuildReceiptError::new(
                 "build_step_upstream_outputs_are_not_canonical",
             ));
@@ -955,6 +1020,11 @@ fn derive_step_receipt_id(receipt: &ObservedBuildStepReceipt) -> String {
         receipt.transaction_context_hash.as_bytes(),
     );
     hash_field(&mut hasher, receipt.executor_hash.as_bytes());
+    hash_field(&mut hasher, receipt.execution_boundary.as_bytes());
+    hasher.update([receipt.can_satisfy_build_transaction as u8]);
+    hasher.update([receipt.input_transport_bound_to_execution_boundary as u8]);
+    hasher.update([receipt.execution_policy_authorized as u8]);
+    hasher.update([receipt.execution_runtime_closure_observed as u8]);
     hash_field(&mut hasher, receipt.invocation_hash.as_bytes());
     hasher.update(receipt.started_monotonic_ns.to_be_bytes());
     hasher.update(receipt.completed_monotonic_ns.to_be_bytes());
@@ -963,20 +1033,21 @@ fn derive_step_receipt_id(receipt: &ObservedBuildStepReceipt) -> String {
         hash_field(&mut hasher, input.input_id.as_bytes());
         hash_field(&mut hasher, input.content_hash.as_bytes());
         hasher.update(input.byte_length.to_be_bytes());
+        hash_field(&mut hasher, input.consumption_proof.as_bytes());
     }
     hasher.update((receipt.outputs.len() as u64).to_be_bytes());
     for output in &receipt.outputs {
         hasher.update(output.output_ordinal.to_be_bytes());
         hash_field(&mut hasher, output.content_hash.as_bytes());
         hasher.update(output.byte_length.to_be_bytes());
-        hasher.update((output.contributing_input_ids.len() as u64).to_be_bytes());
-        for input_id in &output.contributing_input_ids {
+        hasher.update((output.consumed_input_ids.len() as u64).to_be_bytes());
+        for input_id in &output.consumed_input_ids {
             hash_field(&mut hasher, input_id.as_bytes());
         }
         hasher.update(
-            (output.contributing_upstream_outputs.len() as u64).to_be_bytes(),
+            (output.consumed_upstream_outputs.len() as u64).to_be_bytes(),
         );
-        for reference in &output.contributing_upstream_outputs {
+        for reference in &output.consumed_upstream_outputs {
             hash_field(&mut hasher, reference.producer_receipt_id.as_bytes());
             hasher.update(reference.output_ordinal.to_be_bytes());
             hash_field(&mut hasher, reference.content_hash.as_bytes());
@@ -994,6 +1065,8 @@ fn derive_transaction_receipt_id(
     reload_transaction_commitment_id: &str,
     build_step_receipt_ids: &[String],
     artifact_bindings: &[VerifiedArtifactBuildBinding],
+    execution_policy_authorized: bool,
+    execution_runtime_closure_observed: bool,
 ) -> String {
     let mut hasher = Sha256::new();
     hash_field(
@@ -1008,6 +1081,8 @@ fn derive_transaction_receipt_id(
         challenge.transaction_context_hash.as_bytes(),
     );
     hash_field(&mut hasher, reload_transaction_commitment_id.as_bytes());
+    hasher.update([execution_policy_authorized as u8]);
+    hasher.update([execution_runtime_closure_observed as u8]);
     hasher.update((build_step_receipt_ids.len() as u64).to_be_bytes());
     for receipt_id in build_step_receipt_ids {
         hash_field(&mut hasher, receipt_id.as_bytes());
@@ -1092,8 +1167,8 @@ mod test_support {
     #[derive(Debug, Clone)]
     pub(super) struct OutputBytes {
         pub output_ordinal: u32,
-        pub contributing_input_ids: Vec<String>,
-        pub contributing_upstream_outputs: Vec<ObservedBuildOutputReference>,
+        pub consumed_input_ids: Vec<String>,
+        pub consumed_upstream_outputs: Vec<ObservedBuildOutputReference>,
         pub locator: String,
         pub bytes: Arc<[u8]>,
     }
@@ -1176,6 +1251,7 @@ mod test_support {
                 input_id: input.input_id.clone(),
                 content_hash: content_hash(&input.bytes),
                 byte_length: input.bytes.len() as u64,
+                consumption_proof: OBSERVED_BUILD_INPUT_CONSUMPTION_PROOF.to_string(),
             });
         }
         inputs.sort_by(|left, right| left.input_id.cmp(&right.input_id));
@@ -1191,7 +1267,7 @@ mod test_support {
                     "build_output_bytes_or_ordinal_is_invalid",
                 ));
             }
-            let mut direct = output.contributing_input_ids.clone();
+            let mut direct = output.consumed_input_ids.clone();
             direct.sort();
             if direct.windows(2).any(|pair| pair[0] == pair[1])
                 || direct
@@ -1202,7 +1278,7 @@ mod test_support {
                     "build_output_direct_input_binding_is_invalid",
                 ));
             }
-            let mut upstream = output.contributing_upstream_outputs.clone();
+            let mut upstream = output.consumed_upstream_outputs.clone();
             upstream.sort_by(|left, right| {
                 left.producer_receipt_id
                     .cmp(&right.producer_receipt_id)
@@ -1210,8 +1286,8 @@ mod test_support {
             });
             outputs.push(ObservedBuildOutputReceipt {
                 output_ordinal: output.output_ordinal,
-                contributing_input_ids: direct,
-                contributing_upstream_outputs: upstream,
+                consumed_input_ids: direct,
+                consumed_upstream_outputs: upstream,
                 content_hash: content_hash(&output.bytes),
                 byte_length: output.bytes.len() as u64,
             });
@@ -1230,12 +1306,17 @@ mod test_support {
             accepted_for_gpu_hmr: false,
             gpu_hmr_success: false,
             can_satisfy_runtime_proof: false,
+            can_satisfy_build_transaction: true,
+            input_transport_bound_to_execution_boundary: true,
+            execution_policy_authorized: true,
+            execution_runtime_closure_observed: true,
             observer_id: challenge.observer_id.clone(),
             clock_id: challenge.clock_id.clone(),
             challenge_id: challenge.challenge_id.clone(),
             transaction_context_hash: challenge.transaction_context_hash.clone(),
             receipt_id: String::new(),
             executor_hash,
+            execution_boundary: "test_only_synthetic_build_observation_v1".to_string(),
             invocation_hash,
             started_monotonic_ns: observation.started_monotonic_ns,
             completed_monotonic_ns: observation.completed_monotonic_ns,
@@ -1330,8 +1411,8 @@ mod tests {
             }],
             outputs: vec![OutputBytes {
                 output_ordinal: 0,
-                contributing_input_ids: vec![input_id.to_string()],
-                contributing_upstream_outputs: upstream,
+                consumed_input_ids: vec![input_id.to_string()],
+                consumed_upstream_outputs: upstream,
                 locator: "transport/output".into(),
                 bytes: Arc::from(output_bytes),
             }],
@@ -1534,7 +1615,7 @@ mod tests {
         );
 
         let mut unobserved_input = base;
-        unobserved_input.outputs[0].contributing_input_ids = vec![INPUT_B.to_string()];
+        unobserved_input.outputs[0].consumed_input_ids = vec![INPUT_B.to_string()];
         unobserved_input.receipt_id = derive_step_receipt_id(&unobserved_input);
         assert_eq!(
             validate_sealed_step_receipt(&unobserved_input)
@@ -1544,11 +1625,12 @@ mod tests {
         );
 
         let mut unbound_input = unobserved_input;
-        unbound_input.outputs[0].contributing_input_ids = vec![INPUT_A.to_string()];
+        unbound_input.outputs[0].consumed_input_ids = vec![INPUT_A.to_string()];
         unbound_input.inputs.push(ObservedBuildInputReceipt {
             input_id: INPUT_B.to_string(),
             content_hash: content_hash(b"b"),
             byte_length: 1,
+            consumption_proof: OBSERVED_BUILD_INPUT_CONSUMPTION_PROOF.to_string(),
         });
         unbound_input.receipt_id = derive_step_receipt_id(&unbound_input);
         assert_eq!(
