@@ -2853,8 +2853,6 @@ fn runtime_acceptance_contract(
         "abi_compatibility_class": {
             "value": "compatible",
             "evidence_refs": acceptance_evidence_refs,
-            "backend_specific_adapter_safety_proven": true,
-            "backend_specific_adapter_safety_evidence_refs": acceptance_evidence_refs,
         },
         "abi_metadata": {
             "args": arg_provenance.clone(),

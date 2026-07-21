@@ -766,18 +766,16 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
     addFailure(failures, 'ai_hint_used_as_authoritative_contract_field', marker);
   }
   const abi = contract.abi_compatibility_class;
-  const backendSpecificAdapterSafetyProven =
+  const compatibilityClassAccepted = ['compatible', 'additive'].includes(abi.value);
+  const adapterSafetyAuthorityClaimed =
     abi.backend_specific_adapter_safety_proven
-    && abi.backend_specific_adapter_safety_evidence_refs.length > 0;
-  if (
-    abi.backend_specific_adapter_safety_proven
-    && abi.backend_specific_adapter_safety_evidence_refs.length === 0
-  ) {
-    addFailure(failures, 'abi_backend_specific_adapter_safety_evidence_refs_missing', {
+    || (!compatibilityClassAccepted && abi.backend_specific_adapter_safety_evidence_refs.length > 0);
+  if (adapterSafetyAuthorityClaimed) {
+    addFailure(failures, 'abi_backend_specific_adapter_safety_not_authoritative', {
       abi: abi.value,
     });
   }
-  if (!['compatible', 'additive'].includes(abi.value) && !backendSpecificAdapterSafetyProven) {
+  if (!compatibilityClassAccepted) {
     addFailure(failures, 'abi_compatibility_not_proven', { abi: abi.value });
   }
   if (!abi.evidence_refs.length) addFailure(failures, 'abi_evidence_refs_missing');
@@ -2013,10 +2011,6 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     String(selectedIsland.artifactKind ?? selectedIsland.artifact_kind ?? ''),
   );
   const abiAdapterSafetyEvidenceRefs = abiAdapterSafetyEvidenceRefsFromProof(abiProof);
-  const abiAdapterSafetyProven = (
-    abiProof.backendSpecificAdapterSafetyProven === true
-    || abiProof.backend_specific_adapter_safety_proven === true
-  ) && abiAdapterSafetyEvidenceRefs.length > 0;
   const contract = normalizeGpuHmrAcceptanceContract({
     contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
     project_id: firstText(input.projectId, input.project_id, input.workspaceSlug, validationContext.workspaceSlug),
@@ -2082,7 +2076,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     abi_compatibility_class: {
       value: abiCompatibilityClassFromProof(abiProof),
       evidence_refs: compactStringList(abiProof.evidenceRefs ?? abiProof.evidence_refs),
-      backend_specific_adapter_safety_proven: abiAdapterSafetyProven,
+      backend_specific_adapter_safety_proven: false,
       backend_specific_adapter_safety_evidence_refs: abiAdapterSafetyEvidenceRefs,
     },
     abi_metadata: {

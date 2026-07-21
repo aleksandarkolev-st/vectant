@@ -3712,8 +3712,6 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     abiProof: {
       resultState: 'gpu-hmr-abi-proven',
       abiCompatibilityClass: 'compatible',
-      backendSpecificAdapterSafetyProven: true,
-      backendSpecificAdapterSafetyEvidenceRefs: ['runtime:hiprt:same-process-recompile-dispatch-and-visual-oracle'],
       evidenceRefs: [`runtime:hiprt:native-function-resolution:${CFG.reloadKernelSymbol}`],
       args: [{
         name: 'opaque_kernel_params',

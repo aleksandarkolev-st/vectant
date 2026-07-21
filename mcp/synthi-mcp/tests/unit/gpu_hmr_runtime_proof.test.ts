@@ -3863,13 +3863,13 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
     expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
-    expect(proof.degradedReason).toBe("backend_specific_adapter_safety_evidence_missing");
+    expect(proof.degradedReason).toBe("abi_backend_specific_adapter_safety_not_authoritative");
     expect(proof.abiCompatibilityClass).toBe("layout_changed");
     expect(proof.backendSpecificAdapterSafetyProven).toBe(false);
     expect(proof.backendSpecificAdapterSafetyEvidenceRefs).toEqual([]);
   });
 
-  it("proves layout-changing ABI only with explicit backend adapter safety evidence", () => {
+  it("keeps explicit backend adapter safety references non-authoritative", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
@@ -3888,10 +3888,11 @@ describe("GPU HMR runtime output proof classification", () => {
       }],
     });
 
-    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
-    expect(proof.degradedState).toBeNull();
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_backend_specific_adapter_safety_not_authoritative");
     expect(proof.abiCompatibilityClass).toBe("layout_changed");
-    expect(proof.backendSpecificAdapterSafetyProven).toBe(true);
+    expect(proof.backendSpecificAdapterSafetyProven).toBe(false);
     expect(proof.backendSpecificAdapterSafetyEvidenceRefs).toEqual([
       "evidence:abi-adapter-safety:layout-change",
     ]);
@@ -8113,12 +8114,31 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(additiveContract.abi_compatibility_class.value).toBe("additive");
     expect(evaluateGpuHmrAcceptanceContract(additiveContract).accepted).toBe(true);
-    expect(layoutChangedContract.abi_compatibility_class.value).toBe("layout_changed");
-    expect(layoutChangedContract.abi_compatibility_class.backend_specific_adapter_safety_proven).toBe(true);
+    const forgedAdditiveAuthority = evaluateGpuHmrAcceptanceContract({
+      ...additiveContract,
+      abi_compatibility_class: {
+        ...additiveContract.abi_compatibility_class,
+        backend_specific_adapter_safety_proven: true,
+        backend_specific_adapter_safety_evidence_refs: ["evidence:abi-adapter-safety:forged"],
+      },
+    });
+    expect(forgedAdditiveAuthority.accepted).toBe(false);
+    expect(forgedAdditiveAuthority.failedGates.map((gate) => gate.code)).toContain(
+      "abi_backend_specific_adapter_safety_not_authoritative",
+    );
+    expect(layoutChangedContract.abi_compatibility_class.value).toBe("unknown");
+    expect(layoutChangedContract.abi_compatibility_class.backend_specific_adapter_safety_proven).toBe(false);
     expect(layoutChangedContract.abi_compatibility_class.backend_specific_adapter_safety_evidence_refs).toEqual([
       "evidence:abi-adapter-safety:fixture",
     ]);
-    expect(evaluateGpuHmrAcceptanceContract(layoutChangedContract).accepted).toBe(true);
+    const layoutChangedEvaluation = evaluateGpuHmrAcceptanceContract(layoutChangedContract);
+    expect(layoutChangedEvaluation.accepted).toBe(false);
+    expect(layoutChangedEvaluation.failedGates.map((gate) => gate.code)).toEqual(
+      expect.arrayContaining([
+        "abi_backend_specific_adapter_safety_not_authoritative",
+        "abi_compatibility_not_proven",
+      ]),
+    );
   });
 
   it("does not default malformed proven ABI payloads to compatible contracts", () => {
@@ -8241,7 +8261,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(evaluation.accepted).toBe(false);
     expect(evaluation.failedGates.map((gate) => gate.code)).toContain(
-      "abi_backend_specific_adapter_safety_evidence_refs_missing",
+      "abi_backend_specific_adapter_safety_not_authoritative",
     );
     expect(evaluation.failedGates.map((gate) => gate.code)).toContain(
       "abi_compatibility_not_proven",

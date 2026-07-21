@@ -5189,12 +5189,11 @@ export function classifyGpuHmrAbiProof(observation = {}) {
   const compatibilityClass = parsedCompatibilityClass ?? 'unknown';
   const backendSpecificAdapterSafetyEvidenceRefs = backendSpecificAdapterSafetyEvidence(observation);
   const adapterSafetyDeclared = backendSpecificAdapterSafetyDeclared(observation);
-  const adapterSafetyDeclaredWithoutEvidence =
-    adapterSafetyDeclared && backendSpecificAdapterSafetyEvidenceRefs.length === 0;
-  const backendSpecificAdapterSafetyProven = backendSpecificAdapterSafetyEvidenceRefs.length > 0;
-  const compatibilityClassAccepted =
-    ['compatible', 'additive'].includes(compatibilityClass)
-    || backendSpecificAdapterSafetyProven;
+  const adapterSafetyAuthorityClaimed =
+    adapterSafetyDeclared || backendSpecificAdapterSafetyEvidenceRefs.length > 0;
+  // Serialized references and booleans are support metadata, not an observed ABI migration proof.
+  const backendSpecificAdapterSafetyProven = false;
+  const compatibilityClassAccepted = ['compatible', 'additive'].includes(compatibilityClass);
   const acceptedExtractor = acceptedAbiExtractorEvidence(observation);
   const acceptedExtractorProvenanceObserved = acceptedExtractor.accepted;
   const extractorProvenanceComplete = observation.extractorProvenanceComplete !== false;
@@ -5249,8 +5248,8 @@ export function classifyGpuHmrAbiProof(observation = {}) {
     degradedReason: metadataObserved
       ? (typeof observation.degradedReason === 'string' && observation.degradedReason.trim()
         ? observation.degradedReason.trim()
-        : adapterSafetyDeclaredWithoutEvidence
-          ? 'backend_specific_adapter_safety_evidence_missing'
+        : !compatibilityClassAccepted && adapterSafetyAuthorityClaimed
+          ? 'abi_backend_specific_adapter_safety_not_authoritative'
           : parsedCompatibilityClass === null
           ? 'abi_compatibility_class_missing'
           : !compatibilityClassAccepted
