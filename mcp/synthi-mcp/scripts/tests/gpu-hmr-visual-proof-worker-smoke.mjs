@@ -83,6 +83,20 @@ assert.equal(proof.accepted, true);
 assert.equal(proof.acceptedAsAsyncVisualMetrics, true);
 assert.equal(proof.acceptedForGpuHmr, false);
 assert.equal(proof.gpuHmrSuccess, false);
+assert.ok(proof.inputArtifacts.before.supportPath);
+assert.equal(proof.inputArtifacts.before.localPath, null);
+assert.equal(proof.inputArtifacts.before.pathReusableAsProof, false);
+assert.equal(proof.inputArtifacts.before.freshReadMatchesSnapshot, true);
+assert.equal(
+  proof.inputArtifacts.before.freshReadHash,
+  proof.inputArtifacts.before.casValidation.verifiedByteHash
+    ?? proof.inputArtifacts.before.casValidation.readableContentHash,
+);
+assert.equal(
+  proof.inputArtifacts.before.freshReadByteLength,
+  proof.inputArtifacts.before.casValidation.verifiedByteLength
+    ?? proof.inputArtifacts.before.casValidation.readableByteLength,
+);
 assert.match(proof.proofHash, /^sha256:[a-f0-9]{64}$/);
 assert.equal(proof.proofHash, proof.proof_hash);
 

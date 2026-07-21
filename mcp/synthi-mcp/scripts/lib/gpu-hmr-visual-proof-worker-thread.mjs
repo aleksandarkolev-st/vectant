@@ -421,19 +421,87 @@ async function resolveImageInput(input, role, context) {
         },
       };
     }
-    const localPath = manifest.storage?.localPath;
-    const resolvedLocalPath = validation.localPath ?? validation.local_path ?? localPath;
-    const bytes = await readFile(resolvedLocalPath);
+    const supportPath = text(
+      validation.supportPath
+      ?? validation.support_path
+      ?? validation.localPath
+      ?? validation.local_path,
+    );
+    const verifiedHash = text(
+      validation.verifiedByteHash
+      ?? validation.verified_byte_hash
+      ?? validation.readableContentHash
+      ?? validation.contentHash,
+    );
+    const verifiedByteLength = Number(
+      validation.verifiedByteLength
+      ?? validation.verified_byte_length
+      ?? validation.readableByteLength
+      ?? validation.byteLength,
+    );
+    if (!supportPath || !verifiedHash || !Number.isSafeInteger(verifiedByteLength)) {
+      context.reasons.push(`${role}_cas_snapshot_binding_missing`);
+      context.gaps.push(`${role}_cas_snapshot_binding_missing`);
+      return {
+        bytes: null,
+        summary: {
+          role,
+          transportKind: manifest?.transport?.kind ?? null,
+          supportPath,
+          localPath: null,
+          casValidation: validation,
+        },
+      };
+    }
+    let bytes;
+    try {
+      bytes = await readFile(supportPath);
+    } catch {
+      context.reasons.push(`${role}_cas_support_bytes_unreadable`);
+      context.gaps.push(`${role}_cas_support_bytes_unreadable`);
+      return {
+        bytes: null,
+        summary: {
+          role,
+          transportKind: manifest?.transport?.kind ?? null,
+          supportPath,
+          localPath: null,
+          casValidation: validation,
+        },
+      };
+    }
+    const freshReadHash = sha256Bytes(bytes);
+    if (freshReadHash !== verifiedHash || bytes.byteLength !== verifiedByteLength) {
+      context.reasons.push(`${role}_cas_support_bytes_snapshot_mismatch`);
+      context.gaps.push(`${role}_cas_support_bytes_snapshot_mismatch`);
+      return {
+        bytes: null,
+        summary: {
+          role,
+          transportKind: manifest?.transport?.kind ?? null,
+          supportPath,
+          localPath: null,
+          freshReadHash,
+          freshReadByteLength: bytes.byteLength,
+          casValidation: validation,
+        },
+      };
+    }
     return {
       bytes,
-      encodedHash: sha256Bytes(bytes),
+      encodedHash: freshReadHash,
       summary: {
         role,
         transportKind: manifest.transport?.kind ?? null,
         artifactId: manifest.artifactId ?? null,
         contentHash: manifest.contentHash ?? null,
         manifestHash: validation.manifestHash,
-        localPath: resolvedLocalPath,
+        supportPath,
+        localPath: null,
+        pathReusableAsProof: false,
+        freshReadHash,
+        freshReadByteLength: bytes.byteLength,
+        freshReadMatchesSnapshot: true,
         casValidation: validation,
       },
     };
