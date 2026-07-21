@@ -295,6 +295,70 @@ assertFacetIntegrityRejected(
   'runtime_adapter_capabilities_facet_plain_data_cycle',
 );
 
+const oversizedArrayFacet = JSON.parse(JSON.stringify(baseline));
+oversizedArrayFacet.evidenceRefs = Array.from({ length: 129 }, (_, index) => `evidence:${index}`);
+assertFacetIntegrityRejected(
+  oversizedArrayFacet,
+  'runtime_adapter_capabilities_facet_plain_data_array_shape',
+);
+
+const excessiveDepthFacet = JSON.parse(JSON.stringify(baseline));
+let deepValue = 'leaf';
+for (let depth = 0; depth < 18; depth += 1) deepValue = { child: deepValue };
+excessiveDepthFacet.evidenceRefs[0] = deepValue;
+assertFacetIntegrityRejected(
+  excessiveDepthFacet,
+  'runtime_adapter_capabilities_facet_plain_data_depth',
+);
+
+const sharedDepthFacet = JSON.parse(JSON.stringify(baseline));
+const sharedLeaf = { value: 'shared' };
+let deepSharedValue = sharedLeaf;
+for (let depth = 0; depth < 18; depth += 1) {
+  deepSharedValue = { child: deepSharedValue };
+}
+sharedDepthFacet.evidenceRefs = [deepSharedValue, sharedLeaf];
+assertFacetIntegrityRejected(
+  sharedDepthFacet,
+  'runtime_adapter_capabilities_facet_plain_data_depth',
+);
+
+const excessiveNodesFacet = JSON.parse(JSON.stringify(baseline));
+excessiveNodesFacet.evidenceRefs = Array.from({ length: 128 }, (_, index) => ({
+  index,
+  child: { child: { child: { value: `node:${index}` } } },
+}));
+assertFacetIntegrityRejected(
+  excessiveNodesFacet,
+  'runtime_adapter_capabilities_facet_plain_data_nodes',
+);
+
+const excessiveFieldsFacet = JSON.parse(JSON.stringify(baseline));
+excessiveFieldsFacet.evidenceRefs[0] = Object.fromEntries(
+  Array.from({ length: 65 }, (_, index) => [`field${index}`, index]),
+);
+assertFacetIntegrityRejected(
+  excessiveFieldsFacet,
+  'runtime_adapter_capabilities_facet_plain_data_object_fields',
+);
+
+const excessiveStringFacet = JSON.parse(JSON.stringify(baseline));
+excessiveStringFacet.evidenceRefs[0] = 'x'.repeat(4097);
+assertFacetIntegrityRejected(
+  excessiveStringFacet,
+  'runtime_adapter_capabilities_facet_plain_data_string_bytes',
+);
+
+const excessiveTotalStringFacet = JSON.parse(JSON.stringify(baseline));
+excessiveTotalStringFacet.evidenceRefs = Array.from(
+  { length: 20 },
+  (_, index) => `${index}:`.padEnd(4000, 'x'),
+);
+assertFacetIntegrityRejected(
+  excessiveTotalStringFacet,
+  'runtime_adapter_capabilities_facet_plain_data_total_string_bytes',
+);
+
 const topLevelAccessorFacet = JSON.parse(JSON.stringify(baseline));
 let topLevelAccessorCalled = false;
 Object.defineProperty(topLevelAccessorFacet, 'schemaVersion', {

@@ -138,6 +138,13 @@ export const GPU_HMR_RUNTIME_ADAPTER_MAX_EVIDENCE_REFS = 64;
 export const GPU_HMR_RUNTIME_ADAPTER_MAX_EVIDENCE_REF_BYTES = 1024;
 export const GPU_HMR_RUNTIME_ADAPTER_MAX_EVIDENCE_REFS_BYTES = 32 * 1024;
 
+const MAX_CAPABILITY_PLAIN_DATA_DEPTH = 16;
+const MAX_CAPABILITY_PLAIN_DATA_NODES = 512;
+const MAX_CAPABILITY_PLAIN_DATA_ARRAY_LENGTH = 128;
+const MAX_CAPABILITY_PLAIN_DATA_OBJECT_FIELDS = 64;
+const MAX_CAPABILITY_PLAIN_DATA_STRING_BYTES = 4096;
+const MAX_CAPABILITY_PLAIN_DATA_TOTAL_STRING_BYTES = 64 * 1024;
+
 const INPUT_FIELD_SET = new Set(GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_INPUT_FIELDS);
 const CAPABILITY_FACT_FIELD_SET = new Set(
   GPU_HMR_RUNTIME_ADAPTER_CAPABILITY_FACT_FIELDS,
@@ -319,13 +326,28 @@ function canonicalSha256(value) {
 }
 
 function plainDataTreeFailure(value) {
-  const pending = [{ value, leave: false }];
+  const pending = [{ value, leave: false, depth: 0 }];
   const active = new Set();
   const complete = new Set();
+  let nodes = 0;
+  let totalStringBytes = 0;
+  const accountString = (candidate) => {
+    const bytes = Buffer.byteLength(candidate, 'utf8');
+    if (bytes > MAX_CAPABILITY_PLAIN_DATA_STRING_BYTES) return 'string_bytes';
+    totalStringBytes += bytes;
+    return totalStringBytes > MAX_CAPABILITY_PLAIN_DATA_TOTAL_STRING_BYTES
+      ? 'total_string_bytes'
+      : null;
+  };
   while (pending.length > 0) {
     const entry = pending.pop();
     const current = entry.value;
-    if (current === null || typeof current === 'string' || typeof current === 'boolean') continue;
+    if (current === null || typeof current === 'boolean') continue;
+    if (typeof current === 'string') {
+      const stringFailure = accountString(current);
+      if (stringFailure) return stringFailure;
+      continue;
+    }
     if (typeof current === 'number') {
       if (!Number.isFinite(current)) return 'nonfinite_number';
       if (Object.is(current, -0)) return 'negative_zero';
@@ -346,20 +368,34 @@ function plainDataTreeFailure(value) {
       complete.add(current);
       continue;
     }
+    if (entry.depth > MAX_CAPABILITY_PLAIN_DATA_DEPTH) return 'depth';
     if (complete.has(current)) continue;
     if (active.has(current)) return 'cycle';
+    nodes += 1;
+    if (nodes > MAX_CAPABILITY_PLAIN_DATA_NODES) return 'nodes';
     active.add(current);
-    pending.push({ value: current, leave: true });
+    pending.push({ value: current, leave: true, depth: entry.depth });
 
     let descriptors;
     let keys;
     let prototype;
     let array;
     try {
-      descriptors = Object.getOwnPropertyDescriptors(current);
-      keys = Reflect.ownKeys(descriptors);
       prototype = Object.getPrototypeOf(current);
       array = Array.isArray(current);
+      if (!array) {
+        if (prototype !== Object.prototype) return 'object_prototype';
+        let enumerableFieldCount = 0;
+        for (const key in current) {
+          if (!Object.hasOwn(current, key)) continue;
+          enumerableFieldCount += 1;
+          if (enumerableFieldCount > MAX_CAPABILITY_PLAIN_DATA_OBJECT_FIELDS) {
+            return 'object_fields';
+          }
+        }
+      }
+      descriptors = Object.getOwnPropertyDescriptors(current);
+      keys = Reflect.ownKeys(descriptors);
     } catch {
       return 'introspection_failed';
     }
@@ -373,22 +409,34 @@ function plainDataTreeFailure(value) {
         || !Object.hasOwn(lengthDescriptor, 'value')
         || !Number.isSafeInteger(length)
         || length < 0
+        || length > MAX_CAPABILITY_PLAIN_DATA_ARRAY_LENGTH
         || keys.length !== length + 1
       ) return 'array_shape';
       for (let index = 0; index < length; index += 1) {
         const descriptor = descriptors[String(index)];
         if (!descriptor || !Object.hasOwn(descriptor, 'value')) return 'array_accessor';
         if (descriptor.enumerable !== true) return 'array_descriptor';
-        pending.push({ value: descriptor.value, leave: false });
+        pending.push({
+          value: descriptor.value,
+          leave: false,
+          depth: entry.depth + 1,
+        });
       }
       continue;
     }
     if (prototype !== Object.prototype) return 'object_prototype';
+    if (keys.length > MAX_CAPABILITY_PLAIN_DATA_OBJECT_FIELDS) return 'object_fields';
     for (const key of keys) {
+      const keyFailure = accountString(key);
+      if (keyFailure) return keyFailure;
       const descriptor = descriptors[key];
       if (!Object.hasOwn(descriptor, 'value')) return 'accessor_property';
       if (descriptor.enumerable !== true) return 'object_property_descriptor';
-      pending.push({ value: descriptor.value, leave: false });
+      pending.push({
+        value: descriptor.value,
+        leave: false,
+        depth: entry.depth + 1,
+      });
     }
   }
   return null;
