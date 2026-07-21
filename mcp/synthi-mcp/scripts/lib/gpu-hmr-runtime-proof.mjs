@@ -16,8 +16,11 @@ import {
   validateArtifactLocator,
 } from './gpu-hmr-artifact-cas.mjs';
 import {
-  evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity,
-} from './gpu-hmr-runtime-adapter-capabilities.mjs';
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_V2_SCHEMA_VERSION,
+} from './gpu-hmr-runtime-adapter-capabilities-v2.mjs';
+import {
+  evaluateGpuHmrRuntimeAdapterCapabilitiesVersionedIntegrity,
+} from './gpu-hmr-runtime-adapter-capabilities-versioned.mjs';
 import {
   classifyGpuHmrOutputOracleKind,
 } from './gpu-hmr-output-oracle-kind.mjs';
@@ -1704,14 +1707,22 @@ function frozenModalityFailure(failures) {
 }
 
 export function verifyGpuHmrOutputModalityEvidence(capabilityFacet) {
-  const integrity = evaluateGpuHmrRuntimeAdapterCapabilitiesIntegrity(capabilityFacet);
-  if (integrity.valid !== true || !integrity.recomputedFacet) {
+  const integrity = evaluateGpuHmrRuntimeAdapterCapabilitiesVersionedIntegrity(capabilityFacet);
+  const envelope = integrity.recomputedEnvelope;
+  if (integrity.valid !== true || !envelope?.facet) {
     return frozenModalityFailure([
       'output_modality_capability_integrity_unverified',
       ...(Array.isArray(integrity.failures) ? integrity.failures : []),
     ]);
   }
-  const facet = integrity.recomputedFacet;
+  const facet = envelope.facet;
+  if (
+    envelope.schemaVersion !== GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_V2_SCHEMA_VERSION
+    || envelope.historical !== false
+    || facet.schemaVersion !== GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_V2_SCHEMA_VERSION
+  ) {
+    return frozenModalityFailure(['output_modality_capability_v2_required']);
+  }
   const result = Object.freeze({
     schemaVersion: GPU_HMR_VERIFIED_OUTPUT_MODALITY_SCHEMA_VERSION,
     accepted: true,
@@ -1723,10 +1734,11 @@ export function verifyGpuHmrOutputModalityEvidence(capabilityFacet) {
     failedGates: Object.freeze([]),
   });
   PINNED_OUTPUT_MODALITY_EVIDENCE.set(result, Object.freeze({
-    capabilityFacet,
     modality: facet.outputModality,
     oracleKind: facet.oracleKind,
     capabilityProofId: facet.proofId,
+    capabilityBindingHash: facet.bindingHash,
+    evidenceRefs: facet.evidenceRefs,
   }));
   return result;
 }

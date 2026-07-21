@@ -31,6 +31,9 @@ import {
   createGpuHmrRuntimeAdapterCapabilities,
 } from "../../scripts/lib/gpu-hmr-runtime-adapter-capabilities.mjs";
 import {
+  createGpuHmrRuntimeAdapterCapabilitiesV2,
+} from "../../scripts/lib/gpu-hmr-runtime-adapter-capabilities-v2.mjs";
+import {
   classifyGpuHmrOutputOracleKind,
 } from "../../scripts/lib/gpu-hmr-output-oracle-kind.mjs";
 import {
@@ -104,6 +107,27 @@ const TEST_DISPATCHER_ID = `dispatcher:sha256:${"4".repeat(64)}`;
 
 const outputModalityEvidenceByKind = new Map<string, any>();
 
+function currentV2RuntimeAdapterCapabilities(overrides: Record<string, any> = {}) {
+  return createGpuHmrRuntimeAdapterCapabilitiesV2({
+    artifactFormat: "native_binary",
+    outputModality: "compute",
+    oracleKind: "buffer_checksum",
+    publicationModel: "dispatch_table_epoch",
+    commandRecordingModel: "late_bound_dispatch",
+    pipelineCacheOwner: "none",
+    artifactMaterializationModel: "ahead_of_time",
+    dispatchBindingModel: "direct",
+    resourceBindingModel: "fixed_layout",
+    deviceTopology: "single_device",
+    synchronizationTopology: "single_queue_ordered",
+    stateContinuityModel: "stateless",
+    rayTracingStateModel: "none",
+    pipelineReuseModel: "none",
+    evidenceRefs: ["evidence:runtime-adapter-capability:v2"],
+    ...overrides,
+  });
+}
+
 function verifiedOutputModalityEvidence(kind: string) {
   const cached = outputModalityEvidenceByKind.get(kind);
   if (cached) return cached;
@@ -112,13 +136,21 @@ function verifiedOutputModalityEvidence(kind: string) {
     throw new Error(`test output oracle kind is not registered: ${kind}`);
   }
   const evidence = verifyGpuHmrOutputModalityEvidence(
-    createGpuHmrRuntimeAdapterCapabilities({
+    currentV2RuntimeAdapterCapabilities({
       artifactFormat: "opaque_payload",
       outputModality: classification.modality,
       oracleKind: classification.kind,
       publicationModel: "opaque_callback_epoch",
       commandRecordingModel: "opaque_engine_managed",
       pipelineCacheOwner: "opaque_external",
+      artifactMaterializationModel: "opaque",
+      dispatchBindingModel: "opaque",
+      resourceBindingModel: "opaque",
+      deviceTopology: "opaque",
+      synchronizationTopology: "opaque",
+      stateContinuityModel: "opaque",
+      rayTracingStateModel: "opaque",
+      pipelineReuseModel: "opaque",
       evidenceRefs: [`evidence:runtime-adapter-capability:${classification.kind}`],
     }),
   );
@@ -2005,6 +2037,129 @@ describe("real ROCm upstream lifecycle planning", () => {
 });
 
 describe("GPU HMR runtime output proof classification", () => {
+  it("accepts a current v2 capability facet for output modality evidence", () => {
+    const facet = currentV2RuntimeAdapterCapabilities({
+      evidenceRefs: ["evidence:runtime-adapter-capability:v2"],
+    });
+
+    const evidence = verifyGpuHmrOutputModalityEvidence(facet);
+
+    expect(evidence).toMatchObject({
+      accepted: true,
+      modality: facet.outputModality,
+      oracleKind: facet.oracleKind,
+      capabilityProofId: facet.proofId,
+      capabilityBindingHash: facet.bindingHash,
+      evidenceRefs: facet.evidenceRefs,
+    });
+    expect(evidence.failedGates).toEqual([]);
+  });
+
+  it("rejects serialized v2 capability facet tampering", () => {
+    const facet = JSON.parse(JSON.stringify(currentV2RuntimeAdapterCapabilities({
+      evidenceRefs: ["evidence:runtime-adapter-capability:v2-tamper"],
+    })));
+    facet.proofId = "runtime-adapter-capabilities-v2:forged";
+
+    const evidence = verifyGpuHmrOutputModalityEvidence(facet);
+
+    expect(evidence.accepted).toBe(false);
+    expect(evidence.failedGates).toContain("output_modality_capability_integrity_unverified");
+    expect(evidence.failedGates).toContain(
+      "matching_evaluator:runtime_adapter_capabilities_v2_facet_proofId_mismatch",
+    );
+  });
+
+  it("rejects mixed and stale v2 capability hashes", () => {
+    const facet = currentV2RuntimeAdapterCapabilities({
+      evidenceRefs: ["evidence:runtime-adapter-capability:v2-current"],
+    });
+    const staleFacet = currentV2RuntimeAdapterCapabilities({
+      outputModality: "visual",
+      oracleKind: "render_target_hash",
+      evidenceRefs: ["evidence:runtime-adapter-capability:v2-stale"],
+    });
+
+    const evidence = verifyGpuHmrOutputModalityEvidence({
+      ...facet,
+      capabilitiesHash: staleFacet.capabilitiesHash,
+      obligationsHash: staleFacet.obligationsHash,
+      bindingHash: staleFacet.bindingHash,
+    });
+
+    expect(evidence.accepted).toBe(false);
+    expect(evidence.failedGates).toContain(
+      "matching_evaluator:runtime_adapter_capabilities_v2_facet_capabilitiesHash_mismatch",
+    );
+    expect(evidence.failedGates).toContain(
+      "matching_evaluator:runtime_adapter_capabilities_v2_facet_obligationsHash_mismatch",
+    );
+    expect(evidence.failedGates).toContain(
+      "matching_evaluator:runtime_adapter_capabilities_v2_facet_bindingHash_mismatch",
+    );
+  });
+
+  it("rejects forged v2 capability authority and success flags", () => {
+    const facet = currentV2RuntimeAdapterCapabilities({
+      evidenceRefs: ["evidence:runtime-adapter-capability:v2-authority"],
+    });
+
+    const evidence = verifyGpuHmrOutputModalityEvidence({
+      ...facet,
+      authority: "forged-v2-capability-authority",
+      acceptedAsSupportEvidence: true,
+      acceptedForGpuHmr: true,
+      gpuHmrSuccess: true,
+      canSatisfyRuntimeProof: true,
+      canSatisfyDispatchProof: true,
+    });
+
+    expect(evidence.accepted).toBe(false);
+    expect(evidence.failedGates).toContain(
+      "matching_evaluator:runtime_adapter_capabilities_v2_facet_authority_mismatch",
+    );
+    expect(evidence.failedGates).toContain(
+      "matching_evaluator:runtime_adapter_capabilities_v2_facet_declaration_state_invalid",
+    );
+    expect(evidence.failedGates).toContain(
+      "matching_evaluator:runtime_adapter_capabilities_v2_facet_success_authority_forbidden",
+    );
+  });
+
+  it("rejects conflicting parallel aliases outside the current v2 facet", () => {
+    const facet = currentV2RuntimeAdapterCapabilities({
+      evidenceRefs: ["evidence:runtime-adapter-capability:v2-alias"],
+    });
+
+    const evidence = verifyGpuHmrOutputModalityEvidence({
+      ...facet,
+      output_modality: "visual",
+    });
+
+    expect(evidence.accepted).toBe(false);
+    expect(evidence.failedGates).toContain("output_modality_capability_integrity_unverified");
+    expect(evidence.failedGates).toContain(
+      "gpu_hmr_runtime_adapter_capabilities_versioned_facet_unknown_field:output_modality",
+    );
+  });
+
+  it("rejects historical v1 capability facets with a v2-required failure", () => {
+    const evidence = verifyGpuHmrOutputModalityEvidence(
+      createGpuHmrRuntimeAdapterCapabilities({
+        artifactFormat: "native_binary",
+        outputModality: "compute",
+        oracleKind: "buffer_checksum",
+        publicationModel: "dispatch_table_epoch",
+        commandRecordingModel: "late_bound_dispatch",
+        pipelineCacheOwner: "none",
+        evidenceRefs: ["evidence:runtime-adapter-capability:v1"],
+      }),
+    );
+
+    expect(evidence.accepted).toBe(false);
+    expect(evidence.failedGates).toEqual(["output_modality_capability_v2_required"]);
+  });
+
   it("requires dispatch before output proof can be considered", () => {
     const proof = classifyGpuHmrOutputProof({
       dispatchObserved: false,
