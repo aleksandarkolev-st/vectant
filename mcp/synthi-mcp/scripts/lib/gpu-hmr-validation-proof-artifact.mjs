@@ -4510,14 +4510,19 @@ async function validateComputeArtifactCasLocator(
       reasons.push('compute_oracle_artifact_cas_expected_hash_mismatch');
     }
     return {
-      ...validation,
-      accepted: validation.accepted === true && reasons.length === 0,
+      liveValidation: validation,
+      accepted:
+        validation.accepted === true
+        && validation.acceptedAsTransportEvidence === true
+        && reasons.length === 0,
       acceptedAsTransportEvidence:
         validation.acceptedAsTransportEvidence === true && reasons.length === 0,
       reasons,
+      gaps: Array.isArray(validation.gaps) ? [...validation.gaps] : [],
     };
   } catch (error) {
     return {
+      liveValidation: null,
       accepted: false,
       acceptedAsTransportEvidence: false,
       acceptedForGpuHmr: false,
@@ -4525,6 +4530,10 @@ async function validateComputeArtifactCasLocator(
       proofAuthority: 'transport_integrity_only',
       localPath: null,
       local_path: null,
+      supportPath: null,
+      support_path: null,
+      pathReusableAsProof: false,
+      path_reusable_as_proof: false,
       contentHash: computeArtifactLocatorHash(locator),
       manifestHash: firstString(locator?.manifestHash, locator?.manifest_hash),
       reasons: ['artifact_cas_validation_exception'],
@@ -4536,10 +4545,311 @@ async function validateComputeArtifactCasLocator(
   }
 }
 
-async function resolveComputeArtifactCasPaths(source, options = {}) {
+function legacyComputeArtifactValidationShape(validation) {
+  return !hasOwn(validation, 'supportPath')
+    && !hasOwn(validation, 'support_path')
+    && !hasOwn(validation, 'verifiedByteHash')
+    && !hasOwn(validation, 'verified_byte_hash')
+    && !hasOwn(validation, 'verifiedByteLength')
+    && !hasOwn(validation, 'verified_byte_length')
+    && !hasOwn(validation, 'verifiedSnapshotIdentity')
+    && !hasOwn(validation, 'verified_snapshot_identity');
+}
+
+function computeArtifactSnapshotIdentity(value) {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  const object = objectOrNull(value);
+  return object && Object.keys(object).length > 0 ? object : null;
+}
+
+function firstComputeArtifactByteLength(...values) {
+  return values.find((value) => Number.isSafeInteger(value) && value >= 0) ?? null;
+}
+
+function computeArtifactCasSnapshotBinding(validationResult) {
+  const validation = validationResult?.liveValidation;
+  if (
+    validationResult?.accepted !== true
+    || validationResult?.acceptedAsTransportEvidence !== true
+    || validation?.accepted !== true
+    || validation?.acceptedAsTransportEvidence !== true
+  ) {
+    return {
+      accepted: false,
+      reasons: [],
+    };
+  }
+
+  const legacyShape = legacyComputeArtifactValidationShape(validation);
+  const legacyValidationPath = legacyShape
+    ? firstString(...['localPath', 'local_path'].map((field) => validation[field]))
+    : null;
+  const supportPath = firstString(
+    validation.supportPath,
+    validation.support_path,
+    legacyValidationPath,
+  );
+  const verifiedByteHash = normalizeOptionalSha256(firstString(
+    validation.verifiedByteHash,
+    validation.verified_byte_hash,
+    validation.readableContentHash,
+    validation.readable_content_hash,
+  ));
+  const verifiedByteLength = firstComputeArtifactByteLength(
+    validation.verifiedByteLength,
+    validation.verified_byte_length,
+    validation.readableByteLength,
+    validation.readable_byte_length,
+  );
+  const validationSnapshotIdentity = computeArtifactSnapshotIdentity(
+    validation.verifiedSnapshotIdentity ?? validation.verified_snapshot_identity,
+  );
+  const verifiedSnapshotIdentity = validationSnapshotIdentity ?? (
+    legacyShape && verifiedByteHash && verifiedByteLength !== null
+      ? {
+          schemaVersion: 'synthi.gpu_hmr.compute_artifact_legacy_content_snapshot.v1',
+          contentHash: verifiedByteHash,
+          byteLength: verifiedByteLength,
+        }
+      : null
+  );
+  const reasons = [];
+
+  if (!supportPath) reasons.push('compute_oracle_artifact_cas_support_path_missing');
+  if (!verifiedByteHash) {
+    reasons.push('compute_oracle_artifact_cas_verified_snapshot_hash_missing');
+  }
+  if (verifiedByteLength === null) {
+    reasons.push('compute_oracle_artifact_cas_verified_snapshot_byte_length_missing');
+  }
+  if (!verifiedSnapshotIdentity) {
+    reasons.push('compute_oracle_artifact_cas_verified_snapshot_identity_missing');
+  }
+  if (!legacyShape) {
+    if (
+      validation.pathReusableAsProof !== false
+      || validation.path_reusable_as_proof !== false
+    ) {
+      reasons.push('compute_oracle_artifact_cas_support_path_authority_invalid');
+    }
+    if (firstString(...['localPath', 'local_path'].map((field) => validation[field]))) {
+      reasons.push('compute_oracle_artifact_cas_proof_local_path_forbidden');
+    }
+  }
+
+  return {
+    accepted: reasons.length === 0,
+    reasons,
+    supportPath,
+    verifiedByteHash,
+    verifiedByteLength,
+    verifiedSnapshotIdentity,
+    legacyShape,
+    validation,
+  };
+}
+
+function sameComputeArtifactSnapshotIdentity(left, right) {
+  const stableIdentity = (value) => {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    const identity = objectOrNull(value);
+    const root = objectOrNull(identity?.root);
+    const final = objectOrNull(identity?.final);
+    const components = Array.isArray(identity?.components) ? identity.components : null;
+    if (root && final && components) {
+      return stableJson({
+        root: {
+          fileId128: root.fileId128 ?? null,
+          volumeSerialNumber: root.volumeSerialNumber ?? null,
+        },
+        final: {
+          fileId128: final.fileId128 ?? null,
+          volumeSerialNumber: final.volumeSerialNumber ?? null,
+        },
+        components: components.map((component) => ({
+          componentIndex: component?.componentIndex ?? null,
+          component: component?.component ?? null,
+          directory: component?.directory ?? null,
+          fileId128: component?.fileId128 ?? null,
+          volumeSerialNumber: component?.volumeSerialNumber ?? null,
+        })),
+      });
+    }
+    return identity ? stableJson(identity) : null;
+  };
+  const leftIdentity = stableIdentity(left);
+  return Boolean(leftIdentity && leftIdentity === stableIdentity(right));
+}
+
+async function readAcceptedComputeArtifactCasBytes(validationResult, revalidate) {
+  const binding = computeArtifactCasSnapshotBinding(validationResult);
+  if (!binding.accepted) {
+    return {
+      ...binding,
+      bytes: null,
+    };
+  }
+
+  try {
+    const bytes = await readFile(binding.supportPath);
+    const freshReadHash = sha256BufferHash(bytes);
+    const freshReadByteLength = bytes.byteLength;
+    const reasons = [];
+    if (freshReadHash !== binding.verifiedByteHash) {
+      reasons.push('compute_oracle_artifact_cas_fresh_read_hash_mismatch');
+    }
+    if (freshReadByteLength !== binding.verifiedByteLength) {
+      reasons.push('compute_oracle_artifact_cas_fresh_read_byte_length_mismatch');
+    }
+    if (reasons.length > 0) {
+      return {
+        ...binding,
+        accepted: false,
+        bytes: null,
+        freshReadHash,
+        freshReadByteLength,
+        reasons,
+      };
+    }
+
+    const postValidationResult = typeof revalidate === 'function'
+      ? await revalidate()
+      : null;
+    const postBinding = computeArtifactCasSnapshotBinding(postValidationResult);
+    if (!postBinding.accepted) {
+      return {
+        ...binding,
+        accepted: false,
+        bytes: null,
+        freshReadHash,
+        freshReadByteLength,
+        postReadSnapshotIdentity: postBinding.verifiedSnapshotIdentity ?? null,
+        reasons: [
+          'compute_oracle_artifact_cas_post_read_validation_rejected',
+          ...(postBinding.reasons ?? []),
+        ],
+      };
+    }
+    if (
+      postBinding.verifiedByteHash !== binding.verifiedByteHash
+      || postBinding.verifiedByteLength !== binding.verifiedByteLength
+      || !sameComputeArtifactSnapshotIdentity(
+        postBinding.verifiedSnapshotIdentity,
+        binding.verifiedSnapshotIdentity,
+      )
+    ) {
+      return {
+        ...binding,
+        accepted: false,
+        bytes: null,
+        freshReadHash,
+        freshReadByteLength,
+        postReadSnapshotIdentity: postBinding.verifiedSnapshotIdentity,
+        reasons: ['compute_oracle_artifact_cas_post_read_snapshot_mismatch'],
+      };
+    }
+
+    return {
+      ...binding,
+      accepted: true,
+      bytes,
+      freshReadHash,
+      freshReadByteLength,
+      freshReadMatchesSnapshot: true,
+      postReadSnapshotIdentity: postBinding.verifiedSnapshotIdentity,
+      snapshotIdentityStable: true,
+      reasons: [],
+    };
+  } catch {
+    return {
+      ...binding,
+      accepted: false,
+      bytes: null,
+      reasons: ['compute_oracle_artifact_cas_support_bytes_unreadable'],
+    };
+  }
+}
+
+function computeArtifactCasResolutionEntry(role, validationResult, materialization) {
+  const validation = validationResult?.liveValidation ?? {};
+  const accepted = validationResult?.accepted === true && materialization?.accepted === true;
+  const supportPath = materialization?.supportPath ?? null;
+  const verifiedSnapshotIdentity = materialization?.verifiedSnapshotIdentity ?? null;
+  return {
+    role,
+    accepted,
+    acceptedAsTransportEvidence: accepted,
+    accepted_as_transport_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: 'compute_artifact_transport_integrity_only',
+    proof_authority: 'compute_artifact_transport_integrity_only',
+    path: null,
+    localPath: null,
+    local_path: null,
+    supportPath,
+    support_path: supportPath,
+    pathReusableAsProof: false,
+    path_reusable_as_proof: false,
+    pathProofAuthority: 'support_locator_only',
+    path_proof_authority: 'support_locator_only',
+    contentHash: validation.contentHash ?? null,
+    content_hash: validation.contentHash ?? null,
+    byteLength: validation.byteLength ?? null,
+    byte_length: validation.byteLength ?? null,
+    manifestHash: validation.manifestHash ?? null,
+    manifest_hash: validation.manifestHash ?? null,
+    artifactId: validation.artifactId ?? null,
+    artifact_id: validation.artifactId ?? null,
+    artifactUri: validation.artifactUri ?? null,
+    artifact_uri: validation.artifactUri ?? null,
+    transportKind: validation.transportKind ?? null,
+    transport_kind: validation.transportKind ?? null,
+    mediaType: validation.mediaType ?? null,
+    media_type: validation.mediaType ?? null,
+    verifiedByteHash: materialization?.verifiedByteHash ?? null,
+    verified_byte_hash: materialization?.verifiedByteHash ?? null,
+    verifiedByteLength: materialization?.verifiedByteLength ?? null,
+    verified_byte_length: materialization?.verifiedByteLength ?? null,
+    verifiedSnapshotIdentity,
+    verified_snapshot_identity: verifiedSnapshotIdentity,
+    snapshotProofAuthority: validation.snapshotProofAuthority
+      ?? validation.snapshot_proof_authority
+      ?? (materialization?.legacyShape === true
+        ? 'accepted_live_validation_content_snapshot_compatibility'
+        : null),
+    snapshot_proof_authority: validation.snapshotProofAuthority
+      ?? validation.snapshot_proof_authority
+      ?? (materialization?.legacyShape === true
+        ? 'accepted_live_validation_content_snapshot_compatibility'
+        : null),
+    freshReadHash: materialization?.freshReadHash ?? null,
+    fresh_read_hash: materialization?.freshReadHash ?? null,
+    freshReadByteLength: materialization?.freshReadByteLength ?? null,
+    fresh_read_byte_length: materialization?.freshReadByteLength ?? null,
+    freshReadMatchesSnapshot: materialization?.freshReadMatchesSnapshot === true,
+    fresh_read_matches_snapshot: materialization?.freshReadMatchesSnapshot === true,
+    postReadSnapshotIdentity: materialization?.postReadSnapshotIdentity ?? null,
+    post_read_snapshot_identity: materialization?.postReadSnapshotIdentity ?? null,
+    snapshotIdentityStable: materialization?.snapshotIdentityStable === true,
+    snapshot_identity_stable: materialization?.snapshotIdentityStable === true,
+    legacyValidationCompatibility: materialization?.legacyShape === true,
+    legacy_validation_compatibility: materialization?.legacyShape === true,
+    reasons: [
+      ...(validationResult?.reasons ?? []),
+      ...(materialization?.reasons ?? []),
+    ],
+    gaps: validationResult?.gaps ?? [],
+  };
+}
+
+async function resolveComputeArtifactCasSnapshots(source, options = {}) {
   const out = { ...source };
   const embeddedLocators = computeArtifactCasLocators(source);
   const entries = [];
+  const bytesByRole = new Map();
   const malformedGenericLocatorCount = [
     source.artifact_cas_locators,
     source.artifactCasLocators,
@@ -4616,20 +4926,27 @@ async function resolveComputeArtifactCasPaths(source, options = {}) {
     return !roleFields.some((entry) => entry.role === role);
   });
   for (const locator of unresolvedEmbedded) {
-    const validation = await validateComputeArtifactCasLocator(locator, source, options);
+    const validationResult = await validateComputeArtifactCasLocator(locator, source, options);
+    const validation = validationResult.liveValidation;
     entries.push({
       role: computeArtifactLocatorRole(locator) ?? 'untyped',
       accepted: false,
       path: null,
+      localPath: null,
+      local_path: null,
+      supportPath: null,
+      support_path: null,
+      pathReusableAsProof: false,
+      path_reusable_as_proof: false,
       contentHash: validation?.contentHash ?? computeArtifactLocatorHash(locator),
       content_hash: validation?.contentHash ?? computeArtifactLocatorHash(locator),
       manifestHash: validation?.manifestHash ?? null,
       manifest_hash: validation?.manifestHash ?? null,
       reasons: [
-        ...(validation?.reasons ?? []),
+        ...(validationResult.reasons ?? []),
         'compute_oracle_artifact_cas_role_invalid',
       ],
-      gaps: validation?.gaps ?? [],
+      gaps: validationResult.gaps ?? [],
     });
   }
   for (const { role, snakeName, camelName, manifestFields } of roleFields) {
@@ -4686,25 +5003,24 @@ async function resolveComputeArtifactCasPaths(source, options = {}) {
         role,
         expectedHash,
       );
-      validations.push(validation);
-      entries.push({
-        role,
-        accepted: validation?.accepted === true && Boolean(firstString(
-          validation.localPath,
-          validation.local_path,
-        )),
-        path: validation?.accepted === true
-          ? firstString(validation.localPath, validation.local_path)
-          : null,
-        contentHash: validation?.contentHash ?? null,
-        content_hash: validation?.contentHash ?? null,
-        manifestHash: validation?.manifestHash ?? null,
-        manifest_hash: validation?.manifestHash ?? null,
-        reasons: validation?.reasons ?? [],
-        gaps: validation?.gaps ?? [],
-      });
+      const materialization = validation.accepted === true
+        ? await readAcceptedComputeArtifactCasBytes(
+            validation,
+            () => validateComputeArtifactCasLocator(
+              locator,
+              source,
+              options,
+              role,
+              expectedHash,
+            ),
+          )
+        : null;
+      validations.push({ validation, materialization });
+      entries.push(computeArtifactCasResolutionEntry(role, validation, materialization));
     }
-    const peerHashes = new Set(validations.map((validation) => validation?.contentHash).filter(Boolean));
+    const peerHashes = new Set(validations
+      .map(({ validation }) => validation.liveValidation?.contentHash)
+      .filter(Boolean));
     if (peerHashes.size > 1) {
       entries.push({
         role,
@@ -4721,20 +5037,21 @@ async function resolveComputeArtifactCasPaths(source, options = {}) {
     const allRoleEntriesAccepted = entries
       .filter((entry) => entry.role === role)
       .every((entry) => entry.accepted === true);
-    const pathValue = validations
-      .map((validation) => validation?.accepted === true
-        ? firstString(validation.localPath, validation.local_path)
+    const materializedBytes = validations
+      .map(({ materialization }) => materialization?.accepted === true
+        ? materialization.bytes
         : null)
-      .find(Boolean) ?? null;
-    if (candidates.length > 0 && allRoleEntriesAccepted && pathValue) {
-      out[snakeName] = pathValue;
-      out[camelName] = pathValue;
-    } else if (candidates.length > 0 || !allRoleEntriesAccepted) {
+      .find(Buffer.isBuffer) ?? null;
+    if (candidates.length > 0 || !allRoleEntriesAccepted) {
       delete out[snakeName];
       delete out[camelName];
     }
+    if (candidates.length > 0 && allRoleEntriesAccepted && materializedBytes) {
+      bytesByRole.set(role, materializedBytes);
+    }
   }
   if (entries.some((entry) => entry.accepted !== true)) {
+    bytesByRole.clear();
     for (const { snakeName, camelName } of roleFields) {
       delete out[snakeName];
       delete out[camelName];
@@ -4767,7 +5084,7 @@ async function resolveComputeArtifactCasPaths(source, options = {}) {
     };
     out.computeArtifactCasResolution = out.compute_artifact_cas_resolution;
   }
-  return out;
+  return { resolvedSource: out, bytesByRole };
 }
 
 export async function verifyComputeOracleArtifactBundle(computeArtifacts, options) {
@@ -4848,7 +5165,8 @@ function computeOracleArtifactBoundaryFailure(code) {
 async function computeOracleArtifactsFromFilesValidated(computeArtifacts, options) {
   const source = objectOrNull(computeArtifacts);
   if (!source) return null;
-  const resolvedSource = await resolveComputeArtifactCasPaths(source, options);
+  const casResolution = await resolveComputeArtifactCasSnapshots(source, options);
+  const resolvedSource = casResolution.resolvedSource;
   const rawPath = fileArtifactPath(firstString(resolvedSource.raw_readback_bin, resolvedSource.rawReadbackBin));
   const schemaPath = fileArtifactPath(firstString(resolvedSource.readback_schema_json, resolvedSource.readbackSchemaJson));
   const enriched = { ...resolvedSource };
@@ -4860,52 +5178,56 @@ async function computeOracleArtifactsFromFilesValidated(computeArtifacts, option
     ...objectOrNull(resolvedSource.byte_verification),
     ...objectOrNull(resolvedSource.byteVerification),
   };
-  let schemaBytes = null;
-  let rawBytes = null;
+  let schemaBytes = casResolution.bytesByRole.get('readback_schema') ?? null;
+  let rawBytes = casResolution.bytesByRole.get('raw_readback') ?? null;
 
-  if (schemaPath) {
+  if (!schemaBytes && schemaPath) {
     try {
       schemaBytes = await readFile(schemaPath);
-      const schemaHash = sha256BufferHash(schemaBytes);
-      enriched.readback_schema_hash = schemaHash;
-      verification.readback_schema_hash = schemaHash;
-      verification.readback_schema_byte_length = schemaBytes.length;
     } catch (error) {
       verification.readback_schema_read_error = error?.message ? String(error.message) : String(error);
     }
   }
+  if (schemaBytes) {
+    const schemaHash = sha256BufferHash(schemaBytes);
+    enriched.readback_schema_hash = schemaHash;
+    verification.readback_schema_hash = schemaHash;
+    verification.readback_schema_byte_length = schemaBytes.length;
+  }
 
-  if (rawPath) {
+  if (!rawBytes && rawPath) {
     try {
       rawBytes = await readFile(rawPath);
-      const actualHash = sha256BufferHash(rawBytes);
-      const declaredHash = firstString(source.raw_readback_hash, source.rawReadbackHash);
-      enriched.raw_readback_hash = declaredHash ?? actualHash;
-      enriched.raw_readback_byte_length = rawBytes.length;
-      verification.byte_length = rawBytes.length;
-      verification.raw_readback_hash = actualHash;
-      verification.hash_verified = !declaredHash || declaredHash.toLowerCase() === actualHash.toLowerCase();
-      const slice = objectOrNull(source.deterministic_slice ?? source.deterministicSlice);
-      const offset = finiteOffset(slice.offset ?? slice.byte_offset ?? slice.byteOffset);
-      const length = finiteOffset(slice.length ?? slice.byte_length ?? slice.byteLength);
-      if (offset !== null && length !== null && length > 0 && offset + length <= rawBytes.length) {
-        const sliceHash = sha256BufferHash(rawBytes.subarray(offset, offset + length));
-        enriched.deterministic_slice = {
-          ...slice,
-          offset,
-          length,
-          hash: firstString(slice.hash, slice.sha256, slice.slice_hash, slice.sliceHash) ?? sliceHash,
-        };
-        enriched.deterministic_slice_hash = enriched.deterministic_slice.hash;
-        verification.deterministic_slice_hash = sliceHash;
-        verification.deterministic_slice_hash_verified =
-          String(enriched.deterministic_slice.hash).toLowerCase() === sliceHash.toLowerCase();
-        verification.slice_bounds_verified = true;
-      } else {
-        verification.slice_bounds_verified = false;
-      }
     } catch (error) {
       verification.raw_readback_read_error = error?.message ? String(error.message) : String(error);
+    }
+  }
+  if (rawBytes) {
+    const actualHash = sha256BufferHash(rawBytes);
+    const declaredHash = firstString(source.raw_readback_hash, source.rawReadbackHash);
+    enriched.raw_readback_hash = declaredHash ?? actualHash;
+    enriched.raw_readback_byte_length = rawBytes.length;
+    verification.byte_length = rawBytes.length;
+    verification.raw_readback_hash = actualHash;
+    verification.hash_verified = !declaredHash || declaredHash.toLowerCase() === actualHash.toLowerCase();
+    const slice = objectOrNull(source.deterministic_slice ?? source.deterministicSlice);
+    const offset = finiteOffset(slice.offset ?? slice.byte_offset ?? slice.byteOffset);
+    const length = finiteOffset(slice.length ?? slice.byte_length ?? slice.byteLength);
+    if (offset !== null && length !== null && length > 0 && offset + length <= rawBytes.length) {
+      const sliceHash = sha256BufferHash(rawBytes.subarray(offset, offset + length));
+      enriched.deterministic_slice = {
+        ...slice,
+        offset,
+        length,
+        hash: firstString(slice.hash, slice.sha256, slice.slice_hash, slice.sliceHash) ?? sliceHash,
+      };
+      enriched.deterministic_slice_hash = enriched.deterministic_slice.hash;
+      verification.deterministic_slice_hash = sliceHash;
+      verification.deterministic_slice_hash_verified =
+        String(enriched.deterministic_slice.hash).toLowerCase() === sliceHash.toLowerCase();
+      verification.slice_bounds_verified = true;
+    } else {
+      verification.slice_bounds_verified = false;
     }
   }
 

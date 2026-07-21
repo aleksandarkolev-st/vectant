@@ -33,7 +33,10 @@ import {
   deterministicComputeProofCardRendererIdentity,
   renderDeterministicComputeProofCard,
 } from '../lib/gpu-hmr-compute-oracle-artifact-bundle.mjs';
-import { verifyComputeOracleArtifactBundle } from '../lib/gpu-hmr-validation-proof-artifact.mjs';
+import {
+  computeOracleArtifactsFromFiles,
+  verifyComputeOracleArtifactBundle,
+} from '../lib/gpu-hmr-validation-proof-artifact.mjs';
 
 const SUPPORT_AUTHORITY = 'compute_oracle_before_after_artifact_bytes_only_not_gpu_hmr_acceptance';
 const PHASES = ['before', 'after'];
@@ -1002,6 +1005,108 @@ async function main() {
       assert.equal(artifact.sourceKind, 'cas_locator');
       assert.equal(artifact.casIdentity.identityHash.startsWith('sha256:'), true);
       assert.equal(artifact.identity.accepted, true);
+    }
+
+    const materializerRawBytes = Buffer.from(
+      Array.from({ length: 64 }, (_, index) => (index * 5 + 29) % 256),
+    );
+    const materializerRawLocator = await writeArtifactToCas(materializerRawBytes, {
+      artifactRoot: casRoot,
+      role: 'raw_readback',
+      artifactKind: 'compute_readback',
+      mediaType: 'application/octet-stream',
+      producer: { name: 'snapshot_consumer_check', kind: 'worker' },
+      producerSubsystem: 'snapshot_consumer_check',
+      sessionNamespace: 'snapshot_consumer_check',
+      transportKind: 'cas_shared_volume',
+      portable: true,
+      includeLocalPath: false,
+    });
+    const materializerSchemaLocator = await writeArtifactToCas(casSource.after.schemaBytes, {
+      artifactRoot: casRoot,
+      role: 'readback_schema',
+      artifactKind: 'compute_readback_schema',
+      mediaType: 'application/json',
+      producer: { name: 'snapshot_consumer_check', kind: 'worker' },
+      producerSubsystem: 'snapshot_consumer_check',
+      sessionNamespace: 'snapshot_consumer_check',
+      transportKind: 'cas_shared_volume',
+      portable: true,
+      includeLocalPath: false,
+    });
+    const materializerInput = {
+      raw_readback_locator: materializerRawLocator,
+      readback_schema_locator: materializerSchemaLocator,
+      raw_readback_hash: materializerRawLocator.contentHash,
+      readback_schema_hash: materializerSchemaLocator.contentHash,
+      deterministic_slice: {
+        offset: 0,
+        length: materializerRawBytes.byteLength,
+        hash: sha256(materializerRawBytes),
+      },
+    };
+    const materializerOptions = {
+      allowedRoots: [casRoot],
+      artifactRoot: casRoot,
+    };
+    const materializedSnapshots = await computeOracleArtifactsFromFiles(
+      materializerInput,
+      materializerOptions,
+    );
+    assert.equal(materializedSnapshots.compute_artifact_cas_resolution.accepted, true);
+    assert.deepEqual(materializedSnapshots.raw_readback_locator, materializerRawLocator);
+    assert.deepEqual(materializedSnapshots.readback_schema_locator, materializerSchemaLocator);
+    assert.equal(materializedSnapshots.raw_readback_bin, undefined);
+    assert.equal(materializedSnapshots.rawReadbackBin, undefined);
+    assert.equal(materializedSnapshots.readback_schema_json, undefined);
+    assert.equal(materializedSnapshots.readbackSchemaJson, undefined);
+    assert.equal(materializedSnapshots.raw_readback_hash_verified, true);
+    assert.equal(materializedSnapshots.readback_schema_hash, materializerSchemaLocator.contentHash);
+    for (const entry of materializedSnapshots.compute_artifact_cas_resolution.entries) {
+      assert.equal(entry.accepted, true);
+      assert.equal(entry.path, null);
+      assert.equal(entry.localPath, null);
+      assert.equal(entry.local_path, null);
+      assert.equal(entry.pathReusableAsProof, false);
+      assert.equal(entry.pathProofAuthority, 'support_locator_only');
+      assert.equal(typeof entry.supportPath, 'string');
+      assert.equal(entry.supportPath.length > 0, true);
+      assert.ok(entry.verifiedSnapshotIdentity);
+      assert.equal(entry.freshReadHash, entry.verifiedByteHash);
+      assert.equal(entry.freshReadByteLength, entry.verifiedByteLength);
+      assert.equal(entry.freshReadMatchesSnapshot, true);
+      assert.deepEqual(
+        entry.postReadSnapshotIdentity.root,
+        entry.verifiedSnapshotIdentity.root,
+      );
+      assert.deepEqual(
+        entry.postReadSnapshotIdentity.final,
+        entry.verifiedSnapshotIdentity.final,
+      );
+      assert.deepEqual(
+        entry.postReadSnapshotIdentity.components,
+        entry.verifiedSnapshotIdentity.components,
+      );
+      assert.equal(entry.snapshotIdentityStable, true);
+    }
+
+    const rawSnapshotEntry = materializedSnapshots.compute_artifact_cas_resolution.entries
+      .find((entry) => entry.role === 'raw_readback');
+    assert.ok(rawSnapshotEntry);
+    try {
+      await writeFile(
+        rawSnapshotEntry.supportPath,
+        Buffer.alloc(materializerRawBytes.byteLength, 0xa5),
+      );
+      const mutatedSnapshots = await computeOracleArtifactsFromFiles(
+        materializerInput,
+        materializerOptions,
+      );
+      assert.equal(mutatedSnapshots.compute_artifact_cas_resolution.accepted, false);
+      assert.equal(mutatedSnapshots.raw_readback_hash_verified, undefined);
+      assert.equal(mutatedSnapshots.compute_oracle_semantic_verification.accepted, false);
+    } finally {
+      await writeFile(rawSnapshotEntry.supportPath, materializerRawBytes);
     }
 
     const embeddedCas = await toCasBundle(casSource, casRoot, { portable: true, mode: 'embedded' });
