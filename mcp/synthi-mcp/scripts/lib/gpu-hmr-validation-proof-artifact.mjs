@@ -4545,17 +4545,6 @@ async function validateComputeArtifactCasLocator(
   }
 }
 
-function legacyComputeArtifactValidationShape(validation) {
-  return !hasOwn(validation, 'supportPath')
-    && !hasOwn(validation, 'support_path')
-    && !hasOwn(validation, 'verifiedByteHash')
-    && !hasOwn(validation, 'verified_byte_hash')
-    && !hasOwn(validation, 'verifiedByteLength')
-    && !hasOwn(validation, 'verified_byte_length')
-    && !hasOwn(validation, 'verifiedSnapshotIdentity')
-    && !hasOwn(validation, 'verified_snapshot_identity');
-}
-
 function computeArtifactSnapshotIdentity(value) {
   if (typeof value === 'string' && value.trim()) return value.trim();
   const object = objectOrNull(value);
@@ -4580,14 +4569,9 @@ function computeArtifactCasSnapshotBinding(validationResult) {
     };
   }
 
-  const legacyShape = legacyComputeArtifactValidationShape(validation);
-  const legacyValidationPath = legacyShape
-    ? firstString(...['localPath', 'local_path'].map((field) => validation[field]))
-    : null;
   const supportPath = firstString(
     validation.supportPath,
     validation.support_path,
-    legacyValidationPath,
   );
   const verifiedByteHash = normalizeOptionalSha256(firstString(
     validation.verifiedByteHash,
@@ -4601,17 +4585,8 @@ function computeArtifactCasSnapshotBinding(validationResult) {
     validation.readableByteLength,
     validation.readable_byte_length,
   );
-  const validationSnapshotIdentity = computeArtifactSnapshotIdentity(
+  const verifiedSnapshotIdentity = computeArtifactSnapshotIdentity(
     validation.verifiedSnapshotIdentity ?? validation.verified_snapshot_identity,
-  );
-  const verifiedSnapshotIdentity = validationSnapshotIdentity ?? (
-    legacyShape && verifiedByteHash && verifiedByteLength !== null
-      ? {
-          schemaVersion: 'synthi.gpu_hmr.compute_artifact_legacy_content_snapshot.v1',
-          contentHash: verifiedByteHash,
-          byteLength: verifiedByteLength,
-        }
-      : null
   );
   const reasons = [];
 
@@ -4625,16 +4600,14 @@ function computeArtifactCasSnapshotBinding(validationResult) {
   if (!verifiedSnapshotIdentity) {
     reasons.push('compute_oracle_artifact_cas_verified_snapshot_identity_missing');
   }
-  if (!legacyShape) {
-    if (
-      validation.pathReusableAsProof !== false
-      || validation.path_reusable_as_proof !== false
-    ) {
-      reasons.push('compute_oracle_artifact_cas_support_path_authority_invalid');
-    }
-    if (firstString(...['localPath', 'local_path'].map((field) => validation[field]))) {
-      reasons.push('compute_oracle_artifact_cas_proof_local_path_forbidden');
-    }
+  if (
+    validation.pathReusableAsProof !== false
+    || validation.path_reusable_as_proof !== false
+  ) {
+    reasons.push('compute_oracle_artifact_cas_support_path_authority_invalid');
+  }
+  if (firstString(...['localPath', 'local_path'].map((field) => validation[field]))) {
+    reasons.push('compute_oracle_artifact_cas_proof_local_path_forbidden');
   }
 
   return {
@@ -4644,7 +4617,6 @@ function computeArtifactCasSnapshotBinding(validationResult) {
     verifiedByteHash,
     verifiedByteLength,
     verifiedSnapshotIdentity,
-    legacyShape,
     validation,
   };
 }
@@ -4817,14 +4789,10 @@ function computeArtifactCasResolutionEntry(role, validationResult, materializati
     verified_snapshot_identity: verifiedSnapshotIdentity,
     snapshotProofAuthority: validation.snapshotProofAuthority
       ?? validation.snapshot_proof_authority
-      ?? (materialization?.legacyShape === true
-        ? 'accepted_live_validation_content_snapshot_compatibility'
-        : null),
+      ?? null,
     snapshot_proof_authority: validation.snapshotProofAuthority
       ?? validation.snapshot_proof_authority
-      ?? (materialization?.legacyShape === true
-        ? 'accepted_live_validation_content_snapshot_compatibility'
-        : null),
+      ?? null,
     freshReadHash: materialization?.freshReadHash ?? null,
     fresh_read_hash: materialization?.freshReadHash ?? null,
     freshReadByteLength: materialization?.freshReadByteLength ?? null,
@@ -4835,8 +4803,6 @@ function computeArtifactCasResolutionEntry(role, validationResult, materializati
     post_read_snapshot_identity: materialization?.postReadSnapshotIdentity ?? null,
     snapshotIdentityStable: materialization?.snapshotIdentityStable === true,
     snapshot_identity_stable: materialization?.snapshotIdentityStable === true,
-    legacyValidationCompatibility: materialization?.legacyShape === true,
-    legacy_validation_compatibility: materialization?.legacyShape === true,
     reasons: [
       ...(validationResult?.reasons ?? []),
       ...(materialization?.reasons ?? []),
