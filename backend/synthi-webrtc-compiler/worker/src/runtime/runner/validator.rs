@@ -13,6 +13,7 @@ const GPU_HOST_CONTRACT_STATE_SYMBOLS: &[&str] = &["device_save_size", "device_s
 pub struct ValidationInfo {
     pub has_required_symbols: bool,
     pub module_abi_version: u32,
+    pub resolved_contract: Option<ResolvedModuleContract>,
     pub effective_contract: Option<EffectiveModuleContract>,
     pub effective_contract_error: Option<EffectiveModuleContractError>,
     pub has_gpu_contract: bool,
@@ -25,6 +26,20 @@ pub enum EffectiveModuleContract {
     Core,
     Gui,
     Legacy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleAbi {
+    CorePrefixed,
+    GuiPrefixed,
+    GuiLegacy,
+    Legacy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedModuleContract {
+    pub role: EffectiveModuleContract,
+    pub lifecycle_abi: LifecycleAbi,
 }
 
 impl EffectiveModuleContract {
@@ -84,9 +99,9 @@ impl LifecycleExportPresence {
     }
 }
 
-pub fn classify_effective_module_contract(
+pub fn classify_resolved_module_contract(
     exports: LifecycleExportPresence,
-) -> Result<EffectiveModuleContract, EffectiveModuleContractError> {
+) -> Result<ResolvedModuleContract, EffectiveModuleContractError> {
     let core_observed = exports.core_on_load || exports.core_on_update || exports.core_get_api;
     let core_complete = exports.core_on_load && exports.core_on_update && exports.core_get_api;
 
@@ -104,17 +119,37 @@ pub fn classify_effective_module_contract(
     let legacy_complete = (exports.on_load || exports.entrypoint) && exports.on_update;
 
     let observed = [
-        (core_observed, core_complete, EffectiveModuleContract::Core),
-        (gui_observed, gui_complete, EffectiveModuleContract::Gui),
+        (
+            core_observed,
+            core_complete,
+            ResolvedModuleContract {
+                role: EffectiveModuleContract::Core,
+                lifecycle_abi: LifecycleAbi::CorePrefixed,
+            },
+        ),
+        (
+            gui_observed,
+            gui_complete,
+            ResolvedModuleContract {
+                role: EffectiveModuleContract::Gui,
+                lifecycle_abi: LifecycleAbi::GuiPrefixed,
+            },
+        ),
         (
             legacy_gui_observed,
             legacy_gui_complete,
-            EffectiveModuleContract::Gui,
+            ResolvedModuleContract {
+                role: EffectiveModuleContract::Gui,
+                lifecycle_abi: LifecycleAbi::GuiLegacy,
+            },
         ),
         (
             legacy_observed,
             legacy_complete,
-            EffectiveModuleContract::Legacy,
+            ResolvedModuleContract {
+                role: EffectiveModuleContract::Legacy,
+                lifecycle_abi: LifecycleAbi::Legacy,
+            },
         ),
     ];
 
@@ -139,6 +174,12 @@ pub fn classify_effective_module_contract(
     Ok(complete_contracts[0])
 }
 
+pub fn classify_effective_module_contract(
+    exports: LifecycleExportPresence,
+) -> Result<EffectiveModuleContract, EffectiveModuleContractError> {
+    classify_resolved_module_contract(exports).map(|contract| contract.role)
+}
+
 pub unsafe fn validate_symbols(new_lib: &Library, _name: &str) -> ValidationInfo {
     validate_symbols_with_gpu_contract(new_lib, _name, false)
 }
@@ -149,13 +190,13 @@ pub unsafe fn validate_symbols_with_gpu_contract(
     require_gpu_contract: bool,
 ) -> ValidationInfo {
     let contract_result =
-        classify_effective_module_contract(unsafe { LifecycleExportPresence::probe(new_lib) });
-    let (effective_contract, effective_contract_error) = match contract_result {
-        Ok(contract) => (Some(contract), None),
-        Err(error) => (None, Some(error)),
+        classify_resolved_module_contract(unsafe { LifecycleExportPresence::probe(new_lib) });
+    let (resolved_contract, effective_contract, effective_contract_error) = match contract_result {
+        Ok(contract) => (Some(contract), Some(contract.role), None),
+        Err(error) => (None, None, Some(error)),
     };
     let mut has_required_symbols = effective_contract.is_some();
-    let module_abi_version = unsafe { module_abi_version(new_lib, effective_contract) };
+    let module_abi_version = unsafe { module_abi_version(new_lib, resolved_contract) };
 
     let gpu_presence = unsafe { GpuHostContractPresence::probe(new_lib) };
     let gpu_contract_required = require_gpu_contract
@@ -169,6 +210,7 @@ pub unsafe fn validate_symbols_with_gpu_contract(
     ValidationInfo {
         has_required_symbols,
         module_abi_version,
+        resolved_contract,
         effective_contract,
         effective_contract_error,
         has_gpu_contract: gpu_presence.has_required_contract(),
@@ -179,15 +221,21 @@ pub unsafe fn validate_symbols_with_gpu_contract(
 
 unsafe fn module_abi_version(
     lib: &Library,
-    effective_contract: Option<EffectiveModuleContract>,
+    resolved_contract: Option<ResolvedModuleContract>,
 ) -> u32 {
-    let symbol = match effective_contract {
-        Some(EffectiveModuleContract::Core) => b"core_get_abi_version".as_slice(),
-        Some(EffectiveModuleContract::Gui) => b"gui_get_abi_version".as_slice(),
-        Some(EffectiveModuleContract::Legacy) | None => return 0,
+    let Some(symbol) = resolved_contract.and_then(module_abi_version_symbol) else {
+        return 0;
     };
     let get_abi: Result<Symbol<unsafe extern "C" fn() -> c_uint>, _> = lib.get(symbol);
     get_abi.map_or(0, |f| f())
+}
+
+fn module_abi_version_symbol(contract: ResolvedModuleContract) -> Option<&'static [u8]> {
+    match contract.lifecycle_abi {
+        LifecycleAbi::CorePrefixed => Some(b"core_get_abi_version"),
+        LifecycleAbi::GuiPrefixed => Some(b"gui_get_abi_version"),
+        LifecycleAbi::GuiLegacy | LifecycleAbi::Legacy => None,
+    }
 }
 
 pub fn workspace_requires_gpu_contract() -> bool {
@@ -356,6 +404,118 @@ mod tests {
         for (exports, expected) in cases {
             assert_eq!(classify_effective_module_contract(exports), Ok(expected));
         }
+    }
+
+    #[test]
+    fn resolved_contract_preserves_the_observed_lifecycle_abi() {
+        let cases = [
+            (
+                LifecycleExportPresence {
+                    core_on_load: true,
+                    core_on_update: true,
+                    core_get_api: true,
+                    ..Default::default()
+                },
+                ResolvedModuleContract {
+                    role: EffectiveModuleContract::Core,
+                    lifecycle_abi: LifecycleAbi::CorePrefixed,
+                },
+            ),
+            (
+                LifecycleExportPresence {
+                    gui_on_load: true,
+                    gui_on_render: true,
+                    ..Default::default()
+                },
+                ResolvedModuleContract {
+                    role: EffectiveModuleContract::Gui,
+                    lifecycle_abi: LifecycleAbi::GuiPrefixed,
+                },
+            ),
+            (
+                LifecycleExportPresence {
+                    on_load: true,
+                    gui_render: true,
+                    ..Default::default()
+                },
+                ResolvedModuleContract {
+                    role: EffectiveModuleContract::Gui,
+                    lifecycle_abi: LifecycleAbi::GuiLegacy,
+                },
+            ),
+            (
+                LifecycleExportPresence {
+                    entrypoint: true,
+                    on_update: true,
+                    ..Default::default()
+                },
+                ResolvedModuleContract {
+                    role: EffectiveModuleContract::Legacy,
+                    lifecycle_abi: LifecycleAbi::Legacy,
+                },
+            ),
+        ];
+
+        for (exports, expected) in cases {
+            assert_eq!(classify_resolved_module_contract(exports), Ok(expected));
+            assert_eq!(
+                classify_effective_module_contract(exports),
+                Ok(expected.role)
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_contract_rejects_prefixed_and_legacy_gui_abi_mixtures() {
+        let exports = LifecycleExportPresence {
+            gui_on_load: true,
+            gui_on_render: true,
+            on_load: true,
+            on_render: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            classify_resolved_module_contract(exports),
+            Err(EffectiveModuleContractError::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn abi_version_symbol_is_selected_by_observed_lifecycle_abi() {
+        let contract = |role, lifecycle_abi| ResolvedModuleContract {
+            role,
+            lifecycle_abi,
+        };
+
+        assert_eq!(
+            module_abi_version_symbol(contract(
+                EffectiveModuleContract::Core,
+                LifecycleAbi::CorePrefixed,
+            )),
+            Some(b"core_get_abi_version".as_slice())
+        );
+        assert_eq!(
+            module_abi_version_symbol(contract(
+                EffectiveModuleContract::Gui,
+                LifecycleAbi::GuiPrefixed,
+            )),
+            Some(b"gui_get_abi_version".as_slice())
+        );
+        assert_eq!(
+            module_abi_version_symbol(contract(
+                EffectiveModuleContract::Gui,
+                LifecycleAbi::GuiLegacy,
+            )),
+            None
+        );
+        assert_eq!(
+            module_abi_version_symbol(contract(
+                EffectiveModuleContract::Legacy,
+                LifecycleAbi::Legacy,
+            )),
+            None
+        );
     }
 
     #[test]
