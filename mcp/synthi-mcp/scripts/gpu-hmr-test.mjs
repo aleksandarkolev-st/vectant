@@ -3761,8 +3761,10 @@ async function phaseFlow(ctx) {
       compute_oracle_artifacts: inwardComputeOracleArtifacts,
     },
     visualFrameObserved: Boolean(inwardScreenshot),
-    visualEvidenceRequired: true,
     visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
+    // MCP screenshots are diagnostic support until an independently verified
+    // before/after/diff bundle is supplied by the generic evidence pipeline.
+    visualEvidenceSupportOnly: true,
   });
   const inwardEpochProof = await runtimeEpochSwapProofSince(baselineStart);
   const inwardHostProofWithEvidence = await runtimeHostPreservationProofSince(
@@ -3972,8 +3974,9 @@ async function phaseFlow(ctx) {
     oracleArtifacts: outwardOracleArtifacts,
     deterministicVisualMode: outwardVisualOracleArtifacts ? flowDeterministicVisualMode() : undefined,
     visualFrameObserved: Boolean(outwardScreenshot),
-    visualEvidenceRequired: true,
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
+    // A path or capture receipt alone is never runtime visual proof.
+    visualEvidenceSupportOnly: true,
   });
   const outwardEpochProof = await runtimeEpochSwapProofSince(flipStart);
   const outwardHostProofWithEvidence = await runtimeHostPreservationProofSince(

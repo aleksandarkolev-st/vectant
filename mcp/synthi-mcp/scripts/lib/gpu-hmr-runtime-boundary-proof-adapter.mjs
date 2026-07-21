@@ -20,6 +20,7 @@ import {
   classifyGpuHmrFissionProof,
   classifyGpuHmrFullRuntimeProof,
   classifyGpuHmrHostPreservationProof,
+  classifyGpuHmrOutputProof,
 } from './gpu-hmr-runtime-proof.mjs';
 import {
   classifyGpuHmrOutputOracleKind,
@@ -3299,9 +3300,8 @@ function buildBoundaryProofComponents(input, stageEvidence) {
         ...visualEvidenceArtifacts.flatMap(visualArtifactEvidenceRefs),
       ])
     : [];
-  const outputProof = {
+  const outputCandidate = {
     schemaVersion: 'synthi.gpu.hmr.proof.v1',
-    resultState: 'gpu-hmr-output-oracle-proven',
     eventId: output.eventId ?? `${evidencePrefix}:output`,
     processId,
     epoch: epoch.epoch,
@@ -3358,12 +3358,21 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     deterministic_output_observed: true,
     deterministicOracleProvided: true,
     deterministic_oracle_provided: true,
-    deterministicOraclePassed: true,
-    deterministic_oracle_passed: true,
+    deterministicOraclePassed: outputOraclePassed,
+    deterministic_oracle_passed: outputOraclePassed,
     deterministicVisualMode,
     deterministic_visual_mode: deterministicVisualMode,
     evidenceRefs: output.evidenceRefs,
   };
+  const outputProof = oracleMode === 'visual'
+    ? classifyGpuHmrOutputProof({
+        ...outputCandidate,
+        dispatchProof,
+      })
+    : {
+        ...outputCandidate,
+        resultState: 'gpu-hmr-output-oracle-proven',
+      };
   const hostPreservationProof = classifyGpuHmrHostPreservationProof({
     identityChecksPassed: true,
     processId,
