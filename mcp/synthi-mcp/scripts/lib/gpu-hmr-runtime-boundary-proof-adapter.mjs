@@ -681,6 +681,7 @@ function firstBool(...values) {
 function proofArtifactPath(value) {
   const text = firstText(value);
   if (!text) return null;
+  if (path.isAbsolute(text)) return text;
   if (/^[a-z][a-z0-9+.-]*:/iu.test(text)) return null;
   return text;
 }
