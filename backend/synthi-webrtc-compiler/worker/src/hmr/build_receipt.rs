@@ -3,7 +3,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::build_manifest::{
     BuildManifest, RELOAD_ARTIFACT_INPUT_ID_PREFIX, RELOAD_ARTIFACT_ROLE_ID_PREFIX,
@@ -14,12 +14,12 @@ mod command_observer;
 pub(crate) use command_observer::{ObservedBuildCommandOutcome, StdinStdoutBuildStepPlan};
 
 pub const OBSERVED_BUILD_STEP_RECEIPT_SCHEMA_VERSION: &str =
-    "synthi.observed_build_step_receipt.v1";
+    "synthi.observed_build_step_receipt.v2";
 pub const OBSERVED_BUILD_STEP_RECEIPT_ID_PREFIX: &str = "build-step-receipt:sha256:";
 pub const OBSERVED_BUILD_STEP_RECEIPT_AUTHORITY: &str =
     "verifier_sealed_build_observation_only_not_loader_runtime_or_gpu_hmr_proof";
 pub const VERIFIED_RELOAD_BUILD_TRANSACTION_SCHEMA_VERSION: &str =
-    "synthi.verified_reload_build_transaction.v1";
+    "synthi.verified_reload_build_transaction.v2";
 pub const VERIFIED_RELOAD_BUILD_TRANSACTION_ID_PREFIX: &str =
     "verified-build-transaction:sha256:";
 pub const VERIFIED_RELOAD_BUILD_TRANSACTION_AUTHORITY: &str =
@@ -27,6 +27,8 @@ pub const VERIFIED_RELOAD_BUILD_TRANSACTION_AUTHORITY: &str =
 const BUILD_RECEIPT_OBSERVER_ID_PREFIX: &str = "build-observer:sha256:";
 const BUILD_RECEIPT_CLOCK_ID_PREFIX: &str = "build-clock:sha256:";
 const BUILD_TRANSACTION_CHALLENGE_ID_PREFIX: &str = "build-challenge:sha256:";
+const DEFAULT_BUILD_TRANSACTION_CHALLENGE_TTL: Duration = Duration::from_secs(4 * 60 * 60);
+const MAX_BUILD_TRANSACTION_CHALLENGE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const OBSERVED_BUILD_INPUT_CONSUMPTION_PROOF: &str =
     "observer_owned_input_pipe_drained_after_boundary_quiescence_v1";
 
@@ -34,13 +36,15 @@ const OBSERVED_BUILD_INPUT_CONSUMPTION_PROOF: &str =
 ///
 /// The fields are private and the type is not deserializable. A serialized
 /// receipt cannot recreate an active challenge or cross an observer instance.
+/// Final artifact bytes are intentionally bound at terminal verification,
+/// because their content hashes do not exist when this window is issued.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildTransactionChallenge {
     challenge_id: String,
     observer_id: String,
     clock_id: String,
-    transaction_context_hash: String,
     issued_monotonic_ns: u64,
+    expires_monotonic_ns: u64,
 }
 
 impl BuildTransactionChallenge {
@@ -48,8 +52,8 @@ impl BuildTransactionChallenge {
         &self.challenge_id
     }
 
-    pub fn transaction_context_hash(&self) -> &str {
-        &self.transaction_context_hash
+    pub fn expires_monotonic_ns(&self) -> u64 {
+        self.expires_monotonic_ns
     }
 }
 
@@ -57,8 +61,8 @@ impl BuildTransactionChallenge {
 struct ActiveChallenge {
     observer_id: String,
     clock_id: String,
-    transaction_context_hash: String,
     issued_monotonic_ns: u64,
+    expires_monotonic_ns: u64,
     registered_receipt_ids: HashSet<String>,
 }
 
@@ -72,6 +76,7 @@ pub struct BuildReceiptVerifier {
     observer_id: String,
     clock_id: String,
     origin: Instant,
+    challenge_ttl_ns: u64,
     active_challenges: HashMap<String, ActiveChallenge>,
 }
 
@@ -83,6 +88,20 @@ impl Default for BuildReceiptVerifier {
 
 impl BuildReceiptVerifier {
     pub fn new() -> Self {
+        Self::from_challenge_ttl_ns(DEFAULT_BUILD_TRANSACTION_CHALLENGE_TTL.as_nanos() as u64)
+    }
+
+    pub fn with_challenge_ttl(challenge_ttl: Duration) -> Result<Self, BuildReceiptError> {
+        if challenge_ttl.is_zero() || challenge_ttl > MAX_BUILD_TRANSACTION_CHALLENGE_TTL {
+            return Err(BuildReceiptError::new(
+                "build_transaction_challenge_ttl_is_invalid",
+            ));
+        }
+        let challenge_ttl_ns = monotonic_duration_ns(challenge_ttl)?;
+        Ok(Self::from_challenge_ttl_ns(challenge_ttl_ns))
+    }
+
+    fn from_challenge_ttl_ns(challenge_ttl_ns: u64) -> Self {
         let observer_nonce = random_nonce();
         let clock_nonce = random_nonce();
         let process_id = std::process::id();
@@ -100,36 +119,35 @@ impl BuildReceiptVerifier {
             observer_id,
             clock_id,
             origin: Instant::now(),
+            challenge_ttl_ns,
             active_challenges: HashMap::new(),
         }
     }
 
-    pub fn begin_transaction(
-        &mut self,
-        transaction_context_hash: &str,
-    ) -> Result<BuildTransactionChallenge, BuildReceiptError> {
-        validate_canonical_hash(
-            transaction_context_hash,
-            "build_transaction_context_hash_is_invalid",
-        )?;
-        let issued_monotonic_ns = self.monotonic_now_ns();
+    pub fn begin_transaction(&mut self) -> Result<BuildTransactionChallenge, BuildReceiptError> {
+        let issued_monotonic_ns = self.monotonic_now_ns()?;
+        let expires_monotonic_ns = issued_monotonic_ns
+            .checked_add(self.challenge_ttl_ns)
+            .ok_or_else(|| {
+                BuildReceiptError::new("build_transaction_challenge_deadline_is_invalid")
+            })?;
         let nonce = random_nonce();
         let challenge_id = prefixed_hash(
             BUILD_TRANSACTION_CHALLENGE_ID_PREFIX,
-            b"synthi.build_transaction_challenge.v1",
+            b"synthi.build_transaction_challenge.v2",
             &[
                 self.observer_id.as_bytes(),
                 self.clock_id.as_bytes(),
-                transaction_context_hash.as_bytes(),
                 &issued_monotonic_ns.to_be_bytes(),
+                &expires_monotonic_ns.to_be_bytes(),
                 &nonce,
             ],
         );
         let active = ActiveChallenge {
             observer_id: self.observer_id.clone(),
             clock_id: self.clock_id.clone(),
-            transaction_context_hash: transaction_context_hash.to_string(),
             issued_monotonic_ns,
+            expires_monotonic_ns,
             registered_receipt_ids: HashSet::new(),
         };
         self.active_challenges
@@ -138,8 +156,8 @@ impl BuildReceiptVerifier {
             challenge_id,
             observer_id: self.observer_id.clone(),
             clock_id: self.clock_id.clone(),
-            transaction_context_hash: transaction_context_hash.to_string(),
             issued_monotonic_ns,
+            expires_monotonic_ns,
         })
     }
 
@@ -149,49 +167,49 @@ impl BuildReceiptVerifier {
         manifest: &BuildManifest,
         receipts: &[ObservedBuildStepReceipt],
     ) -> Result<VerifiedReloadBuildTransactionReceipt, BuildReceiptError> {
+        let verifier_now_monotonic_ns = self.monotonic_now_ns()?;
+        let active = self
+            .active_challenges
+            .remove(challenge.challenge_id.as_str())
+            .ok_or_else(|| BuildReceiptError::new("build_transaction_challenge_is_not_active"))?;
+        if challenge.observer_id != self.observer_id
+            || challenge.clock_id != self.clock_id
+            || challenge.observer_id != active.observer_id
+            || challenge.clock_id != active.clock_id
+            || challenge.issued_monotonic_ns != active.issued_monotonic_ns
+            || challenge.expires_monotonic_ns != active.expires_monotonic_ns
         {
-            let active = self
-                .active_challenges
-                .get(challenge.challenge_id.as_str())
-                .ok_or_else(|| {
-                    BuildReceiptError::new("build_transaction_challenge_is_not_active")
-                })?;
-            if challenge.observer_id != self.observer_id
-                || challenge.clock_id != self.clock_id
-                || challenge.observer_id != active.observer_id
-                || challenge.clock_id != active.clock_id
-                || challenge.transaction_context_hash != active.transaction_context_hash
-                || challenge.issued_monotonic_ns != active.issued_monotonic_ns
-            {
-                return Err(BuildReceiptError::new(
-                    "build_transaction_challenge_observer_binding_mismatch",
-                ));
-            }
-            if active.registered_receipt_ids.len() != receipts.len()
-                || receipts.iter().any(|receipt| {
-                    !active
-                        .registered_receipt_ids
-                        .contains(receipt.receipt_id.as_str())
-                })
-            {
-                return Err(BuildReceiptError::new(
-                    "build_transaction_receipt_registry_mismatch",
-                ));
-            }
+            return Err(BuildReceiptError::new(
+                "build_transaction_challenge_observer_binding_mismatch",
+            ));
+        }
+        if verifier_now_monotonic_ns >= challenge.expires_monotonic_ns {
+            return Err(BuildReceiptError::new(
+                "build_transaction_challenge_expired",
+            ));
+        }
+        if active.registered_receipt_ids.len() != receipts.len()
+            || receipts.iter().any(|receipt| {
+                !active
+                    .registered_receipt_ids
+                    .contains(receipt.receipt_id.as_str())
+            })
+        {
+            return Err(BuildReceiptError::new(
+                "build_transaction_receipt_registry_mismatch",
+            ));
         }
         let verified = verify_reload_transaction_build_receipts(
             challenge,
             manifest,
             receipts,
-            self.monotonic_now_ns(),
+            verifier_now_monotonic_ns,
         )?;
-        self.active_challenges
-            .remove(challenge.challenge_id.as_str());
         Ok(verified)
     }
 
-    fn monotonic_now_ns(&self) -> u64 {
-        self.origin.elapsed().as_nanos().min(u64::MAX as u128) as u64
+    fn monotonic_now_ns(&self) -> Result<u64, BuildReceiptError> {
+        monotonic_duration_ns(self.origin.elapsed())
     }
 
     fn register_observed_receipt(
@@ -199,35 +217,47 @@ impl BuildReceiptVerifier {
         challenge: &BuildTransactionChallenge,
         receipt: &ObservedBuildStepReceipt,
     ) -> Result<(), BuildReceiptError> {
-        validate_sealed_step_receipt(receipt)?;
-        let verifier_now_monotonic_ns = self.monotonic_now_ns();
+        let verifier_now_monotonic_ns = self.monotonic_now_ns()?;
         let active = self
             .active_challenges
-            .get_mut(challenge.challenge_id.as_str())
+            .get(challenge.challenge_id.as_str())
             .ok_or_else(|| BuildReceiptError::new("build_transaction_challenge_is_not_active"))?;
+        if verifier_now_monotonic_ns >= active.expires_monotonic_ns {
+            self.active_challenges
+                .remove(challenge.challenge_id.as_str());
+            return Err(BuildReceiptError::new(
+                "build_transaction_challenge_expired",
+            ));
+        }
         if challenge.observer_id != self.observer_id
             || challenge.clock_id != self.clock_id
             || challenge.observer_id != active.observer_id
             || challenge.clock_id != active.clock_id
-            || challenge.transaction_context_hash != active.transaction_context_hash
             || challenge.issued_monotonic_ns != active.issued_monotonic_ns
+            || challenge.expires_monotonic_ns != active.expires_monotonic_ns
             || receipt.observer_id != challenge.observer_id
             || receipt.clock_id != challenge.clock_id
             || receipt.challenge_id != challenge.challenge_id
-            || receipt.transaction_context_hash != challenge.transaction_context_hash
+            || receipt.challenge_expires_monotonic_ns != challenge.expires_monotonic_ns
         {
             return Err(BuildReceiptError::new(
                 "build_step_receipt_challenge_binding_mismatch",
             ));
         }
+        validate_sealed_step_receipt(receipt)?;
         if receipt.started_monotonic_ns < challenge.issued_monotonic_ns
             || receipt.completed_monotonic_ns < receipt.started_monotonic_ns
             || receipt.completed_monotonic_ns > verifier_now_monotonic_ns
+            || receipt.completed_monotonic_ns >= challenge.expires_monotonic_ns
         {
             return Err(BuildReceiptError::new(
                 "build_step_receipt_monotonic_interval_is_invalid",
             ));
         }
+        let active = self
+            .active_challenges
+            .get_mut(challenge.challenge_id.as_str())
+            .expect("active challenge was validated above");
         if !active
             .registered_receipt_ids
             .insert(receipt.receipt_id.clone())
@@ -292,7 +322,7 @@ pub struct ObservedBuildStepReceipt {
     observer_id: String,
     clock_id: String,
     challenge_id: String,
-    transaction_context_hash: String,
+    challenge_expires_monotonic_ns: u64,
     receipt_id: String,
     executor_hash: String,
     execution_boundary: String,
@@ -361,7 +391,7 @@ pub struct VerifiedReloadBuildTransactionReceipt {
     observer_id: String,
     clock_id: String,
     challenge_id: String,
-    transaction_context_hash: String,
+    challenge_expires_monotonic_ns: u64,
     reload_transaction_commitment_id: String,
     build_step_receipt_ids: Vec<String>,
     artifact_bindings: Vec<VerifiedArtifactBuildBinding>,
@@ -442,7 +472,7 @@ fn verify_reload_transaction_build_receipts(
         if receipt.observer_id != challenge.observer_id
             || receipt.clock_id != challenge.clock_id
             || receipt.challenge_id != challenge.challenge_id
-            || receipt.transaction_context_hash != challenge.transaction_context_hash
+            || receipt.challenge_expires_monotonic_ns != challenge.expires_monotonic_ns
         {
             return Err(BuildReceiptError::new(
                 "build_step_receipt_challenge_binding_mismatch",
@@ -451,6 +481,7 @@ fn verify_reload_transaction_build_receipts(
         if receipt.started_monotonic_ns < challenge.issued_monotonic_ns
             || receipt.completed_monotonic_ns < receipt.started_monotonic_ns
             || receipt.completed_monotonic_ns > verifier_now_monotonic_ns
+            || receipt.completed_monotonic_ns >= challenge.expires_monotonic_ns
         {
             return Err(BuildReceiptError::new(
                 "build_step_receipt_monotonic_interval_is_invalid",
@@ -821,7 +852,7 @@ fn verify_reload_transaction_build_receipts(
         observer_id: challenge.observer_id.clone(),
         clock_id: challenge.clock_id.clone(),
         challenge_id: challenge.challenge_id.clone(),
-        transaction_context_hash: challenge.transaction_context_hash.clone(),
+        challenge_expires_monotonic_ns: challenge.expires_monotonic_ns,
         reload_transaction_commitment_id,
         build_step_receipt_ids,
         artifact_bindings,
@@ -854,10 +885,11 @@ fn validate_sealed_step_receipt(receipt: &ObservedBuildStepReceipt) -> Result<()
         BUILD_TRANSACTION_CHALLENGE_ID_PREFIX,
         "build_step_challenge_id_is_invalid",
     )?;
-    validate_canonical_hash(
-        &receipt.transaction_context_hash,
-        "build_step_transaction_context_hash_is_invalid",
-    )?;
+    if receipt.challenge_expires_monotonic_ns <= receipt.completed_monotonic_ns {
+        return Err(BuildReceiptError::new(
+            "build_step_challenge_expiry_is_invalid",
+        ));
+    }
     validate_prefixed_hash(
         &receipt.receipt_id,
         OBSERVED_BUILD_STEP_RECEIPT_ID_PREFIX,
@@ -1015,10 +1047,7 @@ fn derive_step_receipt_id(receipt: &ObservedBuildStepReceipt) -> String {
     hash_field(&mut hasher, receipt.observer_id.as_bytes());
     hash_field(&mut hasher, receipt.clock_id.as_bytes());
     hash_field(&mut hasher, receipt.challenge_id.as_bytes());
-    hash_field(
-        &mut hasher,
-        receipt.transaction_context_hash.as_bytes(),
-    );
+    hasher.update(receipt.challenge_expires_monotonic_ns.to_be_bytes());
     hash_field(&mut hasher, receipt.executor_hash.as_bytes());
     hash_field(&mut hasher, receipt.execution_boundary.as_bytes());
     hasher.update([receipt.can_satisfy_build_transaction as u8]);
@@ -1076,10 +1105,7 @@ fn derive_transaction_receipt_id(
     hash_field(&mut hasher, challenge.observer_id.as_bytes());
     hash_field(&mut hasher, challenge.clock_id.as_bytes());
     hash_field(&mut hasher, challenge.challenge_id.as_bytes());
-    hash_field(
-        &mut hasher,
-        challenge.transaction_context_hash.as_bytes(),
-    );
+    hasher.update(challenge.expires_monotonic_ns.to_be_bytes());
     hash_field(&mut hasher, reload_transaction_commitment_id.as_bytes());
     hasher.update([execution_policy_authorized as u8]);
     hasher.update([execution_runtime_closure_observed as u8]);
@@ -1106,6 +1132,11 @@ fn random_nonce() -> [u8; 32] {
     let mut nonce = [0u8; 32];
     OsRng.fill_bytes(&mut nonce);
     nonce
+}
+
+fn monotonic_duration_ns(duration: Duration) -> Result<u64, BuildReceiptError> {
+    u64::try_from(duration.as_nanos())
+        .map_err(|_| BuildReceiptError::new("build_receipt_monotonic_clock_overflow"))
 }
 
 fn prefixed_hash(prefix: &str, domain: &[u8], fields: &[&[u8]]) -> String {
@@ -1313,7 +1344,7 @@ mod test_support {
             observer_id: challenge.observer_id.clone(),
             clock_id: challenge.clock_id.clone(),
             challenge_id: challenge.challenge_id.clone(),
-            transaction_context_hash: challenge.transaction_context_hash.clone(),
+            challenge_expires_monotonic_ns: challenge.expires_monotonic_ns,
             receipt_id: String::new(),
             executor_hash,
             execution_boundary: "test_only_synthetic_build_observation_v1".to_string(),
@@ -1377,8 +1408,6 @@ mod tests {
     use crate::hmr::build_manifest::{BuildArtifactIdentity, BuildDependencyIdentity, BuildSlot};
     use std::sync::Arc;
 
-    const CONTEXT: &str =
-        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const INPUT_A: &str =
         "artifact-input:sha256:1111111111111111111111111111111111111111111111111111111111111111";
     const INPUT_B: &str =
@@ -1464,9 +1493,65 @@ mod tests {
     }
 
     #[test]
+    fn challenge_ttl_is_bounded_and_terminal_expiry_is_single_use() {
+        assert_eq!(
+            BuildReceiptVerifier::with_challenge_ttl(Duration::ZERO)
+                .unwrap_err()
+                .to_string(),
+            "build_transaction_challenge_ttl_is_invalid"
+        );
+        assert_eq!(
+            BuildReceiptVerifier::with_challenge_ttl(
+                MAX_BUILD_TRANSACTION_CHALLENGE_TTL + Duration::from_nanos(1),
+            )
+            .unwrap_err()
+            .to_string(),
+            "build_transaction_challenge_ttl_is_invalid"
+        );
+        assert_eq!(
+            monotonic_duration_ns(Duration::new(u64::MAX, 999_999_999))
+                .unwrap_err()
+                .to_string(),
+            "build_receipt_monotonic_clock_overflow"
+        );
+
+        let mut verifier =
+            BuildReceiptVerifier::with_challenge_ttl(Duration::from_nanos(1)).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
+        assert!(challenge.expires_monotonic_ns > challenge.issued_monotonic_ns);
+        while verifier.monotonic_now_ns().unwrap() < challenge.expires_monotonic_ns {
+            std::thread::yield_now();
+        }
+        let uncommitted_manifest = BuildManifest::new(
+            "preview-metadata",
+            "language-metadata",
+            "adapter-metadata",
+            0,
+            BuildSlot::Full,
+            "out/a",
+            &content_hash(b"out"),
+        );
+
+        assert_eq!(
+            verifier
+                .verify_reload_transaction(&challenge, &uncommitted_manifest, &[])
+                .unwrap_err()
+                .to_string(),
+            "build_transaction_challenge_expired"
+        );
+        assert_eq!(
+            verifier
+                .verify_reload_transaction(&challenge, &uncommitted_manifest, &[])
+                .unwrap_err()
+                .to_string(),
+            "build_transaction_challenge_is_not_active"
+        );
+    }
+
+    #[test]
     fn single_use_challenge_binds_build_bytes_without_runtime_authority() {
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let source = b"source-a";
         let output = b"artifact-a";
         let receipt = seal_test_observation(
@@ -1499,6 +1584,13 @@ mod tests {
             .starts_with(VERIFIED_RELOAD_BUILD_TRANSACTION_ID_PREFIX));
         assert_eq!(verified.artifact_bindings().len(), 1);
         assert_eq!(
+            verified.reload_transaction_commitment_id(),
+            manifest.reload_transaction_commitment_identity().unwrap()
+        );
+        assert!(!verified.accepted_for_gpu_hmr);
+        assert!(!verified.gpu_hmr_success);
+        assert!(!verified.can_satisfy_runtime_proof);
+        assert_eq!(
             verifier
                 .verify_reload_transaction(&challenge, &manifest, &[receipt])
                 .unwrap_err()
@@ -1510,7 +1602,7 @@ mod tests {
     #[test]
     fn challenge_and_receipts_cannot_cross_observer_instances() {
         let mut first = BuildReceiptVerifier::new();
-        let challenge = first.begin_transaction(CONTEXT).unwrap();
+        let challenge = first.begin_transaction().unwrap();
         let receipt = seal_test_observation(
             &mut first,
             &challenge,
@@ -1541,7 +1633,7 @@ mod tests {
     #[test]
     fn self_consistent_but_unregistered_receipt_fails_closed() {
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let receipt = seal_unregistered_test_observation(
             &challenge,
             observation(&challenge, INPUT_A, b"a", b"out", Vec::new(), 1),
@@ -1565,18 +1657,26 @@ mod tests {
                 .to_string(),
             "build_transaction_receipt_registry_mismatch"
         );
-        verifier
-            .register_observed_receipt(&challenge, &receipt)
-            .unwrap();
-        assert!(verifier
-            .verify_reload_transaction(&challenge, &manifest, &[receipt])
-            .is_ok());
+        assert_eq!(
+            verifier
+                .register_observed_receipt(&challenge, &receipt)
+                .unwrap_err()
+                .to_string(),
+            "build_transaction_challenge_is_not_active"
+        );
+        assert_eq!(
+            verifier
+                .verify_reload_transaction(&challenge, &manifest, &[receipt])
+                .unwrap_err()
+                .to_string(),
+            "build_transaction_challenge_is_not_active"
+        );
     }
 
     #[test]
     fn sealed_receipt_rejects_noncanonical_duplicate_and_unobserved_bindings() {
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let base = seal_test_observation(
             &mut verifier,
             &challenge,
@@ -1644,7 +1744,7 @@ mod tests {
     #[test]
     fn multi_step_transaction_requires_observed_byte_and_temporal_edges() {
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let first_source = b"source-a";
         let first_output = b"artifact-a";
         let first_receipt = seal_test_observation(
@@ -1717,7 +1817,7 @@ mod tests {
     #[test]
     fn declared_dependency_without_observed_edge_fails_closed() {
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let first_receipt = seal_test_observation(
             &mut verifier,
             &challenge,
@@ -1775,7 +1875,7 @@ mod tests {
     #[test]
     fn unrelated_receipt_cannot_satisfy_another_roles_source_closure() {
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let first_receipt = seal_test_observation(
             &mut verifier,
             &challenge,
@@ -1832,7 +1932,7 @@ mod tests {
     #[test]
     fn byte_mismatch_and_failed_test_observation_fail_closed() {
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let mut failed = observation(&challenge, INPUT_A, b"a", b"out-a", Vec::new(), 1);
         failed.successful = false;
         assert_eq!(
@@ -1861,10 +1961,17 @@ mod tests {
         let manifest = manifest("out/a", &content_hash(b"forged"), vec![artifact]);
         assert_eq!(
             verifier
-                .verify_reload_transaction(&challenge, &manifest, &[receipt])
+                .verify_reload_transaction(&challenge, &manifest, &[receipt.clone()])
                 .unwrap_err()
                 .to_string(),
             "build_transaction_artifact_hash_mismatch"
+        );
+        assert_eq!(
+            verifier
+                .verify_reload_transaction(&challenge, &manifest, &[receipt])
+                .unwrap_err()
+                .to_string(),
+            "build_transaction_challenge_is_not_active"
         );
     }
 }

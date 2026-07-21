@@ -1,9 +1,10 @@
 use super::*;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -13,7 +14,9 @@ const DEFAULT_STDOUT_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_STDERR_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
 const EXECUTABLE_BINDING: &str = "sealed_immutable_executable_snapshot_v1";
 const EXECUTION_BOUNDARY: &str =
-    "sealed_snapshot_seccomp_lineage_process_group_and_consumed_stdin_v1";
+    "sealed_snapshot_seccomp_lineage_process_group_kernel_deadline_and_consumed_stdin_v2";
+const WATCHDOG_LAUNCH_MESSAGE: u8 = 1;
+const WATCHDOG_CANCEL_MESSAGE: u8 = 2;
 
 /// Declarative intent for one observer-owned process whose exact input is
 /// delivered through stdin and whose artifact bytes are captured from stdout.
@@ -160,7 +163,6 @@ impl BuildReceiptVerifier {
         let mut observed_stdin = ObservedStdinPipe::new()?;
 
         let mut command = tokio::process::Command::new(&pinned.launch_path);
-        configure_process_boundary(&mut command)?;
         command
             .args(&plan.arguments)
             .env_clear()
@@ -171,14 +173,35 @@ impl BuildReceiptVerifier {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
-        let deadline = TokioInstant::now()
-            .checked_add(plan.timeout)
+        let kernel_now_monotonic_ns = kernel_monotonic_now_ns()?;
+        let timeout_origin = TokioInstant::now();
+        let started_monotonic_ns = self.validate_observation_challenge(challenge)?;
+        let remaining_challenge_lifetime = Duration::from_nanos(
+            challenge
+                .expires_monotonic_ns
+                .checked_sub(started_monotonic_ns)
+                .ok_or_else(|| {
+                    BuildReceiptError::new("build_transaction_challenge_deadline_is_invalid")
+                })?,
+        );
+        let execution_window = plan.timeout.min(remaining_challenge_lifetime);
+        let kernel_deadline_monotonic_ns = kernel_now_monotonic_ns
+            .checked_add(monotonic_duration_ns(execution_window)?)
             .ok_or_else(|| BuildReceiptError::new("build_observer_timeout_is_invalid"))?;
-        let started_monotonic_ns = self.monotonic_now_ns();
+        let deadline = timeout_origin
+            .checked_add(execution_window)
+            .ok_or_else(|| BuildReceiptError::new("build_observer_timeout_is_invalid"))?;
+        let watchdog = ExecutionWatchdog::new(kernel_deadline_monotonic_ns)?;
+        configure_process_boundary(
+            &mut command,
+            kernel_deadline_monotonic_ns,
+            watchdog.child_control_fd()?,
+            watchdog.child_receiver_fd()?,
+        )?;
         let mut child = command
             .spawn()
             .map_err(|_| BuildReceiptError::new("build_observer_process_spawn_failed"))?;
-        let boundary = match ProcessBoundary::attach(&child) {
+        let mut boundary = match ProcessBoundary::attach(&child, watchdog) {
             Ok(boundary) => boundary,
             Err(error) => {
                 terminate_untracked_process(&mut child).await;
@@ -188,7 +211,7 @@ impl BuildReceiptVerifier {
         let stdout = match child.stdout.take() {
             Some(stdout) => stdout,
             None => {
-                terminate_process_boundary(&mut child, &boundary).await?;
+                terminate_process_boundary(&mut child, &mut boundary).await?;
                 return Err(BuildReceiptError::new(
                     "build_observer_stdout_pipe_missing",
                 ));
@@ -197,7 +220,7 @@ impl BuildReceiptVerifier {
         let stderr = match child.stderr.take() {
             Some(stderr) => stderr,
             None => {
-                terminate_process_boundary(&mut child, &boundary).await?;
+                terminate_process_boundary(&mut child, &mut boundary).await?;
                 return Err(BuildReceiptError::new(
                     "build_observer_stderr_pipe_missing",
                 ));
@@ -206,14 +229,14 @@ impl BuildReceiptVerifier {
         let mut stdin = match observed_stdin.take_writer() {
             Ok(stdin) => stdin,
             Err(error) => {
-                terminate_process_boundary(&mut child, &boundary).await?;
+                terminate_process_boundary(&mut child, &mut boundary).await?;
                 return Err(error);
             }
         };
         let audit_reader = match observed_stdin.take_audit_reader() {
             Ok(audit_reader) => audit_reader,
             Err(error) => {
-                terminate_process_boundary(&mut child, &boundary).await?;
+                terminate_process_boundary(&mut child, &mut boundary).await?;
                 return Err(error);
             }
         };
@@ -247,7 +270,7 @@ impl BuildReceiptVerifier {
         if let Err(error) = boundary.wait_for_leader_exit(deadline).await {
             terminate_boundary_and_abort_io(
                 &mut child,
-                &boundary,
+                &mut boundary,
                 &mut stdin_task,
                 &mut stdout_task,
                 &mut stderr_task,
@@ -255,13 +278,24 @@ impl BuildReceiptVerifier {
             .await?;
             return Err(error);
         }
+        if boundary.deadline_fired() {
+            terminate_boundary_and_abort_io(
+                &mut child,
+                &mut boundary,
+                &mut stdin_task,
+                &mut stdout_task,
+                &mut stderr_task,
+            )
+            .await?;
+            return Err(BuildReceiptError::new("build_observer_command_timed_out"));
+        }
 
         let stdin_result = match timeout_at(deadline, &mut stdin_task).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
                 terminate_boundary_and_abort_io(
                     &mut child,
-                    &boundary,
+                    &mut boundary,
                     &mut stdin_task,
                     &mut stdout_task,
                     &mut stderr_task,
@@ -272,7 +306,7 @@ impl BuildReceiptVerifier {
             Err(_) => {
                 terminate_boundary_and_abort_io(
                     &mut child,
-                    &boundary,
+                    &mut boundary,
                     &mut stdin_task,
                     &mut stdout_task,
                     &mut stderr_task,
@@ -286,7 +320,7 @@ impl BuildReceiptVerifier {
             Ok(Err(_)) => {
                 terminate_boundary_and_abort_io(
                     &mut child,
-                    &boundary,
+                    &mut boundary,
                     &mut stdin_task,
                     &mut stdout_task,
                     &mut stderr_task,
@@ -297,7 +331,7 @@ impl BuildReceiptVerifier {
             Err(_) => {
                 terminate_boundary_and_abort_io(
                     &mut child,
-                    &boundary,
+                    &mut boundary,
                     &mut stdin_task,
                     &mut stdout_task,
                     &mut stderr_task,
@@ -311,7 +345,7 @@ impl BuildReceiptVerifier {
             Err(error) => {
                 terminate_boundary_and_abort_io(
                     &mut child,
-                    &boundary,
+                    &mut boundary,
                     &mut stdin_task,
                     &mut stdout_task,
                     &mut stderr_task,
@@ -325,7 +359,7 @@ impl BuildReceiptVerifier {
             Ok(Err(_)) => {
                 terminate_boundary_and_abort_io(
                     &mut child,
-                    &boundary,
+                    &mut boundary,
                     &mut stdin_task,
                     &mut stdout_task,
                     &mut stderr_task,
@@ -336,7 +370,7 @@ impl BuildReceiptVerifier {
             Err(_) => {
                 terminate_boundary_and_abort_io(
                     &mut child,
-                    &boundary,
+                    &mut boundary,
                     &mut stdin_task,
                     &mut stdout_task,
                     &mut stderr_task,
@@ -350,7 +384,7 @@ impl BuildReceiptVerifier {
             Err(error) => {
                 terminate_boundary_and_abort_io(
                     &mut child,
-                    &boundary,
+                    &mut boundary,
                     &mut stdin_task,
                     &mut stdout_task,
                     &mut stderr_task,
@@ -364,7 +398,7 @@ impl BuildReceiptVerifier {
             Ok(false) => {
                 terminate_boundary_and_abort_io(
                     &mut child,
-                    &boundary,
+                    &mut boundary,
                     &mut stdin_task,
                     &mut stdout_task,
                     &mut stderr_task,
@@ -377,7 +411,7 @@ impl BuildReceiptVerifier {
             Err(error) => {
                 terminate_boundary_and_abort_io(
                     &mut child,
-                    &boundary,
+                    &mut boundary,
                     &mut stdin_task,
                     &mut stdout_task,
                     &mut stderr_task,
@@ -386,17 +420,22 @@ impl BuildReceiptVerifier {
                 return Err(error);
             }
         }
+        boundary.disarm_watchdog()?;
+        let deadline_fired = boundary.deadline_fired();
         let status = child
             .wait()
             .await
             .map_err(|_| BuildReceiptError::new("build_observer_process_wait_failed"))?;
+        if deadline_fired {
+            return Err(BuildReceiptError::new("build_observer_command_timed_out"));
+        }
         if status.success() && stdin_result.is_err() {
             return Err(BuildReceiptError::new(
                 "build_observer_stdin_delivery_failed",
             ));
         }
         pinned.verify().await?;
-        let completed_monotonic_ns = self.monotonic_now_ns();
+        let completed_monotonic_ns = self.monotonic_now_ns()?;
         let stdout = Arc::<[u8]>::from(stdout);
         let stderr = Arc::<[u8]>::from(stderr);
 
@@ -458,7 +497,7 @@ impl BuildReceiptVerifier {
             observer_id: challenge.observer_id.clone(),
             clock_id: challenge.clock_id.clone(),
             challenge_id: challenge.challenge_id.clone(),
-            transaction_context_hash: challenge.transaction_context_hash.clone(),
+            challenge_expires_monotonic_ns: challenge.expires_monotonic_ns,
             receipt_id: String::new(),
             executor_hash: pinned.executable_hash.clone(),
             execution_boundary: EXECUTION_BOUNDARY.to_string(),
@@ -482,9 +521,21 @@ impl BuildReceiptVerifier {
     }
 
     fn validate_observation_challenge(
-        &self,
+        &mut self,
         challenge: &BuildTransactionChallenge,
-    ) -> Result<(), BuildReceiptError> {
+    ) -> Result<u64, BuildReceiptError> {
+        let verifier_now_monotonic_ns = self.monotonic_now_ns()?;
+        let expired = self
+            .active_challenges
+            .get(challenge.challenge_id.as_str())
+            .is_some_and(|active| verifier_now_monotonic_ns >= active.expires_monotonic_ns);
+        if expired {
+            self.active_challenges
+                .remove(challenge.challenge_id.as_str());
+            return Err(BuildReceiptError::new(
+                "build_transaction_challenge_expired",
+            ));
+        }
         let active = self
             .active_challenges
             .get(challenge.challenge_id.as_str())
@@ -493,14 +544,14 @@ impl BuildReceiptVerifier {
             || challenge.clock_id != self.clock_id
             || challenge.observer_id != active.observer_id
             || challenge.clock_id != active.clock_id
-            || challenge.transaction_context_hash != active.transaction_context_hash
             || challenge.issued_monotonic_ns != active.issued_monotonic_ns
+            || challenge.expires_monotonic_ns != active.expires_monotonic_ns
         {
             return Err(BuildReceiptError::new(
                 "build_transaction_challenge_observer_binding_mismatch",
             ));
         }
-        Ok(())
+        Ok(verifier_now_monotonic_ns)
     }
 }
 
@@ -728,10 +779,14 @@ struct ProcessBoundary {
     process_group_id: libc::pid_t,
     #[cfg(target_os = "linux")]
     process_identity: tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>,
+    watchdog: ExecutionWatchdog,
 }
 
 impl ProcessBoundary {
-    fn attach(child: &tokio::process::Child) -> Result<Self, BuildReceiptError> {
+    fn attach(
+        child: &tokio::process::Child,
+        watchdog: ExecutionWatchdog,
+    ) -> Result<Self, BuildReceiptError> {
         #[cfg(target_os = "linux")]
         {
             use std::os::fd::{FromRawFd, OwnedFd, RawFd};
@@ -757,12 +812,21 @@ impl ProcessBoundary {
             return Ok(Self {
                 process_group_id: process_id as libc::pid_t,
                 process_identity,
+                watchdog,
             });
         }
         #[cfg(not(target_os = "linux"))]
         Err(BuildReceiptError::new(
             "build_observer_process_boundary_unavailable",
         ))
+    }
+
+    fn deadline_fired(&self) -> bool {
+        self.watchdog.deadline_fired()
+    }
+
+    fn disarm_watchdog(&mut self) -> Result<(), BuildReceiptError> {
+        self.watchdog.disarm()
     }
 
     async fn wait_for_leader_exit(
@@ -855,8 +919,111 @@ impl ProcessBoundary {
     }
 }
 
+struct ExecutionWatchdog {
+    #[cfg(target_os = "linux")]
+    control: Option<std::os::unix::net::UnixStream>,
+    #[cfg(target_os = "linux")]
+    child_receiver_fd: i32,
+    #[cfg(target_os = "linux")]
+    task: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    deadline_fired: Arc<AtomicBool>,
+}
+
+impl ExecutionWatchdog {
+    fn new(kernel_deadline_monotonic_ns: u64) -> Result<Self, BuildReceiptError> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::net::UnixStream;
+
+            let (control, receiver) = UnixStream::pair().map_err(|_| {
+                BuildReceiptError::new("build_observer_watchdog_control_unavailable")
+            })?;
+            let timer = absolute_deadline_timerfd(kernel_deadline_monotonic_ns)?;
+            let child_receiver_fd = receiver.as_raw_fd();
+            let deadline_fired = Arc::new(AtomicBool::new(false));
+            let task_deadline_fired = deadline_fired.clone();
+            let task = std::thread::Builder::new()
+                .name("synthi-build-observer-watchdog".to_string())
+                .spawn(move || run_execution_watchdog(receiver, timer, task_deadline_fired))
+                .map_err(|_| BuildReceiptError::new("build_observer_watchdog_unavailable"))?;
+            return Ok(Self {
+                control: Some(control),
+                child_receiver_fd,
+                task: Some(task),
+                deadline_fired,
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(BuildReceiptError::new(
+            "build_observer_process_boundary_unavailable",
+        ))
+    }
+
+    fn child_control_fd(&self) -> Result<i32, BuildReceiptError> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            return self
+                .control
+                .as_ref()
+                .map(AsRawFd::as_raw_fd)
+                .ok_or_else(|| BuildReceiptError::new("build_observer_watchdog_is_disarmed"));
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(BuildReceiptError::new(
+            "build_observer_process_boundary_unavailable",
+        ))
+    }
+
+    fn child_receiver_fd(&self) -> Result<i32, BuildReceiptError> {
+        #[cfg(target_os = "linux")]
+        {
+            return Ok(self.child_receiver_fd);
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(BuildReceiptError::new(
+            "build_observer_process_boundary_unavailable",
+        ))
+    }
+
+    fn deadline_fired(&self) -> bool {
+        self.deadline_fired.load(Ordering::SeqCst)
+    }
+
+    fn disarm(&mut self) -> Result<(), BuildReceiptError> {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(control) = self.control.as_mut() {
+                let _ = control.write_all(&[WATCHDOG_CANCEL_MESSAGE]);
+            }
+            self.control.take();
+            let Some(task) = self.task.take() else {
+                return Ok(());
+            };
+            return task
+                .join()
+                .map_err(|_| BuildReceiptError::new("build_observer_watchdog_panicked"))?
+                .map_err(|_| BuildReceiptError::new("build_observer_watchdog_failed"));
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(BuildReceiptError::new(
+            "build_observer_process_boundary_unavailable",
+        ))
+    }
+}
+
+impl Drop for ExecutionWatchdog {
+    fn drop(&mut self) {
+        let _ = self.disarm();
+    }
+}
+
 fn configure_process_boundary(
     command: &mut tokio::process::Command,
+    kernel_deadline_monotonic_ns: u64,
+    watchdog_control_fd: i32,
+    watchdog_receiver_fd: i32,
 ) -> Result<(), BuildReceiptError> {
     #[cfg(target_os = "linux")]
     {
@@ -865,6 +1032,12 @@ fn configure_process_boundary(
         command.as_std_mut().process_group(0);
         unsafe {
             command.as_std_mut().pre_exec(move || {
+                if libc::close(watchdog_receiver_fd) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if kernel_monotonic_now_ns_io()? >= kernel_deadline_monotonic_ns {
+                    return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));
+                }
                 if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -881,6 +1054,10 @@ fn configure_process_boundary(
                 {
                     return Err(std::io::Error::last_os_error());
                 }
+                if kernel_monotonic_now_ns_io()? >= kernel_deadline_monotonic_ns {
+                    return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));
+                }
+                write_watchdog_launch(watchdog_control_fd, libc::getpid())?;
                 Ok(())
             });
         }
@@ -890,6 +1067,193 @@ fn configure_process_boundary(
     Err(BuildReceiptError::new(
         "build_observer_process_boundary_unavailable",
     ))
+}
+
+fn kernel_monotonic_now_ns() -> Result<u64, BuildReceiptError> {
+    #[cfg(target_os = "linux")]
+    {
+        return kernel_monotonic_now_ns_io()
+            .map_err(|_| BuildReceiptError::new("build_observer_monotonic_clock_unavailable"));
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err(BuildReceiptError::new(
+        "build_observer_process_boundary_unavailable",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn kernel_monotonic_now_ns_io() -> std::io::Result<u64> {
+    let mut timestamp = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut timestamp) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let seconds = u64::try_from(timestamp.tv_sec)
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+    let nanoseconds = u64::try_from(timestamp.tv_nsec)
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EOVERFLOW))
+}
+
+#[cfg(target_os = "linux")]
+fn write_watchdog_launch(control_fd: i32, process_group_id: libc::pid_t) -> std::io::Result<()> {
+    if process_group_id <= 0 {
+        return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    let mut message = [0u8; 1 + std::mem::size_of::<u32>()];
+    message[0] = WATCHDOG_LAUNCH_MESSAGE;
+    message[1..].copy_from_slice(&(process_group_id as u32).to_be_bytes());
+    let mut written = 0usize;
+    while written < message.len() {
+        let result = unsafe {
+            libc::write(
+                control_fd,
+                message[written..].as_ptr().cast(),
+                message.len() - written,
+            )
+        };
+        if result > 0 {
+            written += result as usize;
+            continue;
+        }
+        if result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        return Err(if result == 0 {
+            std::io::Error::from_raw_os_error(libc::EPIPE)
+        } else {
+            std::io::Error::last_os_error()
+        });
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn absolute_deadline_timerfd(
+    kernel_deadline_monotonic_ns: u64,
+) -> Result<std::os::fd::OwnedFd, BuildReceiptError> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    let raw_fd = unsafe {
+        libc::timerfd_create(
+            libc::CLOCK_MONOTONIC,
+            libc::TFD_CLOEXEC | libc::TFD_NONBLOCK,
+        )
+    };
+    if raw_fd < 0 {
+        return Err(BuildReceiptError::new(
+            "build_observer_watchdog_timer_unavailable",
+        ));
+    }
+    let timer = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+    let deadline = libc::itimerspec {
+        it_interval: libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        },
+        it_value: libc::timespec {
+            tv_sec: (kernel_deadline_monotonic_ns / 1_000_000_000) as libc::time_t,
+            tv_nsec: (kernel_deadline_monotonic_ns % 1_000_000_000) as libc::c_long,
+        },
+    };
+    if unsafe {
+        libc::timerfd_settime(
+            raw_fd,
+            libc::TFD_TIMER_ABSTIME,
+            &deadline,
+            std::ptr::null_mut(),
+        )
+    } != 0
+    {
+        return Err(BuildReceiptError::new(
+            "build_observer_watchdog_timer_unavailable",
+        ));
+    }
+    Ok(timer)
+}
+
+#[cfg(target_os = "linux")]
+fn run_execution_watchdog(
+    mut control: std::os::unix::net::UnixStream,
+    timer: std::os::fd::OwnedFd,
+    deadline_fired: Arc<AtomicBool>,
+) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let mut process_group_id = None;
+    loop {
+        let mut descriptors = [
+            libc::pollfd {
+                fd: control.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: timer.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let poll_result =
+            unsafe { libc::poll(descriptors.as_mut_ptr(), descriptors.len() as _, -1) };
+        if poll_result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            kill_observed_process_group(process_group_id)?;
+            return Err(error);
+        }
+        if descriptors[1].revents & (libc::POLLIN | libc::POLLERR | libc::POLLHUP) != 0 {
+            deadline_fired.store(true, Ordering::SeqCst);
+            kill_observed_process_group(process_group_id)?;
+            return Ok(());
+        }
+        if descriptors[0].revents & (libc::POLLIN | libc::POLLERR | libc::POLLHUP) == 0 {
+            continue;
+        }
+        let mut message_kind = [0u8; 1];
+        if let Err(error) = control.read_exact(&mut message_kind) {
+            kill_observed_process_group(process_group_id)?;
+            return Err(error);
+        }
+        match message_kind[0] {
+            WATCHDOG_CANCEL_MESSAGE => return Ok(()),
+            WATCHDOG_LAUNCH_MESSAGE if process_group_id.is_none() => {
+                let mut encoded_process_group_id = [0u8; std::mem::size_of::<u32>()];
+                if let Err(error) = control.read_exact(&mut encoded_process_group_id) {
+                    kill_observed_process_group(process_group_id)?;
+                    return Err(error);
+                }
+                let observed = u32::from_be_bytes(encoded_process_group_id);
+                if observed == 0 || observed > libc::pid_t::MAX as u32 {
+                    return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+                }
+                process_group_id = Some(observed as libc::pid_t);
+            }
+            _ => {
+                kill_observed_process_group(process_group_id)?;
+                return Err(std::io::Error::from_raw_os_error(libc::EPROTO));
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn kill_observed_process_group(process_group_id: Option<libc::pid_t>) -> std::io::Result<()> {
+    let Some(process_group_id) = process_group_id else {
+        return Ok(());
+    };
+    let result = unsafe { libc::kill(-process_group_id, libc::SIGKILL) };
+    if result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(std::io::Error::last_os_error())
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -989,9 +1353,10 @@ fn process_lineage_filter() -> Result<Vec<libc::sock_filter>, BuildReceiptError>
 
 async fn terminate_process_boundary(
     child: &mut tokio::process::Child,
-    boundary: &ProcessBoundary,
+    boundary: &mut ProcessBoundary,
 ) -> Result<(), BuildReceiptError> {
     boundary.terminate()?;
+    boundary.disarm_watchdog()?;
     let _ = child.kill().await;
     let _ = child.wait().await;
     for _ in 0..20 {
@@ -1007,7 +1372,7 @@ async fn terminate_process_boundary(
 
 async fn terminate_boundary_and_abort_io(
     child: &mut tokio::process::Child,
-    boundary: &ProcessBoundary,
+    boundary: &mut ProcessBoundary,
     stdin: &mut tokio::task::JoinHandle<std::io::Result<()>>,
     stdout: &mut tokio::task::JoinHandle<Result<Vec<u8>, BuildReceiptError>>,
     stderr: &mut tokio::task::JoinHandle<Result<Vec<u8>, BuildReceiptError>>,
@@ -1261,8 +1626,6 @@ mod tests {
         BuildArtifactIdentity, BuildDependencyIdentity, BuildManifest, BuildSlot,
     };
 
-    const CONTEXT: &str =
-        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const INPUT: &str =
         "artifact-input:sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
@@ -1271,7 +1634,7 @@ mod tests {
     async fn observer_records_exact_stdin_stdout_without_build_authority() {
         let input = Arc::<[u8]>::from(b"observer-owned-input".as_slice());
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let plan = StdinStdoutBuildStepPlan::new("/bin/cat", INPUT, input.clone(), 0)
             .unwrap()
             .timeout(Duration::from_secs(2));
@@ -1323,7 +1686,7 @@ mod tests {
     async fn failed_and_timed_out_processes_never_mint_receipts() {
         let input = Arc::<[u8]>::from(b"input".as_slice());
         let mut verifier = BuildReceiptVerifier::new();
-        let failed_challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let failed_challenge = verifier.begin_transaction().unwrap();
         let failed_plan = StdinStdoutBuildStepPlan::new("/bin/sh", INPUT, input.clone(), 0)
             .unwrap()
             .args(["-c", "/bin/cat >/dev/null; printf failure >&2; exit 9"])
@@ -1337,7 +1700,7 @@ mod tests {
         assert!(failed.receipt().is_none());
         assert!(String::from_utf8_lossy(failed.stderr()).contains("failure"));
 
-        let timeout_challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let timeout_challenge = verifier.begin_transaction().unwrap();
         let timeout_plan = StdinStdoutBuildStepPlan::new("/bin/sh", INPUT, input, 0)
             .unwrap()
             .args(["-c", "/bin/sleep 2; /bin/cat"])
@@ -1356,7 +1719,7 @@ mod tests {
     #[tokio::test]
     async fn successful_process_must_consume_every_observed_input_byte() {
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let plan = StdinStdoutBuildStepPlan::new(
             "/bin/sh",
             INPUT,
@@ -1381,7 +1744,7 @@ mod tests {
     #[tokio::test]
     async fn descendant_that_retains_observed_pipes_is_bounded_and_refused() {
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let plan = StdinStdoutBuildStepPlan::new(
             "/bin/sh",
             INPUT,
@@ -1410,7 +1773,7 @@ mod tests {
     async fn observed_process_cannot_escape_its_lineage_boundary() {
         assert!(Path::new("/usr/bin/setsid").is_file());
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let plan = StdinStdoutBuildStepPlan::new(
             "/bin/sh",
             INPUT,
@@ -1437,7 +1800,7 @@ mod tests {
     #[tokio::test]
     async fn output_overflow_is_refused_after_boundary_cleanup() {
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let plan = StdinStdoutBuildStepPlan::new(
             "/bin/sh",
             INPUT,
@@ -1463,9 +1826,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_observation_window_is_consumed_before_execution() {
+        let mut verifier =
+            BuildReceiptVerifier::with_challenge_ttl(Duration::from_nanos(1)).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
+        while verifier.monotonic_now_ns().unwrap() < challenge.expires_monotonic_ns {
+            std::thread::yield_now();
+        }
+        let plan = StdinStdoutBuildStepPlan::new(
+            "relative-executor-must-not-run",
+            INPUT,
+            Arc::<[u8]>::from(b"input".as_slice()),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(
+            verifier
+                .observe_stdin_stdout_step(&challenge, plan.clone())
+                .await
+                .unwrap_err()
+                .to_string(),
+            "build_transaction_challenge_expired"
+        );
+        assert_eq!(
+            verifier
+                .observe_stdin_stdout_step(&challenge, plan)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "build_transaction_challenge_is_not_active"
+        );
+    }
+
+    #[tokio::test]
+    async fn child_execution_boundary_rejects_an_expired_absolute_deadline() {
+        let kernel_deadline_monotonic_ns = kernel_monotonic_now_ns().unwrap();
+        let mut watchdog = ExecutionWatchdog::new(kernel_deadline_monotonic_ns).unwrap();
+        let mut command = tokio::process::Command::new("/bin/true");
+        configure_process_boundary(
+            &mut command,
+            kernel_deadline_monotonic_ns,
+            watchdog.child_control_fd().unwrap(),
+            watchdog.child_receiver_fd().unwrap(),
+        )
+        .unwrap();
+
+        assert!(command.spawn().is_err());
+        watchdog.disarm().unwrap();
+    }
+
+    #[tokio::test]
+    async fn kernel_watchdog_terminates_a_command_that_crosses_a_valid_challenge_deadline() {
+        let mut verifier =
+            BuildReceiptVerifier::with_challenge_ttl(Duration::from_millis(500)).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
+        let plan = StdinStdoutBuildStepPlan::new(
+            "/bin/sh",
+            INPUT,
+            Arc::<[u8]>::from(b"input".as_slice()),
+            0,
+        )
+        .unwrap()
+        .args(["-c", "/bin/sleep 2; /bin/cat"])
+        .timeout(Duration::from_secs(3));
+
+        assert_eq!(
+            verifier
+                .observe_stdin_stdout_step(&challenge, plan)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "build_observer_command_timed_out"
+        );
+        assert!(verifier.monotonic_now_ns().unwrap() < 2_000_000_000);
+    }
+
+    #[tokio::test]
+    async fn kernel_watchdog_enforces_deadline_while_async_driver_is_blocked() {
+        let kernel_deadline_monotonic_ns = kernel_monotonic_now_ns()
+            .unwrap()
+            .checked_add(200_000_000)
+            .unwrap();
+        let watchdog = ExecutionWatchdog::new(kernel_deadline_monotonic_ns).unwrap();
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.arg("-c").arg("/bin/sleep 2");
+        configure_process_boundary(
+            &mut command,
+            kernel_deadline_monotonic_ns,
+            watchdog.child_control_fd().unwrap(),
+            watchdog.child_receiver_fd().unwrap(),
+        )
+        .unwrap();
+        let mut child = command.spawn().unwrap();
+        let mut boundary = ProcessBoundary::attach(&child, watchdog).unwrap();
+
+        std::thread::sleep(Duration::from_millis(750));
+
+        assert!(boundary.deadline_fired());
+        boundary.disarm_watchdog().unwrap();
+        assert!(!child.wait().await.unwrap().success());
+        assert!(boundary.is_quiescent().unwrap());
+    }
+
+    #[tokio::test]
     async fn relative_executor_locator_fails_before_process_execution() {
         let mut verifier = BuildReceiptVerifier::new();
-        let challenge = verifier.begin_transaction(CONTEXT).unwrap();
+        let challenge = verifier.begin_transaction().unwrap();
         let plan = StdinStdoutBuildStepPlan::new(
             "relative-executable",
             INPUT,
