@@ -109,13 +109,13 @@ pub fn classify_resolved_module_contract(
     let gui_complete = exports.gui_on_load && exports.gui_on_render;
 
     let legacy_gui_observed = exports.gui_render || exports.on_render;
-    let legacy_gui_complete = exports.on_load && legacy_gui_observed;
+    let legacy_gui_complete = (exports.on_load || exports.entrypoint) && legacy_gui_observed;
 
     // `on_load` is shared by the two legacy sets. It only identifies the
     // update lifecycle when paired with an update-only export; otherwise a
     // bare load export remains an incomplete legacy contract.
     let legacy_observed =
-        exports.entrypoint || exports.on_update || (exports.on_load && !legacy_gui_observed);
+        exports.on_update || ((exports.on_load || exports.entrypoint) && !legacy_gui_observed);
     let legacy_complete = (exports.on_load || exports.entrypoint) && exports.on_update;
 
     let observed = [
@@ -385,6 +385,14 @@ mod tests {
             ),
             (
                 LifecycleExportPresence {
+                    entrypoint: true,
+                    on_render: true,
+                    ..Default::default()
+                },
+                EffectiveModuleContract::Gui,
+            ),
+            (
+                LifecycleExportPresence {
                     on_load: true,
                     on_update: true,
                     ..Default::default()
@@ -436,6 +444,17 @@ mod tests {
                 LifecycleExportPresence {
                     on_load: true,
                     gui_render: true,
+                    ..Default::default()
+                },
+                ResolvedModuleContract {
+                    role: EffectiveModuleContract::Gui,
+                    lifecycle_abi: LifecycleAbi::GuiLegacy,
+                },
+            ),
+            (
+                LifecycleExportPresence {
+                    entrypoint: true,
+                    on_render: true,
                     ..Default::default()
                 },
                 ResolvedModuleContract {
@@ -694,8 +713,8 @@ mod tests {
                 Some(EffectiveModuleContract::Core)
             } else if bits == gui {
                 Some(EffectiveModuleContract::Gui)
-            } else if bits & !(LOAD | LEGACY_GUI_RENDER | LEGACY_ON_RENDER) == 0
-                && bits & LOAD != 0
+            } else if bits & !(LOAD | ENTRYPOINT | LEGACY_GUI_RENDER | LEGACY_ON_RENDER) == 0
+                && bits & (LOAD | ENTRYPOINT) != 0
                 && bits & (LEGACY_GUI_RENDER | LEGACY_ON_RENDER) != 0
             {
                 Some(EffectiveModuleContract::Gui)
