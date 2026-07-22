@@ -27,6 +27,20 @@ documentation change in this repository.
   synthesis, compile, load, epoch publication, dispatch, oracle, and ledger
   pipeline. Opaque mechanisms must receive generic probe/app-hook synthesis;
   missing evidence produces precise refusal gaps, never fabricated success.
+- User code must not be required to emit Synthi records, import a Synthi SDK, or
+  implement a predetermined callback. Proof records are internal observations
+  produced from discovered build and runtime mechanics by instrumentation,
+  interposition, or independently verified AI-synthesized probes. A serialized
+  application claim is never an observed runtime boundary.
+- Treat every user-authored program representation and execution topology as an
+  open composition of discovered capabilities. No fixed list of file forms,
+  runtimes, schedulers, command models, output encodings, or state concepts may
+  define eligibility. The system must bind changed artifacts to observed
+  execution and verifier-consumed output bytes using capability IDs and schemas
+  derived from the target, not categories embedded in Synthi source code.
+- State requirements are an open set of dependencies discovered from observed
+  dataflow. Require only dependencies proven relevant to the changed output,
+  and bind each required dependency's identity or content across the update.
 - AI output is proposal material only. Compiler/build metadata, runtime traces,
   same-process identity, artifact hashes, epoch/dispatch linkage, and output
   oracle bytes must independently verify every accepted field.
