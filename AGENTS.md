@@ -32,6 +32,19 @@ documentation change in this repository.
   produced from discovered build and runtime mechanics by instrumentation,
   interposition, or independently verified AI-synthesized probes. A serialized
   application claim is never an observed runtime boundary.
+- Never require a user's program to conform to Synthi naming, layout, control
+  flow, hook, loop, event, build, or framework conventions. Integration must be
+  attached to the program that already exists, without a project-specific shim
+  or manual rewrite. For an unfamiliar target, invoke the existing AI agent to
+  propose discovery probes, boundaries, and adapter code, then compile, execute,
+  and independently verify those proposals before they can affect acceptance.
+- The product target is transparent universal operation across arbitrary user
+  projects. Treat every newly encountered mechanism as a capability-discovery
+  and synthesis problem, not a new hardcoded scenario. "Flawless" means no
+  false success, silent fallback, hidden restart, or unreported limitation: if
+  the required runtime evidence cannot yet be observed, keep that edit
+  fail-closed with the exact missing observation while continuing the generic
+  synthesis path; never label the architecture itself unsupported.
 - Treat every user-authored program representation and execution topology as an
   open composition of discovered capabilities. No fixed list of file forms,
   runtimes, schedulers, command models, output encodings, or state concepts may
