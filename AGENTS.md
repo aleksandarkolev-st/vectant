@@ -30,6 +30,17 @@ documentation change in this repository.
 - AI output is proposal material only. Compiler/build metadata, runtime traces,
   same-process identity, artifact hashes, epoch/dispatch linkage, and output
   oracle bytes must independently verify every accepted field.
+- Use the AI agent for open-ended discovery and synthesis on unfamiliar source
+  trees: it may propose capability facts, output dependencies, fission
+  boundaries, instrumentation, and adapter code. Feed those proposals through
+  the same identity-free capability obligations and independent compiler/runtime
+  verifiers as every other candidate; never add a project-shaped success path.
+- Prefer the smallest generic capability or obligation that captures an
+  observed mechanic. Renderer terms such as camera, swapchain, TAA, denoiser,
+  engine, framework, or API names may be optional observed metadata, but must
+  not become universal fields or acceptance gates. Do not create another schema
+  or adapter branch when an existing open-vocabulary capability plus evidence
+  binding can express the mechanic.
 - A project-specific shim, source rewrite, precompiled fixture, log message,
   screenshot path, serialized success flag, or profile declaration cannot
   satisfy GPU HMR acceptance.
@@ -59,3 +70,6 @@ documentation change in this repository.
   changes in a dirty worktree.
 - Use subagents for bounded parallel work and independent adversarial review,
   choosing model/effort according to task difficulty.
+- Before each commit, audit the staged diff for name-based authority,
+  scenario-shaped fixtures in production decisions, duplicated proof schemas,
+  and unnecessary abstractions. Do not commit until that audit is clean.
