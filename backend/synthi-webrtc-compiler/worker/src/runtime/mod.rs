@@ -3,6 +3,7 @@ pub mod legacy_module_state;
 pub mod platform;
 
 pub mod capability;
+pub mod cgroup_process_set;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_runtime_boundary;
 #[cfg(feature = "gpu-hmr")]
