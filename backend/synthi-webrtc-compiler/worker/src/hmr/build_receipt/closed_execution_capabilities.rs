@@ -1,14 +1,17 @@
 use super::{
     hash_field, prefixed_hash, BuildReceiptError, BuildReceiptVerifier, BuildTransactionChallenge,
 };
+use crate::runtime::closed_execution_provider::{
+    ClosedExecutionRequirement, ClosedExecutionRequirementSet,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-const RECEIPT_SCHEMA_VERSION: &str = "synthi.observed_closed_execution_capabilities.v1";
+const RECEIPT_SCHEMA_VERSION: &str = "synthi.observed_closed_execution_capabilities.v2";
 const RECEIPT_AUTHORITY: &str =
     "kernel_capability_observation_only_not_closed_execution_build_runtime_or_gpu_hmr_proof";
 const RECEIPT_ID_PREFIX: &str = "closed-execution-capabilities:sha256:";
-const POLICY_SCHEMA_VERSION: &str = "synthi.closed_build_execution_policy.v1";
+const POLICY_SCHEMA_VERSION: &str = "synthi.closed_build_execution_policy.v2";
 const POLICY_ID_PREFIX: &str = "closed-execution-policy:sha256:";
 const PROBE_TRANSPORT: &str = "disposable_syscall_only_child_fixed_record_v1";
 #[cfg(not(target_os = "linux"))]
@@ -34,80 +37,68 @@ const EPHEMERAL_ROOT_MOUNT: usize = 9;
 const ROOT_SWITCH_AND_OLD_ROOT_DETACH: usize = 10;
 const FILESYSTEM_RESTRICTION_V3: usize = 11;
 const SYSCALL_FILTER_INSTALLATION: usize = 12;
-const CAPABILITY_COUNT: usize = 13;
+const PROBE_WIRE_V1_CAPABILITY_COUNT: usize = 13;
 
 #[derive(Debug, Clone, Copy)]
-struct CapabilityDefinition {
+struct ProbeWireCapabilityDefinition {
     id: &'static str,
     wire_index: usize,
-    required: bool,
 }
 
-const REQUIRED_CAPABILITIES: [CapabilityDefinition; CAPABILITY_COUNT] = [
-    CapabilityDefinition {
+// This catalog describes one concrete probe wire format. It is not the closed
+// execution policy: callers supply an open-vocabulary requirement set below.
+const PROBE_WIRE_V1_CAPABILITIES: [ProbeWireCapabilityDefinition; PROBE_WIRE_V1_CAPABILITY_COUNT] = [
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.immutable_snapshot_sealing.v1",
         wire_index: IMMUTABLE_SNAPSHOT,
-        required: true,
     },
-    CapabilityDefinition {
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.descriptor_process_identity.v1",
         wire_index: DESCRIPTOR_PROCESS_IDENTITY,
-        required: true,
     },
-    CapabilityDefinition {
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.close_on_exec_range.v1",
         wire_index: CLOSE_ON_EXEC_RANGE,
-        required: true,
     },
-    CapabilityDefinition {
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.root_scoped_path_resolution.v1",
         wire_index: ROOT_SCOPED_PATH_RESOLUTION,
-        required: true,
     },
-    CapabilityDefinition {
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.no_new_privileges.v1",
         wire_index: NO_NEW_PRIVILEGES,
-        required: true,
     },
-    CapabilityDefinition {
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.isolated_user_namespace.v1",
         wire_index: ISOLATED_USER_NAMESPACE,
-        required: false,
     },
-    CapabilityDefinition {
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.isolated_mount_namespace.v1",
         wire_index: ISOLATED_MOUNT_NAMESPACE,
-        required: true,
     },
-    CapabilityDefinition {
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.isolated_network_namespace.v1",
         wire_index: ISOLATED_NETWORK_NAMESPACE,
-        required: true,
     },
-    CapabilityDefinition {
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.private_mount_propagation.v1",
         wire_index: PRIVATE_MOUNT_PROPAGATION,
-        required: true,
     },
-    CapabilityDefinition {
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.ephemeral_root_mount.v1",
         wire_index: EPHEMERAL_ROOT_MOUNT,
-        required: true,
     },
-    CapabilityDefinition {
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.root_switch_and_old_root_detach.v1",
         wire_index: ROOT_SWITCH_AND_OLD_ROOT_DETACH,
-        required: true,
     },
-    CapabilityDefinition {
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.filesystem_restriction_v3.v1",
         wire_index: FILESYSTEM_RESTRICTION_V3,
-        required: true,
     },
-    CapabilityDefinition {
+    ProbeWireCapabilityDefinition {
         id: "synthi.closed_execution.capability.syscall_filter_installation.v1",
         wire_index: SYSCALL_FILTER_INSTALLATION,
-        required: true,
     },
 ];
 
@@ -115,6 +106,7 @@ const REQUIRED_CAPABILITIES: [CapabilityDefinition; CAPABILITY_COUNT] = [
 #[serde(rename_all = "snake_case")]
 enum CapabilityObservationOutcome {
     Observed,
+    NotObserved,
     Unavailable,
     Blocked,
     PrerequisiteMissing,
@@ -126,7 +118,7 @@ enum CapabilityObservationOutcome {
 #[serde(rename_all = "camelCase")]
 struct ClosedExecutionCapabilityObservation {
     capability_id: String,
-    required: bool,
+    requirement_identity: String,
     outcome: CapabilityObservationOutcome,
     evidence_code: String,
     os_error_code: Option<i32>,
@@ -152,6 +144,7 @@ pub(crate) struct ObservedClosedExecutionCapabilitiesReceipt {
     challenge_expires_monotonic_ns: u64,
     policy_schema_version: String,
     policy_id: String,
+    requirement_set: ClosedExecutionRequirementSet,
     probe_transport: String,
     probe_process_id: Option<u32>,
     probe_started_monotonic_ns: u64,
@@ -176,12 +169,14 @@ impl ObservedClosedExecutionCapabilitiesReceipt {
     }
 
     pub(crate) fn required_mechanics_observed(&self) -> bool {
-        self.observations.iter().all(|observation| {
-            !observation.required || observation.outcome == CapabilityObservationOutcome::Observed
-        })
+        self.observations
+            .iter()
+            .all(|observation| observation.outcome == CapabilityObservationOutcome::Observed)
     }
 
     fn is_self_consistent(&self) -> bool {
+        let canonical_requirements =
+            ClosedExecutionRequirementSet::new(self.requirement_set.requirements().to_vec());
         if self.schema_version != RECEIPT_SCHEMA_VERSION
             || self.evidence_authority != RECEIPT_AUTHORITY
             || self.accepted_for_gpu_hmr
@@ -190,16 +185,22 @@ impl ObservedClosedExecutionCapabilitiesReceipt {
             || self.can_satisfy_closed_execution
             || self.can_satisfy_runtime_proof
             || self.policy_schema_version != POLICY_SCHEMA_VERSION
-            || self.policy_id != derive_policy_id()
+            || canonical_requirements.as_ref() != Ok(&self.requirement_set)
+            || self.policy_id != derive_policy_id(&self.requirement_set)
             || self.probe_started_monotonic_ns > self.probe_completed_monotonic_ns
             || self.probe_completed_monotonic_ns >= self.challenge_expires_monotonic_ns
-            || self.observations.len() != REQUIRED_CAPABILITIES.len()
+            || self.observations.len() != self.requirement_set.requirements().len()
         {
             return false;
         }
-        for (definition, observation) in REQUIRED_CAPABILITIES.iter().zip(&self.observations) {
-            if observation.capability_id != definition.id
-                || observation.required != definition.required
+        for (requirement, observation) in self
+            .requirement_set
+            .requirements()
+            .iter()
+            .zip(&self.observations)
+        {
+            if observation.capability_id != requirement.obligation_id().as_str()
+                || observation.requirement_identity != requirement.requirement_identity().as_str()
                 || !valid_observation(observation)
             {
                 return false;
@@ -237,13 +238,19 @@ impl ObservedClosedExecutionCapabilitiesReceipt {
 struct RawCapabilityProbe {
     transport: &'static str,
     process_id: Option<u32>,
-    results: [i32; CAPABILITY_COUNT],
+    results: Vec<RawCapabilityResult>,
+}
+
+struct RawCapabilityResult {
+    capability_id: &'static str,
+    result: i32,
 }
 
 impl BuildReceiptVerifier {
     pub(crate) async fn observe_closed_execution_capabilities(
         &mut self,
         challenge: &BuildTransactionChallenge,
+        requirements: &ClosedExecutionRequirementSet,
     ) -> Result<ObservedClosedExecutionCapabilitiesReceipt, BuildReceiptError> {
         let probe_started_monotonic_ns = self.validate_observation_challenge(challenge)?;
         let active = self
@@ -261,8 +268,8 @@ impl BuildReceiptVerifier {
                 BuildReceiptError::new("closed_execution_capability_probe_task_failed")
             })??;
         let probe_completed_monotonic_ns = self.validate_observation_challenge(challenge)?;
-        let observations = observations_from_raw(&raw);
-        let policy_id = derive_policy_id();
+        let observations = observations_from_raw(&raw, requirements);
+        let policy_id = derive_policy_id(requirements);
         let probe_id = derive_probe_id(&policy_id, raw.transport, raw.process_id, &observations);
         let binding_id = derive_binding_id(
             &probe_id,
@@ -287,6 +294,7 @@ impl BuildReceiptVerifier {
             challenge_expires_monotonic_ns: challenge.expires_monotonic_ns,
             policy_schema_version: POLICY_SCHEMA_VERSION.to_string(),
             policy_id,
+            requirement_set: requirements.clone(),
             probe_transport: raw.transport.to_string(),
             probe_process_id: raw.process_id,
             probe_started_monotonic_ns,
@@ -340,22 +348,29 @@ impl BuildReceiptVerifier {
     }
 }
 
-fn observations_from_raw(raw: &RawCapabilityProbe) -> Vec<ClosedExecutionCapabilityObservation> {
-    REQUIRED_CAPABILITIES
+fn observations_from_raw(
+    raw: &RawCapabilityProbe,
+    requirements: &ClosedExecutionRequirementSet,
+) -> Vec<ClosedExecutionCapabilityObservation> {
+    requirements
+        .requirements()
         .iter()
-        .map(|definition| {
-            observation_from_result(
-                definition.id,
-                definition.required,
-                raw.results[definition.wire_index],
-            )
+        .map(|requirement| {
+            let result = if requirement.parameters().is_empty() {
+                raw.results
+                    .iter()
+                    .find(|result| result.capability_id == requirement.obligation_id().as_str())
+                    .map_or(RESULT_NOT_OBSERVED, |result| result.result)
+            } else {
+                RESULT_NOT_OBSERVED
+            };
+            observation_from_result(requirement, result)
         })
         .collect()
 }
 
 fn observation_from_result(
-    capability_id: &str,
-    required: bool,
+    requirement: &ClosedExecutionRequirement,
     result: i32,
 ) -> ClosedExecutionCapabilityObservation {
     let (outcome, evidence_code, os_error_code) = match result {
@@ -372,6 +387,11 @@ fn observation_from_result(
         RESULT_VERSION_INSUFFICIENT => (
             CapabilityObservationOutcome::VersionInsufficient,
             "required_mechanic_version_not_observed",
+            None,
+        ),
+        RESULT_NOT_OBSERVED => (
+            CapabilityObservationOutcome::NotObserved,
+            "requested_mechanic_not_observed",
             None,
         ),
         RESULT_MECHANIC_UNAVAILABLE => (
@@ -401,8 +421,8 @@ fn observation_from_result(
         ),
     };
     ClosedExecutionCapabilityObservation {
-        capability_id: capability_id.to_string(),
-        required,
+        capability_id: requirement.obligation_id().as_str().to_string(),
+        requirement_identity: requirement.requirement_identity().as_str().to_string(),
         outcome,
         evidence_code: evidence_code.to_string(),
         os_error_code,
@@ -412,6 +432,7 @@ fn observation_from_result(
 fn valid_observation(observation: &ClosedExecutionCapabilityObservation) -> bool {
     let expected = match observation.outcome {
         CapabilityObservationOutcome::Observed => ("kernel_mechanic_observed", false),
+        CapabilityObservationOutcome::NotObserved => ("requested_mechanic_not_observed", false),
         CapabilityObservationOutcome::Unavailable => {
             return observation.evidence_code == "kernel_mechanic_unavailable"
                 && observation.os_error_code.is_none_or(|error| error > 0);
@@ -441,25 +462,22 @@ fn valid_observation(observation: &ClosedExecutionCapabilityObservation) -> bool
 fn derive_blocking_gaps(observations: &[ClosedExecutionCapabilityObservation]) -> Vec<String> {
     observations
         .iter()
-        .filter(|observation| {
-            observation.required && observation.outcome != CapabilityObservationOutcome::Observed
-        })
+        .filter(|observation| observation.outcome != CapabilityObservationOutcome::Observed)
         .map(|observation| {
             format!(
-                "closed_execution_required_mechanic_not_observed:{}:{}",
-                observation.capability_id, observation.evidence_code
+                "closed_execution_required_mechanic_not_observed:{}:{}:{}",
+                observation.capability_id,
+                observation.requirement_identity,
+                observation.evidence_code
             )
         })
         .collect()
 }
 
-fn derive_policy_id() -> String {
+fn derive_policy_id(requirements: &ClosedExecutionRequirementSet) -> String {
     let mut hasher = Sha256::new();
     hash_field(&mut hasher, POLICY_SCHEMA_VERSION.as_bytes());
-    for definition in REQUIRED_CAPABILITIES {
-        hash_field(&mut hasher, definition.id.as_bytes());
-        hasher.update([u8::from(definition.required)]);
-    }
+    hash_field(&mut hasher, requirements.identity().as_str().as_bytes());
     format!("{POLICY_ID_PREFIX}{:x}", hasher.finalize())
 }
 
@@ -480,11 +498,12 @@ fn derive_probe_id(
     hasher.update((observations.len() as u64).to_be_bytes());
     for observation in observations {
         hash_field(&mut hasher, observation.capability_id.as_bytes());
-        hasher.update([u8::from(observation.required)]);
+        hash_field(&mut hasher, observation.requirement_identity.as_bytes());
         hash_field(
             &mut hasher,
             match observation.outcome {
                 CapabilityObservationOutcome::Observed => b"observed",
+                CapabilityObservationOutcome::NotObserved => b"not_observed",
                 CapabilityObservationOutcome::Unavailable => b"unavailable",
                 CapabilityObservationOutcome::Blocked => b"blocked",
                 CapabilityObservationOutcome::PrerequisiteMissing => b"prerequisite_missing",
@@ -530,13 +549,13 @@ struct LinuxCapabilityProbeWire {
     version: u32,
     process_id: u32,
     reserved: u32,
-    results: [i32; CAPABILITY_COUNT],
+    results: [i32; PROBE_WIRE_V1_CAPABILITY_COUNT],
 }
 
 #[cfg(target_os = "linux")]
 const PROBE_WIRE_RESULTS_OFFSET: usize = 20;
 #[cfg(target_os = "linux")]
-const PROBE_WIRE_SIZE: usize = PROBE_WIRE_RESULTS_OFFSET + CAPABILITY_COUNT * 4;
+const PROBE_WIRE_SIZE: usize = PROBE_WIRE_RESULTS_OFFSET + PROBE_WIRE_V1_CAPABILITY_COUNT * 4;
 
 #[cfg(target_os = "linux")]
 const PROBE_WIRE_MAGIC: u64 = 0x53594e544849434c;
@@ -689,7 +708,13 @@ fn probe_kernel_capabilities_blocking() -> Result<RawCapabilityProbe, BuildRecei
     Ok(RawCapabilityProbe {
         transport: PROBE_TRANSPORT,
         process_id: Some(wire.process_id),
-        results: wire.results,
+        results: PROBE_WIRE_V1_CAPABILITIES
+            .iter()
+            .map(|definition| RawCapabilityResult {
+                capability_id: definition.id,
+                result: wire.results[definition.wire_index],
+            })
+            .collect(),
     })
 }
 
@@ -698,7 +723,7 @@ fn probe_kernel_capabilities_blocking() -> Result<RawCapabilityProbe, BuildRecei
     Ok(RawCapabilityProbe {
         transport: LOCAL_ABSENCE_TRANSPORT,
         process_id: None,
-        results: [RESULT_MECHANIC_UNAVAILABLE; CAPABILITY_COUNT],
+        results: Vec::new(),
     })
 }
 
@@ -709,7 +734,7 @@ fn run_linux_probe_child(write_fd: libc::c_int, inputs: &LinuxProbeInputs) -> ! 
         version: 1,
         process_id: unsafe { libc::getpid() } as u32,
         reserved: 0,
-        results: [RESULT_NOT_OBSERVED; CAPABILITY_COUNT],
+        results: [RESULT_NOT_OBSERVED; PROBE_WIRE_V1_CAPABILITY_COUNT],
     };
     if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) } != 0 {
         unsafe { libc::_exit(127) }
@@ -816,7 +841,7 @@ fn decode_linux_probe_wire(bytes: &[u8; PROBE_WIRE_SIZE]) -> LinuxCapabilityProb
             bytes[offset + 3],
         ])
     };
-    let mut results = [RESULT_NOT_OBSERVED; CAPABILITY_COUNT];
+    let mut results = [RESULT_NOT_OBSERVED; PROBE_WIRE_V1_CAPABILITY_COUNT];
     for (index, result) in results.iter_mut().enumerate() {
         let offset = PROBE_WIRE_RESULTS_OFFSET + index * 4;
         *result = i32::from_le_bytes([
@@ -1499,13 +1524,34 @@ fn last_errno() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::closed_execution_provider::ClosedExecutionMechanismId;
+    use std::collections::BTreeMap;
+
+    fn requirement(id: &str, parameters: BTreeMap<String, String>) -> ClosedExecutionRequirement {
+        ClosedExecutionRequirement::new(ClosedExecutionMechanismId::parse(id).unwrap(), parameters)
+            .unwrap()
+    }
+
+    fn requirement_set(
+        requirements: Vec<ClosedExecutionRequirement>,
+    ) -> ClosedExecutionRequirementSet {
+        ClosedExecutionRequirementSet::new(requirements).unwrap()
+    }
 
     #[tokio::test]
-    async fn probe_is_support_only_identity_free_and_verifier_bound() {
+    async fn probe_is_open_vocabulary_support_only_and_verifier_bound() {
+        let future_requirement_id = "external.closed_execution.future_attestation.v7";
+        let requirements = requirement_set(vec![
+            requirement(
+                "synthi.closed_execution.capability.immutable_snapshot_sealing.v1",
+                BTreeMap::new(),
+            ),
+            requirement(future_requirement_id, BTreeMap::new()),
+        ]);
         let mut verifier = BuildReceiptVerifier::new();
         let challenge = verifier.begin_transaction().unwrap();
         let receipt = verifier
-            .observe_closed_execution_capabilities(&challenge)
+            .observe_closed_execution_capabilities(&challenge, &requirements)
             .await
             .unwrap();
         let validated = verifier
@@ -1524,7 +1570,11 @@ mod tests {
         assert_eq!(json["canSatisfyRuntimeProof"], false);
         assert_eq!(
             json["observations"].as_array().unwrap().len(),
-            CAPABILITY_COUNT
+            requirements.requirements().len()
+        );
+        assert_eq!(
+            json["requirementSet"]["requirementSetIdentity"],
+            requirements.identity().as_str()
         );
         let serialized = serde_json::to_string(&json).unwrap();
         for forbidden in [
@@ -1546,6 +1596,19 @@ mod tests {
         assert!(receipt.observations.iter().all(|observation| {
             observation.outcome != CapabilityObservationOutcome::ProbeFailed
         }));
+        let future_observation = receipt
+            .observations
+            .iter()
+            .find(|observation| observation.capability_id == future_requirement_id)
+            .unwrap();
+        assert_eq!(
+            future_observation.outcome,
+            CapabilityObservationOutcome::NotObserved
+        );
+        assert!(receipt
+            .blocking_gaps()
+            .iter()
+            .any(|gap| gap.contains(future_requirement_id)));
 
         #[cfg(target_os = "linux")]
         {
@@ -1557,7 +1620,7 @@ mod tests {
                 version: 1,
                 process_id: 42,
                 reserved: 0,
-                results: [RESULT_OBSERVED; CAPABILITY_COUNT],
+                results: [RESULT_OBSERVED; PROBE_WIRE_V1_CAPABILITY_COUNT],
             };
             assert_eq!(
                 decode_linux_probe_wire(&encode_linux_probe_wire(&wire)),
@@ -1579,7 +1642,7 @@ mod tests {
 
         assert_eq!(
             verifier
-                .observe_closed_execution_capabilities(&challenge)
+                .observe_closed_execution_capabilities(&challenge, &requirements)
                 .await
                 .unwrap_err()
                 .to_string(),
@@ -1589,10 +1652,14 @@ mod tests {
 
     #[tokio::test]
     async fn forged_or_cross_verifier_capability_receipts_are_rejected() {
+        let requirements = requirement_set(vec![requirement(
+            "external.closed_execution.observed_process_set.v3",
+            BTreeMap::new(),
+        )]);
         let mut first = BuildReceiptVerifier::new();
         let first_challenge = first.begin_transaction().unwrap();
         let receipt = first
-            .observe_closed_execution_capabilities(&first_challenge)
+            .observe_closed_execution_capabilities(&first_challenge, &requirements)
             .await
             .unwrap();
 
@@ -1619,13 +1686,24 @@ mod tests {
 
     #[test]
     fn serialized_success_fields_and_observation_mutations_fail_integrity() {
-        let observations = REQUIRED_CAPABILITIES
+        let mut scoped_parameters = BTreeMap::new();
+        scoped_parameters.insert("scope".to_string(), "descendant-process-set".to_string());
+        let requirements = requirement_set(vec![
+            requirement(
+                "external.closed_execution.observed_process_set.v3",
+                BTreeMap::new(),
+            ),
+            requirement(
+                "external.closed_execution.observed_process_set.v3",
+                scoped_parameters,
+            ),
+        ]);
+        let observations = requirements
+            .requirements()
             .iter()
-            .map(|definition| {
-                observation_from_result(definition.id, definition.required, RESULT_OBSERVED)
-            })
+            .map(|requirement| observation_from_result(requirement, RESULT_OBSERVED))
             .collect::<Vec<_>>();
-        let policy_id = derive_policy_id();
+        let policy_id = derive_policy_id(&requirements);
         let probe_id = derive_probe_id(&policy_id, PROBE_TRANSPORT, Some(7), &observations);
         let mut receipt = ObservedClosedExecutionCapabilitiesReceipt {
             schema_version: RECEIPT_SCHEMA_VERSION.to_string(),
@@ -1641,6 +1719,7 @@ mod tests {
             challenge_expires_monotonic_ns: 4,
             policy_schema_version: POLICY_SCHEMA_VERSION.to_string(),
             policy_id,
+            requirement_set: requirements.clone(),
             probe_transport: PROBE_TRANSPORT.to_string(),
             probe_process_id: Some(7),
             probe_started_monotonic_ns: 1,
@@ -1669,12 +1748,67 @@ mod tests {
         mutated_observation.observations[0].evidence_code = "kernel_mechanic_observed".repeat(2);
         assert!(!mutated_observation.is_self_consistent());
 
-        let mut removed_gap = receipt;
-        removed_gap.observations[0] = observation_from_result(
-            REQUIRED_CAPABILITIES[0].id,
-            REQUIRED_CAPABILITIES[0].required,
-            RESULT_PREREQUISITE_MISSING,
-        );
+        let mut removed_gap = receipt.clone();
+        removed_gap.observations[0] =
+            observation_from_result(&requirements.requirements()[0], RESULT_PREREQUISITE_MISSING);
         assert!(!removed_gap.is_self_consistent());
+
+        let replacement_requirements = requirement_set(vec![requirement(
+            "external.closed_execution.different_obligation.v1",
+            BTreeMap::new(),
+        )]);
+        let mut replaced_policy = receipt;
+        replaced_policy.requirement_set = replacement_requirements;
+        assert!(!replaced_policy.is_self_consistent());
+    }
+
+    #[test]
+    fn provider_catalog_does_not_define_generic_requirement_policy() {
+        let capability_id = "external.closed_execution.parameterized_mechanic.v4";
+        let unparameterized = requirement(capability_id, BTreeMap::new());
+        let mut parameters = BTreeMap::new();
+        parameters.insert("mode".to_string(), "strict".to_string());
+        let parameterized = requirement(capability_id, parameters);
+        let requirements = requirement_set(vec![parameterized, unparameterized]);
+        let raw = RawCapabilityProbe {
+            transport: "test_probe_transport_v1",
+            process_id: Some(11),
+            results: vec![RawCapabilityResult {
+                capability_id,
+                result: RESULT_OBSERVED,
+            }],
+        };
+
+        let observations = observations_from_raw(&raw, &requirements);
+        assert_eq!(observations.len(), 2);
+        assert_eq!(
+            observations
+                .iter()
+                .filter(|observation| {
+                    observation.outcome == CapabilityObservationOutcome::Observed
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            observations
+                .iter()
+                .filter(|observation| {
+                    observation.outcome == CapabilityObservationOutcome::NotObserved
+                })
+                .count(),
+            1
+        );
+        assert_ne!(
+            observations[0].requirement_identity,
+            observations[1].requirement_identity
+        );
+        let gaps = derive_blocking_gaps(&observations);
+        let missing = observations
+            .iter()
+            .find(|observation| observation.outcome == CapabilityObservationOutcome::NotObserved)
+            .unwrap();
+        assert_eq!(gaps.len(), 1);
+        assert!(gaps[0].contains(&missing.requirement_identity));
     }
 }
