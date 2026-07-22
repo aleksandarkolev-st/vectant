@@ -10,9 +10,11 @@ use super::build_manifest::{
 };
 
 mod command_observer;
+mod closed_execution_capabilities;
 mod execution_closure;
 
 pub(crate) use command_observer::{ObservedBuildCommandOutcome, StdinStdoutBuildStepPlan};
+pub(crate) use closed_execution_capabilities::ObservedClosedExecutionCapabilitiesReceipt;
 pub(crate) use execution_closure::{
     DeclaredExecutionClosurePlan, DeclaredExecutionFilePlan, ExecutionClosureAccessMode,
     ObservedExecutionClosureReceipt,
@@ -71,6 +73,7 @@ struct ActiveChallenge {
     issued_monotonic_ns: u64,
     expires_monotonic_ns: u64,
     registered_receipts: HashMap<String, RegisteredBuildObservation>,
+    registered_capability_probe_binding: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +209,7 @@ impl BuildReceiptVerifier {
             issued_monotonic_ns,
             expires_monotonic_ns,
             registered_receipts: HashMap::new(),
+            registered_capability_probe_binding: None,
         };
         self.active_challenges
             .insert(challenge_id.clone(), active);

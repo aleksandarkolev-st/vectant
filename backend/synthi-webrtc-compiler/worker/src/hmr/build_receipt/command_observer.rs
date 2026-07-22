@@ -602,7 +602,7 @@ impl BuildReceiptVerifier {
         Ok(Some(receipt))
     }
 
-    fn validate_observation_challenge(
+    pub(super) fn validate_observation_challenge(
         &mut self,
         challenge: &BuildTransactionChallenge,
     ) -> Result<u64, BuildReceiptError> {
