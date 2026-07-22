@@ -14,12 +14,12 @@ mod command_observer;
 pub(crate) use command_observer::{ObservedBuildCommandOutcome, StdinStdoutBuildStepPlan};
 
 pub const OBSERVED_BUILD_STEP_RECEIPT_SCHEMA_VERSION: &str =
-    "synthi.observed_build_step_receipt.v2";
+    "synthi.observed_build_step_receipt.v3";
 pub const OBSERVED_BUILD_STEP_RECEIPT_ID_PREFIX: &str = "build-step-receipt:sha256:";
 pub const OBSERVED_BUILD_STEP_RECEIPT_AUTHORITY: &str =
     "verifier_sealed_build_observation_only_not_loader_runtime_or_gpu_hmr_proof";
 pub const VERIFIED_RELOAD_BUILD_TRANSACTION_SCHEMA_VERSION: &str =
-    "synthi.verified_reload_build_transaction.v2";
+    "synthi.verified_reload_build_transaction.v3";
 pub const VERIFIED_RELOAD_BUILD_TRANSACTION_ID_PREFIX: &str =
     "verified-build-transaction:sha256:";
 pub const VERIFIED_RELOAD_BUILD_TRANSACTION_AUTHORITY: &str =
@@ -31,6 +31,8 @@ const DEFAULT_BUILD_TRANSACTION_CHALLENGE_TTL: Duration = Duration::from_secs(4 
 const MAX_BUILD_TRANSACTION_CHALLENGE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const OBSERVED_BUILD_INPUT_CONSUMPTION_PROOF: &str =
     "observer_owned_input_pipe_drained_after_boundary_quiescence_v1";
+const VERIFIED_BUILD_AUTHORIZATION_BINDING: &str =
+    "single_use_non_serializable_verifier_registry_v1";
 
 /// A single-use challenge minted by one in-process build observer.
 ///
@@ -63,7 +65,57 @@ struct ActiveChallenge {
     clock_id: String,
     issued_monotonic_ns: u64,
     expires_monotonic_ns: u64,
-    registered_receipt_ids: HashSet<String>,
+    registered_receipts: HashMap<String, RegisteredBuildObservation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegisteredExecutionPolicy {
+    InvocationObservedOnly,
+    #[cfg(test)]
+    IndependentlyAuthorized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegisteredDependencyClosure {
+    ProcessLineageObservedOnly,
+    #[cfg(test)]
+    DeclaredInputsClosed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RegisteredBuildObservation {
+    execution_policy: RegisteredExecutionPolicy,
+    dependency_closure: RegisteredDependencyClosure,
+}
+
+impl RegisteredBuildObservation {
+    fn process_observation_only() -> Self {
+        Self {
+            execution_policy: RegisteredExecutionPolicy::InvocationObservedOnly,
+            dependency_closure: RegisteredDependencyClosure::ProcessLineageObservedOnly,
+        }
+    }
+
+    #[cfg(test)]
+    fn independently_authorized_declared_inputs() -> Self {
+        Self {
+            execution_policy: RegisteredExecutionPolicy::IndependentlyAuthorized,
+            dependency_closure: RegisteredDependencyClosure::DeclaredInputsClosed,
+        }
+    }
+
+    fn can_finalize_build_transaction(self) -> bool {
+        #[cfg(test)]
+        {
+            return self.execution_policy == RegisteredExecutionPolicy::IndependentlyAuthorized
+                && self.dependency_closure == RegisteredDependencyClosure::DeclaredInputsClosed;
+        }
+        #[cfg(not(test))]
+        {
+            let _ = self;
+            false
+        }
+    }
 }
 
 /// Owns freshness and clock state for build-observation receipts.
@@ -148,7 +200,7 @@ impl BuildReceiptVerifier {
             clock_id: self.clock_id.clone(),
             issued_monotonic_ns,
             expires_monotonic_ns,
-            registered_receipt_ids: HashSet::new(),
+            registered_receipts: HashMap::new(),
         };
         self.active_challenges
             .insert(challenge_id.clone(), active);
@@ -188,15 +240,25 @@ impl BuildReceiptVerifier {
                 "build_transaction_challenge_expired",
             ));
         }
-        if active.registered_receipt_ids.len() != receipts.len()
+        if active.registered_receipts.len() != receipts.len()
             || receipts.iter().any(|receipt| {
                 !active
-                    .registered_receipt_ids
-                    .contains(receipt.receipt_id.as_str())
+                    .registered_receipts
+                    .contains_key(receipt.receipt_id.as_str())
             })
         {
             return Err(BuildReceiptError::new(
                 "build_transaction_receipt_registry_mismatch",
+            ));
+        }
+        if receipts.iter().any(|receipt| {
+            !active
+                .registered_receipts
+                .get(receipt.receipt_id.as_str())
+                .is_some_and(|registration| registration.can_finalize_build_transaction())
+        }) {
+            return Err(BuildReceiptError::new(
+                "build_step_receipt_dependency_authority_is_insufficient",
             ));
         }
         let verified = verify_reload_transaction_build_receipts(
@@ -216,6 +278,7 @@ impl BuildReceiptVerifier {
         &mut self,
         challenge: &BuildTransactionChallenge,
         receipt: &ObservedBuildStepReceipt,
+        registration: RegisteredBuildObservation,
     ) -> Result<(), BuildReceiptError> {
         let verifier_now_monotonic_ns = self.monotonic_now_ns()?;
         let active = self
@@ -258,9 +321,10 @@ impl BuildReceiptVerifier {
             .active_challenges
             .get_mut(challenge.challenge_id.as_str())
             .expect("active challenge was validated above");
-        if !active
-            .registered_receipt_ids
-            .insert(receipt.receipt_id.clone())
+        if active
+            .registered_receipts
+            .insert(receipt.receipt_id.clone(), registration)
+            .is_some()
         {
             return Err(BuildReceiptError::new(
                 "build_step_receipt_is_already_registered",
@@ -315,10 +379,6 @@ pub struct ObservedBuildStepReceipt {
     accepted_for_gpu_hmr: bool,
     gpu_hmr_success: bool,
     can_satisfy_runtime_proof: bool,
-    can_satisfy_build_transaction: bool,
-    input_transport_bound_to_execution_boundary: bool,
-    execution_policy_authorized: bool,
-    execution_runtime_closure_observed: bool,
     observer_id: String,
     clock_id: String,
     challenge_id: String,
@@ -344,10 +404,6 @@ impl ObservedBuildStepReceipt {
 
     pub fn evidence_authority(&self) -> &str {
         &self.evidence_authority
-    }
-
-    pub(crate) fn can_satisfy_build_transaction(&self) -> bool {
-        self.can_satisfy_build_transaction
     }
 
     pub(crate) fn output_reference(
@@ -385,8 +441,7 @@ pub struct VerifiedReloadBuildTransactionReceipt {
     accepted_for_gpu_hmr: bool,
     gpu_hmr_success: bool,
     can_satisfy_runtime_proof: bool,
-    execution_policy_authorized: bool,
-    execution_runtime_closure_observed: bool,
+    authorization_binding: String,
     receipt_id: String,
     observer_id: String,
     clock_id: String,
@@ -460,15 +515,6 @@ fn verify_reload_transaction_build_receipts(
     let mut outputs_by_receipt = HashMap::new();
     for receipt in receipts {
         validate_sealed_step_receipt(receipt)?;
-        if !receipt.can_satisfy_build_transaction
-            || !receipt.input_transport_bound_to_execution_boundary
-            || !receipt.execution_policy_authorized
-            || !receipt.execution_runtime_closure_observed
-        {
-            return Err(BuildReceiptError::new(
-                "build_step_receipt_dependency_authority_is_insufficient",
-            ));
-        }
         if receipt.observer_id != challenge.observer_id
             || receipt.clock_id != challenge.clock_id
             || receipt.challenge_id != challenge.challenge_id
@@ -826,19 +872,11 @@ fn verify_reload_transaction_build_receipts(
         .map(str::to_string)
         .collect::<Vec<_>>();
     build_step_receipt_ids.sort();
-    let execution_policy_authorized = receipts
-        .iter()
-        .all(|receipt| receipt.execution_policy_authorized);
-    let execution_runtime_closure_observed = receipts
-        .iter()
-        .all(|receipt| receipt.execution_runtime_closure_observed);
     let receipt_id = derive_transaction_receipt_id(
         challenge,
         &reload_transaction_commitment_id,
         &build_step_receipt_ids,
         &artifact_bindings,
-        execution_policy_authorized,
-        execution_runtime_closure_observed,
     );
     Ok(VerifiedReloadBuildTransactionReceipt {
         schema_version: VERIFIED_RELOAD_BUILD_TRANSACTION_SCHEMA_VERSION.to_string(),
@@ -846,8 +884,7 @@ fn verify_reload_transaction_build_receipts(
         accepted_for_gpu_hmr: false,
         gpu_hmr_success: false,
         can_satisfy_runtime_proof: false,
-        execution_policy_authorized,
-        execution_runtime_closure_observed,
+        authorization_binding: VERIFIED_BUILD_AUTHORIZATION_BINDING.to_string(),
         receipt_id,
         observer_id: challenge.observer_id.clone(),
         clock_id: challenge.clock_id.clone(),
@@ -1050,10 +1087,6 @@ fn derive_step_receipt_id(receipt: &ObservedBuildStepReceipt) -> String {
     hasher.update(receipt.challenge_expires_monotonic_ns.to_be_bytes());
     hash_field(&mut hasher, receipt.executor_hash.as_bytes());
     hash_field(&mut hasher, receipt.execution_boundary.as_bytes());
-    hasher.update([receipt.can_satisfy_build_transaction as u8]);
-    hasher.update([receipt.input_transport_bound_to_execution_boundary as u8]);
-    hasher.update([receipt.execution_policy_authorized as u8]);
-    hasher.update([receipt.execution_runtime_closure_observed as u8]);
     hash_field(&mut hasher, receipt.invocation_hash.as_bytes());
     hasher.update(receipt.started_monotonic_ns.to_be_bytes());
     hasher.update(receipt.completed_monotonic_ns.to_be_bytes());
@@ -1094,8 +1127,6 @@ fn derive_transaction_receipt_id(
     reload_transaction_commitment_id: &str,
     build_step_receipt_ids: &[String],
     artifact_bindings: &[VerifiedArtifactBuildBinding],
-    execution_policy_authorized: bool,
-    execution_runtime_closure_observed: bool,
 ) -> String {
     let mut hasher = Sha256::new();
     hash_field(
@@ -1107,8 +1138,7 @@ fn derive_transaction_receipt_id(
     hash_field(&mut hasher, challenge.challenge_id.as_bytes());
     hasher.update(challenge.expires_monotonic_ns.to_be_bytes());
     hash_field(&mut hasher, reload_transaction_commitment_id.as_bytes());
-    hasher.update([execution_policy_authorized as u8]);
-    hasher.update([execution_runtime_closure_observed as u8]);
+    hash_field(&mut hasher, VERIFIED_BUILD_AUTHORIZATION_BINDING.as_bytes());
     hasher.update((build_step_receipt_ids.len() as u64).to_be_bytes());
     for receipt_id in build_step_receipt_ids {
         hash_field(&mut hasher, receipt_id.as_bytes());
@@ -1238,7 +1268,11 @@ mod test_support {
         observation: TestBuildObservation,
     ) -> Result<ObservedBuildStepReceipt, BuildReceiptError> {
         let receipt = seal_unregistered_test_observation(challenge, observation)?;
-        verifier.register_observed_receipt(challenge, &receipt)?;
+        verifier.register_observed_receipt(
+            challenge,
+            &receipt,
+            RegisteredBuildObservation::independently_authorized_declared_inputs(),
+        )?;
         Ok(receipt)
     }
 
@@ -1337,10 +1371,6 @@ mod test_support {
             accepted_for_gpu_hmr: false,
             gpu_hmr_success: false,
             can_satisfy_runtime_proof: false,
-            can_satisfy_build_transaction: true,
-            input_transport_bound_to_execution_boundary: true,
-            execution_policy_authorized: true,
-            execution_runtime_closure_observed: true,
             observer_id: challenge.observer_id.clone(),
             clock_id: challenge.clock_id.clone(),
             challenge_id: challenge.challenge_id.clone(),
@@ -1590,6 +1620,23 @@ mod tests {
         assert!(!verified.accepted_for_gpu_hmr);
         assert!(!verified.gpu_hmr_success);
         assert!(!verified.can_satisfy_runtime_proof);
+        let serialized_receipt = serde_json::to_value(&receipt).unwrap();
+        let serialized_verified = serde_json::to_value(&verified).unwrap();
+        for field in [
+            "canSatisfyBuildTransaction",
+            "inputTransportBoundToExecutionBoundary",
+            "executionPolicyAuthorized",
+            "executionRuntimeClosureObserved",
+        ] {
+            assert!(serialized_receipt.get(field).is_none());
+            assert!(serialized_verified.get(field).is_none());
+        }
+        assert_eq!(
+            serialized_verified
+                .get("authorizationBinding")
+                .and_then(serde_json::Value::as_str),
+            Some(VERIFIED_BUILD_AUTHORIZATION_BINDING)
+        );
         assert_eq!(
             verifier
                 .verify_reload_transaction(&challenge, &manifest, &[receipt])
@@ -1659,7 +1706,11 @@ mod tests {
         );
         assert_eq!(
             verifier
-                .register_observed_receipt(&challenge, &receipt)
+                .register_observed_receipt(
+                    &challenge,
+                    &receipt,
+                    RegisteredBuildObservation::independently_authorized_declared_inputs(),
+                )
                 .unwrap_err()
                 .to_string(),
             "build_transaction_challenge_is_not_active"

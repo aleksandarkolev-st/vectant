@@ -490,10 +490,6 @@ impl BuildReceiptVerifier {
             accepted_for_gpu_hmr: false,
             gpu_hmr_success: false,
             can_satisfy_runtime_proof: false,
-            can_satisfy_build_transaction: false,
-            input_transport_bound_to_execution_boundary: false,
-            execution_policy_authorized: false,
-            execution_runtime_closure_observed: false,
             observer_id: challenge.observer_id.clone(),
             clock_id: challenge.clock_id.clone(),
             challenge_id: challenge.challenge_id.clone(),
@@ -508,7 +504,11 @@ impl BuildReceiptVerifier {
             outputs: vec![output],
         };
         receipt.receipt_id = derive_step_receipt_id(&receipt);
-        self.register_observed_receipt(challenge, &receipt)?;
+        self.register_observed_receipt(
+            challenge,
+            &receipt,
+            RegisteredBuildObservation::process_observation_only(),
+        )?;
 
         Ok(ObservedBuildCommandOutcome {
             status,
@@ -1646,7 +1646,15 @@ mod tests {
         assert_eq!(outcome.stdout(), input.as_ref());
         assert!(outcome.stderr().is_empty());
         let receipt = outcome.receipt().unwrap().clone();
-        assert!(!receipt.can_satisfy_build_transaction());
+        let serialized = serde_json::to_value(&receipt).unwrap();
+        for field in [
+            "canSatisfyBuildTransaction",
+            "inputTransportBoundToExecutionBoundary",
+            "executionPolicyAuthorized",
+            "executionRuntimeClosureObserved",
+        ] {
+            assert!(serialized.get(field).is_none());
+        }
         let artifact_hash = content_hash(outcome.stdout());
         let artifact = BuildArtifactIdentity::new("ignored", "transport/output", &artifact_hash)
             .with_byte_length(outcome.stdout().len() as u64)
