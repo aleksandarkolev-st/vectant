@@ -4,6 +4,8 @@ use ring::{
     signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519},
 };
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::{collections::HashMap, fmt, sync::Mutex};
 
 pub const CLOSED_EXECUTION_PROTOCOL_VERSION: u16 = 1;
@@ -23,9 +25,13 @@ const FINALIZE_PAYLOAD_BYTES: usize = DIGEST_BYTES * 3 + 16;
 const FINALIZED_PAYLOAD_BYTES: usize = DIGEST_BYTES * 6 + SIGNATURE_BYTES + 56;
 const REFUSED_PAYLOAD_BYTES: usize = DIGEST_BYTES * 3 + SIGNATURE_BYTES + 16;
 const MAX_ACTIVE_TRANSCRIPTS: usize = 65_536;
+#[cfg(target_os = "linux")]
+const LINUX_SCM_PIDFD: libc::c_int = 0x04;
 
 const CHALLENGE_BINDING_DOMAIN: &[u8] = b"synthi.closed_execution.challenge_binding.v1";
 const CHALLENGE_SIGNATURE_DOMAIN: &[u8] = b"synthi.closed_execution.challenge_signature.v1";
+const KERNEL_PEER_IDENTITY_DOMAIN: &[u8] = b"synthi.closed_execution.kernel_peer_identity.v1";
+const KERNEL_RECORD_IDENTITY_DOMAIN: &[u8] = b"synthi.closed_execution.kernel_record_identity.v1";
 const REQUEST_ID_DOMAIN: &[u8] = b"synthi.closed_execution.acquire_request.v1";
 const LEASE_ID_DOMAIN: &[u8] = b"synthi.closed_execution.lease.v1";
 const FINALIZATION_ID_DOMAIN: &[u8] = b"synthi.closed_execution.finalization.v1";
@@ -144,6 +150,7 @@ pub enum ProtocolError {
     DeadlineReached,
     UnexpectedLeasePhase,
     CapacityExceeded,
+    PeerIdentityUnavailable,
 }
 
 impl fmt::Display for ProtocolError {
@@ -162,6 +169,7 @@ impl fmt::Display for ProtocolError {
             Self::DeadlineReached => "closed_execution_protocol_deadline_reached",
             Self::UnexpectedLeasePhase => "closed_execution_protocol_lease_phase_invalid",
             Self::CapacityExceeded => "closed_execution_protocol_capacity_exceeded",
+            Self::PeerIdentityUnavailable => "closed_execution_protocol_peer_identity_unavailable",
         };
         formatter.write_str(code)
     }
@@ -308,20 +316,97 @@ impl SupervisorVerifier {
 
 /// A non-serializable peer identity obtained from the supervisor transport's
 /// kernel credential observation. The protocol deliberately has no production
-/// constructor from a digest or wire record; the transport integration must
-/// add an OS-backed constructor before it can acquire leases.
+/// constructor from a digest or wire record; Linux construction consumes a
+/// message-preserving socket and retains its pidfd for the full session.
 pub struct KernelPeerProcessObservation {
     process_identity: ProtocolDigest,
+    #[cfg(target_os = "linux")]
+    peer_pid: libc::pid_t,
+    #[cfg(target_os = "linux")]
+    peer_uid: libc::uid_t,
+    #[cfg(target_os = "linux")]
+    peer_gid: libc::gid_t,
+    #[cfg(target_os = "linux")]
+    peer_pidfd: OwnedFd,
+    #[cfg(target_os = "linux")]
+    record_socket: Mutex<OwnedFd>,
+    #[cfg(all(test, target_os = "linux"))]
+    _test_sender: Option<OwnedFd>,
 }
 
 impl KernelPeerProcessObservation {
     #[cfg(test)]
     fn for_test(process_identity: ProtocolDigest) -> Self {
-        Self { process_identity }
+        #[cfg(target_os = "linux")]
+        {
+            let (record_socket, test_sender) =
+                unix_seqpacket_pair().expect("test kernel credential transport");
+            let record_socket = configure_unix_record_socket(record_socket)
+                .expect("configured test kernel credential transport");
+            let (peer_pid, peer_uid, peer_gid, peer_pidfd) =
+                unix_peer_process(record_socket.as_raw_fd()).expect("test peer pidfd");
+            return Self {
+                process_identity,
+                peer_pid,
+                peer_uid,
+                peer_gid,
+                peer_pidfd,
+                record_socket: Mutex::new(record_socket),
+                _test_sender: Some(test_sender),
+            };
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self { process_identity }
+        }
     }
 
     fn process_identity(&self) -> ProtocolDigest {
         self.process_identity
+    }
+
+    fn ensure_kernel_bound(&self) -> Result<(), ProtocolError> {
+        #[cfg(target_os = "linux")]
+        {
+            ensure_pidfd_live(&self.peer_pidfd)?;
+            if pidfd_process_id(&self.peer_pidfd)? != self.peer_pid {
+                return Err(ProtocolError::PeerIdentityUnavailable);
+            }
+            return Ok(());
+        }
+        #[cfg(all(test, not(target_os = "linux")))]
+        {
+            Ok(())
+        }
+        #[cfg(all(not(test), not(target_os = "linux")))]
+        {
+            Err(ProtocolError::PeerIdentityUnavailable)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn receive_record(&self) -> Result<KernelAuthenticatedProtocolRecord, ProtocolError> {
+        self.ensure_kernel_bound()?;
+        let socket = self
+            .record_socket
+            .lock()
+            .map_err(|_| ProtocolError::PeerIdentityUnavailable)?;
+        let (record_bytes, credentials, sender_pidfd) = receive_unix_record(socket.as_raw_fd())?;
+        ensure_pidfd_live(&sender_pidfd)?;
+        if credentials.pid != self.peer_pid
+            || credentials.uid != self.peer_uid
+            || credentials.gid != self.peer_gid
+            || pidfd_process_id(&sender_pidfd)? != self.peer_pid
+        {
+            return Err(ProtocolError::AuthenticationFailed);
+        }
+        let record_identity = hash_fields(KERNEL_RECORD_IDENTITY_DOMAIN, &[&record_bytes]);
+        let message = ClosedExecutionMessage::decode_untrusted(&record_bytes)?;
+        Ok(KernelAuthenticatedProtocolRecord {
+            peer_process_identity: self.process_identity,
+            record_identity,
+            message,
+        })
     }
 }
 
@@ -330,6 +415,66 @@ impl fmt::Debug for KernelPeerProcessObservation {
         formatter
             .debug_struct("KernelPeerProcessObservation")
             .field("process_identity", &self.process_identity)
+            .field("kernel_bound", &{
+                #[cfg(target_os = "linux")]
+                {
+                    true
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    false
+                }
+            })
+            .finish_non_exhaustive()
+    }
+}
+
+/// A one-use decoded record whose sender was authenticated by kernel-provided
+/// per-message credentials and pidfd on the observation's owned socket.
+pub struct KernelAuthenticatedProtocolRecord {
+    peer_process_identity: ProtocolDigest,
+    record_identity: ProtocolDigest,
+    message: ClosedExecutionMessage,
+}
+
+impl KernelAuthenticatedProtocolRecord {
+    #[cfg(test)]
+    fn for_test(
+        peer_process_identity: ProtocolDigest,
+        message: ClosedExecutionMessage,
+    ) -> Result<Self, ProtocolError> {
+        let encoded = message.encode()?;
+        Ok(Self {
+            peer_process_identity,
+            record_identity: hash_fields(KERNEL_RECORD_IDENTITY_DOMAIN, &[encoded.as_bytes()]),
+            message,
+        })
+    }
+
+    fn into_message(
+        self,
+        peer: &KernelPeerProcessObservation,
+    ) -> Result<ClosedExecutionMessage, ProtocolError> {
+        peer.ensure_kernel_bound()?;
+        if self.peer_process_identity != peer.process_identity() {
+            return Err(ProtocolError::AuthenticationFailed);
+        }
+        let encoded = self.message.encode()?;
+        let expected_identity = hash_fields(KERNEL_RECORD_IDENTITY_DOMAIN, &[encoded.as_bytes()]);
+        if expected_identity != self.record_identity {
+            return Err(ProtocolError::IntegrityMismatch);
+        }
+        Ok(self.message)
+    }
+}
+
+impl fmt::Debug for KernelAuthenticatedProtocolRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("KernelAuthenticatedProtocolRecord")
+            .field("peer_process_identity", &self.peer_process_identity)
+            .field("record_identity", &self.record_identity)
+            .field("message", &"[REDACTED]")
             .finish_non_exhaustive()
     }
 }
@@ -491,12 +636,48 @@ impl SupervisorAuthority {
         self.verifier.clone()
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn observe_unix_peer(
+        &self,
+        record_socket: OwnedFd,
+    ) -> Result<KernelPeerProcessObservation, ProtocolError> {
+        let record_socket = configure_unix_record_socket(record_socket)?;
+        let (pid, uid, gid, peer_pidfd) = unix_peer_process(record_socket.as_raw_fd())?;
+        let mut observation_nonce = [0u8; DIGEST_BYTES];
+        SystemRandom::new()
+            .fill(&mut observation_nonce)
+            .map_err(|_| ProtocolError::PeerIdentityUnavailable)?;
+        let observation_nonce = ProtocolDigest::from_bytes(observation_nonce)
+            .map_err(|_| ProtocolError::PeerIdentityUnavailable)?;
+        let process_identity = hash_fields(
+            KERNEL_PEER_IDENTITY_DOMAIN,
+            &[
+                self.verifier.key_id().as_bytes(),
+                &pid.to_be_bytes(),
+                &uid.to_be_bytes(),
+                &gid.to_be_bytes(),
+                observation_nonce.as_bytes(),
+            ],
+        );
+        Ok(KernelPeerProcessObservation {
+            process_identity,
+            peer_pid: pid,
+            peer_uid: uid,
+            peer_gid: gid,
+            peer_pidfd,
+            record_socket: Mutex::new(record_socket),
+            #[cfg(test)]
+            _test_sender: None,
+        })
+    }
+
     pub fn issue_challenge(
         &self,
         peer: &KernelPeerProcessObservation,
         issued_monotonic_ns: u64,
         expires_monotonic_ns: u64,
     ) -> Result<AcquisitionChallenge, ProtocolError> {
+        peer.ensure_kernel_bound()?;
         let mut nonce = [0u8; DIGEST_BYTES];
         SystemRandom::new()
             .fill(&mut nonce)
@@ -512,6 +693,7 @@ impl SupervisorAuthority {
         issued_monotonic_ns: u64,
         expires_monotonic_ns: u64,
     ) -> Result<AcquisitionChallenge, ProtocolError> {
+        peer.ensure_kernel_bound()?;
         AcquisitionChallenge::issue(
             peer.process_identity(),
             nonce,
@@ -525,7 +707,7 @@ impl SupervisorAuthority {
     #[allow(clippy::too_many_arguments)]
     pub fn issue_offer(
         &self,
-        request: &AcquireLeaseRequest,
+        record: KernelAuthenticatedProtocolRecord,
         peer: &KernelPeerProcessObservation,
         server_nonce: ProtocolDigest,
         lease_secret: &LeaseSecret,
@@ -533,8 +715,11 @@ impl SupervisorAuthority {
         process_set_identity: ProtocolDigest,
         granted_monotonic_ns: u64,
     ) -> Result<LeaseOffer, ProtocolError> {
+        let ClosedExecutionMessage::Acquire(request) = record.into_message(peer)? else {
+            return Err(ProtocolError::InvalidField);
+        };
         LeaseOffer::issue(
-            request,
+            &request,
             peer.process_identity(),
             server_nonce,
             lease_secret,
@@ -557,15 +742,17 @@ impl SupervisorAuthority {
 
     pub fn attached(
         &self,
-        request_id: ProtocolDigest,
-        lease_id: ProtocolDigest,
+        record: KernelAuthenticatedProtocolRecord,
         peer: &KernelPeerProcessObservation,
         process_set_identity: ProtocolDigest,
         attached_monotonic_ns: u64,
     ) -> Result<LeaseAttached, ProtocolError> {
+        let ClosedExecutionMessage::Attach(request) = record.into_message(peer)? else {
+            return Err(ProtocolError::InvalidField);
+        };
         LeaseAttached::new(
-            request_id,
-            lease_id,
+            request.request_id(),
+            request.lease_id(),
             peer.process_identity(),
             process_set_identity,
             attached_monotonic_ns,
@@ -576,33 +763,33 @@ impl SupervisorAuthority {
     #[allow(clippy::too_many_arguments)]
     pub fn finalized(
         &self,
-        request_id: ProtocolDigest,
-        lease_id: ProtocolDigest,
+        record: KernelAuthenticatedProtocolRecord,
         process_set_identity: ProtocolDigest,
         peer: &KernelPeerProcessObservation,
-        reason: FinalizeReason,
         attached_before_exec: bool,
         migration_protection_observed: bool,
         process_set_kill_issued: bool,
         process_set_quiescent: bool,
         attached_monotonic_ns: u64,
-        finalize_requested_monotonic_ns: u64,
         kill_issued_monotonic_ns: u64,
         quiescent_monotonic_ns: u64,
         finalized_monotonic_ns: u64,
     ) -> Result<LeaseFinalized, ProtocolError> {
+        let ClosedExecutionMessage::Finalize(request) = record.into_message(peer)? else {
+            return Err(ProtocolError::InvalidField);
+        };
         LeaseFinalized::new(
-            request_id,
-            lease_id,
+            request.request_id(),
+            request.lease_id(),
             process_set_identity,
             peer.process_identity(),
-            reason,
+            request.reason(),
             attached_before_exec,
             migration_protection_observed,
             process_set_kill_issued,
             process_set_quiescent,
             attached_monotonic_ns,
-            finalize_requested_monotonic_ns,
+            request.requested_monotonic_ns(),
             kill_issued_monotonic_ns,
             quiescent_monotonic_ns,
             finalized_monotonic_ns,
@@ -2698,6 +2885,316 @@ fn derive_finalization_id(
     )
 }
 
+#[cfg(target_os = "linux")]
+fn unix_peer_process(
+    socket: RawFd,
+) -> Result<(libc::pid_t, libc::uid_t, libc::gid_t, OwnedFd), ProtocolError> {
+    let mut credentials = std::mem::MaybeUninit::<libc::ucred>::uninit();
+    let mut credentials_length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: the output buffer and length match `SO_PEERCRED`'s `ucred` ABI.
+    let credentials_result = unsafe {
+        libc::getsockopt(
+            socket,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            credentials.as_mut_ptr().cast(),
+            &mut credentials_length,
+        )
+    };
+    if credentials_result != 0 || credentials_length as usize != std::mem::size_of::<libc::ucred>()
+    {
+        return Err(ProtocolError::PeerIdentityUnavailable);
+    }
+    // SAFETY: a successful exact-length `getsockopt` initialized the structure.
+    let credentials = unsafe { credentials.assume_init() };
+    if credentials.pid <= 0 {
+        return Err(ProtocolError::PeerIdentityUnavailable);
+    }
+
+    let mut raw_pidfd: libc::c_int = -1;
+    let mut pidfd_length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: the output buffer and length match `SO_PEERPIDFD`'s integer FD ABI.
+    let pidfd_result = unsafe {
+        libc::getsockopt(
+            socket,
+            libc::SOL_SOCKET,
+            libc::SO_PEERPIDFD,
+            (&mut raw_pidfd as *mut libc::c_int).cast(),
+            &mut pidfd_length,
+        )
+    };
+    if pidfd_result != 0 || raw_pidfd < 0 {
+        return Err(ProtocolError::PeerIdentityUnavailable);
+    }
+    // SAFETY: `SO_PEERPIDFD` returned a new owned descriptor on success.
+    let peer_pidfd = unsafe { OwnedFd::from_raw_fd(raw_pidfd) };
+    if pidfd_length as usize != std::mem::size_of::<libc::c_int>() {
+        return Err(ProtocolError::PeerIdentityUnavailable);
+    }
+    set_fd_cloexec(peer_pidfd.as_raw_fd())?;
+    ensure_pidfd_live(&peer_pidfd)?;
+    if pidfd_process_id(&peer_pidfd)? != credentials.pid {
+        return Err(ProtocolError::PeerIdentityUnavailable);
+    }
+    Ok((
+        credentials.pid,
+        credentials.uid,
+        credentials.gid,
+        peer_pidfd,
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn configure_unix_record_socket(socket: OwnedFd) -> Result<OwnedFd, ProtocolError> {
+    if get_socket_option_int(socket.as_raw_fd(), libc::SO_DOMAIN)? != libc::AF_UNIX
+        || get_socket_option_int(socket.as_raw_fd(), libc::SO_TYPE)? != libc::SOCK_SEQPACKET
+    {
+        return Err(ProtocolError::PeerIdentityUnavailable);
+    }
+    set_fd_cloexec(socket.as_raw_fd())?;
+    set_socket_option_int(socket.as_raw_fd(), libc::SO_PASSCRED, 1)?;
+    set_socket_option_int(socket.as_raw_fd(), libc::SO_PASSPIDFD, 1)?;
+    Ok(socket)
+}
+
+#[cfg(target_os = "linux")]
+fn get_socket_option_int(socket: RawFd, option: libc::c_int) -> Result<libc::c_int, ProtocolError> {
+    let mut value = 0;
+    let mut value_length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: the output buffer and length match this integer socket option.
+    let result = unsafe {
+        libc::getsockopt(
+            socket,
+            libc::SOL_SOCKET,
+            option,
+            (&mut value as *mut libc::c_int).cast(),
+            &mut value_length,
+        )
+    };
+    if result != 0 || value_length as usize != std::mem::size_of::<libc::c_int>() {
+        return Err(ProtocolError::PeerIdentityUnavailable);
+    }
+    Ok(value)
+}
+
+#[cfg(target_os = "linux")]
+fn set_socket_option_int(
+    socket: RawFd,
+    option: libc::c_int,
+    value: libc::c_int,
+) -> Result<(), ProtocolError> {
+    // SAFETY: the input buffer and length match this integer socket option.
+    let result = unsafe {
+        libc::setsockopt(
+            socket,
+            libc::SOL_SOCKET,
+            option,
+            (&value as *const libc::c_int).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if result != 0 {
+        return Err(ProtocolError::PeerIdentityUnavailable);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn set_fd_cloexec(fd: RawFd) -> Result<(), ProtocolError> {
+    // SAFETY: both calls inspect or update flags on an open owned descriptor.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(ProtocolError::PeerIdentityUnavailable);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn receive_unix_record(socket: RawFd) -> Result<(Vec<u8>, libc::ucred, OwnedFd), ProtocolError> {
+    loop {
+        let mut record = [0u8; CLOSED_EXECUTION_PROTOCOL_MAX_RECORD_BYTES];
+        let mut control = [0usize; 32];
+        let mut io = libc::iovec {
+            iov_base: record.as_mut_ptr().cast(),
+            iov_len: record.len(),
+        };
+        // SAFETY: all pointer fields are set below to live buffers for this call.
+        let mut message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        message.msg_iov = &mut io;
+        message.msg_iovlen = 1;
+        message.msg_control = control.as_mut_ptr().cast();
+        message.msg_controllen = std::mem::size_of_val(&control);
+        // `MSG_TRUNC` reports an oversized packet's real length; CLOEXEC applies
+        // before any received descriptor becomes visible to this process.
+        let received = unsafe {
+            libc::recvmsg(
+                socket,
+                &mut message,
+                libc::MSG_TRUNC | libc::MSG_CMSG_CLOEXEC,
+            )
+        };
+        if received < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(ProtocolError::PeerIdentityUnavailable);
+        }
+
+        let mut credentials = None;
+        let mut sender_pidfd = None;
+        let mut unexpected_control = false;
+        // SAFETY: `message` and its kernel-written control length describe the
+        // aligned control buffer above for the duration of this loop.
+        let mut header = unsafe { libc::CMSG_FIRSTHDR(&message) };
+        while !header.is_null() {
+            // SAFETY: CMSG iteration returned a header inside `message`.
+            let control_header = unsafe { &*header };
+            // SAFETY: a zero payload length is valid for computing the header size.
+            let minimum_length = unsafe { libc::CMSG_LEN(0) as usize };
+            if control_header.cmsg_len < minimum_length {
+                unexpected_control = true;
+                break;
+            }
+            let data_length = control_header.cmsg_len - minimum_length;
+            // SAFETY: the kernel validated this ancillary record before return.
+            let data = unsafe { libc::CMSG_DATA(header) };
+            match (control_header.cmsg_level, control_header.cmsg_type) {
+                (libc::SOL_SOCKET, libc::SCM_CREDENTIALS)
+                    if data_length == std::mem::size_of::<libc::ucred>() =>
+                {
+                    if credentials.is_some() {
+                        unexpected_control = true;
+                    } else {
+                        // SAFETY: the length check above covers one `ucred`.
+                        credentials =
+                            Some(unsafe { std::ptr::read_unaligned(data.cast::<libc::ucred>()) });
+                    }
+                }
+                (libc::SOL_SOCKET, LINUX_SCM_PIDFD)
+                    if data_length == std::mem::size_of::<libc::c_int>() =>
+                {
+                    // SAFETY: the length check above covers one descriptor.
+                    let raw_pidfd = unsafe { std::ptr::read_unaligned(data.cast::<libc::c_int>()) };
+                    if raw_pidfd < 0 {
+                        unexpected_control = true;
+                    } else {
+                        // SAFETY: SCM_PIDFD installed a new descriptor for this recvmsg.
+                        let owned_pidfd = unsafe { OwnedFd::from_raw_fd(raw_pidfd) };
+                        if set_fd_cloexec(owned_pidfd.as_raw_fd()).is_err() {
+                            unexpected_control = true;
+                        } else if sender_pidfd.replace(owned_pidfd).is_some() {
+                            unexpected_control = true;
+                        }
+                    }
+                }
+                (libc::SOL_SOCKET, libc::SCM_RIGHTS) => {
+                    close_received_descriptors(data, data_length);
+                    unexpected_control = true;
+                }
+                _ => unexpected_control = true,
+            }
+            // SAFETY: libc bounds the next header by the kernel-written length.
+            header = unsafe { libc::CMSG_NXTHDR(&message, header) };
+        }
+
+        if received == 0
+            || received as usize > record.len()
+            || message.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0
+            || unexpected_control
+        {
+            return Err(ProtocolError::PeerIdentityUnavailable);
+        }
+        let credentials = credentials.ok_or(ProtocolError::PeerIdentityUnavailable)?;
+        let sender_pidfd = sender_pidfd.ok_or(ProtocolError::PeerIdentityUnavailable)?;
+        return Ok((
+            record[..received as usize].to_vec(),
+            credentials,
+            sender_pidfd,
+        ));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn close_received_descriptors(data: *mut libc::c_uchar, data_length: usize) {
+    for offset in (0..data_length).step_by(std::mem::size_of::<libc::c_int>()) {
+        if offset + std::mem::size_of::<libc::c_int>() > data_length {
+            break;
+        }
+        // SAFETY: the caller passes a kernel-written SCM_RIGHTS data region.
+        let descriptor =
+            unsafe { std::ptr::read_unaligned(data.add(offset).cast::<libc::c_int>()) };
+        if descriptor >= 0 {
+            // SAFETY: SCM_RIGHTS installed this descriptor into our table.
+            unsafe { libc::close(descriptor) };
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn pidfd_process_id(pidfd: &OwnedFd) -> Result<libc::pid_t, ProtocolError> {
+    let fdinfo = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", pidfd.as_raw_fd()))
+        .map_err(|_| ProtocolError::PeerIdentityUnavailable)?;
+    fdinfo
+        .lines()
+        .find_map(|line| line.strip_prefix("Pid:").map(str::trim))
+        .ok_or(ProtocolError::PeerIdentityUnavailable)?
+        .parse::<libc::pid_t>()
+        .ok()
+        .filter(|pid| *pid > 0)
+        .ok_or(ProtocolError::PeerIdentityUnavailable)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn unix_seqpacket_pair() -> Result<(OwnedFd, OwnedFd), ProtocolError> {
+    unix_socket_pair(libc::SOCK_SEQPACKET)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn unix_socket_pair(socket_type: libc::c_int) -> Result<(OwnedFd, OwnedFd), ProtocolError> {
+    let mut sockets = [-1; 2];
+    // SAFETY: `sockets` has room for both descriptors returned by socketpair.
+    let result = unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            socket_type | libc::SOCK_CLOEXEC,
+            0,
+            sockets.as_mut_ptr(),
+        )
+    };
+    if result != 0 || sockets[0] < 0 || sockets[1] < 0 {
+        return Err(ProtocolError::PeerIdentityUnavailable);
+    }
+    // SAFETY: socketpair returned two independent owned descriptors.
+    Ok(unsafe {
+        (
+            OwnedFd::from_raw_fd(sockets[0]),
+            OwnedFd::from_raw_fd(sockets[1]),
+        )
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_pidfd_live(peer_pidfd: &OwnedFd) -> Result<(), ProtocolError> {
+    let mut descriptor = libc::pollfd {
+        fd: peer_pidfd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: `descriptor` points to one initialized `pollfd` for this call.
+        let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
+        if result == 0 {
+            return Ok(());
+        }
+        if result > 0 {
+            return Err(ProtocolError::PeerIdentityUnavailable);
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return Err(ProtocolError::PeerIdentityUnavailable);
+        }
+    }
+}
+
 fn hash_fields(domain: &[u8], fields: &[&[u8]]) -> ProtocolDigest {
     let mut hasher = Sha256::new();
     hasher.update((domain.len() as u64).to_be_bytes());
@@ -2719,6 +3216,86 @@ mod tests {
 
     fn peer(label: &str) -> KernelPeerProcessObservation {
         KernelPeerProcessObservation::for_test(digest(label))
+    }
+
+    fn authenticated_record(
+        peer_label: &str,
+        message: ClosedExecutionMessage,
+    ) -> KernelAuthenticatedProtocolRecord {
+        KernelAuthenticatedProtocolRecord::for_test(digest(peer_label), message).unwrap()
+    }
+
+    fn authenticated_acquire(
+        peer_label: &str,
+        request: &AcquireLeaseRequest,
+    ) -> KernelAuthenticatedProtocolRecord {
+        authenticated_record(peer_label, ClosedExecutionMessage::Acquire(request.clone()))
+    }
+
+    fn authenticated_attach(
+        peer_label: &str,
+        request: &AttachLeaseRequest,
+    ) -> KernelAuthenticatedProtocolRecord {
+        authenticated_record(peer_label, ClosedExecutionMessage::Attach(request.clone()))
+    }
+
+    fn authenticated_finalize(
+        peer_label: &str,
+        request: &FinalizeLeaseRequest,
+    ) -> KernelAuthenticatedProtocolRecord {
+        authenticated_record(
+            peer_label,
+            ClosedExecutionMessage::Finalize(request.clone()),
+        )
+    }
+
+    fn authenticated_attach_for_grant(
+        peer_label: &str,
+        grant: &LeaseGrant,
+    ) -> KernelAuthenticatedProtocolRecord {
+        authenticated_attach(peer_label, &AttachLeaseRequest::from_grant(grant).unwrap())
+    }
+
+    fn authenticated_finalize_for_grant(
+        peer_label: &str,
+        grant: &LeaseGrant,
+        reason: FinalizeReason,
+        requested_monotonic_ns: u64,
+    ) -> KernelAuthenticatedProtocolRecord {
+        authenticated_finalize(
+            peer_label,
+            &FinalizeLeaseRequest::from_grant(grant, reason, requested_monotonic_ns).unwrap(),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn send_protocol_record(socket: &OwnedFd, message: &ClosedExecutionMessage) {
+        let encoded = message.encode().unwrap();
+        // SAFETY: the encoded buffer remains live for this single send call.
+        let sent = unsafe {
+            libc::send(
+                socket.as_raw_fd(),
+                encoded.as_bytes().as_ptr().cast(),
+                encoded.len(),
+                libc::MSG_NOSIGNAL,
+            )
+        };
+        assert_eq!(sent, encoded.len() as libc::ssize_t);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn cloexec_pipe() -> (OwnedFd, OwnedFd) {
+        let mut descriptors = [-1; 2];
+        // SAFETY: `descriptors` has room for both pipe descriptors.
+        let result = unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) };
+        assert_eq!(result, 0);
+        // SAFETY: pipe2 returned two independent owned descriptors.
+        unsafe {
+            (
+                OwnedFd::from_raw_fd(descriptors[0]),
+                OwnedFd::from_raw_fd(descriptors[1]),
+            )
+        }
     }
 
     fn challenge_for(authority: &SupervisorAuthority, nonce_label: &str) -> AcquisitionChallenge {
@@ -2789,7 +3366,7 @@ mod tests {
         let offer_secret = LeaseSecret::from_bytes([7; SECRET_BYTES]).unwrap();
         let offer = authority
             .issue_offer(
-                &request,
+                authenticated_acquire("peer-process", &request),
                 &peer("peer-process"),
                 digest("server-nonce"),
                 &offer_secret,
@@ -2837,6 +3414,127 @@ mod tests {
             &signer(),
         )
         .unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unix_peer_observation_is_pidfd_bound_and_session_unique() {
+        let authority = authority();
+        let (first_socket, _first_sender) = unix_seqpacket_pair().unwrap();
+        let (second_socket, _second_sender) = unix_seqpacket_pair().unwrap();
+        let first = authority.observe_unix_peer(first_socket).unwrap();
+        let second = authority.observe_unix_peer(second_socket).unwrap();
+
+        first.ensure_kernel_bound().unwrap();
+        second.ensure_kernel_bound().unwrap();
+        assert_ne!(first.process_identity(), second.process_identity());
+        assert!(format!("{first:?}").contains("kernel_bound: true"));
+        // SAFETY: this reads descriptor flags from the observation's live pidfd.
+        let pidfd_flags = unsafe { libc::fcntl(first.peer_pidfd.as_raw_fd(), libc::F_GETFD) };
+        assert!(pidfd_flags & libc::FD_CLOEXEC != 0);
+
+        let challenge = authority.issue_challenge(&first, 10, 1_000).unwrap();
+        assert_eq!(challenge.peer_process_identity(), first.process_identity());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn byte_stream_transport_is_rejected_before_peer_observation() {
+        let authority = authority();
+        let (stream_socket, _sender) = unix_socket_pair(libc::SOCK_STREAM).unwrap();
+        assert_eq!(
+            authority.observe_unix_peer(stream_socket).unwrap_err(),
+            ProtocolError::PeerIdentityUnavailable
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unix_record_sender_is_bound_to_the_observed_process() {
+        let authority = authority();
+        let (record_socket, sender) = unix_seqpacket_pair().unwrap();
+        let peer = authority.observe_unix_peer(record_socket).unwrap();
+        let challenge = authority.issue_challenge(&peer, 10, 1_000).unwrap();
+        let request = request_from_challenge(&challenge, &authority, digest("record-nonce"));
+        send_protocol_record(&sender, &ClosedExecutionMessage::Acquire(request.clone()));
+
+        let record = peer.receive_record().unwrap();
+        let secret = LeaseSecret::from_bytes([7; SECRET_BYTES]).unwrap();
+        let offer = authority
+            .issue_offer(
+                record,
+                &peer,
+                digest("record-server-nonce"),
+                &secret,
+                digest("record-supervisor"),
+                digest("record-process-set"),
+                100,
+            )
+            .unwrap();
+
+        assert_eq!(offer.peer_process_identity, peer.process_identity());
+        assert!(offer.verify(&authority.verifier()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn inherited_seqpacket_endpoint_cannot_substitute_the_record_sender() {
+        let authority = authority();
+        let (record_socket, sender) = unix_seqpacket_pair().unwrap();
+        let peer = authority.observe_unix_peer(record_socket).unwrap();
+        let challenge = authority.issue_challenge(&peer, 10, 1_000).unwrap();
+        let request = request_from_challenge(&challenge, &authority, digest("forked-nonce"));
+        let encoded = ClosedExecutionMessage::Acquire(request).encode().unwrap();
+        let (release_reader, release_writer) = cloexec_pipe();
+
+        // The child performs only async-signal-safe syscalls before `_exit`.
+        let child_pid = unsafe { libc::fork() };
+        assert!(child_pid >= 0);
+        if child_pid == 0 {
+            // SAFETY: all descriptors and the encoded buffer were live at fork.
+            let sent = unsafe {
+                libc::send(
+                    sender.as_raw_fd(),
+                    encoded.as_bytes().as_ptr().cast(),
+                    encoded.len(),
+                    libc::MSG_NOSIGNAL,
+                )
+            };
+            if sent != encoded.len() as libc::ssize_t {
+                unsafe { libc::_exit(2) };
+            }
+            let mut release = 0u8;
+            let read = unsafe {
+                libc::read(
+                    release_reader.as_raw_fd(),
+                    (&mut release as *mut u8).cast(),
+                    1,
+                )
+            };
+            unsafe { libc::_exit(if read == 1 { 0 } else { 3 }) };
+        }
+
+        drop(release_reader);
+        let received = peer.receive_record();
+        let release = [1u8];
+        // SAFETY: the writer and byte buffer remain live for this call.
+        let written = unsafe {
+            libc::write(
+                release_writer.as_raw_fd(),
+                release.as_ptr().cast(),
+                release.len(),
+            )
+        };
+        assert_eq!(written, 1);
+        let mut child_status = 0;
+        // SAFETY: `child_pid` is the direct child created above.
+        assert_eq!(
+            unsafe { libc::waitpid(child_pid, &mut child_status, 0) },
+            child_pid
+        );
+        assert!(libc::WIFEXITED(child_status));
+        assert_eq!(libc::WEXITSTATUS(child_status), 0);
+        assert_eq!(received.unwrap_err(), ProtocolError::AuthenticationFailed);
     }
 
     #[test]
@@ -3154,7 +3852,7 @@ mod tests {
         let secret = LeaseSecret::from_bytes([7; SECRET_BYTES]).unwrap();
         assert_eq!(
             authority.issue_offer(
-                &request,
+                authenticated_acquire("peer-process", &request),
                 &peer("peer-process"),
                 digest("pre-challenge-server-nonce"),
                 &secret,
@@ -3181,7 +3879,7 @@ mod tests {
         assert!(substituted_request_peer.integrity_valid());
         assert_eq!(
             authority.issue_offer(
-                &substituted_request_peer,
+                authenticated_acquire("peer-process", &substituted_request_peer),
                 &peer("peer-process"),
                 digest("substituted-request-server-nonce"),
                 &secret,
@@ -3193,7 +3891,7 @@ mod tests {
         );
         assert_eq!(
             authority.issue_offer(
-                &request,
+                authenticated_acquire("peer-process", &request),
                 &peer("substituted-peer-process"),
                 digest("server-nonce"),
                 &secret,
@@ -3205,7 +3903,7 @@ mod tests {
         );
         authority
             .issue_offer(
-                &request,
+                authenticated_acquire("peer-process", &request),
                 &peer("peer-process"),
                 digest("server-nonce"),
                 &secret,
@@ -3219,7 +3917,7 @@ mod tests {
             request_from_challenge(&challenge, &authority, digest("second-nonce"));
         assert_eq!(
             authority.issue_offer(
-                &reused_challenge_request,
+                authenticated_acquire("peer-process", &reused_challenge_request),
                 &peer("peer-process"),
                 digest("second-server-nonce"),
                 &secret,
@@ -3257,7 +3955,7 @@ mod tests {
         );
         assert_eq!(
             authority.issue_offer(
-                &unissued_request,
+                authenticated_acquire("peer-process", &unissued_request),
                 &peer("peer-process"),
                 digest("third-server-nonce"),
                 &secret,
@@ -3278,7 +3976,7 @@ mod tests {
         let secret = LeaseSecret::from_bytes([7; SECRET_BYTES]).unwrap();
         let offer = authority
             .issue_offer(
-                &request,
+                authenticated_acquire("peer-process", &request),
                 &peer("peer-process"),
                 digest("server-nonce"),
                 &secret,
@@ -3290,7 +3988,7 @@ mod tests {
         assert!(offer.verify(&verifier));
         assert_eq!(
             authority.issue_offer(
-                &request,
+                authenticated_acquire("peer-process", &request),
                 &peer("peer-process"),
                 digest("second-server-nonce"),
                 &secret,
@@ -3371,8 +4069,7 @@ mod tests {
             .unwrap();
         let pre_grant_attachment = authority
             .attached(
-                grant.request_id(),
-                grant.lease_id(),
+                authenticated_attach_for_grant("peer-process", &grant),
                 &peer("peer-process"),
                 grant.process_set_identity(),
                 99,
@@ -3386,8 +4083,7 @@ mod tests {
             .validate_attached_response(
                 &authority
                     .attached(
-                        grant.request_id(),
-                        grant.lease_id(),
+                        authenticated_attach_for_grant("peer-process", &grant),
                         &peer("peer-process"),
                         grant.process_set_identity(),
                         200,
@@ -3406,17 +4102,19 @@ mod tests {
 
         let late_kill = authority
             .finalized(
-                grant.request_id(),
-                grant.lease_id(),
+                authenticated_finalize_for_grant(
+                    "peer-process",
+                    &grant,
+                    FinalizeReason::LeaderExited,
+                    250,
+                ),
                 grant.process_set_identity(),
                 &peer("peer-process"),
-                FinalizeReason::LeaderExited,
                 true,
                 true,
                 true,
                 true,
                 200,
-                250,
                 900,
                 901,
                 902,
@@ -3430,17 +4128,19 @@ mod tests {
 
         let wrong_peer = authority
             .finalized(
-                grant.request_id(),
-                grant.lease_id(),
+                authenticated_finalize_for_grant(
+                    "other-peer-process",
+                    &grant,
+                    FinalizeReason::LeaderExited,
+                    250,
+                ),
                 grant.process_set_identity(),
                 &peer("other-peer-process"),
-                FinalizeReason::LeaderExited,
                 true,
                 true,
                 true,
                 true,
                 200,
-                250,
                 300,
                 400,
                 500,
@@ -3454,17 +4154,19 @@ mod tests {
 
         let wrong_request_time = authority
             .finalized(
-                grant.request_id(),
-                grant.lease_id(),
+                authenticated_finalize_for_grant(
+                    "peer-process",
+                    &grant,
+                    FinalizeReason::LeaderExited,
+                    251,
+                ),
                 grant.process_set_identity(),
                 &peer("peer-process"),
-                FinalizeReason::LeaderExited,
                 true,
                 true,
                 true,
                 true,
                 200,
-                251,
                 300,
                 400,
                 500,
@@ -3476,17 +4178,19 @@ mod tests {
         );
         let finalized = authority
             .finalized(
-                grant.request_id(),
-                grant.lease_id(),
+                authenticated_finalize_for_grant(
+                    "peer-process",
+                    &grant,
+                    FinalizeReason::LeaderExited,
+                    250,
+                ),
                 grant.process_set_identity(),
                 &peer("peer-process"),
-                FinalizeReason::LeaderExited,
                 true,
                 true,
                 true,
                 true,
                 200,
-                250,
                 300,
                 400,
                 500,
@@ -3505,8 +4209,7 @@ mod tests {
 
         let preplayed_attached = authority
             .attached(
-                grant.request_id(),
-                grant.lease_id(),
+                authenticated_attach_for_grant("peer-process", &grant),
                 &peer("peer-process"),
                 grant.process_set_identity(),
                 149,
@@ -3519,8 +4222,7 @@ mod tests {
 
         let attached = authority
             .attached(
-                grant.request_id(),
-                grant.lease_id(),
+                authenticated_attach_for_grant("peer-process", &grant),
                 &peer("peer-process"),
                 grant.process_set_identity(),
                 151,
@@ -3533,17 +4235,14 @@ mod tests {
         guard.validate_finalize(&finalize, 300).unwrap();
         let preplayed_finalized = authority
             .finalized(
-                grant.request_id(),
-                grant.lease_id(),
+                authenticated_finalize("peer-process", &finalize),
                 grant.process_set_identity(),
                 &peer("peer-process"),
-                FinalizeReason::LeaderExited,
                 true,
                 true,
                 true,
                 true,
                 151,
-                250,
                 299,
                 400,
                 500,
@@ -3556,17 +4255,14 @@ mod tests {
 
         let finalized = authority
             .finalized(
-                grant.request_id(),
-                grant.lease_id(),
+                authenticated_finalize("peer-process", &finalize),
                 grant.process_set_identity(),
                 &peer("peer-process"),
-                FinalizeReason::LeaderExited,
                 true,
                 true,
                 true,
                 true,
                 151,
-                250,
                 300,
                 400,
                 500,
@@ -3677,8 +4373,7 @@ mod tests {
 
         let attached = authority
             .attached(
-                grant.request_id(),
-                grant.lease_id(),
+                authenticated_attach_for_grant("peer-process", &grant),
                 &peer("peer-process"),
                 grant.process_set_identity(),
                 200,
@@ -3703,17 +4398,14 @@ mod tests {
 
         let finalized = authority
             .finalized(
-                grant.request_id(),
-                grant.lease_id(),
+                authenticated_finalize("peer-process", &finalize),
                 grant.process_set_identity(),
                 &peer("peer-process"),
-                FinalizeReason::LeaderExited,
                 true,
                 true,
                 true,
                 true,
                 200,
-                250,
                 300,
                 400,
                 500,
