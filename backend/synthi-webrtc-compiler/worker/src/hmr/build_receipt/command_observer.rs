@@ -1,3 +1,4 @@
+use super::execution_closure::{capture_execution_closure, CapturedExecutionClosure};
 use super::*;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -36,6 +37,7 @@ pub(crate) struct StdinStdoutBuildStepPlan {
     timeout: Duration,
     stdout_limit_bytes: u64,
     stderr_limit_bytes: u64,
+    execution_closure: Option<DeclaredExecutionClosurePlan>,
 }
 
 impl StdinStdoutBuildStepPlan {
@@ -67,6 +69,7 @@ impl StdinStdoutBuildStepPlan {
             timeout: Duration::from_secs(120),
             stdout_limit_bytes: DEFAULT_STDOUT_LIMIT_BYTES,
             stderr_limit_bytes: DEFAULT_STDERR_LIMIT_BYTES,
+            execution_closure: None,
         })
     }
 
@@ -106,6 +109,16 @@ impl StdinStdoutBuildStepPlan {
         self
     }
 
+    /// Capture a proposed dependency namespace as support evidence. Capture
+    /// alone does not confine this process and therefore cannot grant build
+    /// transaction authority.
+    pub(crate) fn capture_execution_closure(
+        mut self,
+        execution_closure: DeclaredExecutionClosurePlan,
+    ) -> Self {
+        self.execution_closure = Some(execution_closure);
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -114,6 +127,8 @@ pub(crate) struct ObservedBuildCommandOutcome {
     stdout: Arc<[u8]>,
     stderr: Arc<[u8]>,
     receipt: Option<ObservedBuildStepReceipt>,
+    execution_closure: Option<CapturedExecutionClosure>,
+    invocation_hash: String,
     started_monotonic_ns: u64,
     completed_monotonic_ns: u64,
 }
@@ -139,6 +154,17 @@ impl ObservedBuildCommandOutcome {
         self.receipt.as_ref()
     }
 
+    fn bound_execution_closure_receipt(&self) -> Option<&ObservedExecutionClosureReceipt> {
+        self.execution_closure
+            .as_ref()
+            .and_then(CapturedExecutionClosure::receipt)
+            .filter(|receipt| receipt.is_bound_to_invocation(&self.invocation_hash))
+    }
+
+    pub(crate) fn invocation_hash(&self) -> &str {
+        &self.invocation_hash
+    }
+
     pub(crate) fn monotonic_interval_ns(&self) -> (u64, u64) {
         (self.started_monotonic_ns, self.completed_monotonic_ns)
     }
@@ -152,27 +178,6 @@ impl BuildReceiptVerifier {
     ) -> Result<ObservedBuildCommandOutcome, BuildReceiptError> {
         self.validate_observation_challenge(challenge)?;
         validate_plan(&plan)?;
-
-        let pinned = PinnedExecutable::open(&plan.executable_locator).await?;
-        pinned.verify().await?;
-        let environment = final_environment(&plan);
-        validate_environment(&environment)?;
-        let invocation_hash = derive_observed_invocation_hash(&pinned, &plan, &environment);
-        let working_directory = tempfile::tempdir()
-            .map_err(|_| BuildReceiptError::new("build_observer_working_directory_unavailable"))?;
-        let mut observed_stdin = ObservedStdinPipe::new()?;
-
-        let mut command = tokio::process::Command::new(&pinned.launch_path);
-        command
-            .args(&plan.arguments)
-            .env_clear()
-            .envs(environment.iter())
-            .current_dir(working_directory.path())
-            .stdin(observed_stdin.take_child_stdio()?)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-
         let kernel_now_monotonic_ns = kernel_monotonic_now_ns()?;
         let timeout_origin = TokioInstant::now();
         let started_monotonic_ns = self.validate_observation_challenge(challenge)?;
@@ -191,6 +196,56 @@ impl BuildReceiptVerifier {
         let deadline = timeout_origin
             .checked_add(execution_window)
             .ok_or_else(|| BuildReceiptError::new("build_observer_timeout_is_invalid"))?;
+
+        let capture_started_monotonic_ns = self.validate_observation_challenge(challenge)?;
+        let mut captured_execution_closure = match plan.execution_closure.as_ref() {
+            Some(closure) => Some(
+                timeout_at(deadline, capture_execution_closure(closure))
+                    .await
+                    .map_err(|_| {
+                        BuildReceiptError::new("build_execution_closure_capture_timed_out")
+                    })??,
+            ),
+            None => None,
+        };
+        let capture_completed_monotonic_ns = self.validate_observation_challenge(challenge)?;
+
+        let pinned = PinnedExecutable::open(&plan.executable_locator).await?;
+        pinned.verify().await?;
+        let environment = final_environment(&plan);
+        validate_environment(&environment)?;
+        let invocation_hash = derive_observed_invocation_hash(
+            &pinned,
+            &plan,
+            &environment,
+            captured_execution_closure.as_ref(),
+        );
+        if let Some(closure) = captured_execution_closure.as_mut() {
+            closure.bind_to_invocation(
+                &challenge.observer_id,
+                &challenge.clock_id,
+                &challenge.challenge_id,
+                challenge.expires_monotonic_ns,
+                &invocation_hash,
+                capture_started_monotonic_ns,
+                capture_completed_monotonic_ns,
+            )?;
+        }
+        let working_directory = tempfile::tempdir()
+            .map_err(|_| BuildReceiptError::new("build_observer_working_directory_unavailable"))?;
+        let mut observed_stdin = ObservedStdinPipe::new()?;
+
+        let mut command = tokio::process::Command::new(&pinned.launch_path);
+        command
+            .args(&plan.arguments)
+            .env_clear()
+            .envs(environment.iter())
+            .current_dir(working_directory.path())
+            .stdin(observed_stdin.take_child_stdio()?)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+
         let watchdog = ExecutionWatchdog::new(kernel_deadline_monotonic_ns)?;
         configure_process_boundary(
             &mut command,
@@ -445,6 +500,8 @@ impl BuildReceiptVerifier {
                 stdout,
                 stderr,
                 receipt: None,
+                execution_closure: captured_execution_closure,
+                invocation_hash,
                 started_monotonic_ns,
                 completed_monotonic_ns,
             });
@@ -497,7 +554,7 @@ impl BuildReceiptVerifier {
             receipt_id: String::new(),
             executor_hash: pinned.executable_hash.clone(),
             execution_boundary: EXECUTION_BOUNDARY.to_string(),
-            invocation_hash,
+            invocation_hash: invocation_hash.clone(),
             started_monotonic_ns,
             completed_monotonic_ns,
             inputs: vec![input],
@@ -515,9 +572,34 @@ impl BuildReceiptVerifier {
             stdout,
             stderr,
             receipt: Some(receipt),
+            execution_closure: captured_execution_closure,
+            invocation_hash,
             started_monotonic_ns,
             completed_monotonic_ns,
         })
+    }
+
+    pub(crate) fn execution_closure_receipt<'a>(
+        &mut self,
+        challenge: &BuildTransactionChallenge,
+        outcome: &'a ObservedBuildCommandOutcome,
+    ) -> Result<Option<&'a ObservedExecutionClosureReceipt>, BuildReceiptError> {
+        self.validate_observation_challenge(challenge)?;
+        let Some(receipt) = outcome.bound_execution_closure_receipt() else {
+            return Ok(None);
+        };
+        if !receipt.is_bound_to_context(
+            outcome.invocation_hash(),
+            &challenge.observer_id,
+            &challenge.clock_id,
+            &challenge.challenge_id,
+            challenge.expires_monotonic_ns,
+        ) {
+            return Err(BuildReceiptError::new(
+                "build_execution_closure_challenge_binding_mismatch",
+            ));
+        }
+        Ok(Some(receipt))
     }
 
     fn validate_observation_challenge(
@@ -1451,6 +1533,7 @@ fn derive_observed_invocation_hash(
     pinned: &PinnedExecutable,
     plan: &StdinStdoutBuildStepPlan,
     environment: &BTreeMap<OsString, OsString>,
+    execution_closure: Option<&CapturedExecutionClosure>,
 ) -> String {
     let mut hasher = Sha256::new();
     hash_field(&mut hasher, b"synthi.observed_stdin_stdout_invocation.v1");
@@ -1483,6 +1566,13 @@ fn derive_observed_invocation_hash(
     );
     hasher.update(plan.stdout_limit_bytes.to_be_bytes());
     hasher.update(plan.stderr_limit_bytes.to_be_bytes());
+    match execution_closure {
+        Some(closure) => {
+            hash_field(&mut hasher, b"captured_execution_closure_support_only");
+            hash_field(&mut hasher, closure.closure_id().as_bytes());
+        }
+        None => hash_field(&mut hasher, b"no_execution_closure_capture"),
+    }
     format!("sha256:{:x}", hasher.finalize())
 }
 
@@ -1635,8 +1725,17 @@ mod tests {
         let input = Arc::<[u8]>::from(b"observer-owned-input".as_slice());
         let mut verifier = BuildReceiptVerifier::new();
         let challenge = verifier.begin_transaction().unwrap();
+        let executable = std::fs::canonicalize("/bin/cat").unwrap();
+        let execution_closure = DeclaredExecutionClosurePlan::new(vec![
+            DeclaredExecutionFilePlan::new(
+                executable,
+                "/runtime/cat",
+                ExecutionClosureAccessMode::Executable,
+            ),
+        ]);
         let plan = StdinStdoutBuildStepPlan::new("/bin/cat", INPUT, input.clone(), 0)
             .unwrap()
+            .capture_execution_closure(execution_closure)
             .timeout(Duration::from_secs(2));
         let outcome = verifier
             .observe_stdin_stdout_step(&challenge, plan)
@@ -1645,6 +1744,37 @@ mod tests {
         assert!(outcome.succeeded());
         assert_eq!(outcome.stdout(), input.as_ref());
         assert!(outcome.stderr().is_empty());
+        let closure_receipt = verifier
+            .execution_closure_receipt(&challenge, &outcome)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            closure_receipt.evidence_authority(),
+            "captured_execution_inputs_only_not_closed_execution_or_gpu_hmr_proof"
+        );
+        let closure = serde_json::to_value(closure_receipt).unwrap();
+        assert_eq!(
+            closure["evidenceAuthority"],
+            "captured_execution_inputs_only_not_closed_execution_or_gpu_hmr_proof"
+        );
+        assert_eq!(closure["acceptedForGpuHmr"], false);
+        assert_eq!(closure["gpuHmrSuccess"], false);
+        assert_eq!(closure["canSatisfyRuntimeProof"], false);
+        assert_eq!(closure["files"][0]["logicalPath"], "/runtime/cat");
+        assert_eq!(closure["invocationHash"], outcome.invocation_hash());
+        assert_eq!(
+            closure_receipt.invocation_hash(),
+            outcome.receipt().unwrap().invocation_hash()
+        );
+        let mut replay_verifier = BuildReceiptVerifier::new();
+        let replay_challenge = replay_verifier.begin_transaction().unwrap();
+        assert_eq!(
+            replay_verifier
+                .execution_closure_receipt(&replay_challenge, &outcome)
+                .unwrap_err()
+                .to_string(),
+            "build_execution_closure_challenge_binding_mismatch"
+        );
         let receipt = outcome.receipt().unwrap().clone();
         let serialized = serde_json::to_value(&receipt).unwrap();
         for field in [

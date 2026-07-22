@@ -10,8 +10,13 @@ use super::build_manifest::{
 };
 
 mod command_observer;
+mod execution_closure;
 
 pub(crate) use command_observer::{ObservedBuildCommandOutcome, StdinStdoutBuildStepPlan};
+pub(crate) use execution_closure::{
+    DeclaredExecutionClosurePlan, DeclaredExecutionFilePlan, ExecutionClosureAccessMode,
+    ObservedExecutionClosureReceipt,
+};
 
 pub const OBSERVED_BUILD_STEP_RECEIPT_SCHEMA_VERSION: &str =
     "synthi.observed_build_step_receipt.v3";
