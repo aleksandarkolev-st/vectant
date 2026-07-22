@@ -21,10 +21,6 @@ import {
 } from './gpu-hmr-artifact-cas.mjs';
 import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
 import { verifyComputeOracleSemantics } from './gpu-hmr-compute-oracle-semantics.mjs';
-import {
-  classifyGpuHmrOutputOracleKind,
-  isGpuHmrVisualOutputOracleKind,
-} from './gpu-hmr-output-oracle-kind.mjs';
 
 export const GPU_HMR_STRICT_PROOF_GATES_SCHEMA_VERSION =
   'synthi.gpu_hmr.strict_proof_gates.v2';
@@ -201,7 +197,6 @@ function strictOwnAliasedString(source, keys, failures, code) {
   return normalized;
 }
 
-const VISUAL_OR_ENGINE_BACKENDS = new Set(['hiprt', 'vulkan', 'webgpu', 'bevy_wgsl']);
 const ACCEPTED_PROOF_LEDGER_SOURCE_CONSISTENCY_MODES = new Set([
   'derived_only',
   'explicit_vs_derived',
@@ -1675,18 +1670,16 @@ function visualArtifactEntriesFromValue(value) {
 }
 
 function recordClaimsVisualOutput(record) {
-  const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
-  const kind = normalizedText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind) ?? '';
-  return isGpuHmrVisualOutputOracleKind(kind)
+  return outputOracleTargetKind(outputOracleTarget(record)) === 'visual'
     || visualArtifactsPresent(record);
 }
 
 function outputOracleKindDeclarationFailures(proofLedger) {
   return compactStrings(ledgerRecords(proofLedger).map((record) => {
     const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
-    return classifyGpuHmrOutputOracleKind(
-      normalizedText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind),
-    ).failureCode;
+    return normalizedText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind)
+      ? null
+      : 'output_oracle_kind_missing';
   }));
 }
 
@@ -2156,68 +2149,29 @@ function computeExpectedOutputContractEvidence(
   };
 }
 
-function acceptanceContractOracleModalityEvidence(
-  rawAcceptanceContract,
-  recomputedAcceptanceContract,
-) {
+function ledgerOracleModalityEvidence(proofLedger) {
   const failures = [];
-  const contractModality = (contract, prefix) => {
-    const fission = strictOwnAliasedObject(
-      contract,
-      ['fission_report', 'fissionReport'],
-      failures,
-      `${prefix}_fission_report`,
-    );
-    const outputOracle = strictOwnAliasedObject(
-      fission,
-      ['output_oracle_contract', 'outputOracleContract'],
-      failures,
-      `${prefix}_output_oracle_contract`,
-    );
-    const kind = strictOwnAliasedString(
-      outputOracle,
-      ['kind', 'oracle_kind', 'oracleKind'],
-      failures,
-      `${prefix}_output_oracle_kind`,
-    );
-    const classification = classifyGpuHmrOutputOracleKind(kind);
-    if (classification.accepted !== true) {
-      failures.push(`${prefix}_${classification.failureCode ?? 'output_oracle_kind_invalid'}`);
-    }
-    return classification.modality;
-  };
-  const rawModality = contractModality(rawAcceptanceContract, 'acceptance_contract');
-  const recomputedModality = contractModality(
-    recomputedAcceptanceContract,
-    'recomputed_acceptance_contract',
-  );
-  if (rawModality && recomputedModality && rawModality !== recomputedModality) {
-    failures.push('acceptance_contract_output_oracle_modality_recompute_mismatch');
+  const modalities = compactStrings(ledgerRecords(proofLedger).map((record) =>
+    outputOracleTargetKind(outputOracleTarget(record))
+  ));
+  if (modalities.length === 0) failures.push('output_oracle_target_modality_missing');
+  if (modalities.length > 1) failures.push('output_oracle_target_modality_mismatch');
+  const modality = modalities.length === 1 ? modalities[0] : null;
+  if (modality && modality !== 'compute' && modality !== 'visual') {
+    failures.push('output_oracle_target_verifier_missing');
   }
   return {
-    modality: recomputedModality,
+    modality,
     failures: compactStrings(failures),
   };
 }
 
 function ledgerOracleModalityFailures(proofLedger, requiredModality) {
-  if (!requiredModality) return ['acceptance_contract_output_oracle_modality_unverified'];
+  if (!requiredModality) return ['output_oracle_target_modality_unverified'];
   const records = ledgerRecords(proofLedger);
   const hasComputeArtifacts = records.some(computeArtifactsPresent);
   const hasVisualArtifacts = records.some(visualArtifactsPresent);
-  const eventModalities = compactStrings(records.map((record) => {
-    const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
-    return classifyGpuHmrOutputOracleKind(
-      normalizedText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind),
-    ).modality;
-  }));
   const failures = [];
-  if (!eventModalities.includes(requiredModality)) {
-    failures.push(`${requiredModality}_oracle_required_ledger_event_missing`);
-  }
-  if (eventModalities.some((modality) => modality !== requiredModality)) {
-    failures.push('acceptance_contract_ledger_oracle_modality_mismatch');
-  }
   if (requiredModality === 'compute') {
     if (!hasComputeArtifacts) failures.push('compute_oracle_required_ledger_artifacts_missing');
     if (hasVisualArtifacts) failures.push('compute_oracle_contract_visual_artifacts_forbidden');
@@ -2819,22 +2773,12 @@ function outputOracleTarget(record) {
 }
 
 function outputOracleTargetKind(target) {
-  return normalizedText(target?.kind, target?.target_kind, target?.targetKind);
-}
-
-function computeOnlyOutputTargetVerified(record) {
-  const target = outputOracleTarget(record);
-  return outputOracleTargetKind(target) === 'compute'
-    && (target.compute_only_target_verified === true || target.computeOnlyTargetVerified === true);
+  const kind = firstObject(target?.kind);
+  return normalizedText(kind?.value, target?.kind, target?.target_kind, target?.targetKind);
 }
 
 function recordRequiresDeterministicVisualMode(record) {
-  const backend = normalizedText(record.backend);
-  const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
-  const kind = normalizedText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind) ?? '';
-  const computeOnlyOutput = computeOnlyOutputTargetVerified(record);
-  return (!computeOnlyOutput && VISUAL_OR_ENGINE_BACKENDS.has(backend))
-    || isGpuHmrVisualOutputOracleKind(kind)
+  return outputOracleTargetKind(outputOracleTarget(record)) === 'visual'
     || visualArtifactsPresent(record);
 }
 
@@ -3045,6 +2989,9 @@ function runtimeProofArtifactStrictGateValidated(record, options) {
       failures.push(...outputOracleKindDeclarationFailures(proofLedger));
       failures.push(...visualOracleDeclarationFailures(proofLedger, options));
       failures.push(...computeOracleDeclarationFailures(proofLedger, options));
+      const modalityEvidence = ledgerOracleModalityEvidence(proofLedger);
+      requiredOracleModality = modalityEvidence.modality;
+      failures.push(...modalityEvidence.failures);
     }
     if (proofLedgerAliasMismatch) {
       failures.push('proof_ledger_alias_mismatch');
@@ -3073,12 +3020,6 @@ function runtimeProofArtifactStrictGateValidated(record, options) {
       ) {
         failures.push('acceptance_contract_evaluation_mismatch');
       }
-      const modalityEvidence = acceptanceContractOracleModalityEvidence(
-        acceptanceContract,
-        recomputedAcceptance.contract,
-      );
-      requiredOracleModality = modalityEvidence.modality;
-      failures.push(...modalityEvidence.failures);
     }
     if (acceptanceContractAliasMismatch) {
       failures.push('acceptance_contract_alias_mismatch');

@@ -161,6 +161,7 @@ function portableStrictFixture(
       kind: "buffer_checksum",
       passed: true,
       after_dispatch_id: "dispatch-1",
+      output_target_id: "readback-target-1",
       epoch: candidateEpoch,
       artifact_hash: HASH_B,
       process_id: "pid-1",
@@ -206,7 +207,7 @@ function portableStrictFixture(
     },
     output_oracle_target: {
       kind: "compute",
-      compute_only_target_verified: true,
+      target_id: "readback-target-1",
       evidence_refs: ["runtime:readback"],
     },
     metric_clock: "monotonic_ns",
@@ -222,6 +223,7 @@ function portableStrictFixture(
       "runtime:loader",
       "runtime:dispatch",
       "runtime:output",
+      "runtime:readback",
       "dispatcher-publication:publication-1",
       "dispatcher-registration:registration-1",
     ],
@@ -382,6 +384,98 @@ describe("GPU HMR proof ledger canonical profiles", () => {
 
     const skipped = queryGpuHmrLedgerInvariants(portableStrictFixture("1", "4"));
     expect(skipped.gpuHmrSuccess, skipped.failedInvariants).toBe(true);
+  });
+
+  it("uses observed output mechanics instead of a closed backend allowlist", () => {
+    const record = portableStrictFixture();
+    record.backend = "future.vendor/runtime@v99";
+
+    const result = queryGpuHmrLedgerInvariants(record);
+
+    expect(result.gpuHmrSuccess, result.failedInvariants).toBe(true);
+    expect(result.failedInvariants.map(({ code }) => code)).not.toContain("backend_unsupported");
+  });
+
+  it("rejects output-target relabeling, stale bindings, and unresolved evidence", () => {
+    const visualDowngrade = portableStrictFixture();
+    visualDowngrade.output_oracle_target = {
+      kind: "visual",
+      target_id: "readback-target-1",
+      evidence_refs: ["runtime:readback"],
+    };
+    expect(failureCodes(visualDowngrade)).toEqual(expect.arrayContaining([
+      "visual_output_target_requires_visual_oracle",
+    ]));
+
+    const staleTarget = portableStrictFixture();
+    (staleTarget.output_event as Record<string, unknown>).output_target_id = "stale-target";
+    expect(failureCodes(staleTarget)).toContain("output_oracle_target_id_mismatch");
+
+    const unresolvedEvidence = portableStrictFixture();
+    (unresolvedEvidence.output_oracle_target as Record<string, unknown>).evidence_refs = [
+      "runtime:unresolved-target",
+    ];
+    expect(failureCodes(unresolvedEvidence)).toContain(
+      "output_oracle_target_evidence_refs_unresolved"
+    );
+
+    const conflictingDeclaration = portableStrictFixture();
+    (conflictingDeclaration.output_event as Record<string, unknown>).output_oracle_target = {
+      kind: "visual",
+      target_id: "readback-target-1",
+      evidence_refs: ["runtime:readback"],
+    };
+    expect(failureCodes(conflictingDeclaration)).toContain(
+      "output_oracle_target_declaration_mismatch"
+    );
+
+    const conflictingEventTarget = portableStrictFixture();
+    (conflictingEventTarget.output_event as Record<string, unknown>).outputTarget = {
+      id: "different-target",
+    };
+    expect(failureCodes(conflictingEventTarget)).toContain(
+      "output_event_field_alias_mismatch"
+    );
+
+    const internallyConflictingEventTarget = portableStrictFixture();
+    (internallyConflictingEventTarget.output_event as Record<string, unknown>).output_target = {
+      id: "readback-target-1",
+      target_id: "different-target",
+    };
+    expect(failureCodes(internallyConflictingEventTarget)).toContain(
+      "output_event_field_alias_mismatch"
+    );
+
+    const internallyConflictingTarget = portableStrictFixture();
+    internallyConflictingTarget.output_oracle_target = {
+      kind: "compute",
+      target_kind: "visual",
+      id: "readback-target-1",
+      target_id: "different-target",
+      evidence_refs: ["runtime:readback"],
+    };
+    expect(failureCodes(internallyConflictingTarget)).toContain(
+      "output_oracle_target_declaration_mismatch"
+    );
+
+    const conflictingEvidenceRefs = portableStrictFixture();
+    conflictingEvidenceRefs.outputOracleTarget = {
+      kind: "compute",
+      target_id: "readback-target-1",
+      evidence_refs: ["runtime:other-readback"],
+    };
+    expect(failureCodes(conflictingEvidenceRefs)).toContain(
+      "output_oracle_target_declaration_mismatch"
+    );
+
+    const arbitraryOracle = portableStrictFixture();
+    (arbitraryOracle.output_event as Record<string, unknown>).kind = "vendor_special_output";
+    const arbitraryResult = queryGpuHmrLedgerInvariants(arbitraryOracle);
+    expect(arbitraryResult.gpuHmrSuccess, arbitraryResult.failedInvariants).toBe(true);
+
+    const unknownVerifier = portableStrictFixture();
+    (unknownVerifier.output_oracle_target as Record<string, unknown>).kind = "opaque-output";
+    expect(failureCodes(unknownVerifier)).toContain("output_oracle_target_verifier_missing");
   });
 
   it("rejects noncanonical or non-forward commit-era generations", () => {

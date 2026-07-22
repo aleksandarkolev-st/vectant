@@ -112,6 +112,7 @@ function proofLedger(overrides: Record<string, unknown> = {}) {
       artifact_hash: HASH_B,
       process_id: "pid-1",
       after_dispatch_id: "dispatch-1",
+      output_target_id: "output-target-1",
       passed: true,
       timestamp_monotonic_ns: 400,
     },
@@ -147,6 +148,11 @@ function proofLedger(overrides: Record<string, unknown> = {}) {
         timestamp_after_dispatch: 400,
         epoch: "epoch-2",
       },
+    },
+    output_oracle_target: {
+      kind: "compute",
+      target_id: "output-target-1",
+      evidence_refs: ["runtime:output"],
     },
     metric_clock: "monotonic_ns",
     metric_scope: "hot_delta_1",
@@ -480,6 +486,7 @@ function frameGateProofLedger(options: FrameGateLedgerOptions = {}) {
       process_id: "pid-1",
       runtime_session_id: runtimeSessionId,
       after_dispatch_id: "dispatch-1",
+      output_target_id: "output-target-1",
       passed: true,
       timestamp_monotonic_ns: 400,
       ...options.outputEvent,
@@ -498,7 +505,7 @@ function frameGateProofLedger(options: FrameGateLedgerOptions = {}) {
           id: "output-target-1",
           kind: "compute",
           compute_only_target_verified: true,
-          evidence_refs: ["runtime:output-target"],
+          evidence_refs: ["runtime:output"],
         }
       : options.outputOracleTarget,
   });
@@ -1430,22 +1437,28 @@ describe("GPU HMR proof-state validation", () => {
   });
 
   it("rejects full runtime artifact bound to a different output oracle target", () => {
-    const ledger = proofLedger({
-      output_oracle_target: {
+    const boundLedger = (targetId: string, evidenceRef: string) => {
+      const ledger = proofLedger();
+      const record = ledger.records[0] as Record<string, any>;
+      record.output_oracle_target = {
         kind: "compute",
-        target_id: "compute-target:a",
+        target_id: targetId,
         compute_only_target_verified: true,
-        evidence_refs: ["oracle-target:compute:a"],
-      },
-    });
-    const otherLedger = proofLedger({
-      output_oracle_target: {
-        kind: "compute",
-        target_id: "compute-target:b",
-        compute_only_target_verified: true,
-        evidence_refs: ["oracle-target:compute:b"],
-      },
-    });
+        evidence_refs: [evidenceRef],
+      };
+      record.output_event.output_target_id = targetId;
+      record.evidence_refs = [...record.evidence_refs, evidenceRef];
+      const query = queryGpuHmrLedgerInvariants({
+        schemaVersion: ledger.schemaVersion,
+        records: ledger.records,
+      });
+      ledger.proofId = query.proofId;
+      ledger.gpuHmrSuccess = query.gpuHmrSuccess;
+      ledger.query = query;
+      return ledger;
+    };
+    const ledger = boundLedger("compute-target:a", "oracle-target:compute:a");
+    const otherLedger = boundLedger("compute-target:b", "oracle-target:compute:b");
     const proof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",
       resultState: "gpu-hmr-full-runtime-proven",
@@ -1681,6 +1694,7 @@ describe("GPU HMR proof-state validation", () => {
     record.oracle_artifacts = artifacts;
     record.output_oracle_target = {
       kind: "compute",
+      target_id: "output-target-1",
       compute_only_target_verified: true,
       evidence_refs: ["runtime:output"],
     };
@@ -1807,8 +1821,14 @@ describe("GPU HMR proof-state validation", () => {
       artifact_hash: HASH_B,
       process_id: "pid-1",
       after_dispatch_id: "dispatch-1",
+      output_target_id: "output-target-1",
       passed: true,
       timestamp_monotonic_ns: 400,
+    };
+    record.output_oracle_target = {
+      kind: "visual",
+      target_id: "output-target-1",
+      evidence_refs: ["runtime:output"],
     };
     record.oracle_artifacts = {
       visual_oracle_artifacts: {
@@ -2018,11 +2038,6 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
       code: "runtime_device_identity_not_unique",
     },
     {
-      name: "missing output target",
-      ledger: () => frameGateProofLedger({ outputOracleTarget: null }),
-      code: "runtime_binding_material_incomplete",
-    },
-    {
       name: "mixed runtime clock domain",
       ledger: () => frameGateProofLedger({
         dispatchEvent: { timestamp_monotonic_ns: null, timestamp_ms: 300 },
@@ -2042,6 +2057,24 @@ describe("GPU HMR frame-gate runtime evidence binding", () => {
     expect(result.accepted).toBe(false);
     expect(result.binding).toBeNull();
     expect(result.failures.map((failure) => failure.code)).toContain(code);
+  });
+
+  it("refuses a missing output target before frame binding", () => {
+    const proof = frameGateProof(frameGateProofLedger({ outputOracleTarget: null }));
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+    expect(validation.satisfied).toBe(false);
+    expect(validation.proofLedgerValidation?.failedInvariants.map(({ code }) => code)).toContain(
+      "output_oracle_target_modality_missing"
+    );
+
+    const result = buildGpuHmrFrameGateEvidenceBinding({
+      proof,
+      hmrObservedAtMs: 900,
+      frameObservedAtMs: 1_100,
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.binding).toBeNull();
   });
 
   it("refuses proof telemetry observed before the matching HMR event", () => {

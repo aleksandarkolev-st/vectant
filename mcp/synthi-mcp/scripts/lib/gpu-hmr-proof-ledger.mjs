@@ -1,9 +1,5 @@
 import { createHash } from 'node:crypto';
 import { evaluateGpuHmrDeterministicVisualMode } from './gpu-hmr-visual-evidence.mjs';
-import {
-  classifyGpuHmrOutputOracleKind,
-  isGpuHmrVisualOutputOracleKind,
-} from './gpu-hmr-output-oracle-kind.mjs';
 
 export const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION = 'synthi.gpu.hmr.proof_ledger.v1';
 export const GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE =
@@ -19,17 +15,6 @@ export const GPU_HMR_FRAME_GATE_RUNTIME_BINDING_AUTHORITY =
 
 const GPU_PROJECT_KINDS = new Set(['gpu_project', 'mixed_project']);
 const GPU_ARTIFACT_EDIT_KINDS = new Set(['gpu_artifact_edit']);
-const SUPPORTED_BACKENDS = new Set([
-  'hip',
-  'hiprt',
-  'opencl',
-  'vulkan',
-  'webgpu',
-  'bevy_wgsl',
-  'cuda',
-  'sycl',
-]);
-const VISUAL_OR_ENGINE_BACKENDS = new Set(['hiprt', 'vulkan', 'webgpu', 'bevy_wgsl']);
 const METRIC_CLOCKS = new Set(['monotonic_ns']);
 const METRIC_SCOPES = new Set(['cold', 'warm', 'hot_delta_1', 'hot_delta_2']);
 const CACHE_STATES = new Set(['clean', 'compiler_cache_warm', 'pipeline_cache_warm']);
@@ -153,6 +138,20 @@ function eventFieldAliasMismatch(event, mode = 'standard') {
   ];
   if (mode === 'output') {
     aliasGroups.push(['after_dispatch_id', 'afterDispatchId', 'dispatch_id', 'dispatchId']);
+    const outputTargetIds = [
+      event.output_target,
+      event.outputTarget,
+      event.output_target_id,
+      event.outputTargetId,
+      event.target_id,
+      event.targetId,
+    ].flatMap((value) => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return compactStringList([value.id, value.target_id, value.targetId]);
+      }
+      return compactStringList([value]);
+    });
+    if (new Set(outputTargetIds).size > 1) return true;
   }
   if (mode === 'retirement') {
     aliasGroups.push(
@@ -550,12 +549,6 @@ function outputKind(outputEvent) {
     .toLowerCase();
 }
 
-function isVisualOutput(outputEvent) {
-  const kind = outputKind(outputEvent);
-  return isGpuHmrVisualOutputOracleKind(kind)
-    || asObject(outputEvent.visual_oracle_artifacts ?? outputEvent.visualOracleArtifacts).after_image;
-}
-
 function outputOracleTarget(record) {
   const outputEvent = asObject(record.output_event ?? record.outputEvent);
   const outputOracle = asObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
@@ -569,14 +562,80 @@ function outputOracleTarget(record) {
   );
 }
 
-function outputOracleTargetKind(target) {
-  return firstText(asObject(target.kind).value, target.kind, target.target_kind, target.targetKind);
+function outputOracleTargetModalityValues(target) {
+  const kind = target.kind;
+  return compactStringList([
+    kind && typeof kind === 'object' && !Array.isArray(kind) ? asObject(kind).value : kind,
+    target.target_kind,
+    target.targetKind,
+  ]).map((value) => value.toLowerCase());
 }
 
-function visualOutputTargetId(record) {
+function outputOracleTargetIdValues(target) {
+  return compactStringList([target.id, target.target_id, target.targetId]);
+}
+
+function outputOracleTargetEvidenceRefSets(target) {
+  return [target.evidence_refs, target.evidenceRefs]
+    .filter((value) => value !== undefined)
+    .map((value) => stableJson(compactStringList(value).sort()));
+}
+
+function outputOracleTargetInternalMismatch(target) {
+  return new Set(outputOracleTargetModalityValues(target)).size > 1
+    || new Set(outputOracleTargetIdValues(target)).size > 1
+    || new Set(outputOracleTargetEvidenceRefSets(target)).size > 1;
+}
+
+function outputOracleTargetDeclarationProjections(record) {
   const outputEvent = asObject(record.output_event ?? record.outputEvent);
+  const outputOracle = asObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+  return [
+    record.output_oracle_target,
+    record.outputOracleTarget,
+    outputEvent.output_oracle_target,
+    outputEvent.outputOracleTarget,
+    outputOracle.output_oracle_target,
+    outputOracle.outputOracleTarget,
+  ]
+    .filter((candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate))
+    .map((candidate) => {
+      const target = asObject(candidate);
+      return stableJson({
+        modality: outputOracleTargetModality(target),
+        targetId: outputOracleTargetId(target),
+        evidenceRefs: outputOracleTargetEvidenceRefs(target).sort(),
+      });
+    });
+}
+
+function outputOracleTargetDeclarationMismatch(record) {
+  const outputEvent = asObject(record.output_event ?? record.outputEvent);
+  const outputOracle = asObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+  const declarations = [
+    record.output_oracle_target,
+    record.outputOracleTarget,
+    outputEvent.output_oracle_target,
+    outputEvent.outputOracleTarget,
+    outputOracle.output_oracle_target,
+    outputOracle.outputOracleTarget,
+  ]
+    .filter((candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate))
+    .map(asObject);
+  return declarations.some(outputOracleTargetInternalMismatch)
+    || new Set(outputOracleTargetDeclarationProjections(record)).size > 1;
+}
+
+function outputOracleTargetModality(target) {
+  return outputOracleTargetModalityValues(target)[0] ?? null;
+}
+
+function outputOracleTargetId(target) {
+  return outputOracleTargetIdValues(target)[0] ?? null;
+}
+
+function outputEventTargetId(outputEvent) {
   const eventTarget = asObject(outputEvent.output_target ?? outputEvent.outputTarget);
-  const oracleTarget = outputOracleTarget(record);
   return firstText(
     typeof outputEvent.output_target === 'string' ? outputEvent.output_target : null,
     typeof outputEvent.outputTarget === 'string' ? outputEvent.outputTarget : null,
@@ -587,9 +646,19 @@ function visualOutputTargetId(record) {
     eventTarget.id,
     eventTarget.target_id,
     eventTarget.targetId,
-    oracleTarget.id,
-    oracleTarget.target_id,
-    oracleTarget.targetId,
+  );
+}
+
+function outputOracleTargetEvidenceRefs(target) {
+  return compactStringList(target.evidence_refs ?? target.evidenceRefs);
+}
+
+function visualOutputTargetId(record) {
+  const outputEvent = asObject(record.output_event ?? record.outputEvent);
+  const oracleTarget = outputOracleTarget(record);
+  return firstText(
+    outputEventTargetId(outputEvent),
+    outputOracleTargetId(oracleTarget),
   );
 }
 
@@ -627,13 +696,6 @@ function runtimeSessionId(record) {
     outputEvent.runtime_session,
     outputEvent.runtimeSession,
   );
-}
-
-function computeOnlyOutputTargetVerified(record) {
-  const target = outputOracleTarget(record);
-  return outputOracleTargetKind(target) === 'compute'
-    && (target.compute_only_target_verified === true || target.computeOnlyTargetVerified === true)
-    && compactStringList(target.evidence_refs ?? target.evidenceRefs).length > 0;
 }
 
 const COMPUTE_ORACLE_ARTIFACT_FIELDS = [
@@ -2015,6 +2077,9 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     inheritedState?.outputEventAliasMismatch === true
     || objectAliasMismatch(record, 'output_event', 'outputEvent');
   const outputEvent = asObject(record.output_event ?? record.outputEvent);
+  const outputOracleTargetDeclarationConflict =
+    inheritedState?.outputOracleTargetDeclarationConflict === true
+    || outputOracleTargetDeclarationMismatch(record);
   const retirementEventAliasMismatch =
     inheritedState?.retirementEventAliasMismatch === true
     || objectAliasMismatch(record, 'retirement_event', 'retirementEvent');
@@ -2294,6 +2359,7 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     firewallContradictionCodes: Object.freeze([...firewallContradictionCodes]),
     metricClockContradiction,
     outputSuccessContradiction,
+    outputOracleTargetDeclarationConflict,
   }));
   return normalized;
 }
@@ -2405,6 +2471,9 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
   }
   if (recordState?.outputSuccessContradiction) {
     addFailure(failures, 'output_event_success_contradiction');
+  }
+  if (recordState?.outputOracleTargetDeclarationConflict) {
+    addFailure(failures, 'output_oracle_target_declaration_mismatch');
   }
   if (recordState?.epochCommitEventAliasMismatch) {
     addFailure(failures, 'epoch_commit_event_alias_mismatch');
@@ -2714,11 +2783,7 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
 
   if (!record.projectId) addFailure(failures, 'project_id_missing');
   if (!record.editId) addFailure(failures, 'edit_id_missing');
-  if (!record.backend) {
-    addFailure(failures, 'backend_missing');
-  } else if (!SUPPORTED_BACKENDS.has(record.backend)) {
-    addFailure(failures, 'backend_unsupported', { backend: record.backend });
-  }
+  if (!record.backend) addFailure(failures, 'backend_missing');
   if (record.evidenceRefs.length === 0) addFailure(failures, 'evidence_refs_missing');
   if (!record.metricClock) {
     addFailure(failures, 'metric_clock_missing');
@@ -2859,14 +2924,8 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
   }
   if (!outputId) addFailure(failures, 'output_event_id_missing');
   if (record.outputEvent.passed !== true) addFailure(failures, 'output_oracle_not_passed');
-  const outputOracleKindClassification = classifyGpuHmrOutputOracleKind(
-    outputKind(record.outputEvent),
-  );
-  if (outputOracleKindClassification.accepted !== true) {
-    addFailure(failures, outputOracleKindClassification.failureCode, {
-      outputOracleKind: outputOracleKindClassification.kind,
-    });
-  }
+  const outputOracleKind = outputKind(record.outputEvent);
+  if (!outputOracleKind) addFailure(failures, 'output_oracle_kind_missing');
   const outputArtifactHash = eventArtifactHash(record.outputEvent);
   if (!outputArtifactHash) {
     addFailure(failures, 'output_artifact_hash_missing');
@@ -2947,19 +3006,50 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
     visualOracleArtifacts(record.oracleArtifacts, record.outputEvent),
     visualOracleArtifactOverlay(options),
   );
-  const visualOutput = isVisualOutput(record.outputEvent) || visualArtifacts;
-  const visualBackend = VISUAL_OR_ENGINE_BACKENDS.has(record.backend);
-  const computeOnlyTargetVerified = computeOnlyOutputTargetVerified(record);
-  const oracleTargetKind = outputOracleTargetKind(record.outputOracleTarget);
+  const computeArtifacts = mergeComputeOracleArtifactOverlay(
+    computeOracleArtifacts(record.oracleArtifacts, record.outputEvent),
+    computeOracleArtifactOverlay(options),
+  );
+  const target = asObject(record.outputOracleTarget);
+  const targetModality = outputOracleTargetModality(target);
+  const targetId = outputOracleTargetId(target);
+  const observedTargetId = outputEventTargetId(record.outputEvent);
+  const targetEvidenceRefs = outputOracleTargetEvidenceRefs(target);
+  const unresolvedTargetEvidenceRefs = targetEvidenceRefs.filter(
+    (evidenceRef) => !record.evidenceRefs.includes(evidenceRef),
+  );
+  const verifierAvailable = targetModality === 'visual' || targetModality === 'compute';
+  const visualOutput = targetModality === 'visual';
   const visualCaptureRuntimeBindingRequired =
     options.requireVisualCaptureRuntimeBinding === true
     || options.require_visual_capture_runtime_binding === true;
   let visualCaptureRuntimeBindingEvaluation = null;
-  if (visualBackend && !visualOutput && !computeOnlyTargetVerified) {
-    addFailure(failures, 'visual_backend_requires_visual_oracle', { backend: record.backend });
+  if (!targetModality) {
+    addFailure(failures, 'output_oracle_target_modality_missing');
+  } else {
+    if (!verifierAvailable) {
+      addFailure(failures, 'output_oracle_target_verifier_missing', { targetModality });
+    } else if (targetModality === 'visual' && !visualArtifacts) {
+      addFailure(failures, 'visual_output_target_requires_visual_oracle');
+    } else if (targetModality === 'compute' && !computeArtifacts) {
+      addFailure(failures, 'compute_output_target_requires_compute_oracle');
+    }
   }
-  if (visualBackend && oracleTargetKind === 'compute' && !computeOnlyTargetVerified) {
-    addFailure(failures, 'visual_backend_compute_target_unverified', { backend: record.backend });
+  if (!targetId) addFailure(failures, 'output_oracle_target_id_missing');
+  if (!observedTargetId) {
+    addFailure(failures, 'output_event_target_id_missing');
+  } else if (targetId && observedTargetId !== targetId) {
+    addFailure(failures, 'output_oracle_target_id_mismatch', {
+      expected: targetId,
+      actual: observedTargetId,
+    });
+  }
+  if (targetEvidenceRefs.length === 0) {
+    addFailure(failures, 'output_oracle_target_evidence_refs_missing');
+  } else if (unresolvedTargetEvidenceRefs.length > 0) {
+    addFailure(failures, 'output_oracle_target_evidence_refs_unresolved', {
+      unresolvedEvidenceRefs: unresolvedTargetEvidenceRefs,
+    });
   }
   if (visualOutput) {
     const artifacts = visualArtifacts;
@@ -3135,10 +3225,7 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
       }
     }
   } else {
-    const artifacts = mergeComputeOracleArtifactOverlay(
-      computeOracleArtifacts(record.oracleArtifacts, record.outputEvent),
-      computeOracleArtifactOverlay(options),
-    );
+    const artifacts = computeArtifacts;
     if (!artifacts) {
       addFailure(failures, 'compute_oracle_artifacts_missing');
     } else {
