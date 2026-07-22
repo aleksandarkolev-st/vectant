@@ -100,3 +100,9 @@ documentation change in this repository.
 - Before each commit, audit the staged diff for name-based authority,
   scenario-shaped fixtures in production decisions, duplicated proof schemas,
   and unnecessary abstractions. Do not commit until that audit is clean.
+- Before each commit, explicitly prove that the change expresses a generic
+  discovered mechanic rather than a project, scenario, renderer, architecture,
+  test, or edge-case shortcut. Check that arbitrary unfamiliar projects enter
+  the same path, that user code gains no new conformance requirement, and that
+  adding a new corpus target would not require another production success
+  branch. If any of those checks fail, redesign the patch before committing it.
