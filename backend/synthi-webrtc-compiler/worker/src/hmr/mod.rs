@@ -28,6 +28,7 @@ pub mod candidate_queue;
 pub mod candidate_supersession;
 pub mod candidate_watchdog;
 pub mod changed_files;
+pub(crate) mod closed_execution_protocol;
 pub mod compile_enrichment;
 pub mod compile_manifest;
 pub mod dependency_graph;
