@@ -151,6 +151,7 @@ pub enum ProtocolError {
     UnexpectedLeasePhase,
     CapacityExceeded,
     PeerIdentityUnavailable,
+    TransportUnavailable,
 }
 
 impl fmt::Display for ProtocolError {
@@ -170,6 +171,7 @@ impl fmt::Display for ProtocolError {
             Self::UnexpectedLeasePhase => "closed_execution_protocol_lease_phase_invalid",
             Self::CapacityExceeded => "closed_execution_protocol_capacity_exceeded",
             Self::PeerIdentityUnavailable => "closed_execution_protocol_peer_identity_unavailable",
+            Self::TransportUnavailable => "closed_execution_protocol_transport_unavailable",
         };
         formatter.write_str(code)
     }
@@ -314,6 +316,27 @@ impl SupervisorVerifier {
     }
 }
 
+/// Connection-time credentials captured by the kernel for an observed Unix
+/// peer. These values are not a live credential query; the retained pidfd is
+/// revalidated before each snapshot is returned.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KernelPeerCredentials {
+    connection_uid: libc::uid_t,
+    connection_gid: libc::gid_t,
+}
+
+#[cfg(target_os = "linux")]
+impl KernelPeerCredentials {
+    pub fn connection_uid(&self) -> libc::uid_t {
+        self.connection_uid
+    }
+
+    pub fn connection_gid(&self) -> libc::gid_t {
+        self.connection_gid
+    }
+}
+
 /// A non-serializable peer identity obtained from the supervisor transport's
 /// kernel credential observation. The protocol deliberately has no production
 /// constructor from a digest or wire record; Linux construction consumes a
@@ -330,6 +353,8 @@ pub struct KernelPeerProcessObservation {
     peer_pidfd: OwnedFd,
     #[cfg(target_os = "linux")]
     record_socket: Mutex<OwnedFd>,
+    #[cfg(target_os = "linux")]
+    send_socket: OwnedFd,
     #[cfg(all(test, target_os = "linux"))]
     _test_sender: Option<OwnedFd>,
 }
@@ -343,6 +368,9 @@ impl KernelPeerProcessObservation {
                 unix_seqpacket_pair().expect("test kernel credential transport");
             let record_socket = configure_unix_record_socket(record_socket)
                 .expect("configured test kernel credential transport");
+            let send_socket = record_socket
+                .try_clone()
+                .expect("duplicated test kernel credential transport");
             let (peer_pid, peer_uid, peer_gid, peer_pidfd) =
                 unix_peer_process(record_socket.as_raw_fd()).expect("test peer pidfd");
             return Self {
@@ -352,6 +380,7 @@ impl KernelPeerProcessObservation {
                 peer_gid,
                 peer_pidfd,
                 record_socket: Mutex::new(record_socket),
+                send_socket,
                 _test_sender: Some(test_sender),
             };
         }
@@ -382,6 +411,30 @@ impl KernelPeerProcessObservation {
         {
             Err(ProtocolError::PeerIdentityUnavailable)
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn connection_credentials(&self) -> Result<KernelPeerCredentials, ProtocolError> {
+        self.ensure_kernel_bound()?;
+        Ok(KernelPeerCredentials {
+            connection_uid: self.peer_uid,
+            connection_gid: self.peer_gid,
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn send_record(
+        &self,
+        record: &EncodedProtocolRecord,
+        deadline_monotonic_ns: u64,
+    ) -> Result<(), ProtocolError> {
+        self.ensure_kernel_bound()?;
+        send_unix_record(
+            self.send_socket.as_raw_fd(),
+            self.peer_pidfd.as_raw_fd(),
+            record.as_bytes(),
+            deadline_monotonic_ns,
+        )
     }
 
     #[cfg(target_os = "linux")]
@@ -642,6 +695,9 @@ impl SupervisorAuthority {
         record_socket: OwnedFd,
     ) -> Result<KernelPeerProcessObservation, ProtocolError> {
         let record_socket = configure_unix_record_socket(record_socket)?;
+        let send_socket = record_socket
+            .try_clone()
+            .map_err(|_| ProtocolError::TransportUnavailable)?;
         let (pid, uid, gid, peer_pidfd) = unix_peer_process(record_socket.as_raw_fd())?;
         let mut observation_nonce = [0u8; DIGEST_BYTES];
         SystemRandom::new()
@@ -666,6 +722,7 @@ impl SupervisorAuthority {
             peer_gid: gid,
             peer_pidfd,
             record_socket: Mutex::new(record_socket),
+            send_socket,
             #[cfg(test)]
             _test_sender: None,
         })
@@ -3010,6 +3067,163 @@ fn set_fd_cloexec(fd: RawFd) -> Result<(), ProtocolError> {
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnixSendAttempt {
+    Complete,
+    Interrupted,
+    WaitWritable,
+    Failed,
+}
+
+#[cfg(target_os = "linux")]
+fn classify_unix_send_attempt(
+    sent: libc::ssize_t,
+    expected: usize,
+    errno: libc::c_int,
+) -> UnixSendAttempt {
+    if sent == expected as libc::ssize_t {
+        return UnixSendAttempt::Complete;
+    }
+    if sent >= 0 {
+        return UnixSendAttempt::Failed;
+    }
+    if errno == libc::EINTR {
+        return UnixSendAttempt::Interrupted;
+    }
+    if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
+        return UnixSendAttempt::WaitWritable;
+    }
+    UnixSendAttempt::Failed
+}
+
+#[cfg(target_os = "linux")]
+fn send_unix_record(
+    socket: RawFd,
+    peer_pidfd: RawFd,
+    record: &[u8],
+    deadline_monotonic_ns: u64,
+) -> Result<(), ProtocolError> {
+    if record.is_empty() || record.len() > CLOSED_EXECUTION_PROTOCOL_MAX_RECORD_BYTES {
+        return Err(ProtocolError::TransportUnavailable);
+    }
+    if deadline_monotonic_ns == 0 {
+        return Err(ProtocolError::InvalidField);
+    }
+    loop {
+        if protocol_monotonic_now_ns()? >= deadline_monotonic_ns {
+            return Err(ProtocolError::DeadlineReached);
+        }
+        // SAFETY: the immutable record remains live for this single packet send.
+        let sent = unsafe {
+            libc::send(
+                socket,
+                record.as_ptr().cast(),
+                record.len(),
+                libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT,
+            )
+        };
+        let errno = if sent < 0 {
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        } else {
+            0
+        };
+        match classify_unix_send_attempt(sent, record.len(), errno) {
+            UnixSendAttempt::Complete => {
+                // Scheduling can move the actual send past the caller's absolute
+                // deadline after the pre-send check. The packet may already be
+                // visible to the peer, but it must not be reported as timely.
+                if protocol_monotonic_now_ns()? >= deadline_monotonic_ns {
+                    return Err(ProtocolError::DeadlineReached);
+                }
+                return Ok(());
+            }
+            UnixSendAttempt::Interrupted => continue,
+            UnixSendAttempt::WaitWritable => {
+                wait_for_unix_send_capacity(socket, peer_pidfd, deadline_monotonic_ns)?;
+            }
+            UnixSendAttempt::Failed => return Err(ProtocolError::TransportUnavailable),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_unix_send_capacity(
+    socket: RawFd,
+    peer_pidfd: RawFd,
+    deadline_monotonic_ns: u64,
+) -> Result<(), ProtocolError> {
+    loop {
+        let now = protocol_monotonic_now_ns()?;
+        if now >= deadline_monotonic_ns {
+            return Err(ProtocolError::DeadlineReached);
+        }
+        let remaining = deadline_monotonic_ns - now;
+        let timeout = libc::timespec {
+            tv_sec: (remaining / 1_000_000_000) as libc::time_t,
+            tv_nsec: (remaining % 1_000_000_000) as libc::c_long,
+        };
+        let mut descriptors = [
+            libc::pollfd {
+                fd: socket,
+                events: libc::POLLOUT,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: peer_pidfd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // SAFETY: both descriptors and the relative timeout remain live for ppoll.
+        let result = unsafe {
+            libc::ppoll(
+                descriptors.as_mut_ptr(),
+                descriptors.len() as libc::nfds_t,
+                &timeout,
+                std::ptr::null(),
+            )
+        };
+        if result < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(ProtocolError::TransportUnavailable);
+        }
+        if result == 0 {
+            return Err(ProtocolError::DeadlineReached);
+        }
+        if descriptors[1].revents != 0
+            || descriptors[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0
+        {
+            return Err(ProtocolError::TransportUnavailable);
+        }
+        if descriptors[0].revents & libc::POLLOUT != 0 {
+            return Ok(());
+        }
+        return Err(ProtocolError::TransportUnavailable);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn protocol_monotonic_now_ns() -> Result<u64, ProtocolError> {
+    let mut timestamp = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut timestamp) } != 0 {
+        return Err(ProtocolError::TransportUnavailable);
+    }
+    let seconds =
+        u64::try_from(timestamp.tv_sec).map_err(|_| ProtocolError::TransportUnavailable)?;
+    let nanoseconds =
+        u64::try_from(timestamp.tv_nsec).map_err(|_| ProtocolError::TransportUnavailable)?;
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or(ProtocolError::TransportUnavailable)
+}
+
+#[cfg(target_os = "linux")]
 fn receive_unix_record(socket: RawFd) -> Result<(Vec<u8>, libc::ucred, OwnedFd), ProtocolError> {
     loop {
         let mut record = [0u8; CLOSED_EXECUTION_PROTOCOL_MAX_RECORD_BYTES];
@@ -3284,6 +3498,64 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    fn receive_protocol_packet(socket: &OwnedFd) -> Vec<u8> {
+        let mut buffer = [0u8; CLOSED_EXECUTION_PROTOCOL_MAX_RECORD_BYTES];
+        // SAFETY: the mutable packet buffer remains live for this receive call.
+        let received = unsafe {
+            libc::recv(
+                socket.as_raw_fd(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                0,
+            )
+        };
+        assert!(received > 0);
+        buffer[..received as usize].to_vec()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn future_transport_deadline() -> u64 {
+        protocol_monotonic_now_ns().unwrap() + 1_000_000_000
+    }
+
+    #[cfg(target_os = "linux")]
+    fn saturate_seqpacket_sender(socket: RawFd, record: &[u8]) {
+        let send_buffer_bytes: libc::c_int = 4_096;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    socket,
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&send_buffer_bytes as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&send_buffer_bytes) as libc::socklen_t,
+                )
+            },
+            0
+        );
+
+        for _ in 0..10_000 {
+            let sent = unsafe {
+                libc::send(
+                    socket,
+                    record.as_ptr().cast(),
+                    record.len(),
+                    libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT,
+                )
+            };
+            if sent < 0 {
+                assert_eq!(
+                    std::io::Error::last_os_error().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+                return;
+            }
+            assert_eq!(sent, record.len() as libc::ssize_t);
+        }
+        panic!("seqpacket sender did not reach bounded backpressure");
+    }
+
+    #[cfg(target_os = "linux")]
     fn cloexec_pipe() -> (OwnedFd, OwnedFd) {
         let mut descriptors = [-1; 2];
         // SAFETY: `descriptors` has room for both pipe descriptors.
@@ -3445,6 +3717,172 @@ mod tests {
         assert_eq!(
             authority.observe_unix_peer(stream_socket).unwrap_err(),
             ProtocolError::PeerIdentityUnavailable
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn connection_credentials_are_kernel_observed_and_liveness_bound() {
+        let authority = authority();
+        let (record_socket, _sender) = unix_seqpacket_pair().unwrap();
+        let mut peer = authority.observe_unix_peer(record_socket).unwrap();
+        let credentials = peer.connection_credentials().unwrap();
+        assert_eq!(credentials.connection_uid(), unsafe { libc::geteuid() });
+        assert_eq!(credentials.connection_gid(), unsafe { libc::getegid() });
+
+        // Replace only the test observation's pidfd with a direct child that
+        // has exited, proving the accessor rechecks liveness before disclosure.
+        let child_pid = unsafe { libc::fork() };
+        assert!(child_pid >= 0);
+        if child_pid == 0 {
+            unsafe { libc::_exit(0) };
+        }
+        let raw_pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, child_pid, 0) };
+        assert!(raw_pidfd >= 0);
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(child_pid, &mut status, 0) },
+            child_pid
+        );
+        peer.peer_pid = child_pid;
+        peer.peer_pidfd = unsafe { OwnedFd::from_raw_fd(raw_pidfd as RawFd) };
+        assert_eq!(
+            peer.connection_credentials().unwrap_err(),
+            ProtocolError::PeerIdentityUnavailable
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn concurrent_record_egress_preserves_seqpacket_boundaries() {
+        let authority = authority();
+        let (record_socket, receiver) = unix_seqpacket_pair().unwrap();
+        let peer = authority.observe_unix_peer(record_socket).unwrap();
+        let first = authority
+            .issue_challenge_with_nonce(&peer, digest("egress-first"), 10, 1_000)
+            .unwrap();
+        let second = authority
+            .issue_challenge_with_nonce(&peer, digest("egress-second"), 10, 1_000)
+            .unwrap();
+        let first = ClosedExecutionMessage::Challenge(first).encode().unwrap();
+        let second = ClosedExecutionMessage::Challenge(second).encode().unwrap();
+        let deadline = future_transport_deadline();
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| peer.send_record(&first, deadline).unwrap());
+            scope.spawn(|| peer.send_record(&second, deadline).unwrap());
+        });
+        let received = [
+            receive_protocol_packet(&receiver),
+            receive_protocol_packet(&receiver),
+        ];
+        assert!(received.contains(&first.as_bytes().to_vec()));
+        assert!(received.contains(&second.as_bytes().to_vec()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn record_egress_fails_closed_when_transport_is_gone() {
+        let authority = authority();
+        let (record_socket, receiver) = unix_seqpacket_pair().unwrap();
+        let peer = authority.observe_unix_peer(record_socket).unwrap();
+        let challenge = authority.issue_challenge(&peer, 10, 1_000).unwrap();
+        let encoded = ClosedExecutionMessage::Challenge(challenge)
+            .encode()
+            .unwrap();
+        drop(receiver);
+
+        assert_eq!(
+            peer.send_record(&encoded, future_transport_deadline())
+                .unwrap_err(),
+            ProtocolError::TransportUnavailable
+        );
+        assert_eq!(
+            send_unix_record(-1, -1, encoded.as_bytes(), future_transport_deadline()).unwrap_err(),
+            ProtocolError::TransportUnavailable
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nonreading_peer_cannot_block_egress_past_deadline() {
+        let authority = authority();
+        let (record_socket, _receiver) = unix_seqpacket_pair().unwrap();
+        let peer = authority.observe_unix_peer(record_socket).unwrap();
+        let challenge = authority.issue_challenge(&peer, 10, 1_000).unwrap();
+        let encoded = ClosedExecutionMessage::Challenge(challenge)
+            .encode()
+            .unwrap();
+        saturate_seqpacket_sender(peer.send_socket.as_raw_fd(), encoded.as_bytes());
+
+        let started = protocol_monotonic_now_ns().unwrap();
+        let deadline = started + 20_000_000;
+        assert_eq!(
+            peer.send_record(&encoded, deadline).unwrap_err(),
+            ProtocolError::DeadlineReached
+        );
+        assert!(protocol_monotonic_now_ns().unwrap() - started < 1_000_000_000);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn peer_exit_interrupts_saturated_egress_wait() {
+        let authority = authority();
+        let (record_socket, _receiver) = unix_seqpacket_pair().unwrap();
+        let mut peer = authority.observe_unix_peer(record_socket).unwrap();
+        let challenge = authority.issue_challenge(&peer, 10, 1_000).unwrap();
+        let encoded = ClosedExecutionMessage::Challenge(challenge)
+            .encode()
+            .unwrap();
+        saturate_seqpacket_sender(peer.send_socket.as_raw_fd(), encoded.as_bytes());
+
+        let child_pid = unsafe { libc::fork() };
+        assert!(child_pid >= 0);
+        if child_pid == 0 {
+            unsafe {
+                libc::usleep(100_000);
+                libc::_exit(0);
+            }
+        }
+        let raw_pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, child_pid, 0) };
+        assert!(raw_pidfd >= 0);
+        peer.peer_pid = child_pid;
+        peer.peer_pidfd = unsafe { OwnedFd::from_raw_fd(raw_pidfd as RawFd) };
+
+        let started = protocol_monotonic_now_ns().unwrap();
+        let result = peer.send_record(&encoded, started + 2_000_000_000);
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(child_pid, &mut status, 0) },
+            child_pid
+        );
+        assert_eq!(result.unwrap_err(), ProtocolError::TransportUnavailable);
+        assert!(protocol_monotonic_now_ns().unwrap() - started < 1_000_000_000);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn send_attempt_classification_is_fail_closed() {
+        let expected = 32;
+        assert_eq!(
+            classify_unix_send_attempt(expected as libc::ssize_t, expected, 0),
+            UnixSendAttempt::Complete
+        );
+        assert_eq!(
+            classify_unix_send_attempt(-1, expected, libc::EINTR),
+            UnixSendAttempt::Interrupted
+        );
+        assert_eq!(
+            classify_unix_send_attempt(-1, expected, libc::EAGAIN),
+            UnixSendAttempt::WaitWritable
+        );
+        assert_eq!(
+            classify_unix_send_attempt((expected - 1) as libc::ssize_t, expected, 0),
+            UnixSendAttempt::Failed
+        );
+        assert_eq!(
+            classify_unix_send_attempt(-1, expected, libc::EPIPE),
+            UnixSendAttempt::Failed
         );
     }
 
