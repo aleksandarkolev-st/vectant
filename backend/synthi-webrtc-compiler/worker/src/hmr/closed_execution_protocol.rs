@@ -390,7 +390,7 @@ impl KernelPeerProcessObservation {
         }
     }
 
-    fn process_identity(&self) -> ProtocolDigest {
+    pub(crate) fn process_identity(&self) -> ProtocolDigest {
         self.process_identity
     }
 
@@ -772,11 +772,52 @@ impl SupervisorAuthority {
         process_set_identity: ProtocolDigest,
         granted_monotonic_ns: u64,
     ) -> Result<LeaseOffer, ProtocolError> {
+        let request = self.authenticate_acquire(record, peer)?;
+        self.issue_offer_for_authenticated_request(
+            &request,
+            peer,
+            server_nonce,
+            lease_secret,
+            supervisor_instance,
+            process_set_identity,
+            granted_monotonic_ns,
+        )
+    }
+
+    pub(crate) fn authenticate_acquire(
+        &self,
+        record: KernelAuthenticatedProtocolRecord,
+        peer: &KernelPeerProcessObservation,
+    ) -> Result<AuthenticatedAcquireLeaseRequest, ProtocolError> {
         let ClosedExecutionMessage::Acquire(request) = record.into_message(peer)? else {
             return Err(ProtocolError::InvalidField);
         };
+        if !request.integrity_valid() || request.peer_process_identity != peer.process_identity() {
+            return Err(ProtocolError::AuthenticationFailed);
+        }
+        Ok(AuthenticatedAcquireLeaseRequest {
+            request,
+            observed_peer_process_identity: peer.process_identity(),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn issue_offer_for_authenticated_request(
+        &self,
+        request: &AuthenticatedAcquireLeaseRequest,
+        peer: &KernelPeerProcessObservation,
+        server_nonce: ProtocolDigest,
+        lease_secret: &LeaseSecret,
+        supervisor_instance: ProtocolDigest,
+        process_set_identity: ProtocolDigest,
+        granted_monotonic_ns: u64,
+    ) -> Result<LeaseOffer, ProtocolError> {
+        peer.ensure_kernel_bound()?;
+        if request.observed_peer_process_identity != peer.process_identity() {
+            return Err(ProtocolError::AuthenticationFailed);
+        }
         LeaseOffer::issue(
-            &request,
+            &request.request,
             peer.process_identity(),
             server_nonce,
             lease_secret,
@@ -868,6 +909,46 @@ impl SupervisorAuthority {
             observed_monotonic_ns,
             &self.signer,
         )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuthenticatedAcquireLeaseRequest {
+    request: AcquireLeaseRequest,
+    observed_peer_process_identity: ProtocolDigest,
+}
+
+impl AuthenticatedAcquireLeaseRequest {
+    pub(crate) fn request_id(&self) -> ProtocolDigest {
+        self.request.request_id
+    }
+
+    pub(crate) fn challenge_binding(&self) -> ProtocolDigest {
+        self.request.challenge_binding
+    }
+
+    pub(crate) fn peer_process_identity(&self) -> ProtocolDigest {
+        self.request.peer_process_identity
+    }
+
+    pub(crate) fn invocation(&self) -> ProtocolDigest {
+        self.request.invocation
+    }
+
+    pub(crate) fn executable_snapshot(&self) -> ProtocolDigest {
+        self.request.executable_snapshot
+    }
+
+    pub(crate) fn execution_closure(&self) -> ProtocolDigest {
+        self.request.execution_closure
+    }
+
+    pub(crate) fn execution_policy(&self) -> ProtocolDigest {
+        self.request.execution_policy
+    }
+
+    pub(crate) fn capability_probe(&self) -> ProtocolDigest {
+        self.request.capability_probe
     }
 }
 
@@ -4400,6 +4481,83 @@ mod tests {
                 digest("supervisor"),
                 digest("third-process-set"),
                 102,
+            ),
+            Err(ProtocolError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn authenticated_acquire_remains_available_for_execution_binding() {
+        let authority = authority();
+        let expected = request_for(&authority);
+        let observed_peer = peer("peer-process");
+        let authenticated = authority
+            .authenticate_acquire(
+                authenticated_acquire("peer-process", &expected),
+                &observed_peer,
+            )
+            .unwrap();
+
+        assert_eq!(authenticated.request_id(), expected.request_id());
+        assert_eq!(
+            authenticated.peer_process_identity(),
+            observed_peer.process_identity()
+        );
+        assert_eq!(
+            authenticated.challenge_binding(),
+            expected.challenge_binding
+        );
+        assert_eq!(authenticated.invocation(), expected.invocation);
+        assert_eq!(
+            authenticated.executable_snapshot(),
+            expected.executable_snapshot
+        );
+        assert_eq!(
+            authenticated.execution_closure(),
+            expected.execution_closure
+        );
+        assert_eq!(authenticated.execution_policy(), expected.execution_policy);
+        assert_eq!(authenticated.capability_probe(), expected.capability_probe);
+
+        let secret = LeaseSecret::from_bytes([7; SECRET_BYTES]).unwrap();
+        let process_set_identity = digest("bound-process-set");
+        assert_eq!(
+            authority.issue_offer_for_authenticated_request(
+                &authenticated,
+                &peer("substituted-peer"),
+                digest("rejected-server-nonce"),
+                &secret,
+                digest("supervisor"),
+                process_set_identity,
+                99,
+            ),
+            Err(ProtocolError::AuthenticationFailed)
+        );
+        let offer = authority
+            .issue_offer_for_authenticated_request(
+                &authenticated,
+                &observed_peer,
+                digest("bound-server-nonce"),
+                &secret,
+                digest("supervisor"),
+                process_set_identity,
+                100,
+            )
+            .unwrap();
+        assert_eq!(offer.request_id(), authenticated.request_id());
+        assert_eq!(offer.process_set_identity(), process_set_identity);
+    }
+
+    #[test]
+    fn authenticated_acquire_rejects_embedded_peer_substitution() {
+        let authority = authority();
+        let request = request_for(&authority);
+        let observed_peer = peer("substituted-peer");
+
+        assert_eq!(
+            authority.authenticate_acquire(
+                authenticated_acquire("substituted-peer", &request),
+                &observed_peer,
             ),
             Err(ProtocolError::AuthenticationFailed)
         );
