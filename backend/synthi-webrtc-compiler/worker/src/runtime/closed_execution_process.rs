@@ -548,6 +548,25 @@ mod linux {
         }
     }
 
+    fn ensure_process_set_bound_to_plan(
+        process_set_seed: ProcessSetSeed,
+        process_set_identity: &[u8; IDENTITY_BYTES],
+        expected_process_set_identity: &[u8; IDENTITY_BYTES],
+        plan: &ClosedExecutionSpawnPlan,
+    ) -> Result<(), ClosedExecutionProcessError> {
+        if process_set_identity != expected_process_set_identity {
+            return Err(ClosedExecutionProcessError::new(
+                "closed_execution_process_set_identity_mismatch",
+            ));
+        }
+        if process_set_seed != plan.process_set_seed()? {
+            return Err(ClosedExecutionProcessError::new(
+                "closed_execution_process_set_spawn_plan_mismatch",
+            ));
+        }
+        Ok(())
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct AtomicSpawnObservation {
         process_identity: ClosedExecutionIdentity,
@@ -773,10 +792,20 @@ mod linux {
 
     pub fn spawn_atomic_process(
         mut process_set: CgroupProcessSet,
+        expected_process_set_identity: [u8; IDENTITY_BYTES],
         plan: ClosedExecutionSpawnPlan,
         execution_deadline_monotonic_ns: u64,
         cleanup_deadline_monotonic_ns: u64,
     ) -> Result<AtomicContainedProcess, ClosedExecutionProcessError> {
+        // Identity equality is defense in depth; authenticated provenance for the
+        // expected identity belongs to the supervisor lease that calls this primitive.
+        let process_set_observation = process_set.observation();
+        ensure_process_set_bound_to_plan(
+            process_set_observation.seed(),
+            process_set_observation.process_set_identity().as_bytes(),
+            &expected_process_set_identity,
+            &plan,
+        )?;
         ensure_execution_identity_separated(plan.credentials, unsafe { libc::geteuid() })?;
         let spawned_monotonic_ns = monotonic_now_ns()?;
         if execution_deadline_monotonic_ns <= spawned_monotonic_ns
@@ -1973,6 +2002,48 @@ mod linux {
             assert_ne!(
                 plan("first", "one").identity(),
                 plan("first", "two").identity()
+            );
+        }
+
+        #[test]
+        fn process_set_seed_must_bind_the_exact_spawn_plan() {
+            let first = plan("first", "one");
+            let second = plan("second", "one");
+            let identity = [3; IDENTITY_BYTES];
+
+            ensure_process_set_bound_to_plan(
+                first.process_set_seed().unwrap(),
+                &identity,
+                &identity,
+                &first,
+            )
+            .unwrap();
+            assert_eq!(
+                ensure_process_set_bound_to_plan(
+                    first.process_set_seed().unwrap(),
+                    &identity,
+                    &identity,
+                    &second,
+                )
+                .unwrap_err()
+                .code(),
+                "closed_execution_process_set_spawn_plan_mismatch"
+            );
+        }
+
+        #[test]
+        fn process_set_identity_must_match_the_authorized_leaf() {
+            let plan = plan("first", "one");
+            assert_eq!(
+                ensure_process_set_bound_to_plan(
+                    plan.process_set_seed().unwrap(),
+                    &[3; IDENTITY_BYTES],
+                    &[4; IDENTITY_BYTES],
+                    &plan,
+                )
+                .unwrap_err()
+                .code(),
+                "closed_execution_process_set_identity_mismatch"
             );
         }
 
