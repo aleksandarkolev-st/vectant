@@ -23,6 +23,7 @@ import {
   RuntimeEvidenceTransportKeyPin,
   RuntimeEvidenceTransportReceiptConsumer,
   SessionRuntimeEvidenceTransportReplayStore,
+  observedRuntimeEvidenceDeliveryMatchesEnvelope,
   type RuntimeEvidenceTransportSupportEnvelopeInput,
   type RuntimeEvidenceTransportObservedDelivery,
   type RuntimeEvidenceTransportVerificationContext,
@@ -698,6 +699,73 @@ describe("RuntimeEvidenceTransportKeyPin", () => {
 });
 
 describe("RuntimeEvidenceTransportChannelRouter", () => {
+  it("publishes terminal router status without granting proof authority", () => {
+    const channel = new MockDataChannel();
+    const pin = new RuntimeEvidenceTransportKeyPin();
+    const router = new RuntimeEvidenceTransportChannelRouter(pin);
+    const snapshots: ReturnType<typeof router.snapshot>[] = [];
+    router.onChange((snapshot) => snapshots.push(snapshot));
+
+    router.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+    channel.emit(JSON.stringify(keyAnnouncement(39)));
+    channel.emit("not-json");
+
+    expect(snapshots.map((snapshot) => snapshot.status)).toEqual([
+      "pending",
+      "active",
+      "failed",
+    ]);
+    expect(snapshots.at(-1)).toEqual({
+      status: "failed",
+      failureReason: "runtime_evidence_transport_router_message_json_invalid",
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
+    });
+    expect(pin.snapshot().status).toBe("pinned");
+  });
+
+  it("binds envelope matching to the router-created delivery object", () => {
+    const channel = new MockDataChannel();
+    const pin = new RuntimeEvidenceTransportKeyPin();
+    const router = new RuntimeEvidenceTransportChannelRouter(pin);
+    router.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+    const identity = signingIdentity(40);
+    const fixture = signedEnvelopeFixture(identity);
+
+    channel.emit(JSON.stringify(identity.announcement));
+    channel.emit(JSON.stringify(observedDeliveryFixture(fixture)));
+
+    const [delivery] = router.drainObservedDeliveries();
+    expect(delivery).toBeDefined();
+    expect(
+      observedRuntimeEvidenceDeliveryMatchesEnvelope(
+        delivery!,
+        fixture.input.envelope,
+      ),
+    ).toBe(true);
+    expect(
+      observedRuntimeEvidenceDeliveryMatchesEnvelope(
+        delivery!,
+        {
+          ...fixture.input.envelope,
+          observedPayloadSha256: `sha256:${"f".repeat(64)}`,
+        },
+      ),
+    ).toBe(false);
+    expect(
+      observedRuntimeEvidenceDeliveryMatchesEnvelope(
+        { ...delivery! },
+        fixture.input.envelope,
+      ),
+    ).toBe(false);
+    expect(delivery).toMatchObject({
+      proofAuthority: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+  });
+
   it("routes a key then a hash-bound support delivery without changing the pinned key", () => {
     const channel = new MockDataChannel();
     const pin = new RuntimeEvidenceTransportKeyPin();

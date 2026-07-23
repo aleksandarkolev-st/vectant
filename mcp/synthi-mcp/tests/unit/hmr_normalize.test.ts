@@ -347,6 +347,38 @@ describe("HmrNormalizer preclassification gate", () => {
     normalizer.dispose();
   });
 
+  it("retries deferred messages through the same preclassification gate", () => {
+    const mockDC = dc();
+    let admit = false;
+    const beforeClassify = vi.fn(() => admit);
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0],
+      { beforeClassify },
+    );
+    const publicMessages: WireMessage[] = [];
+    normalizer.onMessage((message) => publicMessages.push(message));
+    const message = {
+      status: "applied",
+      module: "arbitrary-module",
+    };
+
+    mockDC.emit(JSON.stringify(message));
+    expect(beforeClassify).toHaveBeenCalledTimes(1);
+    expect(publicMessages).toEqual([]);
+
+    admit = true;
+    normalizer.retryPreclassifiedMessage(message, Date.now());
+    expect(beforeClassify).toHaveBeenCalledTimes(2);
+    expect(publicMessages).toEqual([message]);
+
+    normalizer.retryPreclassifiedMessage(message, Number.NaN);
+    expect(beforeClassify).toHaveBeenCalledTimes(2);
+    normalizer.dispose();
+    normalizer.retryPreclassifiedMessage(message, Date.now());
+    expect(beforeClassify).toHaveBeenCalledTimes(2);
+    expect(publicMessages).toEqual([message]);
+  });
+
   it("attaches an included parent-control sidecar without changing proof wire data", () => {
     const mockDC = dc();
     const material = parentControlVerificationMaterialFixture();

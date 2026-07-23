@@ -769,6 +769,7 @@ class SessionManager {
 
     const channels = new SessionChannels(terminalDC, buildLogDC, compileDC, {
       keyPin: peer.runtimeEvidenceTransportKeyPin,
+      router: peer.runtimeEvidenceTransportChannelRouter,
       transportSessionId: opts.sessionId,
       admissionReceiptSigner:
         this.#gpuParentRuntimeProofAdmissionAuthority.signer(),

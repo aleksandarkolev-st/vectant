@@ -510,6 +510,7 @@ export class HmrNormalizer {
   private readonly proofHistory: GpuHmrProofTelemetry[] = [];
   private readonly terminalHistory: RetainedHmrTerminalEvent[] = [];
   private terminalSequence = 0;
+  private disposed = false;
   private static readonly TERMINAL_HISTORY_LIMIT = 128;
   private static readonly PROOF_HISTORY_LIMIT = 128;
 
@@ -535,6 +536,20 @@ export class HmrNormalizer {
     };
     dc.addEventListener("message", dcListener);
     this.unbind = (): void => dc.removeEventListener("message", dcListener);
+  }
+
+  retryPreclassifiedMessage(
+    message: WireMessage,
+    observedAt: number,
+  ): void {
+    if (
+      this.disposed
+      || !Number.isFinite(observedAt)
+      || observedAt < 0
+    ) {
+      return;
+    }
+    this.rememberMessage(message, observedAt);
   }
 
   private rememberMessage(
@@ -979,6 +994,8 @@ export class HmrNormalizer {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.invalidateGpuProofTrust("hmr_normalizer_disposed");
     this.listeners.clear();
     this.proofListeners.clear();

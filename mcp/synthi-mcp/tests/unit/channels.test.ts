@@ -8,9 +8,14 @@ import {
   type ComputeExpectedOutputSemanticsMaterial,
 } from "../../src/compute_expected_output_semantics.js";
 import {
+  OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY,
+  OBSERVED_RUNTIME_EVIDENCE_DELIVERY_ENCODING,
+  OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA,
+  OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE,
   RUNTIME_EVIDENCE_TRANSPORT_ALGORITHM,
   RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
   RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA,
+  RuntimeEvidenceTransportChannelRouter,
   RuntimeEvidenceTransportKeyPin,
 } from "../../src/runtime_evidence_transport.js";
 import {
@@ -132,18 +137,69 @@ function parentControlVerificationMaterialFixture():
 
 function pinnedTransport(): {
   pin: RuntimeEvidenceTransportKeyPin;
+  router: RuntimeEvidenceTransportChannelRouter;
   channel: MockEvidenceDataChannel;
 } {
   const channel = new MockEvidenceDataChannel();
   const pin = new RuntimeEvidenceTransportKeyPin();
-  pin.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+  const router = new RuntimeEvidenceTransportChannelRouter(pin);
+  router.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
   channel.emit(JSON.stringify(verificationKeyAnnouncement(7)));
   expect(pin.snapshot().status).toBe("pinned");
-  return { pin, channel };
+  return { pin, router, channel };
 }
 
-function pinnedKeyPin(): RuntimeEvidenceTransportKeyPin {
-  return pinnedTransport().pin;
+function transportForPin(
+  pin: RuntimeEvidenceTransportKeyPin,
+): {
+  pin: RuntimeEvidenceTransportKeyPin;
+  router: RuntimeEvidenceTransportChannelRouter;
+} {
+  return {
+    pin,
+    router: new RuntimeEvidenceTransportChannelRouter(pin),
+  };
+}
+
+function observedRuntimeEvidenceDeliveryFixture(seed: string): {
+  envelope: Record<string, unknown>;
+  delivery: Record<string, unknown>;
+} {
+  const observedPayload = Buffer.from(
+    JSON.stringify({ opaqueRuntimeEvidence: seed }),
+    "utf8",
+  );
+  const envelope = {
+    schemaVersion: "synthi.gpu_hmr.observed_runtime_evidence_envelope.v2",
+    type: "gpu_hmr_observed_runtime_evidence",
+    observedPayloadSha256: `sha256:${sha256Hex(observedPayload)}`,
+    runtimeEvidenceTransportReceipt: {
+      receiptId:
+        `gpu-hmr-runtime-evidence-transport-receipt:sha256:${
+          sha256Hex(`receipt:${seed}`)
+        }`,
+    },
+    proofAuthority:
+      "worker_signed_observation_transport_only_not_gpu_hmr_acceptance",
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+  };
+  return {
+    envelope,
+    delivery: {
+      schemaVersion: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA,
+      type: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE,
+      observedPayloadEncoding: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_ENCODING,
+      observedPayloadByteLength: String(observedPayload.byteLength),
+      observedPayloadBase64: observedPayload.toString("base64url"),
+      runtimeEvidenceTransportEnvelope: envelope,
+      proofAuthority: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    },
+  };
 }
 
 function decodeCompilePayload(sent: string[]): Record<string, unknown> {
@@ -161,7 +217,10 @@ function makeChannels(
   sent: string[],
   send: (frame: string) => void = (frame) => sent.push(frame),
   buildLogDC: MockBuildLogDataChannel = new MockBuildLogDataChannel(),
-  keyPin: RuntimeEvidenceTransportKeyPin = pinnedKeyPin(),
+  transport: {
+    pin: RuntimeEvidenceTransportKeyPin;
+    router: RuntimeEvidenceTransportChannelRouter;
+  } = pinnedTransport(),
 ): SessionChannels {
   const terminalDC = {
     readyState: "open",
@@ -172,7 +231,8 @@ function makeChannels(
     send,
   } as unknown as RTCDataChannel;
   return new SessionChannels(terminalDC, buildLogDC as unknown as RTCDataChannel, compileDC, {
-    keyPin,
+    keyPin: transport.pin,
+    router: transport.router,
     transportSessionId: TRANSPORT_SESSION_ID,
     admissionReceiptSigner: ADMISSION_AUTHORITY.signer(),
   });
@@ -415,7 +475,7 @@ describe("SessionChannels compile chunking", () => {
       [],
       () => undefined,
       buildLog,
-      transport.pin,
+      transport,
     );
     const admission = (channels as unknown as {
       gpuParentRuntimeProofAdmission: {
@@ -520,6 +580,176 @@ describe("SessionChannels compile chunking", () => {
     channels.dispose();
   });
 
+  it.each(["delivery_first", "proof_first"] as const)(
+    "admits exact delivered evidence with %s arrival",
+    async (arrivalOrder) => {
+      const buildLog = new MockBuildLogDataChannel();
+      const transport = pinnedTransport();
+      const channels = makeChannels(
+        [],
+        () => undefined,
+        buildLog,
+        transport,
+      );
+      const admission = (channels as unknown as {
+        gpuParentRuntimeProofAdmission: {
+          beforeClassify: (
+            message: Record<string, unknown>,
+            observedAt: number,
+          ) => boolean;
+          takeControlVerificationMaterial: (
+            fullRuntimeProofId: string,
+          ) => GpuParentRuntimeProofControlVerificationMaterial | null;
+        };
+      }).gpuParentRuntimeProofAdmission;
+      const beforeClassify = vi.spyOn(admission, "beforeClassify")
+        .mockReturnValue(true);
+      const material = parentControlVerificationMaterialFixture();
+      const takeMaterial = vi.spyOn(
+        admission,
+        "takeControlVerificationMaterial",
+      ).mockReturnValue(material);
+      const fixture = observedRuntimeEvidenceDeliveryFixture(arrivalOrder);
+      const fullRuntimeProofId =
+        `gpu-runtime-proof:sha256:${"7".repeat(64)}`;
+      const proof = {
+        type: "gpu_hmr_proof",
+        resultState: "gpu-hmr-full-runtime-proven",
+        parentVerification: {
+          fullRuntimeProofId,
+          runtimeEvidenceTransportEnvelope: fixture.envelope,
+        },
+      };
+      const publicMessages: Record<string, unknown>[] = [];
+      channels.hmr.onMessage((message) => publicMessages.push(message));
+
+      if (arrivalOrder === "delivery_first") {
+        transport.channel.emit(JSON.stringify(fixture.delivery));
+        expect(channels.hmr.latestGpuProof()).toBeNull();
+        expect(publicMessages).toEqual([]);
+        buildLog.emit(proof);
+      } else {
+        buildLog.emit(proof);
+        expect(beforeClassify).not.toHaveBeenCalled();
+        expect(channels.hmr.latestGpuProof()).toBeNull();
+        expect(publicMessages).toEqual([]);
+        transport.channel.emit(JSON.stringify(fixture.delivery));
+        await Promise.resolve();
+      }
+
+      expect(beforeClassify).toHaveBeenCalledTimes(1);
+      expect(takeMaterial).toHaveBeenCalledTimes(1);
+      expect(takeMaterial).toHaveBeenCalledWith(fullRuntimeProofId);
+      expect(publicMessages).toEqual([proof]);
+      expect(channels.hmr.latestGpuProof()).toMatchObject({
+        resultState: "gpu-hmr-full-runtime-proven",
+        parentControlVerificationMaterial: material,
+      });
+      channels.dispose();
+      transport.router.dispose();
+    },
+  );
+
+  it("keeps an envelope without its exact delivered carrier deferred", async () => {
+    const buildLog = new MockBuildLogDataChannel();
+    const transport = pinnedTransport();
+    const channels = makeChannels(
+      [],
+      () => undefined,
+      buildLog,
+      transport,
+    );
+    const admission = (channels as unknown as {
+      gpuParentRuntimeProofAdmission: {
+        beforeClassify: (
+          message: Record<string, unknown>,
+          observedAt: number,
+        ) => boolean;
+      };
+    }).gpuParentRuntimeProofAdmission;
+    const beforeClassify = vi.spyOn(admission, "beforeClassify")
+      .mockReturnValue(true);
+    const proofFixture = observedRuntimeEvidenceDeliveryFixture("proof");
+    const unrelatedDelivery =
+      observedRuntimeEvidenceDeliveryFixture("unrelated-delivery");
+
+    buildLog.emit({
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-full-runtime-proven",
+      parentVerification: {
+        fullRuntimeProofId:
+          `gpu-runtime-proof:sha256:${"8".repeat(64)}`,
+        runtimeEvidenceTransportEnvelope: proofFixture.envelope,
+      },
+    });
+    transport.channel.emit(JSON.stringify(unrelatedDelivery.delivery));
+    await Promise.resolve();
+
+    expect(beforeClassify).not.toHaveBeenCalled();
+    expect(channels.hmr.latestGpuProof()).toBeNull();
+    channels.dispose();
+    transport.router.dispose();
+  });
+
+  it("revokes retained deliveries when their authenticated router fails", () => {
+    const buildLog = new MockBuildLogDataChannel();
+    const transport = pinnedTransport();
+    const channels = makeChannels(
+      [],
+      () => undefined,
+      buildLog,
+      transport,
+    );
+    const admission = (channels as unknown as {
+      gpuParentRuntimeProofAdmission: {
+        beforeClassify: (
+          message: Record<string, unknown>,
+          observedAt: number,
+        ) => boolean;
+      };
+    }).gpuParentRuntimeProofAdmission;
+    const beforeClassify = vi.spyOn(admission, "beforeClassify");
+    const fixture = observedRuntimeEvidenceDeliveryFixture("router-failure");
+    const invalidations: Record<string, unknown>[] = [];
+    channels.hmr.onGpuProofTrustInvalidated((event) => {
+      invalidations.push(event);
+    });
+
+    transport.channel.emit(JSON.stringify(fixture.delivery));
+    transport.channel.emit("not-json");
+    buildLog.emit({
+      type: "gpu_hmr_proof",
+      resultState: "gpu-hmr-full-runtime-proven",
+      parentVerification: {
+        fullRuntimeProofId:
+          `gpu-runtime-proof:sha256:${"6".repeat(64)}`,
+        runtimeEvidenceTransportEnvelope: fixture.envelope,
+      },
+    });
+
+    expect(transport.router.snapshot()).toMatchObject({
+      status: "failed",
+      failureReason: "runtime_evidence_transport_router_message_json_invalid",
+    });
+    expect(beforeClassify).not.toHaveBeenCalled();
+    expect(channels.hmr.latestGpuProof()).toBeNull();
+    expect(channels.gpuParentRuntimeProofAdmissionSnapshot()).toMatchObject({
+      status: "failed",
+      verifiedBindingCount: 0,
+      admittedProofCount: 0,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+    });
+    expect(invalidations).toHaveLength(1);
+    expect(invalidations[0]).toMatchObject({
+      reasonClass: "runtime_evidence_transport_failed",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+    });
+    channels.dispose();
+    transport.router.dispose();
+  });
+
   it("suppresses an admitted-looking strict parent proof when its material is missing", () => {
     const buildLog = new MockBuildLogDataChannel();
     const channels = makeChannels([], () => undefined, buildLog);
@@ -585,7 +815,7 @@ describe("SessionChannels compile chunking", () => {
         sent,
         (frame) => sent.push(frame),
         buildLog,
-        transport.pin,
+        transport,
       );
       await channels.sendCompileRequest({ source: "int main(){}" });
       buildLog.emit({
@@ -608,9 +838,7 @@ describe("SessionChannels compile chunking", () => {
         transport.pin.dispose();
       }
 
-      const expectedReason = transition === "disposed"
-        ? "runtime_evidence_transport_disposed"
-        : "runtime_evidence_transport_failed";
+      const expectedReason = "runtime_evidence_transport_failed";
       expect(invalidations).toHaveLength(1);
       expect(invalidations[0]).toMatchObject({
         reasonClass: expectedReason,
@@ -647,7 +875,12 @@ describe("SessionChannels compile chunking", () => {
     expect(pin.snapshot().status).toBe("failed");
 
     const buildLog = new MockBuildLogDataChannel();
-    const channels = makeChannels([], () => undefined, buildLog, pin);
+    const channels = makeChannels(
+      [],
+      () => undefined,
+      buildLog,
+      transportForPin(pin),
+    );
     const invalidations: Record<string, unknown>[] = [];
     const publicMessages: Record<string, unknown>[] = [];
     channels.hmr.onGpuProofTrustInvalidated((event) => invalidations.push(event));

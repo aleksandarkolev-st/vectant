@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { isProxy } from "node:util/types";
 import type { RTCDataChannel } from "werift";
 import * as sharedRuntimeEvidenceTransportVerifierModule
@@ -121,6 +122,35 @@ export interface RuntimeEvidenceTransportObservedDelivery {
   readonly acceptedForGpuHmr: false;
   readonly gpuHmrSuccess: false;
   readonly canSatisfyRuntimeProof: false;
+}
+
+interface RuntimeEvidenceTransportObservedDeliveryBinding {
+  readonly envelope: Readonly<Record<string, unknown>>;
+}
+
+const observedDeliveryBindings = new WeakMap<
+  RuntimeEvidenceTransportObservedDelivery,
+  RuntimeEvidenceTransportObservedDeliveryBinding
+>();
+
+export function observedRuntimeEvidenceDeliveryMatchesEnvelope(
+  delivery: RuntimeEvidenceTransportObservedDelivery,
+  envelope: unknown,
+): boolean {
+  const binding = observedDeliveryBindings.get(delivery);
+  const candidate = plainRecord(envelope);
+  if (
+    binding === undefined
+    || candidate === null
+    || candidate.observedPayloadSha256 !== delivery.observedPayloadSha256
+  ) {
+    return false;
+  }
+  try {
+    return isDeepStrictEqual(binding.envelope, candidate);
+  } catch {
+    return false;
+  }
 }
 
 export interface RuntimeEvidenceTransportSupportVerification {
@@ -596,17 +626,19 @@ function parseObservedRuntimeEvidenceDelivery(
     );
   }
 
+  const delivery = Object.freeze({
+    schemaVersion: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA,
+    type: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE,
+    observedPayloadSha256,
+    serializedDelivery,
+    proofAuthority: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+  });
+  observedDeliveryBindings.set(delivery, Object.freeze({ envelope }));
   return Object.freeze({
-    delivery: Object.freeze({
-      schemaVersion: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA,
-      type: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE,
-      observedPayloadSha256,
-      serializedDelivery,
-      proofAuthority: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY,
-      acceptedForGpuHmr: false,
-      gpuHmrSuccess: false,
-      canSatisfyRuntimeProof: false,
-    }),
+    delivery,
     reason: null,
   });
 }
@@ -887,12 +919,18 @@ export type RuntimeEvidenceTransportObservedDeliveryListener = (
   delivery: RuntimeEvidenceTransportObservedDelivery,
 ) => void;
 
+export type RuntimeEvidenceTransportChannelRouterListener = (
+  snapshot: RuntimeEvidenceTransportChannelRouterSnapshot,
+) => void;
+
 /**
  * Routes authenticated-channel records by their versioned discriminator only.
  * Signature, context, freshness, and replay validation remain the consumer's responsibility.
  */
 export class RuntimeEvidenceTransportChannelRouter {
   private readonly listeners = new Set<RuntimeEvidenceTransportObservedDeliveryListener>();
+  private readonly statusListeners =
+    new Set<RuntimeEvidenceTransportChannelRouterListener>();
   private readonly retainedObservedDeliveries: RuntimeEvidenceTransportObservedDelivery[] = [];
   private readonly ownershipToken = {};
   private readonly retainedObservedDeliveryCapacity: number;
@@ -975,6 +1013,7 @@ export class RuntimeEvidenceTransportChannelRouter {
       channel.removeEventListener("message", messageListener);
       channel.removeEventListener("close", closeListener);
     };
+    this.notifyStatusChange();
   }
 
   onObservedDelivery(
@@ -983,6 +1022,17 @@ export class RuntimeEvidenceTransportChannelRouter {
     if (this.disposed || this.failureReason !== null) return () => {};
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  onChange(
+    listener: RuntimeEvidenceTransportChannelRouterListener,
+  ): () => void {
+    if (!this.disposed && this.failureReason === null) {
+      this.statusListeners.add(listener);
+    }
+    this.notifyStatusListener(listener, this.snapshot());
+    if (this.disposed || this.failureReason !== null) return () => {};
+    return () => this.statusListeners.delete(listener);
   }
 
   drainObservedDeliveries(): readonly RuntimeEvidenceTransportObservedDelivery[] {
@@ -1018,6 +1068,8 @@ export class RuntimeEvidenceTransportChannelRouter {
     this.retainedObservedDeliveryBytes = 0;
     this.listeners.clear();
     this.disposed = true;
+    this.notifyStatusChange();
+    this.statusListeners.clear();
     this.disposeOwnedKeyPin();
   }
 
@@ -1147,6 +1199,26 @@ export class RuntimeEvidenceTransportChannelRouter {
     this.listeners.clear();
     this.retainedObservedDeliveries.length = 0;
     this.retainedObservedDeliveryBytes = 0;
+    this.notifyStatusChange();
+    this.statusListeners.clear();
+  }
+
+  private notifyStatusListener(
+    listener: RuntimeEvidenceTransportChannelRouterListener,
+    snapshot: RuntimeEvidenceTransportChannelRouterSnapshot,
+  ): void {
+    try {
+      listener(snapshot);
+    } catch {
+      // A diagnostic observer cannot interrupt transport isolation.
+    }
+  }
+
+  private notifyStatusChange(): void {
+    const snapshot = this.snapshot();
+    for (const listener of [...this.statusListeners]) {
+      this.notifyStatusListener(listener, snapshot);
+    }
   }
 
   private normalizeLimits(
