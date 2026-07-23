@@ -16,6 +16,7 @@ export class JupyterClient {
   async getNotebook(path, signal) { const result = await this.request(`api/contents/${safeJupyterPath(path)}?content=1`, { signal }); const body = await result.json(); if (body.type !== 'notebook' || typeof body.content !== 'object') throw new JupyterGatewayError('The requested Jupyter resource is not a notebook', 422, 'not_notebook'); return body; }
   async saveNotebook(path, notebook, signal) { const result = await this.request(`api/contents/${safeJupyterPath(path)}`, { method: 'PUT', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'notebook', format: 'json', content: notebook }) }); return result.json(); }
   async listKernels(signal) { return (await this.request('api/kernels', { signal })).json(); }
+  async status(signal) { return (await this.request('api/status', { signal })).json(); }
   async interruptKernel(kernelId, signal) { await this.request(`api/kernels/${encodeURIComponent(kernelId)}/interrupt`, { method: 'POST', signal }); }
   async startKernel({ path, kernelName, signal }) {
     const response = await this.request('api/sessions', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: safeJupyterPath(path), type: 'notebook', name: path.split('/').pop(), kernel: kernelName ? { name: kernelName } : {} }) });

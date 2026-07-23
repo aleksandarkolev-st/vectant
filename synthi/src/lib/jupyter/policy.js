@@ -1,7 +1,7 @@
 import net from 'node:net';
 import { lookup } from 'node:dns/promises';
 
-const ALLOWED_PATHS = [/^api\/contents(?:\/|$)/, /^api\/sessions(?:\/|$)/, /^api\/kernels(?:\/|$)/];
+const ALLOWED_PATHS = [/^api\/status$/, /^api\/contents(?:\/|$)/, /^api\/sessions(?:\/|$)/, /^api\/kernels(?:\/|$)/];
 const PRIVATE_V4 = [/^127\./, /^10\./, /^192\.168\./, /^172\.(1[6-9]|2\d|3[01])\./];
 
 export function validateJupyterOrigin(value) {
