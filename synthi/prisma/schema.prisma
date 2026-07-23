@@ -87,6 +87,22 @@ model JupyterServer {
   @@unique([workspaceSlug, origin])
 }
 
+model JupyterAuditEvent {
+  id            String   @id @default(cuid())
+  workspaceSlug String
+  serverId      String?
+  actorUserId   String?
+  eventType     String
+  notebookPath  String?
+  kernelId      String?
+  detailsJson   String   @default("{}")
+  createdAt     DateTime @default(now())
+
+  @@index([workspaceSlug, createdAt])
+  @@index([serverId, createdAt])
+  @@index([eventType, createdAt])
+}
+
 model McpConnection {
   id              String           @id @default(cuid())
   name            String
