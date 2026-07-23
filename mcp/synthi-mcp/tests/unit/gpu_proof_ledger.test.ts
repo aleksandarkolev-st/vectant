@@ -495,15 +495,23 @@ describe("GPU HMR proof ledger canonical profiles", () => {
       malformedLegacyMetadata.oracle_artifacts as Record<string, Record<string, unknown>>
     ).visual_oracle_artifacts;
     malformedArtifacts.camera_state_hash = "caller-text-is-not-a-content-hash";
+    malformedArtifacts.swapchain_size = [640, 0];
 
-    expect(failureCodes(malformedLegacyMetadata)).toContain(
-      "visual_camera_state_hash_invalid"
+    const typedMalformedCodes = failureCodes(malformedLegacyMetadata);
+    const scriptMalformedCodes = evaluateScriptGpuHmrProofLedger(
+      malformedLegacyMetadata
+    ).failedInvariants.map(({ code }: { code: string }) => code);
+    for (const rendererMetadataCode of [
+      "visual_camera_state_hash_invalid",
+      "visual_swapchain_size_invalid",
+    ]) {
+      expect(typedMalformedCodes).not.toContain(rendererMetadataCode);
+      expect(scriptMalformedCodes).not.toContain(rendererMetadataCode);
+    }
+    expect(typedMalformedCodes).toContain(
+      "verifier_owned_visual_output_state_receipt_missing"
     );
-    expect(
-      evaluateScriptGpuHmrProofLedger(malformedLegacyMetadata).failedInvariants.map(
-        ({ code }: { code: string }) => code
-      )
-    ).toContain("visual_camera_state_hash_invalid");
+    expect(scriptMalformedCodes).toEqual(typedMalformedCodes);
   });
 
   it("does not accept serialized visual output-state receipt claims", () => {

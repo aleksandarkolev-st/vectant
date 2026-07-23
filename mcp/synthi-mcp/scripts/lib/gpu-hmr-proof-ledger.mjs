@@ -3147,32 +3147,6 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
       if (visiblePixelCount !== null && visiblePixelCount <= 0) {
         addFailure(failures, 'visual_visible_pixel_count_zero');
       }
-      const cameraStateValue = objectFieldValue(artifacts, [
-        'camera_state_hash',
-        'cameraStateHash',
-      ]);
-      const cameraStateHash = artifactFieldText(artifacts, 'camera_state_hash', 'cameraStateHash');
-      const canonicalCameraStateHash = canonicalSha256(cameraStateHash);
-      if (cameraStateValue !== undefined && cameraStateValue !== null) {
-        if (!canonicalCameraStateHash) {
-          addFailure(failures, 'visual_camera_state_hash_invalid');
-        }
-      }
-      const swapchainSizeValue = objectFieldValue(artifacts, [
-        'swapchain_size',
-        'swapchainSize',
-      ]);
-      const swapchainSize = artifactFieldArray(artifacts, 'swapchain_size', 'swapchainSize');
-      if (
-        swapchainSizeValue !== undefined
-        && swapchainSizeValue !== null
-        && (
-          swapchainSize.length !== 2
-          || !swapchainSize.every((value) => Number.isFinite(Number(value)) && Number(value) > 0)
-        )
-      ) {
-        addFailure(failures, 'visual_swapchain_size_invalid');
-      }
       const visualTimestamp = artifactFieldNumber(
         artifacts,
         'timestamp_after_dispatch',

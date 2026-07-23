@@ -2342,11 +2342,6 @@ const cases = [
       visual_oracle_artifacts: baselineVisualOracleArtifacts({ visible_pixel_count: 0 }),
     },
   }), 'visual_visible_pixel_count_zero'],
-  ['visual invalid swapchain size', baselineVisualRecord({
-    oracle_artifacts: {
-      visual_oracle_artifacts: baselineVisualOracleArtifacts({ swapchain_size: [640, 0] }),
-    },
-  }), 'visual_swapchain_size_invalid'],
   ['visual artifact before dispatch', baselineVisualRecord({
     oracle_artifacts: {
       visual_oracle_artifacts: baselineVisualOracleArtifacts({ timestamp_after_dispatch: 250 }),

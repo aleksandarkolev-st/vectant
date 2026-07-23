@@ -2207,32 +2207,6 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
       if (visiblePixelCount !== null && visiblePixelCount <= 0) {
         failures.push({ code: "visual_visible_pixel_count_zero" });
       }
-      const cameraStateValue = objectFieldValue(visualArtifacts, [
-        "camera_state_hash",
-        "cameraStateHash",
-      ]);
-      if (
-        cameraStateValue !== undefined
-        && cameraStateValue !== null
-        && !canonicalSha256(cameraStateValue)
-      ) {
-        failures.push({ code: "visual_camera_state_hash_invalid" });
-      }
-      const swapchainSizeValue = objectFieldValue(visualArtifacts, [
-        "swapchain_size",
-        "swapchainSize",
-      ]);
-      const swapchainSize = artifactArray(visualArtifacts, "swapchain_size", "swapchainSize");
-      if (
-        swapchainSizeValue !== undefined
-        && swapchainSizeValue !== null
-        && (
-          swapchainSize.length !== 2
-          || !swapchainSize.every((value) => Number.isFinite(Number(value)) && Number(value) > 0)
-        )
-      ) {
-        failures.push({ code: "visual_swapchain_size_invalid" });
-      }
       const visualTimestamp = artifactNumber(
         visualArtifacts,
         "timestamp_after_dispatch",
