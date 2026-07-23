@@ -155,6 +155,8 @@ pub enum RegistryInsertOutcome {
 #[derive(Default)]
 pub struct PeerRegistry {
     peers: RwLock<HashMap<String, Arc<PeerHandle>>>,
+    // Acquire `peers` before this map in every operation that needs both.
+    session_data_channels: RwLock<HashMap<String, HashMap<String, Arc<RTCDataChannel>>>>,
 }
 
 impl PeerRegistry {
@@ -170,7 +172,12 @@ impl PeerRegistry {
     /// (the signaling-server assigns unique peer-ids today).
     pub fn insert(&self, handle: PeerHandle) -> RegistryInsertOutcome {
         let new = Arc::new(handle);
+        let new_peer_id = new.peer_id.clone();
         let mut peers = self.peers.write().expect("peer registry poisoned");
+        let mut session_data_channels = self
+            .session_data_channels
+            .write()
+            .expect("session data channels poisoned");
 
         // Browser slot eviction: at most one Browser per session. On
         // re-registration we swap the old one out and return it so the
@@ -181,23 +188,30 @@ impl PeerRegistry {
                 .find(|(_, h)| matches!(h.role, PeerRole::Browser))
                 .map(|(id, _)| id.clone())
             {
-                if existing_id != new.peer_id {
+                if existing_id != new_peer_id {
                     let evicted = peers.remove(&existing_id).expect("just located");
-                    peers.insert(new.peer_id.clone(), new);
+                    session_data_channels.remove(&existing_id);
+                    session_data_channels.remove(&new_peer_id);
+                    peers.insert(new_peer_id, new);
                     return RegistryInsertOutcome::Evicted(evicted);
                 }
             }
         }
 
-        peers.insert(new.peer_id.clone(), new);
+        session_data_channels.remove(&new_peer_id);
+        peers.insert(new_peer_id, new);
         RegistryInsertOutcome::Inserted
     }
 
     pub fn remove(&self, peer_id: &str) -> Option<Arc<PeerHandle>> {
-        self.peers
+        let mut peers = self.peers.write().expect("peer registry poisoned");
+        let mut session_data_channels = self
+            .session_data_channels
             .write()
-            .expect("peer registry poisoned")
-            .remove(peer_id)
+            .expect("session data channels poisoned");
+        let removed = peers.remove(peer_id);
+        session_data_channels.remove(peer_id);
+        removed
     }
 
     pub fn get(&self, peer_id: &str) -> Option<Arc<PeerHandle>> {
@@ -205,6 +219,31 @@ impl PeerRegistry {
             .read()
             .expect("peer registry poisoned")
             .get(peer_id)
+            .cloned()
+    }
+
+    /// Snapshot a registered peer's channel for an opaque, non-empty
+    /// capability ID.
+    pub fn session_data_channel_snapshot(
+        &self,
+        peer_id: &str,
+        capability_id: &str,
+    ) -> Option<Arc<RTCDataChannel>> {
+        if capability_id.is_empty() {
+            return None;
+        }
+
+        let peers = self.peers.read().expect("peer registry poisoned");
+        if !peers.contains_key(peer_id) {
+            return None;
+        }
+        let session_data_channels = self
+            .session_data_channels
+            .read()
+            .expect("session data channels poisoned");
+        session_data_channels
+            .get(peer_id)
+            .and_then(|channels| channels.get(capability_id))
             .cloned()
     }
 
@@ -227,7 +266,13 @@ impl PeerRegistry {
     }
 
     pub fn clear(&self) {
-        self.peers.write().expect("peer registry poisoned").clear();
+        let mut peers = self.peers.write().expect("peer registry poisoned");
+        let mut session_data_channels = self
+            .session_data_channels
+            .write()
+            .expect("session data channels poisoned");
+        peers.clear();
+        session_data_channels.clear();
     }
 
     /// Snapshot every currently-registered peer. Cheap `Arc` clones so
@@ -238,6 +283,32 @@ impl PeerRegistry {
             .expect("peer registry poisoned")
             .values()
             .cloned()
+            .collect()
+    }
+
+    /// Snapshot channels for an opaque, non-empty capability ID across all
+    /// currently registered peers.
+    pub fn all_session_data_channel_snapshots(
+        &self,
+        capability_id: &str,
+    ) -> Vec<Arc<RTCDataChannel>> {
+        if capability_id.is_empty() {
+            return Vec::new();
+        }
+
+        let peers = self.peers.read().expect("peer registry poisoned");
+        let session_data_channels = self
+            .session_data_channels
+            .read()
+            .expect("session data channels poisoned");
+        peers
+            .keys()
+            .filter_map(|peer_id| {
+                session_data_channels
+                    .get(peer_id)
+                    .and_then(|channels| channels.get(capability_id))
+                    .cloned()
+            })
             .collect()
     }
 
@@ -284,10 +355,37 @@ impl PeerRegistry {
         counts
     }
 
+    /// Attach a channel to an already-registered peer under an opaque,
+    /// non-empty capability ID. A duplicate peer/capability attachment is a
+    /// last-write-wins registry replacement; externally-held channels are not
+    /// closed by this registry.
+    pub fn attach_session_data_channel(
+        &self,
+        peer_id: &str,
+        capability_id: &str,
+        dc: Arc<RTCDataChannel>,
+    ) -> bool {
+        if capability_id.is_empty() {
+            return false;
+        }
+
+        let peers = self.peers.read().expect("peer registry poisoned");
+        if !peers.contains_key(peer_id) {
+            return false;
+        }
+
+        self.session_data_channels
+            .write()
+            .expect("session data channels poisoned")
+            .entry(peer_id.to_owned())
+            .or_default()
+            .insert(capability_id.to_owned(), dc);
+        true
+    }
+
     /// Attach a build-log DC to an already-registered peer. Returns `true`
-    /// if the peer existed. Mutation is through the handle's interior
-    /// mutex so the Arc in the registry stays untouched — no
-    /// subscription tasks get severed.
+    /// if the peer existed. Mutation is through the handle's interior mutex
+    /// so the Arc in the registry stays untouched.
     pub fn attach_build_log(&self, peer_id: &str, dc: Arc<RTCDataChannel>) -> bool {
         let peers = self.peers.read().expect("peer registry poisoned");
         if let Some(existing) = peers.get(peer_id) {
@@ -354,6 +452,7 @@ impl PeerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 
     // The webrtc-rs types can't be constructed without real config; build a
     // PC in a helper so tests that need one pay once. The helper is async
@@ -432,16 +531,193 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attaching_a_dc_to_an_unknown_peer_returns_false() {
+    async fn arbitrary_session_data_channel_capabilities_coexist() {
         let reg = PeerRegistry::new();
-        // Build a DC by making a throwaway PC; we can't cheaply construct an
-        // `Arc<RTCDataChannel>` from nothing because the webrtc crate's DC
-        // ctor is private. So test the no-op path where the peer isn't
-        // registered — `attach_build_log` returns false without a DC needed.
-        // The positive-path is exercised in the integration test (see
-        // G3_PHASE_B_INTEGRATION.md once wired).
-        let ok = reg.contains("nope");
-        assert!(!ok);
+        let pc = mk_pc().await;
+        let alpha = pc
+            .create_data_channel("alpha", None)
+            .await
+            .expect("alpha data channel");
+        let beta = pc
+            .create_data_channel("beta", None)
+            .await
+            .expect("beta data channel");
+        let legacy = pc
+            .create_data_channel("legacy", None)
+            .await
+            .expect("legacy data channel");
+        reg.insert(PeerHandle::new("peer", PeerRole::Observer, pc));
+
+        assert!(reg.attach_session_data_channel("peer", "capability.alpha", alpha.clone()));
+        assert!(reg.attach_session_data_channel("peer", "capability.beta", beta.clone()));
+        assert!(reg.attach_build_log("peer", legacy.clone()));
+
+        let observed_alpha = reg
+            .session_data_channel_snapshot("peer", "capability.alpha")
+            .expect("alpha capability attached");
+        let observed_beta = reg
+            .session_data_channel_snapshot("peer", "capability.beta")
+            .expect("beta capability attached");
+        assert!(Arc::ptr_eq(&observed_alpha, &alpha));
+        assert!(Arc::ptr_eq(&observed_beta, &beta));
+        let observed_legacy = reg
+            .get("peer")
+            .and_then(|peer| peer.build_log_dc_snapshot())
+            .expect("legacy channel attached");
+        assert!(Arc::ptr_eq(&observed_legacy, &legacy));
+        assert_eq!(reg.all_build_log_dcs().len(), 1);
+        assert_eq!(
+            reg.all_session_data_channel_snapshots("capability.alpha")
+                .len(),
+            1
+        );
+        assert_eq!(
+            reg.all_session_data_channel_snapshots("capability.beta")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn attaching_a_session_data_channel_to_an_unknown_peer_returns_false() {
+        let reg = PeerRegistry::new();
+        let pc = mk_pc().await;
+        let dc = pc
+            .create_data_channel("unknown", None)
+            .await
+            .expect("unknown data channel");
+
+        assert!(!reg.attach_session_data_channel("missing", "capability.test", dc));
+        assert!(reg
+            .session_data_channel_snapshot("missing", "capability.test")
+            .is_none());
+        assert!(reg
+            .all_session_data_channel_snapshots("capability.test")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_capability_id_is_rejected_without_mutating_registry_state() {
+        let reg = PeerRegistry::new();
+        let pc = mk_pc().await;
+        let dc = pc
+            .create_data_channel("empty", None)
+            .await
+            .expect("empty data channel");
+        reg.insert(PeerHandle::new("peer", PeerRole::Observer, pc));
+
+        assert!(!reg.attach_session_data_channel("peer", "", dc));
+        assert!(reg.session_data_channel_snapshot("peer", "").is_none());
+        assert!(reg.all_session_data_channel_snapshots("").is_empty());
+    }
+
+    #[tokio::test]
+    async fn duplicate_capability_attachment_replaces_registry_entry() {
+        let reg = PeerRegistry::new();
+        let pc = mk_pc().await;
+        let first = pc
+            .create_data_channel("first", None)
+            .await
+            .expect("first data channel");
+        let replacement = pc
+            .create_data_channel("replacement", None)
+            .await
+            .expect("replacement data channel");
+        reg.insert(PeerHandle::new("peer", PeerRole::Observer, pc));
+
+        assert!(reg.attach_session_data_channel("peer", "capability.replace", first.clone()));
+        assert!(reg.attach_session_data_channel("peer", "capability.replace", replacement.clone()));
+
+        let observed = reg
+            .session_data_channel_snapshot("peer", "capability.replace")
+            .expect("replacement capability attached");
+        assert!(Arc::ptr_eq(&observed, &replacement));
+        assert!(!Arc::ptr_eq(&observed, &first));
+        assert_ne!(first.ready_state(), RTCDataChannelState::Closed);
+        assert_eq!(
+            reg.all_session_data_channel_snapshots("capability.replace")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn replacement_and_browser_eviction_erase_session_data_channels() {
+        let reg = PeerRegistry::new();
+        let first_pc = mk_pc().await;
+        let first_dc = first_pc
+            .create_data_channel("first", None)
+            .await
+            .expect("first data channel");
+        reg.insert(PeerHandle::new("first", PeerRole::Browser, first_pc));
+        assert!(reg.attach_session_data_channel("first", "capability.shared", first_dc));
+
+        let second_pc = mk_pc().await;
+        let outcome = reg.insert(PeerHandle::new("second", PeerRole::Browser, second_pc));
+        assert!(matches!(outcome, RegistryInsertOutcome::Evicted(_)));
+        assert!(reg
+            .session_data_channel_snapshot("first", "capability.shared")
+            .is_none());
+        assert!(reg
+            .all_session_data_channel_snapshots("capability.shared")
+            .is_empty());
+
+        let replacement_pc = mk_pc().await;
+        let replacement_dc = replacement_pc
+            .create_data_channel("replacement", None)
+            .await
+            .expect("replacement data channel");
+        assert!(reg.attach_session_data_channel("second", "capability.shared", replacement_dc));
+        reg.insert(PeerHandle::new("second", PeerRole::Browser, replacement_pc));
+        assert!(reg
+            .session_data_channel_snapshot("second", "capability.shared")
+            .is_none());
+        assert!(reg
+            .all_session_data_channel_snapshots("capability.shared")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn removal_and_clear_remove_session_data_channel_visibility() {
+        let reg = PeerRegistry::new();
+        let first_pc = mk_pc().await;
+        let first_dc = first_pc
+            .create_data_channel("first", None)
+            .await
+            .expect("first data channel");
+        let second_pc = mk_pc().await;
+        let second_dc = second_pc
+            .create_data_channel("second", None)
+            .await
+            .expect("second data channel");
+
+        reg.insert(PeerHandle::new("first", PeerRole::Observer, first_pc));
+        reg.insert(PeerHandle::new("second", PeerRole::Observer, second_pc));
+        assert!(reg.attach_session_data_channel("first", "capability.shared", first_dc));
+        assert!(reg.attach_session_data_channel("second", "capability.shared", second_dc));
+        assert_eq!(
+            reg.all_session_data_channel_snapshots("capability.shared")
+                .len(),
+            2
+        );
+
+        reg.remove("first");
+        assert!(reg
+            .session_data_channel_snapshot("first", "capability.shared")
+            .is_none());
+        assert_eq!(
+            reg.all_session_data_channel_snapshots("capability.shared")
+                .len(),
+            1
+        );
+
+        reg.clear();
+        assert!(reg
+            .session_data_channel_snapshot("second", "capability.shared")
+            .is_none());
+        assert!(reg
+            .all_session_data_channel_snapshots("capability.shared")
+            .is_empty());
     }
 
     #[tokio::test]
