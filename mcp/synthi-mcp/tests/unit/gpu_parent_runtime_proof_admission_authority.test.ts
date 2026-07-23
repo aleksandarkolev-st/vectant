@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_AUTHORITY,
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_SCHEMA,
@@ -18,8 +18,13 @@ import {
   type GpuMcpOutputByteProducerCapability,
 } from "../../src/gpu_mcp_output_byte_observation_boundary.js";
 import {
+  captureAndEvaluateGpuMcpAdmittedOutputBytes,
   captureGpuMcpAdmittedOutputBytes,
 } from "../../src/gpu_mcp_admitted_output_capture.js";
+import {
+  createGpuMcpOutputEvaluatorBoundary,
+  type GpuMcpOutputEvaluatorRegistrar,
+} from "../../src/gpu_mcp_output_evaluation.js";
 import {
   createGpuHmrMcpAdmissionOnlineReplayAuthorityClient,
   gpuHmrMcpAdmissionOnlineReplayAuthorityClientProjection,
@@ -97,14 +102,18 @@ function createOutputAuthority(
 ): {
   authority: GpuParentRuntimeProofAdmissionAuthority;
   producer: GpuMcpOutputByteProducerCapability;
+  evaluatorRegistrar: GpuMcpOutputEvaluatorRegistrar;
 } {
   const boundary = createGpuMcpOutputByteObservationBoundary();
+  const evaluatorBoundary = createGpuMcpOutputEvaluatorBoundary();
   return {
     authority: createAuthority({
       ...context,
       outputByteConsumerCapability: boundary.consumer,
+      outputEvaluatorExecutorCapability: evaluatorBoundary.executor,
     }),
     producer: boundary.producer,
+    evaluatorRegistrar: evaluatorBoundary.registrar,
   };
 }
 
@@ -129,6 +138,14 @@ afterEach(async () => {
 
 function hash(digit: string): string {
   return `sha256:${digit.repeat(64)}`;
+}
+
+function intrinsicUint8ArrayByteLength(bytes: Uint8Array): number {
+  const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+  const getter =
+    Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteLength")?.get;
+  if (getter === undefined) throw new Error("typed array getter unavailable");
+  return Reflect.apply(getter, bytes, []) as number;
 }
 
 function admissionInput(): GpuParentRuntimeProofAdmissionReceiptInput {
@@ -202,6 +219,664 @@ function onlineClientProjection(
 }
 
 describe("GpuParentRuntimeProofAdmissionAuthority", () => {
+  it("evaluates exact admitted bytes without output-kind authority", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const source = Buffer.from([17, 19, 23, 29]);
+    let evaluatorBytes: Uint8Array | null = null;
+    const evaluate = vi.fn((bytes: Uint8Array, signal: AbortSignal) => {
+      evaluatorBytes = bytes;
+      expect(signal.aborted).toBe(false);
+      return bytes[0] === 17 && bytes[3] === 29;
+    });
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate,
+    });
+
+    const evaluation = await captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      evaluator,
+      () => source,
+      () => true,
+    );
+
+    expect(evaluate).toHaveBeenCalledOnce();
+    expect(evaluation).toMatchObject({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      admissionReceiptId: admissionReceipt.receiptId,
+      outputByteLength: "4",
+      outputContractPassed: true,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(evaluation.evaluatorFunctionSourceSha256).toMatch(
+      /^sha256:[a-f0-9]{64}$/,
+    );
+    expect(authority.isVerifiedOutputEvaluation(
+      evaluation,
+      admissionReceipt,
+    )).toBe(true);
+    expect(evaluatorBytes).not.toBeNull();
+    expect(evaluatorBytes!.byteLength).toBe(0);
+    expect([...source]).toEqual([17, 19, 23, 29]);
+    expect(JSON.stringify(evaluation)).not.toMatch(
+      /project|fixture|scenario|backend|camera|image|tensor|media/i,
+    );
+  });
+
+  it("derives the evaluator function-source hash instead of accepting one", () => {
+    const { evaluatorRegistrar } = createOutputAuthority();
+
+    expect(() => evaluatorRegistrar.register({
+      evaluatorFunctionSourceSha256: hash("c"),
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => true,
+    } as never)).toThrow("gpu_mcp_output_evaluator_registration_invalid");
+  });
+
+  it("detaches evaluator bytes despite instance property overrides", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    let retainedBytes: Uint8Array | null = null;
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: (bytes) => {
+        retainedBytes = bytes;
+        Object.defineProperties(bytes, {
+          buffer: {
+            get: () => {
+              throw new Error("forged buffer getter");
+            },
+          },
+          byteLength: { value: bytes.byteLength },
+          fill: { value: () => bytes },
+        });
+        return true;
+      },
+    });
+
+    await captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      evaluator,
+      () => Uint8Array.of(24, 26),
+      () => true,
+    );
+
+    expect(retainedBytes).not.toBeNull();
+    expect(intrinsicUint8ArrayByteLength(retainedBytes!)).toBe(0);
+  });
+
+  it("disposal aborts non-cooperative evaluation and detaches its bytes", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    let retainedBytes: Uint8Array | null = null;
+    let markStarted: (() => void) | null = null;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: (bytes) => {
+        retainedBytes = bytes;
+        markStarted?.();
+        return new Promise<boolean>(() => undefined);
+      },
+    });
+    const pending = captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      evaluator,
+      () => Uint8Array.of(27, 28),
+      () => true,
+    );
+    const rejected = expect(pending).rejects.toThrow(
+      "gpu_mcp_output_evaluation_aborted",
+    );
+
+    await started;
+    await authority.dispose();
+    await rejected;
+
+    expect(retainedBytes).not.toBeNull();
+    expect(intrinsicUint8ArrayByteLength(retainedBytes!)).toBe(0);
+  });
+
+  it("disposal ignores evaluator changes to collection prototypes", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const methods = [
+      [Set.prototype, "add"],
+      [Set.prototype, "clear"],
+      [Set.prototype, "delete"],
+      [Set.prototype, "forEach"],
+      [WeakMap.prototype, "delete"],
+      [WeakMap.prototype, "get"],
+      [WeakMap.prototype, "has"],
+      [WeakMap.prototype, "set"],
+    ] as const;
+    const descriptors = methods.map(([prototype, property]) => {
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, property);
+      if (descriptor === undefined) {
+        throw new Error(`missing collection method: ${property}`);
+      }
+      return [prototype, property, descriptor] as const;
+    });
+    const restore = (): void => {
+      for (const [prototype, property, descriptor] of descriptors) {
+        Object.defineProperty(prototype, property, descriptor);
+      }
+    };
+    let retainedBytes: Uint8Array | null = null;
+    let markStarted: (() => void) | null = null;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: (bytes) => {
+        retainedBytes = bytes;
+        for (const [prototype, property] of methods) {
+          Object.defineProperty(prototype, property, {
+            configurable: true,
+            writable: true,
+            value: () => undefined,
+          });
+        }
+        markStarted?.();
+        return new Promise<boolean>(() => undefined);
+      },
+    });
+    const pending = captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      evaluator,
+      () => Uint8Array.of(32, 33),
+      () => true,
+    );
+    const settled = pending.then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    await started;
+    let disposePromise: Promise<void>;
+    try {
+      disposePromise = authority.dispose();
+    } finally {
+      restore();
+    }
+    await disposePromise!;
+    const error = await settled;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "gpu_mcp_output_evaluation_aborted",
+    );
+    expect(retainedBytes).not.toBeNull();
+    expect(intrinsicUint8ArrayByteLength(retainedBytes!)).toBe(0);
+  });
+
+  it("keeps authority, cleanup, and later signal binding intrinsic", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const weakMapGetDescriptor =
+      Object.getOwnPropertyDescriptor(WeakMap.prototype, "get");
+    const weakMapSetDescriptor =
+      Object.getOwnPropertyDescriptor(WeakMap.prototype, "set");
+    const bufferFillDescriptor =
+      Object.getOwnPropertyDescriptor(Buffer.prototype, "fill");
+    const controllerSignalDescriptor =
+      Object.getOwnPropertyDescriptor(AbortController.prototype, "signal");
+    if (
+      weakMapGetDescriptor === undefined
+      || weakMapSetDescriptor === undefined
+      || bufferFillDescriptor === undefined
+      || controllerSignalDescriptor === undefined
+    ) {
+      throw new Error("required prototype descriptor unavailable");
+    }
+    let interceptedCleanup: unknown = null;
+    const firstEvaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => {
+        Object.defineProperty(WeakMap.prototype, "get", {
+          configurable: true,
+          writable: true,
+          value: () => undefined,
+        });
+        Object.defineProperty(WeakMap.prototype, "set", {
+          configurable: true,
+          writable: true,
+          value: function noOpWeakMapSet() {
+            return this;
+          },
+        });
+        Object.defineProperty(Buffer.prototype, "fill", {
+          configurable: true,
+          writable: true,
+          value: function interceptBufferFill() {
+            interceptedCleanup = this;
+            return this;
+          },
+        });
+        Object.defineProperty(AbortController.prototype, "signal", {
+          configurable: true,
+          get: () => {
+            throw new Error("forged signal getter");
+          },
+        });
+        return true;
+      },
+    });
+    let firstEvaluation: Awaited<ReturnType<
+      typeof captureAndEvaluateGpuMcpAdmittedOutputBytes
+    >>;
+    let verifiedWhilePoisoned = false;
+    try {
+      firstEvaluation = await captureAndEvaluateGpuMcpAdmittedOutputBytes(
+        authority,
+        producer,
+        admissionReceipt,
+        firstEvaluator,
+        () => Uint8Array.of(34, 35),
+        () => true,
+      );
+      verifiedWhilePoisoned = authority.isVerifiedOutputEvaluation(
+        firstEvaluation,
+        admissionReceipt,
+      );
+    } finally {
+      Object.defineProperty(
+        WeakMap.prototype,
+        "get",
+        weakMapGetDescriptor,
+      );
+      Object.defineProperty(
+        WeakMap.prototype,
+        "set",
+        weakMapSetDescriptor,
+      );
+      Object.defineProperty(
+        Buffer.prototype,
+        "fill",
+        bufferFillDescriptor,
+      );
+    }
+
+    try {
+      const secondEvaluator = evaluatorRegistrar.register({
+        outputContractSha256: hash("a"),
+        outputSemanticsSha256: hash("b"),
+        evaluate: () => true,
+      });
+      const secondEvaluation =
+        await captureAndEvaluateGpuMcpAdmittedOutputBytes(
+          authority,
+          producer,
+          admissionReceipt,
+          secondEvaluator,
+          () => Uint8Array.of(36),
+          () => true,
+        );
+      expect(authority.isVerifiedOutputEvaluation(
+        secondEvaluation,
+        admissionReceipt,
+      )).toBe(true);
+    } finally {
+      Object.defineProperty(
+        AbortController.prototype,
+        "signal",
+        controllerSignalDescriptor,
+      );
+    }
+
+    expect(verifiedWhilePoisoned).toBe(true);
+    expect(interceptedCleanup).toBeNull();
+  });
+
+  it("retains exact admission identity after the capture freshness window", async () => {
+    let nowUnixNs = 1_700_000_000_000_000_000n;
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority({
+      clockUnixNs: () => nowUnixNs,
+      maxReceiptAgeNs: 10n,
+    });
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => true,
+    });
+    const evaluation = await captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      evaluator,
+      () => Uint8Array.of(30),
+      () => true,
+    );
+
+    nowUnixNs += 11n;
+
+    expect(authority.isVerifiedOutputEvaluation(
+      evaluation,
+      admissionReceipt,
+    )).toBe(true);
+    expect(authority.isVerifiedOutputEvaluation(
+      evaluation,
+      { ...admissionReceipt },
+    )).toBe(false);
+  });
+
+  it("rejects evaluator capabilities not created in this process", async () => {
+    const { authority, producer } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const capture = vi.fn(() => Uint8Array.of(31));
+
+    await expect(captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      {
+        outputContractSha256: hash("a"),
+        outputSemanticsSha256: hash("b"),
+        evaluate: () => true,
+      } as never,
+      capture,
+      () => true,
+    )).rejects.toThrow("gpu_mcp_output_evaluator_capability_invalid");
+    const foreignBoundary = createGpuMcpOutputEvaluatorBoundary();
+    const foreignEvaluator = foreignBoundary.registrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => true,
+    });
+    await expect(captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      foreignEvaluator,
+      capture,
+      () => true,
+    )).rejects.toThrow("gpu_mcp_output_evaluator_capability_invalid");
+    foreignBoundary.registrar.dispose();
+    expect(capture).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects output contract mismatches before evaluator execution", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const evaluate = vi.fn(() => true);
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("d"),
+      outputSemanticsSha256: hash("b"),
+      evaluate,
+    });
+
+    await expect(captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      evaluator,
+      () => Uint8Array.of(37),
+      () => true,
+    )).rejects.toThrow(
+      "gpu_mcp_output_evaluation_contract_binding_mismatch",
+    );
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+
+  it("retains a failed evaluator verdict only as support evidence", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => false,
+    });
+
+    const evaluation = await captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      evaluator,
+      () => Uint8Array.of(39),
+      () => true,
+    );
+
+    expect(evaluation.outputContractPassed).toBe(false);
+    expect(authority.isVerifiedOutputEvaluation(
+      evaluation,
+      admissionReceipt,
+    )).toBe(true);
+    expect(evaluation).toMatchObject({
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+  });
+
+  it("rejects evaluator mutation of the observed byte snapshot", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: (bytes) => {
+        bytes[0] = 0;
+        return true;
+      },
+    });
+
+    await expect(captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      evaluator,
+      () => Uint8Array.of(41),
+      () => true,
+    )).rejects.toThrow("gpu_mcp_output_evaluation_bytes_mutated");
+  });
+
+  it("aborts asynchronous evaluation and wipes its byte copy", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const controller = new AbortController();
+    let evaluatorBytes: Uint8Array | null = null;
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: (bytes) => {
+        evaluatorBytes = bytes;
+        queueMicrotask(() => controller.abort());
+        return new Promise<boolean>(() => undefined);
+      },
+    });
+
+    await expect(captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      evaluator,
+      () => Uint8Array.of(43, 47),
+      () => true,
+      controller.signal,
+    )).rejects.toThrow("gpu_mcp_output_evaluation_aborted");
+    expect(evaluatorBytes).not.toBeNull();
+    expect(evaluatorBytes!.byteLength).toBe(0);
+  });
+
+  it("rejects output evaluation replay, cloning, and cross-authority reuse", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => true,
+    });
+    const bytes = Uint8Array.of(53);
+    const observed = produceOutput(
+      authority,
+      producer,
+      admissionReceipt,
+      bytes,
+    );
+    const evaluation = await authority.observeAndEvaluateOutput(
+      admissionReceipt,
+      observed,
+      evaluator,
+    );
+
+    await expect(authority.observeAndEvaluateOutput(
+      admissionReceipt,
+      observed,
+      evaluator,
+    )).rejects.toThrow(
+      "gpu_parent_runtime_proof_output_byte_source_observation_invalid",
+    );
+    expect(authority.isVerifiedOutputEvaluation(
+      { ...evaluation },
+      admissionReceipt,
+    )).toBe(false);
+    expect(authority.isVerifiedOutputEvaluation(
+      JSON.parse(JSON.stringify(evaluation)),
+      admissionReceipt,
+    )).toBe(false);
+    expect(authority.isVerifiedOutputEvaluation(
+      evaluation,
+      {
+        ...admissionReceipt,
+        sourceEditId: `source-edit:sha256:${"0".repeat(64)}`,
+      },
+    )).toBe(false);
+
+    const {
+      authority: otherAuthority,
+    } = createOutputAuthority();
+    const otherAdmission = otherAuthority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    expect(otherAuthority.isVerifiedOutputEvaluation(
+      evaluation,
+      otherAdmission,
+    )).toBe(false);
+  });
+
+  it("rejects cross-admission evaluation within one authority", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionA = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const admissionB = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => true,
+    });
+    const observedForA = produceOutput(
+      authority,
+      producer,
+      admissionA,
+      Uint8Array.of(59),
+    );
+
+    await expect(authority.observeAndEvaluateOutput(
+      admissionB,
+      observedForA,
+      evaluator,
+    )).rejects.toThrow(
+      "gpu_parent_runtime_proof_output_byte_observation_admission_binding_mismatch",
+    );
+  });
+
   it("captures admitted output bytes without output-kind authority", async () => {
     const { authority, producer } = createOutputAuthority();
     const admissionReceipt = authority.signer().signAdmissionReceipt(

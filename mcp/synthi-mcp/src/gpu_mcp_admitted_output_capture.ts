@@ -8,10 +8,18 @@ import type {
 } from "./gpu_parent_runtime_proof_admission_receipt.js";
 import type {
   GpuMcpOutputByteProducerCapability,
+  GpuMcpOutputByteObservationPermit,
 } from "./gpu_mcp_output_byte_observation_boundary.js";
+import type {
+  GpuMcpOutputEvaluation,
+  GpuMcpOutputEvaluatorCapability,
+} from "./gpu_mcp_output_evaluation.js";
 import {
   snapshotValidatedUint8Array,
 } from "./validated_uint8_array.js";
+
+const reflectApply = Reflect.apply;
+const bufferFill = Buffer.prototype.fill;
 
 export type GpuMcpOutputByteCapture =
   () => Uint8Array | Promise<Uint8Array>;
@@ -32,13 +40,17 @@ function assertCurrent(isCurrent: () => boolean): void {
   }
 }
 
-export async function captureGpuMcpAdmittedOutputBytes(
+async function captureAdmittedOutput<T>(
   authority: GpuParentRuntimeProofAdmissionAuthority,
   producer: GpuMcpOutputByteProducerCapability,
   admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
   captureOutputBytes: GpuMcpOutputByteCapture,
   isCurrent: () => boolean,
-): Promise<GpuParentRuntimeProofOutputObservation> {
+  consume: (
+    permit: GpuMcpOutputByteObservationPermit,
+    snapshot: Uint8Array,
+  ) => T | Promise<T>,
+): Promise<T> {
   if (!validCallback(captureOutputBytes) || !validCallback(isCurrent)) {
     throw new Error("gpu_mcp_admitted_output_capture_callback_invalid");
   }
@@ -52,11 +64,58 @@ export async function captureGpuMcpAdmittedOutputBytes(
     throw new Error("gpu_mcp_admitted_output_capture_bytes_invalid");
   }
   try {
-    const observed = producer.observe(permit, snapshot);
-    const observation = authority.observeOutput(admissionReceipt, observed);
+    const result = await consume(permit, snapshot);
     assertCurrent(isCurrent);
-    return observation;
+    return result;
   } finally {
-    snapshot.fill(0);
+    reflectApply(bufferFill, snapshot, [0]);
   }
+}
+
+export function captureGpuMcpAdmittedOutputBytes(
+  authority: GpuParentRuntimeProofAdmissionAuthority,
+  producer: GpuMcpOutputByteProducerCapability,
+  admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
+  captureOutputBytes: GpuMcpOutputByteCapture,
+  isCurrent: () => boolean,
+): Promise<GpuParentRuntimeProofOutputObservation> {
+  return captureAdmittedOutput(
+    authority,
+    producer,
+    admissionReceipt,
+    captureOutputBytes,
+    isCurrent,
+    (permit, snapshot) => {
+      const observed = producer.observe(permit, snapshot);
+      return authority.observeOutput(admissionReceipt, observed);
+    },
+  );
+}
+
+export function captureAndEvaluateGpuMcpAdmittedOutputBytes(
+  authority: GpuParentRuntimeProofAdmissionAuthority,
+  producer: GpuMcpOutputByteProducerCapability,
+  admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
+  evaluatorCapability: GpuMcpOutputEvaluatorCapability,
+  captureOutputBytes: GpuMcpOutputByteCapture,
+  isCurrent: () => boolean,
+  signal?: AbortSignal,
+): Promise<GpuMcpOutputEvaluation> {
+  return captureAdmittedOutput(
+    authority,
+    producer,
+    admissionReceipt,
+    captureOutputBytes,
+    isCurrent,
+    async (permit, snapshot) => {
+      const observed = producer.observe(permit, snapshot);
+      assertCurrent(isCurrent);
+      return authority.observeAndEvaluateOutput(
+        admissionReceipt,
+        observed,
+        evaluatorCapability,
+        signal,
+      );
+    },
+  );
 }

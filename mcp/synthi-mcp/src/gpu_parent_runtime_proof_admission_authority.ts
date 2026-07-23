@@ -27,6 +27,16 @@ import {
   type GpuMcpOutputByteConsumerClaim,
   type GpuMcpOutputByteObservationPermit,
 } from "./gpu_mcp_output_byte_observation_boundary.js";
+import {
+  claimGpuMcpOutputEvaluatorExecutorCapability,
+  disposeGpuMcpOutputEvaluatorExecutorClaim,
+  evaluateGpuMcpOutputBytes,
+  releaseGpuMcpOutputEvaluatorExecutorClaim,
+  type GpuMcpOutputEvaluation,
+  type GpuMcpOutputEvaluatorCapability,
+  type GpuMcpOutputEvaluatorExecutorCapability,
+  type GpuMcpOutputEvaluatorExecutorClaim,
+} from "./gpu_mcp_output_evaluation.js";
 
 export const GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_SCHEMA =
   "synthi.gpu_hmr.mcp_admission_trust_material.v3" as const;
@@ -44,6 +54,24 @@ const MAX_ONLINE_REPLAY_SCOPES = 65_536;
 const MAX_ONLINE_REPLAY_RECEIPTS_PER_SCOPE = 65_536;
 const MAX_ONLINE_REPLAY_OPERATIONS = 262_144;
 const MAX_ONLINE_REPLAY_OPERATION_TIMEOUT_MS = 60_000;
+const reflectApply = Reflect.apply;
+const weakMapGet = WeakMap.prototype.get;
+const weakMapSet = WeakMap.prototype.set;
+
+function getWeakMapValue<K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+): V | undefined {
+  return reflectApply(weakMapGet, map, [key]) as V | undefined;
+}
+
+function setWeakMapValue<K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+  value: V,
+): void {
+  reflectApply(weakMapSet, map, [key, value]);
+}
 
 export interface GpuParentRuntimeProofOutputObservation {
   readonly schemaVersion:
@@ -126,6 +154,8 @@ export interface GpuParentRuntimeProofAdmissionAuthorityContext {
   readonly nonceBytes?: () => Uint8Array;
   readonly outputByteConsumerCapability?:
     GpuMcpOutputByteConsumerCapability;
+  readonly outputEvaluatorExecutorCapability?:
+    GpuMcpOutputEvaluatorExecutorCapability;
   readonly maxReceiptAgeNs?: bigint;
   readonly maxFutureSkewNs?: bigint;
   readonly maxScopes?: number;
@@ -157,6 +187,7 @@ interface AuthorityContextSnapshot {
   readonly clockUnixNs: unknown;
   readonly nonceBytes: unknown;
   readonly outputByteConsumerCapability: unknown;
+  readonly outputEvaluatorExecutorCapability: unknown;
   readonly maxReceiptAgeNs: unknown;
   readonly maxFutureSkewNs: unknown;
   readonly maxScopes: unknown;
@@ -173,6 +204,7 @@ const CONTEXT_KEYS: ReadonlySet<string> = new Set<AuthorityContextKey>([
   "clockUnixNs",
   "nonceBytes",
   "outputByteConsumerCapability",
+  "outputEvaluatorExecutorCapability",
   "maxReceiptAgeNs",
   "maxFutureSkewNs",
   "maxScopes",
@@ -200,6 +232,7 @@ function snapshotContext(value: unknown): AuthorityContextSnapshot | null {
       clockUnixNs: undefined,
       nonceBytes: undefined,
       outputByteConsumerCapability: undefined,
+      outputEvaluatorExecutorCapability: undefined,
       maxReceiptAgeNs: undefined,
       maxFutureSkewNs: undefined,
       maxScopes: undefined,
@@ -322,6 +355,8 @@ export class GpuParentRuntimeProofAdmissionAuthority {
     GpuMcpOutputObservationReceiptSigner;
   readonly #outputByteConsumerClaim:
     GpuMcpOutputByteConsumerClaim | null;
+  readonly #outputEvaluatorExecutorClaim:
+    GpuMcpOutputEvaluatorExecutorClaim | null;
   readonly #verificationKey:
     GpuParentRuntimeProofAdmissionReceiptVerificationKey;
   readonly #validationRunChallenge: string;
@@ -331,7 +366,17 @@ export class GpuParentRuntimeProofAdmissionAuthority {
   readonly #issuedAdmissionReceiptExpirations: Map<string, bigint>;
   readonly #verifiedOutputObservations = new WeakMap<
     GpuParentRuntimeProofOutputObservation,
-    GpuMcpOutputObservationReceipt
+    {
+      readonly admissionReceipt: GpuParentRuntimeProofAdmissionReceipt;
+      readonly receipt: GpuMcpOutputObservationReceipt;
+    }
+  >();
+  readonly #verifiedOutputEvaluations = new WeakMap<
+    GpuMcpOutputEvaluation,
+    {
+      readonly admissionReceipt: GpuParentRuntimeProofAdmissionReceipt;
+      readonly observation: GpuParentRuntimeProofOutputObservation;
+    }
   >();
   readonly #outputObservationPermitAdmissionReceiptIds = new WeakMap<
     GpuMcpOutputByteObservationPermit,
@@ -475,6 +520,26 @@ export class GpuParentRuntimeProofAdmissionAuthority {
         );
       }
     }
+    let outputEvaluatorExecutorClaim:
+      GpuMcpOutputEvaluatorExecutorClaim | null = null;
+    if (context.outputEvaluatorExecutorCapability !== undefined) {
+      outputEvaluatorExecutorClaim =
+        claimGpuMcpOutputEvaluatorExecutorCapability(
+          context.outputEvaluatorExecutorCapability,
+        );
+      if (outputEvaluatorExecutorClaim === null) {
+        if (outputByteConsumerClaim !== null) {
+          releaseGpuMcpOutputByteConsumerClaim(
+            outputByteConsumerClaim,
+          );
+        }
+        generatedChallenge?.fill(0);
+        generationSecret.fill(0);
+        throw new Error(
+          "gpu_parent_runtime_proof_admission_authority_output_evaluator_executor_invalid",
+        );
+      }
+    }
     let receiptSigner: GpuParentRuntimeProofAdmissionReceiptSigner | null = null;
     let outputObservationSigner: GpuMcpOutputObservationReceiptSigner | null =
       null;
@@ -506,6 +571,11 @@ export class GpuParentRuntimeProofAdmissionAuthority {
           outputByteConsumerClaim,
         );
       }
+      if (outputEvaluatorExecutorClaim !== null) {
+        releaseGpuMcpOutputEvaluatorExecutorClaim(
+          outputEvaluatorExecutorClaim,
+        );
+      }
       if (
         error instanceof Error
         && error.message
@@ -528,6 +598,8 @@ export class GpuParentRuntimeProofAdmissionAuthority {
     this.#outputObservationSigner = outputObservationSigner;
     this.#outputByteConsumerClaim =
       outputByteConsumerClaim;
+    this.#outputEvaluatorExecutorClaim =
+      outputEvaluatorExecutorClaim;
     this.#verificationKey = receiptSigner.exportVerificationKey();
     this.#validationRunChallenge = validationRunChallenge;
     this.#clockUnixNs = clockUnixNs;
@@ -555,11 +627,51 @@ export class GpuParentRuntimeProofAdmissionAuthority {
     if (this.#disposed || value === null || typeof value !== "object") {
       return false;
     }
-    const receipt = this.#verifiedOutputObservations.get(
+    const binding = getWeakMapValue(
+      this.#verifiedOutputObservations,
       value as GpuParentRuntimeProofOutputObservation,
     );
-    return receipt !== undefined
-      && receipt === (value as GpuParentRuntimeProofOutputObservation).receipt;
+    return binding !== undefined
+      && binding.receipt
+        === (value as GpuParentRuntimeProofOutputObservation).receipt;
+  }
+
+  isVerifiedOutputObservationForAdmission(
+    value: unknown,
+    admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
+  ): value is GpuParentRuntimeProofOutputObservation {
+    if (!this.isVerifiedOutputObservation(value)) return false;
+    const binding = getWeakMapValue(
+      this.#verifiedOutputObservations,
+      value,
+    );
+    return binding?.admissionReceipt === admissionReceipt;
+  }
+
+  isVerifiedOutputEvaluation(
+    value: unknown,
+    admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
+  ): value is GpuMcpOutputEvaluation {
+    if (
+      this.#disposed
+      || value === null
+      || typeof value !== "object"
+      || isProxy(value)
+    ) {
+      return false;
+    }
+    const binding = getWeakMapValue(
+      this.#verifiedOutputEvaluations,
+      value as GpuMcpOutputEvaluation,
+    );
+    return binding !== undefined
+      && binding.admissionReceipt === admissionReceipt
+      && this.isVerifiedOutputObservationForAdmission(
+        binding.observation,
+        admissionReceipt,
+      )
+      && binding.observation.receipt.receiptId
+        === (value as GpuMcpOutputEvaluation).outputObservationReceiptId;
   }
 
   createOutputObservationPermit(
@@ -581,7 +693,8 @@ export class GpuParentRuntimeProofAdmissionAuthority {
         "gpu_parent_runtime_proof_output_byte_observation_permit_unavailable",
       );
     }
-    this.#outputObservationPermitAdmissionReceiptIds.set(
+    setWeakMapValue(
+      this.#outputObservationPermitAdmissionReceiptIds,
       permit,
       admission.receiptId,
     );
@@ -592,6 +705,67 @@ export class GpuParentRuntimeProofAdmissionAuthority {
     admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
     observedOutput: GpuMcpObservedOutputBytes,
   ): GpuParentRuntimeProofOutputObservation {
+    return this.#consumeOutputObservation(
+      admissionReceipt,
+      observedOutput,
+    ).observation;
+  }
+
+  async observeAndEvaluateOutput(
+    admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
+    observedOutput: GpuMcpObservedOutputBytes,
+    evaluatorCapability: GpuMcpOutputEvaluatorCapability,
+    signal?: AbortSignal,
+  ): Promise<GpuMcpOutputEvaluation> {
+    if (this.#disposed) throw disposedError();
+    const executorClaim = this.#outputEvaluatorExecutorClaim;
+    if (executorClaim === null) {
+      throw new Error(
+        "gpu_parent_runtime_proof_output_evaluator_executor_unavailable",
+      );
+    }
+    const consumed = this.#consumeOutputObservation(
+      admissionReceipt,
+      observedOutput,
+    );
+    const evaluation = await evaluateGpuMcpOutputBytes(
+      executorClaim,
+      evaluatorCapability,
+      admissionReceipt,
+      consumed.observation.receipt,
+      consumed.outputBytes,
+      signal,
+    );
+    if (
+      this.#disposed
+      || evaluation.admissionReceiptId
+        !== consumed.admissionReceiptId
+      || evaluation.outputObservationReceiptId
+        !== consumed.observation.receipt.receiptId
+    ) {
+      throw new Error(
+        "gpu_parent_runtime_proof_output_evaluation_admission_binding_mismatch",
+      );
+    }
+    setWeakMapValue(
+      this.#verifiedOutputEvaluations,
+      evaluation,
+      {
+        admissionReceipt,
+        observation: consumed.observation,
+      },
+    );
+    return evaluation;
+  }
+
+  #consumeOutputObservation(
+    admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
+    observedOutput: GpuMcpObservedOutputBytes,
+  ): {
+    readonly admissionReceiptId: string;
+    readonly observation: GpuParentRuntimeProofOutputObservation;
+    readonly outputBytes: Uint8Array;
+  } {
     if (this.#disposed) throw disposedError();
     const admission = this.#assertCurrentAdmission(admissionReceipt);
     const consumerClaim = this.#outputByteConsumerClaim;
@@ -610,7 +784,8 @@ export class GpuParentRuntimeProofAdmissionAuthority {
       );
     }
     if (
-      this.#outputObservationPermitAdmissionReceiptIds.get(
+      getWeakMapValue(
+        this.#outputObservationPermitAdmissionReceiptIds,
         producerObservation.permit,
       ) !== admission.receiptId
     ) {
@@ -658,8 +833,19 @@ export class GpuParentRuntimeProofAdmissionAuthority {
       gpuHmrSuccess: false as const,
       canSatisfyRuntimeProof: false as const,
     });
-    this.#verifiedOutputObservations.set(observation, receipt);
-    return observation;
+    setWeakMapValue(
+      this.#verifiedOutputObservations,
+      observation,
+      {
+        admissionReceipt,
+        receipt,
+      },
+    );
+    return Object.freeze({
+      admissionReceiptId: admission.receiptId,
+      observation,
+      outputBytes: producerObservation.bytes,
+    });
   }
 
   #assertCurrentAdmission(
@@ -717,6 +903,11 @@ export class GpuParentRuntimeProofAdmissionAuthority {
     if (this.#outputByteConsumerClaim !== null) {
       disposeGpuMcpOutputByteConsumerClaim(
         this.#outputByteConsumerClaim,
+      );
+    }
+    if (this.#outputEvaluatorExecutorClaim !== null) {
+      disposeGpuMcpOutputEvaluatorExecutorClaim(
+        this.#outputEvaluatorExecutorClaim,
       );
     }
     this.#issuedAdmissionReceiptExpirations.clear();
