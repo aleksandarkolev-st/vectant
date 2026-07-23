@@ -5,8 +5,8 @@ import {
   createGpuHmrObservedCapabilityGraph,
 } from '../lib/gpu-hmr-observed-capability-graph.mjs';
 import {
-  createGpuHmrLiveOutputObservationAuthority,
-} from '../lib/gpu-hmr-live-output-observation.mjs';
+  createGpuHmrOutputObservationSupportChannel,
+} from '../lib/gpu-hmr-output-observation-support.mjs';
 
 function hash(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
@@ -46,17 +46,17 @@ const graph = createGpuHmrObservedCapabilityGraph({
     evidenceRefs: [`cas:${hash('dependency-evidence')}`],
   }],
 });
-const runtimeChainHash = hash('strict-runtime-chain');
+const runtimeChainHash = hash('caller-declared-runtime-chain');
 
-const authority = createGpuHmrLiveOutputObservationAuthority({
-  async observeLiveOutput({ liveInput }) {
-    return { observations: liveInput };
+const channel = createGpuHmrOutputObservationSupportChannel({
+  async collectOutputBytes({ sourceInput }) {
+    return { observations: sourceInput };
   },
 });
-const receipt = await authority.observe({
+const receipt = await channel.collect({
   graph,
-  runtimeChainHash,
-  liveInput: [
+  declaredRuntimeChainHash: runtimeChainHash,
+  sourceInput: [
     { nodeId: firstNodeId, bytes: firstBytes },
     { nodeId: secondNodeId, bytes: new Uint8Array(secondBytes) },
   ],
@@ -67,78 +67,84 @@ assert.equal(receipt.gpuHmrSuccess, false);
 assert.equal(receipt.canSatisfyRuntimeProof, false);
 assert.equal(receipt.canSatisfyDispatchProof, false);
 assert.equal(Object.isFrozen(receipt), true);
-assert.equal(authority.verify(receipt, {
+assert.equal(channel.inspect(receipt, {
   graph,
-  runtimeChainHash,
+  declaredRuntimeChainHash: runtimeChainHash,
   requiredNodeIds: [secondNodeId, firstNodeId],
-}).valid, true);
+}).supportIntegrityValid, true);
+assert.equal('verify' in channel, false);
+assert.equal('valid' in channel.inspect(receipt, {
+  graph,
+  declaredRuntimeChainHash: runtimeChainHash,
+  requiredNodeIds: [secondNodeId, firstNodeId],
+}), false);
 
 const jsonClone = clone(receipt);
-assert.deepEqual(authority.verify(jsonClone, {
+assert.deepEqual(channel.inspect(jsonClone, {
   graph,
-  runtimeChainHash,
+  declaredRuntimeChainHash: runtimeChainHash,
   requiredNodeIds: [firstNodeId],
 }), {
-  valid: false,
+  supportIntegrityValid: false,
   failures: ['receipt_not_issued_by_authority'],
   observationSetHash: null,
   observedNodeIds: [],
 });
 
-const otherAuthority = createGpuHmrLiveOutputObservationAuthority({
-  async observeLiveOutput({ liveInput }) {
-    return { observations: liveInput };
+const otherChannel = createGpuHmrOutputObservationSupportChannel({
+  async collectOutputBytes({ sourceInput }) {
+    return { observations: sourceInput };
   },
 });
-assert.equal(otherAuthority.verify(receipt, {
+assert.equal(otherChannel.inspect(receipt, {
   graph,
-  runtimeChainHash,
+  declaredRuntimeChainHash: runtimeChainHash,
   requiredNodeIds: [firstNodeId],
-}).valid, false);
+}).supportIntegrityValid, false);
 
-assert.equal(authority.verify(receipt, {
+assert.equal(channel.inspect(receipt, {
   graph,
-  runtimeChainHash,
+  declaredRuntimeChainHash: runtimeChainHash,
   requiredNodeIds: ['not-observed'],
 }).failures.includes('required_observation_missing'), true);
-assert.equal(authority.verify(receipt, {
+assert.equal(channel.inspect(receipt, {
   graph,
-  runtimeChainHash,
+  declaredRuntimeChainHash: runtimeChainHash,
   requiredNodeIds: [firstNodeId],
 }).failures.includes('required_observation_graph_incomplete'), true);
-assert.equal(authority.verify(receipt, {
+assert.equal(channel.inspect(receipt, {
   graph,
-  runtimeChainHash: hash('different-runtime-chain'),
+  declaredRuntimeChainHash: hash('different-runtime-chain'),
   requiredNodeIds: [firstNodeId],
-}).failures.includes('runtime_chain_hash_mismatch'), true);
+}).failures.includes('declared_runtime_chain_hash_mismatch'), true);
 
 await assert.rejects(
-  authority.observe({
+  channel.collect({
     graph,
-    runtimeChainHash,
-    liveInput: [{ nodeId: firstNodeId, bytes: Buffer.from('forged bytes') }],
+    declaredRuntimeChainHash: runtimeChainHash,
+    sourceInput: [{ nodeId: firstNodeId, bytes: Buffer.from('forged bytes') }],
   }),
   /observation_evidence_hash_mismatch/,
 );
 await assert.rejects(
-  authority.observe({
+  channel.collect({
     graph,
-    runtimeChainHash,
-    liveInput: [{ nodeId: firstNodeId, bytes: Buffer.alloc(0) }],
+    declaredRuntimeChainHash: runtimeChainHash,
+    sourceInput: [{ nodeId: firstNodeId, bytes: Buffer.alloc(0) }],
   }),
   /observation_bytes_empty/,
 );
 await assert.rejects(
-  authority.observe({
+  channel.collect({
     graph,
-    runtimeChainHash,
-    liveInput: [{ nodeId: firstNodeId, bytes: firstBytes }],
+    declaredRuntimeChainHash: runtimeChainHash,
+    sourceInput: [{ nodeId: firstNodeId, bytes: firstBytes }],
   }),
   /observation_graph_incomplete/,
 );
 
-const declarationObserver = createGpuHmrLiveOutputObservationAuthority({
-  async observeLiveOutput() {
+const declarationChannel = createGpuHmrOutputObservationSupportChannel({
+  async collectOutputBytes() {
     return {
       observations: [],
       gpuHmrSuccess: true,
@@ -146,7 +152,11 @@ const declarationObserver = createGpuHmrLiveOutputObservationAuthority({
   },
 });
 await assert.rejects(
-  declarationObserver.observe({ graph, runtimeChainHash, liveInput: null }),
+  declarationChannel.collect({
+    graph,
+    declaredRuntimeChainHash: runtimeChainHash,
+    sourceInput: null,
+  }),
   /verifier_result_field_set_mismatch/,
 );
 
@@ -154,9 +164,10 @@ console.log(JSON.stringify({
   status: 'ok',
   receiptHash: receipt.receiptHash,
   unfamiliarOutputMechanicsAccepted: true,
-  outputBytesBoundToGraph: true,
-  runtimeChainBound: true,
+  outputBytesBoundToGraphAsSupportOnly: true,
+  declaredRuntimeChainBoundAsSupportOnly: true,
   jsonReplayRejected: true,
   crossAuthorityReplayRejected: true,
   declaredSuccessRejected: true,
+  canSatisfyRuntimeProof: false,
 }, null, 2));

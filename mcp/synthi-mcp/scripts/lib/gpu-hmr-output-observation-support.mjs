@@ -4,18 +4,18 @@ import {
   evaluateGpuHmrObservedCapabilityGraphIntegrity,
 } from './gpu-hmr-observed-capability-graph.mjs';
 
-export const GPU_HMR_LIVE_OUTPUT_OBSERVATION_SCHEMA_VERSION =
-  'synthi.gpu_hmr.live_output_observation.v1';
-export const GPU_HMR_LIVE_OUTPUT_OBSERVATION_AUTHORITY =
-  'in_process_verifier_owned_output_bytes_only_not_gpu_hmr_success';
+export const GPU_HMR_OUTPUT_OBSERVATION_SUPPORT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.output_observation_support.v1';
+export const GPU_HMR_OUTPUT_OBSERVATION_SUPPORT_AUTHORITY =
+  'caller_collected_output_bytes_integrity_only_not_live_runtime_or_gpu_hmr_authority';
 
 const HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
-const REQUEST_FIELDS = Object.freeze(['graph', 'runtimeChainHash', 'liveInput']);
+const REQUEST_FIELDS = Object.freeze(['graph', 'declaredRuntimeChainHash', 'sourceInput']);
 const VERIFIER_RESULT_FIELDS = Object.freeze(['observations']);
 const OBSERVATION_FIELDS = Object.freeze(['nodeId', 'bytes']);
 const EXPECTED_FIELDS = Object.freeze([
   'graph',
-  'runtimeChainHash',
+  'declaredRuntimeChainHash',
   'requiredNodeIds',
 ]);
 const RECEIPT_FIELDS = Object.freeze([
@@ -23,7 +23,7 @@ const RECEIPT_FIELDS = Object.freeze([
   'authority',
   'subjectBindingHash',
   'graphHash',
-  'runtimeChainHash',
+  'declaredRuntimeChainHash',
   'observations',
   'observationSetHash',
   'receiptHash',
@@ -136,7 +136,7 @@ function publicReceiptMaterial(receipt) {
     authority: receipt.authority,
     subjectBindingHash: receipt.subjectBindingHash,
     graphHash: receipt.graphHash,
-    runtimeChainHash: receipt.runtimeChainHash,
+    declaredRuntimeChainHash: receipt.declaredRuntimeChainHash,
     observations: receipt.observations,
     observationSetHash: receipt.observationSetHash,
     acceptedForGpuHmr: receipt.acceptedForGpuHmr,
@@ -146,18 +146,21 @@ function publicReceiptMaterial(receipt) {
   };
 }
 
-export function createGpuHmrLiveOutputObservationAuthority({ observeLiveOutput }) {
-  if (typeof observeLiveOutput !== 'function') fail('live_output_observer_required');
+export function createGpuHmrOutputObservationSupportChannel({ collectOutputBytes }) {
+  if (typeof collectOutputBytes !== 'function') fail('output_byte_collector_required');
   const issuedReceipts = new WeakMap();
 
-  async function observe(request) {
+  async function collect(request) {
     const source = requireExactRecord(request, REQUEST_FIELDS, 'request');
     const graph = requireGraph(source.graph);
-    const runtimeChainHash = requireHash(source.runtimeChainHash, 'runtime_chain_hash');
-    const rawResult = await observeLiveOutput(Object.freeze({
+    const declaredRuntimeChainHash = requireHash(
+      source.declaredRuntimeChainHash,
+      'declared_runtime_chain_hash',
+    );
+    const rawResult = await collectOutputBytes(Object.freeze({
       graph,
-      runtimeChainHash,
-      liveInput: source.liveInput,
+      declaredRuntimeChainHash,
+      sourceInput: source.sourceInput,
     }));
     const result = requireExactRecord(rawResult, VERIFIER_RESULT_FIELDS, 'verifier_result');
     if (!Array.isArray(result.observations) || result.observations.length === 0
@@ -195,15 +198,15 @@ export function createGpuHmrLiveOutputObservationAuthority({ observeLiveOutput }
     }
 
     const observationSetHash = canonicalHash({
-      domain: `${GPU_HMR_LIVE_OUTPUT_OBSERVATION_SCHEMA_VERSION}.observation_set`,
+      domain: `${GPU_HMR_OUTPUT_OBSERVATION_SUPPORT_SCHEMA_VERSION}.observation_set`,
       observations,
     });
     const declaration = {
-      schemaVersion: GPU_HMR_LIVE_OUTPUT_OBSERVATION_SCHEMA_VERSION,
-      authority: GPU_HMR_LIVE_OUTPUT_OBSERVATION_AUTHORITY,
+      schemaVersion: GPU_HMR_OUTPUT_OBSERVATION_SUPPORT_SCHEMA_VERSION,
+      authority: GPU_HMR_OUTPUT_OBSERVATION_SUPPORT_AUTHORITY,
       subjectBindingHash: graph.subjectBindingHash,
       graphHash: graph.graphHash,
-      runtimeChainHash,
+      declaredRuntimeChainHash,
       observations: Object.freeze(observations),
       observationSetHash,
       acceptedForGpuHmr: false,
@@ -212,18 +215,18 @@ export function createGpuHmrLiveOutputObservationAuthority({ observeLiveOutput }
       canSatisfyDispatchProof: false,
     };
     const receiptHash = canonicalHash({
-      domain: `${GPU_HMR_LIVE_OUTPUT_OBSERVATION_SCHEMA_VERSION}.receipt`,
+      domain: `${GPU_HMR_OUTPUT_OBSERVATION_SUPPORT_SCHEMA_VERSION}.receipt`,
       receipt: publicReceiptMaterial(declaration),
     });
     const receipt = deepFreeze({
       ...declaration,
       receiptHash,
-      receiptId: `gpu-hmr-live-output-observation:${receiptHash}`,
+      receiptId: `gpu-hmr-output-observation-support:${receiptHash}`,
     });
     issuedReceipts.set(receipt, Object.freeze({
       graphHash: graph.graphHash,
       subjectBindingHash: graph.subjectBindingHash,
-      runtimeChainHash,
+      declaredRuntimeChainHash,
       observationSetHash,
       nodeIds: Object.freeze(nodeIds),
       receiptHash,
@@ -231,14 +234,14 @@ export function createGpuHmrLiveOutputObservationAuthority({ observeLiveOutput }
     return receipt;
   }
 
-  function verify(receipt, expected) {
+  function inspect(receipt, expected) {
     const failures = [];
     const pinned = receipt !== null && typeof receipt === 'object'
       ? issuedReceipts.get(receipt)
       : undefined;
     if (!pinned) {
       return Object.freeze({
-        valid: false,
+        supportIntegrityValid: false,
         failures: Object.freeze(['receipt_not_issued_by_authority']),
         observationSetHash: null,
         observedNodeIds: Object.freeze([]),
@@ -248,19 +251,19 @@ export function createGpuHmrLiveOutputObservationAuthority({ observeLiveOutput }
       const receiptSource = requireExactRecord(receipt, RECEIPT_FIELDS, 'receipt');
       const expectedSource = requireExactRecord(expected, EXPECTED_FIELDS, 'expected');
       const graph = requireGraph(expectedSource.graph);
-      const runtimeChainHash = requireHash(
-        expectedSource.runtimeChainHash,
-        'expected_runtime_chain_hash',
+      const declaredRuntimeChainHash = requireHash(
+        expectedSource.declaredRuntimeChainHash,
+        'expected_declared_runtime_chain_hash',
       );
       const requiredNodeIds = normalizeRequiredNodeIds(expectedSource.requiredNodeIds);
       const graphNodeIds = graph.nodes.map((node) => node.nodeId).sort();
       if (stableJson(requiredNodeIds) !== stableJson(graphNodeIds)) {
         failures.push('required_observation_graph_incomplete');
       }
-      if (receiptSource.schemaVersion !== GPU_HMR_LIVE_OUTPUT_OBSERVATION_SCHEMA_VERSION) {
+      if (receiptSource.schemaVersion !== GPU_HMR_OUTPUT_OBSERVATION_SUPPORT_SCHEMA_VERSION) {
         failures.push('schema_version_mismatch');
       }
-      if (receiptSource.authority !== GPU_HMR_LIVE_OUTPUT_OBSERVATION_AUTHORITY) {
+      if (receiptSource.authority !== GPU_HMR_OUTPUT_OBSERVATION_SUPPORT_AUTHORITY) {
         failures.push('authority_mismatch');
       }
       if (graph.graphHash !== pinned.graphHash || receiptSource.graphHash !== pinned.graphHash) {
@@ -273,16 +276,16 @@ export function createGpuHmrLiveOutputObservationAuthority({ observeLiveOutput }
         failures.push('subject_binding_hash_mismatch');
       }
       if (
-        runtimeChainHash !== pinned.runtimeChainHash
-        || receiptSource.runtimeChainHash !== pinned.runtimeChainHash
+        declaredRuntimeChainHash !== pinned.declaredRuntimeChainHash
+        || receiptSource.declaredRuntimeChainHash !== pinned.declaredRuntimeChainHash
       ) {
-        failures.push('runtime_chain_hash_mismatch');
+        failures.push('declared_runtime_chain_hash_mismatch');
       }
       if (receiptSource.observationSetHash !== pinned.observationSetHash) {
         failures.push('observation_set_hash_mismatch');
       }
       if (receiptSource.receiptHash !== pinned.receiptHash
-        || receiptSource.receiptId !== `gpu-hmr-live-output-observation:${pinned.receiptHash}`) {
+        || receiptSource.receiptId !== `gpu-hmr-output-observation-support:${pinned.receiptHash}`) {
         failures.push('receipt_identity_mismatch');
       }
       if (
@@ -294,7 +297,7 @@ export function createGpuHmrLiveOutputObservationAuthority({ observeLiveOutput }
         failures.push('authority_claim_forbidden');
       }
       if (canonicalHash({
-        domain: `${GPU_HMR_LIVE_OUTPUT_OBSERVATION_SCHEMA_VERSION}.receipt`,
+        domain: `${GPU_HMR_OUTPUT_OBSERVATION_SUPPORT_SCHEMA_VERSION}.receipt`,
         receipt: publicReceiptMaterial(receiptSource),
       }) !== pinned.receiptHash) {
         failures.push('receipt_hash_mismatch');
@@ -308,12 +311,12 @@ export function createGpuHmrLiveOutputObservationAuthority({ observeLiveOutput }
     }
     const uniqueFailures = Object.freeze([...new Set(failures)]);
     return Object.freeze({
-      valid: uniqueFailures.length === 0,
+      supportIntegrityValid: uniqueFailures.length === 0,
       failures: uniqueFailures,
       observationSetHash: pinned.observationSetHash,
       observedNodeIds: Object.freeze([...pinned.nodeIds]),
     });
   }
 
-  return Object.freeze({ observe, verify });
+  return Object.freeze({ collect, inspect });
 }
