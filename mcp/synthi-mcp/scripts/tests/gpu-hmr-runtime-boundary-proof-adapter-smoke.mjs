@@ -899,25 +899,32 @@ assert.ok(
   visualUnverifiedContentHash.failedGates.join(','),
 );
 
-const visualMissingFramebuffer = buildRuntimeBoundaryProofAdapter({
-  ...visualInput,
-  runtimeBoundaryEvents: boundaryEvents({
+const visualWithoutRendererSpecificMetadata = buildRuntimeBoundaryStageEvidence(
+  boundaryEvents({
     outputOracle: {
-      outputTargetId: 'framebuffer-1',
-      oracleKind: 'render_target_hash',
-      cameraStateHash: HASH_C,
-      swapchainSize: [1, 1],
-      captureBackend: 'png-smoke',
-      frameNumber: 12,
+      outputTargetId: 'opaque-output-resource-1',
+      oracleKind: 'visual_oracle',
       evidenceRefs: ['worker-log:output_oracle:runtime-session-1:dispatch-1'],
     },
   }),
-});
-assert.equal(visualMissingFramebuffer.accepted, false);
-assert.ok(
-  visualMissingFramebuffer.failedGates.includes('output_oracle_visual_framebuffer_identity_missing'),
-  visualMissingFramebuffer.failedGates.join(','),
 );
+assert.equal(
+  visualWithoutRendererSpecificMetadata.accepted,
+  true,
+  visualWithoutRendererSpecificMetadata.failedGates.join(','),
+);
+for (const rendererSpecificGap of [
+  'output_oracle_visual_camera_state_hash_missing',
+  'output_oracle_visual_framebuffer_identity_missing',
+  'output_oracle_visual_swapchain_size_missing',
+  'output_oracle_visual_frame_number_missing',
+  'output_oracle_visual_capture_backend_missing',
+]) {
+  assert.ok(
+    !visualWithoutRendererSpecificMetadata.failedGates.includes(rendererSpecificGap),
+    visualWithoutRendererSpecificMetadata.failedGates.join(','),
+  );
+}
 
 const missingRetirementReceipt = buildRuntimeBoundaryProofAdapter({
   ...adapterInput(),

@@ -2020,15 +2020,6 @@ function runtimeBoundaryFieldFailures(stage, event) {
     } else if (oracleKindClassification.modality === 'compute' && !event.oracleCodeHash) {
       failures.push('output_oracle_compute_oracle_code_hash_missing');
     }
-    if (isVisualOracleKind(event.oracleKind)) {
-      if (!event.cameraStateHash) failures.push('output_oracle_visual_camera_state_hash_missing');
-      if (!event.swapchainOrFramebufferIdentity) {
-        failures.push('output_oracle_visual_framebuffer_identity_missing');
-      }
-      if (!event.swapchainSize) failures.push('output_oracle_visual_swapchain_size_missing');
-      if (!Number.isInteger(event.frameNumber)) failures.push('output_oracle_visual_frame_number_missing');
-      if (!event.captureBackend) failures.push('output_oracle_visual_capture_backend_missing');
-    }
   }
   return failures;
 }
