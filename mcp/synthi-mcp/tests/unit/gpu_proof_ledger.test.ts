@@ -295,15 +295,8 @@ function rendererNeutralVisualArtifactFixture(): Record<string, unknown> {
     },
   };
   record.deterministic_visual_mode = {
-    fixed_seed: true,
-    frozen_camera: true,
-    temporal_accumulation_not_applicable: true,
-    taa_not_applicable: true,
-    denoiser_not_applicable: true,
-    fixed_resolution: true,
-    fixed_swapchain_image_count: true,
-    frame_capture_after_epoch_dispatch: true,
-    presentation_fence_or_frame_boundary: true,
+    output_observation_after_dispatch: true,
+    output_observation_ordering_proven: true,
   };
   return record;
 }
@@ -531,6 +524,150 @@ describe("GPU HMR proof ledger canonical profiles", () => {
         },
       }).failedInvariants.map(({ code }: { code: string }) => code)
     ).toContain("verifier_owned_visual_output_state_receipt_missing");
+  });
+
+  it("keeps script and typed convergence diagnostics fail-closed", () => {
+    const record = rendererNeutralVisualArtifactFixture();
+    record.deterministic_visual_mode = {
+      output_observation_after_dispatch: true,
+      output_observation_ordering_proven: true,
+      convergence_window: {
+        sample_start: 1,
+        sample_end: 2,
+        sample_count: 2,
+        metric: { value: "open-domain-metric@v1" },
+        metric_delta: 1,
+        convergence_proven: true,
+        evidence_refs: ["diagnostic:count-only"],
+      },
+    };
+
+    const typedCodes = failureCodes(record);
+    const scriptCodes = evaluateScriptGpuHmrProofLedger(record).failedInvariants.map(
+      ({ code }: { code: string }) => code
+    );
+
+    expect(scriptCodes).toEqual(typedCodes);
+    expect(typedCodes).toEqual(expect.arrayContaining([
+      "convergence_sample_evidence_missing",
+      "convergence_sample_count_mismatch",
+      "convergence_post_dispatch_sample_evidence_missing",
+      "verifier_owned_visual_output_state_receipt_missing",
+    ]));
+  });
+
+  it("rejects contradictory generic and legacy observation aliases", () => {
+    const record = rendererNeutralVisualArtifactFixture();
+    record.deterministic_visual_mode = {
+      output_observation_after_dispatch: true,
+      frame_capture_after_epoch_dispatch: false,
+      output_observation_ordering_proven: true,
+    };
+
+    const typedCodes = failureCodes(record);
+    const scriptCodes = evaluateScriptGpuHmrProofLedger(record).failedInvariants.map(
+      ({ code }: { code: string }) => code
+    );
+
+    expect(scriptCodes).toEqual(typedCodes);
+    expect(typedCodes).toEqual(expect.arrayContaining([
+      "output_observation_alias_conflict",
+      "output_observation_after_dispatch_unproven",
+    ]));
+  });
+
+  it("keeps generic convergence diagnostics in script and typed parity", () => {
+    const sampleA = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+    const sampleB = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+    const common = {
+      sample_start: 1,
+      sample_end: 2,
+      sample_count: 2,
+      metric: { value: "open-domain-metric@v1" },
+      convergence_proven: true,
+      evidence_refs: ["diagnostic:convergence"],
+    };
+    const cases = [
+      {
+        name: "invalid hash",
+        window: {
+          ...common,
+          post_dispatch_sample_hashes: ["not-a-digest", sampleB],
+          metric_delta: 1,
+        },
+        expected: ["convergence_sample_hash_invalid"],
+      },
+      {
+        name: "duplicate hash",
+        window: {
+          ...common,
+          post_dispatch_sample_hashes: [sampleA, sampleA],
+          metric_delta: 1,
+        },
+        expected: ["convergence_sample_hash_duplicate"],
+      },
+      {
+        name: "pre-dispatch sample",
+        window: {
+          ...common,
+          samples: [
+            { sample_hash: sampleA, metric_value: 1, after_dispatch: false },
+            { sample_hash: sampleB, metric_value: 2, after_dispatch: true },
+          ],
+        },
+        expected: [
+          "convergence_sample_ordering_unproven",
+          "convergence_post_dispatch_sample_evidence_missing",
+        ],
+      },
+      {
+        name: "legacy sample aliases",
+        window: {
+          ...common,
+          samples: [
+            { source_frame_hash: sampleA, value: 1, after_epoch_dispatch: true },
+            { source_frame_hash: sampleB, value: 2, after_epoch_dispatch: true },
+          ],
+        },
+        expected: [],
+      },
+    ];
+
+    for (const scenario of cases) {
+      const record = rendererNeutralVisualArtifactFixture();
+      record.deterministic_visual_mode = {
+        output_observation_after_dispatch: true,
+        output_observation_ordering_proven: true,
+        convergence_window: scenario.window,
+      };
+      const typedCodes = failureCodes(record);
+      const scriptCodes = evaluateScriptGpuHmrProofLedger(record).failedInvariants.map(
+        ({ code }: { code: string }) => code
+      );
+
+      expect(scriptCodes, scenario.name).toEqual(typedCodes);
+      expect(typedCodes, scenario.name).toEqual(expect.arrayContaining(scenario.expected));
+      if (scenario.expected.length === 0) {
+        expect(typedCodes.filter((code) => code.startsWith("convergence_")), scenario.name)
+          .toEqual([]);
+      }
+    }
+
+    const extensionOnly = rendererNeutralVisualArtifactFixture();
+    extensionOnly.deterministic_visual_mode = {
+      output_observation_after_dispatch: true,
+      output_observation_ordering_proven: true,
+      convergence_window: {
+        future_vendor_extension: { revision: 7 },
+      },
+    };
+    const typedExtensionCodes = failureCodes(extensionOnly);
+    const scriptExtensionCodes = evaluateScriptGpuHmrProofLedger(
+      extensionOnly
+    ).failedInvariants.map(({ code }: { code: string }) => code);
+
+    expect(scriptExtensionCodes).toEqual(typedExtensionCodes);
+    expect(typedExtensionCodes.filter((code) => code.startsWith("convergence_"))).toEqual([]);
   });
 
   it("rejects output-target relabeling, stale bindings, and unresolved evidence", () => {

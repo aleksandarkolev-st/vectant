@@ -10613,56 +10613,43 @@ describe("GPU HMR runtime output proof classification", () => {
     );
   });
 
-  it("requires deterministic visual controls beyond a raw pixel diff", () => {
+  it("keeps serialized output-observation ordering diagnostic-only", () => {
     const weakMode = evaluateGpuHmrDeterministicVisualMode({
-      fixed_seed: true,
-      frozen_camera: true,
-      frame_capture_after_epoch_dispatch: true,
+      output_observation_after_dispatch: true,
     });
 
     expect(weakMode.accepted).toBe(false);
-    expect(weakMode.failedGates.map((gate) => gate.code)).toEqual(
-      expect.arrayContaining([
-        "fixed_resolution_unproven",
-        "presentation_boundary_unproven",
-        "temporal_visual_requires_convergence_window",
-        "taa_control_unproven",
-        "denoiser_control_unproven",
-      ])
-    );
+    expect(weakMode.diagnosticAccepted).toBe(false);
+    expect(weakMode.failedGates.map((gate) => gate.code)).toEqual([
+      "output_observation_ordering_unproven",
+      "verifier_owned_output_observation_receipt_missing",
+    ]);
 
-    const strictSingleFrame = evaluateGpuHmrDeterministicVisualMode({
-      fixed_seed: true,
-      frozen_camera: true,
-      temporal_accumulation_disabled: true,
-      taa_disabled: true,
-      denoiser_disabled: true,
-      fixed_resolution: true,
-      fixed_swapchain_image_count: true,
-      frame_capture_after_epoch_dispatch: true,
-      presentation_fence_or_frame_boundary: true,
+    const genericSingleObservation = evaluateGpuHmrDeterministicVisualMode({
+      output_observation_after_dispatch: true,
+      output_observation_ordering_proven: true,
     });
 
-    expect(strictSingleFrame.accepted).toBe(true);
-    expect(strictSingleFrame.proofMode).toBe("single_frame_deterministic");
+    expect(genericSingleObservation.accepted).toBe(false);
+    expect(genericSingleObservation.diagnosticAccepted).toBe(true);
+    expect(genericSingleObservation.proofMode).toBe("single_observation_diagnostics");
+    expect(genericSingleObservation.failedGates.map((gate) => gate.code)).toEqual([
+      "verifier_owned_output_observation_receipt_missing",
+    ]);
   });
 
-  it("accepts convergence-window visual proof for temporal renderers", () => {
+  it("keeps open-metric sampled convergence diagnostic-only", () => {
     const convergenceMode = evaluateGpuHmrDeterministicVisualMode({
-      frozen_camera: true,
-      fixed_resolution: true,
-      fixed_swapchain_image_count: true,
-      frame_capture_after_epoch_dispatch: true,
-      presentation_fence_or_frame_boundary: true,
-      seed_policy_fixed: true,
+      output_observation_after_dispatch: true,
+      output_observation_ordering_proven: true,
       convergence_window: {
-        frame_start: 12,
-        frame_end: 20,
+        sample_start: 12,
+        sample_end: 20,
         metric: {
-          value: "window_mean_delta",
+          value: "unfamiliar-domain-similarity@v17",
         },
         sample_count: 9,
-        post_epoch_frame_hashes: Array.from(
+        post_dispatch_sample_hashes: Array.from(
           { length: 9 },
           (_, index) => `sha256:${String(index + 1).repeat(64)}`,
         ),
@@ -10672,18 +10659,19 @@ describe("GPU HMR runtime output proof classification", () => {
       },
     });
 
-    expect(convergenceMode.accepted).toBe(true);
-    expect(convergenceMode.proofMode).toBe("convergence_window");
-    expect(convergenceMode.failedGates).toEqual([]);
+    expect(convergenceMode.accepted).toBe(false);
+    expect(convergenceMode.diagnosticAccepted).toBe(true);
+    expect(convergenceMode.proofMode).toBe("multi_sample_convergence_diagnostics");
+    expect(convergenceMode.failedGates.map((gate) => gate.code)).toEqual([
+      "verifier_owned_output_observation_receipt_missing",
+    ]);
   });
 
   it("surfaces deterministic visual-mode failures in the proof summary", () => {
     const summary = buildGpuHmrValidationProofSummary({
       workspaceSlug: "workspace",
       deterministicVisualMode: {
-        fixed_seed: true,
-        frozen_camera: true,
-        frame_capture_after_epoch_dispatch: true,
+        output_observation_after_dispatch: true,
       },
     });
 
@@ -10692,7 +10680,7 @@ describe("GPU HMR runtime output proof classification", () => {
       expect.arrayContaining([
         expect.objectContaining({
           stage_id: "deterministic-visual-mode",
-          degraded_reason: "fixed_resolution_unproven",
+          degraded_reason: "output_observation_ordering_unproven",
         }),
       ])
     );

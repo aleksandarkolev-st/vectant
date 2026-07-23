@@ -78,75 +78,51 @@ assert.equal(
   2,
 );
 
-const deterministicSingleFrame = {
+const genericSingleObservation = {
   schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
-  fixed_seed: true,
-  frozen_camera: true,
-  temporal_accumulation_disabled: true,
-  taa_disabled: true,
-  denoiser_disabled: true,
-  fixed_resolution: true,
-  fixed_swapchain_image_count: true,
-  frame_capture_after_epoch_dispatch: true,
-  presentation_fence_or_frame_boundary: true,
-  warmup_frames: 1,
+  output_observation_after_dispatch: true,
+  output_observation_ordering_proven: true,
 };
 
-assert.equal(deterministicVisualModeAccepted(deterministicSingleFrame), true);
+assert.equal(deterministicVisualModeAccepted(genericSingleObservation), false);
+const genericSingleObservationEvaluation =
+  evaluateGpuHmrDeterministicVisualMode(genericSingleObservation);
+assert.equal(genericSingleObservationEvaluation.accepted, false);
+assert.equal(genericSingleObservationEvaluation.diagnosticAccepted, true);
+assert.equal(genericSingleObservationEvaluation.proofMode, 'single_observation_diagnostics');
+assert.ok(genericSingleObservationEvaluation.failedGates.some(
+  (gate) => gate.code === 'verifier_owned_output_observation_receipt_missing',
+));
 
-const runtimeObservedDeterministicMode = evaluateGpuHmrDeterministicVisualMode({
-  ...deterministicSingleFrame,
-  proof_authority: 'recomputed_target_process_runtime_visual_control_pair',
+const unfamiliarSourceMetadata = evaluateGpuHmrDeterministicVisualMode({
+  ...genericSingleObservation,
+  proof_authority: 'unfamiliar-observer@v17',
 });
-assert.equal(runtimeObservedDeterministicMode.accepted, true);
+assert.equal(unfamiliarSourceMetadata.accepted, false);
+assert.equal(unfamiliarSourceMetadata.diagnosticAccepted, true);
 
-for (const source of [
-  'mcp_frame_evidence',
-  'profile_declaration_only_not_runtime_visual_proof',
-  'verified_mcp_capture_observations_only',
-]) {
-  const supportOnlyMode = evaluateGpuHmrDeterministicVisualMode({
-    ...deterministicSingleFrame,
-    controlEvidenceAuthority: 'recomputed_target_process_runtime_visual_control_pair',
-    source,
-  });
-  assert.equal(supportOnlyMode.accepted, false);
-  assert.ok(
-    supportOnlyMode.failedGates.some((gate) =>
-      gate.code === 'deterministic_visual_control_authority_non_authoritative'
-      && gate.authorities?.includes(source)
-    ),
-    `expected non-authoritative visual-control refusal for ${source}, got ${supportOnlyMode.failedGates.map((gate) => gate.code).join(',')}`,
-  );
-}
-
-const missingSwapchainCount = evaluateGpuHmrDeterministicVisualMode({
-  ...deterministicSingleFrame,
-  fixed_swapchain_image_count: false,
+const missingObservationOrdering = evaluateGpuHmrDeterministicVisualMode({
+  ...genericSingleObservation,
+  output_observation_ordering_proven: false,
 });
-assert.equal(missingSwapchainCount.accepted, false);
+assert.equal(missingObservationOrdering.accepted, false);
 assert.ok(
-  missingSwapchainCount.failedGates.some((gate) => gate.code === 'fixed_swapchain_image_count_unproven'),
-  `expected fixed_swapchain_image_count_unproven, got ${missingSwapchainCount.failedGates.map((g) => g.code).join(',')}`,
+  missingObservationOrdering.failedGates.some(
+    (gate) => gate.code === 'output_observation_ordering_unproven',
+  ),
+  `expected output_observation_ordering_unproven, got ${missingObservationOrdering.failedGates.map((g) => g.code).join(',')}`,
 );
 
 const convergenceWindow = evaluateGpuHmrDeterministicVisualMode({
   schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
-  seed_policy_fixed: true,
-  frozen_camera: true,
-  fixed_resolution: true,
-  fixed_swapchain_image_count: true,
-  frame_capture_after_epoch_dispatch: true,
-  presentation_fence_or_frame_boundary: true,
-  temporal_accumulation_present: true,
-  taa_present: true,
-  denoiser_present: true,
+  output_observation_after_dispatch: true,
+  output_observation_ordering_proven: true,
   convergence_window: {
-    frame_start: 3,
-    frame_end: 9,
-    metric: { value: 'window_mean_delta' },
+    sample_start: 3,
+    sample_end: 9,
+    metric: { value: 'unfamiliar-domain-similarity@v17' },
     sample_count: 7,
-    frame_hashes: [
+    post_dispatch_sample_hashes: [
       'sha256:1111111111111111111111111111111111111111111111111111111111111111',
       'sha256:2222222222222222222222222222222222222222222222222222222222222222',
       'sha256:3333333333333333333333333333333333333333333333333333333333333333',
@@ -157,192 +133,136 @@ const convergenceWindow = evaluateGpuHmrDeterministicVisualMode({
     ],
     metric_delta: 12.5,
     convergence_proven: true,
-    evidence_refs: ['visual-window:post-epoch-frames'],
+    evidence_refs: ['output-observation:multi-sample'],
   },
 });
-assert.equal(convergenceWindow.accepted, true);
-assert.equal(convergenceWindow.proofMode, 'convergence_window');
+assert.equal(convergenceWindow.accepted, false);
+assert.equal(convergenceWindow.diagnosticAccepted, true);
+assert.equal(convergenceWindow.proofMode, 'multi_sample_convergence_diagnostics');
 
 const convergenceWindowWithDeclaredCountOnly = evaluateGpuHmrDeterministicVisualMode({
   schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
-  seed_policy_fixed: true,
-  frozen_camera: true,
-  fixed_resolution: true,
-  fixed_swapchain_image_count: true,
-  frame_capture_after_epoch_dispatch: true,
-  presentation_fence_or_frame_boundary: true,
-  temporal_accumulation_present: true,
-  taa_present: true,
-  denoiser_present: true,
+  output_observation_after_dispatch: true,
+  output_observation_ordering_proven: true,
   convergence_window: {
-    frame_start: 3,
-    frame_end: 9,
-    metric: { value: 'window_mean_delta' },
+    sample_start: 3,
+    sample_end: 9,
+    metric: { value: 'unfamiliar-domain-similarity@v17' },
     sample_count: 7,
     metric_delta: 12.5,
     convergence_proven: true,
-    evidence_refs: ['visual-window:post-epoch-frames'],
+    evidence_refs: ['output-observation:multi-sample'],
   },
 });
 assert.equal(convergenceWindowWithDeclaredCountOnly.accepted, false);
 assert.ok(
   convergenceWindowWithDeclaredCountOnly.failedGates.some((gate) =>
-    gate.code === 'convergence_window_sample_evidence_missing'
+    gate.code === 'convergence_sample_evidence_missing'
   ),
-  `expected convergence_window_sample_evidence_missing, got ${convergenceWindowWithDeclaredCountOnly.failedGates.map((g) => g.code).join(',')}`,
-);
-
-const convergenceWindowWithoutSamples = evaluateGpuHmrDeterministicVisualMode({
-  schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
-  seed_policy_fixed: true,
-  frozen_camera: true,
-  fixed_resolution: true,
-  fixed_swapchain_image_count: true,
-  frame_capture_after_epoch_dispatch: true,
-  presentation_fence_or_frame_boundary: true,
-  temporal_accumulation_present: true,
-  taa_present: true,
-  denoiser_present: true,
-  convergence_window: {
-    frame_start: 3,
-    frame_end: 9,
-    metric: { value: 'window_mean_delta' },
-    metric_delta: 12.5,
-    convergence_proven: true,
-    evidence_refs: ['visual-window:post-epoch-frames'],
-  },
-});
-assert.equal(convergenceWindowWithoutSamples.accepted, false);
-assert.ok(
-  convergenceWindowWithoutSamples.failedGates.some((gate) =>
-    gate.code === 'convergence_window_sample_evidence_missing'
-  ),
-  `expected convergence_window_sample_evidence_missing, got ${convergenceWindowWithoutSamples.failedGates.map((g) => g.code).join(',')}`,
+  `expected convergence_sample_evidence_missing, got ${convergenceWindowWithDeclaredCountOnly.failedGates.map((g) => g.code).join(',')}`,
 );
 
 const artifactHashUsedAsConvergenceSample = evaluateGpuHmrDeterministicVisualMode({
   schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
-  seed_policy_fixed: true,
-  frozen_camera: true,
-  fixed_resolution: true,
-  fixed_swapchain_image_count: true,
-  frame_capture_after_epoch_dispatch: true,
-  presentation_fence_or_frame_boundary: true,
-  temporal_accumulation_present: true,
-  taa_present: true,
-  denoiser_present: true,
+  output_observation_after_dispatch: true,
+  output_observation_ordering_proven: true,
   convergence_window: {
-    frame_start: 1,
-    frame_end: 2,
-    metric: { value: 'per_frame_delta' },
+    sample_start: 1,
+    sample_end: 2,
+    metric: { value: 'unfamiliar-domain-similarity@v17' },
     samples: [
       {
-        frame: 1,
+        sample: 1,
         metric_value: 11,
         artifact_hash: 'sha256:8888888888888888888888888888888888888888888888888888888888888888',
-        after_epoch_dispatch: true,
+        after_dispatch: true,
       },
       {
-        frame: 2,
+        sample: 2,
         metric_value: 12,
         artifact_hash: 'sha256:9999999999999999999999999999999999999999999999999999999999999999',
-        after_epoch_dispatch: true,
+        after_dispatch: true,
       },
     ],
     convergence_proven: true,
-    evidence_refs: ['visual-window:post-epoch-frames'],
+    evidence_refs: ['output-observation:multi-sample'],
   },
 });
 assert.equal(artifactHashUsedAsConvergenceSample.accepted, false);
 assert.ok(
   artifactHashUsedAsConvergenceSample.failedGates.some((gate) =>
-    gate.code === 'convergence_window_artifact_hash_not_frame_evidence'
+    gate.code === 'convergence_artifact_hash_not_sample_evidence'
   ),
-  `expected convergence_window_artifact_hash_not_frame_evidence, got ${artifactHashUsedAsConvergenceSample.failedGates.map((g) => g.code).join(',')}`,
+  `expected convergence_artifact_hash_not_sample_evidence, got ${artifactHashUsedAsConvergenceSample.failedGates.map((g) => g.code).join(',')}`,
 );
 
-const runtimeArtifactHashUsedAsFrameHash = evaluateGpuHmrDeterministicVisualMode({
+const runtimeArtifactHashUsedAsSampleHash = evaluateGpuHmrDeterministicVisualMode({
   schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
   artifact_hash_after: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-  seed_policy_fixed: true,
-  frozen_camera: true,
-  fixed_resolution: true,
-  fixed_swapchain_image_count: true,
-  frame_capture_after_epoch_dispatch: true,
-  presentation_fence_or_frame_boundary: true,
-  temporal_accumulation_present: true,
-  taa_present: true,
-  denoiser_present: true,
+  output_observation_after_dispatch: true,
+  output_observation_ordering_proven: true,
   convergence_window: {
-    frame_start: 1,
-    frame_end: 2,
-    metric: { value: 'per_frame_delta' },
-    frame_hashes: [
+    sample_start: 1,
+    sample_end: 2,
+    metric: { value: 'unfamiliar-domain-similarity@v17' },
+    observation_hashes: [
       'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     ],
     metric_delta: 12.5,
     convergence_proven: true,
-    evidence_refs: ['visual-window:post-epoch-frames'],
+    evidence_refs: ['output-observation:multi-sample'],
   },
 });
-assert.equal(runtimeArtifactHashUsedAsFrameHash.accepted, false);
+assert.equal(runtimeArtifactHashUsedAsSampleHash.accepted, false);
 assert.ok(
-  runtimeArtifactHashUsedAsFrameHash.failedGates.some((gate) =>
-    gate.code === 'convergence_window_frame_hash_matches_gpu_artifact_hash'
+  runtimeArtifactHashUsedAsSampleHash.failedGates.some((gate) =>
+    gate.code === 'convergence_sample_hash_matches_gpu_artifact_hash'
   ),
-  `expected convergence_window_frame_hash_matches_gpu_artifact_hash, got ${runtimeArtifactHashUsedAsFrameHash.failedGates.map((g) => g.code).join(',')}`,
+  `expected convergence_sample_hash_matches_gpu_artifact_hash, got ${runtimeArtifactHashUsedAsSampleHash.failedGates.map((g) => g.code).join(',')}`,
 );
 
-const convergenceWindowWithoutSeed = evaluateGpuHmrDeterministicVisualMode({
-  schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
-  frozen_camera: true,
-  fixed_resolution: true,
-  fixed_swapchain_image_count: true,
-  frame_capture_after_epoch_dispatch: true,
-  presentation_fence_or_frame_boundary: true,
-  temporal_accumulation_present: true,
-  taa_present: true,
-  denoiser_present: true,
+const missingPostDispatchObservation = evaluateGpuHmrDeterministicVisualMode({
+  ...genericSingleObservation,
+  output_observation_after_dispatch: false,
+});
+assert.equal(missingPostDispatchObservation.accepted, false);
+assert.ok(
+  missingPostDispatchObservation.failedGates.some(
+    (gate) => gate.code === 'output_observation_after_dispatch_unproven',
+  ),
+  `expected output_observation_after_dispatch_unproven, got ${missingPostDispatchObservation.failedGates.map((g) => g.code).join(',')}`,
+);
+
+const contradictoryObservationAliases = evaluateGpuHmrDeterministicVisualMode({
+  ...genericSingleObservation,
+  frame_capture_after_epoch_dispatch: false,
+});
+assert.equal(contradictoryObservationAliases.diagnosticAccepted, false);
+assert.ok(contradictoryObservationAliases.failedGates.some(
+  (gate) => gate.code === 'output_observation_alias_conflict',
+));
+
+const duplicateConvergenceSamples = evaluateGpuHmrDeterministicVisualMode({
+  ...genericSingleObservation,
   convergence_window: {
-    frame_start: 3,
-    frame_end: 4,
-    metric: { value: 'per_frame_delta' },
-    samples: [
-      {
-        frame: 3,
-        metric_value: 10.0,
-        frame_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-        after_epoch_dispatch: true,
-      },
-      {
-        frame: 4,
-        metric_value: 12.0,
-        frame_hash: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
-        after_epoch_dispatch: true,
-      },
+    sample_start: 1,
+    sample_end: 2,
+    metric: { value: 'unfamiliar-domain-similarity@v17' },
+    sample_count: 2,
+    post_dispatch_sample_hashes: [
+      'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
     ],
+    metric_delta: 1,
     convergence_proven: true,
-    evidence_refs: ['visual-window:post-epoch-frames'],
+    evidence_refs: ['output-observation:duplicate-samples'],
   },
 });
-assert.equal(convergenceWindowWithoutSeed.accepted, false);
-assert.ok(
-  convergenceWindowWithoutSeed.failedGates.some((gate) =>
-    gate.code === 'convergence_window_seed_policy_unproven'
-  ),
-  `expected convergence_window_seed_policy_unproven, got ${convergenceWindowWithoutSeed.failedGates.map((g) => g.code).join(',')}`,
-);
-
-const missingPresentationFence = evaluateGpuHmrDeterministicVisualMode({
-  ...deterministicSingleFrame,
-  presentation_fence_or_frame_boundary: false,
-});
-assert.equal(missingPresentationFence.accepted, false);
-assert.ok(
-  missingPresentationFence.failedGates.some((gate) => gate.code === 'presentation_boundary_unproven'),
-  `expected presentation_boundary_unproven, got ${missingPresentationFence.failedGates.map((g) => g.code).join(',')}`,
-);
+assert.equal(duplicateConvergenceSamples.diagnosticAccepted, false);
+assert.ok(duplicateConvergenceSamples.failedGates.some(
+  (gate) => gate.code === 'convergence_sample_hash_duplicate',
+));
 
 assert.equal(mcpFrameGateSatisfied({ status: 'satisfied' }), true);
 assert.equal(mcpFrameGateSatisfied({
@@ -525,14 +445,7 @@ assert.deepEqual(mcpScreenshotMetadataFromToolResult({ seq: 3, ts: 3000, data: '
 
 const mcpDerived = deterministicVisualModeFromMcpEvidence({
   base: {
-    fixed_seed: true,
-    frozen_camera: true,
-    temporal_accumulation_not_applicable: true,
-    taa_not_applicable: true,
-    denoiser_not_applicable: true,
-    fixed_swapchain_image_count: true,
-    warmup_frames: 1,
-    profile_only_marker: 'must-not-enter-authoritative-mode',
+    caller_serialized_success: true,
   },
   before: mcpBeforeScreenshot,
   gateCapture: mcpAfterScreenshot,
@@ -544,34 +457,19 @@ const mcpDerived = deterministicVisualModeFromMcpEvidence({
 });
 const mcpDerivedEvaluation = evaluateGpuHmrDeterministicVisualMode(mcpDerived);
 assert.equal(mcpDerivedEvaluation.accepted, false);
-assert.equal(mcpDerived.fixed_resolution, true);
-assert.equal(mcpDerived.frame_capture_after_epoch_dispatch, true);
-assert.equal(mcpDerived.presentation_fence_or_frame_boundary, true);
-assert.equal(mcpDerived.frozen_camera, null);
-assert.equal(mcpDerived.camera_state_hash, null);
+assert.equal(mcpDerivedEvaluation.diagnosticAccepted, true);
+assert.equal(mcpDerived.output_observation_after_dispatch, true);
+assert.equal(mcpDerived.output_observation_ordering_proven, true);
+assert.equal(mcpDerived.evidence_authority, 'verified_mcp_capture_observations_only');
 assert.equal(mcpDerived.state_dependency_binding_observed, false);
-assert.equal(mcpDerived.camera_state_observed, undefined);
-assert.equal(mcpDerived.seed_policy_fixed, null);
-assert.equal(mcpDerived.temporal_accumulation_not_applicable, null);
-assert.equal(mcpDerived.taa_not_applicable, null);
-assert.equal(mcpDerived.denoiser_not_applicable, null);
-assert.equal(mcpDerived.fixed_swapchain_image_count, null);
-assert.equal(mcpDerived.profile_only_marker, undefined);
-assert.ok(
-  mcpDerivedEvaluation.failedGates.some((gate) => gate.code === 'seed_policy_unproven'),
-  `expected seed_policy_unproven, got ${mcpDerivedEvaluation.failedGates.map((g) => g.code).join(',')}`,
+assert.equal(mcpDerived.caller_serialized_success, undefined);
+assert.deepEqual(
+  mcpDerivedEvaluation.failedGates.map((gate) => gate.code),
+  ['verifier_owned_output_observation_receipt_missing'],
 );
 
 const mcpMissingGate = evaluateGpuHmrDeterministicVisualMode(
   deterministicVisualModeFromMcpEvidence({
-    base: {
-      fixed_seed: true,
-      frozen_camera: true,
-      temporal_accumulation_not_applicable: true,
-      taa_not_applicable: true,
-      denoiser_not_applicable: true,
-      fixed_swapchain_image_count: true,
-    },
     before: mcpBeforeScreenshot,
     after: { width: 640, height: 480, seq: 11, ts: 1100 },
     wait: { frame_gate: { status: 'timeout' } },
@@ -579,20 +477,14 @@ const mcpMissingGate = evaluateGpuHmrDeterministicVisualMode(
 );
 assert.equal(mcpMissingGate.accepted, false);
 assert.ok(
-  mcpMissingGate.failedGates.some((gate) => gate.code === 'frame_capture_after_epoch_dispatch_unproven'),
-  `expected frame_capture_after_epoch_dispatch_unproven, got ${mcpMissingGate.failedGates.map((g) => g.code).join(',')}`,
+  mcpMissingGate.failedGates.some(
+    (gate) => gate.code === 'output_observation_after_dispatch_unproven',
+  ),
+  `expected output_observation_after_dispatch_unproven, got ${mcpMissingGate.failedGates.map((g) => g.code).join(',')}`,
 );
 
 const mcpStaleScreenshot = evaluateGpuHmrDeterministicVisualMode(
   deterministicVisualModeFromMcpEvidence({
-    base: {
-      fixed_seed: true,
-      frozen_camera: true,
-      temporal_accumulation_not_applicable: true,
-      taa_not_applicable: true,
-      denoiser_not_applicable: true,
-      fixed_swapchain_image_count: true,
-    },
     before: mcpBeforeScreenshot,
     after: { ...mcpAfterScreenshot, seq: 11, ts: 1199 },
     wait: {
@@ -604,21 +496,13 @@ const mcpStaleScreenshot = evaluateGpuHmrDeterministicVisualMode(
 assert.equal(mcpStaleScreenshot.accepted, false);
 assert.ok(
   mcpStaleScreenshot.failedGates.some((gate) =>
-    gate.code === 'frame_capture_after_epoch_dispatch_unproven'
+    gate.code === 'output_observation_after_dispatch_unproven'
   ),
-  `expected frame_capture_after_epoch_dispatch_unproven for stale screenshot, got ${mcpStaleScreenshot.failedGates.map((g) => g.code).join(',')}`,
+  `expected output_observation_after_dispatch_unproven for stale screenshot, got ${mcpStaleScreenshot.failedGates.map((g) => g.code).join(',')}`,
 );
 
 const mcpFailedGpuProofValidation = evaluateGpuHmrDeterministicVisualMode(
   deterministicVisualModeFromMcpEvidence({
-    base: {
-      fixed_seed: true,
-      frozen_camera: true,
-      temporal_accumulation_not_applicable: true,
-      taa_not_applicable: true,
-      denoiser_not_applicable: true,
-      fixed_swapchain_image_count: true,
-    },
     before: mcpBeforeScreenshot,
     after: mcpAfterScreenshot,
     wait: {
@@ -630,9 +514,9 @@ const mcpFailedGpuProofValidation = evaluateGpuHmrDeterministicVisualMode(
 assert.equal(mcpFailedGpuProofValidation.accepted, false);
 assert.ok(
   mcpFailedGpuProofValidation.failedGates.some((gate) =>
-    gate.code === 'frame_capture_after_epoch_dispatch_unproven'
+    gate.code === 'output_observation_after_dispatch_unproven'
   ),
-  `expected frame_capture_after_epoch_dispatch_unproven for failed GPU proof validation, got ${mcpFailedGpuProofValidation.failedGates.map((g) => g.code).join(',')}`,
+  `expected output_observation_after_dispatch_unproven for failed GPU proof validation, got ${mcpFailedGpuProofValidation.failedGates.map((g) => g.code).join(',')}`,
 );
 
 const casRoot = await mkdtemp(path.join(os.tmpdir(), 'synthi-visual-cas-smoke-'));
@@ -656,7 +540,11 @@ assert.equal(
   visualTransport.schemaVersion,
   GPU_HMR_VISUAL_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION,
 );
-assert.equal(visualTransport.acceptedAsTransportEvidence, true);
+assert.equal(
+  visualTransport.acceptedAsTransportEvidence,
+  true,
+  JSON.stringify(visualTransport.reasons ?? visualTransport),
+);
 assert.equal(visualTransport.acceptedForGpuHmr, false);
 assert.equal(visualTransport.gpuHmrSuccess, false);
 assert.equal(
@@ -825,14 +713,14 @@ console.log(JSON.stringify({
   ok: true,
   schemaVersion: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
   checkedModes: [
-    'single_frame_deterministic',
-    'swapchain_rejection',
-    'convergence_window',
-    'convergence_window_declared_count_only_rejection',
-    'convergence_window_sample_rejection',
-    'convergence_window_artifact_hash_rejection',
-    'convergence_window_runtime_artifact_hash_collision_rejection',
-    'convergence_window_seed_rejection',
+    'single_observation_diagnostics_only',
+    'generic_observation_ordering_rejection',
+    'open_metric_multi_sample_convergence_diagnostics_only',
+    'convergence_declared_count_only_rejection',
+    'convergence_duplicate_sample_rejection',
+    'convergence_artifact_hash_rejection',
+    'convergence_runtime_artifact_hash_collision_rejection',
+    'contradictory_observation_alias_rejection',
     'mcp_frame_gate_derived',
     'mcp_screenshot_args_derived',
     'mcp_failed_gpu_proof_validation_rejection',

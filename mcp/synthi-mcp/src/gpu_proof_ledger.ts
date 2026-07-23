@@ -33,12 +33,6 @@ export const DEFAULT_GPU_HMR_MODEL_POLICY = {
     google_gemini: ["gemini", "gemini_api", "google_gemini"],
   },
 } as const;
-const CONVERGENCE_METRICS = new Set([
-  "per_frame_delta",
-  "window_mean_delta",
-  "stable_histogram_delta",
-  "oracle_region_delta",
-]);
 const ACCEPTED_COMPUTE_RAW_READBACK_SOURCES = new Set([
   "runtime_readback",
   "runtime_readback_sample",
@@ -898,76 +892,254 @@ function visualTraceCorrelates(trace: unknown, identifiers: unknown[]): boolean 
   return false;
 }
 
-function boolField(object: Record<string, unknown>, ...keys: string[]): boolean | null {
-  for (const key of keys) {
-    if (typeof object[key] === "boolean") return object[key] as boolean;
-  }
-  return null;
+function consensusBoolField(
+  object: Record<string, unknown>,
+  ...keys: string[]
+): { value: boolean | null; conflict: boolean } {
+  const observed = keys
+    .map((key) => object[key])
+    .filter((value): value is boolean => typeof value === "boolean");
+  const distinct = new Set(observed);
+  return {
+    value: distinct.size === 1 ? (observed[0] ?? null) : null,
+    conflict: distinct.size > 1,
+  };
+}
+
+function convergenceWindowDeclared(window: Record<string, unknown>): boolean {
+  const arrayHasEntries = (...keys: string[]): boolean => keys.some(
+    (key) => Array.isArray(window[key]) && (window[key] as unknown[]).length > 0
+  );
+  return finiteNumber(
+    window.sample_start
+    ?? window.sampleStart
+    ?? window.observation_start
+    ?? window.observationStart
+    ?? window.frame_start
+    ?? window.frameStart
+  ) !== null
+    || finiteNumber(
+      window.sample_end
+      ?? window.sampleEnd
+      ?? window.observation_end
+      ?? window.observationEnd
+      ?? window.frame_end
+      ?? window.frameEnd
+    ) !== null
+    || finiteNumber(window.sample_count ?? window.sampleCount) !== null
+    || arrayHasEntries(
+      "samples",
+      "sample_hashes",
+      "sampleHashes",
+      "observation_hashes",
+      "observationHashes",
+      "frame_hashes",
+      "frameHashes",
+      "pre_dispatch_sample_hashes",
+      "preDispatchSampleHashes",
+      "pre_epoch_frame_hashes",
+      "preEpochFrameHashes",
+      "post_dispatch_sample_hashes",
+      "postDispatchSampleHashes",
+      "post_epoch_frame_hashes",
+      "postEpochFrameHashes",
+      "artifact_hashes",
+      "artifactHashes"
+    )
+    || firstText(window.artifact_hash, window.artifactHash) !== null
+    || firstText(asObject(window.metric).value, window.metric) !== null
+    || finiteNumber(window.metric_value ?? window.metricValue) !== null
+    || finiteNumber(
+      window.metric_delta
+      ?? window.metricDelta
+      ?? window.observed_delta
+      ?? window.observedDelta
+      ?? window.window_delta
+      ?? window.windowDelta
+      ?? window.mean_delta
+      ?? window.meanDelta
+    ) !== null
+    || typeof (window.convergence_proven ?? window.convergenceProven ?? window.proven) === "boolean"
+    || compactStringList(window.evidence_refs ?? window.evidenceRefs).length > 0;
 }
 
 function deterministicVisualFailures(modeInput: unknown): GpuHmrLedgerFailure[] {
   const mode = asObject(modeInput);
   const failures: GpuHmrLedgerFailure[] = [];
-  const fixedSeed =
-    mode.fixed_seed === true
-    || mode.seed_policy_fixed === true
-    || Boolean(text(mode.seed_policy_hash));
-  if (!fixedSeed) failures.push({ code: "seed_policy_unproven" });
-  if (mode.frozen_camera !== true && mode.camera_frozen !== true) {
-    failures.push({ code: "frozen_camera_unproven" });
+  const outputObservedAfterDispatch = consensusBoolField(
+    mode,
+    "output_observation_after_dispatch",
+    "outputObservationAfterDispatch",
+    "output_capture_after_dispatch",
+    "outputCaptureAfterDispatch",
+    "frame_capture_after_epoch_dispatch",
+    "frameCaptureAfterEpochDispatch"
+  );
+  const outputObservationOrdering = consensusBoolField(
+    mode,
+    "output_observation_ordering_proven",
+    "outputObservationOrderingProven",
+    "output_completion_observed",
+    "outputCompletionObserved",
+    "completion_boundary_proven",
+    "completionBoundaryProven",
+    "presentation_fence_or_frame_boundary",
+    "presentationFenceOrFrameBoundary",
+    "presentation_boundary_proven",
+    "presentationBoundaryProven"
+  );
+  const aliasConflictFields = compactStringList([
+    outputObservedAfterDispatch.conflict ? "output_observation_after_dispatch" : null,
+    outputObservationOrdering.conflict ? "output_observation_ordering_proven" : null,
+  ]);
+  if (aliasConflictFields.length > 0) {
+    failures.push({
+      code: "output_observation_alias_conflict",
+      fields: aliasConflictFields,
+    });
   }
-  if (mode.fixed_resolution !== true) failures.push({ code: "fixed_resolution_unproven" });
-  if (mode.frame_capture_after_epoch_dispatch !== true && mode.frameCaptureAfterEpochDispatch !== true) {
-    failures.push({ code: "frame_capture_after_epoch_dispatch_unproven" });
+  if (outputObservedAfterDispatch.value !== true) {
+    failures.push({ code: "output_observation_after_dispatch_unproven" });
   }
-  if (
-    mode.presentation_fence_or_frame_boundary !== true
-    && mode.presentationFenceOrFrameBoundary !== true
-    && mode.presentation_boundary_proven !== true
-    && mode.presentationBoundaryProven !== true
-  ) {
-    failures.push({ code: "presentation_boundary_unproven" });
+  if (outputObservationOrdering.value !== true) {
+    failures.push({ code: "output_observation_ordering_unproven" });
   }
-  if (mode.fixed_swapchain_image_count !== true && mode.fixedSwapchainImageCount !== true) {
-    failures.push({ code: "fixed_swapchain_image_count_unproven" });
-  }
-  const temporalDisabled =
-    mode.temporal_accumulation_disabled === true
-    || mode.temporalAccumulationDisabled === true
-    || mode.temporal_accumulation_present === false
-    || mode.temporalAccumulationPresent === false
-    || mode.temporal_accumulation_not_applicable === true
-    || mode.temporalAccumulationNotApplicable === true;
-  const taaSatisfied =
-    mode.taa_disabled === true
-    || mode.taaDisabled === true
-    || mode.taa_present === false
-    || mode.taaPresent === false
-    || mode.taa_not_applicable === true
-    || mode.taaNotApplicable === true;
-  const denoiserSatisfied =
-    mode.denoiser_disabled === true
-    || mode.denoiserDisabled === true
-    || mode.denoiser_present === false
-    || mode.denoiserPresent === false
-    || mode.denoiser_not_applicable === true
-    || mode.denoiserNotApplicable === true;
-  if (!taaSatisfied) failures.push({ code: "taa_control_unproven" });
-  if (!denoiserSatisfied) failures.push({ code: "denoiser_control_unproven" });
-  if (!temporalDisabled) {
-    const window = asObject(mode.convergence_window ?? mode.convergenceWindow);
+
+  const window = asObject(mode.convergence_window ?? mode.convergenceWindow);
+  const convergenceDeclared = convergenceWindowDeclared(window);
+  if (convergenceDeclared) {
     const metric = text(asObject(window.metric).value ?? window.metric);
-    const frameStart = finiteNumber(window.frame_start ?? window.frameStart);
-    const frameEnd = finiteNumber(window.frame_end ?? window.frameEnd);
-    const samples = Array.isArray(window.samples) ? window.samples : [];
-    const frameHashes = compactStringList(window.frame_hashes ?? window.frameHashes);
-    const postEpochFrameHashes = compactStringList(
-      window.post_epoch_frame_hashes ?? window.postEpochFrameHashes
+    const sampleStart = finiteNumber(
+      window.sample_start
+      ?? window.sampleStart
+      ?? window.observation_start
+      ?? window.observationStart
+      ?? window.frame_start
+      ?? window.frameStart
     );
+    const sampleEnd = finiteNumber(
+      window.sample_end
+      ?? window.sampleEnd
+      ?? window.observation_end
+      ?? window.observationEnd
+      ?? window.frame_end
+      ?? window.frameEnd
+    );
+    const samples = Array.isArray(window.samples) ? window.samples : [];
+    const rawSampleHashes = [
+      ...(Array.isArray(window.sample_hashes) ? window.sample_hashes : []),
+      ...(Array.isArray(window.sampleHashes) ? window.sampleHashes : []),
+      ...(Array.isArray(window.observation_hashes) ? window.observation_hashes : []),
+      ...(Array.isArray(window.observationHashes) ? window.observationHashes : []),
+      ...(Array.isArray(window.frame_hashes) ? window.frame_hashes : []),
+      ...(Array.isArray(window.frameHashes) ? window.frameHashes : []),
+      ...(Array.isArray(window.post_dispatch_sample_hashes)
+        ? window.post_dispatch_sample_hashes
+        : []),
+      ...(Array.isArray(window.postDispatchSampleHashes)
+        ? window.postDispatchSampleHashes
+        : []),
+      ...(Array.isArray(window.post_epoch_frame_hashes)
+        ? window.post_epoch_frame_hashes
+        : []),
+      ...(Array.isArray(window.postEpochFrameHashes)
+        ? window.postEpochFrameHashes
+        : []),
+      ...samples.map((sample) => firstText(
+        asObject(sample).sample_hash,
+        asObject(sample).sampleHash,
+        asObject(sample).observation_hash,
+        asObject(sample).observationHash,
+        asObject(sample).frame_hash,
+        asObject(sample).frameHash,
+        asObject(sample).image_hash,
+        asObject(sample).imageHash,
+        asObject(sample).source_frame_hash,
+        asObject(sample).sourceFrameHash
+      )),
+    ].map((value) => firstText(value)).filter((value): value is string => value !== null);
+    const sampleHashes = compactStringList(rawSampleHashes);
+    const canonicalSampleHashes = rawSampleHashes
+      .map((hash) => canonicalSha256(hash))
+      .filter((hash): hash is string => hash !== null);
+    const uniqueCanonicalSampleHashes = compactStringList(canonicalSampleHashes);
+    const invalidSampleHashes = compactStringList(
+      rawSampleHashes.filter((hash) => canonicalSha256(hash) === null)
+    );
+    const duplicateSampleHashes = compactStringList(
+      canonicalSampleHashes.filter(
+        (hash, index) => canonicalSampleHashes.indexOf(hash) !== index
+      )
+    );
+    const postDispatchHashes = compactStringList([
+      ...(Array.isArray(window.post_dispatch_sample_hashes)
+        ? window.post_dispatch_sample_hashes
+        : []),
+      ...(Array.isArray(window.postDispatchSampleHashes)
+        ? window.postDispatchSampleHashes
+        : []),
+      ...(Array.isArray(window.post_epoch_frame_hashes)
+        ? window.post_epoch_frame_hashes
+        : []),
+      ...(Array.isArray(window.postEpochFrameHashes)
+        ? window.postEpochFrameHashes
+        : []),
+      ...samples
+        .filter((sample) => {
+          const item = asObject(sample);
+          return (
+            item.after_dispatch
+            ?? item.afterDispatch
+            ?? item.after_epoch_dispatch
+            ?? item.afterEpochDispatch
+          ) === true;
+        })
+        .map((sample) => firstText(
+          asObject(sample).sample_hash,
+          asObject(sample).sampleHash,
+          asObject(sample).observation_hash,
+          asObject(sample).observationHash,
+          asObject(sample).frame_hash,
+          asObject(sample).frameHash,
+          asObject(sample).image_hash,
+          asObject(sample).imageHash,
+          asObject(sample).source_frame_hash,
+          asObject(sample).sourceFrameHash
+        )),
+    ].map((value) => canonicalSha256(value)).filter((value): value is string => value !== null));
     const sampleCount = finiteNumber(window.sample_count ?? window.sampleCount)
       ?? (samples.length > 0 ? samples.length : null)
-      ?? (frameHashes.length > 0 ? frameHashes.length : null)
-      ?? (postEpochFrameHashes.length > 0 ? postEpochFrameHashes.length : null);
+      ?? (sampleHashes.length > 0 ? sampleHashes.length : null);
+    const minSamples = Math.max(2, finiteNumber(
+      window.min_samples
+      ?? window.minSamples
+      ?? window.min_frames
+      ?? window.minFrames
+    ) ?? (
+      sampleStart !== null && sampleEnd !== null && sampleEnd >= sampleStart
+        ? sampleEnd - sampleStart + 1
+        : 2
+    ));
+    const artifactHashes = compactStringList([
+      ...(Array.isArray(window.artifact_hashes) ? window.artifact_hashes : []),
+      ...(Array.isArray(window.artifactHashes) ? window.artifactHashes : []),
+      window.artifact_hash,
+      window.artifactHash,
+      ...samples.map((sample) => firstText(
+        asObject(sample).artifact_hash,
+        asObject(sample).artifactHash
+      )),
+    ]);
+    const runtimeArtifactHashes = compactStringList([
+      mode.artifact_hash,
+      mode.artifactHash,
+      mode.artifact_hash_after,
+      mode.artifactHashAfter,
+      mode.changed_artifact_hash,
+      mode.changedArtifactHash,
+      mode.gpu_artifact_hash,
+      mode.gpuArtifactHash,
+    ]);
     const hasMetricEvidence =
       finiteNumber(window.metric_value ?? window.metricValue) !== null
       || finiteNumber(
@@ -980,24 +1152,70 @@ function deterministicVisualFailures(modeInput: unknown): GpuHmrLedgerFailure[] 
         ?? window.mean_delta
         ?? window.meanDelta
       ) !== null
-      || samples.some((sample) => finiteNumber(asObject(sample).metric_value ?? asObject(sample).metricValue) !== null);
+      || samples.some((sample) => finiteNumber(
+        asObject(sample).metric_value
+        ?? asObject(sample).metricValue
+        ?? asObject(sample).value
+      ) !== null);
     const evidenceRefs = compactStringList(window.evidence_refs ?? window.evidenceRefs);
-    const minFrames = Math.max(2, finiteNumber(window.min_frames ?? window.minFrames) ?? 2);
-    const convergenceAccepted =
-      frameStart !== null
-      && frameEnd !== null
-      && frameEnd >= frameStart
-      && metric !== null
-      && CONVERGENCE_METRICS.has(metric)
-      && (sampleCount ?? 0) >= minFrames
-      && hasMetricEvidence
-      && (window.convergence_proven === true || window.convergenceProven === true || window.proven === true)
-      && evidenceRefs.length > 0;
-    if (!convergenceAccepted) {
-      failures.push({ code: "temporal_visual_requires_convergence_window" });
-      if ((sampleCount ?? 0) < minFrames) {
-        failures.push({ code: "convergence_window_sample_evidence_missing" });
-      }
+
+    if (sampleStart === null || sampleEnd === null || sampleEnd < sampleStart) {
+      failures.push({ code: "convergence_sample_range_invalid" });
+    }
+    if (!metric) failures.push({ code: "convergence_metric_identifier_missing" });
+    if (sampleHashes.length < minSamples) {
+      failures.push({ code: "convergence_sample_evidence_missing" });
+    }
+    if (invalidSampleHashes.length > 0) {
+      failures.push({ code: "convergence_sample_hash_invalid", hashes: invalidSampleHashes.slice(0, 3) });
+    }
+    if (duplicateSampleHashes.length > 0) {
+      failures.push({
+        code: "convergence_sample_hash_duplicate",
+        hashes: duplicateSampleHashes.slice(0, 3),
+      });
+    }
+    if (sampleCount !== null && sampleCount !== uniqueCanonicalSampleHashes.length) {
+      failures.push({
+        code: "convergence_sample_count_mismatch",
+        declaredSampleCount: sampleCount,
+        uniqueSampleCount: uniqueCanonicalSampleHashes.length,
+      });
+    }
+    if (postDispatchHashes.length < minSamples) {
+      failures.push({
+        code: "convergence_post_dispatch_sample_evidence_missing",
+        requiredSamples: minSamples,
+        observedSamples: postDispatchHashes.length,
+      });
+    }
+    if (samples.some((sample) => {
+      const item = asObject(sample);
+      return (
+        item.after_dispatch
+        ?? item.afterDispatch
+        ?? item.after_epoch_dispatch
+        ?? item.afterEpochDispatch
+      ) !== true;
+    })) {
+      failures.push({ code: "convergence_sample_ordering_unproven" });
+    }
+    if (artifactHashes.length > 0) {
+      failures.push({ code: "convergence_artifact_hash_not_sample_evidence" });
+    }
+    if (runtimeArtifactHashes.some((hash) => sampleHashes.includes(hash))) {
+      failures.push({ code: "convergence_sample_hash_matches_gpu_artifact_hash" });
+    }
+    if (!hasMetricEvidence) failures.push({ code: "convergence_metric_evidence_missing" });
+    if (
+      window.convergence_proven !== true
+      && window.convergenceProven !== true
+      && window.proven !== true
+    ) {
+      failures.push({ code: "convergence_proof_missing" });
+    }
+    if (evidenceRefs.length === 0) {
+      failures.push({ code: "convergence_evidence_refs_missing" });
     }
   }
   return failures;
@@ -2033,10 +2251,14 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
         failures.push({ code: "visual_epoch_trace_not_correlated" });
       }
     }
-    const deterministicFailures = deterministicVisualFailures(deterministicVisualMode);
+    const deterministicFailures = deterministicVisualFailures({
+      ...deterministicVisualMode,
+      artifact_hash_after: artifactAfterHash,
+    });
     if (deterministicFailures.length > 0) {
       failures.push({ code: "visual_output_without_deterministic_mode" }, ...deterministicFailures);
     }
+    failures.push({ code: "verifier_owned_output_observation_receipt_missing" });
     failures.push({ code: "verifier_owned_visual_output_state_receipt_missing" });
   } else {
     if (computeArtifacts === null) {

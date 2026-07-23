@@ -3201,14 +3201,15 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
         ...asObject(record.deterministicVisualMode),
         artifact_hash_after: artifactAfterHash,
       });
-    if (deterministicVisualModeEvaluation.accepted !== true) {
+    if (deterministicVisualModeEvaluation.diagnosticAccepted !== true) {
       addFailure(failures, 'visual_output_without_deterministic_mode', {
-        failedGates: deterministicVisualModeEvaluation.failedGates,
+        failedGates: deterministicVisualModeEvaluation.diagnosticFailedGates,
       });
-      for (const gate of deterministicVisualModeEvaluation.failedGates) {
+      for (const gate of deterministicVisualModeEvaluation.diagnosticFailedGates) {
         addFailure(failures, gate.code ?? 'deterministic_visual_mode_gate_failed');
       }
     }
+    addFailure(failures, 'verifier_owned_output_observation_receipt_missing');
     addFailure(failures, 'verifier_owned_visual_output_state_receipt_missing');
   } else {
     const artifacts = computeArtifacts;
