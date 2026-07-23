@@ -1,8 +1,10 @@
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_AUTHORITY,
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_SCHEMA,
+  GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_AUTHORITY,
+  GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_SCHEMA,
   GpuParentRuntimeProofAdmissionAuthority,
   type GpuParentRuntimeProofAdmissionAuthorityContext,
 } from "../../src/gpu_parent_runtime_proof_admission_authority.js";
@@ -52,6 +54,22 @@ const RESPONSE_VERIFICATION_KEY_KEYS = [
   "keyId",
   "publicKey",
 ] as const;
+const OUTPUT_OBSERVATION_KEYS = [
+  "schemaVersion",
+  "proofAuthority",
+  "receipt",
+  "trustedKeyOriginChecked",
+  "admissionBindingChecked",
+  "requestChallengeChecked",
+  "runtimeBindingChecked",
+  "outputBytesChecked",
+  "admissionGenerationChecked",
+  "replayChecked",
+  "freshnessChecked",
+  "acceptedForGpuHmr",
+  "gpuHmrSuccess",
+  "canSatisfyRuntimeProof",
+] as const;
 
 const authorities = new Set<GpuParentRuntimeProofAdmissionAuthority>();
 
@@ -72,6 +90,10 @@ afterEach(async () => {
 
 function hash(digit: string): string {
   return `sha256:${digit.repeat(64)}`;
+}
+
+function contentHash(bytes: Uint8Array): string {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
 function admissionInput(): GpuParentRuntimeProofAdmissionReceiptInput {
@@ -307,15 +329,192 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
     });
   });
 
+  it("observes admitted output bytes as frozen support evidence", () => {
+    const nowUnixNs = 1_784_500_000_123_456_789n;
+    const authority = createAuthority({
+      validationRunChallenge: CHALLENGE,
+      clockUnixNs: () => nowUnixNs,
+      nonceBytes: () => Buffer.alloc(32, 0x31),
+    });
+    const admissionReceipt = authority.signer().sign(admissionInput());
+    const outputBytes = Uint8Array.of(0, 7, 19, 31, 255);
+    const observation = authority.observeOutputBytes(
+      admissionReceipt,
+      outputBytes,
+    );
+
+    expect(Object.keys(observation)).toEqual(OUTPUT_OBSERVATION_KEYS);
+    expect(observation).toMatchObject({
+      schemaVersion: GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_SCHEMA,
+      proofAuthority: GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_AUTHORITY,
+      trustedKeyOriginChecked: true,
+      admissionBindingChecked: true,
+      requestChallengeChecked: true,
+      runtimeBindingChecked: true,
+      outputBytesChecked: true,
+      admissionGenerationChecked: true,
+      replayChecked: false,
+      freshnessChecked: true,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(observation.receipt).toMatchObject({
+      outputContentSha256: contentHash(outputBytes),
+      outputByteLength: String(outputBytes.byteLength),
+      outputBytesObserved: true,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(Object.isFrozen(observation)).toBe(true);
+    expect(authority.isVerifiedOutputObservation(observation)).toBe(true);
+    const otherAuthority = createAuthority({
+      validationRunChallenge: CHALLENGE,
+      clockUnixNs: () => nowUnixNs,
+      nonceBytes: () => Buffer.alloc(32, 0x35),
+    });
+    const otherObservation = otherAuthority.observeOutputBytes(
+      otherAuthority.signer().sign(admissionInput()),
+      Uint8Array.of(1),
+    );
+    expect(otherAuthority.isVerifiedOutputObservation(observation))
+      .toBe(false);
+    expect(authority.isVerifiedOutputObservation(otherObservation))
+      .toBe(false);
+    expect(authority.isVerifiedOutputObservation({
+      ...observation,
+    })).toBe(false);
+    expect(authority.isVerifiedOutputObservation(
+      JSON.parse(JSON.stringify(observation)),
+    )).toBe(false);
+    expect(JSON.stringify(observation)).not.toMatch(
+      /project|fixture|scenario|backend|camera|image|tensor|media/i,
+    );
+  });
+
+  it("rejects cross-authority admission without treating repeated bytes as replay", () => {
+    const first = createAuthority({
+      validationRunChallenge: CHALLENGE,
+      clockUnixNs: () => 1_000n,
+      nonceBytes: () => Buffer.alloc(32, 0x32),
+    });
+    const second = createAuthority({
+      validationRunChallenge: CHALLENGE,
+      clockUnixNs: () => 1_000n,
+      nonceBytes: () => Buffer.alloc(32, 0x33),
+    });
+    const admissionReceipt = first.signer().sign(admissionInput());
+    const firstBytes = Uint8Array.of(1, 2, 3);
+
+    expect(() => second.observeOutputBytes(admissionReceipt, firstBytes))
+      .toThrow(
+        "gpu_parent_runtime_proof_output_observation_admission_invalid",
+      );
+
+    const firstObservation = first.observeOutputBytes(
+      admissionReceipt,
+      firstBytes,
+    );
+    const repeatedObservation = first.observeOutputBytes(
+      admissionReceipt,
+      Uint8Array.of(1, 2, 3),
+    );
+    expect(repeatedObservation.receipt.receiptId)
+      .not.toBe(firstObservation.receipt.receiptId);
+    expect(repeatedObservation.receipt.outputContentSha256)
+      .toBe(firstObservation.receipt.outputContentSha256);
+    expect(() => first.observeOutputBytes(
+      admissionReceipt,
+      Uint8Array.of(3, 2, 1),
+    )).not.toThrow();
+  });
+
+  it("applies freshness and bounded authority-generation tracking", () => {
+    let nowUnixNs = 100n;
+    const authority = createAuthority({
+      validationRunChallenge: CHALLENGE,
+      clockUnixNs: () => nowUnixNs,
+      nonceBytes: () => Buffer.alloc(32, Number(nowUnixNs % 256n)),
+      maxReceiptAgeNs: 10n,
+      maxFutureSkewNs: 2n,
+      maxOperations: 1,
+    });
+    const firstAdmission = authority.signer().sign(admissionInput());
+
+    authority.observeOutputBytes(firstAdmission, Uint8Array.of(1));
+    expect(() => authority.signer().sign(admissionInput())).toThrow(
+      "gpu_parent_runtime_proof_admission_authority_generation_capacity_exhausted",
+    );
+
+    nowUnixNs = 111n;
+    expect(() => authority.observeOutputBytes(
+      firstAdmission,
+      Uint8Array.of(3),
+    )).toThrow(
+      "gpu_parent_runtime_proof_output_observation_admission_stale",
+    );
+    const secondAdmission = authority.signer().sign(admissionInput());
+    expect(() => authority.observeOutputBytes(
+      secondAdmission,
+      Uint8Array.of(4),
+    )).not.toThrow();
+
+    nowUnixNs = 108n;
+    expect(() => authority.observeOutputBytes(
+      secondAdmission,
+      Uint8Array.of(5),
+    )).toThrow(
+      "gpu_parent_runtime_proof_output_observation_admission_from_future",
+    );
+  });
+
+  it("rejects unowned or mutable byte views without invoking proxy traps", () => {
+    const authority = createAuthority({
+      validationRunChallenge: CHALLENGE,
+      clockUnixNs: () => 1_000n,
+      nonceBytes: () => Buffer.alloc(32, 0x34),
+    });
+    const admissionReceipt = authority.signer().sign(admissionInput());
+    let trapCalls = 0;
+    const failTrap = (): never => {
+      trapCalls += 1;
+      throw new Error("byte proxy trap must not run");
+    };
+    const proxy = new Proxy(Uint8Array.of(1), {
+      get: failTrap,
+      getOwnPropertyDescriptor: failTrap,
+      getPrototypeOf: failTrap,
+      ownKeys: failTrap,
+    });
+
+    for (const bytes of [
+      proxy,
+      new Uint16Array([1]),
+      new Uint8Array(new SharedArrayBuffer(4)),
+    ]) {
+      expect(() => authority.observeOutputBytes(
+        admissionReceipt,
+        bytes as Uint8Array,
+      )).toThrow("gpu_mcp_output_observation_receipt_request_invalid");
+    }
+    expect(trapCalls).toBe(0);
+  });
+
   it("closes a disposed endpoint and rotates every restart generation", async () => {
     const { privateKey } = generateKeyPairSync("ed25519");
+    const clockUnixNs = () => 1_784_500_000_000_000_000n;
+    const nonceBytes = () => Buffer.alloc(32, 0x36);
     const first = createAuthority({
       privateKey,
       validationRunChallenge: CHALLENGE,
+      clockUnixNs,
+      nonceBytes,
     });
     const firstTrust = await first.trustMaterial();
     const oldClient = onlineClientProjection(firstTrust.onlineReplayAuthority);
     await expect(oldClient.probe()).resolves.toMatchObject({ revision: "0" });
+    const preDisposalAdmission = first.signer().sign(admissionInput());
 
     const firstDisposal = first.dispose();
     expect(first.dispose()).toBe(firstDisposal);
@@ -328,12 +527,22 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
     expect(() => first.signer()).toThrow(
       "gpu_parent_runtime_proof_admission_authority_disposed",
     );
+    expect(() => first.observeOutputBytes(
+      preDisposalAdmission,
+      Uint8Array.of(1),
+    )).toThrow(
+      "gpu_parent_runtime_proof_admission_authority_disposed",
+    );
 
     const restarted = createAuthority({
       privateKey,
       validationRunChallenge: CHALLENGE,
+      clockUnixNs,
+      nonceBytes,
     });
     const restartedTrust = await restarted.trustMaterial();
+    const restartedEquivalentAdmission =
+      restarted.signer().sign(admissionInput());
     expect(restartedTrust.verificationKey)
       .toEqual(firstTrust.verificationKey);
     expect(restartedTrust.onlineReplayAuthority.authorityId)
@@ -346,6 +555,18 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
       );
     expect(restartedTrust.onlineReplayAuthority.endpoint)
       .not.toBe(firstTrust.onlineReplayAuthority.endpoint);
+    expect(restartedEquivalentAdmission.receiptId)
+      .not.toBe(preDisposalAdmission.receiptId);
+    expect(() => restarted.observeOutputBytes(
+      preDisposalAdmission,
+      Uint8Array.of(1),
+    )).toThrow(
+      "gpu_parent_runtime_proof_output_observation_admission_generation_mismatch",
+    );
+    expect(() => restarted.observeOutputBytes(
+      restartedEquivalentAdmission,
+      Uint8Array.of(1),
+    )).not.toThrow();
   });
 
   it("rejects non-data, proxied, named, and filesystem context", () => {
