@@ -18,6 +18,9 @@ import {
   type GpuMcpOutputByteProducerCapability,
 } from "../../src/gpu_mcp_output_byte_observation_boundary.js";
 import {
+  captureGpuMcpAdmittedOutputBytes,
+} from "../../src/gpu_mcp_admitted_output_capture.js";
+import {
   createGpuHmrMcpAdmissionOnlineReplayAuthorityClient,
   gpuHmrMcpAdmissionOnlineReplayAuthorityClientProjection,
   GPU_HMR_MCP_ADMISSION_ONLINE_REPLAY_AUTHORITY_CLASS,
@@ -199,6 +202,88 @@ function onlineClientProjection(
 }
 
 describe("GpuParentRuntimeProofAdmissionAuthority", () => {
+  it("captures admitted output bytes without output-kind authority", async () => {
+    const { authority, producer } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const source = Buffer.from([2, 3, 5, 7, 11]);
+    const observation = await captureGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      async () => source,
+      () => true,
+    );
+
+    expect(authority.isVerifiedOutputObservation(observation)).toBe(true);
+    expect(observation.receipt.outputByteLength).toBe("5");
+    expect(observation.acceptedForGpuHmr).toBe(false);
+    expect(observation.gpuHmrSuccess).toBe(false);
+    source.fill(0);
+    expect(authority.isVerifiedOutputObservation(observation)).toBe(true);
+  });
+
+  it("rechecks lifecycle after asynchronous output capture", async () => {
+    const { authority, producer } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    let current = true;
+    let captureCalled = false;
+
+    await expect(captureGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      async () => {
+        captureCalled = true;
+        current = false;
+        return Buffer.from([13]);
+      },
+      () => current,
+    )).rejects.toThrow(
+      "gpu_mcp_admitted_output_capture_lifecycle_changed",
+    );
+    expect(captureCalled).toBe(true);
+
+    captureCalled = false;
+    await expect(captureGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      async () => {
+        captureCalled = true;
+        return Buffer.from([17]);
+      },
+      () => false,
+    )).rejects.toThrow(
+      "gpu_mcp_admitted_output_capture_lifecycle_changed",
+    );
+    expect(captureCalled).toBe(false);
+
+    let clockCalls = 0;
+    current = true;
+    const reentrant = createOutputAuthority({
+      clockUnixNs: () => {
+        clockCalls += 1;
+        if (clockCalls === 3) current = false;
+        return 1_000_000_000n;
+      },
+    });
+    const reentrantAdmissionReceipt =
+      reentrant.authority.signer().signAdmissionReceipt(admissionInput());
+    await expect(captureGpuMcpAdmittedOutputBytes(
+      reentrant.authority,
+      reentrant.producer,
+      reentrantAdmissionReceipt,
+      () => Buffer.from([19]),
+      () => current,
+    )).rejects.toThrow(
+      "gpu_mcp_admitted_output_capture_lifecycle_changed",
+    );
+  });
+
   it("lazily exports exact frozen v3 trust and answers a live signed probe", async () => {
     const first = createAuthority();
     const trustPromise = first.trustMaterial();
