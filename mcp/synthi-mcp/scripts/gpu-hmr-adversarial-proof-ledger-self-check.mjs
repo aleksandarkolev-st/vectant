@@ -1386,6 +1386,32 @@ assert.equal(strictVisualAccepted.gpuHmrSuccess, true);
 assert.equal(strictVisualAccepted.proofId, strictVisualProofId);
 assert.equal(strictVisualAccepted.visualCaptureRuntimeBinding?.accepted, true);
 
+for (const serializedMode of [
+  strictVisualRecord.deterministic_visual_mode,
+  {
+    ...strictVisualRecord.deterministic_visual_mode,
+    evidence_authority: 'opaque_external_runtime',
+  },
+  {
+    ...strictVisualRecord.deterministic_visual_mode,
+    proof_authority: 'target_emitted_visual_control_diagnostics_only_not_gpu_hmr_proof',
+  },
+]) {
+  const serializedVisualStateRecord = structuredClone(strictVisualRecord);
+  serializedVisualStateRecord.deterministic_visual_mode = serializedMode;
+  const serializedVisualStateResult = evaluateGpuHmrProofLedger(
+    serializedVisualStateRecord,
+    {
+      requireVisualCaptureRuntimeBinding: true,
+      requireVerifierOwnedVisualOutputState: true,
+    },
+  );
+  assert.equal(serializedVisualStateResult.gpuHmrSuccess, false);
+  assert.ok(serializedVisualStateResult.failedInvariants.some(
+    (failure) => failure.code === 'verifier_owned_visual_output_state_receipt_missing',
+  ));
+}
+
 const artifactPrefixedVisualRecord = structuredClone(strictVisualRecord);
 const artifactPrefixedCaptureManifest = artifactPrefixedVisualRecord.oracle_artifacts
   .visual_oracle_artifacts.capture_manifest;

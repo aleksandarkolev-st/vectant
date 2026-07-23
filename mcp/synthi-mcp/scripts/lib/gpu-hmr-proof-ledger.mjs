@@ -2435,6 +2435,9 @@ function addFailure(failures, code, detail = {}) {
 
 export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
   const rawRecord = asObject(input);
+  const requireVerifierOwnedVisualOutputState =
+    options.requireVerifierOwnedVisualOutputState === true
+    || options.require_verifier_owned_visual_output_state === true;
   const modelPolicy = resolveGpuHmrModelPolicy(
     options.modelPolicy,
     options.model_policy,
@@ -3224,6 +3227,9 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
         addFailure(failures, gate.code ?? 'deterministic_visual_mode_gate_failed');
       }
     }
+    if (requireVerifierOwnedVisualOutputState) {
+      addFailure(failures, 'verifier_owned_visual_output_state_receipt_missing');
+    }
   } else {
     const artifacts = computeArtifacts;
     if (!artifacts) {
@@ -3499,9 +3505,9 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
   };
 }
 
-export function buildGpuHmrProofLedger(input = {}) {
+export function buildGpuHmrProofLedger(input = {}, options = {}) {
   const record = normalizeGpuHmrProofLedgerRecord(input);
-  const query = evaluateGpuHmrProofLedger(record);
+  const query = evaluateGpuHmrProofLedger(record, options);
   const proofId = canonicalLedgerRootProofId([record.proofId]);
   return {
     schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
@@ -3546,6 +3552,9 @@ export function queryGpuHmrLedgerInvariants(input = {}, options = {}) {
             requireVisualCaptureRuntimeBinding:
               options.requireVisualCaptureRuntimeBinding === true
               || options.require_visual_capture_runtime_binding === true,
+            requireVerifierOwnedVisualOutputState:
+              options.requireVerifierOwnedVisualOutputState === true
+              || options.require_verifier_owned_visual_output_state === true,
           })
           : invalidRecordResult('ledger_record_not_object'),
       }))
@@ -3559,6 +3568,9 @@ export function queryGpuHmrLedgerInvariants(input = {}, options = {}) {
         requireVisualCaptureRuntimeBinding:
           options.requireVisualCaptureRuntimeBinding === true
           || options.require_visual_capture_runtime_binding === true,
+        requireVerifierOwnedVisualOutputState:
+          options.requireVerifierOwnedVisualOutputState === true
+          || options.require_verifier_owned_visual_output_state === true,
       }),
     }];
   const recomputed = evaluations[evaluations.length - 1].result;
