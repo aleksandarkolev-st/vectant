@@ -301,34 +301,6 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
         requested_session_id: afterFrameGate.sessionId,
       });
     }
-    const gateTokenValidation = afterFrameGate
-      ? session.consumeFrameGateToken({
-          token: afterFrameGate.gateToken,
-          session_id: attached.sessionId,
-          frame_seq: afterFrameGate.frameSeq,
-          ts_ms: afterFrameGate.tsMs,
-        })
-      : null;
-    if (afterFrameGate && gateTokenValidation?.accepted !== true) {
-      return errorResponse("frame_gate_unverified", {
-        status: "unverified",
-        reason: gateTokenValidation?.reason ?? "frame_gate_token_rejected",
-        session_id: attached.sessionId,
-        requested_session_id: afterFrameGate.sessionId ?? null,
-        requested_frame_seq: afterFrameGate.frameSeq ?? null,
-        requested_ts_ms: afterFrameGate.tsMs ?? null,
-      });
-    }
-    const frameGate = afterFrameGate
-      ? frameGateMeta(
-          frame,
-          afterFrameGate,
-          frameGateTimeoutMs,
-          attached.sessionId,
-          gateTokenValidation?.token ?? null,
-        )
-      : undefined;
-
     if (freshnessMaxMs !== undefined) {
       const now = Date.now();
       const staleMs = now - frame.ts;
@@ -402,6 +374,33 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       if (!allowUnbrokeredFrame) throw err;
       brokerFrameError = err instanceof Error ? err.message : String(err);
     }
+    const gateTokenValidation = afterFrameGate
+      ? session.consumeFrameGateToken({
+          token: afterFrameGate.gateToken,
+          session_id: attached.sessionId,
+          frame_seq: afterFrameGate.frameSeq,
+          ts_ms: afterFrameGate.tsMs,
+        })
+      : null;
+    if (afterFrameGate && gateTokenValidation?.accepted !== true) {
+      return errorResponse("frame_gate_unverified", {
+        status: "unverified",
+        reason: gateTokenValidation?.reason ?? "frame_gate_token_rejected",
+        session_id: attached.sessionId,
+        requested_session_id: afterFrameGate.sessionId ?? null,
+        requested_frame_seq: afterFrameGate.frameSeq ?? null,
+        requested_ts_ms: afterFrameGate.tsMs ?? null,
+      });
+    }
+    const frameGate = afterFrameGate
+      ? frameGateMeta(
+          frame,
+          afterFrameGate,
+          frameGateTimeoutMs,
+          attached.sessionId,
+          gateTokenValidation?.token ?? null,
+        )
+      : undefined;
     const responseTs = Date.now();
     const captureManifest = brokerFrame ? {
       schema_version: CAPTURE_MANIFEST_SCHEMA_VERSION,

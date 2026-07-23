@@ -188,6 +188,62 @@ describe("synthi_screenshot", () => {
     expect((res.structuredContent as { error: string }).error).toBe("frame_stale");
   });
 
+  it("keeps a frame-gate token retryable when freshness rejects the frame", async () => {
+    const png = await solidPng(100, 100, { r: 10, g: 20, b: 30 });
+    const frameTs = Date.now() - 10_000;
+    installFakeSession({ data: png, width: 100, height: 100, ts: frameTs, seq: 5 });
+    const gate = fakeFrameGate(5, frameTs);
+
+    const stale = await screenshotTool({
+      after_frame_gate: gate,
+      freshness_max_ms: 500,
+    });
+    expect(stale.isError).toBe(true);
+    expect((stale.structuredContent as { error: string }).error).toBe("frame_stale");
+
+    const retry = await screenshotTool({ after_frame_gate: gate });
+    expect(retry.isError).toBeUndefined();
+    expect(retry.structuredContent).toMatchObject({
+      seq: 5,
+      ts: frameTs,
+      frame_gate: { gate_token_verified: true },
+    });
+
+    const replay = await screenshotTool({ after_frame_gate: gate });
+    expect(replay.isError).toBe(true);
+    expect(replay.structuredContent).toMatchObject({
+      error: "frame_gate_unverified",
+      reason: "frame_gate_token_unknown",
+    });
+  });
+
+  it("keeps a frame-gate token retryable when output byte generation fails", async () => {
+    const frameTs = Date.now();
+    installFakeSession({
+      data: Buffer.from("not-an-image", "utf8"),
+      width: 100,
+      height: 100,
+      ts: frameTs,
+      seq: 6,
+    });
+    const gate = fakeFrameGate(6, frameTs);
+
+    const failed = await screenshotTool({ after_frame_gate: gate });
+    expect(failed.isError).toBe(true);
+    expect((failed.structuredContent as { error: string }).error)
+      .toBe("screenshot_failed");
+
+    const png = await solidPng(100, 100, { r: 40, g: 50, b: 60 });
+    installFakeSession({ data: png, width: 100, height: 100, ts: frameTs, seq: 6 });
+    const retry = await screenshotTool({ after_frame_gate: gate });
+    expect(retry.isError).toBeUndefined();
+    expect(retry.structuredContent).toMatchObject({
+      seq: 6,
+      ts: frameTs,
+      frame_gate: { gate_token_verified: true },
+    });
+  });
+
   it("rejects invalid region shape", async () => {
     const png = await solidPng(100, 100, { r: 10, g: 10, b: 10 });
     installFakeSession({ data: png, width: 100, height: 100, ts: Date.now(), seq: 1 });
