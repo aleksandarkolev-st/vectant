@@ -38,6 +38,18 @@ const SUPPORT_PREPARATION_SCHEMA =
   "synthi.gpu_hmr.runtime_evidence_transport_preparation.v1" as const;
 const SUPPORT_PREPARATION_AUTHORITY =
   "cryptographic_and_freshness_preparation_only_replay_not_committed" as const;
+const OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_SCHEMA =
+  "synthi.gpu_hmr.observed_runtime_evidence_envelope.v2" as const;
+const OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_TYPE =
+  "gpu_hmr_observed_runtime_evidence" as const;
+const DEFAULT_ROUTER_RETAINED_SUPPORT_ENVELOPE_CAPACITY = 64;
+const DEFAULT_ROUTER_MAX_MESSAGE_BYTES = 1_048_576;
+const DEFAULT_ROUTER_MAX_RETAINED_SUPPORT_ENVELOPE_BYTES = 4_194_304;
+const ROUTER_LIMIT_KEYS = [
+  "maxRetainedSupportEnvelopeCount",
+  "maxMessageBytes",
+  "maxRetainedSupportEnvelopeBytes",
+] as const;
 
 export interface RuntimeEvidenceTransportVerificationKey {
   readonly schemaVersion: typeof RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA;
@@ -383,13 +395,58 @@ function verifyRuntimeEvidenceTransportSupportEnvelopeCryptographicCore(
     ) as RuntimeEvidenceTransportSharedCoreResult;
 }
 
-function dataChannelText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
-  if (ArrayBuffer.isView(data)) {
-    return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8");
+interface DataChannelText {
+  readonly text: string;
+  readonly byteLength: number;
+}
+
+function dataChannelText(data: unknown): DataChannelText | null {
+  if (typeof data === "string") {
+    return Object.freeze({ text: data, byteLength: Buffer.byteLength(data, "utf8") });
   }
-  return null;
+  let bytes: Uint8Array;
+  if (data instanceof ArrayBuffer) {
+    bytes = new Uint8Array(data);
+  } else if (ArrayBuffer.isView(data)) {
+    bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  } else {
+    return null;
+  }
+  try {
+    return Object.freeze({
+      text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      byteLength: bytes.byteLength,
+    });
+  } catch {
+    return null;
+  }
+}
+
+const keyPinAnnouncementIngress = new WeakMap<
+  RuntimeEvidenceTransportKeyPin,
+  (value: unknown) => void
+>();
+const keyPinOwnership = new WeakMap<RuntimeEvidenceTransportKeyPin, object>();
+const directKeyPinOwner = {};
+
+function claimKeyPinOwnership(
+  keyPin: RuntimeEvidenceTransportKeyPin,
+  owner: object,
+): boolean {
+  if (keyPinOwnership.has(keyPin)) return false;
+  keyPinOwnership.set(keyPin, owner);
+  return true;
+}
+
+function releaseKeyPinOwnership(keyPin: RuntimeEvidenceTransportKeyPin): void {
+  keyPinOwnership.delete(keyPin);
+}
+
+function routeVerificationKeyAnnouncement(
+  keyPin: RuntimeEvidenceTransportKeyPin,
+  value: unknown,
+): void {
+  keyPinAnnouncementIngress.get(keyPin)?.(value);
 }
 
 export class RuntimeEvidenceTransportKeyPin {
@@ -403,8 +460,13 @@ export class RuntimeEvidenceTransportKeyPin {
   private boundChannel: RTCDataChannel | null = null;
   private unbind: (() => void) | null = null;
 
-  bindAuthenticatedPeerDataChannel(channel: RTCDataChannel): void {
-    if (this.disposed) return;
+  constructor() {
+    keyPinAnnouncementIngress.set(this, (value) => this.acceptVerificationKeyAnnouncement(value));
+  }
+
+  bindAuthenticatedPeerDataChannel(channel: RTCDataChannel): boolean {
+    if (this.disposed) return false;
+    if (keyPinOwnership.has(this)) return false;
     if (
       channel.label !== RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL
       || this.boundChannel !== null
@@ -412,8 +474,9 @@ export class RuntimeEvidenceTransportKeyPin {
       || channel.readyState === "closed"
     ) {
       this.fail("runtime_evidence_transport_authenticated_channel_invalid");
-      return;
+      return false;
     }
+    if (!claimKeyPinOwnership(this, directKeyPinOwner)) return false;
     this.boundChannel = channel;
     const messageListener = (event: Event): void => {
       if (this.disposed || this.failureReason !== null) return;
@@ -424,24 +487,12 @@ export class RuntimeEvidenceTransportKeyPin {
       }
       let parsed: unknown;
       try {
-        parsed = JSON.parse(text);
+        parsed = JSON.parse(text.text);
       } catch {
         this.fail("runtime_evidence_transport_key_announcement_json_invalid");
         return;
       }
-      const next = parseRuntimeEvidenceTransportVerificationKey(parsed);
-      if (next === null) {
-        this.fail("runtime_evidence_transport_key_announcement_invalid");
-        return;
-      }
-      if (this.key !== null && this.key.keyAnnouncementId !== next.keyAnnouncementId) {
-        this.fail("runtime_evidence_transport_key_replaced_in_session");
-        return;
-      }
-      if (this.key?.keyAnnouncementId === next.keyAnnouncementId) return;
-      this.key = next;
-      this.revision += 1;
-      this.notifyChange();
+      this.acceptVerificationKeyAnnouncement(parsed);
     };
     const closeListener = (): void => {
       if (!this.disposed) {
@@ -454,6 +505,7 @@ export class RuntimeEvidenceTransportKeyPin {
       channel.removeEventListener("message", messageListener);
       channel.removeEventListener("close", closeListener);
     };
+    return true;
   }
 
   onChange(
@@ -558,6 +610,7 @@ export class RuntimeEvidenceTransportKeyPin {
     this.unbind?.();
     this.unbind = null;
     this.boundChannel = null;
+    releaseKeyPinOwnership(this);
     this.key = null;
     this.failureReason = null;
     this.disposed = true;
@@ -570,6 +623,23 @@ export class RuntimeEvidenceTransportKeyPin {
     if (this.failureReason !== null || this.disposed) return;
     this.key = null;
     this.failureReason = reason;
+    this.revision += 1;
+    this.notifyChange();
+  }
+
+  private acceptVerificationKeyAnnouncement(value: unknown): void {
+    if (this.disposed || this.failureReason !== null) return;
+    const next = parseRuntimeEvidenceTransportVerificationKey(value);
+    if (next === null) {
+      this.fail("runtime_evidence_transport_key_announcement_invalid");
+      return;
+    }
+    if (this.key !== null && this.key.keyAnnouncementId !== next.keyAnnouncementId) {
+      this.fail("runtime_evidence_transport_key_replaced_in_session");
+      return;
+    }
+    if (this.key?.keyAnnouncementId === next.keyAnnouncementId) return;
+    this.key = next;
     this.revision += 1;
     this.notifyChange();
   }
@@ -591,6 +661,317 @@ export class RuntimeEvidenceTransportKeyPin {
     for (const listener of [...this.listeners]) {
       if (this.revision !== notificationRevision) return;
       this.notifyListener(listener, snapshot);
+    }
+  }
+}
+
+export interface RuntimeEvidenceTransportChannelRouterSnapshot {
+  readonly status: "pending" | "active" | "failed" | "disposed";
+  readonly failureReason: string | null;
+  readonly retainedSupportEnvelopeCount: number;
+  readonly retainedSupportEnvelopeBytes: number;
+}
+
+export interface RuntimeEvidenceTransportChannelRouterLimits {
+  readonly maxRetainedSupportEnvelopeCount?: number;
+  readonly maxMessageBytes?: number;
+  readonly maxRetainedSupportEnvelopeBytes?: number;
+}
+
+export type RuntimeEvidenceTransportSupportEnvelopeListener = (
+  serializedEnvelope: string,
+) => void;
+
+/**
+ * Routes authenticated-channel records by their versioned discriminator only.
+ * Receipt and payload validation remain the responsibility of the support-envelope consumer.
+ */
+export class RuntimeEvidenceTransportChannelRouter {
+  private readonly listeners = new Set<RuntimeEvidenceTransportSupportEnvelopeListener>();
+  private readonly retainedSupportEnvelopes: string[] = [];
+  private readonly ownershipToken = {};
+  private readonly retainedSupportEnvelopeCapacity: number;
+  private readonly maxMessageBytes: number;
+  private readonly maxRetainedSupportEnvelopeBytes: number;
+  private retainedSupportEnvelopeBytes = 0;
+  private boundChannel: RTCDataChannel | null = null;
+  private unbind: (() => void) | null = null;
+  private unsubscribeKeyPin: (() => void) | null = null;
+  private failureReason: string | null = null;
+  private disposed = false;
+  private ownsKeyPin = false;
+  private disposingOwnedKeyPin = false;
+
+  constructor(
+    private readonly keyPin: RuntimeEvidenceTransportKeyPin,
+    limits: RuntimeEvidenceTransportChannelRouterLimits = {},
+  ) {
+    const normalizedLimits = this.normalizeLimits(limits);
+    this.retainedSupportEnvelopeCapacity = normalizedLimits.maxRetainedSupportEnvelopeCount;
+    this.maxMessageBytes = normalizedLimits.maxMessageBytes;
+    this.maxRetainedSupportEnvelopeBytes = normalizedLimits.maxRetainedSupportEnvelopeBytes;
+  }
+
+  bindAuthenticatedPeerDataChannel(channel: RTCDataChannel): void {
+    if (this.disposed || this.failureReason !== null) return;
+    if (
+      channel.label !== RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL
+      || this.boundChannel !== null
+      || channel.readyState === "closing"
+      || channel.readyState === "closed"
+      || this.keyPin.snapshot().status === "disposed"
+      || this.keyPin.snapshot().status === "failed"
+    ) {
+      this.fail("runtime_evidence_transport_router_authenticated_channel_invalid");
+      return;
+    }
+    if (!claimKeyPinOwnership(this.keyPin, this.ownershipToken)) {
+      this.fail("runtime_evidence_transport_router_authenticated_channel_invalid");
+      return;
+    }
+    this.ownsKeyPin = true;
+    this.unsubscribeKeyPin = this.keyPin.onChange((snapshot) => {
+      if (this.disposed || this.disposingOwnedKeyPin) return;
+      if (snapshot.status === "failed") {
+        this.fail(
+          snapshot.failureReason ?? "runtime_evidence_transport_router_key_pin_failed",
+        );
+      } else if (snapshot.status === "disposed") {
+        this.fail("runtime_evidence_transport_router_key_pin_disposed");
+      }
+    });
+    if (this.failureReason !== null) return;
+
+    this.boundChannel = channel;
+    const messageListener = (event: Event): void => {
+      this.routeMessage((event as unknown as { data: unknown }).data);
+    };
+    const closeListener = (): void => {
+      if (this.disposed) return;
+      this.fail("runtime_evidence_transport_router_authenticated_channel_closed");
+      this.disposeOwnedKeyPin();
+    };
+    channel.addEventListener("message", messageListener);
+    channel.addEventListener("close", closeListener);
+    this.unbind = (): void => {
+      channel.removeEventListener("message", messageListener);
+      channel.removeEventListener("close", closeListener);
+    };
+  }
+
+  onSupportEnvelope(listener: RuntimeEvidenceTransportSupportEnvelopeListener): () => void {
+    if (this.disposed || this.failureReason !== null) return () => {};
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  drainSupportEnvelopes(): readonly string[] {
+    const drained = Object.freeze([...this.retainedSupportEnvelopes]);
+    this.retainedSupportEnvelopes.length = 0;
+    this.retainedSupportEnvelopeBytes = 0;
+    return drained;
+  }
+
+  snapshot(): RuntimeEvidenceTransportChannelRouterSnapshot {
+    return Object.freeze({
+      status: this.disposed
+        ? "disposed"
+        : this.failureReason !== null
+          ? "failed"
+          : this.boundChannel !== null
+            ? "active"
+            : "pending",
+      failureReason: this.failureReason,
+      retainedSupportEnvelopeCount: this.retainedSupportEnvelopes.length,
+      retainedSupportEnvelopeBytes: this.retainedSupportEnvelopeBytes,
+    });
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.unbind?.();
+    this.unbind = null;
+    this.unsubscribeKeyPin?.();
+    this.unsubscribeKeyPin = null;
+    this.boundChannel = null;
+    this.retainedSupportEnvelopes.length = 0;
+    this.retainedSupportEnvelopeBytes = 0;
+    this.listeners.clear();
+    this.disposed = true;
+    this.disposeOwnedKeyPin();
+  }
+
+  private routeMessage(data: unknown): void {
+    if (this.disposed || this.failureReason !== null) return;
+    const text = dataChannelText(data);
+    if (text === null) {
+      this.fail("runtime_evidence_transport_router_message_encoding_invalid");
+      return;
+    }
+    if (text.byteLength > this.maxMessageBytes) {
+      this.fail("runtime_evidence_transport_router_message_byte_limit_exceeded");
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text.text);
+    } catch {
+      this.fail("runtime_evidence_transport_router_message_json_invalid");
+      return;
+    }
+    if (
+      parsed === null
+      || typeof parsed !== "object"
+      || Array.isArray(parsed)
+      || Object.getPrototypeOf(parsed) !== Object.prototype
+    ) {
+      this.fail("runtime_evidence_transport_router_message_shape_invalid");
+      return;
+    }
+
+    const schemaVersion = (parsed as Record<string, unknown>).schemaVersion;
+    if (schemaVersion === RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA) {
+      routeVerificationKeyAnnouncement(this.keyPin, parsed);
+      const keyPinSnapshot = this.keyPin.snapshot();
+      if (keyPinSnapshot.status === "failed") {
+        this.fail(
+          keyPinSnapshot.failureReason
+          ?? "runtime_evidence_transport_router_key_pin_failed",
+        );
+      } else if (keyPinSnapshot.status === "disposed") {
+        this.fail("runtime_evidence_transport_router_key_pin_disposed");
+      }
+      return;
+    }
+
+    if (schemaVersion === OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_SCHEMA) {
+      if (
+        (parsed as Record<string, unknown>).type
+        !== OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_TYPE
+      ) {
+        this.fail("runtime_evidence_transport_router_message_type_unknown");
+        return;
+      }
+      if (this.keyPin.snapshot().status !== "pinned") {
+        this.fail("runtime_evidence_transport_router_support_envelope_before_key");
+        return;
+      }
+      this.publishSupportEnvelope(text.text, text.byteLength);
+      return;
+    }
+
+    if (typeof schemaVersion !== "string") {
+      this.fail("runtime_evidence_transport_router_message_schema_invalid");
+      return;
+    }
+    this.fail("runtime_evidence_transport_router_message_schema_unknown");
+  }
+
+  private publishSupportEnvelope(serializedEnvelope: string, byteLength: number): void {
+    if (this.retainedSupportEnvelopes.length >= this.retainedSupportEnvelopeCapacity) {
+      this.fail("runtime_evidence_transport_router_retention_capacity_exhausted");
+      return;
+    }
+    if (byteLength > this.maxRetainedSupportEnvelopeBytes - this.retainedSupportEnvelopeBytes) {
+      this.fail("runtime_evidence_transport_router_retained_byte_capacity_exhausted");
+      return;
+    }
+    this.retainedSupportEnvelopes.push(serializedEnvelope);
+    this.retainedSupportEnvelopeBytes += byteLength;
+    for (const listener of [...this.listeners]) {
+      if (this.disposed || this.failureReason !== null) return;
+      try {
+        listener(serializedEnvelope);
+      } catch {
+        // Support subscribers cannot interrupt transport isolation or promote evidence.
+      }
+    }
+  }
+
+  private fail(reason: string): void {
+    if (this.disposed || this.failureReason !== null) return;
+    this.failureReason = reason;
+    this.unbind?.();
+    this.unbind = null;
+    this.unsubscribeKeyPin?.();
+    this.unsubscribeKeyPin = null;
+    this.boundChannel = null;
+    this.listeners.clear();
+    this.retainedSupportEnvelopes.length = 0;
+    this.retainedSupportEnvelopeBytes = 0;
+  }
+
+  private normalizeLimits(
+    limits: RuntimeEvidenceTransportChannelRouterLimits,
+  ): Readonly<{
+    maxRetainedSupportEnvelopeCount: number;
+    maxMessageBytes: number;
+    maxRetainedSupportEnvelopeBytes: number;
+  }> {
+    try {
+      if (
+        limits === null
+        || typeof limits !== "object"
+        || isProxy(limits)
+        || Array.isArray(limits)
+        || Object.getPrototypeOf(limits) !== Object.prototype
+      ) {
+        throw new Error("invalid limits shape");
+      }
+      const ownKeys = Reflect.ownKeys(limits);
+      const allowedKeys = new Set<string>(ROUTER_LIMIT_KEYS);
+      if (ownKeys.some((key) => typeof key !== "string" || !allowedKeys.has(key))) {
+        throw new Error("invalid limits keys");
+      }
+      const rawValues: Record<string, unknown> = {};
+      for (const key of ROUTER_LIMIT_KEYS) {
+        const descriptor = Object.getOwnPropertyDescriptor(limits, key);
+        if (descriptor === undefined) continue;
+        if (
+          descriptor.enumerable !== true
+          || !Object.prototype.hasOwnProperty.call(descriptor, "value")
+          || Object.prototype.hasOwnProperty.call(descriptor, "get")
+          || Object.prototype.hasOwnProperty.call(descriptor, "set")
+        ) {
+          throw new Error("invalid limits descriptor");
+        }
+        rawValues[key] = descriptor.value;
+      }
+      const values: {
+        maxRetainedSupportEnvelopeCount: number;
+        maxMessageBytes: number;
+        maxRetainedSupportEnvelopeBytes: number;
+      } = {
+        maxRetainedSupportEnvelopeCount:
+          rawValues.maxRetainedSupportEnvelopeCount === undefined
+            ? DEFAULT_ROUTER_RETAINED_SUPPORT_ENVELOPE_CAPACITY
+            : rawValues.maxRetainedSupportEnvelopeCount as number,
+        maxMessageBytes: rawValues.maxMessageBytes === undefined
+          ? DEFAULT_ROUTER_MAX_MESSAGE_BYTES
+          : rawValues.maxMessageBytes as number,
+        maxRetainedSupportEnvelopeBytes:
+          rawValues.maxRetainedSupportEnvelopeBytes === undefined
+            ? DEFAULT_ROUTER_MAX_RETAINED_SUPPORT_ENVELOPE_BYTES
+            : rawValues.maxRetainedSupportEnvelopeBytes as number,
+      };
+      if (Object.values(values).some((value) => !Number.isSafeInteger(value) || value <= 0)) {
+        throw new Error("invalid limits value");
+      }
+      return Object.freeze(values);
+    } catch {
+      throw new Error("runtime_evidence_transport_router_limits_invalid");
+    }
+  }
+
+  private disposeOwnedKeyPin(): void {
+    if (!this.ownsKeyPin) return;
+    this.ownsKeyPin = false;
+    this.disposingOwnedKeyPin = true;
+    try {
+      this.keyPin.dispose();
+    } finally {
+      this.disposingOwnedKeyPin = false;
     }
   }
 }
