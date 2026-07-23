@@ -1,13 +1,17 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_AUTHORITY,
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_SCHEMA,
 } from "../../src/gpu_parent_runtime_proof_admission_authority.js";
 import { session } from "../../src/session.js";
+import type { GpuHmrProofTelemetry } from "../../src/gpu_proof.js";
 import {
   createGpuHmrMcpAdmissionOnlineReplayAuthorityClient,
   gpuHmrMcpAdmissionOnlineReplayAuthorityClientProjection,
 } from "../../scripts/lib/gpu-hmr-mcp-admission-online-replay-authority.mjs";
+import {
+  gpuParentRuntimeProofAdmissionReceiptFixture,
+} from "./gpu_parent_runtime_proof_admission_fixture.js";
 
 const TRUST_MATERIAL_KEYS = [
   "schemaVersion",
@@ -81,5 +85,30 @@ describe("SessionManager GPU parent proof admission authority", () => {
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
     });
+  });
+
+  it("does not capture bytes from a proof outside its live authority", async () => {
+    const admissionReceipt = gpuParentRuntimeProofAdmissionReceiptFixture();
+    const proof = {
+      parentControlVerificationMaterial: {
+        mcpAdmissionReceipt: admissionReceipt,
+      },
+    } as unknown as GpuHmrProofTelemetry;
+    const hmr = {
+      isRetainedGpuProof: (value: unknown) => value === proof,
+    };
+    (session as unknown as { state: string }).state = "attached";
+    (session as unknown as { attached: unknown }).attached = {
+      sessionId: admissionReceipt.transportSessionId,
+      channels: { hmr },
+    };
+    const capture = vi.fn(() => Buffer.from([1, 2, 3]));
+
+    await expect(
+      session.captureGpuProofOutputBytes(proof, capture),
+    ).rejects.toThrow(
+      "gpu_parent_runtime_proof_output_observation_admission_invalid",
+    );
+    expect(capture).not.toHaveBeenCalled();
   });
 });

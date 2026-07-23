@@ -6,10 +6,16 @@ import type { RuntimeEvidenceTransportKeyPin } from "./runtime_evidence_transpor
 import {
   GpuParentRuntimeProofAdmissionAuthority,
   type GpuParentRuntimeProofAdmissionTrustMaterial,
+  type GpuParentRuntimeProofOutputObservation,
 } from "./gpu_parent_runtime_proof_admission_authority.js";
 import {
   createGpuMcpOutputByteObservationBoundary,
 } from "./gpu_mcp_output_byte_observation_boundary.js";
+import {
+  captureGpuMcpAdmittedOutputBytes,
+  type GpuMcpOutputByteCapture,
+} from "./gpu_mcp_admitted_output_capture.js";
+import type { GpuHmrProofTelemetry } from "./gpu_proof.js";
 import { FrameSink } from "./frames.js";
 import { SessionChannels } from "./channels.js";
 import { projectPublicHmrEvent } from "./hmr.js";
@@ -652,6 +658,35 @@ class SessionManager {
       throw new Error("not_attached");
     }
     return this.attached;
+  }
+
+  async captureGpuProofOutputBytes(
+    proof: GpuHmrProofTelemetry,
+    captureOutputBytes: GpuMcpOutputByteCapture,
+  ): Promise<GpuParentRuntimeProofOutputObservation> {
+    const attached = this.require();
+    if (!attached.channels.hmr.isRetainedGpuProof(proof)) {
+      throw new Error("gpu_output_capture_proof_not_retained");
+    }
+    const admissionReceipt =
+      proof.parentControlVerificationMaterial?.mcpAdmissionReceipt;
+    if (admissionReceipt === undefined) {
+      throw new Error("gpu_output_capture_admission_receipt_missing");
+    }
+    if (admissionReceipt.transportSessionId !== attached.sessionId) {
+      throw new Error("gpu_output_capture_transport_session_mismatch");
+    }
+    return captureGpuMcpAdmittedOutputBytes(
+      this.#gpuParentRuntimeProofAdmissionAuthority,
+      this.#gpuMcpOutputByteObservationBoundary.producer,
+      admissionReceipt,
+      captureOutputBytes,
+      () => (
+        this.state === "attached"
+        && this.attached === attached
+        && attached.channels.hmr.isRetainedGpuProof(proof)
+      ),
+    );
   }
 
   async attach(opts: AttachOptions): Promise<AttachedSession> {
