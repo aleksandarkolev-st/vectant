@@ -356,12 +356,13 @@ impl PeerRegistry {
     }
 
     /// Attach a channel to an already-registered peer under an opaque,
-    /// non-empty capability ID. A duplicate peer/capability attachment is a
-    /// last-write-wins registry replacement; externally-held channels are not
-    /// closed by this registry.
+    /// non-empty capability ID when the peer still owns `expected_pc`. A
+    /// duplicate peer/capability attachment is a last-write-wins registry
+    /// replacement; externally-held channels are not closed by this registry.
     pub fn attach_session_data_channel(
         &self,
         peer_id: &str,
+        expected_pc: &Arc<RTCPeerConnection>,
         capability_id: &str,
         dc: Arc<RTCDataChannel>,
     ) -> bool {
@@ -370,7 +371,10 @@ impl PeerRegistry {
         }
 
         let peers = self.peers.read().expect("peer registry poisoned");
-        if !peers.contains_key(peer_id) {
+        let Some(peer) = peers.get(peer_id) else {
+            return false;
+        };
+        if !Arc::ptr_eq(&peer.pc, expected_pc) {
             return false;
         }
 
@@ -546,10 +550,10 @@ mod tests {
             .create_data_channel("legacy", None)
             .await
             .expect("legacy data channel");
-        reg.insert(PeerHandle::new("peer", PeerRole::Observer, pc));
+        reg.insert(PeerHandle::new("peer", PeerRole::Observer, pc.clone()));
 
-        assert!(reg.attach_session_data_channel("peer", "capability.alpha", alpha.clone()));
-        assert!(reg.attach_session_data_channel("peer", "capability.beta", beta.clone()));
+        assert!(reg.attach_session_data_channel("peer", &pc, "capability.alpha", alpha.clone()));
+        assert!(reg.attach_session_data_channel("peer", &pc, "capability.beta", beta.clone()));
         assert!(reg.attach_build_log("peer", legacy.clone()));
 
         let observed_alpha = reg
@@ -587,7 +591,7 @@ mod tests {
             .await
             .expect("unknown data channel");
 
-        assert!(!reg.attach_session_data_channel("missing", "capability.test", dc));
+        assert!(!reg.attach_session_data_channel("missing", &pc, "capability.test", dc));
         assert!(reg
             .session_data_channel_snapshot("missing", "capability.test")
             .is_none());
@@ -604,9 +608,9 @@ mod tests {
             .create_data_channel("empty", None)
             .await
             .expect("empty data channel");
-        reg.insert(PeerHandle::new("peer", PeerRole::Observer, pc));
+        reg.insert(PeerHandle::new("peer", PeerRole::Observer, pc.clone()));
 
-        assert!(!reg.attach_session_data_channel("peer", "", dc));
+        assert!(!reg.attach_session_data_channel("peer", &pc, "", dc));
         assert!(reg.session_data_channel_snapshot("peer", "").is_none());
         assert!(reg.all_session_data_channel_snapshots("").is_empty());
     }
@@ -623,10 +627,15 @@ mod tests {
             .create_data_channel("replacement", None)
             .await
             .expect("replacement data channel");
-        reg.insert(PeerHandle::new("peer", PeerRole::Observer, pc));
+        reg.insert(PeerHandle::new("peer", PeerRole::Observer, pc.clone()));
 
-        assert!(reg.attach_session_data_channel("peer", "capability.replace", first.clone()));
-        assert!(reg.attach_session_data_channel("peer", "capability.replace", replacement.clone()));
+        assert!(reg.attach_session_data_channel("peer", &pc, "capability.replace", first.clone()));
+        assert!(reg.attach_session_data_channel(
+            "peer",
+            &pc,
+            "capability.replace",
+            replacement.clone()
+        ));
 
         let observed = reg
             .session_data_channel_snapshot("peer", "capability.replace")
@@ -642,6 +651,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_connection_cannot_attach_to_re_registered_peer_id() {
+        let reg = PeerRegistry::new();
+        let stale_pc = mk_pc().await;
+        let stale_dc = stale_pc
+            .create_data_channel("stale", None)
+            .await
+            .expect("stale data channel");
+        reg.insert(PeerHandle::new(
+            "peer",
+            PeerRole::Observer,
+            stale_pc.clone(),
+        ));
+
+        let current_pc = mk_pc().await;
+        let current_dc = current_pc
+            .create_data_channel("current", None)
+            .await
+            .expect("current data channel");
+        reg.insert(PeerHandle::new(
+            "peer",
+            PeerRole::Observer,
+            current_pc.clone(),
+        ));
+
+        assert!(!reg.attach_session_data_channel("peer", &stale_pc, "capability.shared", stale_dc));
+        assert!(reg.attach_session_data_channel(
+            "peer",
+            &current_pc,
+            "capability.shared",
+            current_dc.clone()
+        ));
+        let observed = reg
+            .session_data_channel_snapshot("peer", "capability.shared")
+            .expect("current capability attached");
+        assert!(Arc::ptr_eq(&observed, &current_dc));
+    }
+
+    #[tokio::test]
     async fn replacement_and_browser_eviction_erase_session_data_channels() {
         let reg = PeerRegistry::new();
         let first_pc = mk_pc().await;
@@ -649,11 +696,23 @@ mod tests {
             .create_data_channel("first", None)
             .await
             .expect("first data channel");
-        reg.insert(PeerHandle::new("first", PeerRole::Browser, first_pc));
-        assert!(reg.attach_session_data_channel("first", "capability.shared", first_dc));
+        reg.insert(PeerHandle::new(
+            "first",
+            PeerRole::Browser,
+            first_pc.clone(),
+        ));
+        assert!(reg.attach_session_data_channel("first", &first_pc, "capability.shared", first_dc));
 
         let second_pc = mk_pc().await;
-        let outcome = reg.insert(PeerHandle::new("second", PeerRole::Browser, second_pc));
+        let second_dc = second_pc
+            .create_data_channel("second", None)
+            .await
+            .expect("second data channel");
+        let outcome = reg.insert(PeerHandle::new(
+            "second",
+            PeerRole::Browser,
+            second_pc.clone(),
+        ));
         assert!(matches!(outcome, RegistryInsertOutcome::Evicted(_)));
         assert!(reg
             .session_data_channel_snapshot("first", "capability.shared")
@@ -663,11 +722,12 @@ mod tests {
             .is_empty());
 
         let replacement_pc = mk_pc().await;
-        let replacement_dc = replacement_pc
-            .create_data_channel("replacement", None)
-            .await
-            .expect("replacement data channel");
-        assert!(reg.attach_session_data_channel("second", "capability.shared", replacement_dc));
+        assert!(reg.attach_session_data_channel(
+            "second",
+            &second_pc,
+            "capability.shared",
+            second_dc
+        ));
         reg.insert(PeerHandle::new("second", PeerRole::Browser, replacement_pc));
         assert!(reg
             .session_data_channel_snapshot("second", "capability.shared")
@@ -691,10 +751,23 @@ mod tests {
             .await
             .expect("second data channel");
 
-        reg.insert(PeerHandle::new("first", PeerRole::Observer, first_pc));
-        reg.insert(PeerHandle::new("second", PeerRole::Observer, second_pc));
-        assert!(reg.attach_session_data_channel("first", "capability.shared", first_dc));
-        assert!(reg.attach_session_data_channel("second", "capability.shared", second_dc));
+        reg.insert(PeerHandle::new(
+            "first",
+            PeerRole::Observer,
+            first_pc.clone(),
+        ));
+        reg.insert(PeerHandle::new(
+            "second",
+            PeerRole::Observer,
+            second_pc.clone(),
+        ));
+        assert!(reg.attach_session_data_channel("first", &first_pc, "capability.shared", first_dc));
+        assert!(reg.attach_session_data_channel(
+            "second",
+            &second_pc,
+            "capability.shared",
+            second_dc
+        ));
         assert_eq!(
             reg.all_session_data_channel_snapshots("capability.shared")
                 .len(),
