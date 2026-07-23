@@ -3384,8 +3384,8 @@ export async function verifyGpuHmrVisualCaptureProvenance(input, options = {}) {
         dispatch_line_index: dispatchAnchor.sourceLineIndex,
       },
     });
-    if (controlPair.accepted !== true) {
-      failures.push(...controlPair.failedGates.map(
+    if (controlPair.supportValidated !== true) {
+      failures.push(...controlPair.diagnosticFailedGates.map(
         (gate) => `visual_capture_provenance_${gate}`,
       ));
     }

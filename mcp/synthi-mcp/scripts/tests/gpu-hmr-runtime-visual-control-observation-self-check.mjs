@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import {
   GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_AUTHORITY,
   GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_SCHEMA_VERSION,
@@ -12,7 +11,6 @@ import {
 } from '../lib/gpu-hmr-visual-evidence.mjs';
 
 const hash = (character) => `sha256:${character.repeat(64)}`;
-const textHash = (value) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
 
 function observation(phase, overrides = {}) {
   const targetState = {
@@ -90,15 +88,25 @@ const expected = {
 };
 
 const accepted = evaluateRuntimeVisualControlObservationPair({ before, after, expected });
-assert.equal(accepted.accepted, true);
-assert.equal(accepted.acceptedAsRuntimeVisualControlEvidence, true);
+assert.equal(accepted.accepted, false);
+assert.equal(accepted.supportValidated, true);
+assert.equal(accepted.strictAccepted, false);
+assert.equal(accepted.acceptedAsRuntimeVisualControlEvidence, false);
+assert.equal(accepted.acceptedAsDiagnosticRuntimeVisualControlEvidence, true);
 assert.equal(accepted.acceptedForGpuHmr, false);
 assert.equal(accepted.gpuHmrSuccess, false);
 assert.equal(accepted.canSatisfyRuntimeProof, false);
 assert.equal(accepted.canSatisfyDispatchProof, false);
-assert.equal(accepted.canSatisfyVisualControlProof, true);
-assert.equal(accepted.deterministicVisualModeEvaluation.accepted, true);
-assert.equal(accepted.deterministicVisualMode.camera_state_hash, textHash('camera:stable-self-check'));
+assert.equal(accepted.canSatisfyVisualControlProof, false);
+assert.equal(accepted.deterministicVisualModeEvaluation.accepted, false);
+assert.equal(accepted.deterministicVisualMode.camera_state_hash, null);
+assert.deepEqual(accepted.diagnosticFailedGates, []);
+assert.ok(accepted.strictFailedGates.includes(
+  'target_emitted_visual_control_state_not_independent_runtime_evidence',
+));
+assert.ok(accepted.failedGates.includes(
+  'target_emitted_visual_control_state_not_independent_runtime_evidence',
+));
 assert.equal(accepted.before.proof_authority, GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_AUTHORITY);
 assert.equal(accepted.before.schema_version, GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_SCHEMA_VERSION);
 
@@ -242,7 +250,8 @@ console.log(JSON.stringify({
   ok: true,
   schemaVersion: accepted.schemaVersion,
   pairHash: accepted.pairHash,
-  acceptedPairDerivesDeterministicMode: accepted.deterministicVisualModeEvaluation.accepted,
+  targetPairQuarantinedFromDeterministicMode:
+    accepted.deterministicVisualModeEvaluation.accepted === false,
   hostileCases: [
     'forged_payload_hash',
     'replayed_session',

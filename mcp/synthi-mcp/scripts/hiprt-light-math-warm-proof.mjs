@@ -3241,83 +3241,6 @@ function declaredDeterministicVisualModeEvidence() {
   };
 }
 
-function captureObservation(line) {
-  const values = parseKeyValuePairs(line);
-  const width = Number(values.width);
-  const height = Number(values.height);
-  return {
-    accepted:
-      values.wrote === '1'
-      && Number.isInteger(width)
-      && width > 0
-      && Number.isInteger(height)
-      && height > 0,
-    width: Number.isInteger(width) && width > 0 ? width : null,
-    height: Number.isInteger(height) && height > 0 ? height : null,
-  };
-}
-
-function fallbackDeterministicVisualModeForLedger({ proof, dispatchId }) {
-  const baselineCapture = captureObservation(proof.runtime?.baseline?.captureLine);
-  const changedCapture = captureObservation(proof.runtime?.changed?.captureLine);
-  const postRecompileEvidence = proof.runtime?.changed?.postRecompileEvidence ?? {};
-  const dispatchLineIndex = Number(postRecompileEvidence.dispatch?.lineIndex);
-  const captureLineIndex = Number(postRecompileEvidence.captureLineIndex);
-  const captureAfterDispatch =
-    postRecompileEvidence.accepted === true
-    && Number.isInteger(dispatchLineIndex)
-    && Number.isInteger(captureLineIndex)
-    && captureLineIndex > dispatchLineIndex;
-  const width = Number(proof.dimensions?.width);
-  const height = Number(proof.dimensions?.height);
-  const decodedResolutionStable =
-    Number.isInteger(width)
-    && width > 0
-    && Number.isInteger(height)
-    && height > 0
-    && proof.baseline?.width === width
-    && proof.baseline?.height === height
-    && proof.changed?.width === width
-    && proof.changed?.height === height;
-  const captureResolutionStable =
-    baselineCapture.accepted
-    && changedCapture.accepted
-    && baselineCapture.width === width
-    && baselineCapture.height === height
-    && changedCapture.width === width
-    && changedCapture.height === height;
-  return {
-    schema_version: 'synthi.gpu_hmr.deterministic_visual_mode.v1',
-    proof_authority: 'runtime_observation_only_missing_deterministic_control_attestation',
-    fixed_seed: null,
-    seed_policy_fixed: null,
-    seed_policy_hash: null,
-    camera_state_hash: null,
-    frozen_camera: null,
-    temporal_accumulation_disabled: null,
-    temporal_accumulation_present: null,
-    temporal_accumulation_not_applicable: null,
-    taa_disabled: null,
-    taa_present: null,
-    taa_not_applicable: null,
-    denoiser_disabled: null,
-    denoiser_present: null,
-    denoiser_not_applicable: null,
-    fixed_resolution: decodedResolutionStable && captureResolutionStable,
-    fixed_swapchain_image_count: null,
-    frame_capture_after_epoch_dispatch: captureAfterDispatch,
-    presentation_fence_or_frame_boundary: null,
-    warmup_frames: null,
-    convergence_window: null,
-    evidence_refs: compactStringList([
-      decodedResolutionStable && captureResolutionStable
-        ? `runtime:hiprt:capture-resolution:${width}x${height}`
-        : null,
-      captureAfterDispatch ? `runtime:hiprt:same-process-dispatch:${dispatchId}` : null,
-    ]),
-  };
-}
-
 function runtimeVisualControlProofForLedger({ proof, dispatchId }) {
   const postRecompileEvidence = proof.runtime?.changed?.postRecompileEvidence ?? {};
   const dispatch = postRecompileEvidence.dispatch ?? {};
@@ -3372,9 +3295,9 @@ function runtimeVisualControlProofForLedger({ proof, dispatchId }) {
       dispatchLineIndex: postRecompileEvidence.dispatch?.lineIndex ?? null,
     },
   });
-  const deterministicVisualMode = pair.accepted === true
+  const deterministicVisualMode = pair.strictAccepted === true
     ? pair.deterministicVisualMode
-    : fallbackDeterministicVisualModeForLedger({ proof, dispatchId });
+    : null;
   return {
     pair,
     deterministicVisualMode,
@@ -3531,11 +3454,11 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       })
     : null;
   const declaredDeterministicVisualMode = declaredDeterministicVisualModeEvidence();
-  if (runtimeVisualControlPair?.accepted !== true) {
+  if (runtimeVisualControlPair?.strictAccepted !== true) {
     limitations.push({
       code: 'hiprt_runtime_visual_control_pair_unproven',
-      failedGates: runtimeVisualControlPair?.failedGates ?? [],
-      failed_gates: runtimeVisualControlPair?.failedGates ?? [],
+      failedGates: runtimeVisualControlPair?.strictFailedGates ?? [],
+      failed_gates: runtimeVisualControlPair?.strictFailedGates ?? [],
     });
   }
   if (deterministicVisualModeEvaluation?.accepted !== true) {
@@ -5013,8 +4936,7 @@ async function hiprtRuntimeBoundaryAppHookSelfCheck() {
         !== 'profile_declaration_only_not_runtime_visual_proof'
       || declaredBoundaryProof.runtimeProofArtifact?.declaredDeterministicVisualMode?.acceptedForGpuHmr
         !== false
-      || declaredBoundaryProof.runtimeProofArtifact?.deterministicVisualMode?.seed_policy_hash !== null
-      || declaredBoundaryProof.runtimeProofArtifact?.deterministicVisualMode?.camera_state_hash !== null
+      || declaredBoundaryProof.runtimeProofArtifact?.deterministicVisualMode !== null
       || (declaredBoundaryProof.proofLedger?.records?.[0]?.oracle_artifacts
         ?.visual_oracle_artifacts?.camera_state_hash ?? null) !== null
       || !declaredBoundaryProof.runtimeProofArtifact?.limitations?.some((entry) =>

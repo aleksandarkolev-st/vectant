@@ -44,9 +44,9 @@ const NON_AUTHORITATIVE_DETERMINISTIC_VISUAL_CONTROL_AUTHORITIES = new Set([
 export const GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION =
   'synthi.gpu_hmr.deterministic_visual_mode.v1';
 export const GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_SCHEMA_VERSION =
-  'synthi.gpu_hmr.runtime_visual_control_observation.v2';
+  'synthi.gpu_hmr.runtime_visual_control_observation.v3';
 export const GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_AUTHORITY =
-  'verified_target_process_visual_control_state_and_capture_bindings';
+  'target_emitted_visual_control_diagnostics_only_not_gpu_hmr_proof';
 export const GPU_HMR_RUNTIME_VISUAL_CONTROL_STATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.runtime_visual_control_state.v1';
 export const GPU_HMR_RUNTIME_VISUAL_CONTROL_STATE_AUTHORITY =
@@ -60,7 +60,7 @@ export const GPU_HMR_RUNTIME_VISUAL_DEVICE_BINDING_AUTHORITY =
 export const GPU_HMR_RUNTIME_VISUAL_DISPATCH_BINDING_AUTHORITY =
   'independent_runtime_trace_dispatch_identity';
 export const GPU_HMR_RUNTIME_VISUAL_CONTROL_PAIR_SCHEMA_VERSION =
-  'synthi.gpu_hmr.runtime_visual_control_pair.v2';
+  'synthi.gpu_hmr.runtime_visual_control_pair.v3';
 export const GPU_HMR_VISUAL_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION =
   'synthi.gpu_hmr.visual_artifact_transport_evidence.v1';
 export const GPU_HMR_ASYNC_VISUAL_PROOF_JOB_SCHEMA_VERSION =
@@ -1021,33 +1021,6 @@ function visualControlStateMatches(before, after, prefix) {
   return fieldsMatch && controlled;
 }
 
-function runtimeVisualControlModeFromAcceptedPair(before, after, evidenceRefs) {
-  return {
-    ...normalizeGpuHmrDeterministicVisualMode({
-      fixed_seed: true,
-      seed_policy_fixed: true,
-      seed_policy_hash: after.seed_policy_hash,
-      camera_state_hash: after.camera_state_hash,
-      frozen_camera: true,
-      temporal_accumulation_present: after.temporal_accumulation_present,
-      temporal_accumulation_disabled: after.temporal_accumulation_disabled,
-      temporal_accumulation_not_applicable: after.temporal_accumulation_not_applicable,
-      taa_present: after.taa_present,
-      taa_disabled: after.taa_disabled,
-      taa_not_applicable: after.taa_not_applicable,
-      denoiser_present: after.denoiser_present,
-      denoiser_disabled: after.denoiser_disabled,
-      denoiser_not_applicable: after.denoiser_not_applicable,
-      fixed_resolution: true,
-      fixed_swapchain_image_count: true,
-      frame_capture_after_epoch_dispatch: true,
-      presentation_fence_or_frame_boundary: true,
-      warmup_frames: after.warmup_frames,
-    }),
-    evidence_refs: evidenceRefs,
-  };
-}
-
 export function evaluateRuntimeVisualControlObservationPair(input = {}) {
   const pair = isObject(input) ? input : {};
   const before = runtimeVisualControlObservation(pair.before);
@@ -1312,24 +1285,29 @@ export function evaluateRuntimeVisualControlObservationPair(input = {}) {
     }
   }
 
-  const uniqueFailedGates = compactStringList(failedGates);
+  const diagnosticFailedGates = compactStringList(failedGates);
   const evidenceRefs = compactStringList([
     before.observation_hash,
     after.observation_hash,
     before.source_line_hash,
     after.source_line_hash,
   ]);
-  const accepted = uniqueFailedGates.length === 0;
-  const deterministicVisualMode = accepted
-    ? runtimeVisualControlModeFromAcceptedPair(before, after, evidenceRefs)
-    : normalizeGpuHmrDeterministicVisualMode({});
+  const diagnosticAccepted = diagnosticFailedGates.length === 0;
+  const strictFailedGates = compactStringList([
+    ...diagnosticFailedGates,
+    'target_emitted_visual_control_state_not_independent_runtime_evidence',
+  ]);
+  const deterministicVisualMode = normalizeGpuHmrDeterministicVisualMode({});
   const deterministicVisualModeEvaluation = evaluateGpuHmrDeterministicVisualMode(
     deterministicVisualMode,
   );
   const pairCore = {
     schemaVersion: GPU_HMR_RUNTIME_VISUAL_CONTROL_PAIR_SCHEMA_VERSION,
-    proofAuthority: 'recomputed_target_process_runtime_visual_control_pair',
-    accepted,
+    proofAuthority: 'target_emitted_visual_control_diagnostics_only_not_gpu_hmr_proof',
+    accepted: false,
+    diagnosticAccepted,
+    supportValidated: diagnosticAccepted,
+    strictAccepted: false,
     beforeObservationHash: before.observation_hash,
     afterObservationHash: after.observation_hash,
     expectedBeforeFrameHash,
@@ -1343,15 +1321,21 @@ export function evaluateRuntimeVisualControlObservationPair(input = {}) {
     expectedDispatchLineIndex,
     expectedDispatchTimestampNs,
     evidenceRefs,
-    failedGates: uniqueFailedGates,
+    failedGates: strictFailedGates,
+    diagnosticFailedGates,
+    strictFailedGates,
   };
   const pairHash = sha256Text(stableJson(pairCore));
   return {
     ...pairCore,
     schema_version: GPU_HMR_RUNTIME_VISUAL_CONTROL_PAIR_SCHEMA_VERSION,
     proof_authority: pairCore.proofAuthority,
-    acceptedAsRuntimeVisualControlEvidence: accepted,
-    accepted_as_runtime_visual_control_evidence: accepted,
+    support_validated: diagnosticAccepted,
+    strict_accepted: false,
+    acceptedAsRuntimeVisualControlEvidence: false,
+    accepted_as_runtime_visual_control_evidence: false,
+    acceptedAsDiagnosticRuntimeVisualControlEvidence: diagnosticAccepted,
+    accepted_as_diagnostic_runtime_visual_control_evidence: diagnosticAccepted,
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
@@ -1360,8 +1344,8 @@ export function evaluateRuntimeVisualControlObservationPair(input = {}) {
     can_satisfy_runtime_proof: false,
     canSatisfyDispatchProof: false,
     can_satisfy_dispatch_proof: false,
-    canSatisfyVisualControlProof: accepted,
-    can_satisfy_visual_control_proof: accepted,
+    canSatisfyVisualControlProof: false,
+    can_satisfy_visual_control_proof: false,
     before,
     after,
     deterministicVisualMode,
@@ -1369,7 +1353,9 @@ export function evaluateRuntimeVisualControlObservationPair(input = {}) {
     deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     evidence_refs: evidenceRefs,
-    failed_gates: uniqueFailedGates,
+    failed_gates: strictFailedGates,
+    diagnostic_failed_gates: diagnosticFailedGates,
+    strict_failed_gates: strictFailedGates,
     pairHash,
     pair_hash: pairHash,
   };
