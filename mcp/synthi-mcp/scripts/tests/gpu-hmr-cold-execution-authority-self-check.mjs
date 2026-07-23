@@ -884,6 +884,62 @@ async function selfCheck() {
     assert(graphInputAccessorRead === false,
       'graph input accessor ran before exact record rejection');
 
+    const originalGeneratedEntryBytes = Buffer.from(
+      'export default "captured-before-await";\n',
+      'utf8',
+    );
+    const originalGeneratedEntryHash = byteHash(originalGeneratedEntryBytes);
+    const generatedEntryGraphPromise = createControlledExecutionGraph({
+      trustedRoot: temporaryRoot,
+      entryRelativePath: 'generated-entry-capture.mjs',
+      entryBytes: originalGeneratedEntryBytes,
+      moduleEntryPaths: [],
+      supportFilePaths: [],
+    });
+    originalGeneratedEntryBytes.fill(0);
+    const generatedEntryGraph = await generatedEntryGraphPromise;
+    graphs.add(generatedEntryGraph);
+    const generatedEntryManifest = generatedEntryGraph.entries.find(
+      (entry) => entry.relativePath === 'generated-entry-capture.mjs',
+    );
+    assert(generatedEntryManifest?.contentHash === originalGeneratedEntryHash,
+      'generated entry manifest changed after caller buffer mutation');
+    assert((await readFile(controlledExecutionGraphEntryPath(generatedEntryGraph)))
+      .equals(Buffer.from('export default "captured-before-await";\n', 'utf8')),
+    'materialized generated entry changed after caller buffer mutation');
+    await removeGraph(generatedEntryGraph);
+
+    let entryBytesProxyTrapInvoked = false;
+    const proxiedEntryBytes = new Proxy(
+      Buffer.from('export default "must-not-be-read";\n', 'utf8'),
+      {
+        get() {
+          entryBytesProxyTrapInvoked = true;
+          throw new Error('entry bytes proxy trap invoked');
+        },
+        ownKeys() {
+          entryBytesProxyTrapInvoked = true;
+          throw new Error('entry bytes proxy trap invoked');
+        },
+        getOwnPropertyDescriptor() {
+          entryBytesProxyTrapInvoked = true;
+          throw new Error('entry bytes proxy trap invoked');
+        },
+      },
+    );
+    assert(await expectRejected(
+      () => createControlledExecutionGraph({
+        trustedRoot: temporaryRoot,
+        entryRelativePath: 'proxy-entry-bytes.mjs',
+        entryBytes: proxiedEntryBytes,
+        moduleEntryPaths: [],
+        supportFilePaths: [],
+      }),
+      /controlled_graph_entry_bytes_invalid/,
+    ), 'proxy-wrapped generated entry bytes were accepted');
+    assert(entryBytesProxyTrapInvoked === false,
+      'generated entry bytes proxy trap ran before rejection');
+
     const wrapperOnlyExecution = await runProcess(
       process.execPath,
       ['-e', 'process.stdout.write("wrapper-only")'],

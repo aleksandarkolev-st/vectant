@@ -720,9 +720,17 @@ function validateGraphCreationInput(options) {
     input.entryRelativePath,
     'controlled_graph_entry_relative_path',
   );
-  if (!Buffer.isBuffer(input.entryBytes) || input.entryBytes.byteLength === 0) {
+  if (
+    utilTypes.isProxy(input.entryBytes)
+    || !Buffer.isBuffer(input.entryBytes)
+    || input.entryBytes.byteLength === 0
+  ) {
     throw new TypeError('controlled_graph_entry_bytes_invalid');
   }
+  if (input.entryBytes.byteLength > COLD_EXECUTION_AUTHORITY_LIMITS.graphBytes) {
+    throw new TypeError('controlled_graph_entry_bytes_unbounded');
+  }
+  const entryBytes = Buffer.from(input.entryBytes);
   assertBoundedArray(
     input.moduleEntryPaths,
     COLD_EXECUTION_AUTHORITY_LIMITS.graphRoots,
@@ -803,6 +811,7 @@ function validateGraphCreationInput(options) {
   return Object.freeze({
     ...input,
     entryRelativePath,
+    entryBytes,
     moduleEntries,
     supportEntries,
   });
