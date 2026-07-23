@@ -2105,9 +2105,27 @@ async fn wire_peer_channels(
         )
         .await?;
     let evidence_transport_dc_for_open = evidence_transport_dc.clone();
+    let evidence_transport_pc_for_open = pc.clone();
+    let peer_registry_for_evidence_open = peer_registry.clone();
+    let peer_id_for_evidence_open = peer_id.clone();
     evidence_transport_dc.on_open(Box::new(move || {
         let dc = evidence_transport_dc_for_open.clone();
+        let pc = evidence_transport_pc_for_open.clone();
+        let registry = peer_registry_for_evidence_open.clone();
+        let peer_id = peer_id_for_evidence_open.clone();
         async move {
+            if !registry.attach_session_data_channel(
+                &peer_id,
+                &pc,
+                evidence_transport_label,
+                dc.clone(),
+            ) {
+                eprintln!(
+                    "[Worker] Runtime evidence transport channel rejected for stale peer {peer_id}"
+                );
+                return;
+            }
+
             let payload =
                 hmr::runtime_evidence_transport::global_runtime_evidence_transport_signer()
                 .and_then(|signer| {
