@@ -97,6 +97,7 @@ function signer(
   options: Partial<{
     challenge: string;
     clockUnixNs: () => bigint;
+    nonceBindingKey: Uint8Array;
     nonceBytes: () => Uint8Array;
   }> = {},
 ): GpuParentRuntimeProofAdmissionReceiptSigner {
@@ -104,6 +105,9 @@ function signer(
     privateKey,
     validationRunChallenge: options.challenge ?? VALIDATION_RUN_CHALLENGE,
     clockUnixNs: options.clockUnixNs ?? (() => NOW_NS),
+    ...(options.nonceBindingKey === undefined
+      ? {}
+      : { nonceBindingKey: options.nonceBindingKey }),
     nonceBytes: options.nonceBytes ?? deterministicNonce(),
   });
 }
@@ -567,6 +571,24 @@ describe("GpuParentRuntimeProofAdmissionReceiptSigner", () => {
     });
   });
 
+  it("binds deterministic receipt issuance to opaque authority-generation entropy", () => {
+    const { privateKey } = generateKeyPairSync("ed25519");
+    const fixedNonce = () => Buffer.alloc(32, 0x41);
+    const first = signer(privateKey, {
+      nonceBindingKey: Buffer.alloc(32, 0x51),
+      nonceBytes: fixedNonce,
+    }).sign(admissionInput());
+    const second = signer(privateKey, {
+      nonceBindingKey: Buffer.alloc(32, 0x52),
+      nonceBytes: fixedNonce,
+    }).sign(admissionInput());
+
+    expect(first.receiptId).not.toBe(second.receiptId);
+    expect(first.nonce).not.toBe(second.nonce);
+    expect(first).not.toHaveProperty("nonceBindingKey");
+    expect(second).not.toHaveProperty("nonceBindingKey");
+  });
+
   it("snapshots admission input before injected callbacks and isolates the receipt from later mutation", () => {
     const { privateKey } = generateKeyPairSync("ed25519");
     const input = admissionInput();
@@ -964,5 +986,27 @@ describe("strict MCP admission receipt data boundaries", () => {
     } as unknown as never)).toThrow(
       "gpu_parent_runtime_proof_admission_receipt_signer_context_invalid",
     );
+
+    expect(() => new GpuParentRuntimeProofAdmissionReceiptSigner({
+      privateKey,
+      validationRunChallenge: VALIDATION_RUN_CHALLENGE,
+      nonceBindingKey: Buffer.alloc(31),
+    })).toThrow(
+      "gpu_parent_runtime_proof_admission_receipt_nonce_binding_key_invalid",
+    );
+    const proxyBindingKey = new Proxy(Buffer.alloc(32), {
+      get: failTrap,
+      getOwnPropertyDescriptor: failTrap,
+      getPrototypeOf: failTrap,
+      ownKeys: failTrap,
+    });
+    expect(() => new GpuParentRuntimeProofAdmissionReceiptSigner({
+      privateKey,
+      validationRunChallenge: VALIDATION_RUN_CHALLENGE,
+      nonceBindingKey: proxyBindingKey,
+    })).toThrow(
+      "gpu_parent_runtime_proof_admission_receipt_nonce_binding_key_invalid",
+    );
+    expect(trapCalls).toBe(0);
   });
 });

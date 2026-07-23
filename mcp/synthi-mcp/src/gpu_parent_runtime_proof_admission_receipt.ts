@@ -1,4 +1,5 @@
 import {
+  createHash,
   createPublicKey,
   randomBytes,
   sign as signBytes,
@@ -59,6 +60,8 @@ const ED25519_SPKI_PREFIX = Buffer.from(
   "hex",
 );
 const U64_MAX = 18_446_744_073_709_551_615n;
+const NONCE_BINDING_DOMAIN =
+  "synthi.gpu_hmr.mcp_admission_nonce_binding.v1";
 
 const SIGNER_CONTEXT_REQUIRED_KEYS = [
   "privateKey",
@@ -66,6 +69,7 @@ const SIGNER_CONTEXT_REQUIRED_KEYS = [
 ] as const;
 const SIGNER_CONTEXT_OPTIONAL_KEYS = [
   "clockUnixNs",
+  "nonceBindingKey",
   "nonceBytes",
 ] as const;
 
@@ -178,6 +182,7 @@ export interface GpuParentRuntimeProofAdmissionReceiptSignerContext {
   readonly privateKey: KeyObject;
   readonly validationRunChallenge: string;
   readonly clockUnixNs?: () => bigint;
+  readonly nonceBindingKey?: Uint8Array;
   readonly nonceBytes?: () => Uint8Array;
 }
 
@@ -185,6 +190,7 @@ type SignerContextSnapshot = Readonly<{
   privateKey: unknown;
   validationRunChallenge: unknown;
   clockUnixNs: unknown;
+  nonceBindingKey: unknown;
   nonceBytes: unknown;
 }>;
 
@@ -209,6 +215,7 @@ function snapshotSignerContext(value: unknown): SignerContextSnapshot | null {
 
     const snapshot: Record<string, unknown> = {
       clockUnixNs: undefined,
+      nonceBindingKey: undefined,
       nonceBytes: undefined,
     };
     for (const key of ownKeys) {
@@ -336,6 +343,7 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
   readonly #validationRunChallengeSha256: string;
   readonly #clockUnixNs: () => bigint;
   readonly #nonceBytes: () => Uint8Array;
+  #nonceBindingKey: Buffer | null;
   #sequence = 0n;
   #disposed = false;
   #signing = false;
@@ -375,6 +383,14 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
         "gpu_parent_runtime_proof_admission_receipt_nonce_source_invalid",
       );
     }
+    const nonceBindingKey = context.nonceBindingKey === undefined
+      ? null
+      : snapshotNonceBytes(context.nonceBindingKey);
+    if (context.nonceBindingKey !== undefined && nonceBindingKey === null) {
+      throw new Error(
+        "gpu_parent_runtime_proof_admission_receipt_nonce_binding_key_invalid",
+      );
+    }
     const challengeHash = sharedMcpAdmissionReceiptVerifier
       .hashGpuHmrMcpValidationRunChallenge(
         context.validationRunChallenge,
@@ -390,6 +406,7 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
     this.#validationRunChallengeSha256 = challengeHash;
     this.#clockUnixNs = (context.clockUnixNs as (() => bigint) | undefined)
       ?? (() => BigInt(Date.now()) * 1_000_000n);
+    this.#nonceBindingKey = nonceBindingKey;
     this.#nonceBytes = (context.nonceBytes as (() => Uint8Array) | undefined)
       ?? (() => randomBytes(32));
   }
@@ -456,6 +473,20 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
         throw new Error(
           "gpu_parent_runtime_proof_admission_receipt_nonce_source_invalid",
         );
+      }
+      const nonceBindingKey = this.#nonceBindingKey;
+      if (nonceBindingKey !== null) {
+        const sourceNonce = nonce;
+        try {
+          nonce = createHash("sha256")
+            .update(NONCE_BINDING_DOMAIN, "utf8")
+            .update("\0", "utf8")
+            .update(nonceBindingKey)
+            .update(sourceNonce)
+            .digest();
+        } finally {
+          sourceNonce.fill(0);
+        }
       }
       this.assertActive();
 
@@ -528,6 +559,8 @@ export class GpuParentRuntimeProofAdmissionReceiptSigner {
   dispose(): void {
     if (this.#disposed) return;
     this.#privateKey = null;
+    this.#nonceBindingKey?.fill(0);
+    this.#nonceBindingKey = null;
     this.#disposed = true;
   }
 
