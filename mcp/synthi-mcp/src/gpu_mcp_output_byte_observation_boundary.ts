@@ -441,6 +441,7 @@ export function releaseGpuMcpOutputByteConsumerClaim(
   if (activeClaims.get(state.consumer) === claim) {
     activeClaims.delete(state.consumer);
   }
+  discardPending(state.boundary);
   return true;
 }
 

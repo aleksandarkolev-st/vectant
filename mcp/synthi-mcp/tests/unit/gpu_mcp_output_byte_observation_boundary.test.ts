@@ -291,6 +291,36 @@ describe("GPU MCP output byte observation boundary", () => {
     )).toBeNull();
   });
 
+  it("does not carry pending observations across claim generations", () => {
+    const { boundary, claim, permit } = readyBoundary({
+      maxPendingObservations: 1,
+      maxPendingByteLength: 1,
+    });
+    const priorGeneration = boundary.producer.observe(
+      permit,
+      Uint8Array.of(7),
+    );
+
+    expect(releaseGpuMcpOutputByteConsumerClaim(claim)).toBe(true);
+    const nextClaim = claimGpuMcpOutputByteConsumerCapability(
+      boundary.consumer,
+    );
+    expect(nextClaim).not.toBeNull();
+    if (nextClaim === null) throw new Error("consumer claim unavailable");
+    expect(takeGpuMcpObservedOutputBytes(
+      nextClaim,
+      priorGeneration,
+    )).toBeNull();
+    const current = boundary.producer.observe(
+      nextPermit(nextClaim),
+      Uint8Array.of(8),
+    );
+    expect(takeGpuMcpObservedOutputBytes(
+      nextClaim,
+      current,
+    )).toMatchObject({ bytes: Uint8Array.of(8) });
+  });
+
   it("retires both sides when the consumer is disposed", () => {
     const { boundary, claim, permit } = readyBoundary();
     const pending = boundary.producer.observe(
