@@ -8,12 +8,13 @@ import {
 import {
   isKeyObject,
   isProxy,
-  isSharedArrayBuffer,
-  isUint8Array,
 } from "node:util/types";
 import type {
   GpuParentRuntimeProofAdmissionReceipt,
 } from "./gpu_parent_runtime_proof_admission_receipt.js";
+import {
+  snapshotValidatedUint8Array,
+} from "./validated_uint8_array.js";
 import * as sharedAdmissionVerifierModule
   from "../scripts/lib/gpu-hmr-mcp-admission-receipt-verifier.mjs";
 import * as sharedOutputObservationVerifierModule
@@ -349,86 +350,9 @@ function snapshotSignerContext(value: unknown): SignerContextSnapshot | null {
   }
 }
 
-const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype);
-const TYPED_ARRAY_BUFFER_GETTER =
-  Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, "buffer")?.get;
-const TYPED_ARRAY_BYTE_LENGTH_GETTER =
-  Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, "byteLength")?.get;
-const TYPED_ARRAY_BYTE_OFFSET_GETTER =
-  Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, "byteOffset")?.get;
-
-function snapshotObservedBytes(value: unknown): Buffer | null {
-  try {
-    if (
-      value === null
-      || typeof value !== "object"
-      || isProxy(value)
-      || !ArrayBuffer.isView(value)
-      || !isUint8Array(value)
-      || TYPED_ARRAY_BUFFER_GETTER === undefined
-      || TYPED_ARRAY_BYTE_LENGTH_GETTER === undefined
-      || TYPED_ARRAY_BYTE_OFFSET_GETTER === undefined
-    ) {
-      return null;
-    }
-    const buffer = Reflect.apply(
-      TYPED_ARRAY_BUFFER_GETTER,
-      value,
-      [],
-    ) as ArrayBufferLike;
-    const byteLength = Reflect.apply(
-      TYPED_ARRAY_BYTE_LENGTH_GETTER,
-      value,
-      [],
-    ) as number;
-    const byteOffset = Reflect.apply(
-      TYPED_ARRAY_BYTE_OFFSET_GETTER,
-      value,
-      [],
-    ) as number;
-    if (
-      isSharedArrayBuffer(buffer)
-      || !Number.isSafeInteger(byteLength)
-      || byteLength < 0
-    ) {
-      return null;
-    }
-    return Buffer.from(new Uint8Array(buffer, byteOffset, byteLength));
-  } catch {
-    return null;
-  }
-}
-
 function snapshotNonceBytes(value: unknown): Buffer | null {
-  try {
-    if (
-      value === null
-      || typeof value !== "object"
-      || isProxy(value)
-      || !ArrayBuffer.isView(value)
-      || !isUint8Array(value)
-      || TYPED_ARRAY_BUFFER_GETTER === undefined
-      || TYPED_ARRAY_BYTE_LENGTH_GETTER === undefined
-      || TYPED_ARRAY_BYTE_OFFSET_GETTER === undefined
-    ) {
-      return null;
-    }
-    const buffer = Reflect.apply(TYPED_ARRAY_BUFFER_GETTER, value, []) as ArrayBuffer;
-    const byteLength = Reflect.apply(
-      TYPED_ARRAY_BYTE_LENGTH_GETTER,
-      value,
-      [],
-    ) as number;
-    const byteOffset = Reflect.apply(
-      TYPED_ARRAY_BYTE_OFFSET_GETTER,
-      value,
-      [],
-    ) as number;
-    if (byteLength !== 32) return null;
-    return Buffer.from(new Uint8Array(buffer, byteOffset, byteLength));
-  } catch {
-    return null;
-  }
+  const bytes = snapshotValidatedUint8Array(value);
+  return bytes?.byteLength === 32 ? bytes : null;
 }
 
 function deriveVerificationKey(
@@ -489,7 +413,7 @@ function parseRequest(
   ) {
     return null;
   }
-  const outputBytes = snapshotObservedBytes(request.outputBytes);
+  const outputBytes = snapshotValidatedUint8Array(request.outputBytes);
   if (outputBytes === null) return null;
   if (!validClockValue(request.observedAtMonotonicNs)) return null;
   const observedAtMonotonicNs =

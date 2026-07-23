@@ -1,10 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants as bufferConstants } from "node:buffer";
-import {
-  isProxy,
-  isSharedArrayBuffer,
-  isUint8Array,
-} from "node:util/types";
+import { isProxy } from "node:util/types";
+import { validatedUint8ArrayView } from "./validated_uint8_array.js";
 
 export const GPU_MCP_OBSERVED_OUTPUT_BYTES_SCHEMA =
   "synthi.gpu_hmr.mcp_observed_output_bytes.v1" as const;
@@ -105,58 +102,6 @@ const consumerStates = new WeakMap<object, BoundaryState>();
 const activeClaims = new WeakMap<object, object>();
 const claimStates = new WeakMap<object, ClaimState>();
 const permitStates = new WeakMap<object, PermitState>();
-
-const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype);
-const TYPED_ARRAY_BUFFER_GETTER =
-  Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, "buffer")?.get;
-const TYPED_ARRAY_BYTE_LENGTH_GETTER =
-  Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, "byteLength")?.get;
-const TYPED_ARRAY_BYTE_OFFSET_GETTER =
-  Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, "byteOffset")?.get;
-
-function observedByteView(value: unknown): Uint8Array | null {
-  try {
-    if (
-      value === null
-      || typeof value !== "object"
-      || isProxy(value)
-      || !ArrayBuffer.isView(value)
-      || !isUint8Array(value)
-      || TYPED_ARRAY_BUFFER_GETTER === undefined
-      || TYPED_ARRAY_BYTE_LENGTH_GETTER === undefined
-      || TYPED_ARRAY_BYTE_OFFSET_GETTER === undefined
-    ) {
-      return null;
-    }
-    const buffer = Reflect.apply(
-      TYPED_ARRAY_BUFFER_GETTER,
-      value,
-      [],
-    ) as ArrayBufferLike;
-    const byteLength = Reflect.apply(
-      TYPED_ARRAY_BYTE_LENGTH_GETTER,
-      value,
-      [],
-    ) as number;
-    const byteOffset = Reflect.apply(
-      TYPED_ARRAY_BYTE_OFFSET_GETTER,
-      value,
-      [],
-    ) as number;
-    if (
-      isSharedArrayBuffer(buffer)
-      || !Number.isSafeInteger(byteLength)
-      || byteLength < 0
-      || !Number.isSafeInteger(byteOffset)
-      || byteOffset < 0
-    ) {
-      return null;
-    }
-    return new Uint8Array(buffer, byteOffset, byteLength);
-  } catch {
-    return null;
-  }
-}
 
 function boundedPositiveInteger(
   value: unknown,
@@ -373,7 +318,7 @@ export function createGpuMcpOutputByteObservationBoundary(
           "gpu_mcp_output_byte_observation_capacity_exhausted",
         );
       }
-      const bytes = observedByteView(outputBytes);
+      const bytes = validatedUint8ArrayView(outputBytes);
       if (bytes === null) {
         throw new Error(
           "gpu_mcp_output_byte_observation_bytes_invalid",
