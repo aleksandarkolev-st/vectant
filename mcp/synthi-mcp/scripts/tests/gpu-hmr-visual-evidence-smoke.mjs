@@ -25,6 +25,7 @@ import {
   mcpFrameGateForScreenshot,
   mcpScreenshotArgsForFrameGate,
   mcpScreenshotMetadataFromToolResult,
+  normalizeGpuHmrDeterministicVisualMode,
   visualArtifactTransportEvidence,
   visualEvidenceRow,
 } from '../lib/gpu-hmr-visual-evidence.mjs';
@@ -93,6 +94,43 @@ assert.equal(genericSingleObservationEvaluation.proofMode, 'single_observation_d
 assert.ok(genericSingleObservationEvaluation.failedGates.some(
   (gate) => gate.code === 'verifier_owned_output_observation_receipt_missing',
 ));
+
+const legacyRendererPolicy = normalizeGpuHmrDeterministicVisualMode({
+  fixed_seed: true,
+  seed_policy_hash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  camera_state_hash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  frozen_camera: true,
+  temporal_accumulation_disabled: true,
+  taa_disabled: true,
+  denoiser_disabled: true,
+  fixed_resolution: true,
+  fixed_swapchain_image_count: true,
+  warmup_frames: 7,
+  frame_capture_after_epoch_dispatch: true,
+  presentation_fence_or_frame_boundary: true,
+});
+assert.equal(legacyRendererPolicy.output_observation_after_dispatch, null);
+assert.equal(legacyRendererPolicy.output_observation_ordering_proven, null);
+assert.equal(
+  evaluateGpuHmrDeterministicVisualMode(legacyRendererPolicy).diagnosticAccepted,
+  false,
+);
+for (const rendererField of [
+  'fixed_seed',
+  'seed_policy_hash',
+  'camera_state_hash',
+  'frozen_camera',
+  'temporal_accumulation_disabled',
+  'taa_disabled',
+  'denoiser_disabled',
+  'fixed_resolution',
+  'fixed_swapchain_image_count',
+  'warmup_frames',
+  'frame_capture_after_epoch_dispatch',
+  'presentation_fence_or_frame_boundary',
+]) {
+  assert.equal(Object.hasOwn(legacyRendererPolicy, rendererField), false, rendererField);
+}
 
 const unfamiliarSourceMetadata = evaluateGpuHmrDeterministicVisualMode({
   ...genericSingleObservation,
@@ -236,7 +274,7 @@ assert.ok(
 
 const contradictoryObservationAliases = evaluateGpuHmrDeterministicVisualMode({
   ...genericSingleObservation,
-  frame_capture_after_epoch_dispatch: false,
+  output_capture_after_dispatch: false,
 });
 assert.equal(contradictoryObservationAliases.diagnosticAccepted, false);
 assert.ok(contradictoryObservationAliases.failedGates.some(

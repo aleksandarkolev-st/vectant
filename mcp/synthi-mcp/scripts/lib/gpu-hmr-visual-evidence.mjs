@@ -674,32 +674,14 @@ export function mcpFrameGateSatisfiedByCaptureChain(
 
 export function deterministicVisualModeFromMcpEvidence(input = {}) {
   const evidence = isObject(input) ? input : {};
-  const before = evidence.before ?? evidence.beforeScreenshot ?? null;
   const after = evidence.after ?? evidence.afterScreenshot ?? null;
   const gateCapture = evidence.gate_capture ?? evidence.gateCapture ?? after;
-  const beforeWidth = screenshotDimension(before, 'width');
-  const beforeHeight = screenshotDimension(before, 'height');
-  const afterWidth = screenshotDimension(after, 'width');
-  const afterHeight = screenshotDimension(after, 'height');
-  const beforeManifestVerified = captureManifestVerified(before);
-  const afterManifestVerified = captureManifestVerified(after);
-  const sameResolution = beforeManifestVerified
-    && afterManifestVerified
-    && beforeWidth !== null
-    && beforeHeight !== null
-    && afterWidth !== null
-    && afterHeight !== null
-    && beforeWidth > 0
-    && beforeHeight > 0
-    && beforeWidth === afterWidth
-    && beforeHeight === afterHeight;
   const frameBoundary = mcpFrameGateSatisfiedByScreenshot(evidence.wait ?? evidence, after)
     || mcpFrameGateSatisfiedByCaptureChain(evidence.wait ?? evidence, gateCapture, after);
   return {
     ...normalizeGpuHmrDeterministicVisualMode({
-      fixed_resolution: sameResolution === true ? true : null,
-      frame_capture_after_epoch_dispatch: frameBoundary === true ? true : null,
-      presentation_fence_or_frame_boundary: frameBoundary === true ? true : null,
+      output_observation_after_dispatch: frameBoundary === true ? true : null,
+      output_observation_ordering_proven: frameBoundary === true ? true : null,
     }),
     evidence_authority: 'verified_mcp_capture_observations_only',
     capture_chain_verified: frameBoundary === true,
@@ -1408,8 +1390,6 @@ export function normalizeGpuHmrDeterministicVisualMode(input = {}) {
     mode.outputObservationAfterDispatch,
     mode.output_capture_after_dispatch,
     mode.outputCaptureAfterDispatch,
-    mode.frame_capture_after_epoch_dispatch,
-    mode.frameCaptureAfterEpochDispatch,
   );
   const orderingProven = consensusBool(
     mode.output_observation_ordering_proven,
@@ -1418,10 +1398,6 @@ export function normalizeGpuHmrDeterministicVisualMode(input = {}) {
     mode.outputCompletionObserved,
     mode.completion_boundary_proven,
     mode.completionBoundaryProven,
-    mode.presentation_fence_or_frame_boundary,
-    mode.presentationFenceOrFrameBoundary,
-    mode.presentation_boundary_proven,
-    mode.presentationBoundaryProven,
   );
   const convergenceWindow = normalizeConvergenceWindow(
     mode.convergence_window ?? mode.convergenceWindow,
@@ -1440,31 +1416,6 @@ export function normalizeGpuHmrDeterministicVisualMode(input = {}) {
     schema_version:
       textOrNull(mode.schema_version ?? mode.schemaVersion)
       ?? GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
-    fixed_seed: boolOrNull(mode.fixed_seed ?? mode.fixedSeed),
-    seed_policy_fixed: boolOrNull(mode.seed_policy_fixed ?? mode.seedPolicyFixed),
-    seed_policy_hash: textOrNull(mode.seed_policy_hash ?? mode.seedPolicyHash),
-    camera_state_hash: textOrNull(mode.camera_state_hash ?? mode.cameraStateHash),
-    frozen_camera: boolOrNull(mode.frozen_camera ?? mode.frozenCamera),
-    temporal_accumulation_disabled:
-      boolOrNull(mode.temporal_accumulation_disabled ?? mode.temporalAccumulationDisabled),
-    temporal_accumulation_present:
-      boolOrNull(mode.temporal_accumulation_present ?? mode.temporalAccumulationPresent),
-    temporal_accumulation_not_applicable:
-      boolOrNull(mode.temporal_accumulation_not_applicable ?? mode.temporalAccumulationNotApplicable),
-    taa_disabled: boolOrNull(mode.taa_disabled ?? mode.taaDisabled),
-    taa_present: boolOrNull(mode.taa_present ?? mode.taaPresent),
-    taa_not_applicable: boolOrNull(mode.taa_not_applicable ?? mode.taaNotApplicable),
-    denoiser_disabled: boolOrNull(mode.denoiser_disabled ?? mode.denoiserDisabled),
-    denoiser_present: boolOrNull(mode.denoiser_present ?? mode.denoiserPresent),
-    denoiser_not_applicable: boolOrNull(mode.denoiser_not_applicable ?? mode.denoiserNotApplicable),
-    fixed_resolution: boolOrNull(mode.fixed_resolution ?? mode.fixedResolution),
-    fixed_swapchain_image_count:
-      boolOrNull(mode.fixed_swapchain_image_count ?? mode.fixedSwapchainImageCount),
-    frame_capture_after_epoch_dispatch:
-      boolOrNull(mode.frame_capture_after_epoch_dispatch ?? mode.frameCaptureAfterEpochDispatch),
-    presentation_fence_or_frame_boundary:
-      boolOrNull(mode.presentation_fence_or_frame_boundary ?? mode.presentationFenceOrFrameBoundary),
-    warmup_frames: finiteNumberOrNull(mode.warmup_frames ?? mode.warmupFrames),
     output_observation_after_dispatch: afterDispatch.value,
     output_observation_ordering_proven: orderingProven.value,
     alias_conflicts: compactStringList([

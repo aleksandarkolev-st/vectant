@@ -10109,6 +10109,27 @@ async function selfCheckRunModeVisualLedgerClockDomain() {
     ?? record?.output_event?.visual_oracle_artifacts
     ?? null;
   const deterministicMode = record?.deterministicVisualMode ?? record?.deterministic_visual_mode ?? null;
+  const rendererPolicyFieldsPersisted = [
+    'fixed_seed',
+    'seed_policy_fixed',
+    'seed_policy_hash',
+    'camera_state_hash',
+    'frozen_camera',
+    'temporal_accumulation_disabled',
+    'temporal_accumulation_present',
+    'temporal_accumulation_not_applicable',
+    'taa_disabled',
+    'taa_present',
+    'taa_not_applicable',
+    'denoiser_disabled',
+    'denoiser_present',
+    'denoiser_not_applicable',
+    'fixed_resolution',
+    'fixed_swapchain_image_count',
+    'warmup_frames',
+    'frame_capture_after_epoch_dispatch',
+    'presentation_fence_or_frame_boundary',
+  ].some((field) => Object.hasOwn(deterministicMode ?? {}, field));
   const declaredModeFacet =
     record?.declaredDeterministicVisualMode
     ?? record?.declared_deterministic_visual_mode
@@ -10144,28 +10165,20 @@ async function selfCheckRunModeVisualLedgerClockDomain() {
   if (
     recomputed.gpuHmrSuccess !== false
     || !Array.isArray(recomputed.failedInvariants)
-    || !failedInvariantCodes.includes('visual_camera_state_hash_invalid')
-    || !failedInvariantCodes.includes('frozen_camera_unproven')
-    || !failedInvariantCodes.includes('seed_policy_unproven')
+    || !failedInvariantCodes.includes('verifier_owned_output_observation_receipt_missing')
+    || !failedInvariantCodes.includes('verifier_owned_visual_output_state_receipt_missing')
     || artifacts?.timestamp_after_dispatch !== outputTimestampNs
     || artifacts?.timestamp_after_dispatch_clock !== 'ledger_output_event_monotonic_ns'
     || artifacts?.selected_frame_timestamp_ms !== selectedFrameTimestampMs
-    || artifacts?.camera_state_hash !== null
     || artifacts?.capture_manifest?.image_sha256 !== selectedSample.imageHash
     || artifacts?.before_capture_manifest?.image_sha256 !== baselineSample.imageHash
     || artifacts?.screenshot_capture_byte_binding
       ?.acceptedAsScreenshotCaptureByteEvidence !== true
     || artifacts?.before_screenshot_capture_byte_binding
       ?.acceptedAsScreenshotCaptureByteEvidence !== true
-    || deterministicMode?.fixed_resolution !== true
-    || deterministicMode?.frame_capture_after_epoch_dispatch !== true
-    || deterministicMode?.presentation_fence_or_frame_boundary !== true
-    || deterministicMode?.frozen_camera !== null
-    || deterministicMode?.seed_policy_fixed !== null
-    || deterministicMode?.temporal_accumulation_not_applicable !== null
-    || deterministicMode?.taa_not_applicable !== null
-    || deterministicMode?.denoiser_not_applicable !== null
-    || deterministicMode?.fixed_swapchain_image_count !== null
+    || deterministicMode?.output_observation_after_dispatch !== true
+    || deterministicMode?.output_observation_ordering_proven !== true
+    || rendererPolicyFieldsPersisted
     || deterministicMode?.profile_only_marker !== undefined
     || declaredModeFacet?.proofAuthority !== 'profile_declaration_only_not_runtime_visual_proof'
     || declaredModeFacet?.acceptedForGpuHmr !== false
@@ -10181,8 +10194,8 @@ async function selfCheckRunModeVisualLedgerClockDomain() {
       timestampAfterDispatch: artifacts?.timestamp_after_dispatch,
       timestampAfterDispatchClock: artifacts?.timestamp_after_dispatch_clock,
       selectedFrameTimestampMs: artifacts?.selected_frame_timestamp_ms,
-      cameraStateHash: artifacts?.camera_state_hash,
       deterministicMode,
+      rendererPolicyFieldsPersisted,
       declaredModeFacet,
       acceptedFirewallRejected,
       substitutedCaptureRejected,
