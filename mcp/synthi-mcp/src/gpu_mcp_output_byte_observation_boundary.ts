@@ -332,6 +332,7 @@ export function createGpuMcpOutputByteObservationBoundary(
           "gpu_mcp_output_byte_observation_byte_capacity_exhausted",
         );
       }
+      permitStates.delete(permit);
       const observedAtMonotonicNs = process.hrtime.bigint();
       const observation = Object.freeze({
         schemaVersion: GPU_MCP_OBSERVED_OUTPUT_BYTES_SCHEMA,

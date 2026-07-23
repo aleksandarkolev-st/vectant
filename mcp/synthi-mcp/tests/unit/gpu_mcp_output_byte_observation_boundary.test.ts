@@ -30,6 +30,15 @@ function readyBoundary(
   return { boundary, claim, permit };
 }
 
+function nextPermit(
+  claim: ReturnType<typeof claimGpuMcpOutputByteConsumerCapability>,
+) {
+  if (claim === null) throw new Error("consumer claim unavailable");
+  const permit = issueGpuMcpOutputByteObservationPermit(claim);
+  if (permit === null) throw new Error("observation permit unavailable");
+  return permit;
+}
+
 describe("GPU MCP output byte observation boundary", () => {
   it("binds arbitrary byte sequences behind a one-shot opaque token", () => {
     const { boundary, claim, permit } = readyBoundary();
@@ -49,6 +58,10 @@ describe("GPU MCP output byte observation boundary", () => {
       canSatisfyRuntimeProof: false,
     });
     expect(Object.isFrozen(observation)).toBe(true);
+    expect(() => boundary.producer.observe(
+      permit,
+      Uint8Array.of(1),
+    )).toThrow("gpu_mcp_output_byte_observation_permit_invalid");
     const consumed = takeGpuMcpObservedOutputBytes(
       claim,
       observation,
@@ -75,8 +88,9 @@ describe("GPU MCP output byte observation boundary", () => {
       permit,
       Uint8Array.of(1),
     );
+    const pendingPermit = nextPermit(claim);
     expect(() => boundary.producer.observe(
-      permit,
+      pendingPermit,
       Uint8Array.of(2),
     )).toThrow(
       "gpu_mcp_output_byte_observation_capacity_exhausted",
@@ -84,7 +98,7 @@ describe("GPU MCP output byte observation boundary", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     const current = boundary.producer.observe(
-      permit,
+      pendingPermit,
       Uint8Array.of(3),
     );
     expect(takeGpuMcpObservedOutputBytes(claim, expired)).toBeNull();
@@ -101,8 +115,9 @@ describe("GPU MCP output byte observation boundary", () => {
       permit,
       Uint8Array.of(1, 2),
     );
+    const secondPermit = nextPermit(claim);
     expect(() => boundary.producer.observe(
-      permit,
+      secondPermit,
       Uint8Array.of(3, 4),
     )).toThrow(
       "gpu_mcp_output_byte_observation_byte_capacity_exhausted",
@@ -110,7 +125,7 @@ describe("GPU MCP output byte observation boundary", () => {
     expect(takeGpuMcpObservedOutputBytes(claim, first))
       .toMatchObject({ bytes: Uint8Array.of(1, 2) });
     expect(() => boundary.producer.observe(
-      permit,
+      secondPermit,
       Uint8Array.of(3, 4),
     )).not.toThrow();
   });
@@ -134,7 +149,7 @@ describe("GPU MCP output byte observation boundary", () => {
     expect(detachedObservation).not.toBeNull();
     expect(detachedObservation?.bytes.byteLength).toBe(0);
     expect(() => boundary.producer.observe(
-      permit,
+      nextPermit(claim),
       Uint8Array.of(4, 5, 6),
     )).not.toThrow();
   });
@@ -215,6 +230,10 @@ describe("GPU MCP output byte observation boundary", () => {
         .toThrow("gpu_mcp_output_byte_observation_bytes_invalid");
     }
     expect(trapCalls).toBe(0);
+    expect(() => boundary.producer.observe(
+      permit,
+      Uint8Array.of(1),
+    )).not.toThrow();
   });
 
   it("allows exactly one authority claim while keeping the consumer opaque", () => {
