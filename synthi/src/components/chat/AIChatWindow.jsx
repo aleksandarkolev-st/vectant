@@ -262,7 +262,14 @@ const AIChatWindow = ({
         clearAttachments,
         formatBytes,
         addWorkspaceFiles,
+        addNotebookContext,
     } = useChatAttachments({ getFileCacheEntries, rawFiles });
+
+    useEffect(() => {
+        const handleNotebookContext = (event) => addNotebookContext(event?.detail);
+        window.addEventListener('synthi:attach-notebook-context', handleNotebookContext);
+        return () => window.removeEventListener('synthi:attach-notebook-context', handleNotebookContext);
+    }, [addNotebookContext]);
 
     const { inputValue, setInputValue, handleKeyPress, handleSubmit } = useChatInput((value) => {
         const aborter = new AbortController();

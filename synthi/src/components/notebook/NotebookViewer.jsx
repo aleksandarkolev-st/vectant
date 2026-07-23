@@ -4,6 +4,7 @@ import DOMPurify from 'dompurify';
 import { AlertTriangle, Check, ChevronDown, Code2, FileText, Save } from 'lucide-react';
 import { parseNotebook, serializeNotebook } from '@/lib/jupyter/notebook';
 import { chooseSafeOutput, safeImageUrl } from '@/lib/jupyter/outputSafety';
+import { serializeNotebookContext } from '@/context/notebook/serializeNotebookContext';
 
 function SafeOutput({ output }) {
   if (output.output_type === 'error') return <pre className="notebook-error">{[output.ename, output.evalue, ...(output.traceback || [])].filter(Boolean).join('\n')}</pre>;
@@ -25,8 +26,9 @@ export default function NotebookViewer({ path, content, readOnly = false, onSave
   const notebook = draft || parsed.notebook;
   const replaceCell = (cellId, source) => setDraft((current) => ({ ...current, cells: current.cells.map((cell) => cell.id === cellId ? { ...cell, source } : cell) }));
   const addCodeCell = () => setDraft((current) => ({ ...current, cells: [...current.cells, { id: `vectant-new-${Date.now()}`, cell_type: 'code', metadata: {}, execution_count: null, source: '', outputs: [] }] }));
+  const attachSelection = () => window.dispatchEvent(new CustomEvent('synthi:attach-notebook-context', { detail: serializeNotebookContext({ path, notebook, selectedCellIds: [...selected] }) }));
   return <section className="notebook-shell" aria-label={`Notebook ${path}`}>
-    <header className="notebook-toolbar"><div><span className="notebook-eyebrow">Jupyter notebook</span><strong>{path.split('/').pop()}</strong></div><div className="notebook-toolbar-actions"><span>{notebook.cells.length} cells</span>{onSave && !readOnly && <><button type="button" onClick={addCodeCell}><FileText size={15} /> Add code cell</button><button type="button" onClick={() => onSave(serializeNotebook(notebook))}><Save size={15} /> Save notebook</button></>}</div></header>
+    <header className="notebook-toolbar"><div><span className="notebook-eyebrow">Jupyter notebook</span><strong>{path.split('/').pop()}</strong></div><div className="notebook-toolbar-actions"><span>{notebook.cells.length} cells</span><button type="button" onClick={attachSelection}><FileText size={15} /> Attach {selected.size ? `${selected.size} cells` : 'notebook'}</button>{onSave && !readOnly && <><button type="button" onClick={addCodeCell}><FileText size={15} /> Add code cell</button><button type="button" onClick={() => onSave(serializeNotebook(notebook))}><Save size={15} /> Save notebook</button></>}</div></header>
     <div className="notebook-notice"><AlertTriangle size={14} /> Rendered notebook content is untrusted. Scripts, widgets, iframes, SVG, and remote embeds are blocked.</div>
     <div className="notebook-cells">{notebook.cells.map((cell, index) => { const active = selected.has(cell.id); return <article className={`notebook-cell ${active ? 'is-selected' : ''}`} key={cell.id}>
       <header><button type="button" aria-pressed={active} onClick={() => setSelected((current) => { const next = new Set(current); next.has(cell.id) ? next.delete(cell.id) : next.add(cell.id); return next; })}>{active ? <Check size={14} /> : <ChevronDown size={14} />} <span>Cell {index + 1}</span></button><span>{cell.cell_type}</span></header>
