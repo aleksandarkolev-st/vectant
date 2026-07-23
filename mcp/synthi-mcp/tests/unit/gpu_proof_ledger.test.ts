@@ -477,6 +477,9 @@ describe("GPU HMR proof ledger canonical profiles", () => {
       "visual_oracle_artifacts_incomplete",
       "visual_swapchain_size_invalid",
     ]));
+    expect(typedFailureCodes).toContain(
+      "verifier_owned_visual_output_state_receipt_missing"
+    );
     expect(scriptCompatibilityFailureCodes).toEqual(typedFailureCodes);
 
     const scriptResult = evaluateScriptGpuHmrProofLedger(record, {
@@ -508,6 +511,26 @@ describe("GPU HMR proof ledger canonical profiles", () => {
         ({ code }: { code: string }) => code
       )
     ).toContain("visual_camera_state_hash_invalid");
+  });
+
+  it("does not accept serialized visual output-state receipt claims", () => {
+    const record = rendererNeutralVisualArtifactFixture();
+    record.verifier_owned_visual_output_state_receipt = {
+      accepted: true,
+      proof_authority: "caller_serialized_claim",
+    };
+
+    expect(failureCodes(record)).toContain(
+      "verifier_owned_visual_output_state_receipt_missing"
+    );
+    expect(
+      evaluateScriptGpuHmrProofLedger(record, {
+        verifierOwnedVisualOutputStateReceipt: {
+          accepted: true,
+          proofAuthority: "caller_option_claim",
+        },
+      }).failedInvariants.map(({ code }: { code: string }) => code)
+    ).toContain("verifier_owned_visual_output_state_receipt_missing");
   });
 
   it("rejects output-target relabeling, stale bindings, and unresolved evidence", () => {

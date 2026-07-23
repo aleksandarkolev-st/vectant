@@ -2414,9 +2414,6 @@ function addFailure(failures, code, detail = {}) {
 
 export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
   const rawRecord = asObject(input);
-  const requireVerifierOwnedVisualOutputState =
-    options.requireVerifierOwnedVisualOutputState === true
-    || options.require_verifier_owned_visual_output_state === true;
   const modelPolicy = resolveGpuHmrModelPolicy(
     options.modelPolicy,
     options.model_policy,
@@ -3212,9 +3209,7 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
         addFailure(failures, gate.code ?? 'deterministic_visual_mode_gate_failed');
       }
     }
-    if (requireVerifierOwnedVisualOutputState) {
-      addFailure(failures, 'verifier_owned_visual_output_state_receipt_missing');
-    }
+    addFailure(failures, 'verifier_owned_visual_output_state_receipt_missing');
   } else {
     const artifacts = computeArtifacts;
     if (!artifacts) {

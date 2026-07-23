@@ -2037,6 +2037,7 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
     if (deterministicFailures.length > 0) {
       failures.push({ code: "visual_output_without_deterministic_mode" }, ...deterministicFailures);
     }
+    failures.push({ code: "verifier_owned_visual_output_state_receipt_missing" });
   } else {
     if (computeArtifacts === null) {
       failures.push({ code: "compute_oracle_artifacts_missing" });
