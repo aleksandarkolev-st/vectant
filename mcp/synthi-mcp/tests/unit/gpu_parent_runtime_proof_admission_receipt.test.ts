@@ -245,6 +245,7 @@ describe("GpuParentRuntimeProofAdmissionReceiptSigner", () => {
     const outputReceipt = outputSigner.sign({
       admissionReceipt,
       outputBytes: Buffer.alloc(512, 0x64),
+      observedAtMonotonicNs: 91n,
     });
     const {
       receiptId: _admissionReceiptId,

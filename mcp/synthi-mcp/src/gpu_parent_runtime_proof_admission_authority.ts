@@ -16,6 +16,17 @@ import {
   GpuMcpOutputObservationReceiptSigner,
   type GpuMcpOutputObservationReceipt,
 } from "./gpu_mcp_output_observation_receipt.js";
+import {
+  claimGpuMcpOutputByteConsumerCapability,
+  disposeGpuMcpOutputByteConsumerClaim,
+  issueGpuMcpOutputByteObservationPermit,
+  releaseGpuMcpOutputByteConsumerClaim,
+  takeGpuMcpObservedOutputBytes,
+  type GpuMcpObservedOutputBytes,
+  type GpuMcpOutputByteConsumerCapability,
+  type GpuMcpOutputByteConsumerClaim,
+  type GpuMcpOutputByteObservationPermit,
+} from "./gpu_mcp_output_byte_observation_boundary.js";
 
 export const GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_SCHEMA =
   "synthi.gpu_hmr.mcp_admission_trust_material.v3" as const;
@@ -46,6 +57,9 @@ export interface GpuParentRuntimeProofOutputObservation {
   readonly runtimeBindingChecked: true;
   readonly outputBytesChecked: true;
   readonly admissionGenerationChecked: true;
+  readonly producerObservationPermitChecked: true;
+  readonly producerObservationTimeChecked: true;
+  readonly postAdmissionObservationChecked: true;
   readonly replayChecked: false;
   readonly freshnessChecked: true;
   readonly acceptedForGpuHmr: false;
@@ -110,6 +124,8 @@ export interface GpuParentRuntimeProofAdmissionAuthorityContext {
   readonly validationRunChallenge?: string;
   readonly clockUnixNs?: () => bigint;
   readonly nonceBytes?: () => Uint8Array;
+  readonly outputByteConsumerCapability?:
+    GpuMcpOutputByteConsumerCapability;
   readonly maxReceiptAgeNs?: bigint;
   readonly maxFutureSkewNs?: bigint;
   readonly maxScopes?: number;
@@ -140,6 +156,7 @@ interface AuthorityContextSnapshot {
   readonly validationRunChallenge: unknown;
   readonly clockUnixNs: unknown;
   readonly nonceBytes: unknown;
+  readonly outputByteConsumerCapability: unknown;
   readonly maxReceiptAgeNs: unknown;
   readonly maxFutureSkewNs: unknown;
   readonly maxScopes: unknown;
@@ -155,6 +172,7 @@ const CONTEXT_KEYS: ReadonlySet<string> = new Set<AuthorityContextKey>([
   "validationRunChallenge",
   "clockUnixNs",
   "nonceBytes",
+  "outputByteConsumerCapability",
   "maxReceiptAgeNs",
   "maxFutureSkewNs",
   "maxScopes",
@@ -181,6 +199,7 @@ function snapshotContext(value: unknown): AuthorityContextSnapshot | null {
       validationRunChallenge: undefined,
       clockUnixNs: undefined,
       nonceBytes: undefined,
+      outputByteConsumerCapability: undefined,
       maxReceiptAgeNs: undefined,
       maxFutureSkewNs: undefined,
       maxScopes: undefined,
@@ -301,6 +320,8 @@ export class GpuParentRuntimeProofAdmissionAuthority {
     GpuParentRuntimeProofAdmissionReceiptSigner;
   readonly #outputObservationSigner:
     GpuMcpOutputObservationReceiptSigner;
+  readonly #outputByteConsumerClaim:
+    GpuMcpOutputByteConsumerClaim | null;
   readonly #verificationKey:
     GpuParentRuntimeProofAdmissionReceiptVerificationKey;
   readonly #validationRunChallenge: string;
@@ -311,6 +332,10 @@ export class GpuParentRuntimeProofAdmissionAuthority {
   readonly #verifiedOutputObservations = new WeakMap<
     GpuParentRuntimeProofOutputObservation,
     GpuMcpOutputObservationReceipt
+  >();
+  readonly #outputObservationPermitAdmissionReceiptIds = new WeakMap<
+    GpuMcpOutputByteObservationPermit,
+    string
   >();
   readonly #onlineReplayOptions: OnlineReplayAuthorityStartOptions;
   #onlineReplayServerPromise: Promise<OnlineReplayAuthorityServer> | null = null;
@@ -435,6 +460,21 @@ export class GpuParentRuntimeProofAdmissionAuthority {
       );
     };
 
+    let outputByteConsumerClaim:
+      GpuMcpOutputByteConsumerClaim | null = null;
+    if (context.outputByteConsumerCapability !== undefined) {
+      outputByteConsumerClaim =
+        claimGpuMcpOutputByteConsumerCapability(
+        context.outputByteConsumerCapability,
+      );
+      if (outputByteConsumerClaim === null) {
+        generatedChallenge?.fill(0);
+        generationSecret.fill(0);
+        throw new Error(
+          "gpu_parent_runtime_proof_admission_authority_output_byte_consumer_invalid",
+        );
+      }
+    }
     let receiptSigner: GpuParentRuntimeProofAdmissionReceiptSigner | null = null;
     let outputObservationSigner: GpuMcpOutputObservationReceiptSigner | null =
       null;
@@ -461,6 +501,11 @@ export class GpuParentRuntimeProofAdmissionAuthority {
       });
     } catch (error) {
       receiptSigner?.dispose();
+      if (outputByteConsumerClaim !== null) {
+        releaseGpuMcpOutputByteConsumerClaim(
+          outputByteConsumerClaim,
+        );
+      }
       if (
         error instanceof Error
         && error.message
@@ -481,6 +526,8 @@ export class GpuParentRuntimeProofAdmissionAuthority {
 
     this.#receiptSigner = receiptSigner;
     this.#outputObservationSigner = outputObservationSigner;
+    this.#outputByteConsumerClaim =
+      outputByteConsumerClaim;
     this.#verificationKey = receiptSigner.exportVerificationKey();
     this.#validationRunChallenge = validationRunChallenge;
     this.#clockUnixNs = clockUnixNs;
@@ -515,11 +562,112 @@ export class GpuParentRuntimeProofAdmissionAuthority {
       && receipt === (value as GpuParentRuntimeProofOutputObservation).receipt;
   }
 
-  observeOutputBytes(
+  createOutputObservationPermit(
     admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
-    outputBytes: Uint8Array,
+  ): GpuMcpOutputByteObservationPermit {
+    if (this.#disposed) throw disposedError();
+    const admission = this.#assertCurrentAdmission(admissionReceipt);
+    const consumerClaim = this.#outputByteConsumerClaim;
+    if (consumerClaim === null) {
+      throw new Error(
+        "gpu_parent_runtime_proof_output_byte_consumer_unavailable",
+      );
+    }
+    const permit = issueGpuMcpOutputByteObservationPermit(
+      consumerClaim,
+    );
+    if (permit === null) {
+      throw new Error(
+        "gpu_parent_runtime_proof_output_byte_observation_permit_unavailable",
+      );
+    }
+    this.#outputObservationPermitAdmissionReceiptIds.set(
+      permit,
+      admission.receiptId,
+    );
+    return permit;
+  }
+
+  observeOutput(
+    admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
+    observedOutput: GpuMcpObservedOutputBytes,
   ): GpuParentRuntimeProofOutputObservation {
     if (this.#disposed) throw disposedError();
+    const admission = this.#assertCurrentAdmission(admissionReceipt);
+    const consumerClaim = this.#outputByteConsumerClaim;
+    if (consumerClaim === null) {
+      throw new Error(
+        "gpu_parent_runtime_proof_output_byte_consumer_unavailable",
+      );
+    }
+    const producerObservation = takeGpuMcpObservedOutputBytes(
+      consumerClaim,
+      observedOutput,
+    );
+    if (producerObservation === null) {
+      throw new Error(
+        "gpu_parent_runtime_proof_output_byte_source_observation_invalid",
+      );
+    }
+    if (
+      this.#outputObservationPermitAdmissionReceiptIds.get(
+        producerObservation.permit,
+      ) !== admission.receiptId
+    ) {
+      throw new Error(
+        "gpu_parent_runtime_proof_output_byte_observation_admission_binding_mismatch",
+      );
+    }
+
+    const receipt = this.#outputObservationSigner.sign({
+      admissionReceipt,
+      outputBytes: producerObservation.bytes,
+      observedAtMonotonicNs:
+        producerObservation.observedAtMonotonicNs,
+    });
+    this.#assertFreshAdmission(
+      admission.admittedAtUnixNs,
+      BigInt(receipt.issuedAtUnixNs),
+    );
+    if (
+      receipt.outputContentSha256 !== observedOutput.outputContentSha256
+      || receipt.outputByteLength !== observedOutput.outputByteLength
+      || receipt.observedAtMonotonicNs
+        !== observedOutput.observedAtMonotonicNs
+    ) {
+      throw new Error(
+        "gpu_parent_runtime_proof_output_byte_source_observation_mismatch",
+      );
+    }
+    const observation = Object.freeze({
+      schemaVersion: GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_SCHEMA,
+      proofAuthority: GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_AUTHORITY,
+      receipt,
+      trustedKeyOriginChecked: true as const,
+      admissionBindingChecked: true as const,
+      requestChallengeChecked: true as const,
+      runtimeBindingChecked: true as const,
+      outputBytesChecked: true as const,
+      admissionGenerationChecked: true as const,
+      producerObservationPermitChecked: true as const,
+      producerObservationTimeChecked: true as const,
+      postAdmissionObservationChecked: true as const,
+      replayChecked: false as const,
+      freshnessChecked: true as const,
+      acceptedForGpuHmr: false as const,
+      gpuHmrSuccess: false as const,
+      canSatisfyRuntimeProof: false as const,
+    });
+    this.#verifiedOutputObservations.set(observation, receipt);
+    return observation;
+  }
+
+  #assertCurrentAdmission(
+    admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
+  ): {
+    readonly admittedAtUnixNs: bigint;
+    readonly receiptId: string;
+  } {
     const admissionVerification =
       verifyGpuParentRuntimeProofAdmissionReceipt(
         this.#verificationKey,
@@ -547,35 +695,10 @@ export class GpuParentRuntimeProofAdmissionAuthority {
         "gpu_parent_runtime_proof_output_observation_admission_generation_mismatch",
       );
     }
-
-    const receipt = this.#outputObservationSigner.sign({
-      admissionReceipt,
-      outputBytes,
+    return Object.freeze({
+      admittedAtUnixNs: admissionVerification.admittedAtUnixNs,
+      receiptId: admissionVerification.receiptId,
     });
-    const issuedAtUnixNs = BigInt(receipt.issuedAtUnixNs);
-    this.#assertFreshAdmission(
-      admissionVerification.admittedAtUnixNs,
-      issuedAtUnixNs,
-    );
-
-    const observation = Object.freeze({
-      schemaVersion: GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_SCHEMA,
-      proofAuthority: GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_AUTHORITY,
-      receipt,
-      trustedKeyOriginChecked: true as const,
-      admissionBindingChecked: true as const,
-      requestChallengeChecked: true as const,
-      runtimeBindingChecked: true as const,
-      outputBytesChecked: true as const,
-      admissionGenerationChecked: true as const,
-      replayChecked: false as const,
-      freshnessChecked: true as const,
-      acceptedForGpuHmr: false as const,
-      gpuHmrSuccess: false as const,
-      canSatisfyRuntimeProof: false as const,
-    });
-    this.#verifiedOutputObservations.set(observation, receipt);
-    return observation;
   }
 
   trustMaterial(): Promise<GpuParentRuntimeProofAdmissionTrustMaterial> {
@@ -591,6 +714,11 @@ export class GpuParentRuntimeProofAdmissionAuthority {
     this.#disposed = true;
     this.#receiptSigner.dispose();
     this.#outputObservationSigner.dispose();
+    if (this.#outputByteConsumerClaim !== null) {
+      disposeGpuMcpOutputByteConsumerClaim(
+        this.#outputByteConsumerClaim,
+      );
+    }
     this.#issuedAdmissionReceiptExpirations.clear();
     this.#disposePromise = this.#disposeOnlineReplayAuthority();
     return this.#disposePromise;

@@ -85,6 +85,7 @@ const U64_MAX = 18_446_744_073_709_551_615n;
 const REQUEST_KEYS = [
   "admissionReceipt",
   "outputBytes",
+  "observedAtMonotonicNs",
 ] as const;
 const RUNTIME_BINDING_DOMAIN =
   "synthi.gpu_hmr.mcp_output_runtime_binding.v1";
@@ -112,6 +113,7 @@ export interface GpuMcpOutputObservationReceiptVerificationKey {
 export interface GpuMcpOutputObservationReceiptRequest {
   readonly admissionReceipt: GpuParentRuntimeProofAdmissionReceipt;
   readonly outputBytes: Uint8Array;
+  readonly observedAtMonotonicNs: bigint;
 }
 
 interface GpuMcpOutputObservationReceiptSigningInput {
@@ -121,6 +123,7 @@ interface GpuMcpOutputObservationReceiptSigningInput {
   readonly producerObservationSha256: string;
   readonly outputContentSha256: string;
   readonly outputByteLength: string;
+  readonly observedAtMonotonicNs: string;
 }
 
 export interface GpuMcpOutputObservationReceipt
@@ -488,6 +491,9 @@ function parseRequest(
   }
   const outputBytes = snapshotObservedBytes(request.outputBytes);
   if (outputBytes === null) return null;
+  if (!validClockValue(request.observedAtMonotonicNs)) return null;
+  const observedAtMonotonicNs =
+    request.observedAtMonotonicNs.toString();
   const outputContentSha256 =
     `sha256:${createHash("sha256").update(outputBytes).digest("hex")}`;
   const outputByteLength = String(outputBytes.byteLength);
@@ -509,7 +515,7 @@ function parseRequest(
       producerObservationSha256,
       outputContentSha256,
       outputByteLength,
-      observedAtMonotonicNs: "0",
+      observedAtMonotonicNs,
     });
   return validated === null
     ? null
@@ -520,6 +526,7 @@ function parseRequest(
       producerObservationSha256,
       outputContentSha256,
       outputByteLength,
+      observedAtMonotonicNs,
     });
 }
 
@@ -633,14 +640,22 @@ export class GpuMcpOutputObservationReceiptSigner {
     this.#signing = true;
     let nonce: Buffer | null = null;
     try {
-      let observedAtMonotonicNs: bigint;
+      let signerObservedAtMonotonicNs: bigint;
       try {
-        observedAtMonotonicNs = this.#clockMonotonicNs();
+        signerObservedAtMonotonicNs = this.#clockMonotonicNs();
       } catch {
         throw new Error("gpu_mcp_output_observation_receipt_observation_clock_failed");
       }
-      if (!validClockValue(observedAtMonotonicNs)) {
+      if (!validClockValue(signerObservedAtMonotonicNs)) {
         throw new Error("gpu_mcp_output_observation_receipt_observation_clock_invalid");
+      }
+      if (
+        BigInt(request.observedAtMonotonicNs)
+        > signerObservedAtMonotonicNs
+      ) {
+        throw new Error(
+          "gpu_mcp_output_observation_receipt_source_observation_from_future",
+        );
       }
       this.assertActive();
 
@@ -680,7 +695,6 @@ export class GpuMcpOutputObservationReceiptSigner {
         canSatisfyRuntimeProof: false as const,
         validationRunChallengeSha256: this.#validationRunChallengeSha256,
         ...request,
-        observedAtMonotonicNs: observedAtMonotonicNs.toString(),
         issuedAtUnixNs: issuedAtUnixNs.toString(),
         sequence: nextSequence.toString(),
         nonce: nonce.toString("base64url"),

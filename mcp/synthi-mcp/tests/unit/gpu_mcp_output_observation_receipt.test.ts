@@ -86,6 +86,7 @@ function receiptRequest(
   privateKey: KeyObject,
   challenge = CHALLENGE,
   nonceByte = 0x41,
+  observedAtMonotonicNs = OBSERVED_NS,
 ): GpuMcpOutputObservationReceiptRequest {
   return {
     admissionReceipt: admittedReceipt(
@@ -94,6 +95,7 @@ function receiptRequest(
       nonceByte,
     ),
     outputBytes: OUTPUT_BYTES,
+    observedAtMonotonicNs,
   };
 }
 
@@ -131,7 +133,12 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
     const firstRequest = receiptRequest(privateKey);
     const first = receiptSigner.sign(firstRequest);
     const second = receiptSigner.signOutputObservationReceipt(
-      receiptRequest(privateKey, CHALLENGE, 0x42),
+      receiptRequest(
+        privateKey,
+        CHALLENGE,
+        0x42,
+        OBSERVED_NS + 1n,
+      ),
     );
 
     expect(Reflect.ownKeys(receiptSigner)).not.toContain("privateKey");
@@ -218,6 +225,12 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
       extra: true,
     } as unknown as GpuMcpOutputObservationReceiptRequest))
       .toThrow("gpu_mcp_output_observation_receipt_request_invalid");
+    expect(() => receiptSigner.sign({
+      ...receiptRequest(privateKey),
+      observedAtMonotonicNs: OBSERVED_NS + 1n,
+    })).toThrow(
+      "gpu_mcp_output_observation_receipt_source_observation_from_future",
+    );
     expect(verifyGpuMcpOutputObservationReceipt(
       other.exportVerificationKey(),
       receipt,
@@ -504,6 +517,7 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
     expect(Object.keys(receiptRequest(privateKey))).toEqual([
       "admissionReceipt",
       "outputBytes",
+      "observedAtMonotonicNs",
     ]);
     for (const name of [
       "project", "backend", "renderer", "api", "image", "camera", "dimensions",
