@@ -318,20 +318,21 @@ export function createGpuMcpOutputByteObservationBoundary(
           "gpu_mcp_output_byte_observation_capacity_exhausted",
         );
       }
-      const bytes = validatedUint8ArrayView(outputBytes);
-      if (bytes === null) {
+      const sourceView = validatedUint8ArrayView(outputBytes);
+      if (sourceView === null) {
         throw new Error(
           "gpu_mcp_output_byte_observation_bytes_invalid",
         );
       }
       if (
-        bytes.byteLength
+        sourceView.byteLength
         > state.maxPendingByteLength - state.pendingByteLength
       ) {
         throw new Error(
           "gpu_mcp_output_byte_observation_byte_capacity_exhausted",
         );
       }
+      const bytes = new Uint8Array(sourceView);
       permitStates.delete(permit);
       const observedAtMonotonicNs = process.hrtime.bigint();
       const observation = Object.freeze({

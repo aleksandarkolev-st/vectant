@@ -130,7 +130,7 @@ describe("GPU MCP output byte observation boundary", () => {
     )).not.toThrow();
   });
 
-  it("releases the original budget charge after source-buffer detachment", () => {
+  it("preserves observed bytes after source-buffer detachment", () => {
     const { boundary, claim, permit } = readyBoundary({
       maxPendingObservations: 2,
       maxPendingByteLength: 3,
@@ -147,7 +147,10 @@ describe("GPU MCP output byte observation boundary", () => {
       observation,
     );
     expect(detachedObservation).not.toBeNull();
-    expect(detachedObservation?.bytes.byteLength).toBe(0);
+    expect(detachedObservation?.bytes).toEqual(Uint8Array.of(1, 2, 3));
+    expect(Buffer.isBuffer(detachedObservation?.bytes)).toBe(false);
+    expect(detachedObservation?.bytes.byteOffset).toBe(0);
+    expect(detachedObservation?.bytes.buffer.byteLength).toBe(3);
     expect(() => boundary.producer.observe(
       nextPermit(claim),
       Uint8Array.of(4, 5, 6),

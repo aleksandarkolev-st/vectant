@@ -1399,7 +1399,7 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
     );
   });
 
-  it("rejects source mutation after producer observation", () => {
+  it("binds producer observation to an immutable source snapshot", () => {
     const { authority, producer } = createOutputAuthority({
       validationRunChallenge: CHALLENGE,
       clockUnixNs: () => 1_000n,
@@ -1415,12 +1415,13 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
     );
     outputBytes[0] = 9;
 
-    expect(() => authority.observeOutput(
+    const observation = authority.observeOutput(
       admissionReceipt,
       producerObservation,
-    )).toThrow(
-      "gpu_parent_runtime_proof_output_byte_source_observation_mismatch",
     );
+    expect(observation.receipt.outputContentSha256)
+      .toBe(producerObservation.outputContentSha256);
+    expect(observation.receipt.outputByteLength).toBe("3");
   });
 
   it("binds each producer permit to one admitted runtime receipt", () => {
