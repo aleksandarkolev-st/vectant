@@ -147,6 +147,24 @@ async function selfCheck() {
       graphs.add(graph);
       return graph;
     };
+    const createModuleEntriesGraph = async ({
+      entryRelativePath = 'module-entry.mjs',
+      entryBytes: graphEntryBytes,
+      moduleEntries,
+      supportEntries = [],
+    }) => {
+      const graph = await createControlledExecutionGraph({
+        trustedRoot: temporaryRoot,
+        entryRelativePath,
+        entryBytes: graphEntryBytes,
+        moduleEntryPaths: [],
+        supportFilePaths: [],
+        moduleEntries,
+        supportEntries,
+      });
+      graphs.add(graph);
+      return graph;
+    };
     const removeGraph = async (graph) => {
       graphs.delete(graph);
       await removeControlledExecutionGraph(graph);
@@ -404,6 +422,285 @@ async function selfCheck() {
       }),
       /controlled_graph_support_entry_path_collision/,
     ), 'in-memory support bytes replaced an executable graph entry');
+
+    const moduleGraphEntryBytes = Buffer.from([
+      "import { mkdir, writeFile } from 'node:fs/promises';",
+      "import chainValue from './virtual/first.mjs';",
+      "await mkdir('./module-result', { recursive: true });",
+      "await writeFile('./module-result/output.json', JSON.stringify({ chainValue }) + '\\n', { flag: 'wx' });",
+      '',
+    ].join('\n'), 'utf8');
+    const moduleFirstBytes = Buffer.from([
+      "import secondValue from './second.mjs';",
+      "export default `first:${secondValue}`;",
+      '',
+    ].join('\n'), 'utf8');
+    const moduleSecondBytes = Buffer.from([
+      "export default 'second-exact-bytes';",
+      '',
+    ].join('\n'), 'utf8');
+    const moduleFirstExpectedHash = byteHash(moduleFirstBytes);
+    const moduleSecondExpectedHash = byteHash(moduleSecondBytes);
+    const moduleGraph = await createModuleEntriesGraph({
+      entryRelativePath: 'module-entry.mjs',
+      entryBytes: moduleGraphEntryBytes,
+      moduleEntries: [{
+        relativePath: 'virtual/first.mjs',
+        bytes: moduleFirstBytes,
+      }, {
+        relativePath: 'virtual/second.mjs',
+        bytes: moduleSecondBytes,
+      }],
+    });
+    moduleFirstBytes.fill(0);
+    moduleSecondBytes.fill(0);
+    const moduleEntry = moduleGraph.entries.find(
+      (entry) => entry.relativePath === 'virtual/first.mjs',
+    );
+    const secondModuleEntry = moduleGraph.entries.find(
+      (entry) => entry.relativePath === 'virtual/second.mjs',
+    );
+    assert(moduleGraph.graphKind === 'static_ecmascript_support_graph'
+      && moduleGraph.graphCompletenessClaim === 'static_resolution_support_only'
+      && moduleGraph.supportEvidenceOnly === true
+      && moduleGraph.loadedGraphIdentityAttested === false,
+    'module-entry graph claimed runtime-loaded authority');
+    assert(moduleEntry?.contentHash === moduleFirstExpectedHash
+      && moduleEntry?.role === 'ecmascript_module_root'
+      && moduleEntry.imports.some(
+        (dependency) => dependency.specifier === './second.mjs'
+          && dependency.resolution === 'virtual/second.mjs',
+      ),
+    'first byte-backed module was not retained as a rooted exact manifest entry');
+    assert(secondModuleEntry?.contentHash === moduleSecondExpectedHash
+      && secondModuleEntry?.role === 'ecmascript_module_root',
+    'second byte-backed module was not retained as a rooted exact manifest entry');
+    const moduleOutputSourcePath = path.join(
+      temporaryRoot,
+      'module-result',
+      'output.json',
+    );
+    const moduleMaterialOutputPath = registerControlledExecutionOutput(
+      moduleGraph,
+      moduleOutputSourcePath,
+    );
+    await mkdir(path.dirname(moduleMaterialOutputPath), { recursive: true });
+    const moduleExecution = await runProcess(
+      process.execPath,
+      [controlledExecutionGraphEntryPath(moduleGraph)],
+      {
+        cwd: controlledExecutionGraphRoot(moduleGraph),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        executionAuthority: {
+          kind: 'controlled_ecmascript_graph',
+          graph: moduleGraph,
+          entryPath: controlledExecutionGraphEntryPath(moduleGraph),
+        },
+        timeoutMs: 10_000,
+        streamOutput: false,
+      },
+    );
+    assert(moduleExecution.error === null && moduleExecution.exitCode === 0,
+      `byte-backed module entry graph failed before output capture: ${
+        moduleExecution.error ?? moduleExecution.stderr
+      }`);
+    const moduleOutputObservation = await readVerifiedRegularFile(
+      moduleMaterialOutputPath,
+      {
+        trustedRoot: controlledExecutionGraphRoot(moduleGraph),
+        allowEmpty: false,
+        label: 'standalone_module_entry_output',
+      },
+    );
+    assert(
+      JSON.parse(moduleOutputObservation.bytes.toString('utf8')).chainValue
+        === 'first:second-exact-bytes',
+      'module-entry graph did not execute the original exact-byte module chain',
+    );
+    await removeGraph(moduleGraph);
+
+    const cyclicModuleGraph = await createModuleEntriesGraph({
+      entryRelativePath: 'cycle-entry.mjs',
+      entryBytes: Buffer.from(
+        "import { first } from './cycle/first.mjs';\nvoid first;\n",
+      ),
+      moduleEntries: [{
+        relativePath: 'cycle/first.mjs',
+        bytes: Buffer.from(
+          "import './second.mjs';\nexport const first = 'first';\n",
+        ),
+      }, {
+        relativePath: 'cycle/second.mjs',
+        bytes: Buffer.from(
+          "import '../cycle-entry.mjs';\nexport const second = 'second';\n",
+        ),
+      }],
+    });
+    assert(cyclicModuleGraph.entries.filter(
+      (entry) => entry.relativePath.startsWith('cycle/'),
+    ).length === 2
+      && cyclicModuleGraph.entries.find(
+        (entry) => entry.relativePath === 'cycle/second.mjs',
+      )?.imports.some(
+        (dependency) => dependency.resolution === 'cycle-entry.mjs',
+      ),
+    'byte-backed module cycle did not resolve to the captured generated entry');
+    await removeGraph(cyclicModuleGraph);
+
+    assert(await expectRejected(
+      () => createModuleEntriesGraph({
+        entryRelativePath: 'module-entry-path-traversal.mjs',
+        entryBytes: Buffer.from('export default true;\n'),
+        moduleEntries: [{
+          relativePath: '../escaped-module.mjs',
+          bytes: Buffer.from('export default "must-not-escape";\n'),
+        }],
+      }),
+      /controlled_graph_module_entry_relative_path_must_be_canonical_relative_path/,
+    ), 'byte-backed module entry escaped the controlled graph namespace');
+    assert(await expectRejected(
+      () => createModuleEntriesGraph({
+        entryRelativePath: 'module-entry-non-buffer.mjs',
+        entryBytes: Buffer.from('export default true;\n'),
+        moduleEntries: [{
+          relativePath: 'virtual/non-buffer.mjs',
+          bytes: 'not-buffer-bytes',
+        }],
+      }),
+      /controlled_graph_module_entry_bytes_invalid/,
+    ), 'non-buffer module entry bytes were accepted');
+    assert(await expectRejected(
+      () => createModuleEntriesGraph({
+        entryRelativePath: 'module-entry-proxy-bytes.mjs',
+        entryBytes: Buffer.from('export default true;\n'),
+        moduleEntries: [{
+          relativePath: 'virtual/proxy.mjs',
+          bytes: new Proxy(Buffer.from('export default true;\n'), {}),
+        }],
+      }),
+      /controlled_graph_module_entry_bytes_invalid/,
+    ), 'proxy-backed module entry bytes were accepted');
+    assert(await expectRejected(
+      () => createModuleEntriesGraph({
+        entryRelativePath: 'module-entry-unknown-fields.mjs',
+        entryBytes: Buffer.from('export default true;\n'),
+        moduleEntries: [{
+          relativePath: 'virtual/unknown-fields.mjs',
+          bytes: Buffer.from('export default true;\n'),
+          backend: 'must-not-be-an-authority-input',
+        }],
+      }),
+      /controlled_graph_module_entry_fields_(?:invalid|unbounded)/,
+    ), 'unknown module entry fields were accepted');
+    assert(await expectRejected(
+      () => createModuleEntriesGraph({
+        entryRelativePath: 'module-entry-collision.mjs',
+        entryBytes: Buffer.from('export default true;\n'),
+        moduleEntries: [{
+          relativePath: 'module-entry-collision.mjs',
+          bytes: Buffer.from('export default false;\n'),
+        }],
+      }),
+      /controlled_graph_module_entry_path_collision/,
+    ), 'module entry replaced the generated graph entry');
+    assert(await expectRejected(
+      () => createModuleEntriesGraph({
+        entryRelativePath: 'module-entry-duplicate.mjs',
+        entryBytes: Buffer.from('export default true;\n'),
+        moduleEntries: [{
+          relativePath: 'virtual/duplicate.mjs',
+          bytes: Buffer.from('export default "first";\n'),
+        }, {
+          relativePath: 'virtual/duplicate.mjs',
+          bytes: Buffer.from('export default "second";\n'),
+        }],
+      }),
+      /controlled_graph_module_entry_path_duplicated/,
+    ), 'duplicate module entry relative paths were accepted');
+    assert(await expectRejected(
+      () => createModuleEntriesGraph({
+        entryRelativePath: 'module-entry-support-collision.mjs',
+        entryBytes: Buffer.from('export default true;\n'),
+        moduleEntries: [{
+          relativePath: 'virtual/shared.mjs',
+          bytes: Buffer.from('export default "module";\n'),
+        }],
+        supportEntries: [{
+          relativePath: 'virtual/shared.mjs',
+          bytes: Buffer.from('support-collision'),
+        }],
+      }),
+      /controlled_graph_support_entry_path_collision:virtual\/shared\.mjs/,
+    ), 'support bytes replaced a byte-backed module entry');
+    assert(await expectRejected(
+      () => createControlledExecutionGraph({
+        trustedRoot: temporaryRoot,
+        entryRelativePath: 'module-entry-source-collision.mjs',
+        entryBytes: Buffer.from('export default true;\n'),
+        moduleEntryPaths: [localModulePath],
+        supportFilePaths: [],
+        moduleEntries: [{
+          relativePath: 'lib/local.mjs',
+          bytes: Buffer.from('export default "captured-memory";\n'),
+        }],
+      }),
+      /controlled_graph_module_(?:entry|root)_source_collision/,
+    ), 'filesystem module root replaced a byte-backed module path');
+    assert(await expectRejected(
+      () => createModuleEntriesGraph({
+        entryRelativePath: 'module-entry-import-source-collision.mjs',
+        entryBytes: Buffer.from(
+          "import value from './lib/local.mjs';\nvoid value;\n",
+        ),
+        moduleEntries: [{
+          relativePath: 'lib/local.mjs',
+          bytes: Buffer.from('export default "captured-memory";\n'),
+        }],
+      }),
+      /controlled_graph_module_entry_source_collision/,
+    ), 'byte-backed import silently shadowed an existing filesystem module');
+    if (process.platform === 'win32') {
+      assert(await expectRejected(
+        () => createModuleEntriesGraph({
+          entryRelativePath: 'module-entry-case-collision.mjs',
+          entryBytes: Buffer.from('export default true;\n'),
+          moduleEntries: [{
+            relativePath: 'virtual/Case.mjs',
+            bytes: Buffer.from('export default "upper";\n'),
+          }, {
+            relativePath: 'virtual/case.mjs',
+            bytes: Buffer.from('export default "lower";\n'),
+          }],
+        }),
+        /controlled_graph_module_entry_path_duplicated/,
+      ), 'case-equivalent Windows module paths were accepted');
+      assert(await expectRejected(
+        () => createModuleEntriesGraph({
+          entryRelativePath: 'module-support-case-collision.mjs',
+          entryBytes: Buffer.from('export default true;\n'),
+          moduleEntries: [{
+            relativePath: 'virtual/CaseShared.mjs',
+            bytes: Buffer.from('export default "module";\n'),
+          }],
+          supportEntries: [{
+            relativePath: 'virtual/caseshared.mjs',
+            bytes: Buffer.from('support'),
+          }],
+        }),
+        /controlled_graph_(?:filesystem|support_entry)_path_collision/,
+      ), 'case-equivalent Windows module and support paths were accepted');
+    }
+    assert(await expectRejected(
+      () => createModuleEntriesGraph({
+        entryRelativePath: 'module-entry-unresolved-import.mjs',
+        entryBytes: Buffer.from("import value from './virtual/missing-root.mjs';\nvoid value;\n"),
+        moduleEntries: [{
+          relativePath: 'virtual/missing-root.mjs',
+          bytes: Buffer.from("import missingValue from './missing-leaf.mjs';\nexport default missingValue;\n"),
+        }],
+      }),
+      /controlled_graph_(?:local_import_unresolved|external_import_unresolved)|ENOENT/,
+    ), 'unresolved relative import between module entries was accepted');
 
     const staticGraphEscapeCases = [
       ['module_create_require', "import { createRequire } from 'node:module';\n"],

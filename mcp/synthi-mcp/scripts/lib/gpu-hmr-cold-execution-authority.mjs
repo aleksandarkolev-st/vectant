@@ -14,7 +14,7 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { types as utilTypes } from 'node:util';
 import * as acorn from 'acorn';
 
@@ -326,6 +326,11 @@ function sameFilesystemPath(left, right) {
   return process.platform === 'win32'
     ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
     : normalizedLeft === normalizedRight;
+}
+
+function filesystemPathKey(value) {
+  const normalized = path.normalize(path.resolve(value));
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 function isInsideDirectory(root, candidate) {
@@ -694,7 +699,7 @@ function validateGraphCreationInput(options) {
     'moduleEntryPaths',
     'supportFilePaths',
   ];
-  const optionalKeys = ['supportEntries'];
+  const optionalKeys = ['moduleEntries', 'supportEntries'];
   const inspection = inspectBoundedDataRecord(
     options,
     'controlled_graph_input',
@@ -734,6 +739,43 @@ function validateGraphCreationInput(options) {
   ]) {
     for (const value of values) assertBoundedPathText(value, label);
   }
+  const moduleEntriesValue = inspection.descriptors.get('moduleEntries')?.value ?? [];
+  assertBoundedArray(
+    moduleEntriesValue,
+    COLD_EXECUTION_AUTHORITY_LIMITS.graphRoots,
+    'controlled_graph_inline_module_entries',
+  );
+  const moduleEntryPaths = new Set();
+  let moduleEntryByteLength = 0;
+  const moduleEntries = Object.freeze(moduleEntriesValue.map((value) => {
+    const entry = assertExactRecord(
+      value,
+      ['relativePath', 'bytes'],
+      'controlled_graph_module_entry',
+    );
+    const relativePath = normalizeRelativePath(
+      entry.relativePath,
+      'controlled_graph_module_entry_relative_path',
+    );
+    if (relativePath === entryRelativePath) {
+      throw new TypeError('controlled_graph_module_entry_path_collision');
+    }
+    if (moduleEntryPaths.has(relativePath)) {
+      throw new TypeError('controlled_graph_module_entry_path_duplicated');
+    }
+    moduleEntryPaths.add(relativePath);
+    if (!Buffer.isBuffer(entry.bytes) || utilTypes.isProxy(entry.bytes)) {
+      throw new TypeError('controlled_graph_module_entry_bytes_invalid');
+    }
+    moduleEntryByteLength += entry.bytes.byteLength;
+    if (moduleEntryByteLength > COLD_EXECUTION_AUTHORITY_LIMITS.graphBytes) {
+      throw new TypeError('controlled_graph_module_entry_bytes_unbounded');
+    }
+    return Object.freeze({
+      relativePath,
+      bytes: Buffer.from(entry.bytes),
+    });
+  }));
   const supportEntriesValue = inspection.descriptors.get('supportEntries')?.value ?? [];
   assertBoundedArray(
     supportEntriesValue,
@@ -761,6 +803,7 @@ function validateGraphCreationInput(options) {
   return Object.freeze({
     ...input,
     entryRelativePath,
+    moduleEntries,
     supportEntries,
   });
 }
@@ -781,13 +824,50 @@ export async function createControlledExecutionGraph(options) {
   }
 
   const files = new Map();
-  const moduleQueue = [{
+  const graphPathIdentities = new Map();
+  const entryRequest = Object.freeze({
     sourcePath: null,
     referencePath: entryReferencePath,
     relativePath: entryRelativePath,
     bytes: Buffer.from(input.entryBytes),
     role: 'generated_ecmascript_entry',
-  }];
+  });
+  const virtualModules = new Map([[
+    filesystemPathKey(entryReferencePath),
+    entryRequest,
+  ]]);
+  const moduleQueue = [entryRequest];
+  for (const moduleEntry of input.moduleEntries) {
+    const referencePath = path.resolve(
+      trustedRoot,
+      ...moduleEntry.relativePath.split('/'),
+    );
+    if (!isInsideDirectory(trustedRoot, referencePath)) {
+      throw new Error('controlled_graph_module_entry_escaped_trusted_root');
+    }
+    if (sameFilesystemPath(referencePath, entryReferencePath)) {
+      throw new Error('controlled_graph_module_entry_path_collision');
+    }
+    try {
+      await lstat(referencePath);
+      throw new Error('controlled_graph_module_entry_source_collision');
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes(error?.code)) throw error;
+    }
+    const referenceKey = filesystemPathKey(referencePath);
+    if (virtualModules.has(referenceKey)) {
+      throw new Error('controlled_graph_module_entry_path_duplicated');
+    }
+    const request = Object.freeze({
+      sourcePath: null,
+      referencePath,
+      relativePath: moduleEntry.relativePath,
+      bytes: moduleEntry.bytes,
+      role: 'ecmascript_module_root',
+    });
+    virtualModules.set(referenceKey, request);
+    moduleQueue.push(request);
+  }
   for (const modulePath of input.moduleEntryPaths) {
     moduleQueue.push({ sourcePath: path.resolve(modulePath), role: 'ecmascript_module_root' });
   }
@@ -797,8 +877,30 @@ export async function createControlledExecutionGraph(options) {
   let totalBytes = 0;
 
   const addBytes = ({ sourcePath = null, relativePath, bytes, role }) => {
+    const graphPathKey = filesystemPathKey(path.resolve(
+      trustedRoot,
+      ...relativePath.split('/'),
+    ));
+    const existingRelativePath = graphPathIdentities.get(graphPathKey);
+    if (
+      existingRelativePath !== undefined
+      && existingRelativePath !== relativePath
+    ) {
+      throw new Error(`controlled_graph_filesystem_path_collision:${relativePath}`);
+    }
     if (files.has(relativePath)) {
       const previous = files.get(relativePath);
+      const previousIsMemoryBacked = previous.sourcePath === null;
+      const nextIsMemoryBacked = sourcePath === null;
+      if (
+        previousIsMemoryBacked !== nextIsMemoryBacked
+        || (
+          !previousIsMemoryBacked
+          && !sameFilesystemPath(previous.sourcePath, sourcePath)
+        )
+      ) {
+        throw new Error(`controlled_graph_path_provenance_collision:${relativePath}`);
+      }
       if (previous.contentHash !== byteHash(bytes)) {
         throw new Error(`controlled_graph_relative_path_collision:${relativePath}`);
       }
@@ -819,6 +921,7 @@ export async function createControlledExecutionGraph(options) {
       imports: [],
     };
     files.set(relativePath, entry);
+    graphPathIdentities.set(graphPathKey, relativePath);
     return entry;
   };
 
@@ -846,14 +949,21 @@ export async function createControlledExecutionGraph(options) {
     let entry;
     if (request.sourcePath === null) {
       referencePath = request.referencePath;
+      const moduleKey = filesystemPathKey(referencePath);
+      if (moduleSeen.has(moduleKey)) continue;
+      moduleSeen.add(moduleKey);
       entry = addBytes(request);
     } else {
       const resolved = await realpath(path.resolve(request.sourcePath));
       if (!isInsideDirectory(trustedRoot, resolved)) {
         throw new Error('controlled_graph_module_escaped_trusted_root');
       }
-      if (moduleSeen.has(resolved)) continue;
-      moduleSeen.add(resolved);
+      const moduleKey = filesystemPathKey(resolved);
+      if (virtualModules.has(moduleKey)) {
+        throw new Error('controlled_graph_module_root_source_collision');
+      }
+      if (moduleSeen.has(moduleKey)) continue;
+      moduleSeen.add(moduleKey);
       referencePath = resolved;
       entry = await addFile(resolved, request.role ?? 'ecmascript_module');
     }
@@ -906,13 +1016,27 @@ export async function createControlledExecutionGraph(options) {
       }
       if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('file:')) {
         const dependencyPath = specifier.startsWith('file:')
-          ? new URL(specifier)
+          ? fileURLToPath(new URL(specifier))
           : specifier.startsWith('.')
             ? path.resolve(path.dirname(referencePath), specifier)
             : path.resolve(specifier);
-        const dependencyResolved = await realpath(
-          dependencyPath instanceof URL ? dependencyPath : dependencyPath,
-        );
+        if (!isInsideDirectory(trustedRoot, dependencyPath)) {
+          throw new Error(`controlled_graph_local_import_escaped:${specifier}`);
+        }
+        const virtualDependency = virtualModules.get(filesystemPathKey(dependencyPath));
+        if (virtualDependency) {
+          entry.imports.push({
+            specifier,
+            kind: dependency.kind,
+            resolution: virtualDependency.relativePath,
+          });
+          moduleQueue.push({
+            ...virtualDependency,
+            role: 'ecmascript_module',
+          });
+          continue;
+        }
+        const dependencyResolved = await realpath(dependencyPath);
         if (!isInsideDirectory(trustedRoot, dependencyResolved)) {
           throw new Error(`controlled_graph_local_import_escaped:${specifier}`);
         }
