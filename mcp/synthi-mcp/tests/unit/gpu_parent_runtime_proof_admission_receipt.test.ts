@@ -1,4 +1,9 @@
-import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  sign as signBytes,
+  type KeyObject,
+} from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_ALGORITHM,
@@ -15,9 +20,19 @@ import {
   type GpuParentRuntimeProofAdmissionReceiptVerification,
 } from "../../src/gpu_parent_runtime_proof_admission_receipt.js";
 import {
+  createGpuHmrMcpAdmissionReceiptSigningBytes,
+  finalizeGpuHmrMcpAdmissionReceipt,
   parseGpuHmrMcpAdmissionReceiptSigningInput,
   verifyGpuHmrMcpAdmissionReceipt,
 } from "../../scripts/lib/gpu-hmr-mcp-admission-receipt-verifier.mjs";
+import {
+  GpuMcpOutputObservationReceiptSigner,
+  verifyGpuMcpOutputObservationReceipt,
+} from "../../src/gpu_mcp_output_observation_receipt.js";
+import {
+  createGpuHmrMcpOutputObservationReceiptSigningBytes,
+  finalizeGpuHmrMcpOutputObservationReceipt,
+} from "../../scripts/lib/gpu-hmr-mcp-output-observation-receipt-verifier.mjs";
 
 const NOW_NS = 1_784_500_000_123_456_789n;
 const VALIDATION_RUN_CHALLENGE = Buffer.alloc(32, 0x17).toString("base64url");
@@ -209,6 +224,97 @@ describe("GpuParentRuntimeProofAdmissionReceiptSigner", () => {
     )).toEqual(result);
     expect(parseGpuParentRuntimeProofAdmissionReceiptVerificationKey(trustedKey))
       .toEqual(trustedKey);
+  });
+
+  it("rejects cross-protocol receipts under the same key and challenge", () => {
+    const { privateKey } = generateKeyPairSync("ed25519");
+    const admissionSigner = signer(privateKey);
+    const outputSigner = new GpuMcpOutputObservationReceiptSigner({
+      privateKey,
+      validationRunChallenge: VALIDATION_RUN_CHALLENGE,
+      clockMonotonicNs: () => 91n,
+      clockUnixNs: () => NOW_NS,
+      nonceBytes: () => Buffer.alloc(32, 0x73),
+    });
+    const trustedKey = admissionSigner.exportVerificationKey();
+    const admissionReceipt = admissionSigner.sign(admissionInput());
+    const outputReceipt = outputSigner.sign({
+      transportSessionId: "opaque-transport-session:domain-separation-01",
+      requestChallengeSha256: hash("a"),
+      runtimeBindingSha256: hash("b"),
+      producerObservationSha256: hash("c"),
+      outputContentSha256: hash("d"),
+      outputByteLength: "512",
+    });
+    const {
+      receiptId: _admissionReceiptId,
+      signature: _admissionSignature,
+      ...unsignedAdmissionReceipt
+    } = admissionReceipt;
+    const {
+      receiptId: _outputReceiptId,
+      signature: _outputSignature,
+      ...unsignedOutputReceipt
+    } = outputReceipt;
+    const admissionSigningBytes =
+      createGpuHmrMcpAdmissionReceiptSigningBytes(unsignedAdmissionReceipt);
+    const outputSigningBytes =
+      createGpuHmrMcpOutputObservationReceiptSigningBytes(unsignedOutputReceipt);
+    expect(Buffer.isBuffer(admissionSigningBytes)).toBe(true);
+    expect(Buffer.isBuffer(outputSigningBytes)).toBe(true);
+    const admissionMaterial = JSON.parse(admissionSigningBytes.toString("utf8"));
+    const outputMaterial = JSON.parse(outputSigningBytes.toString("utf8"));
+    expect(admissionMaterial[0]).not.toBe(outputMaterial[0]);
+
+    const admissionShapeWithOutputDomain = [
+      outputMaterial[0],
+      ...admissionMaterial.slice(1),
+    ];
+    const outputShapeWithAdmissionDomain = [
+      admissionMaterial[0],
+      ...outputMaterial.slice(1),
+    ];
+    const crossSignedAdmissionReceipt = finalizeGpuHmrMcpAdmissionReceipt(
+      unsignedAdmissionReceipt,
+      `ed25519:${signBytes(
+        null,
+        Buffer.from(JSON.stringify(admissionShapeWithOutputDomain), "utf8"),
+        privateKey,
+      ).toString("base64url")}`,
+    );
+    const crossSignedOutputReceipt = finalizeGpuHmrMcpOutputObservationReceipt(
+      unsignedOutputReceipt,
+      `ed25519:${signBytes(
+        null,
+        Buffer.from(JSON.stringify(outputShapeWithAdmissionDomain), "utf8"),
+        privateKey,
+      ).toString("base64url")}`,
+    );
+    expect(crossSignedAdmissionReceipt).not.toBeNull();
+    expect(crossSignedOutputReceipt).not.toBeNull();
+
+    expect(verifyGpuParentRuntimeProofAdmissionReceipt(
+      trustedKey,
+      crossSignedAdmissionReceipt,
+      VALIDATION_RUN_CHALLENGE,
+    )).toMatchObject({
+      verified: false,
+      reason: "gpu_hmr_mcp_admission_signature_mismatch",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(verifyGpuMcpOutputObservationReceipt(
+      trustedKey,
+      crossSignedOutputReceipt,
+      VALIDATION_RUN_CHALLENGE,
+    )).toMatchObject({
+      signatureVerified: false,
+      reason: "gpu_hmr_mcp_output_observation_signature_mismatch",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
   });
 
   it("rejects a different trusted MCP key and a different external validation-run challenge", () => {
