@@ -859,7 +859,7 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
 
     expect(competingRouter.snapshot()).toEqual({
       status: "failed",
-      failureReason: "runtime_evidence_transport_router_authenticated_channel_invalid",
+      failureReason: "runtime_evidence_transport_router_key_pin_ownership_unavailable",
       retainedSupportEnvelopeCount: 0,
       retainedSupportEnvelopeBytes: 0,
     });
@@ -872,6 +872,9 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     const secondRouter = new RuntimeEvidenceTransportChannelRouter(routedPin);
     const firstRouterReceived = vi.fn();
     firstRouter.onSupportEnvelope(firstRouterReceived);
+    expect(routedPin.bindAuthenticatedPeerDataChannel(
+      new MockDataChannel() as unknown as RTCDataChannel,
+    )).toBe(false);
     firstRouter.bindAuthenticatedPeerDataChannel(routerChannel as unknown as RTCDataChannel);
     secondRouter.bindAuthenticatedPeerDataChannel(
       new MockDataChannel() as unknown as RTCDataChannel,
@@ -880,7 +883,7 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     expect(firstRouter.snapshot().status).toBe("active");
     expect(secondRouter.snapshot()).toEqual({
       status: "failed",
-      failureReason: "runtime_evidence_transport_router_authenticated_channel_invalid",
+      failureReason: "runtime_evidence_transport_router_key_pin_ownership_unavailable",
       retainedSupportEnvelopeCount: 0,
       retainedSupportEnvelopeBytes: 0,
     });

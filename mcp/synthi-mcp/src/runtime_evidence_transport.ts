@@ -713,27 +713,22 @@ export class RuntimeEvidenceTransportChannelRouter {
     this.retainedSupportEnvelopeCapacity = normalizedLimits.maxRetainedSupportEnvelopeCount;
     this.maxMessageBytes = normalizedLimits.maxMessageBytes;
     this.maxRetainedSupportEnvelopeBytes = normalizedLimits.maxRetainedSupportEnvelopeBytes;
-  }
-
-  bindAuthenticatedPeerDataChannel(channel: RTCDataChannel): void {
-    if (this.disposed || this.failureReason !== null) return;
-    if (
-      channel.label !== RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL
-      || this.boundChannel !== null
-      || channel.readyState === "closing"
-      || channel.readyState === "closed"
-      || this.keyPin.snapshot().status === "disposed"
-      || this.keyPin.snapshot().status === "failed"
-    ) {
-      this.fail("runtime_evidence_transport_router_authenticated_channel_invalid");
+    const keyPinSnapshot = this.keyPin.snapshot();
+    if (keyPinSnapshot.status === "failed") {
+      this.failureReason = keyPinSnapshot.failureReason
+        ?? "runtime_evidence_transport_router_key_pin_failed";
+      return;
+    }
+    if (keyPinSnapshot.status === "disposed") {
+      this.failureReason = "runtime_evidence_transport_router_key_pin_disposed";
       return;
     }
     if (!claimKeyPinOwnership(this.keyPin, this.ownershipToken)) {
-      this.fail("runtime_evidence_transport_router_authenticated_channel_invalid");
+      this.failureReason = "runtime_evidence_transport_router_key_pin_ownership_unavailable";
       return;
     }
     this.ownsKeyPin = true;
-    this.unsubscribeKeyPin = this.keyPin.onChange((snapshot) => {
+    const unsubscribeKeyPin = this.keyPin.onChange((snapshot) => {
       if (this.disposed || this.disposingOwnedKeyPin) return;
       if (snapshot.status === "failed") {
         this.fail(
@@ -743,8 +738,24 @@ export class RuntimeEvidenceTransportChannelRouter {
         this.fail("runtime_evidence_transport_router_key_pin_disposed");
       }
     });
-    if (this.failureReason !== null) return;
+    if (this.failureReason !== null || this.disposed) {
+      unsubscribeKeyPin();
+    } else {
+      this.unsubscribeKeyPin = unsubscribeKeyPin;
+    }
+  }
 
+  bindAuthenticatedPeerDataChannel(channel: RTCDataChannel): void {
+    if (this.disposed || this.failureReason !== null) return;
+    if (
+      channel.label !== RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL
+      || this.boundChannel !== null
+      || channel.readyState === "closing"
+      || channel.readyState === "closed"
+    ) {
+      this.fail("runtime_evidence_transport_router_authenticated_channel_invalid");
+      return;
+    }
     this.boundChannel = channel;
     const messageListener = (event: Event): void => {
       this.routeMessage((event as unknown as { data: unknown }).data);
