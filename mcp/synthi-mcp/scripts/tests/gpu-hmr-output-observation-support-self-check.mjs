@@ -12,6 +12,13 @@ function hash(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
+function subjectBindingHash(value) {
+  const canonical = Object.fromEntries(
+    Object.entries(value).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  return hash(JSON.stringify(canonical));
+}
+
 function graphNode(nodeId, capabilityId, bytes) {
   return {
     nodeId,
@@ -31,21 +38,34 @@ const firstBytes = Buffer.from('arbitrary verified output bytes: first');
 const secondBytes = Buffer.from('arbitrary verified output bytes: second');
 const firstNodeId = 'urn:unknown-output:state/one';
 const secondNodeId = 'vendor.future.output+state://two';
-const graph = createGpuHmrObservedCapabilityGraph({
-  subjectBindingHash: hash('subject-without-architecture-name'),
-  nodes: [
-    graphNode(firstNodeId, 'opaque-output-mechanic-a', firstBytes),
-    graphNode(secondNodeId, 'unregistered-output-mechanic-b', secondBytes),
-  ],
-  edges: [{
-    dependentNodeId: secondNodeId,
-    requiredNodeId: firstNodeId,
-    relationId: 'verifier-defined-output-dependency',
-    dependencySchemaHash: hash('dependency-schema'),
-    evidenceHash: hash('dependency-evidence'),
-    evidenceRefs: [`cas:${hash('dependency-evidence')}`],
-  }],
+const runtimeSubject = Object.freeze({
+  artifactIdentity: hash('changed-artifact'),
+  dispatchIdentity: 'dispatch:opaque:17',
+  epochIdentity: 'epoch:opaque:8',
+  outputTargetIdentity: 'output:opaque:3',
+  processIdentity: 'process:opaque:41',
+  runtimeSessionIdentity: 'session:opaque:12',
 });
+const graphNodes = [
+  graphNode(firstNodeId, 'opaque-output-mechanic-a', firstBytes),
+  graphNode(secondNodeId, 'unregistered-output-mechanic-b', secondBytes),
+];
+const graphEdges = [{
+  dependentNodeId: secondNodeId,
+  requiredNodeId: firstNodeId,
+  relationId: 'verifier-defined-output-dependency',
+  dependencySchemaHash: hash('dependency-schema'),
+  evidenceHash: hash('dependency-evidence'),
+  evidenceRefs: [`cas:${hash('dependency-evidence')}`],
+}];
+function graphForSubject(subject, nodes = graphNodes, edges = graphEdges) {
+  return createGpuHmrObservedCapabilityGraph({
+    subjectBindingHash: subjectBindingHash(subject),
+    nodes,
+    edges,
+  });
+}
+const graph = graphForSubject(runtimeSubject);
 const runtimeChainHash = hash('caller-declared-runtime-chain');
 
 const channel = createGpuHmrOutputObservationSupportChannel({
@@ -78,6 +98,34 @@ assert.equal('valid' in channel.inspect(receipt, {
   declaredRuntimeChainHash: runtimeChainHash,
   requiredNodeIds: [secondNodeId, firstNodeId],
 }), false);
+
+for (const [field, value] of [
+  ['artifactIdentity', hash('other-artifact')],
+  ['dispatchIdentity', 'dispatch:opaque:18'],
+  ['epochIdentity', 'epoch:opaque:9'],
+  ['outputTargetIdentity', 'output:opaque:4'],
+  ['processIdentity', 'process:opaque:42'],
+  ['runtimeSessionIdentity', 'session:opaque:13'],
+]) {
+  const inspection = channel.inspect(receipt, {
+    graph: graphForSubject({ ...runtimeSubject, [field]: value }),
+    declaredRuntimeChainHash: runtimeChainHash,
+    requiredNodeIds: [firstNodeId, secondNodeId],
+  });
+  assert.equal(inspection.supportIntegrityValid, false, field);
+  assert.equal(inspection.failures.includes('subject_binding_hash_mismatch'), true, field);
+}
+
+const missingDependencyGraph = graphForSubject(runtimeSubject, [
+  graphNode(secondNodeId, 'unregistered-output-mechanic-b', secondBytes),
+], []);
+const missingDependencyInspection = channel.inspect(receipt, {
+  graph: missingDependencyGraph,
+  declaredRuntimeChainHash: runtimeChainHash,
+  requiredNodeIds: [secondNodeId],
+});
+assert.equal(missingDependencyInspection.supportIntegrityValid, false);
+assert.equal(missingDependencyInspection.failures.includes('graph_hash_mismatch'), true);
 
 const jsonClone = clone(receipt);
 assert.deepEqual(channel.inspect(jsonClone, {
@@ -168,6 +216,8 @@ console.log(JSON.stringify({
   declaredRuntimeChainBoundAsSupportOnly: true,
   jsonReplayRejected: true,
   crossAuthorityReplayRejected: true,
+  runtimeSubjectMutationRejected: true,
+  dependencyClosureMutationRejected: true,
   declaredSuccessRejected: true,
   canSatisfyRuntimeProof: false,
 }, null, 2));
