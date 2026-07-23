@@ -136,6 +136,20 @@ extends GpuParentRuntimeProofAdmissionReceiptInput {
   readonly signature: string;
 }
 
+export interface GpuParentRuntimeProofAdmissionOutputContractBinding {
+  readonly outputContractSha256: string | null;
+  readonly outputSemanticsSha256: string | null;
+}
+
+export function gpuParentRuntimeProofAdmissionOutputContractBinding(
+  receipt: GpuParentRuntimeProofAdmissionReceipt,
+): GpuParentRuntimeProofAdmissionOutputContractBinding {
+  return Object.freeze({
+    outputContractSha256: receipt.computeExpectedOutputContractHash,
+    outputSemanticsSha256: receipt.computeExpectedOutputSemanticsHash,
+  });
+}
+
 export interface GpuParentRuntimeProofAdmissionReceiptReplayScope {
   readonly replayScopeId: string;
   readonly signerKeyId: string;

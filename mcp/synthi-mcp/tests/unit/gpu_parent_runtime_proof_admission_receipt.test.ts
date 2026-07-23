@@ -13,6 +13,7 @@ import {
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_VERIFICATION_AUTHORITY,
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_RECEIPT_VERIFICATION_KEY_SCHEMA,
   GpuParentRuntimeProofAdmissionReceiptSigner,
+  gpuParentRuntimeProofAdmissionOutputContractBinding,
   parseGpuParentRuntimeProofAdmissionReceiptVerificationKey,
   verifyGpuParentRuntimeProofAdmissionReceipt,
   type GpuParentRuntimeProofAdmissionReceipt,
@@ -156,6 +157,21 @@ function expectSupportOnly(
 }
 
 describe("GpuParentRuntimeProofAdmissionReceiptSigner", () => {
+  it("projects legacy wire fields through a generic output-contract binding", () => {
+    const { receipt } = signedReceipt();
+    const binding =
+      gpuParentRuntimeProofAdmissionOutputContractBinding(receipt);
+
+    expect(binding).toEqual({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+    });
+    expect(Object.isFrozen(binding)).toBe(true);
+    expect(JSON.stringify(binding)).not.toMatch(
+      /project|fixture|scenario|backend|camera|image|tensor|media/i,
+    );
+  });
+
   it("signs both admitted stages and verifies with an independently supplied key and challenge", () => {
     const { privateKey } = generateKeyPairSync("ed25519");
     const receiptSigner = signer(privateKey);
