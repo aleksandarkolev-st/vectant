@@ -359,6 +359,57 @@ mod tests {
     }
 
     #[test]
+    fn matches_cross_language_golden_vector() {
+        let fragments = [
+            fragment(b"", &[0x00]),
+            fragment(&[0x00, 0x01, 0xff], &[0xff, 0x00]),
+        ];
+        let value = serde_json::to_value(
+            TransportAccessUnitObservation::new(TransportAccessUnitObservationInput {
+                stream_instance_identity: &[0x73, 0x00, 0xff],
+                access_unit_ordinal: 0,
+                native_transport_identity: &[0x6e, 0x00, 0x80],
+                fragments: &fragments,
+                observed_at_monotonic_ns: u128::MAX - 5,
+            })
+            .expect("golden observation"),
+        )
+        .expect("serialize golden observation");
+
+        assert_eq!(
+            value["streamInstanceIdentitySha256"],
+            "sha256:550dcbeb81190154f4bfcafbe03ce1557e98032322647d10c2a3ec9cab464295"
+        );
+        assert_eq!(
+            value["nativeTransportIdentitySha256"],
+            "sha256:a2fcc2026c960ee9a8862011388da87aa36d4d7e29fb9072e942aa48445c10b5"
+        );
+        assert_eq!(
+            value["transportPayloadCommitmentSha256"],
+            "sha256:94c34a8c4d285460e490edb400648174202ed2927ee4ff16398db4f8363a0acc"
+        );
+        assert_eq!(
+            value["nativeBoundaryWitnessCommitmentSha256"],
+            "sha256:8f9a59a23f38c67c34d0fac65127bcb84aec742a4ea08c4a70898e9dc5e83f94"
+        );
+        assert_eq!(
+            value["canonicalObservationSha256"],
+            "sha256:bdfa6fa1e923e51dd81039548d3633870b77268e48b27094275e99752a0b6617"
+        );
+        assert_eq!(
+            value["observationId"],
+            "transport-access-unit-observation:sha256:bdfa6fa1e923e51dd81039548d3633870b77268e48b27094275e99752a0b6617"
+        );
+        assert_eq!(value["accessUnitOrdinal"], "0");
+        assert_eq!(value["fragmentCount"], "2");
+        assert_eq!(value["totalPayloadByteLength"], "3");
+        assert_eq!(
+            value["observedAtMonotonicNs"],
+            "340282366920938463463374607431768211450"
+        );
+    }
+
+    #[test]
     fn invalid_inputs_and_overflow_fail_closed() {
         let fragments = [fragment(b"payload", b"boundary")];
         let base = TransportAccessUnitObservationInput {

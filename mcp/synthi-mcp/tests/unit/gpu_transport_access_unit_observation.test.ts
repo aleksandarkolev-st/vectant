@@ -210,6 +210,65 @@ describe("verifyGpuTransportAccessUnitObservation", () => {
     expect(Object.values(result).some((value) => value instanceof Uint8Array)).toBe(false);
   });
 
+  it("matches the Rust cross-language golden vector", () => {
+    const canonicalObservationSha256 =
+      "sha256:bdfa6fa1e923e51dd81039548d3633870b77268e48b27094275e99752a0b6617";
+    const result = verifyGpuTransportAccessUnitObservation({
+      observation: {
+        schemaVersion: GPU_TRANSPORT_ACCESS_UNIT_OBSERVATION_SCHEMA,
+        canonicalizationVersion:
+          GPU_TRANSPORT_ACCESS_UNIT_OBSERVATION_CANONICALIZATION,
+        streamInstanceIdentitySha256:
+          "sha256:550dcbeb81190154f4bfcafbe03ce1557e98032322647d10c2a3ec9cab464295",
+        accessUnitOrdinal: "0",
+        nativeTransportIdentitySha256:
+          "sha256:a2fcc2026c960ee9a8862011388da87aa36d4d7e29fb9072e942aa48445c10b5",
+        fragmentCount: "2",
+        totalPayloadByteLength: "3",
+        transportPayloadCommitmentSha256:
+          "sha256:94c34a8c4d285460e490edb400648174202ed2927ee4ff16398db4f8363a0acc",
+        nativeBoundaryWitnessCommitmentSha256:
+          "sha256:8f9a59a23f38c67c34d0fac65127bcb84aec742a4ea08c4a70898e9dc5e83f94",
+        observedAtMonotonicNs: "340282366920938463463374607431768211450",
+        canonicalObservationSha256,
+        observationId: `${OBSERVATION_ID_PREFIX}${canonicalObservationSha256.slice(7)}`,
+        proofAuthority: GPU_TRANSPORT_ACCESS_UNIT_OBSERVATION_AUTHORITY,
+        acceptedForGpuHmr: false,
+        gpuHmrSuccess: false,
+        canSatisfyRuntimeProof: false,
+      },
+      streamInstanceIdentity: Buffer.from([0x73, 0x00, 0xff]),
+      nativeTransportIdentity: Buffer.from([0x6e, 0x00, 0x80]),
+      fragments: [
+        {
+          payload: Buffer.alloc(0),
+          nativeBoundaryWitness: Buffer.from([0x00]),
+        },
+        {
+          payload: Buffer.from([0x00, 0x01, 0xff]),
+          nativeBoundaryWitness: Buffer.from([0xff, 0x00]),
+        },
+      ],
+      limits,
+    });
+
+    expect(result).toMatchObject({
+      verified: true,
+      byteCommitmentsRecomputed: true,
+      observationId:
+        "transport-access-unit-observation:sha256:bdfa6fa1e923e51dd81039548d3633870b77268e48b27094275e99752a0b6617",
+      canonicalObservationSha256,
+      fragmentCount: 2n,
+      totalPayloadByteLength: 3n,
+      accessUnitOrdinal: 0n,
+      observedAtMonotonicNs:
+        340_282_366_920_938_463_463_374_607_431_768_211_450n,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+  });
+
   it.each([
     ["fragment order", (input: GpuTransportAccessUnitObservationVerificationInput) => ({
       ...input,
