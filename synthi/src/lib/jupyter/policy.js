@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { lookup } from 'node:dns/promises';
 
 const ALLOWED_PATHS = [/^api\/contents(?:\/|$)/, /^api\/sessions(?:\/|$)/, /^api\/kernels(?:\/|$)/];
 const PRIVATE_V4 = [/^127\./, /^10\./, /^192\.168\./, /^172\.(1[6-9]|2\d|3[01])\./];
@@ -13,6 +14,22 @@ export function validateJupyterOrigin(value) {
   return url.origin;
 }
 
+function isPrivateAddress(address) {
+  if (address === '::1' || address.startsWith('fc') || address.startsWith('fd') || address.startsWith('fe80:')) return true;
+  return PRIVATE_V4.some((pattern) => pattern.test(address));
+}
+
+/** Resolve at registration time. Every DNS answer must remain private to avoid rebinding. */
+export async function resolveApprovedJupyterOrigin(value) {
+  const origin = validateJupyterOrigin(value); const hostname = new URL(origin).hostname;
+  const explicitlyApproved = new Set(String(process.env.JUPYTER_ALLOWED_ORIGINS || '').split(',').map((entry) => entry.trim()).filter(Boolean));
+  if (explicitlyApproved.has(origin)) return origin;
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return origin;
+  const addresses = await lookup(hostname, { all: true, verbatim: true }).catch(() => []);
+  if (!addresses.length || addresses.some(({ address }) => !isPrivateAddress(address))) throw new Error('Jupyter hostname must resolve only to approved private addresses');
+  return origin;
+}
+
 export function safeJupyterPath(path = '') {
   const decoded = decodeURIComponent(String(path));
   if (decoded.includes('..') || decoded.includes('\\') || decoded.startsWith('/')) throw new Error('Invalid notebook path');
@@ -23,4 +40,3 @@ export function allowedJupyterEndpoint(pathname) {
   const path = pathname.replace(/^\//, '');
   return ALLOWED_PATHS.some((pattern) => pattern.test(path));
 }
-
