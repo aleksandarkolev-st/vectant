@@ -28,6 +28,13 @@ pub const OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_SCHEMA_VERSION: &str =
 pub const OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_TYPE: &str = "gpu_hmr_observed_runtime_evidence";
 pub const OBSERVED_RUNTIME_EVIDENCE_AUTHORITY: &str =
     "worker_signed_observation_transport_only_not_gpu_hmr_acceptance";
+pub const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.observed_runtime_evidence_delivery.v1";
+pub const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE: &str =
+    "gpu_hmr_observed_runtime_evidence_delivery";
+pub const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_ENCODING: &str = "base64url_no_pad";
+pub const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY: &str =
+    "worker_payload_delivery_only_not_gpu_hmr_acceptance";
 const RUNTIME_EVIDENCE_TRANSPORT_RECEIPT_PRODUCER: &str = "synthi-webrtc-compiler-worker";
 const KEY_ID_PREFIX: &str = "gpu-hmr-runtime-evidence-transport-key:sha256:";
 const RECEIPT_ID_PREFIX: &str = "gpu-hmr-runtime-evidence-transport-receipt:sha256:";
@@ -39,6 +46,7 @@ const OBSERVATION_CONTEXT_DOMAIN: &str =
     "synthi.gpu_hmr.runtime_evidence_transport_observation_context.v1";
 const SUBJECT_IDENTITY_DOMAIN: &str =
     "synthi.gpu_hmr.runtime_evidence_transport_subject_identity.v1";
+const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_PAYLOAD_BYTES: u64 = 512 * 1024;
 const MAX_RECEIPT_AGE: Duration = Duration::from_secs(300);
 const MAX_FUTURE_SKEW: Duration = Duration::from_secs(30);
 
@@ -142,6 +150,22 @@ pub struct ObservedRuntimeEvidenceEnvelope {
     message_type: String,
     observed_payload_sha256: String,
     runtime_evidence_transport_receipt: RuntimeEvidenceTransportReceipt,
+    proof_authority: String,
+    accepted_for_gpu_hmr: bool,
+    gpu_hmr_success: bool,
+    can_satisfy_runtime_proof: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObservedRuntimeEvidenceDelivery {
+    schema_version: String,
+    #[serde(rename = "type")]
+    message_type: String,
+    observed_payload_encoding: String,
+    observed_payload_byte_length: String,
+    observed_payload_base64: String,
+    runtime_evidence_transport_envelope: ObservedRuntimeEvidenceEnvelope,
     proof_authority: String,
     accepted_for_gpu_hmr: bool,
     gpu_hmr_success: bool,
@@ -794,6 +818,114 @@ impl ObservedRuntimeEvidenceEnvelope {
         }
         Ok(())
     }
+}
+
+impl ObservedRuntimeEvidenceDelivery {
+    pub fn new(
+        observed_payload: &[u8],
+        runtime_evidence_transport_envelope: ObservedRuntimeEvidenceEnvelope,
+    ) -> Result<Self, String> {
+        runtime_evidence_transport_envelope.validate_shape()?;
+        if observed_payload.is_empty() {
+            return Err("observed_runtime_evidence_delivery_payload_empty".to_string());
+        }
+        let observed_payload_byte_length = u64::try_from(observed_payload.len())
+            .map_err(|_| "observed_runtime_evidence_delivery_payload_too_large".to_string())?;
+        if observed_payload_byte_length > OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_PAYLOAD_BYTES {
+            return Err("observed_runtime_evidence_delivery_payload_too_large".to_string());
+        }
+        let observed_payload_sha256 = prefixed_sha256(observed_payload);
+        if runtime_evidence_transport_envelope.observed_payload_sha256 != observed_payload_sha256 {
+            return Err(
+                "observed_runtime_evidence_delivery_payload_envelope_hash_mismatch".to_string(),
+            );
+        }
+        Ok(Self {
+            schema_version: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA_VERSION.to_string(),
+            message_type: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE.to_string(),
+            observed_payload_encoding: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_ENCODING.to_string(),
+            observed_payload_byte_length: observed_payload_byte_length.to_string(),
+            observed_payload_base64: URL_SAFE_NO_PAD.encode(observed_payload),
+            runtime_evidence_transport_envelope,
+            proof_authority: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY.to_string(),
+            accepted_for_gpu_hmr: false,
+            gpu_hmr_success: false,
+            can_satisfy_runtime_proof: false,
+        })
+    }
+
+    fn decode_payload_and_validate(&self) -> Result<Vec<u8>, String> {
+        if self.schema_version != OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA_VERSION
+            || self.message_type != OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE
+            || self.observed_payload_encoding != OBSERVED_RUNTIME_EVIDENCE_DELIVERY_ENCODING
+            || !canonical_u64(&self.observed_payload_byte_length)
+            || self.proof_authority != OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY
+            || self.accepted_for_gpu_hmr
+            || self.gpu_hmr_success
+            || self.can_satisfy_runtime_proof
+        {
+            return Err("observed_runtime_evidence_delivery_shape_invalid".to_string());
+        }
+        self.runtime_evidence_transport_envelope.validate_shape()?;
+        let observed_payload_byte_length = self
+            .observed_payload_byte_length
+            .parse::<u64>()
+            .map_err(|_| "observed_runtime_evidence_delivery_shape_invalid".to_string())?;
+        if observed_payload_byte_length > OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_PAYLOAD_BYTES {
+            return Err("observed_runtime_evidence_delivery_payload_too_large".to_string());
+        }
+        let expected_encoded_length =
+            base64url_no_pad_encoded_length(observed_payload_byte_length)?;
+        if u64::try_from(self.observed_payload_base64.len()).map_err(|_| {
+            "observed_runtime_evidence_delivery_payload_encoding_invalid".to_string()
+        })? != expected_encoded_length
+        {
+            return Err("observed_runtime_evidence_delivery_payload_encoding_invalid".to_string());
+        }
+        let observed_payload = URL_SAFE_NO_PAD
+            .decode(&self.observed_payload_base64)
+            .map_err(|_| {
+                "observed_runtime_evidence_delivery_payload_encoding_invalid".to_string()
+            })?;
+        if URL_SAFE_NO_PAD.encode(&observed_payload) != self.observed_payload_base64
+            || u64::try_from(observed_payload.len())
+                .map_err(|_| "observed_runtime_evidence_delivery_payload_too_large".to_string())?
+                != observed_payload_byte_length
+        {
+            return Err("observed_runtime_evidence_delivery_payload_encoding_invalid".to_string());
+        }
+        let observed_payload_sha256 = prefixed_sha256(&observed_payload);
+        if observed_payload_sha256
+            != self
+                .runtime_evidence_transport_envelope
+                .observed_payload_sha256
+        {
+            return Err(
+                "observed_runtime_evidence_delivery_payload_envelope_hash_mismatch".to_string(),
+            );
+        }
+        Ok(observed_payload)
+    }
+
+    fn validate_shape(&self) -> Result<(), String> {
+        self.decode_payload_and_validate().map(|_| ())
+    }
+}
+
+fn base64url_no_pad_encoded_length(byte_length: u64) -> Result<u64, String> {
+    let full_groups = byte_length / 3;
+    let remainder = byte_length % 3;
+    full_groups
+        .checked_mul(4)
+        .and_then(|length| {
+            length.checked_add(match remainder {
+                0 => 0,
+                1 => 2,
+                2 => 3,
+                _ => unreachable!(),
+            })
+        })
+        .ok_or_else(|| "observed_runtime_evidence_delivery_payload_too_large".to_string())
 }
 
 pub fn initialize_runtime_evidence_transport_signer() -> Result<(), String> {
@@ -1453,6 +1585,89 @@ mod tests {
         let mut missing_transport = input();
         missing_transport.transport_session_id = "";
         assert!(signer.issue(missing_transport).is_err());
+    }
+
+    #[test]
+    fn observed_delivery_pairs_exact_payload_bytes_with_signed_envelope() {
+        let signer = RuntimeEvidenceTransportSigner::generate(41).unwrap();
+        let issued_at = 1_784_379_315_000_000_000_u128;
+        let envelope = envelope_at(&signer, issued_at, 1, 'a');
+        let delivery =
+            ObservedRuntimeEvidenceDelivery::new(OBSERVED_PAYLOAD, envelope.clone()).unwrap();
+
+        assert_eq!(
+            ObservedRuntimeEvidenceDelivery::new(&[], envelope.clone()).unwrap_err(),
+            "observed_runtime_evidence_delivery_payload_empty"
+        );
+        delivery.validate_shape().unwrap();
+        assert_eq!(
+            delivery.decode_payload_and_validate().unwrap(),
+            OBSERVED_PAYLOAD
+        );
+        assert_eq!(delivery.runtime_evidence_transport_envelope, envelope);
+        assert!(!delivery.accepted_for_gpu_hmr);
+        assert!(!delivery.gpu_hmr_success);
+        assert!(!delivery.can_satisfy_runtime_proof);
+
+        let encoded = serde_json::to_string(&delivery).unwrap();
+        let decoded: ObservedRuntimeEvidenceDelivery = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, delivery);
+
+        let mut altered_payload = delivery.clone();
+        altered_payload.observed_payload_base64 = URL_SAFE_NO_PAD.encode(b"altered-payload");
+        altered_payload.observed_payload_byte_length = b"altered-payload".len().to_string();
+        assert_eq!(
+            altered_payload.validate_shape().unwrap_err(),
+            "observed_runtime_evidence_delivery_payload_envelope_hash_mismatch"
+        );
+
+        let mut padded_payload = delivery.clone();
+        padded_payload.observed_payload_base64.push('=');
+        assert_eq!(
+            padded_payload.validate_shape().unwrap_err(),
+            "observed_runtime_evidence_delivery_payload_encoding_invalid"
+        );
+
+        let mut noncanonical_length = delivery.clone();
+        noncanonical_length.observed_payload_byte_length =
+            format!("0{}", noncanonical_length.observed_payload_byte_length);
+        assert_eq!(
+            noncanonical_length.validate_shape().unwrap_err(),
+            "observed_runtime_evidence_delivery_shape_invalid"
+        );
+
+        let oversized_payload =
+            vec![0_u8; OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_PAYLOAD_BYTES as usize + 1];
+        assert_eq!(
+            ObservedRuntimeEvidenceDelivery::new(&oversized_payload, envelope.clone()).unwrap_err(),
+            "observed_runtime_evidence_delivery_payload_too_large"
+        );
+        let mut oversized_claim = delivery.clone();
+        oversized_claim.observed_payload_byte_length =
+            (OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_PAYLOAD_BYTES + 1).to_string();
+        assert_eq!(
+            oversized_claim.validate_shape().unwrap_err(),
+            "observed_runtime_evidence_delivery_payload_too_large"
+        );
+
+        let mut altered_envelope = delivery.clone();
+        altered_envelope
+            .runtime_evidence_transport_envelope
+            .observed_payload_sha256 = prefixed_sha256(b"altered-payload");
+        assert!(altered_envelope.validate_shape().is_err());
+
+        let mut forged_authority = serde_json::to_value(&delivery).unwrap();
+        forged_authority["gpuHmrSuccess"] = json!(true);
+        let forged_authority: ObservedRuntimeEvidenceDelivery =
+            serde_json::from_value(forged_authority).unwrap();
+        assert_eq!(
+            forged_authority.validate_shape().unwrap_err(),
+            "observed_runtime_evidence_delivery_shape_invalid"
+        );
+
+        let mut unknown_field = serde_json::to_value(&delivery).unwrap();
+        unknown_field["unexpectedField"] = json!(true);
+        assert!(serde_json::from_value::<ObservedRuntimeEvidenceDelivery>(unknown_field).is_err());
     }
 
     #[test]
