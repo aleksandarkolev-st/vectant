@@ -10,14 +10,21 @@ import type { RTCDataChannel } from "werift";
 import * as sharedOfflineVerifierModule
   from "../../scripts/lib/gpu-hmr-runtime-evidence-transport-offline-verifier.mjs";
 import {
+  OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY,
+  OBSERVED_RUNTIME_EVIDENCE_DELIVERY_ENCODING,
+  OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_PAYLOAD_BYTES,
+  OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA,
+  OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE,
   RUNTIME_EVIDENCE_TRANSPORT_ALGORITHM,
   RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
+  RUNTIME_EVIDENCE_TRANSPORT_MAX_MESSAGE_BYTES,
   RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA,
   RuntimeEvidenceTransportChannelRouter,
   RuntimeEvidenceTransportKeyPin,
   RuntimeEvidenceTransportReceiptConsumer,
   SessionRuntimeEvidenceTransportReplayStore,
   type RuntimeEvidenceTransportSupportEnvelopeInput,
+  type RuntimeEvidenceTransportObservedDelivery,
   type RuntimeEvidenceTransportVerificationContext,
   type RuntimeEvidenceTransportVerificationKey,
   parseRuntimeEvidenceTransportVerificationKey,
@@ -324,6 +331,27 @@ function signedEnvelopeFixture(options: {
   };
 }
 
+function observedDeliveryFixture(
+  fixture: SignedEnvelopeFixture,
+): Record<string, unknown> {
+  const observedPayload = fixture.input.observedPayload;
+  const observedPayloadBytes = typeof observedPayload === "string"
+    ? Buffer.from(observedPayload, "utf8")
+    : Buffer.from(observedPayload);
+  return {
+    schemaVersion: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA,
+    type: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE,
+    observedPayloadEncoding: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_ENCODING,
+    observedPayloadByteLength: String(observedPayloadBytes.byteLength),
+    observedPayloadBase64: observedPayloadBytes.toString("base64url"),
+    runtimeEvidenceTransportEnvelope: fixture.input.envelope,
+    proofAuthority: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+  };
+}
+
 describe("RuntimeEvidenceTransportKeyPin", () => {
   it("pins one self-consistent key from the dedicated authenticated peer channel", () => {
     const channel = new MockDataChannel();
@@ -523,6 +551,21 @@ describe("RuntimeEvidenceTransportKeyPin", () => {
     expect(removeListener).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects oversized binary key announcements before UTF-8 decoding", () => {
+    const channel = new MockDataChannel();
+    const pin = new RuntimeEvidenceTransportKeyPin();
+    pin.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+    channel.emit(new Uint8Array(
+      RUNTIME_EVIDENCE_TRANSPORT_MAX_MESSAGE_BYTES + 1,
+    ).fill(0xff));
+
+    expect(pin.snapshot()).toEqual({
+      status: "failed",
+      key: null,
+      failureReason: "runtime_evidence_transport_key_announcement_byte_limit_exceeded",
+    });
+  });
+
   it("invalidates the pin when the worker attempts in-session key replacement", () => {
     const channel = new MockDataChannel();
     const pin = new RuntimeEvidenceTransportKeyPin();
@@ -655,19 +698,30 @@ describe("RuntimeEvidenceTransportKeyPin", () => {
 });
 
 describe("RuntimeEvidenceTransportChannelRouter", () => {
-  it("routes a key then a recognized support envelope without changing the pinned key", () => {
+  it("routes a key then a hash-bound support delivery without changing the pinned key", () => {
     const channel = new MockDataChannel();
     const pin = new RuntimeEvidenceTransportKeyPin();
     const router = new RuntimeEvidenceTransportChannelRouter(pin);
-    const delivered: string[] = [];
-    router.onSupportEnvelope((serializedEnvelope) => delivered.push(serializedEnvelope));
-    router.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+    const delivered: RuntimeEvidenceTransportObservedDelivery[] = [];
+    router.onObservedDelivery((delivery) => {
+      expect(
+        Reflect.set(
+          delivery as unknown as Record<string, unknown>,
+          "gpuHmrSuccess",
+          true,
+        ),
+      ).toBe(false);
+      delivered.push(delivery);
+    });
+    router.bindAuthenticatedPeerDataChannel(
+      channel as unknown as RTCDataChannel,
+    );
     const identity = signingIdentity(41);
     const fixture = signedEnvelopeFixture(identity);
-    const serializedEnvelope = JSON.stringify(fixture.input.envelope);
+    const serializedDelivery = JSON.stringify(observedDeliveryFixture(fixture));
 
     channel.emit(JSON.stringify(identity.announcement));
-    channel.emit(serializedEnvelope);
+    channel.emit(serializedDelivery);
 
     expect(pin.snapshot()).toMatchObject({
       status: "pinned",
@@ -677,40 +731,113 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     expect(router.snapshot()).toEqual({
       status: "active",
       failureReason: null,
-      retainedSupportEnvelopeCount: 1,
-      retainedSupportEnvelopeBytes: Buffer.byteLength(serializedEnvelope, "utf8"),
+      retainedObservedDeliveryCount: 1,
+      retainedObservedDeliveryBytes: Buffer.byteLength(
+        serializedDelivery,
+        "utf8",
+      ),
     });
-    expect(delivered).toEqual([serializedEnvelope]);
-    expect(router.drainSupportEnvelopes()).toEqual([serializedEnvelope]);
-    expect(router.snapshot().retainedSupportEnvelopeCount).toBe(0);
+    expect(delivered).toHaveLength(1);
+    expect(Object.isFrozen(delivered[0])).toBe(true);
+    expect(delivered[0]).toMatchObject({
+      schemaVersion: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA,
+      type: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE,
+      observedPayloadSha256: prefixedSha256(fixture.input.observedPayload),
+      serializedDelivery,
+      proofAuthority: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(delivered[0]).not.toHaveProperty("observedPayloadBase64");
+    expect(delivered[0]).not.toHaveProperty("runtimeEvidenceTransportEnvelope");
+    expect(delivered[0]).not.toHaveProperty("serializedEnvelope");
+    const retainedCarrier = JSON.parse(delivered[0].serializedDelivery) as {
+      observedPayloadBase64: string;
+    };
+    expect(
+      Buffer.from(retainedCarrier.observedPayloadBase64, "base64url").toString("utf8"),
+    ).toBe(fixture.input.observedPayload);
+    expect(router.drainObservedDeliveries()).toEqual(delivered);
+    expect(router.snapshot().retainedObservedDeliveryCount).toBe(0);
   });
 
-  it("fails malformed and unknown router messages without mutating an already pinned key", () => {
+  it("retains deeply nested unverified envelope data without recursively serializing it", () => {
+    const channel = new MockDataChannel();
+    const pin = new RuntimeEvidenceTransportKeyPin();
+    const router = new RuntimeEvidenceTransportChannelRouter(pin);
+    const received = vi.fn();
+    router.onObservedDelivery(received);
+    router.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+    const identity = signingIdentity(58);
+    const fixture = signedEnvelopeFixture(identity);
+    const delivery = observedDeliveryFixture(fixture);
+    const serializedDelivery = JSON.stringify(delivery);
+    const serializedEnvelope = JSON.stringify(fixture.input.envelope);
+    const deepValue = `${"[".repeat(20_000)}0${"]".repeat(20_000)}`;
+    const deepEnvelope = `{"unverifiedSupportMetadata":${deepValue},${
+      serializedEnvelope.slice(1)
+    }`;
+    expect(serializedDelivery).toContain(serializedEnvelope);
+    const deepDelivery = serializedDelivery.replace(serializedEnvelope, deepEnvelope);
+
+    channel.emit(JSON.stringify(identity.announcement));
+    channel.emit(deepDelivery);
+
+    expect(router.snapshot()).toEqual({
+      status: "active",
+      failureReason: null,
+      retainedObservedDeliveryCount: 1,
+      retainedObservedDeliveryBytes: Buffer.byteLength(deepDelivery, "utf8"),
+    });
+    expect(received.mock.calls[0]?.[0]).toMatchObject({
+      serializedDelivery: deepDelivery,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+  });
+
+  it("rejects malformed, unknown, and envelope-only records without mutating the pin", () => {
+    const identity = signingIdentity(42);
+    const fixture = signedEnvelopeFixture(identity);
     for (const [message, reason] of [
       ["not-json", "runtime_evidence_transport_router_message_json_invalid"],
-      [JSON.stringify({ schemaVersion: "synthi.gpu_hmr.unrecognized.v1" }),
-        "runtime_evidence_transport_router_message_schema_unknown"],
-      [JSON.stringify({ schemaVersion: "synthi.gpu_hmr.observed_runtime_evidence_envelope.v2" }),
-        "runtime_evidence_transport_router_message_type_unknown"],
+      [
+        JSON.stringify({ schemaVersion: "synthi.gpu_hmr.unrecognized.v1" }),
+        "runtime_evidence_transport_router_message_schema_unknown",
+      ],
+      [
+        JSON.stringify(fixture.input.envelope),
+        "runtime_evidence_transport_router_observed_delivery_required",
+      ],
+      [
+        JSON.stringify({
+          ...observedDeliveryFixture(fixture),
+          type: "unrecognized",
+        }),
+        "runtime_evidence_transport_router_message_type_unknown",
+      ],
     ] as const) {
       const channel = new MockDataChannel();
       const pin = new RuntimeEvidenceTransportKeyPin();
       const router = new RuntimeEvidenceTransportChannelRouter(pin);
-      router.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
-      const announcement = keyAnnouncement(42);
-      channel.emit(JSON.stringify(announcement));
+      router.bindAuthenticatedPeerDataChannel(
+        channel as unknown as RTCDataChannel,
+      );
+      channel.emit(JSON.stringify(identity.announcement));
 
       channel.emit(message);
 
       expect(router.snapshot()).toEqual({
         status: "failed",
         failureReason: reason,
-        retainedSupportEnvelopeCount: 0,
-        retainedSupportEnvelopeBytes: 0,
+        retainedObservedDeliveryCount: 0,
+        retainedObservedDeliveryBytes: 0,
       });
       expect(pin.snapshot()).toEqual({
         status: "pinned",
-        key: announcement,
+        key: identity.announcement,
         failureReason: null,
       });
     }
@@ -720,12 +847,18 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     const channel = new MockDataChannel();
     const pin = new RuntimeEvidenceTransportKeyPin();
     const router = new RuntimeEvidenceTransportChannelRouter(pin);
-    router.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+    router.bindAuthenticatedPeerDataChannel(
+      channel as unknown as RTCDataChannel,
+    );
     const first = keyAnnouncement(43);
 
     channel.emit(JSON.stringify(first));
     channel.emit(JSON.stringify(first));
-    expect(pin.snapshot()).toEqual({ status: "pinned", key: first, failureReason: null });
+    expect(pin.snapshot()).toEqual({
+      status: "pinned",
+      key: first,
+      failureReason: null,
+    });
     expect(router.snapshot().status).toBe("active");
 
     channel.emit(JSON.stringify(keyAnnouncement(44)));
@@ -738,8 +871,8 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     expect(router.snapshot()).toEqual({
       status: "failed",
       failureReason: "runtime_evidence_transport_key_replaced_in_session",
-      retainedSupportEnvelopeCount: 0,
-      retainedSupportEnvelopeBytes: 0,
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
     });
   });
 
@@ -747,35 +880,52 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     const closeChannel = new MockDataChannel();
     const closePin = new RuntimeEvidenceTransportKeyPin();
     const closeRouter = new RuntimeEvidenceTransportChannelRouter(closePin);
-    closeRouter.bindAuthenticatedPeerDataChannel(closeChannel as unknown as RTCDataChannel);
+    closeRouter.bindAuthenticatedPeerDataChannel(
+      closeChannel as unknown as RTCDataChannel,
+    );
     closeChannel.emit(JSON.stringify(keyAnnouncement(45)));
     closeChannel.closeRemotely();
 
     expect(closeRouter.snapshot()).toEqual({
       status: "failed",
-      failureReason: "runtime_evidence_transport_router_authenticated_channel_closed",
-      retainedSupportEnvelopeCount: 0,
-      retainedSupportEnvelopeBytes: 0,
+      failureReason:
+        "runtime_evidence_transport_router_authenticated_channel_closed",
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
     });
-    expect(closePin.snapshot()).toEqual({ status: "disposed", key: null, failureReason: null });
+    expect(closePin.snapshot()).toEqual({
+      status: "disposed",
+      key: null,
+      failureReason: null,
+    });
 
     const disposeChannel = new MockDataChannel();
     const disposePin = new RuntimeEvidenceTransportKeyPin();
     const disposeRouter = new RuntimeEvidenceTransportChannelRouter(disposePin);
     const received = vi.fn();
-    disposeRouter.onSupportEnvelope(received);
-    disposeRouter.bindAuthenticatedPeerDataChannel(disposeChannel as unknown as RTCDataChannel);
+    disposeRouter.onObservedDelivery(received);
+    disposeRouter.bindAuthenticatedPeerDataChannel(
+      disposeChannel as unknown as RTCDataChannel,
+    );
     disposeRouter.dispose();
-    disposeChannel.emit(JSON.stringify(signedEnvelopeFixture(signingIdentity(46)).input.envelope));
+    disposeChannel.emit(
+      JSON.stringify(
+        observedDeliveryFixture(signedEnvelopeFixture(signingIdentity(46))),
+      ),
+    );
 
     expect(received).not.toHaveBeenCalled();
     expect(disposeRouter.snapshot()).toEqual({
       status: "disposed",
       failureReason: null,
-      retainedSupportEnvelopeCount: 0,
-      retainedSupportEnvelopeBytes: 0,
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
     });
-    expect(disposePin.snapshot()).toEqual({ status: "disposed", key: null, failureReason: null });
+    expect(disposePin.snapshot()).toEqual({
+      status: "disposed",
+      key: null,
+      failureReason: null,
+    });
   });
 
   it("rejects a second authenticated channel without reusing the first session pin", () => {
@@ -783,35 +933,71 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     const secondChannel = new MockDataChannel();
     const pin = new RuntimeEvidenceTransportKeyPin();
     const router = new RuntimeEvidenceTransportChannelRouter(pin);
-    router.bindAuthenticatedPeerDataChannel(firstChannel as unknown as RTCDataChannel);
+    router.bindAuthenticatedPeerDataChannel(
+      firstChannel as unknown as RTCDataChannel,
+    );
     const announcement = keyAnnouncement(47);
     firstChannel.emit(JSON.stringify(announcement));
 
-    router.bindAuthenticatedPeerDataChannel(secondChannel as unknown as RTCDataChannel);
+    router.bindAuthenticatedPeerDataChannel(
+      secondChannel as unknown as RTCDataChannel,
+    );
     secondChannel.emit(JSON.stringify(keyAnnouncement(48)));
 
     expect(router.snapshot()).toEqual({
       status: "failed",
-      failureReason: "runtime_evidence_transport_router_authenticated_channel_invalid",
-      retainedSupportEnvelopeCount: 0,
-      retainedSupportEnvelopeBytes: 0,
+      failureReason:
+        "runtime_evidence_transport_router_authenticated_channel_invalid",
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
     });
-    expect(pin.snapshot()).toEqual({ status: "pinned", key: announcement, failureReason: null });
+    expect(pin.snapshot()).toEqual({
+      status: "pinned",
+      key: announcement,
+      failureReason: null,
+    });
   });
 
-  it("bounds retained support envelopes and permits listener cleanup", () => {
+  it("bounds retained support deliveries and permits listener cleanup", () => {
     const channel = new MockDataChannel();
     const pin = new RuntimeEvidenceTransportKeyPin();
     const router = new RuntimeEvidenceTransportChannelRouter(pin, {
-      maxRetainedSupportEnvelopeCount: 2,
+      maxRetainedObservedDeliveryCount: 2,
     });
     const received = vi.fn();
-    const unsubscribe = router.onSupportEnvelope(received);
-    router.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
-    channel.emit(JSON.stringify(keyAnnouncement(49)));
-    const first = JSON.stringify(signedEnvelopeFixture(signingIdentity(49)).input.envelope);
-    const second = JSON.stringify(signedEnvelopeFixture(signingIdentity(50)).input.envelope);
-    const third = JSON.stringify(signedEnvelopeFixture(signingIdentity(51)).input.envelope);
+    const unsubscribe = router.onObservedDelivery(received);
+    router.bindAuthenticatedPeerDataChannel(
+      channel as unknown as RTCDataChannel,
+    );
+    const identity = signingIdentity(49);
+    channel.emit(JSON.stringify(identity.announcement));
+    const first = JSON.stringify(
+      observedDeliveryFixture(
+        signedEnvelopeFixture({
+          ...identity,
+          sequence: 1n,
+          nonceSeed: "6",
+        }),
+      ),
+    );
+    const second = JSON.stringify(
+      observedDeliveryFixture(
+        signedEnvelopeFixture({
+          ...identity,
+          sequence: 2n,
+          nonceSeed: "7",
+        }),
+      ),
+    );
+    const third = JSON.stringify(
+      observedDeliveryFixture(
+        signedEnvelopeFixture({
+          ...identity,
+          sequence: 3n,
+          nonceSeed: "8",
+        }),
+      ),
+    );
 
     channel.emit(first);
     unsubscribe();
@@ -819,49 +1005,68 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     channel.emit(third);
 
     expect(received).toHaveBeenCalledTimes(1);
-    expect(received).toHaveBeenCalledWith(first);
+    expect(received.mock.calls[0]?.[0]).toMatchObject({
+      serializedDelivery: first,
+    });
     expect(router.snapshot()).toEqual({
       status: "failed",
-      failureReason: "runtime_evidence_transport_router_retention_capacity_exhausted",
-      retainedSupportEnvelopeCount: 0,
-      retainedSupportEnvelopeBytes: 0,
+      failureReason:
+        "runtime_evidence_transport_router_retention_capacity_exhausted",
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
     });
-    expect(router.drainSupportEnvelopes()).toEqual([]);
+    expect(router.drainObservedDeliveries()).toEqual([]);
   });
 
-  it("refuses a recognized support envelope until the channel key is pinned", () => {
+  it("refuses a recognized delivery until the channel key is pinned", () => {
     const channel = new MockDataChannel();
     const pin = new RuntimeEvidenceTransportKeyPin();
     const router = new RuntimeEvidenceTransportChannelRouter(pin);
     const received = vi.fn();
-    router.onSupportEnvelope(received);
-    router.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
-    channel.emit(JSON.stringify(signedEnvelopeFixture(signingIdentity(52)).input.envelope));
+    router.onObservedDelivery(received);
+    router.bindAuthenticatedPeerDataChannel(
+      channel as unknown as RTCDataChannel,
+    );
+    channel.emit(
+      JSON.stringify(
+        observedDeliveryFixture(signedEnvelopeFixture(signingIdentity(52))),
+      ),
+    );
 
     expect(router.snapshot()).toEqual({
       status: "failed",
-      failureReason: "runtime_evidence_transport_router_support_envelope_before_key",
-      retainedSupportEnvelopeCount: 0,
-      retainedSupportEnvelopeBytes: 0,
+      failureReason:
+        "runtime_evidence_transport_router_observed_delivery_before_key",
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
     });
-    expect(pin.snapshot()).toEqual({ status: "pending", key: null, failureReason: null });
+    expect(pin.snapshot()).toEqual({
+      status: "pending",
+      key: null,
+      failureReason: null,
+    });
     expect(received).not.toHaveBeenCalled();
   });
 
   it("keeps direct and routed pin ownership mutually exclusive", () => {
     const directChannel = new MockDataChannel();
     const directPin = new RuntimeEvidenceTransportKeyPin();
-    directPin.bindAuthenticatedPeerDataChannel(directChannel as unknown as RTCDataChannel);
-    const competingRouter = new RuntimeEvidenceTransportChannelRouter(directPin);
+    directPin.bindAuthenticatedPeerDataChannel(
+      directChannel as unknown as RTCDataChannel,
+    );
+    const competingRouter = new RuntimeEvidenceTransportChannelRouter(
+      directPin,
+    );
     competingRouter.bindAuthenticatedPeerDataChannel(
       new MockDataChannel() as unknown as RTCDataChannel,
     );
 
     expect(competingRouter.snapshot()).toEqual({
       status: "failed",
-      failureReason: "runtime_evidence_transport_router_key_pin_ownership_unavailable",
-      retainedSupportEnvelopeCount: 0,
-      retainedSupportEnvelopeBytes: 0,
+      failureReason:
+        "runtime_evidence_transport_router_key_pin_ownership_unavailable",
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
     });
     directChannel.emit(JSON.stringify(keyAnnouncement(53)));
     expect(directPin.snapshot().status).toBe("pinned");
@@ -871,11 +1076,15 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     const firstRouter = new RuntimeEvidenceTransportChannelRouter(routedPin);
     const secondRouter = new RuntimeEvidenceTransportChannelRouter(routedPin);
     const firstRouterReceived = vi.fn();
-    firstRouter.onSupportEnvelope(firstRouterReceived);
-    expect(routedPin.bindAuthenticatedPeerDataChannel(
-      new MockDataChannel() as unknown as RTCDataChannel,
-    )).toBe(false);
-    firstRouter.bindAuthenticatedPeerDataChannel(routerChannel as unknown as RTCDataChannel);
+    firstRouter.onObservedDelivery(firstRouterReceived);
+    expect(
+      routedPin.bindAuthenticatedPeerDataChannel(
+        new MockDataChannel() as unknown as RTCDataChannel,
+      ),
+    ).toBe(false);
+    firstRouter.bindAuthenticatedPeerDataChannel(
+      routerChannel as unknown as RTCDataChannel,
+    );
     secondRouter.bindAuthenticatedPeerDataChannel(
       new MockDataChannel() as unknown as RTCDataChannel,
     );
@@ -883,21 +1092,31 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     expect(firstRouter.snapshot().status).toBe("active");
     expect(secondRouter.snapshot()).toEqual({
       status: "failed",
-      failureReason: "runtime_evidence_transport_router_key_pin_ownership_unavailable",
-      retainedSupportEnvelopeCount: 0,
-      retainedSupportEnvelopeBytes: 0,
+      failureReason:
+        "runtime_evidence_transport_router_key_pin_ownership_unavailable",
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
     });
     secondRouter.dispose();
     expect(firstRouter.snapshot().status).toBe("active");
-    expect(routedPin.snapshot()).toEqual({ status: "pending", key: null, failureReason: null });
+    expect(routedPin.snapshot()).toEqual({
+      status: "pending",
+      key: null,
+      failureReason: null,
+    });
 
     for (const conflictingChannel of [
       new MockDataChannel("wrong-label"),
-      new MockDataChannel(RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL, "closed"),
+      new MockDataChannel(
+        RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
+        "closed",
+      ),
     ]) {
-      expect(routedPin.bindAuthenticatedPeerDataChannel(
-        conflictingChannel as unknown as RTCDataChannel,
-      )).toBe(false);
+      expect(
+        routedPin.bindAuthenticatedPeerDataChannel(
+          conflictingChannel as unknown as RTCDataChannel,
+        ),
+      ).toBe(false);
       expect(routedPin.snapshot()).toEqual({
         status: "pending",
         key: null,
@@ -907,16 +1126,24 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     }
 
     const announcement = keyAnnouncement(54);
-    const serializedEnvelope = JSON.stringify(signedEnvelopeFixture(signingIdentity(54)).input.envelope);
+    const serializedDelivery = JSON.stringify(
+      observedDeliveryFixture(signedEnvelopeFixture(signingIdentity(54))),
+    );
     routerChannel.emit(JSON.stringify(announcement));
-    routerChannel.emit(serializedEnvelope);
-    expect(routedPin.snapshot()).toEqual({ status: "pinned", key: announcement, failureReason: null });
+    routerChannel.emit(serializedDelivery);
+    expect(routedPin.snapshot()).toEqual({
+      status: "pinned",
+      key: announcement,
+      failureReason: null,
+    });
     expect(firstRouter.snapshot()).toMatchObject({
       status: "active",
       failureReason: null,
-      retainedSupportEnvelopeCount: 1,
+      retainedObservedDeliveryCount: 1,
     });
-    expect(firstRouterReceived).toHaveBeenCalledWith(serializedEnvelope);
+    expect(firstRouterReceived.mock.calls[0]?.[0]).toMatchObject({
+      serializedDelivery,
+    });
   });
 
   it("tears down an owner router when its key pin is externally disposed", () => {
@@ -924,22 +1151,26 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     const pin = new RuntimeEvidenceTransportKeyPin();
     const router = new RuntimeEvidenceTransportChannelRouter(pin);
     const received = vi.fn();
-    router.onSupportEnvelope(received);
-    router.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
+    router.onObservedDelivery(received);
+    router.bindAuthenticatedPeerDataChannel(
+      channel as unknown as RTCDataChannel,
+    );
     const identity = signingIdentity(55);
-    const serializedEnvelope = JSON.stringify(signedEnvelopeFixture(identity).input.envelope);
+    const serializedDelivery = JSON.stringify(
+      observedDeliveryFixture(signedEnvelopeFixture(identity)),
+    );
     channel.emit(JSON.stringify(identity.announcement));
-    channel.emit(serializedEnvelope);
-    expect(router.snapshot().retainedSupportEnvelopeCount).toBe(1);
+    channel.emit(serializedDelivery);
+    expect(router.snapshot().retainedObservedDeliveryCount).toBe(1);
 
     pin.dispose();
-    channel.emit(serializedEnvelope);
+    channel.emit(serializedDelivery);
 
     expect(router.snapshot()).toEqual({
       status: "failed",
       failureReason: "runtime_evidence_transport_router_key_pin_disposed",
-      retainedSupportEnvelopeCount: 0,
-      retainedSupportEnvelopeBytes: 0,
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
     });
     expect(received).toHaveBeenCalledTimes(1);
   });
@@ -958,11 +1189,15 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
       new Proxy({}, {}),
       accessorLimits,
       { maxMessageBytes: 32, unexpected: true },
+      { maxMessageBytes: RUNTIME_EVIDENCE_TRANSPORT_MAX_MESSAGE_BYTES + 1 },
     ]) {
-      expect(() => new RuntimeEvidenceTransportChannelRouter(
-        new RuntimeEvidenceTransportKeyPin(),
-        limits,
-      )).toThrow("runtime_evidence_transport_router_limits_invalid");
+      expect(
+        () =>
+          new RuntimeEvidenceTransportChannelRouter(
+            new RuntimeEvidenceTransportKeyPin(),
+            limits,
+          ),
+      ).toThrow("runtime_evidence_transport_router_limits_invalid");
     }
     expect(accessor).not.toHaveBeenCalled();
   });
@@ -978,52 +1213,182 @@ describe("RuntimeEvidenceTransportChannelRouter", () => {
     malformedChannel.emit(new Uint8Array([0xff]));
     expect(malformedRouter.snapshot()).toEqual({
       status: "failed",
-      failureReason: "runtime_evidence_transport_router_message_encoding_invalid",
-      retainedSupportEnvelopeCount: 0,
-      retainedSupportEnvelopeBytes: 0,
+      failureReason:
+        "runtime_evidence_transport_router_message_encoding_invalid",
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
     });
 
-    const identity = signingIdentity(54);
-    const serializedEnvelope = JSON.stringify(signedEnvelopeFixture(identity).input.envelope);
+    const oversizedBinaryChannel = new MockDataChannel();
+    const oversizedBinaryRouter = new RuntimeEvidenceTransportChannelRouter(
+      new RuntimeEvidenceTransportKeyPin(),
+      { maxMessageBytes: 8 },
+    );
+    oversizedBinaryRouter.bindAuthenticatedPeerDataChannel(
+      oversizedBinaryChannel as unknown as RTCDataChannel,
+    );
+    oversizedBinaryChannel.emit(new Uint8Array(9).fill(0xff));
+    expect(oversizedBinaryRouter.snapshot()).toEqual({
+      status: "failed",
+      failureReason: "runtime_evidence_transport_router_message_byte_limit_exceeded",
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
+    });
+
+    const identity = signingIdentity(56);
+    const serializedDelivery = JSON.stringify(
+      observedDeliveryFixture(signedEnvelopeFixture(identity)),
+    );
     const messageLimitChannel = new MockDataChannel();
     const messageLimitPin = new RuntimeEvidenceTransportKeyPin();
-    const messageLimitRouter = new RuntimeEvidenceTransportChannelRouter(messageLimitPin, {
-      maxMessageBytes: Buffer.byteLength(serializedEnvelope, "utf8") - 1,
-    });
+    const messageLimitRouter = new RuntimeEvidenceTransportChannelRouter(
+      messageLimitPin,
+      {
+        maxMessageBytes: Buffer.byteLength(serializedDelivery, "utf8") - 1,
+      },
+    );
     messageLimitRouter.bindAuthenticatedPeerDataChannel(
       messageLimitChannel as unknown as RTCDataChannel,
     );
     messageLimitChannel.emit(JSON.stringify(identity.announcement));
     expect(messageLimitPin.snapshot().status).toBe("pinned");
-    messageLimitChannel.emit(serializedEnvelope);
+    messageLimitChannel.emit(serializedDelivery);
     expect(messageLimitRouter.snapshot()).toMatchObject({
       status: "failed",
-      failureReason: "runtime_evidence_transport_router_message_byte_limit_exceeded",
-      retainedSupportEnvelopeCount: 0,
-      retainedSupportEnvelopeBytes: 0,
+      failureReason:
+        "runtime_evidence_transport_router_message_byte_limit_exceeded",
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
     });
 
-    const retainedByteLength = Buffer.byteLength(serializedEnvelope, "utf8");
+    const retainedByteLength = Buffer.byteLength(serializedDelivery, "utf8");
     const retainedLimitChannel = new MockDataChannel();
     const retainedLimitPin = new RuntimeEvidenceTransportKeyPin();
-    const retainedLimitRouter = new RuntimeEvidenceTransportChannelRouter(retainedLimitPin, {
-      maxMessageBytes: retainedByteLength,
-      maxRetainedSupportEnvelopeBytes: retainedByteLength * 2 - 1,
-      maxRetainedSupportEnvelopeCount: 3,
-    });
+    const retainedLimitRouter = new RuntimeEvidenceTransportChannelRouter(
+      retainedLimitPin,
+      {
+        maxMessageBytes: retainedByteLength,
+        maxRetainedObservedDeliveryBytes: retainedByteLength * 2 - 1,
+        maxRetainedObservedDeliveryCount: 3,
+      },
+    );
     retainedLimitRouter.bindAuthenticatedPeerDataChannel(
       retainedLimitChannel as unknown as RTCDataChannel,
     );
     retainedLimitChannel.emit(JSON.stringify(identity.announcement));
-    retainedLimitChannel.emit(serializedEnvelope);
-    retainedLimitChannel.emit(serializedEnvelope);
+    retainedLimitChannel.emit(serializedDelivery);
+    retainedLimitChannel.emit(serializedDelivery);
 
     expect(retainedLimitRouter.snapshot()).toEqual({
       status: "failed",
-      failureReason: "runtime_evidence_transport_router_retained_byte_capacity_exhausted",
-      retainedSupportEnvelopeCount: 0,
-      retainedSupportEnvelopeBytes: 0,
+      failureReason:
+        "runtime_evidence_transport_router_retained_byte_capacity_exhausted",
+      retainedObservedDeliveryCount: 0,
+      retainedObservedDeliveryBytes: 0,
     });
+  });
+
+  it("rejects noncanonical, oversized, forged, and authority-claiming deliveries", () => {
+    const identity = signingIdentity(57);
+    const fixture = signedEnvelopeFixture(identity);
+    const valid = observedDeliveryFixture(fixture);
+    const validPayloadBase64 = String(valid.observedPayloadBase64);
+    const alteredPayloadBase64 = `${
+      validPayloadBase64.startsWith("A") ? "B" : "A"
+    }${validPayloadBase64.slice(1)}`;
+    const variants: readonly [Record<string, unknown>, string][] = [
+      [
+        {
+          ...valid,
+          observedPayloadBase64: `${validPayloadBase64}=`,
+        },
+        "observed_runtime_evidence_delivery_payload_encoding_invalid",
+      ],
+      [
+        {
+          ...valid,
+          observedPayloadByteLength: `0${String(valid.observedPayloadByteLength)}`,
+        },
+        "observed_runtime_evidence_delivery_shape_invalid",
+      ],
+      [
+        {
+          ...valid,
+          observedPayloadByteLength: String(
+            OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_PAYLOAD_BYTES + 1,
+          ),
+        },
+        "observed_runtime_evidence_delivery_payload_too_large",
+      ],
+      [
+        {
+          ...valid,
+          observedPayloadByteLength: String(
+            Number(valid.observedPayloadByteLength) + 1,
+          ),
+        },
+        "observed_runtime_evidence_delivery_payload_encoding_invalid",
+      ],
+      [
+        {
+          ...valid,
+          observedPayloadBase64: alteredPayloadBase64,
+        },
+        "observed_runtime_evidence_delivery_payload_envelope_hash_mismatch",
+      ],
+      [
+        {
+          ...valid,
+          unexpectedField: true,
+        },
+        "observed_runtime_evidence_delivery_shape_invalid",
+      ],
+      [
+        {
+          ...valid,
+          proofAuthority: "forged",
+        },
+        "observed_runtime_evidence_delivery_shape_invalid",
+      ],
+      [
+        {
+          ...valid,
+          gpuHmrSuccess: true,
+        },
+        "observed_runtime_evidence_delivery_shape_invalid",
+      ],
+      [
+        {
+          ...valid,
+          runtimeEvidenceTransportEnvelope: {
+            ...(fixture.input.envelope as Record<string, unknown>),
+            acceptedForGpuHmr: true,
+          },
+        },
+        "observed_runtime_evidence_envelope_shape_invalid",
+      ],
+    ];
+
+    for (const [variant, reason] of variants) {
+      const channel = new MockDataChannel();
+      const pin = new RuntimeEvidenceTransportKeyPin();
+      const router = new RuntimeEvidenceTransportChannelRouter(pin);
+      const received = vi.fn();
+      router.onObservedDelivery(received);
+      router.bindAuthenticatedPeerDataChannel(
+        channel as unknown as RTCDataChannel,
+      );
+      channel.emit(JSON.stringify(identity.announcement));
+      channel.emit(JSON.stringify(variant));
+
+      expect(router.snapshot()).toEqual({
+        status: "failed",
+        failureReason: reason,
+        retainedObservedDeliveryCount: 0,
+        retainedObservedDeliveryBytes: 0,
+      });
+      expect(received).not.toHaveBeenCalled();
+    }
   });
 });
 

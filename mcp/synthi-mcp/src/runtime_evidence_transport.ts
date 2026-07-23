@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isProxy } from "node:util/types";
 import type { RTCDataChannel } from "werift";
 import * as sharedRuntimeEvidenceTransportVerifierModule
@@ -42,13 +43,36 @@ const OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_SCHEMA =
   "synthi.gpu_hmr.observed_runtime_evidence_envelope.v2" as const;
 const OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_TYPE =
   "gpu_hmr_observed_runtime_evidence" as const;
-const DEFAULT_ROUTER_RETAINED_SUPPORT_ENVELOPE_CAPACITY = 64;
-const DEFAULT_ROUTER_MAX_MESSAGE_BYTES = 1_048_576;
-const DEFAULT_ROUTER_MAX_RETAINED_SUPPORT_ENVELOPE_BYTES = 4_194_304;
+const OBSERVED_RUNTIME_EVIDENCE_AUTHORITY =
+  "worker_signed_observation_transport_only_not_gpu_hmr_acceptance" as const;
+export const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA =
+  "synthi.gpu_hmr.observed_runtime_evidence_delivery.v1" as const;
+export const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE =
+  "gpu_hmr_observed_runtime_evidence_delivery" as const;
+export const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_ENCODING =
+  "base64url_no_pad" as const;
+export const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY =
+  "worker_payload_delivery_only_not_gpu_hmr_acceptance" as const;
+export const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_PAYLOAD_BYTES = 512 * 1024;
+const DEFAULT_ROUTER_RETAINED_OBSERVED_DELIVERY_CAPACITY = 64;
+export const RUNTIME_EVIDENCE_TRANSPORT_MAX_MESSAGE_BYTES = 1_048_576;
+const DEFAULT_ROUTER_MAX_RETAINED_OBSERVED_DELIVERY_BYTES = 4_194_304;
 const ROUTER_LIMIT_KEYS = [
-  "maxRetainedSupportEnvelopeCount",
+  "maxRetainedObservedDeliveryCount",
   "maxMessageBytes",
-  "maxRetainedSupportEnvelopeBytes",
+  "maxRetainedObservedDeliveryBytes",
+] as const;
+const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_KEYS = [
+  "schemaVersion",
+  "type",
+  "observedPayloadEncoding",
+  "observedPayloadByteLength",
+  "observedPayloadBase64",
+  "runtimeEvidenceTransportEnvelope",
+  "proofAuthority",
+  "acceptedForGpuHmr",
+  "gpuHmrSuccess",
+  "canSatisfyRuntimeProof",
 ] as const;
 
 export interface RuntimeEvidenceTransportVerificationKey {
@@ -86,6 +110,17 @@ export interface RuntimeEvidenceTransportSupportEnvelopeInput
 extends RuntimeEvidenceTransportVerificationContext {
   readonly envelope: unknown;
   readonly observedPayload: Uint8Array | string;
+}
+
+export interface RuntimeEvidenceTransportObservedDelivery {
+  readonly schemaVersion: typeof OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA;
+  readonly type: typeof OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE;
+  readonly observedPayloadSha256: string;
+  readonly serializedDelivery: string;
+  readonly proofAuthority: typeof OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY;
+  readonly acceptedForGpuHmr: false;
+  readonly gpuHmrSuccess: false;
+  readonly canSatisfyRuntimeProof: false;
 }
 
 export interface RuntimeEvidenceTransportSupportVerification {
@@ -422,6 +457,160 @@ function dataChannelText(data: unknown): DataChannelText | null {
   }
 }
 
+function binaryDataChannelByteLength(data: unknown): number | null {
+  if (data instanceof ArrayBuffer) return data.byteLength;
+  if (ArrayBuffer.isView(data)) return data.byteLength;
+  return null;
+}
+
+interface ObservedRuntimeEvidenceDeliveryParseResult {
+  readonly delivery: RuntimeEvidenceTransportObservedDelivery | null;
+  readonly reason: string | null;
+}
+
+function deliveryParseFailure(reason: string): ObservedRuntimeEvidenceDeliveryParseResult {
+  return Object.freeze({ delivery: null, reason });
+}
+
+function plainRecord(value: unknown): Record<string, unknown> | null {
+  if (
+    value === null
+    || typeof value !== "object"
+    || isProxy(value)
+    || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function hasExactOwnKeys(
+  value: Record<string, unknown>,
+  expectedKeys: readonly string[],
+): boolean {
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== expectedKeys.length) return false;
+  const expected = new Set(expectedKeys);
+  return keys.every((key) => typeof key === "string" && expected.has(key));
+}
+
+function canonicalSha256(value: unknown): value is string {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+}
+
+function expectedBase64urlNoPadLength(byteLength: number): number {
+  const remainder = byteLength % 3;
+  return Math.floor(byteLength / 3) * 4 + (remainder === 0 ? 0 : remainder + 1);
+}
+
+function parseObservedRuntimeEvidenceDelivery(
+  value: unknown,
+  serializedDelivery: string,
+): ObservedRuntimeEvidenceDeliveryParseResult {
+  const record = plainRecord(value);
+  if (
+    record === null
+    || !hasExactOwnKeys(record, OBSERVED_RUNTIME_EVIDENCE_DELIVERY_KEYS)
+    || record.schemaVersion !== OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA
+    || record.type !== OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE
+    || record.observedPayloadEncoding !== OBSERVED_RUNTIME_EVIDENCE_DELIVERY_ENCODING
+    || record.proofAuthority !== OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY
+    || record.acceptedForGpuHmr !== false
+    || record.gpuHmrSuccess !== false
+    || record.canSatisfyRuntimeProof !== false
+    || typeof record.observedPayloadByteLength !== "string"
+    || !/^[1-9][0-9]*$/.test(record.observedPayloadByteLength)
+    || typeof record.observedPayloadBase64 !== "string"
+  ) {
+    return deliveryParseFailure("observed_runtime_evidence_delivery_shape_invalid");
+  }
+
+  const maximumByteLength = String(
+    OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_PAYLOAD_BYTES,
+  );
+  if (
+    record.observedPayloadByteLength.length > maximumByteLength.length
+    || (
+      record.observedPayloadByteLength.length === maximumByteLength.length
+      && record.observedPayloadByteLength > maximumByteLength
+    )
+  ) {
+    return deliveryParseFailure(
+      "observed_runtime_evidence_delivery_payload_too_large",
+    );
+  }
+  const observedPayloadByteLength = Number(record.observedPayloadByteLength);
+  if (
+    !Number.isSafeInteger(observedPayloadByteLength)
+    || observedPayloadByteLength <= 0
+  ) {
+    return deliveryParseFailure("observed_runtime_evidence_delivery_shape_invalid");
+  }
+  if (
+    record.observedPayloadBase64.length
+    !== expectedBase64urlNoPadLength(observedPayloadByteLength)
+  ) {
+    return deliveryParseFailure(
+      "observed_runtime_evidence_delivery_payload_encoding_invalid",
+    );
+  }
+
+  let observedPayload: Buffer;
+  try {
+    observedPayload = Buffer.from(record.observedPayloadBase64, "base64url");
+  } catch {
+    return deliveryParseFailure(
+      "observed_runtime_evidence_delivery_payload_encoding_invalid",
+    );
+  }
+  if (
+    observedPayload.byteLength !== observedPayloadByteLength
+    || observedPayload.toString("base64url") !== record.observedPayloadBase64
+  ) {
+    return deliveryParseFailure(
+      "observed_runtime_evidence_delivery_payload_encoding_invalid",
+    );
+  }
+
+  const envelope = plainRecord(record.runtimeEvidenceTransportEnvelope);
+  if (
+    envelope === null
+    || envelope.schemaVersion !== OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_SCHEMA
+    || envelope.type !== OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_TYPE
+    || envelope.proofAuthority !== OBSERVED_RUNTIME_EVIDENCE_AUTHORITY
+    || envelope.acceptedForGpuHmr !== false
+    || envelope.gpuHmrSuccess !== false
+    || envelope.canSatisfyRuntimeProof !== false
+    || !canonicalSha256(envelope.observedPayloadSha256)
+  ) {
+    return deliveryParseFailure("observed_runtime_evidence_envelope_shape_invalid");
+  }
+
+  const observedPayloadSha256 = `sha256:${
+    createHash("sha256").update(observedPayload).digest("hex")
+  }`;
+  if (observedPayloadSha256 !== envelope.observedPayloadSha256) {
+    return deliveryParseFailure(
+      "observed_runtime_evidence_delivery_payload_envelope_hash_mismatch",
+    );
+  }
+
+  return Object.freeze({
+    delivery: Object.freeze({
+      schemaVersion: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA,
+      type: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE,
+      observedPayloadSha256,
+      serializedDelivery,
+      proofAuthority: OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    }),
+    reason: null,
+  });
+}
+
 const keyPinAnnouncementIngress = new WeakMap<
   RuntimeEvidenceTransportKeyPin,
   (value: unknown) => void
@@ -480,9 +669,22 @@ export class RuntimeEvidenceTransportKeyPin {
     this.boundChannel = channel;
     const messageListener = (event: Event): void => {
       if (this.disposed || this.failureReason !== null) return;
-      const text = dataChannelText((event as unknown as { data: unknown }).data);
+      const data = (event as unknown as { data: unknown }).data;
+      const binaryByteLength = binaryDataChannelByteLength(data);
+      if (
+        binaryByteLength !== null
+        && binaryByteLength > RUNTIME_EVIDENCE_TRANSPORT_MAX_MESSAGE_BYTES
+      ) {
+        this.fail("runtime_evidence_transport_key_announcement_byte_limit_exceeded");
+        return;
+      }
+      const text = dataChannelText(data);
       if (text === null) {
         this.fail("runtime_evidence_transport_key_announcement_encoding_invalid");
+        return;
+      }
+      if (text.byteLength > RUNTIME_EVIDENCE_TRANSPORT_MAX_MESSAGE_BYTES) {
+        this.fail("runtime_evidence_transport_key_announcement_byte_limit_exceeded");
         return;
       }
       let parsed: unknown;
@@ -671,32 +873,32 @@ export class RuntimeEvidenceTransportKeyPin {
 export interface RuntimeEvidenceTransportChannelRouterSnapshot {
   readonly status: "pending" | "active" | "failed" | "disposed";
   readonly failureReason: string | null;
-  readonly retainedSupportEnvelopeCount: number;
-  readonly retainedSupportEnvelopeBytes: number;
+  readonly retainedObservedDeliveryCount: number;
+  readonly retainedObservedDeliveryBytes: number;
 }
 
 export interface RuntimeEvidenceTransportChannelRouterLimits {
-  readonly maxRetainedSupportEnvelopeCount?: number;
+  readonly maxRetainedObservedDeliveryCount?: number;
   readonly maxMessageBytes?: number;
-  readonly maxRetainedSupportEnvelopeBytes?: number;
+  readonly maxRetainedObservedDeliveryBytes?: number;
 }
 
-export type RuntimeEvidenceTransportSupportEnvelopeListener = (
-  serializedEnvelope: string,
+export type RuntimeEvidenceTransportObservedDeliveryListener = (
+  delivery: RuntimeEvidenceTransportObservedDelivery,
 ) => void;
 
 /**
  * Routes authenticated-channel records by their versioned discriminator only.
- * Receipt and payload validation remain the responsibility of the support-envelope consumer.
+ * Signature, context, freshness, and replay validation remain the consumer's responsibility.
  */
 export class RuntimeEvidenceTransportChannelRouter {
-  private readonly listeners = new Set<RuntimeEvidenceTransportSupportEnvelopeListener>();
-  private readonly retainedSupportEnvelopes: string[] = [];
+  private readonly listeners = new Set<RuntimeEvidenceTransportObservedDeliveryListener>();
+  private readonly retainedObservedDeliveries: RuntimeEvidenceTransportObservedDelivery[] = [];
   private readonly ownershipToken = {};
-  private readonly retainedSupportEnvelopeCapacity: number;
+  private readonly retainedObservedDeliveryCapacity: number;
   private readonly maxMessageBytes: number;
-  private readonly maxRetainedSupportEnvelopeBytes: number;
-  private retainedSupportEnvelopeBytes = 0;
+  private readonly maxRetainedObservedDeliveryBytes: number;
+  private retainedObservedDeliveryBytes = 0;
   private boundChannel: RTCDataChannel | null = null;
   private unbind: (() => void) | null = null;
   private unsubscribeKeyPin: (() => void) | null = null;
@@ -710,9 +912,11 @@ export class RuntimeEvidenceTransportChannelRouter {
     limits: RuntimeEvidenceTransportChannelRouterLimits = {},
   ) {
     const normalizedLimits = this.normalizeLimits(limits);
-    this.retainedSupportEnvelopeCapacity = normalizedLimits.maxRetainedSupportEnvelopeCount;
+    this.retainedObservedDeliveryCapacity =
+      normalizedLimits.maxRetainedObservedDeliveryCount;
     this.maxMessageBytes = normalizedLimits.maxMessageBytes;
-    this.maxRetainedSupportEnvelopeBytes = normalizedLimits.maxRetainedSupportEnvelopeBytes;
+    this.maxRetainedObservedDeliveryBytes =
+      normalizedLimits.maxRetainedObservedDeliveryBytes;
     const keyPinSnapshot = this.keyPin.snapshot();
     if (keyPinSnapshot.status === "failed") {
       this.failureReason = keyPinSnapshot.failureReason
@@ -773,16 +977,18 @@ export class RuntimeEvidenceTransportChannelRouter {
     };
   }
 
-  onSupportEnvelope(listener: RuntimeEvidenceTransportSupportEnvelopeListener): () => void {
+  onObservedDelivery(
+    listener: RuntimeEvidenceTransportObservedDeliveryListener,
+  ): () => void {
     if (this.disposed || this.failureReason !== null) return () => {};
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
-  drainSupportEnvelopes(): readonly string[] {
-    const drained = Object.freeze([...this.retainedSupportEnvelopes]);
-    this.retainedSupportEnvelopes.length = 0;
-    this.retainedSupportEnvelopeBytes = 0;
+  drainObservedDeliveries(): readonly RuntimeEvidenceTransportObservedDelivery[] {
+    const drained = Object.freeze([...this.retainedObservedDeliveries]);
+    this.retainedObservedDeliveries.length = 0;
+    this.retainedObservedDeliveryBytes = 0;
     return drained;
   }
 
@@ -796,8 +1002,8 @@ export class RuntimeEvidenceTransportChannelRouter {
             ? "active"
             : "pending",
       failureReason: this.failureReason,
-      retainedSupportEnvelopeCount: this.retainedSupportEnvelopes.length,
-      retainedSupportEnvelopeBytes: this.retainedSupportEnvelopeBytes,
+      retainedObservedDeliveryCount: this.retainedObservedDeliveries.length,
+      retainedObservedDeliveryBytes: this.retainedObservedDeliveryBytes,
     });
   }
 
@@ -808,8 +1014,8 @@ export class RuntimeEvidenceTransportChannelRouter {
     this.unsubscribeKeyPin?.();
     this.unsubscribeKeyPin = null;
     this.boundChannel = null;
-    this.retainedSupportEnvelopes.length = 0;
-    this.retainedSupportEnvelopeBytes = 0;
+    this.retainedObservedDeliveries.length = 0;
+    this.retainedObservedDeliveryBytes = 0;
     this.listeners.clear();
     this.disposed = true;
     this.disposeOwnedKeyPin();
@@ -817,6 +1023,11 @@ export class RuntimeEvidenceTransportChannelRouter {
 
   private routeMessage(data: unknown): void {
     if (this.disposed || this.failureReason !== null) return;
+    const binaryByteLength = binaryDataChannelByteLength(data);
+    if (binaryByteLength !== null && binaryByteLength > this.maxMessageBytes) {
+      this.fail("runtime_evidence_transport_router_message_byte_limit_exceeded");
+      return;
+    }
     const text = dataChannelText(data);
     if (text === null) {
       this.fail("runtime_evidence_transport_router_message_encoding_invalid");
@@ -859,19 +1070,32 @@ export class RuntimeEvidenceTransportChannelRouter {
       return;
     }
 
-    if (schemaVersion === OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_SCHEMA) {
+    if (schemaVersion === OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA) {
       if (
         (parsed as Record<string, unknown>).type
-        !== OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_TYPE
+        !== OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE
       ) {
         this.fail("runtime_evidence_transport_router_message_type_unknown");
         return;
       }
       if (this.keyPin.snapshot().status !== "pinned") {
-        this.fail("runtime_evidence_transport_router_support_envelope_before_key");
+        this.fail("runtime_evidence_transport_router_observed_delivery_before_key");
         return;
       }
-      this.publishSupportEnvelope(text.text, text.byteLength);
+      const deliveryResult = parseObservedRuntimeEvidenceDelivery(parsed, text.text);
+      if (deliveryResult.delivery === null) {
+        this.fail(
+          deliveryResult.reason
+          ?? "observed_runtime_evidence_delivery_shape_invalid",
+        );
+        return;
+      }
+      this.publishObservedDelivery(deliveryResult.delivery, text.byteLength);
+      return;
+    }
+
+    if (schemaVersion === OBSERVED_RUNTIME_EVIDENCE_ENVELOPE_SCHEMA) {
+      this.fail("runtime_evidence_transport_router_observed_delivery_required");
       return;
     }
 
@@ -882,21 +1106,30 @@ export class RuntimeEvidenceTransportChannelRouter {
     this.fail("runtime_evidence_transport_router_message_schema_unknown");
   }
 
-  private publishSupportEnvelope(serializedEnvelope: string, byteLength: number): void {
-    if (this.retainedSupportEnvelopes.length >= this.retainedSupportEnvelopeCapacity) {
+  private publishObservedDelivery(
+    delivery: RuntimeEvidenceTransportObservedDelivery,
+    byteLength: number,
+  ): void {
+    if (
+      this.retainedObservedDeliveries.length
+      >= this.retainedObservedDeliveryCapacity
+    ) {
       this.fail("runtime_evidence_transport_router_retention_capacity_exhausted");
       return;
     }
-    if (byteLength > this.maxRetainedSupportEnvelopeBytes - this.retainedSupportEnvelopeBytes) {
+    if (
+      byteLength
+      > this.maxRetainedObservedDeliveryBytes - this.retainedObservedDeliveryBytes
+    ) {
       this.fail("runtime_evidence_transport_router_retained_byte_capacity_exhausted");
       return;
     }
-    this.retainedSupportEnvelopes.push(serializedEnvelope);
-    this.retainedSupportEnvelopeBytes += byteLength;
+    this.retainedObservedDeliveries.push(delivery);
+    this.retainedObservedDeliveryBytes += byteLength;
     for (const listener of [...this.listeners]) {
       if (this.disposed || this.failureReason !== null) return;
       try {
-        listener(serializedEnvelope);
+        listener(delivery);
       } catch {
         // Support subscribers cannot interrupt transport isolation or promote evidence.
       }
@@ -912,16 +1145,16 @@ export class RuntimeEvidenceTransportChannelRouter {
     this.unsubscribeKeyPin = null;
     this.boundChannel = null;
     this.listeners.clear();
-    this.retainedSupportEnvelopes.length = 0;
-    this.retainedSupportEnvelopeBytes = 0;
+    this.retainedObservedDeliveries.length = 0;
+    this.retainedObservedDeliveryBytes = 0;
   }
 
   private normalizeLimits(
     limits: RuntimeEvidenceTransportChannelRouterLimits,
   ): Readonly<{
-    maxRetainedSupportEnvelopeCount: number;
+    maxRetainedObservedDeliveryCount: number;
     maxMessageBytes: number;
-    maxRetainedSupportEnvelopeBytes: number;
+    maxRetainedObservedDeliveryBytes: number;
   }> {
     try {
       if (
@@ -953,24 +1186,27 @@ export class RuntimeEvidenceTransportChannelRouter {
         rawValues[key] = descriptor.value;
       }
       const values: {
-        maxRetainedSupportEnvelopeCount: number;
+        maxRetainedObservedDeliveryCount: number;
         maxMessageBytes: number;
-        maxRetainedSupportEnvelopeBytes: number;
+        maxRetainedObservedDeliveryBytes: number;
       } = {
-        maxRetainedSupportEnvelopeCount:
-          rawValues.maxRetainedSupportEnvelopeCount === undefined
-            ? DEFAULT_ROUTER_RETAINED_SUPPORT_ENVELOPE_CAPACITY
-            : rawValues.maxRetainedSupportEnvelopeCount as number,
+        maxRetainedObservedDeliveryCount:
+          rawValues.maxRetainedObservedDeliveryCount === undefined
+            ? DEFAULT_ROUTER_RETAINED_OBSERVED_DELIVERY_CAPACITY
+            : rawValues.maxRetainedObservedDeliveryCount as number,
         maxMessageBytes: rawValues.maxMessageBytes === undefined
-          ? DEFAULT_ROUTER_MAX_MESSAGE_BYTES
+          ? RUNTIME_EVIDENCE_TRANSPORT_MAX_MESSAGE_BYTES
           : rawValues.maxMessageBytes as number,
-        maxRetainedSupportEnvelopeBytes:
-          rawValues.maxRetainedSupportEnvelopeBytes === undefined
-            ? DEFAULT_ROUTER_MAX_RETAINED_SUPPORT_ENVELOPE_BYTES
-            : rawValues.maxRetainedSupportEnvelopeBytes as number,
+        maxRetainedObservedDeliveryBytes:
+          rawValues.maxRetainedObservedDeliveryBytes === undefined
+            ? DEFAULT_ROUTER_MAX_RETAINED_OBSERVED_DELIVERY_BYTES
+            : rawValues.maxRetainedObservedDeliveryBytes as number,
       };
       if (Object.values(values).some((value) => !Number.isSafeInteger(value) || value <= 0)) {
         throw new Error("invalid limits value");
+      }
+      if (values.maxMessageBytes > RUNTIME_EVIDENCE_TRANSPORT_MAX_MESSAGE_BYTES) {
+        throw new Error("message limit exceeds protocol maximum");
       }
       return Object.freeze(values);
     } catch {
