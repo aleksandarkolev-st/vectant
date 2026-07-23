@@ -27,8 +27,6 @@ export const GPU_HMR_IMAGE_EVIDENCE_MAX_DECODED_BYTES = 256 * 1024 * 1024;
 export const GPU_HMR_IMAGE_EVIDENCE_MAX_DIMENSION = 16_384;
 export const GPU_HMR_IMAGE_EVIDENCE_MAX_PIXELS = 64 * 1024 * 1024;
 const MCP_CAPTURE_MANIFEST_SCHEMA_VERSION = 'synthi.mcp.capture_manifest.v1';
-const TARGET_PROCESS_CAMERA_STATE_AUTHORITY =
-  'target_process_runtime_camera_state_attestation';
 const CONVERGENCE_METRICS = new Set([
   'per_frame_delta',
   'window_mean_delta',
@@ -446,24 +444,6 @@ function captureManifestSessionId(manifest) {
   return textOrNull(manifest?.session_id ?? manifest?.sessionId);
 }
 
-function captureManifestCameraStateHash(manifest) {
-  const value = textOrNull(manifest?.camera_state_hash ?? manifest?.cameraStateHash);
-  const verified = manifest?.camera_state_hash_verified === true
-    || manifest?.cameraStateHashVerified === true;
-  const authority = textOrNull(
-    manifest?.camera_state_evidence_authority ?? manifest?.cameraStateEvidenceAuthority,
-  );
-  const evidenceRef = textOrNull(
-    manifest?.camera_state_evidence_ref ?? manifest?.cameraStateEvidenceRef,
-  );
-  return verified
-    && authority === TARGET_PROCESS_CAMERA_STATE_AUTHORITY
-    && evidenceRef
-    && /^sha256:[a-f0-9]{64}$/i.test(value ?? '')
-    ? value.toLowerCase()
-    : null;
-}
-
 function captureManifestVerified(shot, gate = null) {
   const manifest = screenshotCaptureManifest(shot);
   if (!manifest) return false;
@@ -641,29 +621,15 @@ export function deterministicVisualModeFromMcpEvidence(input = {}) {
     && beforeHeight === afterHeight;
   const frameBoundary = mcpFrameGateSatisfiedByScreenshot(evidence.wait ?? evidence, after)
     || mcpFrameGateSatisfiedByCaptureChain(evidence.wait ?? evidence, gateCapture, after);
-  const beforeManifest = screenshotCaptureManifest(before);
-  const afterManifest = screenshotCaptureManifest(after);
-  const sameSession = beforeManifestVerified
-    && afterManifestVerified
-    && captureManifestSessionId(beforeManifest) === captureManifestSessionId(afterManifest);
-  const beforeCameraStateHash = captureManifestCameraStateHash(beforeManifest);
-  const afterCameraStateHash = captureManifestCameraStateHash(afterManifest);
-  const cameraStateHash = sameSession
-    && beforeCameraStateHash
-    && beforeCameraStateHash === afterCameraStateHash
-    ? beforeCameraStateHash
-    : null;
   return {
     ...normalizeGpuHmrDeterministicVisualMode({
-      camera_state_hash: cameraStateHash,
-      frozen_camera: cameraStateHash ? true : null,
       fixed_resolution: sameResolution === true ? true : null,
       frame_capture_after_epoch_dispatch: frameBoundary === true ? true : null,
       presentation_fence_or_frame_boundary: frameBoundary === true ? true : null,
     }),
     evidence_authority: 'verified_mcp_capture_observations_only',
     capture_chain_verified: frameBoundary === true,
-    camera_state_observed: Boolean(cameraStateHash),
+    state_dependency_binding_observed: false,
   };
 }
 

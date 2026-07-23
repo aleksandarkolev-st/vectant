@@ -547,11 +547,10 @@ assert.equal(mcpDerivedEvaluation.accepted, false);
 assert.equal(mcpDerived.fixed_resolution, true);
 assert.equal(mcpDerived.frame_capture_after_epoch_dispatch, true);
 assert.equal(mcpDerived.presentation_fence_or_frame_boundary, true);
-assert.equal(mcpDerived.frozen_camera, true);
-assert.equal(
-  mcpDerived.camera_state_hash,
-  'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-);
+assert.equal(mcpDerived.frozen_camera, null);
+assert.equal(mcpDerived.camera_state_hash, null);
+assert.equal(mcpDerived.state_dependency_binding_observed, false);
+assert.equal(mcpDerived.camera_state_observed, undefined);
 assert.equal(mcpDerived.seed_policy_fixed, null);
 assert.equal(mcpDerived.temporal_accumulation_not_applicable, null);
 assert.equal(mcpDerived.taa_not_applicable, null);
