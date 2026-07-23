@@ -132,8 +132,8 @@ function registerProcessCleanup(): void {
 }
 
 export class FrameSink {
-  private readonly ffmpeg: ChildProcessByStdio<Writable, Readable, Readable>;
-  private readonly trackSub: { unSubscribe: () => void } | null;
+  private ffmpeg: ChildProcessByStdio<Writable, Readable, Readable> | null = null;
+  private trackSub: { unSubscribe: () => void } | null = null;
   private latest: LatestPng | null = null;
   private producerViewport: ProducerViewport | null = null;
   private seq = 0;
@@ -163,10 +163,20 @@ export class FrameSink {
     stopAllActiveFrameSinks();
   }
 
-  constructor(track: MediaStreamTrack) {
+  constructor(track?: MediaStreamTrack) {
     registerProcessCleanup();
-    fsDbg(`FrameSink constructed for track id=${track.id ?? track.uuid} kind=${track.kind}`);
-    this.ffmpeg = spawn(
+    activeFrameSinks.add(this);
+    if (track !== undefined) {
+      this.attachTrack(track);
+    }
+  }
+
+  attachTrack(track: MediaStreamTrack): boolean {
+    if (this.stopped || this.ffmpeg !== null || this.trackSub !== null) {
+      return false;
+    }
+    fsDbg(`FrameSink attached to track id=${track.id ?? track.uuid} kind=${track.kind}`);
+    const ffmpeg = spawn(
       FFMPEG_PATH,
       [
         "-loglevel", "error",
@@ -178,20 +188,20 @@ export class FrameSink {
       ],
       { stdio: ["pipe", "pipe", "pipe"] },
     );
-    this.ffmpeg.stdout.on("data", (chunk: Buffer) => this.onFfmpegStdout(chunk));
-    this.ffmpeg.stderr.on("data", (chunk: Buffer) => {
+    this.ffmpeg = ffmpeg;
+    ffmpeg.stdout.on("data", (chunk: Buffer) => this.onFfmpegStdout(chunk));
+    ffmpeg.stderr.on("data", (chunk: Buffer) => {
       process.stderr.write(`[mcp] frames: ffmpeg: ${chunk.toString()}`);
     });
-    this.ffmpeg.on("error", (err) => {
+    ffmpeg.on("error", (err) => {
       process.stderr.write(`[mcp] frames: ffmpeg spawn error: ${err.message}\n`);
     });
-    this.ffmpeg.once("close", () => {
+    ffmpeg.once("close", () => {
       activeFrameSinks.delete(this);
     });
-    this.ffmpeg.stdin.on("error", () => {
+    ffmpeg.stdin.on("error", () => {
       // ignore broken-pipe on shutdown
     });
-    activeFrameSinks.add(this);
 
     this.trackSub = track.onReceiveRtp.subscribe((rtp) => {
       if (this.stopped) return;
@@ -254,6 +264,7 @@ export class FrameSink {
       );
     }, 2_000);
     if (this.diagTimer.unref) this.diagTimer.unref();
+    return true;
   }
 
   setProducerViewport(viewport: ProducerViewport): void {
@@ -283,6 +294,11 @@ export class FrameSink {
 
   private flushFrame(pts: number): void {
     if (this.frameBuf.length === 0) return;
+    const ffmpeg = this.ffmpeg;
+    if (ffmpeg === null) {
+      this.frameBuf = [];
+      return;
+    }
     const frame = Buffer.concat(this.frameBuf);
     this.frameBuf = [];
 
@@ -299,14 +315,14 @@ export class FrameSink {
       fsDbg(
         `first keyframe accepted ${keyframeDims.width}x${keyframeDims.height} (dropped ${this.droppedPreKeyframeCount} delta frame(s) while waiting)`
       );
-      this.ffmpeg.stdin.write(buildIvfHeader(keyframeDims.width, keyframeDims.height));
+      ffmpeg.stdin.write(buildIvfHeader(keyframeDims.width, keyframeDims.height));
       this.ivfHeaderSent = true;
     }
 
     this.flushedFrameCount += 1;
     if (keyframeDims) this.flushedKeyframeCount += 1;
-    this.ffmpeg.stdin.write(buildIvfFrameHeader(frame.length, pts));
-    this.ffmpeg.stdin.write(frame);
+    ffmpeg.stdin.write(buildIvfFrameHeader(frame.length, pts));
+    ffmpeg.stdin.write(frame);
   }
 
   private onFfmpegStdout(chunk: Buffer): void {
@@ -416,12 +432,12 @@ export class FrameSink {
       // ignored
     }
     try {
-      this.ffmpeg.stdin.end();
+      this.ffmpeg?.stdin.end();
     } catch {
       // ignored
     }
     try {
-      this.ffmpeg.kill("SIGTERM");
+      this.ffmpeg?.kill("SIGTERM");
     } catch {
       // ignored
     }

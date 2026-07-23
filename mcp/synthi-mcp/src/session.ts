@@ -767,15 +767,13 @@ class SessionManager {
       dcWaiter("compileDC", peer.ready.compileDC),
     ]) as [void, RTCDataChannel, RTCDataChannel, RTCDataChannel];
 
-    const videoTrack = await peer.ready.videoTrack;
-    const frames = new FrameSink(videoTrack);
-
     const channels = new SessionChannels(terminalDC, buildLogDC, compileDC, {
       keyPin: peer.runtimeEvidenceTransportKeyPin,
       transportSessionId: opts.sessionId,
       admissionReceiptSigner:
         this.#gpuParentRuntimeProofAdmissionAuthority.signer(),
     });
+    const frames = new FrameSink();
     const unsubFrameGateTokenRevocation = this.bindFrameGateTokenRevocation(channels.hmr);
     this.unsubscribers.push(unsubFrameGateTokenRevocation);
 
@@ -790,13 +788,28 @@ class SessionManager {
       terminalDC,
       compileDC,
       runtimeEvidenceTransportKeyPin: peer.runtimeEvidenceTransportKeyPin,
-      resolution: frames.dimensions(),
+      get resolution() {
+        return frames.dimensions();
+      },
     };
     this.attached = attached;
     this.state = "attached";
     this.attachedAt = Date.now();
     this.lastActivityAt = this.attachedAt;
     this.setWireState("running");
+
+    void peer.ready.videoTrack.then(
+      (track) => {
+        if (this.attached !== attached || this.state !== "attached") return;
+        if (!frames.attachTrack(track)) {
+          dbg("ready.videoTrack ignored because the frame sink is no longer attachable");
+        }
+      },
+      (error) => {
+        const cause = error instanceof Error ? error.message : String(error);
+        dbg(`ready.videoTrack unavailable: ${cause}`);
+      },
+    );
 
     // Wire event-log taps.
     const unsubHmr = channels.hmr.onMessage((msg) => {
