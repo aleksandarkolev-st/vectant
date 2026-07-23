@@ -120,22 +120,29 @@ async function selfCheck() {
       "import localValue from './lib/local.mjs';",
       "import packageValue from 'authority-test-package';",
       "const support = JSON.parse(await readFile('./support/input.json', 'utf8'));",
+      "const virtualSupport = await readFile('./support/virtual.bin', 'utf8');",
       "await mkdir('./result', { recursive: true });",
       "await writeFile('./result/output.json', JSON.stringify({",
-      '  localValue, packageValue, support: support.support,',
+      '  localValue, packageValue, support: support.support, virtualSupport,',
       "  injectedShim: globalThis.__coldAuthorityInjectedShim === true,",
       "}) + '\\n', { flag: 'wx' });",
       'await new Promise((resolve) => setTimeout(resolve, 900));',
       '',
     ].join('\n'), 'utf8');
 
-    const createGraph = async () => {
+    const createGraph = async (
+      virtualSupportBytes = Buffer.from('immutable-virtual-support', 'utf8'),
+    ) => {
       const graph = await createControlledExecutionGraph({
         trustedRoot: temporaryRoot,
         entryRelativePath: 'entry.mjs',
         entryBytes,
         moduleEntryPaths: [],
         supportFilePaths: [supportPath],
+        supportEntries: [{
+          relativePath: 'support/virtual.bin',
+          bytes: virtualSupportBytes,
+        }],
       });
       graphs.add(graph);
       return graph;
@@ -145,7 +152,12 @@ async function selfCheck() {
       await removeControlledExecutionGraph(graph);
     };
 
-    const graph = await createGraph();
+    const callerOwnedVirtualSupport = Buffer.from(
+      'immutable-virtual-support',
+      'utf8',
+    );
+    const graph = await createGraph(callerOwnedVirtualSupport);
+    callerOwnedVirtualSupport.fill(0);
     const entryPath = controlledExecutionGraphEntryPath(graph);
     const graphRoot = controlledExecutionGraphRoot(graph);
     assert(graph.graphKind === 'static_ecmascript_support_graph'
@@ -174,6 +186,8 @@ async function selfCheck() {
     const outputSourcePath = path.join(temporaryRoot, 'result', 'output.json');
     const materialOutputPath = registerControlledExecutionOutput(graph, outputSourcePath);
     await mkdir(path.dirname(materialOutputPath), { recursive: true });
+    assert(await verifyControlledExecutionGraph(graph) === true,
+      'controlled graph changed before process prebinding');
     const injectedShimPath = path.join(temporaryRoot, 'injected-shim.cjs');
     await writeFile(injectedShimPath, 'globalThis.__coldAuthorityInjectedShim = true;\n');
     const safeAuthorityEnvironment = Object.freeze(Object.fromEntries([
@@ -203,6 +217,12 @@ async function selfCheck() {
       timeoutMs: 10_000,
       streamOutput: false,
     });
+    assert(
+      execution.error === null && execution.exitCode === 0,
+      `controlled exact graph failed before result capture: ${
+        execution.error ?? execution.stderr
+      }`,
+    );
     const outputObservation = await readVerifiedRegularFile(materialOutputPath, {
       trustedRoot: graphRoot,
       allowEmpty: false,
@@ -215,10 +235,11 @@ async function selfCheck() {
       graph,
       resultPath: materialOutputPath,
     });
-    assert(execution.exitCode === 0, 'controlled exact graph did not execute successfully');
     assert(output.localValue === 'local-exact-bytes', 'local module bytes were not executed');
     assert(output.packageValue === 'package-exact-bytes', 'package bytes were not executed');
     assert(output.support === 'observed-support-bytes', 'support bytes were not materialized');
+    assert(output.virtualSupport === 'immutable-virtual-support',
+      'caller mutation changed captured in-memory support bytes');
     assert(output.injectedShim === false, 'NODE_OPTIONS or NODE_PATH injected an unbound shim');
     assert((await readFile(packageTopLevelMarkerPath, 'utf8')).trim()
       === String(execution.childPid),
@@ -354,6 +375,35 @@ async function selfCheck() {
       /controlled_graph_untracked_dynamic_import/,
     );
     assert(dynamicImportRejected, 'non-literal dynamic import was accepted');
+
+    assert(await expectRejected(
+      () => createControlledExecutionGraph({
+        trustedRoot: temporaryRoot,
+        entryRelativePath: 'virtual-path-entry.mjs',
+        entryBytes: Buffer.from('export default true;\n'),
+        moduleEntryPaths: [],
+        supportFilePaths: [],
+        supportEntries: [{
+          relativePath: '../escaped-input.bin',
+          bytes: Buffer.from('must-not-escape'),
+        }],
+      }),
+      /controlled_graph_support_entry_relative_path_must_be_canonical_relative_path/,
+    ), 'in-memory support bytes escaped the controlled graph namespace');
+    assert(await expectRejected(
+      () => createControlledExecutionGraph({
+        trustedRoot: temporaryRoot,
+        entryRelativePath: 'virtual-collision-entry.mjs',
+        entryBytes: Buffer.from('export default true;\n'),
+        moduleEntryPaths: [],
+        supportFilePaths: [],
+        supportEntries: [{
+          relativePath: 'virtual-collision-entry.mjs',
+          bytes: Buffer.from('export default true;\n'),
+        }],
+      }),
+      /controlled_graph_support_entry_path_collision/,
+    ), 'in-memory support bytes replaced an executable graph entry');
 
     const staticGraphEscapeCases = [
       ['module_create_require', "import { createRequire } from 'node:module';\n"],

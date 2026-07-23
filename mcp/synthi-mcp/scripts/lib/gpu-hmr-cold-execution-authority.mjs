@@ -687,13 +687,29 @@ async function packageRootForResolvedModule(trustedRoot, resolvedModulePath, exp
 }
 
 function validateGraphCreationInput(options) {
-  const input = assertExactRecord(options, [
+  const requiredKeys = [
     'trustedRoot',
     'entryRelativePath',
     'entryBytes',
     'moduleEntryPaths',
     'supportFilePaths',
-  ], 'controlled_graph_input');
+  ];
+  const optionalKeys = ['supportEntries'];
+  const inspection = inspectBoundedDataRecord(
+    options,
+    'controlled_graph_input',
+    requiredKeys.length + optionalKeys.length,
+  );
+  const allowedKeys = new Set([...requiredKeys, ...optionalKeys]);
+  if (
+    requiredKeys.some((key) => !inspection.descriptors.has(key))
+    || inspection.keys.some((key) => !allowedKeys.has(key))
+  ) {
+    throw new TypeError('controlled_graph_input_fields_invalid');
+  }
+  const input = Object.freeze(Object.fromEntries(
+    requiredKeys.map((key) => [key, inspection.descriptors.get(key).value]),
+  ));
   assertBoundedPathText(input.trustedRoot, 'controlled_graph_trusted_root');
   const entryRelativePath = normalizeRelativePath(
     input.entryRelativePath,
@@ -718,7 +734,35 @@ function validateGraphCreationInput(options) {
   ]) {
     for (const value of values) assertBoundedPathText(value, label);
   }
-  return Object.freeze({ ...input, entryRelativePath });
+  const supportEntriesValue = inspection.descriptors.get('supportEntries')?.value ?? [];
+  assertBoundedArray(
+    supportEntriesValue,
+    COLD_EXECUTION_AUTHORITY_LIMITS.graphRoots,
+    'controlled_graph_support_entries',
+  );
+  const supportEntries = Object.freeze(supportEntriesValue.map((value) => {
+    const entry = assertExactRecord(
+      value,
+      ['relativePath', 'bytes'],
+      'controlled_graph_support_entry',
+    );
+    const relativePath = normalizeRelativePath(
+      entry.relativePath,
+      'controlled_graph_support_entry_relative_path',
+    );
+    if (!Buffer.isBuffer(entry.bytes) || utilTypes.isProxy(entry.bytes)) {
+      throw new TypeError('controlled_graph_support_entry_bytes_invalid');
+    }
+    return Object.freeze({
+      relativePath,
+      bytes: Buffer.from(entry.bytes),
+    });
+  }));
+  return Object.freeze({
+    ...input,
+    entryRelativePath,
+    supportEntries,
+  });
 }
 
 export async function createControlledExecutionGraph(options) {
@@ -989,6 +1033,19 @@ export async function createControlledExecutionGraph(options) {
 
   for (const supportFilePath of input.supportFilePaths) {
     await addFile(path.resolve(supportFilePath), 'support_input');
+  }
+  for (const supportEntry of input.supportEntries) {
+    if (files.has(supportEntry.relativePath)) {
+      throw new Error(
+        `controlled_graph_support_entry_path_collision:${supportEntry.relativePath}`,
+      );
+    }
+    addBytes({
+      sourcePath: null,
+      relativePath: supportEntry.relativePath,
+      bytes: supportEntry.bytes,
+      role: 'support_input',
+    });
   }
 
   const manifestEntries = Object.freeze([...files.values()]
