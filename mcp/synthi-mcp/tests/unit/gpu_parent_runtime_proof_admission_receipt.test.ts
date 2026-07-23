@@ -239,12 +239,8 @@ describe("GpuParentRuntimeProofAdmissionReceiptSigner", () => {
     const trustedKey = admissionSigner.exportVerificationKey();
     const admissionReceipt = admissionSigner.sign(admissionInput());
     const outputReceipt = outputSigner.sign({
-      transportSessionId: "opaque-transport-session:domain-separation-01",
-      requestChallengeSha256: hash("a"),
-      runtimeBindingSha256: hash("b"),
-      producerObservationSha256: hash("c"),
-      outputContentSha256: hash("d"),
-      outputByteLength: "512",
+      admissionReceipt,
+      outputBytes: Buffer.alloc(512, 0x64),
     });
     const {
       receiptId: _admissionReceiptId,

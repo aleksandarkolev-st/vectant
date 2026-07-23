@@ -1,10 +1,19 @@
 import {
+  createHash,
   createPublicKey,
   randomBytes,
   sign as signBytes,
   type KeyObject,
 } from "node:crypto";
-import { isKeyObject, isProxy, isUint8Array } from "node:util/types";
+import {
+  isKeyObject,
+  isProxy,
+  isSharedArrayBuffer,
+  isUint8Array,
+} from "node:util/types";
+import type {
+  GpuParentRuntimeProofAdmissionReceipt,
+} from "./gpu_parent_runtime_proof_admission_receipt.js";
 import * as sharedAdmissionVerifierModule
   from "../scripts/lib/gpu-hmr-mcp-admission-receipt-verifier.mjs";
 import * as sharedOutputObservationVerifierModule
@@ -18,6 +27,11 @@ const sharedAdmissionVerifier = sharedAdmissionVerifierModule as unknown as Read
   createGpuHmrMcpAdmissionVerificationKey: (publicKey: unknown) => unknown;
   parseGpuHmrMcpAdmissionVerificationKey: (value: unknown) => unknown;
   hashGpuHmrMcpValidationRunChallenge: (value: unknown) => unknown;
+  verifyGpuHmrMcpAdmissionReceipt: (
+    trustedVerificationKey: unknown,
+    receipt: unknown,
+    expectedValidationRunChallenge: unknown,
+  ) => unknown;
 }>;
 
 const sharedOutputObservationVerifier =
@@ -69,13 +83,13 @@ const ED25519_SPKI_PREFIX = Buffer.from(
 const U64_MAX = 18_446_744_073_709_551_615n;
 
 const REQUEST_KEYS = [
-  "transportSessionId",
-  "requestChallengeSha256",
-  "runtimeBindingSha256",
-  "producerObservationSha256",
-  "outputContentSha256",
-  "outputByteLength",
+  "admissionReceipt",
+  "outputBytes",
 ] as const;
+const RUNTIME_BINDING_DOMAIN =
+  "synthi.gpu_hmr.mcp_output_runtime_binding.v1";
+const OBSERVATION_REQUEST_DOMAIN =
+  "synthi.gpu_hmr.mcp_output_observation_request.v1";
 const SIGNER_CONTEXT_REQUIRED_KEYS = [
   "privateKey",
   "validationRunChallenge",
@@ -96,6 +110,11 @@ export interface GpuMcpOutputObservationReceiptVerificationKey {
 }
 
 export interface GpuMcpOutputObservationReceiptRequest {
+  readonly admissionReceipt: GpuParentRuntimeProofAdmissionReceipt;
+  readonly outputBytes: Uint8Array;
+}
+
+interface GpuMcpOutputObservationReceiptSigningInput {
   readonly transportSessionId: string;
   readonly requestChallengeSha256: string;
   readonly runtimeBindingSha256: string;
@@ -105,7 +124,7 @@ export interface GpuMcpOutputObservationReceiptRequest {
 }
 
 export interface GpuMcpOutputObservationReceipt
-extends GpuMcpOutputObservationReceiptRequest {
+extends GpuMcpOutputObservationReceiptSigningInput {
   readonly schemaVersion: typeof GPU_MCP_OUTPUT_OBSERVATION_RECEIPT_SCHEMA;
   readonly algorithm: typeof GPU_MCP_OUTPUT_OBSERVATION_RECEIPT_ALGORITHM;
   readonly signerKeyId: string;
@@ -228,6 +247,62 @@ function snapshotExactDataObject(
   }
 }
 
+function snapshotPrimitiveDataObject(
+  value: unknown,
+): Readonly<Record<string, unknown>> | null {
+  try {
+    if (value === null || typeof value !== "object" || isProxy(value)) return null;
+    if (Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+      return null;
+    }
+    const ownKeys = Reflect.ownKeys(value);
+    if (
+      ownKeys.length === 0
+      || ownKeys.length > 64
+      || ownKeys.some((key) => typeof key !== "string")
+    ) {
+      return null;
+    }
+    const snapshot: Record<string, unknown> = {};
+    for (const key of ownKeys) {
+      if (typeof key !== "string") return null;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined
+        || descriptor.enumerable !== true
+        || !Object.prototype.hasOwnProperty.call(descriptor, "value")
+        || Object.prototype.hasOwnProperty.call(descriptor, "get")
+        || Object.prototype.hasOwnProperty.call(descriptor, "set")
+        || !(
+          descriptor.value === null
+          || typeof descriptor.value === "string"
+          || typeof descriptor.value === "number"
+          || typeof descriptor.value === "boolean"
+        )
+      ) {
+        return null;
+      }
+      Object.defineProperty(snapshot, key, {
+        value: descriptor.value,
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+    }
+    return Object.freeze(snapshot);
+  } catch {
+    return null;
+  }
+}
+
+function domainSha256(domain: string, ...values: string[]): string {
+  const hash = createHash("sha256").update(domain, "utf8");
+  for (const value of values) {
+    hash.update("\0", "utf8").update(value, "utf8");
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
 function snapshotSignerContext(value: unknown): SignerContextSnapshot | null {
   try {
     if (value === null || typeof value !== "object" || isProxy(value)) return null;
@@ -278,6 +353,48 @@ const TYPED_ARRAY_BYTE_LENGTH_GETTER =
   Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, "byteLength")?.get;
 const TYPED_ARRAY_BYTE_OFFSET_GETTER =
   Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, "byteOffset")?.get;
+
+function snapshotObservedBytes(value: unknown): Buffer | null {
+  try {
+    if (
+      value === null
+      || typeof value !== "object"
+      || isProxy(value)
+      || !ArrayBuffer.isView(value)
+      || !isUint8Array(value)
+      || TYPED_ARRAY_BUFFER_GETTER === undefined
+      || TYPED_ARRAY_BYTE_LENGTH_GETTER === undefined
+      || TYPED_ARRAY_BYTE_OFFSET_GETTER === undefined
+    ) {
+      return null;
+    }
+    const buffer = Reflect.apply(
+      TYPED_ARRAY_BUFFER_GETTER,
+      value,
+      [],
+    ) as ArrayBufferLike;
+    const byteLength = Reflect.apply(
+      TYPED_ARRAY_BYTE_LENGTH_GETTER,
+      value,
+      [],
+    ) as number;
+    const byteOffset = Reflect.apply(
+      TYPED_ARRAY_BYTE_OFFSET_GETTER,
+      value,
+      [],
+    ) as number;
+    if (
+      isSharedArrayBuffer(buffer)
+      || !Number.isSafeInteger(byteLength)
+      || byteLength <= 0
+    ) {
+      return null;
+    }
+    return Buffer.from(new Uint8Array(buffer, byteOffset, byteLength));
+  } catch {
+    return null;
+  }
+}
 
 function snapshotNonceBytes(value: unknown): Buffer | null {
   try {
@@ -343,17 +460,67 @@ function deriveVerificationKey(
 
 function parseRequest(
   value: unknown,
-): GpuMcpOutputObservationReceiptRequest | null {
+  trustedVerificationKey: GpuMcpOutputObservationReceiptVerificationKey,
+  validationRunChallenge: string,
+): GpuMcpOutputObservationReceiptSigningInput | null {
   const request = snapshotExactDataObject(value, REQUEST_KEYS);
   if (request === null) return null;
+  const admissionReceipt = snapshotPrimitiveDataObject(request.admissionReceipt);
+  if (admissionReceipt === null) return null;
+  const admissionVerification =
+    sharedAdmissionVerifier.verifyGpuHmrMcpAdmissionReceipt(
+      trustedVerificationKey,
+      admissionReceipt,
+      validationRunChallenge,
+    ) as Readonly<Record<string, unknown>> | null;
+  if (admissionVerification?.verified !== true) return null;
+  const transportSessionId = admissionReceipt.transportSessionId;
+  const admissionReceiptId = admissionReceipt.receiptId;
+  const compileRequestNonce = admissionReceipt.compileRequestNonce;
+  const producerObservationSha256 = admissionReceipt.protectedProofJsonSha256;
+  if (
+    typeof transportSessionId !== "string"
+    || typeof admissionReceiptId !== "string"
+    || typeof compileRequestNonce !== "string"
+    || typeof producerObservationSha256 !== "string"
+  ) {
+    return null;
+  }
+  const outputBytes = snapshotObservedBytes(request.outputBytes);
+  if (outputBytes === null) return null;
+  const outputContentSha256 =
+    `sha256:${createHash("sha256").update(outputBytes).digest("hex")}`;
+  const outputByteLength = String(outputBytes.byteLength);
+  outputBytes.fill(0);
+  const runtimeBindingSha256 = domainSha256(
+    RUNTIME_BINDING_DOMAIN,
+    admissionReceiptId,
+  );
+  const requestChallengeSha256 = domainSha256(
+    OBSERVATION_REQUEST_DOMAIN,
+    admissionReceiptId,
+    compileRequestNonce,
+  );
   const validated = sharedOutputObservationVerifier
     .parseGpuHmrMcpOutputObservationReceiptSigningInput({
-      ...request,
+      transportSessionId,
+      requestChallengeSha256,
+      runtimeBindingSha256,
+      producerObservationSha256,
+      outputContentSha256,
+      outputByteLength,
       observedAtMonotonicNs: "0",
     });
   return validated === null
     ? null
-    : request as unknown as GpuMcpOutputObservationReceiptRequest;
+    : Object.freeze({
+      transportSessionId,
+      requestChallengeSha256,
+      runtimeBindingSha256,
+      producerObservationSha256,
+      outputContentSha256,
+      outputByteLength,
+    });
 }
 
 function validClockValue(value: unknown): value is bigint {
@@ -379,9 +546,15 @@ export function verifyGpuMcpOutputObservationReceipt(
   ) as GpuMcpOutputObservationReceiptVerification;
 }
 
+/**
+ * Produces support evidence only. The signer verifies the admitted runtime
+ * subject and observes the supplied bytes itself; the session authority still
+ * owns trusted-key origin, one-time request, replay, and freshness policy.
+ */
 export class GpuMcpOutputObservationReceiptSigner {
   #privateKey: KeyObject | null;
   readonly #exportedVerificationKey: GpuMcpOutputObservationReceiptVerificationKey;
+  readonly #validationRunChallenge: string;
   readonly #validationRunChallengeSha256: string;
   readonly #clockMonotonicNs: () => bigint;
   readonly #clockUnixNs: () => bigint;
@@ -414,7 +587,6 @@ export class GpuMcpOutputObservationReceiptSigner {
         throw new Error(reason);
       }
     }
-
     const validationRunChallengeSha256 = sharedAdmissionVerifier
       .hashGpuHmrMcpValidationRunChallenge(context.validationRunChallenge);
     if (typeof validationRunChallengeSha256 !== "string") {
@@ -424,6 +596,7 @@ export class GpuMcpOutputObservationReceiptSigner {
     }
     this.#privateKey = context.privateKey;
     this.#exportedVerificationKey = deriveVerificationKey(context.privateKey);
+    this.#validationRunChallenge = context.validationRunChallenge as string;
     this.#validationRunChallengeSha256 = validationRunChallengeSha256;
     this.#clockMonotonicNs =
       (context.clockMonotonicNs as (() => bigint) | undefined)
@@ -445,7 +618,11 @@ export class GpuMcpOutputObservationReceiptSigner {
     if (this.#signing) {
       throw new Error("gpu_mcp_output_observation_receipt_signer_busy");
     }
-    const request = parseRequest(requestValue);
+    const request = parseRequest(
+      requestValue,
+      this.#exportedVerificationKey,
+      this.#validationRunChallenge,
+    );
     if (request === null) {
       throw new Error("gpu_mcp_output_observation_receipt_request_invalid");
     }

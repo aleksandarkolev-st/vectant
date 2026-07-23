@@ -13,6 +13,10 @@ import {
   type GpuMcpOutputObservationReceiptRequest,
 } from "../../src/gpu_mcp_output_observation_receipt.js";
 import {
+  GpuParentRuntimeProofAdmissionReceiptSigner,
+  type GpuParentRuntimeProofAdmissionReceiptInput,
+} from "../../src/gpu_parent_runtime_proof_admission_receipt.js";
+import {
   finalizeGpuHmrMcpOutputObservationReceipt,
   verifyGpuHmrMcpOutputObservationReceipt,
 } from "../../scripts/lib/gpu-hmr-mcp-output-observation-receipt-verifier.mjs";
@@ -27,14 +31,69 @@ function sha256(value: Uint8Array | string): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
-function receiptRequest(): GpuMcpOutputObservationReceiptRequest {
+function admissionInput(): GpuParentRuntimeProofAdmissionReceiptInput {
+  const hashDigit = (digit: string): string => `sha256:${digit.repeat(64)}`;
+  const controlBindingCanonicalSha256 = hashDigit("4");
   return {
     transportSessionId: "opaque-transport-session:output-observation-01",
-    requestChallengeSha256: sha256("one-time-observation-request"),
-    runtimeBindingSha256: sha256("validated-runtime-binding"),
-    producerObservationSha256: sha256("trusted-producer-observation"),
-    outputContentSha256: sha256(OUTPUT_BYTES),
-    outputByteLength: String(OUTPUT_BYTES.byteLength),
+    compileRequestNonce: `gpu-proof-transport-request:${"1".repeat(32)}`,
+    computeExpectedOutputContractHash: hashDigit("a"),
+    computeExpectedOutputSemanticsHash: hashDigit("b"),
+    workerKeyId:
+      `gpu-hmr-runtime-evidence-transport-key:sha256:${"2".repeat(64)}`,
+    workerKeyAnnouncementId:
+      `gpu-hmr-runtime-evidence-transport-key-announcement:sha256:${"3".repeat(64)}`,
+    workerProcessId: "9123",
+    controlBindingId:
+      `gpu-parent-runtime-proof-control-binding:${controlBindingCanonicalSha256}`,
+    controlBindingCanonicalSha256,
+    controlTransportReceiptId:
+      `gpu-hmr-runtime-evidence-transport-receipt:sha256:${"5".repeat(64)}`,
+    controlObservationContextHash: hashDigit("6"),
+    parentReceiptId:
+      `gpu-parent-runtime-proof-receipt:sha256:${"7".repeat(64)}`,
+    parentTransportReceiptId:
+      `gpu-hmr-runtime-evidence-transport-receipt:sha256:${"8".repeat(64)}`,
+    parentCanonicalProofSha256: hashDigit("9"),
+    parentObservationContextHash: hashDigit("0"),
+    requestId: `gpu-reload:request:${"c".repeat(32)}`,
+    sourceEditId: `source-edit:sha256:${"d".repeat(64)}`,
+    artifactContentHash: hashDigit("e"),
+    fullRuntimeProofId: `gpu-runtime-proof:sha256:${"f".repeat(64)}`,
+    proofLedgerId: `gpu-ledger-proof:sha256:${"1".repeat(64)}`,
+    runnerProcessId: 8123,
+    runnerRuntimeSessionId: "opaque-runtime-session:output-observation-02",
+    runnerChallenge: "23456789abcdef0123456789abcdef01",
+    commandEnvelopeSha256: hashDigit("2"),
+    protectedProofJsonSha256: hashDigit("3"),
+  };
+}
+
+function admittedReceipt(
+  privateKey: KeyObject,
+  challenge = CHALLENGE,
+  nonceByte = 0x41,
+) {
+  return new GpuParentRuntimeProofAdmissionReceiptSigner({
+    privateKey,
+    validationRunChallenge: challenge,
+    clockUnixNs: () => ISSUED_NS,
+    nonceBytes: () => Buffer.alloc(32, nonceByte),
+  }).sign(admissionInput());
+}
+
+function receiptRequest(
+  privateKey: KeyObject,
+  challenge = CHALLENGE,
+  nonceByte = 0x41,
+): GpuMcpOutputObservationReceiptRequest {
+  return {
+    admissionReceipt: admittedReceipt(
+      privateKey,
+      challenge,
+      nonceByte,
+    ),
+    outputBytes: OUTPUT_BYTES,
   };
 }
 
@@ -69,8 +128,11 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
       clockMonotonicNs: () => monotonic++,
     });
     const trustedKey = receiptSigner.exportVerificationKey();
-    const first = receiptSigner.sign(receiptRequest());
-    const second = receiptSigner.signOutputObservationReceipt(receiptRequest());
+    const firstRequest = receiptRequest(privateKey);
+    const first = receiptSigner.sign(firstRequest);
+    const second = receiptSigner.signOutputObservationReceipt(
+      receiptRequest(privateKey, CHALLENGE, 0x42),
+    );
 
     expect(Reflect.ownKeys(receiptSigner)).not.toContain("privateKey");
     expect(Object.isFrozen(trustedKey)).toBe(true);
@@ -92,7 +154,15 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
       acceptedForGpuHmr: false,
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
+      outputContentSha256: sha256(OUTPUT_BYTES),
+      outputByteLength: String(OUTPUT_BYTES.byteLength),
+      transportSessionId: firstRequest.admissionReceipt.transportSessionId,
+      producerObservationSha256:
+        firstRequest.admissionReceipt.protectedProofJsonSha256,
     });
+    expect(first.requestChallengeSha256).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(first.runtimeBindingSha256).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(first).not.toHaveProperty("outputBytes");
     expect(second.observedAtMonotonicNs).toBe((OBSERVED_NS + 1n).toString());
     expect(second.sequence).toBe("2");
     expect(first).not.toHaveProperty("publicKey");
@@ -129,15 +199,26 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
   it("rejects malformed requests, key mismatch, and challenge mismatch", () => {
     const { privateKey } = generateKeyPairSync("ed25519");
     const receiptSigner = signer(privateKey);
-    const receipt = receiptSigner.sign(receiptRequest());
+    const receipt = receiptSigner.sign(receiptRequest(privateKey));
     const other = signer(generateKeyPairSync("ed25519").privateKey);
 
     expect(() => receiptSigner.sign({
-      ...receiptRequest(),
-      outputByteLength: "0",
+      ...receiptRequest(privateKey),
+      outputBytes: Buffer.alloc(0),
     })).toThrow("gpu_mcp_output_observation_receipt_request_invalid");
+    expect(() => receiptSigner.sign(
+      receiptRequest(generateKeyPairSync("ed25519").privateKey),
+    )).toThrow("gpu_mcp_output_observation_receipt_request_invalid");
     expect(() => receiptSigner.sign({
-      ...receiptRequest(),
+      ...receiptRequest(privateKey),
+      runtimeBindingSha256: sha256("caller-claimed-runtime"),
+      producerObservationSha256: sha256("caller-claimed-observation"),
+      outputContentSha256: sha256("caller-claimed-output"),
+      outputByteLength: "999",
+    } as unknown as GpuMcpOutputObservationReceiptRequest))
+      .toThrow("gpu_mcp_output_observation_receipt_request_invalid");
+    expect(() => receiptSigner.sign({
+      ...receiptRequest(privateKey),
       extra: true,
     } as unknown as GpuMcpOutputObservationReceiptRequest))
       .toThrow("gpu_mcp_output_observation_receipt_request_invalid");
@@ -159,7 +240,7 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
     const { privateKey } = generateKeyPairSync("ed25519");
     const receiptSigner = signer(privateKey);
     const trustedKey = receiptSigner.exportVerificationKey();
-    const receipt = receiptSigner.sign(receiptRequest());
+    const receipt = receiptSigner.sign(receiptRequest(privateKey));
 
     expect(verifyGpuMcpOutputObservationReceipt(trustedKey, {
       ...receipt,
@@ -191,13 +272,13 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
   it("rejects proxy and accessor boundaries without invoking them", () => {
     const { privateKey } = generateKeyPairSync("ed25519");
     const receiptSigner = signer(privateKey);
-    const request = receiptRequest() as Record<string, unknown>;
+    const request = receiptRequest(privateKey) as Record<string, unknown>;
     let getterCalls = 0;
-    Object.defineProperty(request, "runtimeBindingSha256", {
+    Object.defineProperty(request, "admissionReceipt", {
       enumerable: true,
       get: () => {
         getterCalls += 1;
-        return sha256("unreachable");
+        return admittedReceipt(privateKey);
       },
     });
     expect(() => receiptSigner.sign(
@@ -209,7 +290,7 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
       trapCalls += 1;
       throw new Error("trap must not run");
     };
-    expect(() => receiptSigner.sign(new Proxy(receiptRequest(), {
+    expect(() => receiptSigner.sign(new Proxy(receiptRequest(privateKey), {
       get: failTrap,
       getOwnPropertyDescriptor: failTrap,
       getPrototypeOf: failTrap,
@@ -217,6 +298,39 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
     }))).toThrow("gpu_mcp_output_observation_receipt_request_invalid");
     expect(getterCalls).toBe(0);
     expect(trapCalls).toBe(0);
+
+    expect(() => receiptSigner.sign({
+      ...receiptRequest(privateKey),
+      outputBytes: new Proxy(Buffer.from(OUTPUT_BYTES), {}),
+    })).toThrow("gpu_mcp_output_observation_receipt_request_invalid");
+    expect(() => receiptSigner.sign({
+      ...receiptRequest(privateKey),
+      outputBytes: new Uint16Array([1, 2]),
+    } as unknown as GpuMcpOutputObservationReceiptRequest))
+      .toThrow("gpu_mcp_output_observation_receipt_request_invalid");
+    expect(() => receiptSigner.sign({
+      ...receiptRequest(privateKey),
+      outputBytes: new Uint8Array(new SharedArrayBuffer(32)),
+    })).toThrow("gpu_mcp_output_observation_receipt_request_invalid");
+  });
+
+  it("snapshots observed bytes before signer callbacks can mutate them", () => {
+    const { privateKey } = generateKeyPairSync("ed25519");
+    const mutableBytes = Buffer.from(OUTPUT_BYTES);
+    const expectedHash = sha256(mutableBytes);
+    const receiptSigner = signer(privateKey, {
+      clockMonotonicNs: () => {
+        mutableBytes.fill(0);
+        return OBSERVED_NS;
+      },
+    });
+
+    const receipt = receiptSigner.sign({
+      ...receiptRequest(privateKey),
+      outputBytes: mutableBytes,
+    });
+    expect(receipt.outputContentSha256).toBe(expectedHash);
+    expect(receipt.outputByteLength).toBe(String(OUTPUT_BYTES.byteLength));
   });
 
   it("rejects non-data signer contexts, extra context fields, and public keys", () => {
@@ -271,14 +385,16 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
       clockMonotonicNs: () => {
         if (reenter) {
           reenter = false;
-          expect(() => receiptSigner.sign(receiptRequest()))
+          expect(() => receiptSigner.sign(receiptRequest(privateKey)))
             .toThrow("gpu_mcp_output_observation_receipt_signer_busy");
         }
         return OBSERVED_NS;
       },
     });
-    expect(receiptSigner.sign(receiptRequest()).sequence).toBe("1");
-    expect(receiptSigner.sign(receiptRequest()).sequence).toBe("2");
+    expect(receiptSigner.sign(receiptRequest(privateKey)).sequence).toBe("1");
+    expect(receiptSigner.sign(
+      receiptRequest(privateKey, CHALLENGE, 0x42),
+    ).sequence).toBe("2");
 
     let failOnce = true;
     const failedClockSigner = signer(privateKey, {
@@ -290,9 +406,9 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
         return ISSUED_NS;
       },
     });
-    expect(() => failedClockSigner.sign(receiptRequest()))
+    expect(() => failedClockSigner.sign(receiptRequest(privateKey)))
       .toThrow("gpu_mcp_output_observation_receipt_issuance_clock_failed");
-    expect(failedClockSigner.sign(receiptRequest()).sequence).toBe("1");
+    expect(failedClockSigner.sign(receiptRequest(privateKey)).sequence).toBe("1");
 
     let failNonce = true;
     const failedNonceSigner = signer(privateKey, {
@@ -304,9 +420,9 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
         return Buffer.alloc(32, 0x71);
       },
     });
-    expect(() => failedNonceSigner.sign(receiptRequest()))
+    expect(() => failedNonceSigner.sign(receiptRequest(privateKey)))
       .toThrow("gpu_mcp_output_observation_receipt_nonce_source_failed");
-    expect(failedNonceSigner.sign(receiptRequest()).sequence).toBe("1");
+    expect(failedNonceSigner.sign(receiptRequest(privateKey)).sequence).toBe("1");
   });
 
   it("fails closed when a signer-owned callback disposes the signer", () => {
@@ -318,9 +434,9 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
         return OBSERVED_NS;
       },
     });
-    expect(() => clockSigner.sign(receiptRequest()))
+    expect(() => clockSigner.sign(receiptRequest(privateKey)))
       .toThrow("gpu_mcp_output_observation_receipt_signer_disposed");
-    expect(() => clockSigner.sign(receiptRequest()))
+    expect(() => clockSigner.sign(receiptRequest(privateKey)))
       .toThrow("gpu_mcp_output_observation_receipt_signer_disposed");
 
     let nonceSigner!: GpuMcpOutputObservationReceiptSigner;
@@ -330,7 +446,7 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
         return Buffer.alloc(32, 0x6b);
       },
     });
-    expect(() => nonceSigner.sign(receiptRequest()))
+    expect(() => nonceSigner.sign(receiptRequest(privateKey)))
       .toThrow("gpu_mcp_output_observation_receipt_signer_disposed");
   });
 
@@ -341,12 +457,13 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
       [{ clockUnixNs: () => 1 as unknown as bigint }, "gpu_mcp_output_observation_receipt_issuance_clock_invalid"],
       [{ nonceBytes: () => Buffer.alloc(31) }, "gpu_mcp_output_observation_receipt_nonce_source_invalid"],
     ] as const) {
-      expect(() => signer(privateKey, option).sign(receiptRequest())).toThrow(reason);
+      expect(() => signer(privateKey, option).sign(receiptRequest(privateKey)))
+        .toThrow(reason);
     }
     const proxiedNonce = new Proxy(Buffer.alloc(32), {});
     expect(() => signer(privateKey, {
       nonceBytes: () => proxiedNonce,
-    }).sign(receiptRequest())).toThrow(
+    }).sign(receiptRequest(privateKey))).toThrow(
       "gpu_mcp_output_observation_receipt_nonce_source_invalid",
     );
   });
@@ -358,7 +475,7 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
     receiptSigner.dispose();
     receiptSigner.dispose();
     expect(receiptSigner.exportVerificationKey()).toBe(key);
-    expect(() => receiptSigner.sign(receiptRequest()))
+    expect(() => receiptSigner.sign(receiptRequest(privateKey)))
       .toThrow("gpu_mcp_output_observation_receipt_signer_disposed");
     expect(parseGpuMcpOutputObservationReceiptVerificationKey(key)).toEqual(key);
     expect(JSON.stringify(receiptSigner)).not.toContain("private");
@@ -366,14 +483,10 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
 
   it("keeps the request and receipt schema generic", () => {
     const { privateKey } = generateKeyPairSync("ed25519");
-    const receipt = signer(privateKey).sign(receiptRequest());
-    expect(Object.keys(receiptRequest())).toEqual([
-      "transportSessionId",
-      "requestChallengeSha256",
-      "runtimeBindingSha256",
-      "producerObservationSha256",
-      "outputContentSha256",
-      "outputByteLength",
+    const receipt = signer(privateKey).sign(receiptRequest(privateKey));
+    expect(Object.keys(receiptRequest(privateKey))).toEqual([
+      "admissionReceipt",
+      "outputBytes",
     ]);
     for (const name of [
       "project", "backend", "renderer", "api", "image", "camera", "dimensions",
