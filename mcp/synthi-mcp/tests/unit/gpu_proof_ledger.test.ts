@@ -564,11 +564,11 @@ describe("GPU HMR proof ledger canonical profiles", () => {
     ]));
   });
 
-  it("rejects contradictory generic and legacy observation aliases", () => {
+  it("rejects contradictory generic observation aliases", () => {
     const record = rendererNeutralVisualArtifactFixture();
     record.deterministic_visual_mode = {
       output_observation_after_dispatch: true,
-      frame_capture_after_epoch_dispatch: false,
+      output_capture_after_dispatch: false,
       output_observation_ordering_proven: true,
     };
 
@@ -582,6 +582,41 @@ describe("GPU HMR proof ledger canonical profiles", () => {
       "output_observation_alias_conflict",
       "output_observation_after_dispatch_unproven",
     ]));
+  });
+
+  it("does not promote renderer controls into generic output observations", () => {
+    const genericRecord = rendererNeutralVisualArtifactFixture();
+    genericRecord.deterministic_visual_mode = {
+      output_observation_after_dispatch: true,
+      output_observation_ordering_proven: true,
+      frame_capture_after_epoch_dispatch: false,
+      presentation_fence_or_frame_boundary: false,
+    };
+    const genericTypedCodes = failureCodes(genericRecord);
+    const genericScriptCodes = evaluateScriptGpuHmrProofLedger(
+      genericRecord
+    ).failedInvariants.map(({ code }: { code: string }) => code);
+    expect(genericTypedCodes).not.toEqual(expect.arrayContaining([
+      "output_observation_alias_conflict",
+      "output_observation_after_dispatch_unproven",
+      "output_observation_ordering_unproven",
+    ]));
+    expect(genericScriptCodes).toEqual(genericTypedCodes);
+
+    const legacyOnlyRecord = rendererNeutralVisualArtifactFixture();
+    legacyOnlyRecord.deterministic_visual_mode = {
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+    };
+    const legacyTypedCodes = failureCodes(legacyOnlyRecord);
+    const legacyScriptCodes = evaluateScriptGpuHmrProofLedger(
+      legacyOnlyRecord
+    ).failedInvariants.map(({ code }: { code: string }) => code);
+    expect(legacyTypedCodes).toEqual(expect.arrayContaining([
+      "output_observation_after_dispatch_unproven",
+      "output_observation_ordering_unproven",
+    ]));
+    expect(legacyScriptCodes).toEqual(legacyTypedCodes);
   });
 
   it("keeps generic convergence diagnostics in script and typed parity", () => {

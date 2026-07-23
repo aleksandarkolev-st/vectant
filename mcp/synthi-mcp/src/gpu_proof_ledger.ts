@@ -971,9 +971,7 @@ function deterministicVisualFailures(modeInput: unknown): GpuHmrLedgerFailure[] 
     "output_observation_after_dispatch",
     "outputObservationAfterDispatch",
     "output_capture_after_dispatch",
-    "outputCaptureAfterDispatch",
-    "frame_capture_after_epoch_dispatch",
-    "frameCaptureAfterEpochDispatch"
+    "outputCaptureAfterDispatch"
   );
   const outputObservationOrdering = consensusBoolField(
     mode,
@@ -982,11 +980,7 @@ function deterministicVisualFailures(modeInput: unknown): GpuHmrLedgerFailure[] 
     "output_completion_observed",
     "outputCompletionObserved",
     "completion_boundary_proven",
-    "completionBoundaryProven",
-    "presentation_fence_or_frame_boundary",
-    "presentationFenceOrFrameBoundary",
-    "presentation_boundary_proven",
-    "presentationBoundaryProven"
+    "completionBoundaryProven"
   );
   const aliasConflictFields = compactStringList([
     outputObservedAfterDispatch.conflict ? "output_observation_after_dispatch" : null,

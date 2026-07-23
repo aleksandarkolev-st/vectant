@@ -1652,9 +1652,6 @@ function visualCaptureManifestEvaluation(record, artifacts) {
 function visualCaptureRuntimeBindingProjection(record, artifacts) {
   const manifestEvaluation = visualCaptureManifestEvaluation(record, artifacts);
   const pixelVerification = visualPixelVerification(artifacts);
-  const deterministicVisualMode = asObject(
-    record.deterministicVisualMode ?? record.deterministic_visual_mode,
-  );
   const projection = {
     schema_version: GPU_HMR_VISUAL_CAPTURE_RUNTIME_BINDING_SCHEMA_VERSION,
     proof_authority: GPU_HMR_VISUAL_CAPTURE_RUNTIME_BINDING_AUTHORITY,
@@ -1712,15 +1709,6 @@ function visualCaptureRuntimeBindingProjection(record, artifacts) {
     )),
     capture_backend: artifactFieldText(artifacts, 'capture_backend', 'captureBackend'),
     swapchain_size: manifestEvaluation.swapchainSize,
-    presentation_boundary_proven:
-      objectFieldValue(deterministicVisualMode, [
-        'frame_capture_after_epoch_dispatch',
-        'frameCaptureAfterEpochDispatch',
-      ]) === true
-      && objectFieldValue(deterministicVisualMode, [
-        'presentation_fence_or_frame_boundary',
-        'presentationFenceOrFrameBoundary',
-      ]) === true,
     accepted_for_gpu_hmr: false,
     gpu_hmr_success: false,
     can_satisfy_runtime_proof: false,
@@ -1728,7 +1716,6 @@ function visualCaptureRuntimeBindingProjection(record, artifacts) {
   };
   const missingFields = Object.entries(projection)
     .filter(([key, value]) => {
-      if (key === 'presentation_boundary_proven') return false;
       if (key === 'swapchain_size') return !Array.isArray(value) || value.length !== 2;
       if (key === 'runtime_binding') {
         return missingVisualFrameGateRuntimeBindingFields(value).length > 0;
@@ -1825,9 +1812,6 @@ function evaluateVisualCaptureRuntimeBinding(record, artifacts) {
     if (stableJson(suppliedProjection) !== stableJson(projection)) {
       failures.push({ code: 'visual_capture_runtime_binding_runtime_material_mismatch' });
     }
-  }
-  if (projection.presentation_boundary_proven !== true) {
-    failures.push({ code: 'visual_capture_runtime_binding_presentation_boundary_unproven' });
   }
   if (
     projection.source_frame_hash === null
