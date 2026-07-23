@@ -508,6 +508,7 @@ describe("RuntimeEvidenceTransportKeyPin", () => {
 
   it("rejects malformed UTF-8 bytes without replacement decoding", () => {
     const channel = new MockDataChannel();
+    const removeListener = vi.spyOn(channel, "removeEventListener");
     const pin = new RuntimeEvidenceTransportKeyPin();
     pin.bindAuthenticatedPeerDataChannel(channel as unknown as RTCDataChannel);
     channel.emit(new Uint8Array([0xff]));
@@ -517,6 +518,9 @@ describe("RuntimeEvidenceTransportKeyPin", () => {
       key: null,
       failureReason: "runtime_evidence_transport_key_announcement_encoding_invalid",
     });
+    expect(removeListener).toHaveBeenCalledWith("message", expect.any(Function));
+    expect(removeListener).toHaveBeenCalledWith("close", expect.any(Function));
+    expect(removeListener).toHaveBeenCalledTimes(2);
   });
 
   it("invalidates the pin when the worker attempts in-session key replacement", () => {

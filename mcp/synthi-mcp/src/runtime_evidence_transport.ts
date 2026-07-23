@@ -621,6 +621,9 @@ export class RuntimeEvidenceTransportKeyPin {
 
   private fail(reason: string): void {
     if (this.failureReason !== null || this.disposed) return;
+    this.unbind?.();
+    this.unbind = null;
+    this.boundChannel = null;
     this.key = null;
     this.failureReason = reason;
     this.revision += 1;
