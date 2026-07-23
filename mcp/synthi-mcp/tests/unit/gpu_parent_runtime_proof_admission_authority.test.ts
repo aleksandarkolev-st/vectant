@@ -782,6 +782,195 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
     expect(evaluatorBytes!.byteLength).toBe(0);
   });
 
+  it("aborts an in-flight output capture before evaluator execution", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const controller = new AbortController();
+    let evaluatorCalled = false;
+    let captureSignal: AbortSignal | null = null;
+    let markCaptureStarted: (() => void) | null = null;
+    const captureStarted = new Promise<void>((resolve) => {
+      markCaptureStarted = resolve;
+    });
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => {
+        evaluatorCalled = true;
+        return true;
+      },
+    });
+    const pending = captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      evaluator,
+      (signal) => {
+        captureSignal = signal ?? null;
+        markCaptureStarted?.();
+        return new Promise<Uint8Array>(() => {});
+      },
+      () => true,
+      controller.signal,
+    );
+
+    await captureStarted;
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(
+      "gpu_mcp_admitted_output_capture_aborted",
+    );
+    expect(captureSignal?.aborted).toBe(true);
+    expect(evaluatorCalled).toBe(false);
+    await authority.dispose();
+  });
+
+  it.each([
+    "already-aborted",
+    "abort-before-capture-turn",
+  ] as const)(
+    "does not invoke capture for %s input",
+    async (abortTiming) => {
+      const {
+        authority,
+        producer,
+        evaluatorRegistrar,
+      } = createOutputAuthority();
+      const admissionReceipt = authority.signer().signAdmissionReceipt(
+        admissionInput(),
+      );
+      const controller = new AbortController();
+      const capture = vi.fn(() => Uint8Array.of(79));
+      const evaluator = evaluatorRegistrar.register({
+        outputContractSha256: hash("a"),
+        outputSemanticsSha256: hash("b"),
+        evaluate: () => true,
+      });
+      if (abortTiming === "already-aborted") {
+        controller.abort();
+      }
+      const pending = captureAndEvaluateGpuMcpAdmittedOutputBytes(
+        authority,
+        producer,
+        admissionReceipt,
+        evaluator,
+        capture,
+        () => true,
+        controller.signal,
+      );
+      if (abortTiming === "abort-before-capture-turn") {
+        controller.abort();
+      }
+
+      await expect(pending).rejects.toThrow(
+        "gpu_mcp_admitted_output_capture_aborted",
+      );
+      expect(capture).not.toHaveBeenCalled();
+      await authority.dispose();
+    },
+  );
+
+  it("consumes a late capture rejection after cancellation", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const controller = new AbortController();
+    let rejectCapture: ((reason: Error) => void) | null = null;
+    let markCaptureStarted: (() => void) | null = null;
+    const captureStarted = new Promise<void>((resolve) => {
+      markCaptureStarted = resolve;
+    });
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => true,
+    });
+    const pending = captureAndEvaluateGpuMcpAdmittedOutputBytes(
+      authority,
+      producer,
+      admissionReceipt,
+      evaluator,
+      () => new Promise<Uint8Array>((_resolve, reject) => {
+        rejectCapture = reject;
+        markCaptureStarted?.();
+      }),
+      () => true,
+      controller.signal,
+    );
+
+    await captureStarted;
+    controller.abort();
+    await expect(pending).rejects.toThrow(
+      "gpu_mcp_admitted_output_capture_aborted",
+    );
+    rejectCapture?.(new Error("late capture failure"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await authority.dispose();
+  });
+
+  it("uses captured Promise intrinsics for output capture", async () => {
+    const {
+      authority,
+      producer,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const resolveDescriptor =
+      Object.getOwnPropertyDescriptor(Promise, "resolve");
+    const thenDescriptor =
+      Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+    if (resolveDescriptor === undefined || thenDescriptor === undefined) {
+      throw new Error("promise intrinsics unavailable");
+    }
+    const capture = vi.fn(() => Uint8Array.of(83, 89));
+    let pending:
+      ReturnType<typeof captureGpuMcpAdmittedOutputBytes>;
+    try {
+      Object.defineProperty(Promise, "resolve", {
+        configurable: true,
+        value: () => {
+          throw new Error("forged Promise.resolve");
+        },
+      });
+      Object.defineProperty(Promise.prototype, "then", {
+        configurable: true,
+        value: () => {
+          throw new Error("forged Promise.then");
+        },
+      });
+      pending = captureGpuMcpAdmittedOutputBytes(
+        authority,
+        producer,
+        admissionReceipt,
+        capture,
+        () => true,
+      );
+    } finally {
+      Object.defineProperty(Promise, "resolve", resolveDescriptor);
+      Object.defineProperty(Promise.prototype, "then", thenDescriptor);
+    }
+
+    await expect(pending!).resolves.toMatchObject({
+      receipt: {
+        outputByteLength: "2",
+      },
+    });
+    expect(capture).toHaveBeenCalledOnce();
+    await authority.dispose();
+  });
+
   it("rejects output evaluation replay, cloning, and cross-authority reuse", async () => {
     const {
       authority,
