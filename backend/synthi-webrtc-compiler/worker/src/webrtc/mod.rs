@@ -23,7 +23,9 @@ pub mod input_lease;
 pub mod peer_registry;
 pub mod track_fanout;
 
-pub use build_log_broadcast::{broadcast_build_log_text, PER_DC_SEND_TIMEOUT};
+pub use build_log_broadcast::{
+    broadcast_build_log_text, broadcast_session_capability_text, PER_DC_SEND_TIMEOUT,
+};
 pub use input_lease::{
     AcquireError as InputLeaseAcquireError, GateDecision as InputLeaseGateDecision, InputLease,
     InputLeaseRegistry,

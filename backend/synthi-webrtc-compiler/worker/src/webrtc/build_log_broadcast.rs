@@ -26,6 +26,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::future::join_all;
+
 use super::peer_registry::PeerRegistry;
 
 /// Per-DC write deadline. Stale or back-pressured peers drop their
@@ -59,9 +61,46 @@ pub async fn broadcast_build_log_text(
     (sent, dropped)
 }
 
+/// Fan out text to every current channel registered under an opaque
+/// capability ID. Sends progress concurrently after the registry snapshot,
+/// so one back-pressured channel cannot serially delay the others.
+pub async fn broadcast_session_capability_text(
+    registry: &Arc<PeerRegistry>,
+    capability_id: &str,
+    message: String,
+) -> (usize, usize) {
+    let dcs = registry.all_session_data_channel_snapshots(capability_id);
+    let outcomes = join_all(dcs.into_iter().map(|dc| {
+        let message = message.clone();
+        async move {
+            matches!(
+                tokio::time::timeout(PER_DC_SEND_TIMEOUT, dc.send_text(message)).await,
+                Ok(Ok(_))
+            )
+        }
+    }))
+    .await;
+    let sent = outcomes.iter().filter(|sent| **sent).count();
+    (sent, outcomes.len() - sent)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::peer_registry::{PeerHandle, PeerRole, RegistryInsertOutcome};
     use super::*;
+    use webrtc::api::APIBuilder;
+    use webrtc::peer_connection::configuration::RTCConfiguration;
+    use webrtc::peer_connection::RTCPeerConnection;
+
+    async fn peer_connection() -> Arc<RTCPeerConnection> {
+        Arc::new(
+            APIBuilder::new()
+                .build()
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .expect("new peer connection"),
+        )
+    }
 
     #[tokio::test]
     async fn empty_registry_returns_zero_zero() {
@@ -69,6 +108,43 @@ mod tests {
         let (sent, dropped) = broadcast_build_log_text(&registry, "{}".to_string()).await;
         assert_eq!(sent, 0);
         assert_eq!(dropped, 0);
+    }
+
+    #[tokio::test]
+    async fn capability_broadcast_uses_only_current_matching_channels() {
+        let registry = Arc::new(PeerRegistry::new());
+        let pc = peer_connection().await;
+        let selected = pc
+            .create_data_channel("selected", None)
+            .await
+            .expect("selected data channel");
+        let unrelated = pc
+            .create_data_channel("unrelated", None)
+            .await
+            .expect("unrelated data channel");
+        assert!(matches!(
+            registry.insert(PeerHandle::new("peer", PeerRole::Observer, pc.clone())),
+            RegistryInsertOutcome::Inserted
+        ));
+        assert!(registry.attach_session_data_channel("peer", &pc, "capability.selected", selected,));
+        assert!(registry.attach_session_data_channel(
+            "peer",
+            &pc,
+            "capability.unrelated",
+            unrelated,
+        ));
+
+        let (sent, dropped) =
+            broadcast_session_capability_text(&registry, "capability.selected", "{}".to_string())
+                .await;
+        assert_eq!(sent + dropped, 1);
+
+        registry.remove("peer");
+        assert_eq!(
+            broadcast_session_capability_text(&registry, "capability.selected", "{}".to_string(),)
+                .await,
+            (0, 0)
+        );
     }
 
     #[test]
