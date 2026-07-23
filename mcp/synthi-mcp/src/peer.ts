@@ -10,6 +10,7 @@ import {
 import type { SignalingClient, SignalingMessage } from "./signaling.js";
 import {
   RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
+  RuntimeEvidenceTransportChannelRouter,
   RuntimeEvidenceTransportKeyPin,
 } from "./runtime_evidence_transport.js";
 
@@ -123,6 +124,8 @@ export class Peer {
   readonly pc: RTCPeerConnection;
   readonly ready: PeerReadyState;
   readonly runtimeEvidenceTransportKeyPin = new RuntimeEvidenceTransportKeyPin();
+  readonly runtimeEvidenceTransportChannelRouter =
+    new RuntimeEvidenceTransportChannelRouter(this.runtimeEvidenceTransportKeyPin);
 
   private readonly signaling: SignalingClient;
   private readonly offerRetryMs: number;
@@ -251,7 +254,7 @@ export class Peer {
     this.pc.onDataChannel.subscribe((dc) => {
       dbg(`peer: ondatachannel label=${dc.label} readyState=${dc.readyState}`);
       if (dc.label === RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL) {
-        this.runtimeEvidenceTransportKeyPin.bindAuthenticatedPeerDataChannel(dc);
+        this.runtimeEvidenceTransportChannelRouter.bindAuthenticatedPeerDataChannel(dc);
       } else if (dc.label === "build-log") {
         if (dc.readyState === "open") {
           this.buildLogDcD.resolve(dc);
@@ -415,7 +418,7 @@ export class Peer {
   async close(): Promise<void> {
     this.closed = true;
     this.stopOfferRetry();
-    this.runtimeEvidenceTransportKeyPin.dispose();
+    this.runtimeEvidenceTransportChannelRouter.dispose();
     try {
       await this.pc.close();
     } catch {
