@@ -87,10 +87,6 @@ const VISUAL_ORACLE_ARTIFACT_FIELDS = [
   ["blank_frame_rejection", "blankFrameRejection"],
   ["same_frame_rejection", "sameFrameRejection"],
   ["new_epoch_watermark_or_trace", "newEpochWatermarkOrTrace", "epoch_trace", "epochTrace"],
-  ["camera_state_hash", "cameraStateHash"],
-  ["swapchain_size", "swapchainSize"],
-  ["capture_backend", "captureBackend"],
-  ["frame_number", "frameNumber"],
   ["timestamp_after_dispatch", "timestampAfterDispatch"],
   ["perceptual_diff", "perceptualDiff"],
   ["changed_pixel_ratio", "changedPixelRatio"],
@@ -793,6 +789,11 @@ function computeDeterministicSliceHash(
 
 function computeSha256Digest(value: string | null): string | null {
   return value?.match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
+}
+
+function canonicalSha256(value: unknown): string | null {
+  const digest = computeSha256Digest(firstText(value));
+  return digest ? `sha256:${digest}` : null;
 }
 
 function visualOracleArtifacts(
@@ -1988,10 +1989,29 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
       if (visiblePixelCount !== null && visiblePixelCount <= 0) {
         failures.push({ code: "visual_visible_pixel_count_zero" });
       }
+      const cameraStateValue = objectFieldValue(visualArtifacts, [
+        "camera_state_hash",
+        "cameraStateHash",
+      ]);
+      if (
+        cameraStateValue !== undefined
+        && cameraStateValue !== null
+        && !canonicalSha256(cameraStateValue)
+      ) {
+        failures.push({ code: "visual_camera_state_hash_invalid" });
+      }
+      const swapchainSizeValue = objectFieldValue(visualArtifacts, [
+        "swapchain_size",
+        "swapchainSize",
+      ]);
       const swapchainSize = artifactArray(visualArtifacts, "swapchain_size", "swapchainSize");
       if (
-        swapchainSize.length !== 2
-        || !swapchainSize.every((value) => Number.isFinite(Number(value)) && Number(value) > 0)
+        swapchainSizeValue !== undefined
+        && swapchainSizeValue !== null
+        && (
+          swapchainSize.length !== 2
+          || !swapchainSize.every((value) => Number.isFinite(Number(value)) && Number(value) > 0)
+        )
       ) {
         failures.push({ code: "visual_swapchain_size_invalid" });
       }

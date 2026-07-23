@@ -718,10 +718,6 @@ const VISUAL_ORACLE_ARTIFACT_FIELDS = [
   ['blank_frame_rejection', 'blankFrameRejection'],
   ['same_frame_rejection', 'sameFrameRejection'],
   ['new_epoch_watermark_or_trace', 'newEpochWatermarkOrTrace', 'epoch_trace', 'epochTrace'],
-  ['camera_state_hash', 'cameraStateHash'],
-  ['swapchain_size', 'swapchainSize'],
-  ['capture_backend', 'captureBackend'],
-  ['frame_number', 'frameNumber'],
   ['timestamp_after_dispatch', 'timestampAfterDispatch'],
   ['perceptual_diff', 'perceptualDiff'],
   ['changed_pixel_ratio', 'changedPixelRatio'],
@@ -998,23 +994,6 @@ function canonicalSha256(value) {
 function canonicalArtifactSha256(value) {
   const text = firstText(value);
   return canonicalSha256(text?.replace(/^artifact:/i, ''));
-}
-
-function expectedVisualCameraStateHashes(record) {
-  const contract = asObject(record.acceptanceContract ?? record.acceptance_contract);
-  const state = asObject(contract.state_preservation_checks ?? contract.statePreservationChecks);
-  const hiprtContract = asObject(contract.hiprt_contract ?? contract.hiprtContract);
-  const deterministicVisualMode = asObject(
-    record.deterministic_visual_mode ?? record.deterministicVisualMode,
-  );
-  return [
-    deterministicVisualMode.camera_state_hash,
-    deterministicVisualMode.cameraStateHash,
-    state.camera_state_hash,
-    state.cameraStateHash,
-    hiprtContract.camera_state_hash,
-    hiprtContract.cameraStateHash,
-  ].map(canonicalSha256).filter(Boolean);
 }
 
 function visualOracleArtifacts(recordOracleArtifacts, outputEvent) {
@@ -3171,23 +3150,29 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
       if (visiblePixelCount !== null && visiblePixelCount <= 0) {
         addFailure(failures, 'visual_visible_pixel_count_zero');
       }
+      const cameraStateValue = objectFieldValue(artifacts, [
+        'camera_state_hash',
+        'cameraStateHash',
+      ]);
       const cameraStateHash = artifactFieldText(artifacts, 'camera_state_hash', 'cameraStateHash');
       const canonicalCameraStateHash = canonicalSha256(cameraStateHash);
-      if (!canonicalCameraStateHash) {
-        addFailure(failures, 'visual_camera_state_hash_invalid');
-      } else {
-        const expectedCameraStateHashes = expectedVisualCameraStateHashes(record);
-        if (
-          expectedCameraStateHashes.length > 0
-          && !expectedCameraStateHashes.includes(canonicalCameraStateHash)
-        ) {
-          addFailure(failures, 'visual_camera_state_hash_mismatch');
+      if (cameraStateValue !== undefined && cameraStateValue !== null) {
+        if (!canonicalCameraStateHash) {
+          addFailure(failures, 'visual_camera_state_hash_invalid');
         }
       }
+      const swapchainSizeValue = objectFieldValue(artifacts, [
+        'swapchain_size',
+        'swapchainSize',
+      ]);
       const swapchainSize = artifactFieldArray(artifacts, 'swapchain_size', 'swapchainSize');
       if (
-        swapchainSize.length !== 2
-        || !swapchainSize.every((value) => Number.isFinite(Number(value)) && Number(value) > 0)
+        swapchainSizeValue !== undefined
+        && swapchainSizeValue !== null
+        && (
+          swapchainSize.length !== 2
+          || !swapchainSize.every((value) => Number.isFinite(Number(value)) && Number(value) > 0)
+        )
       ) {
         addFailure(failures, 'visual_swapchain_size_invalid');
       }

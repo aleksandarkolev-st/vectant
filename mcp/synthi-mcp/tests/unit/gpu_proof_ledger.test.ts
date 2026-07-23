@@ -4,6 +4,9 @@ import {
   GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE,
   queryGpuHmrLedgerInvariants,
 } from "../../src/gpu_proof_ledger.js";
+import {
+  evaluateGpuHmrProofLedger as evaluateScriptGpuHmrProofLedger,
+} from "../../scripts/lib/gpu-hmr-proof-ledger.mjs";
 
 const HASH_A = `sha256:${"a".repeat(64)}`;
 const HASH_B = `sha256:${"b".repeat(64)}`;
@@ -240,6 +243,71 @@ function portableStrictFixture(
   };
 }
 
+function rendererNeutralVisualArtifactFixture(): Record<string, unknown> {
+  const record = portableStrictFixture();
+  record.output_event = {
+    id: "output-1",
+    kind: "visual_oracle",
+    passed: true,
+    after_dispatch_id: "dispatch-1",
+    output_target_id: "opaque-output-resource-1",
+    epoch: "2",
+    artifact_hash: HASH_B,
+    process_id: "pid-1",
+    timestamp_monotonic_ns: 40,
+  };
+  record.output_oracle_target = {
+    kind: "visual",
+    target_id: "opaque-output-resource-1",
+    evidence_refs: ["runtime:output"],
+  };
+  record.oracle_artifacts = {
+    visual_oracle_artifacts: {
+      before_image: "memory://visual-before.png",
+      after_image: "memory://visual-after.png",
+      diff_image: "memory://visual-diff.png",
+      blank_frame_rejection: true,
+      same_frame_rejection: true,
+      new_epoch_watermark_or_trace: "dispatch-1:2",
+      timestamp_after_dispatch: 40,
+      perceptual_diff: 0.42,
+      changed_pixel_ratio: 0.25,
+      visible_pixel_count: 1024,
+      before_image_hash: HASH_A,
+      after_image_hash: HASH_B,
+      diff_image_hash: HASH_C,
+      before_image_hash_verified: true,
+      after_image_hash_verified: true,
+      diff_image_hash_verified: true,
+      pixel_metrics_verified: true,
+      visual_pixel_verification: {
+        before_image_hash: HASH_A,
+        after_image_hash: HASH_B,
+        diff_image_hash: HASH_C,
+        before_image_hash_verified: true,
+        after_image_hash_verified: true,
+        diff_image_hash_verified: true,
+        metrics_verified: true,
+        changed_pixel_ratio_recomputed: 0.25,
+        perceptual_diff_recomputed: 0.42,
+        visible_pixel_count_recomputed: 1024,
+      },
+    },
+  };
+  record.deterministic_visual_mode = {
+    fixed_seed: true,
+    frozen_camera: true,
+    temporal_accumulation_not_applicable: true,
+    taa_not_applicable: true,
+    denoiser_not_applicable: true,
+    fixed_resolution: true,
+    fixed_swapchain_image_count: true,
+    frame_capture_after_epoch_dispatch: true,
+    presentation_fence_or_frame_boundary: true,
+  };
+  return record;
+}
+
 function normalizedPortableRecordForTransport(): Record<string, unknown> {
   const wire = portableStrictFixture();
   const normalized: Record<string, unknown> = {
@@ -394,6 +462,52 @@ describe("GPU HMR proof ledger canonical profiles", () => {
 
     expect(result.gpuHmrSuccess, result.failedInvariants).toBe(true);
     expect(result.failedInvariants.map(({ code }) => code)).not.toContain("backend_unsupported");
+  });
+
+  it("does not require renderer-specific visual artifact metadata", () => {
+    const record = rendererNeutralVisualArtifactFixture();
+    const typedResult = queryGpuHmrLedgerInvariants(record);
+    const typedFailureCodes = typedResult.failedInvariants.map(({ code }) => code);
+    const scriptCompatibilityResult = evaluateScriptGpuHmrProofLedger(record);
+    const scriptCompatibilityFailureCodes = scriptCompatibilityResult.failedInvariants.map(
+      ({ code }: { code: string }) => code
+    );
+
+    expect(typedFailureCodes).not.toEqual(expect.arrayContaining([
+      "visual_oracle_artifacts_incomplete",
+      "visual_swapchain_size_invalid",
+    ]));
+    expect(scriptCompatibilityFailureCodes).toEqual(typedFailureCodes);
+
+    const scriptResult = evaluateScriptGpuHmrProofLedger(record, {
+      requireVerifierOwnedVisualOutputState: true,
+    });
+    const scriptFailureCodes = scriptResult.failedInvariants.map(
+      ({ code }: { code: string }) => code
+    );
+
+    expect(scriptResult.gpuHmrSuccess).toBe(false);
+    expect(scriptFailureCodes).toContain("verifier_owned_visual_output_state_receipt_missing");
+    expect(scriptFailureCodes).not.toEqual(expect.arrayContaining([
+      "visual_oracle_artifacts_incomplete",
+      "visual_camera_state_hash_invalid",
+      "visual_swapchain_size_invalid",
+    ]));
+
+    const malformedLegacyMetadata = rendererNeutralVisualArtifactFixture();
+    const malformedArtifacts = (
+      malformedLegacyMetadata.oracle_artifacts as Record<string, Record<string, unknown>>
+    ).visual_oracle_artifacts;
+    malformedArtifacts.camera_state_hash = "caller-text-is-not-a-content-hash";
+
+    expect(failureCodes(malformedLegacyMetadata)).toContain(
+      "visual_camera_state_hash_invalid"
+    );
+    expect(
+      evaluateScriptGpuHmrProofLedger(malformedLegacyMetadata).failedInvariants.map(
+        ({ code }: { code: string }) => code
+      )
+    ).toContain("visual_camera_state_hash_invalid");
   });
 
   it("rejects output-target relabeling, stale bindings, and unresolved evidence", () => {
