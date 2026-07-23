@@ -103,6 +103,11 @@ assert.equal(authority.verify(receipt, {
 }).failures.includes('required_observation_missing'), true);
 assert.equal(authority.verify(receipt, {
   graph,
+  runtimeChainHash,
+  requiredNodeIds: [firstNodeId],
+}).failures.includes('required_observation_graph_incomplete'), true);
+assert.equal(authority.verify(receipt, {
+  graph,
   runtimeChainHash: hash('different-runtime-chain'),
   requiredNodeIds: [firstNodeId],
 }).failures.includes('runtime_chain_hash_mismatch'), true);
@@ -122,6 +127,14 @@ await assert.rejects(
     liveInput: [{ nodeId: firstNodeId, bytes: Buffer.alloc(0) }],
   }),
   /observation_bytes_empty/,
+);
+await assert.rejects(
+  authority.observe({
+    graph,
+    runtimeChainHash,
+    liveInput: [{ nodeId: firstNodeId, bytes: firstBytes }],
+  }),
+  /observation_graph_incomplete/,
 );
 
 const declarationObserver = createGpuHmrLiveOutputObservationAuthority({

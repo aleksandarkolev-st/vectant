@@ -187,8 +187,12 @@ export function createGpuHmrLiveOutputObservationAuthority({ observeLiveOutput }
       if (evidenceHash !== graphNode.evidenceHash) fail('observation_evidence_hash_mismatch');
       return Object.freeze({ nodeId, byteLength: bytes.byteLength, evidenceHash });
     }).sort(compareCanonical);
-    const nodeIds = observations.map((observation) => observation.nodeId);
+    const nodeIds = observations.map((observation) => observation.nodeId).sort();
     if (new Set(nodeIds).size !== nodeIds.length) fail('observation_node_duplicate');
+    const graphNodeIds = graph.nodes.map((node) => node.nodeId).sort();
+    if (stableJson(nodeIds) !== stableJson(graphNodeIds)) {
+      fail('observation_graph_incomplete');
+    }
 
     const observationSetHash = canonicalHash({
       domain: `${GPU_HMR_LIVE_OUTPUT_OBSERVATION_SCHEMA_VERSION}.observation_set`,
@@ -249,6 +253,10 @@ export function createGpuHmrLiveOutputObservationAuthority({ observeLiveOutput }
         'expected_runtime_chain_hash',
       );
       const requiredNodeIds = normalizeRequiredNodeIds(expectedSource.requiredNodeIds);
+      const graphNodeIds = graph.nodes.map((node) => node.nodeId).sort();
+      if (stableJson(requiredNodeIds) !== stableJson(graphNodeIds)) {
+        failures.push('required_observation_graph_incomplete');
+      }
       if (receiptSource.schemaVersion !== GPU_HMR_LIVE_OUTPUT_OBSERVATION_SCHEMA_VERSION) {
         failures.push('schema_version_mismatch');
       }
