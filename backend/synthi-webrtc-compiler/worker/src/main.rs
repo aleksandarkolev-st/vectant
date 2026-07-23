@@ -2514,6 +2514,8 @@ async fn wire_peer_channels(
                                         let sdls = sdl_store.clone();
                                         let rs = runner_store.clone();
                                         let pc_clone = pc_for_compile.clone();
+                                        let peer_registry_for_compile = peer_registry_for_msg.clone();
+                                        let peer_id_for_compile = peer_id_for_msg.clone();
                                         let wp = workspace_path_for_compile.clone();
                                         let cc = compile_cache.clone();
                                         let bc = boundary_checker.clone();
@@ -2538,7 +2540,29 @@ async fn wire_peer_channels(
                                         let log_clone = log.clone();
                                         let task_session = session_id.clone();
                                         let handle = tokio::spawn(async move {
-                                            if let Err(e) = handle_compile(req, log_clone, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc, video_fanout_for_compile, audio_fanout_for_compile).await {
+                                            if let Err(e) = handle_compile(
+                                                req,
+                                                log_clone,
+                                                ts,
+                                                sdls,
+                                                rs,
+                                                pc_clone,
+                                                peer_registry_for_compile,
+                                                peer_id_for_compile,
+                                                wp.to_path_buf(),
+                                                cc,
+                                                bc,
+                                                ic,
+                                                ho,
+                                                sl,
+                                                ma,
+                                                rc,
+                                                ipc,
+                                                video_fanout_for_compile,
+                                                audio_fanout_for_compile,
+                                            )
+                                            .await
+                                            {
                                                 eprintln!("[Main] Compile task failed: {:?}", e);
                                             }
                                             let mut guard = task_store.lock().await;
@@ -4629,6 +4653,8 @@ async fn handle_compile(
     sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
     runner_store: Arc<Mutex<Option<RunnerState>>>,
     pc: Arc<RTCPeerConnection>,
+    peer_registry: Arc<PeerRegistry>,
+    peer_id: String,
     workspace_path: std::path::PathBuf,
     compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>>,
     boundary_checker: Arc<Mutex<BoundaryChecker>>,
@@ -4648,6 +4674,8 @@ async fn handle_compile(
         sdl_input_store,
         runner_store,
         pc,
+        peer_registry,
+        peer_id,
         workspace_path,
         compile_cache,
         boundary_checker,

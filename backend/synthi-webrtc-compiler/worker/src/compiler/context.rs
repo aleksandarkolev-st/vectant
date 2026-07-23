@@ -14,7 +14,7 @@ use crate::runtime::path_c::xvfb_allocator::XvfbAllocator;
 use crate::runtime::runner_state::RunnerState;
 use crate::safety::hardened_ipc::IpcConfig;
 use crate::safety::restart_control::RestartController;
-use crate::webrtc::TrackFanout;
+use crate::webrtc::{PeerRegistry, TrackFanout};
 
 pub struct CompileContext {
     pub log_dc: Arc<RTCDataChannel>,
@@ -22,6 +22,8 @@ pub struct CompileContext {
     pub sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
     pub runner_store: Arc<Mutex<Option<RunnerState>>>,
     pub pc: Arc<RTCPeerConnection>,
+    pub peer_registry: Arc<PeerRegistry>,
+    pub peer_id: String,
     pub workspace_path: PathBuf,
     pub compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>>,
     pub boundary_checker: Arc<Mutex<BoundaryChecker>>,
@@ -51,6 +53,8 @@ impl Clone for CompileContext {
             sdl_input_store: self.sdl_input_store.clone(),
             runner_store: self.runner_store.clone(),
             pc: self.pc.clone(),
+            peer_registry: self.peer_registry.clone(),
+            peer_id: self.peer_id.clone(),
             workspace_path: self.workspace_path.clone(),
             compile_cache: self.compile_cache.clone(),
             boundary_checker: self.boundary_checker.clone(),

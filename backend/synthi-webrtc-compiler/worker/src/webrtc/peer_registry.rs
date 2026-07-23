@@ -247,6 +247,34 @@ impl PeerRegistry {
             .cloned()
     }
 
+    /// Snapshot a capability channel only while the peer still owns the
+    /// expected connection. The returned channel remains bound to that
+    /// connection and cannot resolve to a replacement that reused the peer ID.
+    pub fn session_data_channel_snapshot_for_connection(
+        &self,
+        peer_id: &str,
+        expected_pc: &Arc<RTCPeerConnection>,
+        capability_id: &str,
+    ) -> Option<Arc<RTCDataChannel>> {
+        if capability_id.is_empty() {
+            return None;
+        }
+
+        let peers = self.peers.read().expect("peer registry poisoned");
+        let peer = peers.get(peer_id)?;
+        if !Arc::ptr_eq(&peer.pc, expected_pc) {
+            return None;
+        }
+        let session_data_channels = self
+            .session_data_channels
+            .read()
+            .expect("session data channels poisoned");
+        session_data_channels
+            .get(peer_id)
+            .and_then(|channels| channels.get(capability_id))
+            .cloned()
+    }
+
     pub fn contains(&self, peer_id: &str) -> bool {
         self.peers
             .read()
@@ -681,6 +709,18 @@ mod tests {
             &current_pc,
             "capability.shared",
             current_dc.clone()
+        ));
+        assert!(reg
+            .session_data_channel_snapshot_for_connection("peer", &stale_pc, "capability.shared",)
+            .is_none());
+        assert!(Arc::ptr_eq(
+            &reg.session_data_channel_snapshot_for_connection(
+                "peer",
+                &current_pc,
+                "capability.shared",
+            )
+            .expect("current connection capability attached"),
+            &current_dc,
         ));
         let observed = reg
             .session_data_channel_snapshot("peer", "capability.shared")

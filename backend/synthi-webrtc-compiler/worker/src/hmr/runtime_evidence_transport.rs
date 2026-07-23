@@ -47,6 +47,8 @@ const OBSERVATION_CONTEXT_DOMAIN: &str =
 const SUBJECT_IDENTITY_DOMAIN: &str =
     "synthi.gpu_hmr.runtime_evidence_transport_subject_identity.v1";
 const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_PAYLOAD_BYTES: u64 = 512 * 1024;
+const OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_SERIALIZED_BYTES: usize =
+    (OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_PAYLOAD_BYTES as usize) * 2;
 const MAX_RECEIPT_AGE: Duration = Duration::from_secs(300);
 const MAX_FUTURE_SKEW: Duration = Duration::from_secs(30);
 
@@ -910,6 +912,18 @@ impl ObservedRuntimeEvidenceDelivery {
     fn validate_shape(&self) -> Result<(), String> {
         self.decode_payload_and_validate().map(|_| ())
     }
+
+    pub fn serialize_for_transport(&self) -> Result<String, String> {
+        self.validate_shape()?;
+        let serialized = serde_json::to_string(self)
+            .map_err(|_| "observed_runtime_evidence_delivery_serialize_failed".to_string())?;
+        if serialized.len() > OBSERVED_RUNTIME_EVIDENCE_DELIVERY_MAX_SERIALIZED_BYTES {
+            return Err(
+                "observed_runtime_evidence_delivery_serialized_payload_too_large".to_string(),
+            );
+        }
+        Ok(serialized)
+    }
 }
 
 fn base64url_no_pad_encoded_length(byte_length: u64) -> Result<u64, String> {
@@ -1609,7 +1623,7 @@ mod tests {
         assert!(!delivery.gpu_hmr_success);
         assert!(!delivery.can_satisfy_runtime_proof);
 
-        let encoded = serde_json::to_string(&delivery).unwrap();
+        let encoded = delivery.serialize_for_transport().unwrap();
         let decoded: ObservedRuntimeEvidenceDelivery = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, delivery);
 
@@ -1662,6 +1676,10 @@ mod tests {
             serde_json::from_value(forged_authority).unwrap();
         assert_eq!(
             forged_authority.validate_shape().unwrap_err(),
+            "observed_runtime_evidence_delivery_shape_invalid"
+        );
+        assert_eq!(
+            forged_authority.serialize_for_transport().unwrap_err(),
             "observed_runtime_evidence_delivery_shape_invalid"
         );
 
