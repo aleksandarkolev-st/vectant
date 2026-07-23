@@ -4751,6 +4751,7 @@ const EditorPanel = ({
                                         {isNotebookDocument && !diffMode && (
                                             <NotebookViewer
                                                 path={paneFile?.path || paneFile?.name || 'notebook.ipynb'}
+                                                workspaceSlug={slug}
                                                 content={isFocusedPane ? (code || '') : paneInitialContent}
                                                 readOnly={isCollabReadOnly || !jupyterFlags.editing()}
                                                 onSave={jupyterFlags.editing() && !isCollabReadOnly ? (nextContent) => {
