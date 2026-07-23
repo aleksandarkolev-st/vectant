@@ -658,6 +658,27 @@ describe("HmrNormalizer — data channel subscription", () => {
     normalizer.dispose();
   });
 
+  it("recognizes only exact proof objects retained by the live normalizer", () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0]
+    );
+    mockDC.emit(JSON.stringify({
+      status: "gpu-proof-state",
+      module: "arbitrary-module",
+      resultState: "gpu-hmr-compile-proven",
+    }));
+
+    const retained = normalizer.latestGpuProof();
+    expect(retained).not.toBeNull();
+    expect(normalizer.isRetainedGpuProof(retained)).toBe(true);
+    expect(normalizer.isRetainedGpuProof({ ...retained })).toBe(false);
+
+    normalizer.invalidateGpuProofTrust("runtime_evidence_transport_failed");
+    expect(normalizer.isRetainedGpuProof(retained)).toBe(false);
+    normalizer.dispose();
+  });
+
   it("drops malformed typed chunks instead of forwarding them as wire events", () => {
     const mockDC = dc();
     const normalizer = new HmrNormalizer(

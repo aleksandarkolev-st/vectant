@@ -864,6 +864,18 @@ export class HmrNormalizer {
     return null;
   }
 
+  isRetainedGpuProof(value: unknown): value is GpuHmrProofTelemetry {
+    if (
+      this.disposed
+      || this.proofTrustInvalidation !== null
+      || value === null
+      || typeof value !== "object"
+    ) {
+      return false;
+    }
+    return this.proofHistory.includes(value as GpuHmrProofTelemetry);
+  }
+
   private rememberGpuProof(proof: GpuHmrProofTelemetry): void {
     if (this.proofTrustInvalidation !== null) return;
     this.latestProof = proof;
