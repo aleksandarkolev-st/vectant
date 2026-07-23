@@ -4,6 +4,7 @@ import { canWriteScope } from '@/lib/integrations/scope';
 import { resolveJupyterServer } from '@/lib/jupyter/registry';
 import { JupyterClient } from '@/lib/jupyter/client';
 import { normalizeNotebook, revisionOf, serializeNotebook } from '@/lib/jupyter/notebook';
+import { recordJupyterAudit } from '@/lib/jupyter/audit';
 
 export const runtime = 'nodejs';
 export async function POST(request, { params }) {
@@ -16,6 +17,6 @@ export async function POST(request, { params }) {
     const client = new JupyterClient(server); const current = await client.getNotebook(path, request.signal);
     if (expectedServerRevision && current.last_modified !== expectedServerRevision) return NextResponse.json({ error: 'server_newer', revision: current.last_modified }, { status: 409 });
     const normalized = normalizeNotebook(notebook); const saved = await client.saveNotebook(path, normalized, request.signal);
-    const content = serializeNotebook(normalized); return NextResponse.json({ revision: revisionOf(content), serverRevision: saved.last_modified || null });
+    const content = serializeNotebook(normalized); void recordJupyterAudit({ workspaceSlug: slug, serverId: server.id, actorUserId: actor.userId, eventType: 'notebook_saved', notebookPath: path, details: { bytes: content.length } }); return NextResponse.json({ revision: revisionOf(content), serverRevision: saved.last_modified || null });
   } catch (error) { return NextResponse.json({ error: error.code || 'jupyter_error', detail: error.message }, { status: error.status || 502 }); }
 }
