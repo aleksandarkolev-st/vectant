@@ -9,6 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub mod transport_access_unit_observation;
+pub use transport_access_unit_observation::{
+    TransportAccessUnitFragment, TransportAccessUnitObservation,
+    TransportAccessUnitObservationInput,
+    TRANSPORT_ACCESS_UNIT_OBSERVATION_CANONICALIZATION_VERSION,
+    TRANSPORT_ACCESS_UNIT_OBSERVATION_SCHEMA_VERSION,
+};
+
 pub const RUNTIME_EVIDENCE_TRANSPORT_RECEIPT_SCHEMA_VERSION: &str =
     "synthi.gpu_hmr.runtime_evidence_transport_receipt.v2";
 pub const RUNTIME_EVIDENCE_TRANSPORT_VERIFICATION_KEY_SCHEMA_VERSION: &str =
