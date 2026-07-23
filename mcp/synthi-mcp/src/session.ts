@@ -7,6 +7,9 @@ import {
   GpuParentRuntimeProofAdmissionAuthority,
   type GpuParentRuntimeProofAdmissionTrustMaterial,
 } from "./gpu_parent_runtime_proof_admission_authority.js";
+import {
+  createGpuMcpOutputByteObservationBoundary,
+} from "./gpu_mcp_output_byte_observation_boundary.js";
 import { FrameSink } from "./frames.js";
 import { SessionChannels } from "./channels.js";
 import { projectPublicHmrEvent } from "./hmr.js";
@@ -282,8 +285,13 @@ function parseProducerViewport(msg: Record<string, unknown>): ProducerViewport |
 }
 
 class SessionManager {
+  readonly #gpuMcpOutputByteObservationBoundary =
+    createGpuMcpOutputByteObservationBoundary();
   readonly #gpuParentRuntimeProofAdmissionAuthority =
-    new GpuParentRuntimeProofAdmissionAuthority();
+    new GpuParentRuntimeProofAdmissionAuthority({
+      outputByteConsumerCapability:
+        this.#gpuMcpOutputByteObservationBoundary.consumer,
+    });
   #gpuParentRuntimeProofAdmissionTrustMaterialPromise:
     Promise<GpuParentRuntimeProofAdmissionTrustMaterial> | null = null;
   private attached: AttachedSession | null = null;
