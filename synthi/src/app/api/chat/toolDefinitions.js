@@ -10,6 +10,8 @@
  * streaming loop.
  */
 
+import { jupyterFlags } from '@/lib/jupyter/flags';
+
 const COLLAB_BASE =
     (process.env.COLLAB_SERVER_URL || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234').replace(/\/$/, '');
 
@@ -20,6 +22,11 @@ const MAX_DIR_ENTRIES = 60;
 /* ─── Gemini function declarations ────────────────────────────────── */
 
 export const TOOL_DECLARATIONS = [
+    ...(jupyterFlags.execution() ? [{
+        name: 'execute_notebook_cells',
+        description: 'Execute explicit notebook code through a registered Jupyter server. This always requires user approval before a kernel receives code.',
+        parameters: { type: 'OBJECT', properties: { serverId: { type: 'STRING' }, notebookPath: { type: 'STRING' }, code: { type: 'STRING' }, kernelName: { type: 'STRING' } }, required: ['serverId', 'notebookPath', 'code'] },
+    }] : []),
     {
         name: 'read_file',
         description:
@@ -249,6 +256,20 @@ async function execListDirectory(slug, args, signal, options = {}) {
     } catch (e) {
         return { error: `Failed to list directory: ${e.message}` };
     }
+}
+
+async function execExecuteNotebookCells(slug, args, signal) {
+    if (!jupyterFlags.execution()) return { error: 'Jupyter agent execution is disabled by workspace feature flag' };
+    const { resolveJupyterServer } = await import('@/lib/jupyter/registry');
+    const { JupyterClient } = await import('@/lib/jupyter/client');
+    const server = await resolveJupyterServer(args?.serverId, slug);
+    if (!server) return { error: 'Registered Jupyter server is unavailable for this workspace' };
+    if (!String(args?.notebookPath || '').endsWith('.ipynb')) return { error: 'Notebook path must end in .ipynb' };
+    try {
+        const client = new JupyterClient(server); const session = await client.startKernel({ path: args.notebookPath, kernelName: args.kernelName, signal });
+        const result = await client.execute({ kernelId: session.kernel?.id, code: String(args.code), signal });
+        return { serverId: server.id, notebookPath: args.notebookPath, kernelId: session.kernel?.id, ...result };
+    } catch (error) { return { error: error.message, code: error.code || 'jupyter_execution_error' }; }
 }
 
 const MAX_CMD_OUTPUT = 20_000;
@@ -545,6 +566,7 @@ async function execCreateDirectory(slug, args, _signal, options = {}) {
 }
 
 const EXECUTORS = {
+    execute_notebook_cells: execExecuteNotebookCells,
     read_file: execReadFile,
     search_workspace: execSearchWorkspace,
     list_directory: execListDirectory,

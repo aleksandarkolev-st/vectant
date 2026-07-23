@@ -1027,14 +1027,16 @@ const streamGeminiWithTools = async ({
                 for (const part of fnCalls) {
                     const { name, args } = part.functionCall;
 
-                    if (name === 'run_command') {
-                        const command = (args?.command || '').trim();
+                    if (name === 'run_command' || name === 'execute_notebook_cells') {
+                        const command = name === 'execute_notebook_cells'
+                            ? `Execute notebook ${args?.notebookPath || ''} on registered Jupyter server`
+                            : (args?.command || '').trim();
 
                         // ── Detect git write commands → DEFER them ──
                         // Git add/commit/push must wait until the user reviews
                         // and applies FILE: block suggestions. We tell Gemini
                         // the command is deferred and continue generating.
-                        if (GIT_WRITE_CMD_RE.test(command)) {
+                        if (name === 'run_command' && GIT_WRITE_CMD_RE.test(command)) {
                             const approvalId = generateApprovalId();
                             deferredCommands.push({ id: approvalId, command, args });
                             // Store for the approve-command endpoint to execute later

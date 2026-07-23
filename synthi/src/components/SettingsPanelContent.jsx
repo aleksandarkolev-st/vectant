@@ -29,6 +29,7 @@ import { useThemePicker } from '@/components/ThemePicker';
 import { useViewport } from '@/hooks/useViewport';
 import StatusIslandPresetDialog from '@/components/StatusIslandPresetDialog';
 import { toast } from 'sonner';
+import JupyterConnectionSettings from '@/components/notebook/JupyterConnectionSettings';
 import { Key, Eye, EyeOff, Check, Trash2, AlertCircle, FlaskConical, Loader2, X } from 'lucide-react';
 import {
   STATUS_ISLAND_DOCK_PRESETS,
@@ -689,6 +690,8 @@ export function SettingsPanelContent() {
       </div>
 
       <div className="border-t my-1" style={{ borderColor: 'var(--border-subtle)' }} />
+
+      <JupyterConnectionSettings />
 
       {/* Theme picker */}
       <button
