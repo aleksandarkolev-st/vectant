@@ -386,7 +386,7 @@ function snapshotObservedBytes(value: unknown): Buffer | null {
     if (
       isSharedArrayBuffer(buffer)
       || !Number.isSafeInteger(byteLength)
-      || byteLength <= 0
+      || byteLength < 0
     ) {
       return null;
     }

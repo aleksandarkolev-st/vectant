@@ -202,10 +202,6 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
     const receipt = receiptSigner.sign(receiptRequest(privateKey));
     const other = signer(generateKeyPairSync("ed25519").privateKey);
 
-    expect(() => receiptSigner.sign({
-      ...receiptRequest(privateKey),
-      outputBytes: Buffer.alloc(0),
-    })).toThrow("gpu_mcp_output_observation_receipt_request_invalid");
     expect(() => receiptSigner.sign(
       receiptRequest(generateKeyPairSync("ed25519").privateKey),
     )).toThrow("gpu_mcp_output_observation_receipt_request_invalid");
@@ -233,6 +229,27 @@ describe("GpuMcpOutputObservationReceiptSigner", () => {
       OTHER_CHALLENGE,
     ).reason).toBe(
       "gpu_hmr_mcp_output_observation_validation_run_challenge_mismatch",
+    );
+  });
+
+  it("observes an empty output without assigning it a modality", () => {
+    const { privateKey } = generateKeyPairSync("ed25519");
+    const receiptSigner = signer(privateKey);
+    const receipt = receiptSigner.sign({
+      ...receiptRequest(privateKey),
+      outputBytes: new Uint8Array(0),
+    });
+
+    expect(receipt).toMatchObject({
+      outputContentSha256: sha256(new Uint8Array(0)),
+      outputByteLength: "0",
+      outputBytesObserved: true,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(JSON.stringify(receipt)).not.toMatch(
+      /project|fixture|scenario|backend|camera|image|tensor|media/i,
     );
   });
 

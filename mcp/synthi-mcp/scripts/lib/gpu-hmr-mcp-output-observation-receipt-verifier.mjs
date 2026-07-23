@@ -160,7 +160,7 @@ function validInputFields(value) {
     && canonicalSha256(value.runtimeBindingSha256)
     && canonicalSha256(value.producerObservationSha256)
     && canonicalSha256(value.outputContentSha256)
-    && canonicalDecimalU64(value.outputByteLength, false)
+    && canonicalDecimalU64(value.outputByteLength, true)
     && canonicalDecimalU64(value.observedAtMonotonicNs, true);
 }
 

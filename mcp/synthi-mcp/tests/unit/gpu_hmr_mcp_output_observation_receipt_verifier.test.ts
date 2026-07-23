@@ -207,7 +207,7 @@ describe("generic MCP output-observation receipt verifier", () => {
     expect(verification.signatureVerified).toBe(false);
   });
 
-  it("rejects extra scenario fields, malformed lengths, accessors, and proxies", () => {
+  it("accepts empty output and rejects malformed lengths and object boundaries", () => {
     const valid = input();
     expect(parseGpuHmrMcpOutputObservationReceiptSigningInput(valid)).toEqual(valid);
     expect(parseGpuHmrMcpOutputObservationReceiptSigningInput({
@@ -217,6 +217,14 @@ describe("generic MCP output-observation receipt verifier", () => {
     expect(parseGpuHmrMcpOutputObservationReceiptSigningInput({
       ...valid,
       outputByteLength: "0",
+    })).toEqual({ ...valid, outputByteLength: "0" });
+    expect(parseGpuHmrMcpOutputObservationReceiptSigningInput({
+      ...valid,
+      outputByteLength: "-1",
+    })).toBeNull();
+    expect(parseGpuHmrMcpOutputObservationReceiptSigningInput({
+      ...valid,
+      outputByteLength: "01",
     })).toBeNull();
     expect(parseGpuHmrMcpOutputObservationReceiptSigningInput({
       ...valid,
