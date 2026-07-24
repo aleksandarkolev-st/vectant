@@ -1411,6 +1411,139 @@ async function main() {
     await rm(poisonedPublicationCacheRoot, { recursive: true, force: true });
   }
 
+  const poisonedAttestationCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-poisoned-attestation-cache-'),
+  );
+  try {
+    const descriptor = await coldBuildLauncherPublicationDescriptor({
+      architecture: launcher.architecture,
+      cacheRoot: poisonedAttestationCacheRoot,
+    });
+    await createPrivateDirectoryChain(
+      poisonedAttestationCacheRoot,
+      descriptor.relativeDirectorySegments,
+    );
+    await writeFile(
+      descriptor.cachedAttestationPath,
+      'forged publication attestation',
+      { mode: 0o400 },
+    );
+    await chmod(descriptor.cachedAttestationPath, 0o444);
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: poisonedAttestationCacheRoot,
+      }),
+      /cold_build_launcher_publication_attestation_conflict_invalid/,
+    );
+    assert.equal(
+      await readFile(descriptor.cachedAttestationPath, 'utf8'),
+      'forged publication attestation',
+    );
+  } finally {
+    await rm(poisonedAttestationCacheRoot, { recursive: true, force: true });
+  }
+
+  const mutableAttestationCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-mutable-attestation-cache-'),
+  );
+  try {
+    const descriptor = await coldBuildLauncherPublicationDescriptor({
+      architecture: launcher.architecture,
+      cacheRoot: mutableAttestationCacheRoot,
+    });
+    await createPrivateDirectoryChain(
+      mutableAttestationCacheRoot,
+      descriptor.relativeDirectorySegments,
+    );
+    await writeFile(
+      descriptor.cachedAttestationPath,
+      descriptor.publicationAttestation.bytes,
+      { mode: 0o600 },
+    );
+    await chmod(descriptor.cachedAttestationPath, 0o644);
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: mutableAttestationCacheRoot,
+      }),
+      /cold_build_launcher_publication_attestation_conflict_invalid:.*mutable_mode/,
+    );
+  } finally {
+    await rm(mutableAttestationCacheRoot, { recursive: true, force: true });
+  }
+
+  const publicationPairRaceCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-pair-race-cache-'),
+  );
+  try {
+    const descriptor = await coldBuildLauncherPublicationDescriptor({
+      architecture: launcher.architecture,
+      cacheRoot: publicationPairRaceCacheRoot,
+    });
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: publicationPairRaceCacheRoot,
+        beforePublicationLink: async () => {
+          await writeFile(
+            descriptor.cachedAttestationPath,
+            'racing forged publication attestation',
+            { mode: 0o400 },
+          );
+          await chmod(descriptor.cachedAttestationPath, 0o444);
+        },
+      }),
+      /cold_build_launcher_publication_conflict_invalid:.*hash_mismatch/,
+    );
+    assert.equal(
+      await readFile(descriptor.cachedAttestationPath, 'utf8'),
+      'racing forged publication attestation',
+    );
+  } finally {
+    await rm(publicationPairRaceCacheRoot, { recursive: true, force: true });
+  }
+
+  const partialPublicationCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-partial-publication-cache-'),
+  );
+  try {
+    const descriptor = await coldBuildLauncherPublicationDescriptor({
+      architecture: launcher.architecture,
+      cacheRoot: partialPublicationCacheRoot,
+    });
+    await createPrivateDirectoryChain(
+      partialPublicationCacheRoot,
+      descriptor.relativeDirectorySegments,
+    );
+    await writeFile(
+      descriptor.cachedBinaryPath,
+      await readFile(launcher.executablePath),
+      { mode: 0o500 },
+    );
+    await chmod(descriptor.cachedBinaryPath, 0o555);
+    const repaired = await materializeColdBuildLauncher({
+      dockerExecutable,
+      architecture: launcher.architecture,
+      cacheRoot: partialPublicationCacheRoot,
+    });
+    assert.equal(repaired.buildEvidence.cacheHit, false);
+    assert.equal(repaired.buildEvidence.buildExecuted, true);
+    assert.equal(
+      contentHash(await readFile(descriptor.cachedAttestationPath)),
+      descriptor.publicationManifestHash,
+    );
+    assert.equal(
+      repaired.buildEvidence.publicationOutcome,
+      'verified_existing_after_race',
+    );
+  } finally {
+    await rm(partialPublicationCacheRoot, { recursive: true, force: true });
+  }
+
   const mutablePublicationCacheRoot = await mkdtemp(
     path.join(os.tmpdir(), 'synthi-cold-launcher-mutable-publication-cache-'),
   );

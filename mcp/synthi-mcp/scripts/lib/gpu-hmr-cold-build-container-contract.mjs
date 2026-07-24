@@ -43,7 +43,9 @@ export const COLD_BUILD_LAUNCHER_SOURCE_MANIFEST_SCHEMA =
 export const COLD_BUILD_LAUNCHER_BUILDER_RECIPE_SCHEMA =
   'synthi.gpu_hmr.cold_build_launcher_builder_recipe.v1';
 export const COLD_BUILD_LAUNCHER_PUBLICATION_SCHEMA =
-  'synthi.gpu_hmr.cold_build_launcher_publication.v1';
+  'synthi.gpu_hmr.cold_build_launcher_publication.v2';
+export const COLD_BUILD_LAUNCHER_PUBLICATION_AUTHORITY =
+  'content_addressed_launcher_publication_only_not_gpu_hmr_success';
 export const COLD_BUILD_LAUNCHER_BUILDER_IMAGE =
   'golang@sha256:3641e0d9b931dc4f2f185dcd669c4679670e9277c8166a838ddb98a2d4389cb5';
 export const COLD_BUILD_LAUNCHER_CONTAINER_PATH =
@@ -630,6 +632,7 @@ function sameFileMetadata(left, right) {
 
 async function inspectLauncherFile(filePath, expectedHash, {
   requireImmutable = true,
+  requireExecutable = true,
 } = {}) {
   let before;
   let beforeCanonicalPath;
@@ -709,7 +712,9 @@ async function inspectLauncherFile(filePath, expectedHash, {
       || verificationOpened.size !== BigInt(bytes.byteLength)
       || finalPath.size !== BigInt(bytes.byteLength)
     ) invariantFailures.push('size_mismatch');
-    if (!executableModeAccepted) invariantFailures.push('not_executable');
+    if (requireExecutable && !executableModeAccepted) {
+      invariantFailures.push('not_executable');
+    }
     if (requireImmutable && !immutableMode) invariantFailures.push('mutable_mode');
     if (binaryHash !== expectedHash) invariantFailures.push('hash_mismatch');
     const accepted = invariantFailures.length === 0;
@@ -760,11 +765,14 @@ async function inspectLauncherFile(filePath, expectedHash, {
 
 async function inspectLauncherFileUntilStable(filePath, expectedHash, {
   timeoutMs = 5_000,
+  requireExecutable = true,
 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let inspection = null;
   do {
-    inspection = await inspectLauncherFile(filePath, expectedHash);
+    inspection = await inspectLauncherFile(filePath, expectedHash, {
+      requireExecutable,
+    });
     if (inspection.accepted) return inspection;
     if (!/unstable_(identity|metadata)/.test(inspection.reason || '')) return inspection;
     await sleep(10);
@@ -1186,8 +1194,12 @@ async function syncDirectoryHierarchy(directoryPath) {
   };
 }
 
-async function syncPublishedLauncherFile(filePath, expectedHash) {
-  const before = await inspectLauncherFileUntilStable(filePath, expectedHash);
+async function syncPublishedLauncherFile(filePath, expectedHash, {
+  requireExecutable = true,
+} = {}) {
+  const before = await inspectLauncherFileUntilStable(filePath, expectedHash, {
+    requireExecutable,
+  });
   if (!before.accepted) {
     throw new Error(`cold_build_launcher_published_file_sync_invalid:${before.reason}`);
   }
@@ -1223,7 +1235,9 @@ async function syncPublishedLauncherFile(filePath, expectedHash) {
   } finally {
     await handle?.close().catch(() => {});
   }
-  const after = await inspectLauncherFileUntilStable(filePath, expectedHash);
+  const after = await inspectLauncherFileUntilStable(filePath, expectedHash, {
+    requireExecutable,
+  });
   if (
     !after.accepted
     || after.inodeIdentityHash !== before.inodeIdentityHash
@@ -1238,16 +1252,33 @@ async function syncPublishedLauncherFile(filePath, expectedHash) {
   };
 }
 
-async function publishLauncherBinary({
+function combineSyncResults(results) {
+  const present = results.filter(Boolean);
+  if (present.length === 0) return null;
+  const status = present.every((result) => result.status === 'synced')
+    ? 'synced'
+    : present.every((result) => result.status === 'not_required_cache_hit')
+      ? 'not_required_cache_hit'
+      : 'unsupported';
+  return {
+    status,
+    errorCode: present.find((result) => result.errorCode)?.errorCode ?? null,
+  };
+}
+
+async function publishLauncherFile({
   publicationDirectory,
-  cachedBinaryPath,
-  binaryBytes,
-  expectedBinaryHash,
+  publishedPath,
+  fileBytes,
+  expectedFileHash,
+  candidatePrefix,
+  fileMode,
+  requireExecutable,
   beforePublicationLink,
 }) {
   const candidateBinaryPath = path.join(
     publicationDirectory,
-    `.candidate-${process.pid}-${randomBytes(16).toString('hex')}`,
+    `${candidatePrefix}${process.pid}-${randomBytes(16).toString('hex')}`,
   );
   let candidateCreated = false;
   let publicationOutcome = null;
@@ -1263,15 +1294,16 @@ async function publishLauncherBinary({
     const handle = await open(candidateBinaryPath, 'wx', 0o500);
     candidateCreated = true;
     try {
-      await handle.writeFile(binaryBytes);
-      await handle.chmod(0o555);
+      await handle.writeFile(fileBytes);
+      await handle.chmod(fileMode);
       await handle.sync();
     } finally {
       await handle.close();
     }
     candidateInspection = await inspectLauncherFile(
       candidateBinaryPath,
-      expectedBinaryHash,
+      expectedFileHash,
+      { requireExecutable },
     );
     if (!candidateInspection.accepted) {
       throw new Error(
@@ -1287,11 +1319,12 @@ async function publishLauncherBinary({
     if (beforePublicationLink) {
       await beforePublicationLink(Object.freeze({
         candidateBinaryPath,
-        cachedBinaryPath,
+        publishedPath,
       }));
       candidatePostCoordinationInspection = await inspectLauncherFile(
         candidateBinaryPath,
-        expectedBinaryHash,
+        expectedFileHash,
+        { requireExecutable },
       );
       if (
         !candidatePostCoordinationInspection.accepted
@@ -1302,7 +1335,7 @@ async function publishLauncherBinary({
       }
     }
     try {
-      await link(candidateBinaryPath, cachedBinaryPath);
+      await link(candidateBinaryPath, publishedPath);
       publicationOutcome = 'publication_created';
     } catch (error) {
       if (error?.code !== 'EEXIST') {
@@ -1312,8 +1345,9 @@ async function publishLauncherBinary({
       }
       publicationRaceObserved = true;
       const existing = await inspectLauncherFileUntilStable(
-        cachedBinaryPath,
-        expectedBinaryHash,
+        publishedPath,
+        expectedFileHash,
+        { requireExecutable },
       );
       if (!existing.accepted) {
         throw new Error(
@@ -1323,8 +1357,9 @@ async function publishLauncherBinary({
       publicationOutcome = 'verified_existing_after_race';
     }
     publishedFileSync = await syncPublishedLauncherFile(
-      cachedBinaryPath,
-      expectedBinaryHash,
+      publishedPath,
+      expectedFileHash,
+      { requireExecutable },
     );
     directorySyncAfterLink = await syncDirectory(publicationDirectory);
   } finally {
@@ -1334,8 +1369,9 @@ async function publishLauncherBinary({
     }
   }
   const published = await inspectLauncherFileUntilStable(
-    cachedBinaryPath,
-    expectedBinaryHash,
+    publishedPath,
+    expectedFileHash,
+    { requireExecutable },
   );
   if (
     !published.accepted
@@ -1346,7 +1382,7 @@ async function publishLauncherBinary({
     );
   }
   return {
-    binaryBytes: published.bytes,
+    fileBytes: published.bytes,
     finalInspection: published,
     candidateInspection,
     candidatePostCoordinationInspection,
@@ -1619,6 +1655,38 @@ export function coldBuildLauncherExpectedHash(architecture) {
     : null;
 }
 
+function launcherPublicationAttestation({
+  architecture,
+  binaryHash,
+  builderRecipe,
+  publicationKeyHash,
+  relativeBinaryPath,
+  sourceIdentity,
+}) {
+  const record = Object.freeze({
+    schemaVersion: COLD_BUILD_LAUNCHER_PUBLICATION_SCHEMA,
+    proofAuthority: COLD_BUILD_LAUNCHER_PUBLICATION_AUTHORITY,
+    publicationKeyHash,
+    providerIdentity: architecture,
+    sourceManifestHash: sourceIdentity.manifestHash,
+    builderRecipeHash: builderRecipe.recipeHash,
+    builderImage: builderRecipe.builderImage,
+    binaryHash,
+    relativeBinaryPath,
+    acceptedAsLauncherPublication: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  });
+  const bytes = Buffer.from(`${stableJson(record)}\n`, 'utf8');
+  return Object.freeze({
+    record,
+    bytes,
+    manifestHash: contentHash(bytes),
+  });
+}
+
 function coldBuildLauncherSourceIdentityAccepted(sourceIdentity) {
   if (
     !exactKeys(sourceIdentity, COLD_BUILD_LAUNCHER_SOURCE_IDENTITY_KEYS)
@@ -1657,21 +1725,26 @@ function coldBuildLauncherBuildEvidenceAccepted(
     architecture,
     builderRecipeHash: expectedRecipe.recipeHash,
     expectedBinaryHash,
+    publicationSchema: COLD_BUILD_LAUNCHER_PUBLICATION_SCHEMA,
     sourceManifestHash: sourceIdentity.manifestHash,
   };
   const expectedPublicationKeyHash = contentHash(stableJson(publicationKeyProjection));
   const publicationDirectoryName = expectedPublicationKeyHash.slice('sha256:'.length);
-  const publicationProjection = {
-    schemaVersion: COLD_BUILD_LAUNCHER_PUBLICATION_SCHEMA,
+  const relativeBinaryPath = [
+    'cold-build-launcher',
+    'publications',
+    architecture,
+    publicationDirectoryName,
+    'cold-build-launcher',
+  ].join('/');
+  const publicationAttestation = launcherPublicationAttestation({
+    architecture,
+    binaryHash: expectedBinaryHash,
+    builderRecipe: expectedRecipe,
     publicationKeyHash: expectedPublicationKeyHash,
-    relativeBinaryPath: [
-      'cold-build-launcher',
-      'publications',
-      architecture,
-      publicationDirectoryName,
-      'cold-build-launcher',
-    ].join('/'),
-  };
+    relativeBinaryPath,
+    sourceIdentity,
+  });
   const requiredHashFields = [
     'sourceHash',
     'sourceManifestHash',
@@ -1810,7 +1883,7 @@ function coldBuildLauncherBuildEvidenceAccepted(
     && buildEvidence.mutableBuildLockUsed === false
     && buildEvidence.publicationKeyHash === expectedPublicationKeyHash
     && buildEvidence.publicationManifestHash
-      === contentHash(stableJson(publicationProjection))
+      === publicationAttestation.manifestHash
     && buildEvidence.publicationDirectoryName === publicationDirectoryName
     && publicationOutcomeAccepted
     && typeof buildEvidence.publicationPreLinkCoordinationUsed === 'boolean'
@@ -2077,6 +2150,7 @@ export async function coldBuildLauncherPublicationDescriptor({
     architecture: normalizedArchitecture,
     builderRecipeHash: builderRecipe.recipeHash,
     expectedBinaryHash,
+    publicationSchema: COLD_BUILD_LAUNCHER_PUBLICATION_SCHEMA,
     sourceManifestHash: sourceIdentity.manifestHash,
   };
   const publicationKeyHash = contentHash(stableJson(publicationKeyProjection));
@@ -2090,12 +2164,15 @@ export async function coldBuildLauncherPublicationDescriptor({
   const relativeBinaryPath = path.join(
     ...relativeDirectorySegments,
     'cold-build-launcher',
-  );
-  const publicationProjection = {
-    schemaVersion: COLD_BUILD_LAUNCHER_PUBLICATION_SCHEMA,
+  ).split(path.sep).join('/');
+  const publicationAttestation = launcherPublicationAttestation({
+    architecture: normalizedArchitecture,
+    binaryHash: expectedBinaryHash,
+    builderRecipe,
     publicationKeyHash,
-    relativeBinaryPath: relativeBinaryPath.split(path.sep).join('/'),
-  };
+    relativeBinaryPath,
+    sourceIdentity,
+  });
   const resolvedCacheRoot = path.resolve(cacheRoot);
   const publicationDirectory = path.join(resolvedCacheRoot, ...relativeDirectorySegments);
   return Object.freeze({
@@ -2104,13 +2181,19 @@ export async function coldBuildLauncherPublicationDescriptor({
     sourceIdentity,
     builderRecipe,
     publicationKeyHash,
-    publicationManifestHash: contentHash(stableJson(publicationProjection)),
+    publicationAttestation,
+    publicationManifestHash: publicationAttestation.manifestHash,
     publicationDirectoryName,
     relativeDirectorySegments: Object.freeze([...relativeDirectorySegments]),
-    relativeBinaryPath: publicationProjection.relativeBinaryPath,
+    relativeBinaryPath,
+    relativeAttestationPath: [
+      ...relativeDirectorySegments,
+      'publication.json',
+    ].join('/'),
     resolvedCacheRoot,
     publicationDirectory,
     cachedBinaryPath: path.join(publicationDirectory, 'cold-build-launcher'),
+    cachedAttestationPath: path.join(publicationDirectory, 'publication.json'),
   });
 }
 
@@ -2128,12 +2211,14 @@ async function materializeColdBuildLauncherOnce({
     sourceIdentity,
     builderRecipe,
     publicationKeyHash,
+    publicationAttestation,
     publicationManifestHash,
     publicationDirectoryName,
     relativeDirectorySegments,
     resolvedCacheRoot,
     publicationDirectory,
     cachedBinaryPath,
+    cachedAttestationPath,
   } = descriptor;
   const trustedRoot = await prepareTrustedCacheRoot(resolvedCacheRoot);
   const publicationDirectoryChain = await preparePrivateDirectoryChain(
@@ -2180,21 +2265,42 @@ async function materializeColdBuildLauncherOnce({
     cachedBinaryPath,
     expectedBinaryHash,
   );
+  const initialAttestationInspection = await inspectLauncherFileUntilStable(
+    cachedAttestationPath,
+    publicationManifestHash,
+    { requireExecutable: false },
+  );
   if (initialInspection.present && !initialInspection.accepted) {
     throw new Error(
       `cold_build_launcher_publication_conflict_invalid:${initialInspection.reason}`,
     );
   }
+  if (initialAttestationInspection.present && !initialAttestationInspection.accepted) {
+    throw new Error(
+      'cold_build_launcher_publication_attestation_conflict_invalid:'
+        + initialAttestationInspection.reason,
+    );
+  }
   let finalInspection = initialInspection;
+  let finalAttestationInspection = initialAttestationInspection;
   let binaryBytes = initialInspection.accepted ? initialInspection.bytes : null;
-  let cacheAccepted = initialInspection.accepted;
-  const cacheHit = initialInspection.accepted;
-  const cacheHitFileSync = cacheHit
+  let cacheAccepted = initialInspection.accepted
+    && initialAttestationInspection.accepted;
+  const cacheHit = cacheAccepted;
+  const cacheHitBinarySync = cacheHit
     ? await syncPublishedLauncherFile(cachedBinaryPath, expectedBinaryHash)
     : null;
-  if (cacheHitFileSync) {
-    finalInspection = cacheHitFileSync.inspection;
-    binaryBytes = cacheHitFileSync.inspection.bytes;
+  const cacheHitAttestationSync = cacheHit
+    ? await syncPublishedLauncherFile(
+      cachedAttestationPath,
+      publicationManifestHash,
+      { requireExecutable: false },
+    )
+    : null;
+  if (cacheHitBinarySync && cacheHitAttestationSync) {
+    finalInspection = cacheHitBinarySync.inspection;
+    finalAttestationInspection = cacheHitAttestationSync.inspection;
+    binaryBytes = cacheHitBinarySync.inspection.bytes;
   }
   let buildResult = null;
   let buildArgs = null;
@@ -2204,13 +2310,21 @@ async function materializeColdBuildLauncherOnce({
   let publicationRaceObserved = false;
   let publicationPreLinkCoordinationUsed = false;
   let publicationSameDevice = finalInspection?.accepted
+    && finalAttestationInspection?.accepted
     ? finalInspection.pathDevice
       === String(publicationDirectoryChain.inspections.at(-1)?.device)
+      && finalAttestationInspection.pathDevice
+        === String(publicationDirectoryChain.inspections.at(-1)?.device)
     : null;
+  const cacheHitFileSync = combineSyncResults([
+    cacheHitBinarySync,
+    cacheHitAttestationSync,
+  ]);
   let publicationFileSyncStatus = cacheHit ? cacheHitFileSync.status : null;
   let publicationFileSyncErrorCode = cacheHit ? cacheHitFileSync.errorCode : null;
   let publicationFileSyncIdentityVerified = cacheHit
-    ? cacheHitFileSync.identityVerified
+    ? cacheHitBinarySync.identityVerified
+      && cacheHitAttestationSync.identityVerified
     : false;
   let directorySyncBeforeLink = cacheHit
     ? { status: 'not_required_cache_hit', errorCode: null }
@@ -2293,26 +2407,68 @@ async function materializeColdBuildLauncherOnce({
           `cold_build_launcher_reproducible_hash_mismatch:${builtInspection.reason}`,
         );
       }
-      const publication = await publishLauncherBinary({
+      const binaryPublication = await publishLauncherFile({
         publicationDirectory,
-        cachedBinaryPath,
-        binaryBytes: builtInspection.bytes,
-        expectedBinaryHash,
+        publishedPath: cachedBinaryPath,
+        fileBytes: builtInspection.bytes,
+        expectedFileHash: expectedBinaryHash,
+        candidatePrefix: '.candidate-binary-',
+        fileMode: 0o555,
+        requireExecutable: true,
         beforePublicationLink,
       });
-      binaryBytes = publication.binaryBytes;
-      finalInspection = publication.finalInspection;
-      publicationOutcome = publication.publicationOutcome;
-      publicationRaceObserved = publication.publicationRaceObserved;
-      publicationPreLinkCoordinationUsed = publication.publicationPreLinkCoordinationUsed;
-      publicationSameDevice = publication.sameDevice;
-      publicationFileSyncStatus = publication.fileSyncStatus;
-      publicationFileSyncErrorCode = publication.fileSyncErrorCode;
-      publicationFileSyncIdentityVerified = publication.fileSyncIdentityVerified;
-      directorySyncBeforeLink = publication.directorySyncBeforeLink;
-      directorySyncAfterLink = publication.directorySyncAfterLink;
-      directorySyncAfterCleanup = publication.directorySyncAfterCleanup;
-      cacheAccepted = binaryBytes !== null;
+      const attestationPublication = await publishLauncherFile({
+        publicationDirectory,
+        publishedPath: cachedAttestationPath,
+        fileBytes: publicationAttestation.bytes,
+        expectedFileHash: publicationManifestHash,
+        candidatePrefix: '.candidate-publication-',
+        fileMode: 0o444,
+        requireExecutable: false,
+        beforePublicationLink: null,
+      });
+      binaryBytes = binaryPublication.fileBytes;
+      finalInspection = binaryPublication.finalInspection;
+      finalAttestationInspection = attestationPublication.finalInspection;
+      publicationOutcome = binaryPublication.publicationOutcome === 'publication_created'
+        && attestationPublication.publicationOutcome === 'publication_created'
+        ? 'publication_created'
+        : 'verified_existing_after_race';
+      publicationRaceObserved = binaryPublication.publicationRaceObserved
+        || attestationPublication.publicationRaceObserved;
+      publicationPreLinkCoordinationUsed =
+        binaryPublication.publicationPreLinkCoordinationUsed;
+      publicationSameDevice = binaryPublication.sameDevice
+        && attestationPublication.sameDevice;
+      const publicationFileSync = combineSyncResults([
+        {
+          status: binaryPublication.fileSyncStatus,
+          errorCode: binaryPublication.fileSyncErrorCode,
+        },
+        {
+          status: attestationPublication.fileSyncStatus,
+          errorCode: attestationPublication.fileSyncErrorCode,
+        },
+      ]);
+      publicationFileSyncStatus = publicationFileSync.status;
+      publicationFileSyncErrorCode = publicationFileSync.errorCode;
+      publicationFileSyncIdentityVerified =
+        binaryPublication.fileSyncIdentityVerified
+        && attestationPublication.fileSyncIdentityVerified;
+      directorySyncBeforeLink = combineSyncResults([
+        binaryPublication.directorySyncBeforeLink,
+        attestationPublication.directorySyncBeforeLink,
+      ]);
+      directorySyncAfterLink = combineSyncResults([
+        binaryPublication.directorySyncAfterLink,
+        attestationPublication.directorySyncAfterLink,
+      ]);
+      directorySyncAfterCleanup = combineSyncResults([
+        binaryPublication.directorySyncAfterCleanup,
+        attestationPublication.directorySyncAfterCleanup,
+      ]);
+      cacheAccepted = binaryBytes !== null
+        && finalAttestationInspection.accepted;
     } finally {
       if (temporaryDirectory) {
         await rm(temporaryDirectory, { recursive: true, force: true });
@@ -2326,14 +2482,22 @@ async function materializeColdBuildLauncherOnce({
     cachedBinaryPath,
     expectedBinaryHash,
   );
-  if (!finalInspection.accepted) {
+  finalAttestationInspection = await inspectLauncherFileUntilStable(
+    cachedAttestationPath,
+    publicationManifestHash,
+    { requireExecutable: false },
+  );
+  if (!finalInspection.accepted || !finalAttestationInspection.accepted) {
     throw new Error(
-      `cold_build_launcher_cache_identity_changed:${finalInspection.reason}`,
+      'cold_build_launcher_cache_identity_changed:'
+        + `${finalInspection.reason || finalAttestationInspection.reason}`,
     );
   }
   binaryBytes = finalInspection.bytes;
   publicationSameDevice = finalInspection.pathDevice
-    === String(publicationDirectoryChain.inspections.at(-1)?.device);
+    === String(publicationDirectoryChain.inspections.at(-1)?.device)
+    && finalAttestationInspection.pathDevice
+      === String(publicationDirectoryChain.inspections.at(-1)?.device);
   if (!publicationSameDevice) {
     throw new Error('cold_build_launcher_publication_final_cross_device');
   }
@@ -2371,10 +2535,20 @@ async function materializeColdBuildLauncherOnce({
     cachedBinaryPath,
     expectedBinaryHash,
   );
+  const postDirectoryAttestationInspection = await inspectLauncherFileUntilStable(
+    cachedAttestationPath,
+    publicationManifestHash,
+    { requireExecutable: false },
+  );
   if (
     !postDirectoryFinalInspection.accepted
+    || !postDirectoryAttestationInspection.accepted
     || postDirectoryFinalInspection.binaryHash !== finalInspection.binaryHash
     || postDirectoryFinalInspection.inodeIdentityHash !== finalInspection.inodeIdentityHash
+    || postDirectoryAttestationInspection.binaryHash
+      !== finalAttestationInspection.binaryHash
+    || postDirectoryAttestationInspection.inodeIdentityHash
+      !== finalAttestationInspection.inodeIdentityHash
   ) {
     throw new Error('cold_build_launcher_final_identity_changed_after_directory_revalidation');
   }
@@ -2394,6 +2568,7 @@ async function materializeColdBuildLauncherOnce({
     throw new Error('cold_build_launcher_directory_identity_changed_after_final_file_check');
   }
   finalInspection = postDirectoryFinalInspection;
+  finalAttestationInspection = postDirectoryAttestationInspection;
   const directorySyncStatuses = [
     directorySyncBeforeLink?.status,
     directorySyncAfterLink?.status,
