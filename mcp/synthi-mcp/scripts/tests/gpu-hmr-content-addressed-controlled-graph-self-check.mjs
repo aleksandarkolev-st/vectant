@@ -9,7 +9,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { writeArtifactToCas } from '../lib/gpu-hmr-artifact-cas.mjs';
-import { createContentAddressedControlledExecutionGraph } from '../lib/gpu-hmr-content-addressed-controlled-graph.mjs';
+import {
+  createContentAddressedControlledExecutionGraph,
+  verifyContentAddressedControlledExecutionGraphPackage,
+} from '../lib/gpu-hmr-content-addressed-controlled-graph.mjs';
 import {
   controlledExecutionGraphRoot,
   removeControlledExecutionGraph,
@@ -56,6 +59,10 @@ try {
   assert.equal(result.acceptedForGpuHmr, false);
   assert.equal(result.gpuHmrSuccess, false);
   assert.equal(result.canSatisfyRuntimeProof, false);
+  assert.equal(
+    await verifyContentAddressedControlledExecutionGraphPackage(result),
+    true,
+  );
   assert.equal(await verifyControlledExecutionGraph(result.graph), true);
   assert.equal(result.graphHash, result.graph.graphHash);
   assert.deepEqual(result.graph.entries.map((entry) => ({
@@ -95,6 +102,47 @@ try {
   ]);
 
   const materialRoot = controlledExecutionGraphRoot(result.graph);
+  const clonedPackage = Object.freeze({ ...result });
+  assert.equal(
+    await verifyContentAddressedControlledExecutionGraphPackage(clonedPackage),
+    false,
+  );
+  let packageGetterCalls = 0;
+  const accessorPackage = {};
+  Object.defineProperty(accessorPackage, 'graph', {
+    enumerable: true,
+    get() {
+      packageGetterCalls += 1;
+      return result.graph;
+    },
+  });
+  assert.equal(
+    await verifyContentAddressedControlledExecutionGraphPackage(
+      accessorPackage,
+    ),
+    false,
+  );
+  const proxiedPackage = new Proxy(result, {
+    get() {
+      packageGetterCalls += 1;
+      throw new Error('proxy getter must not run');
+    },
+  });
+  assert.equal(
+    await verifyContentAddressedControlledExecutionGraphPackage(
+      proxiedPackage,
+    ),
+    false,
+  );
+  const revocablePackage = Proxy.revocable(result, {});
+  revocablePackage.revoke();
+  assert.equal(
+    await verifyContentAddressedControlledExecutionGraphPackage(
+      revocablePackage.proxy,
+    ),
+    false,
+  );
+  assert.equal(packageGetterCalls, 0);
   const materializedBeforeMutation = await Promise.all([
     readFile(path.join(materialRoot, 'entry.mjs')),
     readFile(path.join(materialRoot, 'lib', 'value.mjs')),
@@ -134,6 +182,19 @@ try {
   assert.equal(await verifyControlledExecutionGraph(
     mutableLocatorGraph.graph,
   ), true);
+  assert.equal(
+    await verifyContentAddressedControlledExecutionGraphPackage(
+      mutableLocatorGraph,
+    ),
+    true,
+  );
+  await removeControlledExecutionGraph(mutableLocatorGraph.graph);
+  assert.equal(
+    await verifyContentAddressedControlledExecutionGraphPackage(
+      mutableLocatorGraph,
+    ),
+    false,
+  );
 
   const oversizedDeclaredLocator = {
     ...moduleLocator,

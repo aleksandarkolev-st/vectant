@@ -17,6 +17,7 @@ const GRAPH_INPUT_ROLES = Object.freeze({
   module: 'ecmascript_module_root',
   support: 'support_input',
 });
+const contentAddressedGraphPackageBrand = new WeakMap();
 
 function exactRecord(value, keys, label) {
   if (
@@ -265,6 +266,26 @@ function graphMatchesDeclaredArtifacts(graph, artifacts) {
   return true;
 }
 
+function contentAddressedGraphPackageState(value) {
+  if (
+    value === null
+    || typeof value !== 'object'
+    || utilTypes.isProxy(value)
+  ) {
+    return null;
+  }
+  const state = contentAddressedGraphPackageBrand.get(value);
+  if (
+    !state
+    || value.graph !== state.graph
+    || value.graphHash !== state.graph.graphHash
+    || value.artifactBindings !== state.artifactBindings
+  ) {
+    return null;
+  }
+  return state;
+}
+
 export async function createContentAddressedControlledExecutionGraph(value) {
   const input = snapshotInput(value);
   const validations = [];
@@ -335,17 +356,23 @@ export async function createContentAddressedControlledExecutionGraph(value) {
         'content_addressed_controlled_graph_materialized_graph_invalid',
       );
     }
-    return Object.freeze({
+    const artifactBindings = Object.freeze(
+      artifacts.map((artifact) => artifact.binding),
+    );
+    const graphPackage = Object.freeze({
       graph,
       graphHash: graph.graphHash,
-      artifactBindings: Object.freeze(
-        artifacts.map((artifact) => artifact.binding),
-      ),
+      artifactBindings,
       supportEvidenceOnly: true,
       acceptedForGpuHmr: false,
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
     });
+    contentAddressedGraphPackageBrand.set(graphPackage, Object.freeze({
+      graph,
+      artifactBindings,
+    }));
+    return graphPackage;
   } catch (error) {
     if (graph !== null) {
       await removeControlledExecutionGraph(graph);
@@ -354,4 +381,12 @@ export async function createContentAddressedControlledExecutionGraph(value) {
   } finally {
     for (const artifact of artifacts) artifact.bytes.fill(0);
   }
+}
+
+export async function verifyContentAddressedControlledExecutionGraphPackage(
+  value,
+) {
+  const state = contentAddressedGraphPackageState(value);
+  return state !== null
+    && await verifyControlledExecutionGraph(state.graph) === true;
 }
