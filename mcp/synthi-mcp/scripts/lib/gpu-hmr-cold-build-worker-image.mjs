@@ -4,6 +4,9 @@ import {
   coldBuildDockerHostEnvironment,
   runColdBuildHostProcess,
 } from './gpu-hmr-cold-build-container-contract.mjs';
+import {
+  observedProviderIdentityLabelAccepted,
+} from './gpu-hmr-observed-provider-identity.mjs';
 
 export const COLD_BUILD_WORKER_IMAGE_EVIDENCE_SCHEMA =
   'synthi.gpu_hmr.cold_build_worker_image_evidence.v1';
@@ -142,8 +145,8 @@ function buildProjection(rawDescriptor, reference) {
   const architecture = rawDescriptor?.Architecture;
   if (
     !SHA256_PATTERN.test(imageId ?? '')
-    || operatingSystem !== 'linux'
-    || !['amd64', 'arm64'].includes(architecture)
+    || !observedProviderIdentityLabelAccepted(operatingSystem)
+    || !observedProviderIdentityLabelAccepted(architecture)
   ) {
     throw new Error('cold_build_worker_image_descriptor_invalid');
   }
@@ -176,8 +179,8 @@ function verifyProjection(result, reference) {
   };
   if (
     !SHA256_PATTERN.test(normalized.imageId ?? '')
-    || normalized.operatingSystem !== 'linux'
-    || !['amd64', 'arm64'].includes(normalized.architecture)
+    || !observedProviderIdentityLabelAccepted(normalized.operatingSystem)
+    || !observedProviderIdentityLabelAccepted(normalized.architecture)
     || (reference.kind === 'image_id'
       ? reference.value !== normalized.imageId
       : !normalized.repoDigests.includes(reference.value))
@@ -346,8 +349,8 @@ function workerImageReceiptAccepted(receipt) {
       'evidenceHash',
     ].every((name) => SHA256_PATTERN.test(receipt[name] ?? ''))
     && ['image_id', 'repo_digest'].includes(receipt.requestedImageReferenceKind)
-    && receipt.operatingSystem === 'linux'
-    && ['amd64', 'arm64'].includes(receipt.architecture)
+    && observedProviderIdentityLabelAccepted(receipt.operatingSystem)
+    && observedProviderIdentityLabelAccepted(receipt.architecture)
     && Number.isSafeInteger(receipt.environmentEntryCount)
     && receipt.environmentEntryCount >= 0
     && receipt.environmentEntryCount <= 256
