@@ -1606,31 +1606,43 @@ async function removeBuilderContainer(dockerExecutable, containerName) {
   };
 }
 
-function elfIdentity(bytes) {
+export function coldBuildLauncherExecutableIdentity(bytes) {
   if (
-    bytes.byteLength < 64
+    !Buffer.isBuffer(bytes)
+    || bytes.byteLength < 52
     || bytes[0] !== 0x7f
     || bytes[1] !== 0x45
     || bytes[2] !== 0x4c
     || bytes[3] !== 0x46
-    || bytes[4] !== 2
-    || bytes[5] !== 1
+    || ![1, 2].includes(bytes[4])
+    || ![1, 2].includes(bytes[5])
   ) {
     return null;
   }
-  const machine = bytes.readUInt16LE(18);
-  const architecture = machine === 62
-    ? 'amd64'
-    : machine === 183
-      ? 'arm64'
-      : `elf_machine_${machine}`;
-  const programHeaderOffsetBigInt = bytes.readBigUInt64LE(32);
-  if (programHeaderOffsetBigInt > BigInt(Number.MAX_SAFE_INTEGER)) return null;
-  const programHeaderOffset = Number(programHeaderOffsetBigInt);
-  const programHeaderEntrySize = bytes.readUInt16LE(54);
-  const programHeaderCount = bytes.readUInt16LE(56);
+  const is64Bit = bytes[4] === 2;
+  const littleEndian = bytes[5] === 1;
+  if (bytes.byteLength < (is64Bit ? 64 : 52)) return null;
+  const readUInt16 = (offset) => littleEndian
+    ? bytes.readUInt16LE(offset)
+    : bytes.readUInt16BE(offset);
+  const readUInt32 = (offset) => littleEndian
+    ? bytes.readUInt32LE(offset)
+    : bytes.readUInt32BE(offset);
+  const machine = readUInt16(18);
+  const programHeaderOffset = is64Bit
+    ? (() => {
+      const value = littleEndian
+        ? bytes.readBigUInt64LE(32)
+        : bytes.readBigUInt64BE(32);
+      return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null;
+    })()
+    : readUInt32(28);
+  if (programHeaderOffset === null) return null;
+  const programHeaderEntrySize = readUInt16(is64Bit ? 54 : 42);
+  const programHeaderCount = readUInt16(is64Bit ? 56 : 44);
+  const minimumProgramHeaderEntrySize = is64Bit ? 56 : 32;
   if (
-    programHeaderEntrySize < 56
+    programHeaderEntrySize < minimumProgramHeaderEntrySize
     || programHeaderCount < 1
     || programHeaderOffset + (programHeaderEntrySize * programHeaderCount) > bytes.byteLength
   ) {
@@ -1638,11 +1650,18 @@ function elfIdentity(bytes) {
   }
   const programHeaderTypes = [];
   for (let index = 0; index < programHeaderCount; index += 1) {
-    programHeaderTypes.push(bytes.readUInt32LE(programHeaderOffset + (index * programHeaderEntrySize)));
+    programHeaderTypes.push(readUInt32(
+      programHeaderOffset + (index * programHeaderEntrySize),
+    ));
   }
   return {
-    operatingSystem: 'linux',
-    architecture,
+    formatIdentity: [
+      'elf',
+      is64Bit ? '64' : '32',
+      littleEndian ? 'little-endian' : 'big-endian',
+      `osabi-${bytes[7]}`,
+    ].join(':'),
+    machineIdentity: `elf-machine:${machine}`,
     staticExecutable: !programHeaderTypes.includes(2) && !programHeaderTypes.includes(3),
     programHeaderTypes: [...new Set(programHeaderTypes)].sort((left, right) => left - right),
   };
@@ -2584,11 +2603,9 @@ async function materializeColdBuildLauncherOnce({
       ? 'durable'
       : 'directory_sync_unsupported';
   const binaryHash = contentHash(binaryBytes);
-  const elf = elfIdentity(binaryBytes);
+  const elf = coldBuildLauncherExecutableIdentity(binaryBytes);
   if (
     binaryHash !== expectedBinaryHash
-    || elf?.operatingSystem !== 'linux'
-    || elf?.architecture !== normalizedArchitecture
     || elf?.staticExecutable !== true
     || binaryBytes.byteLength < 1024 * 1024
   ) {
@@ -2607,7 +2624,7 @@ async function materializeColdBuildLauncherOnce({
     builderRecipeSchema: builderRecipe.schemaVersion,
     builderRecipeHash: builderRecipe.recipeHash,
     architecture: normalizedArchitecture,
-    operatingSystem: elf.operatingSystem,
+    operatingSystem: builderRecipe.operatingSystem,
     staticExecutable: elf.staticExecutable,
     elfProgramHeaderTypes: elf.programHeaderTypes,
     binaryHash,
