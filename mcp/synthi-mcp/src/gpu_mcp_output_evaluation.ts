@@ -43,6 +43,12 @@ function requiredGetter(
 
 const freeze = Object.freeze;
 const reflectApply = Reflect.apply;
+const createHashIntrinsic = createHash;
+const hashPrototype = Object.getPrototypeOf(
+  createHashIntrinsic("sha256"),
+);
+const hashUpdate = hashPrototype.update as Function;
+const hashDigest = hashPrototype.digest as Function;
 const bufferByteLength = Buffer.byteLength;
 const bufferFrom = Buffer.from;
 const jsonStringify = JSON.stringify;
@@ -241,6 +247,20 @@ function canonicalSha256(value: unknown): value is string {
     && CANONICAL_SHA256_PATTERN.test(value);
 }
 
+function sha256Hex(
+  ...values: readonly (string | Uint8Array)[]
+): string {
+  const hash = createHashIntrinsic("sha256");
+  for (const value of values) {
+    reflectApply(
+      hashUpdate,
+      hash,
+      typeof value === "string" ? [value, "utf8"] : [value],
+    );
+  }
+  return reflectApply(hashDigest, hash, ["hex"]) as string;
+}
+
 function snapshotRegistration(
   value: unknown,
 ): GpuMcpOutputEvaluatorRegistration | null {
@@ -336,7 +356,7 @@ function evaluatorCapabilityState(
 }
 
 function outputSha256(bytes: Uint8Array): string {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  return `sha256:${sha256Hex(bytes)}`;
 }
 
 interface EvaluatorSourceIdentity {
@@ -358,13 +378,9 @@ function evaluatorSourceIdentity(
   if (reflectApply(stringIncludes, source, ["[native code]"])) {
     throw new Error("gpu_mcp_output_evaluator_function_source_unavailable");
   }
-  const functionSourceSha256 = `sha256:${createHash("sha256")
-    .update(EVALUATOR_IDENTITY_DOMAIN, "utf8")
-    .update("\0", "utf8")
-    .update(source, "utf8")
-    .digest("hex")}`;
-  const sourceSha256 =
-    `sha256:${createHash("sha256").update(source, "utf8").digest("hex")}`;
+  const functionSourceSha256 =
+    `sha256:${sha256Hex(EVALUATOR_IDENTITY_DOMAIN, "\0", source)}`;
+  const sourceSha256 = `sha256:${sha256Hex(source)}`;
   return freeze({
     source,
     functionSourceSha256,
@@ -392,8 +408,7 @@ function outputEvaluatorMaterial(
   if (source === undefined) {
     throw new Error("gpu_mcp_output_evaluator_material_unavailable");
   }
-  const materialSha256 =
-    `sha256:${createHash("sha256").update(source, "utf8").digest("hex")}`;
+  const materialSha256 = `sha256:${sha256Hex(source)}`;
   return freeze({
     source,
     manifest: freeze({

@@ -27,6 +27,7 @@ import {
   GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_AUTHORITY,
   GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA,
   snapshotGpuMcpOutputEvaluatorMaterialBytes,
+  type GpuMcpOutputEvaluation,
   type GpuMcpOutputEvaluatorRegistrar,
 } from "../../src/gpu_mcp_output_evaluation.js";
 import {
@@ -396,6 +397,82 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
     expect(
       gpuMcpOutputEvaluatorMaterial(differentSource)?.materialSha256,
     ).not.toBe(firstMaterial!.materialSha256);
+  });
+
+  it("rehashes output after evaluator crypto prototype poisoning", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const hashPrototype = Object.getPrototypeOf(createHash("sha256"));
+    const updateDescriptor =
+      Object.getOwnPropertyDescriptor(hashPrototype, "update");
+    const digestDescriptor =
+      Object.getOwnPropertyDescriptor(hashPrototype, "digest");
+    if (updateDescriptor === undefined || digestDescriptor === undefined) {
+      throw new Error("hash prototype descriptors unavailable");
+    }
+    const definePropertyIntrinsic = Object.defineProperty;
+    const reflectApplyIntrinsic = Reflect.apply;
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => {
+        Object.defineProperties(hashPrototype, {
+          update: {
+            ...updateDescriptor,
+            value: () => {
+              throw new Error("poisoned hash update");
+            },
+          },
+          digest: {
+            ...digestDescriptor,
+            value: () => {
+              throw new Error("poisoned hash digest");
+            },
+          },
+        });
+        return true;
+      },
+    });
+
+    let evaluation: GpuMcpOutputEvaluation;
+    try {
+      evaluation = await captureAndEvaluateGpuMcpAdmittedOutputBytes(
+        authority,
+        producer,
+        admissionReceipt,
+        evaluator,
+        () => Uint8Array.of(41, 43),
+        () => true,
+      );
+    } finally {
+      reflectApplyIntrinsic(definePropertyIntrinsic, Object, [
+        hashPrototype,
+        "update",
+        updateDescriptor,
+      ]);
+      reflectApplyIntrinsic(definePropertyIntrinsic, Object, [
+        hashPrototype,
+        "digest",
+        digestDescriptor,
+      ]);
+    }
+
+    expect(evaluation.outputContractPassed).toBe(true);
+    expect(evaluation.outputContentSha256).toBe(
+      `sha256:${createHash("sha256")
+        .update(Uint8Array.of(41, 43))
+        .digest("hex")}`,
+    );
+    expect(authority.isVerifiedOutputEvaluation(
+      evaluation,
+      admissionReceipt,
+    )).toBe(true);
   });
 
   it("detaches evaluator bytes despite instance property overrides", async () => {
