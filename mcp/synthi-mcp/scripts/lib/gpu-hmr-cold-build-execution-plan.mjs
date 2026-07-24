@@ -17,6 +17,9 @@ import {
   verifyColdBuildInputSet,
 } from './gpu-hmr-cold-build-input-set.mjs';
 import {
+  observedProviderIdentityLabelAccepted,
+} from './gpu-hmr-observed-provider-identity.mjs';
+import {
   COLD_BUILD_CONTAINER_CAPABILITIES,
   COLD_BUILD_CONTAINER_COMMAND_GID,
   COLD_BUILD_CONTAINER_COMMAND_UID,
@@ -63,7 +66,6 @@ const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const EXECUTION_NONCE_PATTERN = /^[a-f0-9]{32}$/;
 const CONTAINER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const EXECUTION_PROVIDER_IDENTITY_LABEL_MAX_BYTES = 1024;
 const PINNED_EXECUTION_PLANS = new WeakMap();
 const PINNED_INPUT_EVIDENCE = new WeakMap();
 const PINNED_SPEC_PUBLICATIONS = new WeakMap();
@@ -186,11 +188,7 @@ function requireHostPath(value, name) {
 }
 
 export function coldBuildExecutionProviderIdentityLabelAccepted(value) {
-  return typeof value === 'string'
-    && value.length > 0
-    && Buffer.byteLength(value, 'utf8')
-      <= EXECUTION_PROVIDER_IDENTITY_LABEL_MAX_BYTES
-    && !/[\0\r\n]/.test(value);
+  return observedProviderIdentityLabelAccepted(value);
 }
 
 function dockerMountField(name, value) {
