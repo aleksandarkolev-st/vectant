@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_AUTHORITY,
@@ -23,6 +23,10 @@ import {
 } from "../../src/gpu_mcp_admitted_output_capture.js";
 import {
   createGpuMcpOutputEvaluatorBoundary,
+  gpuMcpOutputEvaluatorMaterial,
+  GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_AUTHORITY,
+  GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA,
+  snapshotGpuMcpOutputEvaluatorMaterialBytes,
   type GpuMcpOutputEvaluatorRegistrar,
 } from "../../src/gpu_mcp_output_evaluation.js";
 import {
@@ -264,6 +268,63 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
     expect(evaluation.evaluatorFunctionSourceSha256).toMatch(
       /^sha256:[a-f0-9]{64}$/,
     );
+    const evaluatorMaterial = gpuMcpOutputEvaluatorMaterial(evaluator);
+    expect(evaluatorMaterial).toMatchObject({
+      schemaVersion: GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA,
+      proofAuthority: GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_AUTHORITY,
+      materialSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      materialByteLength: expect.stringMatching(/^[1-9][0-9]*$/),
+      evaluatorFunctionSourceSha256:
+        evaluation.evaluatorFunctionSourceSha256,
+      evaluatorSourceSha256:
+        expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      isolatedExecutionRequired: true,
+      isolatedExecutionVerified: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(evaluation.evaluatorMaterial).toBe(evaluatorMaterial);
+    const evaluatorMaterialBytes =
+      snapshotGpuMcpOutputEvaluatorMaterialBytes(evaluator);
+    expect(evaluatorMaterialBytes).not.toBeNull();
+    expect(String(evaluatorMaterialBytes!.byteLength)).toBe(
+      evaluatorMaterial!.materialByteLength,
+    );
+    expect(
+      `sha256:${createHash("sha256")
+        .update(evaluatorMaterialBytes!)
+        .digest("hex")}`,
+    ).toBe(evaluatorMaterial!.materialSha256);
+    const evaluatorMaterialDocument = JSON.parse(
+      Buffer.from(evaluatorMaterialBytes!).toString("utf8"),
+    ) as Record<string, unknown>;
+    expect(evaluatorMaterialDocument).toMatchObject({
+      schemaVersion: GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA,
+      evaluatorFunctionSourceSha256:
+        evaluation.evaluatorFunctionSourceSha256,
+      evaluatorSourceSha256: evaluatorMaterial!.evaluatorSourceSha256,
+      evaluatorSourceByteLength:
+        evaluatorMaterial!.evaluatorSourceByteLength,
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+    });
+    expect(typeof evaluatorMaterialDocument.evaluatorSource).toBe("string");
+    expect(
+      `sha256:${createHash("sha256")
+        .update(evaluatorMaterialDocument.evaluatorSource as string, "utf8")
+        .digest("hex")}`,
+    ).toBe(evaluatorMaterial!.evaluatorSourceSha256);
+    evaluatorMaterialBytes!.fill(0);
+    const freshEvaluatorMaterialBytes =
+      snapshotGpuMcpOutputEvaluatorMaterialBytes(evaluator);
+    expect(
+      `sha256:${createHash("sha256")
+        .update(freshEvaluatorMaterialBytes!)
+        .digest("hex")}`,
+    ).toBe(evaluatorMaterial!.materialSha256);
     expect(authority.isVerifiedOutputEvaluation(
       evaluation,
       admissionReceipt,
@@ -285,6 +346,56 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
       outputSemanticsSha256: hash("b"),
       evaluate: () => true,
     } as never)).toThrow("gpu_mcp_output_evaluator_registration_invalid");
+  });
+
+  it("derives evaluator material instead of accepting caller material", () => {
+    const { evaluatorRegistrar } = createOutputAuthority();
+
+    expect(() => evaluatorRegistrar.register({
+      evaluatorMaterial: {
+        materialSha256: hash("c"),
+      },
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => true,
+    } as never)).toThrow("gpu_mcp_output_evaluator_registration_invalid");
+  });
+
+  it("content-addresses evaluator source and neutral contract bindings", () => {
+    const { evaluatorRegistrar } = createOutputAuthority();
+    const evaluate = () => true;
+    const first = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate,
+    });
+    const equivalent = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate,
+    });
+    const differentContract = evaluatorRegistrar.register({
+      outputContractSha256: hash("c"),
+      outputSemanticsSha256: hash("b"),
+      evaluate,
+    });
+    const differentSource = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => false,
+    });
+
+    const firstMaterial = gpuMcpOutputEvaluatorMaterial(first);
+    expect(firstMaterial).not.toBeNull();
+    expect(gpuMcpOutputEvaluatorMaterial(equivalent)?.materialSha256).toBe(
+      firstMaterial!.materialSha256,
+    );
+    expect(
+      gpuMcpOutputEvaluatorMaterial(differentContract)?.materialSha256,
+    ).not.toBe(firstMaterial!.materialSha256);
+    expect(
+      gpuMcpOutputEvaluatorMaterial(differentSource)?.materialSha256,
+    ).not.toBe(firstMaterial!.materialSha256);
   });
 
   it("detaches evaluator bytes despite instance property overrides", async () => {

@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { isProxy } from "node:util/types";
 import type {
@@ -15,6 +16,10 @@ export const GPU_MCP_OUTPUT_EVALUATION_SCHEMA =
   "synthi.gpu_hmr.mcp_output_evaluation.v1" as const;
 export const GPU_MCP_OUTPUT_EVALUATION_AUTHORITY =
   "in_process_mcp_output_evaluator_support_only_not_gpu_hmr_acceptance" as const;
+export const GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA =
+  "synthi.gpu_hmr.mcp_output_evaluator_material.v1" as const;
+export const GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_AUTHORITY =
+  "content_addressed_evaluator_material_support_only_not_gpu_hmr_acceptance" as const;
 
 const CANONICAL_SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const REGISTRATION_KEYS = [
@@ -38,6 +43,9 @@ function requiredGetter(
 
 const freeze = Object.freeze;
 const reflectApply = Reflect.apply;
+const bufferByteLength = Buffer.byteLength;
+const bufferFrom = Buffer.from;
+const jsonStringify = JSON.stringify;
 const structuredCloneIntrinsic = structuredClone;
 const SetIntrinsic = Set;
 const setAdd = Set.prototype.add;
@@ -111,10 +119,30 @@ export interface GpuMcpOutputEvaluatorBoundary {
   readonly executor: GpuMcpOutputEvaluatorExecutorCapability;
 }
 
+export interface GpuMcpOutputEvaluatorMaterial {
+  readonly schemaVersion:
+    typeof GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA;
+  readonly proofAuthority:
+    typeof GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_AUTHORITY;
+  readonly materialSha256: string;
+  readonly materialByteLength: string;
+  readonly evaluatorFunctionSourceSha256: string;
+  readonly evaluatorSourceSha256: string;
+  readonly evaluatorSourceByteLength: string;
+  readonly outputContractSha256: string;
+  readonly outputSemanticsSha256: string | null;
+  readonly isolatedExecutionRequired: true;
+  readonly isolatedExecutionVerified: false;
+  readonly acceptedForGpuHmr: false;
+  readonly gpuHmrSuccess: false;
+  readonly canSatisfyRuntimeProof: false;
+}
+
 export interface GpuMcpOutputEvaluation {
   readonly schemaVersion: typeof GPU_MCP_OUTPUT_EVALUATION_SCHEMA;
   readonly proofAuthority: typeof GPU_MCP_OUTPUT_EVALUATION_AUTHORITY;
   readonly evaluatorFunctionSourceSha256: string;
+  readonly evaluatorMaterial: GpuMcpOutputEvaluatorMaterial;
   readonly outputContractSha256: string;
   readonly outputSemanticsSha256: string | null;
   readonly admissionReceiptId: string;
@@ -137,6 +165,8 @@ interface OutputEvaluatorCapabilityState
 extends GpuMcpOutputEvaluatorRegistration {
   readonly boundary: OutputEvaluatorBoundaryState;
   readonly evaluatorFunctionSourceSha256: string;
+  readonly evaluatorMaterialSource: string;
+  readonly evaluatorMaterial: GpuMcpOutputEvaluatorMaterial;
 }
 
 interface OutputEvaluatorExecutorClaimState {
@@ -309,9 +339,16 @@ function outputSha256(bytes: Uint8Array): string {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-function evaluatorFunctionSourceSha256(
+interface EvaluatorSourceIdentity {
+  readonly source: string;
+  readonly functionSourceSha256: string;
+  readonly sourceSha256: string;
+  readonly sourceByteLength: string;
+}
+
+function evaluatorSourceIdentity(
   evaluate: GpuMcpOutputEvaluator,
-): string {
+): EvaluatorSourceIdentity {
   let source: string;
   try {
     source = reflectApply(functionToString, evaluate, []);
@@ -321,11 +358,61 @@ function evaluatorFunctionSourceSha256(
   if (reflectApply(stringIncludes, source, ["[native code]"])) {
     throw new Error("gpu_mcp_output_evaluator_function_source_unavailable");
   }
-  return `sha256:${createHash("sha256")
+  const functionSourceSha256 = `sha256:${createHash("sha256")
     .update(EVALUATOR_IDENTITY_DOMAIN, "utf8")
     .update("\0", "utf8")
     .update(source, "utf8")
     .digest("hex")}`;
+  const sourceSha256 =
+    `sha256:${createHash("sha256").update(source, "utf8").digest("hex")}`;
+  return freeze({
+    source,
+    functionSourceSha256,
+    sourceSha256,
+    sourceByteLength: String(bufferByteLength(source, "utf8")),
+  });
+}
+
+function outputEvaluatorMaterial(
+  identity: EvaluatorSourceIdentity,
+  registration: GpuMcpOutputEvaluatorRegistration,
+): {
+  readonly manifest: GpuMcpOutputEvaluatorMaterial;
+  readonly source: string;
+} {
+  const source = jsonStringify({
+    schemaVersion: GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA,
+    evaluatorFunctionSourceSha256: identity.functionSourceSha256,
+    evaluatorSourceSha256: identity.sourceSha256,
+    evaluatorSourceByteLength: identity.sourceByteLength,
+    evaluatorSource: identity.source,
+    outputContractSha256: registration.outputContractSha256,
+    outputSemanticsSha256: registration.outputSemanticsSha256,
+  });
+  if (source === undefined) {
+    throw new Error("gpu_mcp_output_evaluator_material_unavailable");
+  }
+  const materialSha256 =
+    `sha256:${createHash("sha256").update(source, "utf8").digest("hex")}`;
+  return freeze({
+    source,
+    manifest: freeze({
+      schemaVersion: GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA,
+      proofAuthority: GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_AUTHORITY,
+      materialSha256,
+      materialByteLength: String(bufferByteLength(source, "utf8")),
+      evaluatorFunctionSourceSha256: identity.functionSourceSha256,
+      evaluatorSourceSha256: identity.sourceSha256,
+      evaluatorSourceByteLength: identity.sourceByteLength,
+      outputContractSha256: registration.outputContractSha256,
+      outputSemanticsSha256: registration.outputSemanticsSha256,
+      isolatedExecutionRequired: true as const,
+      isolatedExecutionVerified: false as const,
+      acceptedForGpuHmr: false as const,
+      gpuHmrSuccess: false as const,
+      canSatisfyRuntimeProof: false as const,
+    }),
+  });
 }
 
 function typedArrayByteLength(bytes: Uint8Array): number {
@@ -455,11 +542,19 @@ GpuMcpOutputEvaluatorBoundary {
       const capability = freeze(
         {},
       ) as GpuMcpOutputEvaluatorCapability;
+      const sourceIdentity = evaluatorSourceIdentity(
+        registration.evaluate,
+      );
+      const evaluatorMaterial = outputEvaluatorMaterial(
+        sourceIdentity,
+        registration,
+      );
       setWeakMapValue(evaluatorCapabilityStates, capability, {
         boundary,
-        evaluatorFunctionSourceSha256: evaluatorFunctionSourceSha256(
-          registration.evaluate,
-        ),
+        evaluatorFunctionSourceSha256:
+          sourceIdentity.functionSourceSha256,
+        evaluatorMaterialSource: evaluatorMaterial.source,
+        evaluatorMaterial: evaluatorMaterial.manifest,
         ...registration,
       });
       return capability;
@@ -472,6 +567,26 @@ GpuMcpOutputEvaluatorBoundary {
     },
   });
   return freeze({ registrar, executor });
+}
+
+export function gpuMcpOutputEvaluatorMaterial(
+  capability: unknown,
+): GpuMcpOutputEvaluatorMaterial | null {
+  return evaluatorCapabilityState(capability)?.evaluatorMaterial ?? null;
+}
+
+export function snapshotGpuMcpOutputEvaluatorMaterialBytes(
+  capability: unknown,
+): Uint8Array | null {
+  const state = evaluatorCapabilityState(capability);
+  if (state === null) return null;
+  const encoded = bufferFrom(state.evaluatorMaterialSource, "utf8");
+  const snapshot = new Uint8ArrayIntrinsic(
+    typedArrayByteLength(encoded),
+  );
+  reflectApply(uint8ArraySet, snapshot, [encoded]);
+  fillBytes(encoded, 0);
+  return snapshot;
 }
 
 export function claimGpuMcpOutputEvaluatorExecutorCapability(
@@ -625,6 +740,7 @@ export async function evaluateGpuMcpOutputBytes(
       proofAuthority: GPU_MCP_OUTPUT_EVALUATION_AUTHORITY,
       evaluatorFunctionSourceSha256:
         evaluator.evaluatorFunctionSourceSha256,
+      evaluatorMaterial: evaluator.evaluatorMaterial,
       outputContractSha256: evaluator.outputContractSha256,
       outputSemanticsSha256: evaluator.outputSemanticsSha256,
       admissionReceiptId: admissionReceipt.receiptId,
