@@ -6,6 +6,7 @@ import {
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { isProxy } from 'node:util/types';
 import sharp from 'sharp';
 import {
   GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
@@ -11883,8 +11884,88 @@ function visualWorkerDiagnosticDelayMs() {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
+function assertDirectAsyncProofSemanticAliasConsistency(value, reason) {
+  if (!isObject(value)) return;
+  if (Object.getPrototypeOf(value) !== Object.prototype || isProxy(value)) {
+    throw new Error(`${reason}:object_invalid`);
+  }
+  const groups = new Map();
+  for (const key of Object.keys(value)) {
+    if (value[key] === undefined) continue;
+    const semanticKey = String(key).replace(
+      /_([a-z0-9])/g,
+      (_match, character) => character.toUpperCase(),
+    );
+    if (!groups.has(semanticKey)) groups.set(semanticKey, []);
+    groups.get(semanticKey).push(key);
+  }
+  for (const keys of groups.values()) {
+    if (keys.length < 2) continue;
+    const firstValue = value[keys[0]];
+    const firstCanonical = stableJson(firstValue);
+    if (keys.some((key) => (
+      value[key] !== firstValue && stableJson(value[key]) !== firstCanonical
+    ))) {
+      throw new Error(`${reason}:semantic_alias_conflict:${keys.join(':')}`);
+    }
+  }
+}
+
+function assertAsyncProofSemanticAliasConsistency(proof, reason) {
+  assertDirectAsyncProofSemanticAliasConsistency(proof, reason);
+  const tileEvidence = compactObject(proof.tileEvidence ?? proof.tile_evidence);
+  const roiEvidence = compactObject(proof.roiEvidence ?? proof.roi_evidence);
+  const inputArtifacts = compactObject(proof.inputArtifacts ?? proof.input_artifacts);
+  const observedObjects = [
+    proof.worker,
+    proof.metrics,
+    proof.dimensions,
+    proof.incremental,
+    proof.inputHashes ?? proof.input_hashes,
+    tileEvidence,
+    tileEvidence.binding,
+    compactObject(tileEvidence.binding).dimensions,
+    compactObject(tileEvidence.binding).roi,
+    roiEvidence,
+    roiEvidence.binding,
+    compactObject(roiEvidence.binding).dimensions,
+    compactObject(roiEvidence.binding).roi,
+  ];
+  for (const artifact of Object.values(inputArtifacts)) {
+    if (!isObject(artifact)) continue;
+    observedObjects.push(artifact, artifact.casValidation ?? artifact.cas_validation);
+  }
+  for (const observed of observedObjects) {
+    assertDirectAsyncProofSemanticAliasConsistency(observed, reason);
+  }
+}
+
+function assertAsyncProofJobSemanticAliasConsistency(job, reason) {
+  assertDirectAsyncProofSemanticAliasConsistency(job, reason);
+  assertDirectAsyncProofSemanticAliasConsistency(
+    job.jobManifestLocator ?? job.job_manifest_locator,
+    reason,
+  );
+  assertDirectAsyncProofSemanticAliasConsistency(
+    job.visualArtifactTransportEvidence
+      ?? job.visual_artifact_transport_evidence,
+    reason,
+  );
+}
+
 function summarizeAsyncVisualProof(proof) {
   if (!isObject(proof)) return null;
+  let aliasConflict = false;
+  try {
+    assertAsyncProofSemanticAliasConsistency(
+      proof,
+      'async_visual_proof_semantic_alias_invalid',
+    );
+  } catch {
+    aliasConflict = true;
+    proof = {};
+  }
+  const eventType = text(proof.eventType ?? proof.event_type);
   const tileEvidence = isObject(proof.tileEvidence ?? proof.tile_evidence)
     ? proof.tileEvidence ?? proof.tile_evidence
     : null;
@@ -12012,21 +12093,31 @@ function summarizeAsyncVisualProof(proof) {
     pixel_count: finiteNumber(metrics.pixelCount ?? metrics.pixel_count),
   };
   const summary = {
-    schemaVersion: proof.schemaVersion ?? proof.schema_version ?? GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
-    schema_version: proof.schemaVersion ?? proof.schema_version ?? GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
-    eventType: proof.eventType ?? proof.event_type ?? 'proof_ready',
-    event_type: proof.eventType ?? proof.event_type ?? 'proof_ready',
+    schemaVersion: text(proof.schemaVersion ?? proof.schema_version),
+    schema_version: text(proof.schemaVersion ?? proof.schema_version),
+    eventType,
+    event_type: eventType,
     accepted: proof.accepted === true,
-    acceptedAsAsyncVisualMetrics: proof.acceptedAsAsyncVisualMetrics === true,
-    accepted_as_async_visual_metrics: proof.acceptedAsAsyncVisualMetrics === true,
-    acceptedForGpuHmr: false,
-    accepted_for_gpu_hmr: false,
-    gpuHmrSuccess: false,
-    gpu_hmr_success: false,
-    proofAuthority: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
-    proof_authority: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
+    acceptedAsAsyncVisualMetrics:
+      firstBool(
+        proof.acceptedAsAsyncVisualMetrics,
+        proof.accepted_as_async_visual_metrics,
+      ) === true,
+    accepted_as_async_visual_metrics:
+      firstBool(
+        proof.acceptedAsAsyncVisualMetrics,
+        proof.accepted_as_async_visual_metrics,
+      ) === true,
+    acceptedForGpuHmr: firstBool(proof.acceptedForGpuHmr, proof.accepted_for_gpu_hmr),
+    accepted_for_gpu_hmr: firstBool(proof.acceptedForGpuHmr, proof.accepted_for_gpu_hmr),
+    gpuHmrSuccess: firstBool(proof.gpuHmrSuccess, proof.gpu_hmr_success),
+    gpu_hmr_success: firstBool(proof.gpuHmrSuccess, proof.gpu_hmr_success),
+    proofAuthority: text(proof.proofAuthority ?? proof.proof_authority),
+    proof_authority: text(proof.proofAuthority ?? proof.proof_authority),
+    aliasConflict,
+    alias_conflict: aliasConflict,
     worker: {
-      kind: text(worker.kind) || 'node_worker_threads',
+      kind: text(worker.kind) || null,
       identitySchemaVersion:
         text(worker.identitySchemaVersion ?? worker.identity_schema_version) || null,
       identity_schema_version:
@@ -12077,8 +12168,8 @@ function summarizeAsyncVisualProof(proof) {
         Number.isSafeInteger(Number(worker.nativeDependencyCount ?? worker.native_dependency_count))
           ? Number(worker.nativeDependencyCount ?? worker.native_dependency_count)
           : null,
-      offMainThread: worker.offMainThread === true,
-      off_main_thread: worker.offMainThread === true,
+      offMainThread: firstBool(worker.offMainThread, worker.off_main_thread) === true,
+      off_main_thread: firstBool(worker.offMainThread, worker.off_main_thread) === true,
       failedBeforeWorkerCompletion: worker.failedBeforeWorkerCompletion === true,
       failed_before_worker_completion: worker.failedBeforeWorkerCompletion === true,
     },
@@ -12251,7 +12342,7 @@ async function asyncVisualMetricsForPair(before, after, request = {}) {
   } catch (error) {
     const metrics = withTransport(summarizeAsyncVisualProof({
       schemaVersion: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
-      eventType: 'proof_ready',
+      eventType: 'proof_failed',
       accepted: false,
       acceptedAsAsyncVisualMetrics: false,
       acceptedForGpuHmr: false,
@@ -13209,14 +13300,22 @@ function rawVisualArtifactTransportEvidence(row = {}) {
 }
 
 function rawAsyncVisualProofJob(row = {}) {
-  return compactObject(
-    row.asyncVisualProofJob
-      ?? row.async_visual_proof_job
-      ?? row.visualProofBundle?.asyncVisualProofJob
-      ?? row.visualProofBundle?.async_visual_proof_job
-      ?? row.visual_proof_bundle?.asyncVisualProofJob
-      ?? row.visual_proof_bundle?.async_visual_proof_job,
+  const candidates = [
+    row.asyncVisualProofJob,
+    row.async_visual_proof_job,
+    row.visualProofBundle?.asyncVisualProofJob,
+    row.visualProofBundle?.async_visual_proof_job,
+    row.visual_proof_bundle?.asyncVisualProofJob,
+    row.visual_proof_bundle?.async_visual_proof_job,
+  ].filter(isObject);
+  if (candidates.length === 0) return {};
+  const selected = candidates[0];
+  const aliasConflict = candidates.some(
+    (candidate) => stableJson(candidate) !== stableJson(selected),
   );
+  return aliasConflict
+    ? { ...selected, asyncVisualProofJobAliasConflict: true }
+    : selected;
 }
 
 function firstObjectOrNull(...values) {
@@ -13281,14 +13380,25 @@ function recomputedAsyncVisualProofJobHash(job = {}) {
 }
 
 function asyncVisualProofJobBindingFacet(jobValue = {}) {
-  const job = compactObject(jobValue);
-  if (Object.keys(job).length === 0) {
+  const rawJob = compactObject(jobValue);
+  if (Object.keys(rawJob).length === 0) {
     return {
       present: false,
       accepted: null,
       failedGates: [],
       failed_gates: [],
     };
+  }
+  let aliasConflict = rawJob.asyncVisualProofJobAliasConflict === true;
+  let job = rawJob;
+  try {
+    assertAsyncProofJobSemanticAliasConsistency(
+      rawJob,
+      'async_visual_proof_job_semantic_alias_invalid',
+    );
+  } catch {
+    aliasConflict = true;
+    job = {};
   }
   const schemaVersion = firstText(job.schemaVersion, job.schema_version);
   const eventType = firstText(job.eventType, job.event_type);
@@ -13322,6 +13432,7 @@ function asyncVisualProofJobBindingFacet(jobValue = {}) {
     && firstBool(transportEvidence.acceptedForGpuHmr, transportEvidence.accepted_for_gpu_hmr) === false
     && firstBool(transportEvidence.gpuHmrSuccess, transportEvidence.gpu_hmr_success) === false;
   const failedGates = compactStringList([
+    aliasConflict ? 'async_visual_proof_job_alias_conflict' : null,
     schemaVersion === GPU_HMR_ASYNC_VISUAL_PROOF_JOB_SCHEMA_VERSION
       ? null
       : 'async_visual_proof_job_schema_mismatch',
@@ -13491,7 +13602,7 @@ function visualLocatorTransportAccepted(locator) {
 }
 
 function asyncVisualMetricsFromVisualEvidence(visual = {}) {
-  return compactObject(
+  const retainedMetrics = compactObject(
     visual.recomputedVisualPair?.asyncVisualMetrics
       ?? visual.recomputedVisualPair?.async_visual_metrics
       ?? visual.recomputed_visual_pair?.asyncVisualMetrics
@@ -13501,6 +13612,7 @@ function asyncVisualMetricsFromVisualEvidence(visual = {}) {
       ?? visual.recomputed_single_frame?.asyncVisualMetrics
       ?? visual.recomputed_single_frame?.async_visual_metrics,
   );
+  return compactObject(summarizeAsyncVisualProof(retainedMetrics));
 }
 
 function incrementalBindingHashPayload(binding = {}) {
@@ -13727,6 +13839,7 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     && workerNativeDependencyCount > 0;
   const asyncMetricsAccepted =
     !asyncVisualProofJobPending
+    && firstBool(asyncMetrics.aliasConflict, asyncMetrics.alias_conflict) === false
     && firstText(asyncMetrics.schemaVersion, asyncMetrics.schema_version)
       === GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION
     && asyncMetricsEventType === 'proof_ready'
@@ -44030,6 +44143,8 @@ function largeRocmMlRandomColdSourceIntakeCoverage(rows, context = {}) {
 }
 
 export const GPU_HMR_VALIDATION_MATRIX_LEDGER_TEST_HOOKS = Object.freeze({
+  asyncVisualCasBundleFacet,
+  asyncVisualProofJobBindingFacet,
   identityShortcutAcceptanceFailures,
   largeRocmMlRandomColdContentAddressedSupportEvidence,
   largeRocmMlRandomColdNormalizedIdentityTerm,
@@ -44039,6 +44154,8 @@ export const GPU_HMR_VALIDATION_MATRIX_LEDGER_TEST_HOOKS = Object.freeze({
   largeRocmMlRandomColdSemanticTextValues,
   largeRocmMlRandomColdTextSignals,
   randomColdSourceListingManifestSummary,
+  recomputedAsyncVisualProofJobHash,
+  summarizeAsyncVisualProof,
   validationProfileEvidenceBindingFacet,
 });
 
