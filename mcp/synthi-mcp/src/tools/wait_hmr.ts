@@ -197,24 +197,35 @@ function proofWaitDecisionPayload(
   };
 }
 
-function attachDevLoopProofPendingStatus(
+function attachDevLoopProofStatus(
   payload: Record<string, unknown>,
   proof: GpuHmrProofTelemetry | null,
   requiredState: string | null
 ): void {
   if (requiredState !== null || payload.status !== "applied") return;
-  payload.proof_pending = true;
-  payload.proof_status = "hmr_applied_proof_pending";
+  const proofReady =
+    proof?.resultState === "gpu-hmr-full-runtime-proven"
+    && proof.decisions["gpu-hmr-full-runtime-proven"]?.satisfied === true;
+  payload.proof_pending = !proofReady;
+  payload.proof_ready = proofReady;
+  payload.proof_status = proofReady
+    ? "hmr_applied_proof_ready"
+    : "hmr_applied_proof_pending";
   payload.gpu_hmr_dev_loop = {
     schemaVersion: DEV_LOOP_PROOF_STATUS_SCHEMA_VERSION,
     mode: "non_blocking_dev_loop",
     hmr_fast_path_status: "applied",
-    proof_pending: true,
+    proof_pending: !proofReady,
+    proof_ready: proofReady,
     strict_ledger_validation_requested: false,
     accepted_for_gpu_hmr: false,
     gpu_hmr_success: false,
     evidence_authority: "hmr_fast_path_only_not_gpu_hmr_acceptance",
-    reason: proof === null ? "proof_telemetry_missing" : "strict_proof_state_not_requested",
+    reason: proofReady
+      ? "strict_proof_state_available_not_requested"
+      : proof === null
+        ? "proof_telemetry_missing"
+        : "strict_proof_state_not_requested",
     latest_proof_state: proof?.resultState ?? null,
     latest_degraded_state: proof?.degradedState ?? null,
     latest_proof_rank: proof === null ? 0 : gpuHmrProofStateRank(proof.resultState),
@@ -338,7 +349,7 @@ function responseWithGpuProofValidation(
   requiredState: string | null,
   minProofObservedAt?: number,
 ): ToolResponse {
-  attachDevLoopProofPendingStatus(payload, proof, requiredState);
+  attachDevLoopProofStatus(payload, proof, requiredState);
   if (proof !== null) {
     payload.gpu_proof_telemetry = gpuProofPayload(proof);
   }

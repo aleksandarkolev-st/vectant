@@ -838,6 +838,153 @@ describe("synthi_wait_hmr", () => {
     expect(body.gpu_hmr_dev_loop?.next_strict_proof_state).toBe("gpu-hmr-full-runtime-proven");
   });
 
+  it("reports a prevalidated retained full-runtime proof as ready without granting acceptance", async () => {
+    const partial = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-symbol-bound",
+      proofArtifactPath: ".synthi/gpu-hmr/proofs/full-runtime-ready.json",
+    }, Date.now());
+    expect(partial).not.toBeNull();
+    const proof = {
+      ...partial!,
+      resultState: "gpu-hmr-full-runtime-proven",
+      decisions: {
+        ...partial!.decisions,
+        "gpu-hmr-full-runtime-proven": {
+          ...partial!.decisions["gpu-hmr-full-runtime-proven"],
+          resultState: "gpu-hmr-full-runtime-proven",
+          resultRank: 9,
+          effectiveResultRank: 9,
+          satisfied: true,
+          reason: undefined,
+        },
+      },
+    } as GpuHmrProofTelemetry;
+    installFakeAttached(
+      async () => ({ status: "applied", source: "hmr_status", elapsedMs: 10 }),
+      () => proof,
+    );
+
+    const res = await waitHmrTool({ timeoutMs: 500, sinceTs: 0 });
+
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      status?: string;
+      proof_pending?: boolean;
+      proof_ready?: boolean;
+      proof_status?: string;
+      gpu_proof_validation?: {
+        validated?: boolean;
+        satisfied?: boolean;
+        reason?: string;
+      };
+      gpu_hmr_dev_loop?: {
+        proof_pending?: boolean;
+        proof_ready?: boolean;
+        strict_ledger_validation_requested?: boolean;
+        accepted_for_gpu_hmr?: boolean;
+        gpu_hmr_success?: boolean;
+        reason?: string;
+        latest_proof_state?: string | null;
+      };
+    };
+    expect(body.status).toBe("applied");
+    expect(body.proof_pending).toBe(false);
+    expect(body.proof_ready).toBe(true);
+    expect(body.proof_status).toBe("hmr_applied_proof_ready");
+    expect(body.gpu_proof_validation).toMatchObject({
+      validated: false,
+      satisfied: false,
+      reason: "proof_state_not_requested",
+    });
+    expect(body.gpu_hmr_dev_loop).toMatchObject({
+      proof_pending: false,
+      proof_ready: true,
+      strict_ledger_validation_requested: false,
+      accepted_for_gpu_hmr: false,
+      gpu_hmr_success: false,
+      reason: "strict_proof_state_available_not_requested",
+      latest_proof_state: "gpu-hmr-full-runtime-proven",
+    });
+  });
+
+  it("keeps an unvalidated full-runtime label pending", async () => {
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofArtifactPath: ".synthi/gpu-hmr/proofs/unvalidated-full-runtime.json",
+    }, Date.now());
+    expect(proof).not.toBeNull();
+    expect(
+      proof!.decisions["gpu-hmr-full-runtime-proven"].satisfied,
+    ).toBe(false);
+    installFakeAttached(
+      async () => ({ status: "applied", source: "hmr_status", elapsedMs: 10 }),
+      () => proof,
+    );
+
+    const res = await waitHmrTool({ timeoutMs: 500, sinceTs: 0 });
+
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      proof_pending?: boolean;
+      proof_ready?: boolean;
+      proof_status?: string;
+      gpu_hmr_dev_loop?: {
+        proof_pending?: boolean;
+        proof_ready?: boolean;
+        accepted_for_gpu_hmr?: boolean;
+        gpu_hmr_success?: boolean;
+      };
+    };
+    expect(body.proof_pending).toBe(true);
+    expect(body.proof_ready).toBe(false);
+    expect(body.proof_status).toBe("hmr_applied_proof_pending");
+    expect(body.gpu_hmr_dev_loop).toMatchObject({
+      proof_pending: true,
+      proof_ready: false,
+      accepted_for_gpu_hmr: false,
+      gpu_hmr_success: false,
+    });
+  });
+
+  it("keeps a mismatched full-runtime decision pending", async () => {
+    const partial = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-symbol-bound",
+    }, Date.now());
+    expect(partial).not.toBeNull();
+    const proof = {
+      ...partial!,
+      decisions: {
+        ...partial!.decisions,
+        "gpu-hmr-full-runtime-proven": {
+          ...partial!.decisions["gpu-hmr-full-runtime-proven"],
+          satisfied: true,
+        },
+      },
+    } as GpuHmrProofTelemetry;
+    installFakeAttached(
+      async () => ({ status: "applied", source: "hmr_status", elapsedMs: 10 }),
+      () => proof,
+    );
+
+    const res = await waitHmrTool({ timeoutMs: 500, sinceTs: 0 });
+
+    expect(res.isError).toBeUndefined();
+    expect(res.structuredContent).toMatchObject({
+      proof_pending: true,
+      proof_ready: false,
+      proof_status: "hmr_applied_proof_pending",
+      gpu_hmr_dev_loop: {
+        proof_pending: true,
+        proof_ready: false,
+        accepted_for_gpu_hmr: false,
+        gpu_hmr_success: false,
+      },
+    });
+  });
+
   it("fails wait_hmr when requested GPU proof is stronger than observed", async () => {
     installFakeAttached(async () => ({ status: "applied", source: "hmr_status", elapsedMs: 10 }));
 
