@@ -10,9 +10,14 @@ import { isProxy } from "node:util/types";
 import * as coldExecutionAuthorityModule
   from "../scripts/lib/gpu-hmr-cold-execution-authority.mjs";
 import {
+  GPU_MCP_OUTPUT_EVALUATOR_FUNCTION_SOURCE_IDENTITY_DOMAIN,
+  GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_AUTHORITY,
+  GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA,
+  gpuMcpOutputEvaluatorCapabilityMatchesExecutorClaim,
   gpuMcpOutputEvaluatorMaterial,
   snapshotGpuMcpOutputEvaluatorMaterialBytes,
   type GpuMcpOutputEvaluatorCapability,
+  type GpuMcpOutputEvaluatorExecutorClaim,
   type GpuMcpOutputEvaluatorMaterial,
 } from "./gpu_mcp_output_evaluation.js";
 import {
@@ -335,10 +340,12 @@ function timeoutMs(
   return value as number;
 }
 
-function materialDocument(
-  material: GpuMcpOutputEvaluatorMaterial,
+function validatedMaterialFromBytes(
   bytes: Uint8Array,
-): MaterialDocument {
+): Readonly<{
+  material: GpuMcpOutputEvaluatorMaterial;
+  document: MaterialDocument;
+}> {
   const text = bufferFrom(bytes).toString("utf8");
   let parsed: unknown;
   try {
@@ -349,37 +356,89 @@ function materialDocument(
     );
   }
   const record = exactPlainRecord(parsed, MATERIAL_DOCUMENT_KEYS);
+  const evaluatorSource = record?.evaluatorSource;
+  const outputSemanticsSha256 = record?.outputSemanticsSha256;
   if (
     record === null
     || reflectApply(jsonStringify, JSON, [record]) !== text
-    || record.schemaVersion !== material.schemaVersion
+    || record.schemaVersion !== GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA
+    || typeof evaluatorSource !== "string"
+    || typeof record.evaluatorFunctionSourceSha256 !== "string"
+    || !CANONICAL_SHA256_PATTERN.test(
+      record.evaluatorFunctionSourceSha256,
+    )
     || record.evaluatorFunctionSourceSha256
-      !== material.evaluatorFunctionSourceSha256
-    || record.evaluatorSourceSha256 !== material.evaluatorSourceSha256
-    || record.evaluatorSourceByteLength
-      !== material.evaluatorSourceByteLength
-    || typeof record.evaluatorSource !== "string"
-    || sha256(record.evaluatorSource) !== material.evaluatorSourceSha256
-    || String(bufferByteLength(record.evaluatorSource, "utf8"))
-      !== material.evaluatorSourceByteLength
-    || record.outputContractSha256 !== material.outputContractSha256
-    || record.outputSemanticsSha256 !== material.outputSemanticsSha256
+      !== `sha256:${sha256Hex(
+        GPU_MCP_OUTPUT_EVALUATOR_FUNCTION_SOURCE_IDENTITY_DOMAIN,
+        "\0",
+        evaluatorSource,
+      )}`
+    || typeof record.evaluatorSourceSha256 !== "string"
+    || !CANONICAL_SHA256_PATTERN.test(record.evaluatorSourceSha256)
+    || sha256(evaluatorSource) !== record.evaluatorSourceSha256
+    || typeof record.evaluatorSourceByteLength !== "string"
+    || String(bufferByteLength(evaluatorSource, "utf8"))
+      !== record.evaluatorSourceByteLength
+    || typeof record.outputContractSha256 !== "string"
+    || !CANONICAL_SHA256_PATTERN.test(record.outputContractSha256)
+    || (
+      outputSemanticsSha256 !== null
+      && (
+        typeof outputSemanticsSha256 !== "string"
+        || !CANONICAL_SHA256_PATTERN.test(outputSemanticsSha256)
+      )
+    )
   ) {
     throw new Error(
       "gpu_mcp_output_evaluator_fresh_process_material_invalid",
     );
   }
-  return freeze(record) as unknown as MaterialDocument;
+  const document = freeze(record) as unknown as MaterialDocument;
+  const material = freeze({
+    schemaVersion: GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA,
+    proofAuthority: GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_AUTHORITY,
+    materialSha256: sha256(bytes),
+    materialByteLength: String(bytes.byteLength),
+    evaluatorFunctionSourceSha256:
+      document.evaluatorFunctionSourceSha256,
+    evaluatorSourceSha256: document.evaluatorSourceSha256,
+    evaluatorSourceByteLength: document.evaluatorSourceByteLength,
+    outputContractSha256: document.outputContractSha256,
+    outputSemanticsSha256: document.outputSemanticsSha256,
+    isolatedExecutionRequired: true as const,
+    isolatedExecutionVerified: false as const,
+    acceptedForGpuHmr: false as const,
+    gpuHmrSuccess: false as const,
+    canSatisfyRuntimeProof: false as const,
+  });
+  return freeze({ material, document });
 }
 
 function validateMaterial(
   material: GpuMcpOutputEvaluatorMaterial,
   bytes: Uint8Array,
-): MaterialDocument {
+): Readonly<{
+  material: GpuMcpOutputEvaluatorMaterial;
+  document: MaterialDocument;
+}> {
+  const validated = validatedMaterialFromBytes(bytes);
   if (
-    !CANONICAL_SHA256_PATTERN.test(material.materialSha256)
-    || material.materialSha256 !== sha256(bytes)
-    || material.materialByteLength !== String(bytes.byteLength)
+    material.schemaVersion !== validated.material.schemaVersion
+    || material.proofAuthority !== validated.material.proofAuthority
+    || material.materialSha256
+      !== validated.material.materialSha256
+    || material.materialByteLength
+      !== validated.material.materialByteLength
+    || material.evaluatorFunctionSourceSha256
+      !== validated.material.evaluatorFunctionSourceSha256
+    || material.evaluatorSourceSha256
+      !== validated.material.evaluatorSourceSha256
+    || material.evaluatorSourceByteLength
+      !== validated.material.evaluatorSourceByteLength
+    || material.outputContractSha256
+      !== validated.material.outputContractSha256
+    || material.outputSemanticsSha256
+      !== validated.material.outputSemanticsSha256
     || material.isolatedExecutionRequired !== true
     || material.isolatedExecutionVerified !== false
     || material.acceptedForGpuHmr !== false
@@ -390,7 +449,7 @@ function validateMaterial(
       "gpu_mcp_output_evaluator_fresh_process_material_binding_mismatch",
     );
   }
-  return materialDocument(material, bytes);
+  return validated;
 }
 
 function entrypointSource(
@@ -537,35 +596,18 @@ function processObservationHash(
   return sha256(canonical);
 }
 
-export async function executeGpuMcpOutputEvaluatorInFreshProcess(
-  evaluatorCapability: GpuMcpOutputEvaluatorCapability,
-  observedBytesValue: Uint8Array,
-  optionsValue?: GpuMcpOutputEvaluatorFreshProcessOptions,
+async function executeValidatedMaterialInFreshProcess(
+  evaluatorMaterial: GpuMcpOutputEvaluatorMaterial,
+  document: MaterialDocument,
+  materialBytes: Uint8Array,
+  observedBytes: Uint8Array,
+  executionTimeoutMs: number,
 ): Promise<GpuMcpOutputEvaluatorFreshProcessExecution> {
-  const executionTimeoutMs = timeoutMs(optionsValue);
-  const evaluatorMaterial =
-    gpuMcpOutputEvaluatorMaterial(evaluatorCapability);
-  const materialBytes =
-    snapshotGpuMcpOutputEvaluatorMaterialBytes(evaluatorCapability);
-  const observedBytes =
-    snapshotValidatedUint8Array(observedBytesValue);
-  if (evaluatorMaterial === null || materialBytes === null) {
-    throw new Error(
-      "gpu_mcp_output_evaluator_fresh_process_material_unavailable",
-    );
-  }
-  if (observedBytes === null) {
-    fillBytes(materialBytes);
-    throw new Error(
-      "gpu_mcp_output_evaluator_fresh_process_output_bytes_invalid",
-    );
-  }
   let graph: ControlledExecutionGraph | null = null;
   let trustedRoot: string | null = null;
   let entryBytes: Buffer | null = null;
   let resultReceipt: ControlledResultReceipt | null = null;
   try {
-    const document = validateMaterial(evaluatorMaterial, materialBytes);
     const outputContentSha256 = sha256(observedBytes);
     const outputByteLength = String(observedBytes.byteLength);
     const entrySource = entrypointSource(
@@ -750,4 +792,107 @@ export async function executeGpuMcpOutputEvaluatorInFreshProcess(
     fillBytes(materialBytes);
     fillBytes(observedBytes);
   }
+}
+
+export async function executeReopenedGpuMcpOutputEvaluatorMaterialInFreshProcess(
+  executorClaim: GpuMcpOutputEvaluatorExecutorClaim,
+  evaluatorCapability: GpuMcpOutputEvaluatorCapability,
+  evaluatorMaterialBytesValue: Uint8Array,
+  observedBytesValue: Uint8Array,
+  optionsValue?: GpuMcpOutputEvaluatorFreshProcessOptions,
+): Promise<GpuMcpOutputEvaluatorFreshProcessExecution> {
+  if (!gpuMcpOutputEvaluatorCapabilityMatchesExecutorClaim(
+    executorClaim,
+    evaluatorCapability,
+  )) {
+    throw new Error(
+      "gpu_mcp_output_evaluator_fresh_process_executor_claim_invalid",
+    );
+  }
+  const executionTimeoutMs = timeoutMs(optionsValue);
+  const evaluatorMaterial =
+    gpuMcpOutputEvaluatorMaterial(evaluatorCapability);
+  const materialBytes =
+    snapshotValidatedUint8Array(evaluatorMaterialBytesValue);
+  const observedBytes =
+    snapshotValidatedUint8Array(observedBytesValue);
+  if (evaluatorMaterial === null || materialBytes === null) {
+    if (materialBytes !== null) fillBytes(materialBytes);
+    if (observedBytes !== null) fillBytes(observedBytes);
+    throw new Error(
+      "gpu_mcp_output_evaluator_fresh_process_material_unavailable",
+    );
+  }
+  if (observedBytes === null) {
+    fillBytes(materialBytes);
+    throw new Error(
+      "gpu_mcp_output_evaluator_fresh_process_output_bytes_invalid",
+    );
+  }
+  let validated: ReturnType<typeof validateMaterial>;
+  try {
+    validated = validateMaterial(evaluatorMaterial, materialBytes);
+  } catch (error) {
+    fillBytes(materialBytes);
+    fillBytes(observedBytes);
+    throw error;
+  }
+  const execution = await executeValidatedMaterialInFreshProcess(
+    validated.material,
+    validated.document,
+    materialBytes,
+    observedBytes,
+    executionTimeoutMs,
+  );
+  if (!gpuMcpOutputEvaluatorCapabilityMatchesExecutorClaim(
+    executorClaim,
+    evaluatorCapability,
+  )) {
+    throw new Error(
+      "gpu_mcp_output_evaluator_fresh_process_executor_claim_invalid",
+    );
+  }
+  return execution;
+}
+
+export async function executeGpuMcpOutputEvaluatorInFreshProcess(
+  evaluatorCapability: GpuMcpOutputEvaluatorCapability,
+  observedBytesValue: Uint8Array,
+  optionsValue?: GpuMcpOutputEvaluatorFreshProcessOptions,
+): Promise<GpuMcpOutputEvaluatorFreshProcessExecution> {
+  const executionTimeoutMs = timeoutMs(optionsValue);
+  const evaluatorMaterial =
+    gpuMcpOutputEvaluatorMaterial(evaluatorCapability);
+  const materialBytes =
+    snapshotGpuMcpOutputEvaluatorMaterialBytes(evaluatorCapability);
+  const observedBytes =
+    snapshotValidatedUint8Array(observedBytesValue);
+  if (evaluatorMaterial === null || materialBytes === null) {
+    if (materialBytes !== null) fillBytes(materialBytes);
+    if (observedBytes !== null) fillBytes(observedBytes);
+    throw new Error(
+      "gpu_mcp_output_evaluator_fresh_process_material_unavailable",
+    );
+  }
+  if (observedBytes === null) {
+    fillBytes(materialBytes);
+    throw new Error(
+      "gpu_mcp_output_evaluator_fresh_process_output_bytes_invalid",
+    );
+  }
+  let validated: ReturnType<typeof validateMaterial>;
+  try {
+    validated = validateMaterial(evaluatorMaterial, materialBytes);
+  } catch (error) {
+    fillBytes(materialBytes);
+    fillBytes(observedBytes);
+    throw error;
+  }
+  return executeValidatedMaterialInFreshProcess(
+    validated.material,
+    validated.document,
+    materialBytes,
+    observedBytes,
+    executionTimeoutMs,
+  );
 }

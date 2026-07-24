@@ -20,6 +20,8 @@ export const GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA =
   "synthi.gpu_hmr.mcp_output_evaluator_material.v1" as const;
 export const GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_AUTHORITY =
   "content_addressed_evaluator_material_support_only_not_gpu_hmr_acceptance" as const;
+export const GPU_MCP_OUTPUT_EVALUATOR_FUNCTION_SOURCE_IDENTITY_DOMAIN =
+  "synthi.gpu_hmr.mcp_output_evaluator.function_source.v1" as const;
 
 const CANONICAL_SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const REGISTRATION_KEYS = [
@@ -27,9 +29,6 @@ const REGISTRATION_KEYS = [
   "outputSemanticsSha256",
   "evaluate",
 ] as const;
-const EVALUATOR_IDENTITY_DOMAIN =
-  "synthi.gpu_hmr.mcp_output_evaluator.function_source.v1";
-
 function requiredGetter(
   prototype: object,
   property: string,
@@ -379,7 +378,11 @@ function evaluatorSourceIdentity(
     throw new Error("gpu_mcp_output_evaluator_function_source_unavailable");
   }
   const functionSourceSha256 =
-    `sha256:${sha256Hex(EVALUATOR_IDENTITY_DOMAIN, "\0", source)}`;
+    `sha256:${sha256Hex(
+      GPU_MCP_OUTPUT_EVALUATOR_FUNCTION_SOURCE_IDENTITY_DOMAIN,
+      "\0",
+      source,
+    )}`;
   const sourceSha256 = `sha256:${sha256Hex(source)}`;
   return freeze({
     source,

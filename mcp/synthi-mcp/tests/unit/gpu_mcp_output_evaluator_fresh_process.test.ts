@@ -1,11 +1,16 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  claimGpuMcpOutputEvaluatorExecutorCapability,
   createGpuMcpOutputEvaluatorBoundary,
+  gpuMcpOutputEvaluatorMaterial,
+  releaseGpuMcpOutputEvaluatorExecutorClaim,
+  snapshotGpuMcpOutputEvaluatorMaterialBytes,
   type GpuMcpOutputEvaluator,
 } from "../../src/gpu_mcp_output_evaluation.js";
 import {
   executeGpuMcpOutputEvaluatorInFreshProcess,
+  executeReopenedGpuMcpOutputEvaluatorMaterialInFreshProcess,
   GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_AUTHORITY,
   GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_SCHEMA,
 } from "../../src/gpu_mcp_output_evaluator_fresh_process.js";
@@ -29,6 +34,7 @@ function fixture(
   });
   return {
     evaluator,
+    executor: evaluatorBoundary.executor,
     output,
   };
 }
@@ -87,6 +93,125 @@ describe("fresh-process GPU MCP output evaluator", () => {
     expect(execution).not.toHaveProperty("outputObservationReceiptId");
     expect(JSON.stringify(execution)).not.toMatch(
       /project|fixture|scenario|backend|camera|image|tensor|media/i,
+    );
+  });
+
+  it("re-executes independently reopened evaluator material bytes", async () => {
+    const {
+      evaluator,
+      executor,
+      output,
+    } = fixture(
+      (bytes) => bytes[0] === 17 && bytes[2] === 23,
+    );
+    const material = gpuMcpOutputEvaluatorMaterial(evaluator);
+    const materialBytes =
+      snapshotGpuMcpOutputEvaluatorMaterialBytes(evaluator);
+    expect(material).not.toBeNull();
+    expect(materialBytes).not.toBeNull();
+    if (material === null || materialBytes === null) {
+      throw new Error("test_evaluator_material_missing");
+    }
+    const executorClaim =
+      claimGpuMcpOutputEvaluatorExecutorCapability(executor);
+    expect(executorClaim).not.toBeNull();
+    if (executorClaim === null) {
+      throw new Error("test_evaluator_executor_claim_missing");
+    }
+
+    const execution = await (
+      executeReopenedGpuMcpOutputEvaluatorMaterialInFreshProcess(
+        executorClaim,
+        evaluator,
+        materialBytes,
+        output,
+      )
+    ).finally(() => {
+      releaseGpuMcpOutputEvaluatorExecutorClaim(executorClaim);
+    });
+
+    expect(execution).toMatchObject({
+      evaluatorMaterialSha256: material.materialSha256,
+      evaluatorMaterialByteLength: material.materialByteLength,
+      evaluatorFunctionSourceSha256:
+        material.evaluatorFunctionSourceSha256,
+      evaluatorSourceSha256: material.evaluatorSourceSha256,
+      outputContractSha256: material.outputContractSha256,
+      outputSemanticsSha256: material.outputSemanticsSha256,
+      outputContractPassed: true,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(
+      `sha256:${createHash("sha256").update(materialBytes).digest("hex")}`,
+    ).toBe(material.materialSha256);
+  });
+
+  it("rejects altered reopened evaluator material bytes", async () => {
+    const {
+      evaluator,
+      executor,
+      output,
+    } = fixture(() => true);
+    const materialBytes =
+      snapshotGpuMcpOutputEvaluatorMaterialBytes(evaluator);
+    expect(materialBytes).not.toBeNull();
+    if (materialBytes === null) {
+      throw new Error("test_evaluator_material_missing");
+    }
+    const altered = materialBytes.slice();
+    altered[altered.byteLength - 1] ^= 1;
+    const executorClaim =
+      claimGpuMcpOutputEvaluatorExecutorCapability(executor);
+    expect(executorClaim).not.toBeNull();
+    if (executorClaim === null) {
+      throw new Error("test_evaluator_executor_claim_missing");
+    }
+
+    await expect((
+      executeReopenedGpuMcpOutputEvaluatorMaterialInFreshProcess(
+        executorClaim,
+        evaluator,
+        altered,
+        output,
+      )
+    ).finally(() => {
+      releaseGpuMcpOutputEvaluatorExecutorClaim(executorClaim);
+    }),
+    ).rejects.toThrow(
+      "gpu_mcp_output_evaluator_fresh_process_material_invalid",
+    );
+  });
+
+  it("rejects self-consistent material from another evaluator boundary", async () => {
+    const original = fixture(() => true);
+    const foreign = fixture(() => false);
+    const foreignMaterialBytes =
+      snapshotGpuMcpOutputEvaluatorMaterialBytes(foreign.evaluator);
+    expect(foreignMaterialBytes).not.toBeNull();
+    if (foreignMaterialBytes === null) {
+      throw new Error("test_evaluator_material_missing");
+    }
+    const executorClaim =
+      claimGpuMcpOutputEvaluatorExecutorCapability(original.executor);
+    expect(executorClaim).not.toBeNull();
+    if (executorClaim === null) {
+      throw new Error("test_evaluator_executor_claim_missing");
+    }
+
+    await expect((
+      executeReopenedGpuMcpOutputEvaluatorMaterialInFreshProcess(
+        executorClaim,
+        original.evaluator,
+        foreignMaterialBytes,
+        original.output,
+      )
+    ).finally(() => {
+      releaseGpuMcpOutputEvaluatorExecutorClaim(executorClaim);
+    }),
+    ).rejects.toThrow(
+      "gpu_mcp_output_evaluator_fresh_process_material_binding_mismatch",
     );
   });
 
