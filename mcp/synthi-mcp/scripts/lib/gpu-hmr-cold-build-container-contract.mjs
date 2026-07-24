@@ -18,6 +18,10 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
+import {
+  observedProviderIdentityLabelAccepted,
+} from './gpu-hmr-observed-provider-identity.mjs';
+
 export const COLD_BUILD_CONTAINER_PROTOCOL_SCHEMA =
   'synthi.gpu_hmr.cold_build_container_protocol.v2';
 export const COLD_BUILD_CONTAINER_PROTOCOL_AUTHORITY =
@@ -100,7 +104,7 @@ export const COLD_BUILD_LAUNCHER_SOURCE_PATH = path.resolve(
   'main.go',
 );
 
-const EXPECTED_LAUNCHER_HASHES = Object.freeze({
+const ATTESTED_LAUNCHER_HASHES_BY_PROVIDER_IDENTITY = Object.freeze({
   amd64: 'sha256:44ee25aee904e7ee09c345a121b15449251ad765ce95c31a9c3766b89afe5aaf',
   arm64: 'sha256:4ee9b485435d1b7c30fc1c73871a9cd45d38c23c1f126d390a0876003c36fe9a',
 });
@@ -278,11 +282,8 @@ function stableJson(value) {
     .join(',')}}`;
 }
 
-function normalizeArchitecture(value) {
-  const architecture = String(value ?? '').trim().toLowerCase();
-  if (architecture === 'x64' || architecture === 'x86_64') return 'amd64';
-  if (architecture === 'aarch64') return 'arm64';
-  return architecture;
+function normalizeProviderIdentity(value) {
+  return observedProviderIdentityLabelAccepted(value) ? value : null;
 }
 
 const COLD_BUILD_DOCKER_REDIRECT_ENVIRONMENT_NAMES = new Set([
@@ -1531,7 +1532,10 @@ function elfIdentity(bytes) {
 }
 
 export function coldBuildLauncherExpectedHash(architecture) {
-  return EXPECTED_LAUNCHER_HASHES[normalizeArchitecture(architecture)] ?? null;
+  const providerIdentity = normalizeProviderIdentity(architecture);
+  return providerIdentity
+    ? ATTESTED_LAUNCHER_HASHES_BY_PROVIDER_IDENTITY[providerIdentity] ?? null
+    : null;
 }
 
 function coldBuildLauncherSourceIdentityAccepted(sourceIdentity) {
@@ -1829,13 +1833,12 @@ export function createColdBuildLauncherIdentityReceipt(launcherIdentity) {
 }
 
 export function verifyColdBuildLauncherIdentityReceipt(receipt) {
-  const architecture = normalizeArchitecture(receipt?.architecture);
+  const architecture = normalizeProviderIdentity(receipt?.architecture);
   if (
     !exactKeys(receipt, COLD_BUILD_LAUNCHER_IDENTITY_RECEIPT_KEYS)
     || receipt.schemaVersion !== COLD_BUILD_LAUNCHER_IDENTITY_RECEIPT_SCHEMA
     || receipt.proofAuthority !== COLD_BUILD_LAUNCHER_IDENTITY_RECEIPT_AUTHORITY
     || receipt.architecture !== architecture
-    || !['amd64', 'arm64'].includes(architecture)
     || receipt.binaryHash !== coldBuildLauncherExpectedHash(architecture)
     || !coldBuildLauncherSourceIdentityAccepted(receipt.sourceIdentity)
     || !coldBuildLauncherBuildEvidenceAccepted(
@@ -1863,7 +1866,7 @@ function requirePinnedLauncherIdentity(value) {
   const pinnedIdentity = value && typeof value === 'object'
     ? PINNED_LAUNCHER_IDENTITIES.get(value)
     : null;
-  const architecture = normalizeArchitecture(value?.architecture);
+  const architecture = normalizeProviderIdentity(value?.architecture);
   const expectedHash = coldBuildLauncherExpectedHash(architecture);
   const buildEvidence = value?.buildEvidence;
   if (
@@ -1968,13 +1971,16 @@ export async function coldBuildLauncherPublicationDescriptor({
   architecture,
   cacheRoot = coldBuildLauncherDefaultCacheRoot(),
 } = {}) {
-  const normalizedArchitecture = normalizeArchitecture(architecture);
-  if (!normalizedArchitecture) {
+  if (architecture === null || architecture === undefined || architecture === '') {
     throw new Error('cold_build_launcher_target_architecture_required');
+  }
+  const normalizedArchitecture = normalizeProviderIdentity(architecture);
+  if (!normalizedArchitecture) {
+    throw new Error('cold_build_launcher_target_provider_identity_invalid');
   }
   const expectedBinaryHash = coldBuildLauncherExpectedHash(normalizedArchitecture);
   if (!expectedBinaryHash) {
-    throw new Error(`cold_build_launcher_architecture_unsupported:${normalizedArchitecture}`);
+    throw new Error('cold_build_launcher_reproducible_identity_capability_missing');
   }
   const sourceIdentity = await coldBuildLauncherSourceIdentity();
   const builderRecipe = launcherBuilderRecipe(normalizedArchitecture);
