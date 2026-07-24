@@ -6,6 +6,9 @@ import {
   createColdBuildInputSet,
   verifyColdBuildInputSet,
 } from './gpu-hmr-cold-build-input-set.mjs';
+import {
+  observedProviderIdentityLabelAccepted,
+} from './gpu-hmr-observed-provider-identity.mjs';
 
 export const ARBITRARY_COLD_PROJECT_CONTRACT_SCHEMA =
   'synthi.gpu_hmr.arbitrary_cold_project_contract.v1';
@@ -271,10 +274,10 @@ export function createArbitraryColdProjectContract(input) {
   if (!HASH_PATTERN.test(input.workerImageId ?? '')) {
     throw new Error('arbitrary_cold_project_contract_worker_image_id_invalid');
   }
-  if (input.workerImageOperatingSystem !== 'linux') {
+  if (!observedProviderIdentityLabelAccepted(input.workerImageOperatingSystem)) {
     throw new Error('arbitrary_cold_project_contract_worker_image_os_invalid');
   }
-  if (!['amd64', 'arm64'].includes(input.workerImageArchitecture)) {
+  if (!observedProviderIdentityLabelAccepted(input.workerImageArchitecture)) {
     throw new Error('arbitrary_cold_project_contract_worker_image_architecture_invalid');
   }
   if (!RUNTIME_PATTERN.test(input.containerRuntime ?? '')) {
@@ -541,8 +544,8 @@ function contractReceiptMaterialAccepted(receipt) {
     && HASH_PATTERN.test(receipt.sourceBindingHash ?? '')
     && receipt.inputSetHash === inputSet.inputSetHash
     && HASH_PATTERN.test(receipt.workerImageId ?? '')
-    && receipt.workerImageOperatingSystem === 'linux'
-    && ['amd64', 'arm64'].includes(receipt.workerImageArchitecture)
+    && observedProviderIdentityLabelAccepted(receipt.workerImageOperatingSystem)
+    && observedProviderIdentityLabelAccepted(receipt.workerImageArchitecture)
     && RUNTIME_PATTERN.test(receipt.containerRuntime ?? '')
     && [
       'commandExecutableHash',

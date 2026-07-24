@@ -38,8 +38,8 @@ const base = {
     { mountPath: 'vendor/source', sourceBindingHash: `sha256:${'4'.repeat(64)}` },
   ],
   workerImageId: `sha256:${'2'.repeat(64)}`,
-  workerImageOperatingSystem: 'linux',
-  workerImageArchitecture: 'amd64',
+  workerImageOperatingSystem: 'provider-defined-os/future-v7',
+  workerImageArchitecture: 'provider-defined-machine/future-v11',
   containerRuntime: 'runc',
   command: '/opaque/tool',
   args: ['--build', 'arbitrary input'],
@@ -267,6 +267,15 @@ assert.throws(
   }),
   /read_only_input_shape_invalid/,
 );
+for (const invalidLabel of ['', 'line\nbreak', 'nul\0byte']) {
+  assert.throws(
+    () => createArbitraryColdProjectContract({
+      ...structuredClone(base),
+      workerImageArchitecture: invalidLabel,
+    }),
+    /worker_image_architecture_invalid/,
+  );
+}
 assert.ok(!JSON.stringify(first).match(/miopen|hiprt|flow|diamond|neural|blas|cuda|rocm/i));
 
 console.log(JSON.stringify({
