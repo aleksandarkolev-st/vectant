@@ -818,7 +818,7 @@ async function pollControl(containerId, name, timeoutMs = 20_000) {
   throw new Error(`control receipt ${name} not observed: ${lastResult?.stderr || 'timeout'}`);
 }
 
-async function assertLinuxCacheRootTrustRefusals() {
+async function assertLinuxCacheRootTrustRefusals(architecture) {
   assert.notEqual(process.platform, 'win32');
   const worldWritableRoot = await mkdtemp(
     path.join(os.tmpdir(), 'synthi-launcher-linux-world-writable-'),
@@ -827,7 +827,7 @@ async function assertLinuxCacheRootTrustRefusals() {
     await chmod(worldWritableRoot, 0o777);
     await assert.rejects(
       materializeColdBuildLauncher({
-        architecture: 'amd64',
+        architecture,
         cacheRoot: worldWritableRoot,
         dockerExecutable: 'must-not-run',
       }),
@@ -849,7 +849,7 @@ async function assertLinuxCacheRootTrustRefusals() {
     await mkdir(privateChild, { mode: 0o700 });
     await assert.rejects(
       materializeColdBuildLauncher({
-        architecture: 'amd64',
+        architecture,
         cacheRoot: privateChild,
         dockerExecutable: 'must-not-run',
       }),
@@ -872,7 +872,7 @@ async function assertLinuxCacheRootTrustRefusals() {
       await chown(foreignParent, 12345, 12345);
       await assert.rejects(
         materializeColdBuildLauncher({
-          architecture: 'amd64',
+          architecture,
           cacheRoot: privateChild,
           dockerExecutable: 'must-not-run',
         }),
@@ -888,7 +888,7 @@ async function assertLinuxCacheRootTrustRefusals() {
 async function main() {
   await assertCapturedTimeoutIsBounded();
   if (process.argv.includes('--linux-cache-root-only')) {
-    await assertLinuxCacheRootTrustRefusals();
+    await assertLinuxCacheRootTrustRefusals(os.arch());
     process.stdout.write('gpu-hmr Linux cache-root trust self-check passed\n');
     return;
   }
@@ -907,7 +907,8 @@ async function main() {
   ]);
   const builderImageDescriptor = JSON.parse(builderImageInspection.stdout)?.[0];
   assert.equal(builderImageDescriptor?.Os, 'linux');
-  assert.ok(['amd64', 'arm64'].includes(builderImageDescriptor?.Architecture));
+  assert.equal(typeof builderImageDescriptor?.Architecture, 'string');
+  assert.ok(builderImageDescriptor.Architecture.length > 0);
   const launcher = await materializeColdBuildLauncher({
     dockerExecutable,
     architecture: builderImageDescriptor.Architecture,
@@ -920,8 +921,29 @@ async function main() {
   assert.equal(launcher.buildEvidence.canSatisfyDispatchProof, false);
   assert.equal(launcher.buildEvidence.operatingSystem, 'linux');
   assert.equal(launcher.buildEvidence.architecture, launcher.architecture);
-  assert.ok(['amd64', 'arm64'].includes(launcher.architecture));
+  assert.equal(launcher.architecture, builderImageDescriptor.Architecture);
+  assert.equal(typeof launcher.buildEvidence.compilerTargetIdentity, 'string');
+  assert.ok(launcher.buildEvidence.compilerTargetIdentity.length > 0);
+  assert.match(
+    launcher.buildEvidence.executableFormatIdentity,
+    /^elf:/,
+  );
+  assert.match(
+    launcher.buildEvidence.executableMachineIdentity,
+    /^elf-machine:/,
+  );
   assert.equal(launcher.buildEvidence.staticExecutable, true);
+  assert.equal(launcher.buildEvidence.buildExecuted, true);
+  assert.equal(launcher.buildEvidence.publicationReplicaCount, 2);
+  assert.equal(launcher.buildEvidence.verificationReplicaCount, 2);
+  assert.deepEqual(
+    launcher.buildEvidence.verificationReplicaBinaryHashes,
+    [launcher.binaryHash, launcher.binaryHash],
+  );
+  assert.deepEqual(
+    launcher.buildEvidence.verificationReplicaEvidenceHashes,
+    launcher.buildEvidence.publicationReplicaEvidenceHashes,
+  );
   assert.equal(launcher.buildEvidence.builderCleanupAccepted, true);
   assert.match(launcher.buildEvidence.sourceManifestHash, /^sha256:[a-f0-9]{64}$/);
   assert.match(launcher.buildEvidence.builderRecipeHash, /^sha256:[a-f0-9]{64}$/);
@@ -985,6 +1007,54 @@ async function main() {
     launcher.buildEvidence.finalBinaryExecutableModeApplicable,
     process.platform !== 'win32',
   );
+  const acceptedAttestationBytes = await readFile(
+    path.join(path.dirname(launcher.executablePath), 'publication.json'),
+  );
+  const sameProcessCacheHit = await materializeColdBuildLauncher({
+    dockerExecutable,
+    architecture: launcher.architecture,
+  });
+  assert.equal(sameProcessCacheHit.binaryHash, launcher.binaryHash);
+  assert.equal(sameProcessCacheHit.buildEvidence.cacheHit, true);
+  assert.equal(sameProcessCacheHit.buildEvidence.buildExecuted, false);
+  assert.equal(sameProcessCacheHit.buildEvidence.verificationReplicaCount, 0);
+  assert.deepEqual(
+    sameProcessCacheHit.buildEvidence.verificationReplicaEvidenceHashes,
+    [],
+  );
+  const contractModuleUrl = new URL(
+    '../lib/gpu-hmr-cold-build-container-contract.mjs',
+    import.meta.url,
+  ).href;
+  const freshVerifierProgram = [
+    `import { materializeColdBuildLauncher } from ${JSON.stringify(contractModuleUrl)};`,
+    'const result = await materializeColdBuildLauncher({',
+    `  dockerExecutable: ${JSON.stringify(dockerExecutable)},`,
+    `  architecture: ${JSON.stringify(launcher.architecture)},`,
+    '});',
+    'process.stdout.write(JSON.stringify({',
+    '  binaryHash: result.binaryHash,',
+    '  buildExecuted: result.buildEvidence.buildExecuted,',
+    '  cacheHit: result.buildEvidence.cacheHit,',
+    '  verificationReplicaCount: result.buildEvidence.verificationReplicaCount,',
+    '}));',
+  ].join('\n');
+  const freshVerifierResult = await spawnCaptured(
+    process.execPath,
+    ['--input-type=module', '-e', freshVerifierProgram],
+    {
+      timeoutMs: 240_000,
+      maxStdoutBytes: 1024 * 1024,
+      maxStderrBytes: 1024 * 1024,
+      encoding: 'utf8',
+    },
+  );
+  assert.equal(freshVerifierResult.exitCode, 0, freshVerifierResult.stderr);
+  const freshVerifierLauncher = JSON.parse(freshVerifierResult.stdout);
+  assert.equal(freshVerifierLauncher.binaryHash, launcher.binaryHash);
+  assert.equal(freshVerifierLauncher.buildExecuted, true);
+  assert.equal(freshVerifierLauncher.cacheHit, false);
+  assert.equal(freshVerifierLauncher.verificationReplicaCount, 2);
   const forgedLauncherIdentity = JSON.parse(JSON.stringify(launcher));
   assert.throws(
     () => coldBuildLauncherSpec({ launcherIdentity: forgedLauncherIdentity }),
@@ -1033,6 +1103,16 @@ async function main() {
     /cold_build_launcher_identity_receipt_invalid/,
   );
 
+  const forgedReceiptReplicaEvidence = structuredClone(replayedLauncherReceipt);
+  forgedReceiptReplicaEvidence.buildEvidence.publicationReplicaEvidenceHashes[0] =
+    contentHash('forged-publication-replica');
+  resealEvidence(forgedReceiptReplicaEvidence.buildEvidence);
+  resealEvidence(forgedReceiptReplicaEvidence);
+  assert.throws(
+    () => verifyColdBuildLauncherIdentityReceipt(forgedReceiptReplicaEvidence),
+    /cold_build_launcher_identity_receipt_invalid/,
+  );
+
   const forgedReceiptSource = structuredClone(replayedLauncherReceipt);
   forgedReceiptSource.sourceIdentity.sourceHash = `sha256:${'1'.repeat(64)}`;
   forgedReceiptSource.sourceIdentity.manifestHash = contentHash(stableJson({
@@ -1060,15 +1140,6 @@ async function main() {
     () => verifyColdBuildLauncherIdentityReceipt(forgedReceiptAuthority),
     /cold_build_launcher_identity_receipt_invalid/,
   );
-  const alternateArchitecture = launcher.architecture === 'amd64' ? 'arm64' : 'amd64';
-  const alternateLauncher = await materializeColdBuildLauncher({
-    dockerExecutable,
-    architecture: alternateArchitecture,
-  });
-  assert.equal(alternateLauncher.architecture, alternateArchitecture);
-  assert.equal(alternateLauncher.buildEvidence.operatingSystem, 'linux');
-  assert.equal(alternateLauncher.buildEvidence.staticExecutable, true);
-  assert.notEqual(alternateLauncher.binaryHash, launcher.binaryHash);
   const concurrentCacheRoot = await mkdtemp(
     path.join(os.tmpdir(), 'synthi-cold-launcher-concurrent-cache-'),
   );
@@ -1129,10 +1200,6 @@ async function main() {
     const linkReadyPaths = [0, 1].map(
       (index) => path.join(crossProcessCacheRoot, `child-${index}.link-ready`),
     );
-    const contractModuleUrl = new URL(
-      '../lib/gpu-hmr-cold-build-container-contract.mjs',
-      import.meta.url,
-    ).href;
     const childPromises = readyPaths.map((readyPath, index) => {
       const childProgram = [
         "import { access, writeFile } from 'node:fs/promises';",
@@ -1445,6 +1512,58 @@ async function main() {
     await rm(poisonedAttestationCacheRoot, { recursive: true, force: true });
   }
 
+  const selfConsistentPoisonedCacheRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'synthi-cold-launcher-self-consistent-poison-'),
+  );
+  try {
+    const descriptor = await coldBuildLauncherPublicationDescriptor({
+      architecture: launcher.architecture,
+      cacheRoot: selfConsistentPoisonedCacheRoot,
+    });
+    await createPrivateDirectoryChain(
+      selfConsistentPoisonedCacheRoot,
+      descriptor.relativeDirectorySegments,
+    );
+    const forgedBinaryBytes = Buffer.from('self-consistent forged launcher bytes');
+    const forgedBinaryHash = contentHash(forgedBinaryBytes);
+    const forgedAttestation = JSON.parse(acceptedAttestationBytes.toString('utf8'));
+    forgedAttestation.binaryHash = forgedBinaryHash;
+    forgedAttestation.buildReplicaBinaryHashes = [
+      forgedBinaryHash,
+      forgedBinaryHash,
+    ];
+    forgedAttestation.buildReplicaEvidenceHashes = [
+      contentHash('forged-replica-0'),
+      contentHash('forged-replica-1'),
+    ];
+    await writeFile(
+      descriptor.cachedBinaryPath,
+      forgedBinaryBytes,
+      { mode: 0o500 },
+    );
+    await chmod(descriptor.cachedBinaryPath, 0o555);
+    await writeFile(
+      descriptor.cachedAttestationPath,
+      `${stableJson(forgedAttestation)}\n`,
+      { mode: 0o400 },
+    );
+    await chmod(descriptor.cachedAttestationPath, 0o444);
+    await assert.rejects(
+      materializeColdBuildLauncher({
+        dockerExecutable,
+        architecture: launcher.architecture,
+        cacheRoot: selfConsistentPoisonedCacheRoot,
+      }),
+      /cold_build_launcher_publication_attestation_build_mismatch/,
+    );
+    assert.equal(
+      contentHash(await readFile(descriptor.cachedBinaryPath)),
+      forgedBinaryHash,
+    );
+  } finally {
+    await rm(selfConsistentPoisonedCacheRoot, { recursive: true, force: true });
+  }
+
   const mutableAttestationCacheRoot = await mkdtemp(
     path.join(os.tmpdir(), 'synthi-cold-launcher-mutable-attestation-cache-'),
   );
@@ -1459,7 +1578,7 @@ async function main() {
     );
     await writeFile(
       descriptor.cachedAttestationPath,
-      descriptor.publicationAttestation.bytes,
+      acceptedAttestationBytes,
       { mode: 0o600 },
     );
     await chmod(descriptor.cachedAttestationPath, 0o644);
@@ -1534,7 +1653,7 @@ async function main() {
     assert.equal(repaired.buildEvidence.buildExecuted, true);
     assert.equal(
       contentHash(await readFile(descriptor.cachedAttestationPath)),
-      descriptor.publicationManifestHash,
+      repaired.buildEvidence.publicationManifestHash,
     );
     assert.equal(
       repaired.buildEvidence.publicationOutcome,
@@ -1672,7 +1791,7 @@ async function main() {
   }
 
   if (process.platform !== 'win32') {
-    await assertLinuxCacheRootTrustRefusals();
+    await assertLinuxCacheRootTrustRefusals(launcher.architecture);
   }
 
   const failedCoalescingParent = await mkdtemp(
