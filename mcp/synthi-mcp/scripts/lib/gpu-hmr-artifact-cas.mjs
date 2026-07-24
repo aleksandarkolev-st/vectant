@@ -52,6 +52,12 @@ export function stableJson(value) {
   ).join(',')}}`;
 }
 
+export function snapshotPortableArtifactCasManifestInput(value) {
+  const cloned = clonePortableData(value);
+  if (!cloned.ok || !isObject(cloned.value)) return null;
+  return freezeSnapshot(cloned.value);
+}
+
 export function sha256Bytes(bytes) {
   return `sha256:${sha256Digest(bytes)}`;
 }

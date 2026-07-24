@@ -27,6 +27,7 @@ import {
   normalizeArtifactId,
   normalizeSha256Hash,
   sha256Bytes,
+  snapshotPortableArtifactCasManifestInput,
   validateArtifactLocator,
   validateSharedArtifactAddressing,
   writeArtifactToCas,
@@ -65,6 +66,53 @@ assert.equal(normalizeArtifactId(artifactId), artifactId);
 assert.equal(hashFromArtifactId(artifactId), contentHash);
 assert.equal(idsMatchHashes([artifactId], [contentHash]), true);
 assert.equal(idsMatchHashes([artifactId], ['sha256:0000000000000000000000000000000000000000000000000000000000000000']), false);
+
+const mutableManifestInput = {
+  schemaVersion: CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION,
+  storage: {
+    kind: 'cas',
+    relativePath: 'sha256/00/original',
+  },
+  aliases: ['original'],
+};
+const portableManifestSnapshot =
+  snapshotPortableArtifactCasManifestInput(mutableManifestInput);
+assert.ok(portableManifestSnapshot);
+assert.equal(Object.isFrozen(portableManifestSnapshot), true);
+assert.equal(Object.isFrozen(portableManifestSnapshot.storage), true);
+assert.equal(Object.isFrozen(portableManifestSnapshot.aliases), true);
+mutableManifestInput.storage.relativePath = 'sha256/ff/mutated';
+mutableManifestInput.aliases[0] = 'mutated';
+assert.equal(
+  portableManifestSnapshot.storage.relativePath,
+  'sha256/00/original',
+);
+assert.deepEqual(portableManifestSnapshot.aliases, ['original']);
+
+let unsafeManifestGetterCalls = 0;
+const accessorManifestInput = {};
+Object.defineProperty(accessorManifestInput, 'contentHash', {
+  enumerable: true,
+  get() {
+    unsafeManifestGetterCalls += 1;
+    return contentHash;
+  },
+});
+assert.equal(
+  snapshotPortableArtifactCasManifestInput(accessorManifestInput),
+  null,
+);
+const proxiedManifestInput = new Proxy({}, {
+  get() {
+    unsafeManifestGetterCalls += 1;
+    throw new Error('portable manifest snapshot must not invoke proxy getters');
+  },
+});
+assert.equal(
+  snapshotPortableArtifactCasManifestInput(proxiedManifestInput),
+  null,
+);
+assert.equal(unsafeManifestGetterCalls, 0);
 
 const locator = await locatorFromBytes({
   bytes,
