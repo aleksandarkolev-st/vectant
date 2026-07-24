@@ -418,11 +418,13 @@ function executionPlanProjection(plan) {
 
 export function createColdBuildExecutionPlanReceipt(plan) {
   const pinned = PINNED_EXECUTION_PLANS.get(plan);
+  if (!pinned) {
+    throw new Error('cold_build_execution_plan_receipt_source_invalid');
+  }
   const planProjection = executionPlanProjection(plan);
   const planHash = contentHash(stableJson(planProjection));
   if (
-    !pinned
-    || pinned.launcherIdentity !== plan?.launcherIdentity
+    pinned.launcherIdentity !== plan?.launcherIdentity
     || pinned.projectionHash !== planHash
     || plan?.planHash !== planHash
     || !executionPlanMaterialAccepted(plan)
