@@ -63,6 +63,7 @@ const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const EXECUTION_NONCE_PATTERN = /^[a-f0-9]{32}$/;
 const CONTAINER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const EXECUTION_PROVIDER_IDENTITY_LABEL_MAX_BYTES = 1024;
 const PINNED_EXECUTION_PLANS = new WeakMap();
 const PINNED_INPUT_EVIDENCE = new WeakMap();
 const PINNED_SPEC_PUBLICATIONS = new WeakMap();
@@ -182,6 +183,14 @@ function requireHostPath(value, name) {
     throw new Error(`cold_build_execution_plan_${name}_invalid`);
   }
   return path.resolve(value);
+}
+
+export function coldBuildExecutionProviderIdentityLabelAccepted(value) {
+  return typeof value === 'string'
+    && value.length > 0
+    && Buffer.byteLength(value, 'utf8')
+      <= EXECUTION_PROVIDER_IDENTITY_LABEL_MAX_BYTES
+    && !/[\0\r\n]/.test(value);
 }
 
 function dockerMountField(name, value) {
@@ -496,8 +505,12 @@ export function verifyColdBuildExecutionPlanReceipt(receipt) {
     || projection.inputSetHash !== contentHash(stableJson(projection.inputSetBindings))
     || !Number.isSafeInteger(projection.specByteLength)
     || projection.specByteLength < 2
-    || projection.workerImageOperatingSystem !== 'linux'
-    || !['amd64', 'arm64'].includes(projection.workerImageArchitecture)
+    || !coldBuildExecutionProviderIdentityLabelAccepted(
+      projection.workerImageOperatingSystem,
+    )
+    || !coldBuildExecutionProviderIdentityLabelAccepted(
+      projection.workerImageArchitecture,
+    )
     || !exactKeys(
       projection.expectedContainerConfiguration,
       RETAINED_CONTAINER_CONFIGURATION_KEYS,
@@ -566,7 +579,8 @@ function executionPlanMaterialAccepted(plan) {
     && plan.launcherExecutableHash === plan.launcherIdentity?.binaryHash
     && plan.launcherBuildEvidenceHash
       === (plan.launcherIdentity?.buildEvidence?.evidenceHash ?? null)
-    && plan.workerImageOperatingSystem === 'linux'
+    && plan.workerImageOperatingSystem
+      === plan.launcherIdentity?.buildEvidence?.operatingSystem
     && plan.workerImageArchitecture === plan.launcherIdentity?.architecture
     && plan.workerImageId === plan.expectedContainerConfiguration?.imageId;
 }
@@ -748,10 +762,22 @@ export function createColdBuildLauncherExecutionPlan({
   }
   requireHash(commandSpecHash, 'command_spec_hash');
   requireHash(workerImageId, 'worker_image_id');
-  if (workerImageOperatingSystem !== 'linux') {
+  if (!coldBuildExecutionProviderIdentityLabelAccepted(
+    workerImageOperatingSystem,
+  )) {
     throw new Error('cold_build_execution_plan_worker_image_operating_system_invalid');
   }
-  if (!['amd64', 'arm64'].includes(workerImageArchitecture)) {
+  if (
+    launcherIdentity?.buildEvidence?.operatingSystem
+      !== workerImageOperatingSystem
+  ) {
+    throw new Error(
+      'cold_build_execution_plan_launcher_operating_system_mismatch',
+    );
+  }
+  if (!coldBuildExecutionProviderIdentityLabelAccepted(
+    workerImageArchitecture,
+  )) {
     throw new Error('cold_build_execution_plan_worker_image_architecture_invalid');
   }
   if (launcherIdentity?.architecture !== workerImageArchitecture) {

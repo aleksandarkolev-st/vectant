@@ -26,6 +26,7 @@ import {
   coldBuildLauncherCollectorExecArgs,
   createColdBuildExecutionPlanReceipt,
   createColdBuildLauncherExecutionPlan,
+  coldBuildExecutionProviderIdentityLabelAccepted,
   publishColdBuildLauncherSpec,
   verifyColdBuildExecutionPlanReceipt,
   verifyColdBuildLauncherContainerInspection,
@@ -52,7 +53,10 @@ async function workerImageDescriptor() {
   assert.equal(inspected.exitCode, 0, inspected.stderr || inspected.error);
   const [descriptor] = JSON.parse(inspected.stdout);
   assert.equal(descriptor?.Os, 'linux');
-  assert.ok(['amd64', 'arm64'].includes(descriptor?.Architecture));
+  assert.equal(
+    coldBuildExecutionProviderIdentityLabelAccepted(descriptor?.Architecture),
+    true,
+  );
   assert.match(descriptor?.Id ?? '', /^sha256:[a-f0-9]{64}$/);
   return descriptor;
 }
@@ -757,16 +761,15 @@ async function main() {
     assert.throws(
       () => createColdBuildLauncherExecutionPlan({
         ...common,
-        workerImageOperatingSystem: 'windows',
+        workerImageOperatingSystem:
+          `${common.workerImageOperatingSystem}-mismatch`,
       }),
-      /worker_image_operating_system_invalid/,
+      /launcher_operating_system_mismatch/,
     );
     assert.throws(
       () => createColdBuildLauncherExecutionPlan({
         ...common,
-        workerImageArchitecture: common.workerImageArchitecture === 'amd64'
-          ? 'arm64'
-          : 'amd64',
+        workerImageArchitecture: `${common.workerImageArchitecture}-mismatch`,
       }),
       /launcher_architecture_mismatch/,
     );

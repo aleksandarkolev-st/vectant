@@ -1,8 +1,22 @@
 import assert from 'node:assert/strict';
 
 import {
+  coldBuildExecutionProviderIdentityLabelAccepted,
   createColdBuildExecutionPlanReceipt,
 } from '../lib/gpu-hmr-cold-build-execution-plan.mjs';
+
+assert.equal(
+  coldBuildExecutionProviderIdentityLabelAccepted(
+    'newly-discovered-machine-family/revision-17',
+  ),
+  true,
+);
+assert.equal(coldBuildExecutionProviderIdentityLabelAccepted(''), false);
+assert.equal(coldBuildExecutionProviderIdentityLabelAccepted('invalid\nlabel'), false);
+assert.equal(
+  coldBuildExecutionProviderIdentityLabelAccepted('x'.repeat(1025)),
+  false,
+);
 
 let getterCalls = 0;
 const accessorImpostor = {};
