@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_AUTHORITY,
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_SCHEMA,
+  GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_AUTHORITY,
+  GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_SCHEMA,
   GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_AUTHORITY,
   GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_SCHEMA,
   GpuParentRuntimeProofAdmissionAuthority,
@@ -326,6 +328,68 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
         .update(freshEvaluatorMaterialBytes!)
         .digest("hex")}`,
     ).toBe(evaluatorMaterial!.materialSha256);
+    const evaluationReceipt = authority.outputEvaluationReceipt(
+      evaluation,
+      admissionReceipt,
+    );
+    expect(evaluationReceipt).toMatchObject({
+      schemaVersion:
+        GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_SCHEMA,
+      proofAuthority:
+        GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_AUTHORITY,
+      receiptId: expect.stringMatching(
+        /^gpu-mcp-output-evaluation-receipt:sha256:[a-f0-9]{64}$/,
+      ),
+      evaluatorMaterialSchemaVersion:
+        GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA,
+      evaluatorMaterialSha256: evaluatorMaterial!.materialSha256,
+      evaluatorMaterialByteLength:
+        evaluatorMaterial!.materialByteLength,
+      evaluatorFunctionSourceSha256:
+        evaluation.evaluatorFunctionSourceSha256,
+      evaluatorSourceSha256: evaluatorMaterial!.evaluatorSourceSha256,
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      admissionReceiptId: admissionReceipt.receiptId,
+      outputObservationReceiptId: evaluation.outputObservationReceiptId,
+      outputContentSha256: evaluation.outputContentSha256,
+      outputByteLength: "4",
+      evaluatedAtMonotonicNs: evaluation.evaluatedAtMonotonicNs,
+      outputContractPassed: true,
+      materialBytesChecked: true,
+      liveAdmissionBindingChecked: true,
+      isolatedExecutionRequired: true,
+      isolatedExecutionVerified: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(Object.isFrozen(evaluationReceipt)).toBe(true);
+    const {
+      receiptId: evaluationReceiptId,
+      ...evaluationReceiptContent
+    } = evaluationReceipt!;
+    expect(evaluationReceiptId).toBe(
+      `gpu-mcp-output-evaluation-receipt:sha256:${createHash("sha256")
+        .update(
+          "synthi.gpu_hmr.parent_output_evaluation_receipt.id.v1",
+          "utf8",
+        )
+        .update("\0", "utf8")
+        .update(JSON.stringify(evaluationReceiptContent), "utf8")
+        .digest("hex")}`,
+    );
+    expect(authority.outputEvaluationReceipt(
+      { ...evaluation },
+      admissionReceipt,
+    )).toBeNull();
+    const unrelatedAdmissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    expect(authority.outputEvaluationReceipt(
+      evaluation,
+      unrelatedAdmissionReceipt,
+    )).toBeNull();
     expect(authority.isVerifiedOutputEvaluation(
       evaluation,
       admissionReceipt,
@@ -334,6 +398,9 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
     expect(evaluatorBytes!.byteLength).toBe(0);
     expect([...source]).toEqual([17, 19, 23, 29]);
     expect(JSON.stringify(evaluation)).not.toMatch(
+      /project|fixture|scenario|backend|camera|image|tensor|media/i,
+    );
+    expect(JSON.stringify(evaluationReceipt)).not.toMatch(
       /project|fixture|scenario|backend|camera|image|tensor|media/i,
     );
   });
@@ -473,6 +540,105 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
       evaluation,
       admissionReceipt,
     )).toBe(true);
+  });
+
+  it("issues a frozen receipt after evaluator intrinsic poisoning", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const hashPrototype = Object.getPrototypeOf(createHash("sha256"));
+    const updateDescriptor =
+      Object.getOwnPropertyDescriptor(hashPrototype, "update");
+    const digestDescriptor =
+      Object.getOwnPropertyDescriptor(hashPrototype, "digest");
+    const freezeDescriptor =
+      Object.getOwnPropertyDescriptor(Object, "freeze");
+    if (
+      updateDescriptor === undefined
+      || digestDescriptor === undefined
+      || freezeDescriptor === undefined
+    ) {
+      throw new Error("receipt intrinsic descriptors unavailable");
+    }
+    const definePropertyIntrinsic = Object.defineProperty;
+    const reflectApplyIntrinsic = Reflect.apply;
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => {
+        Object.defineProperties(hashPrototype, {
+          update: {
+            ...updateDescriptor,
+            value: () => {
+              throw new Error("poisoned receipt hash update");
+            },
+          },
+          digest: {
+            ...digestDescriptor,
+            value: () => {
+              throw new Error("poisoned receipt hash digest");
+            },
+          },
+        });
+        Object.defineProperty(Object, "freeze", {
+          ...freezeDescriptor,
+          value: () => {
+            throw new Error("poisoned receipt freeze");
+          },
+        });
+        return true;
+      },
+    });
+
+    let evaluation: GpuMcpOutputEvaluation;
+    try {
+      evaluation = await captureAndEvaluateGpuMcpAdmittedOutputBytes(
+        authority,
+        producer,
+        admissionReceipt,
+        evaluator,
+        () => Uint8Array.of(47, 53),
+        () => true,
+      );
+    } finally {
+      reflectApplyIntrinsic(definePropertyIntrinsic, Object, [
+        hashPrototype,
+        "update",
+        updateDescriptor,
+      ]);
+      reflectApplyIntrinsic(definePropertyIntrinsic, Object, [
+        hashPrototype,
+        "digest",
+        digestDescriptor,
+      ]);
+      reflectApplyIntrinsic(definePropertyIntrinsic, Object, [
+        Object,
+        "freeze",
+        freezeDescriptor,
+      ]);
+    }
+
+    const receipt = authority.outputEvaluationReceipt(
+      evaluation,
+      admissionReceipt,
+    );
+    expect(Object.isFrozen(receipt)).toBe(true);
+    expect(receipt).toMatchObject({
+      outputContentSha256: `sha256:${createHash("sha256")
+        .update(Uint8Array.of(47, 53))
+        .digest("hex")}`,
+      materialBytesChecked: true,
+      liveAdmissionBindingChecked: true,
+      isolatedExecutionVerified: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
   });
 
   it("detaches evaluator bytes despite instance property overrides", async () => {
@@ -794,12 +960,20 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
       () => true,
     );
 
+    expect(authority.outputEvaluationReceipt(
+      evaluation,
+      admissionReceipt,
+    )).not.toBeNull();
     nowUnixNs += 11n;
 
     expect(authority.isVerifiedOutputEvaluation(
       evaluation,
       admissionReceipt,
     )).toBe(true);
+    expect(authority.outputEvaluationReceipt(
+      evaluation,
+      admissionReceipt,
+    )).toBeNull();
     expect(authority.isVerifiedOutputEvaluation(
       evaluation,
       { ...admissionReceipt },
@@ -897,6 +1071,16 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
     );
 
     expect(evaluation.outputContractPassed).toBe(false);
+    expect(authority.outputEvaluationReceipt(
+      evaluation,
+      admissionReceipt,
+    )).toMatchObject({
+      outputContractPassed: false,
+      isolatedExecutionVerified: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
     expect(authority.isVerifiedOutputEvaluation(
       evaluation,
       admissionReceipt,

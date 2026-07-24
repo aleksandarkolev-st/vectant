@@ -1,4 +1,5 @@
 import {
+  createHash,
   generateKeyPairSync,
   randomBytes,
   type KeyObject,
@@ -31,7 +32,10 @@ import {
   claimGpuMcpOutputEvaluatorExecutorCapability,
   disposeGpuMcpOutputEvaluatorExecutorClaim,
   evaluateGpuMcpOutputBytes,
+  GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_AUTHORITY,
+  GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA,
   releaseGpuMcpOutputEvaluatorExecutorClaim,
+  snapshotGpuMcpOutputEvaluatorMaterialBytes,
   type GpuMcpOutputEvaluation,
   type GpuMcpOutputEvaluatorCapability,
   type GpuMcpOutputEvaluatorExecutorCapability,
@@ -46,6 +50,10 @@ export const GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_SCHEMA =
   "synthi.gpu_hmr.parent_output_observation.v1" as const;
 export const GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_AUTHORITY =
   "live_mcp_session_admission_and_output_byte_observation_support_only_not_gpu_hmr_acceptance" as const;
+export const GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_SCHEMA =
+  "synthi.gpu_hmr.parent_output_evaluation_receipt.v1" as const;
+export const GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_AUTHORITY =
+  "live_parent_admission_bound_output_evaluation_support_only_not_gpu_hmr_acceptance" as const;
 
 const U64_MAX = 18_446_744_073_709_551_615n;
 const DEFAULT_MAX_RECEIPT_AGE_NS = 30_000_000_000n;
@@ -54,7 +62,34 @@ const MAX_ONLINE_REPLAY_SCOPES = 65_536;
 const MAX_ONLINE_REPLAY_RECEIPTS_PER_SCOPE = 65_536;
 const MAX_ONLINE_REPLAY_OPERATIONS = 262_144;
 const MAX_ONLINE_REPLAY_OPERATION_TIMEOUT_MS = 60_000;
+const OUTPUT_EVALUATION_RECEIPT_ID_DOMAIN =
+  "synthi.gpu_hmr.parent_output_evaluation_receipt.id.v1";
+const freeze = Object.freeze;
 const reflectApply = Reflect.apply;
+const jsonStringify = JSON.stringify;
+const createHashIntrinsic = createHash;
+const hashPrototype = Object.getPrototypeOf(
+  createHashIntrinsic("sha256"),
+);
+const hashUpdate = hashPrototype.update as Function;
+const hashDigest = hashPrototype.digest as Function;
+
+function requiredGetter(
+  prototype: object,
+  property: string,
+): (this: unknown) => unknown {
+  const getter = Object.getOwnPropertyDescriptor(prototype, property)?.get;
+  if (getter === undefined) {
+    throw new Error(
+      "gpu_parent_runtime_proof_admission_authority_intrinsics_unavailable",
+    );
+  }
+  return getter;
+}
+
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+const typedArrayByteLengthGetter =
+  requiredGetter(typedArrayPrototype, "byteLength");
 const weakMapGet = WeakMap.prototype.get;
 const weakMapSet = WeakMap.prototype.set;
 
@@ -71,6 +106,108 @@ function setWeakMapValue<K extends object, V>(
   value: V,
 ): void {
   reflectApply(weakMapSet, map, [key, value]);
+}
+
+function sha256Hex(
+  ...values: readonly (string | Uint8Array)[]
+): string {
+  const hash = createHashIntrinsic("sha256");
+  for (const value of values) {
+    reflectApply(
+      hashUpdate,
+      hash,
+      typeof value === "string" ? [value, "utf8"] : [value],
+    );
+  }
+  return reflectApply(hashDigest, hash, ["hex"]) as string;
+}
+
+function outputEvaluationReceiptId(
+  content: object,
+): string {
+  const canonical = jsonStringify(content);
+  if (canonical === undefined) {
+    throw new Error(
+      "gpu_parent_runtime_proof_output_evaluation_receipt_unavailable",
+    );
+  }
+  const digest = sha256Hex(
+    OUTPUT_EVALUATION_RECEIPT_ID_DOMAIN,
+    "\0",
+    canonical,
+  );
+  return `gpu-mcp-output-evaluation-receipt:sha256:${digest}`;
+}
+
+function createOutputEvaluationReceipt(
+  evaluation: GpuMcpOutputEvaluation,
+  admissionReceiptId: string,
+  outputObservationReceiptId: string,
+  materialBytes: Uint8Array,
+): GpuParentRuntimeProofOutputEvaluationReceipt {
+  const material = evaluation.evaluatorMaterial;
+  const materialByteLength = reflectApply(
+    typedArrayByteLengthGetter,
+    materialBytes,
+    [],
+  ) as number;
+  const materialSha256 = `sha256:${sha256Hex(materialBytes)}`;
+  if (
+    evaluation.admissionReceiptId !== admissionReceiptId
+    || evaluation.outputObservationReceiptId !== outputObservationReceiptId
+    || material.schemaVersion !== GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA
+    || material.proofAuthority
+      !== GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_AUTHORITY
+    || material.materialSha256 !== materialSha256
+    || material.materialByteLength !== String(materialByteLength)
+    || material.evaluatorFunctionSourceSha256
+      !== evaluation.evaluatorFunctionSourceSha256
+    || material.outputContractSha256 !== evaluation.outputContractSha256
+    || material.outputSemanticsSha256 !== evaluation.outputSemanticsSha256
+    || material.isolatedExecutionRequired !== true
+    || material.isolatedExecutionVerified !== false
+    || material.acceptedForGpuHmr !== false
+    || material.gpuHmrSuccess !== false
+    || material.canSatisfyRuntimeProof !== false
+    || evaluation.acceptedForGpuHmr !== false
+    || evaluation.gpuHmrSuccess !== false
+    || evaluation.canSatisfyRuntimeProof !== false
+  ) {
+    throw new Error(
+      "gpu_parent_runtime_proof_output_evaluation_material_binding_mismatch",
+    );
+  }
+  const content = freeze({
+    schemaVersion:
+      GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_SCHEMA,
+    proofAuthority:
+      GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_AUTHORITY,
+    evaluatorMaterialSchemaVersion: material.schemaVersion,
+    evaluatorMaterialSha256: material.materialSha256,
+    evaluatorMaterialByteLength: material.materialByteLength,
+    evaluatorFunctionSourceSha256:
+      evaluation.evaluatorFunctionSourceSha256,
+    evaluatorSourceSha256: material.evaluatorSourceSha256,
+    outputContractSha256: evaluation.outputContractSha256,
+    outputSemanticsSha256: evaluation.outputSemanticsSha256,
+    admissionReceiptId,
+    outputObservationReceiptId,
+    outputContentSha256: evaluation.outputContentSha256,
+    outputByteLength: evaluation.outputByteLength,
+    evaluatedAtMonotonicNs: evaluation.evaluatedAtMonotonicNs,
+    outputContractPassed: evaluation.outputContractPassed,
+    materialBytesChecked: true as const,
+    liveAdmissionBindingChecked: true as const,
+    isolatedExecutionRequired: true as const,
+    isolatedExecutionVerified: false as const,
+    acceptedForGpuHmr: false as const,
+    gpuHmrSuccess: false as const,
+    canSatisfyRuntimeProof: false as const,
+  });
+  return freeze({
+    ...content,
+    receiptId: outputEvaluationReceiptId(content),
+  });
 }
 
 export interface GpuParentRuntimeProofOutputObservation {
@@ -90,6 +227,35 @@ export interface GpuParentRuntimeProofOutputObservation {
   readonly postAdmissionObservationChecked: true;
   readonly replayChecked: false;
   readonly freshnessChecked: true;
+  readonly acceptedForGpuHmr: false;
+  readonly gpuHmrSuccess: false;
+  readonly canSatisfyRuntimeProof: false;
+}
+
+export interface GpuParentRuntimeProofOutputEvaluationReceipt {
+  readonly schemaVersion:
+    typeof GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_SCHEMA;
+  readonly proofAuthority:
+    typeof GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_AUTHORITY;
+  readonly receiptId: string;
+  readonly evaluatorMaterialSchemaVersion:
+    typeof GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA;
+  readonly evaluatorMaterialSha256: string;
+  readonly evaluatorMaterialByteLength: string;
+  readonly evaluatorFunctionSourceSha256: string;
+  readonly evaluatorSourceSha256: string;
+  readonly outputContractSha256: string;
+  readonly outputSemanticsSha256: string | null;
+  readonly admissionReceiptId: string;
+  readonly outputObservationReceiptId: string;
+  readonly outputContentSha256: string;
+  readonly outputByteLength: string;
+  readonly evaluatedAtMonotonicNs: string;
+  readonly outputContractPassed: boolean;
+  readonly materialBytesChecked: true;
+  readonly liveAdmissionBindingChecked: true;
+  readonly isolatedExecutionRequired: true;
+  readonly isolatedExecutionVerified: false;
   readonly acceptedForGpuHmr: false;
   readonly gpuHmrSuccess: false;
   readonly canSatisfyRuntimeProof: false;
@@ -376,6 +542,7 @@ export class GpuParentRuntimeProofAdmissionAuthority {
     {
       readonly admissionReceipt: GpuParentRuntimeProofAdmissionReceipt;
       readonly observation: GpuParentRuntimeProofOutputObservation;
+      readonly receipt: GpuParentRuntimeProofOutputEvaluationReceipt;
     }
   >();
   readonly #outputObservationPermitAdmissionReceiptIds = new WeakMap<
@@ -674,6 +841,24 @@ export class GpuParentRuntimeProofAdmissionAuthority {
         === (value as GpuMcpOutputEvaluation).outputObservationReceiptId;
   }
 
+  outputEvaluationReceipt(
+    value: unknown,
+    admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
+  ): GpuParentRuntimeProofOutputEvaluationReceipt | null {
+    if (!this.isVerifiedOutputEvaluation(value, admissionReceipt)) {
+      return null;
+    }
+    try {
+      this.#assertCurrentAdmission(admissionReceipt);
+    } catch {
+      return null;
+    }
+    return getWeakMapValue(
+      this.#verifiedOutputEvaluations,
+      value,
+    )?.receipt ?? null;
+  }
+
   createOutputObservationPermit(
     admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
   ): GpuMcpOutputByteObservationPermit {
@@ -747,12 +932,26 @@ export class GpuParentRuntimeProofAdmissionAuthority {
         "gpu_parent_runtime_proof_output_evaluation_admission_binding_mismatch",
       );
     }
+    const materialBytes =
+      snapshotGpuMcpOutputEvaluatorMaterialBytes(evaluatorCapability);
+    if (materialBytes === null) {
+      throw new Error(
+        "gpu_parent_runtime_proof_output_evaluator_material_unavailable",
+      );
+    }
+    const receipt = createOutputEvaluationReceipt(
+      evaluation,
+      consumed.admissionReceiptId,
+      consumed.observation.receipt.receiptId,
+      materialBytes,
+    );
     setWeakMapValue(
       this.#verifiedOutputEvaluations,
       evaluation,
       {
         admissionReceipt,
         observation: consumed.observation,
+        receipt,
       },
     );
     return evaluation;
