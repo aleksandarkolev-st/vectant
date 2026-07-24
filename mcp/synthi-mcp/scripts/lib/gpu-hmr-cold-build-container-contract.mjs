@@ -1364,7 +1364,10 @@ async function publishLauncherBinary({
   };
 }
 
-function launcherBuilderRecipe(architecture) {
+function launcherBuilderRecipe(architecture, sourceHash) {
+  if (!SHA256_PATTERN.test(sourceHash ?? '')) {
+    throw new Error('cold_build_launcher_builder_source_hash_invalid');
+  }
   const containerArguments = Object.freeze([
     '--pull',
     'missing',
@@ -1392,15 +1395,23 @@ function launcherBuilderRecipe(architecture) {
     `GOARCH=${architecture}`,
     'GOCACHE=/tmp/go-cache',
     'GOOS=linux',
+    `SYNTHI_LAUNCHER_SOURCE_HASH=${sourceHash}`,
   ].sort());
   const command = Object.freeze([
-    'build',
-    '-trimpath',
-    '-buildvcs=false',
-    '-ldflags=-buildid=',
-    '-o',
-    '/out/cold-build-launcher',
-    '/src/main.go',
+    '-eu',
+    '-c',
+    [
+      'snapshot=/tmp/synthi-launcher-source/main.go',
+      'mkdir -p /tmp/synthi-launcher-source',
+      'cp /src/main.go "$snapshot"',
+      'chmod 0444 "$snapshot"',
+      'actual="$(sha256sum "$snapshot")"',
+      'actual="${actual%% *}"',
+      '[ "sha256:$actual" = "$SYNTHI_LAUNCHER_SOURCE_HASH" ]',
+      'printf "%s\\n" "$SYNTHI_LAUNCHER_SOURCE_HASH"',
+      'exec /usr/local/go/bin/go build -trimpath -buildvcs=false '
+        + '\'-ldflags=-buildid=\' -o /out/cold-build-launcher "$snapshot"',
+    ].join('; '),
   ]);
   const projection = {
     schemaVersion: COLD_BUILD_LAUNCHER_BUILDER_RECIPE_SCHEMA,
@@ -1409,7 +1420,7 @@ function launcherBuilderRecipe(architecture) {
     architecture,
     containerArguments,
     environment,
-    entrypoint: '/usr/local/go/bin/go',
+    entrypoint: '/bin/sh',
     command,
     sourceMount: Object.freeze({ target: '/src', readOnly: true }),
     outputMount: Object.freeze({ target: '/out', readOnly: false }),
@@ -1439,6 +1450,76 @@ function launcherBuildArgs({ sourceDir, outputDir, recipe, containerName }) {
     recipe.builderImage,
     ...recipe.command,
   ];
+}
+
+async function verifyLauncherSourceSnapshot(snapshotPath, sourceIdentity) {
+  const readFlags = fsConstants.O_RDONLY
+    | (process.platform === 'win32' ? 0 : (fsConstants.O_NOFOLLOW ?? 0));
+  const verificationHandle = await open(snapshotPath, readFlags);
+  try {
+    const beforeRead = await verificationHandle.stat({ bigint: true });
+    const snapshotBytes = await verificationHandle.readFile();
+    const afterRead = await verificationHandle.stat({ bigint: true });
+    if (
+      !beforeRead.isFile()
+      || !afterRead.isFile()
+      || !sameOpenFileIdentity(beforeRead, afterRead)
+      || !sameFileMetadata(beforeRead, afterRead)
+      || snapshotBytes.byteLength !== sourceIdentity.byteLength
+      || contentHash(snapshotBytes) !== sourceIdentity.sourceHash
+    ) {
+      throw new Error('cold_build_launcher_source_snapshot_identity_invalid');
+    }
+    return Object.freeze({
+      inodeIdentityHash: contentHash(`${afterRead.dev}:${afterRead.ino}`),
+    });
+  } finally {
+    await verificationHandle.close();
+  }
+}
+
+async function stageLauncherSourceSnapshot(buildDirectory, sourceIdentity) {
+  const sourceDirectory = path.join(buildDirectory, 'source');
+  const outputDirectory = path.join(buildDirectory, 'output');
+  await mkdir(sourceDirectory, { mode: 0o700 });
+  await mkdir(outputDirectory, { mode: 0o700 });
+  await requirePrivateDirectory(
+    sourceDirectory,
+    'cold_build_launcher_source_snapshot_directory_untrusted',
+  );
+  await requirePrivateDirectory(
+    outputDirectory,
+    'cold_build_launcher_output_directory_untrusted',
+  );
+
+  const sourceBytes = await readFile(COLD_BUILD_LAUNCHER_SOURCE_PATH);
+  if (
+    sourceBytes.byteLength !== sourceIdentity.byteLength
+    || contentHash(sourceBytes) !== sourceIdentity.sourceHash
+  ) {
+    throw new Error('cold_build_launcher_source_changed_before_snapshot');
+  }
+
+  const snapshotPath = path.join(sourceDirectory, 'main.go');
+  const snapshotHandle = await open(snapshotPath, 'wx', 0o400);
+  try {
+    await snapshotHandle.writeFile(sourceBytes);
+    await snapshotHandle.chmod(0o444);
+    await snapshotHandle.sync();
+  } finally {
+    await snapshotHandle.close();
+  }
+  const inspection = await verifyLauncherSourceSnapshot(
+    snapshotPath,
+    sourceIdentity,
+  );
+
+  return Object.freeze({
+    sourceDirectory,
+    outputDirectory,
+    snapshotPath,
+    inodeIdentityHash: inspection.inodeIdentityHash,
+  });
 }
 
 async function removeBuilderContainer(dockerExecutable, containerName) {
@@ -1568,7 +1649,10 @@ function coldBuildLauncherBuildEvidenceAccepted(
     return false;
   }
   const expectedBinaryHash = coldBuildLauncherExpectedHash(architecture);
-  const expectedRecipe = launcherBuilderRecipe(architecture);
+  const expectedRecipe = launcherBuilderRecipe(
+    architecture,
+    sourceIdentity.sourceHash,
+  );
   const publicationKeyProjection = {
     architecture,
     builderRecipeHash: expectedRecipe.recipeHash,
@@ -1675,6 +1759,8 @@ function coldBuildLauncherBuildEvidenceAccepted(
   const buildExecutionAccepted = buildEvidence.buildExecuted === true
     ? optionalBuildHashFields.every((name) => SHA256_PATTERN.test(buildEvidence[name] ?? ''))
       && buildEvidence.buildExitCode === 0
+      && buildEvidence.buildStdoutHash
+        === contentHash(`${sourceIdentity.sourceHash}\n`)
       && buildEvidence.builderCleanupAttempted === true
       && buildEvidence.builderCleanupAccepted === true
       && Number.isSafeInteger(buildEvidence.builderCleanupRemovalExitCode)
@@ -1983,7 +2069,10 @@ export async function coldBuildLauncherPublicationDescriptor({
     throw new Error('cold_build_launcher_reproducible_identity_capability_missing');
   }
   const sourceIdentity = await coldBuildLauncherSourceIdentity();
-  const builderRecipe = launcherBuilderRecipe(normalizedArchitecture);
+  const builderRecipe = launcherBuilderRecipe(
+    normalizedArchitecture,
+    sourceIdentity.sourceHash,
+  );
   const publicationKeyProjection = {
     architecture: normalizedArchitecture,
     builderRecipeHash: builderRecipe.recipeHash,
@@ -2136,6 +2225,10 @@ async function materializeColdBuildLauncherOnce({
         temporaryDirectory,
         'cold_build_launcher_build_directory_untrusted',
       );
+      const sourceSnapshot = await stageLauncherSourceSnapshot(
+        temporaryDirectory,
+        sourceIdentity,
+      );
       builderContainerName = [
         'synthi-cold-launcher-builder',
         sourceIdentity.sourceHash.slice('sha256:'.length, 'sha256:'.length + 12),
@@ -2144,8 +2237,8 @@ async function materializeColdBuildLauncherOnce({
         randomBytes(6).toString('hex'),
       ].join('-');
       buildArgs = launcherBuildArgs({
-        sourceDir: path.dirname(COLD_BUILD_LAUNCHER_SOURCE_PATH),
-        outputDir: temporaryDirectory,
+        sourceDir: sourceSnapshot.sourceDirectory,
+        outputDir: sourceSnapshot.outputDirectory,
         recipe: builderRecipe,
         containerName: builderContainerName,
       });
@@ -2173,7 +2266,23 @@ async function materializeColdBuildLauncherOnce({
           `cold_build_launcher_build_failed:${buildResult.error || buildResult.stderr || buildResult.exitCode}`,
         );
       }
-      const builtPath = path.join(temporaryDirectory, 'cold-build-launcher');
+      if (buildResult.stdout !== `${sourceIdentity.sourceHash}\n`) {
+        throw new Error('cold_build_launcher_source_snapshot_observation_mismatch');
+      }
+      const sourceSnapshotRevalidation = await verifyLauncherSourceSnapshot(
+        sourceSnapshot.snapshotPath,
+        sourceIdentity,
+      );
+      if (
+        sourceSnapshotRevalidation.inodeIdentityHash
+        !== sourceSnapshot.inodeIdentityHash
+      ) {
+        throw new Error('cold_build_launcher_source_snapshot_changed_during_build');
+      }
+      const builtPath = path.join(
+        sourceSnapshot.outputDirectory,
+        'cold-build-launcher',
+      );
       const builtInspection = await inspectLauncherFile(
         builtPath,
         expectedBinaryHash,
