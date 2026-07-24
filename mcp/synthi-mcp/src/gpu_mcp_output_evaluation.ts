@@ -634,6 +634,17 @@ export function claimGpuMcpOutputEvaluatorExecutorCapability(
   return claim;
 }
 
+export function gpuMcpOutputEvaluatorCapabilityMatchesExecutorClaim(
+  executorClaim: unknown,
+  evaluatorCapability: unknown,
+): boolean {
+  const claim = activeExecutorClaim(executorClaim);
+  const evaluator = evaluatorCapabilityState(evaluatorCapability);
+  return claim !== null
+    && evaluator !== null
+    && evaluator.boundary === claim.boundary;
+}
+
 export function releaseGpuMcpOutputEvaluatorExecutorClaim(
   claim: unknown,
 ): boolean {

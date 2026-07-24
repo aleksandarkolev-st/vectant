@@ -9,6 +9,7 @@ import * as sharedOnlineReplayAuthorityModule
   from "../scripts/lib/gpu-hmr-mcp-admission-online-replay-authority.mjs";
 import {
   GpuParentRuntimeProofAdmissionReceiptSigner,
+  gpuParentRuntimeProofAdmissionOutputContractBinding,
   verifyGpuParentRuntimeProofAdmissionReceipt,
   type GpuParentRuntimeProofAdmissionReceipt,
   type GpuParentRuntimeProofAdmissionReceiptVerificationKey,
@@ -32,6 +33,7 @@ import {
   claimGpuMcpOutputEvaluatorExecutorCapability,
   disposeGpuMcpOutputEvaluatorExecutorClaim,
   evaluateGpuMcpOutputBytes,
+  gpuMcpOutputEvaluatorCapabilityMatchesExecutorClaim,
   GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_AUTHORITY,
   GPU_MCP_OUTPUT_EVALUATOR_MATERIAL_SCHEMA,
   releaseGpuMcpOutputEvaluatorExecutorClaim,
@@ -41,6 +43,13 @@ import {
   type GpuMcpOutputEvaluatorExecutorCapability,
   type GpuMcpOutputEvaluatorExecutorClaim,
 } from "./gpu_mcp_output_evaluation.js";
+import {
+  executeGpuMcpOutputEvaluatorInFreshProcess,
+  GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_AUTHORITY,
+  GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_SCHEMA,
+  type GpuMcpOutputEvaluatorFreshProcessOptions,
+  type GpuMcpOutputEvaluatorFreshProcessExecution,
+} from "./gpu_mcp_output_evaluator_fresh_process.js";
 
 export const GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_SCHEMA =
   "synthi.gpu_hmr.mcp_admission_trust_material.v3" as const;
@@ -54,6 +63,10 @@ export const GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_SCHEMA =
   "synthi.gpu_hmr.parent_output_evaluation_receipt.v1" as const;
 export const GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_AUTHORITY =
   "live_parent_admission_bound_output_evaluation_support_only_not_gpu_hmr_acceptance" as const;
+export const GPU_PARENT_RUNTIME_PROOF_FRESH_PROCESS_OUTPUT_EVALUATION_RECEIPT_SCHEMA =
+  "synthi.gpu_hmr.parent_fresh_process_output_evaluation_receipt.v1" as const;
+export const GPU_PARENT_RUNTIME_PROOF_FRESH_PROCESS_OUTPUT_EVALUATION_RECEIPT_AUTHORITY =
+  "live_parent_admission_bound_fresh_process_output_evaluation_support_only_not_gpu_hmr_acceptance" as const;
 
 const U64_MAX = 18_446_744_073_709_551_615n;
 const DEFAULT_MAX_RECEIPT_AGE_NS = 30_000_000_000n;
@@ -64,6 +77,8 @@ const MAX_ONLINE_REPLAY_OPERATIONS = 262_144;
 const MAX_ONLINE_REPLAY_OPERATION_TIMEOUT_MS = 60_000;
 const OUTPUT_EVALUATION_RECEIPT_ID_DOMAIN =
   "synthi.gpu_hmr.parent_output_evaluation_receipt.id.v1";
+const FRESH_PROCESS_OUTPUT_EVALUATION_RECEIPT_ID_DOMAIN =
+  "synthi.gpu_hmr.parent_fresh_process_output_evaluation_receipt.id.v1";
 const freeze = Object.freeze;
 const reflectApply = Reflect.apply;
 const jsonStringify = JSON.stringify;
@@ -210,6 +225,119 @@ function createOutputEvaluationReceipt(
   });
 }
 
+function freshProcessOutputEvaluationReceiptId(
+  content: object,
+): string {
+  const canonical = jsonStringify(content);
+  if (canonical === undefined) {
+    throw new Error(
+      "gpu_parent_runtime_proof_fresh_process_output_evaluation_receipt_unavailable",
+    );
+  }
+  const digest = sha256Hex(
+    FRESH_PROCESS_OUTPUT_EVALUATION_RECEIPT_ID_DOMAIN,
+    "\0",
+    canonical,
+  );
+  return `gpu-mcp-fresh-process-output-evaluation-receipt:sha256:${digest}`;
+}
+
+function createFreshProcessOutputEvaluationReceipt(
+  execution: GpuMcpOutputEvaluatorFreshProcessExecution,
+  admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
+  outputObservationReceipt: GpuMcpOutputObservationReceipt,
+): GpuParentRuntimeProofFreshProcessOutputEvaluationReceipt {
+  const outputContractBinding =
+    gpuParentRuntimeProofAdmissionOutputContractBinding(admissionReceipt);
+  if (
+    execution.schemaVersion
+      !== GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_SCHEMA
+    || execution.proofAuthority
+      !== GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_AUTHORITY
+    || execution.outputContractSha256
+      !== outputContractBinding.outputContractSha256
+    || execution.outputSemanticsSha256
+      !== outputContractBinding.outputSemanticsSha256
+    || execution.outputContentSha256
+      !== outputObservationReceipt.outputContentSha256
+    || execution.outputByteLength
+      !== outputObservationReceipt.outputByteLength
+    || execution.freshProcessExecutionObserved !== true
+    || execution.parentClosureUnavailable !== true
+    || execution.staticExecutionGraphVerified !== true
+    || execution.loadedGraphIdentityAttested !== false
+    || execution.loadedGraphIdentityGap
+      !== "runtime_loaded_graph_identity_attestation_missing"
+    || execution.isolatedExecutionVerified !== false
+    || execution.containerAttestationVerified !== false
+    || execution.acceptedForGpuHmr !== false
+    || execution.gpuHmrSuccess !== false
+    || execution.canSatisfyRuntimeProof !== false
+  ) {
+    throw new Error(
+      "gpu_parent_runtime_proof_fresh_process_output_evaluation_binding_mismatch",
+    );
+  }
+  const executionCanonical = jsonStringify(execution);
+  if (executionCanonical === undefined) {
+    throw new Error(
+      "gpu_parent_runtime_proof_fresh_process_output_evaluation_receipt_unavailable",
+    );
+  }
+  const content = freeze({
+    schemaVersion:
+      GPU_PARENT_RUNTIME_PROOF_FRESH_PROCESS_OUTPUT_EVALUATION_RECEIPT_SCHEMA,
+    proofAuthority:
+      GPU_PARENT_RUNTIME_PROOF_FRESH_PROCESS_OUTPUT_EVALUATION_RECEIPT_AUTHORITY,
+    freshProcessExecutionSchemaVersion: execution.schemaVersion,
+    freshProcessExecutionAuthority: execution.proofAuthority,
+    freshProcessExecutionHash: `sha256:${sha256Hex(executionCanonical)}`,
+    evaluatorMaterialSha256: execution.evaluatorMaterialSha256,
+    evaluatorMaterialByteLength: execution.evaluatorMaterialByteLength,
+    evaluatorFunctionSourceSha256:
+      execution.evaluatorFunctionSourceSha256,
+    evaluatorSourceSha256: execution.evaluatorSourceSha256,
+    outputContractSha256: execution.outputContractSha256,
+    outputSemanticsSha256: execution.outputSemanticsSha256,
+    admissionReceiptId: admissionReceipt.receiptId,
+    outputObservationReceiptId: outputObservationReceipt.receiptId,
+    outputContentSha256: execution.outputContentSha256,
+    outputByteLength: execution.outputByteLength,
+    executionEntrypointSha256: execution.executionEntrypointSha256,
+    executionEntrypointByteLength:
+      execution.executionEntrypointByteLength,
+    executionGraphHash: execution.executionGraphHash,
+    processObservationHash: execution.processObservationHash,
+    resultContentSha256: execution.resultContentSha256,
+    resultByteLength: execution.resultByteLength,
+    executionStartedMonotonicNs:
+      execution.executionStartedMonotonicNs,
+    executionFinishedMonotonicNs:
+      execution.executionFinishedMonotonicNs,
+    timeoutMs: execution.timeoutMs,
+    timedOut: false as const,
+    exitCode: 0 as const,
+    outputContractPassed: execution.outputContractPassed,
+    freshProcessExecutionObserved: true as const,
+    parentClosureUnavailable: true as const,
+    staticExecutionGraphVerified: true as const,
+    loadedGraphIdentityAttested: false as const,
+    loadedGraphIdentityGap:
+      "runtime_loaded_graph_identity_attestation_missing" as const,
+    liveAdmissionBindingChecked: true as const,
+    outputObservationBindingChecked: true as const,
+    isolatedExecutionVerified: false as const,
+    containerAttestationVerified: false as const,
+    acceptedForGpuHmr: false as const,
+    gpuHmrSuccess: false as const,
+    canSatisfyRuntimeProof: false as const,
+  });
+  return freeze({
+    ...content,
+    receiptId: freshProcessOutputEvaluationReceiptId(content),
+  });
+}
+
 export interface GpuParentRuntimeProofOutputObservation {
   readonly schemaVersion:
     typeof GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_SCHEMA;
@@ -259,6 +387,27 @@ export interface GpuParentRuntimeProofOutputEvaluationReceipt {
   readonly acceptedForGpuHmr: false;
   readonly gpuHmrSuccess: false;
   readonly canSatisfyRuntimeProof: false;
+}
+
+export interface GpuParentRuntimeProofFreshProcessOutputEvaluationReceipt
+extends Omit<
+  GpuMcpOutputEvaluatorFreshProcessExecution,
+  "schemaVersion" | "proofAuthority"
+> {
+  readonly schemaVersion:
+    typeof GPU_PARENT_RUNTIME_PROOF_FRESH_PROCESS_OUTPUT_EVALUATION_RECEIPT_SCHEMA;
+  readonly proofAuthority:
+    typeof GPU_PARENT_RUNTIME_PROOF_FRESH_PROCESS_OUTPUT_EVALUATION_RECEIPT_AUTHORITY;
+  readonly receiptId: string;
+  readonly freshProcessExecutionSchemaVersion:
+    typeof GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_SCHEMA;
+  readonly freshProcessExecutionAuthority:
+    typeof GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_AUTHORITY;
+  readonly freshProcessExecutionHash: string;
+  readonly admissionReceiptId: string;
+  readonly outputObservationReceiptId: string;
+  readonly liveAdmissionBindingChecked: true;
+  readonly outputObservationBindingChecked: true;
 }
 
 export interface GpuParentRuntimeProofAdmissionOnlineReplayResponseVerificationKey {
@@ -543,6 +692,15 @@ export class GpuParentRuntimeProofAdmissionAuthority {
       readonly admissionReceipt: GpuParentRuntimeProofAdmissionReceipt;
       readonly observation: GpuParentRuntimeProofOutputObservation;
       readonly receipt: GpuParentRuntimeProofOutputEvaluationReceipt;
+    }
+  >();
+  readonly #verifiedFreshProcessOutputEvaluations = new WeakMap<
+    GpuParentRuntimeProofFreshProcessOutputEvaluationReceipt,
+    {
+      readonly admissionReceipt: GpuParentRuntimeProofAdmissionReceipt;
+      readonly observation: GpuParentRuntimeProofOutputObservation;
+      readonly receipt:
+        GpuParentRuntimeProofFreshProcessOutputEvaluationReceipt;
     }
   >();
   readonly #outputObservationPermitAdmissionReceiptIds = new WeakMap<
@@ -859,6 +1017,45 @@ export class GpuParentRuntimeProofAdmissionAuthority {
     )?.receipt ?? null;
   }
 
+  freshProcessOutputEvaluationReceipt(
+    value: unknown,
+    admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
+  ): GpuParentRuntimeProofFreshProcessOutputEvaluationReceipt | null {
+    if (
+      this.#disposed
+      || value === null
+      || typeof value !== "object"
+      || isProxy(value)
+    ) {
+      return null;
+    }
+    const receipt =
+      value as GpuParentRuntimeProofFreshProcessOutputEvaluationReceipt;
+    const binding = getWeakMapValue(
+      this.#verifiedFreshProcessOutputEvaluations,
+      receipt,
+    );
+    if (
+      binding === undefined
+      || binding.receipt !== receipt
+      || binding.admissionReceipt !== admissionReceipt
+      || !this.isVerifiedOutputObservationForAdmission(
+        binding.observation,
+        admissionReceipt,
+      )
+      || binding.observation.receipt.receiptId
+        !== receipt.outputObservationReceiptId
+    ) {
+      return null;
+    }
+    try {
+      this.#assertCurrentAdmission(admissionReceipt);
+    } catch {
+      return null;
+    }
+    return receipt;
+  }
+
   createOutputObservationPermit(
     admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
   ): GpuMcpOutputByteObservationPermit {
@@ -955,6 +1152,80 @@ export class GpuParentRuntimeProofAdmissionAuthority {
       },
     );
     return evaluation;
+  }
+
+  async observeAndEvaluateOutputInFreshProcess(
+    admissionReceipt: GpuParentRuntimeProofAdmissionReceipt,
+    observedOutput: GpuMcpObservedOutputBytes,
+    evaluatorCapability: GpuMcpOutputEvaluatorCapability,
+    options?: GpuMcpOutputEvaluatorFreshProcessOptions,
+  ): Promise<GpuParentRuntimeProofFreshProcessOutputEvaluationReceipt> {
+    if (this.#disposed) throw disposedError();
+    const executorClaim = this.#outputEvaluatorExecutorClaim;
+    if (executorClaim === null) {
+      throw new Error(
+        "gpu_parent_runtime_proof_output_evaluator_executor_unavailable",
+      );
+    }
+    if (!gpuMcpOutputEvaluatorCapabilityMatchesExecutorClaim(
+      executorClaim,
+      evaluatorCapability,
+    )) {
+      throw new Error(
+        "gpu_parent_runtime_proof_output_evaluator_capability_invalid",
+      );
+    }
+    const consumed = this.#consumeOutputObservation(
+      admissionReceipt,
+      observedOutput,
+    );
+    const execution =
+      await executeGpuMcpOutputEvaluatorInFreshProcess(
+        evaluatorCapability,
+        consumed.outputBytes,
+        options,
+      );
+    if (
+      this.#disposed
+      || this.#outputEvaluatorExecutorClaim !== executorClaim
+      || !gpuMcpOutputEvaluatorCapabilityMatchesExecutorClaim(
+        executorClaim,
+        evaluatorCapability,
+      )
+    ) {
+      throw new Error(
+        "gpu_parent_runtime_proof_output_evaluator_boundary_disposed",
+      );
+    }
+    const receipt = createFreshProcessOutputEvaluationReceipt(
+      execution,
+      admissionReceipt,
+      consumed.observation.receipt,
+    );
+    if (
+      this.#disposed
+      || receipt.admissionReceiptId !== consumed.admissionReceiptId
+      || receipt.outputObservationReceiptId
+        !== consumed.observation.receipt.receiptId
+      || receipt.outputContentSha256
+        !== consumed.observation.receipt.outputContentSha256
+      || receipt.outputByteLength
+        !== consumed.observation.receipt.outputByteLength
+    ) {
+      throw new Error(
+        "gpu_parent_runtime_proof_fresh_process_output_evaluation_binding_mismatch",
+      );
+    }
+    setWeakMapValue(
+      this.#verifiedFreshProcessOutputEvaluations,
+      receipt,
+      {
+        admissionReceipt,
+        observation: consumed.observation,
+        receipt,
+      },
+    );
+    return receipt;
   }
 
   #consumeOutputObservation(

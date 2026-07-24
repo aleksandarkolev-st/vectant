@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_AUTHORITY,
   GPU_PARENT_RUNTIME_PROOF_ADMISSION_TRUST_MATERIAL_SCHEMA,
+  GPU_PARENT_RUNTIME_PROOF_FRESH_PROCESS_OUTPUT_EVALUATION_RECEIPT_AUTHORITY,
+  GPU_PARENT_RUNTIME_PROOF_FRESH_PROCESS_OUTPUT_EVALUATION_RECEIPT_SCHEMA,
   GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_AUTHORITY,
   GPU_PARENT_RUNTIME_PROOF_OUTPUT_EVALUATION_RECEIPT_SCHEMA,
   GPU_PARENT_RUNTIME_PROOF_OUTPUT_OBSERVATION_AUTHORITY,
@@ -32,6 +34,11 @@ import {
   type GpuMcpOutputEvaluation,
   type GpuMcpOutputEvaluatorRegistrar,
 } from "../../src/gpu_mcp_output_evaluation.js";
+import {
+  executeGpuMcpOutputEvaluatorInFreshProcess,
+  GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_AUTHORITY,
+  GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_SCHEMA,
+} from "../../src/gpu_mcp_output_evaluator_fresh_process.js";
 import {
   createGpuHmrMcpAdmissionOnlineReplayAuthorityClient,
   gpuHmrMcpAdmissionOnlineReplayAuthorityClientProjection,
@@ -402,6 +409,172 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
     );
     expect(JSON.stringify(evaluationReceipt)).not.toMatch(
       /project|fixture|scenario|backend|camera|image|tensor|media/i,
+    );
+  });
+
+  it("binds fresh-process execution only after a live output observation", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: (bytes) => bytes.at(1) === 43,
+    });
+    const outputBytes = Uint8Array.from([41, 43, 47]);
+    const unboundExecution =
+      await executeGpuMcpOutputEvaluatorInFreshProcess(
+        evaluator,
+        outputBytes,
+      );
+    expect(authority.freshProcessOutputEvaluationReceipt(
+      unboundExecution,
+      admissionReceipt,
+    )).toBeNull();
+    const observedOutput = produceOutput(
+      authority,
+      producer,
+      admissionReceipt,
+      outputBytes,
+    );
+    const foreignBoundary = createGpuMcpOutputEvaluatorBoundary();
+    const foreignEvaluator = foreignBoundary.registrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: (bytes) => bytes.at(1) === 43,
+    });
+    await expect(
+      authority.observeAndEvaluateOutputInFreshProcess(
+        admissionReceipt,
+        observedOutput,
+        foreignEvaluator,
+      ),
+    ).rejects.toThrow(
+      "gpu_parent_runtime_proof_output_evaluator_capability_invalid",
+    );
+    foreignBoundary.registrar.dispose();
+
+    const receipt =
+      await authority.observeAndEvaluateOutputInFreshProcess(
+        admissionReceipt,
+        observedOutput,
+        evaluator,
+      );
+
+    expect(receipt).toMatchObject({
+      schemaVersion:
+        GPU_PARENT_RUNTIME_PROOF_FRESH_PROCESS_OUTPUT_EVALUATION_RECEIPT_SCHEMA,
+      proofAuthority:
+        GPU_PARENT_RUNTIME_PROOF_FRESH_PROCESS_OUTPUT_EVALUATION_RECEIPT_AUTHORITY,
+      receiptId: expect.stringMatching(
+        /^gpu-mcp-fresh-process-output-evaluation-receipt:sha256:[a-f0-9]{64}$/,
+      ),
+      freshProcessExecutionSchemaVersion:
+        GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_SCHEMA,
+      freshProcessExecutionAuthority:
+        GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_AUTHORITY,
+      admissionReceiptId: admissionReceipt.receiptId,
+      liveAdmissionBindingChecked: true,
+      outputObservationBindingChecked: true,
+      isolatedExecutionVerified: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    expect(authority.freshProcessOutputEvaluationReceipt(
+      receipt,
+      admissionReceipt,
+    )).toBe(receipt);
+    expect(authority.freshProcessOutputEvaluationReceipt(
+      { ...receipt },
+      admissionReceipt,
+    )).toBeNull();
+    const unrelatedAdmission = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    expect(authority.freshProcessOutputEvaluationReceipt(
+      receipt,
+      unrelatedAdmission,
+    )).toBeNull();
+    expect(JSON.stringify(receipt)).not.toMatch(
+      /project|fixture|scenario|backend|camera|image|tensor|media/i,
+    );
+  });
+
+  it("requires an executor claim before fresh-process evaluation", async () => {
+    const outputBoundary = createGpuMcpOutputByteObservationBoundary();
+    const evaluatorBoundary = createGpuMcpOutputEvaluatorBoundary();
+    const authority = createAuthority({
+      outputByteConsumerCapability: outputBoundary.consumer,
+    });
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const evaluator = evaluatorBoundary.registrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: () => true,
+    });
+    const observedOutput = produceOutput(
+      authority,
+      outputBoundary.producer,
+      admissionReceipt,
+      Uint8Array.from([53, 59, 61]),
+    );
+
+    try {
+      await expect(
+        authority.observeAndEvaluateOutputInFreshProcess(
+          admissionReceipt,
+          observedOutput,
+          evaluator,
+        ),
+      ).rejects.toThrow(
+        "gpu_parent_runtime_proof_output_evaluator_executor_unavailable",
+      );
+    } finally {
+      evaluatorBoundary.registrar.dispose();
+    }
+  });
+
+  it("refuses fresh-process results after evaluator boundary disposal", async () => {
+    const {
+      authority,
+      producer,
+      evaluatorRegistrar,
+    } = createOutputAuthority();
+    const admissionReceipt = authority.signer().signAdmissionReceipt(
+      admissionInput(),
+    );
+    const evaluator = evaluatorRegistrar.register({
+      outputContractSha256: hash("a"),
+      outputSemanticsSha256: hash("b"),
+      evaluate: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return true;
+      },
+    });
+    const observedOutput = produceOutput(
+      authority,
+      producer,
+      admissionReceipt,
+      Uint8Array.from([67, 71, 73]),
+    );
+
+    const pending = authority.observeAndEvaluateOutputInFreshProcess(
+      admissionReceipt,
+      observedOutput,
+      evaluator,
+    );
+    evaluatorRegistrar.dispose();
+
+    await expect(pending).rejects.toThrow(
+      "gpu_parent_runtime_proof_output_evaluator_boundary_disposed",
     );
   });
 
