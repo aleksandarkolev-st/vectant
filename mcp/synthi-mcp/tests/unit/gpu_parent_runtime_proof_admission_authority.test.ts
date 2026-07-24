@@ -479,13 +479,43 @@ describe("GpuParentRuntimeProofAdmissionAuthority", () => {
       freshProcessExecutionAuthority:
         GPU_MCP_OUTPUT_EVALUATOR_FRESH_PROCESS_EXECUTION_AUTHORITY,
       admissionReceiptId: admissionReceipt.receiptId,
+      reopenedInputExecutionHash: expect.stringMatching(
+        /^sha256:[a-f0-9]{64}$/,
+      ),
+      reopenedInputProcessObservationHash: expect.stringMatching(
+        /^sha256:[a-f0-9]{64}$/,
+      ),
+      reopenedInputResultContentSha256: expect.stringMatching(
+        /^sha256:[a-f0-9]{64}$/,
+      ),
+      reopenedInputResultByteLength: receipt.resultByteLength,
+      reopenedInputExecutionStartedMonotonicNs:
+        expect.stringMatching(/^[0-9]+$/),
+      reopenedInputExecutionFinishedMonotonicNs:
+        expect.stringMatching(/^[0-9]+$/),
       liveAdmissionBindingChecked: true,
       outputObservationBindingChecked: true,
+      evaluatorMaterialBytesReopened: true,
+      outputBytesReopened: true,
+      reopenedInputExecutionBindingChecked: true,
       isolatedExecutionVerified: false,
       acceptedForGpuHmr: false,
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
     });
+    expect(receipt.reopenedInputResultContentSha256).toBe(
+      receipt.resultContentSha256,
+    );
+    expect(
+      BigInt(receipt.reopenedInputExecutionStartedMonotonicNs),
+    ).toBeGreaterThanOrEqual(
+      BigInt(receipt.executionFinishedMonotonicNs),
+    );
+    expect(
+      BigInt(receipt.reopenedInputExecutionFinishedMonotonicNs),
+    ).toBeGreaterThanOrEqual(
+      BigInt(receipt.reopenedInputExecutionStartedMonotonicNs),
+    );
     expect(authority.freshProcessOutputEvaluationReceipt(
       receipt,
       admissionReceipt,
