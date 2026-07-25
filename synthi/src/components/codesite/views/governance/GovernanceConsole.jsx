@@ -2,8 +2,9 @@ import { EmptyLine, IconButton, PathList, Pill } from "../../ui";
 import { useState, useCallback } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { CheckCircle2 } from "lucide-react";
-import { asArray, compact, productCopy, uniqueValues } from "../../lib/format";
+import { asArray, compact, productCopy } from "../../lib/format";
 import { documentLabel, documentNeedsReview, firstRoutePattern, incidentNeedsResume, maydayResumeInspectionRefs, routeRevisionCanApply, routeRevisionCanReview } from "../../lib/governance";
+import { documentReviewAction, maydayResumeAction, routeApplyAction, routeReviewAction } from "../../lib/governanceActions";
 import { CodeSiteIcons } from "../../icons";
 import GovernanceReviewGate from "./GovernanceReviewGate";
 
@@ -240,19 +241,11 @@ export default function GovernanceConsole({
                       title="Approve document"
                       disabled={disabled || !documentNeedsReview(document)}
                       onClick={() =>
-                        queueGovernanceAction({
-                          kind: "document_review",
-                          title: `Approve ${documentLabel(document)}`,
-                          entity: document.id,
-                          owner: document.fromSessionId || document.fromSession || "coordinator",
-                          severity: document.blocking ? "high" : "medium",
-                          evidenceRefs: uniqueValues([
-                            ...asArray(document.evidenceRefs),
-                            `codesite:ui:document-review:${document.id}`,
-                          ]),
-                          execute: (rationale) =>
-                            onReviewDocument(document, "approved", rationale),
-                        })
+                        queueGovernanceAction(
+                          documentReviewAction(document, "approved", {
+                            onReviewDocument,
+                          }),
+                        )
                       }
                       testId="codesite-document-approve-button"
                     >
@@ -263,19 +256,11 @@ export default function GovernanceConsole({
                       title="Reject document"
                       disabled={disabled || !documentNeedsReview(document)}
                       onClick={() =>
-                        queueGovernanceAction({
-                          kind: "document_review",
-                          title: `Reject ${documentLabel(document)}`,
-                          entity: document.id,
-                          owner: document.fromSessionId || document.fromSession || "coordinator",
-                          severity: "high",
-                          evidenceRefs: uniqueValues([
-                            ...asArray(document.evidenceRefs),
-                            `codesite:ui:document-review:${document.id}`,
-                          ]),
-                          execute: (rationale) =>
-                            onReviewDocument(document, "rejected", rationale),
-                        })
+                        queueGovernanceAction(
+                          documentReviewAction(document, "rejected", {
+                            onReviewDocument,
+                          }),
+                        )
                       }
                       testId="codesite-document-reject-button"
                     >
@@ -419,24 +404,11 @@ export default function GovernanceConsole({
                         title="Approve plan change"
                         disabled={disabled || !routeRevisionCanReview(revision)}
                         onClick={() =>
-                          queueGovernanceAction({
-                            kind: "route_revision_review",
-                            title: "Approve plan change",
-                            entity: revision.id,
-                            owner: revision.displayCallsign || revision.executionPlanId,
-                            severity: "high",
-                            scope: revision.proposedRoute,
-                            evidenceRefs: uniqueValues([
-                              ...asArray(revision.evidenceRefs),
-                              `codesite:ui:route-review:${revision.id}`,
-                            ]),
-                            execute: (rationale) =>
-                              onReviewRouteRevision(
-                                revision,
-                                "approved",
-                                rationale,
-                              ),
-                          })
+                          queueGovernanceAction(
+                            routeReviewAction(revision, {
+                              onReviewRouteRevision,
+                            }),
+                          )
                         }
                         testId="codesite-route-review-button"
                       >
@@ -447,20 +419,11 @@ export default function GovernanceConsole({
                         title="Apply plan change"
                         disabled={disabled || !routeRevisionCanApply(revision)}
                         onClick={() =>
-                          queueGovernanceAction({
-                            kind: "route_revision_apply",
-                            title: "Apply plan change",
-                            entity: revision.id,
-                            owner: revision.displayCallsign || revision.executionPlanId,
-                            severity: "critical",
-                            scope: revision.proposedRoute,
-                            evidenceRefs: uniqueValues([
-                              ...asArray(revision.evidenceRefs),
-                              `codesite:ui:route-apply:${revision.id}`,
-                            ]),
-                            execute: (rationale) =>
-                              onApplyRouteRevision(revision, rationale),
-                          })
+                          queueGovernanceAction(
+                            routeApplyAction(revision, {
+                              onApplyRouteRevision,
+                            }),
+                          )
                         }
                         testId="codesite-route-apply-button"
                       >
@@ -579,25 +542,11 @@ export default function GovernanceConsole({
                       title="Resume paused incident"
                       disabled={disabled || inspectionRunIds.length === 0}
                       onClick={() =>
-                        queueGovernanceAction({
-                          kind: "mayday_resume",
-                          title: `Resume ${productCopy(incident.category, "paused incident")}`,
-                          entity: incident.id,
-                          owner: asArray(incident.participants)[0] || "coordinator",
-                          severity: "critical",
-                          scope: incident.affectedZones,
-                          evidenceRefs: uniqueValues([
-                            ...asArray(incident.evidenceRefs),
-                            incident.replayDigest,
-                            `codesite:ui:mayday-resume:${incident.id}`,
-                          ]),
-                          execute: (rationale) =>
-                            onResumeMayday(
-                              incident,
-                              inspectionRunIds,
-                              rationale,
-                            ),
-                        })
+                        queueGovernanceAction(
+                          maydayResumeAction(incident, inspectionRunIds, {
+                            onResumeMayday,
+                          }),
+                        )
                       }
                       testId="codesite-resume-mayday-submit"
                     >
