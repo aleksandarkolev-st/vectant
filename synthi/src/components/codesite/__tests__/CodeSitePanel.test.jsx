@@ -9,7 +9,10 @@ const h = vi.hoisted(() => ({
   applyCodeSiteQuarantine: vi.fn(),
   createCodeSiteProject: vi.fn(),
   exportCodeSiteArtifacts: vi.fn(),
+  fetchCodeSiteCoreState: vi.fn(),
+  fetchCodeSiteEvidenceSlice: vi.fn(),
   fetchCodeSiteLineProvenance: vi.fn(),
+  fetchCodeSiteQuarantineSlice: vi.fn(),
   fetchCodeSiteRadarState: vi.fn(),
   issueCodeSitePermit: vi.fn(),
   proposeCodeSiteRouteRevision: vi.fn(),
@@ -52,7 +55,10 @@ vi.mock('../codesiteClient', () => ({
   createCodeSiteProject: h.createCodeSiteProject,
   createEmptyCodeSiteRadarState: emptyState,
   exportCodeSiteArtifacts: h.exportCodeSiteArtifacts,
+  fetchCodeSiteCoreState: h.fetchCodeSiteCoreState,
+  fetchCodeSiteEvidenceSlice: h.fetchCodeSiteEvidenceSlice,
   fetchCodeSiteLineProvenance: h.fetchCodeSiteLineProvenance,
+  fetchCodeSiteQuarantineSlice: h.fetchCodeSiteQuarantineSlice,
   fetchCodeSiteRadarState: h.fetchCodeSiteRadarState,
   issueCodeSitePermit: h.issueCodeSitePermit,
   proposeCodeSiteRouteRevision: h.proposeCodeSiteRouteRevision,
@@ -70,6 +76,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 let root;
 let container;
+let lastResolvedState = null;
 
 function renderPanel(props = {}) {
   container = document.createElement('div');
@@ -684,6 +691,25 @@ function radarState() {
 describe('CodeSitePanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The panel loads core on mount and each view's slice when it mounts, but
+    // every test here configures one whole-state fixture via
+    // `fetchCodeSiteRadarState`. Delegating the core fetch to it keeps those
+    // fixtures authoritative — including their `mockResolvedValueOnce` chains,
+    // since the delegate calls through to the same mock — and the slice mocks
+    // then serve the matching parts of whichever state core last resolved.
+    lastResolvedState = null;
+    h.fetchCodeSiteCoreState.mockImplementation(async (...args) => {
+      lastResolvedState = await h.fetchCodeSiteRadarState(...args);
+      return lastResolvedState;
+    });
+    h.fetchCodeSiteEvidenceSlice.mockImplementation(async () => ({
+      metrics: lastResolvedState?.metrics ?? null,
+      artifactPreview: lastResolvedState?.artifactPreview ?? null,
+    }));
+    h.fetchCodeSiteQuarantineSlice.mockImplementation(async () => ({
+      quarantines: lastResolvedState?.quarantines ?? [],
+      quarantineError: lastResolvedState?.quarantineError ?? null,
+    }));
     h.exportCodeSiteArtifacts.mockResolvedValue({ written: false, files: [] });
     h.fetchCodeSiteLineProvenance.mockResolvedValue([]);
     h.subscribeCodeSiteProjectEvents.mockImplementation((_workspaceSlug, _projectId, { onStatus } = {}) => {
@@ -1375,5 +1401,50 @@ describe('CodeSitePanel', () => {
       expect.objectContaining({ title: 'Landing project', request: 'Landing project' }),
     );
     expect(container.textContent).toContain('Checkout coordination');
+  });
+
+  it('takes core on mount and the evidence slice only when Evidence opens', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+
+    // First paint takes core only. The quarantine fan-out still runs, because
+    // the Overview digest counts quarantines, but it runs after core rather
+    // than blocking it. Evidence has no Overview consumer, so nothing should
+    // pay for it until that view is opened.
+    expect(h.fetchCodeSiteCoreState).toHaveBeenCalled();
+    expect(h.fetchCodeSiteQuarantineSlice).toHaveBeenCalled();
+    expect(h.fetchCodeSiteEvidenceSlice).not.toHaveBeenCalled();
+
+    await selectSection('governance');
+    expect(h.fetchCodeSiteEvidenceSlice).not.toHaveBeenCalled();
+
+    await selectSection('evidence');
+    expect(h.fetchCodeSiteEvidenceSlice).toHaveBeenCalled();
+  });
+
+  it('refreshes everything when the user asks explicitly', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+    h.fetchCodeSiteRadarState.mockClear();
+    h.fetchCodeSiteCoreState.mockClear();
+
+    await act(async () => {
+      container
+        .querySelector('[data-testid="codesite-refresh"]')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    // Refresh is the one path that still pays for the composite fetch, because
+    // it is the user asking for everything rather than the panel guessing. The
+    // core mock delegates to the composite mock, so a plain "was called" check
+    // would also pass for a core load — the composite has to be called strictly
+    // more often than core for the direct call to be proven.
+    expect(h.fetchCodeSiteRadarState).toHaveBeenCalledWith('acme', 'proj-1');
+    expect(h.fetchCodeSiteRadarState.mock.calls.length).toBeGreaterThan(
+      h.fetchCodeSiteCoreState.mock.calls.length,
+    );
   });
 });

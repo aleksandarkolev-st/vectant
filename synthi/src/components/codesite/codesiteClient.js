@@ -341,6 +341,106 @@ export async function simulateCodeSiteShadowMerge(workspaceSlug, projectId, payl
   });
 }
 
+/**
+ * The three requests every view needs: `project` drives the proof bundles,
+ * incidents, inspection runs and counterfactual runs; `controlState` drives
+ * every `counts.*` the Overview renders plus the required actions and the
+ * collision forecast; `events` drives the Activity view and seeds the
+ * quarantine merge. Nothing outside this trio blocks first paint.
+ */
+async function fetchCodeSiteCoreSlice(workspaceSlug, projectId) {
+  const [project, controlState, events] = await Promise.all([
+    fetchCodeSiteProject(workspaceSlug, projectId),
+    fetchCodeSiteControlState(workspaceSlug, projectId),
+    fetchCodeSiteEvents(workspaceSlug, projectId),
+  ]);
+  return { project, controlState, events };
+}
+
+/** Consumed only by the Evidence view (metrics deck and artifact list). */
+export async function fetchCodeSiteEvidenceSlice(workspaceSlug, projectId) {
+  if (!workspaceSlug || !projectId) return { metrics: null, artifactPreview: null };
+  const [metrics, artifactPreview] = await Promise.all([
+    fetchCodeSiteMetrics(workspaceSlug, projectId).catch(() => null),
+    fetchCodeSiteArtifactPreview(workspaceSlug, projectId).catch(() => null),
+  ]);
+  return { metrics, artifactPreview };
+}
+
+/**
+ * The expensive one: it fans out one request per distinct transaction id, and
+ * those ids are only known once the core slice has resolved — so it is a second
+ * serial wave. Split out not to defer it to a single view (the Overview's
+ * digest counts quarantines too) but so it stops blocking first paint. Callers
+ * merge it with `controlState.pendingQuarantines` and the event log, both core,
+ * so the quarantine list still populates while this is in flight.
+ *
+ * Takes no project id: the quarantine endpoint is scoped by transaction, not by
+ * project, which is exactly why the ids have to come from the core slice first.
+ */
+export async function fetchCodeSiteQuarantineSlice(workspaceSlug, core = {}) {
+  const { project, controlState, events } = core;
+  const transactionIds = uniqueValues([
+    ...(Array.isArray(controlState?.activeTransactions) ? controlState.activeTransactions.map((transaction) => transaction.id) : []),
+    ...(Array.isArray(project?.mutationTxns) ? project.mutationTxns.map((transaction) => transaction.id) : []),
+    ...(Array.isArray(events) ? events.map((event) => event.details?.transactionId || event.details?.transaction_id) : []),
+  ]);
+  if (!workspaceSlug || !transactionIds.length) {
+    return { quarantines: [], quarantineError: null };
+  }
+  try {
+    const groups = await Promise.all(transactionIds.map((transactionId) => fetchCodeSiteQuarantines(workspaceSlug, { transactionId })));
+    const seen = new Set();
+    const quarantines = groups.flat().filter((record) => {
+      const key = record?.quarantineId || record?.id;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return { quarantines, quarantineError: null };
+  } catch (error) {
+    return {
+      quarantines: [],
+      quarantineError: {
+        message: error?.message || 'codesite_quarantine_fetch_failed',
+        status: error?.status || null,
+      },
+    };
+  }
+}
+
+/**
+ * First paint: 1 + 3 requests in two waves, with no per-transaction fan-out.
+ * Per-view slices load when their view mounts.
+ */
+export async function fetchCodeSiteCoreState(workspaceSlug, selectedProjectId = null) {
+  if (!workspaceSlug) {
+    return createEmptyCodeSiteRadarState(workspaceSlug);
+  }
+
+  const projects = await fetchCodeSiteProjects(workspaceSlug);
+  const projectId = selectedProjectId || projects[0]?.id || null;
+
+  if (!projectId) {
+    return normalizeCodeSiteRadarState({ workspaceSlug, projects });
+  }
+
+  const core = await fetchCodeSiteCoreSlice(workspaceSlug, projectId);
+  return normalizeCodeSiteRadarState({
+    workspaceSlug,
+    projects,
+    ...core,
+    selectedProjectId: projectId,
+  });
+}
+
+/**
+ * The composite fetch: core plus every per-view slice. Retained because callers
+ * and tests depend on it by name, and because a caller that genuinely wants
+ * everything at once should not have to compose the slices itself. Request
+ * count and wave depth are unchanged from before the split — the evidence slice
+ * runs alongside the core slice, and the quarantine fan-out still follows both.
+ */
 export async function fetchCodeSiteRadarState(workspaceSlug, selectedProjectId = null) {
   if (!workspaceSlug) {
     return createEmptyCodeSiteRadarState(workspaceSlug);
@@ -353,48 +453,18 @@ export async function fetchCodeSiteRadarState(workspaceSlug, selectedProjectId =
     return normalizeCodeSiteRadarState({ workspaceSlug, projects });
   }
 
-  const [project, controlState, events, metrics, artifactPreview] = await Promise.all([
-    fetchCodeSiteProject(workspaceSlug, projectId),
-    fetchCodeSiteControlState(workspaceSlug, projectId),
-    fetchCodeSiteEvents(workspaceSlug, projectId),
-    fetchCodeSiteMetrics(workspaceSlug, projectId).catch(() => null),
-    fetchCodeSiteArtifactPreview(workspaceSlug, projectId).catch(() => null),
+  const [core, evidence] = await Promise.all([
+    fetchCodeSiteCoreSlice(workspaceSlug, projectId),
+    fetchCodeSiteEvidenceSlice(workspaceSlug, projectId),
   ]);
-  const transactionIds = uniqueValues([
-    ...(Array.isArray(controlState?.activeTransactions) ? controlState.activeTransactions.map((transaction) => transaction.id) : []),
-    ...(Array.isArray(project?.mutationTxns) ? project.mutationTxns.map((transaction) => transaction.id) : []),
-    ...(Array.isArray(events) ? events.map((event) => event.details?.transactionId || event.details?.transaction_id) : []),
-  ]);
-  let quarantines = [];
-  let quarantineError = null;
-  if (transactionIds.length) {
-    try {
-      const groups = await Promise.all(transactionIds.map((transactionId) => fetchCodeSiteQuarantines(workspaceSlug, { transactionId })));
-      const seen = new Set();
-      quarantines = groups.flat().filter((record) => {
-        const key = record?.quarantineId || record?.id;
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-    } catch (error) {
-      quarantineError = {
-        message: error?.message || 'codesite_quarantine_fetch_failed',
-        status: error?.status || null,
-      };
-    }
-  }
+  const quarantine = await fetchCodeSiteQuarantineSlice(workspaceSlug, core);
 
   return normalizeCodeSiteRadarState({
     workspaceSlug,
     projects,
-    project,
-    controlState,
-    metrics,
-    events,
-    quarantines,
-    quarantineError,
-    artifactPreview,
+    ...core,
+    ...evidence,
+    ...quarantine,
     selectedProjectId: projectId,
   });
 }

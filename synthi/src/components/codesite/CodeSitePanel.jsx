@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, RefreshCw } from "lucide-react";
-import { applyCodeSiteRouteRevision, applyCodeSiteQuarantine, createCodeSiteProject, createEmptyCodeSiteRadarState, exportCodeSiteArtifacts, fetchCodeSiteLineProvenance, fetchCodeSiteRadarState, issueCodeSitePermit, proposeCodeSiteRouteRevision, replayCodeSiteQuarantine, resumeCodeSiteMayday, reviewCodeSiteDocument, reviewCodeSiteRouteRevision, simulateCodeSiteShadowMerge, subscribeCodeSiteProjectEvents } from "./codesiteClient";
+import { applyCodeSiteRouteRevision, applyCodeSiteQuarantine, createCodeSiteProject, createEmptyCodeSiteRadarState, exportCodeSiteArtifacts, fetchCodeSiteCoreState, fetchCodeSiteEvidenceSlice, fetchCodeSiteLineProvenance, fetchCodeSiteQuarantineSlice, fetchCodeSiteRadarState, issueCodeSitePermit, proposeCodeSiteRouteRevision, replayCodeSiteQuarantine, resumeCodeSiteMayday, reviewCodeSiteDocument, reviewCodeSiteRouteRevision, simulateCodeSiteShadowMerge, subscribeCodeSiteProjectEvents } from "./codesiteClient";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CodeSiteIcons } from "./icons";
 import DesktopSectionRail from "./nav/DesktopSectionRail";
@@ -24,7 +24,46 @@ import {
 } from "./lib/quarantine";
 
 
-const POLL_MS = 5000;
+/**
+ * Liveness is SSE-first: `subscribeCodeSiteProjectEvents` streams 36 named event
+ * types and now refreshes the core state on arrival, so the poll below is a
+ * safety net for a dropped stream rather than the primary mechanism.
+ *
+ * Every view's core data is covered by at least one streamed event type:
+ *
+ *   overview     tower_instruction, holding_pattern, ground_stop, mayday,
+ *                mayday_resumed, clearance_*, transaction_*, rfi, change_order,
+ *                policy_delta_*, incident_reported
+ *   radar        near_miss, route_deviation, radar_result, transponder_update
+ *   tower        every type — the event log *is* this view's data
+ *   governance   rfi, change_order, policy_delta_*, arbiter_verdict
+ *   runway       clearance_requested, clearance_issued, write_allowed,
+ *                write_denied, landing_requested, holding_pattern
+ *   quarantine   write_quarantined, quarantine_reviewed, quarantine_replayed,
+ *                quarantine_applied
+ *   inspections  inspection_result
+ *   replay       shadow_run, black_box_closed
+ *   simulator    shadow_run — and its results are request/response, not polled
+ *
+ * Evidence is the exception: no event type announces a metrics recomputation or
+ * an artifact export, so that view keeps the old 5s cadence for its own slice
+ * rather than silently going stale for up to 30 seconds.
+ */
+const POLL_MS = 30000;
+const EVIDENCE_POLL_MS = 5000;
+const STREAM_REFRESH_DEBOUNCE_MS = 400;
+
+/**
+ * Per-view data, held apart from the core state so a core refresh cannot wipe
+ * it. `null` means "not loaded", which is what makes the `?? radarState.x`
+ * reads below fall back to the composite fetch when one has run.
+ */
+const EMPTY_VIEW_SLICES = {
+  metrics: null,
+  artifactPreview: null,
+  quarantines: null,
+  quarantineError: null,
+};
 
 const VIEWS = {
   overview: OverviewView,
@@ -132,9 +171,10 @@ export default function CodeSitePanel({ workspaceSlug }) {
     error: null,
   });
   const [pendingReviewTarget, setPendingReviewTarget] = useState(null);
+  const [viewSlices, setViewSlices] = useState(EMPTY_VIEW_SLICES);
 
   const loadRadar = useCallback(
-    async ({ silent = false, projectId = selectedProjectId } = {}) => {
+    async ({ silent = false, full = false, projectId = selectedProjectId } = {}) => {
       if (!workspaceSlug) {
         setRadarState(createEmptyCodeSiteRadarState(workspaceSlug));
         setLoading(false);
@@ -144,8 +184,15 @@ export default function CodeSitePanel({ workspaceSlug }) {
       if (!silent) setLoading(true);
 
       try {
-        const next = await fetchCodeSiteRadarState(workspaceSlug, projectId);
+        // `full` is the explicit Refresh action, where the user is asking for
+        // everything at once. Everything else — mount, poll, stream, and the
+        // reload after a mutation — takes core only and lets the mounted view
+        // fetch its own slice.
+        const next = full
+          ? await fetchCodeSiteRadarState(workspaceSlug, projectId)
+          : await fetchCodeSiteCoreState(workspaceSlug, projectId);
         setRadarState(next);
+        if (full) setViewSlices(EMPTY_VIEW_SLICES);
         setError(null);
         if (
           next.selectedProjectId &&
@@ -177,13 +224,80 @@ export default function CodeSitePanel({ workspaceSlug }) {
     return () => window.clearInterval(timer);
   }, [loadRadar, radarState.selectedProjectId, workspaceSlug]);
 
+  // A project switch invalidates every slice. Clear them so the outgoing
+  // project's metrics and quarantines cannot show under the incoming one.
+  useEffect(() => {
+    setViewSlices(EMPTY_VIEW_SLICES);
+  }, [radarState.selectedProjectId]);
+
+  // Evidence is the one view with no invalidating event type, so it keeps its
+  // own short poll rather than waiting on the 30s core cadence.
+  useEffect(() => {
+    const projectId = radarState.selectedProjectId;
+    if (activeSection !== "evidence" || !workspaceSlug || !projectId) {
+      return undefined;
+    }
+    let cancelled = false;
+    const load = async () => {
+      const slice = await fetchCodeSiteEvidenceSlice(workspaceSlug, projectId);
+      if (!cancelled) setViewSlices((current) => ({ ...current, ...slice }));
+    };
+    void load();
+    const timer = window.setInterval(load, EVIDENCE_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeSection, radarState.selectedProjectId, workspaceSlug]);
+
+  // Not gated on the active view: the Overview's Needs Attention digest and
+  // TowerNowStrip both count quarantines, so gating this would silently
+  // undercount them. The win here is that it no longer blocks first paint —
+  // core renders, then this fills in. It needs transaction ids from the core
+  // state, so it re-runs whenever core changes, which the stream now drives on
+  // every quarantine_* event. No separate poll needed.
+  useEffect(() => {
+    if (!workspaceSlug || !radarState.selectedProjectId) return undefined;
+    let cancelled = false;
+    void (async () => {
+      const slice = await fetchCodeSiteQuarantineSlice(workspaceSlug, {
+        project: radarState.project,
+        controlState: radarState.controlState,
+        events: radarState.events,
+      });
+      if (!cancelled) setViewSlices((current) => ({ ...current, ...slice }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    radarState.controlState,
+    radarState.events,
+    radarState.project,
+    radarState.selectedProjectId,
+    workspaceSlug,
+  ]);
+
   useEffect(() => {
     setStreamEvents([]);
     if (!workspaceSlug || !radarState.selectedProjectId) {
       setStreamStatus("polling");
       return undefined;
     }
-    return subscribeCodeSiteProjectEvents(
+    // Events arrive in bursts — a commit emits several in a row — so coalesce
+    // them into one refresh instead of one per event.
+    let refreshTimer = null;
+    const scheduleRefresh = () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void loadRadar({
+          silent: true,
+          projectId: radarState.selectedProjectId,
+        });
+      }, STREAM_REFRESH_DEBOUNCE_MS);
+    };
+    const unsubscribe = subscribeCodeSiteProjectEvents(
       workspaceSlug,
       radarState.selectedProjectId,
       {
@@ -199,10 +313,15 @@ export default function CodeSitePanel({ workspaceSlug }) {
             );
             return [event, ...withoutDuplicate].slice(0, 12);
           });
+          scheduleRefresh();
         },
       },
     );
-  }, [radarState.selectedProjectId, workspaceSlug]);
+    return () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      unsubscribe?.();
+    };
+  }, [loadRadar, radarState.selectedProjectId, workspaceSlug]);
 
   const handleSelectSection = useCallback((sectionKey) => {
     setActiveSection(sectionKey);
@@ -425,7 +544,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
   const currentProject = radarState.project;
   const controlState = radarState.controlState;
-  const metrics = radarState.metrics;
+  const metrics = viewSlices.metrics ?? radarState.metrics;
   const metricSections = metrics?.sections || {};
   const metricSummary = metrics?.summary || {};
   const hasProjects = radarState.projects.length > 0;
@@ -479,20 +598,23 @@ export default function CodeSitePanel({ workspaceSlug }) {
   }, []);
 
   const counterfactualRuns = asArray(currentProject?.counterfactualRuns);
-  const artifacts = asArray(radarState.artifactPreview?.files);
+  const artifacts = asArray(
+    (viewSlices.artifactPreview ?? radarState.artifactPreview)?.files,
+  );
   const events = uniqueByEvent([
     ...streamEvents,
     ...asArray(radarState.events).slice().reverse(),
   ]).slice(0, 24);
   const allEvents = asArray(radarState.events);
+  const fetchedQuarantines = viewSlices.quarantines ?? radarState.quarantines;
   const quarantineRecords = useMemo(
     () =>
       mergeQuarantineRecords(
-        radarState.quarantines,
+        fetchedQuarantines,
         controlState?.pendingQuarantines,
         quarantineRecordsFromEvents(allEvents),
       ),
-    [allEvents, controlState?.pendingQuarantines, radarState.quarantines],
+    [allEvents, controlState?.pendingQuarantines, fetchedQuarantines],
   );
   const actionableQuarantineRecords = useMemo(
     () =>
@@ -899,7 +1021,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
     assumptions,
     simulationRun,
     actionableQuarantineRecords,
-    quarantineError: radarState.quarantineError,
+    quarantineError: viewSlices.quarantineError ?? radarState.quarantineError,
     quarantineReview,
     selectedQuarantineId:
       selectedQuarantine?.quarantineId || quarantineReview.selectedId,
@@ -1024,7 +1146,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
           <IconButton
             title="Refresh"
-            onClick={() => loadRadar()}
+            onClick={() => loadRadar({ full: true })}
             disabled={loading || acting}
             testId="codesite-refresh"
           >
@@ -1096,7 +1218,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </div>
               <IconButton
                 title="Retry CodeSite sync"
-                onClick={() => loadRadar()}
+                onClick={() => loadRadar({ full: true })}
                 disabled={loading || acting}
               >
                 <RefreshCw className="h-3.5 w-3.5" />
