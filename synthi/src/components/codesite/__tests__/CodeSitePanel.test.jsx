@@ -1134,6 +1134,37 @@ describe('CodeSitePanel', () => {
     }));
   });
 
+  it('routes a required action for a proposed plan change into the review gate', async () => {
+    const state = radarState();
+    // route-rev-1 is `proposed`: reviewable, not yet appliable.
+    state.controlState.requiredActions = [{
+      kind: 'review_route_revision',
+      title: 'Approve checkout reroute',
+      owner: 'ATLAS-1',
+      routeRevisionId: 'route-rev-1',
+      severity: 'high',
+      evidenceRefs: ['route-revision:proposal'],
+      scope: ['api/checkout/v2/**'],
+    }];
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+
+    renderPanel();
+    await flush();
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-required-action-review"]')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="codesite-governance-review-gate"]')).toBeTruthy();
+    await confirmGovernanceReview('Plan change approved from the required actions queue.');
+    expect(h.reviewCodeSiteRouteRevision).toHaveBeenCalledWith('acme', 'route-rev-1', expect.objectContaining({
+      decision: 'approved',
+    }));
+  });
+
   it('shows active workstreams in the workspace graph without radar markers', async () => {
     const state = radarState();
     state.controlState.activeFlights = state.controlState.activeFlights.map((flight) => ({

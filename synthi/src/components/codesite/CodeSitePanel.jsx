@@ -7054,10 +7054,18 @@ export default function CodeSitePanel({ workspaceSlug }) {
             "data-codesite-route-revision-id",
             action?.routeRevisionId || entityId,
           );
-          const button =
-            row?.querySelector('[data-testid="codesite-route-apply-button"]') ||
-            row?.querySelector('[data-testid="codesite-route-review-button"]');
-          if (button) candidates.push(button);
+          // Both route buttons always render; only their disabled state differs,
+          // so `apply || review` always resolved to apply and left review
+          // unreachable. Offer both and let the disabled filter below choose —
+          // apply first, preserving the original preference.
+          const applyButton = row?.querySelector(
+            '[data-testid="codesite-route-apply-button"]',
+          );
+          const reviewButton = row?.querySelector(
+            '[data-testid="codesite-route-review-button"]',
+          );
+          if (applyButton) candidates.push(applyButton);
+          if (reviewButton) candidates.push(reviewButton);
         }
         if (action?.incidentId || /mayday|ground|resume/.test(kind)) {
           const row = findGovernanceEntityRow(
