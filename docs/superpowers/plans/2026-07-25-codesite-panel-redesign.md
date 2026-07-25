@@ -599,7 +599,28 @@ Total should be within ~200 lines of the original 9,044 (new import/export boile
 
 This is where behavior changes. Test edits are expected and legitimate here.
 
-## Task 8: Turn the rail into a view switcher
+## Task 8: Turn the rail into a view switcher — ✅ COMPLETE
+
+Landed in `ab57862a9`, `53d91f079`, `62fef9bb2`, `62cbbd3e8`. Panel 2,277 → 1,249
+lines; 8 → 18 tests, all green; all 169 original assertions verified still present;
+test-id invariant passes; graph untouched.
+
+Deviations from the steps as written, all verified and kept:
+
+- Both required-action tests **do** need `selectSection('governance')` — Step 9's
+  table said none, but Required Actions lives in the Governance view.
+- Step 10's sketch was split into 11 tests, not 4, because the sketch as written
+  dropped ~110 assertions despite claiming to preserve every one.
+- `pcap-checkout-schema`, `schema.level_2@…` and `dojo:evidence:checkride-1` are in
+  **Locks** (the Approvals lease `TagList` and `PilotLicenseHealthPanel`), not
+  Evidence as Step 10 assumed.
+- The metric rail is a 24th block the table omitted. It went to Overview, per the
+  spec's "metric tiles" line — see `62cbbd3e8`.
+- `inspections` uses `CodeSiteIcons.lineage` (`SearchCheck`); the obvious choices
+  collide with Evidence and Governance.
+- Removing `sectionKey` orphaned the rails' `aria-controls`; the `id` moved to the
+  view-router wrapper, which now carries `role="tabpanel"`.
+
 
 The rail is currently a scroll-spy: `handleSelectSection` (7035 before Part A) sets `activeSection` and then scrolls the container to a `[data-codesite-section]` anchor. Only 9 of 23 blocks have an anchor. This task makes `activeSection` decide what *mounts*.
 
@@ -610,7 +631,7 @@ The rail is currently a scroll-spy: `handleSelectSection` (7035 before Part A) s
 - Modify: `synthi/src/components/codesite/nav/DesktopSectionRail.jsx`, `nav/MobileSectionTabs.jsx`
 - Modify: `synthi/src/components/codesite/__tests__/CodeSitePanel.test.jsx`
 
-- [ ] **Step 1: Write the failing test for view switching**
+- [x] **Step 1: Write the failing test for view switching**
 
 Add to `CodeSitePanel.test.jsx`:
 
@@ -632,7 +653,7 @@ it('mounts only the selected view', async () => {
 });
 ```
 
-- [ ] **Step 2: Add the `selectSection` test helper**
+- [x] **Step 2: Add the `selectSection` test helper**
 
 Put it next to the existing `confirmGovernanceReview` helper in `CodeSitePanel.test.jsx`:
 
@@ -651,7 +672,7 @@ async function selectSection(key) {
 
 This requires the rail tabs to carry their key. In `nav/DesktopSectionRail.jsx` and `nav/MobileSectionTabs.jsx`, add `data-codesite-section-key={section.key}` to each tab button. Both already render `testId="codesite-desktop-section-tab"` / `"codesite-mobile-section-tab"`, so the invariant is unaffected.
 
-- [ ] **Step 3: Run the test to verify it fails**
+- [x] **Step 3: Run the test to verify it fails**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite -t "mounts only the selected view"
@@ -659,7 +680,7 @@ cd synthi && npx vitest run src/components/codesite -t "mounts only the selected
 
 Expected: FAIL — the governance console is present on first paint, because every block currently mounts at once. That failure is the proof the test is real.
 
-- [ ] **Step 4: Extract the ten views**
+- [x] **Step 4: Extract the ten views**
 
 Using the mapping table under **File structure**, move each block's JSX out of the `CodeSitePanel` return into its own view component. Each view takes the props it needs from the shell. Signature pattern:
 
@@ -683,7 +704,7 @@ export default function GovernanceView({
 
 Move the JSX verbatim, including every prop. The `OperatorPane`'s `sectionKey` prop and the `Section`'s `sectionKey` prop become inert once nothing scrolls to anchors — leave them in place for this task and remove them in Step 7, so that a mistake here is isolated from a mistake there.
 
-- [ ] **Step 5: Create `views/index.js`**
+- [x] **Step 5: Create `views/index.js`**
 
 ```js
 export { default as OverviewView } from "./OverviewView";
@@ -698,7 +719,7 @@ export { default as ReplayView } from "./ReplayView";
 export { default as SimulatorView } from "./SimulatorView";
 ```
 
-- [ ] **Step 6: Replace `handleSelectSection` with plain state**
+- [x] **Step 6: Replace `handleSelectSection` with plain state**
 
 Delete the scroll logic. The whole handler becomes:
 
@@ -710,7 +731,7 @@ const handleSelectSection = useCallback((key) => {
 
 Delete the `scroll-mt-32 md:scroll-mt-24` classes (formerly lines 1419, 1926) and the runtime rail-height measurement inside the old handler. Both existed to position a scroll target under a sticky rail; with view switching there is nothing to scroll to. Leaving them would mean two competing mechanisms for a problem that no longer exists.
 
-- [ ] **Step 7: Update the section list and render the router**
+- [x] **Step 7: Update the section list and render the router**
 
 Rename the `mobileSections` memo to `sections` — it now drives both rails and the router, so its old name is misleading. Ten entries, replacing `radar` with `overview` as the default and adding `inspections`:
 
@@ -774,7 +795,7 @@ In the return, replacing the former `codesite-responsive-proof-target` two-colum
 
 Keep `data-testid="codesite-responsive-proof-target"` on the wrapper that holds the active view — it is in the baseline, and it is still the element whose width the responsiveness work targets.
 
-- [ ] **Step 8: Run the new test**
+- [x] **Step 8: Run the new test**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite -t "mounts only the selected view"
@@ -782,7 +803,7 @@ cd synthi && npx vitest run src/components/codesite -t "mounts only the selected
 
 Expected: PASS.
 
-- [ ] **Step 9: Migrate the existing tests to navigate first**
+- [x] **Step 9: Migrate the existing tests to navigate first**
 
 The other tests will now fail, because they query testids that are no longer mounted on first paint. That is expected and is the real cost of this redesign.
 
@@ -800,7 +821,7 @@ For each failure, insert the right `await selectSection(...)` before the asserti
 
 **Change only where the test navigates. Do not weaken an assertion to make it pass.** If an assertion cannot be satisfied by navigating, you have lost functionality — fix the code, not the test.
 
-- [ ] **Step 10: Split the whole-panel test**
+- [x] **Step 10: Split the whole-panel test**
 
 `renders the coordination state and exports artifact projection` asserts across all 23 blocks at once. Under view switching that is no longer one test. Split it by view, keeping every existing assertion — reassigned, never dropped:
 
@@ -858,7 +879,7 @@ it('exports the artifact projection from the evidence view', async () => {
 
 Once split, the 20000ms timeout added to the original test is no longer needed; each of the smaller tests mounts one view and should finish well inside the 5s default. Remove the timeout argument and its explanatory comment.
 
-- [ ] **Step 11: Verify the whole suite**
+- [x] **Step 11: Verify the whole suite**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -866,7 +887,7 @@ cd synthi && npx vitest run src/components/codesite
 
 Expected: all green, with **more** tests than the 8 you started with. Confirm the count went up, not down.
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add synthi/src/components/codesite
@@ -898,7 +919,17 @@ every assertion preserved."
 - Modify: `synthi/src/components/codesite/views/GovernanceView.jsx`
 - Modify: `synthi/src/components/codesite/views/governance/GovernanceConsole.jsx`
 
-**Why this must change.** The current handler switches to governance, waits a tick, then `document.querySelector`s the matching approve / apply / resume button and programmatically `.click()`s it. That only works because every section is always mounted. After Task 8 the target is not in the DOM when Required Actions is on screen, so the handler silently falls through to its scroll-to-console fallback for every action.
+**Why this must change.** The current handler switches to governance, waits a tick, then `document.querySelector`s the matching approve / apply / resume button and programmatically `.click()`s it.
+
+**Correction to this plan's original premise.** It claimed the handler would be *broken* after Task 8 because the target would no longer be mounted. That turned out to be wrong, and Task 8's implementer caught it: Required Actions and `GovernanceConsole` both live in the **Governance** view, so the target is still in the DOM and the DOM walk still works. Both required-action tests pass today with only a `selectSection('governance')` added.
+
+So this is not a repair. The reasons to do it anyway:
+
+1. **The user asked for it explicitly** — "plan the rewrite carefully and execute surgically."
+2. **It has a real defect.** The handler selects its target by reading each button's `disabled` attribute. That attribute is also driven by the global `acting` mutex, so while any mutation is in flight *every* candidate looks unactionable and the handler silently scrolls to the console instead of opening the gate. The user clicks Review and nothing happens.
+3. **It is coupled to render order, and that coupling already hid one bug.** Commit `53ae02a9d` fixed a case where `querySelector(apply) || querySelector(review)` always resolved to apply, making the review branch dead code — invisible precisely because the selection logic lived in the DOM rather than in data.
+
+Keeping it working is therefore not sufficient justification to leave it: the failure mode is silent, and a data-driven resolver is testable in isolation where a DOM walk is not.
 
 **The elegant constraint.** The payload passed to `queueGovernanceAction` is currently built inline in `GovernanceConsole`'s JSX — a distinct literal per button. If the pending-target path builds its own copy, the two will drift, and "behaves identically" becomes unverifiable by inspection. So extract the payload builders first and have **both** paths call the same builder. That is what makes this a rewrite rather than a reimplementation.
 
