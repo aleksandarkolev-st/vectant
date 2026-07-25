@@ -8,7 +8,7 @@ import BlackBoxFlightRecorder from "./activity/BlackBoxFlightRecorder";
 export default function ActivityView({ events, streamStatus, inboxItems }) {
   return (
     <>
-      <div className="grid min-w-0 content-start gap-3 p-3 sm:p-4">
+      <div className="grid min-w-0 content-start gap-3 p-3 @min-[28rem]/panel:p-4">
         <OperatorPane
           title="Activity Feed"
           icon={CodeSiteIcons.activity}

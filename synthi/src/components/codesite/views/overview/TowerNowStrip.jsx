@@ -111,7 +111,12 @@ export default function TowerNowStrip({
   return (
     <div
       data-testid="codesite-tower-now"
-      className="flex gap-1.5 overflow-x-auto rounded-[var(--radius-panel)] border p-1.5"
+      // Was a flex row of six 9.25rem cards inside overflow-x-auto — about 888px
+      // of minimum content, so a narrow dock got a horizontal scrollbar across
+      // the panel's primary status display. An auto-fit grid reflows instead:
+      // one column in a narrow dock, up to six when there is room, no scrollbar
+      // at any width.
+      className="grid grid-cols-[repeat(auto-fit,minmax(9.25rem,1fr))] gap-1.5 rounded-[var(--radius-panel)] border p-1.5"
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 62%, var(--accent-primary) 38%)",
@@ -132,7 +137,7 @@ export default function TowerNowStrip({
             data-testid={`codesite-tower-now-${card.key}`}
             aria-label={`${card.label}: ${card.value}. ${card.detail}`}
             onClick={() => onSelect?.(card.section)}
-            className="group min-w-[9.25rem] flex-1 rounded-[var(--radius-control)] border px-2.5 py-1.5 text-left outline-none transition-[background,border-color] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)]"
+            className="group min-w-0 rounded-[var(--radius-control)] border px-2.5 py-1.5 text-left outline-none transition-[background,border-color] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)]"
             style={{
               borderColor:
                 "color-mix(in srgb, var(--border-subtle) 78%, var(--text-primary) 10%)",
@@ -156,13 +161,13 @@ export default function TowerNowStrip({
                   />
                 </span>
                 <span
-                  className="truncate text-[10px] font-semibold uppercase sm:hidden"
+                  className="truncate text-[10px] font-semibold uppercase @min-[28rem]/panel:hidden"
                   style={{ color: "var(--text-muted)" }}
                 >
                   {card.shortLabel || card.label}
                 </span>
                 <span
-                  className="hidden truncate text-[10px] font-semibold uppercase sm:inline"
+                  className="hidden truncate text-[10px] font-semibold uppercase @min-[28rem]/panel:inline"
                   style={{ color: "var(--text-muted)" }}
                 >
                   {card.label}
@@ -190,13 +195,13 @@ export default function TowerNowStrip({
               />
             </div>
             <div
-              className="mt-1 break-words font-mono text-sm font-semibold leading-tight tabular-nums sm:text-base"
+              className="mt-1 break-words font-mono text-sm font-semibold leading-tight tabular-nums @min-[28rem]/panel:text-base"
               style={{ color: "var(--text-primary)" }}
             >
               {card.value}
             </div>
             <div
-              className="mt-0.5 hidden min-h-4 text-[10.5px] leading-4 sm:block"
+              className="mt-0.5 hidden min-h-4 text-[10.5px] leading-4 @min-[28rem]/panel:block"
               style={{ color: "var(--text-secondary)" }}
             >
               {card.detail}

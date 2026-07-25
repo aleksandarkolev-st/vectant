@@ -17,7 +17,7 @@ export default function BlackBoxFlightRecorder({ events }) {
   return (
     <div data-testid="codesite-black-box-recorder" className="grid gap-3">
       <div
-        className="grid gap-2 rounded-lg border px-3 py-2 text-xs lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)]"
+        className="grid gap-2 rounded-lg border px-3 py-2 text-xs @min-[44rem]/panel:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)]"
         style={{
           borderColor:
             "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
@@ -34,12 +34,12 @@ export default function BlackBoxFlightRecorder({ events }) {
             preview for event replay.
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-1 lg:justify-end">
+        <div className="flex flex-wrap items-center gap-1 @min-[44rem]/panel:justify-end">
           <Pill>{rows.length} events</Pill>
           <Pill>{actors.length} actors</Pill>
         </div>
       </div>
-      <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(220px,0.35fr)]">
+      <div className="grid min-w-0 gap-3 @min-[52rem]/panel:grid-cols-[minmax(0,1fr)_minmax(220px,0.35fr)]">
         <div className="space-y-1">
           {rows.map((event, index) => (
             <div

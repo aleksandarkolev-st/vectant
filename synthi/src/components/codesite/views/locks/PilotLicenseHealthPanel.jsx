@@ -22,7 +22,7 @@ export default function PilotLicenseHealthPanel({ records }) {
               record.displayCallsign ||
               index
             }
-            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 lg:grid-cols-[minmax(124px,0.8fr)_minmax(0,1.15fr)_minmax(0,1fr)_minmax(96px,0.75fr)]"
+            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 @min-[44rem]/panel:grid-cols-[minmax(124px,0.8fr)_minmax(0,1.15fr)_minmax(0,1fr)_minmax(96px,0.75fr)]"
             style={{
               borderColor: "var(--border-subtle)",
               background: index % 2 ? "var(--bg-surface)" : "var(--bg-editor)",

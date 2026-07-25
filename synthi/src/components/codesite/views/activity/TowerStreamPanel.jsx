@@ -13,7 +13,7 @@ export default function TowerStreamPanel({ events, streamStatus, condensed = fal
       className={
         condensed
           ? "grid min-w-0 gap-2"
-          : "grid min-w-0 gap-2 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]"
+          : "grid min-w-0 gap-2 @min-[44rem]/panel:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]"
       }
     >
       <div

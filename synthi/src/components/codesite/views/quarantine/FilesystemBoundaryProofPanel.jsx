@@ -34,7 +34,7 @@ export default function FilesystemBoundaryProofPanel({ records }) {
           <div
             key={record.proofId || `${record.eventId || "event"}-${index}`}
             data-testid="codesite-filesystem-boundary-proof-row"
-            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 lg:grid-cols-[minmax(126px,0.78fr)_minmax(0,1.18fr)_minmax(0,1.05fr)_minmax(0,1fr)]"
+            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 @min-[44rem]/panel:grid-cols-[minmax(126px,0.78fr)_minmax(0,1.18fr)_minmax(0,1.05fr)_minmax(0,1fr)]"
             style={{
               borderColor: "var(--border-subtle)",
               background: index % 2 ? "var(--bg-surface)" : "var(--bg-editor)",

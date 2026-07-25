@@ -116,9 +116,9 @@ export default function QuarantineReviewPanel({
   return (
     <div
       data-testid="codesite-quarantine-review"
-      className="grid min-w-0 gap-3 xl:grid-cols-[minmax(220px,0.78fr)_minmax(0,1.22fr)]"
+      className="grid min-w-0 gap-3 @min-[52rem]/panel:grid-cols-[minmax(220px,0.78fr)_minmax(0,1.22fr)]"
     >
-      <div className="grid min-w-0 gap-2 xl:min-h-full xl:grid-rows-[auto_auto_auto_minmax(180px,1fr)]">
+      <div className="grid min-w-0 gap-2 @min-[52rem]/panel:min-h-full @min-[52rem]/panel:grid-rows-[auto_auto_auto_minmax(180px,1fr)]">
         <div
           className="min-w-0 overflow-hidden rounded border"
           style={{ borderColor: "var(--border-subtle)" }}
@@ -328,7 +328,7 @@ export default function QuarantineReviewPanel({
           <div className="space-y-3">
             <div
               data-testid="codesite-quarantine-summary"
-              className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
+              className="grid gap-2 @min-[28rem]/panel:grid-cols-[minmax(0,1fr)_auto] @min-[28rem]/panel:items-start"
             >
               <div className="min-w-0">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -346,7 +346,7 @@ export default function QuarantineReviewPanel({
                     </Pill>
                   ) : null}
                 </div>
-                <div className="mt-1 grid gap-1 text-[11px] sm:grid-cols-2">
+                <div className="mt-1 grid gap-1 text-[11px] @min-[28rem]/panel:grid-cols-2">
                   <div className="min-w-0">
                     <span style={{ color: "var(--text-muted)" }}>
                       Transaction{" "}
@@ -365,7 +365,7 @@ export default function QuarantineReviewPanel({
                   </div>
                 </div>
               </div>
-              <div className="flex flex-wrap gap-1 sm:justify-end">
+              <div className="flex flex-wrap gap-1 @min-[28rem]/panel:justify-end">
                 <IconButton
                   title="Replay selected quarantine paths"
                   onClick={() => onReplay(selected)}
@@ -466,7 +466,7 @@ export default function QuarantineReviewPanel({
                           )}
                         </Pill>
                       </div>
-                      <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                      <div className="mt-1 grid gap-1 @min-[28rem]/panel:grid-cols-2">
                         <PathList
                           paths={[
                             quarantineDigest(change, "beforeDigest"),
@@ -506,7 +506,7 @@ export default function QuarantineReviewPanel({
                 {selected.symlinkSanitization.sanitized.map((item) => (
                   <div
                     key={`${item.path}-${item.resolvedTarget}`}
-                    className="grid gap-1 border-t py-1 first:border-t-0 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_auto]"
+                    className="grid gap-1 border-t py-1 first:border-t-0 @min-[28rem]/panel:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_auto]"
                     style={{ borderColor: "var(--border-subtle)" }}
                   >
                     <code className="truncate text-[10px]" title={item.path}>
@@ -554,7 +554,7 @@ export default function QuarantineReviewPanel({
                       <div
                         key={`${item.path || "reject"}-${index}`}
                         data-testid="codesite-quarantine-rejected-row"
-                        className="grid gap-2 rounded border px-2 py-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
+                        className="grid gap-2 rounded border px-2 py-1 @min-[28rem]/panel:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
                         style={{
                           borderColor:
                             "color-mix(in srgb, var(--accent-danger) 36%, var(--border-subtle))",
@@ -610,7 +610,7 @@ export default function QuarantineReviewPanel({
 
             <div
               data-testid="codesite-quarantine-timeline"
-              className="grid gap-1 text-[11px] sm:grid-cols-4"
+              className="grid gap-1 text-[11px] @min-[28rem]/panel:grid-cols-4"
             >
               {[
                 ["Captured", selectedLifecycle.capturedAt],

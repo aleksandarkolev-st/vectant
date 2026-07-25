@@ -54,7 +54,7 @@ export default function OperatorPane({
         </div>
         {right}
       </div>
-      <div className="p-2.5 sm:p-3">{children}</div>
+      <div className="p-2.5 @min-[28rem]/panel:p-3">{children}</div>
     </motion.section>
   );
 }

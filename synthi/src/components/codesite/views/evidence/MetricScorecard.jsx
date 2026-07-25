@@ -27,7 +27,7 @@ export default function MetricScorecard({ metric }) {
           <Pill tone={tone}>{toneLabel(tone)}</Pill>
         </div>
         <div
-          className="mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xl font-semibold leading-none tabular-nums sm:text-2xl"
+          className="mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xl font-semibold leading-none tabular-nums @min-[28rem]/panel:text-2xl"
           title={formatMetricValue(metric)}
           style={{ color: "var(--text-primary)" }}
         >

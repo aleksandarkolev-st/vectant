@@ -19,7 +19,7 @@ export default function GraphView({
 }) {
   return (
     <>
-      <div className="grid min-w-0 content-start gap-3 p-3 sm:p-4">
+      <div className="grid min-w-0 content-start gap-3 p-3 @min-[28rem]/panel:p-4">
         <OperatorPane
           title="Workspace Graph"
           icon={CodeSiteIcons.workspaceGraph}

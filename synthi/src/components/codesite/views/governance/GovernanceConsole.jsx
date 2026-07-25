@@ -110,7 +110,7 @@ export default function GovernanceConsole({
       className={
         condensed
           ? "grid min-w-0 gap-3"
-          : "grid min-w-0 gap-3 xl:grid-cols-[minmax(260px,0.82fr)_minmax(0,1.18fr)]"
+          : "grid min-w-0 gap-3 @min-[52rem]/panel:grid-cols-[minmax(260px,0.82fr)_minmax(0,1.18fr)]"
       }
     >
       <motion.form
@@ -241,7 +241,7 @@ export default function GovernanceConsole({
       />
 
       <div className="grid min-w-0 gap-3">
-        <div className={condensed ? "grid gap-2" : "grid gap-2 md:grid-cols-2"}>
+        <div className={condensed ? "grid gap-2" : "grid gap-2 @min-[34rem]/panel:grid-cols-2"}>
           <div
             className="rounded-lg border p-2"
             style={{
@@ -278,7 +278,7 @@ export default function GovernanceConsole({
                     </span>
                     <Pill
                       tone={document.status}
-                      className="max-w-[8.5rem] justify-center break-words text-center whitespace-normal sm:max-w-none"
+                      className="max-w-[8.5rem] justify-center break-words text-center whitespace-normal @min-[28rem]/panel:max-w-none"
                     >
                       {compact(document.status, "open")}
                     </Pill>
@@ -445,7 +445,7 @@ export default function GovernanceConsole({
                       </code>
                       <Pill
                         tone={revision.status}
-                        className="max-w-[8.5rem] justify-center break-words text-center whitespace-normal sm:max-w-none"
+                        className="max-w-[8.5rem] justify-center break-words text-center whitespace-normal @min-[28rem]/panel:max-w-none"
                       >
                         {compact(revision.status, "proposed")}
                       </Pill>
@@ -562,7 +562,7 @@ export default function GovernanceConsole({
                     data-testid="codesite-ground-stop-row"
                     data-codesite-mayday-id={incident.id || ""}
                     data-codesite-governance-entity={incident.id || ""}
-                    className="mt-2 grid gap-2 rounded border px-2 py-1.5 text-xs sm:grid-cols-[minmax(0,1fr)_auto]"
+                    className="mt-2 grid gap-2 rounded border px-2 py-1.5 text-xs @min-[28rem]/panel:grid-cols-[minmax(0,1fr)_auto]"
                     style={{
                       borderColor: "var(--border-subtle)",
                       background: "var(--bg-editor)",

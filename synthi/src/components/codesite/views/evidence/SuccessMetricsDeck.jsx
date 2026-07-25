@@ -45,7 +45,7 @@ export default function SuccessMetricsDeck({ sections, summary }) {
       data-testid="codesite-success-metrics"
       className="grid min-w-0 gap-4"
     >
-      <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
+      <div className="grid min-w-0 gap-3 @min-[52rem]/panel:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
         <div
           className="rounded-lg border p-3"
           style={{
@@ -106,13 +106,13 @@ export default function SuccessMetricsDeck({ sections, summary }) {
             ))}
           </div>
         </div>
-        <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid min-w-0 gap-2 @min-[28rem]/panel:grid-cols-2 @min-[52rem]/panel:grid-cols-3">
           {watchlist.map((metric) => (
             <MetricScorecard key={metric.key || metric.label} metric={metric} />
           ))}
         </div>
       </div>
-      <div className="grid min-w-0 gap-4 lg:grid-cols-4">
+      <div className="grid min-w-0 gap-4 @min-[44rem]/panel:grid-cols-4">
         {sectionEntries.map((section) => (
           <div
             key={section.title}

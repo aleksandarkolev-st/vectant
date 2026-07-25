@@ -1051,10 +1051,15 @@ export default function CodeSitePanel({ workspaceSlug }) {
   };
   const ActiveView = VIEWS[activeSection] || OverviewView;
 
+  // The root carries `@container/panel`: this panel is a dock whose width is
+  // independent of the viewport, so everything inside lays out against
+  // `@min-[…]/panel:` rather than the viewport breakpoints. Tailwind's container t-shirt
+  // scale is not the viewport scale (`@md` is 28rem, not 48rem), so the
+  // thresholds below are all explicit `@min-[…]` and mean what they say.
   return (
     <div
       data-testid="codesite-panel"
-      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
+      className="@container/panel flex h-full min-h-0 w-full flex-col overflow-hidden"
       style={{
         "--text-muted":
           "color-mix(in srgb, var(--text-secondary) 78%, var(--text-primary) 22%)",
@@ -1099,7 +1104,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span
-              className="hidden max-w-[18rem] truncate text-[11px] sm:block"
+              className="hidden max-w-[18rem] truncate text-[11px] @min-[28rem]/panel:block"
               style={{ color: "var(--text-muted)" }}
               title={workspaceSlug}
             >
@@ -1111,7 +1116,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {hasProjects ? (
-            <div className="min-w-0 basis-full sm:min-w-[220px] sm:basis-0 sm:flex-1">
+            <div className="min-w-0 basis-full @min-[28rem]/panel:min-w-[220px] @min-[28rem]/panel:basis-0 @min-[28rem]/panel:flex-1">
               <label htmlFor="codesite-project-select" className="sr-only">
                 CodeSite project
               </label>
@@ -1194,7 +1199,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
           {error ? (
             <div
               data-testid="codesite-error-state"
-              className="m-3 grid gap-3 rounded-lg border px-3 py-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+              className="m-3 grid gap-3 rounded-lg border px-3 py-3 text-xs @min-[28rem]/panel:grid-cols-[minmax(0,1fr)_auto] @min-[28rem]/panel:items-center"
               style={{
                 borderColor:
                   "color-mix(in srgb, var(--accent-danger) 38%, var(--border-subtle))",
@@ -1240,7 +1245,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                     "linear-gradient(135deg, color-mix(in srgb, var(--bg-surface) 90%, var(--accent-primary) 7%), var(--bg-editor))",
                 }}
               >
-                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                <div className="grid gap-3 @min-[28rem]/panel:grid-cols-[minmax(0,1fr)_auto] @min-[28rem]/panel:items-start">
                   <div className="min-w-0">
                     <div className="flex min-w-0 items-center gap-2">
                       <span

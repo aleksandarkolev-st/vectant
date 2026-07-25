@@ -73,7 +73,7 @@ export default function OverviewView({
   return (
     <motion.div
       data-testid="codesite-operator-cockpit"
-      className="grid gap-3 p-3 sm:p-4"
+      className="grid gap-3 p-3 @min-[28rem]/panel:p-4"
       initial={reduceMotion ? false : { opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{
@@ -83,7 +83,7 @@ export default function OverviewView({
     >
       <div
         data-testid="codesite-mission-control-header"
-        className="grid gap-3 rounded-lg border p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.055)] xl:grid-cols-[minmax(0,1fr)_minmax(460px,0.82fr)] xl:items-center"
+        className="grid gap-3 rounded-lg border p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.055)] @min-[52rem]/panel:grid-cols-[minmax(0,1fr)_minmax(0,0.82fr)] @min-[52rem]/panel:items-center"
         style={{
           borderColor:
             "color-mix(in srgb, var(--border-subtle) 58%, var(--accent-primary) 42%)",
@@ -112,7 +112,7 @@ export default function OverviewView({
             ) : null}
           </div>
           <h2
-            className="mt-2 max-w-[760px] break-words text-2xl font-semibold leading-tight sm:text-3xl"
+            className="mt-2 max-w-[760px] break-words text-2xl font-semibold leading-tight @min-[28rem]/panel:text-3xl"
             style={{ color: "var(--text-primary)" }}
           >
             {project.title}
@@ -126,7 +126,7 @@ export default function OverviewView({
         </div>
         <div
           data-testid="codesite-status-rail"
-          className="grid grid-cols-2 gap-2 xl:grid-cols-4"
+          className="grid grid-cols-2 gap-2 @min-[52rem]/panel:grid-cols-4"
         >
           <StatusRailItem
             label="Workstreams"

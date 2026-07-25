@@ -101,7 +101,7 @@ export default function LineProvenanceDeck({
           tone={selectedLineRow ? "active" : "idle"}
         />
       </div>
-      <div className="grid min-w-0 gap-3 overflow-hidden xl:grid-cols-[minmax(0,0.95fr)_minmax(300px,0.8fr)]">
+      <div className="grid min-w-0 gap-3 overflow-hidden @min-[52rem]/panel:grid-cols-[minmax(0,0.95fr)_minmax(300px,0.8fr)]">
         <div className="min-w-0 space-y-1">
           {visibleRows.map((row, index) => {
             const selected =
@@ -141,7 +141,7 @@ export default function LineProvenanceDeck({
                     </Pill>
                   </div>
                 </div>
-                <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                <div className="mt-1 grid gap-1 @min-[28rem]/panel:grid-cols-2">
                   <PathList
                     paths={[row.reasonRef, row.proofBundleId].filter(Boolean)}
                     empty="no reason"

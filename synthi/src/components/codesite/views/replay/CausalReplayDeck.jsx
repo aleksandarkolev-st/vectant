@@ -54,7 +54,7 @@ export default function CausalReplayDeck({ handovers }) {
                 "linear-gradient(180deg, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 84%, var(--bg-editor) 16%))",
             }}
           >
-            <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(260px,0.55fr)]">
+            <div className="grid min-w-0 gap-3 @min-[52rem]/panel:grid-cols-[minmax(0,0.95fr)_minmax(260px,0.55fr)]">
               <div className="min-w-0">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <span className="min-w-0 truncate font-medium">
@@ -70,7 +70,7 @@ export default function CausalReplayDeck({ handovers }) {
                     {Number.isFinite(score) ? formatPercent(score) : "pending"}
                   </Pill>
                 </div>
-                <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                <div className="mt-2 grid gap-2 @min-[28rem]/panel:grid-cols-3">
                   {[
                     ["Replay artifact", handover.incident.replayDigest],
                     ["Proof bundle", handover.proofBundle?.id],
@@ -95,7 +95,7 @@ export default function CausalReplayDeck({ handovers }) {
                     </div>
                   ))}
                 </div>
-                <div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
+                <div className="mt-3 grid min-w-0 gap-3 @min-[44rem]/panel:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
                   <div className="min-w-0 rounded-md border px-2 py-2" style={{
                     borderColor: "var(--border-subtle)",
                     background: "var(--bg-editor)",

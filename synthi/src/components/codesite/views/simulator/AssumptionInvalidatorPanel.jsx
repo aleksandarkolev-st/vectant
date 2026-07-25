@@ -58,7 +58,7 @@ export default function AssumptionInvalidatorPanel({
           {rows.reduce((sum, row) => sum + (row.staleCount || 1), 0)} paused
         </Pill>
       </div>
-      <div className="grid gap-2 xl:grid-cols-2">
+      <div className="grid gap-2 @min-[52rem]/panel:grid-cols-2">
         {rows.slice(0, 4).map((row, index) => (
           <div
             key={row.id || `assumption-${index}`}
@@ -82,7 +82,7 @@ export default function AssumptionInvalidatorPanel({
               </div>
               <Pill tone="holding">writes paused</Pill>
             </div>
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <div className="mt-2 grid gap-2 @min-[28rem]/panel:grid-cols-2">
               <div className="min-w-0">
                 <div
                   className="text-[10px] font-semibold uppercase tracking-normal"

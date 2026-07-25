@@ -23,7 +23,7 @@ export default function SerializableIsolationDeck({
   return (
     <div data-testid="codesite-serializable-isolation" className="grid gap-3">
       <div
-        className="grid gap-2 rounded-lg border px-3 py-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto]"
+        className="grid gap-2 rounded-lg border px-3 py-2 text-xs @min-[28rem]/panel:grid-cols-[minmax(0,1fr)_auto]"
         style={{
           borderColor:
             "color-mix(in srgb, var(--border-subtle) 74%, var(--accent-primary) 26%)",
@@ -41,7 +41,7 @@ export default function SerializableIsolationDeck({
             reads, observed reads, writes, result, reason, and coordinator action.
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-1 sm:justify-end">
+        <div className="flex flex-wrap items-center gap-1 @min-[28rem]/panel:justify-end">
           <Pill>{transactions.length} txns</Pill>
           {hiddenTransactions > 0 ? (
             <Pill tone="holding">+{hiddenTransactions} archived</Pill>
@@ -93,7 +93,7 @@ export default function SerializableIsolationDeck({
                 <Pill tone={transaction.status}>{result}</Pill>
               </div>
             </div>
-            <div className="mt-3 grid gap-2 md:grid-cols-4">
+            <div className="mt-3 grid gap-2 @min-[34rem]/panel:grid-cols-4">
               <div className="min-w-0 rounded-md border px-2 py-1.5" style={{
                 borderColor: "var(--border-subtle)",
                 background: "var(--bg-editor)",
@@ -154,8 +154,8 @@ export default function SerializableIsolationDeck({
                 </div>
               </div>
             </div>
-            <div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)]">
-              <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+            <div className="mt-3 grid min-w-0 gap-3 @min-[44rem]/panel:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)]">
+              <div className="grid min-w-0 gap-2 @min-[28rem]/panel:grid-cols-2">
                 <div className="min-w-0">
                   <div
                     className="text-[10px] font-semibold uppercase tracking-normal"
@@ -232,7 +232,8 @@ export default function SerializableIsolationDeck({
                 background: "var(--bg-surface)",
               }}
             >
-              <div className="grid min-h-10 grid-cols-[minmax(76px,0.9fr)_minmax(0,1.5fr)_minmax(72px,0.8fr)] items-center gap-2">
+              {/* Same track as the shared Row primitive, gated the same way. */}
+              <div className="grid min-h-10 grid-cols-1 items-start gap-1 @min-[26rem]/panel:grid-cols-[minmax(76px,0.9fr)_minmax(0,1.5fr)_minmax(72px,0.8fr)] @min-[26rem]/panel:items-center @min-[26rem]/panel:gap-2">
                 <div className="min-w-0">
                   <div className="truncate font-mono text-[11px]">
                     {bundle.id}
@@ -260,7 +261,7 @@ export default function SerializableIsolationDeck({
                   />
                 </div>
               </div>
-              <div className="mt-1 grid gap-1 sm:grid-cols-2">
+              <div className="mt-1 grid gap-1 @min-[28rem]/panel:grid-cols-2">
                 <PathList
                   paths={bundle.evidenceRefs || []}
                   empty="no evidence refs"

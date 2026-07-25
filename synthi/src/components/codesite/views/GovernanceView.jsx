@@ -37,7 +37,7 @@ export default function GovernanceView({
 }) {
   return (
     <>
-      <div className="grid min-w-0 content-start gap-3 p-3 sm:p-4">
+      <div className="grid min-w-0 content-start gap-3 p-3 @min-[28rem]/panel:p-4">
         <OperatorPane
           title="Governance Console"
           icon={CodeSiteIcons.governance}
@@ -112,7 +112,7 @@ export default function GovernanceView({
                     "linear-gradient(180deg, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 86%, var(--bg-editor) 14%))",
                 }}
               >
-                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                <div className="grid gap-2 @min-[28rem]/panel:grid-cols-[minmax(0,1fr)_auto] @min-[28rem]/panel:items-start">
                   <div className="min-w-0">
                     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                       <Pill tone={actionSeverity(action)}>
@@ -123,7 +123,7 @@ export default function GovernanceView({
                       </span>
                     </div>
                     <div
-                      className="mt-1 grid gap-1 font-mono text-[10px] sm:grid-cols-2"
+                      className="mt-1 grid gap-1 font-mono text-[10px] @min-[28rem]/panel:grid-cols-2"
                       style={{ color: "var(--text-muted)" }}
                     >
                       <span className="min-w-0 break-all">

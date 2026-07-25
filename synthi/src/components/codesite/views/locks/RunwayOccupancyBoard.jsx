@@ -21,7 +21,7 @@ export default function RunwayOccupancyBoard({ runways }) {
           <div
             key={`${runway.mutationLeaseId || runway.runway || "runway"}-${index}`}
             data-testid="codesite-runway-row"
-            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 lg:grid-cols-[minmax(136px,0.9fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,0.9fr)]"
+            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 @min-[44rem]/panel:grid-cols-[minmax(136px,0.9fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,0.9fr)]"
             style={{
               borderColor: "var(--border-subtle)",
               background: index % 2 ? "var(--bg-surface)" : "var(--bg-editor)",

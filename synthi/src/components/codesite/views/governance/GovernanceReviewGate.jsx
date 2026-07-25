@@ -37,7 +37,7 @@ export default function GovernanceReviewGate({ action, rationale, onRationale, o
         </div>
         <Pill tone={summary.severity}>{summary.severity}</Pill>
       </div>
-      <div className="mt-3 grid gap-2 text-[11px] sm:grid-cols-3">
+      <div className="mt-3 grid gap-2 text-[11px] @min-[28rem]/panel:grid-cols-3">
         <div>
           <div style={{ color: "var(--text-muted)" }}>Owner</div>
           <div className="mt-1 break-all font-mono">{summary.owner}</div>

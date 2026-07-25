@@ -71,7 +71,7 @@ export default function CodeSiteOperatingModel({
         background: "color-mix(in srgb, var(--bg-surface) 92%, transparent)",
       }}
     >
-      <div className="grid gap-2 border-b px-3 py-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-center" style={{ borderColor: "color-mix(in srgb, var(--border-subtle) 72%, transparent)" }}>
+      <div className="grid gap-2 border-b px-3 py-2 @min-[34rem]/panel:grid-cols-[minmax(0,1fr)_auto] @min-[34rem]/panel:items-center" style={{ borderColor: "color-mix(in srgb, var(--border-subtle) 72%, transparent)" }}>
         <div className="min-w-0">
           <div className="text-xs font-semibold">Operating queue</div>
           <div className="mt-0.5 truncate text-[11px]" style={{ color: "var(--text-muted)" }}>
@@ -95,7 +95,7 @@ export default function CodeSiteOperatingModel({
           ))}
         </div>
       </div>
-      <div className="hidden grid-cols-[1.1fr_0.7fr_0.8fr_1fr_auto] gap-2 border-b px-3 py-2 text-[10px] uppercase tracking-normal md:grid" style={{ borderColor: "color-mix(in srgb, var(--border-subtle) 72%, transparent)", color: "var(--text-muted)" }}>
+      <div className="hidden grid-cols-[1.1fr_0.7fr_0.8fr_1fr_auto] gap-2 border-b px-3 py-2 text-[10px] uppercase tracking-normal @min-[34rem]/panel:grid" style={{ borderColor: "color-mix(in srgb, var(--border-subtle) 72%, transparent)", color: "var(--text-muted)" }}>
         <span>Queue</span>
         <span>Status</span>
         <span>Owner</span>
@@ -113,7 +113,7 @@ export default function CodeSiteOperatingModel({
               whileHover={reduceMotion ? undefined : { x: 2 }}
               whileTap={reduceMotion ? undefined : { scale: 0.995 }}
               transition={{ duration: reduceMotion ? 0 : 0.16, ease: MOTION_EASE }}
-              className="grid min-h-14 w-full gap-2 px-3 py-2 text-left outline-none transition-[background] hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--primary)] md:grid-cols-[1.1fr_0.7fr_0.8fr_1fr_auto] md:items-center"
+              className="grid min-h-14 w-full gap-2 px-3 py-2 text-left outline-none transition-[background] hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--primary)] @min-[34rem]/panel:grid-cols-[1.1fr_0.7fr_0.8fr_1fr_auto] @min-[34rem]/panel:items-center"
             >
               <span className="grid min-w-0 grid-cols-[1.75rem_minmax(0,1fr)] items-center gap-2">
                 <span className="grid h-7 w-7 place-items-center rounded-md border" style={{ borderColor: "var(--border-subtle)", background: "var(--bg-editor)" }}>

@@ -13,13 +13,16 @@ export default function DesktopSectionRail({ sections, activeSection, onSelect, 
   return (
     <div
       data-testid="codesite-desktop-section-rail"
-      className="sticky top-0 z-20 hidden border-b px-4 py-2 shadow-[0_12px_28px_rgba(0,0,0,0.14)] md:block"
+      className="sticky top-0 z-20 hidden border-b px-4 py-2 shadow-[0_12px_28px_rgba(0,0,0,0.14)] @min-[34rem]/panel:block"
       style={{
         borderColor: "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
         background: "color-mix(in srgb, var(--bg-sidebar) 96%, var(--accent-primary) 4%)",
       }}
     >
-      <div className="grid gap-2 xl:grid-cols-[minmax(0,1fr)_280px] xl:items-center">
+      {/* The status card was a hard 280px, which in a narrow dock left almost
+          nothing for the tabs beside it. Now it only appears once the panel is
+          wide enough, and it can still shrink. */}
+      <div className="grid gap-2 @min-[52rem]/panel:grid-cols-[minmax(0,1fr)_minmax(0,280px)] @min-[52rem]/panel:items-center">
         <div
           className="flex min-w-0 gap-1 overflow-x-auto rounded-lg border p-1"
           role="tablist"

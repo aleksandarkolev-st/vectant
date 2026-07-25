@@ -92,7 +92,7 @@ export default function InspectionsView({ inspectionRuns, incidents, counts }) {
                       empty="no affected zones"
                     />
                   </div>
-                  <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                  <div className="mt-1 grid gap-1 @min-[28rem]/panel:grid-cols-2">
                     <PathList
                       paths={incident.participants || []}
                       empty="no participants"

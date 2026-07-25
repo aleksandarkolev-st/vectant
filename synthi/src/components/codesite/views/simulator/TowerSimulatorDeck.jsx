@@ -33,7 +33,7 @@ export default function TowerSimulatorDeck({
   return (
     <div data-testid="codesite-tower-simulator" className="grid min-w-0 gap-3">
       <div
-        className="grid gap-3 rounded-lg border p-3 lg:grid-cols-[minmax(0,0.9fr)_auto]"
+        className="grid gap-3 rounded-lg border p-3 @min-[44rem]/panel:grid-cols-[minmax(0,0.9fr)_auto]"
         style={{
           borderColor:
             "color-mix(in srgb, var(--border-subtle) 70%, var(--accent-primary) 30%)",
@@ -121,7 +121,7 @@ export default function TowerSimulatorDeck({
             activeLeases={activeLeases}
             events={events}
           />
-          <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(260px,0.85fr)]">
+          <div className="grid min-w-0 gap-3 @min-[52rem]/panel:grid-cols-[minmax(0,1.15fr)_minmax(260px,0.85fr)]">
             <div className="grid min-w-0 gap-2">
               {towerUniverses.map((universe, index) => {
                 const selected =
@@ -152,7 +152,7 @@ export default function TowerSimulatorDeck({
                         : "var(--bg-surface)",
                     }}
                   >
-                    <div className="grid gap-3 sm:grid-cols-[minmax(128px,1fr)_minmax(0,1.4fr)_minmax(118px,0.65fr)] sm:items-center">
+                    <div className="grid gap-3 @min-[28rem]/panel:grid-cols-[minmax(128px,1fr)_minmax(0,1.4fr)_minmax(118px,0.65fr)] @min-[28rem]/panel:items-center">
                       <div className="min-w-0">
                         <div className="break-words font-medium leading-tight">
                           {compact(universe.strategy, "strategy")}
@@ -171,7 +171,7 @@ export default function TowerSimulatorDeck({
                           label={`${compact(universe.strategy, "strategy")} health`}
                         />
                         <div
-                          className="grid gap-1 text-[11px] sm:grid-cols-3"
+                          className="grid gap-1 text-[11px] @min-[28rem]/panel:grid-cols-3"
                           style={{ color: "var(--text-secondary)" }}
                         >
                           <span>
@@ -194,7 +194,7 @@ export default function TowerSimulatorDeck({
                           </span>
                         </div>
                       </div>
-                      <div className="justify-self-start sm:justify-self-end">
+                      <div className="justify-self-start @min-[28rem]/panel:justify-self-end">
                         <Pill
                           tone={
                             universe.unresolvedRisks?.length
@@ -206,7 +206,7 @@ export default function TowerSimulatorDeck({
                         </Pill>
                       </div>
                     </div>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <div className="mt-2 grid gap-2 @min-[28rem]/panel:grid-cols-2">
                       <div>
                         <div
                           className="text-[11px]"
