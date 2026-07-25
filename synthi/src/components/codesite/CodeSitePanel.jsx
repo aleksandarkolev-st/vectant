@@ -2,35 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import {
-  ArchiveRestore,
-  Bot,
-  CheckCircle2,
-  CircleGauge,
-  Cable,
-  ClipboardCheck,
-  DatabaseZap,
-  FileCheck2,
-  FileJson,
-  FileStack,
-  FolderGit2,
-  GitBranch,
-  History,
-  ListChecks,
-  LockKeyhole,
-  MapPinned,
-  PackageCheck,
-  Plus,
-  RefreshCw,
-  SearchCheck,
-  ServerCog,
-  ShieldAlert,
-  ShieldCheck,
-  Siren,
-  SquareActivity,
-  Waypoints,
-  Workflow,
-} from "lucide-react";
+import { CheckCircle2, Plus, RefreshCw } from "lucide-react";
 import {
   applyCodeSiteRouteRevision,
   applyCodeSiteQuarantine,
@@ -55,6 +27,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { CodeSiteIcons } from "./icons";
+import { MOTION_EASE, STATUS_PULSE_EASE } from "./lib/motion";
+import {
+  EmptyLine, IconButton, JsonPreview, LoadingSkeleton, Metric, OperatorPane,
+  PathList, Pill, Row, Section, SignalBar, StatusRailItem, TagList,
+} from "./ui";
 import * as fmt from "./lib/format";
 import * as gov from "./lib/governance";
 import * as qtn from "./lib/quarantine";
@@ -95,38 +73,7 @@ const {
 } = graph;
 
 const POLL_MS = 5000;
-const MOTION_EASE = [0.16, 1, 0.3, 1];
-const STATUS_PULSE_EASE = [0.45, 0, 0.55, 1];
 
-const CodeSiteIcons = Object.freeze({
-  control: ServerCog,
-  liveState: SquareActivity,
-  workspaceGraph: Waypoints,
-  paths: FolderGit2,
-  agents: Bot,
-  actions: ListChecks,
-  approvals: ShieldCheck,
-  governance: ClipboardCheck,
-  planChanges: GitBranch,
-  pathLocks: LockKeyhole,
-  conflicts: ShieldAlert,
-  evidence: FileCheck2,
-  transactions: DatabaseZap,
-  metrics: CircleGauge,
-  activity: History,
-  recovery: Siren,
-  simulator: Workflow,
-  quarantine: ArchiveRestore,
-  inspections: ClipboardCheck,
-  incidents: ShieldAlert,
-  replay: History,
-  artifacts: PackageCheck,
-  files: FileStack,
-  lineage: SearchCheck,
-  scopes: MapPinned,
-  signals: Cable,
-  json: FileJson,
-});
 
 
 
@@ -140,229 +87,10 @@ function findGovernanceEntityRow(attributeName, entityId) {
 
 
 
-function Pill({ children, tone = "idle", className = "", testId }) {
-  const toneStyle = typeof tone === "string" ? statusTone(tone) : tone;
-  return (
-    <span
-      data-testid={testId}
-      className={`inline-flex min-h-6 min-w-0 max-w-full items-center gap-1.5 overflow-hidden text-ellipsis whitespace-nowrap rounded-md border px-2 text-[11px] font-semibold leading-4 ${className}`}
-      style={{
-        borderColor:
-          "color-mix(in srgb, var(--border-subtle) 74%, var(--text-primary) 12%)",
-        ...toneStyle,
-      }}
-    >
-      {typeof tone === "string" ? (
-        <span
-          aria-hidden="true"
-          className="h-1.5 w-1.5 shrink-0 rounded-full"
-          style={{ background: statusColor(tone) }}
-        />
-      ) : null}
-      {children}
-    </span>
-  );
-}
 
-function IconButton({
-  title,
-  onClick,
-  disabled,
-  children,
-  variant = "neutral",
-  testId,
-  type = "button",
-}) {
-  const active = variant === "primary";
-  const reduceMotion = useReducedMotion();
-  return (
-    <motion.button
-      type={type}
-      data-testid={testId}
-      title={title}
-      aria-label={title}
-      onClick={onClick}
-      disabled={disabled}
-      whileHover={disabled || reduceMotion ? undefined : { y: -1 }}
-      whileTap={disabled || reduceMotion ? undefined : { scale: 0.985 }}
-      transition={{ duration: reduceMotion ? 0 : 0.18, ease: MOTION_EASE }}
-      className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold outline-none transition-[background,border-color,box-shadow,opacity] duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)] disabled:cursor-not-allowed disabled:opacity-50"
-      style={{
-        borderColor: active
-          ? "color-mix(in srgb, var(--accent-primary) 62%, var(--border-subtle))"
-          : "color-mix(in srgb, var(--border-subtle) 86%, var(--text-primary) 8%)",
-        background: active
-          ? "color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))"
-          : "var(--bg-elevated)",
-        color: "var(--text-primary)",
-        boxShadow: active
-          ? "inset 0 1px 0 color-mix(in srgb, var(--accent-primary) 28%, transparent)"
-          : "inset 0 1px 0 color-mix(in srgb, var(--text-primary) 7%, transparent)",
-        transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
-      }}
-    >
-      {children}
-    </motion.button>
-  );
-}
 
-function Section({ title, icon: Icon, children, right, sectionKey }) {
-  return (
-    <section
-      id={sectionKey ? `codesite-section-${sectionKey}` : undefined}
-      data-codesite-section={sectionKey || undefined}
-      className="border-t scroll-mt-32 md:scroll-mt-24"
-      style={{
-        borderColor:
-          "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
-      }}
-    >
-      <div
-        className="flex min-h-12 items-center justify-between gap-3 border-b px-4 py-3"
-        style={{
-          borderColor:
-            "color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%)",
-          background:
-            "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 82%, var(--bg-editor) 18%), color-mix(in srgb, var(--bg-surface) 96%, transparent))",
-        }}
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md border shadow-[inset_0_1px_0_rgba(255,255,255,0.055)]"
-            style={{
-              borderColor:
-                "color-mix(in srgb, var(--border-subtle) 72%, var(--accent-primary) 28%)",
-              background:
-                "color-mix(in srgb, var(--accent-primary) 10%, var(--bg-elevated))",
-            }}
-          >
-            <Icon
-              className="h-3.5 w-3.5"
-              style={{ color: "var(--accent-primary)" }}
-            />
-          </span>
-          <h3
-            className="truncate text-sm font-semibold"
-            style={{ color: "var(--text-primary)" }}
-          >
-            {title}
-          </h3>
-        </div>
-        {right}
-      </div>
-      <div className="px-4 pb-4">{children}</div>
-    </section>
-  );
-}
 
-function Metric({ label, value, tone = null, testId, icon: Icon }) {
-  return (
-    <div
-      data-testid={testId}
-      className="min-h-[76px] rounded-md border px-3 py-3 transition-[border-color,background,box-shadow] duration-200"
-      style={{
-        borderColor:
-          "color-mix(in srgb, var(--border-subtle) 92%, var(--accent-primary) 8%)",
-        background:
-          "linear-gradient(180deg, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 88%, var(--bg-editor) 12%))",
-        boxShadow:
-          "inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent)",
-      }}
-    >
-      <div className="flex min-w-0 items-center justify-between gap-2">
-        <div
-          className="truncate text-[11px] font-medium leading-tight"
-          style={{ color: "var(--text-muted)" }}
-          title={label}
-        >
-          {label}
-        </div>
-        {Icon ? (
-          <Icon
-            className="h-3.5 w-3.5 shrink-0"
-            style={{ color: "var(--accent-primary)" }}
-          />
-        ) : null}
-      </div>
-      <div className="mt-1 flex items-start justify-between gap-2">
-        <div
-          className="min-w-0 break-words font-mono text-lg font-semibold leading-tight tabular-nums"
-          title={String(value)}
-          style={{ color: "var(--text-primary)" }}
-        >
-          {value}
-        </div>
-        {tone ? (
-          <span
-            className="inline-flex shrink-0 items-center gap-1 text-[10px] leading-4"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            <span className="h-2 w-2 rounded-full" style={riskTone(tone)} />
-            <span>{toneLabel(tone)}</span>
-          </span>
-        ) : null}
-      </div>
-    </div>
-  );
-}
 
-function StatusRailItem({
-  label,
-  value,
-  tone = "idle",
-  icon: Icon = CodeSiteIcons.liveState,
-  testId,
-}) {
-  return (
-    <div
-      data-testid={testId}
-      className="grid min-h-16 grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2.5 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.045)]"
-      style={{
-        borderColor:
-          "color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%)",
-        background:
-          "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 96%, var(--accent-primary) 3%), color-mix(in srgb, var(--bg-surface) 90%, var(--bg-editor) 10%))",
-      }}
-    >
-      <span
-        className="grid h-8 w-8 place-items-center rounded-md border"
-        style={{
-          borderColor:
-            "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
-          background:
-            "color-mix(in srgb, var(--accent-primary) 9%, transparent)",
-        }}
-      >
-        <Icon
-          className="h-3.5 w-3.5 shrink-0"
-          style={{ color: "var(--accent-primary)" }}
-        />
-      </span>
-      <div className="min-w-0">
-        <div
-          className="text-[10px] font-medium leading-tight"
-          style={{ color: "var(--text-muted)" }}
-        >
-          {label}
-        </div>
-        <div
-          className="break-words font-mono text-sm font-semibold leading-tight tabular-nums"
-          title={String(value)}
-          style={{ color: "var(--text-primary)" }}
-        >
-          {value}
-        </div>
-      </div>
-      <span
-        className="inline-flex shrink-0 items-center gap-1 text-[10px] leading-4"
-        style={{ color: "var(--text-secondary)" }}
-      >
-        <span className="h-2 w-2 rounded-full" style={indicatorTone(tone)} />
-        <span>{toneLabel(tone)}</span>
-      </span>
-    </div>
-  );
-}
 
 function TowerNowStrip({
   towerState,
@@ -699,66 +427,6 @@ function CodeSiteOperatingModel({
   );
 }
 
-function OperatorPane({
-  title,
-  icon: Icon,
-  right,
-  sectionKey,
-  testId,
-  children,
-  className = "",
-}) {
-  const reduceMotion = useReducedMotion();
-  return (
-    <motion.section
-      id={sectionKey ? `codesite-section-${sectionKey}` : undefined}
-      data-codesite-section={sectionKey || undefined}
-      data-testid={testId}
-      layout={!reduceMotion}
-      initial={reduceMotion ? false : { opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: reduceMotion ? 0 : 0.22, ease: MOTION_EASE }}
-      className={`min-w-0 scroll-mt-32 overflow-hidden rounded-lg border p-1 md:scroll-mt-24 ${className}`}
-      style={{
-        borderColor:
-          "color-mix(in srgb, var(--border-subtle) 84%, var(--accent-primary) 16%)",
-        background: "color-mix(in srgb, var(--bg-surface) 96%, var(--bg-editor) 4%)",
-      }}
-    >
-      <div
-        className="flex min-h-12 items-center justify-between gap-3 rounded-md border px-3 py-2"
-        style={{
-          borderColor:
-            "color-mix(in srgb, var(--border-subtle) 90%, var(--text-primary) 6%)",
-          background: "var(--bg-elevated)",
-        }}
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md"
-            style={{
-              background:
-                "color-mix(in srgb, var(--accent-primary) 8%, transparent)",
-            }}
-          >
-            <Icon
-              className="h-3.5 w-3.5"
-              style={{ color: "var(--accent-primary)" }}
-            />
-          </span>
-          <h3
-            className="truncate text-sm font-semibold"
-            style={{ color: "var(--text-primary)" }}
-          >
-            {title}
-          </h3>
-        </div>
-        {right}
-      </div>
-      <div className="p-2.5 sm:p-3">{children}</div>
-    </motion.section>
-  );
-}
 
 function MetricRow({ metric }) {
   return (
@@ -827,29 +495,6 @@ function MetricsGroup({ title, rows }) {
   );
 }
 
-function SignalBar({ value, tone = "active", label = "" }) {
-  const width = `${Math.round(clampRatio(value) * 100)}%`;
-  return (
-    <div
-      className="h-1.5 overflow-hidden rounded-full"
-      aria-label={label}
-      style={{
-        background:
-          "color-mix(in srgb, var(--border-subtle) 70%, transparent)",
-      }}
-    >
-      <div
-        className="h-full rounded-full"
-        style={{
-          width,
-          minWidth: value > 0 ? "12%" : "0",
-          background:
-            indicatorTone(tone).background || "var(--accent-primary)",
-        }}
-      />
-    </div>
-  );
-}
 
 function MetricScorecard({ metric }) {
   const tone = metricTone(metric);
@@ -2796,97 +2441,9 @@ function QuarantineReviewPanel({
   );
 }
 
-function PathList({ paths, empty = "none", maxVisible = 4 }) {
-  const list = asArray(paths);
-  const visible = list.slice(0, maxVisible);
-  if (visible.length === 0) {
-    return <span style={{ color: "var(--text-muted)" }}>{empty}</span>;
-  }
 
-  return (
-    <div className="flex min-w-0 max-w-full flex-wrap items-start gap-1 self-start overflow-hidden">
-      {visible.map((path, index) => (
-        <code
-          key={`${path}-${index}`}
-          className="inline-block min-w-0 max-w-full break-all rounded border px-1.5 py-0.5 text-[10px] leading-4 whitespace-normal"
-          style={{
-            maxWidth: "min(100%, 18rem)",
-            borderColor: "var(--border-subtle)",
-            background: "var(--bg-editor)",
-            color: "var(--text-secondary)",
-          }}
-          title={path}
-        >
-          {path}
-        </code>
-      ))}
-      {list.length > visible.length ? (
-        <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-          +{list.length - visible.length}
-        </span>
-      ) : null}
-    </div>
-  );
-}
 
-function TagList({ items, empty = null, maxVisible = 5 }) {
-  const list = asArray(items).filter(Boolean);
-  const visible = list.slice(0, maxVisible);
-  if (visible.length === 0)
-    return empty ? (
-      <span style={{ color: "var(--text-muted)" }}>{empty}</span>
-    ) : null;
 
-  return (
-    <div className="mt-1 flex min-w-0 flex-wrap gap-1">
-      {visible.map((item, index) => (
-        <code
-          key={`${item}-${index}`}
-          className="max-w-full break-all rounded border px-1.5 py-0.5 text-[10px] leading-4 whitespace-normal"
-          style={{
-            borderColor: "var(--border-subtle)",
-            background: "var(--bg-editor)",
-            color: "var(--text-secondary)",
-          }}
-          title={item}
-        >
-          {item}
-        </code>
-      ))}
-      {list.length > visible.length ? (
-        <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-          +{list.length - visible.length}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function Row({ children, testId }) {
-  return (
-    <div
-      data-testid={testId}
-      className="grid min-h-10 grid-cols-[minmax(76px,0.9fr)_minmax(0,1.5fr)_minmax(72px,0.8fr)] items-center gap-2 border-t py-2 text-xs first:border-t-0"
-      style={{ borderColor: "var(--border-subtle)" }}
-    >
-      {children}
-    </div>
-  );
-}
-
-function EmptyLine({ children = "None" }) {
-  return (
-    <div
-      className="rounded border px-3 py-3 text-xs"
-      style={{
-        borderColor: "var(--border-subtle)",
-        color: "var(--text-muted)",
-      }}
-    >
-      {children}
-    </div>
-  );
-}
 
 function DesktopSectionRail({ sections, activeSection, onSelect, status, streamStatus }) {
   const reduceMotion = useReducedMotion();
@@ -4063,23 +3620,6 @@ function GovernanceConsole({
   );
 }
 
-function LoadingSkeleton() {
-  return (
-    <div className="space-y-3 p-3" data-testid="codesite-loading">
-      {[0, 1, 2, 3].map((item) => (
-        <div
-          key={item}
-          className="h-16 rounded border"
-          style={{
-            borderColor: "var(--border-subtle)",
-            background: "var(--bg-surface)",
-            opacity: 0.75,
-          }}
-        />
-      ))}
-    </div>
-  );
-}
 
 
 function WorkGraphConnector({ tone = "active", active = false, delay = 0 }) {
@@ -5441,25 +4981,6 @@ function ScopeTopology({
   );
 }
 
-function JsonPreview({ value, maxLines = 10 }) {
-  const text =
-    typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 2);
-  const lines = text.split("\n").slice(0, maxLines).join("\n");
-  return (
-    <pre
-      aria-label="CodeSite JSON proof details"
-      className="max-h-44 overflow-auto rounded border p-2 text-[10px] leading-4"
-      style={{
-        borderColor: "var(--border-subtle)",
-        background: "var(--bg-editor)",
-        color: "var(--text-secondary)",
-      }}
-      tabIndex={0}
-    >
-      {lines}
-    </pre>
-  );
-}
 
 export default function CodeSitePanel({ workspaceSlug }) {
   const reduceMotion = useReducedMotion();
