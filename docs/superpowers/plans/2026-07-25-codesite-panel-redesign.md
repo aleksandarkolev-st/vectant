@@ -1686,7 +1686,7 @@ Also: 2221 (`lg:grid-cols-4` — content-agnostic fixed count), 2815, 1866/1884.
 
 Formerly line 1679: six cards at `min-w-[9.25rem]` inside an `overflow-x-auto` — about 888px of minimum content. In a narrow dock the user gets a horizontal scrollbar over their primary status display. Replace the horizontal scroll with a wrapping grid that goes to one column at narrow container widths and back to six when there is room.
 
-- [ ] **Step 6: Verify at all four target widths**
+- [x] **Step 6: Verify at all four target widths**
 
 The tests cannot catch layout regressions, so check this in the browser. `codesite-responsive-proof-target` exists to be measured.
 
@@ -1726,7 +1726,13 @@ width, and makes TowerNowStrip reflow rather than putting a horizontal scrollbar
 over the primary status display."
 ```
 
-## Task 13: Wire the saved-view filters
+## Task 13: Wire the saved-view filters — ✅ COMPLETE
+
+> **Outcome** (`c608038aa`). Test written first and confirmed failing (`Cannot read properties of null` — the ids did not exist) before implementing. 35 tests green.
+>
+> `Active` was previously styled as selected by a hardcoded `view === "Active"` string compare, with no `onClick` on any of the three buttons.
+>
+> **One design choice worth recording:** membership is **structural** — `active` → Workstreams + Activity, `review` → Governance, `evidence` → Evidence — rather than count-based as the plan's Step 3 suggested ("`review` shows only rows needing a decision"). Count-based filtering means a filter yields an empty queue whenever the counts happen to be zero, which reads as a broken control rather than as "nothing to do". Row status pills still come from the live counts exactly as before, so no information is lost.
 
 The `Active` / `Review` / `Evidence` buttons (formerly 1850–1863) look like filters but have no `onClick`. Making them real is the natural remedy for density: show only what needs action.
 
@@ -1734,7 +1740,7 @@ The `Active` / `Review` / `Evidence` buttons (formerly 1850–1863) look like fi
 - Modify: `synthi/src/components/codesite/views/overview/CodeSiteOperatingModel.jsx`
 - Modify: `synthi/src/components/codesite/__tests__/CodeSitePanel.test.jsx`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```jsx
 it('filters the operating queue by saved view', async () => {
@@ -1757,7 +1763,7 @@ it('filters the operating queue by saved view', async () => {
 });
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite -t "filters the operating queue"
@@ -1765,13 +1771,13 @@ cd synthi && npx vitest run src/components/codesite -t "filters the operating qu
 
 Expected: FAIL — `codesite-saved-view-review` does not exist.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add local state (`useState("active")`) — no persistence was requested, so do not add any. Give each button `onClick`, `aria-pressed`, and a `testId` of `codesite-saved-view-active` / `-review` / `-evidence`. Filter the rows the component already renders: `active` shows in-flight work, `review` shows only rows needing a decision, `evidence` shows rows with proof refs.
 
 Adding three test ids raises the invariant baseline. That is expected — the check asserts a superset, so additions pass. Do **not** regenerate `tasks/codesite-testid-baseline.txt`; it is a historical record of what existed before the redesign, and rewriting it would destroy the guarantee.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
