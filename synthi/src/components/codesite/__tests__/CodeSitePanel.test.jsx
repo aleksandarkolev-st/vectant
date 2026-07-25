@@ -750,6 +750,9 @@ describe('CodeSitePanel', () => {
     }
   });
 
+  // Renders all ~21 sections of the panel and asserts across every one of them,
+  // which takes ~4s in jsdom — too close to the 5s default, so it fails
+  // intermittently whenever another test file competes for the CPU.
   it('renders the coordination state and exports artifact projection', async () => {
     const state = radarState();
     h.fetchCodeSiteRadarState.mockResolvedValue(state);
@@ -1059,7 +1062,7 @@ describe('CodeSitePanel', () => {
     await flush();
 
     expect(h.exportCodeSiteArtifacts).toHaveBeenCalledWith('acme', 'proj-1');
-  });
+  }, 20000);
 
   it('exposes show-all controls for capped governance queues', async () => {
     const state = radarState();
