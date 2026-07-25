@@ -12,7 +12,6 @@ export default function ActivityView({ events, streamStatus, inboxItems }) {
         <OperatorPane
           title="Activity Feed"
           icon={CodeSiteIcons.activity}
-          sectionKey="tower"
           testId="codesite-operator-tower-pane"
           right={
             <Pill

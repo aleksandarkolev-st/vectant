@@ -16,7 +16,6 @@ export default function LocksView({
       <Section
         title="Path Locks"
         icon={CodeSiteIcons.pathLocks}
-        sectionKey="runway"
         right={
           <Pill tone={runwayOccupancy.length ? "holding" : "active"}>
             {runwayOccupancy.length}

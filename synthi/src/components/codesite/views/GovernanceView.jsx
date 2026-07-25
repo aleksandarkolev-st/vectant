@@ -39,7 +39,6 @@ export default function GovernanceView({
         <OperatorPane
           title="Governance Console"
           icon={CodeSiteIcons.governance}
-          sectionKey="governance"
           testId="codesite-operator-governance-pane"
           right={
             <Pill

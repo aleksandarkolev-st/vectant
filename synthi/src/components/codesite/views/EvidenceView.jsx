@@ -22,7 +22,6 @@ export default function EvidenceView({
       <Section
         title="Success Metrics"
         icon={CodeSiteIcons.metrics}
-        sectionKey="evidence"
         right={
           <Pill tone={metrics?.status || "pending"}>
             {metrics ? "measured" : "no data"}

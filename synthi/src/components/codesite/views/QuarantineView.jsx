@@ -44,7 +44,6 @@ export default function QuarantineView({
       <Section
         title="Quarantine Review"
         icon={CodeSiteIcons.quarantine}
-        sectionKey="quarantine"
         right={
           <Pill
             tone={

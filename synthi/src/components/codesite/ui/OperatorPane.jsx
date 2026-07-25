@@ -5,7 +5,6 @@ export default function OperatorPane({
   title,
   icon: Icon,
   right,
-  sectionKey,
   testId,
   children,
   className = "",
@@ -13,14 +12,12 @@ export default function OperatorPane({
   const reduceMotion = useReducedMotion();
   return (
     <motion.section
-      id={sectionKey ? `codesite-section-${sectionKey}` : undefined}
-      data-codesite-section={sectionKey || undefined}
       data-testid={testId}
       layout={!reduceMotion}
       initial={reduceMotion ? false : { opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: reduceMotion ? 0 : 0.22, ease: MOTION_EASE }}
-      className={`min-w-0 scroll-mt-32 overflow-hidden rounded-lg border p-1 md:scroll-mt-24 ${className}`}
+      className={`min-w-0 overflow-hidden rounded-lg border p-1 ${className}`}
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 84%, var(--accent-primary) 16%)",

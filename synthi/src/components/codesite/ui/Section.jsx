@@ -1,11 +1,9 @@
 
 
-export default function Section({ title, icon: Icon, children, right, sectionKey }) {
+export default function Section({ title, icon: Icon, children, right }) {
   return (
     <section
-      id={sectionKey ? `codesite-section-${sectionKey}` : undefined}
-      data-codesite-section={sectionKey || undefined}
-      className="border-t scroll-mt-32 md:scroll-mt-24"
+      className="border-t"
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",

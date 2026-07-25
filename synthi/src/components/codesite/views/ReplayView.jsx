@@ -22,7 +22,6 @@ export default function ReplayView({
       <Section
         title="Replay Handover"
         icon={CodeSiteIcons.replay}
-        sectionKey="replay"
         right={
           <Pill
             tone={
@@ -43,7 +42,6 @@ export default function ReplayView({
       <Section
         title="Lineage Inspector"
         icon={CodeSiteIcons.lineage}
-        sectionKey="lineage"
         right={<Pill>{lineProvenance.length}</Pill>}
       >
         <LineProvenanceDeck

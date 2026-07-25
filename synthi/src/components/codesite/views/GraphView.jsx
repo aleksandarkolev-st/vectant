@@ -24,7 +24,6 @@ export default function GraphView({
         <OperatorPane
           title="Workspace Graph"
           icon={CodeSiteIcons.workspaceGraph}
-          sectionKey="radar"
           testId="codesite-operator-airspace-pane"
           right={
             <Pill>{zones.length || activeFlights.length}</Pill>

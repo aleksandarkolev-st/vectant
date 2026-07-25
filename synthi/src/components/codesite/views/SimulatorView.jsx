@@ -20,7 +20,6 @@ export default function SimulatorView({
     <Section
       title="Coordination Simulator"
       icon={CodeSiteIcons.simulator}
-      sectionKey="simulator"
       right={
         <Pill tone={selectedUniverse?.result || simulationRun.status}>
           {compact(
