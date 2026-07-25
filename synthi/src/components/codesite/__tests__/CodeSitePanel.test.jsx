@@ -802,6 +802,31 @@ describe('CodeSitePanel', () => {
     );
   });
 
+  it('surfaces required actions on the overview with a drill-in to governance', async () => {
+    const state = radarState();
+    state.controlState.requiredActions = [{
+      kind: 'review_document',
+      title: 'Review checkout schema RFI',
+      owner: 'ATLAS-1',
+      documentId: 'doc-1',
+      severity: 'high',
+    }];
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+    renderPanel();
+    await flush();
+
+    const digest = container.querySelector('[data-testid="codesite-overview-attention"]');
+    expect(digest).toBeTruthy();
+    expect(digest.textContent).toContain('Review checkout schema RFI');
+
+    await act(async () => {
+      digest.querySelector('[data-testid="codesite-overview-attention-drill"]')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="codesite-governance-console"]')).toBeTruthy();
+  });
+
   it('renders the workspace graph under the graph view', async () => {
     h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
     renderPanel();

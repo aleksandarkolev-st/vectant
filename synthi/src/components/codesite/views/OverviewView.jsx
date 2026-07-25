@@ -1,9 +1,24 @@
+import { useMemo } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { CodeSiteIcons } from "../icons";
 import { MOTION_EASE } from "../lib/motion";
-import { compact, toneLabel } from "../lib/format";
-import { documentNeedsReview, routeRevisionCanReview } from "../lib/governance";
-import { Metric, Pill, StatusRailItem } from "../ui";
+import { compact, productCopy, toneLabel } from "../lib/format";
+import {
+  actionEntityId,
+  actionLabel,
+  actionSeverity,
+  documentNeedsReview,
+  routeRevisionCanReview,
+} from "../lib/governance";
+import {
+  EmptyLine,
+  IconButton,
+  Metric,
+  Pill,
+  Row,
+  Section,
+  StatusRailItem,
+} from "../ui";
 import TowerNowStrip from "./overview/TowerNowStrip";
 import CodeSiteOperatingModel from "./overview/CodeSiteOperatingModel";
 
@@ -21,12 +36,40 @@ export default function OverviewView({
   documents,
   routeRevisions,
   openMaydays,
+  requiredActions,
+  actionableQuarantineRecords,
   runwayOccupancy,
   proofBundles,
   quarantineRecords,
   onSelect,
 }) {
   const reduceMotion = useReducedMotion();
+  const attentionItems = useMemo(
+    () => [
+      ...requiredActions.map((action, index) => ({
+        id: `action-${actionEntityId(action) || index}`,
+        label: actionLabel(action),
+        severity: actionSeverity(action),
+        viewKey: "governance",
+        viewLabel: "Governance",
+      })),
+      ...openMaydays.map((incident) => ({
+        id: `mayday-${incident.id}`,
+        label: `Resume ${productCopy(incident.category, "paused incident")}`,
+        severity: "critical",
+        viewKey: "governance",
+        viewLabel: "Governance",
+      })),
+      ...actionableQuarantineRecords.map((record) => ({
+        id: `quarantine-${record.quarantineId}`,
+        label: `Quarantined change: ${record.quarantineId}`,
+        severity: "high",
+        viewKey: "quarantine",
+        viewLabel: "Quarantine",
+      })),
+    ],
+    [requiredActions, openMaydays, actionableQuarantineRecords],
+  );
   return (
     <motion.div
       data-testid="codesite-operator-cockpit"
@@ -182,6 +225,38 @@ export default function OverviewView({
           icon={CodeSiteIcons.planChanges}
         />
       </div>
+
+      <Section
+        title="Needs Attention"
+        icon={CodeSiteIcons.actions}
+        right={
+          <Pill tone={attentionItems.length ? "holding" : "active"}>
+            {attentionItems.length}
+          </Pill>
+        }
+      >
+        <div className="grid gap-1" data-testid="codesite-overview-attention">
+          {attentionItems.length === 0 ? (
+            <EmptyLine>Nothing is waiting on you.</EmptyLine>
+          ) : (
+            attentionItems.slice(0, 5).map((item) => (
+              <Row key={item.id}>
+                <Pill tone={item.severity}>{item.severity}</Pill>
+                <span className="min-w-0 break-words font-medium">
+                  {item.label}
+                </span>
+                <IconButton
+                  title={`Open ${item.label} in ${item.viewLabel}`}
+                  onClick={() => onSelect(item.viewKey)}
+                  testId="codesite-overview-attention-drill"
+                >
+                  Open
+                </IconButton>
+              </Row>
+            ))
+          )}
+        </div>
+      </Section>
 
       <TowerNowStrip
         towerState={status}
