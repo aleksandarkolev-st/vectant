@@ -38,6 +38,7 @@ export default function MobileSectionTabs({ sections, activeSection, onSelect })
               aria-selected={activeSection === section.key}
               aria-controls={`codesite-section-${section.key}`}
               data-testid="codesite-mobile-section-tab"
+              data-codesite-section-key={section.key}
               onClick={() => onSelect(section.key)}
               whileTap={reduceMotion ? undefined : { scale: 0.985 }}
               className="relative inline-flex h-11 shrink-0 items-center gap-2 rounded-md border px-3 text-[11px] font-semibold transition-[background,border-color,color] active:scale-[0.98]"

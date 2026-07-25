@@ -40,6 +40,7 @@ export default function DesktopSectionRail({ sections, activeSection, onSelect, 
                 aria-selected={active}
                 aria-controls={`codesite-section-${section.key}`}
                 data-testid="codesite-desktop-section-tab"
+                data-codesite-section-key={section.key}
                 onClick={() => onSelect(section.key)}
                 className="relative inline-flex h-11 shrink-0 items-center gap-2 rounded-md border px-3 text-[11px] font-semibold transition-[background,border-color,transform] hover:-translate-y-px"
                 style={{
