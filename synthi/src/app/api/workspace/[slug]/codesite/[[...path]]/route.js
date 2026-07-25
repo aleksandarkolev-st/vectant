@@ -77,7 +77,7 @@ export const dynamic = 'force-dynamic';
 export async function GET(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
-  const access = await requireCodesiteAccess(slug, 'read');
+  const access = await requireCodesiteAccess(slug, 'read', request);
   if (!access.ok) return errorJson(access.status, access.error);
 
   try {
@@ -213,7 +213,7 @@ export async function GET(request, { params }) {
 export async function POST(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
-  const access = await requireCodesiteAccess(slug, postAccessMode(route));
+  const access = await requireCodesiteAccess(slug, postAccessMode(route), request);
   if (!access.ok) return errorJson(access.status, access.error);
   const limited = enforceRateLimit(access.actor, route.join('/'), route.includes('events') ? 'audit' : 'crud');
   if (limited) return limited;

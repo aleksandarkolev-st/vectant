@@ -107,6 +107,11 @@ services:
       # are loaded from the gitignored .env.local file.
       NEXTAUTH_URL: "http://localhost:${FRONTEND_HOST_PORT:-3000}/"
       SYNTHI_APP_INTERNAL_URL: "http://frontend:3000"
+      # Shared secret that authenticates the collab-server's server-to-server
+      # CodeSite control-plane probe (requireCodesiteAccess accepts it as an
+      # internal-service token). MUST match the collab-server value below.
+      # Production must inject a real secret via SYNTHI_CODESITE_TOKEN.
+      SYNTHI_CODESITE_TOKEN: "${SYNTHI_CODESITE_TOKEN:-local-compose-codesite-token}"
       # Local-compose auth secret used by NextAuth. Production deployments must
       # provide AUTH_SECRET/NEXTAUTH_SECRET through their secret manager.
       AUTH_SECRET: "${AUTH_SECRET:-local-compose-auth-secret}"
@@ -186,6 +191,9 @@ services:
       # Networking
       CORS_ORIGIN: "http://localhost:${FRONTEND_HOST_PORT:-3000}"
       SYNTHI_APP_INTERNAL_URL: "http://frontend:3000"
+      # Sent as `Authorization: Bearer` on the CodeSite control-plane probe to
+      # the frontend (see controlPlaneHeaders). MUST match the frontend value.
+      SYNTHI_CODESITE_TOKEN: "${SYNTHI_CODESITE_TOKEN:-local-compose-codesite-token}"
       CODE_INTEL_URL: "http://ai-engine:8000"
       YSWEET_URL: "http://y-sweet:8080"
       YSWEET_AUTH_KEY: dev-secret

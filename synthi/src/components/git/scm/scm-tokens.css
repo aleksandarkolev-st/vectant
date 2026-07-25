@@ -170,9 +170,10 @@
   align-items: center;
   text-align: center;
   padding: 18px 14px 14px;
+  /* Diagonal hatch "drop-zone" texture — no dashed border, just the lines. */
   background:
-    radial-gradient(circle at 50% 122%, color-mix(in srgb, var(--attention-purple) 6%, transparent), transparent 60%),
-    repeating-linear-gradient(0deg, color-mix(in srgb, var(--text-primary) 2.5%, transparent) 0 1px, transparent 1px 4px);
+    linear-gradient(135deg, color-mix(in srgb, var(--bg-panel) 70%, transparent), transparent),
+    repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-primary) 3%, transparent) 0 1px, transparent 1px 12px);
 }
 
 .scm-focal-title {

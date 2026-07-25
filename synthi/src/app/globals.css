@@ -1158,13 +1158,19 @@
   min-height: 180px;
   padding: 24px;
   color: var(--text-muted);
-  /* Faint horizontal scanlines + a soft brand glow read as a quiet console
-     surface waiting for output — not a drag-and-drop target (no diagonal
-     hatch, no dashed border). */
+  /* Diagonal hatch "drop-zone" texture — no dashed border, just the lines. */
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--bg-panel) 86%, transparent), transparent),
+    repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-primary) 3%, transparent) 0 1px, transparent 1px 12px);
+  border-radius: var(--radius-panel);
+}
+
+/* Output console keeps the calm horizontal scanlines instead of the diagonal
+   hatch — it streams build/process output, so it shouldn't read as a drop zone. */
+.vt-empty-state--scanlines {
   background:
     radial-gradient(circle at 50% 122%, color-mix(in srgb, var(--attention-purple) 6%, transparent), transparent 60%),
     repeating-linear-gradient(0deg, color-mix(in srgb, var(--text-primary) 2.5%, transparent) 0 1px, transparent 1px 4px);
-  border-radius: var(--radius-panel);
 }
 
 .vt-skeleton {
@@ -1260,6 +1266,20 @@
     radial-gradient(circle at 14% -6%, color-mix(in srgb, var(--brand-stop-1) 7%, transparent), transparent 54%),
     radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--brand-stop-3) 5%, transparent), transparent 50%),
     linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 82%, black 18%), var(--bg-app));
+}
+
+/* CodeSite tokens — derived from the active theme's accent palette so every
+   theme restyles the panel. A theme can re-tint by overriding any
+   --codesite-* variable; nothing inside the panel is hardcoded. */
+[data-panel-type="codesite"] {
+  --codesite-accent-secondary: var(--accent-secondary);
+  --codesite-success: var(--accent-success);
+  --codesite-warning: var(--accent-warning);
+  --codesite-danger: var(--accent-danger);
+  --codesite-muted-accent: color-mix(in srgb, var(--accent-primary) 40%, var(--text-secondary) 60%);
+  --codesite-panel-line: color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%);
+  --codesite-panel-surface: color-mix(in srgb, var(--bg-sidebar) 94%, var(--bg-editor) 6%);
+  color: var(--text-primary);
 }
 
 /* Platform group — cool lavender, top-right */

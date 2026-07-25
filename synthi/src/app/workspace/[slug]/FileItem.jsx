@@ -98,7 +98,7 @@ const FileItem = memo(({
 
     return (
       <div
-        className="pointer-events-none absolute inset-y-0 left-0 z-0"
+        className="pointer-events-none absolute -top-px -bottom-px left-0 z-0"
         aria-hidden="true"
       >
         {Array.isArray(guideAncestorHasNext) &&
