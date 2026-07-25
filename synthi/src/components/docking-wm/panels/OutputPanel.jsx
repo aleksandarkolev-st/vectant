@@ -252,7 +252,7 @@ const OutputPanel = memo(function OutputPanel() {
         style={{ background: 'color-mix(in srgb, var(--bg-app) 72%, var(--bg-editor) 28%)' }}
       >
         {lines.length === 0 ? (
-          <div className="vt-empty-state h-full min-h-0 text-center">
+          <div className="vt-empty-state vt-empty-state--scanlines h-full min-h-0 text-center">
             <div>
               <TerminalSquare className="mx-auto mb-3 h-5 w-5 text-[var(--text-muted)]" strokeWidth={1.5} />
               <div className="text-[12px] font-semibold text-[var(--text-primary)]">No process output yet</div>

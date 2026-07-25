@@ -7705,23 +7705,10 @@ export default function CodeSitePanel({ workspaceSlug }) {
   return (
     <div
       data-testid="codesite-panel"
-      className="vt-app-surface flex h-full min-h-0 w-full flex-col overflow-hidden"
+      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
       style={{
-        "--accent-primary": "oklch(73% 0.13 196)",
-        "--attention-purple": "oklch(73% 0.13 196)",
-        "--codesite-accent-secondary": "oklch(70% 0.13 252)",
-        "--codesite-success": "oklch(72% 0.15 155)",
-        "--codesite-warning": "oklch(80% 0.15 82)",
-        "--codesite-danger": "oklch(67% 0.19 29)",
-        "--codesite-muted-accent": "oklch(68% 0.06 235)",
         "--text-muted":
           "color-mix(in srgb, var(--text-secondary) 78%, var(--text-primary) 22%)",
-        "--codesite-panel-line":
-          "color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%)",
-        "--codesite-panel-surface":
-          "color-mix(in srgb, var(--bg-sidebar) 94%, var(--bg-editor) 6%)",
-        background:
-          "linear-gradient(180deg, color-mix(in srgb, var(--bg-sidebar) 92%, var(--accent-primary) 5%), var(--bg-sidebar) 34%, color-mix(in srgb, var(--codesite-panel-surface) 94%, var(--codesite-accent-secondary) 4%))",
         color: "var(--text-primary)",
       }}
     >
