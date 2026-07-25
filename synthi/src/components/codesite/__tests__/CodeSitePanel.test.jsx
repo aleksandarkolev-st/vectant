@@ -1403,6 +1403,39 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('Checkout coordination');
   });
 
+  it('filters the operating queue by saved view', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+
+    const queue = () => container.querySelector('[data-testid="codesite-operating-model"]');
+    const savedView = (name) =>
+      container.querySelector(`[data-testid="codesite-saved-view-${name}"]`);
+
+    expect(savedView('active').getAttribute('aria-pressed')).toBe('true');
+    const before = queue().textContent;
+    expect(before).toContain('Workstreams');
+
+    await act(async () => {
+      savedView('review').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(savedView('review').getAttribute('aria-pressed')).toBe('true');
+    expect(savedView('active').getAttribute('aria-pressed')).toBe('false');
+    expect(queue().textContent).not.toBe(before);
+    expect(queue().textContent).toContain('Governance');
+    expect(queue().textContent).not.toContain('Workstreams');
+
+    await act(async () => {
+      savedView('evidence').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(queue().textContent).toContain('Evidence');
+    expect(queue().textContent).not.toContain('Governance');
+  });
+
   it('takes core on mount and the evidence slice only when Evidence opens', async () => {
     h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
     renderPanel();

@@ -1,9 +1,22 @@
+import { useState } from "react";
 import { Pill } from "../../ui";
 import { motion, useReducedMotion } from "framer-motion";
 import { MOTION_EASE } from "../../lib/motion";
 import { asArray } from "../../lib/format";
 import { documentNeedsReview, routeRevisionCanReview } from "../../lib/governance";
 import { CodeSiteIcons } from "../../icons";
+
+/**
+ * Which saved view each queue row belongs to. Membership is structural — what
+ * the row *is* — not count-based, so a filter never yields an empty queue and
+ * leaves the user wondering whether it broke. The counts still drive each row's
+ * status pill exactly as before.
+ */
+const SAVED_VIEWS = [
+  { key: "active", label: "Active", rows: ["scope", "activity"] },
+  { key: "review", label: "Review", rows: ["governance"] },
+  { key: "evidence", label: "Evidence", rows: ["evidence"] },
+];
 
 export default function CodeSiteOperatingModel({
   activeFlights,
@@ -14,6 +27,7 @@ export default function CodeSiteOperatingModel({
   onSelect,
 }) {
   const reduceMotion = useReducedMotion();
+  const [savedView, setSavedView] = useState("active");
   const flightCount = asArray(activeFlights).length;
   const leaseCount = asArray(activeLeases).length;
   const documentReviewCount = asArray(documents).filter(documentNeedsReview).length;
@@ -61,6 +75,9 @@ export default function CodeSiteOperatingModel({
       section: "evidence",
     },
   ];
+  const selectedRows =
+    SAVED_VIEWS.find((view) => view.key === savedView)?.rows || [];
+  const visibleRows = rows.filter((row) => selectedRows.includes(row.key));
 
   return (
     <section
@@ -78,21 +95,29 @@ export default function CodeSiteOperatingModel({
             Saved views for active work, approvals, and replay evidence
           </div>
         </div>
-        <div className="flex min-w-0 gap-1 overflow-x-auto" aria-label="CodeSite saved views">
-          {["Active", "Review", "Evidence"].map((view) => (
-            <button
-              key={view}
-              type="button"
-              className="h-7 shrink-0 rounded-md border px-2 text-[11px]"
-              style={{
-                borderColor: "var(--border-subtle)",
-                background: view === "Active" ? "color-mix(in srgb, var(--primary) 9%, transparent)" : "transparent",
-                color: view === "Active" ? "var(--text-primary)" : "var(--text-muted)",
-              }}
-            >
-              {view}
-            </button>
-          ))}
+        <div className="flex min-w-0 gap-1 overflow-x-auto" role="group" aria-label="CodeSite saved views">
+          {SAVED_VIEWS.map((view) => {
+            const selected = view.key === savedView;
+            return (
+              <button
+                key={view.key}
+                type="button"
+                aria-pressed={selected}
+                data-testid={`codesite-saved-view-${view.key}`}
+                onClick={() => setSavedView(view.key)}
+                className="h-7 shrink-0 rounded-md border px-2 text-[11px]"
+                style={{
+                  borderColor: selected
+                    ? "color-mix(in srgb, var(--primary) 42%, var(--border-subtle))"
+                    : "var(--border-subtle)",
+                  background: selected ? "color-mix(in srgb, var(--primary) 9%, transparent)" : "transparent",
+                  color: selected ? "var(--text-primary)" : "var(--text-muted)",
+                }}
+              >
+                {view.label}
+              </button>
+            );
+          })}
         </div>
       </div>
       <div className="hidden grid-cols-[1.1fr_0.7fr_0.8fr_1fr_auto] gap-2 border-b px-3 py-2 text-[10px] uppercase tracking-normal @min-[34rem]/panel:grid" style={{ borderColor: "color-mix(in srgb, var(--border-subtle) 72%, transparent)", color: "var(--text-muted)" }}>
@@ -103,7 +128,7 @@ export default function CodeSiteOperatingModel({
         <span>Open</span>
       </div>
       <div className="divide-y divide-[color-mix(in_srgb,var(--border-subtle)_72%,transparent)]">
-        {rows.map((row) => {
+        {visibleRows.map((row) => {
           const Icon = row.icon;
           return (
             <motion.button
