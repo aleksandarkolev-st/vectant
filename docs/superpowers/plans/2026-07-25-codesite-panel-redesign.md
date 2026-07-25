@@ -1786,11 +1786,31 @@ onClick. Filtering the operating queue to just what needs a decision is the
 natural remedy for density. Selection is local UI state; no persistence."
 ```
 
-## Task 14: Final verification
+## Task 14: Final verification — ⚠️ COMPLETE EXCEPT THE DATA WALKTHROUGH
+
+> **Outcome.** Steps 1–4 and 6 pass. Step 5 is **blocked and handed back to the user** — see below.
+>
+> | Step | Result |
+> |---|---|
+> | 1 — test-id invariant | ✅ 1/1. Mechanical proof that every one of the 103 baseline ids survived. `tasks/codesite-testid-baseline.txt` never regenerated. |
+> | 2 — suite green and grew | ✅ **35 tests / 4 files**, up from the 8 this started with. |
+> | 3 — nothing else broke | ✅ 999 pass / 20 fail across the repo. The 20 failures are in the same 7 files as before this work — `agent-workflows`, `programs` ×2, `preview-store`, `terminal-preview-links`, `src/lib/codesite` ×2 — and were proven pre-existing by restoring the pre-refactor directory and seeing them unchanged. Note `src/lib/codesite` ≠ `src/components/codesite`. Both external importers (`app/workspace/[slug]/page.jsx`, `app/workspace/[slug]/codesite/page.jsx`) use the default export, which still exists. |
+> | 4 — hardcoded values | ✅ Zero `oklch(`, zero 6-digit hex, zero URLs or ports in the panel. All three timing constants named (`POLL_MS`, `EVIDENCE_POLL_MS`, `STREAM_REFRESH_DEBOUNCE_MS`). |
+> | 6 — graph untouched | ✅ `git diff 79ef2e48b..HEAD -- views/graph/` is **674 insertions, 0 deletions** — purely the file move. Deferral honored. |
+>
+> **Task 12 Step 6 (layout at the target widths) is done**, using the webpack dev server. Measured at 320, 380, 700, 760 and 1440px: no panel or body horizontal scrollbar at any width, and zero unexplained overflow. The only inner scrollers are a deliberate `truncate`, the tab strip's own `overflow-x-auto`, and an `sr-only` span. All 10 views mount, select, and render with no console errors.
+>
+> Container queries proven to be driving layout, not just compiling: the rail's status-card split is a single `668px` column at 700px panel width and `1120px 280px` at 1440px, and the rail↔tabs swap flips on panel width — a 760px panel now gets the desktop rail where the old `md:` (768px viewport) gave it the mobile tabs.
+>
+> **Step 5's data walkthrough could not be run.** The API returns `401: Authentication required`, so every view renders its empty state. Verifying Required Actions → Review for a document / proposed revision / approved revision / paused incident, the quarantine toggles, replay and apply, export, and project switching all need a signed-in session. Signing in is the user's to do — these paths are covered by the 35 automated tests (including the `53ae02a9d` proposed-route regression and the payload-identity pins), but they have not been exercised against live data.
+>
+> **Also worth noting:** `next dev --turbopack` cannot build this repo on Windows — `Module not found: ... node_modules/yjs/dist/yjs.mjs — windows imports are not implemented yet`. It blocks every route and has nothing to do with codesite. The webpack bundler builds fine; `.claude/launch.json` has a `synthi-webpack` entry for it.
+>
+> **Dead code found, deliberately left alone** (per the standing "mention it, don't delete it"): `MetricRow`, `SignalBar`, `MetricsGroup`, and `AssumptionInvalidatorPanel` render zero times both before and after this work. `AssumptionInvalidatorPanel` owns `codesite-assumption-invalidator`, so the baseline protects a test id that never renders.
 
 **Files:** none modified.
 
-- [ ] **Step 1: Confirm every baseline test id survived**
+- [x] **Step 1: Confirm every baseline test id survived**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite/__tests__/testIdInvariant.test.js
@@ -1798,7 +1818,7 @@ cd synthi && npx vitest run src/components/codesite/__tests__/testIdInvariant.te
 
 Expected: `Tests 1 passed (1)`. This is the mechanical proof of "kept EVERY single functionality."
 
-- [ ] **Step 2: Confirm the full suite is green and grew**
+- [x] **Step 2: Confirm the full suite is green and grew**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -1806,7 +1826,7 @@ cd synthi && npx vitest run src/components/codesite
 
 Test count must be **higher** than the 8 you started with. A lower count means a test was deleted rather than migrated.
 
-- [ ] **Step 3: Check nothing outside codesite broke**
+- [x] **Step 3: Check nothing outside codesite broke**
 
 ```bash
 cd synthi && npx vitest run 2>&1 | tail -20
@@ -1818,7 +1838,7 @@ Compare against the pre-refactor result for the same command. `lib/` extraction 
 cd synthi && grep -rn "from.*codesite/CodeSitePanel" src/ --include=*.jsx --include=*.js | grep -v __tests__
 ```
 
-- [ ] **Step 4: Full hardcoded-values audit**
+- [x] **Step 4: Full hardcoded-values audit**
 
 Per the standing instruction, a full audit runs at the end of all slices, not just per-slice. This is a production-bound app.
 
@@ -1837,7 +1857,7 @@ Open the panel and visit all ten views. For each: it renders, its actions are pr
 - The quarantine path toggles, replay, and apply.
 - Export, refresh, and project switching from the shell header.
 
-- [ ] **Step 6: Report the graph is untouched**
+- [x] **Step 6: Report the graph is untouched**
 
 ```bash
 git diff 79ef2e48b..HEAD -- synthi/src/components/codesite/views/graph/
