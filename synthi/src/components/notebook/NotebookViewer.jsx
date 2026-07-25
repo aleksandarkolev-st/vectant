@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
+import DOMPurify from 'dompurify';
 import { AlertTriangle, Check, ChevronDown, Code2, FileText, Save } from 'lucide-react';
 import { parseNotebook, serializeNotebook } from '@/lib/jupyter/notebook';
 import { chooseSafeOutput, safeImageUrl } from '@/lib/jupyter/outputSafety';
@@ -18,8 +19,20 @@ function safeHref(value) {
   }
 }
 
+const NOTEBOOK_HTML_POLICY = {
+  ALLOWED_TAGS: ['a', 'abbr', 'b', 'blockquote', 'br', 'code', 'del', 'em', 'figcaption', 'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'li', 'ol', 'p', 'pre', 'span', 'strong', 'sub', 'sup', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul'],
+  ALLOWED_ATTR: ['alt', 'colspan', 'href', 'rowspan', 'src', 'title'],
+  ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|data:image\/(?:png|jpeg|gif|webp);base64,)/i,
+  FORBID_ATTR: ['class', 'id', 'style', 'target'],
+};
+
+function SafeNotebookHtml({ html }) {
+  const sanitized = useMemo(() => DOMPurify.sanitize(asText(html), NOTEBOOK_HTML_POLICY), [html]);
+  return <div className="notebook-markdown notebook-html" dangerouslySetInnerHTML={{ __html: sanitized }} />;
+}
+
 function MarkdownInline({ text }) {
-  const parts = asText(text).split(/(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*)/g);
+  const parts = asText(text).split(/(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|~~[^~]+~~|(?<!\w)\*[^*]+\*(?!\w)|(?<!\w)_[^_]+_(?!\w))/g);
   return parts.map((part, index) => {
     const link = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     if (link) {
@@ -28,6 +41,8 @@ function MarkdownInline({ text }) {
     }
     if (part.startsWith('`') && part.endsWith('`')) return <code key={index}>{part.slice(1, -1)}</code>;
     if (part.startsWith('**') && part.endsWith('**')) return <strong key={index}>{part.slice(2, -2)}</strong>;
+    if (part.startsWith('~~') && part.endsWith('~~')) return <del key={index}>{part.slice(2, -2)}</del>;
+    if ((part.startsWith('*') && part.endsWith('*')) || (part.startsWith('_') && part.endsWith('_'))) return <em key={index}>{part.slice(1, -1)}</em>;
     return <span key={index}>{part}</span>;
   });
 }
@@ -50,6 +65,18 @@ function SafeMarkdown({ value }) {
       const Tag = `h${heading[1].length}`;
       blocks.push(<Tag key={`heading-${index}`}><MarkdownInline text={heading[2]} /></Tag>); index += 1; continue;
     }
+    if (/^\s*</.test(line)) {
+      const html = [];
+      while (index < lines.length && lines[index].trim()) html.push(lines[index++]);
+      blocks.push(<SafeNotebookHtml html={html.join('\n')} key={`html-${index}`} />);
+      continue;
+    }
+    if (/^>\s?/.test(line)) {
+      const quote = [];
+      while (index < lines.length && /^>\s?/.test(lines[index])) quote.push(lines[index++].replace(/^>\s?/, ''));
+      blocks.push(<blockquote className="notebook-markdown-quote" key={`quote-${index}`}><SafeMarkdown value={quote.join('\n')} /></blockquote>);
+      continue;
+    }
     const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
     const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
     if (unordered || ordered) {
@@ -62,7 +89,9 @@ function SafeMarkdown({ value }) {
     }
     if (!line.trim()) { index += 1; continue; }
     const paragraph = [];
-    while (index < lines.length && lines[index].trim() && !/^(```|~~~|#{1,6}\s+|\s*[-*+]\s+|\s*\d+[.)]\s+)/.test(lines[index])) paragraph.push(lines[index++]);
+    blocks.push(<p key={`paragraph-${index}`}>{paragraph.map((part, partIndex) => <span key={partIndex}><MarkdownInline text={part} />{partIndex < paragraph.length - 1 && <br />}</span>)}</p>);
+    while (index < lines.length && lines[index].trim() && !/^(```|~~~|#{1,6}\s+|>\s?|\s*<)/.test(lines[index]) && !/^(\s*[-*+]\s+|\s*\d+[.)]\s+)/.test(lines[index])) paragraph.push(lines[index++]);
+    blocks.push(<p key={`paragraph-${index}`}>{paragraph.map((part, partIndex) => <span key={partIndex}><MarkdownInline text={part} />{partIndex < paragraph.length - 1 && <br />}</span>)}</p>);
     blocks.push(<p key={`paragraph-${index}`}>{paragraph.map((part, partIndex) => <span key={partIndex}><MarkdownInline text={part} />{partIndex < paragraph.length - 1 && <br />}</span>)}</p>);
   }
   return <div className="notebook-markdown">{blocks}</div>;
@@ -95,13 +124,13 @@ export default function NotebookViewer({ path, content, workspaceSlug = '', read
   const saveToServer = async () => { if (!serverId) return; setSyncMessage('Saving to Jupyter…'); try { const response = await fetch(`/api/workspace/${encodeURIComponent(workspaceSlug)}/jupyter/save`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ serverId, path, notebook, expectedServerRevision: serverRevision }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error === 'server_newer' ? 'Server copy changed. Reload it before saving.' : (result.detail || result.error)); setServerRevision(result.serverRevision); setSyncMessage('Jupyter copy saved.'); } catch (error) { setSyncMessage(`Save failed: ${error.message}`); } };
   return <section className="notebook-shell" aria-label={`Notebook ${path}`}>
     <header className="notebook-toolbar"><div><span className="notebook-eyebrow">Jupyter notebook</span><strong>{path.split('/').pop()}</strong></div><div className="notebook-toolbar-actions"><span>{notebook.cells.length} cells</span>{servers.length > 0 && <select aria-label="Jupyter server" value={serverId} onChange={(event) => { setServerId(event.target.value); setServerRevision(null); }}><option value="">Jupyter server</option>{servers.map((server) => <option value={server.id} key={server.id}>{server.name}</option>)}</select>}<button type="button" disabled={!serverId} onClick={syncFromServer}>Sync</button><button type="button" disabled={!serverId || readOnly} onClick={saveToServer}>Save to Jupyter</button><button type="button" onClick={attachSelection}><FileText size={15} /> Attach {selected.size ? `${selected.size} cells` : 'notebook'}</button>{onSave && !readOnly && <><button type="button" onClick={addCodeCell}><FileText size={15} /> Add code cell</button><button type="button" onClick={() => onSave(serializeNotebook(notebook))}><Save size={15} /> Save workspace</button></>}</div></header>
-    <div className="notebook-notice"><AlertTriangle size={14} /> Rendered notebook content is untrusted. Markdown is rendered as text and formatting only. Scripts, widgets, HTML, iframes, SVG, and remote embeds are blocked.</div>
+    <div className="notebook-notice"><AlertTriangle size={14} /> Rendered notebook content is untrusted. Document formatting, links, and images are sanitized before display. Scripts, widgets, iframes, SVG, styles, and active embeds are blocked.</div>
     {syncMessage && <p className="notebook-sync" role="status">{syncMessage}</p>}
     <div className="notebook-cells">{notebook.cells.map((cell, index) => { const active = selected.has(cell.id); return <article className={`notebook-cell ${active ? 'is-selected' : ''}`} key={cell.id}>
       <header><button type="button" aria-pressed={active} onClick={() => setSelected((current) => { const next = new Set(current); next.has(cell.id) ? next.delete(cell.id) : next.add(cell.id); return next; })}>{active ? <Check size={14} /> : <ChevronDown size={14} />} <span>Cell {index + 1}</span></button><span>{cell.cell_type}</span></header>
       {readOnly ? (cell.cell_type === 'markdown' ? <SafeMarkdown value={cell.source} /> : <pre className="notebook-source"><Code2 size={14} /><code>{cell.source}</code></pre>) : <textarea aria-label={`Edit cell ${index + 1}`} className="notebook-editor" value={cell.source} onChange={(event) => replaceCell(cell.id, event.target.value)} spellCheck={false} />}
       {cell.cell_type === 'code' && cell.outputs?.map((output, outputIndex) => <SafeOutput output={output} key={outputIndex} />)}
     </article>; })}</div>
-    <style jsx>{`.notebook-shell{height:100%;overflow:auto;background:var(--bg-editor);color:var(--text-primary);font:13px/1.5 system-ui,sans-serif}.notebook-toolbar{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--border-medium);background:var(--bg-sidebar)}.notebook-toolbar strong{display:block}.notebook-eyebrow{display:block;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}.notebook-toolbar-actions{display:flex;gap:8px;align-items:center;color:var(--text-secondary);flex-wrap:wrap}.notebook-toolbar button,.notebook-toolbar select{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--border-medium);border-radius:5px;background:transparent;color:inherit;padding:6px 9px}.notebook-notice{display:flex;gap:8px;align-items:center;margin:16px auto;max-width:980px;padding:9px 12px;border:1px solid color-mix(in srgb,#d39235 34%,var(--border-medium));color:var(--text-secondary);background:color-mix(in srgb,#d39235 8%,transparent)}.notebook-sync{max-width:980px;margin:0 auto 8px;padding:0 12px;color:var(--text-secondary)}.notebook-cells{max-width:980px;margin:0 auto;padding:0 20px 48px}.notebook-cell{margin:12px 0;border:1px solid var(--border-medium);border-radius:6px;overflow:hidden}.notebook-cell.is-selected{outline:2px solid color-mix(in srgb,var(--accent-primary) 65%,transparent);outline-offset:1px}.notebook-cell>header{display:flex;justify-content:space-between;padding:6px 10px;background:var(--bg-sidebar);color:var(--text-muted);font-size:11px}.notebook-cell>header button{display:flex;align-items:center;gap:6px;border:0;background:transparent;color:inherit;padding:0}.notebook-source,.notebook-output,.notebook-error{margin:0;padding:14px;white-space:pre-wrap;overflow:auto;background:color-mix(in srgb,var(--bg-editor) 86%,#111)}.notebook-source{display:flex;gap:9px}.notebook-editor{width:100%;min-height:120px;resize:vertical;border:0;padding:14px;background:color-mix(in srgb,var(--bg-editor) 86%,#111);color:var(--text-primary);font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.notebook-error{color:#f19797;background:color-mix(in srgb,#a73b3b 16%,var(--bg-editor))}.notebook-markdown{padding:16px;max-width:75ch}.notebook-markdown :global(h1),.notebook-markdown :global(h2){margin-top:0}.notebook-markdown :global(p){margin:0 0 10px}.notebook-markdown :global(ul),.notebook-markdown :global(ol){margin:0 0 10px;padding-left:22px}.notebook-markdown :global(a){color:var(--accent-primary);text-decoration:underline;text-underline-offset:2px}.notebook-markdown :global(code){padding:1px 4px;border-radius:3px;background:color-mix(in srgb,var(--bg-sidebar) 86%,#111);font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.notebook-markdown-code{margin:0 0 12px;padding:12px;overflow:auto;background:color-mix(in srgb,var(--bg-editor) 86%,#111);border:1px solid var(--border-medium);border-radius:4px;white-space:pre}.notebook-image{display:block;max-width:min(100%,900px);height:auto;padding:12px}.notebook-muted{padding:0 14px;color:var(--text-muted)}@media(max-width:700px){.notebook-toolbar{padding:10px 12px}.notebook-cells{padding:0 10px 30px}.notebook-toolbar-actions span{display:none}}`}</style>
+    <style jsx>{`.notebook-shell{height:100%;overflow:auto;background:var(--bg-editor);color:var(--text-primary);font:13px/1.5 system-ui,sans-serif}.notebook-toolbar{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--border-medium);background:var(--bg-sidebar)}.notebook-toolbar strong{display:block}.notebook-eyebrow{display:block;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}.notebook-toolbar-actions{display:flex;gap:8px;align-items:center;color:var(--text-secondary);flex-wrap:wrap}.notebook-toolbar button,.notebook-toolbar select{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--border-medium);border-radius:5px;background:transparent;color:inherit;padding:6px 9px}.notebook-notice{display:flex;gap:8px;align-items:center;margin:16px auto;max-width:980px;padding:9px 12px;border:1px solid color-mix(in srgb,#d39235 34%,var(--border-medium));color:var(--text-secondary);background:color-mix(in srgb,#d39235 8%,transparent)}.notebook-sync{max-width:980px;margin:0 auto 8px;padding:0 12px;color:var(--text-secondary)}.notebook-cells{max-width:980px;margin:0 auto;padding:0 20px 48px}.notebook-cell{margin:12px 0;border:1px solid var(--border-medium);border-radius:6px;overflow:hidden}.notebook-cell.is-selected{outline:2px solid color-mix(in srgb,var(--accent-primary) 65%,transparent);outline-offset:1px}.notebook-cell>header{display:flex;justify-content:space-between;padding:6px 10px;background:var(--bg-sidebar);color:var(--text-muted);font-size:11px}.notebook-cell>header button{display:flex;align-items:center;gap:6px;border:0;background:transparent;color:inherit;padding:0}.notebook-source,.notebook-output,.notebook-error{margin:0;padding:14px;white-space:pre-wrap;overflow:auto;background:color-mix(in srgb,var(--bg-editor) 86%,#111)}.notebook-source{display:flex;gap:9px}.notebook-editor{width:100%;min-height:120px;resize:vertical;border:0;padding:14px;background:color-mix(in srgb,var(--bg-editor) 86%,#111);color:var(--text-primary);font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.notebook-error{color:#f19797;background:color-mix(in srgb,#a73b3b 16%,var(--bg-editor))}.notebook-markdown{padding:16px;max-width:75ch}.notebook-markdown :global(h1),.notebook-markdown :global(h2){margin-top:0}.notebook-markdown :global(p){margin:0 0 10px}.notebook-markdown :global(ul),.notebook-markdown :global(ol){margin:0 0 10px;padding-left:22px}.notebook-markdown :global(a){color:var(--accent-primary);text-decoration:underline;text-underline-offset:2px}.notebook-markdown :global(img){display:block;max-width:100%;height:auto;margin:6px 0}.notebook-markdown :global(code){padding:1px 4px;border-radius:3px;background:color-mix(in srgb,var(--bg-sidebar) 86%,#111);font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.notebook-markdown-code{margin:0 0 12px;padding:12px;overflow:auto;background:color-mix(in srgb,var(--bg-editor) 86%,#111);border:1px solid var(--border-medium);border-radius:4px;white-space:pre}.notebook-markdown-quote{margin:0 0 12px;padding:4px 0 4px 14px;border-inline-start:2px solid var(--border-medium);color:var(--text-secondary)}.notebook-html{padding-top:6px;padding-bottom:6px}.notebook-image{display:block;max-width:min(100%,900px);height:auto;padding:12px}.notebook-muted{padding:0 14px;color:var(--text-muted)}@media(max-width:700px){.notebook-toolbar{padding:10px 12px}.notebook-cells{padding:0 10px 30px}.notebook-toolbar-actions span{display:none}}`}</style>
   </section>;
 }
