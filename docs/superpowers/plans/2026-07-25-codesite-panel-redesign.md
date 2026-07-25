@@ -910,7 +910,43 @@ Tests now navigate before asserting. The whole-panel test is split per view with
 every assertion preserved."
 ```
 
-## Task 9: Rewrite `handleRequiredActionReview` as state
+## Task 9: Rewrite `handleRequiredActionReview` as state — ✅ COMPLETE
+
+Landed in `df0978e97` (builder extraction) and `260b15759` (state rewrite).
+18 → 24 tests, all green; **both required-action tests passed with zero edits**,
+verified non-vacuous by a negative control (stubbing the resolver to return null
+fails exactly those two). `findGovernanceEntityRow` is gone; eslint clean.
+
+Deviations from the steps as written, all verified and kept:
+
+- **Step 1's `DATA` fixture was wrong for the mayday case.** It gave the run an
+  `incidentId`, but `maydayResumeInspectionRefs` never reads that — it matches on
+  affected-zone/changed-path overlap or a shared evidence ref. As written the
+  first mayday assertion could not pass. The fixture now gives the incident and
+  the run a shared `evidenceRefs` entry, which keeps the second half of the
+  assertion (`inspectionRuns: []` → `null`) meaningful.
+- **`governanceReviewCandidates` uses `actionKind`/`actionEntityId`** from
+  `lib/governance`, not the plan's inline `String(action.kind || "")` and
+  `action.entity || action.entityId`. Those are the exact expressions the old
+  handler evaluated; the plan's versions silently drop `action.type`, string
+  actions, lowercasing, and the `eventId`/`id` fallbacks.
+- **Step 3's `documentReviewAction` was correct** — diffed field by field against
+  both the approve literal (4843) and the reject literal (4866). `title`,
+  `severity`, `owner`, `entity`, `evidenceRefs` and `execute` all reproduce.
+  `compact` is imported by the plan's snippet but unused, so it was dropped.
+- **`handleRequiredActionReview` moved down the file**, below the `documents` /
+  `routeRevisions` / `openMaydays` / `inspectionRuns` consts it now closes over.
+  Left where it was it would have hit a TDZ error on the first render.
+- **A second intentional divergence beyond the `acting` one**: the old "nothing
+  actionable" fallback scrolled the console into view and focused it. The
+  resolver returns `null` there and nothing happens, because since Task 8 the
+  console *is* the top of the freshly mounted Governance view. Same reasoning
+  that retired the scroll anchors in `62fef9bb2`.
+
+One latent issue left alone: `data-codesite-document-id`,
+`data-codesite-route-revision-id` and `data-codesite-mayday-id` now have no
+readers anywhere in the repo — `findGovernanceEntityRow` was their only consumer.
+Step 9 said to keep them, so they were kept.
 
 **Files:**
 - Create: `synthi/src/components/codesite/lib/governanceActions.js`
@@ -933,7 +969,7 @@ Keeping it working is therefore not sufficient justification to leave it: the fa
 
 **The elegant constraint.** The payload passed to `queueGovernanceAction` is currently built inline in `GovernanceConsole`'s JSX — a distinct literal per button. If the pending-target path builds its own copy, the two will drift, and "behaves identically" becomes unverifiable by inspection. So extract the payload builders first and have **both** paths call the same builder. That is what makes this a rewrite rather than a reimplementation.
 
-- [ ] **Step 1: Write the failing test for the resolver**
+- [x] **Step 1: Write the failing test for the resolver**
 
 Create `synthi/src/components/codesite/lib/__tests__/governanceActions.test.js`:
 
@@ -994,7 +1030,7 @@ describe('resolveGovernanceReviewTarget', () => {
 
 The apply-vs-review pair encodes the bug fixed in commit `53ae02a9d`: apply is preferred, but a `proposed` revision resolves to `review` rather than falling through to nothing.
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite/lib/__tests__/governanceActions.test.js
@@ -1002,7 +1038,7 @@ cd synthi && npx vitest run src/components/codesite/lib/__tests__/governanceActi
 
 Expected: FAIL — `Failed to resolve import "../governanceActions"`.
 
-- [ ] **Step 3: Write `lib/governanceActions.js`**
+- [x] **Step 3: Write `lib/governanceActions.js`**
 
 ```js
 import { asArray, compact, productCopy, uniqueValues } from "./format";
@@ -1158,7 +1194,7 @@ export function resolveGovernanceReviewTarget(action, data = {}) {
 
 Note the deliberate divergence from the original, which must be recorded in the commit message: the old code treated the global `acting`/`disabled` mutex as making every candidate unactionable, because it read the buttons' `disabled` attribute — so mid-mutation the Review button scrolled instead of opening the gate. The resolver above ignores `acting`, because the gate's own confirm button is independently disabled while a mutation is in flight. The gate opening during a mutation is correct; silently scrolling was not.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite/lib/__tests__/governanceActions.test.js
@@ -1166,7 +1202,7 @@ cd synthi && npx vitest run src/components/codesite/lib/__tests__/governanceActi
 
 Expected: `Tests 6 passed (6)`.
 
-- [ ] **Step 5: Point `GovernanceConsole`'s buttons at the builders**
+- [x] **Step 5: Point `GovernanceConsole`'s buttons at the builders**
 
 Replace each inline `queueGovernanceAction({...})` literal with a builder call. The five sites, at their post-Task-5 locations in `views/governance/GovernanceConsole.jsx`:
 
@@ -1201,7 +1237,7 @@ Leave every `disabled` expression, `title`, `testId` and child exactly as-is. On
 
 Before trusting this, diff the reject builder against the original literal at 4866–4880 — the plan's `documentReviewAction` folds approve and reject into one function using the `decision` argument, and its `severity` ternary must reproduce both cases exactly (`approved` → `blocking ? high : medium`; `rejected` → always `high`). Verify the original reject payload's `title` really is `Reject ${documentLabel(document)}` before relying on it.
 
-- [ ] **Step 6: Verify the console still behaves identically**
+- [x] **Step 6: Verify the console still behaves identically**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -1209,7 +1245,7 @@ cd synthi && npx vitest run src/components/codesite
 
 Expected: all green. The existing tests already assert the resulting client calls (`reviewCodeSiteDocument`, `reviewCodeSiteRouteRevision` with `route-rev-1`, `applyCodeSiteRouteRevision` with `route-rev-2`), so a drifted payload shows up here.
 
-- [ ] **Step 7: Commit the extraction separately**
+- [x] **Step 7: Commit the extraction separately**
 
 ```bash
 git add synthi/src/components/codesite/lib/governanceActions.js \
@@ -1227,7 +1263,7 @@ should the review gate open on', replacing a DOM walk. Unit-tested including the
 proposed-vs-approved route case that commit 53ae02a9d fixed."
 ```
 
-- [ ] **Step 8: Replace the handler with a pending target**
+- [x] **Step 8: Replace the handler with a pending target**
 
 In `CodeSitePanel.jsx`, delete `handleRequiredActionReview` (the `window.setTimeout` + `querySelector` + `.click()` block) and `findGovernanceEntityRow`, which was left behind by Task 2 Step 2 for exactly this moment. Replace with:
 
@@ -1252,7 +1288,7 @@ const handleRequiredActionReview = useCallback(
 
 Pass `pendingReviewTarget` and `onPendingReviewTargetConsumed={() => setPendingReviewTarget(null)}` into `GovernanceView`, and through to `GovernanceConsole`.
 
-- [ ] **Step 9: Consume the target in `GovernanceConsole`**
+- [x] **Step 9: Consume the target in `GovernanceConsole`**
 
 `pendingReview` state already lives inside `GovernanceConsole` (formerly line 4642) and drives `GovernanceReviewGate`. Open it from the descriptor on mount:
 
@@ -1307,7 +1343,7 @@ That requires the rows to carry the attribute. The row elements already have `da
 cd synthi && grep -rn "data-codesite-document-id\|data-codesite-route-revision-id\|data-codesite-mayday-id" src/
 ```
 
-- [ ] **Step 10: Verify both required-action tests pass unchanged**
+- [x] **Step 10: Verify both required-action tests pass unchanged**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -1315,7 +1351,7 @@ cd synthi && npx vitest run src/components/codesite
 
 Expected: all green, **including the two required-action tests with no edits to them.** Those tests assert observable behavior — gate opens, correct client call on confirm — so passing them without modification is the evidence that the rewrite preserved behavior. If you find yourself editing them, stop: the rewrite changed behavior.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add synthi/src/components/codesite
