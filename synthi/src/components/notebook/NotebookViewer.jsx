@@ -1,10 +1,72 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
-import DOMPurify from 'dompurify';
 import { AlertTriangle, Check, ChevronDown, Code2, FileText, Save } from 'lucide-react';
 import { parseNotebook, serializeNotebook } from '@/lib/jupyter/notebook';
 import { chooseSafeOutput, safeImageUrl } from '@/lib/jupyter/outputSafety';
 import { serializeNotebookContext } from '@/context/notebook/serializeNotebookContext';
+
+function asText(value) {
+  return Array.isArray(value) ? value.join('') : String(value ?? '');
+}
+
+function safeHref(value) {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:', 'mailto:'].includes(url.protocol) ? url.href : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function MarkdownInline({ text }) {
+  const parts = asText(text).split(/(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*)/g);
+  return parts.map((part, index) => {
+    const link = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    if (link) {
+      const href = safeHref(link[2]);
+      return href ? <a key={index} href={href} target="_blank" rel="noopener noreferrer">{link[1]}</a> : <span key={index}>{link[1]}</span>;
+    }
+    if (part.startsWith('`') && part.endsWith('`')) return <code key={index}>{part.slice(1, -1)}</code>;
+    if (part.startsWith('**') && part.endsWith('**')) return <strong key={index}>{part.slice(2, -2)}</strong>;
+    return <span key={index}>{part}</span>;
+  });
+}
+
+function SafeMarkdown({ value }) {
+  const lines = asText(value).replace(/\r\n?/g, '\n').split('\n');
+  const blocks = [];
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    const fence = line.match(/^(```|~~~)\s*([^\s]*)/);
+    if (fence) {
+      const code = []; const marker = fence[1]; index += 1;
+      while (index < lines.length && !lines[index].startsWith(marker)) code.push(lines[index++]);
+      if (index < lines.length) index += 1;
+      blocks.push(<pre className="notebook-markdown-code" key={`code-${index}`}><code>{code.join('\n')}</code></pre>);
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      const Tag = `h${heading[1].length}`;
+      blocks.push(<Tag key={`heading-${index}`}><MarkdownInline text={heading[2]} /></Tag>); index += 1; continue;
+    }
+    const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
+    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (unordered || ordered) {
+      const orderedList = Boolean(ordered); const items = [];
+      const matcher = orderedList ? /^\s*\d+[.)]\s+(.+)$/ : /^\s*[-*+]\s+(.+)$/;
+      while (index < lines.length && matcher.test(lines[index])) items.push(lines[index++].match(matcher)[1]);
+      const List = orderedList ? 'ol' : 'ul';
+      blocks.push(<List key={`list-${index}`}>{items.map((item, itemIndex) => <li key={itemIndex}><MarkdownInline text={item} /></li>)}</List>);
+      continue;
+    }
+    if (!line.trim()) { index += 1; continue; }
+    const paragraph = [];
+    while (index < lines.length && lines[index].trim() && !/^(```|~~~|#{1,6}\s+|\s*[-*+]\s+|\s*\d+[.)]\s+)/.test(lines[index])) paragraph.push(lines[index++]);
+    blocks.push(<p key={`paragraph-${index}`}>{paragraph.map((part, partIndex) => <span key={partIndex}><MarkdownInline text={part} />{partIndex < paragraph.length - 1 && <br />}</span>)}</p>);
+  }
+  return <div className="notebook-markdown">{blocks}</div>;
+}
 
 function SafeOutput({ output }) {
   if (output.output_type === 'error') return <pre className="notebook-error">{[output.ename, output.evalue, ...(output.traceback || [])].filter(Boolean).join('\n')}</pre>;
@@ -13,7 +75,7 @@ function SafeOutput({ output }) {
   if (!candidate) return text ? <pre className="notebook-output">{Array.isArray(text) ? text.join('') : text}</pre> : null;
   if (candidate.mime.startsWith('image/')) { const src = safeImageUrl(candidate.mime, candidate.value); return src ? <img className="notebook-image" src={src} alt="Notebook output" /> : <p className="notebook-muted">Image output exceeds the safe preview limit.</p>; }
   if (candidate.mime === 'application/json') return <pre className="notebook-output">{typeof text === 'string' ? text : JSON.stringify(text, null, 2)}</pre>;
-  if (candidate.mime === 'text/markdown') return <div className="notebook-markdown" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(String(text), { USE_PROFILES: { html: true }, FORBID_TAGS: ['style', 'iframe', 'script', 'svg'] }) }} />;
+  if (candidate.mime === 'text/markdown') return <SafeMarkdown value={text} />;
   return <pre className="notebook-output">{String(text)}</pre>;
 }
 
@@ -33,13 +95,13 @@ export default function NotebookViewer({ path, content, workspaceSlug = '', read
   const saveToServer = async () => { if (!serverId) return; setSyncMessage('Saving to Jupyter…'); try { const response = await fetch(`/api/workspace/${encodeURIComponent(workspaceSlug)}/jupyter/save`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ serverId, path, notebook, expectedServerRevision: serverRevision }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error === 'server_newer' ? 'Server copy changed. Reload it before saving.' : (result.detail || result.error)); setServerRevision(result.serverRevision); setSyncMessage('Jupyter copy saved.'); } catch (error) { setSyncMessage(`Save failed: ${error.message}`); } };
   return <section className="notebook-shell" aria-label={`Notebook ${path}`}>
     <header className="notebook-toolbar"><div><span className="notebook-eyebrow">Jupyter notebook</span><strong>{path.split('/').pop()}</strong></div><div className="notebook-toolbar-actions"><span>{notebook.cells.length} cells</span>{servers.length > 0 && <select aria-label="Jupyter server" value={serverId} onChange={(event) => { setServerId(event.target.value); setServerRevision(null); }}><option value="">Jupyter server</option>{servers.map((server) => <option value={server.id} key={server.id}>{server.name}</option>)}</select>}<button type="button" disabled={!serverId} onClick={syncFromServer}>Sync</button><button type="button" disabled={!serverId || readOnly} onClick={saveToServer}>Save to Jupyter</button><button type="button" onClick={attachSelection}><FileText size={15} /> Attach {selected.size ? `${selected.size} cells` : 'notebook'}</button>{onSave && !readOnly && <><button type="button" onClick={addCodeCell}><FileText size={15} /> Add code cell</button><button type="button" onClick={() => onSave(serializeNotebook(notebook))}><Save size={15} /> Save workspace</button></>}</div></header>
-    <div className="notebook-notice"><AlertTriangle size={14} /> Rendered notebook content is untrusted. Scripts, widgets, iframes, SVG, and remote embeds are blocked.</div>
+    <div className="notebook-notice"><AlertTriangle size={14} /> Rendered notebook content is untrusted. Markdown is rendered as text and formatting only. Scripts, widgets, HTML, iframes, SVG, and remote embeds are blocked.</div>
     {syncMessage && <p className="notebook-sync" role="status">{syncMessage}</p>}
     <div className="notebook-cells">{notebook.cells.map((cell, index) => { const active = selected.has(cell.id); return <article className={`notebook-cell ${active ? 'is-selected' : ''}`} key={cell.id}>
       <header><button type="button" aria-pressed={active} onClick={() => setSelected((current) => { const next = new Set(current); next.has(cell.id) ? next.delete(cell.id) : next.add(cell.id); return next; })}>{active ? <Check size={14} /> : <ChevronDown size={14} />} <span>Cell {index + 1}</span></button><span>{cell.cell_type}</span></header>
-      {readOnly ? (cell.cell_type === 'markdown' ? <div className="notebook-markdown" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(cell.source, { USE_PROFILES: { html: true }, FORBID_TAGS: ['style', 'iframe', 'script', 'svg'] }) }} /> : <pre className="notebook-source"><Code2 size={14} /><code>{cell.source}</code></pre>) : <textarea aria-label={`Edit cell ${index + 1}`} className="notebook-editor" value={cell.source} onChange={(event) => replaceCell(cell.id, event.target.value)} spellCheck={false} />}
+      {readOnly ? (cell.cell_type === 'markdown' ? <SafeMarkdown value={cell.source} /> : <pre className="notebook-source"><Code2 size={14} /><code>{cell.source}</code></pre>) : <textarea aria-label={`Edit cell ${index + 1}`} className="notebook-editor" value={cell.source} onChange={(event) => replaceCell(cell.id, event.target.value)} spellCheck={false} />}
       {cell.cell_type === 'code' && cell.outputs?.map((output, outputIndex) => <SafeOutput output={output} key={outputIndex} />)}
     </article>; })}</div>
-    <style jsx>{`.notebook-shell{height:100%;overflow:auto;background:var(--bg-editor);color:var(--text-primary);font:13px/1.5 system-ui,sans-serif}.notebook-toolbar{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--border-medium);background:var(--bg-sidebar)}.notebook-toolbar strong{display:block}.notebook-eyebrow{display:block;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}.notebook-toolbar-actions{display:flex;gap:8px;align-items:center;color:var(--text-secondary);flex-wrap:wrap}.notebook-toolbar button,.notebook-toolbar select{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--border-medium);border-radius:5px;background:transparent;color:inherit;padding:6px 9px}.notebook-notice{display:flex;gap:8px;align-items:center;margin:16px auto;max-width:980px;padding:9px 12px;border:1px solid color-mix(in srgb,#d39235 34%,var(--border-medium));color:var(--text-secondary);background:color-mix(in srgb,#d39235 8%,transparent)}.notebook-sync{max-width:980px;margin:0 auto 8px;padding:0 12px;color:var(--text-secondary)}.notebook-cells{max-width:980px;margin:0 auto;padding:0 20px 48px}.notebook-cell{margin:12px 0;border:1px solid var(--border-medium);border-radius:6px;overflow:hidden}.notebook-cell.is-selected{outline:2px solid color-mix(in srgb,var(--accent-primary) 65%,transparent);outline-offset:1px}.notebook-cell>header{display:flex;justify-content:space-between;padding:6px 10px;background:var(--bg-sidebar);color:var(--text-muted);font-size:11px}.notebook-cell>header button{display:flex;align-items:center;gap:6px;border:0;background:transparent;color:inherit;padding:0}.notebook-source,.notebook-output,.notebook-error{margin:0;padding:14px;white-space:pre-wrap;overflow:auto;background:color-mix(in srgb,var(--bg-editor) 86%,#111)}.notebook-source{display:flex;gap:9px}.notebook-editor{width:100%;min-height:120px;resize:vertical;border:0;padding:14px;background:color-mix(in srgb,var(--bg-editor) 86%,#111);color:var(--text-primary);font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.notebook-error{color:#f19797;background:color-mix(in srgb,#a73b3b 16%,var(--bg-editor))}.notebook-markdown{padding:16px;max-width:75ch}.notebook-markdown :global(h1),.notebook-markdown :global(h2){margin-top:0}.notebook-image{display:block;max-width:min(100%,900px);height:auto;padding:12px}.notebook-muted{padding:0 14px;color:var(--text-muted)}@media(max-width:700px){.notebook-toolbar{padding:10px 12px}.notebook-cells{padding:0 10px 30px}.notebook-toolbar-actions span{display:none}}`}</style>
+    <style jsx>{`.notebook-shell{height:100%;overflow:auto;background:var(--bg-editor);color:var(--text-primary);font:13px/1.5 system-ui,sans-serif}.notebook-toolbar{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--border-medium);background:var(--bg-sidebar)}.notebook-toolbar strong{display:block}.notebook-eyebrow{display:block;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}.notebook-toolbar-actions{display:flex;gap:8px;align-items:center;color:var(--text-secondary);flex-wrap:wrap}.notebook-toolbar button,.notebook-toolbar select{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--border-medium);border-radius:5px;background:transparent;color:inherit;padding:6px 9px}.notebook-notice{display:flex;gap:8px;align-items:center;margin:16px auto;max-width:980px;padding:9px 12px;border:1px solid color-mix(in srgb,#d39235 34%,var(--border-medium));color:var(--text-secondary);background:color-mix(in srgb,#d39235 8%,transparent)}.notebook-sync{max-width:980px;margin:0 auto 8px;padding:0 12px;color:var(--text-secondary)}.notebook-cells{max-width:980px;margin:0 auto;padding:0 20px 48px}.notebook-cell{margin:12px 0;border:1px solid var(--border-medium);border-radius:6px;overflow:hidden}.notebook-cell.is-selected{outline:2px solid color-mix(in srgb,var(--accent-primary) 65%,transparent);outline-offset:1px}.notebook-cell>header{display:flex;justify-content:space-between;padding:6px 10px;background:var(--bg-sidebar);color:var(--text-muted);font-size:11px}.notebook-cell>header button{display:flex;align-items:center;gap:6px;border:0;background:transparent;color:inherit;padding:0}.notebook-source,.notebook-output,.notebook-error{margin:0;padding:14px;white-space:pre-wrap;overflow:auto;background:color-mix(in srgb,var(--bg-editor) 86%,#111)}.notebook-source{display:flex;gap:9px}.notebook-editor{width:100%;min-height:120px;resize:vertical;border:0;padding:14px;background:color-mix(in srgb,var(--bg-editor) 86%,#111);color:var(--text-primary);font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.notebook-error{color:#f19797;background:color-mix(in srgb,#a73b3b 16%,var(--bg-editor))}.notebook-markdown{padding:16px;max-width:75ch}.notebook-markdown :global(h1),.notebook-markdown :global(h2){margin-top:0}.notebook-markdown :global(p){margin:0 0 10px}.notebook-markdown :global(ul),.notebook-markdown :global(ol){margin:0 0 10px;padding-left:22px}.notebook-markdown :global(a){color:var(--accent-primary);text-decoration:underline;text-underline-offset:2px}.notebook-markdown :global(code){padding:1px 4px;border-radius:3px;background:color-mix(in srgb,var(--bg-sidebar) 86%,#111);font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.notebook-markdown-code{margin:0 0 12px;padding:12px;overflow:auto;background:color-mix(in srgb,var(--bg-editor) 86%,#111);border:1px solid var(--border-medium);border-radius:4px;white-space:pre}.notebook-image{display:block;max-width:min(100%,900px);height:auto;padding:12px}.notebook-muted{padding:0 14px;color:var(--text-muted)}@media(max-width:700px){.notebook-toolbar{padding:10px 12px}.notebook-cells{padding:0 10px 30px}.notebook-toolbar-actions span{display:none}}`}</style>
   </section>;
 }
