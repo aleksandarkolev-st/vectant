@@ -1,8 +1,7 @@
 import { CodeSiteIcons } from "../icons";
 import { compact, productCopy, riskTone, toneLabel } from "../lib/format";
-import { documentNeedsReview, routeRevisionCanReview } from "../lib/governance";
 import { displayZoneName, zonePaths, zoneTierLabel } from "../lib/graph";
-import { EmptyLine, Metric, OperatorPane, PathList, Pill, Row, Section } from "../ui";
+import { EmptyLine, OperatorPane, PathList, Pill, Row, Section } from "../ui";
 import ScopeTopology from "./graph/ScopeTopology";
 
 export default function GraphView({
@@ -40,68 +39,6 @@ export default function GraphView({
           />
         </OperatorPane>
 
-        <div
-          data-testid="codesite-metric-rail"
-          className="grid grid-cols-[repeat(auto-fit,minmax(126px,1fr))] gap-2"
-        >
-          <Metric
-            label="Workstreams"
-            value={counts.activeFlights}
-            testId="codesite-metric-flights"
-            icon={CodeSiteIcons.agents}
-          />
-          <Metric
-            label="Path locks"
-            value={counts.activeMutationLeases}
-            icon={CodeSiteIcons.pathLocks}
-          />
-          <Metric
-            label="Transactions"
-            value={counts.activeTransactions}
-            icon={CodeSiteIcons.transactions}
-          />
-          <Metric
-            label="Actions"
-            value={counts.requiredActions}
-            tone={
-              counts.requiredActions ? "high" : "low"
-            }
-            icon={CodeSiteIcons.actions}
-          />
-          <Metric
-            label="Conflict"
-            value={compact(collisionForecast.riskLevel, "unknown")}
-            tone={collisionForecast.riskLevel}
-            icon={CodeSiteIcons.conflicts}
-          />
-          <Metric
-            label="Approvals"
-            value={permits.length}
-            tone={permits.length ? "active" : "idle"}
-            testId="codesite-metric-permits"
-            icon={CodeSiteIcons.approvals}
-          />
-          <Metric
-            label="Documents"
-            value={documents.length}
-            tone={
-              documents.filter(documentNeedsReview).length
-                ? "holding"
-                : "active"
-            }
-            icon={CodeSiteIcons.files}
-          />
-          <Metric
-            label="Plan changes"
-            value={routeRevisions.length}
-            tone={
-              routeRevisions.filter(routeRevisionCanReview).length
-                ? "holding"
-                : "idle"
-            }
-            icon={CodeSiteIcons.planChanges}
-          />
-        </div>
       </div>
 
       <Section

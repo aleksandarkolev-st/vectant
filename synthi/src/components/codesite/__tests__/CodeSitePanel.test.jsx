@@ -787,6 +787,8 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('ATLAS-1');
     expect(container.querySelector('[data-testid="codesite-responsive-proof-target"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="codesite-tower-now"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-metric-flights"]').textContent).toContain('1');
+    expect(container.querySelector('[data-testid="codesite-metric-permits"]').textContent).toContain('1');
     expect(container.querySelector('[data-testid="codesite-tower-now-clearance"]').textContent).toContain('1');
     expect(container.querySelector('[data-testid="codesite-tower-now-mayday"]').textContent).toContain('1');
     expect(container.querySelector('[data-testid="codesite-mobile-section-tabs"]')).toBeTruthy();
@@ -836,8 +838,6 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('API work scope');
     expect(container.textContent).toContain('write_overlap');
     expect(container.querySelector('[data-testid="codesite-scope-topology"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-metric-flights"]').textContent).toContain('1');
-    expect(container.querySelector('[data-testid="codesite-metric-permits"]').textContent).toContain('1');
   });
 
   it('renders the activity feed and audit log under the activity view', async () => {
