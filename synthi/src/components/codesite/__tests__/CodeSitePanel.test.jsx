@@ -815,7 +815,10 @@ describe('CodeSitePanel', () => {
       reviewRow.querySelector('[data-testid="codesite-quarantine-path-toggle"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
-    expect(notesRow.querySelector('[data-testid="codesite-quarantine-path-toggle"]').checked).toBe(false);
+    // The toggle is a <span> swatch inside the row; checkbox semantics live on
+    // the row button itself (role="checkbox" aria-checked), so assert there.
+    expect(reviewRow.getAttribute('aria-checked')).toBe('true');
+    expect(notesRow.getAttribute('aria-checked')).toBe('false');
     await act(async () => {
       container.querySelector('[data-testid="codesite-quarantine-replay-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
