@@ -1376,7 +1376,30 @@ gate opens and confirmation waits, which is what the control was always for.
 Both required-action tests pass without modification."
 ```
 
-## Task 10: Add the Overview view
+## Task 10: Add the Overview view — ✅ COMPLETE
+
+Landed in `6944ca6f8`, `e5f5c529c`. 32 tests green.
+
+Three errors in Step 3's code, all caught during implementation:
+
+- **`record.id` does not exist on quarantine records.** `normalizeQuarantineRecord`
+  canonicalises onto `quarantineId`; event-built records have no `.id`, so the
+  plan's key would have been `quarantine-undefined`.
+- **`Paused: ${productCopy(incident.category, "incident")}` renders "Paused: paused
+  incident"** — `productCopy` already rewrites `mayday`. Now matches the title
+  `maydayResumeAction` builds for the same incident.
+- **`Row` is a three-column grid**, not two. The plan's two-child body would have
+  crushed the label into the narrowest column.
+
+Also: the plan said to put the digest above `TowerNowStrip`, which placed it
+*below* the metric rail. Moved above the tiles in `e5f5c529c` — "what is waiting
+on me" has to precede the raw counts or it is buried.
+
+Hardcoded-values audit: the `slice(0, 5)` cap stays inline (16 other capped lists
+in `views/`, all inline literals with differing values; a shared constant would be
+a single-use abstraction matching nothing). Severity strings stay inline — they are
+`actionSeverity`'s output vocabulary. The plan's `compact(item.severity, "medium")`
+fallback was removed as unreachable.
 
 The landing view, and the answer to "someone opening it for the first time has no entry point."
 
@@ -1386,7 +1409,7 @@ The landing view, and the answer to "someone opening it for the first time has n
 
 Task 8 already created `OverviewView` holding the mission-control header, status rail, `TowerNowStrip` and `CodeSiteOperatingModel`. This task makes it a digest rather than the old top-of-page furniture.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```jsx
 it('surfaces required actions on the overview with a drill-in to governance', async () => {
@@ -1415,7 +1438,7 @@ it('surfaces required actions on the overview with a drill-in to governance', as
 });
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite -t "surfaces required actions on the overview"
@@ -1423,7 +1446,7 @@ cd synthi && npx vitest run src/components/codesite -t "surfaces required action
 
 Expected: FAIL — `codesite-overview-attention` does not exist.
 
-- [ ] **Step 3: Add the attention digest**
+- [x] **Step 3: Add the attention digest**
 
 In `views/OverviewView.jsx`, above the existing `TowerNowStrip`:
 
@@ -1483,7 +1506,7 @@ const attentionItems = useMemo(() => [
 
 `requiredActions`, `openMaydays` and `actionableQuarantineRecords` are all existing derived values in the shell — pass them into `OverviewView` rather than recomputing.
 
-- [ ] **Step 4: Verify, audit, commit**
+- [x] **Step 4: Verify, audit, commit**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
