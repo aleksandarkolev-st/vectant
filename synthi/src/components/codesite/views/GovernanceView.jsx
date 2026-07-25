@@ -32,6 +32,8 @@ export default function GovernanceView({
   disabled,
   requiredActions,
   onRequiredActionReview,
+  pendingReviewTarget,
+  onPendingReviewTargetConsumed,
 }) {
   return (
     <>
@@ -74,6 +76,8 @@ export default function GovernanceView({
             onResumeMayday={onResumeMayday}
             actionState={actionState}
             disabled={disabled}
+            pendingReviewTarget={pendingReviewTarget}
+            onPendingReviewTargetConsumed={onPendingReviewTargetConsumed}
             condensed
           />
         </OperatorPane>

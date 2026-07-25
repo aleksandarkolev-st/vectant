@@ -1,5 +1,5 @@
 import { EmptyLine, IconButton, PathList, Pill } from "../../ui";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { CheckCircle2 } from "lucide-react";
 import { asArray, compact, productCopy } from "../../lib/format";
@@ -26,6 +26,8 @@ export default function GovernanceConsole({
   actionState,
   disabled,
   inspectionRuns,
+  pendingReviewTarget = null,
+  onPendingReviewTargetConsumed = () => {},
   condensed = false,
 }) {
   const reduceMotion = useReducedMotion();
@@ -54,6 +56,53 @@ export default function GovernanceConsole({
     setReviewRationale("");
     return result;
   }, [pendingReview]);
+
+  // Open the gate on the row a required action pointed at. The dependency array
+  // is deliberately just [pendingReviewTarget]: including documents or
+  // routeRevisions would re-fire on every poll tick and reopen a gate the
+  // operator had cancelled. The consumed callback runs unconditionally so a
+  // stale descriptor cannot wedge the effect.
+  useEffect(() => {
+    if (!pendingReviewTarget) return;
+    const { entity, entityId, intent } = pendingReviewTarget;
+    let action = null;
+
+    if (entity === "document") {
+      const target = documents.find((row) => row.id === entityId);
+      if (target) {
+        action = documentReviewAction(target, "approved", { onReviewDocument });
+      }
+    } else if (entity === "routeRevision") {
+      const revision = routeRevisions.find((row) => row.id === entityId);
+      if (revision) {
+        action = intent === "apply"
+          ? routeApplyAction(revision, { onApplyRouteRevision })
+          : routeReviewAction(revision, { onReviewRouteRevision });
+      }
+    } else if (entity === "incident") {
+      const incident = maydayIncidents.find((row) => row.id === entityId);
+      if (incident) {
+        action = maydayResumeAction(
+          incident,
+          maydayResumeInspectionRefs(incident, inspectionRuns),
+          { onResumeMayday },
+        );
+      }
+    }
+
+    if (action) queueGovernanceAction(action);
+    onPendingReviewTargetConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingReviewTarget]);
+
+  // Presentational, and therefore the one piece of DOM interaction that stays
+  // here rather than moving into the resolver.
+  useEffect(() => {
+    if (!pendingReview?.entity) return;
+    document
+      .querySelector(`[data-codesite-governance-entity="${pendingReview.entity}"]`)
+      ?.scrollIntoView?.({ behavior: "auto", block: "nearest" });
+  }, [pendingReview?.entity]);
 
   return (
     <div
@@ -214,6 +263,7 @@ export default function GovernanceConsole({
                   key={document.id}
                   data-testid="codesite-document-row"
                   data-codesite-document-id={document.id || ""}
+                  data-codesite-governance-entity={document.id || ""}
                   className="rounded-md border px-2 py-2 text-xs"
                   style={{
                     borderColor:
@@ -379,6 +429,7 @@ export default function GovernanceConsole({
                     key={revision.id}
                     data-testid="codesite-route-revision-row"
                     data-codesite-route-revision-id={revision.id || ""}
+                    data-codesite-governance-entity={revision.id || ""}
                     className="rounded-md border px-2 py-2 text-xs"
                     style={{
                       borderColor:
@@ -510,6 +561,7 @@ export default function GovernanceConsole({
                     key={incident.id}
                     data-testid="codesite-ground-stop-row"
                     data-codesite-mayday-id={incident.id || ""}
+                    data-codesite-governance-entity={incident.id || ""}
                     className="mt-2 grid gap-2 rounded border px-2 py-1.5 text-xs sm:grid-cols-[minmax(0,1fr)_auto]"
                     style={{
                       borderColor: "var(--border-subtle)",

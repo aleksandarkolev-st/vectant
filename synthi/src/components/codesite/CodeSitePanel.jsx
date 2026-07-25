@@ -17,7 +17,8 @@ import {
   asArray, compact, inspectionRunRefs, latestCounterfactualSimulation,
   lineRange, pathCoversFile, toneLabel, uniqueByEvent, uniqueValues,
 } from "./lib/format";
-import { actionEntityId, actionKind, incidentNeedsResume } from "./lib/governance";
+import { incidentNeedsResume } from "./lib/governance";
+import { resolveGovernanceReviewTarget } from "./lib/governanceActions";
 import {
   mergeQuarantineRecords, quarantineRecordsFromEvents, selectedPathKey,
 } from "./lib/quarantine";
@@ -41,12 +42,6 @@ const VIEWS = {
 
 
 
-function findGovernanceEntityRow(attributeName, entityId) {
-  if (!entityId || typeof document === "undefined") return null;
-  return Array.from(document.querySelectorAll(`[${attributeName}]`)).find(
-    (element) => element.getAttribute(attributeName) === entityId,
-  );
-}
 
 
 
@@ -136,6 +131,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
     result: null,
     error: null,
   });
+  const [pendingReviewTarget, setPendingReviewTarget] = useState(null);
 
   const loadRadar = useCallback(
     async ({ silent = false, projectId = selectedProjectId } = {}) => {
@@ -211,69 +207,6 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const handleSelectSection = useCallback((sectionKey) => {
     setActiveSection(sectionKey);
   }, []);
-
-  const handleRequiredActionReview = useCallback(
-    (action) => {
-      handleSelectSection("governance");
-      const kind = actionKind(action);
-      const entityId = actionEntityId(action);
-      window.setTimeout(() => {
-        const candidates = [];
-        if (action?.documentId || /document|rfi|change_order/.test(kind)) {
-          const row = findGovernanceEntityRow(
-            "data-codesite-document-id",
-            action?.documentId || entityId,
-          );
-          const button = row?.querySelector(
-            '[data-testid="codesite-document-approve-button"]',
-          );
-          if (button) candidates.push(button);
-        }
-        if (action?.routeRevisionId || /route|reroute/.test(kind)) {
-          const row = findGovernanceEntityRow(
-            "data-codesite-route-revision-id",
-            action?.routeRevisionId || entityId,
-          );
-          // Both route buttons always render; only their disabled state differs,
-          // so `apply || review` always resolved to apply and left review
-          // unreachable. Offer both and let the disabled filter below choose —
-          // apply first, preserving the original preference.
-          const applyButton = row?.querySelector(
-            '[data-testid="codesite-route-apply-button"]',
-          );
-          const reviewButton = row?.querySelector(
-            '[data-testid="codesite-route-review-button"]',
-          );
-          if (applyButton) candidates.push(applyButton);
-          if (reviewButton) candidates.push(reviewButton);
-        }
-        if (action?.incidentId || /mayday|ground|resume/.test(kind)) {
-          const row = findGovernanceEntityRow(
-            "data-codesite-mayday-id",
-            action?.incidentId || entityId,
-          );
-          const button = row?.querySelector(
-            '[data-testid="codesite-resume-mayday-submit"]',
-          );
-          if (button) candidates.push(button);
-        }
-
-        const target = candidates.find((button) => !button.disabled);
-        if (target) {
-          target.focus({ preventScroll: true });
-          target.click();
-          return;
-        }
-
-        const console = document.querySelector(
-          '[data-testid="codesite-governance-console"]',
-        );
-        console?.scrollIntoView?.({ behavior: "auto", block: "start" });
-        console?.focus?.({ preventScroll: true });
-      }, 0);
-    },
-    [handleSelectSection],
-  );
 
   const handleCreateProject = useCallback(
     async (event) => {
@@ -524,6 +457,27 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const permits = asArray(currentProject?.permits);
   const routeRevisions = asArray(currentProject?.routeRevisions);
   const openMaydays = incidents.filter(incidentNeedsResume);
+
+  // Declared here rather than beside the other handlers because it reads the
+  // derived governance collections above.
+  const handleRequiredActionReview = useCallback(
+    (action) => {
+      setActiveSection("governance");
+      setPendingReviewTarget(
+        resolveGovernanceReviewTarget(action, {
+          documents,
+          routeRevisions,
+          openMaydays,
+          inspectionRuns,
+        }),
+      );
+    },
+    [documents, routeRevisions, openMaydays, inspectionRuns],
+  );
+  const handlePendingReviewTargetConsumed = useCallback(() => {
+    setPendingReviewTarget(null);
+  }, []);
+
   const counterfactualRuns = asArray(currentProject?.counterfactualRuns);
   const artifacts = asArray(radarState.artifactPreview?.files);
   const events = uniqueByEvent([
@@ -964,6 +918,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
     onApplyRouteRevision: handleApplyRouteRevision,
     onResumeMayday: handleResumeMayday,
     onRequiredActionReview: handleRequiredActionReview,
+    pendingReviewTarget,
+    onPendingReviewTargetConsumed: handlePendingReviewTargetConsumed,
     onSelectQuarantine: handleSelectQuarantine,
     onToggleQuarantinePath: handleToggleQuarantinePath,
     onReplayQuarantine: handleReplayQuarantine,
