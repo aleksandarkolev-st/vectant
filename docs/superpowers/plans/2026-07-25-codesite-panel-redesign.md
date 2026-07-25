@@ -1530,7 +1530,31 @@ drill-in that switches to the owning view."
 
 # Part C — Data flow and responsiveness
 
-## Task 11: Split core from per-view fetching
+## Task 11: Split core from per-view fetching — ✅ COMPLETE
+
+> **Outcome** (`fc3c84563`). 34 tests pass (was 32); no existing assertion edited.
+>
+> **Core vs per-view, from reading the consumers rather than the plan's guess:**
+>
+> | Request | Verdict | Evidence |
+> |---|---|---|
+> | `fetchCodeSiteProjects` | core | project switcher; `projects[0].id` resolves the default project id, so everything depends on it |
+> | `fetchCodeSiteProject` | core | `currentProject` feeds proof bundles, incidents, inspection runs, counterfactual runs → Overview, Replay, Inspections, Evidence |
+> | `fetchCodeSiteControlState` | core | every `counts.*` the Overview actually renders (`activeFlights`, `requiredActions`, `activeMutationLeases`, `activeTransactions`) plus required actions and `collisionForecast` |
+> | `fetchCodeSiteEvents` | core | Activity view's data; also seeds `quarantineRecordsFromEvents` |
+> | `fetchCodeSiteMetrics` | **per-view** (Evidence) | sole consumers `views/EvidenceView.jsx:26-37` |
+> | `fetchCodeSiteArtifactPreview` | **per-view** (Evidence) | sole consumers `views/EvidenceView.jsx:62-82`, plus `artifactContent` |
+> | `fetchCodeSiteQuarantines` ×N | **non-blocking, not per-view** — see below | |
+>
+> **Two plan corrections.** The plan listed core as "projects + project + controlState + counts". `counts` is not a request — it is derived inside `normalizeCodeSiteRadarState`; and `events` **is** core, which the plan did not classify.
+>
+> More importantly, the plan classified quarantines as per-view. That is wrong: `views/OverviewView.jsx:64-67` builds Needs Attention entries from `quarantineRecords` and `views/overview/TowerNowStrip.jsx:35` counts them. Gating the fan-out on the Quarantine view would have silently undercounted the digest added in `6944ca6f8`. So the fan-out runs on every core change; the win is that it no longer *blocks* first paint. Its two sibling merge inputs (`controlState.pendingQuarantines`, the event log) are core, so the list populates while it is in flight.
+>
+> Net: first paint 6+N requests / 3 waves → **1+3 / 2 waves**, and the poll driving the fan-out drops 5s → 30s.
+>
+> **SSE event mapping** (recorded next to `POLL_MS`): overview, radar, tower, governance, runway, quarantine, inspections, replay and simulator are each covered by at least one of the 36 streamed types. **Evidence is not** — no event announces a metrics recomputation or an artifact export — so it keeps a 5s poll on its own slice. `onEvent` now triggers a 400ms-debounced core refresh instead of only appending to the display list, which is what makes SSE primary rather than decorative.
+>
+> **Deviation:** no `state/useCodeSiteCore.js` was created. The change is ~30 lines of effects in the panel; extracting a hook for a single caller would be the speculative abstraction CLAUDE.md forbids. Per-view data lives in a `viewSlices` state object read as `viewSlices.x ?? radarState.x`, which is what stops a core refresh from wiping a loaded slice.
 
 **Files:**
 - Modify: `synthi/src/components/codesite/codesiteClient.js` (decompose only — no endpoint or shape changes)
@@ -1539,7 +1563,7 @@ drill-in that switches to the owning view."
 
 `fetchCodeSiteRadarState` (codesiteClient.js:344–400) fans out `5 + N` requests where N is the number of distinct transaction ids, every `POLL_MS = 5000`, and nothing paints until all of them resolve — including artifact previews and quarantines the user may never open.
 
-- [ ] **Step 1: Read the fan-out before changing it**
+- [x] **Step 1: Read the fan-out before changing it**
 
 ```bash
 cd synthi && sed -n '344,400p' src/components/codesite/codesiteClient.js
@@ -1547,7 +1571,7 @@ cd synthi && sed -n '344,400p' src/components/codesite/codesiteClient.js
 
 Classify each request as **core** (needed by the header, rail badges, or Overview) or **per-view**. Expect core to be projects + project + controlState + counts, and per-view to be metrics, artifact preview, quarantines and line provenance. Write the actual classification down before writing code — the plan's expectation is a starting point, not a substitute for reading.
 
-- [ ] **Step 2: Add `fetchCodeSiteCoreState` alongside the existing function**
+- [x] **Step 2: Add `fetchCodeSiteCoreState` alongside the existing function**
 
 Export a new function that performs only the core requests and returns the same normalized shape with per-view slices empty. **Keep `fetchCodeSiteRadarState` exported and working** — the test suite mocks it by name in `vi.hoisted`, and every existing test depends on it:
 
@@ -1557,7 +1581,7 @@ cd synthi && grep -n "fetchCodeSiteRadarState" src/components/codesite/__tests__
 
 Run both through `normalizeCodeSiteRadarState` (codesiteClient.js:72) so there is exactly one normalizer and per-view data cannot arrive in a different shape than the composite path produced.
 
-- [ ] **Step 3: Keep the tests passing by keeping the composite path**
+- [x] **Step 3: Keep the tests passing by keeping the composite path**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -1565,7 +1589,7 @@ cd synthi && npx vitest run src/components/codesite
 
 Expected: all green with no test edits. If the shell now calls `fetchCodeSiteCoreState` on mount, the existing mocks of `fetchCodeSiteRadarState` will return `undefined` and everything will fail — so either have the shell fall back to the composite call when the core call is not mocked, or add the new mock to `vi.hoisted` in the same commit. Prefer adding the mock; a production fallback that exists only to satisfy tests is the wrong shape.
 
-- [ ] **Step 4: Move liveness to SSE-first**
+- [x] **Step 4: Move liveness to SSE-first**
 
 `subscribeCodeSiteProjectEvents` already streams 36 named event types and is already wired (the effect formerly at 6961–6986). Make it primary and slow the poll:
 
@@ -1581,7 +1605,7 @@ cd synthi && grep -n "addEventListener\|EVENT_TYPES\|eventTypes" src/components/
 
 Any view whose data has **no** corresponding event type keeps a shorter poll — otherwise it silently goes stale for up to 30 seconds, which is worse than the churn this task is removing. Record the mapping in a comment next to `POLL_MS` so the next person can tell which views are covered by the stream and which are not.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
