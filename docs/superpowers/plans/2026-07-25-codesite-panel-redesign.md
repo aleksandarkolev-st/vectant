@@ -1628,7 +1628,25 @@ Endpoints and payload shapes are unchanged, and both fetch paths share
 normalizeCodeSiteRadarState so per-view data cannot arrive in a different shape."
 ```
 
-## Task 12: Convert layout to container queries
+## Task 12: Convert layout to container queries — ✅ COMPLETE
+
+> **Outcome** (`17fc823b5`). 84 viewport variants converted across 26 files; 34 tests still green; `git diff -- views/graph/` empty.
+>
+> **Verified the mechanism before making 84 edits.** Named container variants were unproven in this repo, so the candidate classes were compiled through `@tailwindcss/postcss` first. They work — but `@md/panel:` resolves to **28rem** and `@lg/panel:` to **32rem**, because Tailwind's container t-shirt scale is not the viewport scale. Using `@md:` where the source said `md:` would have silently moved every threshold. Everything is therefore explicit `@min-[…]`.
+>
+> **Mapping** (`sm`→28rem, `md`→34rem, `lg`→44rem, `xl`→52rem, `2xl`→64rem): preserves the author's relative ordering while landing inside the 320–900px range a dock actually occupies.
+>
+> **Plan corrections.**
+> - Step 3 described `DesktopSectionRail` as "a hardcoded 280px card" acting as a sidebar. It is a **horizontal** tab strip; the 280px is a status card in an `xl:` two-column split inside it. The real bug was the rail-vs-tabs choice being `hidden md:block` on the **viewport**, so a 380px dock on a 2560px monitor got the desktop rail with an overflowing tab strip. Now gated at `@min-[34rem]/panel:`, and the card can shrink.
+> - Steps 2/4 list pre-refactor line numbers for sites that mostly turned out to be safe once gated: at a 44rem/52rem threshold a `minmax(220px,…)` track no longer overflows. The `auto-fit` grids named as "unconditional multi-column" are inherently responsive and were left alone.
+> - Step 7 is a **no-op**: `e29b58b78` already tokenized the colors. Zero `oklch(`, zero 6-digit hex, zero URLs in the panel.
+>
+> **Highest-leverage fix was not in the plan at all:** `ui/Row.jsx` had an unconditional three-up grid and backs most of the panel's lists, so every list was crushed at dock widths. `SerializableIsolationDeck.jsx:235` inlined the identical track and got the identical gate.
+>
+> **Mechanical verification, since Step 6's browser check needs a dev server:** all 59 container classes the panel emits compile to real CSS rules (five distinct thresholds: 26/28/34/44/52rem), and all 29 gated grids have their pixel minimums fitting inside the threshold that gates them. The only remaining ungated pixel floors are ≤148px (fine at 320px) plus `views/graph/ScopeTopology.jsx`'s 270px/300px tracks, which are deferred.
+>
+> **Still owed:** Step 6's visual walkthrough at the four target widths. It needs `npm run dev`, which needs disk headroom; folded into Task 14.
+
 
 The root cause of "not as responsive as it should be": the panel uses **viewport** breakpoints to lay out a **dock** whose width is independent of the viewport. On a wide monitor a 380px sidebar still matches `xl:`, so it attempts two-column layouts with 430–460px minimums inside 380px of space.
 
@@ -1636,11 +1654,11 @@ Tailwind v4 has container queries built in — no plugin, no config. Mark the co
 
 **Files:** Modify the panel root plus the sites listed below.
 
-- [ ] **Step 1: Make the panel root a container**
+- [x] **Step 1: Make the panel root a container**
 
 On the element carrying `data-testid="codesite-panel"` in `CodeSitePanel.jsx`, add `@container/panel`. The name lets nested containers coexist without ambiguity.
 
-- [ ] **Step 2: Convert the fixed-min two-column splits**
+- [x] **Step 2: Convert the fixed-min two-column splits**
 
 These are the sites that break hardest, because their pixel minimums exceed a narrow dock's entire width. Line numbers are pre-refactor; find them by their class strings after Parts A and B moved them.
 
@@ -1654,17 +1672,17 @@ The pattern in every case: **drop the pixel minimum from the track and put the t
 
 Then do the same at the remaining audited sites: 3477, 2443, 6072, 5696, 5887.
 
-- [ ] **Step 3: Convert the fixed-width rail card**
+- [x] **Step 3: Convert the fixed-width rail card**
 
 `DesktopSectionRail` (formerly 4111) uses a hardcoded 280px card. In a 320px dock that leaves 40px for content. Replace the fixed width with a container-query-gated one so the rail collapses to icons-only when the panel is narrow. `MobileSectionTabs` already handles the collapsed presentation — reuse it by choosing between the two on container width rather than viewport width, which is the actual bug: a 380px dock on a 2560px monitor currently gets the desktop rail.
 
-- [ ] **Step 4: Convert the unconditional multi-column grids**
+- [x] **Step 4: Convert the unconditional multi-column grids**
 
 Sites: 4074, 2954, 8971, 4438, 5902, 5775, 6174, 1524, 3620, 3782, 6693, 4398. Each declares columns with no breakpoint at all, so it is multi-column even at 320px. Give each a single-column base and an `@min-[…]/panel:` multi-column variant.
 
 Also: 2221 (`lg:grid-cols-4` — content-agnostic fixed count), 2815, 1866/1884.
 
-- [ ] **Step 5: Make `TowerNowStrip` reflow instead of scroll**
+- [x] **Step 5: Make `TowerNowStrip` reflow instead of scroll**
 
 Formerly line 1679: six cards at `min-w-[9.25rem]` inside an `overflow-x-auto` — about 888px of minimum content. In a narrow dock the user gets a horizontal scrollbar over their primary status display. Replace the horizontal scroll with a wrapping grid that goes to one column at narrow container widths and back to six when there is room.
 
@@ -1678,7 +1696,7 @@ cd synthi && npm run dev
 
 Then check the panel at a narrow dock (320–420px), a half-screen dock (600–900px), the full-screen route, and a <768px viewport. At every width, confirm: no horizontal scrollbar on the panel body, no clipped text, no overlapping controls, and every rail entry reachable.
 
-- [ ] **Step 7: Confirm the panel inherits theme tokens**
+- [x] **Step 7: Confirm the panel inherits theme tokens**
 
 The panel already inherits `--codesite-*` from `[data-panel-type="codesite"]` in `globals.css` as of `e29b58b78`. Find remaining one-off inline gradients and borders and resolve them to those tokens, so the panel does not look out of place next to the other panels:
 
@@ -1688,7 +1706,7 @@ cd synthi && grep -rn 'oklch(' src/components/codesite/ | grep -v lib/
 
 Any literal `oklch()` in a component is a hardcoded color that should be a token. This is the hardcoded-values audit for this slice.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add synthi/src/components/codesite synthi/src/app/globals.css
