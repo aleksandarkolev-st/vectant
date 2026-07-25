@@ -56,26 +56,56 @@ All paths relative to `synthi/src/components/codesite/`.
 
 ### The 23 blocks and where each one goes
 
-This mapping is the contract for Task 5. It follows the approved spec table.
+This mapping is the contract for Task 8. It follows the approved spec table.
 
-| View | Blocks it absorbs (current line) |
+**Line numbers below are as of commit `854829632` (end of Part A), in the
+2,277-line `CodeSitePanel.jsx`.** They shift as soon as you start moving blocks —
+after the first extraction, find the rest by their `title=` / `sectionKey=`
+string, not by line.
+
+| View | Blocks it absorbs (line at 854829632) |
 |---|---|
-| **Overview** (new) | mission-control header 7984, status rail 8032–8058, `TowerNowStrip` 8067, `CodeSiteOperatingModel` 8083 |
-| **Graph** | Workspace Graph 8098, Conflict Forecast 8362, Workstreams 8437, Work Scope Zones 8967 |
-| **Activity** | Activity Feed 8183, Audit Event Log 8760, Agent Inbox 8850 |
-| **Governance** | Governance Console 8209, Required Actions 8768 |
-| **Locks** | Path Locks 8274, Agent Readiness 8287, Approvals 8479, Policy Inputs 9006 |
-| **Quarantine** | Filesystem Boundary Evidence 8307, Quarantine Review 8331 |
-| **Evidence** | Success Metrics 8254, Transactions & Evidence 8544, Artifact Export Preview 8696 |
-| **Inspections** | Inspections & Incidents 8562, Inspections Queue 8921 |
-| **Replay** | Replay Handover 8675, Lineage Inspector 8947 |
-| **Simulator** | Coordination Simulator 8407 |
+| **Overview** (new) | mission-control header, status rail, `TowerNowStrip`, `CodeSiteOperatingModel` — all above line 1333 |
+| **Graph** | Workspace Graph 1333, Conflict Forecast 1595, Workstreams 1670, Work Scope Zones 2200 |
+| **Activity** | Activity Feed 1418, Audit Event Log 1993, Agent Inbox 2083 |
+| **Governance** | Governance Console 1444, Required Actions 2001 |
+| **Locks** | Path Locks 1507, Agent Readiness 1520, Approvals 1712, Policy Inputs 2239 |
+| **Quarantine** | Filesystem Boundary Evidence 1540, Quarantine Review 1564 |
+| **Evidence** | Success Metrics 1487, Transactions & Evidence 1777, Artifact Export Preview 1929 |
+| **Inspections** | Inspections & Incidents 1795, Inspections Queue 2154 |
+| **Replay** | Replay Handover 1908, Lineage Inspector 2180 |
+| **Simulator** | Coordination Simulator 1640 |
 
 Twelve of those blocks have no nav entry today and are reachable only by scrolling: Agent Readiness, Filesystem Boundary Evidence, Conflict Forecast, Workstreams, Approvals, Transactions & Evidence, Inspections & Incidents, Artifact Export Preview, Audit Event Log, Required Actions, Agent Inbox, Inspections Queue, Work Scope Zones, Policy Inputs. Adopting them is the whole point of the view table.
 
 ---
 
-# Part A — Decomposition
+# Part A — Decomposition — ✅ COMPLETE
+
+Landed in `89c1b67f2`, `c078acfbb`, `8d682c925`, `854829632`. Outcome:
+
+- **`CodeSitePanel.jsx`: 9,045 → 2,277 lines.** 96 helpers to `lib/`, 13 primitives
+  to `ui/`, 22 components to `views/` and `nav/`, `CodeSiteIcons` to `icons.js`,
+  the easing curves to `lib/motion.js`.
+- **All 135 extracted declarations verified byte-identical** to their pre-refactor
+  originals at `79ef2e48b`. Nothing was retyped.
+- **Zero test file changes**, as required. 8 tests still pass.
+
+Three findings worth carrying forward:
+
+1. **`MetricRow`, `SignalBar` and `AssumptionInvalidatorPanel` are dead code** —
+   render count zero both before and after Part A. Left in place (removing
+   pre-existing dead code is out of scope). `AssumptionInvalidatorPanel` owns
+   `codesite-assumption-invalidator`, so the id baseline contains an id that never
+   renders.
+2. **20 test failures elsewhere in `synthi` are pre-existing** — `agent-workflows`,
+   `programs`, `preview-store`, `terminal-preview-links`, `src/lib/codesite`.
+   Confirmed by restoring the pre-refactor `components/codesite` and re-running:
+   identical failures. Note `src/lib/codesite` is a different directory from
+   `src/components/codesite` and is not touched by this plan.
+3. **The whole-panel test takes 20.5s under full-suite load** (4s alone) and times
+   out in CI-like conditions. Do not raise the timeout again — Task 8 Step 10
+   splits it per view, which is the actual fix.
 
 No behavior change. No test file edits. If a test changes, you made a mistake.
 
@@ -83,7 +113,7 @@ No behavior change. No test file edits. If a test changes, you made a mistake.
 
 **Files:** none modified.
 
-- [ ] **Step 1: Run the suite three times**
+- [x] **Step 1: Run the suite three times**
 
 ```bash
 cd synthi && for i in 1 2 3; do npx vitest run src/components/codesite 2>&1 | grep -E "Tests |Test Files"; done
@@ -98,7 +128,7 @@ Expected, all three times:
 
 If any run fails, stop and fix the flake before moving code. A red or flaky suite cannot serve as the safety net for a 9,000-line refactor — you will not be able to tell your mistakes from pre-existing noise.
 
-- [ ] **Step 2: Record the module's line count**
+- [x] **Step 2: Record the module's line count**
 
 ```bash
 cd synthi && wc -l src/components/codesite/CodeSitePanel.jsx
@@ -117,7 +147,7 @@ These are pure functions: no JSX, no hooks, no React import. They move first bec
 - Create: `synthi/src/components/codesite/lib/graph.js`
 - Modify: `synthi/src/components/codesite/CodeSitePanel.jsx`
 
-- [ ] **Step 1: Create `lib/format.js`**
+- [x] **Step 1: Create `lib/format.js`**
 
 Move lines **93–566**, **757–800**, and **1222–1346** verbatim. Add `export` before each `function` and before `const TOWER_EVENT_LABELS`.
 
@@ -139,7 +169,7 @@ toneLabel
 
 `towerEventKind` reads `TOWER_EVENT_LABELS`, and `towerInstructionText` reads it too — keep all three together in this file so neither crosses a module boundary.
 
-- [ ] **Step 2: Create `lib/governance.js`**
+- [x] **Step 2: Create `lib/governance.js`**
 
 Move lines **568–749** verbatim, adding `export` to each. Exported names:
 
@@ -159,7 +189,7 @@ import { asArray, compact, productCopy, uniqueValues } from "./format";
 
 **Deliberately excluded: `findGovernanceEntityRow` (750–755).** It is a `document.querySelector` helper that exists only to serve `handleRequiredActionReview`, and Task 9 deletes that coupling. Leave it in `CodeSitePanel.jsx` for now; Task 9 removes it. Do not move DOM-reaching code into a module named `governance`.
 
-- [ ] **Step 3: Create `lib/quarantine.js`**
+- [x] **Step 3: Create `lib/quarantine.js`**
 
 Move lines **801–1221** verbatim, adding `export` to each. Exported names:
 
@@ -178,7 +208,7 @@ Add at the top:
 import { asArray, compact, uniqueValues } from "./format";
 ```
 
-- [ ] **Step 4: Create `lib/graph.js`**
+- [x] **Step 4: Create `lib/graph.js`**
 
 Move lines **5289–5490** verbatim, adding `export` to each. This is graph *math*, which is safe to relocate — the deferral covers the graph's rendering and interaction, not the pure geometry helpers. Exported names:
 
@@ -198,7 +228,7 @@ import { asArray, toneColor } from "./format";
 
 Check `graphNodeStyle` and `statusColor` for what they actually call before finalizing this import line — add whatever else they reference from `format`.
 
-- [ ] **Step 5: Delete the moved lines from `CodeSitePanel.jsx` and import them back**
+- [x] **Step 5: Delete the moved lines from `CodeSitePanel.jsx` and import them back**
 
 Delete the four ranges. Add near the top of the file, after the existing imports:
 
@@ -253,7 +283,7 @@ const {
 
 These re-bindings are scaffolding. Each one disappears as Tasks 3–5 move its consumers out, and Task 6 asserts none are left.
 
-- [ ] **Step 6: Verify nothing broke**
+- [x] **Step 6: Verify nothing broke**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -263,7 +293,7 @@ Expected: `Tests 8 passed (8)`. Zero changes to any test file.
 
 If you get `X is not defined`, a name is missing from a destructuring list above or from an `export` in the new module. If you get a circular-import warning, a `lib/` file is importing from `CodeSitePanel.jsx` — it must not; `lib/` only ever imports from other `lib/` files.
 
-- [ ] **Step 7: Confirm no content was lost**
+- [x] **Step 7: Confirm no content was lost**
 
 ```bash
 cd synthi && wc -l src/components/codesite/CodeSitePanel.jsx src/components/codesite/lib/*.js
@@ -271,7 +301,7 @@ cd synthi && wc -l src/components/codesite/CodeSitePanel.jsx src/components/code
 
 The total should be close to 9044 plus ~60 lines of new import/export boilerplate.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add synthi/src/components/codesite/lib synthi/src/components/codesite/CodeSitePanel.jsx
@@ -313,7 +343,7 @@ Components used by more than one view.
 
 `IconButton`, `Section`, `OperatorPane`, `Metric`, `Row` and `StatusRailItem` are exactly the primitives that take a **`testId` prop** rather than writing `data-testid` inline. That is why the invariant regex in `testIdInvariant.test.js` matches `testId=` as well — do not "simplify" these props away.
 
-- [ ] **Step 1: Create the files**
+- [x] **Step 1: Create the files**
 
 One component per file, default-exported, with its own imports from `../lib/format`. For example, `ui/Pill.jsx`:
 
@@ -327,7 +357,7 @@ export default function Pill({ children, tone = "idle", className = "", testId }
 
 Read each component's body before writing its import line and import exactly what it references. `Section` and `OperatorPane` also import `motion` / `useReducedMotion` from `framer-motion`.
 
-- [ ] **Step 2: Create `ui/index.js`**
+- [x] **Step 2: Create `ui/index.js`**
 
 ```js
 export { default as Pill } from "./Pill";
@@ -345,7 +375,7 @@ export { default as LoadingSkeleton } from "./LoadingSkeleton";
 export { default as JsonPreview } from "./JsonPreview";
 ```
 
-- [ ] **Step 3: Delete the moved components and import them back**
+- [x] **Step 3: Delete the moved components and import them back**
 
 Delete the 13 ranges from `CodeSitePanel.jsx`. Add:
 
@@ -356,7 +386,7 @@ import {
 } from "./ui";
 ```
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -364,7 +394,7 @@ cd synthi && npx vitest run src/components/codesite
 
 Expected: `Tests 8 passed (8)`, no test file edits.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add synthi/src/components/codesite/ui synthi/src/components/codesite/CodeSitePanel.jsx
@@ -386,13 +416,13 @@ Isolated from Task 5 so that the one part of the panel the user wants untouched 
 - Create: `synthi/src/components/codesite/views/graph/WorkGraphConnector.jsx`
 - Modify: `synthi/src/components/codesite/CodeSitePanel.jsx`
 
-- [ ] **Step 1: Move the three components**
+- [x] **Step 1: Move the three components**
 
 `WorkGraphConnector` 5491–5533, `WorkGraphNode` 5535–5584, `ScopeTopology` 6283–6848. Verbatim. Imports come from `../../ui`, `../../lib/format` and `../../lib/graph`.
 
 `ScopeTopology` renders `WorkGraphNode` and `WorkGraphConnector`, so it imports both.
 
-- [ ] **Step 2: Prove the move changed nothing**
+- [x] **Step 2: Prove the move changed nothing**
 
 ```bash
 cd synthi && git show HEAD:src/components/codesite/CodeSitePanel.jsx | sed -n '6283,6848p' > /tmp/topology-before.txt
@@ -402,7 +432,7 @@ diff <(sed 's/^[[:space:]]*//' /tmp/topology-before.txt) <(sed 's/^[[:space:]]*/
 
 Expected: differences confined to the `function ScopeTopology` → `export default function ScopeTopology` line. Any other difference means you edited the graph, which is out of scope — revert it.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -462,11 +492,11 @@ cd synthi && grep -rn "<ProofValueList" src/components/codesite/
 
 If it turns up outside `views/quarantine/`, move it to `ui/` instead.
 
-- [ ] **Step 1: For each component, in the table's order**
+- [x] **Step 1: For each component, in the table's order**
 
 Move the body verbatim. Add `export default`. Write the import lines by reading what the body actually references. Then delete the original range and import it into `CodeSitePanel.jsx`.
 
-- [ ] **Step 2: After each component, verify**
+- [x] **Step 2: After each component, verify**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -474,7 +504,7 @@ cd synthi && npx vitest run src/components/codesite
 
 Expected: `Tests 8 passed (8)`. Fix before moving to the next component — do not stack unverified moves.
 
-- [ ] **Step 3: After each component, commit**
+- [x] **Step 3: After each component, commit**
 
 ```bash
 git add synthi/src/components/codesite
@@ -485,7 +515,7 @@ git commit -m "refactor(codesite): move <ComponentName> to views/<area>/"
 
 **Files:** Modify `synthi/src/components/codesite/CodeSitePanel.jsx`
 
-- [ ] **Step 1: Replace the wildcard imports with explicit ones**
+- [x] **Step 1: Replace the wildcard imports with explicit ones**
 
 The big destructuring blocks from Task 2 Step 5 exist only so call sites did not have to change. Most of their consumers have now moved out of the file. Delete the four `const { … } = fmt/gov/qtn/graph;` blocks and the four `import * as` lines, then let the test run tell you exactly which names the shell still needs:
 
@@ -503,7 +533,7 @@ import { mergeQuarantineRecords, quarantineRecordsFromEvents } from "./lib/quara
 
 The exact lists depend on what the shell retained; the loop above is the mechanism, not a prediction.
 
-- [ ] **Step 2: Confirm the shell shrank as expected**
+- [x] **Step 2: Confirm the shell shrank as expected**
 
 ```bash
 cd synthi && wc -l src/components/codesite/CodeSitePanel.jsx
@@ -511,7 +541,7 @@ cd synthi && wc -l src/components/codesite/CodeSitePanel.jsx
 
 Expected: roughly 2,300–2,600 lines — the exported `CodeSitePanel` function plus imports. It is not under 700 yet; the render tree still inlines all 23 blocks. Part B extracts those.
 
-- [ ] **Step 3: Check for orphans your changes created**
+- [x] **Step 3: Check for orphans your changes created**
 
 ```bash
 cd synthi && npx next lint --file src/components/codesite/CodeSitePanel.jsx 2>&1 | head -30
@@ -519,7 +549,7 @@ cd synthi && npx next lint --file src/components/codesite/CodeSitePanel.jsx 2>&1
 
 Remove imports and variables that *your* moves made unused. Do not remove pre-existing dead code — if you spot some, note it and leave it.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -539,7 +569,7 @@ extracted, now that their consumers live in their own files."
 
 **Files:** none modified. This is a checkpoint, not a change.
 
-- [ ] **Step 1: Confirm the test id set is intact**
+- [x] **Step 1: Confirm the test id set is intact**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite/__tests__/testIdInvariant.test.js
@@ -547,7 +577,7 @@ cd synthi && npx vitest run src/components/codesite/__tests__/testIdInvariant.te
 
 Expected: `Tests 1 passed (1)`. The invariant test walks the whole `components/codesite/` tree, so it follows ids into their new files automatically.
 
-- [ ] **Step 2: Confirm no test file was touched during Part A**
+- [x] **Step 2: Confirm no test file was touched during Part A**
 
 ```bash
 git diff --stat 79ef2e48b..HEAD -- synthi/src/components/codesite/__tests__/
@@ -555,7 +585,7 @@ git diff --stat 79ef2e48b..HEAD -- synthi/src/components/codesite/__tests__/
 
 Expected: **no output** for `CodeSitePanel.test.jsx`. Part A is mechanical; a changed test means behavior moved when it should not have. Investigate before continuing.
 
-- [ ] **Step 3: Confirm nothing was silently dropped**
+- [x] **Step 3: Confirm nothing was silently dropped**
 
 ```bash
 cd synthi && find src/components/codesite -name '*.jsx' -o -name '*.js' | grep -v __tests__ | xargs wc -l | tail -1
