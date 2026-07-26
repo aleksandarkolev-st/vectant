@@ -1,48 +1,29 @@
+// A section is a label over its content, not a framed box. The panel stacks up
+// to nine of these in a view, so every pixel of chrome here is multiplied by
+// nine. Matches the label-and-count pattern the sibling panels use.
+export default function Section({
+  title,
+  icon: Icon,
+  children,
+  right,
+  count,
+  hideWhenEmpty = false,
+}) {
+  if (hideWhenEmpty && !count) return null;
 
-
-export default function Section({ title, icon: Icon, children, right }) {
   return (
-    <section
-      className="border-t"
-      style={{
-        borderColor:
-          "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
-      }}
-    >
-      <div
-        className="flex min-h-12 items-center justify-between gap-3 border-b px-4 py-3"
-        style={{
-          borderColor:
-            "color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%)",
-          background:
-            "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 82%, var(--bg-editor) 18%), color-mix(in srgb, var(--bg-surface) 96%, transparent))",
-        }}
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md border shadow-[inset_0_1px_0_rgba(255,255,255,0.055)]"
-            style={{
-              borderColor:
-                "color-mix(in srgb, var(--border-subtle) 72%, var(--accent-primary) 28%)",
-              background:
-                "color-mix(in srgb, var(--accent-primary) 10%, var(--bg-elevated))",
-            }}
-          >
-            <Icon
-              className="h-3.5 w-3.5"
-              style={{ color: "var(--accent-primary)" }}
-            />
-          </span>
-          <h3
-            className="truncate text-sm font-semibold"
-            style={{ color: "var(--text-primary)" }}
-          >
-            {title}
-          </h3>
-        </div>
+    <section className="flex min-w-0 flex-col gap-2 px-3 pb-4 pt-3">
+      <div className="flex min-h-5 items-center justify-between gap-2">
+        <span
+          className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          {Icon ? <Icon className="h-3 w-3 shrink-0" strokeWidth={2} /> : null}
+          <span className="truncate">{title}</span>
+        </span>
         {right}
       </div>
-      <div className="px-4 pb-4">{children}</div>
+      {children}
     </section>
   );
 }
