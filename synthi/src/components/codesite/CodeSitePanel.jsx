@@ -7,6 +7,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { CodeSiteIcons } from "./icons";
 import DesktopSectionRail from "./nav/DesktopSectionRail";
 import MobileSectionTabs from "./nav/MobileSectionTabs";
+import ViewStrip from "./nav/ViewStrip";
+import {
+  DEFAULT_GROUP_KEY, SECTION_GROUPS, groupForSection, groupSummary,
+} from "./lib/sectionGroups";
 import { causalReplayHandovers } from "./views/replay/handovers";
 import {
   ActivityView, EvidenceView, GovernanceView, GraphView, InspectionsView,
@@ -172,6 +176,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   });
   const [pendingReviewTarget, setPendingReviewTarget] = useState(null);
   const [viewSlices, setViewSlices] = useState(EMPTY_VIEW_SLICES);
+  const [activeGroup, setActiveGroup] = useState(DEFAULT_GROUP_KEY);
 
   const loadRadar = useCallback(
     async ({ silent = false, full = false, projectId = selectedProjectId } = {}) => {
@@ -323,8 +328,18 @@ export default function CodeSitePanel({ workspaceSlug }) {
     };
   }, [loadRadar, radarState.selectedProjectId, workspaceSlug]);
 
+  // Also moves the group, so the drill-in links from TowerNowStrip and
+  // CodeSiteOperatingModel land on a section whose group tile is selected.
   const handleSelectSection = useCallback((sectionKey) => {
     setActiveSection(sectionKey);
+    setActiveGroup(groupForSection(sectionKey));
+  }, []);
+
+  // Selecting a group lands on its first section.
+  const handleSelectGroup = useCallback((groupKey) => {
+    setActiveGroup(groupKey);
+    const group = SECTION_GROUPS.find((entry) => entry.key === groupKey);
+    if (group?.sections.length) setActiveSection(group.sections[0]);
   }, []);
 
   const handleCreateProject = useCallback(
@@ -967,6 +982,31 @@ export default function CodeSitePanel({ workspaceSlug }) {
     [],
   );
 
+  // First navigation level: the four groups, each carrying the live detail line
+  // and count that make the panel readable without clicking into it.
+  const groupTiles = useMemo(
+    () =>
+      SECTION_GROUPS.map((group) => ({
+        ...group,
+        ...groupSummary(group.key, radarState.counts, {
+          actionableQuarantines: actionableQuarantineRecords.length,
+          counterfactualRuns: counterfactualRuns.length,
+        }),
+      })),
+    [radarState.counts, actionableQuarantineRecords.length, counterfactualRuns.length],
+  );
+
+  // Second level: the sections belonging to the active group.
+  const groupSections = useMemo(() => {
+    const group = SECTION_GROUPS.find((entry) => entry.key === activeGroup);
+    return sections.filter((section) => group?.sections.includes(section.key));
+  }, [activeGroup, sections]);
+
+  const activeSectionLabel = useMemo(
+    () => sections.find((section) => section.key === activeSection)?.label,
+    [sections, activeSection],
+  );
+
   const viewProps = {
     project: currentProject,
     counts: radarState.counts,
@@ -1180,16 +1220,22 @@ export default function CodeSitePanel({ workspaceSlug }) {
           }}
         >
           <MobileSectionTabs
-            sections={sections}
-            activeSection={activeSection}
-            onSelect={handleSelectSection}
+            groups={groupTiles}
+            activeGroup={activeGroup}
+            onSelect={handleSelectGroup}
+            activeSectionLabel={activeSectionLabel}
           />
           <DesktopSectionRail
-            sections={sections}
+            groups={groupTiles}
+            activeGroup={activeGroup}
+            onSelect={handleSelectGroup}
+          />
+          {/* Second level, rendered here rather than inside either rail so it
+              stays reachable at every panel width. */}
+          <ViewStrip
+            sections={groupSections}
             activeSection={activeSection}
             onSelect={handleSelectSection}
-            status={latestStatus}
-            streamStatus={streamStatus}
           />
           {error ? (
             <div

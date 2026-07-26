@@ -71,6 +71,7 @@ vi.mock('../codesiteClient', () => ({
 }));
 
 import CodeSitePanel from '../CodeSitePanel';
+import { groupForSection } from '../lib/sectionGroups';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -123,11 +124,23 @@ async function confirmGovernanceReview(rationale = 'Reviewed replay, evidence, s
   await flush();
 }
 
+// Navigation is two levels now: a group tile, then a section within that group.
+// This is a helper change only -- no assertion moved.
 async function selectSection(key) {
+  const groupKey = groupForSection(key);
+  const tile = container.querySelector(
+    `[data-testid="codesite-command-tile"][data-codesite-group-key="${groupKey}"]`,
+  );
+  if (!tile) throw new Error(`no command tile for group "${groupKey}"`);
+  await act(async () => {
+    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await flush();
+
   const tab = container.querySelector(
     `[data-testid="codesite-desktop-section-tab"][data-codesite-section-key="${key}"]`,
   );
-  if (!tab) throw new Error(`no rail tab for section "${key}"`);
+  if (!tab) throw new Error(`no view tab for section "${key}" in group "${groupKey}"`);
   await act(async () => {
     tab.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
