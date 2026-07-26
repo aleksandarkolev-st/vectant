@@ -17,6 +17,11 @@ export default function EvidenceView({
   artifactContentPath,
   exportResult,
 }) {
+  const mergedTransactionCount = mergeTransactionSources(
+    activeTransactions,
+    mutationTransactions,
+  ).length;
+
   return (
     <>
       <Section
@@ -41,9 +46,11 @@ export default function EvidenceView({
       <Section
         title="Transactions & Evidence"
         icon={CodeSiteIcons.transactions}
+        count={mergedTransactionCount + proofBundles.length}
+        hideWhenEmpty
         right={
           <Pill>
-            {mergeTransactionSources(activeTransactions, mutationTransactions).length}/
+            {mergedTransactionCount}/
             {proofBundles.length}
           </Pill>
         }
@@ -59,6 +66,9 @@ export default function EvidenceView({
       <Section
         title="Artifact Export Preview"
         icon={CodeSiteIcons.artifacts}
+        // An export with no preview files still has a result to show.
+        count={artifacts.length || (exportResult ? 1 : 0)}
+        hideWhenEmpty
         right={<Pill>{artifacts.length}</Pill>}
       >
         {exportResult ? (

@@ -89,6 +89,8 @@ export default function GraphView({
       <Section
         title="Workstreams"
         icon={CodeSiteIcons.agents}
+        count={activeFlights.length}
+        hideWhenEmpty
         right={<Pill>{activeFlights.length}</Pill>}
       >
         {activeFlights.length === 0 ? (
@@ -131,6 +133,8 @@ export default function GraphView({
       <Section
         title="Work Scope Zones"
         icon={CodeSiteIcons.scopes}
+        count={zones.length}
+        hideWhenEmpty
         right={<Pill>{zones.length}</Pill>}
       >
         {zones.length === 0 ? (

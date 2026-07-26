@@ -44,6 +44,10 @@ export default function QuarantineView({
       <Section
         title="Quarantine Review"
         icon={CodeSiteIcons.quarantine}
+        // Keep the section when a fetch failed, or the error would vanish
+        // along with it.
+        count={actionableQuarantineRecords.length || (quarantineError ? 1 : 0)}
+        hideWhenEmpty
         right={
           <Pill
             tone={

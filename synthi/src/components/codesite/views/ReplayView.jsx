@@ -42,6 +42,8 @@ export default function ReplayView({
       <Section
         title="Lineage Inspector"
         icon={CodeSiteIcons.lineage}
+        count={lineProvenance.length}
+        hideWhenEmpty
         right={<Pill>{lineProvenance.length}</Pill>}
       >
         <LineProvenanceDeck

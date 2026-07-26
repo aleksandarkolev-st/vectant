@@ -121,6 +121,8 @@ export default function InspectionsView({ inspectionRuns, incidents, counts }) {
       <Section
         title="Inspections Queue"
         icon={CodeSiteIcons.inspections}
+        count={inspectionRuns.length}
+        hideWhenEmpty
         right={<Pill>{inspectionRuns.length}</Pill>}
       >
         <div className="grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] gap-2">

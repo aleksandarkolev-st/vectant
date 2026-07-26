@@ -28,6 +28,8 @@ export default function LocksView({
       <Section
         title="Agent Readiness"
         icon={CodeSiteIcons.agents}
+        count={pilotLicenseHealth.length}
+        hideWhenEmpty
         right={
           <Pill
             tone={
@@ -48,6 +50,8 @@ export default function LocksView({
       <Section
         title="Approvals"
         icon={CodeSiteIcons.approvals}
+        count={activeLeases.length}
+        hideWhenEmpty
         right={<Pill>{activeLeases.length}</Pill>}
       >
         {activeLeases.length === 0 ? (
