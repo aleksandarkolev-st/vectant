@@ -25,7 +25,7 @@ Today CodeSite does the opposite — it repaints over the frame with `--codesite
 ## Invariants — do not break these
 
 1. **All 103 baseline test ids must survive.** `synthi/src/components/codesite/__tests__/testIdInvariant.test.js` asserts a superset of `tasks/codesite-testid-baseline.txt`. Additions are fine; removals fail. **Never regenerate the baseline** — it is a historical record.
-2. **Four nav ids are in that baseline** and must keep existing on *something*: `codesite-desktop-section-rail`, `codesite-desktop-section-tab`, `codesite-mobile-section-tabs`, `codesite-mobile-section-tab`. Task 8 re-homes them.
+2. **Five nav ids are in that baseline** and must keep existing on *something*: `codesite-desktop-section-rail`, `codesite-desktop-section-tab`, `codesite-mobile-section-tabs`, `codesite-mobile-section-tab`, and `codesite-mobile-action-drawer`. Task 8 re-homes them. *(This said "four" when written; the action drawer was missed. Corrected at implementation time.)*
 3. **35 tests must stay green**, with no assertion weakened or deleted. Task 8 changes the `selectSection` *helper*; it must not change any `expect(...)`.
 4. **`synthi/src/components/codesite/views/graph/` stays untouched.** The user deferred the map pending their own evaluation. `git diff dev..HEAD -- .../views/graph/` must stay empty. Its *surrounding* panes restyle via the shared primitives; the topology itself does not.
 5. **No literal colors.** No `oklch(`, no 6-digit hex, no URLs. Every colour resolves to a token.
@@ -49,14 +49,23 @@ Today CodeSite does the opposite — it repaints over the frame with `--codesite
 
 ---
 
-# Part A — Shell and tokens
+# Part A — Shell and tokens — ✅ COMPLETE
+
+> **Outcome** (`986ebbe09`, `3e701d4a6`). 35 tests green throughout.
+>
+> Computed styles in the running app confirm the shell now resolves exactly as Workflows' does: `vt-toolbar` gives 36px min-height, a 1px border, the shared gradient, and **`box-shadow: none`**. Scanning every element over 300x40px inside the panel afterwards: **zero box-shadows remain**, and the scroll container is fully transparent so the Agents frame shows through.
+>
+> **Task 2 was almost entirely a no-op.** It assumed both structural tokens had use sites to migrate. They had none — Task 1 removed the last `--codesite-panel-line` consumer and `--codesite-panel-surface` had zero consumers to begin with — so the task reduced to deleting two dead declarations. The five surviving status tokens were each confirmed still consumed rather than assumed. `globals.css` was recompiled through `@tailwindcss/postcss` to prove the edit valid.
+>
+> **Deviation:** the plan deferred the two `nav/` drop shadows to Task 8, but Part A's stated purpose is removing the raised-slab look and two 24-28px shadows sat immediately below the header. Removed early; Task 8 rewrote both files anyway.
+
 
 ## Task 1: Stop the panel painting over its own frame
 
 **Files:**
 - Modify: `synthi/src/components/codesite/CodeSitePanel.jsx:1060-1075`
 
-- [ ] **Step 1: Confirm the reference markup before copying it**
+- [x] **Step 1: Confirm the reference markup before copying it**
 
 ```bash
 cd synthi && sed -n '1792,1800p' src/components/agent-workflows/AgentWorkflowPanel.jsx
@@ -64,7 +73,7 @@ cd synthi && sed -n '1792,1800p' src/components/agent-workflows/AgentWorkflowPan
 
 Expected: a root `<section className="vt-app-surface flex h-full min-h-0 w-full flex-col overflow-hidden">` followed by `<header className="vt-toolbar px-4 py-3">`. If that is not what you see, stop and re-read before continuing — the rest of this task copies it.
 
-- [ ] **Step 2: Swap the root and header classes**
+- [x] **Step 2: Swap the root and header classes**
 
 Replace the root element and the header opening tag:
 
@@ -83,7 +92,7 @@ Replace the root element and the header opening tag:
 
 `vt-toolbar` already supplies `min-height: 36px`, `border-bottom: 1px solid var(--border-subtle)`, and the panel gradient (`globals.css:1138-1144`), so the old `border-b`, the `shadow-[0_12px_28px_rgba(0,0,0,0.16)]`, the `borderColor`, and the `background` gradient all go. Keep `@container/panel` — every layout rule in the panel depends on it.
 
-- [ ] **Step 3: Verify the shadow is gone repo-wide in this panel**
+- [x] **Step 3: Verify the shadow is gone repo-wide in this panel**
 
 ```bash
 cd synthi && grep -rn "shadow-\[0_1" src/components/codesite/ | grep -v __tests__
@@ -91,7 +100,7 @@ cd synthi && grep -rn "shadow-\[0_1" src/components/codesite/ | grep -v __tests_
 
 Expected: the two `nav/` files still match (Task 8 handles those), nothing else. If a view still carries a heavy drop shadow, it will read as a raised slab against the flat frame; remove it.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -99,7 +108,7 @@ cd synthi && npx vitest run src/components/codesite
 
 Expected: `Tests  35 passed (35)`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add synthi/src/components/codesite
@@ -121,7 +130,7 @@ vt-app-surface and vt-toolbar, as AgentWorkflowPanel does, lets that frame show.
 - Modify: `synthi/src/app/globals.css:1274-1283`
 - Modify: whichever codesite components reference the two structural tokens
 
-- [ ] **Step 1: Find every use of the two structural tokens**
+- [x] **Step 1: Find every use of the two structural tokens**
 
 ```bash
 cd synthi && grep -rn "codesite-panel-surface\|codesite-panel-line" src/ | grep -v __tests__
@@ -129,12 +138,12 @@ cd synthi && grep -rn "codesite-panel-surface\|codesite-panel-line" src/ | grep 
 
 Write the list down. These two are structural (a surface and a border) and are what make the panel diverge; the status tokens (`--codesite-success`, `--codesite-warning`, `--codesite-danger`, `--codesite-accent-secondary`, `--codesite-muted-accent`) are semantic and **stay**, because they let a theme re-tint status meaning.
 
-- [ ] **Step 2: Replace the structural two at their use sites**
+- [x] **Step 2: Replace the structural two at their use sites**
 
 - `var(--codesite-panel-line)` becomes `var(--border-subtle)`.
 - `var(--codesite-panel-surface)` becomes `color-mix(in srgb, var(--bg-panel) 72%, transparent)` — the value `PROGRAM_STYLE.header` and `WorkflowCommandStrip` both already use, so all three panels land on one surface value.
 
-- [ ] **Step 3: Delete the two declarations from globals.css**
+- [x] **Step 3: Delete the two declarations from globals.css**
 
 Remove these two lines from the `[data-panel-type="codesite"]` block, leaving the five semantic tokens and `color`:
 
@@ -145,7 +154,7 @@ Remove these two lines from the `[data-panel-type="codesite"]` block, leaving th
 
 Update the comment above the block so it still tells the truth: the panel derives *status* colours from the theme, and takes structure from the shared tokens.
 
-- [ ] **Step 4: Prove no dangling references**
+- [x] **Step 4: Prove no dangling references**
 
 ```bash
 cd synthi && grep -rn "codesite-panel-surface\|codesite-panel-line" src/
@@ -153,7 +162,7 @@ cd synthi && grep -rn "codesite-panel-surface\|codesite-panel-line" src/
 
 Expected: no output. A dangling `var(--codesite-panel-line)` resolves to nothing and silently renders a transparent border.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -171,7 +180,20 @@ they are what lets a theme re-tint what warning and danger mean."
 
 ---
 
-# Part B — Section chrome
+# Part B — Section chrome — ✅ COMPLETE
+
+> **Outcome** (`19e0246e3`, `7dad05185`, `5274a5b10`). 35 tests green, none edited.
+>
+> `Section` went from an accent top border plus a 48px gradient header bar with its own bottom border plus a 28x28 bordered icon plate, down to a 10px uppercase label and a count. `OperatorPane` went from three nested surfaces to one. Ten of the 21 secondary sections now unmount when empty.
+>
+> **Task 5 needed two guards the plan did not anticipate.** A bare `count={x.length}` would have hidden *information*, not absence, in two places: Quarantine Review must keep rendering when `quarantineError` is set, or the fetch failure disappears with the section; Artifact Export Preview must keep rendering when `exportResult` is set, since an export producing no preview files still has a result to show.
+>
+> Before applying `hideWhenEmpty` anywhere, checked that no hidden section owns a control. `LineProvenanceDeck` and `QuarantineReviewPanel` both contain buttons, but all are per-row, and replay/apply require a selected record — so an empty list has nothing to lose. Had any held a standalone control, hiding would have removed functionality.
+>
+> Verified mechanically rather than by eye: parsed every `<Section>` block per file and asserted neither the first nor all of them carry `hideWhenEmpty`. Result: 10/21 hidden, no view can render blank.
+>
+> **Limit worth recording:** the dev server shows the panel's empty state (401, no project), so no `<Section>` mounts there. Part B's visual effect was verified through the test suite's populated fixtures and the static parse, **not** visually.
+
 
 ## Task 3: Flatten `Section` to a label and a count
 
@@ -180,7 +202,7 @@ Today `Section` renders an accent-tinted top border, a 48px header bar with its 
 **Files:**
 - Modify: `synthi/src/components/codesite/ui/Section.jsx`
 
-- [ ] **Step 1: Replace the component body**
+- [x] **Step 1: Replace the component body**
 
 The `title` / `icon` / `right` / `children` API is unchanged, so no call site needs editing. `hideWhenEmpty` and `count` are new and optional; Task 5 uses them.
 
@@ -216,7 +238,7 @@ export default function Section({
 }
 ```
 
-- [ ] **Step 2: Run the tests**
+- [x] **Step 2: Run the tests**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -224,7 +246,7 @@ cd synthi && npx vitest run src/components/codesite
 
 Expected: `Tests  35 passed (35)`. Section carries no test id, and every assertion targets ids inside `children`, so this should pass untouched. If something fails, an assertion was matching on the header chrome — read it before changing anything.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add synthi/src/components/codesite/ui/Section.jsx
@@ -243,7 +265,7 @@ times over. Now a 10px uppercase label and a count, as the sibling panels do."
 **Files:**
 - Modify: `synthi/src/components/codesite/ui/OperatorPane.jsx`
 
-- [ ] **Step 1: Replace the component body**
+- [x] **Step 1: Replace the component body**
 
 Keeps the entry animation and the `testId` prop, both of which tests and the baseline depend on.
 
@@ -294,7 +316,7 @@ export default function OperatorPane({
 }
 ```
 
-- [ ] **Step 2: Verify and commit**
+- [x] **Step 2: Verify and commit**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -315,13 +337,13 @@ surfaces to present a single title. One bordered surface with a divider row."
 **Files:**
 - Modify: each file under `synthi/src/components/codesite/views/` **except** `views/graph/`
 
-- [ ] **Step 1: List the candidate sections**
+- [x] **Step 1: List the candidate sections**
 
 ```bash
 cd synthi && grep -rn "<Section" src/components/codesite/views/ | grep -v "views/graph/"
 ```
 
-- [ ] **Step 2: Apply the rule**
+- [x] **Step 2: Apply the rule**
 
 For each view: the **first** section keeps its empty state, because a view that renders nothing at all looks broken. Every **subsequent** section gets `hideWhenEmpty` plus the count it already computes for its `right` pill.
 
@@ -351,7 +373,7 @@ and likewise "Work Scope Zones" with `count={zones.length}`.
 
 `views/GraphView.jsx` is *not* inside `views/graph/` and is in scope. The topology component it renders, `views/graph/ScopeTopology.jsx`, is not.
 
-- [ ] **Step 3: Confirm no view can render completely empty**
+- [x] **Step 3: Confirm no view can render completely empty**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -359,7 +381,7 @@ cd synthi && npx vitest run src/components/codesite
 
 Expected: `Tests  35 passed (35)`. Several tests assert on empty-state text; if one fails, you applied `hideWhenEmpty` to a view's first section. Move it to the next one rather than deleting the assertion.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add synthi/src/components/codesite/views
@@ -373,14 +395,27 @@ each view's first section keeps its empty state so no view renders blank."
 
 ---
 
-# Part C — Navigation
+# Part C — Navigation — ✅ COMPLETE
+
+> **Outcome** (`307acb347`, `98455093f`). 39 tests green, up from 35. Baseline invariant holds.
+>
+> **One plan defect, found at implementation time.** Task 8 Step 2 nested `ViewStrip` inside `DesktopSectionRail`, which is `hidden` below 34rem. That would have made **every sub-view unreachable in a narrow dock** — a functional regression, not a cosmetic one, and exactly the class of bug this redesign is supposed to remove. `ViewStrip` is now rendered by the panel between the two rails, so both levels work at every width. Verified at 320px: mobile group tabs present, view strip present, zero overflow.
+>
+> **A second id turned out to be locked.** The plan named four baseline nav ids; there are **five** — `codesite-mobile-action-drawer` is also in the baseline. It kept its home in `MobileSectionTabs`, repurposed to show the active section name against group progress.
+>
+> `MobileSectionTabs` now shows the four groups rather than all ten sections, which is what made it overflow into a horizontal scroller before.
+>
+> **Where the five ids live now:** `codesite-desktop-section-rail` → `DesktopSectionRail`; `codesite-desktop-section-tab` → `ViewStrip`; `codesite-mobile-section-tabs`, `codesite-mobile-section-tab`, `codesite-mobile-action-drawer` → `MobileSectionTabs`.
+>
+> **Browser-verified:** each group exposes exactly its own sections (live→overview/radar/tower, decisions→governance/runway/quarantine, proof→evidence/inspections, analysis→replay/simulator), exactly one tile selected at a time, tiles render their detail line and count, command strip resolves to four columns at 1440px and the mobile grid at 320px, no overflow at either, no console errors.
+
 
 ## Task 6: Add the group model
 
 **Files:**
 - Create: `synthi/src/components/codesite/lib/sectionGroups.js`
 
-- [ ] **Step 1: Create the file**
+- [x] **Step 1: Create the file**
 
 ```js
 import { CodeSiteIcons } from "../icons";
@@ -472,7 +507,7 @@ export function groupSummary(groupKey, counts, extra = {}) {
 }
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Create `synthi/src/components/codesite/lib/__tests__/sectionGroups.test.js`:
 
@@ -513,7 +548,7 @@ describe('section groups', () => {
 });
 ```
 
-- [ ] **Step 3: Run it**
+- [x] **Step 3: Run it**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite/lib/__tests__/sectionGroups.test.js
@@ -521,7 +556,7 @@ cd synthi && npx vitest run src/components/codesite/lib/__tests__/sectionGroups.
 
 Expected: `Tests  4 passed (4)`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add synthi/src/components/codesite/lib
@@ -541,7 +576,7 @@ Mirrors `AgentWorkflowPanel.jsx:847-895`, converted from `sm:grid-cols-4` to con
 **Files:**
 - Create: `synthi/src/components/codesite/nav/CommandStrip.jsx`
 
-- [ ] **Step 1: Create the component**
+- [x] **Step 1: Create the component**
 
 ```jsx
 import { CodeSiteIcons } from "../icons";
@@ -610,7 +645,7 @@ export default function CommandStrip({ groups, activeGroup, onSelect }) {
 }
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add synthi/src/components/codesite/nav/CommandStrip.jsx
@@ -629,7 +664,7 @@ group, with sm:grid-cols-4 converted to container queries since this is a dock."
 - Modify: `synthi/src/components/codesite/CodeSitePanel.jsx`
 - Modify: `synthi/src/components/codesite/__tests__/CodeSitePanel.test.jsx`
 
-- [ ] **Step 1: Create `ViewStrip.jsx`**
+- [x] **Step 1: Create `ViewStrip.jsx`**
 
 The second level. `codesite-desktop-section-tab` and `data-codesite-section-key` **must** appear here — the baseline requires the id and 18 tests select by that attribute pair.
 
@@ -680,7 +715,7 @@ export default function ViewStrip({ sections, activeSection, onSelect }) {
 }
 ```
 
-- [ ] **Step 2: Rewrite `DesktopSectionRail.jsx` as the host**
+- [x] **Step 2: Rewrite `DesktopSectionRail.jsx` as the host**
 
 It keeps `codesite-desktop-section-rail` (baseline) and now hosts both levels. Delete the old 280px status card, the tab list, and the framer-motion `layoutId` highlight.
 
@@ -709,7 +744,7 @@ export default function DesktopSectionRail({
 }
 ```
 
-- [ ] **Step 3: Simplify `MobileSectionTabs.jsx`**
+- [x] **Step 3: Simplify `MobileSectionTabs.jsx`**
 
 Keep `codesite-mobile-section-tabs` and `codesite-mobile-section-tab` (both baseline). Show the **groups** here, not all ten sections, and drop the drop shadow so it matches the flat shell. Below 34rem the ViewStrip renders under it, so both levels remain reachable.
 
@@ -725,7 +760,7 @@ Change the wrapper to:
 
 and have each button carry `data-testid="codesite-mobile-section-tab"` and `data-codesite-group-key={group.key}`.
 
-- [ ] **Step 4: Wire the panel**
+- [x] **Step 4: Wire the panel**
 
 In `CodeSitePanel.jsx`, add the group state beside `activeSection` and derive the tiles:
 
@@ -771,7 +806,7 @@ In `CodeSitePanel.jsx`, add the group state beside `activeSection` and derive th
 
 Import from `./lib/sectionGroups`, and pass `groups={groupTiles}`, `activeGroup`, `onSelectGroup={handleSelectGroup}`, `sections={groupSections}`, `activeSection`, `onSelectSection={handleSelectSection}` to both nav components.
 
-- [ ] **Step 5: Update the `selectSection` test helper**
+- [x] **Step 5: Update the `selectSection` test helper**
 
 This is a **helper** change. Do not touch any `expect(...)`.
 
@@ -802,7 +837,7 @@ async function selectSection(key) {
 
 Add `import { groupForSection } from '../lib/sectionGroups';` to the test file.
 
-- [ ] **Step 6: Run the tests**
+- [x] **Step 6: Run the tests**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -810,7 +845,7 @@ cd synthi && npx vitest run src/components/codesite
 
 Expected: `Tests  39 passed (39)` — 35 existing plus Task 6's 4.
 
-- [ ] **Step 7: Prove the baseline still holds**
+- [x] **Step 7: Prove the baseline still holds**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite/__tests__/testIdInvariant.test.js
@@ -818,7 +853,7 @@ cd synthi && npx vitest run src/components/codesite/__tests__/testIdInvariant.te
 
 Expected: `Tests  1 passed (1)`. If it fails, one of the four nav ids lost its home; re-read Steps 2 and 3. **Do not regenerate the baseline.**
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add synthi/src/components/codesite
@@ -843,7 +878,7 @@ group first; no assertion changed."
 
 **Files:** none modified.
 
-- [ ] **Step 1: Full codesite suite**
+- [x] **Step 1: Full codesite suite**
 
 ```bash
 cd synthi && npx vitest run src/components/codesite
@@ -851,7 +886,7 @@ cd synthi && npx vitest run src/components/codesite
 
 Expected: `Tests  39 passed (39)`.
 
-- [ ] **Step 2: Nothing else broke**
+- [x] **Step 2: Nothing else broke**
 
 ```bash
 cd synthi && npx vitest run 2>&1 | tail -20
@@ -859,7 +894,7 @@ cd synthi && npx vitest run 2>&1 | tail -20
 
 Expected: 20 failures across 7 files — `agent-workflows`, `programs` x2, `preview-store`, `terminal-preview-links`, `src/lib/codesite` x2. These are pre-existing. Any **new** failing file is yours.
 
-- [ ] **Step 3: Container classes still compile**
+- [x] **Step 3: Container classes still compile**
 
 Every layout class must generate real CSS. Reuse the probe from the previous slice:
 
@@ -869,7 +904,7 @@ cd synthi && node "$SCRATCH/cq-probe/verify-real.mjs"
 
 Expected: `EVERY CONTAINER CLASS THE PANEL USES GENERATES CSS`. If `$SCRATCH` is gone, recreate it: compile `@import "tailwindcss" source(none);` plus an `@source` pointing at a file listing every `@min-[…]/panel:` class in the panel, through `@tailwindcss/postcss`, with `from:` set to a path **inside the repo** so the import resolves. Match classes by stripping backslashes from the output, not by reproducing Tailwind's escaping.
 
-- [ ] **Step 4: No viewport breakpoints crept back**
+- [x] **Step 4: No viewport breakpoints crept back**
 
 ```bash
 cd synthi && grep -rn "[\"' ]\(2xl\|xl\|lg\|md\|sm\):" src/components/codesite/ --include=*.jsx | grep -v "views/graph/"
@@ -877,7 +912,7 @@ cd synthi && grep -rn "[\"' ]\(2xl\|xl\|lg\|md\|sm\):" src/components/codesite/ 
 
 Expected: no output.
 
-- [ ] **Step 5: Hardcoded-values audit**
+- [x] **Step 5: Hardcoded-values audit**
 
 ```bash
 cd synthi && grep -rn 'oklch(\|#[0-9a-fA-F]\{6\}\|localhost\|http://' src/components/codesite/ | grep -v __tests__
@@ -885,7 +920,7 @@ cd synthi && grep -rn 'oklch(\|#[0-9a-fA-F]\{6\}\|localhost\|http://' src/compon
 
 Expected: no output.
 
-- [ ] **Step 6: The graph is still untouched**
+- [x] **Step 6: The graph is still untouched**
 
 ```bash
 git diff dev..HEAD -- synthi/src/components/codesite/views/graph/
@@ -893,7 +928,7 @@ git diff dev..HEAD -- synthi/src/components/codesite/views/graph/
 
 Expected: empty. This is the evidence the deferral was honoured.
 
-- [ ] **Step 7: Look at it**
+- [x] **Step 7: Look at it**
 
 Turbopack cannot build this repo on Windows — it fails resolving `node_modules/yjs/dist/yjs.mjs` and 500s every route. Use webpack:
 
@@ -909,9 +944,11 @@ The API returns 401 without a signed-in session, so views render empty states. T
 docker compose up -d frontend
 ```
 
-- [ ] **Step 8: Compare against the sibling**
+- [ ] **Step 8: Compare against the sibling** — *left open, see below*
 
 Open Workflows and CodeSite side by side. They should read as the same family: same frame, same toolbar, same command-strip geometry, same label treatment. If CodeSite still looks heavier, the remaining weight is almost certainly a drop shadow or a nested border in a view — find it and remove it.
+
+> **Not done as written.** A true side-by-side needs both panels docked in the workspace shell, which needs a signed-in session; the standalone `/workspace/[slug]/codesite` route renders CodeSite alone. What *was* verified: both panels now carry the identical class names (`vt-app-surface`, `vt-toolbar`), so their shell styling is equal by construction, and CodeSite's computed values were read from the running app to confirm those classes resolve (36px toolbar, 1px border, shared gradient, `box-shadow: none`). The command strip geometry was copied from `WorkflowCommandStrip` with only the `sm:grid-cols-4` → container-query change. The remaining unverified claim is purely subjective weighting, which needs eyes on both at once.
 
 ---
 
