@@ -13,7 +13,7 @@ export default function DesktopSectionRail({ sections, activeSection, onSelect, 
   return (
     <div
       data-testid="codesite-desktop-section-rail"
-      className="sticky top-0 z-20 hidden border-b px-4 py-2 shadow-[0_12px_28px_rgba(0,0,0,0.14)] @min-[34rem]/panel:block"
+      className="sticky top-0 z-20 hidden border-b px-4 py-2 @min-[34rem]/panel:block"
       style={{
         borderColor: "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
         background: "color-mix(in srgb, var(--bg-sidebar) 96%, var(--accent-primary) 4%)",

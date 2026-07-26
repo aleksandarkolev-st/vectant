@@ -1059,21 +1059,16 @@ export default function CodeSitePanel({ workspaceSlug }) {
   return (
     <div
       data-testid="codesite-panel"
-      className="@container/panel flex h-full min-h-0 w-full flex-col overflow-hidden"
+      className="vt-app-surface @container/panel flex h-full min-h-0 w-full flex-col overflow-hidden"
       style={{
         "--text-muted":
           "color-mix(in srgb, var(--text-secondary) 78%, var(--text-primary) 22%)",
         color: "var(--text-primary)",
       }}
     >
-      <div
-        className="shrink-0 border-b px-3 py-2 shadow-[0_12px_28px_rgba(0,0,0,0.16)]"
-        style={{
-          borderColor: "var(--codesite-panel-line)",
-          background:
-            "linear-gradient(180deg, color-mix(in srgb, var(--bg-sidebar) 94%, var(--bg-elevated) 6%), color-mix(in srgb, var(--bg-sidebar) 98%, var(--bg-editor) 2%))",
-        }}
-      >
+      {/* vt-toolbar supplies the min-height, bottom border and panel gradient,
+          so the frame shows through instead of being painted over. */}
+      <div className="vt-toolbar shrink-0 px-3 py-2">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <span

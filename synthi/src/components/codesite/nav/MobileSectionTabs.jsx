@@ -11,7 +11,7 @@ export default function MobileSectionTabs({ sections, activeSection, onSelect })
   return (
     <div
       data-testid="codesite-mobile-section-tabs"
-      className="sticky top-0 z-20 border-b px-3 py-1.5 shadow-[0_10px_24px_rgba(0,0,0,0.16)] @min-[34rem]/panel:hidden"
+      className="sticky top-0 z-20 border-b px-3 py-1.5 @min-[34rem]/panel:hidden"
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
