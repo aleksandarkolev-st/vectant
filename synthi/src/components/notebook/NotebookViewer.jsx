@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import DOMPurify from 'dompurify';
+import { marked } from 'marked';
 import { AlertTriangle, Check, ChevronDown, Code2, FileText, Play, Save, Square } from 'lucide-react';
 import { jupyterFlags } from '@/lib/jupyter/flags';
 import { parseNotebook, serializeNotebook } from '@/lib/jupyter/notebook';
@@ -9,15 +10,6 @@ import { serializeNotebookContext } from '@/context/notebook/serializeNotebookCo
 
 function asText(value) {
   return Array.isArray(value) ? value.join('') : String(value ?? '');
-}
-
-function safeHref(value) {
-  try {
-    const url = new URL(value);
-    return ['http:', 'https:', 'mailto:'].includes(url.protocol) ? url.href : null;
-  } catch (_) {
-    return null;
-  }
 }
 
 const NOTEBOOK_HTML_POLICY = {
@@ -32,68 +24,9 @@ function SafeNotebookHtml({ html }) {
   return <div className="notebook-markdown notebook-html" dangerouslySetInnerHTML={{ __html: sanitized }} />;
 }
 
-function MarkdownInline({ text }) {
-  const parts = asText(text).split(/(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|~~[^~]+~~|(?<!\w)\*[^*]+\*(?!\w)|(?<!\w)_[^_]+_(?!\w))/g);
-  return parts.map((part, index) => {
-    const link = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-    if (link) {
-      const href = safeHref(link[2]);
-      return href ? <a key={index} href={href} target="_blank" rel="noopener noreferrer">{link[1]}</a> : <span key={index}>{link[1]}</span>;
-    }
-    if (part.startsWith('`') && part.endsWith('`')) return <code key={index}>{part.slice(1, -1)}</code>;
-    if (part.startsWith('**') && part.endsWith('**')) return <strong key={index}>{part.slice(2, -2)}</strong>;
-    if (part.startsWith('~~') && part.endsWith('~~')) return <del key={index}>{part.slice(2, -2)}</del>;
-    if ((part.startsWith('*') && part.endsWith('*')) || (part.startsWith('_') && part.endsWith('_'))) return <em key={index}>{part.slice(1, -1)}</em>;
-    return <span key={index}>{part}</span>;
-  });
-}
-
 function SafeMarkdown({ value }) {
-  const lines = asText(value).replace(/\r\n?/g, '\n').split('\n');
-  const blocks = [];
-  for (let index = 0; index < lines.length;) {
-    const line = lines[index];
-    const fence = line.match(/^(```|~~~)\s*([^\s]*)/);
-    if (fence) {
-      const code = []; const marker = fence[1]; index += 1;
-      while (index < lines.length && !lines[index].startsWith(marker)) code.push(lines[index++]);
-      if (index < lines.length) index += 1;
-      blocks.push(<pre className="notebook-markdown-code" key={`code-${index}`}><code>{code.join('\n')}</code></pre>);
-      continue;
-    }
-    const heading = line.match(/^(#{1,6})\s+(.+)$/);
-    if (heading) {
-      const Tag = `h${heading[1].length}`;
-      blocks.push(<Tag key={`heading-${index}`}><MarkdownInline text={heading[2]} /></Tag>); index += 1; continue;
-    }
-    if (/^\s*</.test(line)) {
-      const html = [];
-      while (index < lines.length && lines[index].trim()) html.push(lines[index++]);
-      blocks.push(<SafeNotebookHtml html={html.join('\n')} key={`html-${index}`} />);
-      continue;
-    }
-    if (/^>\s?/.test(line)) {
-      const quote = [];
-      while (index < lines.length && /^>\s?/.test(lines[index])) quote.push(lines[index++].replace(/^>\s?/, ''));
-      blocks.push(<blockquote className="notebook-markdown-quote" key={`quote-${index}`}><SafeMarkdown value={quote.join('\n')} /></blockquote>);
-      continue;
-    }
-    const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
-    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
-    if (unordered || ordered) {
-      const orderedList = Boolean(ordered); const items = [];
-      const matcher = orderedList ? /^\s*\d+[.)]\s+(.+)$/ : /^\s*[-*+]\s+(.+)$/;
-      while (index < lines.length && matcher.test(lines[index])) items.push(lines[index++].match(matcher)[1]);
-      const List = orderedList ? 'ol' : 'ul';
-      blocks.push(<List key={`list-${index}`}>{items.map((item, itemIndex) => <li key={itemIndex}><MarkdownInline text={item} /></li>)}</List>);
-      continue;
-    }
-    if (!line.trim()) { index += 1; continue; }
-    const paragraph = [];
-    while (index < lines.length && lines[index].trim() && !/^(```|~~~|#{1,6}\s+|>\s?|\s*<)/.test(lines[index]) && !/^(\s*[-*+]\s+|\s*\d+[.)]\s+)/.test(lines[index])) paragraph.push(lines[index++]);
-    blocks.push(<p key={`paragraph-${index}`}>{paragraph.map((part, partIndex) => <span key={partIndex}><MarkdownInline text={part} />{partIndex < paragraph.length - 1 && <br />}</span>)}</p>);
-  }
-  return <div className="notebook-markdown">{blocks}</div>;
+  const html = useMemo(() => marked.parse(asText(value), { async: false, gfm: true }), [value]);
+  return <SafeNotebookHtml html={html} />;
 }
 
 function SafeOutput({ output }) {
