@@ -2,107 +2,90 @@ import { motion, useReducedMotion } from "framer-motion";
 import { MOTION_EASE } from "../lib/motion";
 import { CodeSiteIcons } from "../icons";
 
-export default function MobileSectionTabs({ sections, activeSection, onSelect }) {
+/**
+ * The narrow-dock first level. Shows the four groups rather than all ten
+ * sections, which is what let the old version overflow into a horizontal
+ * scroller. The second level (ViewStrip) renders below this, from the panel.
+ *
+ * Keeps three baseline test ids: codesite-mobile-section-tabs,
+ * codesite-mobile-section-tab and codesite-mobile-action-drawer.
+ */
+export default function MobileSectionTabs({
+  groups,
+  activeGroup,
+  onSelect,
+  activeSectionLabel,
+}) {
   const reduceMotion = useReducedMotion();
   const activeIndex = Math.max(
     0,
-    sections.findIndex((section) => section.key === activeSection),
+    groups.findIndex((group) => group.key === activeGroup),
   );
   return (
     <div
       data-testid="codesite-mobile-section-tabs"
-      className="sticky top-0 z-20 border-b px-3 py-1.5 shadow-[0_10px_24px_rgba(0,0,0,0.16)] @min-[34rem]/panel:hidden"
-      style={{
-        borderColor:
-          "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
-        background:
-          "color-mix(in srgb, var(--bg-sidebar) 96%, var(--accent-primary) 4%)",
-      }}
+      className="sticky top-0 z-20 border-b px-3 py-1.5 @min-[34rem]/panel:hidden"
+      style={{ borderColor: "var(--border-subtle)" }}
     >
       <div
-        className="flex min-w-0 gap-1 overflow-x-auto rounded-lg border p-1"
+        className="grid min-w-0 grid-cols-2 gap-1 rounded-md border p-1"
         role="tablist"
-        aria-label="CodeSite sections"
+        aria-label="CodeSite section groups"
         style={{
           borderColor: "var(--border-subtle)",
-          background: "color-mix(in srgb, var(--bg-editor) 76%, transparent)",
+          background: "color-mix(in srgb, var(--bg-panel) 72%, transparent)",
         }}
       >
-        {sections.map((section) => {
-          const Icon = section.icon || CodeSiteIcons.liveState;
+        {groups.map((group) => {
+          const active = activeGroup === group.key;
+          const Icon = group.icon || CodeSiteIcons.liveState;
           return (
-            <motion.button
-              key={section.key}
+            <button
+              key={group.key}
               type="button"
               role="tab"
-              aria-selected={activeSection === section.key}
-              aria-controls={`codesite-section-${section.key}`}
+              aria-selected={active}
               data-testid="codesite-mobile-section-tab"
-              data-codesite-section-key={section.key}
-              onClick={() => onSelect(section.key)}
-              whileTap={reduceMotion ? undefined : { scale: 0.985 }}
-              className="relative inline-flex h-11 shrink-0 items-center gap-2 rounded-md border px-3 text-[11px] font-semibold transition-[background,border-color,color] active:scale-[0.98]"
+              data-codesite-group-key={group.key}
+              onClick={() => onSelect?.(group.key)}
+              className="th-focus-ring grid min-h-10 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-1.5 rounded-[var(--radius-control)] border px-2 text-left text-[11px] transition-[background,border-color]"
               style={{
-                borderColor:
-                  activeSection === section.key
-                    ? "color-mix(in srgb, var(--accent-primary) 54%, var(--border-subtle))"
-                    : "var(--border-subtle)",
-                background:
-                  activeSection === section.key
-                    ? "color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))"
-                    : "var(--bg-elevated)",
-                color: "var(--text-primary)",
-                transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
+                borderColor: active
+                  ? "color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))"
+                  : "color-mix(in srgb, var(--border-subtle) 74%, transparent)",
+                background: active
+                  ? "color-mix(in srgb, var(--accent-primary) 10%, var(--bg-panel))"
+                  : "transparent",
+                color: active ? "var(--text-primary)" : "var(--text-secondary)",
               }}
             >
-              {activeSection === section.key && !reduceMotion ? (
-                <motion.span
-                  layoutId="codesite-mobile-active-section"
-                  className="absolute inset-0 rounded-md"
-                  style={{
-                    border:
-                      "1px solid color-mix(in srgb, var(--accent-primary) 54%, transparent)",
-                  }}
-                  transition={{ duration: 0.2, ease: MOTION_EASE }}
-                />
-              ) : null}
-              <Icon
-                className="relative h-3.5 w-3.5 shrink-0"
-                style={{ color: "var(--accent-primary)" }}
-              />
-              <span className="relative">{section.label}</span>
+              <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
+              <span className="truncate font-semibold">{group.label}</span>
               <span
-                className="relative h-1.5 w-1.5 rounded-full"
+                className="font-mono text-[10px]"
                 style={{
-                  background:
-                    activeSection === section.key
-                      ? "var(--accent-primary)"
-                      : "var(--border-subtle)",
+                  color: active ? "var(--accent-primary)" : "var(--text-muted)",
                 }}
-              />
-            </motion.button>
+              >
+                {group.count}
+              </span>
+            </button>
           );
         })}
       </div>
       <div
         data-testid="codesite-mobile-action-drawer"
-        className="mt-2 grid gap-2 rounded-lg border p-2 text-[11px]"
+        className="mt-1.5 grid gap-1.5 rounded-md border p-2 text-[11px]"
         style={{
-          borderColor:
-            "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
-          background:
-            "color-mix(in srgb, var(--bg-elevated) 92%, var(--bg-editor) 8%)",
+          borderColor: "var(--border-subtle)",
+          background: "color-mix(in srgb, var(--bg-panel) 72%, transparent)",
           color: "var(--text-muted)",
         }}
       >
         <div className="flex items-center justify-between gap-2">
           <span>Section</span>
-          <span
-            className="font-semibold"
-            style={{ color: "var(--text-primary)" }}
-          >
-            {sections.find((section) => section.key === activeSection)?.label ||
-              "Scope"}
+          <span className="truncate font-semibold" style={{ color: "var(--text-primary)" }}>
+            {activeSectionLabel || "Overview"}
           </span>
         </div>
         <div
@@ -116,16 +99,12 @@ export default function MobileSectionTabs({ sections, activeSection, onSelect })
               transformOrigin: "left center",
             }}
             initial={false}
-            animate={{
-              scaleX: (activeIndex + 1) / Math.max(1, sections.length),
-            }}
+            animate={{ scaleX: (activeIndex + 1) / Math.max(1, groups.length) }}
             transition={{ duration: reduceMotion ? 0 : 0.2, ease: MOTION_EASE }}
           />
         </div>
         <span className="sr-only">
-          {reduceMotion
-            ? "Reduced motion active"
-            : "Animated section jump active"}
+          {reduceMotion ? "Reduced motion active" : "Animated section jump active"}
         </span>
       </div>
     </div>

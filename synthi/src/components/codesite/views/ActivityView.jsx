@@ -46,6 +46,8 @@ export default function ActivityView({ events, streamStatus, inboxItems }) {
       <Section
         title="Agent Inbox"
         icon={CodeSiteIcons.files}
+        count={inboxItems.length}
+        hideWhenEmpty
         right={
           <Pill
             tone={

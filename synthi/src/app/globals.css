@@ -1268,17 +1268,18 @@
     linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 82%, black 18%), var(--bg-app));
 }
 
-/* CodeSite tokens — derived from the active theme's accent palette so every
-   theme restyles the panel. A theme can re-tint by overriding any
-   --codesite-* variable; nothing inside the panel is hardcoded. */
+/* CodeSite tokens — status semantics only, derived from the active theme's
+   accent palette so a theme can re-tint what success/warning/danger mean by
+   overriding any --codesite-* variable. Structure (surfaces, borders, the
+   toolbar) comes from the shared vocabulary the sibling Agents panels use:
+   vt-app-surface, vt-toolbar, --border-subtle, --bg-panel. Nothing inside the
+   panel is hardcoded. */
 [data-panel-type="codesite"] {
   --codesite-accent-secondary: var(--accent-secondary);
   --codesite-success: var(--accent-success);
   --codesite-warning: var(--accent-warning);
   --codesite-danger: var(--accent-danger);
   --codesite-muted-accent: color-mix(in srgb, var(--accent-primary) 40%, var(--text-secondary) 60%);
-  --codesite-panel-line: color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%);
-  --codesite-panel-surface: color-mix(in srgb, var(--bg-sidebar) 94%, var(--bg-editor) 6%);
   color: var(--text-primary);
 }
 
