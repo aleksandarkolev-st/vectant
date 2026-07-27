@@ -10,7 +10,8 @@ export class JupyterClient {
     if (!allowedJupyterEndpoint(path)) throw new JupyterGatewayError('Jupyter endpoint is not permitted', 403, 'endpoint_denied');
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await fetch(this.endpointUrl(path), { ...options, signal: options.signal || controller.signal, headers: { Accept: 'application/json', ...(this.token ? { Authorization: `token ${this.token}` } : {}), ...(options.headers || {}) } });
+      const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+      const response = await fetch(this.endpointUrl(path), { ...options, signal, headers: { Accept: 'application/json', ...(this.token ? { Authorization: `token ${this.token}` } : {}), ...(options.headers || {}) } });
       if (!response.ok) throw new JupyterGatewayError(`Jupyter request failed (${response.status})`, response.status, response.status === 401 || response.status === 403 ? 'unauthorized' : 'upstream_error');
       return response;
     } catch (error) { if (error instanceof JupyterGatewayError) throw error; if (error.name === 'AbortError') throw new JupyterGatewayError('Jupyter request timed out', 504, 'timeout'); throw new JupyterGatewayError('Jupyter server is unavailable', 502, 'unavailable'); } finally { clearTimeout(timer); }
@@ -37,7 +38,8 @@ export class JupyterClient {
     const origin = new URL(this.origin); const wsUrl = `${protocol}//${origin.host}/${this.mountPath ? `${this.mountPath}/` : ''}api/kernels/${encodeURIComponent(kernelId)}/channels`;
     return new Promise((resolve, reject) => {
       let completed = false; const outputs = []; const messageId = crypto.randomUUID(); const socket = new WebSocket(wsUrl, { headers: this.token ? { Authorization: `token ${this.token}` } : undefined });
-      const finish = (result) => { if (completed) return; completed = true; try { socket.close(); } catch {} result.error ? reject(result.error) : resolve({ outputs, executionState: result.executionState || 'idle' }); };
+      const executionTimer = setTimeout(() => abort(), this.timeoutMs);
+      const finish = (result) => { if (completed) return; completed = true; clearTimeout(executionTimer); if (signal) signal.removeEventListener('abort', abort); try { socket.close(); } catch {} result.error ? reject(result.error) : resolve({ outputs, executionState: result.executionState || 'idle' }); };
       const abort = () => { this.interruptKernel(kernelId).catch(() => {}); finish({ error: new JupyterGatewayError('Execution state is unknown after cancellation', 499, 'execution_unknown') }); };
       if (signal) signal.addEventListener('abort', abort, { once: true });
       socket.on('open', () => socket.send(JSON.stringify({ header: { msg_id: messageId, username: 'vectant', session: messageId, msg_type: 'execute_request', version: '5.3' }, parent_header: {}, metadata: {}, content: { code, silent: false, store_history: true, allow_stdin: false, stop_on_error: true }, channel: 'shell' })));
