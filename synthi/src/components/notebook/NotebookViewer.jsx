@@ -89,9 +89,7 @@ function SafeMarkdown({ value }) {
     }
     if (!line.trim()) { index += 1; continue; }
     const paragraph = [];
-    blocks.push(<p key={`paragraph-${index}`}>{paragraph.map((part, partIndex) => <span key={partIndex}><MarkdownInline text={part} />{partIndex < paragraph.length - 1 && <br />}</span>)}</p>);
     while (index < lines.length && lines[index].trim() && !/^(```|~~~|#{1,6}\s+|>\s?|\s*<)/.test(lines[index]) && !/^(\s*[-*+]\s+|\s*\d+[.)]\s+)/.test(lines[index])) paragraph.push(lines[index++]);
-    blocks.push(<p key={`paragraph-${index}`}>{paragraph.map((part, partIndex) => <span key={partIndex}><MarkdownInline text={part} />{partIndex < paragraph.length - 1 && <br />}</span>)}</p>);
     blocks.push(<p key={`paragraph-${index}`}>{paragraph.map((part, partIndex) => <span key={partIndex}><MarkdownInline text={part} />{partIndex < paragraph.length - 1 && <br />}</span>)}</p>);
   }
   return <div className="notebook-markdown">{blocks}</div>;
