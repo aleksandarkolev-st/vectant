@@ -1,20 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ actor: vi.fn(), read: vi.fn(), write: vi.fn(), list: vi.fn(), create: vi.fn(), resolve: vi.fn(), clientGet: vi.fn(), clientSave: vi.fn(), clientConnect: vi.fn(), clientExecute: vi.fn(), audit: vi.fn() }));
+const h = vi.hoisted(() => ({ actor: vi.fn(), read: vi.fn(), write: vi.fn(), list: vi.fn(), create: vi.fn(), resolve: vi.fn(), clientGet: vi.fn(), clientSave: vi.fn(), clientConnect: vi.fn(), clientExecute: vi.fn(), clientInterrupt: vi.fn(), clientRestart: vi.fn(), audit: vi.fn() }));
 vi.mock('@/lib/integrations/session', () => ({ resolveActor: h.actor }));
 vi.mock('@/lib/integrations/scope', () => ({ canReadScope: h.read, canWriteScope: h.write }));
 vi.mock('@/lib/jupyter/registry', () => ({ listJupyterServers: h.list, createJupyterServer: h.create, resolveJupyterServer: h.resolve }));
 vi.mock('@/lib/jupyter/audit', () => ({ recordJupyterAudit: h.audit }));
-vi.mock('@/lib/jupyter/client', () => ({ JupyterClient: class { getNotebook(...args) { return h.clientGet(...args); } saveNotebook(...args) { return h.clientSave(...args); } connectKernel(...args) { return h.clientConnect(...args); } execute(...args) { return h.clientExecute(...args); } } }));
+vi.mock('@/lib/jupyter/client', () => ({ JupyterClient: class { getNotebook(...args) { return h.clientGet(...args); } saveNotebook(...args) { return h.clientSave(...args); } connectKernel(...args) { return h.clientConnect(...args); } execute(...args) { return h.clientExecute(...args); } interruptKernel(...args) { return h.clientInterrupt(...args); } restartKernel(...args) { return h.clientRestart(...args); } } }));
 
 import { GET as listServers, POST as createServer } from '../servers/route.js';
 import { GET as snapshot } from '../snapshot/route.js';
 import { POST as save } from '../save/route.js';
 import { POST as execute } from '../execute/route.js';
+import { POST as interrupt } from '../kernels/[kernelId]/interrupt/route.js';
+import { POST as restart } from '../kernels/[kernelId]/restart/route.js';
 
-const ctx = { params: Promise.resolve({ slug: 'team' }) };
+const ctx = { params: Promise.resolve({ slug: 'team' }) }; const kernelCtx = { params: Promise.resolve({ slug: 'team', kernelId: 'kernel-1' }) };
 const request = (url, body = {}) => ({ url, json: async () => body, signal: new AbortController().signal });
-beforeEach(() => { vi.clearAllMocks(); h.actor.mockResolvedValue({ userId: 'user-1' }); h.read.mockResolvedValue(true); h.write.mockResolvedValue(true); h.resolve.mockResolvedValue({ id: 'server-1', origin: 'https://jupyter.test', token: null }); h.clientGet.mockResolvedValue({ type: 'notebook', content: { nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [] }, last_modified: 'rev-1' }); h.clientSave.mockResolvedValue({ last_modified: 'rev-2' }); h.clientConnect.mockResolvedValue({ kernel: { id: 'kernel-1' } }); h.clientExecute.mockResolvedValue({ outputs: [{ output_type: 'stream', text: '1\\n' }], executionState: 'idle' }); });
+beforeEach(() => { vi.clearAllMocks(); h.actor.mockResolvedValue({ userId: 'user-1' }); h.read.mockResolvedValue(true); h.write.mockResolvedValue(true); h.resolve.mockResolvedValue({ id: 'server-1', origin: 'https://jupyter.test', token: null }); h.clientGet.mockResolvedValue({ type: 'notebook', content: { nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [] }, last_modified: 'rev-1' }); h.clientSave.mockResolvedValue({ last_modified: 'rev-2' }); h.clientConnect.mockResolvedValue({ kernel: { id: 'kernel-1' } }); h.clientExecute.mockResolvedValue({ outputs: [{ output_type: 'stream', text: '1\\n' }], executionState: 'idle' }); h.clientRestart.mockResolvedValue({ id: 'kernel-1' }); });
 
 describe('Jupyter workspace routes', () => {
   it('does not expose workspace servers to non-members', async () => { h.read.mockResolvedValue(false); const response = await listServers(request('http://app/api/workspace/team/jupyter/servers'), ctx); expect(response.status).toBe(403); expect(h.list).not.toHaveBeenCalled(); });
@@ -22,4 +24,5 @@ describe('Jupyter workspace routes', () => {
   it('does not fetch a notebook from an unavailable or cross-workspace server', async () => { h.resolve.mockResolvedValue(null); const response = await snapshot(request('http://app/api/workspace/team/jupyter/snapshot?serverId=other&path=a.ipynb'), ctx); expect(response.status).toBe(404); expect(h.clientGet).not.toHaveBeenCalled(); });
   it('refuses a stale server revision before saving', async () => { h.clientGet.mockResolvedValue({ type: 'notebook', content: { nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [] }, last_modified: 'server-new' }); const response = await save(request('http://app/api/workspace/team/jupyter/save', { serverId: 'server-1', path: 'a.ipynb', notebook: { nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [] }, expectedServerRevision: 'old' }), ctx); expect(response.status).toBe(409); expect(h.clientSave).not.toHaveBeenCalled(); });
   it('executes through the workspace gateway and reuses the kernel connection', async () => { const response = await execute(request('http://app/api/workspace/team/jupyter/execute', { serverId: 'server-1', path: 'a.ipynb', code: 'print(1)' }), ctx); expect(response.status).toBe(200); expect(h.clientConnect).toHaveBeenCalledWith(expect.objectContaining({ path: 'a.ipynb' })); expect(h.clientExecute).toHaveBeenCalledWith(expect.objectContaining({ kernelId: 'kernel-1', code: 'print(1)' })); expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'cell_executed', kernelId: 'kernel-1' })); });
+  it('interrupts and restarts only the workspace-scoped kernel', async () => { expect((await interrupt(request('http://app/api/workspace/team/jupyter/kernels/kernel-1/interrupt', { serverId: 'server-1', path: 'a.ipynb' }), kernelCtx)).status).toBe(200); expect(h.clientInterrupt).toHaveBeenCalledWith('kernel-1', expect.anything()); expect((await restart(request('http://app/api/workspace/team/jupyter/kernels/kernel-1/restart', { serverId: 'server-1', path: 'a.ipynb' }), kernelCtx)).status).toBe(200); expect(h.clientRestart).toHaveBeenCalledWith('kernel-1', expect.anything()); });
 });

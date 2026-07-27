@@ -266,7 +266,7 @@ async function execExecuteNotebookCells(slug, args, signal) {
     if (!server) return { error: 'Registered Jupyter server is unavailable for this workspace' };
     if (!String(args?.notebookPath || '').endsWith('.ipynb')) return { error: 'Notebook path must end in .ipynb' };
     try {
-        const client = new JupyterClient(server); const session = await client.startKernel({ path: args.notebookPath, kernelName: args.kernelName, signal });
+        const client = new JupyterClient(server); const session = await client.connectKernel({ path: args.notebookPath, kernelName: args.kernelName, signal });
         const result = await client.execute({ kernelId: session.kernel?.id, code: String(args.code), signal });
         return { serverId: server.id, notebookPath: args.notebookPath, kernelId: session.kernel?.id, ...result };
     } catch (error) { return { error: error.message, code: error.code || 'jupyter_execution_error' }; }

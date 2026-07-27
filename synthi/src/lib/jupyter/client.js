@@ -22,6 +22,7 @@ export class JupyterClient {
   async listSessions(signal) { return (await this.request('api/sessions', { signal })).json(); }
   async status(signal) { return (await this.request('api/status', { signal })).json(); }
   async interruptKernel(kernelId, signal) { await this.request(`api/kernels/${encodeURIComponent(kernelId)}/interrupt`, { method: 'POST', signal }); }
+  async restartKernel(kernelId, signal) { return (await this.request(`api/kernels/${encodeURIComponent(kernelId)}/restart`, { method: 'POST', signal })).json(); }
   async startKernel({ path, kernelName, signal }) {
     const response = await this.request('api/sessions', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: safeJupyterPath(path), type: 'notebook', name: path.split('/').pop(), kernel: kernelName ? { name: kernelName } : {} }) });
     return response.json();
