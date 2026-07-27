@@ -20,6 +20,33 @@ export function parseNotebook(raw) {
   return normalizeNotebook(notebook);
 }
 
+/**
+ * Return a standards-compliant, immediately editable notebook.  File creation
+ * must never use an empty string for .ipynb files: Jupyter treats that as a
+ * malformed document rather than a blank notebook.
+ */
+export function createNotebook({ kernelName = 'python3' } = {}) {
+  return {
+    nbformat: 4,
+    nbformat_minor: 5,
+    metadata: {
+      kernelspec: { display_name: 'Python 3', language: 'python', name: kernelName },
+      language_info: { name: 'python' },
+    },
+    cells: [{
+      cell_type: 'code',
+      execution_count: null,
+      metadata: {},
+      outputs: [],
+      source: '',
+    }],
+  };
+}
+
+export function createNotebookContent(options) {
+  return serializeNotebook(createNotebook(options));
+}
+
 export function normalizeNotebook(notebook) {
   if (!notebook || typeof notebook !== 'object' || Array.isArray(notebook)) throw new NotebookValidationError('Notebook must be an object');
   if (!Number.isInteger(notebook.nbformat) || notebook.nbformat < 3) throw new NotebookValidationError('Unsupported notebook format');
@@ -53,4 +80,3 @@ function isObject(value) { return value !== null && typeof value === 'object' &&
 
 export function serializeNotebook(notebook, space = 1) { return `${JSON.stringify(normalizeNotebook(notebook), null, space)}\n`; }
 export function revisionOf(raw) { return { hash: sha256(raw), bytes: new TextEncoder().encode(raw).byteLength }; }
-
