@@ -4,12 +4,13 @@ import WebSocket from 'ws';
 export class JupyterGatewayError extends Error { constructor(message, status = 502, code = 'jupyter_error') { super(message); this.status = status; this.code = code; } }
 
 export class JupyterClient {
-  constructor({ origin, token, timeoutMs = 12_000 }) { this.origin = origin.replace(/\/$/, ''); this.token = token; this.timeoutMs = timeoutMs; }
+  constructor({ origin, mountPath = '', token, timeoutMs = 12_000 }) { this.origin = origin.replace(/\/$/, ''); this.mountPath = String(mountPath).replace(/^\/+|\/+$/g, ''); this.token = token; this.timeoutMs = timeoutMs; }
+  endpointUrl(path) { return `${this.origin}/${this.mountPath ? `${this.mountPath}/` : ''}${path.replace(/^\//, '')}`; }
   async request(path, options = {}) {
     if (!allowedJupyterEndpoint(path)) throw new JupyterGatewayError('Jupyter endpoint is not permitted', 403, 'endpoint_denied');
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await fetch(`${this.origin}/${path.replace(/^\//, '')}`, { ...options, signal: options.signal || controller.signal, headers: { Accept: 'application/json', ...(this.token ? { Authorization: `token ${this.token}` } : {}), ...(options.headers || {}) } });
+      const response = await fetch(this.endpointUrl(path), { ...options, signal: options.signal || controller.signal, headers: { Accept: 'application/json', ...(this.token ? { Authorization: `token ${this.token}` } : {}), ...(options.headers || {}) } });
       if (!response.ok) throw new JupyterGatewayError(`Jupyter request failed (${response.status})`, response.status, response.status === 401 || response.status === 403 ? 'unauthorized' : 'upstream_error');
       return response;
     } catch (error) { if (error instanceof JupyterGatewayError) throw error; if (error.name === 'AbortError') throw new JupyterGatewayError('Jupyter request timed out', 504, 'timeout'); throw new JupyterGatewayError('Jupyter server is unavailable', 502, 'unavailable'); } finally { clearTimeout(timer); }
@@ -33,7 +34,7 @@ export class JupyterClient {
   async execute({ kernelId, code, signal, onOutput = () => {} }) {
     if (!kernelId || !code) throw new JupyterGatewayError('Kernel and code are required', 400, 'invalid_execution');
     const protocol = this.origin.startsWith('https:') ? 'wss:' : 'ws:';
-    const origin = new URL(this.origin); const wsUrl = `${protocol}//${origin.host}/api/kernels/${encodeURIComponent(kernelId)}/channels`;
+    const origin = new URL(this.origin); const wsUrl = `${protocol}//${origin.host}/${this.mountPath ? `${this.mountPath}/` : ''}api/kernels/${encodeURIComponent(kernelId)}/channels`;
     return new Promise((resolve, reject) => {
       let completed = false; const outputs = []; const messageId = crypto.randomUUID(); const socket = new WebSocket(wsUrl, { headers: this.token ? { Authorization: `token ${this.token}` } : undefined });
       const finish = (result) => { if (completed) return; completed = true; try { socket.close(); } catch {} result.error ? reject(result.error) : resolve({ outputs, executionState: result.executionState || 'idle' }); };
