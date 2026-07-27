@@ -1,5 +1,5 @@
 import { allowedJupyterEndpoint, safeJupyterPath } from './policy';
-import WebSocket from 'ws';
+import WebSocket from 'next/dist/compiled/ws';
 
 export class JupyterGatewayError extends Error { constructor(message, status = 502, code = 'jupyter_error') { super(message); this.status = status; this.code = code; } }
 
