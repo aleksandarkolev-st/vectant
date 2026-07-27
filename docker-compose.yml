@@ -108,8 +108,9 @@ services:
       NEXTAUTH_URL: "http://localhost:${FRONTEND_HOST_PORT:-3000}/"
       SYNTHI_APP_INTERNAL_URL: "http://frontend:3000"
       # Permit the local Docker frontend to reach a Jupyter server exposed on
-      # the host at host.docker.internal. Remote servers still require HTTPS.
+      # the host or private LAN. Public servers still require HTTPS.
       JUPYTER_ALLOW_DOCKER_HOST: "${JUPYTER_ALLOW_DOCKER_HOST:-1}"
+      JUPYTER_ALLOW_PRIVATE_HTTP: "${JUPYTER_ALLOW_PRIVATE_HTTP:-1}"
       # Local-compose auth secret used by NextAuth. Production deployments must
       # provide AUTH_SECRET/NEXTAUTH_SECRET through their secret manager.
       AUTH_SECRET: "${AUTH_SECRET:-local-compose-auth-secret}"

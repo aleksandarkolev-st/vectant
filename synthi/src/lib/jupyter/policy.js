@@ -10,7 +10,8 @@ export function validateJupyterOrigin(value) {
   if (url.username || url.password || url.search || url.hash) throw new Error('Jupyter server URL must not contain credentials, a query, or fragment');
   const localhost = ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
   const dockerHost = url.hostname === 'host.docker.internal' && process.env.JUPYTER_ALLOW_DOCKER_HOST === '1';
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (localhost || dockerHost))) throw new Error('Jupyter server must use HTTPS, except approved local development servers');
+  const privateNetworkHost = net.isIP(url.hostname) === 4 && PRIVATE_V4.some((pattern) => pattern.test(url.hostname)) && process.env.JUPYTER_ALLOW_PRIVATE_HTTP === '1';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (localhost || dockerHost || privateNetworkHost))) throw new Error('Jupyter server must use HTTPS, except approved local development servers');
   if (url.hostname.endsWith('.local') || net.isIP(url.hostname) === 4 && !PRIVATE_V4.some((pattern) => pattern.test(url.hostname)) && !url.hostname.startsWith('127.')) throw new Error('Unapproved network origin');
   return url.origin;
 }
