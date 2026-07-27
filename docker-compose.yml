@@ -410,4 +410,6 @@ services:
 volumes:
   ysweet-data:
   postgres-data:
-  collab-data:
+  collab-data:      # Permit the local Docker frontend to reach a Jupyter server exposed on
+      # the host at host.docker.internal. Remote servers still require HTTPS.
+      JUPYTER_ALLOW_DOCKER_HOST: "${JUPYTER_ALLOW_DOCKER_HOST:-1}"
