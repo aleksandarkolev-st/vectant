@@ -9,6 +9,7 @@ import { setShowTerminal } from '@/redux/uiSlice';
 import { useContextWindow } from './useContextWindow';
 import { useAgentPipeline, PIPELINE_MODES } from './useAgentPipeline';
 import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
+import { serializeNotebookContext } from '@/context/notebook/serializeNotebookContext';
 
 const INTENT_CLASSIFY_URL = '/api/classify/intent';
 
@@ -1577,8 +1578,20 @@ export const useAISuggestions = ({
                     (activeFile?.name ? getFileLanguage(activeFile.name) : undefined) ||
                     'plaintext')
                 : 'plaintext';
-            const normalizedLang = (langSource || 'plaintext').toLowerCase();
-            const code = includeActiveFile ? getLiveCurrentCode() : '';
+            let normalizedLang = (langSource || 'plaintext').toLowerCase();
+            let code = includeActiveFile ? getLiveCurrentCode() : '';
+            const isNotebook = includeActiveFile && /\.ipynb$/i.test(activeFile?.path || activeFile?.name || '');
+            let notebookContext = null;
+            if (isNotebook) {
+                try {
+                    notebookContext = serializeNotebookContext({ path: activeFile.path || activeFile.name, notebook: JSON.parse(code) });
+                    code = notebookContext.content;
+                    normalizedLang = 'jupyter-notebook';
+                } catch (error) {
+                    appendProgressLog(`Notebook context was not attached: ${error.message}`);
+                    code = '';
+                }
+            }
             const userPrompt = inputValue;
             
             // Classify user intent using LLM-based backend (with local fallback)
@@ -1791,13 +1804,16 @@ If image attachments are present, read/ocr the images and extract any text or co
             const mentionsOtherFile = skipFileContext ? false : (promptMentionedPaths.length > 0 || /\b[a-zA-Z0-9_-]+\.[a-zA-Z0-9]{1,5}\b/.test(userPrompt) || /other file|another file|files/i.test(userPrompt) || /delete\s+\w+/i.test(userPrompt) || /remove\s+\w+/i.test(userPrompt) || /create\s+\w+/i.test(userPrompt) || /new file/i.test(userPrompt) || /\b(main\s*page|home\s*page|the\s*page|the\s*app)/i.test(userPrompt));
             const includeRelatedFiles = relatedPaths.length > 0;
             const wantsFullRepo = skipFileContext ? false : /\b(full repo|entire repo|whole repo|entire project|all files|full context)\b/i.test(userPrompt);
-            const filesPayload = skipFileContext
+            let filesPayload = skipFileContext
                 ? []
                 : mentionsOtherFile
                     ? filesPayloadRaw
                     : includeRelatedFiles
                         ? filesPayloadRaw
                         : filesPayloadRaw.filter((f) => f.path === (activeFile?.path || activeFile?.name));
+            if (notebookContext && !skipFileContext) {
+                filesPayload = [{ path: notebookContext.path, content: notebookContext.content, kind: notebookContext.kind, provenance: notebookContext.provenance, truncated: notebookContext.truncated }];
+            }
             // Disable fallback to active file when prompt targets other files (creates/deletes) to avoid hijacking the active file.
             // Also disable when active file is detached from context.
             fallbackPathRef.current = (!includeActiveFile || mentionsOtherFile) ? null : (activeFile?.path || activeFile?.name || null);

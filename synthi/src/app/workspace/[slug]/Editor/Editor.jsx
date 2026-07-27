@@ -69,6 +69,8 @@ import { fileCache } from '@/services/fileCache';
 import { registerMonarchTokenizers } from './languageTokenizers';
 import * as monaco from '@codingame/monaco-vscode-editor-api';
 import { toast } from 'sonner';
+import NotebookViewer from '@/components/notebook/NotebookViewer';
+import { jupyterFlags } from '@/lib/jupyter/flags';
 
 const CloseAction = {
     DoNotRestart: 1,
@@ -329,6 +331,7 @@ const EditorPanel = ({
         if (typeof cached === 'string') return cached;
         return isFocusedPane ? (code ?? '') : '';
     }, [paneFile?.path, fileCacheEntries, isFocusedPane, code]);
+    const isNotebookDocument = jupyterFlags.viewer() && /\.ipynb$/i.test(paneFile?.path || paneFile?.name || '');
 
     // Git status for conflict detection
     const gitStatus = useAppSelector(state => state.git?.status);
@@ -4745,7 +4748,19 @@ const EditorPanel = ({
                                         )}
 
                                         {/* Regular Editor — hidden when diff is active */}
-                                        <div className="h-full w-full" style={{ display: diffMode ? 'none' : undefined }}>
+                                        {isNotebookDocument && !diffMode && (
+                                            <NotebookViewer
+                                                path={paneFile?.path || paneFile?.name || 'notebook.ipynb'}
+                                                workspaceSlug={slug}
+                                                content={isFocusedPane ? (code || '') : paneInitialContent}
+                                                readOnly={isCollabReadOnly || !jupyterFlags.editing()}
+                                                onSave={jupyterFlags.editing() && !isCollabReadOnly ? (nextContent) => {
+                                                    dispatch(updateContent(nextContent));
+                                                    dispatch(saveFileContentThunk());
+                                                } : undefined}
+                                            />
+                                        )}
+                                        <div className="h-full w-full" style={{ display: (diffMode || isNotebookDocument) ? 'none' : undefined }}>
                                             <Editor
                                                 height="100%"
                                                 path={paneFile

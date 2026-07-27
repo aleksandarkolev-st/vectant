@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { timingSafeEqual } from 'node:crypto';
 import { resolveActor } from '@/lib/integrations/session';
 import { canReadScope, canWriteScope } from '@/lib/integrations/scope';
 import { checkLimit, RATE_LIMITS } from '@/lib/integrations/rateLimit';
@@ -25,7 +26,30 @@ function workspaceAuthBypassEnabled() {
     || process.env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS === '1';
 }
 
-export async function requireCodesiteAccess(slug, mode = 'read') {
+function hasTrustedInternalCodeSiteToken(request) {
+  const configured = String(process.env.SYNTHI_CODESITE_TOKEN || '').trim();
+  const authorization = String(request.headers.get('authorization') || '').trim();
+  const prefix = 'Bearer ';
+  if (!configured || !authorization.startsWith(prefix)) return false;
+  const provided = authorization.slice(prefix.length);
+  const expectedBytes = Buffer.from(configured);
+  const providedBytes = Buffer.from(provided);
+  return expectedBytes.length === providedBytes.length
+    && timingSafeEqual(expectedBytes, providedBytes);
+}
+
+export async function requireCodesiteAccess(slug, mode = 'read', request = null) {
+  if (request && hasTrustedInternalCodeSiteToken(request)) {
+    return {
+      ok: true,
+      actor: {
+        userId: 'codesite-control-plane',
+        email: 'codesite-control-plane@synthi.local',
+        workspaceUserId: 'codesite-control-plane',
+        internal: true,
+      },
+    };
+  }
   if (workspaceAuthBypassEnabled()) {
     return {
       ok: true,

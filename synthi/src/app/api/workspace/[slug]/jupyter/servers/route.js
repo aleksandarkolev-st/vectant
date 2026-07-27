@@ -1,0 +1,10 @@
+import { NextResponse } from 'next/server';
+import { resolveActor } from '@/lib/integrations/session';
+import { canReadScope, canWriteScope } from '@/lib/integrations/scope';
+import { createJupyterServer, listJupyterServers } from '@/lib/jupyter/registry';
+import { recordJupyterAudit } from '@/lib/jupyter/audit';
+
+export const runtime = 'nodejs';
+async function actorFor(slug, write = false) { const actor = await resolveActor(); if (!actor) return null; const allowed = await (write ? canWriteScope : canReadScope)(actor, { scope: 'workspace', workspaceSlug: slug }); return allowed ? actor : null; }
+export async function GET(_request, { params }) { const { slug } = await params; if (!await actorFor(slug)) return NextResponse.json({ error: 'forbidden' }, { status: 403 }); return NextResponse.json({ servers: await listJupyterServers(slug) }); }
+export async function POST(request, { params }) { const { slug } = await params; const actor = await actorFor(slug, true); if (!actor) return NextResponse.json({ error: 'forbidden' }, { status: 403 }); const body = await request.json().catch(() => ({})); if (!body.name || !body.origin) return NextResponse.json({ error: 'name and origin are required' }, { status: 400 }); let connection; try { const url = new URL(body.origin); connection = { origin: url.origin, token: typeof body.token === 'string' && body.token.trim() ? body.token.trim() : url.searchParams.get('token') || null, mountPath: body.mountPath }; } catch { return NextResponse.json({ error: 'Jupyter server URL is invalid' }, { status: 400 }); } try { const { server, reused } = await createJupyterServer({ workspaceSlug: slug, name: body.name, ...connection }); void recordJupyterAudit({ workspaceSlug: slug, serverId: server.id, actorUserId: actor.userId, eventType: reused ? 'connection_updated' : 'connection_created' }); return NextResponse.json({ server, reused }, { status: reused ? 200 : 201 }); } catch (error) { return NextResponse.json({ error: error.message }, { status: 400 }); } }

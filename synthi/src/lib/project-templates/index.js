@@ -39,6 +39,7 @@ import {
 
 export const FILE_TYPES = [
   { id: 'py',   label: 'Python',     ext: 'py',   icon: FileCode,   defaultName: 'main' },
+  { id: 'ipynb', label: 'Jupyter Notebook', ext: 'ipynb', icon: FileCode, defaultName: 'notebook' },
   { id: 'ts',   label: 'TypeScript', ext: 'ts',   icon: Type,       defaultName: 'index' },
   { id: 'js',   label: 'JavaScript', ext: 'js',   icon: FileCode,   defaultName: 'index' },
   { id: 'cpp',  label: 'C++',        ext: 'cpp',  icon: FileCode,   defaultName: 'main' },

@@ -52,4 +52,6 @@ CLAUDE.md
 node_modules/
 backend/vectant-local-support-app/target/
 backend/vectant-local-support-app/desktop/target/
+backend/vectant-local-support-app/target-*/
+backend/vectant-local-support-app/desktop/target-*/
 backend/vectant-local-support-app/desktop/gen/

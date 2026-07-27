@@ -68,6 +68,39 @@ model EncryptedSecret {
   connection         McpConnection?
   gitProvider        GitProvider?   @relation("GitProviderSecret")
   gitProviderRefresh GitProvider?   @relation("GitProviderRefresh")
+  jupyterServer      JupyterServer?
+}
+
+model JupyterServer {
+  id           String           @id @default(cuid())
+  workspaceSlug String
+  name         String
+  origin       String
+  mountPath    String           @default("")
+  enabled      Boolean          @default(true)
+  secretId     String?          @unique
+  secret       EncryptedSecret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@index([workspaceSlug])
+  @@unique([workspaceSlug, origin])
+}
+
+model JupyterAuditEvent {
+  id            String   @id @default(cuid())
+  workspaceSlug String
+  serverId      String?
+  actorUserId   String?
+  eventType     String
+  notebookPath  String?
+  kernelId      String?
+  detailsJson   String   @default("{}")
+  createdAt     DateTime @default(now())
+
+  @@index([workspaceSlug, createdAt])
+  @@index([serverId, createdAt])
+  @@index([eventType, createdAt])
 }
 
 model McpConnection {
