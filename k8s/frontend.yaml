@@ -90,6 +90,15 @@ spec:
                 secretKeyRef:
                   name: synthi-secrets
                   key: GITHUB_SECRET
+            # ── CodeSite internal-service token ─────────────────────────────
+            # Validated here; presented by the collab-server. optional so a
+            # missing key degrades CodeSite instead of crash-looping the pod.
+            - name: SYNTHI_CODESITE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: SYNTHI_CODESITE_TOKEN
+                  optional: true
             # ── Database (Prisma) ───────────────────────────────────────────
             - name: DATABASE_URL
               valueFrom:

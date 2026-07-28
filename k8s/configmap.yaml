@@ -67,6 +67,12 @@ data:
   CORS_ORIGIN: "https://beta.vectant.dev"
   SYNTHI_PUBLIC_APP_URL: "https://beta.vectant.dev"
   SYNTHI_APP_INTERNAL_URL: "http://frontend.synthi.svc.cluster.local:3000"
+  # CodeSite control-plane authority. MUST be set explicitly: runtime filesystem
+  # hydration calls refreshWorkspaceFromControlPlane with requireAuthority=true,
+  # which throws when no authority is configured, surfacing as
+  # "active_authority_unavailable" and blocking every workspace runtime.
+  # {workspace_slug} is substituted per request.
+  SYNTHI_CODESITE_API_BASE_URL: "http://frontend.synthi.svc.cluster.local:3000/api/workspace/{workspace_slug}/codesite"
 
   # ── Next.js public env (baked into client bundle at build time) ─────────────
   # These MUST be set at `next build` time, not just runtime.
