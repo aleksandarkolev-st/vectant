@@ -371,6 +371,61 @@ test('CodeSite activity registry fails closed when mandatory active authority ha
   });
 });
 
+test('a generic app origin is not treated as a configured CodeSite authority', async (t) => {
+  await withTempRegistryPersistence(t, async () => {
+    await withCodeSiteOriginEnv({ SYNTHI_APP_INTERNAL_URL: 'http://frontend.internal:3000' }, async () => {
+      let fetchCalled = false;
+      const active = await activityRegistry.refreshWorkspaceFromControlPlane('registry-app-origin-only', {
+        fetch: async () => {
+          fetchCalled = true;
+          return new Response(JSON.stringify({ error: 'Authentication required' }), { status: 401 });
+        },
+      });
+      // No CodeSite endpoint was ever configured, so there is no authority to consult and
+      // nothing to fail closed against - the app origin alone must not conjure one.
+      assert.equal(fetchCalled, false);
+      assert.deepEqual(active, []);
+    });
+  });
+});
+
+test('a caller-supplied app-origin control plane URL stays trusted', async (t) => {
+  await withTempRegistryPersistence(t, async () => {
+    await withCodeSiteOriginEnv({ SYNTHI_APP_INTERNAL_URL: 'http://frontend.internal:3000' }, async () => {
+      let requestedUrl = null;
+      await activityRegistry.refreshWorkspaceFromControlPlane('registry-app-origin-supplied', {
+        controlPlaneUrl: 'http://frontend.internal:3000/api/workspace/registry-app-origin-supplied/codesite',
+        fetch: async (url) => {
+          requestedUrl = url;
+          return new Response(JSON.stringify({ activeTransactions: [] }), { status: 200 });
+        },
+      });
+      assert.equal(
+        requestedUrl,
+        'http://frontend.internal:3000/api/workspace/registry-app-origin-supplied/codesite/transactions/active',
+      );
+    });
+  });
+});
+
+test('CodeSite activity registry still fails closed when mandatory authority hits a rejecting control plane', async (t) => {
+  await withTempRegistryPersistence(t, async () => {
+    await withConfiguredCodeSiteBase(async () => {
+      await assert.rejects(
+        () => activityRegistry.refreshWorkspaceFromControlPlane('registry-required-unauthorized', {
+          requireAuthority: true,
+          fetch: async () => new Response(JSON.stringify({ error: 'Authentication required' }), { status: 401 }),
+        }),
+        (error) => (
+          error.code === 'CODESITE_ACTIVITY_CONTROL_PLANE_UNAVAILABLE'
+          && error.details?.reason === 'bad_status'
+          && error.details?.status === 401
+        ),
+      );
+    });
+  });
+});
+
 test('CodeSite request contexts do not publish self-declared active authority to the registry', () => {
   activityRegistry.resetRegistry();
   try {

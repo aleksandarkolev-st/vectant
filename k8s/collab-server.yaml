@@ -250,6 +250,44 @@ spec:
                 secretKeyRef:
                   name: synthi-secrets
                   key: SYNTHI_TOKEN_ENCRYPTION_KEY
+            # ── CodeSite control-plane authority ─────────────────────────
+            - name: SYNTHI_CODESITE_API_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_CODESITE_API_BASE_URL
+            # ── Workspace runtime backend ────────────────────────────────
+            # The Docker-based workspace runtime talks to /var/run/docker.sock,
+            # which does not exist in a k8s pod. It defaults ON in code, so it
+            # MUST be disabled here or every ensure-runtime call fails with
+            # ENOENT and the editor reports "Runtime unavailable". Workspace
+            # runtimes come from the k8s spawner instead.
+            - name: ENABLE_CODESITE_DOCKER_RUNTIME
+              value: "0"
+            # ── CodeSite internal-service token ──────────────────────────
+            # Presented when consulting the CodeSite control plane; the
+            # frontend validates the same value.
+            - name: SYNTHI_CODESITE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: SYNTHI_CODESITE_TOKEN
+                  optional: true
+            # ── Collab gateway JWT verification ──────────────────────────
+            # The frontend SIGNS terminal/exec gateway tokens with AUTH_SECRET;
+            # this server VERIFIES them. Without it every terminal WebSocket
+            # upgrade is refused with 503 gateway_auth_unconfigured. NOT optional:
+            # a missing secret fails closed and silently breaks all terminals.
+            - name: AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: AUTH_SECRET
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: NEXTAUTH_SECRET
             # ── Y-Sweet CRDT server ──────────────────────────────────────
             - name: YSWEET_URL
               valueFrom:
