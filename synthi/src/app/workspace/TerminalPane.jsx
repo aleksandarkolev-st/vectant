@@ -473,15 +473,18 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         import('xterm-addon-web-links'),
       ]);
 
-      // PERF: Attempt to load WebGL renderer addon for GPU-accelerated
-      // terminal rendering. Falls back to the default canvas renderer
-      // if WebGL is unavailable (e.g., software rendering, privacy mode).
+      // WebGL can race xterm's renderer teardown during pane resizes, which
+      // leaves its internal renderer undefined. Keep the reliable canvas
+      // renderer as the default; WebGL remains available for deliberate
+      // opt-in deployments that have validated it on their target browsers.
       let WebglAddon = null;
-      try {
-        const webglModule = await import('xterm-addon-webgl');
-        WebglAddon = webglModule.WebglAddon;
-      } catch (_) {
-        console.log('[Terminal] WebGL addon not available, using canvas renderer');
+      if (process.env.NEXT_PUBLIC_SYNTHI_TERMINAL_WEBGL === '1') {
+        try {
+          const webglModule = await import('xterm-addon-webgl');
+          WebglAddon = webglModule.WebglAddon;
+        } catch (_) {
+          console.log('[Terminal] WebGL addon not available, using canvas renderer');
+        }
       }
 
       if (disposed || !containerRef.current) return;
