@@ -2474,11 +2474,13 @@ describe("Dojo release gate manifest", () => {
     });
     const gate = manifest.gates.find((item) => item.id === "dojo_full_visual_proof");
     const validReport = buildFullVisualReportFixture();
+    const fullVisualResultCount = DOJO_FULL_VISUAL_ROUTE_IDS.length * DOJO_FULL_VISUAL_VIEWPORTS.length;
+    const missingOneFullVisualResult = fullVisualResultCount - 1;
 
     expect(validateDojoVisualProofReport(validReport, { gate })).toEqual(expect.objectContaining({
       ok: true,
       errors: [],
-      result_count: DOJO_FULL_VISUAL_ROUTE_IDS.length * DOJO_FULL_VISUAL_VIEWPORTS.length,
+      result_count: fullVisualResultCount,
     }));
 
     const rejectedReport = {
@@ -2500,7 +2502,7 @@ describe("Dojo release gate manifest", () => {
 
     expect(validateDojoVisualProofReport(rejectedReport, { gate }).errors).toEqual(expect.arrayContaining([
       "visual_report_not_ok",
-      "visual_report_result_count_below_minimum:19:20",
+      `visual_report_result_count_below_minimum:${missingOneFullVisualResult}:${fullVisualResultCount}`,
       "visual_report_missing_required_route_viewport:dojo-shell:mobile",
       "visual_result_not_ok:dojo-shell:desktop",
       "visual_result_failed_gates:dojo-shell:desktop:horizontal_overflow",
@@ -2512,7 +2514,7 @@ describe("Dojo release gate manifest", () => {
       omit: ({ routeId, viewport }) => routeId === "evidence" && viewport === "mobile",
     });
     expect(validateDojoVisualProofReport(missingRouteReport, { gate }).errors).toEqual(expect.arrayContaining([
-      "visual_report_result_count_below_minimum:19:20",
+      `visual_report_result_count_below_minimum:${missingOneFullVisualResult}:${fullVisualResultCount}`,
       "visual_report_missing_required_route_viewport:evidence:mobile",
     ]));
 

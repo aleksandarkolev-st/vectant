@@ -67,7 +67,7 @@ services:
     working_dir: /app/synthi
     command: ["npx", "prisma", "migrate", "deploy"]
     environment:
-      DATABASE_URL: "${DATABASE_URL:-postgresql://synthi:password@postgres:5432/synthi}"
+      DATABASE_URL: "postgresql://synthi:password@postgres:5432/synthi"
     depends_on:
       postgres:
         condition: service_healthy
@@ -112,11 +112,16 @@ services:
       # internal-service token). MUST match the collab-server value below.
       # Production must inject a real secret via SYNTHI_CODESITE_TOKEN.
       SYNTHI_CODESITE_TOKEN: "${SYNTHI_CODESITE_TOKEN:-local-compose-codesite-token}"
+      # Permit the local Docker frontend to reach a Jupyter server exposed on
+      # the host or private LAN. Public servers still require HTTPS.
+      JUPYTER_ALLOW_DOCKER_HOST: "${JUPYTER_ALLOW_DOCKER_HOST:-1}"
+      JUPYTER_ALLOW_PRIVATE_HTTP: "${JUPYTER_ALLOW_PRIVATE_HTTP:-1}"
       # Local-compose auth secret used by NextAuth. Production deployments must
       # provide AUTH_SECRET/NEXTAUTH_SECRET through their secret manager.
       AUTH_SECRET: "${AUTH_SECRET:-local-compose-auth-secret}"
       NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-local-compose-auth-secret}"
-      DATABASE_URL: "${DATABASE_URL:-postgresql://synthi:password@postgres:5432/synthi}"
+      # Local Compose must use the database service, never a host .env URL.
+      DATABASE_URL: "postgresql://synthi:password@postgres:5432/synthi"
       SYNTHI_CODESITE_ARTIFACT_ROOT: "/codesite-app-artifacts"
       # Mature CodeSite shadow proofs execute isolated repo-command universes.
       # The runner reads from the read-only /workspace mirror and copies each

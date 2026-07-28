@@ -11,6 +11,7 @@ import {
   FileCheck2,
   GitBranch,
   History,
+  ScanLine,
   Scale,
   ShieldCheck,
   Workflow,
@@ -60,6 +61,7 @@ export default function DojoShell({
     { label: 'Passport', href: selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/passport` : baseHref, icon: FileCheck2, detail: selectedSkill ? 'Credential scope' : 'Select a skill' },
     { label: 'Cortex', href: selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/cortex` : baseHref, icon: GitBranch, detail: selectedSkill ? 'Runtime graph' : 'No graph yet' },
     { label: 'Practice', href: `${baseHref}/practice`, icon: BookOpenCheck, detail: `${metrics.scenarioCount || 0} scenarios` },
+    { label: 'Tomography', href: `${baseHref}/therapeutic-trace`, icon: ScanLine, detail: 'Authority trace' },
     { label: 'Source/API', href: `${baseHref}/source`, icon: Braces, detail: 'Affordance bridge' },
     { label: 'Debugger', href: `${baseHref}/debug/time-machine`, icon: History, detail: 'Replay variables' },
     { label: 'Evidence', href: `${baseHref}/evidence`, icon: DatabaseZap, detail: `${metrics.artifactCount || 0} artifacts` },
@@ -78,6 +80,7 @@ export default function DojoShell({
       .find((item) => path === item.href || path.startsWith(`${item.href}/`));
     if (match) setCurrentNavLabel(match.label);
   }, [navItems]);
+
   const scopeRows = useMemo(() => {
     if (!selectedSkill) return [];
     return [

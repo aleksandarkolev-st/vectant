@@ -1,0 +1,3682 @@
+use std::collections::HashMap;
+use std::fs;
+use std::net::{IpAddr, Ipv4Addr};
+
+use axum::body::{Body, Bytes};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::Router;
+use sha2::{Digest, Sha256};
+use tempfile::tempdir;
+use vectant_local_support_app::approval::{
+    denied_approval_response, ApprovalQueue, ApprovalStatus,
+};
+use vectant_local_support_app::audit::{
+    AuditClass, AuditLog, AuditStoreError, ConsentReceipt, LocalAuditStore,
+};
+use vectant_local_support_app::command_broker::{
+    execute_command, validate_request, CommandError, CommandRequest,
+};
+use vectant_local_support_app::desktop::{
+    build_desktop_status_state, inspect_tauri_config, plan_desktop_ipc_action,
+    renderer_command_can_access_secret, sanitize_desktop_ipc_state, DesktopIpcError,
+};
+use vectant_local_support_app::full_access::FullAccessPolicy;
+use vectant_local_support_app::full_access::{FullAccessCapability, FullAccessConsentReceipt};
+use vectant_local_support_app::http::{
+    bind_loopback, shutdown_cleanup, validate_file_request_authorization, AppState,
+    LocalAuthorizationError, LocalRequestAuthorization, RateLimiter, MAX_JSON_BODY_BYTES,
+};
+use vectant_local_support_app::ipc::{decide_ipc_request, IpcRequest};
+use vectant_local_support_app::lifecycle::{
+    disconnect_cleanup, uninstall_cleanup, PendingApprovalQueue,
+};
+use vectant_local_support_app::mutation::{
+    MutationError, MutationRequest, WorkspaceMutationBroker,
+};
+use vectant_local_support_app::pair::{
+    verify_pairing_proof, DeviceIdentity, DeviceIdentityStore, DeviceIdentityStoreError,
+    PairingError, PairingSession,
+};
+use vectant_local_support_app::policy::Classification;
+use vectant_local_support_app::preview::{
+    classify_preview_redirect, decide_preview_request, decide_preview_request_from_header_list,
+    decide_preview_request_from_header_list_with_token, decide_preview_request_with_token,
+    port_identity_matches, preview_path_allowed, preview_token_matches, redirect_allowed,
+    sanitize_response_header_list, sanitize_response_headers, validate_preview_response_size,
+    PortApproval, PortApprovalRegistry, PreviewDecision, PreviewRedirectDecision,
+    PreviewTrafficGuard, MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST,
+    MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST, MAX_PREVIEW_RESPONSE_BYTES,
+};
+use vectant_local_support_app::process_adapter::{
+    ProcessInspectionAdapter, ProcessInspectionError,
+};
+use vectant_local_support_app::scanner::SecretScanner;
+use vectant_local_support_app::session::{DeviceProofContext, SessionError, SessionGuard};
+use vectant_local_support_app::update::{
+    signed_test_manifest, signed_test_package, verify_update_manifest, verify_update_package,
+    UpdateError,
+};
+use vectant_local_support_app::workspace::{resolve_relative, FileReadRequest, WorkspacePolicy};
+
+#[test]
+fn capability_graph_has_no_raw_secret_paths_or_bodies() {
+    let root = tempdir().unwrap();
+    fs::create_dir_all(root.path().join("src")).unwrap();
+    fs::write(root.path().join("src/lib.rs"), "pub fn safe() {}\n").unwrap();
+    fs::write(root.path().join(".env"), "API_TOKEN=must-not-leak\n").unwrap();
+    fs::write(
+        root.path().join("secrets.json"),
+        r#"{"api_key":"must-not-leak"}"#,
+    )
+    .unwrap();
+    let workspace =
+        WorkspacePolicy::new(root.path(), "wk_graph", SecretScanner::default()).unwrap();
+
+    let graph = workspace.build_capability_graph().unwrap();
+    let serialized = serde_json::to_string(&graph).unwrap();
+    assert!(serialized.contains("src/lib.rs"));
+    assert!(serialized.contains("blocked_sensitive_category"));
+    assert!(!serialized.contains(".env"));
+    assert!(!serialized.contains("secrets.json"));
+    assert!(!serialized.contains("must-not-leak"));
+    assert!(graph
+        .values()
+        .all(|node| !node.content_hash.contains("must-not-leak")));
+}
+
+#[test]
+fn process_adapter_exposes_only_narrow_validated_operations() {
+    let root = tempdir().unwrap();
+    assert!(matches!(
+        ProcessInspectionAdapter::list_workspace_processes(root.path(), 0),
+        Err(ProcessInspectionError::InvalidScope)
+    ));
+    assert_eq!(
+        ProcessInspectionAdapter::inspect_listener_identity(0, "sha256:bad"),
+        Err(ProcessInspectionError::InvalidScope)
+    );
+}
+
+#[test]
+fn workspace_mutation_is_graph_bound_atomic_and_revertible() {
+    let root = tempdir().unwrap();
+    fs::create_dir_all(root.path().join("src")).unwrap();
+    fs::write(root.path().join("src/lib.rs"), "pub fn original() {}\n").unwrap();
+    let workspace =
+        WorkspacePolicy::new(root.path(), "wk_mutation", SecretScanner::default()).unwrap();
+    let graph = workspace.build_capability_graph().unwrap();
+    let node = graph
+        .values()
+        .find(|node| node.relative_path == "src/lib.rs")
+        .unwrap()
+        .clone();
+    let mut broker = WorkspaceMutationBroker::new(workspace, chrono::Duration::minutes(10));
+    let transaction = broker
+        .apply(
+            &graph,
+            MutationRequest {
+                request_id: "req_mutation_1".into(),
+                node_id: node.node_id.clone(),
+                expected_content_hash: node.content_hash.clone(),
+                replacement: "pub fn changed() {}\n".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(root.path().join("src/lib.rs")).unwrap(),
+        "pub fn changed() {}\n"
+    );
+    let review = broker.local_review(&transaction.transaction_id).unwrap();
+    assert_eq!(review.relative_path, "src/lib.rs");
+    assert!(review.unified_diff.contains("-pub fn original() {}"));
+    assert!(review.unified_diff.contains("+pub fn changed() {}"));
+    assert!(!serde_json::to_string(&broker.local_summaries())
+        .unwrap()
+        .contains("pub fn changed"));
+    let fresh_graph = WorkspacePolicy::new(root.path(), "wk_mutation", SecretScanner::default())
+        .unwrap()
+        .build_capability_graph()
+        .unwrap();
+    assert!(!serde_json::to_string(&fresh_graph)
+        .unwrap()
+        .contains(".vectant-local-support"));
+    assert!(broker.revert_locally(&transaction.transaction_id).is_ok());
+    assert_eq!(
+        fs::read_to_string(root.path().join("src/lib.rs")).unwrap(),
+        "pub fn original() {}\n"
+    );
+    assert!(matches!(
+        broker.apply(
+            &graph,
+            MutationRequest {
+                request_id: "req_mutation_2".into(),
+                node_id: node.node_id,
+                expected_content_hash: "sha256:stale".into(),
+                replacement: "x".into()
+            }
+        ),
+        Err(MutationError::StaleTarget)
+    ));
+}
+
+#[test]
+fn workspace_mutation_recovers_after_broker_restart_and_denies_secret_replacement() {
+    let root = tempdir().unwrap();
+    fs::write(
+        root.path().join("safe.rs"),
+        "pub const VALUE: &str = \"before\";\n",
+    )
+    .unwrap();
+    let workspace =
+        WorkspacePolicy::new(root.path(), "wk_recovery", SecretScanner::default()).unwrap();
+    let graph = workspace.build_capability_graph().unwrap();
+    let node = graph
+        .values()
+        .find(|node| node.relative_path == "safe.rs")
+        .unwrap()
+        .clone();
+    let transaction = WorkspaceMutationBroker::new(workspace, chrono::Duration::minutes(10))
+        .apply(
+            &graph,
+            MutationRequest {
+                request_id: "req_recovery_1".into(),
+                node_id: node.node_id.clone(),
+                expected_content_hash: node.content_hash.clone(),
+                replacement: "pub const VALUE: &str = \"after\";\n".into(),
+            },
+        )
+        .unwrap();
+
+    let restarted_workspace =
+        WorkspacePolicy::new(root.path(), "wk_recovery", SecretScanner::default()).unwrap();
+    let mut restarted =
+        WorkspaceMutationBroker::new(restarted_workspace, chrono::Duration::minutes(10));
+    assert!(restarted.transaction(&transaction.transaction_id).is_some());
+    assert!(restarted
+        .revert(&transaction.transaction_id, &transaction.after_hash)
+        .is_ok());
+    assert_eq!(
+        fs::read_to_string(root.path().join("safe.rs")).unwrap(),
+        "pub const VALUE: &str = \"before\";\n"
+    );
+
+    let refreshed_workspace =
+        WorkspacePolicy::new(root.path(), "wk_recovery", SecretScanner::default()).unwrap();
+    let refreshed_graph = refreshed_workspace.build_capability_graph().unwrap();
+    let refreshed_node = refreshed_graph
+        .values()
+        .find(|candidate| candidate.relative_path == "safe.rs")
+        .unwrap();
+    let mut broker =
+        WorkspaceMutationBroker::new(refreshed_workspace, chrono::Duration::minutes(10));
+    assert!(matches!(
+        broker.apply(
+            &refreshed_graph,
+            MutationRequest {
+                request_id: "req_recovery_2".into(),
+                node_id: refreshed_node.node_id.clone(),
+                expected_content_hash: refreshed_node.content_hash.clone(),
+                replacement: "const TOKEN: &str = \"sk-0123456789abcdefghijklmnop\";".into(),
+            },
+        ),
+        Err(MutationError::ScannerDenied)
+    ));
+}
+
+#[tokio::test]
+async fn command_broker_requires_allowlisted_shell_free_bounded_requests() {
+    let root = tempdir().unwrap();
+    #[cfg(windows)]
+    let (executable, expected_output) = ("rustc", "rustc");
+    #[cfg(not(windows))]
+    let (executable, expected_output) = ("env", "env");
+    let mut policy = FullAccessPolicy {
+        organization_enabled: true,
+        ..Default::default()
+    };
+    policy.allowed_command_executables.insert(executable.into());
+    let request = CommandRequest {
+        request_id: "req_command_1".into(),
+        executable: executable.into(),
+        arguments: vec!["--version".into()],
+        timeout_seconds: 5,
+        max_output_bytes: 4096,
+    };
+    let context = execute_command(root.path(), &policy, request.clone())
+        .await
+        .unwrap();
+    assert!(context.stdout.contains(expected_output));
+    assert!(!context.argument_hash.contains("--version"));
+    let mut dangerous = request;
+    dangerous.arguments = vec!["--interactive".into()];
+    assert_eq!(
+        validate_request(root.path(), &policy, &dangerous),
+        Err(CommandError::InvalidRequest)
+    );
+}
+
+#[tokio::test]
+async fn full_access_graph_endpoint_requires_live_bound_consent_and_returns_no_bodies() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let workspace =
+        WorkspacePolicy::new(root.path(), "wk_full_http", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound_device(
+        "acct_full",
+        "org_full",
+        "wk_full_http",
+        "sha256:full-device",
+        std::time::Duration::from_secs(300),
+    );
+    let token = session.token_for_pairing_response().to_string();
+    let state = AppState::new(session, workspace);
+    let summary = state.workspace.summary();
+    let session_state = state.session.lock().await.state();
+    let mut policy = FullAccessPolicy {
+        organization_enabled: true,
+        ..Default::default()
+    };
+    policy.allowed_actors.insert("support_agent".into());
+    policy
+        .allowed_capabilities
+        .insert(FullAccessCapability::GraphRead);
+    let receipt = FullAccessConsentReceipt {
+        consent_id: "consent_full_http".into(),
+        session_id: session_state.session_id,
+        account_id: session_state.account_id,
+        organization_id: session_state.org_id,
+        support_actor: "support_agent".into(),
+        device_fingerprint: session_state.device_fingerprint,
+        workspace_hash: summary.root_hash,
+        capabilities: [FullAccessCapability::GraphRead].into_iter().collect(),
+        auto_approval_enabled: true,
+        policy_version: vectant_local_support_app::POLICY_VERSION.into(),
+        scanner_version: vectant_local_support_app::SCANNER_VERSION.into(),
+        app_version: "0.1.0".into(),
+        policy_major: 1,
+        reconsent_version: 1,
+        created_at: chrono::Utc::now(),
+        expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+        paused_at: None,
+        revoked_at: None,
+        local_confirmation: "native_button".into(),
+    };
+    let graph = state.workspace.build_capability_graph().unwrap();
+    {
+        let mut access = state.full_access.lock().await;
+        access.policy = policy;
+        access.receipt = Some(receipt);
+        access.graph = graph;
+    }
+    let addr = bind_loopback(state).await.unwrap();
+    let response = reqwest::Client::new()
+        .get(format!("http://{addr}/v1/full-access/graph/req_full_graph"))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["raw_bodies_included"], false);
+    assert_eq!(body["bytes_sent"], 0);
+    assert!(!body.to_string().contains("fn main"));
+}
+
+fn request(path: &str) -> FileReadRequest {
+    FileReadRequest {
+        request_id: format!("req_{path}"),
+        session_id: "sess_123".to_string(),
+        account_id: "acct_local".to_string(),
+        org_id: "org_local".to_string(),
+        workspace_id: "wk_123".to_string(),
+        device_fingerprint: "sha256:pending".to_string(),
+        capability: "workspace.file.source.read".to_string(),
+        path: path.to_string(),
+        max_bytes: Some(262_144),
+        reason: "Debug test".to_string(),
+        actor: "vectant_ai".to_string(),
+        expires_at: "2030-07-05T12:00:00Z".to_string(),
+    }
+}
+
+fn local_auth(session: &SessionGuard, request: &FileReadRequest) -> LocalRequestAuthorization {
+    let mut auth = LocalRequestAuthorization {
+        app_version: "0.1.0".to_string(),
+        protocol_version: vectant_local_support_app::APP_PROTOCOL_VERSION.to_string(),
+        policy_version: vectant_local_support_app::POLICY_VERSION.to_string(),
+        device_fingerprint: session.device_fingerprint().to_string(),
+        device_proof: String::new(),
+    };
+    auth.device_proof = session.request_device_proof_for_context(&DeviceProofContext {
+        request_id: &request.request_id,
+        account_id: &request.account_id,
+        org_id: &request.org_id,
+        workspace_id: &request.workspace_id,
+        capability: &request.capability,
+        actor: &request.actor,
+        expires_at: &request.expires_at,
+        protocol_version: &auth.protocol_version,
+        policy_version: &auth.policy_version,
+    });
+    auth
+}
+
+fn local_authorization_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-vectant-app-version", HeaderValue::from_static("0.1.0"));
+    headers.insert(
+        "x-vectant-protocol-version",
+        HeaderValue::from_static(vectant_local_support_app::APP_PROTOCOL_VERSION),
+    );
+    headers.insert(
+        "x-vectant-policy-version",
+        HeaderValue::from_static(vectant_local_support_app::POLICY_VERSION),
+    );
+    headers.insert(
+        "x-vectant-device-fingerprint",
+        HeaderValue::from_static("sha256:1111111111111111"),
+    );
+    headers.insert(
+        "x-vectant-device-proof",
+        HeaderValue::from_static(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+    );
+    headers
+}
+
+fn http_headers(
+    token: &str,
+    request: &FileReadRequest,
+    session: &SessionGuard,
+) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("origin", "https://app.vectant.dev".parse().unwrap());
+    headers.insert("sec-fetch-site", "same-site".parse().unwrap());
+    headers.insert(
+        "x-vectant-csrf",
+        "csrf_123456789012345678901234567890".parse().unwrap(),
+    );
+    headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+    headers.insert("x-vectant-app-version", "0.1.0".parse().unwrap());
+    headers.insert(
+        "x-vectant-protocol-version",
+        vectant_local_support_app::APP_PROTOCOL_VERSION
+            .parse()
+            .unwrap(),
+    );
+    headers.insert(
+        "x-vectant-policy-version",
+        vectant_local_support_app::POLICY_VERSION.parse().unwrap(),
+    );
+    headers.insert(
+        "x-vectant-device-fingerprint",
+        session.device_fingerprint().parse().unwrap(),
+    );
+    headers.insert(
+        "x-vectant-device-proof",
+        session
+            .request_device_proof_for_context(&DeviceProofContext {
+                request_id: &request.request_id,
+                account_id: &request.account_id,
+                org_id: &request.org_id,
+                workspace_id: &request.workspace_id,
+                capability: &request.capability,
+                actor: &request.actor,
+                expires_at: &request.expires_at,
+                protocol_version: vectant_local_support_app::APP_PROTOCOL_VERSION,
+                policy_version: vectant_local_support_app::POLICY_VERSION,
+            })
+            .parse()
+            .unwrap(),
+    );
+    headers
+}
+
+fn http_control_headers(token: &str, control_secret: &str) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("origin", "https://app.vectant.dev".parse().unwrap());
+    headers.insert("sec-fetch-site", "same-site".parse().unwrap());
+    headers.insert(
+        "x-vectant-csrf",
+        "csrf_123456789012345678901234567890".parse().unwrap(),
+    );
+    headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+    headers.insert(
+        "x-vectant-local-control-secret",
+        control_secret.parse().unwrap(),
+    );
+    headers
+}
+
+fn http_preview_headers(token: &str, preview_host: &str) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("origin", "https://app.vectant.dev".parse().unwrap());
+    headers.insert("sec-fetch-site", "same-site".parse().unwrap());
+    headers.insert(
+        "x-vectant-csrf",
+        "csrf_123456789012345678901234567890".parse().unwrap(),
+    );
+    headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+    headers.insert("x-vectant-preview-host", preview_host.parse().unwrap());
+    headers
+}
+
+fn preview_token(port: u16, process_identity: &str) -> String {
+    format!("local-preview-token-{port}-{process_identity}")
+}
+
+#[tokio::test]
+async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("server.log"),
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz\nsafe tail\n",
+    )
+    .unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_http", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound_device(
+        "acct_http",
+        "org_http",
+        "wk_http",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    let token = session.token_for_pairing_response().to_string();
+    let session_id = session.session_id().to_string();
+    let mut state = AppState::new(session, policy);
+    state.set_local_control_secret_for_test("desktop_control_secret_123456789012345");
+    let shared_state = state.clone();
+    let addr = bind_loopback(state).await.unwrap();
+    let client = reqwest::Client::new();
+
+    let mut req = request("server.log");
+    req.request_id = "req_http_review".to_string();
+    req.session_id = session_id;
+    req.account_id = "acct_http".to_string();
+    req.org_id = "org_http".to_string();
+    req.workspace_id = "wk_http".to_string();
+    req.device_fingerprint = "sha256:1111111111111111".to_string();
+    req.capability = "workspace.log.read".to_string();
+    req.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+
+    let session_guard = shared_state.session.lock().await;
+    let mut bad_headers = http_headers(&token, &req, &session_guard);
+    drop(session_guard);
+    bad_headers.insert("origin", "https://evil.example".parse().unwrap());
+    let bad_origin = client
+        .post(format!("http://{addr}/v1/file/review"))
+        .headers(bad_headers)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_origin.status(), StatusCode::FORBIDDEN);
+    let bad_origin_body: serde_json::Value = bad_origin.json().await.unwrap();
+    assert_eq!(bad_origin_body["decision"], "denied");
+    assert_eq!(bad_origin_body["bytes_sent"], 0);
+
+    let queued = client
+        .post(format!("http://{addr}/v1/file/review"))
+        .headers({
+            let session_guard = shared_state.session.lock().await;
+            http_headers(&token, &req, &session_guard)
+        })
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(queued.status(), StatusCode::OK);
+    let queued_body: serde_json::Value = queued.json().await.unwrap();
+    assert_eq!(queued_body["decision"], "approval_queued");
+    assert_eq!(queued_body["bytes_sent"], 0);
+    assert!(queued_body.get("content").is_none() || queued_body["content"].is_null());
+    let revoked_approval_id = queued_body["approval_id"].as_str().unwrap().to_string();
+    assert!(revoked_approval_id.starts_with("appr_"));
+
+    let mut revoke_req = req.clone();
+    revoke_req.request_id = "req_http_review_revoke_all".to_string();
+    revoke_req.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+    let queued_for_revoke = client
+        .post(format!("http://{addr}/v1/file/review"))
+        .headers({
+            let session_guard = shared_state.session.lock().await;
+            http_headers(&token, &revoke_req, &session_guard)
+        })
+        .json(&revoke_req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(queued_for_revoke.status(), StatusCode::OK);
+    let queued_for_revoke_body: serde_json::Value = queued_for_revoke.json().await.unwrap();
+    assert_eq!(queued_for_revoke_body["decision"], "approval_queued");
+    assert!(shared_state.approvals.lock().await.pending_len() >= 2);
+
+    let revoke_all = client
+        .post(format!(
+            "http://{addr}/v1/approval/revoke-all/req_http_revoke_all"
+        ))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoke_all.status(), StatusCode::OK);
+    let revoke_all_body: serde_json::Value = revoke_all.json().await.unwrap();
+    assert_eq!(revoke_all_body["decision"], "session_approvals_revoked");
+    assert_eq!(revoke_all_body["bytes_sent"], 0);
+    assert_eq!(shared_state.approvals.lock().await.pending_len(), 0);
+
+    let mut approve_req = req.clone();
+    approve_req.request_id = "req_http_review_after_revoke_all".to_string();
+    approve_req.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+    let queued_after_revoke = client
+        .post(format!("http://{addr}/v1/file/review"))
+        .headers({
+            let session_guard = shared_state.session.lock().await;
+            http_headers(&token, &approve_req, &session_guard)
+        })
+        .json(&approve_req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(queued_after_revoke.status(), StatusCode::OK);
+    let queued_after_revoke_body: serde_json::Value = queued_after_revoke.json().await.unwrap();
+    assert_eq!(queued_after_revoke_body["decision"], "approval_queued");
+    let approval_id = queued_after_revoke_body["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let approval_without_local_secret = client
+        .post(format!(
+            "http://{addr}/v1/approval/approve/{approval_id}/req_http_control_missing_secret"
+        ))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        approval_without_local_secret.status(),
+        StatusCode::FORBIDDEN
+    );
+    let missing_secret_body: serde_json::Value =
+        approval_without_local_secret.json().await.unwrap();
+    assert_eq!(missing_secret_body["decision"], "denied");
+    assert_eq!(missing_secret_body["bytes_sent"], 0);
+
+    assert!(shared_state
+        .approvals
+        .lock()
+        .await
+        .set_local_approval_secret_for_test(
+            &approval_id,
+            "desktop_approval_secret_123456789012345"
+        ));
+    let mut approve_headers =
+        http_control_headers(&token, "desktop_control_secret_123456789012345");
+    approve_headers.insert(
+        "x-vectant-local-approval-secret",
+        "desktop_approval_secret_123456789012345".parse().unwrap(),
+    );
+    let approved = client
+        .post(format!(
+            "http://{addr}/v1/approval/approve/{approval_id}/req_http_control_approve"
+        ))
+        .headers(approve_headers)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(approved.status(), StatusCode::OK);
+    let approved_body: serde_json::Value = approved.json().await.unwrap();
+    assert_eq!(approved_body["decision"], "redact_then_approval");
+    assert!(approved_body["content"]
+        .as_str()
+        .unwrap()
+        .contains("[REDACTED:authorization_header]"));
+    assert!(!serde_json::to_string(&approved_body)
+        .unwrap()
+        .contains("abcdefghijklmnopqrstuvwxyz"));
+
+    let port_approval = client
+        .post(format!("http://{addr}/v1/port/approve"))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .json(&serde_json::json!({
+            "request_id": "req_http_port_approve",
+            "port": 5173,
+            "process_identity": "vite:5173:pid123",
+            "service": "vite dev server"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(port_approval.status(), StatusCode::OK);
+    let port_body: serde_json::Value = port_approval.json().await.unwrap();
+    assert_eq!(port_body["decision"], "port_approved");
+    assert_eq!(port_body["port"], 5173);
+    assert_eq!(port_body["browser_preview_allowed"], true);
+    assert_eq!(port_body["agent_read_allowed"], false);
+    assert_eq!(port_body["support_agent_read_allowed"], false);
+    assert_eq!(port_body["send_response_body_allowed"], false);
+    assert_eq!(port_body["state_changing_methods_allowed"], false);
+    assert_eq!(port_body["preview_token_included"], false);
+    assert!(!serde_json::to_string(&port_body)
+        .unwrap()
+        .contains("preview_token_hash"));
+
+    let status_after_port = client
+        .get(format!(
+            "http://{addr}/v1/status/req_http_status_after_port"
+        ))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status_after_port.status(), StatusCode::OK);
+    let status_body: serde_json::Value = status_after_port.json().await.unwrap();
+    assert_eq!(status_body["ports"][0]["port"], 5173);
+    assert_eq!(status_body["ports"][0]["preview_token_included"], false);
+    assert!(!serde_json::to_string(&status_body)
+        .unwrap()
+        .contains("preview_token_hash"));
+
+    let target_listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let target_addr = target_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let app = Router::new()
+            .route(
+                "/ok",
+                get(|| async {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(
+                        "set-cookie",
+                        HeaderValue::from_static("local_preview=secret"),
+                    );
+                    headers.insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN"));
+                    (headers, "local preview body").into_response()
+                }),
+            )
+            .route(
+                "/redirect-private",
+                get(|| async {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(
+                        "location",
+                        HeaderValue::from_static("http://169.254.169.254/latest/meta-data/"),
+                    );
+                    (StatusCode::FOUND, headers, "").into_response()
+                }),
+            )
+            .route(
+                "/oversized-stream",
+                get(|| async {
+                    let chunks = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
+                        Bytes::from(vec![b'x'; MAX_PREVIEW_RESPONSE_BYTES as usize + 1]),
+                    )]);
+                    axum::response::Response::new(Body::from_stream(chunks))
+                }),
+            );
+        let _ = axum::serve(target_listener, app).await;
+    });
+    let preview_grant = {
+        let mut registry = shared_state.port_approvals.lock().await;
+        registry.approve_browser_port_grant(
+            port_body["session_id"].as_str().unwrap(),
+            target_addr.port(),
+            "vite-preview:pid123",
+        )
+    };
+    let preview_ok = client
+        .get(format!(
+            "http://{addr}/v1/preview/{}/ok?request_id=req_http_preview_ok&preview_token={}&process_identity=vite-preview:pid123",
+            target_addr.port(),
+            preview_grant.preview_token
+        ))
+        .headers(http_preview_headers(&token, &preview_grant.approval.preview_host))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview_ok.status(), StatusCode::OK);
+    assert!(preview_ok.headers().get("set-cookie").is_none());
+    assert!(preview_ok.headers().get("x-frame-options").is_none());
+    assert!(preview_ok
+        .headers()
+        .get("content-security-policy")
+        .is_some());
+    let preview_body = preview_ok.text().await.unwrap();
+    assert_eq!(preview_body, "local preview body");
+
+    let preview_with_browser_host = client
+        .get(format!(
+            "http://{addr}/v1/preview/{}/ok?request_id=req_http_preview_browser_host&preview_token={}&process_identity=vite-preview:pid123",
+            target_addr.port(),
+            preview_grant.preview_token
+        ))
+        .headers({
+            let mut headers = http_preview_headers(&token, &preview_grant.approval.preview_host);
+            headers.remove("x-vectant-preview-host");
+            headers.insert(
+                "host",
+                format!("{}:{}", preview_grant.approval.preview_host, addr.port())
+                    .parse()
+                    .unwrap(),
+            );
+            headers
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview_with_browser_host.status(), StatusCode::OK);
+    assert_eq!(
+        preview_with_browser_host.text().await.unwrap(),
+        "local preview body"
+    );
+
+    let oversized_stream = client
+        .get(format!(
+            "http://{addr}/v1/preview/{}/oversized-stream?request_id=req_http_preview_stream_cap&preview_token={}&process_identity=vite-preview:pid123",
+            target_addr.port(),
+            preview_grant.preview_token
+        ))
+        .headers(http_preview_headers(
+            &token,
+            &preview_grant.approval.preview_host,
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(oversized_stream.status(), StatusCode::OK);
+    assert!(oversized_stream.bytes().await.is_err());
+
+    let preview_cookie = client
+        .get(format!(
+            "http://{addr}/v1/preview/{}/ok?request_id=req_http_preview_cookie&preview_token={}&process_identity=vite-preview:pid123",
+            target_addr.port(),
+            preview_grant.preview_token
+        ))
+        .headers({
+            let mut headers = http_preview_headers(&token, &preview_grant.approval.preview_host);
+            headers.insert("cookie", "vectant_session=should_not_forward".parse().unwrap());
+            headers
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview_cookie.status(), StatusCode::FORBIDDEN);
+    let preview_cookie_body: serde_json::Value = preview_cookie.json().await.unwrap();
+    assert_eq!(preview_cookie_body["reason"], "credential_header_blocked");
+    assert_eq!(preview_cookie_body["bytes_sent"], 0);
+
+    let preview_private_redirect = client
+        .get(format!(
+            "http://{addr}/v1/preview/{}/redirect-private?request_id=req_http_preview_redirect&preview_token={}&process_identity=vite-preview:pid123",
+            target_addr.port(),
+            preview_grant.preview_token
+        ))
+        .headers(http_preview_headers(&token, &preview_grant.approval.preview_host))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview_private_redirect.status(), StatusCode::FORBIDDEN);
+    let redirect_body: serde_json::Value = preview_private_redirect.json().await.unwrap();
+    assert_eq!(redirect_body["reason"], "redirect_target_not_approved");
+    assert_eq!(redirect_body["bytes_sent"], 0);
+
+    let preview_worker = client
+        .get(format!(
+            "http://{addr}/v1/preview/{}/sw.js?request_id=req_http_preview_worker&preview_token={}&process_identity=vite-preview:pid123",
+            target_addr.port(),
+            preview_grant.preview_token
+        ))
+        .headers(http_preview_headers(&token, &preview_grant.approval.preview_host))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview_worker.status(), StatusCode::FORBIDDEN);
+    let worker_body: serde_json::Value = preview_worker.json().await.unwrap();
+    assert_eq!(worker_body["reason"], "service_worker_path_blocked");
+    assert_eq!(worker_body["bytes_sent"], 0);
+
+    let port_revoke = client
+        .post(format!(
+            "http://{addr}/v1/port/revoke/5173/req_http_port_revoke"
+        ))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(port_revoke.status(), StatusCode::OK);
+    let revoke_body: serde_json::Value = port_revoke.json().await.unwrap();
+    assert_eq!(revoke_body["decision"], "port_revoked");
+    assert_eq!(revoke_body["bytes_sent"], 0);
+    assert!(shared_state
+        .port_approvals
+        .lock()
+        .await
+        .approval_for(
+            port_body["session_id"].as_str().unwrap(),
+            5173,
+            "vite:5173:pid123"
+        )
+        .is_none());
+
+    let pause = client
+        .post(format!("http://{addr}/v1/session/pause/req_http_pause"))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pause.status(), StatusCode::OK);
+
+    let status_while_paused = client
+        .get(format!("http://{addr}/v1/status/req_http_status_paused"))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status_while_paused.status(), StatusCode::OK);
+    let paused_body: serde_json::Value = status_while_paused.json().await.unwrap();
+    assert_eq!(paused_body["session"]["paused"], true);
+
+    let audit = shared_state.audit.lock().await;
+    assert!(audit
+        .events()
+        .iter()
+        .any(|event| event.summary.contains("bytes prepared for local review")));
+    assert_eq!(audit.consent_receipts().len(), 1);
+    assert!(audit
+        .events()
+        .iter()
+        .any(|event| event.summary.contains("Preview port 5173 approved")));
+    assert!(audit.events().iter().any(|event| event
+        .summary
+        .contains("Port approval for 127.0.0.1:5173 revoked locally")));
+}
+
+#[tokio::test]
+async fn app_shutdown_revokes_session_approvals_ports_and_preview_traffic() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_shutdown", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound_device(
+        "acct_shutdown",
+        "org_shutdown",
+        "wk_shutdown",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    let token = session.token_for_pairing_response().to_string();
+    let mut request = request("app.rs");
+    request.request_id = "req_shutdown_review".to_string();
+    request.session_id = session.session_id().to_string();
+    request.account_id = "acct_shutdown".to_string();
+    request.org_id = "org_shutdown".to_string();
+    request.workspace_id = "wk_shutdown".to_string();
+    request.device_fingerprint = session.device_fingerprint().to_string();
+    request.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+    let state = AppState::new(session, policy);
+
+    let review = state.workspace.read_file_for_review(&request);
+    state
+        .approvals
+        .lock()
+        .await
+        .queue_file_review(request, review);
+    let session_id = state.session.lock().await.session_id().to_string();
+    let grant = state
+        .port_approvals
+        .lock()
+        .await
+        .approve_browser_port_grant(&session_id, 5173, "vite:5173:pid123");
+    assert!(state
+        .preview_traffic
+        .lock()
+        .await
+        .begin_stream(&grant.approval.preview_host));
+    assert_eq!(state.approvals.lock().await.pending_len(), 1);
+
+    shutdown_cleanup(&state, "req_shutdown_cleanup")
+        .await
+        .unwrap();
+
+    assert_eq!(state.approvals.lock().await.pending_len(), 0);
+    assert!(state
+        .port_approvals
+        .lock()
+        .await
+        .approval_for(&session_id, 5173, "vite:5173:pid123")
+        .is_none());
+    assert_eq!(
+        state
+            .preview_traffic
+            .lock()
+            .await
+            .active_stream_count(&grant.approval.preview_host),
+        0
+    );
+    let mut session = state.session.lock().await;
+    assert_eq!(
+        session.validate_control(&token, "req_after_shutdown"),
+        Err(SessionError::Expired)
+    );
+    drop(session);
+    assert!(state.audit.lock().await.events().iter().any(|event| {
+        event.summary.contains("Local app shutdown disconnected") && event.user_visible
+    }));
+}
+
+#[tokio::test]
+async fn history_delete_persists_scrubbed_deletion_marker_and_removes_prior_events() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let audit_path = dir.path().join("audit.json");
+    let audit_store = LocalAuditStore::new(&audit_path, 30, SecretScanner::default());
+    let mut existing = AuditLog::new(SecretScanner::default());
+    existing.append(
+        AuditClass::Denied,
+        Some("req_old_secret".to_string()),
+        "Old blocked Authorization: Bearer abcdefghijklmnopqrstuvwxyz should not survive delete.",
+        true,
+    );
+    audit_store.persist(&existing).unwrap();
+
+    let policy =
+        WorkspacePolicy::new(dir.path(), "wk_history_delete", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound_device(
+        "acct_history",
+        "org_history",
+        "wk_history_delete",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    let token = session.token_for_pairing_response().to_string();
+    let mut state = AppState::new_with_audit_store(session, policy, audit_store.clone()).unwrap();
+    state.set_local_control_secret_for_test("desktop_control_secret_123456789012345");
+    let shared_state = state.clone();
+    let addr = bind_loopback(state).await.unwrap();
+    let client = reqwest::Client::new();
+
+    let delete = client
+        .post(format!(
+            "http://{addr}/v1/history/delete/req_http_history_delete"
+        ))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), StatusCode::OK);
+    let delete_body: serde_json::Value = delete.json().await.unwrap();
+    assert_eq!(delete_body["decision"], "deleted");
+    assert_eq!(delete_body["bytes_sent"], 0);
+    assert!(audit_path.exists());
+
+    let raw = fs::read_to_string(&audit_path).unwrap();
+    assert!(raw.contains("Local support history deleted according to retention policy."));
+    assert!(!raw.contains("Old blocked"));
+    assert!(!raw.contains("abcdefghijklmnopqrstuvwxyz"));
+
+    let reloaded = audit_store.load().unwrap();
+    let export = reloaded.export_incident_bundle(audit_store.retention_days());
+    assert!(export.verify_hash_chain());
+    assert_eq!(export.events.len(), 1);
+    assert_eq!(
+        export.events[0].request_id.as_deref(),
+        Some("req_http_history_delete")
+    );
+    assert!(export.consent_receipts.is_empty());
+    assert_eq!(shared_state.audit.lock().await.events().len(), 1);
+}
+
+#[test]
+fn corrupt_audit_storage_fails_closed_instead_of_resetting_history() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("audit.json"), b"not-json").unwrap();
+    let store = LocalAuditStore::new(dir.path().join("audit.json"), 30, SecretScanner::default());
+    assert!(matches!(store.load(), Err(AuditStoreError::Json(_))));
+
+    let policy =
+        WorkspacePolicy::new(dir.path(), "wk_corrupt_audit", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound_device(
+        "acct_corrupt_audit",
+        "org_corrupt_audit",
+        "wk_corrupt_audit",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    let result = AppState::new_with_audit_store(session, policy, store);
+    assert!(matches!(result, Err(AuditStoreError::Json(_))));
+}
+
+#[tokio::test]
+async fn desktop_status_state_uses_real_daemon_state_and_sanitizes_renderer_payload() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy =
+        WorkspacePolicy::new(dir.path(), "wk_desktop_state", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound_device(
+        "acct_desktop",
+        "org_desktop",
+        "wk_desktop_state",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    let session_id = session.session_id().to_string();
+    let state = AppState::new(session, policy);
+    let mut request = request("app.rs");
+    request.session_id = session_id.clone();
+    request.account_id = "acct_desktop".to_string();
+    request.org_id = "org_desktop".to_string();
+    request.workspace_id = "wk_desktop_state".to_string();
+    request.device_fingerprint = "sha256:1111111111111111".to_string();
+    request.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+    let review = state.workspace.read_file_for_review(&request);
+    state
+        .approvals
+        .lock()
+        .await
+        .queue_file_review(request, review);
+    state
+        .port_approvals
+        .lock()
+        .await
+        .approve_browser_port_grant(&session_id, 5173, "vite:5173:pid123");
+    state.audit.lock().await.append(
+        AuditClass::Security,
+        Some("req_desktop_secret_event".to_string()),
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        true,
+    );
+
+    let desktop_state = build_desktop_status_state(&state).await;
+    let serialized = serde_json::to_string(&desktop_state).unwrap();
+
+    assert_eq!(desktop_state["connected"], true);
+    assert_eq!(desktop_state["session"]["account_id"], "acct_desktop");
+    assert_eq!(
+        desktop_state["workspace"]["workspace_id"],
+        "wk_desktop_state"
+    );
+    assert_eq!(desktop_state["approvals"]["pending_count"], 1);
+    assert_eq!(desktop_state["approvals"]["content_included"], true);
+    assert_eq!(
+        desktop_state["approvals"]["content_is_redacted_review_only"],
+        true
+    );
+    assert_eq!(desktop_state["ports"][0]["port"], 5173);
+    assert!(!serialized.contains("preview_token"));
+    assert!(!serialized.contains("preview_token_hash"));
+    assert!(!serialized.contains("abcdefghijklmnopqrstuvwxyz"));
+    assert!(!serialized.contains("Authorization: Bearer"));
+}
+
+#[tokio::test]
+async fn desktop_status_state_reports_disconnected_sessions_truthfully() {
+    let dir = tempdir().unwrap();
+    let policy =
+        WorkspacePolicy::new(dir.path(), "not_selected", SecretScanner::default()).unwrap();
+    let mut session = SessionGuard::new_bound_device(
+        "not_paired",
+        "not_paired",
+        "not_selected",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    session.disconnect();
+    let state = AppState::new(session, policy);
+
+    let desktop_state = build_desktop_status_state(&state).await;
+
+    assert_eq!(desktop_state["connected"], false);
+    assert_eq!(desktop_state["workspace"]["selected"], false);
+    assert_eq!(desktop_state["session"]["account_id"], "not paired");
+    assert_eq!(
+        desktop_state["session"]["workspace_id"],
+        "No folder selected"
+    );
+}
+
+#[tokio::test]
+async fn desktop_status_exposes_only_a_safe_selected_workspace_summary() {
+    let dir = tempdir().unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_selected", SecretScanner::default()).unwrap();
+    let mut session = SessionGuard::new_bound_device(
+        "not_paired",
+        "not_paired",
+        "wk_selected",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    session.disconnect();
+    let audit_store = LocalAuditStore::new(
+        dir.path().join("desktop-audit.json"),
+        30,
+        SecretScanner::default(),
+    );
+    let state = AppState::new_with_audit_store(session, policy, audit_store).unwrap();
+
+    let desktop_state = build_desktop_status_state(&state).await;
+    let serialized = serde_json::to_string(&desktop_state).unwrap();
+
+    assert_eq!(desktop_state["connected"], false);
+    assert_eq!(desktop_state["workspace"]["selected"], true);
+    assert_eq!(desktop_state["workspace"]["root_path_included"], false);
+    assert_eq!(desktop_state["history_controls_available"], true);
+    assert!(!serialized.contains(&dir.path().display().to_string()));
+}
+
+#[test]
+fn blocks_traversal_and_secret_files() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join(".env"),
+        "OPENAI_API_KEY=sk-testsecret000000000000000\n",
+    )
+    .unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    let traversal = policy.read_file_for_review(&request("../.ssh/id_ed25519"));
+    assert_eq!(traversal.decision, "denied");
+    assert_eq!(traversal.bytes_sent, 0);
+
+    let env = policy.read_file_for_review(&request(".env"));
+    assert_eq!(env.decision, "denied");
+    assert_eq!(env.bytes_sent, 0);
+    assert!(env.content.is_none());
+}
+
+#[test]
+fn blocks_device_unc_named_pipe_and_drive_paths() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    for path in [
+        r"\\server\share\secrets.txt",
+        r"\\?\C:\Users\alex\.ssh\id_ed25519",
+        r"\\.\pipe\vectant",
+        r"\??\C:\Windows\win.ini",
+        r"C:\Users\alex\.aws\credentials",
+        "C:relative-drive-path.txt",
+    ] {
+        assert!(
+            resolve_relative(policy.root(), path).is_err(),
+            "path should be blocked: {path}"
+        );
+        let response = policy.read_file_for_review(&request(path));
+        assert_eq!(response.decision, "denied");
+        assert_eq!(response.bytes_sent, 0);
+        assert!(response.content.is_none());
+    }
+}
+
+#[test]
+fn workspace_status_summary_omits_raw_root_path() {
+    let dir = tempdir().unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let summary = policy.summary();
+
+    assert_eq!(summary.workspace_id, "wk_123");
+    assert!(!summary.root_path_included);
+    assert!(summary.root_hash.starts_with("sha256:"));
+    assert!(!summary.display.contains('\\'));
+    assert!(!summary.display.contains('/'));
+    assert!(!serde_json::to_string(&summary)
+        .unwrap()
+        .contains(&dir.path().display().to_string()));
+}
+
+#[cfg(unix)]
+#[test]
+fn blocks_symlink_escape_from_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    fs::write(
+        outside.path().join("credentials"),
+        "aws_access_key_id = AKIA1234567890ABCDEF\n",
+    )
+    .unwrap();
+    symlink(
+        outside.path().join("credentials"),
+        workspace.path().join("linked-credentials"),
+    )
+    .unwrap();
+    let policy =
+        WorkspacePolicy::new(workspace.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    let response = policy.read_file_for_review(&request("linked-credentials"));
+    assert_eq!(response.decision, "denied");
+    assert_eq!(response.bytes_sent, 0);
+    assert!(response.content.is_none());
+    assert!(resolve_relative(policy.root(), "linked-credentials").is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn blocks_junction_escape_from_workspace() {
+    use std::process::Command;
+
+    let workspace = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    fs::write(
+        outside.path().join("credentials.txt"),
+        "aws_access_key_id = AKIA1234567890ABCDEF\n",
+    )
+    .unwrap();
+    let link = workspace.path().join("outside-link");
+    let status = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&link)
+        .arg(outside.path())
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "mklink /J should create a junction for the escape test"
+    );
+
+    let policy =
+        WorkspacePolicy::new(workspace.path(), "wk_123", SecretScanner::default()).unwrap();
+    let response = policy.read_file_for_review(&request("outside-link/credentials.txt"));
+    assert_eq!(response.decision, "denied");
+    assert_eq!(response.bytes_sent, 0);
+    assert!(response.content.is_none());
+    assert!(resolve_relative(policy.root(), "outside-link/credentials.txt").is_err());
+}
+
+#[test]
+fn redacts_secrets_before_review_payload() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("server.log"),
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz\npostgres://user:pass@localhost/db\n",
+    )
+    .unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let mut req = request("server.log");
+    req.capability = "workspace.log.read".to_string();
+    let response = policy.read_file_for_review(&req);
+
+    assert_eq!(response.decision, "redact_then_approval");
+    assert_eq!(response.bytes_sent, 0);
+    let expected_hash = response.content.as_ref().map(|content| {
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        format!("sha256:{}", hex::encode(hasher.finalize()))
+    });
+    assert_eq!(response.content_sha256, expected_hash);
+    let content = response.content.unwrap();
+    assert!(content.contains("[REDACTED:authorization_header]"));
+    assert!(content.contains("[REDACTED:database_url]"));
+    assert!(!content.contains("postgres://user:pass"));
+}
+
+#[test]
+fn file_response_display_paths_are_scrubbed() {
+    let dir = tempdir().unwrap();
+    let secret_name = "notes-sk-abcdefghijklmnopqrstuvwxyz123456.txt";
+    fs::write(dir.path().join(secret_name), "ordinary local note\n").unwrap();
+    fs::write(
+        dir.path().join(".env.sk-abcdefghijklmnopqrstuvwxyz123456"),
+        "OPENAI_API_KEY=sk-testsecret000000000000000\n",
+    )
+    .unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    let mut scrubbed_path_request = request(secret_name);
+    scrubbed_path_request.request_id = "req_secret_named_file".to_string();
+    let decision = policy.decide_file(&scrubbed_path_request);
+    let message = &decision.required_approval.as_ref().unwrap().message;
+    assert!(message.contains("[REDACTED:openai_api_key]"));
+    assert!(!message.contains("abcdefghijklmnopqrstuvwxyz"));
+
+    let response = policy.read_file_for_review(&scrubbed_path_request);
+    assert_eq!(response.decision, "approval_required");
+    assert!(response.path_display.contains("[REDACTED:openai_api_key]"));
+    assert!(!serde_json::to_string(&response)
+        .unwrap()
+        .contains("abcdefghijklmnopqrstuvwxyz"));
+
+    let mut denied_request = request(".env.sk-abcdefghijklmnopqrstuvwxyz123456");
+    denied_request.request_id = "req_secret_env_file".to_string();
+    let denied = policy.read_file_for_review(&denied_request);
+    assert_eq!(denied.decision, "denied");
+    assert!(denied.path_display.contains("[REDACTED:openai_api_key]"));
+    assert!(!serde_json::to_string(&denied)
+        .unwrap()
+        .contains("abcdefghijklmnopqrstuvwxyz"));
+}
+
+#[test]
+fn approval_queue_keeps_review_content_local_until_approval() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("server.log"),
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz\n",
+    )
+    .unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let mut req = request("server.log");
+    req.capability = "workspace.log.read".to_string();
+    req.session_id = "sess_queue".to_string();
+    req.account_id = "acct_queue".to_string();
+    req.org_id = "org_queue".to_string();
+    req.device_fingerprint = "sha256:queue-device".to_string();
+    let local_review = policy.read_file_for_review(&req);
+    assert!(local_review.content.is_some());
+
+    let mut queue = ApprovalQueue::new();
+    let public = queue.queue_file_review(req.clone(), local_review);
+    let approval_id = public.approval_id.clone().unwrap();
+
+    assert_eq!(public.decision, "approval_queued");
+    assert_eq!(public.bytes_sent, 0);
+    assert!(public.content.is_none());
+    assert_eq!(queue.pending_len(), 1);
+    assert_eq!(
+        queue.get(&approval_id).unwrap().status,
+        ApprovalStatus::Pending
+    );
+
+    let (approved, receipt) = queue.approve(&approval_id).unwrap();
+    assert_eq!(approved.approval_id.as_deref(), Some(approval_id.as_str()));
+    assert!(approved
+        .content
+        .unwrap()
+        .contains("[REDACTED:authorization_header]"));
+    assert_eq!(receipt.approval_id, approval_id);
+    assert_eq!(receipt.request_id, req.request_id);
+    assert_eq!(receipt.session_id, "sess_queue");
+    assert_eq!(receipt.account_id, "acct_queue");
+    assert_eq!(receipt.org_id, "org_queue");
+    assert_eq!(receipt.workspace_id, "wk_123");
+    assert_eq!(receipt.device_fingerprint, "sha256:queue-device");
+    assert_eq!(receipt.capability, "workspace.log.read");
+    assert_eq!(receipt.scope, "once");
+    assert!(queue.get(&approval_id).is_none());
+    assert_eq!(queue.pending_len(), 0);
+    assert!(queue.approve(&approval_id).is_none());
+}
+
+#[test]
+fn approval_queue_deny_and_revoke_invalidate_queued_content() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let mut queue = ApprovalQueue::new();
+
+    let req = request("app.rs");
+    let public = queue.queue_file_review(req.clone(), policy.read_file_for_review(&req));
+    let approval_id = public.approval_id.clone().unwrap();
+
+    assert!(queue.deny(&approval_id));
+    let denied = queue.get(&approval_id).unwrap();
+    assert_eq!(denied.status, ApprovalStatus::Denied);
+    assert!(denied.local_review.content.is_none());
+    assert!(queue.approve(&approval_id).is_none());
+
+    let mut second_req = request("app.rs");
+    second_req.request_id = "req_second".to_string();
+    let second_public =
+        queue.queue_file_review(second_req.clone(), policy.read_file_for_review(&second_req));
+    let second_approval_id = second_public.approval_id.clone().unwrap();
+    queue.revoke_all();
+    let revoked = queue.get(&second_approval_id).unwrap();
+    assert_eq!(revoked.status, ApprovalStatus::Revoked);
+    assert!(revoked.local_review.content.is_none());
+    assert_eq!(queue.pending_len(), 0);
+}
+
+#[test]
+fn local_approval_grant_keeps_redacted_payload_queued_until_release() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "const answer = 42;\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let request = request("app.rs");
+    let mut queue = ApprovalQueue::new();
+    let public = queue.queue_file_review(request.clone(), policy.read_file_for_review(&request));
+    let approval_id = public.approval_id.unwrap();
+
+    let summaries = queue.pending_review_summaries();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].bytes_sent, 0);
+    assert_eq!(summaries[0].actor, "vectant_ai");
+    assert!(summaries[0].redacted_preview.contains("const answer = 42"));
+
+    assert!(queue.grant_for_local_release(&approval_id));
+    assert_eq!(queue.pending_len(), 0);
+    let granted = queue.get(&approval_id).unwrap();
+    assert_eq!(granted.status, ApprovalStatus::Approved);
+    assert!(granted.local_review.content.is_some());
+
+    let current_review = policy.read_file_for_review(&request);
+    let (released, receipt) = queue
+        .release_granted_at(&approval_id, current_review, chrono::Utc::now())
+        .unwrap();
+    assert!(released.content.is_some());
+    assert_eq!(released.bytes_sent, 0);
+    assert_eq!(receipt.approval_id, approval_id);
+    assert!(queue.get(&approval_id).is_none());
+}
+
+#[test]
+fn granted_approval_release_fails_closed_after_toctou_change() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("app.rs");
+    fs::write(&path, "const answer = 42;\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let request = request("app.rs");
+    let mut queue = ApprovalQueue::new();
+    let public = queue.queue_file_review(request.clone(), policy.read_file_for_review(&request));
+    let approval_id = public.approval_id.unwrap();
+    assert!(queue.grant_for_local_release(&approval_id));
+
+    fs::write(&path, "const answer = 43;\n").unwrap();
+    let changed_review = policy.read_file_for_review(&request);
+
+    assert!(queue
+        .release_granted_at(&approval_id, changed_review, chrono::Utc::now())
+        .is_none());
+    assert!(queue.get(&approval_id).is_none());
+}
+
+#[test]
+fn approval_queue_requires_local_secret_for_http_approval_paths() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("server.log"), "local log line\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let mut queue = ApprovalQueue::new();
+    let req = request("server.log");
+    let public = queue.queue_file_review(req.clone(), policy.read_file_for_review(&req));
+    let approval_id = public.approval_id.clone().unwrap();
+
+    assert!(serde_json::to_string(queue.get(&approval_id).unwrap())
+        .unwrap()
+        .contains("local_review"));
+    assert!(!serde_json::to_string(queue.get(&approval_id).unwrap())
+        .unwrap()
+        .contains("local_approval_secret"));
+
+    assert!(queue
+        .approve_with_secret(&approval_id, "wrong-secret")
+        .is_none());
+    assert_eq!(queue.pending_len(), 1);
+    assert!(!queue.deny_with_secret(&approval_id, "wrong-secret"));
+    assert_eq!(
+        queue.get(&approval_id).unwrap().status,
+        ApprovalStatus::Pending
+    );
+
+    assert!(queue.set_local_approval_secret_for_test(&approval_id, "desktop-confirmation-secret"));
+    let (approved, _) = queue
+        .approve_with_secret(&approval_id, "desktop-confirmation-secret")
+        .unwrap();
+    assert!(approved.content.is_some());
+    assert!(queue.get(&approval_id).is_none());
+}
+
+#[test]
+fn approval_queue_rejects_and_scrubs_malformed_approval_ids() {
+    let mut queue = ApprovalQueue::new();
+    let malicious_id = "sk-abcdefghijklmnopqrstuvwxyz123456";
+
+    assert!(queue.approve(malicious_id).is_none());
+    assert!(queue
+        .approve_with_secret(malicious_id, "desktop-confirmation-secret")
+        .is_none());
+    assert!(!queue.deny(malicious_id));
+    assert!(!queue.deny_with_secret(malicious_id, "desktop-confirmation-secret"));
+    assert!(queue.get(malicious_id).is_none());
+
+    let denied = denied_approval_response("req_bad_approval", malicious_id);
+    let serialized = serde_json::to_string(&denied).unwrap();
+    assert_eq!(denied.path_display, "approval_request");
+    assert_eq!(denied.approval_id.as_deref(), Some("approval_request"));
+    assert!(!serialized.contains("abcdefghijklmnopqrstuvwxyz"));
+    assert!(!serialized.contains("sk-"));
+}
+
+#[test]
+fn approval_queue_revalidates_expiry_before_releasing_content() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("server.log"), "local log line\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let mut queue = ApprovalQueue::new();
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let mut expired_req = request("server.log");
+    expired_req.expires_at = "2026-07-05T11:59:59Z".to_string();
+    let expired_public = queue.queue_file_review(
+        expired_req.clone(),
+        policy.read_file_for_review(&expired_req),
+    );
+    let expired_id = expired_public.approval_id.unwrap();
+    assert!(queue.approve_at(&expired_id, now).is_none());
+    assert!(queue.get(&expired_id).is_none());
+
+    let mut malformed_req = request("server.log");
+    malformed_req.request_id = "req_malformed_expiry".to_string();
+    malformed_req.expires_at = "not-a-date".to_string();
+    let malformed_public = queue.queue_file_review(
+        malformed_req.clone(),
+        policy.read_file_for_review(&malformed_req),
+    );
+    let malformed_id = malformed_public.approval_id.unwrap();
+    assert!(queue.approve_at(&malformed_id, now).is_none());
+    assert!(queue.get(&malformed_id).is_none());
+
+    let mut valid_req = request("server.log");
+    valid_req.request_id = "req_valid_expiry".to_string();
+    valid_req.expires_at = "2026-07-05T12:01:00Z".to_string();
+    let valid_public =
+        queue.queue_file_review(valid_req.clone(), policy.read_file_for_review(&valid_req));
+    let valid_id = valid_public.approval_id.unwrap();
+    let (approved, _) = queue.approve_at(&valid_id, now).unwrap();
+    assert!(approved.content.is_some());
+}
+
+#[test]
+fn approval_queue_revalidates_file_hash_before_releasing_content() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("server.log");
+    fs::write(&path, "first safe local log line\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let mut queue = ApprovalQueue::new();
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let mut req = request("server.log");
+    req.capability = "workspace.log.read".to_string();
+    req.expires_at = "2026-07-05T12:01:00Z".to_string();
+    let public = queue.queue_file_review(req.clone(), policy.read_file_for_review(&req));
+    let approval_id = public.approval_id.unwrap();
+    assert!(queue.set_local_approval_secret_for_test(&approval_id, "desktop-confirmation-secret"));
+
+    let unchanged_review = policy.read_file_for_review(&req);
+    let (approved, _) = queue
+        .approve_with_secret_and_current_review(
+            &approval_id,
+            "desktop-confirmation-secret",
+            unchanged_review,
+            now,
+        )
+        .unwrap();
+    assert!(approved
+        .content
+        .unwrap()
+        .contains("first safe local log line"));
+
+    let second_public = queue.queue_file_review(req.clone(), policy.read_file_for_review(&req));
+    let second_approval_id = second_public.approval_id.unwrap();
+    assert!(queue
+        .set_local_approval_secret_for_test(&second_approval_id, "desktop-confirmation-secret",));
+    fs::write(&path, "changed local log line after review\n").unwrap();
+    let changed_review = policy.read_file_for_review(&req);
+    assert!(queue
+        .approve_with_secret_and_current_review(
+            &second_approval_id,
+            "desktop-confirmation-secret",
+            changed_review,
+            now,
+        )
+        .is_none());
+    assert!(queue.get(&second_approval_id).is_none());
+}
+
+#[test]
+fn blocks_sensitive_filename_variants_and_cloud_credentials() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".aws")).unwrap();
+    fs::write(
+        dir.path().join("production.env.backup"),
+        "DATABASE_URL=postgres://u:p@localhost/db\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join(".aws").join("credentials"),
+        "aws_access_key_id = AKIA1234567890ABCDEF\n",
+    )
+    .unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    for path in ["production.env.backup", ".aws/credentials"] {
+        let response = policy.read_file_for_review(&request(path));
+        assert_eq!(response.decision, "denied");
+        assert_eq!(response.bytes_sent, 0);
+        assert!(response.content.is_none());
+    }
+}
+
+#[test]
+fn blocks_default_ignored_and_sensitive_artifact_paths() {
+    let dir = tempdir().unwrap();
+    for path in [
+        ".docker/config.json",
+        ".npmrc",
+        ".pypirc",
+        ".netrc",
+        ".git-credentials",
+        ".git/config",
+        ".git/objects/aa/object",
+        ".git/logs/HEAD",
+        ".git/hooks/pre-commit",
+        ".vscode/settings.json",
+        "node_modules/pkg/index.js",
+        "dist/app.js",
+        "build/app.js",
+        ".next/server/app.js",
+        "coverage/lcov.info",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lockb",
+        "composer.lock",
+        "poetry.lock",
+        "Cargo.lock",
+        "public/app.min.js",
+        "public/app.min.css",
+        "src/app.js.map",
+        "data.sqlite",
+        "dump.sql",
+        "backup.bak",
+        "server.crt",
+        "known_hosts",
+        "Thumbs.db",
+    ] {
+        let full = dir.path().join(path);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        fs::write(&full, "local artifact that must not leave the machine\n").unwrap();
+    }
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    for path in [
+        ".docker/config.json",
+        ".npmrc",
+        ".pypirc",
+        ".netrc",
+        ".git-credentials",
+        ".git/config",
+        ".git/objects/aa/object",
+        ".git/logs/HEAD",
+        ".git/hooks/pre-commit",
+        ".vscode/settings.json",
+        "node_modules/pkg/index.js",
+        "dist/app.js",
+        "build/app.js",
+        ".next/server/app.js",
+        "coverage/lcov.info",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lockb",
+        "composer.lock",
+        "poetry.lock",
+        "Cargo.lock",
+        "public/app.min.js",
+        "public/app.min.css",
+        "src/app.js.map",
+        "data.sqlite",
+        "dump.sql",
+        "backup.bak",
+        "server.crt",
+        "known_hosts",
+        "Thumbs.db",
+    ] {
+        let response = policy.read_file_for_review(&request(path));
+        assert_eq!(response.decision, "denied", "{path} should be denied");
+        assert_eq!(response.bytes_sent, 0);
+        assert!(response.content.is_none());
+    }
+}
+
+#[test]
+fn blocks_archive_binary_and_huge_files() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("bundle.zip"), b"PK\x03\x04").unwrap();
+    fs::write(dir.path().join("image.bin"), b"hello\0secret").unwrap();
+    fs::write(dir.path().join("huge.log"), vec![b'a'; 262_145]).unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    for path in ["bundle.zip", "image.bin", "huge.log"] {
+        let response = policy.read_file_for_review(&request(path));
+        assert_eq!(response.decision, "denied");
+        assert_eq!(response.bytes_sent, 0);
+        assert!(response.content.is_none());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn blocks_sparse_files_even_when_logical_size_is_under_cap() {
+    use std::io::Write;
+
+    let dir = tempdir().unwrap();
+    let sparse_path = dir.path().join("sparse.log");
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&sparse_path)
+        .unwrap();
+    file.write_all(b"start").unwrap();
+    file.set_len(128 * 1024).unwrap();
+    drop(file);
+
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let response = policy.read_file_for_review(&request("sparse.log"));
+
+    assert_eq!(response.decision, "denied");
+    assert_eq!(response.bytes_sent, 0);
+    assert!(response.content.is_none());
+}
+
+#[test]
+fn scanner_redacts_required_secret_fixtures() {
+    let scanner = SecretScanner::default();
+    let content = [
+        "GitHub=ghp_abcdefghijklmnopqrstuvwxyz123456",
+        "OpenAI=sk-abcdefghijklmnopqrstuvwxyz123456",
+        "Jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturevalue",
+        "AWS=AKIA1234567890ABCDEF",
+        "-----BEGIN PRIVATE KEY-----",
+        "Database=postgres://user:pass@localhost/db",
+        "Cookie: session_id=super-secret-cookie",
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        "NPM=npm_abcdefghijklmnopqrstuvwxyz",
+        r#"{ "type": "service_account", "project_id": "demo" }"#,
+    ]
+    .join("\n");
+
+    let report = scanner.scan(&content);
+    let kinds: Vec<_> = report
+        .findings
+        .iter()
+        .map(|finding| finding.kind.as_str())
+        .collect();
+    for expected in [
+        "github_token",
+        "openai_api_key",
+        "jwt",
+        "aws_access_key",
+        "private_key",
+        "database_url",
+        "cookie",
+        "authorization_header",
+        "npm_token",
+        "firebase_service_account",
+    ] {
+        assert!(
+            kinds.contains(&expected),
+            "missing scanner fixture {expected}"
+        );
+    }
+
+    let redacted = scanner.redact(&content, &report);
+    for raw in [
+        "ghp_abcdefghijklmnopqrstuvwxyz123456",
+        "sk-abcdefghijklmnopqrstuvwxyz123456",
+        "eyJhbGciOiJIUzI1NiJ9",
+        "AKIA1234567890ABCDEF",
+        "-----BEGIN PRIVATE KEY-----",
+        "postgres://user:pass@localhost/db",
+        "super-secret-cookie",
+        "abcdefghijklmnopqrstuvwxyz",
+        "npm_abcdefghijklmnopqrstuvwxyz",
+        r#""type": "service_account""#,
+    ] {
+        assert!(!redacted.contains(raw), "raw scanner fixture leaked: {raw}");
+    }
+}
+
+#[test]
+fn scanner_failure_denies_file_reads() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.ts"), "export const ok = true;\n").unwrap();
+    let policy = WorkspacePolicy::new(
+        dir.path(),
+        "wk_123",
+        SecretScanner::unavailable("scanner-test"),
+    )
+    .unwrap();
+
+    let response = policy.read_file_for_review(&request("app.ts"));
+    assert_eq!(response.decision, "denied");
+    assert_eq!(response.bytes_sent, 0);
+    assert!(response.content.is_none());
+    assert!(response
+        .user_visible_message
+        .unwrap()
+        .contains("secret scanner was unavailable"));
+}
+
+#[test]
+fn session_rejects_bad_token_replay_and_pause() {
+    let mut session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
+    let token = session.token_for_pairing_response().to_string();
+
+    assert_eq!(
+        session.validate("wrong", "req_1"),
+        Err(SessionError::BadToken)
+    );
+    assert!(session.validate(&token, "req_1").is_ok());
+    assert_eq!(session.validate(&token, "req_1"), Err(SessionError::Replay));
+    session.pause();
+    assert_eq!(session.validate(&token, "req_2"), Err(SessionError::Paused));
+}
+
+#[test]
+fn session_rejects_unsafe_request_ids_before_replay_tracking() {
+    let mut session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
+    let token = session.token_for_pairing_response().to_string();
+
+    assert_eq!(
+        session.validate("wrong", "req_bad\nheader"),
+        Err(SessionError::BadToken)
+    );
+    assert_eq!(
+        session.validate(&token, "req_bad\nheader"),
+        Err(SessionError::InvalidRequestId)
+    );
+    assert_eq!(
+        session.validate_control(&token, &"r".repeat(129)),
+        Err(SessionError::InvalidRequestId)
+    );
+    assert!(session.validate(&token, "req_after_bad_id").is_ok());
+}
+
+#[test]
+fn session_state_omits_token_material() {
+    let session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
+    let serialized = serde_json::to_string(&session.state()).unwrap();
+
+    assert!(!serialized.contains("token"));
+    assert!(!serialized.contains("bearer"));
+    assert!(serialized.contains("device_fingerprint"));
+    assert!(serialized.contains("protocol_version"));
+}
+
+#[test]
+fn session_control_can_resume_from_paused_state() {
+    let mut session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
+    let token = session.token_for_pairing_response().to_string();
+
+    session.pause();
+    assert_eq!(
+        session.validate(&token, "req_data"),
+        Err(SessionError::Paused)
+    );
+    assert!(session.validate_control(&token, "req_pause_again").is_ok());
+    assert!(session.validate_control(&token, "req_resume").is_ok());
+    session.resume();
+    assert!(session.validate(&token, "req_after_resume").is_ok());
+    assert!(session.validate_control(&token, "req_disconnect").is_ok());
+    session.disconnect();
+    assert_eq!(
+        session.validate_control(&token, "req_after_disconnect"),
+        Err(SessionError::Expired)
+    );
+}
+
+#[test]
+fn disconnect_cleanup_revokes_tokens_streams_and_pending_approvals() {
+    let mut session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
+    let token = session.token_for_pairing_response().to_string();
+    let session_id = session.session_id().to_string();
+    let mut registry = PortApprovalRegistry::new();
+    let approval = registry.approve_browser_port(&session_id, 5173, "vite:1234");
+    let mut traffic = PreviewTrafficGuard::new();
+    let mut pending = PendingApprovalQueue::new();
+
+    pending.push("appr_file_1");
+    assert!(traffic.begin_stream(&approval.preview_host));
+    assert_eq!(traffic.active_stream_count(&approval.preview_host), 1);
+    assert!(registry
+        .approval_for(&session_id, 5173, "vite:1234")
+        .is_some());
+
+    let report = disconnect_cleanup(&mut session, &mut registry, &mut traffic, &mut pending);
+
+    assert_eq!(pending.len(), 0);
+    assert_eq!(traffic.active_stream_count(&approval.preview_host), 0);
+    assert!(registry
+        .approval_for(&session_id, 5173, "vite:1234")
+        .is_none());
+    assert_eq!(
+        session.validate_control(&token, "req_after_cleanup"),
+        Err(SessionError::Expired)
+    );
+    assert!(report.cloud_token_revoked);
+    assert!(report.local_token_revoked);
+    assert!(report.preview_tokens_revoked);
+    assert!(report.agent_tokens_revoked);
+    assert!(report.preview_streams_stopped);
+    assert!(report.pending_approvals_cleared);
+    assert!(report.session_disconnected);
+    assert!(!report.hidden_daemon_running);
+}
+
+#[test]
+fn uninstall_cleanup_leaves_no_hidden_daemon_state() {
+    let mut session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
+    let session_id = session.session_id().to_string();
+    let mut registry = PortApprovalRegistry::new();
+    let approval = registry.approve_browser_port(&session_id, 3000, "next:3000");
+    let mut traffic = PreviewTrafficGuard::new();
+    let mut pending = PendingApprovalQueue::new();
+
+    pending.push("appr_port_1");
+    assert!(traffic.begin_stream(&approval.preview_host));
+
+    let report = uninstall_cleanup(&mut session, &mut registry, &mut traffic, &mut pending);
+
+    assert_eq!(pending.len(), 0);
+    assert_eq!(traffic.active_stream_count(&approval.preview_host), 0);
+    assert!(registry
+        .approval_for(&session_id, 3000, "next:3000")
+        .is_none());
+    assert!(!report.hidden_daemon_running);
+}
+
+#[test]
+fn desktop_ipc_allows_only_narrow_commands() {
+    let allowed = decide_ipc_request(&IpcRequest {
+        command: "session.pause".to_string(),
+        request_id: "req_pause".to_string(),
+        session_id: "sess_123".to_string(),
+    });
+    assert_eq!(allowed.decision, "allow");
+
+    let allowed_delete = decide_ipc_request(&IpcRequest {
+        command: "history.delete".to_string(),
+        request_id: "req_delete_history".to_string(),
+        session_id: "sess_123".to_string(),
+    });
+    assert_eq!(allowed_delete.decision, "allow");
+
+    let allowed_revoke = decide_ipc_request(&IpcRequest {
+        command: "approval.revoke_session".to_string(),
+        request_id: "req_revoke_session_approvals".to_string(),
+        session_id: "sess_123".to_string(),
+    });
+    assert_eq!(allowed_revoke.decision, "allow");
+
+    for command in ["update.check", "update.install"] {
+        let allowed_update = decide_ipc_request(&IpcRequest {
+            command: command.to_string(),
+            request_id: format!("req_{}", command.replace('.', "_")),
+            session_id: "sess_123".to_string(),
+        });
+        assert_eq!(allowed_update.decision, "allow");
+    }
+
+    let allowed_pairing = decide_ipc_request(&IpcRequest {
+        command: "pairing.start".to_string(),
+        request_id: "req_pairing_start".to_string(),
+        session_id: "sess_123".to_string(),
+    });
+    assert_eq!(allowed_pairing.decision, "allow");
+
+    for command in [
+        "fs.readFile",
+        "workspace.writeFile",
+        "shell.exec",
+        "openPath",
+        "clipboard.read",
+        "screen.capture",
+        "accessibility.enable",
+        "keychain.read",
+        "workspace.deleteAll",
+    ] {
+        let denied = decide_ipc_request(&IpcRequest {
+            command: command.to_string(),
+            request_id: format!("req_{command}"),
+            session_id: "sess_123".to_string(),
+        });
+        assert_eq!(denied.decision, "deny");
+        assert!(denied.user_visible);
+    }
+
+    let dangerous_delete = decide_ipc_request(&IpcRequest {
+        command: "workspace.deleteall".to_string(),
+        request_id: "req_workspace_delete".to_string(),
+        session_id: "sess_123".to_string(),
+    });
+    assert_eq!(dangerous_delete.reason, "dangerous_ipc_command_blocked");
+}
+
+#[test]
+fn desktop_ipc_action_plans_map_renderer_commands_to_narrow_daemon_routes() {
+    let status = plan_desktop_ipc_action(&IpcRequest {
+        command: "session.status".to_string(),
+        request_id: "req_status".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert_eq!(status.daemon_method.as_deref(), Some("GET"));
+    assert_eq!(
+        status.daemon_path_template.as_deref(),
+        Some("/v1/status/{request_id}")
+    );
+    assert!(!status.requires_local_control);
+    assert!(status.returns_sanitized_state);
+
+    let revoke = plan_desktop_ipc_action(&IpcRequest {
+        command: "approval.revoke_session".to_string(),
+        request_id: "req_revoke_session_approvals".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert_eq!(revoke.daemon_method.as_deref(), Some("POST"));
+    assert_eq!(
+        revoke.daemon_path_template.as_deref(),
+        Some("/v1/approval/revoke-all/{request_id}")
+    );
+    assert!(revoke.requires_local_control);
+    assert!(revoke.user_visible);
+
+    let update_check = plan_desktop_ipc_action(&IpcRequest {
+        command: "update.check".to_string(),
+        request_id: "req_update_check".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert_eq!(update_check.daemon_method.as_deref(), Some("NATIVE"));
+    assert_eq!(
+        update_check.daemon_path_template.as_deref(),
+        Some("signed-updater/check")
+    );
+    assert!(update_check.returns_sanitized_state);
+
+    let workspace_pick = plan_desktop_ipc_action(&IpcRequest {
+        command: "workspace.pick".to_string(),
+        request_id: "req_workspace_pick".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert!(workspace_pick.daemon_method.is_none());
+    assert!(workspace_pick.requires_local_control);
+
+    let file_review = plan_desktop_ipc_action(&IpcRequest {
+        command: "approval.file.review".to_string(),
+        request_id: "req_file_review".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert!(file_review.daemon_method.is_none());
+    assert!(file_review.requires_local_control);
+    assert!(file_review.user_visible);
+
+    let port_review = plan_desktop_ipc_action(&IpcRequest {
+        command: "approval.port.review".to_string(),
+        request_id: "req_port_review".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert!(port_review.daemon_method.is_none());
+    assert!(port_review.requires_local_control);
+    assert!(port_review.user_visible);
+
+    let pairing_start = plan_desktop_ipc_action(&IpcRequest {
+        command: "pairing.start".to_string(),
+        request_id: "req_pairing_start".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert!(pairing_start.daemon_method.is_none());
+    assert!(pairing_start.requires_local_control);
+
+    let denied = plan_desktop_ipc_action(&IpcRequest {
+        command: "shell.exec".to_string(),
+        request_id: "req_shell_exec".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap_err();
+    assert_eq!(
+        denied,
+        DesktopIpcError::Denied("dangerous_ipc_command_blocked".to_string())
+    );
+}
+
+#[test]
+fn desktop_tauri_config_keeps_renderer_unprivileged() {
+    let config = include_str!("../desktop/tauri.conf.json");
+    let report = inspect_tauri_config(config).unwrap();
+
+    assert!(report.csp_restrictive);
+    assert!(report.fs_scope_empty);
+    assert!(report.shell_open_disabled);
+    assert!(report.clipboard_disabled);
+    assert!(report.devtools_disabled);
+    assert!(report.renderer_token_access_blocked);
+    assert!(report.csp_blocks_loopback_fetch);
+    assert!(report.updater_requires_signature);
+    assert!(report.hardened());
+
+    let loopback_fetch_config = config.replace(
+        r#"connect-src 'self';"#,
+        r#"connect-src 'self' http://127.0.0.1:*;"#,
+    );
+    let loopback_fetch_report = inspect_tauri_config(&loopback_fetch_config).unwrap();
+    assert!(!loopback_fetch_report.csp_blocks_loopback_fetch);
+    assert!(!loopback_fetch_report.hardened());
+
+    let signed_config = config.to_string();
+    let signed_report = inspect_tauri_config(&signed_config).unwrap();
+    assert!(signed_report.updater_requires_signature);
+    assert!(signed_report.hardened());
+}
+
+#[test]
+fn desktop_ipc_blocks_renderer_secret_and_device_key_access() {
+    for command in [
+        "session.token.read",
+        "pairing.bearer.export",
+        "device_private_key.read",
+        "keychain.entry.get",
+        "credentials.dump",
+        "local_log.read",
+        "audit_raw.export",
+        "approval.file.review;fs.readFile",
+        "workspace.pick/../../secret",
+    ] {
+        assert!(
+            renderer_command_can_access_secret(command)
+                || command.contains(';')
+                || command.contains('/'),
+            "test command should model a dangerous renderer action: {command}"
+        );
+        let denied = decide_ipc_request(&IpcRequest {
+            command: command.to_string(),
+            request_id: format!("req_{command}"),
+            session_id: "sess_123".to_string(),
+        });
+        assert_eq!(denied.decision, "deny", "{command} must be denied");
+        assert!(denied.user_visible);
+    }
+}
+
+#[test]
+fn desktop_ipc_state_sanitizer_removes_tokens_keys_and_raw_bodies() {
+    let state = serde_json::json!({
+        "session": {
+            "session_id": "sess_safe",
+            "device_private_key": "PRIVATE KEY",
+            "authorization": "Bearer abcdefghijklmnopqrstuvwxyz",
+            "local_control_secret": "desktop-control-secret-000000000000"
+        },
+        "ports": [{
+            "port": 5173,
+            "preview_host": "br-local-p5173.vectant-preview.dev",
+            "preview_token": "raw-preview-token",
+            "preview_token_hash": "sha256:tokenhash"
+        }],
+        "history": {
+            "raw_bodies_included": false,
+            "raw_body": "OPENAI_API_KEY=sk-testsecret000000000000000"
+        }
+    });
+    let sanitized = sanitize_desktop_ipc_state(&state);
+    let serialized = serde_json::to_string(&sanitized).unwrap();
+
+    assert!(serialized.contains("sess_safe"));
+    assert!(serialized.contains("br-local-p5173.vectant-preview.dev"));
+    assert!(!serialized.contains("PRIVATE KEY"));
+    assert!(!serialized.contains("Bearer abcdefghijklmnopqrstuvwxyz"));
+    assert!(!serialized.contains("desktop-control-secret"));
+    assert!(!serialized.contains("raw-preview-token"));
+    assert!(!serialized.contains("preview_token"));
+    assert!(!serialized.contains("sk-testsecret"));
+    assert!(!serialized.contains("raw_body"));
+}
+
+#[test]
+fn desktop_ipc_rejects_malformed_renderer_identifiers() {
+    let cases = vec![
+        ("req_ok".to_string(), "".to_string()),
+        ("".to_string(), "sess_123".to_string()),
+        (" req_space".to_string(), "sess_123".to_string()),
+        ("req_newline\nx".to_string(), "sess_123".to_string()),
+        ("req/slash".to_string(), "sess_123".to_string()),
+        ("req_123".to_string(), "sess_123\r\nx".to_string()),
+        ("r".repeat(129), "sess_123".to_string()),
+    ];
+    for (request_id, session_id) in cases {
+        let denied = decide_ipc_request(&IpcRequest {
+            command: "session.status".to_string(),
+            request_id,
+            session_id,
+        });
+        assert_eq!(denied.decision, "deny");
+        assert_eq!(denied.reason, "invalid_schema");
+        assert!(denied.user_visible);
+    }
+}
+
+#[test]
+fn local_api_rate_limiter_denies_after_window_budget() {
+    let start = std::time::Instant::now();
+    let mut limiter = RateLimiter::new(2, std::time::Duration::from_secs(60));
+
+    assert!(limiter.allow_at(start));
+    assert!(limiter.allow_at(start + std::time::Duration::from_secs(1)));
+    assert!(!limiter.allow_at(start + std::time::Duration::from_secs(2)));
+    assert!(limiter.allow_at(start + std::time::Duration::from_secs(61)));
+}
+
+#[test]
+fn local_api_body_limit_matches_file_review_cap() {
+    assert_eq!(MAX_JSON_BODY_BYTES, 262_144);
+}
+
+#[test]
+fn local_control_secret_is_required_for_desktop_side_effects() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
+    let mut state = AppState::new(session, policy);
+
+    assert!(!state.local_control_secret_matches(""));
+    assert!(!state.local_control_secret_matches("wrong-control-secret"));
+    state.set_local_control_secret_for_test("desktop-control-secret-000000000000");
+    assert!(state.local_control_secret_matches("desktop-control-secret-000000000000"));
+    assert!(!state.local_control_secret_matches("desktop-control-secret-111111111111"));
+}
+
+#[test]
+fn local_authorization_headers_reject_malformed_values_before_policy_validation() {
+    let mut headers = local_authorization_headers();
+    assert!(LocalRequestAuthorization::from_headers(&headers).is_ok());
+
+    for (name, value) in [
+        ("x-vectant-app-version", "0.1.0-beta"),
+        ("x-vectant-app-version", "1.2.3.4.5"),
+        ("x-vectant-protocol-version", "local support mvp"),
+        ("x-vectant-policy-version", "2026/07/05"),
+        ("x-vectant-device-fingerprint", "sha256:not-hex"),
+        ("x-vectant-device-proof", "sha256:bad-proof"),
+    ] {
+        headers = local_authorization_headers();
+        headers.insert(name, HeaderValue::from_str(value).unwrap());
+        let error = LocalRequestAuthorization::from_headers(&headers).unwrap_err();
+        assert_eq!(error.0, StatusCode::FORBIDDEN);
+    }
+}
+
+#[test]
+fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proof() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
+    let mut req = request("app.rs");
+    req.session_id = session.session_id().to_string();
+    req.account_id = "acct_test".to_string();
+    req.org_id = "org_test".to_string();
+    let auth = local_auth(&session, &req);
+    req.device_fingerprint = auth.device_fingerprint.clone();
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    assert!(validate_file_request_authorization(&session, &policy, &req, &auth, now).is_ok());
+
+    let mut wrong_session = req.clone();
+    wrong_session.session_id = "sess_attacker".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &wrong_session, &auth, now),
+        Err(LocalAuthorizationError::SessionMismatch)
+    );
+
+    let mut wrong_account = req.clone();
+    wrong_account.account_id = "acct_attacker".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &wrong_account, &auth, now),
+        Err(LocalAuthorizationError::AccountMismatch)
+    );
+
+    let mut wrong_org = req.clone();
+    wrong_org.org_id = "org_attacker".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &wrong_org, &auth, now),
+        Err(LocalAuthorizationError::OrgMismatch)
+    );
+
+    let mut wrong_workspace = req.clone();
+    wrong_workspace.workspace_id = "wk_other".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &wrong_workspace, &auth, now),
+        Err(LocalAuthorizationError::WorkspaceMismatch)
+    );
+
+    let mut mismatched_body_device = req.clone();
+    mismatched_body_device.device_fingerprint = "sha256:bodybad0".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &mismatched_body_device, &auth, now),
+        Err(LocalAuthorizationError::DeviceMismatch)
+    );
+
+    let mut tampered_capability = req.clone();
+    tampered_capability.capability = "workspace.log.read".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &tampered_capability, &auth, now),
+        Err(LocalAuthorizationError::DeviceProofInvalid)
+    );
+
+    let mut tampered_actor = req.clone();
+    tampered_actor.actor = "support_agent".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &tampered_actor, &auth, now),
+        Err(LocalAuthorizationError::DeviceProofInvalid)
+    );
+
+    let mut expired = req.clone();
+    expired.expires_at = "2026-07-05T11:59:59Z".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &expired, &auth, now),
+        Err(LocalAuthorizationError::ExpiredRequest)
+    );
+
+    let mut invalid_expiry = req.clone();
+    invalid_expiry.expires_at = "not-a-date".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &invalid_expiry, &auth, now),
+        Err(LocalAuthorizationError::InvalidRequestExpiry)
+    );
+
+    let mut old_app = auth.clone();
+    old_app.app_version = "0.0.9".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &old_app, now),
+        Err(LocalAuthorizationError::AppVersionTooOld)
+    );
+
+    let mut blocked_app = auth.clone();
+    blocked_app.app_version = "0.1.1".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &blocked_app, now),
+        Err(LocalAuthorizationError::AppVersionBlocked)
+    );
+
+    let mut semantically_blocked_app = auth.clone();
+    semantically_blocked_app.app_version = "0.1.1.0".to_string();
+    assert_eq!(
+        validate_file_request_authorization(
+            &session,
+            &policy,
+            &req,
+            &semantically_blocked_app,
+            now
+        ),
+        Err(LocalAuthorizationError::AppVersionBlocked)
+    );
+
+    let mut stale_protocol = auth.clone();
+    stale_protocol.protocol_version = "local-support-old".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &stale_protocol, now),
+        Err(LocalAuthorizationError::ProtocolVersionMismatch)
+    );
+
+    let mut stale_policy = auth.clone();
+    stale_policy.policy_version = "2026.01.01".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &stale_policy, now),
+        Err(LocalAuthorizationError::PolicyVersionMismatch)
+    );
+
+    let mut wrong_device = auth.clone();
+    wrong_device.device_fingerprint = "sha256:wrong-device".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &wrong_device, now),
+        Err(LocalAuthorizationError::DeviceMismatch)
+    );
+
+    let mut malformed_device = auth.clone();
+    malformed_device.device_fingerprint = "dev-not-a-fingerprint".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &malformed_device, now),
+        Err(LocalAuthorizationError::DeviceMismatch)
+    );
+
+    let mut bad_proof = auth.clone();
+    bad_proof.device_proof = "sha256:bad-proof".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &bad_proof, now),
+        Err(LocalAuthorizationError::DeviceProofInvalid)
+    );
+
+    let mut malformed_proof = auth;
+    malformed_proof.device_proof = "not-a-proof".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &malformed_proof, now),
+        Err(LocalAuthorizationError::DeviceProofInvalid)
+    );
+}
+
+#[test]
+fn local_file_request_authorization_rejects_malformed_body_identity_before_proof_hashing() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
+    let mut req = request("app.rs");
+    req.session_id = session.session_id().to_string();
+    let auth = local_auth(&session, &req);
+    req.device_fingerprint = auth.device_fingerprint.clone();
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let mut injected_request_id = req.clone();
+    injected_request_id.request_id = "req_bad\nheader".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &injected_request_id, &auth, now),
+        Err(LocalAuthorizationError::InvalidRequestShape)
+    );
+
+    let mut oversized_actor = req.clone();
+    oversized_actor.actor = "support_agent".repeat(20);
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &oversized_actor, &auth, now),
+        Err(LocalAuthorizationError::InvalidRequestShape)
+    );
+
+    let mut malformed_expiry_shape = req;
+    malformed_expiry_shape.expires_at =
+        "2030-07-05T12:00:00Z authorization: bearer secret".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &malformed_expiry_shape, &auth, now),
+        Err(LocalAuthorizationError::InvalidRequestShape)
+    );
+}
+
+#[test]
+fn local_sessions_can_bind_to_pairing_device_identity() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let paired_device = DeviceIdentity::generate().public_identity();
+    let session = SessionGuard::new_bound_device(
+        "acct_local",
+        "org_local",
+        "wk_123",
+        paired_device.device_fingerprint.clone(),
+        std::time::Duration::from_secs(60),
+    );
+    let mut req = request("app.rs");
+    req.session_id = session.session_id().to_string();
+    req.device_fingerprint = paired_device.device_fingerprint.clone();
+    let auth = local_auth(&session, &req);
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    assert_eq!(
+        session.device_fingerprint(),
+        paired_device.device_fingerprint
+    );
+    assert!(validate_file_request_authorization(&session, &policy, &req, &auth, now).is_ok());
+
+    let attacker = DeviceIdentity::generate().public_identity();
+    let mut wrong_device = auth.clone();
+    wrong_device.device_fingerprint = attacker.device_fingerprint.clone();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &wrong_device, now),
+        Err(LocalAuthorizationError::DeviceMismatch)
+    );
+}
+
+#[test]
+fn paired_local_sessions_preserve_cloud_session_identity_and_hide_local_token() {
+    let mut session = SessionGuard::new_paired(
+        "sess_cloud_pair_123",
+        "acct_pair",
+        "org_pair",
+        "wk_pair",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    )
+    .unwrap();
+    let local_token = session.token_for_pairing_response().to_string();
+    let state = session.state();
+
+    assert_eq!(state.session_id, "sess_cloud_pair_123");
+    assert_eq!(state.account_id, "acct_pair");
+    assert!(!serde_json::to_string(&state)
+        .unwrap()
+        .contains(&local_token));
+    assert!(session.validate(&local_token, "req_cloud_pair_123").is_ok());
+    assert_eq!(
+        SessionGuard::new_paired(
+            "bad session id",
+            "acct_pair",
+            "org_pair",
+            "wk_pair",
+            "sha256:1111111111111111",
+            std::time::Duration::from_secs(300),
+        )
+        .unwrap_err(),
+        vectant_local_support_app::session::SessionError::InvalidSessionId
+    );
+}
+
+#[test]
+fn device_identity_store_persists_rotates_and_fails_closed() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("device-identity.json");
+    let store = DeviceIdentityStore::new(&path);
+
+    let first = store.load_or_create().unwrap();
+    let first_public = first.public_identity();
+    let raw = fs::read(store.path()).unwrap();
+    #[cfg(windows)]
+    {
+        assert!(raw.starts_with(b"VECTANT-DPAPI-V1\0"));
+        let raw_text = String::from_utf8_lossy(&raw);
+        assert!(!raw_text.contains(&first_public.device_public_key));
+        assert!(!raw_text.contains(&first_public.device_fingerprint));
+    }
+    #[cfg(not(windows))]
+    {
+        let raw_text = String::from_utf8(raw.clone()).unwrap();
+        assert!(raw_text.contains(&first_public.device_public_key));
+        assert!(raw_text.contains(&first_public.device_fingerprint));
+    }
+    assert!(!serde_json::to_string(&first_public)
+        .unwrap()
+        .contains("private_key"));
+
+    let loaded = store.load_or_create().unwrap();
+    assert_eq!(
+        loaded.public_identity().device_fingerprint,
+        first_public.device_fingerprint
+    );
+
+    let rotated = store.reset().unwrap();
+    assert_ne!(
+        rotated.public_identity().device_fingerprint,
+        first_public.device_fingerprint
+    );
+
+    fs::write(&path, "{not json").unwrap();
+    assert_eq!(
+        store.load().unwrap_err(),
+        DeviceIdentityStoreError::InvalidFormat
+    );
+
+    let identity = DeviceIdentity::generate();
+    store.persist(&identity).unwrap();
+    #[cfg(not(windows))]
+    {
+        let mut stored: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        stored["device_fingerprint"] = serde_json::json!("sha256:0000000000000000");
+        fs::write(&path, serde_json::to_vec_pretty(&stored).unwrap()).unwrap();
+        assert_eq!(
+            store.load().unwrap_err(),
+            DeviceIdentityStoreError::PublicIdentityMismatch
+        );
+    }
+    #[cfg(windows)]
+    {
+        let mut encrypted = fs::read(&path).unwrap();
+        let last = encrypted.len() - 1;
+        encrypted[last] ^= 0x01;
+        fs::write(&path, encrypted).unwrap();
+        assert_eq!(
+            store.load().unwrap_err(),
+            DeviceIdentityStoreError::InvalidFormat
+        );
+    }
+}
+
+#[test]
+fn pairing_requires_matching_fingerprint_and_rate_limits() {
+    let mut pairing = PairingSession::new(std::time::Duration::from_secs(60));
+    let public = pairing.public_code();
+    assert_eq!(
+        pairing.verify(&public.code, "bad-fingerprint"),
+        Err(PairingError::Mismatch)
+    );
+    assert!(pairing.verify(&public.code, &public.fingerprint).is_ok());
+    assert_eq!(
+        pairing.verify(&public.code, &public.fingerprint),
+        Err(PairingError::Consumed)
+    );
+
+    let mut limited = PairingSession::new(std::time::Duration::from_secs(60));
+    for _ in 0..5 {
+        let _ = limited.verify("bad", "bad");
+    }
+    assert_eq!(limited.verify("bad", "bad"), Err(PairingError::RateLimited));
+}
+
+#[test]
+fn pairing_rejects_malformed_code_and_fingerprint_shape() {
+    let mut pairing = PairingSession::new(std::time::Duration::from_secs(60));
+    let public = pairing.public_code();
+
+    assert_eq!(
+        pairing.verify(&format!("{}\n", public.code), &public.fingerprint),
+        Err(PairingError::Mismatch)
+    );
+    assert_eq!(
+        pairing.verify(&public.code.to_ascii_lowercase(), &public.fingerprint),
+        Err(PairingError::Mismatch)
+    );
+    assert_eq!(
+        pairing.verify(&public.code, &"a".repeat(128)),
+        Err(PairingError::Mismatch)
+    );
+}
+
+#[test]
+fn pairing_proof_binds_device_key_to_challenge() {
+    let device = DeviceIdentity::generate();
+    let public = device.public_identity();
+    assert!(public.device_fingerprint.starts_with("sha256:"));
+    assert_eq!(public.device_fingerprint.len(), "sha256:".len() + 16);
+    let proof = device.sign_pairing_challenge("pair_123", "nonce_123", "browser_123", "user_123");
+
+    assert!(verify_pairing_proof(&proof).is_ok());
+
+    let mut tampered = proof.clone();
+    tampered.browser_session_id = "browser_456".to_string();
+    assert_eq!(
+        verify_pairing_proof(&tampered),
+        Err(PairingError::BadSignature)
+    );
+
+    let mut wrong_user = proof;
+    wrong_user.requested_user_id = "user_456".to_string();
+    assert_eq!(
+        verify_pairing_proof(&wrong_user),
+        Err(PairingError::BadSignature)
+    );
+}
+
+#[test]
+fn pairing_proof_rejects_malformed_or_oversized_fields_before_verification() {
+    let device = DeviceIdentity::generate();
+    let proof = device.sign_pairing_challenge("pair_123", "nonce_123", "browser_123", "user_123");
+
+    let mut oversized = proof.clone();
+    oversized.server_nonce = "n".repeat(129);
+    assert_eq!(
+        verify_pairing_proof(&oversized),
+        Err(PairingError::InvalidProof)
+    );
+
+    let mut control_character = proof.clone();
+    control_character.browser_session_id = "browser_123\ninjected".to_string();
+    assert_eq!(
+        verify_pairing_proof(&control_character),
+        Err(PairingError::InvalidProof)
+    );
+
+    let mut huge_public_key = proof.clone();
+    huge_public_key.device_public_key = "a".repeat(10_000);
+    assert_eq!(
+        verify_pairing_proof(&huge_public_key),
+        Err(PairingError::InvalidProof)
+    );
+
+    let mut malformed_signature = proof;
+    malformed_signature.signature = "z".repeat(128);
+    assert_eq!(
+        verify_pairing_proof(&malformed_signature),
+        Err(PairingError::InvalidProof)
+    );
+}
+
+#[test]
+fn preview_blocks_unapproved_private_redirects_and_credentials() {
+    let token = preview_token(5173, "vite:1234");
+    let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);
+    let mut headers = HashMap::new();
+    headers.insert("Cookie".to_string(), "vectant_session=secret".to_string());
+
+    assert_eq!(
+        decide_preview_request_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &headers,
+            &token,
+        ),
+        PreviewDecision::Deny("credential_header_blocked".to_string())
+    );
+
+    headers.clear();
+    assert_eq!(
+        decide_preview_request_with_token(
+            Some(&approval),
+            "POST",
+            &approval.preview_host,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &headers,
+            &token,
+        ),
+        PreviewDecision::Deny("state_changing_method_blocked".to_string())
+    );
+    assert_eq!(
+        decide_preview_request_with_token(
+            Some(&approval),
+            " get ",
+            &approval.preview_host,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &headers,
+            &token,
+        ),
+        PreviewDecision::Allow
+    );
+    assert_eq!(
+        decide_preview_request_with_token(
+            Some(&approval),
+            "GET\r\nX-Injected: yes",
+            &approval.preview_host,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &headers,
+            &token,
+        ),
+        PreviewDecision::Deny("invalid_method_blocked".to_string())
+    );
+
+    assert!(!redirect_allowed(
+        "http://169.254.169.254/latest/meta-data/"
+    ));
+    assert!(!redirect_allowed("http://192.168.1.1/admin"));
+    assert!(!redirect_allowed("http://2130706433/admin"));
+    assert!(!redirect_allowed("http://0x7f.0.0.1/admin"));
+    assert!(!redirect_allowed("http://0177.0.0.1/admin"));
+    assert!(!redirect_allowed("http://user:pass@127.0.0.1:5173/secret"));
+    assert!(!redirect_allowed("file:///etc/passwd"));
+    assert!(redirect_allowed("http://127.0.0.1:5173/ok"));
+    assert!(redirect_allowed("http://[::1]:5173/ok"));
+}
+
+#[test]
+fn preview_redirect_classifier_rewrites_only_approved_loopback_targets() {
+    let token = preview_token(5173, "vite:1234");
+    let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);
+
+    assert_eq!(
+        classify_preview_redirect(&approval, "/docs/index.html", "/assets/app.js"),
+        PreviewRedirectDecision::RewriteToPreview("/assets/app.js".to_string())
+    );
+    assert_eq!(
+        classify_preview_redirect(&approval, "/docs/index.html", "next.html"),
+        PreviewRedirectDecision::RewriteToPreview("/docs/next.html".to_string())
+    );
+    assert_eq!(
+        classify_preview_redirect(
+            &approval,
+            "/docs/index.html",
+            "http://127.0.0.1:5173/ok?x=1"
+        ),
+        PreviewRedirectDecision::RewriteToPreview("/ok?x=1".to_string())
+    );
+    assert_eq!(
+        classify_preview_redirect(&approval, "/docs/index.html", "http://localhost:5173/ok"),
+        PreviewRedirectDecision::RewriteToPreview("/ok".to_string())
+    );
+    assert_eq!(
+        classify_preview_redirect(&approval, "/docs/index.html", "http://[::1]:5173/ok"),
+        PreviewRedirectDecision::RewriteToPreview("/ok".to_string())
+    );
+}
+
+#[test]
+fn preview_redirect_classifier_blocks_proxy_abuse_and_separates_external_navigation() {
+    let token = preview_token(5173, "vite:1234");
+    let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);
+
+    for location in [
+        "http://127.0.0.1:3000/wrong-port",
+        "https://127.0.0.1:3000/wrong-port",
+        "http://192.168.1.1/admin",
+        "https://192.168.1.1/admin",
+        "http://10.0.0.5/",
+        "https://10.0.0.5/",
+        "http://169.254.169.254/latest/meta-data/",
+        "https://169.254.169.254/latest/meta-data/",
+        "http://2130706433/admin",
+        "http://0x7f.0.0.1/admin",
+        "http://0177.0.0.1/admin",
+        "file:///etc/passwd",
+        "mailto:security@example.com",
+        "http://user:pass@127.0.0.1:5173/secret",
+    ] {
+        assert!(
+            matches!(
+                classify_preview_redirect(&approval, "/docs/index.html", location),
+                PreviewRedirectDecision::Block(_)
+            ),
+            "{location} should be blocked"
+        );
+    }
+
+    assert_eq!(
+        classify_preview_redirect(&approval, "/docs/index.html", "https://example.com/docs"),
+        PreviewRedirectDecision::ExternalNavigation("https://example.com/docs".to_string())
+    );
+}
+
+#[test]
+fn preview_requires_short_lived_token_for_browser_requests() {
+    let token = preview_token(5173, "vite:1234");
+    let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);
+    let target = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let headers = HashMap::new();
+    let mut registry = PortApprovalRegistry::new();
+    let grant = registry.approve_browser_port_grant("sess_123", 5174, "vite:5174");
+
+    assert!(preview_token_matches(&grant.approval, &grant.preview_token));
+    assert_ne!(grant.approval.preview_token_hash, grant.preview_token);
+    assert!(preview_token_matches(&approval, &token));
+    assert!(!preview_token_matches(&approval, "wrong-token"));
+    assert_eq!(
+        decide_preview_request(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &headers,
+        ),
+        PreviewDecision::Deny("preview_token_invalid".to_string())
+    );
+    assert_eq!(
+        decide_preview_request_from_header_list(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[],
+        ),
+        PreviewDecision::Deny("preview_token_invalid".to_string())
+    );
+    assert_eq!(
+        decide_preview_request_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &headers,
+            "wrong-token",
+        ),
+        PreviewDecision::Deny("preview_token_invalid".to_string())
+    );
+    assert_eq!(
+        decide_preview_request_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &headers,
+            &token,
+        ),
+        PreviewDecision::Allow
+    );
+}
+
+#[test]
+fn preview_blocks_request_smuggling_and_connection_named_headers() {
+    let token = preview_token(5173, "vite:1234");
+    let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);
+    let target = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    assert_eq!(
+        decide_preview_request_from_header_list_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Content-Length", "4"), ("Content-Length", "5")],
+            &token,
+        ),
+        PreviewDecision::Deny("duplicate_content_length_blocked".to_string())
+    );
+
+    assert_eq!(
+        decide_preview_request_from_header_list_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Transfer-Encoding", "chunked"), ("Content-Length", "5")],
+            &token,
+        ),
+        PreviewDecision::Deny("ambiguous_body_length_blocked".to_string())
+    );
+
+    assert_eq!(
+        decide_preview_request_from_header_list_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Connection", "Authorization")],
+            &token,
+        ),
+        PreviewDecision::Deny("connection_sensitive_header_blocked".to_string())
+    );
+
+    assert_eq!(
+        decide_preview_request_from_header_list_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Connection", "X-Shadow-Hop"), ("X-Shadow-Hop", "secret")],
+            &token,
+        ),
+        PreviewDecision::Deny("connection_named_header_blocked".to_string())
+    );
+
+    assert_eq!(
+        decide_preview_request_from_header_list_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("X-Forwarded-For", "10.0.0.4")],
+            &token,
+        ),
+        PreviewDecision::Deny("credential_header_blocked".to_string())
+    );
+
+    assert_eq!(
+        decide_preview_request_from_header_list_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Sec-Fetch-Site", "same-origin")],
+            &token,
+        ),
+        PreviewDecision::Deny("browser_security_header_blocked".to_string())
+    );
+}
+
+#[test]
+fn preview_blocks_websockets_and_port_identity_changes() {
+    let token = preview_token(5173, "vite:1234");
+    let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);
+    let target = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    assert!(port_identity_matches(&approval, "vite:1234"));
+    assert!(!port_identity_matches(&approval, "admin-panel:9999"));
+
+    assert_eq!(
+        decide_preview_request_from_header_list_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Upgrade", "websocket")],
+            &token,
+        ),
+        PreviewDecision::Deny("websocket_blocked".to_string())
+    );
+
+    assert_eq!(
+        decide_preview_request_from_header_list_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Sec-WebSocket-Key", "abc")],
+            &token,
+        ),
+        PreviewDecision::Deny("websocket_blocked".to_string())
+    );
+}
+
+#[test]
+fn port_approvals_are_session_scoped_revocable_and_process_bound() {
+    let mut registry = PortApprovalRegistry::new();
+    let approval = registry.approve_browser_port("sess_123", 5173, "vite:1234");
+
+    assert!(!approval.persistent);
+    assert_eq!(approval.expires_at, "session_end");
+    assert!(approval.invalidate_on_port_close);
+    assert!(approval.invalidate_on_process_change);
+    assert!(!approval.agent_read_allowed);
+    assert!(!approval.support_agent_read_allowed);
+    assert!(!approval.agent_interact_allowed);
+    assert!(!approval.send_response_body_allowed);
+    assert!(!approval.send_screenshot_allowed);
+    assert!(!approval.send_console_errors_allowed);
+
+    assert!(registry
+        .approval_for("sess_123", 5173, "vite:1234")
+        .is_some());
+    assert!(registry
+        .approval_for("sess_123", 5173, "admin-panel:9999")
+        .is_none());
+    assert!(registry
+        .approval_for("other_session", 5173, "vite:1234")
+        .is_none());
+
+    registry.revoke_port(5173);
+    assert!(registry
+        .approval_for("sess_123", 5173, "vite:1234")
+        .is_none());
+
+    registry.approve_browser_port("sess_123", 5173, "vite:1234");
+    registry.port_closed(5173);
+    assert!(registry
+        .approval_for("sess_123", 5173, "vite:1234")
+        .is_none());
+
+    registry.approve_browser_port("sess_123", 5173, "vite:1234");
+    registry.disconnect_session("sess_123");
+    assert!(registry
+        .approval_for("sess_123", 5173, "vite:1234")
+        .is_none());
+}
+
+#[test]
+fn preview_traffic_guard_limits_request_rate_streams_and_response_bytes() {
+    let mut guard = PreviewTrafficGuard::new();
+    let host = "br-local-p5173.vectant-preview.dev";
+
+    for _ in 0..MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST {
+        assert!(guard.allow_request_at(host, 1_000));
+    }
+    assert!(!guard.allow_request_at(host, 1_000));
+    assert!(guard.allow_request_at(host, 1_061));
+
+    for _ in 0..MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST {
+        assert!(guard.begin_stream(host));
+    }
+    assert!(!guard.begin_stream(host));
+    guard.end_stream(host);
+    assert!(guard.begin_stream(host));
+
+    assert!(validate_preview_response_size(Some(MAX_PREVIEW_RESPONSE_BYTES), 4).is_ok());
+    assert_eq!(
+        validate_preview_response_size(Some(MAX_PREVIEW_RESPONSE_BYTES + 1), 0),
+        Err("preview_response_too_large".to_string())
+    );
+    assert_eq!(
+        validate_preview_response_size(None, MAX_PREVIEW_RESPONSE_BYTES + 1),
+        Err("preview_response_too_large".to_string())
+    );
+}
+
+#[test]
+fn response_headers_strip_cookie_and_block_service_workers() {
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Set-Cookie".to_string(),
+        "vectant_session=bad; Domain=.vectant.com".to_string(),
+    );
+    headers.insert(
+        "Location".to_string(),
+        "http://192.168.1.1/admin".to_string(),
+    );
+    headers.insert("X-Frame-Options".to_string(), "SAMEORIGIN".to_string());
+    headers.insert("Clear-Site-Data".to_string(), "\"cookies\"".to_string());
+    headers.insert("Content-Type".to_string(), "text/html".to_string());
+    let sanitized = sanitize_response_headers(&headers);
+
+    assert!(!sanitized.contains_key("Set-Cookie"));
+    assert!(!sanitized.contains_key("Location"));
+    assert!(!sanitized.contains_key("X-Frame-Options"));
+    assert!(!sanitized.contains_key("Clear-Site-Data"));
+    assert_eq!(
+        sanitized.get("Service-Worker-Allowed"),
+        Some(&"none".to_string())
+    );
+    assert_eq!(
+        sanitized.get("Cache-Control"),
+        Some(&"no-store".to_string())
+    );
+    assert_eq!(
+        sanitized.get("Referrer-Policy"),
+        Some(&"no-referrer".to_string())
+    );
+    assert_eq!(
+        sanitized.get("X-Content-Type-Options"),
+        Some(&"nosniff".to_string())
+    );
+    assert!(sanitized
+        .get("Permissions-Policy")
+        .unwrap()
+        .contains("camera=()"));
+    assert!(sanitized
+        .get("Content-Security-Policy")
+        .unwrap()
+        .contains("worker-src 'none'"));
+}
+
+#[test]
+fn preview_blocks_service_worker_script_paths() {
+    for path in [
+        "/sw.js",
+        "/service-worker.js?cache=1",
+        "/static/serviceworker.js",
+        "/assets/service-worker.js/ignored",
+        "/%73w.js",
+        "/static/%73erviceworker.js?cache=1",
+    ] {
+        assert!(
+            !preview_path_allowed(path),
+            "service worker path should be blocked: {path}"
+        );
+    }
+    assert!(preview_path_allowed("/assets/app.js"));
+}
+
+#[test]
+fn response_headers_strip_hop_by_hop_and_connection_named_headers() {
+    let sanitized = sanitize_response_header_list(&[
+        ("Connection", "X-Internal-Trace, Keep-Alive"),
+        ("X-Internal-Trace", "secret"),
+        ("Keep-Alive", "timeout=5"),
+        ("Transfer-Encoding", "chunked"),
+        ("Content-Type", "text/html"),
+    ]);
+
+    assert!(!sanitized.contains_key("Connection"));
+    assert!(!sanitized.contains_key("X-Internal-Trace"));
+    assert!(!sanitized.contains_key("Keep-Alive"));
+    assert!(!sanitized.contains_key("Transfer-Encoding"));
+    assert_eq!(
+        sanitized.get("Content-Type"),
+        Some(&"text/html".to_string())
+    );
+}
+
+#[test]
+fn audit_log_scrubs_secret_material() {
+    let mut log = AuditLog::new(SecretScanner::default());
+    log.append(
+        AuditClass::Denied,
+        Some("req_log".to_string()),
+        "Denied Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        true,
+    );
+    let event = &log.events()[0];
+    assert!(event.summary.contains("[REDACTED:authorization_header]"));
+    assert!(!event.summary.contains("abcdefghijklmnopqrstuvwxyz"));
+    assert!(event.event_hash.starts_with("sha256:"));
+    assert!(log.export_incident_bundle(30).verify_hash_chain());
+}
+
+#[test]
+fn audit_export_contains_consent_receipts_and_detects_tampering() {
+    let mut log = AuditLog::new(SecretScanner::default());
+    log.record_consent(ConsentReceipt {
+        approval_id: "appr_123".to_string(),
+        request_id: "req_log".to_string(),
+        session_id: "sess_123".to_string(),
+        account_id: "acct_123".to_string(),
+        org_id: "org_123".to_string(),
+        workspace_id: "wk_123".to_string(),
+        device_fingerprint: "sha256:device12345678".to_string(),
+        actor: "support_agent".to_string(),
+        capability: "workspace.log.read".to_string(),
+        target_display: "dev-server.log Authorization: Bearer abcdefghijklmnopqrstuvwxyz"
+            .to_string(),
+        classification: Classification::L3,
+        content_sha256: Some("sha256:content".to_string()),
+        scope: "once".to_string(),
+        granted_at: chrono::Utc::now(),
+        expires_at: "session_end".to_string(),
+        policy_version: "2026.07.05".to_string(),
+        scanner_version: "scanner-2026.07.05".to_string(),
+        bytes_sent: 42,
+        redaction_count: 1,
+    });
+    log.append(
+        AuditClass::Denied,
+        Some("req_env".to_string()),
+        "Blocked .env. Nothing was sent.",
+        true,
+    );
+
+    let export = log.export_incident_bundle(30);
+    assert!(export.verify_hash_chain());
+    assert!(!export.raw_bodies_included);
+    assert_eq!(export.consent_receipts.len(), 1);
+    assert_eq!(export.consent_receipts[0].approval_id, "appr_123");
+    assert!(export.consent_receipts[0]
+        .target_display
+        .contains("[REDACTED:authorization_header]"));
+    assert!(!serde_json::to_string(&export)
+        .unwrap()
+        .contains("abcdefghijklmnopqrstuvwxyz"));
+
+    let mut tampered = export.clone();
+    tampered.events[0].summary = "Consent silently changed".to_string();
+    assert!(!tampered.verify_hash_chain());
+}
+
+#[test]
+fn audit_delete_clears_prior_events_and_keeps_new_chain_valid() {
+    let mut log = AuditLog::new(SecretScanner::default());
+    log.append(
+        AuditClass::Data,
+        Some("req_before_delete".to_string()),
+        "Sent package metadata after local review.",
+        true,
+    );
+    assert_eq!(log.events().len(), 1);
+
+    log.clear();
+    log.append(
+        AuditClass::Control,
+        Some("req_delete".to_string()),
+        "Local support history deleted according to retention policy.",
+        true,
+    );
+
+    let export = log.export_incident_bundle(0);
+    assert_eq!(export.events.len(), 0);
+    assert!(export.verify_hash_chain());
+    assert!(!export.raw_bodies_included);
+    assert!(!serde_json::to_string(&export)
+        .unwrap()
+        .contains("Sent package metadata"));
+}
+
+#[test]
+fn audit_export_applies_retention_and_rechains_retained_events() {
+    let mut log = AuditLog::new(SecretScanner::default());
+    let old = chrono::Utc::now() - chrono::Duration::days(45);
+    let recent = chrono::Utc::now() - chrono::Duration::days(2);
+
+    log.append_at(
+        AuditClass::Denied,
+        Some("req_old".to_string()),
+        "Old denied request.",
+        true,
+        old,
+    );
+    log.append_at(
+        AuditClass::Control,
+        Some("req_recent".to_string()),
+        "Recent control event.",
+        true,
+        recent,
+    );
+    log.record_consent(ConsentReceipt {
+        approval_id: "appr_old".to_string(),
+        request_id: "req_old_receipt".to_string(),
+        session_id: "sess_123".to_string(),
+        account_id: "acct_123".to_string(),
+        org_id: "org_123".to_string(),
+        workspace_id: "wk_123".to_string(),
+        device_fingerprint: "sha256:device12345678".to_string(),
+        actor: "support_agent".to_string(),
+        capability: "workspace.log.read".to_string(),
+        target_display: "old.log".to_string(),
+        classification: Classification::L2,
+        content_sha256: None,
+        scope: "once".to_string(),
+        granted_at: old,
+        expires_at: "session_end".to_string(),
+        policy_version: "2026.07.05".to_string(),
+        scanner_version: "scanner-2026.07.05".to_string(),
+        bytes_sent: 0,
+        redaction_count: 0,
+    });
+
+    let export = log.export_incident_bundle(30);
+    assert!(export.verify_hash_chain());
+    assert_eq!(export.events.len(), 1);
+    assert!(export
+        .events
+        .iter()
+        .all(|event| event.request_id.as_deref() != Some("req_old")));
+    assert_eq!(
+        export.events[0].previous_hash,
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    );
+    assert!(export.consent_receipts.is_empty());
+    assert!(!serde_json::to_string(&export)
+        .unwrap()
+        .contains("Old denied request"));
+}
+
+#[test]
+fn local_audit_store_persists_scrubbed_hash_chained_history() {
+    let dir = tempdir().unwrap();
+    let store = LocalAuditStore::new(dir.path().join("audit.json"), 30, SecretScanner::default());
+    let mut log = AuditLog::new(SecretScanner::default());
+    log.append(
+        AuditClass::Denied,
+        Some("req_store_secret".to_string()),
+        "Blocked Authorization: Bearer abcdefghijklmnopqrstuvwxyz before send.",
+        true,
+    );
+
+    store.persist(&log).unwrap();
+    let raw = fs::read_to_string(store.path()).unwrap();
+    assert!(raw.contains("[REDACTED:authorization_header]"));
+    assert!(!raw.contains("abcdefghijklmnopqrstuvwxyz"));
+
+    let loaded = store.load().unwrap();
+    let export = loaded.export_incident_bundle(store.retention_days());
+    assert!(export.verify_hash_chain());
+    assert_eq!(export.events.len(), 1);
+    assert!(!export.raw_bodies_included);
+}
+
+#[test]
+fn local_audit_store_applies_a_live_retention_change_before_persisting() {
+    let dir = tempdir().unwrap();
+    let store = LocalAuditStore::new(dir.path().join("audit.json"), 30, SecretScanner::default());
+    let mut log = AuditLog::new(SecretScanner::default());
+    let old = chrono::Utc::now() - chrono::Duration::days(2);
+    log.append_at(
+        AuditClass::Denied,
+        Some("req_old_retention".to_string()),
+        "Old denied event.",
+        true,
+        old,
+    );
+    log.append(
+        AuditClass::Control,
+        Some("req_recent_retention".to_string()),
+        "Recent control event.",
+        true,
+    );
+
+    store.set_retention_days(1);
+    log.apply_retention(store.retention_days());
+    store.persist(&log).unwrap();
+
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded.events().len(), 1);
+    assert_eq!(
+        loaded.events()[0].request_id.as_deref(),
+        Some("req_recent_retention")
+    );
+}
+
+#[test]
+fn local_audit_store_rejects_tampered_history_and_delete_removes_file() {
+    let dir = tempdir().unwrap();
+    let store = LocalAuditStore::new(dir.path().join("audit.json"), 30, SecretScanner::default());
+    let mut log = AuditLog::new(SecretScanner::default());
+    log.append(
+        AuditClass::Control,
+        Some("req_audit".to_string()),
+        "Session paused.",
+        true,
+    );
+    store.persist(&log).unwrap();
+
+    let mut export = log.export_incident_bundle(store.retention_days());
+    export.events[0].summary = "tampered summary".to_string();
+    fs::write(store.path(), serde_json::to_vec_pretty(&export).unwrap()).unwrap();
+    assert!(matches!(
+        store.load(),
+        Err(AuditStoreError::HashChainInvalid)
+    ));
+
+    store.delete().unwrap();
+    assert!(!store.path().exists());
+    assert_eq!(store.load().unwrap().events().len(), 0);
+}
+
+#[test]
+fn local_audit_store_rejects_oversized_history_before_parsing() {
+    let dir = tempdir().unwrap();
+    let store = LocalAuditStore::new(dir.path().join("audit.json"), 30, SecretScanner::default());
+    fs::write(store.path(), vec![b'{'; (2 * 1024 * 1024) + 1]).unwrap();
+
+    assert!(matches!(store.load(), Err(AuditStoreError::TooLarge)));
+}
+
+#[test]
+fn local_audit_store_rejects_symlinked_audit_path() {
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("target.json");
+    let link = dir.path().join("audit.json");
+    fs::write(&target, "{}").unwrap();
+    if create_file_symlink_for_test(&target, &link).is_err() {
+        return;
+    }
+
+    let store = LocalAuditStore::new(&link, 30, SecretScanner::default());
+    let mut log = AuditLog::new(SecretScanner::default());
+    log.append(
+        AuditClass::Control,
+        Some("req_symlink_store".to_string()),
+        "Audit path symlink must not be followed.",
+        true,
+    );
+
+    assert!(matches!(store.load(), Err(AuditStoreError::UnsafePath)));
+    assert!(matches!(
+        store.persist(&log),
+        Err(AuditStoreError::UnsafePath)
+    ));
+    assert!(matches!(store.delete(), Err(AuditStoreError::UnsafePath)));
+    assert!(link.exists());
+    assert!(target.exists());
+}
+
+#[cfg(unix)]
+fn create_file_symlink_for_test(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_file_symlink_for_test(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
+
+#[test]
+fn update_manifest_requires_valid_signature_and_blocks_downgrades() {
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
+    assert!(verify_update_manifest(&trusted_key, "0.1.0", &manifest).is_ok());
+
+    let mut tampered = manifest.clone();
+    tampered.artifact_sha256 = format!("sha256:{}", "b".repeat(64));
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &tampered),
+        Err(UpdateError::BadSignature)
+    );
+
+    let (_, downgrade) = signed_test_manifest("0.0.9", "0.1.0", Vec::new());
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &downgrade),
+        Err(UpdateError::Downgrade)
+    );
+}
+
+#[test]
+fn update_manifest_rejects_malformed_artifact_hash_and_unknown_channel() {
+    let (trusted_key, mut bad_hash) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
+    bad_hash.artifact_sha256 = "sha256:not-hex".to_string();
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &bad_hash),
+        Err(UpdateError::InvalidArtifactHash)
+    );
+
+    let (trusted_key, mut bad_channel) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
+    bad_channel.channel = "nightly".to_string();
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &bad_channel),
+        Err(UpdateError::UnsupportedChannel)
+    );
+}
+
+#[test]
+fn update_manifest_rejects_malformed_versions_before_update_decisions() {
+    let (trusted_key, mut manifest) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
+    manifest.app_version = "0.2.0-beta".to_string();
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::InvalidVersion)
+    );
+
+    let (trusted_key, mut manifest) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
+    manifest.minimum_supported_version = "old".to_string();
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::InvalidVersion)
+    );
+
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "current", &manifest),
+        Err(UpdateError::InvalidVersion)
+    );
+
+    let (trusted_key, manifest) =
+        signed_test_manifest("0.2.0", "0.1.0", vec!["bad-version".to_string()]);
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::InvalidVersion)
+    );
+}
+
+#[test]
+fn update_manifest_supports_emergency_version_revocation() {
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", vec!["0.1.0".to_string()]);
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::VersionRevoked)
+    );
+
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", vec!["0.2.0".to_string()]);
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::VersionRevoked)
+    );
+
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", vec!["0.2".to_string()]);
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::VersionRevoked)
+    );
+
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", vec!["0.1".to_string()]);
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::VersionRevoked)
+    );
+
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.2.0", Vec::new());
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::UnsupportedCurrentVersion)
+    );
+}
+
+#[test]
+fn update_package_binds_signature_channel_and_downloaded_artifact() {
+    let artifact = b"signed windows installer bytes";
+    let (trusted_key, manifest) =
+        signed_test_package("0.2.0", "0.1.0", "beta", Vec::new(), artifact);
+
+    assert!(verify_update_package(&trusted_key, "0.1.0", "beta", &manifest, artifact).is_ok());
+    assert_eq!(
+        verify_update_package(&trusted_key, "0.1.0", "stable", &manifest, artifact),
+        Err(UpdateError::ChannelMismatch)
+    );
+    assert_eq!(
+        verify_update_package(
+            &trusted_key,
+            "0.1.0",
+            "beta",
+            &manifest,
+            b"tampered installer bytes",
+        ),
+        Err(UpdateError::ArtifactHashMismatch)
+    );
+}

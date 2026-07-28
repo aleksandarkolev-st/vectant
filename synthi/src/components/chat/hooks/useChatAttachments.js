@@ -172,6 +172,13 @@ export const useChatAttachments = (options = {}) => {
 
     // Clear all attachments after a send or when resetting the composer.
     const clearAttachments = useCallback(() => setAttachments([]), []);
+    const addNotebookContext = useCallback((attachment) => {
+        if (!attachment?.content || !attachment?.path) return false;
+        setAttachments((previous) => [...previous.filter((item) => item.id !== `notebook-${attachment.path}`), {
+            ...attachment, id: `notebook-${attachment.path}`, name: attachment.name || attachment.path.split('/').pop(), type: 'text/plain', kind: 'text', isNotebookContext: true,
+        }]);
+        return true;
+    }, []);
 
     const formatBytes = useCallback((bytes) => {
         if (!bytes && bytes !== 0) return '';
@@ -193,5 +200,6 @@ export const useChatAttachments = (options = {}) => {
         clearAttachments,
         formatBytes,
         addWorkspaceFiles,
+        addNotebookContext,
     };
 };

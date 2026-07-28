@@ -1,0 +1,44 @@
+[package]
+name = "vectant-local-support-app"
+version = "0.1.0"
+edition = "2021"
+autobins = false
+
+[lib]
+name = "vectant_local_support_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "local-support-test-daemon"
+path = "src/bin/local_support_test_daemon.rs"
+required-features = ["live-test-daemon"]
+
+[features]
+live-test-daemon = []
+
+[dependencies]
+anyhow = "1"
+axum = "0.7"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex = "0.4"
+rand = "0.8"
+rand_core = { version = "0.6", features = ["getrandom"] }
+regex = "1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

@@ -2,7 +2,51 @@
 
 ## Status
 
-Improved product and architecture plan.
+Production-readiness implementation is repo-local executable and the production
+release gate is wired, but deployed production proof is not complete until the
+v2 release-evidence runner observes real production endpoints and managed or
+external Ed25519 signing.
+
+| Area | Status | Proof |
+|---|---|---|
+| Repo-local runtime implementation | Complete | Unit tests and `proof:dojo:therapeutic-tomography:self-check` exercise tenant-scoped runtime state, strict proof routing, protected dispatch, revocation, remediation gates, policy learning, and chaos controls. |
+| Production deployment configuration | Complete in repo | `synthi-mcp-http` can expose runtime authorization, Postgres-backed runtime-state append/readback, and HTTPS probe proxy endpoints when production env vars are present. |
+| Deployed production release proof | Blocked on live environment | `docs/THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json` is still v1 repo-local evidence. The v2 runner refuses to write production evidence without deployed HTTPS runtime/probe/store endpoints, production tenant/RBAC context, and managed/external Ed25519 signing. |
+| Visual production proof | Blocked on validated v2 evidence | The visual report generator validates `synthi.dojo.therapeuticTomographyReleaseEvidence.v2` first and refuses stale v1/demo/local evidence. |
+
+Implemented in the repo:
+
+- tenant-scoped durable runtime snapshots for traces, proof decisions, grants, reviews, remediation proposals, postcondition checks, case law, and policy-learning records
+- therapeutic MCP tool production gates for tenant/RBAC context, hosted-runtime authorization, durable stores, protected dispatch, and proof signing
+- strict proof capsules with deterministic proof routing, replay/stale/revoked checks, and signing/verification hooks compatible with the existing Dojo proof signer interface
+- contract-bound probe catalogs for ML quality drop, workflow debugging, and incident response, plus a pluggable HTTPS probe adapter
+- operational UI actions for pending-review approval/denial, grant revocation, runtime refresh, evidence records, audit records, remediation state, and postcondition status
+- chaos controls for stale proof, revoked proof, replayed proof, leaky probes, unavailable durable store, failed revocation, failed postcondition, and emergency under-escalation
+- release evidence generation for a non-demo incident-response trace that exercises brokered read-only access, scoped grant, protected dispatch, revocation, durable audit reconstruction, signed proof verification, and unauthorized protected-tool bypass denial
+
+Deployment boundary:
+
+- The checked-in release evidence is a stale repo-local v1 artifact generated
+  from deterministic execution with non-loopback example URLs and a durable file
+  store. It is not production proof.
+- True production-runtime proof requires running the v2 release evidence gate
+  against the deployed hosted runtime, configured production tenant/RBAC
+  provider, external durable evidence store, and managed-key or external-command
+  Ed25519 proof signer.
+- Narrative-only proof still cannot grant broad access, raw logs, model weights, admin privileges, production writes, or diagnostic mutation. Remediation write access remains gated by diagnosis, rollback, postcondition, human approval, and revocation checks.
+
+Operational follow-ups:
+
+- Provide production values for `SYNTHI_THERAPEUTIC_PROD_RUNTIME_URL`,
+  `SYNTHI_THERAPEUTIC_PROD_PROBE_URL`, `SYNTHI_THERAPEUTIC_PROD_STORE_URL`,
+  tenant/RBAC identifiers, bearer tokens, and the managed or external Ed25519
+  signer configuration listed in the release runbook.
+- Run `npm --prefix mcp/synthi-mcp run proof:dojo:therapeutic-tomography:release-evidence`
+  from the production-authorized environment. The command must replace
+  `docs/THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json` with validated
+  `synthi.dojo.therapeuticTomographyReleaseEvidence.v2` evidence.
+- Run `node mcp/synthi-mcp/scripts/dojo-therapeutic-tomography-visual-report.mjs --evidence docs/THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json`
+  only after the v2 evidence has been produced.
 
 This version makes **Proof Capsules stricter** by separating:
 

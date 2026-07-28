@@ -24,6 +24,7 @@ import {
   Box,
   Radar,
   Network,
+  Cable,
   ChevronRight,
   ChevronDown,
   ShieldCheck,
@@ -98,6 +99,7 @@ const ACTIVITY_GROUPS = [
       { id: 'extensions', panelType: IDE_PANEL.EXTENSIONS, label: 'Extensions', Icon: Puzzle },
       { id: 'programs', panelType: IDE_PANEL.PROGRAMS, label: 'Programs', Icon: Command },
       { id: 'integrations', panelType: IDE_PANEL.INTEGRATIONS, label: 'Connected Tools', Icon: Plug },
+      { id: 'local-support', panelType: null, label: 'Local Support', Icon: Cable, externalPath: '/local-support' },
       { id: 'ports', panelType: IDE_PANEL.PORTS, label: 'Ports', Icon: Network },
     ],
   },
@@ -264,9 +266,11 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
     }
   }, [dispatch, nodes, tabs]);
 
-  const renderButton = ({ id, panelType, label, Icon, extensionIcon, onClick, groupLabel }) => {
-    const isActive = activePanelType === panelType;
-    const handler = onClick || handlers[id];
+  const renderButton = ({ id, panelType, label, Icon, extensionIcon, onClick, groupLabel, externalPath }) => {
+    const isActive = Boolean(panelType) && activePanelType === panelType;
+    const handler = onClick || (externalPath
+      ? () => window.open(externalPath, '_blank', 'noopener,noreferrer')
+      : handlers[id]);
     const hasImageIcon = extensionIcon && typeof extensionIcon === 'string' &&
       (extensionIcon.startsWith('http') || extensionIcon.startsWith('data:'));
     const canHide = !LOCKED_ITEM_IDS.has(id);
@@ -278,6 +282,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
         aria-label={label}
         aria-current={isActive ? 'page' : undefined}
         data-active={isActive ? 'true' : 'false'}
+        data-testid={id === 'local-support' ? 'workspace-local-support-button' : undefined}
         onClick={handler}
         onContextMenu={(event) => {
           if (!canHide) return;

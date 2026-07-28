@@ -79,6 +79,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - managed-key signing release-observation artifact generation from configured signer command/key URI/public verifier material, with redacted config and digest-backed verifier checks
 - hosted-runtime gateway release-observation artifact generation from live workflow/private-tool/MCP-host conformance artifacts, with digest-backed input references and section-scoped release verification
 - privacy-redaction and compliance-export release gates with focused test execution, digest-matched logs/reports, verifier include flags, and local evidence artifacts
+- therapeutic tomography runtime with durable tenant-scoped snapshots, production-mode tenant/RBAC/hosted-runtime gates, signed strict proof capsules, pluggable contract-bound probe adapters, operational review/revocation UI actions, chaos controls, and repo-local release evidence for non-demo incident-response execution
 - repo artifact export
 - compact UI status surface plus dedicated Dojo routes
 
@@ -152,6 +153,32 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_revoke_proof_capsule` | `executable` |
 | `synthi_dojo_create_hosted_runtime_session` | `executable` |
 | `synthi_dojo_run_with_proof_capsule` | `executable` |
+| `synthi_dojo_therapeutic_init_trace` | `executable` |
+| `synthi_dojo_therapeutic_run_probe` | `executable` |
+| `synthi_dojo_therapeutic_request_access` | `executable` |
+| `synthi_dojo_therapeutic_dispatch_protected_tool` | `executable` |
+| `synthi_dojo_therapeutic_revoke_grants` | `executable` |
+| `synthi_dojo_therapeutic_run_checkrides` | `executable` |
+| `synthi_dojo_therapeutic_learn_policy` | `executable` |
+| `synthi_dojo_therapeutic_review_access` | `executable` |
+| `synthi_dojo_therapeutic_record_diagnosis` | `executable` |
+| `synthi_dojo_therapeutic_propose_remediation` | `executable` |
+| `synthi_dojo_therapeutic_verify_remediation` | `executable` |
+| `synthi_dojo_therapeutic_get_runtime` | `executable` |
+
+## Therapeutic Tomography Boundary
+
+Therapeutic Tomography is production-ready at the repo-local implementation boundary: focused unit coverage and self-checks exercise durable tenant-scoped runtime state, strict proof routing, signed proof verification, RBAC/tenant gates, hosted-runtime authorization checks, protected dispatch, revocation, policy-learning persistence, remediation/postcondition gates, probe output containment, and chaos controls.
+
+The production release evidence artifact at `docs/THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json` is generated only by:
+
+```bash
+npm --prefix mcp/synthi-mcp run proof:dojo:therapeutic-tomography:release-evidence
+```
+
+The current checked-in artifact may be stale repo-local evidence until that command is run against production dependencies. The production release gate now rejects v1/demo evidence, loopback or `.test` endpoints, repo-local file durability, local HMAC signing, and missing production tenant/RBAC context.
+
+The accepted v2 artifact must prove a deployed hosted runtime authorization, real deployed HTTPS probe service evidence, production tenant/RBAC authorization, external durable state reconstruction, managed-key or external proof signing and verification, brokered scoped grant behavior, protected dispatch before and after revocation, and narrative-only denial for broad access, raw logs, model weights, admin privileges, full DB access, mutation, or production writes.
 
 ## Current Report Classification
 
@@ -183,13 +210,15 @@ runtime foundations, materialized synthetic Vivarium scenarios, evidence/proof/l
 foundations, scoped licenses, repo exports, source/API scaffolding, API-backed skill-bus
 tool execution foundations, governance views, package-readiness release proof, managed-key
 signing and hosted-runtime release-observation harnessing, privacy/compliance release-gate
-proof artifacts, and MCP tool exposure.
+proof artifacts, therapeutic tomography durable/proof-gated repo-local release evidence,
+and MCP tool exposure.
 ```
 
 Unsafe current claim:
 
 ```text
 Agent Dojo has completed production deployment proof for non-loopback hosted MCP,
-managed KMS/HSM signing deployment, broad arbitrary-app source/API graduation, complete governance
-operator workflows, and externally executed chaos/soak/performance/compliance release gates against production infrastructure.
+managed KMS/HSM signing deployment, deployed therapeutic tomography production-runtime proof,
+broad arbitrary-app source/API graduation, complete governance operator workflows, and externally
+executed chaos/soak/performance/compliance release gates against production infrastructure.
 ```

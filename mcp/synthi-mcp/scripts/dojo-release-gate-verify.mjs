@@ -146,6 +146,9 @@ import {
   DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES,
 } from "./dojo-time-machine-debugger-self-check.mjs";
 import {
+  validateProductionTherapeuticTomographyEvidence,
+} from "./dojo-therapeutic-tomography-release-evidence.mjs";
+import {
   DOJO_VIVARIUM_RUNTIME_CAPABILITIES,
   DOJO_VIVARIUM_RUNTIME_TEST_FILES,
 } from "./dojo-vivarium-runtime-self-check.mjs";
@@ -847,6 +850,23 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     })));
   }
 
+  const therapeuticTomographyResults = [];
+  const therapeuticTomographyReleaseCandidate = releasePromotion || truthy(args["therapeutic-tomography-release-candidate"]);
+  if (therapeuticTomographyReleaseCandidate || truthy(args["include-therapeutic-tomography"]) || args["therapeutic-tomography-evidence"]) {
+    const therapeuticTomographyGate = findGate(manifest, "dojo_therapeutic_tomography_production_release") || {};
+    const evidencePath = resolveRepoPath(args["therapeutic-tomography-evidence"]
+      || therapeuticTomographyGate.default_evidence_path
+      || path.join(REPO_ROOT, "docs", "THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json"));
+    therapeuticTomographyResults.push(await verifyArtifactSection({
+      id: "dojo_therapeutic_tomography_production_release",
+      evidencePath,
+      releaseCandidate: therapeuticTomographyReleaseCandidate,
+    }, () => verifyTherapeuticTomographyProductionEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: therapeuticTomographyReleaseCandidate,
+    })));
+  }
+
   const securityResults = [];
   const securityAbuseReleaseCandidate = releasePromotion || truthy(args["security-abuse-release-candidate"]);
   if (securityAbuseReleaseCandidate || args["security-abuse-evidence"]) {
@@ -961,7 +981,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       })));
   }
 
-  const sections = [manifestResult, ...releaseGateRunnerResults, ...releaseGateVerifierResults, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...packageReadinessResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...liveChaosResults, ...dojoSoakPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...releaseGateRunnerResults, ...releaseGateVerifierResults, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...packageReadinessResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...therapeuticTomographyResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...liveChaosResults, ...dojoSoakPerformanceResults, ...soakPerformanceResults];
   const releaseGateCoverage = getVerifiableReleaseGateCoverage({
     manifest,
     sections,
@@ -1010,6 +1030,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     checkride_license: checkrideLicenseResults.map(summarizeSection),
     case_law_runtime: caseLawRuntimeResults.map(summarizeSection),
     hosted_runtime_gateway: hostedRuntimeGatewayResults.map(summarizeSection),
+    therapeutic_tomography: therapeuticTomographyResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
     compliance_export: complianceExportResults.map(summarizeSection),
     privacy_redaction: privacyRedactionResults.map(summarizeSection),
@@ -4439,6 +4460,48 @@ export function validateDojoHostedRuntimeGatewayReleaseObservation(observation) 
     }
   });
   return errors;
+}
+
+export async function verifyTherapeuticTomographyProductionEvidenceArtifact({ evidencePath, releaseCandidate = false } = {}) {
+  const evidence = await readJsonFile(evidencePath);
+  const validation = validateProductionTherapeuticTomographyEvidence(evidence);
+  const errors = validation.ok ? [] : validation.errors.map((error) => `therapeutic_tomography_production_invalid:${error}`);
+  if (evidence?.schema_version !== "synthi.dojo.therapeuticTomographyReleaseEvidence.v2") {
+    errors.push(`therapeutic_tomography_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (releaseCandidate) {
+    if (evidence?.hosted_runtime?.authorized !== true) errors.push("therapeutic_tomography_runtime_not_authorized");
+    if (evidence?.deployed_probe_adapter?.transport !== "fetch") errors.push("therapeutic_tomography_probe_transport_not_fetch");
+    if (evidence?.production_durable_store?.kind !== "external_control_plane") errors.push("therapeutic_tomography_store_not_external");
+    if (evidence?.production_durable_store?.reconstruction_verified !== true) errors.push("therapeutic_tomography_store_not_reconstructed");
+    if (evidence?.proof_signing?.signature_verified !== true) errors.push("therapeutic_tomography_signature_not_verified");
+    if (evidence?.proof_signing?.signing_provider !== "managed-key-service" && evidence?.proof_signing?.signing_provider !== "external-command") {
+      errors.push(`therapeutic_tomography_signing_provider_not_external:${evidence?.proof_signing?.signing_provider || "missing"}`);
+    }
+    if (evidence?.proof_signing?.key_custody === "local") errors.push("therapeutic_tomography_key_custody_local");
+    if (evidence?.authorization_path?.unauthorized_bypass_decision !== "denied") errors.push("therapeutic_tomography_bypass_not_denied");
+    if (evidence?.authorization_path?.access_decision !== "approved") errors.push("therapeutic_tomography_scoped_grant_not_approved");
+    if (evidence?.authorization_path?.protected_dispatch_decision !== "approved") errors.push("therapeutic_tomography_dispatch_not_approved");
+    if (evidence?.authorization_path?.post_revocation_dispatch_decision !== "denied") errors.push("therapeutic_tomography_post_revocation_not_denied");
+    if (evidence?.safety_assertions?.narrative_only_access_decision === "approved") {
+      errors.push("therapeutic_tomography_narrative_only_granted_access");
+    }
+  }
+  return {
+    id: "dojo_therapeutic_tomography_production_release",
+    ok: errors.length === 0,
+    errors,
+    evidence,
+    evidence_path: evidencePath,
+    report_schema_version: evidence?.schema_version ?? null,
+    release_candidate: Boolean(releaseCandidate),
+    runtime_url: evidence?.hosted_runtime?.url ?? null,
+    probe_url: evidence?.deployed_probe_adapter?.endpoint_url ?? null,
+    store_kind: evidence?.production_durable_store?.kind ?? null,
+    signing_provider: evidence?.proof_signing?.signing_provider ?? null,
+    signature_verified: Boolean(evidence?.proof_signing?.signature_verified),
+    reconstruction_verified: Boolean(evidence?.production_durable_store?.reconstruction_verified),
+  };
 }
 
 export async function verifyDojoSecurityAbuseEvidenceArtifact({ evidencePath, releaseCandidate = false }) {

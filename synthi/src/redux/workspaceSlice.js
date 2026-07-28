@@ -24,6 +24,7 @@ import { getEditorPanes } from '@/components/docking-wm/utils/editor-panes';
 import { resolveOpenTarget } from '@/redux/paneActiveFile';
 import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
 import { getWorkspaceDependencyInstallPlan } from '@/lib/workspaceInstallPlan';
+import { createNotebookContent } from '@/lib/jupyter/notebook';
 
 // --- Initial State and Utilities ---
 
@@ -34,6 +35,10 @@ import { getWorkspaceDependencyInstallPlan } from '@/lib/workspaceInstallPlan';
  * inline re-definitions (DRY).
  */
 const normalizeTrailing = (s) => (typeof s === 'string' ? s.replace(/[\r\n]+$/, '') : '');
+
+function initialFileContent(filePath) {
+    return String(filePath).toLowerCase().endsWith('.ipynb') ? createNotebookContent() : '';
+}
 
 /**
  * Ensure the main editor panel tab exists in the docking layout.
@@ -502,7 +507,8 @@ export const handleCreateItemThunk = createAsyncThunk(
 
         // api.createItem calls the collab-server's write-file / create-directory
         // endpoint which writes to disk. This is the authoritative creation path.
-        await api.createItem(slug, fullPath, isFolder);
+        const initialContent = isFolder ? '' : initialFileContent(fullPath);
+        await api.createItem(slug, fullPath, isFolder, initialContent);
 
         // Sync to the compiler worker's disk for LSP cross-file resolution.
         // Best-effort: file-sync channel may not be open if no compilation has run.
@@ -511,7 +517,7 @@ export const handleCreateItemThunk = createAsyncThunk(
             if (isFolder) {
                 client.mkdirSync(fullPath);
             } else {
-                client.syncFile(fullPath, '');
+                client.syncFile(fullPath, initialContent);
             }
         } catch (_) { /* best-effort */ }
         
@@ -654,10 +660,11 @@ export const createFileWithExtensionThunk = createAsyncThunk(
             throw new SynthiException('A file with this name already exists.', 'A file with this name already exists.');
         }
 
-        await api.createItem(slug, fullPath, false);
+        const initialContent = initialFileContent(fullPath);
+        await api.createItem(slug, fullPath, false, initialContent);
 
         try {
-            getCompilerClient().syncFile(fullPath, '');
+            getCompilerClient().syncFile(fullPath, initialContent);
         } catch (_) { /* best-effort */ }
 
         await dispatch(fetchFilesThunk(slug));

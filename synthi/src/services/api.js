@@ -281,7 +281,7 @@ export class ApiClient {
         return { ok: true };
     }
 
-    async createItem(slug, fullPath, isFolder) {
+    async createItem(slug, fullPath, isFolder, content = '') {
         if (isFolder) {
             // Create directory via collab-server
             const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/create-directory`, {
@@ -295,11 +295,13 @@ export class ApiClient {
             }
             return res.json();
         } else {
-            // Create an empty file via the write-file endpoint
+            // Create the requested initial content through the authoritative
+            // write-file endpoint. Notebook files use this to begin as valid
+            // nbformat JSON instead of an invalid empty text file.
             const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/write-file`, {
                 method: 'POST',
                 headers: await this._headers({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ path: fullPath, content: '' }),
+                body: JSON.stringify({ path: fullPath, content }),
             });
             if (!res.ok) {
                 const errText = await res.text().catch(() => 'Unknown error');
