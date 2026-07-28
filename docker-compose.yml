@@ -222,8 +222,10 @@ services:
       # collab-server runs as a container here, so the per-workspace runtime
       # container must reach repo files via the SHARED collab-data named volume
       # (a host-path bind would resolve on the host and be empty). Value is the
-      # compose-project-prefixed volume name.
-      WORKSPACE_DATA_VOLUME: "synthi-ide_collab-data"
+      # explicitly named volume used by this Compose stack.
+      WORKSPACE_DATA_VOLUME: "vectant-ade_collab-data"
+      # Runtime and worker containers must join this stack's explicit network.
+      WORKER_NETWORK: "vectant-ade_default"
     volumes:
       - collab-data:/data
       # Used ONLY by collab-server to manage per-workspace runtime containers.
