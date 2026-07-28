@@ -1626,8 +1626,45 @@ let the pipeline deploy.
 - [x] 10b. Fast-forwarded `main` → `0921c42cf` (`3e814d983..0921c42cf`, 118 commits, no history rewritten).
       Done by direct push, not a PR: the org flag hides the PR list, so the user could neither
       see nor merge the existing dev→main PR. Push triggers `deploy-prod.yml`.
-- [ ] 11. Post-deploy: confirm GKE rollout and beta.vectant.dev serving — STILL BLOCKED on
-      `gcloud auth login`. The deploy was started but its outcome is unverified.
+- [x] 11. Inspected the live cluster. Every synthi service runs image tag
+      `prod-202606211530-588967bd85d3`, built **2026-06-21**. Production was therefore
+      already missing local-support (merged Jul 18) and Jupyter (merged Jul 28) before this
+      work started — the merge was necessary but never the real blocker. `worker` sits at
+      0 replicas.
+
+## The deploy pipeline was broken in four independent ways
+
+All four pre-date this session's merge. None was caused by it. The common thread: GitHub
+Actions stopped submitting builds after 2026-06-21, so nothing that landed afterwards was
+ever exercised.
+
+1. **GitHub Actions is not firing.** No Cloud Build submitted since 2026-06-21 — not even a
+   failed one, so `gcloud builds submit` is never reached. Almost certainly the flagged-org
+   state disabling Actions. NOT fixable from this repo; needs GitHub support.
+2. **`codesite-mature-proof-suite`** (added 2026-07-05) required playwright at module scope,
+   so `--no-screenshot` could not help — the module failed to load before any flag was read.
+   FIXED: require moved inside `screenshotHtml`, matching `codesite-release-gate.mjs`.
+3. **`codesite-release-gate`** (added 2026-07-03) validates proof provenance via git, but a
+   Cloud Build upload is a tarball with no `.git`, so it hard-fails on `unable to validate
+   proof git provenance`. Not fixable by installing anything — the gate itself says
+   provenance "must be validated by the host release gate". FIXED by removing the
+   unworkable in-container copies; `deploy-prod.yml` already runs the authoritative gate on
+   the runner.
+4. **The Rust worker does not compile.** `69879eee4` (2026-07-04, "Disable legacy VS Code
+   websocket tunnel") dropped `AsyncReadExt` from the `tokio::io` import while leaving a
+   `read_exact` call at `main.rs:3913`. Broken on `main` and `dev` alike since Jul 4.
+   FIXED: import restored.
+
+Also fixed: `.gcloudignore` now excludes `.claude/`, whose untracked worktrees carry mutable
+`:latest` refs that trip the `reject-mutable-images` guard on any local submit.
+
+## Deploy log
+
+- Build 1 `9a366f71` — CANCELLED. Would have failed the mutable-image guard on `.claude/`.
+- Build 2 `4c3229ed` — FAILURE at `codesite-mature-proof-suite` (playwright).
+- Build 3 `41bc0262` — FAILURE at `build-worker` (the Rust error above). 11 of 12 image
+  builds succeeded, including the frontend.
+- Build 4 — pending, after the worker fix.
 
 ## Conflict resolutions (what was decided and why)
 
