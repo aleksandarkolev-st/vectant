@@ -1589,3 +1589,95 @@ Implemented in order 1 → 5 → 3 → 2 → 4/7 → 6. CSS validated with PostC
 Files changed (12): themes/builtin/synthi-dark.json, app/globals.css, docking-wm/styles/docking.css, chat/chat.css, git/scm/scm-tokens.css, EditorTabStrip.jsx, git/scm/SourceControlPanel.jsx, git/PullRequestsPanel.jsx, ports/PortsPanel.jsx, healing/HealingSettingsPanel.jsx, docking-wm/hooks/use-activity-bar-docking.js, workspace/[slug]/page.jsx.
 
 Self-caught during verify: the line-range sed for Item 1 skipped `terminal.cursor` (outside the ui/editor range) — fixed to purple. Remaining: live visual pass in a running workspace (needs backend stack); all static checks green.
+
+---
+
+# Bring beta.vectant.dev up to date with dev (2026-07-28)
+
+## Context
+
+`main` is the only branch that deploys to beta.vectant.dev (`.github/workflows/deploy-prod.yml`
+→ Cloud Build → GKE `synthi-beta-cluster`, europe-west10-a, project `vectant-proj`).
+`main` and `dev` diverged at merge base 2026-07-07:
+
+- `main` +476 commits `dev` lacks: the `local-support` desktop app (PR #653) and
+  Jupyter/notebook support (PR #665, 41 commits).
+- `dev` +115 commits `main` lacks: the CodeSite panel + tool UI redesign, including the
+  visual redesign merged via PR #666.
+
+Deploying `dev` directly would strip local-support and Jupyter off production, so the
+CodeSite work has to be merged onto `main`, not swapped in.
+
+Chosen path: merge `main` into `dev`, verify the combined app, then merge to `main` and
+let the pipeline deploy.
+
+## Plan
+
+- [x] 1. Switch to `dev`, fast-forward to `origin/dev` → HEAD == c38e7a0f3, clean
+- [x] 2. Merge `origin/main` into `dev` → stopped on exactly the 4 predicted conflicts
+- [x] 3. Resolve `docker-compose.yml` → `docker compose config` exits 0
+- [x] 4. Resolve `synthi/src/lib/codesite/routeHelpers.js` → internalAuth test passes
+- [x] 5. Resolve `synthi/src/components/dojo/DojoShell.jsx` → main's DojoShell.test.jsx asserts 'Tomography' and passes
+- [x] 6. Resolve `DockingActivityBar.jsx` → docking-wm suite passes; Local Support kept
+- [x] 7. CodeSite release gate → exit 0
+- [x] 8. Test suites → 1213 passed / 19 failed; all 19 proven pre-existing on dev
+- [x] 9. Production build → compiled in 103s; local-support, Jupyter and CodeSite routes all present
+- [ ] 10. Hand off push commands: `dev`, then `dev` → `main` (user-side; push blocked in sandbox)
+- [ ] 11. Post-deploy: confirm GKE rollout and beta.vectant.dev serving (needs `gcloud auth login`)
+
+## Conflict resolutions (what was decided and why)
+
+1. **docker-compose.yml** — kept dev's `SYNTHI_CODESITE_TOKEN` (working default) *and* main's
+   two `JUPYTER_ALLOW_*` vars. Trap avoided: the merge base had no frontend token, dev added one
+   near the top with a real default and main added one lower with an *empty* default. Keeping both
+   sides verbatim would have left a duplicate YAML key where the empty one wins, silently
+   re-breaking dev's git-write 503 fix. Collapsed to a single declaration; collab-server matched.
+2. **routeHelpers.js** — both branches independently implemented internal-service auth. Took dev's
+   (`internalServiceActor`): it is test-covered, hash-compares so it cannot leak secret length,
+   accepts main's `Bearer` form plus `x-synthi-internal-token`, and its call site was already
+   present in the unconflicted region — main's version would have left it undefined at runtime.
+   Removed the now-orphaned `import { timingSafeEqual } from 'node:crypto'` that main's version used.
+   Result is byte-identical to dev's file.
+3. **DojoShell.jsx** — kept dev's rich `useMemo` nav (the JSX destructures
+   `{ label, href, icon: Icon, detail }`, so main's tuple shape would break rendering) and folded
+   main's new **Tomography** entry into it (`ScanLine` icon, 'Authority trace'), preserving main's
+   position after Practice. Without this the shipped `therapeutic-trace/` route is unreachable.
+4. **DockingActivityBar.jsx** — kept dev's three-group `ACTIVITY_GROUPS` and added main's
+   **Local Support** item to the Platform group. `renderButton` merged both signatures: dev's
+   `groupLabel` plus main's `externalPath` and its `Boolean(panelType) &&` guard (required — Local
+   Support has `panelType: null` and would otherwise render spuriously active). Kept dev's
+   `aria-current`/`data-active` and main's `data-testid`.
+
+## Blockers
+
+- `gcloud auth` expired → live cluster inspection needs a user-side `gcloud auth login`.
+- `git fetch`/`push` to origin time out from this sandbox → user runs the pushes.
+
+## Review
+
+Merge commit `ed1328ec6` on `dev`. 239 files staged from main; 4 conflicts, all resolved
+to preserve both branches' features rather than picking a side.
+
+Verification:
+- `docker compose config` exit 0; exactly 2 matching token declarations.
+- CodeSite release gate (the gate `deploy-prod.yml` runs) exit 0.
+- `next build` compiled in 103s, standalone assets prepared. Route manifest carries all
+  three feature sets: 8 `/api/jupyter/*` routes, the `/api/local-support/*` surface, plus
+  `/workspace/[slug]/codesite` and `/dojo/therapeutic-trace`.
+- Tests: 1213 passed, 19 failed across 6 files. All 19 proven pre-existing on `dev` — each
+  failing test file *and its subject modules* are byte-identical between this tree and
+  `origin/dev`, and none of the 100 merge-changed `synthi/src` files overlap them.
+  (Failing files: proofVerifierCli, AgentWorkflowPanel, programsPanelInstall,
+  programsPanelTerminalRouting, preview-store, terminal-preview-links.)
+
+Two environment notes, not code problems:
+- `vitest run` at full parallelism crashes workers on this machine (107 "failed" files,
+  fork exhaustion). `--maxWorkers=2` gives the real result.
+- The first `next build` segfaulted (exit 139) under memory pressure with ~4 GB free.
+  Re-running with `NODE_OPTIONS=--max-old-space-size=6144` succeeded.
+
+Because main was merged *into* dev, main is now an ancestor of dev, so `dev` -> `main` is a
+pure fast-forward — no second conflict resolution is possible.
+
+Not done (blocked, user-side): pushing `dev`, fast-forwarding `main`, and verifying the GKE
+rollout. `gcloud auth login` is still required before any cluster inspection.
