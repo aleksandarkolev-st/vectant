@@ -1560,12 +1560,6 @@ export class CompilerClient {
                 console.log('[CompilerClient] Waiting for previous session to cancel before starting new compile:', previousSessionId);
                 const cancelResult = await this.cancelMobileJob(previousSessionId, { timeoutMs: 5000 });
                 if (!cancelResult || !cancelResult.cancelled) {
-                    if (typeof window !== 'undefined' && window.alert) {
-                        window.alert(
-                            `Previous build did not fully stop within 5 seconds (session ${previousSessionId}).\n` +
-                            `Please wait a moment and try Run again.`
-                        );
-                    }
                     throw new SynthiException(
                         'Previous build still stopping',
                         'Previous build did not fully stop. Please wait and retry.'

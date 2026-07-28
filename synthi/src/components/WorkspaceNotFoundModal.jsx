@@ -14,17 +14,17 @@ export default function WorkspaceNotFoundModal({ slug, message = 'Workspace not 
     if (!open) return null;
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60">
-            <div className="w-full max-w-lg p-6 rounded-lg bg-[#1b1b1b] border border-gray-700 shadow-lg">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[color-mix(in_srgb,black_68%,transparent)] backdrop-blur-sm">
+            <div className="vt-dialog-surface w-full max-w-lg p-6">
                 <div className="flex flex-col gap-4">
                     <div className="flex items-center gap-3">
-                        <div className="text-3xl font-bold text-red-400">⚠️</div>
-                        <div className="text-xl font-semibold">Workspace not found</div>
+                        <div className="text-3xl font-bold text-[var(--accent-danger)]">!</div>
+                        <div className="text-xl font-semibold text-[var(--text-primary)]">Workspace not found</div>
                     </div>
-                    <div className="text-sm text-gray-300">
+                    <div className="text-sm text-[var(--text-secondary)]">
                         {slug ? (
                             <>
-                                Could not find workspace <strong className="text-white">{slug}</strong> in the database. It may have been removed or the link is invalid.
+                                Could not find workspace <strong className="text-[var(--text-primary)]">{slug}</strong> in the database. It may have been removed or the link is invalid.
                             </>
                         ) : (
                             <>No workspace specified.</>

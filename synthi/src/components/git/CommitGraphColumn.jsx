@@ -223,8 +223,8 @@ export default function CommitGraphColumn({
           style={{ left: tooltip.x + 12, top: tooltip.y - 8 }}
         >
           <div
-            className="rounded-lg shadow-xl px-3 py-2 min-w-[200px] max-w-[320px] border"
-            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)' }}
+            className="vt-command-popover min-w-[200px] max-w-[320px] px-3 py-2"
+            style={{ color: 'var(--text-primary)' }}
           >
             {/* Branch badges */}
             {tooltip.branches.length > 0 && (

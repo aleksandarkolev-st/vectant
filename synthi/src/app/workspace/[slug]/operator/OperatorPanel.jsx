@@ -37,23 +37,28 @@ const KICKABLE_ROLES = [
 const MAX_EVENTS = 200;
 
 function StatusPill({ state }) {
-  const { label, cls } = useMemo(() => {
+  const { label, tone } = useMemo(() => {
     switch (state) {
       case 'connected':
-        return { label: 'connected', cls: 'bg-emerald-500/20 text-emerald-400' };
+        return { label: 'connected', tone: 'var(--accent-success)' };
       case 'connecting':
-        return { label: 'connecting…', cls: 'bg-amber-500/20 text-amber-400' };
+        return { label: 'connecting...', tone: 'var(--accent-warning)' };
       case 'disconnected':
-        return { label: 'disconnected', cls: 'bg-zinc-500/20 text-zinc-400' };
+        return { label: 'disconnected', tone: 'var(--text-muted)' };
       case 'evicted':
-        return { label: 'evicted', cls: 'bg-red-500/20 text-red-400' };
+        return { label: 'evicted', tone: 'var(--accent-danger)' };
       default:
-        return { label: state, cls: 'bg-zinc-500/20 text-zinc-400' };
+        return { label: state, tone: 'var(--text-muted)' };
     }
   }, [state]);
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${cls}`}
+      className="inline-flex items-center rounded-[var(--radius-control)] border px-2.5 py-0.5 text-xs font-medium"
+      style={{
+        color: tone,
+        borderColor: `color-mix(in srgb, ${tone} 34%, var(--border-subtle))`,
+        background: `color-mix(in srgb, ${tone} 10%, transparent)`,
+      }}
     >
       {label}
     </span>
@@ -159,7 +164,14 @@ export default function OperatorPanel({ sessionId }) {
       </header>
 
       {error ? (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+        <div
+          className="rounded-[var(--radius-panel)] border px-3 py-2 text-xs"
+          style={{
+            borderColor: 'color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))',
+            background: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)',
+            color: 'var(--accent-danger)',
+          }}
+        >
           {error}
         </div>
       ) : null}

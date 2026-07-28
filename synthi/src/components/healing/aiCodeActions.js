@@ -59,7 +59,7 @@ export function registerAICodeActions(editor, fixes, { onApply } = {}) {
           ? ` (${Math.round(fix.confidence * 100)}%)`
           : '';
 
-        const title = `AI Fix: ${fix.description || 'Apply suggestion'}${confidence}`;
+        const title = `Fix candidate: ${fix.description || 'Apply suggestion'}${confidence}`;
 
         actions.push({
           title,

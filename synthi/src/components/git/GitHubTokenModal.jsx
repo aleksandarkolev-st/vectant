@@ -12,49 +12,41 @@ import { Key, ExternalLink, X } from 'lucide-react';
  */
 export function GitHubTokenModal({ onClose }) {
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)' }}>
-      <div
-        className="relative w-full max-w-md mx-4 rounded-xl border shadow-2xl"
-        style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}
-      >
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-[color-mix(in_srgb,black_72%,transparent)] backdrop-blur-sm">
+      <div className="vt-dialog-surface relative mx-4 w-full max-w-md overflow-hidden">
         <button
           onClick={onClose}
-          className="absolute top-3 right-3 p-1 rounded-md opacity-60 hover:opacity-100 transition"
-          style={{ color: 'var(--text-muted)' }}
+          className="vt-icon-button th-focus-ring absolute right-3 top-3 h-7 min-w-7"
         >
           <X className="w-4 h-4" />
         </button>
 
         <div className="p-6">
           <div className="flex items-center gap-3 mb-4">
-            <div
-              className="w-9 h-9 rounded-lg flex items-center justify-center"
-              style={{ background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)' }}
-            >
-              <Key className="w-4 h-4" style={{ color: 'var(--accent-primary)' }} />
+            <div className="vt-agent-card flex h-9 w-9 items-center justify-center">
+              <Key className="h-4 w-4 text-[var(--attention-purple)]" />
             </div>
             <div>
-              <h2 className="text-sm font-semibold">GitHub Authentication</h2>
-              <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              <h2 className="vt-panel-title">GitHub Authentication</h2>
+              <p className="mt-0.5 text-xs text-[var(--text-muted)]">
                 Configure your token in Settings
               </p>
             </div>
           </div>
 
-          <p className="text-xs leading-relaxed mb-4" style={{ color: 'var(--text-secondary)' }}>
+          <p className="mb-4 text-xs leading-relaxed text-[var(--text-secondary)]">
             Your GitHub access is now managed per user. Open <strong>Settings</strong>
             {' '}to add or replace your Personal Access Token. If you signed in with GitHub,
             your OAuth token is used automatically — no PAT required for basic operations.
           </p>
 
-          <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+          <p className="mb-4 text-xs text-[var(--text-muted)]">
             Need a new token?{' '}
             <a
               href="https://github.com/settings/personal-access-tokens/new"
               target="_blank"
               rel="noopener noreferrer"
-              className="underline inline-flex items-center gap-0.5"
-              style={{ color: 'var(--accent-primary)' }}
+              className="inline-flex items-center gap-0.5 text-[var(--attention-purple)] underline"
             >
               Create one on GitHub <ExternalLink className="w-3 h-3" />
             </a>
@@ -63,8 +55,7 @@ export function GitHubTokenModal({ onClose }) {
 
           <button
             onClick={onClose}
-            className="w-full py-2 rounded-lg text-sm font-medium transition"
-            style={{ background: 'var(--accent-primary)', color: '#fff' }}
+            className="th-focus-ring th-btn-primary w-full py-2 text-sm font-medium"
           >
             Got it
           </button>

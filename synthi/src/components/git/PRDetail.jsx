@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { MarkdownRenderer, MarkdownEditor, MarkdownToolbar, handleMarkdownKeyDown } from './MarkdownRenderer';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -121,16 +122,12 @@ function TabButton({ active, onClick, icon: Icon, label, count }) {
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium transition-all border-b-2 -mb-px flex-shrink-0"
-      style={{
-        borderBottomColor: active ? 'var(--accent-primary)' : 'transparent',
-        color: active ? 'var(--accent-primary)' : 'var(--text-muted)',
-      }}
+      className={`th-focus-ring flex flex-shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] px-2.5 py-1.5 text-xs font-medium transition-all ${active ? 'th-btn-active' : 'th-btn-ghost'}`}
     >
       {Icon && <Icon className="w-3 h-3" />}
       {label}
       {count !== undefined && count > 0 && (
-        <span className="text-[9px] px-1 rounded-full" style={{ background: active ? 'color-mix(in srgb, var(--accent-primary) 15%, transparent)' : 'var(--bg-panel)' }}>
+        <span className="vt-state-pill h-4 px-1 text-[9px]">
           {count}
         </span>
       )}
@@ -152,22 +149,13 @@ function CommentBox({ onSubmit, placeholder = 'Leave a comment…', submitLabel 
   };
 
   return (
-    <div className="border rounded-lg overflow-hidden" style={{ borderColor: 'var(--border-medium)' }}>
+    <div className="vt-workflow-card overflow-hidden">
       {/* Write / Preview tabs */}
-      <div className="flex items-center border-b"
-        style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}>
+      <div className="flex items-center gap-1 border-b border-[var(--border-subtle)] bg-[var(--surface-panel-subtle)] px-2 py-1">
         <button onClick={() => setMode('write')}
-          className="px-2.5 py-1 text-[10px] font-medium border-b-2 -mb-px transition"
-          style={{
-            borderBottomColor: mode === 'write' ? 'var(--accent-primary)' : 'transparent',
-            color: mode === 'write' ? 'var(--text-primary)' : 'var(--text-muted)',
-          }}>Write</button>
+          className={`th-focus-ring rounded-[var(--radius-control)] px-2.5 py-1 text-[10px] font-medium transition ${mode === 'write' ? 'th-btn-active' : 'th-btn-ghost'}`}>Write</button>
         <button onClick={() => setMode('preview')}
-          className="px-2.5 py-1 text-[10px] font-medium border-b-2 -mb-px transition"
-          style={{
-            borderBottomColor: mode === 'preview' ? 'var(--accent-primary)' : 'transparent',
-            color: mode === 'preview' ? 'var(--text-primary)' : 'var(--text-muted)',
-          }}>Preview</button>
+          className={`th-focus-ring rounded-[var(--radius-control)] px-2.5 py-1 text-[10px] font-medium transition ${mode === 'preview' ? 'th-btn-active' : 'th-btn-ghost'}`}>Preview</button>
       </div>
       {mode === 'write' && <MarkdownToolbar textareaRef={textareaRef} />}
       {mode === 'write' ? (
@@ -177,33 +165,27 @@ function CommentBox({ onSubmit, placeholder = 'Leave a comment…', submitLabel 
           onChange={e => setText(e.target.value)}
           placeholder={placeholder}
           rows={3}
-          className="w-full px-3 py-2 text-xs resize-none outline-none"
-          style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+          className="th-input w-full resize-none border-0 px-3 py-2 text-xs outline-none"
           onKeyDown={e => {
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSubmit();
             handleMarkdownKeyDown(e, textareaRef);
           }}
         />
       ) : (
-        <div className="px-3 py-2 min-h-[72px]"
-          style={{ background: 'var(--bg-app)' }}>
+        <div className="min-h-[72px] bg-[var(--bg-app)] px-3 py-2">
           {text.trim() ? (
             <MarkdownRenderer text={text} />
           ) : (
-            <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>Nothing to preview</p>
+            <p className="text-xs italic text-[var(--text-muted)]">Nothing to preview</p>
           )}
         </div>
       )}
-      <div
-        className="flex items-center justify-between px-3 py-1.5 border-t"
-        style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}
-      >
-        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Markdown supported · Ctrl+Enter to submit</span>
+      <div className="flex items-center justify-between border-t border-[var(--border-subtle)] bg-[var(--surface-panel-subtle)] px-3 py-1.5">
+        <span className="text-[10px] text-[var(--text-muted)]">Markdown supported. Ctrl+Enter to submit.</span>
         <button
           onClick={handleSubmit}
           disabled={!text.trim() || loading}
-          className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition disabled:opacity-50"
-          style={{ background: 'var(--accent-primary)', color: '#ffffff' }}
+          className="th-focus-ring th-btn-primary flex items-center gap-1 px-2.5 py-1 text-xs font-medium disabled:opacity-50"
         >
           <Send className="w-3 h-3" />
           {loading ? 'Posting…' : submitLabel}
@@ -247,13 +229,10 @@ function ReviewPanel({ slug, owner, repo, prNumber }) {
           <button
             key={opt.value}
             onClick={() => setEvent(opt.value)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs border transition ${event === opt.value ? 'border-current' : ''}`}
-            style={{
-              borderColor: event === opt.value ? 'currentColor' : 'var(--border-subtle)',
-              color: event === opt.value ? undefined : 'var(--text-muted)',
-            }}
+            className={`th-focus-ring flex items-center gap-1.5 rounded-[var(--radius-control)] px-2.5 py-1 text-xs transition ${event === opt.value ? 'th-btn-active' : 'th-btn-ghost'}`}
+            style={{ '--chip-color': opt.color }}
           >
-            <opt.icon className={`w-3 h-3 ${event === opt.value ? opt.color : ''}`} />
+            <opt.icon className="w-3 h-3" style={{ color: event === opt.value ? opt.color : undefined }} />
             {opt.label}
           </button>
         ))}
@@ -390,15 +369,12 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
     <div className="space-y-2">
       {/* ── Merge Conflicts Warning ────────── */}
       {hasConflicts && (
-        <div
-          className="rounded-lg p-3 border"
-          style={{ background: 'rgba(245,158,66,0.06)', borderColor: 'rgba(245,158,66,0.25)' }}
-        >
+        <div className="vt-workflow-alert p-3">
           <div className="flex items-center gap-2 mb-1.5">
-            <AlertCircle className="w-4 h-4" style={{ color: 'var(--accent-warning)' }} strokeWidth={2} />
-            <span className="text-xs font-semibold" style={{ color: 'var(--accent-warning)' }}>Merge Conflicts</span>
+            <AlertCircle className="w-4 h-4 text-[var(--accent-warning)]" strokeWidth={2} />
+            <span className="text-xs font-semibold text-[var(--accent-warning)]">Merge Conflicts</span>
           </div>
-          <p className="text-[11px] leading-relaxed mb-2" style={{ color: 'var(--text-secondary)' }}>
+          <p className="mb-2 text-[11px] leading-relaxed text-[var(--text-secondary)]">
             This branch has conflicts that must be resolved before merging.
             {conflictedFiles.length > 0 ? ` ${conflictedFiles.length} conflicted file${conflictedFiles.length !== 1 ? 's' : ''}:` : ''}
           </p>
@@ -407,13 +383,11 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
               {conflictedFiles.map((f, i) => (
                 <li
                   key={i}
-                  className="flex items-center gap-1.5 px-2 py-1 rounded text-[11px] cursor-pointer transition-colors"
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--accent-warning) 10%, transparent)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                  className="vt-command-item flex cursor-pointer items-center gap-1.5 px-2 py-1 text-[11px]"
                   onClick={() => onFileClick?.(f.filename)}
                 >
-                  <AlertCircle className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent-warning)' }} strokeWidth={2} />
-                  <span className="truncate" style={{ color: 'var(--text-primary)' }}>{f.filename}</span>
+                  <AlertCircle className="w-3 h-3 flex-shrink-0 text-[var(--accent-warning)]" strokeWidth={2} />
+                  <span className="truncate text-[var(--text-primary)]">{f.filename}</span>
                 </li>
               ))}
             </ul>
@@ -444,8 +418,7 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
                   toast.error(err?.message || 'Failed to set up conflict resolution.');
                 }
               }}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-colors hover:opacity-90"
-              style={{ background: 'color-mix(in srgb, var(--accent-secondary) 10%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-secondary) 30%, transparent)', color: 'var(--accent-secondary)' }}
+              className="th-focus-ring th-btn-active flex items-center gap-1.5 rounded-[var(--radius-control)] px-2.5 py-1.5 text-[11px] font-medium"
             >
               <ArrowRightLeft className="w-3 h-3" />
               Resolve in Synthi
@@ -454,8 +427,7 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
               href={pr.html_url ? `${pr.html_url}/conflicts` : '#'}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-colors hover:opacity-90"
-              style={{ borderColor: 'var(--border-medium)', color: 'var(--text-secondary)' }}
+              className="th-focus-ring th-btn-ghost flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-subtle)] px-2.5 py-1.5 text-[11px] font-medium"
             >
               <ExternalLink className="w-3 h-3" />
               Open in GitHub
@@ -466,33 +438,27 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
 
       {/* ── Checking mergeability spinner ──── */}
       {isChecking && (
-        <div className="rounded-lg p-3 border flex items-center gap-2" style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}>
-          <RefreshCw className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--accent-warning)' }} strokeWidth={2} />
-          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Checking merge status…</span>
+        <div className="vt-workflow-alert vt-workflow-alert--muted flex items-center gap-2 p-3">
+          <RefreshCw className="w-3.5 h-3.5 animate-spin text-[var(--accent-warning)]" strokeWidth={2} />
+          <span className="text-xs text-[var(--text-secondary)]">Checking merge status…</span>
         </div>
       )}
 
       {/* ── Blocked by branch protection ──── */}
       {isBlocked && !hasConflicts && (
-        <div className="rounded-lg p-3 border" style={{ background: 'rgba(239,68,68,0.06)', borderColor: 'rgba(239,68,68,0.25)' }}>
+        <div className="vt-workflow-alert vt-workflow-alert--danger p-3">
           <div className="flex items-center gap-2">
-            <Lock className="w-4 h-4" style={{ color: 'var(--accent-danger)' }} strokeWidth={2} />
-            <span className="text-xs font-semibold" style={{ color: 'var(--accent-danger)' }}>Merge blocked</span>
+            <Lock className="w-4 h-4 text-[var(--accent-danger)]" strokeWidth={2} />
+            <span className="text-xs font-semibold text-[var(--accent-danger)]">Merge blocked</span>
           </div>
-          <p className="text-[11px] mt-1" style={{ color: 'var(--text-secondary)' }}>
+          <p className="mt-1 text-[11px] text-[var(--text-secondary)]">
             Branch protection rules prevent merging. Required status checks or reviews may be missing.
           </p>
         </div>
       )}
 
       {/* ── Merge controls ────────────────── */}
-      <div
-        className="rounded-lg p-3 border"
-        style={{
-          background: canMerge ? 'rgba(52,211,153,0.04)' : 'rgba(161,161,170,0.04)',
-          borderColor: canMerge ? 'rgba(52,211,153,0.2)' : 'rgba(161,161,170,0.2)',
-        }}
-      >
+      <div className={`vt-workflow-alert p-3 ${canMerge ? 'vt-workflow-alert--success' : 'vt-workflow-alert--muted'}`}>
         <div className="flex items-center gap-2 mb-2">
           <GitMerge
             className="w-4 h-4"
@@ -511,43 +477,27 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
           <button
             onClick={handleMerge}
             disabled={mergePRLoading || !canMerge}
-            className="flex-1 py-2 rounded-lg text-xs font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{
-              background: canMerge ? 'var(--accent-success)' : 'var(--bg-elevated)',
-              color: canMerge ? '#ffffff' : 'var(--text-muted)',
-            }}
+            className={`th-focus-ring flex-1 rounded-[var(--radius-control)] py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${canMerge ? 'th-btn-primary' : 'th-btn-ghost border border-[var(--border-subtle)]'}`}
           >
             {mergePRLoading ? 'Merging…' : isChecking ? 'Checking…' : methodLabels[method]}
           </button>
           <button
             onClick={() => setShowOptions(v => !v)}
-            className="px-2 py-2 rounded-lg text-xs border transition"
-            style={{
-              borderColor: 'color-mix(in srgb, var(--accent-success) 30%, transparent)',
-              color: 'var(--accent-success)',
-            }}
+            className="vt-icon-button th-focus-ring h-8 min-w-8 text-[var(--accent-success)]"
           >
             <ChevronDown className="w-3.5 h-3.5" />
           </button>
         </div>
 
         {showOptions && (
-          <div
-            className="mt-2 rounded-lg border overflow-hidden"
-            style={{ borderColor: 'var(--border-medium)', background: 'var(--bg-elevated)' }}
-          >
+          <div className="vt-command-popover mt-2 overflow-hidden p-1">
             {['merge', 'squash', 'rebase'].map(m => (
               <button
                 key={m}
                 onClick={() => { setMethod(m); setShowOptions(false); }}
-                className="flex items-center gap-2 w-full px-3 py-2 text-xs text-left hover:opacity-80 transition border-b last:border-b-0"
-                style={{
-                  borderColor: 'var(--border-subtle)',
-                  background: m === method ? 'color-mix(in srgb, var(--accent-primary) 8%, transparent)' : 'transparent',
-                  color: 'var(--text-primary)',
-                }}
+                className={`vt-command-item flex w-full items-center gap-2 px-3 py-2 text-left text-xs ${m === method ? 'th-btn-active' : ''}`}
               >
-                {m === method && <CheckCircle2 className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent-success)' }} strokeWidth={2} />}
+                {m === method && <CheckCircle2 className="w-3 h-3 flex-shrink-0 text-[var(--accent-success)]" strokeWidth={2} />}
                 {m !== method && <div className="w-3 h-3 flex-shrink-0" />}
                 {methodLabels[m]}
               </button>
@@ -563,16 +513,14 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
               value={commitTitle}
               onChange={e => setCommitTitle(e.target.value)}
               placeholder={`Merge pull request #${pr.number} from ${pr.head?.label}`}
-              className="w-full px-2 py-1.5 text-xs rounded-lg border outline-none"
-              style={{ background: 'var(--bg-app)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}
+              className="th-input w-full rounded-[var(--radius-control)] border px-2 py-1.5 text-xs outline-none"
             />
             <textarea
               value={commitMsg}
               onChange={e => setCommitMsg(e.target.value)}
               placeholder="Optional commit message…"
               rows={2}
-              className="w-full px-2 py-1.5 text-xs rounded-lg border outline-none resize-none"
-              style={{ background: 'var(--bg-app)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}
+              className="th-input w-full resize-none rounded-[var(--radius-control)] border px-2 py-1.5 text-xs outline-none"
             />
           </div>
         )}
@@ -596,6 +544,7 @@ export function PRDetail({ slug, onBack }) {
   const [newTitle, setNewTitle] = useState('');
   const [closingPR, setClosingPR] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const { confirm, confirmDialog } = useConfirmDialog();
 
   const { owner, repo } = githubInfo || {};
 
@@ -658,7 +607,13 @@ export function PRDetail({ slug, onBack }) {
   };
 
   const handleDeleteComment = async (commentId) => {
-    if (!confirm('Delete this comment?')) return;
+    const allowed = await confirm({
+      title: 'Delete comment?',
+      message: 'This removes the comment from the pull request conversation.',
+      confirmLabel: 'Delete comment',
+      tone: 'danger',
+    });
+    if (!allowed) return;
     const result = await dispatch(deleteComment({ owner, repo, commentId, slug }));
     // Silent on success — the comment disappears from the list. Toast
     // only on failure.
@@ -674,15 +629,11 @@ export function PRDetail({ slug, onBack }) {
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Header */}
-      <div
-        className="flex-shrink-0 border-b px-3 py-2"
-        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)' }}
-      >
+      <div className="vt-panel-header flex-shrink-0 flex-col items-stretch px-3 py-2">
         <div className="flex items-center gap-2">
           <button
             onClick={onBack}
-            className="p-1 rounded-md hover:opacity-70 transition flex-shrink-0"
-            style={{ color: 'var(--text-muted)' }}
+            className="vt-icon-button th-focus-ring h-7 min-w-7 flex-shrink-0"
           >
             <ChevronLeft className="w-4 h-4" />
           </button>
@@ -690,25 +641,24 @@ export function PRDetail({ slug, onBack }) {
           {pr ? (
             <div className="flex items-center gap-2 min-w-0 flex-1">
               <span
-                className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold flex-shrink-0"
+                className="vt-state-pill flex-shrink-0"
                 style={stateBadgeStyle}
               >
                 {prStateIcon(pr)}
                 {prStateLabel(pr)}
               </span>
-              <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>#{pr.number}</span>
-              <span className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>{pr.title}</span>
+              <span className="font-mono text-[10px] flex-shrink-0 text-[var(--text-muted)]">#{pr.number}</span>
+              <span className="truncate text-xs font-medium text-[var(--text-primary)]">{pr.title}</span>
             </div>
           ) : (
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Loading…</span>
+            <span className="text-xs text-[var(--text-muted)]">Loading...</span>
           )}
 
           <div className="flex items-center gap-1 flex-shrink-0 ml-auto">
             <button
               onClick={handleRefresh}
               disabled={prDetailLoading}
-              className="p-1 rounded-md hover:opacity-70 transition disabled:opacity-30"
-              style={{ color: 'var(--text-muted)' }}
+              className="vt-icon-button th-focus-ring h-7 min-w-7 disabled:opacity-30"
               title="Refresh"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${prDetailLoading ? 'animate-spin' : ''}`} />
@@ -718,8 +668,7 @@ export function PRDetail({ slug, onBack }) {
                 href={pr.html_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="p-1 rounded-md hover:opacity-70 transition"
-                style={{ color: 'var(--text-muted)' }}
+                className="vt-icon-button th-focus-ring h-7 min-w-7"
                 title="Open on GitHub"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
@@ -730,7 +679,7 @@ export function PRDetail({ slug, onBack }) {
 
         {/* Tab bar */}
         {pr && (
-          <div className="flex flex-nowrap gap-0 mt-2 border-b -mx-3 px-3 overflow-x-auto whitespace-nowrap scrollbar-none" style={{ borderColor: 'var(--border-subtle)' }}>
+          <div className="-mx-1 mt-2 flex flex-nowrap gap-1 overflow-x-auto whitespace-nowrap scrollbar-none">
             <TabButton active={tab === 'overview'} onClick={() => setTab('overview')} icon={FileText} label="Overview" />
             <TabButton active={tab === 'files'} onClick={() => setTab('files')} icon={FileText} label="Files" count={prFiles.length} />
             <TabButton active={tab === 'commits'} onClick={() => setTab('commits')} icon={GitCommit} label="Commits" count={prCommits.length} />
@@ -746,19 +695,13 @@ export function PRDetail({ slug, onBack }) {
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         {prDetailLoading && !pr && (
-          <div className="flex items-center justify-center h-24 text-xs" style={{ color: 'var(--text-muted)' }}>
-            <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading…
+          <div className="flex h-24 items-center justify-center text-xs text-[var(--text-muted)]">
+            <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading...
           </div>
         )}
 
         {prDetailError && (
-          <div
-            className="mx-3 mt-3 p-3 rounded-lg text-xs"
-            style={{
-              background: 'color-mix(in srgb, var(--accent-danger) 8%, transparent)',
-              color: 'var(--accent-danger)',
-            }}
-          >
+          <div className="vt-workflow-alert vt-workflow-alert--danger mx-3 mt-3 p-3 text-xs text-[var(--accent-danger)]">
             <AlertCircle className="w-3.5 h-3.5 inline mr-1" />{prDetailError}
           </div>
         )}
@@ -799,6 +742,7 @@ export function PRDetail({ slug, onBack }) {
         )}
         {pr && tab === 'checks' && <ChecksTab checks={prChecks} />}
       </div>
+      {confirmDialog}
     </div>
   );
 }
@@ -866,23 +810,22 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
               value={newTitle}
               onChange={e => setNewTitle(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') onTitleSave(); if (e.key === 'Escape') onTitleCancel(); }}
-              className="flex-1 px-2 py-1 rounded-lg text-sm border outline-none"
-              style={{ background: 'var(--bg-app)', borderColor: 'var(--accent-primary)', color: 'var(--text-primary)' }}
+              className="th-input flex-1 rounded-[var(--radius-control)] border px-2 py-1 text-sm outline-none"
             />
-            <button onClick={onTitleSave} className="px-2 py-1 rounded-lg text-xs" style={{ background: 'var(--accent-primary)', color: '#ffffff' }}>Save</button>
-            <button onClick={onTitleCancel} className="px-2 py-1 rounded-lg text-xs border" style={{ borderColor: 'var(--border-medium)', color: 'var(--text-muted)' }}>Cancel</button>
+            <button onClick={onTitleSave} className="th-focus-ring th-btn-primary px-2 py-1 text-xs">Save</button>
+            <button onClick={onTitleCancel} className="th-focus-ring th-btn-ghost rounded-[var(--radius-control)] border border-[var(--border-subtle)] px-2 py-1 text-xs">Cancel</button>
           </div>
         ) : (
           <div className="flex items-start gap-2">
-            <h3 className="text-sm font-semibold flex-1 leading-snug" style={{ color: 'var(--text-primary)' }}>{pr.title}</h3>
-            <button onClick={onEditTitle} className="p-1 rounded hover:opacity-70 transition flex-shrink-0" style={{ color: 'var(--text-muted)' }} title="Edit title">
+            <h3 className="flex-1 text-sm font-semibold leading-snug text-[var(--text-primary)]">{pr.title}</h3>
+            <button onClick={onEditTitle} className="vt-icon-button th-focus-ring h-7 min-w-7 flex-shrink-0" title="Edit title">
               <Edit3 className="w-3.5 h-3.5" />
             </button>
           </div>
         )}
 
         {/* Meta */}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--text-muted)]">
           <span className="flex items-center gap-1">
             <img src={pr.user?.avatar_url} alt={pr.user?.login} className="w-3.5 h-3.5 rounded-full" />
             <a href={pr.user?.html_url} target="_blank" rel="noopener noreferrer" className="hover:underline">{pr.user?.login}</a>
@@ -906,11 +849,10 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
       {/* Labels — editable */}
       <div>
         <div className="flex items-center gap-2 mb-1.5">
-          <p className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>LABELS</p>
+          <p className="vt-panel-kicker">LABELS</p>
           <button
             onClick={() => setShowLabelPicker(v => !v)}
-            className="text-[10px] px-1.5 py-0.5 rounded hover:opacity-80 transition"
-            style={{ color: 'var(--accent-primary)' }}
+            className={`th-focus-ring rounded-[var(--radius-control)] px-1.5 py-0.5 text-[10px] transition ${showLabelPicker ? 'th-btn-active' : 'th-btn-ghost'}`}
           >
             {showLabelPicker ? 'Done' : '+ Edit'}
           </button>
@@ -920,8 +862,8 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
             {pr.labels.map(label => (
               <span
                 key={label.id}
-                className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium"
-                style={{ background: `#${label.color}22`, color: `#${label.color}`, border: `1px solid #${label.color}44` }}
+                className="vt-workflow-chip"
+                style={{ '--chip-color': `#${label.color}` }}
               >
                 <span className="w-2 h-2 rounded-full" style={{ background: `#${label.color}` }} />
                 {label.name}
@@ -930,33 +872,26 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
           </div>
         )}
         {!pr.labels?.length && !showLabelPicker && (
-          <p className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>No labels</p>
+          <p className="text-[10px] italic text-[var(--text-muted)]">No labels</p>
         )}
         {showLabelPicker && (
-          <div
-            className="rounded-lg border overflow-y-auto max-h-40 mt-1"
-            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)' }}
-          >
+          <div className="vt-command-popover mt-1 max-h-40 overflow-y-auto p-1">
             {repoLabels.map(label => {
               const isSelected = pr.labels?.find(l => l.name === label.name);
               return (
                 <button
                   key={label.id}
                   onClick={() => handleToggleLabel(label)}
-                  className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs hover:opacity-80 transition text-left"
-                  style={{ 
-                    color: 'var(--text-primary)', 
-                    background: isSelected ? 'color-mix(in srgb, var(--accent-primary) 10%, transparent)' : 'transparent' 
-                  }}
+                  className={`vt-command-item flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs ${isSelected ? 'th-btn-active' : ''}`}
                 >
                   <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: `#${label.color}` }} />
                   {label.name}
-                  {isSelected && <CheckCircle2 className="w-3 h-3 ml-auto" style={{ color: 'var(--accent-primary)' }} />}
+                  {isSelected && <CheckCircle2 className="ml-auto h-3 w-3 text-[var(--attention-purple)]" />}
                 </button>
               );
             })}
             {repoLabels.length === 0 && (
-              <p className="text-[10px] py-2 px-2.5 italic" style={{ color: 'var(--text-muted)' }}>No labels in repository</p>
+              <p className="px-2.5 py-2 text-[10px] italic text-[var(--text-muted)]">No labels in repository</p>
             )}
           </div>
         )}
@@ -965,12 +900,11 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
       {/* Description — editable */}
       <div>
         <div className="flex items-center gap-2 mb-1.5">
-          <p className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>DESCRIPTION</p>
+          <p className="vt-panel-kicker">DESCRIPTION</p>
           {!editingBody && (
             <button
               onClick={() => { setNewBody(pr.body || ''); setEditingBody(true); }}
-              className="text-[10px] px-1.5 py-0.5 rounded hover:opacity-80 transition"
-              style={{ color: 'var(--accent-primary)' }}
+              className="th-focus-ring th-btn-ghost rounded-[var(--radius-control)] px-1.5 py-0.5 text-[10px] transition"
             >
               + Edit
             </button>
@@ -985,19 +919,16 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
               rows={8}
             />
             <div className="flex gap-2">
-              <button onClick={handleBodySave} className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: 'var(--accent-primary)', color: '#ffffff' }}>Save</button>
-              <button onClick={() => setEditingBody(false)} className="px-3 py-1.5 rounded-lg text-xs border" style={{ borderColor: 'var(--border-medium)', color: 'var(--text-muted)' }}>Cancel</button>
+              <button onClick={handleBodySave} className="th-focus-ring th-btn-primary px-3 py-1.5 text-xs font-medium">Save</button>
+              <button onClick={() => setEditingBody(false)} className="th-focus-ring th-btn-ghost rounded-[var(--radius-control)] border border-[var(--border-subtle)] px-3 py-1.5 text-xs">Cancel</button>
             </div>
           </div>
         ) : (
-          <div
-            className="rounded-lg p-3 border"
-            style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}
-          >
+          <div className="vt-workflow-card p-3">
             {pr.body ? (
               <MarkdownText text={pr.body} />
             ) : (
-              <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>No description provided</p>
+              <p className="text-xs italic text-[var(--text-muted)]">No description provided</p>
             )}
           </div>
         )}
@@ -1006,11 +937,10 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
       {/* Assignees — editable */}
       <div>
         <div className="flex items-center gap-2 mb-1.5">
-          <p className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>ASSIGNEES</p>
+          <p className="vt-panel-kicker">ASSIGNEES</p>
           <button
             onClick={() => setShowAssigneePicker(v => !v)}
-            className="text-[10px] px-1.5 py-0.5 rounded hover:opacity-80 transition"
-            style={{ color: 'var(--accent-primary)' }}
+            className={`th-focus-ring rounded-[var(--radius-control)] px-1.5 py-0.5 text-[10px] transition ${showAssigneePicker ? 'th-btn-active' : 'th-btn-ghost'}`}
           >
             {showAssigneePicker ? 'Done' : '+ Edit'}
           </button>
@@ -1027,33 +957,26 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
           </div>
         )}
         {!pr.assignees?.length && !showAssigneePicker && (
-          <p className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>No assignees</p>
+          <p className="text-[10px] italic text-[var(--text-muted)]">No assignees</p>
         )}
         {showAssigneePicker && (
-          <div
-            className="rounded-lg border overflow-y-auto max-h-40 mt-1"
-            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)' }}
-          >
+          <div className="vt-command-popover mt-1 max-h-40 overflow-y-auto p-1">
             {repoCollaborators.map(user => {
               const isSelected = pr.assignees?.find(a => a.login === user.login);
               return (
                 <button
                   key={user.id}
                   onClick={() => handleToggleAssignee(user)}
-                  className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs hover:opacity-80 transition text-left"
-                  style={{
-                    color: 'var(--text-primary)',
-                    background: isSelected ? 'color-mix(in srgb, var(--accent-primary) 10%, transparent)' : 'transparent'
-                  }}
+                  className={`vt-command-item flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs ${isSelected ? 'th-btn-active' : ''}`}
                 >
                   <img src={user.avatar_url} alt={user.login} className="w-4 h-4 rounded-full flex-shrink-0" />
                   {user.login}
-                  {isSelected && <CheckCircle2 className="w-3 h-3 ml-auto" style={{ color: 'var(--accent-primary)' }} />}
+                  {isSelected && <CheckCircle2 className="ml-auto h-3 w-3 text-[var(--attention-purple)]" />}
                 </button>
               );
             })}
             {repoCollaborators.length === 0 && (
-              <p className="text-[10px] py-2 px-2.5 italic" style={{ color: 'var(--text-muted)' }}>No collaborators found</p>
+              <p className="px-2.5 py-2 text-[10px] italic text-[var(--text-muted)]">No collaborators found</p>
             )}
           </div>
         )}
@@ -1062,7 +985,7 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
       {/* Reviews summary */}
       {reviews?.length > 0 && (
         <div>
-          <p className="text-[10px] font-semibold mb-1.5" style={{ color: 'var(--text-muted)' }}>REVIEWS</p>
+          <p className="vt-panel-kicker mb-1.5">REVIEWS</p>
           <div className="space-y-1.5">
             {reviews.map(review => (
               <ReviewRow key={review.id} review={review} />
@@ -1076,9 +999,11 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
         <button
           onClick={onClose}
           disabled={closingPR}
-          className="w-full py-2 rounded-lg text-xs font-medium border transition hover:opacity-80 disabled:opacity-50"
+          className="th-focus-ring th-btn-ghost w-full rounded-[var(--radius-control)] border py-2 text-xs font-medium transition disabled:opacity-50"
           style={{
-            borderColor: pr.state === 'closed' ? 'rgba(52,211,153,0.3)' : 'rgba(239,68,68,0.3)',
+            borderColor: pr.state === 'closed'
+              ? 'color-mix(in srgb, var(--accent-success) 32%, transparent)'
+              : 'color-mix(in srgb, var(--accent-danger) 32%, transparent)',
             color: pr.state === 'closed' ? 'var(--accent-success)' : 'var(--accent-danger)',
           }}
         >
@@ -1141,25 +1066,21 @@ function parsePatchHunks(patch) {
 
 function DiffHunkView({ hunk }) {
   return (
-    <div className="border-t first:border-t-0" style={{ borderColor: 'var(--border-subtle)' }}>
+    <div className="border-t border-[var(--border-subtle)] first:border-t-0">
       {/* Hunk header */}
-      <div className="px-3 py-1 text-[10px] font-mono select-none flex items-center gap-2"
-        style={{ background: 'color-mix(in srgb, var(--accent-secondary) 8%, transparent)', color: 'var(--accent-secondary)' }}>
+      <div className="vt-code-line-hunk flex select-none items-center gap-2 px-3 py-1 font-mono text-[10px]">
         <span>{hunk.header}</span>
         {hunk.context && <span className="opacity-60 truncate">{hunk.context}</span>}
       </div>
       {/* Lines */}
       <div className="font-mono text-[11px] leading-[1.6]">
         {hunk.lines.map((line, i) => {
-          const bgColor = line.type === 'add'
-            ? 'rgba(52,211,153,0.06)' : line.type === 'del'
-            ? 'rgba(248,113,113,0.06)' : 'transparent';
-          const textColor = line.type === 'add'
-            ? 'var(--accent-success)' : line.type === 'del'
-            ? 'var(--accent-danger)' : 'var(--text-secondary, #a1a1aa)';
+          const lineClass = line.type === 'add'
+            ? 'vt-code-line-add' : line.type === 'del'
+            ? 'vt-code-line-del' : 'text-[var(--text-secondary)]';
           const prefix = line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' ';
           return (
-            <div key={i} className="flex hover:brightness-110" style={{ background: bgColor }}>
+            <div key={i} className={`flex hover:brightness-110 ${lineClass}`}>
               <span className="select-none text-right pr-1 min-w-[3em] opacity-30"
                 style={{ color: 'var(--text-muted)' }}>
                 {line.oldLine ?? ''}
@@ -1168,8 +1089,8 @@ function DiffHunkView({ hunk }) {
                 style={{ color: 'var(--text-muted)', borderColor: 'var(--border-subtle)' }}>
                 {line.newLine ?? ''}
               </span>
-              <span className="select-none w-4 text-center flex-shrink-0" style={{ color: textColor }}>{prefix}</span>
-              <span className="flex-1 whitespace-pre-wrap break-all" style={{ color: textColor }}>{line.content}</span>
+              <span className="select-none w-4 text-center flex-shrink-0">{prefix}</span>
+              <span className="flex-1 whitespace-pre-wrap break-all">{line.content}</span>
             </div>
           );
         })}
@@ -1185,37 +1106,27 @@ function FilesTab({ files, pr }) {
   return (
     <div className="p-3 space-y-1.5">
       <div className="flex items-center justify-between mb-2">
-        <p className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>
+        <p className="vt-panel-kicker">
           {files.length} file{files.length !== 1 ? 's' : ''} changed
           {pr && <span className="ml-2" style={{ color: 'var(--accent-success)' }}>+{pr.additions}</span>}
           {pr && <span className="ml-1" style={{ color: 'var(--accent-danger)' }}>-{pr.deletions}</span>}
         </p>
         <div className="flex gap-0.5">
           <button onClick={() => setDiffViewMode('unified')} title="Unified diff"
-            className="px-1.5 py-0.5 rounded text-[10px] transition"
-            style={{
-              background: diffViewMode === 'unified' ? 'color-mix(in srgb, var(--accent-primary) 15%, transparent)' : 'transparent',
-              color: diffViewMode === 'unified' ? 'var(--accent-primary)' : 'var(--text-muted)'
-            }}>Unified</button>
+            className={`th-focus-ring rounded-[var(--radius-control)] px-1.5 py-0.5 text-[10px] transition ${diffViewMode === 'unified' ? 'th-btn-active' : 'th-btn-ghost'}`}>Unified</button>
           <button onClick={() => setDiffViewMode('raw')} title="Raw patch"
-            className="px-1.5 py-0.5 rounded text-[10px] transition"
-            style={{
-              background: diffViewMode === 'raw' ? 'color-mix(in srgb, var(--accent-primary) 15%, transparent)' : 'transparent',
-              color: diffViewMode === 'raw' ? 'var(--accent-primary)' : 'var(--text-muted)'
-            }}>Raw</button>
+            className={`th-focus-ring rounded-[var(--radius-control)] px-1.5 py-0.5 text-[10px] transition ${diffViewMode === 'raw' ? 'th-btn-active' : 'th-btn-ghost'}`}>Raw</button>
         </div>
       </div>
       {files.map(file => {
         const hunks = expandedFiles[file.filename] && file.patch ? parsePatchHunks(file.patch) : [];
         return (
           <div key={file.sha || file.filename}
-            className="rounded-lg border overflow-hidden"
-            style={{ borderColor: 'var(--border-subtle)' }}>
+            className="vt-workflow-card overflow-hidden">
             <button
               onClick={() => setExpandedFiles(prev => ({ ...prev, [file.filename]: !prev[file.filename] }))}
-              className="flex items-center gap-2 w-full px-2.5 py-2 text-left hover:opacity-80 transition"
-              style={{ background: 'var(--bg-panel)', color: 'var(--text-primary)' }}>
-              <span className={`text-[10px] font-bold font-mono w-3.5 text-center ${fileDiffColor(file.status)}`}>
+              className="vt-workflow-row flex w-full items-center gap-2 px-2.5 py-2 text-left text-[var(--text-primary)]">
+              <span className="w-3.5 text-center font-mono text-[10px] font-bold" style={{ color: fileDiffColor(file.status) }}>
                 {fileDiffLabel(file.status)}
               </span>
               <span className="text-xs font-mono flex-1 truncate">{file.filename}</span>
@@ -1231,19 +1142,16 @@ function FilesTab({ files, pr }) {
             </button>
             {expandedFiles[file.filename] && file.patch && (
               diffViewMode === 'unified' && hunks.length > 0 ? (
-                <div style={{ background: 'var(--bg-app)', maxHeight: 400, overflowY: 'auto' }}>
+                <div className="vt-code-surface" style={{ maxHeight: 400, overflowY: 'auto' }}>
                   {hunks.map((hunk, i) => <DiffHunkView key={i} hunk={hunk} />)}
                 </div>
               ) : (
                 <pre
-                  className="text-[10px] font-mono px-3 py-2 overflow-x-auto leading-relaxed"
-                  style={{ background: 'var(--bg-app)', color: 'var(--text-secondary)', maxHeight: '300px', overflowY: 'auto' }}>
+                  className="vt-code-surface overflow-x-auto px-3 py-2 text-[10px] leading-relaxed"
+                  style={{ maxHeight: '300px', overflowY: 'auto' }}>
                   {file.patch.split('\n').map((line, i) => (
                     <div key={i}
-                      style={{
-                        color: line.startsWith('+') ? 'var(--accent-success)' : line.startsWith('-') ? 'var(--accent-danger)' : line.startsWith('@@') ? 'var(--accent-secondary)' : undefined,
-                        background: line.startsWith('+') ? 'rgba(52,211,153,0.06)' : line.startsWith('-') ? 'rgba(248,113,113,0.06)' : 'transparent',
-                      }}>{line}</div>
+                      className={line.startsWith('+') ? 'vt-code-line-add' : line.startsWith('-') ? 'vt-code-line-del' : line.startsWith('@@') ? 'vt-code-line-hunk' : ''}>{line}</div>
                   ))}
                 </pre>
               )
@@ -1252,7 +1160,7 @@ function FilesTab({ files, pr }) {
         );
       })}
       {files.length === 0 && (
-        <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>No files changed.</p>
+        <p className="vt-empty-state py-4 text-center text-xs">No files changed.</p>
       )}
     </div>
   );
@@ -1264,8 +1172,7 @@ function CommitsTab({ commits }) {
     <div className="p-3 space-y-1.5">
       {commits.map(c => (
         <div key={c.sha}
-          className="flex items-start gap-2 px-2.5 py-2 rounded-lg border"
-          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)' }}
+          className="vt-workflow-card flex items-start gap-2 px-2.5 py-2"
         >
           <GitCommit className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" style={{ color: 'var(--accent-primary)' }} />
           <div className="min-w-0 flex-1">
@@ -1279,7 +1186,7 @@ function CommitsTab({ commits }) {
         </div>
       ))}
       {commits.length === 0 && (
-        <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>No commits.</p>
+        <p className="vt-empty-state py-4 text-center text-xs">No commits.</p>
       )}
     </div>
   );
@@ -1294,10 +1201,10 @@ function CommentsTab({ comments, onDelete, onComment, commentLoading }) {
         <CommentCard key={c.id} comment={c} onDelete={onDelete} />
       ))}
       {comments.length === 0 && (
-        <p className="text-xs py-2 text-center" style={{ color: 'var(--text-muted)' }}>No comments yet.</p>
+        <p className="vt-empty-state py-4 text-center text-xs">No comments yet.</p>
       )}
       {/* New comment box */}
-      <div className="pt-2 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="border-t border-[var(--border-subtle)] pt-2">
         <CommentBox onSubmit={onComment} loading={commentLoading} />
       </div>
     </div>
@@ -1308,16 +1215,12 @@ function CommentCard({ comment, onDelete }) {
   const [showDelete, setShowDelete] = useState(false);
   return (
     <div
-      className="rounded-lg border overflow-hidden"
-      style={{ borderColor: 'var(--border-subtle)' }}
+      className="vt-workflow-card overflow-hidden"
       onMouseEnter={() => setShowDelete(true)}
       onMouseLeave={() => setShowDelete(false)}
     >
       {/* Header */}
-      <div
-        className="flex items-center gap-2 px-2.5 py-1.5 border-b"
-        style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}
-      >
+      <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] bg-[var(--surface-panel-subtle)] px-2.5 py-1.5">
         <img src={comment.user?.avatar_url} alt={comment.user?.login} className="w-4 h-4 rounded-full" />
         <a href={comment.user?.html_url} target="_blank" rel="noopener noreferrer"
           className="text-xs font-medium hover:underline" style={{ color: 'var(--text-primary)' }}>
@@ -1325,13 +1228,13 @@ function CommentCard({ comment, onDelete }) {
         </a>
         <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{relativeTime(comment.created_at)}</span>
         {showDelete && (
-          <button onClick={() => onDelete(comment.id)} className="p-0.5 rounded hover:opacity-70 transition" style={{ color: 'var(--text-muted)' }}>
+          <button onClick={() => onDelete(comment.id)} className="vt-icon-button th-focus-ring h-6 min-w-6">
             <Trash2 className="w-3 h-3" />
           </button>
         )}
       </div>
       {/* Body */}
-      <div className="px-2.5 py-2" style={{ background: 'var(--bg-app)' }}>
+      <div className="bg-[var(--bg-app)] px-2.5 py-2">
         <MarkdownText text={comment.body} />
       </div>
     </div>
@@ -1344,8 +1247,7 @@ function ChecksTab({ checks }) {
     <div className="p-3 space-y-1.5">
       {checks.map(check => (
         <div key={check.id}
-          className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg border"
-          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)' }}
+          className="vt-workflow-card flex items-center gap-2.5 px-2.5 py-2"
         >
           {checkIcon(check.status, check.conclusion)}
           <div className="min-w-0 flex-1">
@@ -1359,14 +1261,14 @@ function ChecksTab({ checks }) {
           </span>
           {check.html_url && (
             <a href={check.html_url} target="_blank" rel="noopener noreferrer"
-              className="p-1 hover:opacity-70 transition" style={{ color: 'var(--text-muted)' }}>
+              className="vt-icon-button th-focus-ring h-7 min-w-7">
               <ExternalLink className="w-3 h-3" />
             </a>
           )}
         </div>
       ))}
       {checks.length === 0 && (
-        <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>No checks.</p>
+        <p className="vt-empty-state py-4 text-center text-xs">No checks.</p>
       )}
     </div>
   );

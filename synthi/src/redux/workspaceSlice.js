@@ -760,14 +760,6 @@ export const deleteItemThunk = createAsyncThunk(
     'workspace/deleteItem',
     async (item, { dispatch, getState }) => {
         const state = getState().workspace;
-        
-        const confirmMessage = item.isFolder
-          ? `Are you sure you want to delete the folder "${item.name}" and all its contents?`
-            : `Are you sure you want to delete the file "${item.name}"?`;
-            
-        if (!window.confirm(confirmMessage)) {
-            return { deleted: false };
-        }
         const itemPath = getItemPathInBucket(item);
 
         await api.deleteItem(state.slug, itemPath);

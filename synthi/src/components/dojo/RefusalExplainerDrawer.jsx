@@ -3,8 +3,10 @@
 import { Ban, FileWarning } from 'lucide-react';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function RefusalExplainerDrawer({ refusal }) {
@@ -34,13 +36,13 @@ export default function RefusalExplainerDrawer({ refusal }) {
       </div>
 
       {refusal.refusal ? (
-        <p className="mt-4 rounded-md border p-3 text-sm leading-6" style={{ borderColor: 'var(--border-subtle)' }}>
+        <p className="mt-4 rounded-md border p-3 text-sm leading-6" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           {refusal.refusal}
         </p>
       ) : null}
 
       {refusal.rule ? (
-        <section className="mt-4 rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+        <section className="mt-4 rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           <h3 className="text-xs font-semibold">Blocking Rule</h3>
           <p className="mt-2 text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>{refusal.rule}</p>
         </section>
@@ -59,7 +61,7 @@ export default function RefusalExplainerDrawer({ refusal }) {
         {refusal.caseLawRefs?.length ? (
           <div className="grid gap-2">
             {refusal.caseLawRefs.map((item) => (
-              <div key={`${item.id}-${item.title}`} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div key={`${item.id}-${item.title}`} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                 <div className="font-semibold">{item.id || item.title}</div>
                 {item.title && item.title !== item.id ? (
                   <div className="mt-1" style={{ color: 'var(--text-muted)' }}>{item.title}</div>
@@ -88,7 +90,7 @@ export default function RefusalExplainerDrawer({ refusal }) {
           <h3 className="mb-2 text-xs font-semibold">Smallest Allowed Next Step</h3>
           <ul className="grid gap-2 text-xs">
             {[refusal.nextStep, ...(refusal.requiredSteps || [])].filter(Boolean).map((step) => (
-              <li key={step} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+              <li key={step} className="rounded-md border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                 {step}
               </li>
             ))}
@@ -106,7 +108,7 @@ function List({ title, items = [] }) {
       {items.length ? (
         <ul className="grid gap-2 text-xs">
           {items.map((item) => (
-            <li key={`${title}-${item}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+            <li key={`${title}-${item}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
               {item}
             </li>
           ))}

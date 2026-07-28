@@ -61,8 +61,15 @@ export const authOptions = {
       session.githubLogin = null;
       if (session.user?.email) {
         try {
-          const dbUser = await prisma.user.findUnique({
+          // Create-if-missing: with JWT session strategy and no Prisma adapter,
+          // nothing else ever inserts the User row, so a fresh/reset local DB
+          // leaves resolveActor() returning null and every DB-backed route
+          // responding 401 even though the NextAuth session is valid. The
+          // upsert self-heals that on the next request after sign-in.
+          const dbUser = await prisma.user.upsert({
             where: { email: session.user.email },
+            update: {},
+            create: { email: session.user.email },
             select: { githubTokenCipher: true, githubLogin: true },
           });
           if (dbUser?.githubTokenCipher) {

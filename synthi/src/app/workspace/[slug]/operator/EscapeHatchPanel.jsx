@@ -363,7 +363,14 @@ export default function EscapeHatchPanel() {
     <div className="flex flex-col gap-3 text-sm">
       <BridgeSettings url={url} token={token} onSave={save} />
       {lastError ? (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+        <div
+          className="rounded-[var(--radius-panel)] border px-3 py-2 text-xs"
+          style={{
+            borderColor: 'color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))',
+            background: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)',
+            color: 'var(--accent-danger)',
+          }}
+        >
           {lastError}
         </div>
       ) : null}

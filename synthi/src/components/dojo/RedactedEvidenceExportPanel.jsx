@@ -3,8 +3,10 @@
 import { FileArchive } from 'lucide-react';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
   boxSizing: 'border-box',
   overflow: 'hidden',
 };
@@ -80,7 +82,7 @@ export default function RedactedEvidenceExportPanel({ exportManifest }) {
         <div className="p-4 text-sm" style={{ color: 'var(--text-secondary)' }}>No redacted export artifacts are reported.</div>
       )}
       {exportManifest?.excluded?.length ? (
-        <div className="border-t px-4 py-3 text-xs" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="border-t px-4 py-3 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           <span style={{ color: 'var(--text-muted)' }}>Excluded: </span>
           <span style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{exportManifest.excluded.join(', ')}</span>
         </div>

@@ -7,17 +7,18 @@ import EvidenceLedgerChain from './EvidenceLedgerChain';
 import RedactedEvidenceExportPanel from './RedactedEvidenceExportPanel';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
   boxSizing: 'border-box',
 };
 
 const pageStyle = {
-  minHeight: '100vh',
+  minHeight: '100dvh',
   padding: 20,
   boxSizing: 'border-box',
   overflowX: 'hidden',
-  background: 'var(--bg-app)',
   color: 'var(--text-primary)',
 };
 
@@ -98,7 +99,7 @@ export default function EvidenceDashboard({
 
   return (
     <main
-      className="min-h-screen px-5 py-5 text-sm"
+      className="dojo-page min-h-[100dvh] px-5 py-5 text-sm"
       style={pageStyle}
       data-testid="dojo-evidence-dashboard"
     >
@@ -185,7 +186,7 @@ function EvidenceClaimsPanel({ claims }) {
       {claims.length ? (
         <div className="mt-3 grid gap-2" style={{ display: 'grid', gap: 8, minWidth: 0 }}>
           {claims.map((claim) => (
-            <article key={`${claim.claim}-${claim.status}`} className="rounded-md border p-3 text-xs" style={{ borderColor: 'var(--border-subtle)', boxSizing: 'border-box', minWidth: 0, padding: 12 }}>
+            <article key={`${claim.claim}-${claim.status}`} className="rounded-md border p-3 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)', boxSizing: 'border-box', minWidth: 0, padding: 12 }}>
               <div className="flex flex-wrap items-center justify-between gap-2" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8, minWidth: 0 }}>
                 <h3 className="font-semibold" style={{ margin: 0, overflowWrap: 'anywhere' }}>{claim.claim}</h3>
                 <span className="rounded-md border px-2 py-1" style={panelStyle}>{claim.status}</span>

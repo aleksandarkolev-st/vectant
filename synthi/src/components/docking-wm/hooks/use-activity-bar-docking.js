@@ -25,6 +25,8 @@ import {
 } from '../state/layout-slice';
 import { IDE_PANEL } from '../panels/panel-types';
 
+const SIDEBAR_PANEL_REVEAL_EVENT = 'synthi:sidebar-panel-reveal';
+
 // ── Panel category classification ──
 const SIDEBAR_TYPES = new Set([
   IDE_PANEL.EXPLORER,
@@ -40,6 +42,7 @@ const SIDEBAR_TYPES = new Set([
   IDE_PANEL.PULL_REQUESTS,
   IDE_PANEL.AI_HEALING,
   IDE_PANEL.INTEGRATIONS,
+  IDE_PANEL.PORTS,
 ]);
 
 const BOTTOM_TYPES = new Set([
@@ -76,6 +79,19 @@ function findExistingTab(nodes, tabs, panelType) {
     }
   }
   return null;
+}
+
+function isCollapsedSidebarGroup(groupId) {
+  if (typeof document === 'undefined') return false;
+  const group = document.querySelector(`[data-tabgroup-id="${groupId}"]`);
+  return group?.getAttribute('data-sidebar-collapsed') === 'true';
+}
+
+function revealSidebarGroup(panelType, groupId) {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(SIDEBAR_PANEL_REVEAL_EVENT, {
+    detail: { panelType, groupId },
+  }));
 }
 
 /**
@@ -141,9 +157,18 @@ export function useActivityBarDocking() {
 
       if (existing) {
         const group = nodes[existing.groupId];
+        const isSidebarPanel = panelCategory(panelType) === 'sidebar';
+        const isCollapsed = isSidebarPanel && isCollapsedSidebarGroup(existing.groupId);
         const isAlreadyActive =
           group?.activeTabId === existing.tabId &&
           focusedGroupId === existing.groupId;
+
+        if (isCollapsed) {
+          dispatch(setFocusedTabGroup(existing.groupId));
+          dispatch(activateTabAction({ tabId: existing.tabId }));
+          revealSidebarGroup(panelType, existing.groupId);
+          return;
+        }
 
         if (isAlreadyActive) {
           // Re-tap: focus the editor group so mobile users can return
@@ -159,6 +184,9 @@ export function useActivityBarDocking() {
         dispatch(setFocusedTabGroup(existing.groupId));
         // Activate the tab
         dispatch(activateTabAction({ tabId: existing.tabId }));
+        if (isSidebarPanel) {
+          revealSidebarGroup(panelType, existing.groupId);
+        }
         return;
       }
 
@@ -174,6 +202,9 @@ export function useActivityBarDocking() {
           targetTabGroupId: targetGroupId,
         }));
         dispatch(setFocusedTabGroup(targetGroupId));
+        if (category === 'sidebar') {
+          revealSidebarGroup(panelType, targetGroupId);
+        }
       }
     },
     [dispatch, nodes, tabs, focusedGroupId],
@@ -187,7 +218,12 @@ export function useActivityBarDocking() {
       extensions: () => togglePanel(IDE_PANEL.EXTENSIONS, 'Extensions'),
       programs:   () => togglePanel(IDE_PANEL.PROGRAMS, 'Programs'),
       terminal:   () => togglePanel(IDE_PANEL.TERMINAL, 'Terminal'),
-      chat:       () => togglePanel(IDE_PANEL.CHAT, 'AI Chat'),
+      // Activity-bar chat docks as a full panel on the RIGHT of the editor
+      // (page-level ensureDockedChatRight, via event) — not the left sidebar.
+      // The navbar button opens the floating right popup instead.
+      chat:       () => { if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('synthi:dock-chat-right')); },
+      // Low-level open used by ensureDockedChatRight (avoids recursing on `chat`).
+      openChatPanel: () => togglePanel(IDE_PANEL.CHAT, 'AI Chat'),
       workflows:  () => togglePanel(IDE_PANEL.AGENT_WORKFLOWS, 'Workflows'),
       codesite:   () => togglePanel(IDE_PANEL.CODESITE, 'CodeSite'),
       problems:   () => togglePanel(IDE_PANEL.PROBLEMS, 'Problems'),

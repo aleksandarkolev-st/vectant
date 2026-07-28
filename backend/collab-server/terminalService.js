@@ -377,11 +377,17 @@ function codeSitePayloadFromSearch(searchParams) {
 }
 
 function terminalCodeSiteContext(req, searchParams, { workspaceSlug, actorUserId, filesystemUserId }) {
-  return codeSiteContextFromRequest(req, {
-    codesite: codeSitePayloadFromSearch(searchParams),
-    userId: actorUserId,
-    filesystemUserId,
-  }, {
+  // codeSitePayloadFromSearch always returns every key (searchParams.get yields null
+  // when absent), and codeSiteContextFromRequest activates CodeSite on the mere
+  // PRESENCE of a `codesite` key. Attaching it unconditionally therefore marked every
+  // ordinary terminal as a managed agent session. Only attach it when a caller actually
+  // supplied CodeSite parameters; headers are still read by codeSiteContextFromRequest.
+  const payload = codeSitePayloadFromSearch(searchParams);
+  const data = { userId: actorUserId, filesystemUserId };
+  if (Object.values(payload).some((value) => value !== null && value !== undefined && value !== '')) {
+    data.codesite = payload;
+  }
+  return codeSiteContextFromRequest(req, data, {
     workspaceSlug,
     actorUserId,
     effectiveUserId: filesystemUserId,
@@ -2018,6 +2024,9 @@ function createTerminalWSS({
       codesite: codeSiteMetadata,
       codesiteContext: codeSiteContext.active ? codeSiteContext : null,
       codesiteQuarantine: codeSiteQuarantine || null,
+      // Property name stays lowercase to match its siblings; the value comes from
+      // codeSiteOriginalCwd. The shorthand form referenced an undefined identifier
+      // and threw ReferenceError on every terminal session.
       codesiteOriginalCwd: codeSiteOriginalCwd,
       releasePort: runtimeLaunch?.releasePort || (() => {}),
       unwatchFs,

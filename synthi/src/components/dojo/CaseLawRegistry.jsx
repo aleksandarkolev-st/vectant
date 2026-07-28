@@ -3,14 +3,16 @@
 import { ScrollText } from 'lucide-react';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function CaseLawRegistry({ records = [] }) {
   return (
     <section className="rounded-md border" style={panelStyle} data-testid="case-law-registry">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <ScrollText size={15} aria-hidden="true" />
           Case-Law Registry
@@ -18,7 +20,7 @@ export default function CaseLawRegistry({ records = [] }) {
         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{records.length} cases</span>
       </div>
       {records.length ? (
-        <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="divide-y" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           {records.map((record) => (
             <article key={record.caseId} className="px-4 py-3">
               <div className="flex flex-wrap items-start justify-between gap-3">

@@ -3,11 +3,10 @@
 /**
  * @fileoverview ThemePicker
  *
- * Full-screen overlay resembling a command palette; lists all available
- * themes in two columns — dark on the left, light on the right.
+ * Full-screen overlay for theme selection; lists all available themes in two
+ * columns while preserving quick keyboard navigation.
  *
  * Activation:
- *   - Ctrl+K  Ctrl+T  (two-chord shortcut, like VS Code)
  *   - Exposed via `useThemePicker()` hook for programmatic open
  *
  * Behaviour:
@@ -51,7 +50,7 @@ export function ThemePickerProvider({ children }) {
   const open = useCallback(() => setIsOpen(true), []);
   const close = useCallback(() => setIsOpen(false), []);
 
-  // ── Two-chord shortcut: Ctrl+K  Ctrl+T ────────────────────
+  // ── Two-chord shortcut ────────────────────────────────────
   useEffect(() => {
     let waitingForT = false;
     let timer = null;
@@ -298,7 +297,6 @@ function ThemePickerOverlay({ onClose }) {
         key={theme.id}
         data-theme-item
         data-column={colName}
-        title="Hold right-click to preview"
         className={cn(
           'group flex items-center gap-2 px-3 py-1.5 cursor-pointer text-sm transition-colors duration-75',
           isSelected && 'ring-1 ring-inset'
@@ -377,8 +375,8 @@ function ThemePickerOverlay({ onClose }) {
               style={{ color: 'var(--text-muted)' }}
               title="Delete theme"
               onMouseEnter={(e) => {
-                e.currentTarget.style.color = 'var(--accent-danger, #ff5757)';
-                e.currentTarget.style.background = 'color-mix(in srgb, var(--accent-danger, #ff5757) 12%, transparent)';
+                e.currentTarget.style.color = 'var(--accent-danger)';
+                e.currentTarget.style.background = 'color-mix(in srgb, var(--accent-danger) 12%, transparent)';
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.color = 'var(--text-muted)';
@@ -455,10 +453,10 @@ function ThemePickerOverlay({ onClose }) {
 
   return (
     <div
-      className="fixed inset-0 z-[9999] flex items-start justify-center pt-[15vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center px-3 pt-[12vh]"
       style={{
-        background: 'rgba(0,0,0,0.45)',
-        backdropFilter: 'blur(2px)',
+        background: 'color-mix(in srgb, var(--bg-app) 72%, transparent)',
+        backdropFilter: 'blur(10px) saturate(140%)',
         opacity: isPreviewing ? 0 : 1,
         pointerEvents: isPreviewing ? 'none' : 'auto',
         transition: 'opacity 80ms ease-out',
@@ -466,28 +464,32 @@ function ThemePickerOverlay({ onClose }) {
       onClick={backdropClick}
     >
       <div
-        className="w-[720px] max-h-[60vh] flex flex-col rounded-lg overflow-hidden"
+        className="vt-dialog-surface flex max-h-[68vh] w-[760px] max-w-full flex-col overflow-hidden"
         style={{
-          background: 'var(--bg-elevated)',
-          border: '1px solid var(--border-medium)',
-          boxShadow: 'var(--shadow-dropdown)',
+          boxShadow: '0 24px 80px color-mix(in srgb, var(--bg-app) 64%, transparent)',
         }}
       >
+        <div aria-hidden="true" className="h-px w-full" style={{ background: 'var(--brand-gradient-horizontal)' }} />
         {/* Search input */}
         <div
-          className="flex items-center gap-2 px-3 py-2"
+          className="flex items-center gap-2 px-3.5 py-2.5"
           style={{ borderBottom: '1px solid var(--border-subtle)' }}
         >
           <Palette className="h-4 w-4 shrink-0" style={{ color: 'var(--accent-primary)' }} />
           <input
             ref={inputRef}
             type="text"
-            placeholder="Select Color Theme"
+            placeholder="Find theme"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
-            className="flex-1 bg-transparent text-sm outline-none"
-            style={{ color: 'var(--text-primary)', caretColor: 'var(--accent-primary)' }}
+            className="th-focus-ring-inset h-8 flex-1 rounded-md border bg-transparent px-2 text-sm outline-none"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--border-medium) 78%, transparent)',
+              color: 'var(--text-primary)',
+              caretColor: 'var(--accent-primary)',
+              background: 'color-mix(in srgb, var(--bg-editor) 72%, transparent)',
+            }}
             spellCheck={false}
             autoComplete="off"
           />
@@ -505,42 +507,21 @@ function ThemePickerOverlay({ onClose }) {
           style={{ borderTop: '1px solid var(--border-medium)' }}
         >
           <button
-            className="flex items-center gap-1.5 px-4 py-1.5 rounded font-medium text-[11px] transition-colors w-full justify-center"
-            style={{ color: 'white', background: 'var(--accent-primary)' }}
+            className="th-focus-ring flex h-8 w-full items-center justify-center gap-1.5 rounded-md border px-4 text-[11px] font-semibold transition-opacity hover:opacity-90"
+            style={{
+              color: 'var(--bg-app)',
+              background: 'var(--brand-gradient)',
+              borderColor: 'color-mix(in srgb, var(--accent-primary) 42%, transparent)',
+            }}
             onClick={() => {
               onClose();
               setTimeout(() => openCreator(), 50);
             }}
-            title="Create a brand-new custom theme"
+            title="Create custom theme"
           >
             <Plus className="h-3.5 w-3.5" />
-            Create Your Own Theme
+            New custom theme
           </button>
-        </div>
-
-        {/* Footer hints */}
-        <div
-          className="flex items-center justify-between gap-3 px-3 py-1 text-[10px]"
-          style={{
-            borderTop: '1px solid var(--border-subtle)',
-            color: 'var(--text-muted)',
-          }}
-        >
-          <span className="flex items-center gap-1 flex-wrap">
-            <span>↑↓ Navigate &middot; ←→ Switch column &middot;</span>
-            <span
-              className="font-semibold px-1.5 py-0.5 rounded"
-              style={{
-                color: 'var(--accent-primary)',
-                background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)',
-                border: '1px solid color-mix(in srgb, var(--accent-primary) 35%, transparent)',
-              }}
-            >
-              Hold right-click to preview
-            </span>
-            <span>&middot; Enter Confirm &middot; Esc Cancel</span>
-          </span>
-          <span>Ctrl+K Ctrl+T</span>
         </div>
       </div>
     </div>

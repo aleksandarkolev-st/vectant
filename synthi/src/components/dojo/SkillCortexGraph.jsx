@@ -6,24 +6,26 @@ import { createEmptyDojoSummary, getDojoWorkspaceSummary } from '@/services/dojo
 import CortexNodeInspector from './CortexNodeInspector';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 const elevatedPanelStyle = {
   borderColor: 'color-mix(in srgb, var(--border-subtle) 72%, var(--accent-primary) 28%)',
   background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 96%, transparent), color-mix(in srgb, var(--bg-app) 76%, transparent))',
-  boxShadow: '0 18px 48px -30px rgba(0, 0, 0, 0.7)',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: '0 18px 48px -30px color-mix(in srgb, var(--bg-app) 70%, transparent), inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 const FORCE_MIN_WIDTH = 940;
 const FORCE_MIN_HEIGHT = 560;
 const FORCE_PADDING = 58;
 const FORCE_ITERATIONS = 220;
-const STARFIELD_BASE_COUNT = 220;
-const STARFIELD_MAX_COUNT = 620;
-const STAR_LINK_LIMIT = 960;
-const SEMANTIC_PATH_STAR_COUNT = 4;
+const STARFIELD_BASE_COUNT = 70;
+const STARFIELD_MAX_COUNT = 180;
+const STAR_LINK_LIMIT = 240;
 const OPERATIONAL_STAR_LIMIT_PER_NODE = 12;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const IMPORTANT_NODE_KINDS = new Set(['Proof', 'Guardrail', 'CaseLaw', 'Adversary', 'Expiry']);
@@ -80,12 +82,12 @@ export default function SkillCortexGraph({
 
   return (
     <main
-      className="min-h-screen px-4 py-5 text-sm md:px-8"
-      style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+      className="dojo-page min-h-[100dvh] px-4 py-5 text-sm md:px-8"
+      style={{ color: 'var(--text-primary)' }}
       data-testid="skill-cortex-view"
     >
       <div className="mx-auto flex max-w-[1580px] flex-col gap-4">
-        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
+        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           <div className="min-w-0">
             <a href={backHref} className="mb-3 inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs transition hover:-translate-y-px" style={panelStyle}>
               <ArrowLeft size={13} aria-hidden="true" />
@@ -171,7 +173,7 @@ function RuntimeSummary({ skill, graph }) {
       <div className="min-w-0">
         <div className="mb-1 inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px]" style={panelStyle}>
           <Waypoints size={13} aria-hidden="true" />
-          Runtime star map
+          Runtime dependency graph
         </div>
         <h2 className="truncate text-lg font-semibold md:text-xl">{skill.title}</h2>
       </div>
@@ -187,6 +189,11 @@ function RuntimeSummary({ skill, graph }) {
 function GraphRuntimeExplorer({ graph, skill, selectedNodeId, selectedNode, onSelectNode, statusChips }) {
   const [legendOpen, setLegendOpen] = useState(false);
   const [viewMode, setViewMode] = useState('focus');
+  const nodeRail = useMemo(() => {
+    const nodes = graph?.nodes || [];
+    const important = nodes.filter((node) => isImportantNode(node));
+    return [...important, ...nodes.filter((node) => !important.includes(node))].slice(0, 8);
+  }, [graph?.nodes]);
 
   return (
     <section
@@ -241,6 +248,11 @@ function GraphRuntimeExplorer({ graph, skill, selectedNodeId, selectedNode, onSe
             <Legend label="Expired / Recertify" tone="expired" />
           </div>
         ) : null}
+        <GraphNodeRail
+          nodes={nodeRail}
+          selectedNodeId={selectedNodeId}
+          onSelectNode={onSelectNode}
+        />
         <GraphCanvas
           graph={graph}
           selectedNodeId={selectedNodeId}
@@ -252,6 +264,55 @@ function GraphRuntimeExplorer({ graph, skill, selectedNodeId, selectedNode, onSe
         <CortexNodeInspector node={selectedNode} graph={graph} skill={skill} />
       </div>
     </section>
+  );
+}
+
+function GraphNodeRail({ nodes, selectedNodeId, onSelectNode }) {
+  if (!nodes?.length) return null;
+  return (
+    <div
+      data-testid="cortex-node-rail"
+      className="mb-2 flex min-w-0 gap-1 overflow-x-auto rounded-lg border p-1"
+      style={{
+        borderColor: 'color-mix(in srgb, var(--border-subtle) 78%, transparent)',
+        background: 'color-mix(in srgb, var(--bg-app) 40%, transparent)',
+      }}
+      aria-label="Cortex node rail"
+    >
+      {nodes.map((node) => {
+        const active = selectedNodeId === node.id;
+        const tone = nodeTone(node);
+        return (
+          <button
+            key={node.id}
+            type="button"
+            className="th-focus-ring inline-flex h-11 shrink-0 items-center gap-2 rounded-md border px-3 text-[11px] transition-[background,border-color,transform] hover:-translate-y-px"
+            style={{
+              borderColor: active
+                ? tone.color
+                : 'color-mix(in srgb, var(--border-subtle) 72%, transparent)',
+              background: active
+                ? 'color-mix(in srgb, var(--accent-primary) 11%, var(--bg-panel))'
+                : 'color-mix(in srgb, var(--bg-panel) 66%, transparent)',
+              color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+            }}
+            aria-pressed={active}
+            aria-label={`Select ${node.label || node.id} node`}
+            onClick={() => onSelectNode?.(node.id)}
+            title={`${node.kind}: ${node.label || node.id}`}
+          >
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{
+                background: tone.color,
+                boxShadow: active ? `0 0 10px ${tone.color}` : 'none',
+              }}
+            />
+            <span className="max-w-44 truncate">{node.label || node.id}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -285,7 +346,7 @@ function StatusChip({ label, value, tone = 'neutral' }) {
 
 function MetadataItem({ label, value }) {
   return (
-    <div className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+    <div className="rounded-md border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
       <div style={{ color: 'var(--text-muted)' }}>{label}</div>
       <div className="mt-1 truncate font-medium">{value}</div>
     </div>
@@ -347,9 +408,9 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
       ref={frameRef}
       className="relative h-[460px] min-h-[420px] max-h-[560px] w-full overflow-hidden rounded-lg border md:h-[72vh] md:min-h-[620px] md:max-h-[780px]"
       style={{
-        borderColor: 'var(--border-subtle)',
+        borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
         background:
-          'radial-gradient(circle at 12% 14%, rgba(30, 41, 59, 0.2), transparent 26%), radial-gradient(circle at 88% 74%, rgba(15, 23, 42, 0.2), transparent 30%), radial-gradient(circle at 64% 18%, rgba(8, 13, 24, 0.34), transparent 36%), color-mix(in srgb, var(--bg-app) 92%, transparent)',
+          'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 76%, transparent), color-mix(in srgb, var(--bg-app) 96%, transparent)), repeating-linear-gradient(0deg, color-mix(in srgb, var(--border-subtle) 44%, transparent) 0 1px, transparent 1px 34px), repeating-linear-gradient(90deg, color-mix(in srgb, var(--border-subtle) 38%, transparent) 0 1px, transparent 1px 34px)',
       }}
       data-testid="skill-cortex-graph"
     >
@@ -375,8 +436,8 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
               50% { opacity: 0.86; }
             }
             @keyframes cortex-particle-pulse {
-              0%, 100% { transform: scale(1); opacity: 0.84; }
-              50% { transform: scale(1.14); opacity: 0.96; }
+              0%, 100% { opacity: 0.92; }
+              50% { opacity: 1; }
             }
             .cortex-active-edge {
               animation: cortex-active-path 2.2s cubic-bezier(0.16, 1, 0.3, 1) infinite;
@@ -440,20 +501,38 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
           </g>
           {(layout.semanticSegments || []).map((segment) => {
             const isActive = segment.fromNodeId === activeNodeId || segment.toNodeId === activeNodeId;
+            const midX = (segment.x1 + segment.x2) / 2;
+            const midY = (segment.y1 + segment.y2) / 2;
             return (
-              <line
-                key={segment.id}
-                className={isActive ? 'cortex-active-edge' : undefined}
-                x1={segment.x1}
-                y1={segment.y1}
-                x2={segment.x2}
-                y2={segment.y2}
-                stroke={isActive ? segment.activeColor : segment.color}
-                strokeWidth={isActive ? 0.98 : 0.72}
-                strokeOpacity={isActive ? 0.42 : segment.opacity}
-                strokeLinecap="round"
-                style={{ filter: isActive ? `drop-shadow(0 0 4px ${segment.activeColor})` : 'none' }}
-              />
+              <g key={segment.id}>
+                <line
+                  className={isActive ? 'cortex-active-edge' : undefined}
+                  x1={segment.x1}
+                  y1={segment.y1}
+                  x2={segment.x2}
+                  y2={segment.y2}
+                  stroke={isActive ? segment.activeColor : segment.color}
+                  strokeWidth={isActive ? 1.45 : 0.82}
+                  strokeOpacity={isActive ? 0.74 : segment.opacity}
+                  strokeLinecap="round"
+                  strokeDasharray={isActive ? 'none' : '4 7'}
+                />
+                {isActive && !layout.mobile ? (
+                  <text
+                    x={midX}
+                    y={midY - 7}
+                    textAnchor="middle"
+                    fill="color-mix(in srgb, var(--text-secondary) 92%, transparent)"
+                    stroke="color-mix(in srgb, var(--bg-app) 94%, transparent)"
+                    strokeWidth="4"
+                    paintOrder="stroke"
+                    fontSize="9.5"
+                    fontWeight="650"
+                  >
+                    {truncateLabel(segment.label, 22)}
+                  </text>
+                ) : null}
+              </g>
             );
           })}
           {(layout.operationalStars || []).map((star) => {
@@ -474,17 +553,16 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
                 <circle
                   cx={star.x}
                   cy={star.y}
-                  r={star.r + (selectedParent || hovered ? 7 : 4)}
+                  r={star.r + (selectedParent || hovered ? 4 : 2)}
                   fill={tone.color}
-                  opacity={selectedParent || hovered ? 0.085 : 0.04}
-                  style={{ filter: `blur(${selectedParent || hovered ? 6 : 4}px)` }}
+                  opacity={selectedParent || hovered ? 0.11 : 0.035}
                   pointerEvents="none"
                 />
                 <circle
                   cx={star.x}
                   cy={star.y}
                   r={Math.max(10, star.r + 7)}
-                  fill="rgba(255,255,255,0.001)"
+                  fill="color-mix(in srgb, var(--text-primary) 0.1%, transparent)"
                   stroke="transparent"
                   style={{ cursor: 'default' }}
                 />
@@ -493,8 +571,7 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
                   cy={star.y}
                   r={star.r}
                   fill={tone.color}
-                  opacity={selectedParent || hovered ? 0.84 : 0.56}
-                  style={{ filter: `drop-shadow(0 0 ${selectedParent || hovered ? 7 : 4}px ${tone.color})` }}
+                  opacity={selectedParent || hovered ? 0.88 : 0.5}
                   pointerEvents="none"
                 />
                 {hovered ? (
@@ -513,8 +590,8 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
                       x={labelX}
                       y={labelY}
                       textAnchor={labelAnchor}
-                      fill="rgba(226, 232, 240, 0.94)"
-                      stroke="rgba(6, 9, 16, 0.92)"
+                      fill="color-mix(in srgb, var(--text-primary) 94%, transparent)"
+                      stroke="color-mix(in srgb, var(--bg-app) 92%, transparent)"
                       strokeWidth="4"
                       paintOrder="stroke"
                       fontSize={layout.mobile ? 11.5 : 10.5}
@@ -536,7 +613,7 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
             const connected = activeNeighborIds.has(node.id);
             const radius = nodeRadius(node);
             const depth = nodeDepth(node, graph.nodes);
-            const showLabel = selected || hovered;
+            const showLabel = selected || hovered || (connected && isImportantNode(node));
             const label = node.label || node.id;
             const labelAnchor = layout.mobile
               ? position.x > layout.width * 0.52 ? 'end' : 'start'
@@ -568,14 +645,13 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
                   cy={position.y + 1.6 * depth}
                   r={radius + 5 + depth}
                   fill={tone.color}
-                  opacity={selected || hovered ? 0.12 : connected ? 0.085 : 0.045}
-                  style={{ filter: `blur(${Math.max(3, radius)}px)` }}
+                  opacity={selected || hovered ? 0.08 : connected ? 0.055 : 0.025}
                 />
                 <circle
                   cx={position.x}
                   cy={position.y}
                   r={Math.max(16, radius + 11)}
-                  fill="rgba(255,255,255,0.001)"
+                  fill="color-mix(in srgb, var(--text-primary) 0.1%, transparent)"
                   stroke="transparent"
                   style={{ cursor: 'pointer' }}
                   data-testid={`cortex-node-${node.id}`}
@@ -586,11 +662,10 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
                   cy={position.y}
                   r={radius}
                   fill={tone.color}
-                  opacity={selected || hovered ? 0.88 : connected ? 0.92 : 0.74}
+                  opacity={selected || hovered ? 0.94 : connected ? 0.86 : 0.64}
                   className={selected || hovered ? 'cortex-active-node' : undefined}
-                  style={{
-                    filter: `drop-shadow(0 0 ${selected || hovered ? 9 : 6}px ${tone.color})`,
-                  }}
+                  stroke="color-mix(in srgb, var(--bg-app) 76%, transparent)"
+                  strokeWidth={selected || hovered ? 1.6 : 1}
                 />
                 {selected || hovered ? (
                   <>
@@ -599,8 +674,7 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
                       cy={position.y}
                       r={radius + 10}
                       fill={tone.color}
-                      opacity="0.045"
-                      style={{ filter: `blur(${radius + 1}px)` }}
+                      opacity="0.035"
                     />
                     <circle
                       cx={position.x}
@@ -629,8 +703,8 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
                       x={labelX}
                       y={labelY}
                       textAnchor={labelAnchor}
-                      fill="rgba(241, 245, 249, 0.94)"
-                      stroke="rgba(6, 9, 16, 0.92)"
+                      fill="color-mix(in srgb, var(--text-primary) 94%, transparent)"
+                      stroke="color-mix(in srgb, var(--bg-app) 92%, transparent)"
                       strokeWidth="4"
                       paintOrder="stroke"
                       fontSize={layout.mobile ? 12.5 : 11}
@@ -645,10 +719,10 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
           })}
           {activeNode ? (
             <g pointerEvents="none">
-              <text x="18" y={layout.height - 36} fill="rgba(148, 163, 184, 0.78)" fontSize="10">
+              <text x="18" y={layout.height - 36} fill="color-mix(in srgb, var(--text-muted) 78%, transparent)" fontSize="10">
                 Selected node
               </text>
-              <text x="18" y={layout.height - 18} fill="rgba(241, 245, 249, 0.94)" fontSize="12" fontWeight="700">
+              <text x="18" y={layout.height - 18} fill="color-mix(in srgb, var(--text-primary) 94%, transparent)" fontSize="12" fontWeight="700">
                 {truncateLabel(activeNode.label || activeNode.id, 52)}
               </text>
             </g>
@@ -783,7 +857,7 @@ function computeGraphLayout(graph, options = {}) {
   }
 
   const constellation = buildConstellationField({ graph, nodes, positions, width, height, mobile });
-  const semanticSegments = buildSemanticPathSegments({ graph, nodes, edges, positions, stars: constellation.stars });
+  const semanticSegments = buildSemanticPathSegments({ graph, nodes, edges, positions });
   const operations = buildOperationalStars({ graph, nodes, positions, width, height });
   const layout = {
     positions,
@@ -869,10 +943,9 @@ function translateLayout(layout, dx, dy) {
   };
 }
 
-function buildSemanticPathSegments({ graph, nodes, edges, positions, stars }) {
+function buildSemanticPathSegments({ nodes, edges, positions }) {
   const segments = [];
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
-  const random = createSeededRandom(`${graph?.graphId || 'skill-cortex'}::semantic-paths`);
 
   for (const edge of edges) {
     const from = positions.get(edge.from);
@@ -880,7 +953,7 @@ function buildSemanticPathSegments({ graph, nodes, edges, positions, stars }) {
     if (!from || !to) continue;
     const targetTone = nodeTone(nodeById.get(edge.to) || {});
     const sourceTone = nodeTone(nodeById.get(edge.from) || {});
-    const waypoints = selectPathStars({ from, to, stars, random });
+    const waypoints = [];
     const points = [from, ...waypoints, to];
     for (let index = 0; index < points.length - 1; index += 1) {
       const a = points[index];
@@ -893,59 +966,15 @@ function buildSemanticPathSegments({ graph, nodes, edges, positions, stars }) {
         y1: a.y,
         x2: b.x,
         y2: b.y,
-        color: index % 2 === 0 ? sourceTone.color : 'rgba(148, 163, 184, 0.54)',
+        color: index % 2 === 0 ? sourceTone.color : 'color-mix(in srgb, var(--text-muted) 54%, transparent)',
         activeColor: targetTone.color,
-        opacity: Math.max(0.08, 0.2 - pointDistance(a, b) / 620),
+        label: graphEdgeLabel(edge),
+        opacity: Math.max(0.1, 0.24 - pointDistance(a, b) / 680),
       });
     }
   }
 
   return segments;
-}
-
-function selectPathStars({ from, to, stars, random }) {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const lengthSquared = Math.max(1, dx * dx + dy * dy);
-  const length = Math.sqrt(lengthSquared);
-  const candidates = stars
-    .map((star) => {
-      const t = ((star.x - from.x) * dx + (star.y - from.y) * dy) / lengthSquared;
-      if (t <= 0.08 || t >= 0.92) return null;
-      const projected = { x: from.x + dx * t, y: from.y + dy * t };
-      const perpendicular = pointDistance(star, projected);
-      if (perpendicular > Math.max(72, Math.min(132, length * 0.22))) return null;
-      return {
-        ...star,
-        t,
-        score: perpendicular + Math.abs(0.5 - t) * 16 + random() * 12,
-      };
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.score - b.score);
-
-  const selected = [];
-  for (const candidate of candidates) {
-    if (selected.length >= SEMANTIC_PATH_STAR_COUNT) break;
-    if (selected.every((star) => Math.abs(star.t - candidate.t) > 0.12 && pointDistance(star, candidate) > 38)) {
-      selected.push(candidate);
-    }
-  }
-
-  const fallbackTargets = [0.22, 0.4, 0.6, 0.78];
-  for (const target of fallbackTargets) {
-    if (selected.length >= SEMANTIC_PATH_STAR_COUNT) break;
-    const ideal = { x: from.x + dx * target, y: from.y + dy * target };
-    const fallback = stars
-      .map((star) => ({ ...star, t: target, score: pointDistance(star, ideal) + random() * 8 }))
-      .filter((star) => selected.every((existing) => pointDistance(existing, star) > 34))
-      .sort((a, b) => a.score - b.score)[0];
-    if (fallback) selected.push(fallback);
-  }
-
-  return selected
-    .sort((a, b) => a.t - b.t)
-    .map((star) => ({ x: star.x, y: star.y }));
 }
 
 function buildOperationalStars({ graph, nodes, positions, width, height }) {
@@ -1076,8 +1105,8 @@ function buildConstellationField({ graph, nodes, positions, width, height, mobil
       addStar({
         x: position.x + Math.cos(angle) * radius * spreadX,
         y: position.y + Math.sin(angle) * radius * spreadY,
-        r: 0.48 + Math.pow(random(), 1.8) * (important ? 1.55 : 1.18),
-        opacity: 0.24 + random() * (important ? 0.58 : 0.46),
+        r: 0.34 + Math.pow(random(), 1.8) * (important ? 0.9 : 0.64),
+        opacity: 0.06 + random() * (important ? 0.13 : 0.09),
         color: starColor(random),
         clusterId: node.id,
       });
@@ -1095,8 +1124,8 @@ function buildConstellationField({ graph, nodes, positions, width, height, mobil
       addStar({
         x: anchor.x + Math.cos(angle) * radius * (0.78 + random() * 0.58),
         y: anchor.y + Math.sin(angle) * radius * (0.72 + random() * 0.52),
-        r: 0.34 + Math.pow(random(), 2.4) * 1.02,
-        opacity: 0.14 + random() * 0.38,
+        r: 0.28 + Math.pow(random(), 2.4) * 0.62,
+        opacity: 0.045 + random() * 0.08,
         color: starColor(random),
         clusterId: `edge-${clusterIndex}`,
       });
@@ -1113,8 +1142,8 @@ function buildConstellationField({ graph, nodes, positions, width, height, mobil
     addStar({
       x: (edgeBiased ? edgeWeightedRandom(random, width) : centerWeightedRandom(random, width)) + driftX,
       y: (edgeBiased ? edgeWeightedRandom(random, height) : centerWeightedRandom(random, height)) + driftY,
-      r: 0.38 + Math.pow(random(), 2.1) * 1.08,
-      opacity: 0.18 + random() * 0.48,
+      r: 0.26 + Math.pow(random(), 2.1) * 0.68,
+      opacity: 0.04 + random() * 0.1,
       color: starColor(random),
       clusterId: '',
     });
@@ -1145,14 +1174,14 @@ function buildStarLinks({ stars, nodes, positions, random }) {
       const key = `${star.id}:${candidate.other.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const opacityBase = candidate.sameCluster ? 0.18 : 0.08;
+      const opacityBase = candidate.sameCluster ? 0.055 : 0.028;
       links.push({
         id: `link-${links.length}`,
         x1: star.x,
         y1: star.y,
         x2: candidate.other.x,
         y2: candidate.other.y,
-        color: candidate.sameCluster ? 'rgba(191, 219, 254, 0.72)' : 'rgba(148, 163, 184, 0.52)',
+        color: candidate.sameCluster ? 'color-mix(in srgb, var(--border-medium) 72%, transparent)' : 'color-mix(in srgb, var(--text-muted) 34%, transparent)',
         opacity: Math.round((opacityBase * (1 - candidate.distance / (candidate.sameCluster ? 84 : 58)) + random() * 0.025) * 100) / 100,
         width: candidate.sameCluster ? 0.7 : 0.55,
       });
@@ -1177,7 +1206,7 @@ function buildStarLinks({ stars, nodes, positions, random }) {
         x2: position.x,
         y2: position.y,
         color: tone.color,
-        opacity: Math.round((0.05 + (1 - candidate.distance / 104) * 0.15) * 100) / 100,
+        opacity: Math.round((0.025 + (1 - candidate.distance / 104) * 0.06) * 100) / 100,
         width: 0.65,
       });
     }
@@ -1231,11 +1260,15 @@ function createSeededRandom(seedText = '') {
 
 function starColor(random) {
   const value = random();
-  if (value < 0.34) return 'rgba(226, 232, 240, 0.86)';
-  if (value < 0.58) return 'rgba(191, 219, 254, 0.72)';
-  if (value < 0.78) return 'rgba(148, 163, 184, 0.66)';
-  if (value < 0.92) return 'rgba(203, 213, 225, 0.54)';
-  return 'rgba(219, 234, 254, 0.92)';
+  if (value < 0.34) return 'color-mix(in srgb, var(--text-primary) 86%, transparent)';
+  if (value < 0.58) return 'color-mix(in srgb, var(--accent-secondary) 72%, transparent)';
+  if (value < 0.78) return 'color-mix(in srgb, var(--text-muted) 66%, transparent)';
+  if (value < 0.92) return 'color-mix(in srgb, var(--text-secondary) 54%, transparent)';
+  return 'color-mix(in srgb, var(--accent-secondary) 92%, transparent)';
+}
+
+function graphEdgeLabel(edge) {
+  return edge?.label || edge?.kind || edge?.type || edge?.relationship || 'dependency';
 }
 
 function stableNodeSeed(value = '') {
@@ -1257,7 +1290,7 @@ function nodeTone(node) {
   if (node.risk === 'dangerous') return { color: 'oklch(62% 0.17 25)', text: 'oklch(84% 0.09 25)' };
   if (node.kind === 'Action' || node.risk === 'mutation') return { color: 'oklch(69% 0.14 75)', text: 'oklch(87% 0.09 75)' };
   if (['Permission', 'Assertion', 'Checkride'].includes(node.kind)) return { color: 'oklch(63% 0.12 145)', text: 'oklch(84% 0.08 145)' };
-  return { color: 'rgba(148, 163, 184, 0.76)', text: '#cbd5e1' };
+  return { color: 'color-mix(in srgb, var(--text-muted) 76%, transparent)', text: 'var(--text-secondary)' };
 }
 
 function operationalStarTone(star) {
@@ -1269,7 +1302,7 @@ function operationalStarTone(star) {
   if (star.type === 'evidence' || star.type === 'output') return { color: 'oklch(72% 0.065 226)' };
   if (star.type === 'expiry') return { color: 'oklch(62% 0.035 250)' };
   if (star.type === 'substrate') return { color: 'oklch(68% 0.11 88)' };
-  return { color: 'rgba(203, 213, 225, 0.78)' };
+  return { color: 'color-mix(in srgb, var(--text-secondary) 78%, transparent)' };
 }
 
 function Badge({ label, icon: Icon }) {
@@ -1288,7 +1321,7 @@ function Legend({ label, tone }) {
     mutation: 'oklch(66% 0.14 75)',
     dangerous: 'oklch(57% 0.17 25)',
     expired: 'oklch(56% 0.04 250)',
-  }[tone] || 'rgba(148, 163, 184, 0.62)';
+  }[tone] || 'color-mix(in srgb, var(--text-muted) 62%, transparent)';
   return (
     <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs" style={{ background: 'color-mix(in srgb, var(--text-primary) 4%, transparent)' }}>
       <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} />

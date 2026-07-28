@@ -107,6 +107,11 @@ services:
       # are loaded from the gitignored .env.local file.
       NEXTAUTH_URL: "http://localhost:${FRONTEND_HOST_PORT:-3000}/"
       SYNTHI_APP_INTERNAL_URL: "http://frontend:3000"
+      # Shared secret that authenticates the collab-server's server-to-server
+      # CodeSite control-plane probe (requireCodesiteAccess accepts it as an
+      # internal-service token). MUST match the collab-server value below.
+      # Production must inject a real secret via SYNTHI_CODESITE_TOKEN.
+      SYNTHI_CODESITE_TOKEN: "${SYNTHI_CODESITE_TOKEN:-local-compose-codesite-token}"
       # Permit the local Docker frontend to reach a Jupyter server exposed on
       # the host or private LAN. Public servers still require HTTPS.
       JUPYTER_ALLOW_DOCKER_HOST: "${JUPYTER_ALLOW_DOCKER_HOST:-1}"
@@ -115,8 +120,6 @@ services:
       # provide AUTH_SECRET/NEXTAUTH_SECRET through their secret manager.
       AUTH_SECRET: "${AUTH_SECRET:-local-compose-auth-secret}"
       NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-local-compose-auth-secret}"
-      # Shared only with collab-server so it can read CodeSite activity state.
-      SYNTHI_CODESITE_TOKEN: "${SYNTHI_CODESITE_TOKEN:-}"
       # Local Compose must use the database service, never a host .env URL.
       DATABASE_URL: "postgresql://synthi:password@postgres:5432/synthi"
       SYNTHI_CODESITE_ARTIFACT_ROOT: "/codesite-app-artifacts"
@@ -198,7 +201,9 @@ services:
       # Networking
       CORS_ORIGIN: "http://localhost:${FRONTEND_HOST_PORT:-3000}"
       SYNTHI_APP_INTERNAL_URL: "http://frontend:3000"
-      SYNTHI_CODESITE_TOKEN: "${SYNTHI_CODESITE_TOKEN:-}"
+      # Sent as `Authorization: Bearer` on the CodeSite control-plane probe to
+      # the frontend (see controlPlaneHeaders). MUST match the frontend value.
+      SYNTHI_CODESITE_TOKEN: "${SYNTHI_CODESITE_TOKEN:-local-compose-codesite-token}"
       CODE_INTEL_URL: "http://ai-engine:8000"
       YSWEET_URL: "http://y-sweet:8080"
       YSWEET_AUTH_KEY: dev-secret

@@ -9,7 +9,10 @@ const h = vi.hoisted(() => ({
   applyCodeSiteQuarantine: vi.fn(),
   createCodeSiteProject: vi.fn(),
   exportCodeSiteArtifacts: vi.fn(),
+  fetchCodeSiteCoreState: vi.fn(),
+  fetchCodeSiteEvidenceSlice: vi.fn(),
   fetchCodeSiteLineProvenance: vi.fn(),
+  fetchCodeSiteQuarantineSlice: vi.fn(),
   fetchCodeSiteRadarState: vi.fn(),
   issueCodeSitePermit: vi.fn(),
   proposeCodeSiteRouteRevision: vi.fn(),
@@ -52,7 +55,10 @@ vi.mock('../codesiteClient', () => ({
   createCodeSiteProject: h.createCodeSiteProject,
   createEmptyCodeSiteRadarState: emptyState,
   exportCodeSiteArtifacts: h.exportCodeSiteArtifacts,
+  fetchCodeSiteCoreState: h.fetchCodeSiteCoreState,
+  fetchCodeSiteEvidenceSlice: h.fetchCodeSiteEvidenceSlice,
   fetchCodeSiteLineProvenance: h.fetchCodeSiteLineProvenance,
+  fetchCodeSiteQuarantineSlice: h.fetchCodeSiteQuarantineSlice,
   fetchCodeSiteRadarState: h.fetchCodeSiteRadarState,
   issueCodeSitePermit: h.issueCodeSitePermit,
   proposeCodeSiteRouteRevision: h.proposeCodeSiteRouteRevision,
@@ -65,11 +71,13 @@ vi.mock('../codesiteClient', () => ({
 }));
 
 import CodeSitePanel from '../CodeSitePanel';
+import { groupForSection } from '../lib/sectionGroups';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 let root;
 let container;
+let lastResolvedState = null;
 
 function renderPanel(props = {}) {
   container = document.createElement('div');
@@ -112,6 +120,29 @@ async function confirmGovernanceReview(rationale = 'Reviewed replay, evidence, s
   expect(confirm.disabled).toBe(false);
   await act(async () => {
     confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await flush();
+}
+
+// Navigation is two levels now: a group tile, then a section within that group.
+// This is a helper change only -- no assertion moved.
+async function selectSection(key) {
+  const groupKey = groupForSection(key);
+  const tile = container.querySelector(
+    `[data-testid="codesite-command-tile"][data-codesite-group-key="${groupKey}"]`,
+  );
+  if (!tile) throw new Error(`no command tile for group "${groupKey}"`);
+  await act(async () => {
+    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await flush();
+
+  const tab = container.querySelector(
+    `[data-testid="codesite-desktop-section-tab"][data-codesite-section-key="${key}"]`,
+  );
+  if (!tab) throw new Error(`no view tab for section "${key}" in group "${groupKey}"`);
+  await act(async () => {
+    tab.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
   await flush();
 }
@@ -673,6 +704,25 @@ function radarState() {
 describe('CodeSitePanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The panel loads core on mount and each view's slice when it mounts, but
+    // every test here configures one whole-state fixture via
+    // `fetchCodeSiteRadarState`. Delegating the core fetch to it keeps those
+    // fixtures authoritative — including their `mockResolvedValueOnce` chains,
+    // since the delegate calls through to the same mock — and the slice mocks
+    // then serve the matching parts of whichever state core last resolved.
+    lastResolvedState = null;
+    h.fetchCodeSiteCoreState.mockImplementation(async (...args) => {
+      lastResolvedState = await h.fetchCodeSiteRadarState(...args);
+      return lastResolvedState;
+    });
+    h.fetchCodeSiteEvidenceSlice.mockImplementation(async () => ({
+      metrics: lastResolvedState?.metrics ?? null,
+      artifactPreview: lastResolvedState?.artifactPreview ?? null,
+    }));
+    h.fetchCodeSiteQuarantineSlice.mockImplementation(async () => ({
+      quarantines: lastResolvedState?.quarantines ?? [],
+      quarantineError: lastResolvedState?.quarantineError ?? null,
+    }));
     h.exportCodeSiteArtifacts.mockResolvedValue({ written: false, files: [] });
     h.fetchCodeSiteLineProvenance.mockResolvedValue([]);
     h.subscribeCodeSiteProjectEvents.mockImplementation((_workspaceSlug, _projectId, { onStatus } = {}) => {
@@ -750,113 +800,79 @@ describe('CodeSitePanel', () => {
     }
   });
 
-  it('renders the coordination state and exports artifact projection', async () => {
-    const state = radarState();
-    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+  it('mounts only the selected view', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+
+    // Overview is the landing view: no governance console in the DOM yet.
+    expect(container.querySelector('[data-testid="codesite-governance-console"]')).toBeNull();
+
+    await selectSection('governance');
+    expect(container.querySelector('[data-testid="codesite-governance-console"]')).toBeTruthy();
+    // And switching away unmounts it.
+    await selectSection('quarantine');
+    expect(container.querySelector('[data-testid="codesite-governance-console"]')).toBeNull();
+    expect(container.querySelector('[data-testid="codesite-quarantine-review"]')).toBeTruthy();
+  });
+
+  it('renders overview status on first paint', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
     renderPanel();
     await flush();
 
     expect(container.querySelector('[data-testid="codesite-panel"]')).toBeTruthy();
     expect(container.textContent).toContain('Checkout coordination');
     expect(container.textContent).toContain('ATLAS-1');
-    expect(container.textContent).toContain('pcap-checkout-schema');
-    expect(container.textContent).toContain('schema.level_2@2026-06-25');
-    expect(container.textContent).toContain('dojo:evidence:checkride-1');
+    expect(container.querySelector('[data-testid="codesite-responsive-proof-target"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-tower-now"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-metric-flights"]').textContent).toContain('1');
+    expect(container.querySelector('[data-testid="codesite-metric-permits"]').textContent).toContain('1');
+    expect(container.querySelector('[data-testid="codesite-tower-now-clearance"]').textContent).toContain('1');
+    expect(container.querySelector('[data-testid="codesite-tower-now-mayday"]').textContent).toContain('1');
+    expect(container.querySelector('[data-testid="codesite-mobile-section-tabs"]')).toBeTruthy();
+    expect(h.subscribeCodeSiteProjectEvents).toHaveBeenCalledWith(
+      'acme',
+      'proj-1',
+      expect.objectContaining({
+        onEvent: expect.any(Function),
+        onStatus: expect.any(Function),
+      }),
+    );
+  });
+
+  it('surfaces required actions on the overview with a drill-in to governance', async () => {
+    const state = radarState();
+    state.controlState.requiredActions = [{
+      kind: 'review_document',
+      title: 'Review checkout schema RFI',
+      owner: 'ATLAS-1',
+      documentId: 'doc-1',
+      severity: 'high',
+    }];
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+    renderPanel();
+    await flush();
+
+    const digest = container.querySelector('[data-testid="codesite-overview-attention"]');
+    expect(digest).toBeTruthy();
+    expect(digest.textContent).toContain('Review checkout schema RFI');
+
+    await act(async () => {
+      digest.querySelector('[data-testid="codesite-overview-attention-drill"]')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="codesite-governance-console"]')).toBeTruthy();
+  });
+
+  it('renders the workspace graph under the graph view', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+    await selectSection('radar');
+
     expect(container.textContent).toContain('Workspace Graph');
-    expect(container.textContent).toContain('Path Locks');
-    expect(container.textContent).toContain('Agent Readiness');
-    expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('IFR');
-    expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('pilot_license_source_current');
-    expect(container.textContent).toContain('agent:active');
-    expect(container.textContent).toContain('min:IFR');
-    const replayHandover = container.querySelector('[data-testid="codesite-causal-replay-handover"]');
-    expect(replayHandover).toBeTruthy();
-    expect(replayHandover.textContent).toContain('txn-1');
-    expect(replayHandover.textContent).toContain('proof-1');
-    expect(replayHandover.textContent).toContain('sha256:incident');
-    expect(replayHandover.textContent).toContain('Event evidence digest');
-    expect(replayHandover.textContent).toContain('transaction.committed');
-    expect(replayHandover.textContent).toContain('black_box.closed');
-    expect(replayHandover.textContent).toContain('write.denied');
-    expect(replayHandover.textContent).toContain('incident-replay-incident-1.jsonl');
-    expect(container.textContent).toContain('Filesystem Boundary Evidence');
-    const boundaryProof = container.querySelector('[data-testid="codesite-filesystem-boundary-proof"]');
-    expect(boundaryProof).toBeTruthy();
-    expect(boundaryProof.textContent).toContain('secrets/prod.env');
-    expect(boundaryProof.textContent).toContain('lease-1');
-    expect(boundaryProof.textContent).toContain('inspected_clearance_rejected');
-    expect(boundaryProof.textContent).toContain('entered_no_fly_zone');
-    expect(boundaryProof.textContent).toContain('python <- bash <- codex-cli');
-    expect(boundaryProof.textContent).toContain('runtime:event:denied-write');
-    expect(boundaryProof.textContent).toContain('incomplete');
-    expect(boundaryProof.textContent).toContain('missing process');
-    const runwayRow = container.querySelector('[data-testid="codesite-runway-row"]');
-    expect(runwayRow.textContent).toContain('api/checkout/**');
-    expect(runwayRow.textContent).toContain('ATLAS-1');
-    expect(runwayRow.textContent).toContain('api/checkout/route.js');
-    expect(runwayRow.textContent).toContain('api_contract_radar');
-    expect(runwayRow.textContent).toContain('inspection:QA-1');
-    expect(runwayRow.textContent).toContain('QA-1');
-    expect(container.textContent).toContain('Quarantine Review');
-    expect(container.querySelector('[data-testid="codesite-quarantine-review"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('qtn-checkout-1');
-    expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('txn-1');
-    expect(container.textContent).toContain('docs/review.md');
-    expect(container.textContent).toContain('docs/notes.md');
-    expect(container.textContent).toContain('quarantine_symlink_escape_replaced');
-    expect(container.querySelector('[data-testid="codesite-quarantine-symlink-guard"]').textContent).toContain('/tmp/outside-target.txt');
-    expect(container.querySelector('[data-testid="codesite-quarantine-apply-button"]').disabled).toBe(true);
-    const quarantineRows = [...container.querySelectorAll('[data-testid="codesite-quarantine-change-row"]')];
-    const reviewRow = quarantineRows.find((row) => row.textContent.includes('docs/review.md'));
-    const notesRow = quarantineRows.find((row) => row.textContent.includes('docs/notes.md'));
-    expect(reviewRow).toBeTruthy();
-    expect(notesRow).toBeTruthy();
-    await act(async () => {
-      reviewRow.querySelector('[data-testid="codesite-quarantine-path-toggle"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    await flush();
-    expect(notesRow.querySelector('[data-testid="codesite-quarantine-path-toggle"]').checked).toBe(false);
-    await act(async () => {
-      container.querySelector('[data-testid="codesite-quarantine-replay-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    await flush();
-    expect(h.replayCodeSiteQuarantine).toHaveBeenCalledWith('acme', 'qtn-checkout-1', expect.objectContaining({
-      transactionId: 'txn-1',
-      mutationLeaseId: 'lease-1',
-      displayCallsign: 'ATLAS-1',
-      paths: ['docs/review.md'],
-    }));
-    expect(container.querySelector('[data-testid="codesite-quarantine-replay-result"]').textContent).toContain('docs/review.md');
-    expect(container.querySelector('[data-testid="codesite-quarantine-apply-button"]').disabled).toBe(false);
-    await act(async () => {
-      container.querySelector('[data-testid="codesite-quarantine-apply-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    await flush();
-    expect(h.applyCodeSiteQuarantine).toHaveBeenCalledWith('acme', 'qtn-checkout-1', expect.objectContaining({
-      transactionId: 'txn-1',
-      mutationLeaseId: 'lease-1',
-      displayCallsign: 'ATLAS-1',
-      paths: ['docs/review.md'],
-    }));
-    expect(container.querySelector('[data-testid="codesite-quarantine-apply-result"]').textContent).toContain('docs/review.md');
-    expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('partially_applied');
-    expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('2 pending');
-    expect(container.querySelector('[data-testid="codesite-quarantine-timeline"]').textContent).toContain('Captured');
-    expect(container.textContent).toContain('Success Metrics');
-    expect(container.textContent).toContain('Collisions avoided');
-    expect(container.textContent).toContain('CodeSiteFS blocked writes');
-    expect(container.textContent).toContain('Line coverage');
-    expect(container.textContent).toContain('67%');
-    expect(container.textContent).toContain('Black box');
-    expect(container.textContent).toContain('82%');
-    expect(container.textContent).toContain('API work scope');
-    expect(container.textContent).toContain('write_overlap');
-    expect(container.textContent).toContain('Coordination Simulator');
-    expect(container.querySelector('[data-testid="codesite-tower-selected"]').textContent).toContain('schema-first');
-    expect(container.textContent).toContain('frontend-backend-parallel');
-    expect(container.textContent).toContain('refresh_downstream_assumptions');
-    expect(container.textContent).toContain('importGraphEdges:2');
-    expect(container.textContent).toContain('codesite:repo-policy:checkout');
     const scopeTopology = container.querySelector('[data-testid="codesite-scope-topology"]');
     const matrixRows = container.querySelectorAll('[data-testid="codesite-scope-matrix-row"]');
     const agentNodes = container.querySelectorAll('[data-testid="codesite-scope-agent-node"]');
@@ -883,48 +899,234 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('passed');
     expect(laneNamed('API work scope').textContent).toContain('ATLAS-1');
     expect(laneNamed('Health API work scope').textContent).not.toContain('ATLAS-1');
+    expect(container.textContent).toContain('API work scope');
+    expect(container.textContent).toContain('write_overlap');
+    expect(container.querySelector('[data-testid="codesite-scope-topology"]')).toBeTruthy();
+  });
+
+  it('renders the activity feed and audit log under the activity view', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+    await selectSection('tower');
+
+    expect(container.querySelector('[data-testid="codesite-activity-feed"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-event-stream-status"]').textContent).toContain('Live updates connected');
+    expect(container.textContent).toContain('logicalTime');
+    expect(container.textContent).toContain('event:evidence');
+    expect(container.textContent).toContain('Agent Inbox');
+    expect(container.textContent).toContain('Need schema owner');
+  });
+
+  it('renders locks evidence under the locks view', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+    await selectSection('runway');
+
+    expect(container.textContent).toContain('ATLAS-1');
+    expect(container.textContent).toContain('pcap-checkout-schema');
+    expect(container.textContent).toContain('schema.level_2@2026-06-25');
+    expect(container.textContent).toContain('dojo:evidence:checkride-1');
+    expect(container.textContent).toContain('Path Locks');
+    expect(container.textContent).toContain('Agent Readiness');
+    expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('IFR');
+    expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('pilot_license_source_current');
+    expect(container.textContent).toContain('agent:active');
+    expect(container.textContent).toContain('min:IFR');
+    const runwayRow = container.querySelector('[data-testid="codesite-runway-row"]');
+    expect(runwayRow.textContent).toContain('api/checkout/**');
+    expect(runwayRow.textContent).toContain('ATLAS-1');
+    expect(runwayRow.textContent).toContain('api/checkout/route.js');
+    expect(runwayRow.textContent).toContain('api_contract_radar');
+    expect(runwayRow.textContent).toContain('inspection:QA-1');
+    expect(runwayRow.textContent).toContain('QA-1');
+  });
+
+  it('reviews and applies a quarantine under the quarantine view', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+    await selectSection('quarantine');
+
+    expect(container.textContent).toContain('Filesystem Boundary Evidence');
+    const boundaryProof = container.querySelector('[data-testid="codesite-filesystem-boundary-proof"]');
+    expect(boundaryProof).toBeTruthy();
+    expect(boundaryProof.textContent).toContain('secrets/prod.env');
+    expect(boundaryProof.textContent).toContain('lease-1');
+    expect(boundaryProof.textContent).toContain('inspected_clearance_rejected');
+    expect(boundaryProof.textContent).toContain('entered_no_fly_zone');
+    expect(boundaryProof.textContent).toContain('python <- bash <- codex-cli');
+    expect(boundaryProof.textContent).toContain('runtime:event:denied-write');
+    expect(boundaryProof.textContent).toContain('incomplete');
+    expect(boundaryProof.textContent).toContain('missing process');
+    expect(container.textContent).toContain('Quarantine Review');
+    expect(container.querySelector('[data-testid="codesite-quarantine-review"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('qtn-checkout-1');
+    expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('txn-1');
+    expect(container.textContent).toContain('docs/review.md');
+    expect(container.textContent).toContain('docs/notes.md');
+    expect(container.textContent).toContain('quarantine_symlink_escape_replaced');
+    expect(container.querySelector('[data-testid="codesite-quarantine-symlink-guard"]').textContent).toContain('/tmp/outside-target.txt');
+    expect(container.querySelector('[data-testid="codesite-quarantine-apply-button"]').disabled).toBe(true);
+    const quarantineRows = [...container.querySelectorAll('[data-testid="codesite-quarantine-change-row"]')];
+    const reviewRow = quarantineRows.find((row) => row.textContent.includes('docs/review.md'));
+    const notesRow = quarantineRows.find((row) => row.textContent.includes('docs/notes.md'));
+    expect(reviewRow).toBeTruthy();
+    expect(notesRow).toBeTruthy();
+    await act(async () => {
+      reviewRow.querySelector('[data-testid="codesite-quarantine-path-toggle"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    // The toggle is a <span> swatch inside the row; checkbox semantics live on
+    // the row button itself (role="checkbox" aria-checked), so assert there.
+    expect(reviewRow.getAttribute('aria-checked')).toBe('true');
+    expect(notesRow.getAttribute('aria-checked')).toBe('false');
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-quarantine-replay-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(h.replayCodeSiteQuarantine).toHaveBeenCalledWith('acme', 'qtn-checkout-1', expect.objectContaining({
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      displayCallsign: 'ATLAS-1',
+      paths: ['docs/review.md'],
+    }));
+    expect(container.querySelector('[data-testid="codesite-quarantine-replay-result"]').textContent).toContain('docs/review.md');
+    expect(container.querySelector('[data-testid="codesite-quarantine-apply-button"]').disabled).toBe(false);
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-quarantine-apply-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(h.applyCodeSiteQuarantine).toHaveBeenCalledWith('acme', 'qtn-checkout-1', expect.objectContaining({
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      displayCallsign: 'ATLAS-1',
+      paths: ['docs/review.md'],
+    }));
+    expect(container.querySelector('[data-testid="codesite-quarantine-apply-result"]').textContent).toContain('docs/review.md');
+    expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('partially_applied');
+    expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('2 pending');
+    expect(container.querySelector('[data-testid="codesite-quarantine-timeline"]').textContent).toContain('Captured');
+  });
+
+  it('exports the artifact projection from the evidence view', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+    await selectSection('evidence');
+
+    expect(container.textContent).toContain('Success Metrics');
+    expect(container.textContent).toContain('Collisions avoided');
+    expect(container.textContent).toContain('CodeSiteFS blocked writes');
+    expect(container.textContent).toContain('Line coverage');
+    expect(container.textContent).toContain('67%');
+    expect(container.textContent).toContain('Black box');
+    expect(container.textContent).toContain('82%');
     expect(container.textContent).toContain('CodeSite-Clearance');
     expect(container.textContent).toContain('CodeSite-Transaction');
+    expect(container.textContent).toContain('projects/proj-1/control-state.json');
+    expect(container.textContent).toContain('towerState');
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-export"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(h.exportCodeSiteArtifacts).toHaveBeenCalledWith('acme', 'proj-1');
+  });
+
+  it('renders replay handover and lineage under the replay view', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+    await selectSection('replay');
+
+    const replayHandover = container.querySelector('[data-testid="codesite-causal-replay-handover"]');
+    expect(replayHandover).toBeTruthy();
+    expect(replayHandover.textContent).toContain('txn-1');
+    expect(replayHandover.textContent).toContain('proof-1');
+    expect(replayHandover.textContent).toContain('sha256:incident');
+    expect(replayHandover.textContent).toContain('Event evidence digest');
+    expect(replayHandover.textContent).toContain('transaction.committed');
+    expect(replayHandover.textContent).toContain('black_box.closed');
+    expect(replayHandover.textContent).toContain('write.denied');
+    expect(replayHandover.textContent).toContain('incident-replay-incident-1.jsonl');
     expect(container.textContent).toContain('Lineage Inspector');
     expect(container.textContent).toContain('api/checkout/route.js');
     expect(container.textContent).toContain('L42-L44');
     expect(container.textContent).toContain('hunk:checkout');
-    expect(container.textContent).toContain('Agent Inbox');
-    expect(container.textContent).toContain('Need schema owner');
-    const requiredAction = container.querySelector('[data-testid="codesite-required-action-row"]');
-    expect(requiredAction).toBeTruthy();
-    expect(requiredAction.textContent).toContain('ack_event:event-1');
-    expect(requiredAction.textContent).toContain('medium');
-    expect(requiredAction.textContent).toContain('owner: event-1');
-    expect(requiredAction.querySelector('[data-testid="codesite-required-action-review"]')).toBeTruthy();
-    expect(container.textContent).toContain('logicalTime');
-    expect(container.textContent).toContain('event:evidence');
-    expect(container.textContent).toContain('projects/proj-1/control-state.json');
-    expect(container.textContent).toContain('towerState');
-    expect(container.querySelector('[data-testid="codesite-metric-flights"]').textContent).toContain('1');
-    expect(container.querySelector('[data-testid="codesite-metric-permits"]').textContent).toContain('1');
-    expect(container.querySelector('[data-testid="codesite-responsive-proof-target"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-tower-now"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-tower-now-clearance"]').textContent).toContain('1');
-    expect(container.querySelector('[data-testid="codesite-tower-now-mayday"]').textContent).toContain('1');
-    expect(container.querySelector('[data-testid="codesite-mobile-section-tabs"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-scope-topology"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-activity-feed"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-event-stream-status"]').textContent).toContain('Live updates connected');
+
+    h.fetchCodeSiteLineProvenance.mockResolvedValueOnce([{
+      ...radarState().project.lineProvenance[0],
+      transaction: { id: 'txn-1', mutationLeaseId: 'lease-1' },
+      mutationLease: { id: 'lease-1', displayCallsign: 'ATLAS-1' },
+      proofBundles: [{ id: 'proof-1', bundleDigest: 'digest-proof-1' }],
+    }]);
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-lineage-row"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(h.fetchCodeSiteLineProvenance).toHaveBeenCalledWith('acme', {
+      projectId: 'proj-1',
+      filePath: 'api/checkout/route.js',
+      lineAnchor: 'L42',
+      lineNumber: 42,
+    });
+    const inspector = container.querySelector('[data-testid="codesite-line-inspector"]');
+    expect(inspector.textContent).toContain('L42-L44 causal trace');
+    expect(inspector.textContent).toContain('txn-1');
+    expect(inspector.textContent).toContain('ATLAS-1 / lease-1');
+    expect(inspector.textContent).toContain('rfi:checkout');
+    expect(inspector.textContent).toContain('digest-proof-1');
+    expect(inspector.textContent).toContain('runtime:event:inspection-1');
+    expect(inspector.textContent).toContain('dojo:source:checkout-contract');
+    expect(inspector.textContent).toContain('mcp:synthi_codesite_apply_patch');
+    expect(inspector.textContent).toContain('Add checkout route');
+  });
+
+  it('runs the coordination simulator under the simulator view', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+    await selectSection('simulator');
+
+    expect(container.textContent).toContain('Coordination Simulator');
+    expect(container.querySelector('[data-testid="codesite-tower-selected"]').textContent).toContain('schema-first');
+    expect(container.textContent).toContain('frontend-backend-parallel');
+    expect(container.textContent).toContain('refresh_downstream_assumptions');
+    expect(container.textContent).toContain('importGraphEdges:2');
+    expect(container.textContent).toContain('codesite:repo-policy:checkout');
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-run-tower-simulator"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(h.simulateCodeSiteShadowMerge).toHaveBeenCalledWith('acme', 'proj-1');
+    expect(container.querySelector('[data-testid="codesite-tower-selected"]').textContent).toContain('test-first');
+    expect(container.textContent).toContain('run_owned_tests_before_landing');
+  });
+
+  it('runs the governance queue from the governance view', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+    await selectSection('governance');
+
     expect(container.querySelector('[data-testid="codesite-governance-console"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="codesite-document-row"]').textContent).toContain('Need schema owner');
     expect(container.querySelector('[data-testid="codesite-route-revision-row"]').textContent).toContain('api/checkout/v2/**');
     expect(container.querySelector('[data-testid="codesite-mayday-banner"]').textContent).toContain('1 open');
     expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('paused incident');
     expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('inspection-mayday-1');
-    expect(h.subscribeCodeSiteProjectEvents).toHaveBeenCalledWith(
-      'acme',
-      'proj-1',
-      expect.objectContaining({
-        onEvent: expect.any(Function),
-        onStatus: expect.any(Function),
-      }),
-    );
+    const requiredAction = container.querySelector('[data-testid="codesite-required-action-row"]');
+    expect(requiredAction).toBeTruthy();
+    expect(requiredAction.textContent).toContain('ack_event:event-1');
+    expect(requiredAction.textContent).toContain('medium');
+    expect(requiredAction.textContent).toContain('owner: event-1');
+    expect(requiredAction.querySelector('[data-testid="codesite-required-action-review"]')).toBeTruthy();
 
     await act(async () => {
       container.querySelector('[data-testid="codesite-issue-permit-button"]')
@@ -1012,50 +1214,17 @@ describe('CodeSitePanel', () => {
       replayRefs: ['sha256:mayday-replay'],
       evidenceRefs: ['codesite:ui:mayday-resume:incident-mayday-1'],
     }));
+  });
 
-    h.fetchCodeSiteLineProvenance.mockResolvedValueOnce([{
-      ...radarState().project.lineProvenance[0],
-      transaction: { id: 'txn-1', mutationLeaseId: 'lease-1' },
-      mutationLease: { id: 'lease-1', displayCallsign: 'ATLAS-1' },
-      proofBundles: [{ id: 'proof-1', bundleDigest: 'digest-proof-1' }],
-    }]);
-    await act(async () => {
-      container.querySelector('[data-testid="codesite-lineage-row"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+  it('renders inspections and incidents under the inspections view', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
     await flush();
+    await selectSection('inspections');
 
-    expect(h.fetchCodeSiteLineProvenance).toHaveBeenCalledWith('acme', {
-      projectId: 'proj-1',
-      filePath: 'api/checkout/route.js',
-      lineAnchor: 'L42',
-      lineNumber: 42,
-    });
-    const inspector = container.querySelector('[data-testid="codesite-line-inspector"]');
-    expect(inspector.textContent).toContain('L42-L44 causal trace');
-    expect(inspector.textContent).toContain('txn-1');
-    expect(inspector.textContent).toContain('ATLAS-1 / lease-1');
-    expect(inspector.textContent).toContain('rfi:checkout');
-    expect(inspector.textContent).toContain('digest-proof-1');
-    expect(inspector.textContent).toContain('runtime:event:inspection-1');
-    expect(inspector.textContent).toContain('dojo:source:checkout-contract');
-    expect(inspector.textContent).toContain('mcp:synthi_codesite_apply_patch');
-    expect(inspector.textContent).toContain('Add checkout route');
-
-    await act(async () => {
-      container.querySelector('[data-testid="codesite-run-tower-simulator"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    await flush();
-
-    expect(h.simulateCodeSiteShadowMerge).toHaveBeenCalledWith('acme', 'proj-1');
-    expect(container.querySelector('[data-testid="codesite-tower-selected"]').textContent).toContain('test-first');
-    expect(container.textContent).toContain('run_owned_tests_before_landing');
-
-    await act(async () => {
-      container.querySelector('[data-testid="codesite-export"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    await flush();
-
-    expect(h.exportCodeSiteArtifacts).toHaveBeenCalledWith('acme', 'proj-1');
+    expect(container.textContent).toContain('Inspections & Incidents');
+    expect(container.textContent).toContain('QA-1');
+    expect(container.textContent).toContain('Inspections Queue');
   });
 
   it('exposes show-all controls for capped governance queues', async () => {
@@ -1087,6 +1256,7 @@ describe('CodeSitePanel', () => {
 
     renderPanel();
     await flush();
+    await selectSection('governance');
 
     expect(container.querySelector('[data-testid="codesite-documents-show-all"]').textContent)
       .toContain('Show all documents (6)');
@@ -1111,6 +1281,7 @@ describe('CodeSitePanel', () => {
 
     renderPanel();
     await flush();
+    await selectSection('governance');
 
     await act(async () => {
       container.querySelector('[data-testid="codesite-required-action-review"]')
@@ -1128,6 +1299,38 @@ describe('CodeSitePanel', () => {
     }));
   });
 
+  it('routes a required action for a proposed plan change into the review gate', async () => {
+    const state = radarState();
+    // route-rev-1 is `proposed`: reviewable, not yet appliable.
+    state.controlState.requiredActions = [{
+      kind: 'review_route_revision',
+      title: 'Approve checkout reroute',
+      owner: 'ATLAS-1',
+      routeRevisionId: 'route-rev-1',
+      severity: 'high',
+      evidenceRefs: ['route-revision:proposal'],
+      scope: ['api/checkout/v2/**'],
+    }];
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+
+    renderPanel();
+    await flush();
+    await selectSection('governance');
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-required-action-review"]')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="codesite-governance-review-gate"]')).toBeTruthy();
+    await confirmGovernanceReview('Plan change approved from the required actions queue.');
+    expect(h.reviewCodeSiteRouteRevision).toHaveBeenCalledWith('acme', 'route-rev-1', expect.objectContaining({
+      decision: 'approved',
+    }));
+  });
+
   it('shows active workstreams in the workspace graph without radar markers', async () => {
     const state = radarState();
     state.controlState.activeFlights = state.controlState.activeFlights.map((flight) => ({
@@ -1138,6 +1341,7 @@ describe('CodeSitePanel', () => {
 
     renderPanel();
     await flush();
+    await selectSection('radar');
 
     expect(container.querySelectorAll('[data-testid="codesite-scope-agent-node"]')).toHaveLength(2);
     expect(container.querySelector('[data-testid="codesite-scope-topology"]').textContent).toContain('ATLAS-1');
@@ -1173,6 +1377,7 @@ describe('CodeSitePanel', () => {
     h.fetchCodeSiteRadarState.mockResolvedValue(state);
     renderPanel();
     await flush();
+    await selectSection('radar');
 
     const guardrails = [...container.querySelectorAll('[data-testid="codesite-scope-guardrail-node"]')];
     const evidenceGuardrail = guardrails.find((node) => node.textContent.includes('Evidence'));
@@ -1209,5 +1414,83 @@ describe('CodeSitePanel', () => {
       expect.objectContaining({ title: 'Landing project', request: 'Landing project' }),
     );
     expect(container.textContent).toContain('Checkout coordination');
+  });
+
+  it('filters the operating queue by saved view', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+
+    const queue = () => container.querySelector('[data-testid="codesite-operating-model"]');
+    const savedView = (name) =>
+      container.querySelector(`[data-testid="codesite-saved-view-${name}"]`);
+
+    expect(savedView('active').getAttribute('aria-pressed')).toBe('true');
+    const before = queue().textContent;
+    expect(before).toContain('Workstreams');
+
+    await act(async () => {
+      savedView('review').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(savedView('review').getAttribute('aria-pressed')).toBe('true');
+    expect(savedView('active').getAttribute('aria-pressed')).toBe('false');
+    expect(queue().textContent).not.toBe(before);
+    expect(queue().textContent).toContain('Governance');
+    expect(queue().textContent).not.toContain('Workstreams');
+
+    await act(async () => {
+      savedView('evidence').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(queue().textContent).toContain('Evidence');
+    expect(queue().textContent).not.toContain('Governance');
+  });
+
+  it('takes core on mount and the evidence slice only when Evidence opens', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+
+    // First paint takes core only. The quarantine fan-out still runs, because
+    // the Overview digest counts quarantines, but it runs after core rather
+    // than blocking it. Evidence has no Overview consumer, so nothing should
+    // pay for it until that view is opened.
+    expect(h.fetchCodeSiteCoreState).toHaveBeenCalled();
+    expect(h.fetchCodeSiteQuarantineSlice).toHaveBeenCalled();
+    expect(h.fetchCodeSiteEvidenceSlice).not.toHaveBeenCalled();
+
+    await selectSection('governance');
+    expect(h.fetchCodeSiteEvidenceSlice).not.toHaveBeenCalled();
+
+    await selectSection('evidence');
+    expect(h.fetchCodeSiteEvidenceSlice).toHaveBeenCalled();
+  });
+
+  it('refreshes everything when the user asks explicitly', async () => {
+    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    renderPanel();
+    await flush();
+    h.fetchCodeSiteRadarState.mockClear();
+    h.fetchCodeSiteCoreState.mockClear();
+
+    await act(async () => {
+      container
+        .querySelector('[data-testid="codesite-refresh"]')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    // Refresh is the one path that still pays for the composite fetch, because
+    // it is the user asking for everything rather than the panel guessing. The
+    // core mock delegates to the composite mock, so a plain "was called" check
+    // would also pass for a core load — the composite has to be called strictly
+    // more often than core for the direct call to be proven.
+    expect(h.fetchCodeSiteRadarState).toHaveBeenCalledWith('acme', 'proj-1');
+    expect(h.fetchCodeSiteRadarState.mock.calls.length).toBeGreaterThan(
+      h.fetchCodeSiteCoreState.mock.calls.length,
+    );
   });
 });

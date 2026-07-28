@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSession, signIn, signOut } from "next-auth/react";
+import { useSession, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -705,20 +705,19 @@ export default function Dashboard() {
                   Sign in to unlock workspace provisioning.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => signIn("github", { callbackUrl: "/" })}
-                className="th-focus-ring flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
-              >
-                <Github className="h-4 w-4" />
-                Continue with GitHub
-              </button>
+              {/* Sends users to /login rather than starting a provider flow
+                  here. Calling signIn("github") directly left GitHub as the
+                  only way in, and that flow is currently dead: the OAuth app
+                  belongs to the flagged `vectant` org, so GitHub's authorize
+                  page 404s before the user can approve anything. /login offers
+                  Google too, which the org flag does not affect. */}
               <button
                 type="button"
                 onClick={() => router.push("/login")}
-                className="th-focus-ring mt-3 flex h-10 w-full items-center justify-center rounded-md border border-[var(--border-medium)] text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+                className="th-focus-ring flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
               >
-                More auth options
+                Continue to sign in
+                <ArrowRight className="h-4 w-4" />
               </button>
               <div className="mt-5 rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_52%,transparent)] p-3 font-mono text-[11px] text-[var(--text-muted)]">
                 {launcherStatusRows.slice(0, 3).map(([event, state]) => (

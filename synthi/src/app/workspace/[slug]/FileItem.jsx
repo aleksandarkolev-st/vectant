@@ -1,6 +1,7 @@
 // src/app/FileItem.jsx
 "use client";
 import { useState, useRef, useEffect, useMemo, memo } from "react";
+import { motion } from "framer-motion";
 import { toast } from "sonner";
 import collabClient from '@/services/collabClient';
 import { useAppSelector } from "@/redux/hooks";
@@ -97,7 +98,7 @@ const FileItem = memo(({
 
     return (
       <div
-        className="pointer-events-none absolute inset-y-0 left-0 z-0"
+        className="pointer-events-none absolute -top-px -bottom-px left-0 z-0"
         aria-hidden="true"
       >
         {Array.isArray(guideAncestorHasNext) &&
@@ -562,7 +563,7 @@ useEffect(() => {
   // Standard Display Rendering
   return (
     <>
-      <div
+      <motion.div
         ref={fileContentRef}
         data-node-path={item.path}
         data-node-path-id={item.path}
@@ -577,16 +578,13 @@ useEffect(() => {
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`file-item th-focus-ring relative group flex items-center py-1 px-2 cursor-pointer transition-all ${isSelected ? 'rounded-none' : 'rounded-md'}`}
+        layout={false}
+        whileHover={{ x: 1 }}
+        whileTap={{ scale: 0.996 }}
+        transition={{ duration: 0.16, ease: [0.32, 0.72, 0, 1] }}
+        className={`vt-file-row file-item th-focus-ring relative group mx-1 flex items-center py-1 px-2 cursor-pointer ${isSelected ? 'is-active' : ''}`}
         style={{
           ...itemStyle,
-          ...(isSelected
-            ? {
-                background: 'color-mix(in srgb, var(--attention-purple) 10%, transparent)',
-                borderRadius: 0,
-                boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--attention-purple) 28%, transparent), 0 0 14px -6px color-mix(in srgb, var(--attention-purple) 26%, transparent)',
-              }
-            : {}),
           ...(isDropTarget
             ? { background: 'color-mix(in srgb, var(--attention-purple) 18%, transparent)', outline: '1px solid var(--attention-purple)' }
             : {}),
@@ -712,8 +710,13 @@ useEffect(() => {
                             }}
                             onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}
                             title={p.state?.user?.name || 'User'}
-                            className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white cursor-default overflow-hidden"
-                            style={{ border: `2px solid ${p.state?.user?.color || '#0b0b0b'}`, background: p.state?.user?.color ? 'rgba(255,255,255,0.03)' : '#111' }}
+                            className="flex h-6 w-6 cursor-default items-center justify-center overflow-hidden rounded-full text-xs text-[var(--text-primary)]"
+                            style={{
+                              border: `2px solid ${p.state?.user?.color || 'var(--border-medium)'}`,
+                              background: p.state?.user?.color
+                                ? 'color-mix(in srgb, var(--text-primary) 3%, transparent)'
+                                : 'var(--bg-panel)',
+                            }}
                           >
                             {userImage
                               ? <img src={userImage} alt="" className="w-full h-full rounded-full object-cover" referrerPolicy="no-referrer" />
@@ -732,11 +735,11 @@ useEffect(() => {
             {/* Hover card for file presence */}
             {hoverPresence && hoverPresence.rect && (
               <div style={{ position: 'fixed', left: hoverPresence.rect.left + hoverPresence.rect.width + 6, top: hoverPresence.rect.top - 6, zIndex: 2000 }} onMouseEnter={() => { if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; } }} onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}>
-                <div className="rounded-md p-2 text-sm shadow-lg w-44 border" style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
+                <div className="vt-command-popover w-44 p-2 text-sm" style={{ color: 'var(--text-primary)' }}>
                   <div className="flex items-center gap-2">
                     {hoverPresence.user.image
                       ? <img src={hoverPresence.user.image} alt="" className="w-7 h-7 rounded-full object-cover" referrerPolicy="no-referrer" />
-                      : <div className="w-7 h-7 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || '#555' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
+                      : <div className="flex h-7 w-7 items-center justify-center rounded-full text-sm text-[var(--text-primary)]" style={{ background: hoverPresence.user.color || 'var(--bg-elevated)' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
                     }
                     <div className="flex flex-col">
                       <div className="font-semibold text-sm">{hoverPresence.user.name || 'Anonymous'}</div>
@@ -748,7 +751,7 @@ useEffect(() => {
             )}
           </div>
         )}
-      </div>
+      </motion.div>
 
       {/* Show children if folder is open or if it's the target for creation */}
       {/* In shallow mode (virtualised tree), children rendering is handled by the parent Virtuoso list */}

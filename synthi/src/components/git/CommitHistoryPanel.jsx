@@ -20,6 +20,15 @@ import {
 } from './gitUtils';
 import CommitGraphColumn from './CommitGraphColumn';
 import InteractiveRebasePanel from './InteractiveRebasePanel';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
+import { usePromptDialog } from '@/components/ui/usePromptDialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import './scm/scm-tokens.css';
 
 /* ────────────────────────────────────────────────────────────
@@ -66,11 +75,10 @@ function ContextMenu({ x, y, commit, onClose, onAction }) {
   return (
     <div
       ref={menuRef}
-      className="fixed z-[9999] rounded-lg shadow-xl py-1 min-w-[200px]"
+      className="vt-command-popover fixed z-[9999] min-w-[200px] py-1"
       style={{
         left: x, top: y,
-        background: 'var(--bg-panel)',
-        border: '1px solid var(--border-subtle)',
+        color: 'var(--text-primary)',
       }}
     >
       {items.map((item, i) =>
@@ -252,6 +260,32 @@ function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
 
 /* ─── Filter bar ────────────────────────────────────── */
 
+function DateFilterInput({ label, value, onChange }) {
+  const handleChange = (event) => {
+    const next = event.target.value.replace(/[^\d-]/g, '').slice(0, 10);
+    onChange(next);
+  };
+
+  return (
+    <label className="flex items-center gap-1.5">
+      <span>{label}</span>
+      <span className="flex h-7 items-center rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2">
+        <input
+          type="text"
+          inputMode="numeric"
+          pattern="\\d{4}-\\d{2}-\\d{2}"
+          value={value}
+          onChange={handleChange}
+          placeholder="YYYY-MM-DD"
+          aria-label={`${label} date`}
+          className="w-[82px] bg-transparent font-mono text-[10px] outline-none placeholder:text-[var(--text-dim)]"
+          style={{ color: 'var(--text-secondary)' }}
+        />
+      </span>
+    </label>
+  );
+}
+
 function FilterBar({
   searchQuery, onSearchChange,
   authorFilter, onAuthorChange,
@@ -279,21 +313,17 @@ function FilterBar({
           autoFocus
         />
         {authors.length > 0 && (
-          <select
-            value={authorFilter}
-            onChange={(e) => onAuthorChange(e.target.value)}
-            className="rounded px-1.5 py-0.5 text-[10px] focus:outline-none th-focus-ring"
-            style={{
-              background: 'var(--bg-elevated)',
-              border: '1px solid var(--border-subtle)',
-              color: 'var(--text-secondary)',
-            }}
-          >
-            <option value="">All authors</option>
-            {authors.map((a) => (
-              <option key={a} value={a}>{a}</option>
-            ))}
-          </select>
+          <Select value={authorFilter || 'all'} onValueChange={(value) => onAuthorChange(value === 'all' ? '' : value)}>
+            <SelectTrigger className="h-7 w-[132px] px-2 py-0.5 text-[10px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="all">All authors</SelectItem>
+              {authors.map((a) => (
+                <SelectItem key={a} value={a}>{a}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         )}
         <button
           onClick={onClose}
@@ -306,30 +336,8 @@ function FilterBar({
       </div>
       <div className="flex items-center gap-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
         <Calendar className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--text-dim)' }} strokeWidth={2} />
-        <span>From</span>
-        <input
-          type="date"
-          value={dateFrom}
-          onChange={(e) => onDateFromChange(e.target.value)}
-          className="rounded px-1 py-0.5 text-[10px] focus:outline-none th-focus-ring"
-          style={{
-            background: 'var(--bg-elevated)',
-            border: '1px solid var(--border-subtle)',
-            color: 'var(--text-secondary)',
-          }}
-        />
-        <span>To</span>
-        <input
-          type="date"
-          value={dateTo}
-          onChange={(e) => onDateToChange(e.target.value)}
-          className="rounded px-1 py-0.5 text-[10px] focus:outline-none th-focus-ring"
-          style={{
-            background: 'var(--bg-elevated)',
-            border: '1px solid var(--border-subtle)',
-            color: 'var(--text-secondary)',
-          }}
-        />
+        <DateFilterInput label="From" value={dateFrom} onChange={onDateFromChange} />
+        <DateFilterInput label="To" value={dateTo} onChange={onDateToChange} />
         {(dateFrom || dateTo) && (
           <button
             onClick={() => { onDateFromChange(''); onDateToChange(''); }}
@@ -367,6 +375,8 @@ export default function CommitHistoryPanel({ slug }) {
   const [selectedHash, setSelectedHash] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
   const [rebaseCommits, setRebaseCommits] = useState(null);
+  const { confirm, confirmDialog } = useConfirmDialog();
+  const { prompt, promptDialog } = usePromptDialog();
   const scrollRef = useRef(null);
 
   useEffect(() => {
@@ -450,7 +460,12 @@ export default function CommitHistoryPanel({ slug }) {
         dispatch(fetchCommitDetail({ slug, hash: commit.hash }));
         break;
       case 'cherry-pick':
-        if (window.confirm(`Cherry-pick commit ${commit.hash.substring(0, 7)}?\n\n"${commit.message}"`)) {
+        if (await confirm({
+          title: `Cherry-pick ${commit.hash.substring(0, 7)}?`,
+          message: commit.message,
+          confirmLabel: 'Cherry-pick',
+          tone: 'warning',
+        })) {
           const result = await dispatch(cherryPickCommit({ slug, hash: commit.hash }));
           if (cherryPickCommit.fulfilled.match(result)) {
             toast.success(`Cherry-picked ${commit.hash.substring(0, 7)}`);
@@ -460,7 +475,12 @@ export default function CommitHistoryPanel({ slug }) {
         }
         break;
       case 'revert':
-        if (window.confirm(`Revert commit ${commit.hash.substring(0, 7)}?\n\n"${commit.message}"\n\nThis will create a new commit that undoes the changes.`)) {
+        if (await confirm({
+          title: `Revert ${commit.hash.substring(0, 7)}?`,
+          message: `${commit.message}\n\nThis creates a new commit that undoes the changes.`,
+          confirmLabel: 'Revert commit',
+          tone: 'danger',
+        })) {
           const result = await dispatch(revertCommit({ slug, hash: commit.hash }));
           if (revertCommit.fulfilled.match(result)) {
             toast.success(`Reverted ${commit.hash.substring(0, 7)}`);
@@ -479,9 +499,19 @@ export default function CommitHistoryPanel({ slug }) {
         break;
       }
       case 'create-tag': {
-        const tagName = window.prompt(`Create tag on ${commit.hash.substring(0, 7)}:\n\nTag name:`);
+        const tagName = await prompt({
+          title: `Create tag on ${commit.hash.substring(0, 7)}`,
+          message: commit.message,
+          placeholder: 'v1.0.0',
+          confirmLabel: 'Continue',
+        });
         if (!tagName?.trim()) break;
-        const tagMessage = window.prompt('Tag message (leave empty for lightweight tag):');
+        const tagMessage = await prompt({
+          title: 'Tag message',
+          message: 'Leave empty to create a lightweight tag.',
+          placeholder: 'Release checkpoint',
+          confirmLabel: 'Create tag',
+        });
         const result = await dispatch(createTag({ slug, name: tagName.trim(), ref: commit.hash, message: tagMessage || undefined }));
         if (createTag.fulfilled.match(result)) {
           toast.success(`Tag "${tagName.trim()}" created`);
@@ -493,7 +523,7 @@ export default function CommitHistoryPanel({ slug }) {
       default:
         break;
     }
-  }, [dispatch, slug, handleRefresh, allCommits]);
+  }, [allCommits, confirm, dispatch, handleRefresh, prompt, slug]);
 
   const handleCommitClick = useCallback((commit) => {
     if (selectedHash === commit.hash) {
@@ -818,6 +848,8 @@ export default function CommitHistoryPanel({ slug }) {
           onAction={handleContextAction}
         />
       )}
+      {confirmDialog}
+      {promptDialog}
     </div>
   );
 }

@@ -87,7 +87,7 @@ export function HealingIndicator() {
         };
       case 'cooldown':
         return {
-          dotColor: 'var(--accent-info, #60a5fa)',
+          dotColor: 'var(--accent-info)',
           textColor: 'var(--text-secondary)',
           bgColor: 'transparent',
           Icon: Pause,
@@ -130,14 +130,14 @@ export function HealingIndicator() {
         hints.push('Only runs on save (Ctrl+S). Enable "When diagnostics stabilize" in settings to run on type.');
       }
       if (!triggers.useAIForHard) {
-        hints.push('AI escalation is off — typos / logic errors will not be caught. Enable "Also try AI for tricky errors" in settings.');
+        hints.push('Model escalation is off. Typos and logic errors will not be caught. Enable "Also try model repair for tricky errors" in settings.');
       }
       if (hints.length) {
-        lines.push('—');
+        lines.push('-');
         lines.push(...hints);
       }
     }
-    lines.push('—');
+    lines.push('-');
     lines.push('Click to toggle');
     return lines.join('\n');
   })();

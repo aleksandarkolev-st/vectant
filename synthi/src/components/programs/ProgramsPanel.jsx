@@ -44,6 +44,7 @@ import MyAppsView from './myapps/MyAppsView';
 import FirstPublishTutorial from './FirstPublishTutorial';
 import GenerateManifestDialog from './GenerateManifestDialog';
 import ConfirmDialog from './ConfirmDialog';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
 
 /** Non-terminal review states — while any app is here, the My Apps tab polls. */
 const IN_FLIGHT_STATES = ['submitted', 'scanning', 'ai_review', 'approved', 'rehosting'];
@@ -109,6 +110,7 @@ export default function ProgramsPanel() {
   const [consent, setConsent] = useState(null); // { requested, published? }
   const [busy, setBusy] = useState(false);
   const [removeTarget, setRemoveTarget] = useState(null);
+  const { confirm, confirmDialog } = useConfirmDialog();
 
   // Members get a read-only view; owner/admin (or unknown role — the API still
   // enforces) can launch / install. 'member' is the only role denied here.
@@ -282,7 +284,13 @@ export default function ProgramsPanel() {
   const handleScaffold = useCallback(async (install) => {
     if (!workspaceSlug || !install?.id) return;
     const name = install.packageId?.split('/').pop() || 'starter';
-    if (!window.confirm(`Scaffold a "${name}" starter into this workspace? Existing files are skipped.`)) return;
+    const allowed = await confirm({
+      title: `Scaffold ${name}?`,
+      message: 'Starter files will be added to this workspace. Existing files are skipped.',
+      confirmLabel: 'Scaffold',
+      tone: 'warning',
+    });
+    if (!allowed) return;
     try {
       const result = await scaffoldProgram(workspaceSlug, install.packageId);
       toast.success(`Scaffolded ${result?.written?.length || 0} file(s)` + (result?.skipped?.length ? `, skipped ${result.skipped.length}` : ''));
@@ -290,7 +298,7 @@ export default function ProgramsPanel() {
     } catch (error) {
       toast.error(error.body?.message || error.message || 'Failed to scaffold');
     }
-  }, [handleLaunchInstall, workspaceSlug]);
+  }, [confirm, handleLaunchInstall, workspaceSlug]);
 
   const handleLaunchDetected = useCallback(async () => {
     if (!workspaceSlug) return;
@@ -524,6 +532,7 @@ export default function ProgramsPanel() {
           onCancel={() => setRemoveTarget(null)}
         />
       ) : null}
+      {confirmDialog}
     </div>
   );
 }

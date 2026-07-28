@@ -37,9 +37,7 @@ function ColorSwatch({ label, value, onChange, cssVar }) {
   const inputRef = useRef(null);
 
   return (
-    <div className="flex items-center gap-2 py-1 px-2 group rounded transition-colors"
-      style={{ ':hover': { background: 'var(--bg-surface)' } }}
-    >
+    <div className="vt-command-item group flex items-center gap-2 px-2 py-1 transition-colors">
       <button
         className="w-5 h-5 rounded border shrink-0 cursor-pointer"
         style={{

@@ -3,14 +3,16 @@
 import { GitBranch } from 'lucide-react';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function SubstrateLadderView({ nodes = [] }) {
   return (
     <section className="rounded-md border" style={panelStyle} data-testid="substrate-ladder-view">
-      <div className="flex items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="flex items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <GitBranch size={15} aria-hidden="true" />
           Substrate Ladder
@@ -19,7 +21,7 @@ export default function SubstrateLadderView({ nodes = [] }) {
       </div>
       {nodes.length ? (
         <>
-          <div className="divide-y md:hidden" style={{ borderColor: 'var(--border-subtle)' }}>
+          <div className="divide-y md:hidden" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
             {nodes.map((node) => (
               <article key={`${node.nodeId}-${node.label}`} className="grid gap-2 px-4 py-3 text-xs">
                 <div className="flex items-start justify-between gap-3">
@@ -39,7 +41,7 @@ export default function SubstrateLadderView({ nodes = [] }) {
           <div className="hidden overflow-x-auto md:block">
             <table className="min-w-full table-fixed text-left text-xs">
               <thead style={{ color: 'var(--text-muted)' }}>
-                <tr className="border-b" style={{ borderColor: 'var(--border-subtle)' }}>
+                <tr className="border-b" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                   <th className="w-48 px-4 py-3 font-medium">Node</th>
                   <th className="w-28 px-4 py-3 font-medium">Kind</th>
                   <th className="w-32 px-4 py-3 font-medium">Substrate</th>
@@ -49,7 +51,7 @@ export default function SubstrateLadderView({ nodes = [] }) {
               </thead>
               <tbody>
                 {nodes.map((node) => (
-                  <tr key={`${node.nodeId}-${node.label}`} className="border-b last:border-b-0" style={{ borderColor: 'var(--border-subtle)' }}>
+                  <tr key={`${node.nodeId}-${node.label}`} className="border-b last:border-b-0" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                     <td className="px-4 py-3">
                       <div className="truncate font-medium">{node.label}</div>
                       <div className="mt-1 truncate" style={{ color: 'var(--text-muted)' }}>{node.nodeId}</div>

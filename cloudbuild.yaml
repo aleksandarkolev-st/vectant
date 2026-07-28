@@ -75,30 +75,22 @@ steps:
           exit 1
         fi
 
-  - id: codesite-mature-proof-suite
-    waitFor: ['reject-mutable-images']
-    name: docker.io/library/node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
-    entrypoint: bash
-    args:
-      - -c
-      - |
-        set -euo pipefail
-        npm --prefix synthi run codesite:proof:mature-suite -- \
-          --proof-root tmp/codesite-dojo-proof \
-          --no-screenshot
-
-  - id: codesite-release-gate
-    waitFor: ['codesite-mature-proof-suite']
-    name: docker.io/library/node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
-    entrypoint: bash
-    args:
-      - -c
-      - |
-        set -euo pipefail
-        npm --prefix synthi run codesite:release-gate -- \
-          --proof-root tmp/codesite-dojo-proof \
-          --require-mature-suite-run \
-          --out tmp/codesite-dojo-proof/codesite-release-gate-cloudbuild.json
+  # CodeSite proof suite + release gate intentionally do NOT run here. They run
+  # on the host, in .github/workflows/deploy-prod.yml, before this build is
+  # submitted. That is where they can work, and the gate itself says so: it
+  # validates proof provenance with `git merge-base`/`git diff` against the
+  # recorded proof head, and when it cannot reach a git dir it reports
+  # "Git provenance must be validated by the host release gate; container
+  # cannot access ...". A Cloud Build source upload is a tarball with no .git,
+  # so an in-container gate hard-fails on `unable to validate proof git
+  # provenance` -- it cannot be fixed by installing anything.
+  #
+  # Both steps were added here on 2026-07-03/07-05, after the last green build
+  # (2026-06-21), and never once passed in Cloud Build. Removed 2026-07-28.
+  #
+  # NOTE: this means a manual `gcloud builds submit` has no CodeSite gate. Run
+  # it on the host first, exactly as the workflow does:
+  #   npm --prefix synthi run codesite:release-gate -- --proof-root tmp/codesite-dojo-proof
 
   # ───────────────────────────────────────────────────────────────────────────
   # BUILD — Service images in parallel via Kaniko (layer-cached)
@@ -106,7 +98,7 @@ steps:
 
   # ── 0. Prepare Next.js environment ───────────────────────────────────────
   - id: prepare-frontend-env
-    waitFor: ['codesite-release-gate']
+    waitFor: ['reject-mutable-images']
     name: 'ubuntu:25.10@sha256:4a9232cc47bf99defcc8860ef6222c99773330367fcecbf21ba2edb0b810a31e'
     entrypoint: 'bash'
     env:
@@ -158,7 +150,7 @@ steps:
 
   # ── 2. Collab Server (Node.js) ──────────────────────────────────────────
   - id: build-collab-server
-    waitFor: ['codesite-release-gate']
+    waitFor: ['reject-mutable-images']
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=backend/collab-server/Dockerfile
@@ -169,7 +161,7 @@ steps:
 
   # ── 3. AI Engine (Python FastAPI) ───────────────────────────────────────
   - id: build-ai-engine
-    waitFor: ['codesite-release-gate']
+    waitFor: ['reject-mutable-images']
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=ai-backend/ai-engine/Dockerfile
@@ -180,7 +172,7 @@ steps:
 
   # ── 4. AI Gateway (Node.js WS proxy) ───────────────────────────────────
   - id: build-ai-gateway
-    waitFor: ['codesite-release-gate']
+    waitFor: ['reject-mutable-images']
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=ai-backend/gateway/Dockerfile
@@ -215,7 +207,7 @@ steps:
 
   # ── 7. Prisma Migration Image (lightweight, for K8s Job) ────────────────
   - id: build-prisma-migrate
-    waitFor: ['codesite-release-gate']
+    waitFor: ['reject-mutable-images']
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=synthi/Dockerfile.migrate
@@ -226,7 +218,7 @@ steps:
 
   # ── 8. Browser Workflow Bridge + Hosted Browser Runtime ────────────────
   - id: build-browser-workflow-bridge
-    waitFor: ['codesite-release-gate']
+    waitFor: ['reject-mutable-images']
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=mcp/synthi-mcp/Dockerfile.workflow-bridge
@@ -239,7 +231,7 @@ steps:
   # Agent Dojo HTTP MCP host. Built for the release-gate overlay; the default
   # beta kustomization does not deploy this image.
   - id: build-dojo-mcp-host
-    waitFor: ['codesite-release-gate']
+    waitFor: ['reject-mutable-images']
     name: gcr.io/kaniko-project/executor:debug@sha256:2562c4fe551399514277ffff7dcca9a3b1628c4ea38cb017d7286dc6ea52f4cd
     entrypoint: /busybox/sh
     env:
@@ -273,7 +265,7 @@ steps:
   # not in CI); it crash-loops under Sysbox (rootlesskit can't nest a userns).
   # Pulled at runtime by spawnRuntimePod() only when RUNTIME_BACKEND=sysbox-pod.
   - id: build-runtime-image
-    waitFor: ['codesite-release-gate']
+    waitFor: ['reject-mutable-images']
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=backend/runtime-image/Dockerfile

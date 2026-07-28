@@ -36,17 +36,18 @@ export class AIErrorBoundary extends React.Component {
     if (this.state.hasError) {
       return (
         <div className="flex flex-col items-center justify-center p-6 text-center">
-          <AlertTriangle size={32} className="text-yellow-400 mb-3" />
-          <h3 className="text-sm font-medium text-white/80 mb-1">
-            AI Healing panel error
+          <AlertTriangle size={32} className="mb-3" style={{ color: 'var(--accent-warning)' }} />
+          <h3 className="mb-1 text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+            Healing panel error
           </h3>
-          <p className="text-xs text-white/40 mb-3 max-w-xs">
+          <p className="mb-3 max-w-xs text-xs" style={{ color: 'var(--text-muted)' }}>
             {this.state.error?.message || 'An unexpected error occurred'}
           </p>
 
           <button
             onClick={this.handleRetry}
-            className="flex items-center gap-1.5 text-xs bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 px-3 py-1.5 rounded transition-colors"
+            className="th-focus-ring th-btn-ghost flex items-center gap-1.5 rounded-[var(--radius-control)] border px-3 py-1.5 text-xs transition-colors"
+            style={{ color: 'var(--attention-purple)', borderColor: 'var(--border-subtle)' }}
           >
             <RefreshCcw size={12} />
             Retry
@@ -54,10 +55,10 @@ export class AIErrorBoundary extends React.Component {
 
           {process.env.NODE_ENV === 'development' && this.state.errorInfo && (
             <details className="mt-4 text-left w-full">
-              <summary className="text-[10px] text-white/30 cursor-pointer">
+              <summary className="cursor-pointer text-[10px]" style={{ color: 'var(--text-muted)' }}>
                 Stack trace (dev only)
               </summary>
-              <pre className="mt-1 text-[9px] text-white/20 overflow-auto max-h-32 bg-black/30 p-2 rounded">
+              <pre className="mt-1 max-h-32 overflow-auto rounded-[var(--radius-control)] p-2 text-[9px]" style={{ background: 'var(--bg-app)', color: 'var(--text-muted)' }}>
                 {this.state.errorInfo.componentStack}
               </pre>
             </details>

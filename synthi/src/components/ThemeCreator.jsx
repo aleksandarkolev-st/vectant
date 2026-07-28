@@ -4,7 +4,7 @@
  * @fileoverview ThemeCreator
  *
  * Full-screen overlay for creating a brand-new user theme.
- * Opened from the ThemePicker via the "Create Your Own Theme" button.
+ * Opened from the ThemePicker via the custom theme action.
  *
  * Layout:
  *   ┌─────────────────────────────────────────────────────┐
@@ -548,47 +548,21 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
 
   return (
     <div
-      className="fixed inset-0 z-[9998] flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(3px)' }}
+      className="fixed inset-0 z-50 flex items-center justify-center px-3"
+      style={{
+        background: 'color-mix(in srgb, var(--bg-app) 72%, transparent)',
+        backdropFilter: 'blur(10px) saturate(140%)',
+      }}
     >
       {/* Flex wrapper so the AI chat panel can sit beside the main overlay */}
       <div className="flex items-start gap-3">
-      {/*
-       * Scoped CSS variable overrides — pin the overlay to a known dark
-       * palette so it stays readable regardless of the live theme preview
-       * being applied to :root behind it.
-       */}
       <div
-        className="w-[720px] max-h-[80vh] flex flex-col rounded-lg overflow-hidden"
+        className="vt-dialog-surface flex max-h-[82vh] w-[760px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden"
         style={{
-          /* ── Pinned overlay palette ─────────────────── */
-          '--bg-app':          '#08090d',
-          '--bg-editor':       '#0c0d12',
-          '--bg-sidebar':      '#070810',
-          '--bg-panel':        '#101118',
-          '--bg-surface':      '#14151d',
-          '--bg-elevated':     '#1a1b24',
-          '--border-subtle':   '#1a1b24',
-          '--border-medium':   '#2a2b38',
-          '--border-focus':    '#3a3b52',
-          '--border-strong':   '#42445a',
-          '--text-primary':    '#f4f5f8',
-          '--text-secondary':  '#9ba2b8',
-          '--text-muted':      '#5a6178',
-          '--text-dim':        '#3d4256',
-          '--accent-primary':  '#327464',
-          '--accent-secondary':'#3d8b78',
-          '--accent-tertiary': '#4a9e8a',
-          '--accent-danger':   '#ff5757',
-          '--accent-success':  '#4ade80',
-          '--accent-warning':  '#fbbf24',
-          '--shadow-dropdown': '0 4px 16px rgba(0, 0, 0, 0.7)',
-          /* ── Standard styling ──────────────────────── */
-          background: 'var(--bg-elevated)',
-          border: '1px solid var(--border-medium)',
-          boxShadow: 'var(--shadow-dropdown)',
+          boxShadow: '0 24px 80px color-mix(in srgb, var(--bg-app) 64%, transparent)',
         }}
       >
+        <div aria-hidden="true" className="h-px w-full" style={{ background: 'var(--brand-gradient-horizontal)' }} />
         {/* ─── Header ────────────────────────────────────── */}
         <div
           className="flex items-center gap-3 px-4 py-3 shrink-0"
@@ -596,23 +570,23 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
         >
           <Palette className="h-5 w-5" style={{ color: 'var(--accent-primary)' }} />
           <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-            {isEditing ? 'Edit Theme' : 'Create Your Own Theme'}
+            {isEditing ? 'Edit theme' : 'Custom theme'}
           </span>
 
-          {/* AI Generate button */}
+          {/* AI assistant button */}
           <button
             className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ml-auto"
             style={{
               background: aiChatOpen
                 ? 'var(--accent-primary)'
                 : 'linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))',
-              color: 'white',
-              boxShadow: aiChatOpen ? 'none' : '0 0 8px rgba(50,116,100,0.3)',
+              color: 'var(--bg-app)',
+              boxShadow: aiChatOpen ? 'none' : '0 0 18px -8px color-mix(in srgb, var(--accent-primary) 60%, transparent)',
             }}
             onClick={() => setAiChatOpen((v) => !v)}
           >
             <Wand2 className="h-3.5 w-3.5" />
-            AI Generate
+            Assist
           </button>
 
           {/* Theme type toggle */}
@@ -624,7 +598,7 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
               className={cn('flex items-center gap-1 px-2.5 py-1 transition-colors')}
               style={{
                 background: themeType === 'dark' ? 'var(--accent-primary)' : 'transparent',
-                color: themeType === 'dark' ? 'white' : 'var(--text-muted)',
+                color: themeType === 'dark' ? 'var(--bg-app)' : 'var(--text-muted)',
               }}
               onClick={() => setThemeType('dark')}
             >
@@ -634,7 +608,7 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
               className={cn('flex items-center gap-1 px-2.5 py-1 transition-colors')}
               style={{
                 background: themeType === 'light' ? 'var(--accent-primary)' : 'transparent',
-                color: themeType === 'light' ? 'white' : 'var(--text-muted)',
+                color: themeType === 'light' ? 'var(--bg-app)' : 'var(--text-muted)',
               }}
               onClick={() => setThemeType('light')}
             >
@@ -910,7 +884,7 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
                     setNameError(null);
                   }
                 }}
-                placeholder="My Awesome Theme"
+                placeholder="Ops dark, Platform light, Incident review"
                 className="w-full px-2 py-1 text-xs rounded border outline-none transition-colors pr-7"
                 style={{
                   background: 'var(--bg-editor)',
@@ -947,7 +921,7 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
           )}
           {themeName.trim().length > 0 && !nameError && (
             <p className="text-[10px] mt-1 ml-[84px]" style={{ color: 'var(--accent-success)' }}>
-              Name approved by content filter
+              Name is valid
             </p>
           )}
         </div>
@@ -1031,7 +1005,7 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
                   ? 'var(--accent-primary)'
                   : 'var(--bg-surface)',
                 color: completion.complete && themeName.trim()
-                  ? 'white'
+                  ? 'var(--bg-app)'
                   : 'var(--text-muted)',
               }}
               onClick={handleSave}
@@ -1046,34 +1020,12 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
       {/* ─── AI Chat Panel (slides in beside the overlay) ── */}
       {aiChatOpen && (
         <div
-          className="w-[320px] max-h-[80vh] flex flex-col rounded-lg overflow-hidden shrink-0"
+          className="vt-dialog-surface flex max-h-[82vh] w-[320px] shrink-0 flex-col overflow-hidden"
           style={{
-            '--bg-app':          '#08090d',
-            '--bg-editor':       '#0c0d12',
-            '--bg-sidebar':      '#070810',
-            '--bg-panel':        '#101118',
-            '--bg-surface':      '#14151d',
-            '--bg-elevated':     '#1a1b24',
-            '--border-subtle':   '#1a1b24',
-            '--border-medium':   '#2a2b38',
-            '--border-focus':    '#3a3b52',
-            '--border-strong':   '#42445a',
-            '--text-primary':    '#f4f5f8',
-            '--text-secondary':  '#9ba2b8',
-            '--text-muted':      '#5a6178',
-            '--text-dim':        '#3d4256',
-            '--accent-primary':  '#327464',
-            '--accent-secondary':'#3d8b78',
-            '--accent-tertiary': '#4a9e8a',
-            '--accent-danger':   '#ff5757',
-            '--accent-success':  '#4ade80',
-            '--accent-warning':  '#fbbf24',
-            '--shadow-dropdown': '0 4px 16px rgba(0, 0, 0, 0.7)',
-            background: 'var(--bg-elevated)',
-            border: '1px solid var(--border-medium)',
-            boxShadow: 'var(--shadow-dropdown)',
+            boxShadow: '0 24px 80px color-mix(in srgb, var(--bg-app) 64%, transparent)',
           }}
         >
+          <div aria-hidden="true" className="h-px w-full" style={{ background: 'var(--brand-gradient-horizontal)' }} />
           {/* Panel header */}
           <div
             className="flex items-center gap-2 px-3 py-2.5 shrink-0"
@@ -1101,10 +1053,10 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
               <div className="flex flex-col items-center justify-center h-full gap-2 py-8">
                 <Sparkles className="h-8 w-8" style={{ color: 'var(--border-focus)' }} />
                 <p className="text-[11px] text-center leading-relaxed px-4" style={{ color: 'var(--text-muted)' }}>
-                  Describe your ideal theme and the AI will generate all the colours for you.
+                  Describe a production interface mood or operational context.
                 </p>
                 <div className="flex flex-wrap gap-1 mt-1 justify-center">
-                  {['Monokai inspired', 'Ocean breeze', 'Warm sunset', 'Minimal grayscale'].map((suggestion) => (
+                  {['Incident review dark', 'Platform console', 'Low-glare editor', 'Audit dashboard'].map((suggestion) => (
                     <button
                       key={suggestion}
                       className="text-[9px] px-2 py-0.5 rounded-full transition-colors"
@@ -1130,7 +1082,7 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
                 )}
                 style={{
                   background: msg.role === 'user' ? 'var(--accent-primary)' : 'var(--bg-surface)',
-                  color: msg.role === 'user' ? 'white' : 'var(--text-secondary)',
+                  color: msg.role === 'user' ? 'var(--bg-app)' : 'var(--text-secondary)',
                 }}
               >
                 {msg.text}

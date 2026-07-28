@@ -6,8 +6,10 @@ import { createEmptyDojoSummary, getDojoWorkspaceSummary } from '@/services/dojo
 import CheckrideReportView from './CheckrideReportView';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function PracticeWorldDashboard({
@@ -48,12 +50,12 @@ export default function PracticeWorldDashboard({
 
   return (
     <main
-      className="min-h-screen px-5 py-5 text-sm"
-      style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+      className="dojo-page min-h-[100dvh] px-5 py-5 text-sm"
+      style={{ color: 'var(--text-primary)' }}
       data-testid="dojo-practice-world"
     >
       <div className="mx-auto flex min-w-0 max-w-7xl flex-col gap-4">
-        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
+        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           <div className="min-w-0">
             <a href={backHref} className="mb-3 inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs" style={panelStyle}>
               <ArrowLeft size={13} aria-hidden="true" />
@@ -89,7 +91,7 @@ export default function PracticeWorldDashboard({
 
             <section className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
               <div className="min-w-0 rounded-md border" style={panelStyle}>
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                   <div className="min-w-0">
                     <h2 className="text-sm font-semibold">Scenario List</h2>
                     <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -109,7 +111,7 @@ export default function PracticeWorldDashboard({
                   <Detail label="Tissues" value={practice.organoid.tissueNames.length ? practice.organoid.tissueNames.join(', ') : 'Not reported'} />
                   <Detail label="Stop reason" value={practice.windTunnel.stopReason || 'Budget not exhausted'} />
                 </dl>
-                <div className="mt-4 rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }} data-testid="dojo-practice-latest-evidence">
+                <div className="mt-4 rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }} data-testid="dojo-practice-latest-evidence">
                   <div className="mb-2 flex items-center gap-2 text-xs font-semibold">
                     <DatabaseZap size={14} aria-hidden="true" />
                     Latest Evidence
@@ -135,7 +137,7 @@ export default function PracticeWorldDashboard({
             </section>
 
             <section className="min-w-0 rounded-md border" style={panelStyle} data-testid="dojo-wind-tunnel-matrix">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                 <div>
                   <h2 className="text-sm font-semibold">Wind Tunnel Matrix</h2>
                   <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>Observed scenario outcomes from runtime or bridge evidence.</p>
@@ -172,7 +174,7 @@ function ScenarioList({ scenarios, selectedScenario }) {
     );
   }
   return (
-    <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }} data-testid="dojo-scenario-list">
+    <div className="divide-y" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }} data-testid="dojo-scenario-list">
       {scenarios.map((scenario) => (
         <div
           key={scenario.id}
@@ -210,7 +212,7 @@ function WindTunnelMatrix({ runs }) {
   }
   return (
     <>
-      <div className="divide-y md:hidden" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="divide-y md:hidden" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
         {runs.map((run) => (
           <div key={run.runId} className="grid min-w-0 gap-3 px-4 py-4">
             <div className="flex items-start justify-between gap-3">
@@ -234,7 +236,7 @@ function WindTunnelMatrix({ runs }) {
       <div className="hidden overflow-x-auto md:block">
         <table className="min-w-full table-fixed text-left text-xs">
           <thead style={{ color: 'var(--text-muted)' }}>
-            <tr className="border-b" style={{ borderColor: 'var(--border-subtle)' }}>
+            <tr className="border-b" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
               <th className="w-56 px-4 py-3 font-medium">Scenario</th>
               <th className="w-32 px-4 py-3 font-medium">Status</th>
               <th className="w-36 px-4 py-3 font-medium">Mutation</th>
@@ -244,7 +246,7 @@ function WindTunnelMatrix({ runs }) {
           </thead>
           <tbody>
             {runs.map((run) => (
-              <tr key={run.runId} className="border-b last:border-b-0" style={{ borderColor: 'var(--border-subtle)' }}>
+              <tr key={run.runId} className="border-b last:border-b-0" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                 <td className="px-4 py-3">
                   <div className="truncate font-medium">{run.scenarioId || run.runId}</div>
                   <div className="mt-1 truncate" style={{ color: 'var(--text-muted)' }}>{run.runId}</div>

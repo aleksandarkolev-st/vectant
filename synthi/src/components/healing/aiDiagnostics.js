@@ -76,13 +76,13 @@ function fixToMarker(fix) {
 
   return {
     severity: toMarkerSeverity(fix.severity || 'moderate'),
-    message: `${prefix} ${fix.description || 'AI-detected issue'} (${confidence}% confident)`,
+    message: `${prefix} ${fix.description || 'Detected issue'} (${confidence}% confident)`,
     startLineNumber: startLine,
     startColumn: startCol,
     endLineNumber: endLine,
     endColumn: endCol,
-    source: 'AI Healing',
-    code: fix.rule_id || fix.ruleId || `AI_${(cat || 'OTHER').toUpperCase()}`,
+    source: 'Vectant healing',
+    code: fix.rule_id || fix.ruleId || `FIX_${(cat || 'OTHER').toUpperCase()}`,
     tags: fix.is_safe || fix.isSafe
       ? []  // no tag for safe fixes
       : [1], // MarkerTag.Unnecessary — shows as faded (optional)

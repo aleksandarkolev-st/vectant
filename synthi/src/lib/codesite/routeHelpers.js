@@ -1,5 +1,5 @@
+import crypto from 'crypto';
 import { NextResponse } from 'next/server';
-import { timingSafeEqual } from 'node:crypto';
 import { resolveActor } from '@/lib/integrations/session';
 import { canReadScope, canWriteScope } from '@/lib/integrations/scope';
 import { checkLimit, RATE_LIMITS } from '@/lib/integrations/rateLimit';
@@ -26,30 +26,42 @@ function workspaceAuthBypassEnabled() {
     || process.env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS === '1';
 }
 
-function hasTrustedInternalCodeSiteToken(request) {
-  const configured = String(process.env.SYNTHI_CODESITE_TOKEN || '').trim();
-  const authorization = String(request.headers.get('authorization') || '').trim();
-  const prefix = 'Bearer ';
-  if (!configured || !authorization.startsWith(prefix)) return false;
-  const provided = authorization.slice(prefix.length);
-  const expectedBytes = Buffer.from(configured);
-  const providedBytes = Buffer.from(provided);
-  return expectedBytes.length === providedBytes.length
-    && timingSafeEqual(expectedBytes, providedBytes);
+function safeSecretEqual(presented, secret) {
+  // Hash both to a fixed length before the constant-time compare so the
+  // comparison never leaks the secret's length via an early-exit branch.
+  const a = crypto.createHash('sha256').update(String(presented)).digest();
+  const b = crypto.createHash('sha256').update(String(secret)).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * Trusted internal-service authentication for server-to-server callers — namely
+ * the collab-server's CodeSite control-plane probe, which presents the shared
+ * secret `SYNTHI_CODESITE_TOKEN` as a Bearer token (see
+ * codesiteActivityRegistry.controlPlaneHeaders). `x-synthi-internal-token` is
+ * accepted too, matching the convention used by other internal routes.
+ *
+ * This is strictly ADDITIVE: it is inert unless the server-only secret is
+ * configured, never weakens the NextAuth-session or NODE_ENV bypass guards, and
+ * grants a distinct, auditable `internalService` identity rather than
+ * impersonating a real user.
+ */
+function internalServiceActor(request) {
+  const secret = process.env.SYNTHI_CODESITE_TOKEN;
+  if (!secret || !request?.headers?.get) return null;
+  const authHeader = request.headers.get('authorization') || '';
+  const bearer = /^bearer\s+/i.test(authHeader) ? authHeader.replace(/^bearer\s+/i, '').trim() : '';
+  const presented = bearer || (request.headers.get('x-synthi-internal-token') || '').trim();
+  if (!presented || !safeSecretEqual(presented, secret)) return null;
+  return {
+    userId: 'codesite-internal-service',
+    email: 'internal-service@synthi.local',
+    workspaceUserId: 'internal-service',
+    internalService: true,
+  };
 }
 
 export async function requireCodesiteAccess(slug, mode = 'read', request = null) {
-  if (request && hasTrustedInternalCodeSiteToken(request)) {
-    return {
-      ok: true,
-      actor: {
-        userId: 'codesite-control-plane',
-        email: 'codesite-control-plane@synthi.local',
-        workspaceUserId: 'codesite-control-plane',
-        internal: true,
-      },
-    };
-  }
   if (workspaceAuthBypassEnabled()) {
     return {
       ok: true,
@@ -61,6 +73,9 @@ export async function requireCodesiteAccess(slug, mode = 'read', request = null)
       },
     };
   }
+
+  const internal = internalServiceActor(request);
+  if (internal) return { ok: true, actor: internal };
 
   const actor = await resolveActor();
   if (!actor) return { ok: false, status: 401, error: 'Authentication required' };

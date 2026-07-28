@@ -93,10 +93,9 @@ function RebaseRow({ item, index, onActionChange, onMessageChange, onDragStart, 
         </button>
         {showDropdown && (
           <div
-            className="absolute z-50 top-full mt-1 left-0 rounded-lg shadow-xl py-1 min-w-[180px]"
+            className="vt-command-popover absolute left-0 top-full z-50 mt-1 min-w-[180px] py-1"
             style={{
-              background: 'var(--bg-panel)',
-              border: '1px solid var(--border-medium)',
+              color: 'var(--text-primary)',
             }}
           >
             {ACTIONS.map((a) => (
@@ -291,10 +290,10 @@ export default function InteractiveRebasePanel({ commits, slug, onClose }) {
             className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors th-focus-ring"
             style={{
               background: 'var(--brand-gradient)',
-              color: '#ffffff',
+              color: 'var(--text-on-accent, var(--text-primary))',
               border: 'none',
               opacity: executing ? 0.6 : 1,
-              boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+              boxShadow: 'var(--accent-glow)',
             }}
             aria-label={executing ? 'Rebasing' : 'Start rebase'}
           >

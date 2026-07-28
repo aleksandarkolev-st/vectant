@@ -4,8 +4,10 @@ import { useState } from 'react';
 import { ShieldAlert, ShieldOff } from 'lucide-react';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function LicenseHealthBoard({ items = [], onRevoke, busyLicenseId = '' }) {
@@ -30,7 +32,7 @@ export default function LicenseHealthBoard({ items = [], onRevoke, busyLicenseId
               && item.status !== 'revoked'
               && revocationReason.trim().length > 0;
             return (
-            <article key={`${item.skillId}-${item.licenseId}`} className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+            <article key={`${item.skillId}-${item.licenseId}`} className="rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                   <h3 className="truncate text-sm font-semibold">{item.skillName || item.skillId}</h3>
@@ -53,7 +55,7 @@ export default function LicenseHealthBoard({ items = [], onRevoke, busyLicenseId
                 <input
                   type="text"
                   className="mt-1 h-8 w-full rounded-md border px-2 text-xs outline-none"
-                  style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+                  style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)', background: 'var(--bg-app)', color: 'var(--text-primary)' }}
                   value={revocationReason}
                   onChange={(event) => setRevocationReasons((current) => ({
                     ...current,
@@ -99,7 +101,7 @@ function Info({ label, value }) {
 }
 
 function statusColor(status) {
-  if (status === 'expired' || status === 'revoked') return 'var(--accent-danger, #ef4444)';
-  if (status === 'expiring') return 'var(--accent-warning, #f59e0b)';
-  return 'var(--accent-success, #22c55e)';
+  if (status === 'expired' || status === 'revoked') return 'var(--accent-danger)';
+  if (status === 'expiring') return 'var(--accent-warning)';
+  return 'var(--accent-success)';
 }

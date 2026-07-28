@@ -1,7 +1,9 @@
 "use client";
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import collabSessionService from '@/services/collabSessionService';
 import WorkspaceUsersPanel from './WorkspaceUsersPanel';
@@ -16,10 +18,10 @@ import T from './collabTheme';
 // ── Permission config ─────────────────────────────────────────────────────────
 
 const PERM_CONFIG = [
-  { key: 'canEdit',     label: 'Edit Code',   icon: FileEdit,   risk: 'low',    desc: 'Allow editing files via Yjs' },
-  { key: 'canFileOps',  label: 'File Ops',     icon: FolderEdit, risk: 'medium', desc: 'Create, delete, rename files' },
-  { key: 'canTerminal', label: 'Terminal',      icon: Terminal,   risk: 'high',   desc: 'Run commands in the terminal' },
-  { key: 'canGit',      label: 'Git Control',   icon: GitBranch,  risk: 'high',   desc: 'Commit, push, pull, checkout' },
+  { key: 'canEdit',     label: 'Edit',     icon: FileEdit,   risk: 'low',    desc: 'Change workspace files' },
+  { key: 'canFileOps',  label: 'Files',    icon: FolderEdit, risk: 'medium', desc: 'Create, rename, and remove files' },
+  { key: 'canTerminal', label: 'Terminal', icon: Terminal,   risk: 'high',   desc: 'Run shell commands' },
+  { key: 'canGit',      label: 'Git',      icon: GitBranch,  risk: 'high',   desc: 'Change branches and publish commits' },
 ];
 
 /**
@@ -51,7 +53,12 @@ export default function ShareModal({ slug, open, onClose }) {
   const [terminating, setTerminating] = useState(false);
   const [joinCode, setJoinCode] = useState('');
   const [joiningByCode, setJoiningByCode] = useState(false);
+  const [portalNode, setPortalNode] = useState(null);
   const modalRef = useRef(null);
+
+  useEffect(() => {
+    setPortalNode(document.body);
+  }, []);
 
   // Reset state when modal opens (clearError is stable via useCallback)
   useEffect(() => {
@@ -126,60 +133,72 @@ export default function ShareModal({ slug, open, onClose }) {
     });
   }, [createSession, slug, authSession]);
 
-  if (!open) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="share-modal-title"
-      ref={modalRef}
-      tabIndex={-1}
-      onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
-    >
+  const modal = (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="fixed inset-0 flex items-center justify-center"
+          style={{ zIndex: 10000 }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="share-modal-title"
+          ref={modalRef}
+          tabIndex={-1}
+          onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+        >
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <motion.div
+        className="absolute inset-0 bg-[color-mix(in_srgb,black_68%,transparent)] backdrop-blur-sm"
+        onClick={onClose}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+      />
 
       {/* Modal */}
-      <div
-        className="relative w-[480px] max-h-[85vh] rounded-xl border shadow-2xl flex flex-col overflow-hidden"
-        style={{ backgroundColor: T.card, borderColor: T.border }}
+      <motion.div
+        className="vt-dialog-surface vt-session-modal relative flex max-h-[85vh] w-[520px] max-w-[calc(100vw-28px)] flex-col overflow-hidden"
+        initial={{ opacity: 0, y: 18, scale: 0.965 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 12, scale: 0.98 }}
+        transition={{ duration: 0.42, ease: [0.16, 1, 0.3, 1] }}
       >
         {/* ── Header ─────────────────────────────────────────────── */}
-        <div className="flex items-center justify-between px-5 py-3 border-b" style={{ borderColor: T.border }}>
+        <div className="vt-panel-header justify-between px-5">
           <div className="flex items-center gap-2.5">
-            <Users className="w-4.5 h-4.5" style={{ color: T.teal }} />
-            <h2 id="share-modal-title" className="text-sm font-semibold" style={{ color: T.text }}>
-              Collaboration
+            <Users className="h-4 w-4 text-[var(--accent-primary)]" />
+            <h2 id="share-modal-title" className="vt-panel-title">
+              Session control
             </h2>
             {isActive && (
-              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold"
-                style={{ backgroundColor: 'rgba(255,87,87,0.10)', color: T.live }}>
+              <span className="vt-workflow-chip text-[9px]" style={{ '--chip-color': 'var(--accent-danger)' }}>
                 <span className="relative flex h-1.5 w-1.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: T.live }} />
-                  <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ backgroundColor: T.live }} />
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--accent-danger)] opacity-75" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[var(--accent-danger)]" />
                 </span>
-                LIVE
+                Live
               </span>
             )}
             {isActive && wsStatus !== 'connected' && (
-              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold"
-                style={{ backgroundColor: 'rgba(251,191,36,0.10)', color: T.amber }}>
+              <span className="vt-workflow-chip text-[9px]" style={{ '--chip-color': 'var(--accent-warning)' }}>
                 <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                {wsStatus === 'connecting' ? 'Reconnecting…' : 'Offline'}
+                {wsStatus === 'connecting' ? 'Reconnecting' : 'Offline'}
               </span>
             )}
             {isKnocking && (
-              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold"
-                style={{ backgroundColor: 'rgba(251,191,36,0.10)', color: T.amber }}>
+              <span className="vt-workflow-chip text-[9px]" style={{ '--chip-color': 'var(--accent-warning)' }}>
                 <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                Connecting…
+                Connecting
               </span>
             )}
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-[#1a1b24] transition-colors" aria-label="Close">
-            <X className="w-4 h-4" style={{ color: T.textMuted }} />
+          <button onClick={onClose} className="vt-icon-button th-focus-ring h-7 min-w-7" aria-label="Close">
+            <X className="w-4 h-4" />
           </button>
         </div>
 
@@ -234,68 +253,71 @@ export default function ShareModal({ slug, open, onClose }) {
         )}
 
         {/* ── Footer Actions ─────────────────────────────────────── */}
-        <div className="px-4 py-3 border-t flex items-center gap-2" style={{ borderColor: T.border }}>
+        <div className="flex items-center gap-2 border-t border-[var(--border-subtle)] px-4 py-3">
           {role === 'idle' && (
             <button onClick={handleStartSession}
               disabled={isLoading}
-              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-all border"
-              style={{ backgroundColor: 'rgba(74,186,154,0.10)', borderColor: 'rgba(74,186,154,0.30)', color: T.teal }}>
+              className="th-focus-ring th-btn-primary flex flex-1 items-center justify-center gap-2 px-3 py-2 text-xs font-semibold disabled:opacity-50">
               <Users className="w-3.5 h-3.5" />
-              {isLoading ? 'Starting…' : 'Start Sharing'}
+              {isLoading ? 'Starting...' : 'Start session'}
             </button>
           )}
 
           {isHost && (
             <button onClick={handleTerminate}
               disabled={terminating}
-              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-all border"
-              style={{ backgroundColor: 'rgba(255,87,87,0.08)', borderColor: 'rgba(255,87,87,0.25)', color: T.red, opacity: terminating ? 0.5 : 1 }}>
+              className="th-focus-ring th-btn-ghost flex flex-1 items-center justify-center gap-2 rounded-[var(--radius-control)] border px-3 py-2 text-xs font-semibold text-[var(--accent-danger)] disabled:opacity-50"
+              style={{ borderColor: 'color-mix(in srgb, var(--accent-danger) 28%, transparent)' }}>
               {terminating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CircleOff className="w-3.5 h-3.5" />}
-              {terminating ? 'Stopping…' : 'Stop Sharing'}
+              {terminating ? 'Ending…' : 'End session'}
             </button>
           )}
 
           {isGuest && (
             <button onClick={leaveSession}
-              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-all border"
-              style={{ backgroundColor: 'rgba(255,87,87,0.08)', borderColor: 'rgba(255,87,87,0.25)', color: T.red }}>
+              className="th-focus-ring th-btn-ghost flex flex-1 items-center justify-center gap-2 rounded-[var(--radius-control)] border px-3 py-2 text-xs font-semibold text-[var(--accent-danger)]"
+              style={{ borderColor: 'color-mix(in srgb, var(--accent-danger) 28%, transparent)' }}>
               <LogOut className="w-3.5 h-3.5" />
-              Leave Session
+              Leave session
             </button>
           )}
 
           {isKnocking && (
             <button onClick={leaveSession}
-              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-all border"
-              style={{ backgroundColor: 'rgba(251,191,36,0.08)', borderColor: 'rgba(251,191,36,0.25)', color: T.amber }}>
+              className="th-focus-ring th-btn-ghost flex flex-1 items-center justify-center gap-2 rounded-[var(--radius-control)] border px-3 py-2 text-xs font-semibold text-[var(--accent-warning)]"
+              style={{ borderColor: 'color-mix(in srgb, var(--accent-warning) 28%, transparent)' }}>
               <X className="w-3.5 h-3.5" />
-              Cancel Request
+              Cancel request
             </button>
           )}
         </div>
 
         {/* ── Error ───────────────────────────────────────────────── */}
         {error && (
-          <div className="px-4 py-2.5 border-t flex items-center gap-2"
-            style={{ borderColor: T.border, backgroundColor: 'rgba(255,87,87,0.06)' }}>
-            <CircleOff className="w-3.5 h-3.5 flex-shrink-0" style={{ color: T.red }} />
-            <span className="flex-1 text-[11px]" style={{ color: T.red }}>{error}</span>
+          <div className="vt-workflow-alert vt-workflow-alert--danger flex items-center gap-2 rounded-none border-x-0 border-b-0 px-4 py-2.5">
+            <CircleOff className="w-3.5 h-3.5 flex-shrink-0 text-[var(--accent-danger)]" />
+            <span className="flex-1 text-[11px] text-[var(--accent-danger)]">{error}</span>
             {isActive && (
               <button 
                 onClick={() => { clearError(); collabSessionService.refreshSession(); }}
-                className="px-2 py-0.5 rounded text-[10px] font-medium border transition-colors"
-                style={{ borderColor: 'rgba(255,87,87,0.25)', color: T.red }}>
+                className="th-focus-ring th-btn-ghost rounded-[var(--radius-control)] border px-2 py-0.5 text-[10px] font-medium text-[var(--accent-danger)]"
+                style={{ borderColor: 'color-mix(in srgb, var(--accent-danger) 28%, transparent)' }}>
                 Retry
               </button>
             )}
-            <button onClick={clearError} className="p-0.5 rounded hover:bg-[#ff575720]">
-              <X className="w-3 h-3" style={{ color: T.red }} />
+            <button onClick={clearError} className="vt-icon-button th-focus-ring h-6 min-w-6">
+              <X className="w-3 h-3" />
             </button>
           </div>
         )}
-      </div>
-    </div>
+      </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
+
+  if (!portalNode) return null;
+  return createPortal(modal, portalNode);
 }
 
 // ── Session Info — Host ──────────────────────────────────────────────────────
@@ -326,30 +348,29 @@ function SessionInfoHost({ session, copied, copiedCode, regenerating, onCopy, on
   const duration = useSessionDuration(session?.createdAt);
 
   return (
-    <div className="px-4 py-3 border-b space-y-2" style={{ borderColor: T.border, backgroundColor: 'rgba(74,186,154,0.02)' }}>
+      <div className="vt-session-info space-y-2 border-b border-[var(--border-subtle)] px-4 py-3">
       {/* Room Code — big and bold */}
       {roomCode && (
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5">
-            <Hash className="w-3.5 h-3.5" style={{ color: T.teal }} />
-            <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: T.textMuted }}>Room Code</span>
+            <Hash className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
+            <span className="vt-panel-kicker">Room code</span>
           </div>
           <div className="flex items-center gap-2 flex-1">
-            <span className="text-lg font-mono font-bold tracking-[0.3em] select-all" style={{ color: T.teal }}>
+            <span className="vt-session-room-code select-all font-mono text-lg font-bold tracking-[0.26em]">
               {roomCode}
             </span>
             <button onClick={onCopyCode}
-              className="p-1 rounded-md border transition-colors"
-              style={{ backgroundColor: T.surface, borderColor: copiedCode ? 'rgba(74,186,154,0.4)' : T.border }}
+              className={`vt-icon-button th-focus-ring h-7 min-w-7 ${copiedCode ? 'th-btn-active' : ''}`}
               title="Copy room code">
               {copiedCode
-                ? <Check className="w-3 h-3" style={{ color: T.teal }} />
-                : <Copy className="w-3 h-3" style={{ color: T.textMuted }} />
+                ? <Check className="w-3 h-3" />
+                : <Copy className="w-3 h-3" />
               }
             </button>
           </div>
           {duration && (
-            <div className="flex items-center gap-1 text-[10px]" style={{ color: T.textMuted }}>
+            <div className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
               <Clock className="w-3 h-3" />
               {duration}
             </div>
@@ -359,31 +380,28 @@ function SessionInfoHost({ session, copied, copiedCode, regenerating, onCopy, on
 
       {/* Invite Link — compact */}
       <div className="flex items-center gap-2">
-        <Link2 className="w-3.5 h-3.5 flex-shrink-0" style={{ color: T.tealDim }} />
+        <Link2 className="w-3.5 h-3.5 flex-shrink-0 text-[var(--text-muted)]" />
         <input
           readOnly
           value={session?.inviteLink || ''}
           aria-label="Invite link"
-          className="flex-1 rounded-md px-2.5 py-1 text-[11px] font-mono truncate border focus:outline-none"
-          style={{ backgroundColor: T.surface, borderColor: T.border, color: T.textSec }}
+          className="th-input flex-1 truncate rounded-[var(--radius-control)] border px-2.5 py-1 font-mono text-[11px] focus:outline-none"
         />
         <button onClick={onCopy}
-          className="p-1.5 rounded-md border transition-colors"
-          style={{ backgroundColor: T.surface, borderColor: copied ? 'rgba(74,186,154,0.4)' : T.border }}
+          className={`vt-icon-button th-focus-ring h-7 min-w-7 ${copied ? 'th-btn-active' : ''}`}
           title="Copy invite link">
           {copied
-            ? <Check className="w-3 h-3" style={{ color: T.teal }} />
-            : <Copy className="w-3 h-3" style={{ color: T.textMuted }} />
+            ? <Check className="w-3 h-3" />
+            : <Copy className="w-3 h-3" />
           }
         </button>
         <button onClick={onRegenerate}
           disabled={regenerating}
-          className="p-1.5 rounded-md border transition-colors"
-          style={{ backgroundColor: T.surface, borderColor: T.border, opacity: regenerating ? 0.5 : 1 }}
+          className="vt-icon-button th-focus-ring h-7 min-w-7 disabled:opacity-50"
           title="Regenerate link">
           {regenerating
-            ? <Loader2 className="w-3 h-3 animate-spin" style={{ color: T.textMuted }} />
-            : <RefreshCw className="w-3 h-3" style={{ color: T.textMuted }} />
+            ? <Loader2 className="w-3 h-3 animate-spin" />
+            : <RefreshCw className="w-3 h-3" />
           }
         </button>
       </div>
@@ -398,19 +416,14 @@ function SessionInfoGuest({ session, permissions, requestPermission }) {
   const hasEdit = permissions?.canEdit;
 
   return (
-    <div className="px-4 py-2.5 border-b flex items-center justify-between"
-      style={{ borderColor: T.border, backgroundColor: hasEdit ? 'rgba(74,186,154,0.03)' : 'rgba(251,191,36,0.03)' }}>
+      <div className="vt-session-info flex items-center justify-between border-b border-[var(--border-subtle)] px-4 py-2.5">
       <div className="flex items-center gap-2">
-        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold"
-          style={{
-            backgroundColor: hasEdit ? 'rgba(74,186,154,0.12)' : 'rgba(251,191,36,0.12)',
-            color: hasEdit ? T.teal : T.amber,
-          }}>
+        <div className="vt-workflow-chip" style={{ '--chip-color': hasEdit ? 'var(--accent-secondary)' : 'var(--accent-warning)' }}>
           {hasEdit ? <Edit3 className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-          {hasEdit ? 'EDIT' : 'VIEW'}
+          {hasEdit ? 'Edit' : 'View'}
         </div>
-        <span className="text-xs font-medium" style={{ color: T.text }}>
-          {hostName}&apos;s Session
+        <span className="text-xs font-medium text-[var(--text-primary)]">
+          Hosted by {hostName}
         </span>
       </div>
       {/* Permission pills — denied ones are clickable to request */}
@@ -421,11 +434,7 @@ function SessionInfoGuest({ session, permissions, requestPermission }) {
             <button key={key}
               disabled={granted}
               onClick={() => !granted && requestPermission?.(key)}
-              className="p-1 rounded transition-colors cursor-pointer disabled:cursor-default"
-              style={{
-                backgroundColor: granted ? 'rgba(74,186,154,0.10)' : 'transparent',
-                color: granted ? T.teal : T.borderHi,
-              }}
+              className={`vt-icon-button th-focus-ring h-7 min-w-7 cursor-pointer disabled:cursor-default ${granted ? 'th-btn-active' : ''}`}
               title={granted ? `${label}: Granted` : `${label}: Denied — click to request`}>
               <Icon className="w-3 h-3" />
             </button>
@@ -440,18 +449,17 @@ function SessionInfoGuest({ session, permissions, requestPermission }) {
 
 function PendingKnocksSection({ knocks, onAdmit, onDeny }) {
   return (
-    <div className="px-4 py-2.5 border-b" style={{ borderColor: T.border }}>
+    <div className="border-b border-[var(--border-subtle)] px-4 py-2.5">
       <div className="flex items-center gap-1.5 mb-2">
-        <Bell className="w-3.5 h-3.5" style={{ color: T.amber }} />
-        <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: T.amber }}>
-          Requesting Access ({knocks.length})
+        <Bell className="w-3.5 h-3.5 text-[var(--accent-warning)]" />
+        <span className="vt-panel-kicker text-[var(--accent-warning)]">
+	          Join requests ({knocks.length})
         </span>
       </div>
       <div className="space-y-1.5">
         {knocks.map((knock) => (
           <div key={knock.guestId}
-            className="flex items-center justify-between p-2 rounded-lg border"
-            style={{ backgroundColor: 'rgba(251,191,36,0.03)', borderColor: 'rgba(251,191,36,0.15)' }}>
+            className="vt-workflow-alert flex items-center justify-between p-2">
             <div className="flex items-center gap-2">
               {knock.avatarUrl ? (
                 <img src={knock.avatarUrl} alt="" className="w-5 h-5 rounded-full" />
@@ -465,16 +473,14 @@ function PendingKnocksSection({ knocks, onAdmit, onDeny }) {
             </div>
             <div className="flex items-center gap-1">
               <button onClick={() => onAdmit(knock.guestId)}
-                className="p-1 rounded transition-colors"
-                style={{ backgroundColor: 'rgba(74,222,128,0.12)' }}
+                className="vt-icon-button th-focus-ring h-7 min-w-7 text-[var(--accent-success)]"
                 title="Accept">
-                <Check className="w-3.5 h-3.5" style={{ color: '#4ade80' }} />
+                <Check className="w-3.5 h-3.5" />
               </button>
               <button onClick={() => onDeny(knock.guestId)}
-                className="p-1 rounded transition-colors"
-                style={{ backgroundColor: 'rgba(255,87,87,0.12)' }}
+                className="vt-icon-button th-focus-ring h-7 min-w-7 text-[var(--accent-danger)]"
                 title="Deny">
-                <X className="w-3.5 h-3.5" style={{ color: T.red }} />
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
@@ -490,11 +496,11 @@ function ConnectedGuestsSection({ guests, onUpdatePermissions, onKick }) {
   if (!guests || guests.length === 0) return null;
 
   return (
-    <div className="px-4 py-2.5 border-b" style={{ borderColor: T.border }}>
+    <div className="border-b border-[var(--border-subtle)] px-4 py-2.5">
       <div className="flex items-center gap-1.5 mb-2">
-        <Users className="w-3.5 h-3.5" style={{ color: T.teal }} />
-        <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: T.textMuted }}>
-          Connected ({guests.length})
+        <Users className="w-3.5 h-3.5 text-[var(--accent-secondary)]" />
+        <span className="vt-panel-kicker">
+          Connected peers ({guests.length})
         </span>
       </div>
       <div className="space-y-1.5">
@@ -517,7 +523,7 @@ function GuestRow({ guest, onUpdatePermissions, onKick }) {
   const [showPerms, setShowPerms] = useState(false);
 
   return (
-    <div className="rounded-lg border overflow-hidden" style={{ backgroundColor: T.surface, borderColor: T.border }}>
+    <div className="vt-workflow-card overflow-hidden">
       <div className="flex items-center justify-between px-2.5 py-1.5">
         <div className="flex items-center gap-2">
           {guest.avatarUrl ? (
@@ -532,34 +538,30 @@ function GuestRow({ guest, onUpdatePermissions, onKick }) {
         </div>
         <div className="flex items-center gap-0.5">
           <button onClick={() => setShowPerms(!showPerms)}
-            className="p-1 rounded hover:bg-[#1a1b24] transition-colors" title="Permissions">
+            className={`vt-icon-button th-focus-ring h-7 min-w-7 ${showPerms ? 'th-btn-active' : ''}`} title="Permissions">
             {showPerms
-              ? <Shield className="w-3.5 h-3.5" style={{ color: T.teal }} />
-              : <ShieldOff className="w-3.5 h-3.5" style={{ color: T.textMuted }} />
+              ? <Shield className="w-3.5 h-3.5" />
+              : <ShieldOff className="w-3.5 h-3.5" />
             }
           </button>
           <button onClick={onKick}
-            className="p-1 rounded hover:bg-[#ff575720] transition-colors" title="Remove guest">
-            <UserX className="w-3.5 h-3.5" style={{ color: T.textMuted }} />
+            className="vt-icon-button th-focus-ring h-7 min-w-7 text-[var(--accent-danger)]" title="Remove guest">
+            <UserX className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
       {showPerms && (
-        <div className="px-2.5 pb-2 space-y-1 border-t pt-1.5" style={{ borderColor: T.border }}>
+        <div className="space-y-1 border-t border-[var(--border-subtle)] px-2.5 pb-2 pt-1.5">
           {PERM_CONFIG.map(({ key, label, icon: Icon, risk }) => {
             const enabled = guest.permissions?.[key];
             return (
               <button key={key}
                 onClick={() => onUpdatePermissions({ [key]: !enabled })}
-                className="w-full flex items-center justify-between px-2 py-1 rounded-md transition-all border"
-                style={{
-                  backgroundColor: enabled ? 'rgba(58,133,116,0.07)' : T.bg,
-                  borderColor: enabled ? 'rgba(58,133,116,0.15)' : T.border,
-                }}>
+                className={`th-focus-ring flex w-full items-center justify-between rounded-[var(--radius-control)] border px-2 py-1 transition-all ${enabled ? 'th-btn-active' : 'th-btn-ghost border-[var(--border-subtle)]'}`}>
                 <div className="flex items-center gap-1.5">
-                  <Icon className="w-3 h-3" style={{ color: enabled ? T.teal : T.textMuted }} />
-                  <span className="text-[11px] font-medium" style={{ color: enabled ? T.text : T.textMuted }}>{label}</span>
-                  {risk === 'high' && <span className="text-[9px]" style={{ color: T.red }}>⚠</span>}
+                  <Icon className="w-3 h-3" />
+                  <span className="text-[11px] font-medium">{label}</span>
+                  {risk === 'high' && <span className="vt-session-risk">Privileged</span>}
                 </div>
                 <MiniToggle enabled={enabled} />
               </button>
@@ -575,11 +577,11 @@ function GuestRow({ guest, onUpdatePermissions, onKick }) {
 
 function JoinByCodeSection({ code, onChange, onJoin, loading }) {
   return (
-    <div className="px-4 py-3 border-t" style={{ borderColor: T.border }}>
+    <div className="border-t border-[var(--border-subtle)] px-4 py-3">
       <div className="flex items-center gap-1.5 mb-2">
-        <Hash className="w-3.5 h-3.5" style={{ color: T.textMuted }} />
-        <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: T.textMuted }}>
-          Join by Room Code
+        <Hash className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+        <span className="vt-panel-kicker">
+          Join by code
         </span>
       </div>
       <div className="flex items-center gap-2">
@@ -590,21 +592,14 @@ function JoinByCodeSection({ code, onChange, onJoin, loading }) {
             e.stopPropagation(); // prevent global shortcuts from intercepting input
             if (e.key === 'Enter') onJoin();
           }}
-          placeholder="Enter code…"
+          placeholder="ROOM-CODE"
           maxLength={8}
-          className="flex-1 rounded-md px-3 py-1.5 text-sm font-mono tracking-widest border focus:outline-none focus:border-[#4aba9a60] uppercase"
-          style={{ backgroundColor: T.surface, borderColor: T.border, color: T.text }}
+          className="th-input flex-1 rounded-[var(--radius-control)] border px-3 py-1.5 font-mono text-sm uppercase tracking-widest focus:outline-none"
           aria-label="Room code"
         />
         <button onClick={onJoin}
           disabled={loading || !code.trim() || code.trim().length < 4}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-semibold transition-all border"
-          style={{
-            backgroundColor: 'rgba(74,186,154,0.10)',
-            borderColor: 'rgba(74,186,154,0.30)',
-            color: T.teal,
-            opacity: loading || !code.trim() ? 0.5 : 1,
-          }}>
+          className="th-focus-ring th-btn-primary flex items-center gap-1 px-3 py-1.5 text-xs font-semibold disabled:opacity-50">
           {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowRight className="w-3.5 h-3.5" />}
           Join
         </button>
@@ -617,8 +612,7 @@ function JoinByCodeSection({ code, onChange, onJoin, loading }) {
 
 function MiniToggle({ enabled }) {
   return (
-    <div className="w-7 h-3.5 rounded-full relative transition-colors flex-shrink-0"
-      style={{ backgroundColor: enabled ? T.teal : T.borderHi }}>
+    <div className={`relative h-3.5 w-7 flex-shrink-0 rounded-full transition-colors ${enabled ? 'th-toggle-on' : 'th-toggle-off'}`}>
       <div className={`absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white shadow transition-transform ${
         enabled ? 'translate-x-3.5' : 'translate-x-0.5'
       }`} />

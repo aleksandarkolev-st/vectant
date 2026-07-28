@@ -201,8 +201,8 @@ export function ContextMenu({ items, position, onClose }) {
       role="menu"
       data-slot="context-menu-content"
       className={cn(
-        "bg-popover text-popover-foreground fixed z-50 min-w-[8rem]",
-        "overflow-hidden rounded-md border p-1 shadow-md",
+        "vt-command-popover fixed z-50 min-w-[9.5rem]",
+        "overflow-hidden p-1",
         "animate-in fade-in-0 zoom-in-95 duration-75",
       )}
       style={{
@@ -226,10 +226,8 @@ export function ContextMenu({ items, position, onClose }) {
               }
             }}
             className={cn(
-              "relative flex w-full cursor-default select-none items-center gap-2",
-              "rounded-sm px-2 py-1.5 text-sm outline-hidden",
-              "hover:bg-accent hover:text-accent-foreground",
-              "focus:bg-accent focus:text-accent-foreground",
+              "vt-command-item relative flex w-full cursor-default select-none items-center gap-2",
+              "px-2 py-1.5 text-sm outline-hidden",
               "data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
             )}
           >
@@ -237,7 +235,7 @@ export function ContextMenu({ items, position, onClose }) {
             {item.shortcut && (
               <span
                 data-slot="context-menu-shortcut"
-                className="text-muted-foreground ml-auto text-xs tracking-widest"
+                className="ml-auto text-[10px] tracking-widest text-[var(--text-dim)]"
               >
                 {item.shortcut}
               </span>
@@ -247,7 +245,7 @@ export function ContextMenu({ items, position, onClose }) {
             <div
               role="separator"
               data-slot="context-menu-separator"
-              className="bg-border -mx-1 my-1 h-px"
+              className="-mx-1 my-1 h-px bg-[var(--border-subtle)]"
             />
           )}
         </div>

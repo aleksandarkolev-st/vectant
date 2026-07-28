@@ -25,7 +25,7 @@ import {
 import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition, selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { fetchGitStatus, closeConflictResolver } from '@/redux/gitSlice';
 import { setFocusedTabGroup } from '@/components/docking-wm/state/layout-slice';
-import { Circle, Save, Sparkles, Loader2, X, Plus, TerminalSquare } from 'lucide-react';
+import { Circle, Save, Sparkles, Loader2, X, Plus, TerminalSquare, Users } from 'lucide-react';
 import { getFileIcon } from '@/utils/fileIcons';
 import {
     ResizableHandle,
@@ -246,17 +246,17 @@ async function disposeLanguageClientSafely(client, label) {
 
 // ===== SYNTHI BRAND Design Tokens - Theme-aware via CSS vars =====
 const TAB_TOKENS = {
-    activeBg: 'var(--bg-editor, #0c0d12)',
-    inactiveBg: 'var(--bg-app, #08090d)',
-    hoverBg: 'var(--bg-surface, #101118)',
-    primary: 'var(--accent-primary, #3a8574)',
-    primaryGlow: '0 0 14px color-mix(in srgb, var(--accent-primary, #3a8574) 60%, transparent)',
-    borderSubtle: 'var(--border-subtle, #1a1b24)',
-    borderFocus: 'var(--border-focus, #3a3b52)',
-    textPrimary: 'var(--text-primary, #f4f5f8)',
-    textSecondary: 'var(--text-secondary, #9ba2b8)',
-    textInactive: 'var(--text-dim, #4a5066)',
-    unsaved: 'var(--accent-danger, #ff6b6b)',
+    activeBg: 'var(--bg-editor)',
+    inactiveBg: 'var(--bg-app)',
+    hoverBg: 'var(--bg-surface)',
+    primary: 'var(--accent-primary)',
+    primaryGlow: '0 0 14px color-mix(in srgb, var(--accent-primary) 60%, transparent)',
+    borderSubtle: 'var(--border-subtle)',
+    borderFocus: 'var(--border-focus)',
+    textPrimary: 'var(--text-primary)',
+    textSecondary: 'var(--text-secondary)',
+    textInactive: 'var(--text-dim)',
+    unsaved: 'var(--accent-danger)',
 };
 
 const EditorPanel = ({
@@ -4159,7 +4159,7 @@ const EditorPanel = ({
                             pill, save). The tabs DOM stays mounted (hidden) so
                             scroll-into-view + middle-click + drag handlers
                             remain wired for any code that still references them. */}
-                        <div className="hidden h-8 border-b justify-between select-none shadow-sm" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)' }}>
+                        <div className="hidden h-8 select-none justify-between border-b" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)' }}>
 
                             {/* Breadcrumbs — visually hidden, the tab strip
                                 was lifted into the TopNav. We keep the DOM
@@ -4271,8 +4271,8 @@ const EditorPanel = ({
                                                             style={{
                                                                 width: 6,
                                                                 height: 6,
-                                                                background: 'var(--accent-primary, #6f7eff)',
-                                                                boxShadow: '0 0 5px color-mix(in srgb, var(--accent-primary, #6f7eff) 70%, transparent)',
+                                                                background: 'var(--accent-primary)',
+                                                                boxShadow: '0 0 5px color-mix(in srgb, var(--accent-primary) 70%, transparent)',
                                                             }}
                                                         />
                                                     )}
@@ -4300,7 +4300,7 @@ const EditorPanel = ({
                                                             style={{
                                                                 width: 14,
                                                                 height: 14,
-                                                                color: 'var(--accent-warning, #e0a83c)',
+                                                                color: 'var(--accent-warning)',
                                                             }}
                                                         >
                                                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -4340,7 +4340,7 @@ const EditorPanel = ({
                                                                             borderRadius: '50%',
                                                                             backgroundColor: u.color,
                                                                             display: 'inline-block',
-                                                                            border: '1.5px solid var(--bg-primary, #0c0d12)',
+                                                                            border: '1.5px solid var(--bg-app)',
                                                                             flexShrink: 0,
                                                                         }}
                                                                     />
@@ -4387,7 +4387,7 @@ const EditorPanel = ({
                                                                 style={{
                                                                     width: 10,
                                                                     height: 10,
-                                                                    color: 'var(--accent-success, #4caf87)',
+                                                                    color: 'var(--accent-success)',
                                                                 }}
                                                             >
                                                                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -4436,23 +4436,23 @@ const EditorPanel = ({
                                         style={{ position: 'fixed', left: tabContext.x, top: tabContext.y, zIndex: 9999 }}
                                         onMouseLeave={() => setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 })}
                                     >
-                                        <div className="rounded-lg shadow-lg text-sm border" style={{ background: TAB_TOKENS.activeBg, borderColor: TAB_TOKENS.borderSubtle, color: TAB_TOKENS.textPrimary }}>
-                                            <div className="px-3 py-2 cursor-pointer rounded-t-lg transition-colors" style={{ ':hover': undefined }} onClick={() => { if (tabContext.file) handleCloseTab(tabContext.file); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</div>
-                                            <div className="px-3 py-2 cursor-pointer transition-colors" onClick={() => {
+                                        <div className="vt-command-popover p-1 text-sm" style={{ color: TAB_TOKENS.textPrimary }}>
+                                            <button type="button" className="vt-command-item block w-full px-3 py-2 text-left" onClick={() => { if (tabContext.file) handleCloseTab(tabContext.file); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</button>
+                                            <button type="button" className="vt-command-item block w-full px-3 py-2 text-left" onClick={() => {
                                                 if (tabContext.file) {
                                                     const keep = tabContext.file.path;
                                                     const toClose = openFiles.filter(f => f.path !== keep).map(f => f.path);
                                                     toClose.forEach(p => dispatch(closeFile(p)));
                                                 }
                                                 setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 });
-                                            }}>Close Others</div>
-                                            <div className="px-3 py-2 cursor-pointer rounded-b-lg transition-colors" onClick={() => {
+                                            }}>Close Others</button>
+                                            <button type="button" className="vt-command-item block w-full px-3 py-2 text-left" onClick={() => {
                                                 if (tabContext.index >= 0) {
                                                     const toClose = openFiles.slice(tabContext.index + 1).map(f => f.path);
                                                     toClose.forEach(p => dispatch(closeFile(p)));
                                                 }
                                                 setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 });
-                                            }}>Close to Right</div>
+                                            }}>Close to Right</button>
                                         </div>
                                     </div>
                                 )}
@@ -4469,7 +4469,7 @@ const EditorPanel = ({
                                         style={isPrivateMode ? { background: 'color-mix(in srgb, var(--accent-danger) 12%, transparent)', color: 'var(--accent-danger)', border: '1px solid color-mix(in srgb, var(--accent-danger) 25%, transparent)' } : {}}
                                         title={isPrivateMode ? "Enable Collaboration" : "Disable Collaboration (Private Mode)"}
                                     >
-                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <div className="text-xs h-5" style={{ color: 'var(--text-secondary)' }}>👥</div>}
+                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <Users className="h-3.5 w-3.5" style={{ color: 'var(--text-secondary)' }} />}
                                         {isPrivateMode && <span className="text-[10px] font-bold ml-1">PRIVATE</span>}
                                     </button>
                                     
@@ -4499,7 +4499,7 @@ const EditorPanel = ({
                                                                 if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current);
                                                                 hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140);
                                                             }}
-                                                            className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white cursor-default shadow-sm"
+                                                            className="flex h-6 w-6 cursor-default items-center justify-center rounded-full text-xs text-[var(--text-primary)]"
                                                             style={{ border: `2px solid ${user.color || 'var(--accent-primary)'}`, background: user.color ? 'color-mix(in srgb, var(--text-primary) 5%, transparent)' : 'var(--bg-surface)' }}
                                                         >
                                                             <span style={{ fontSize: 10 }}>{initials}</span>
@@ -4527,9 +4527,9 @@ const EditorPanel = ({
                         {/* Hover card for presence */}
                         {hoverCardStyle && hoverPresence && hoverPresence.user && (
                             <div style={hoverCardStyle} onMouseEnter={() => { if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; } }} onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}>
-                                <div className="border rounded-md p-2 text-sm shadow-lg w-56" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
+                                <div className="vt-command-popover w-56 p-2 text-sm" style={{ color: 'var(--text-primary)' }}>
                                     <div className="flex items-center gap-2">
-                                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || 'var(--accent-primary)' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
+                                        <div className="flex h-8 w-8 items-center justify-center rounded-full text-sm text-[var(--text-primary)]" style={{ background: hoverPresence.user.color || 'var(--accent-primary)' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
                                         <div className="flex flex-col">
                                             <div className="font-semibold text-sm">{hoverPresence.user.name || 'Anonymous'}</div>
                                             <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{hoverPresence.user.email || (hoverPresence.user.id ? `id: ${hoverPresence.user.id}` : 'Anonymous user')}</div>
@@ -4618,8 +4618,8 @@ const EditorPanel = ({
                                               "Unsupported: MarkdownRendererService.setDefaultCodeBlockRenderer
                                                is not supported" */}
                                         {!servicesReady ? (
-                                            <div className="h-full w-full flex items-center justify-center bg-[#0a0b10]">
-                                                <span className="text-[#4d5168] text-sm select-none animate-pulse">Initializing editor…</span>
+                                            <div className="flex h-full w-full items-center justify-center" style={{ background: 'var(--bg-editor)' }}>
+                                                <span className="animate-pulse select-none text-sm" style={{ color: 'var(--text-muted)' }}>Initializing editor...</span>
                                             </div>
                                         ) : (<>
                                         {/* DiffEditor — kept mounted (display:none) once activated
@@ -4969,7 +4969,7 @@ const EditorPanel = ({
                                         window.__lastManualAiTrigger = now;
                                         requestAiCompletion();
                                     }}>
-                                        Trigger AI Suggestion
+                                        Run Model Suggestion
                                     </ContextMenuItem>
                                 </ContextMenuContent>
                             </ContextMenu>

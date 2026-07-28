@@ -1,5 +1,5 @@
 /* =====================================================================
-   Vectant AI Chat — "Living Orb" redesign
+   Vectant Console - Living Orb redesign
    Scoped, chat-only classes. The orb itself is a WebGL canvas (see
    VectantOrb.jsx); this file styles its frame (glow, pulse, bloom),
    a no-WebGL fallback, and the surrounding chat surfaces.
@@ -63,15 +63,104 @@
 }
 
 /* ── Suggestion chips (empty state) ─────────────────────────────────── */
+.vx-chat-shell {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 14% -10%, color-mix(in srgb, var(--brand-stop-3) 9%, transparent), transparent 24rem),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 78%, black 22%), var(--bg-app));
+  color: var(--text-primary);
+}
+
+.vx-chat-shell--docked {
+  border-radius: 0;
+  /* Docked chat defers its surface to the panel wrapper's Agents-group tint;
+     the floating popup keeps .vx-chat-shell's own gradient. */
+  background: transparent;
+}
+
+.vx-chat-shell--floating {
+  /* Force fixed positioning: the base .vx-chat-shell sets position:relative,
+     which otherwise overrides Tailwind's `fixed` utility and drops the popup
+     into the document flow (top-left) instead of pinning it to the viewport
+     (top-12 right-4). This is what made the navbar chat open on the left. */
+  position: fixed;
+  border: 1px solid color-mix(in srgb, var(--brand-stop-3) 24%, transparent);
+  border-radius: var(--radius-panel);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 14%, transparent),
+    0 28px 80px -42px color-mix(in srgb, var(--bg-app) 95%, transparent),
+    0 0 34px -20px color-mix(in srgb, var(--brand-stop-4) 54%, transparent);
+}
+
+.vx-chat-header {
+  border-bottom: 1px solid var(--border-subtle);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 84%, transparent), color-mix(in srgb, var(--bg-app) 92%, transparent));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+}
+
+.vx-chat-scroll {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-app) 94%, transparent), var(--bg-app));
+}
+
+.vx-run-badge {
+  color: var(--attention-purple);
+  background: color-mix(in srgb, var(--attention-purple) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--attention-purple) 26%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+}
+
+.vx-mini-action,
+.vx-icon-action {
+  border-radius: var(--radius-control);
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 88%, transparent);
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--bg-panel) 60%, transparent);
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    color var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.vx-mini-action:hover,
+.vx-icon-action:hover {
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--attention-purple) 28%, var(--border-subtle));
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+
+.vx-mini-action:active,
+.vx-icon-action:active {
+  transform: translateY(1px);
+}
+
+.vx-composer-dock {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-app) 70%, transparent), var(--bg-app));
+  border-top: 1px solid var(--border-subtle);
+}
+
+.vx-composer-dock.is-empty {
+  border-top: 0;
+  background: transparent;
+}
+
 .vx-chip {
   font-size: 11px;
   color: var(--text-secondary);
   background: color-mix(in srgb, var(--bg-elevated) 60%, transparent);
   border: 1px solid var(--border-medium);
-  border-radius: 999px;
+  border-radius: var(--radius-control);
   padding: 6px 12px;
   cursor: pointer;
-  transition: color 0.2s ease, border-color 0.2s ease, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), background 0.2s ease;
+  transition:
+    color var(--motion-fast),
+    border-color var(--motion-fast),
+    transform var(--motion-fast),
+    background var(--motion-fast);
 }
 .vx-chip:hover {
   color: var(--text-primary);
@@ -95,10 +184,14 @@
 
 /* ── Composer focus ring (matches the SCM composer language) ─────────── */
 .vx-composer-shell {
-  border-radius: 12px;
-  background: var(--bg-elevated);
+  border-radius: var(--radius-panel);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 86%, white 3%), var(--bg-panel));
   border: 1px solid var(--border-medium);
-  transition: border-color 180ms ease, box-shadow 180ms ease;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent),
+    0 16px 42px -34px color-mix(in srgb, var(--bg-app) 95%, transparent);
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast);
 }
 .vx-composer-shell:focus-within {
   border-color: color-mix(in srgb, var(--attention-purple) 60%, transparent);
@@ -108,7 +201,7 @@
 }
 
 /* ── Empty-state entrance ────────────────────────────────────────────── */
-.vx-emptystate { animation: vx-rise 520ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.vx-emptystate { animation: vx-rise 420ms cubic-bezier(0.16, 1, 0.3, 1) both; }
 @keyframes vx-rise { 0% { opacity: 0; transform: translateY(8px); } 100% { opacity: 1; transform: none; } }
 
 /* ── Editorial messages ──────────────────────────────────────────────
@@ -142,18 +235,21 @@
 .vx-user-bubble {
   max-width: 85%; min-width: 0;
   padding: 8px 11px;
-  border-radius: 12px 12px 4px 12px;
-  background: color-mix(in srgb, var(--bg-elevated) 65%, transparent);
-  border: 1px solid var(--border-medium);
+  border-radius: 10px 10px 4px 10px;
+  background: color-mix(in srgb, var(--bg-elevated) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-medium) 86%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
   color: var(--text-primary);
 }
 
 /* ── Card system: reasoning card (and shared chrome for diff/command) ── */
 .vx-rcard {
   border: 1px solid var(--border-medium);
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   overflow: hidden;
-  background: color-mix(in srgb, var(--bg-panel) 86%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 92%, white 3%), color-mix(in srgb, var(--bg-panel) 92%, transparent));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
 }
 .vx-rcard-hd {
   display: flex; align-items: center; gap: 9px; width: 100%;
@@ -209,7 +305,7 @@
 .vx-rcard-acts { display: flex; gap: 8px; }
 
 .vx-btn { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 5px 11px; border-radius: 8px; cursor: pointer; transition: filter 0.15s ease, background 0.15s ease, color 0.15s ease; }
-.vx-btn--primary { color: #fff; border: 1px solid transparent; background: linear-gradient(var(--bg-panel), var(--bg-panel)) padding-box, var(--brand-gradient-horizontal) border-box; }
+.vx-btn--primary { color: var(--text-primary); border: 1px solid transparent; background: linear-gradient(var(--bg-panel), var(--bg-panel)) padding-box, var(--brand-gradient-horizontal) border-box; }
 .vx-btn--primary:hover { filter: brightness(1.1); }
 .vx-btn--ghost { color: var(--text-secondary); background: transparent; border: 1px solid var(--border-medium); }
 .vx-btn--ghost:hover { color: var(--text-primary); border-color: color-mix(in srgb, var(--attention-purple) 45%, transparent); }
@@ -274,7 +370,7 @@
   transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform;
 }
-.vx-rail.is-open { transform: translateX(0); box-shadow: 12px 0 40px -12px rgba(0, 0, 0, 0.7); }
+.vx-rail.is-open { transform: translateX(0); box-shadow: 12px 0 40px -12px color-mix(in srgb, var(--bg-app) 70%, transparent); }
 
 .vx-rail-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 12px; }
 .vx-rail-orb { width: 22px; height: 22px; border-radius: 8px; flex: 0 0 auto; background: var(--brand-gradient-horizontal); box-shadow: 0 0 10px color-mix(in srgb, var(--attention-purple) 38%, transparent); }
@@ -315,50 +411,239 @@
   background: linear-gradient(var(--bg-panel), var(--bg-panel)) padding-box, var(--brand-gradient-horizontal) border-box;
 }
 
+.genome-card,
+.genome-cost-panel {
+  margin: 8px 0;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 84%, transparent);
+  border-radius: var(--radius-panel);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--attention-purple) 5%, transparent), transparent 66%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 86%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 52%, transparent));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent),
+    0 18px 50px -42px color-mix(in srgb, var(--bg-app) 94%, transparent);
+}
+
+.genome-card { padding: 10px; }
+
+.genome-card__head,
+.genome-cost-panel__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.genome-card__tier,
+.genome-universe__status,
+.genome-cost-panel__spinner {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  border: 1px solid color-mix(in srgb, var(--chip-color, var(--text-muted)) 24%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--chip-color, var(--text-muted)) 9%, transparent);
+  color: var(--chip-color, var(--text-muted));
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.genome-card__tier {
+  --chip-color: var(--accent-secondary);
+  margin-left: auto;
+  padding: 0 7px;
+  text-transform: none;
+}
+
+.genome-card__cancel {
+  margin-left: 2px;
+  border: 1px solid color-mix(in srgb, var(--border-medium) 76%, transparent);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--bg-elevated) 44%, transparent);
+  color: var(--text-muted);
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast), transform var(--motion-fast);
+}
+
+.genome-card__cancel:hover {
+  border-color: color-mix(in srgb, var(--accent-danger) 35%, var(--border-medium));
+  color: var(--accent-danger);
+}
+
+.genome-card__cancel:active,
+.genome-universe__actions button:active,
+.genome-cost-panel__cap-form button:active,
+.genome-cost-panel__value--editable:active {
+  transform: translateY(1px);
+}
+
+.genome-card__error,
 .genome-card__learned,
 .genome-card__ambiguity,
-.genome-card__policy {
+.genome-card__policy,
+.genome-card__empty,
+.genome-cost-panel__warn,
+.genome-cost-panel__error {
   margin: 8px 0;
   padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--bg-elevated) 48%, transparent);
+  border: 1px solid color-mix(in srgb, var(--workflow-alert-color, var(--border-subtle)) 28%, transparent);
+  border-radius: var(--radius-control);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--workflow-alert-color, var(--text-muted)) 9%, transparent), transparent 74%),
+    color-mix(in srgb, var(--bg-elevated) 44%, transparent);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
+.genome-card__error,
+.genome-cost-panel__error {
+  --workflow-alert-color: var(--accent-danger);
+  color: var(--text-primary);
+}
+
 .genome-card__learned {
-  border-color: color-mix(in srgb, var(--attention-purple) 40%, var(--border-subtle));
+  --workflow-alert-color: var(--attention-purple);
   color: var(--text-primary);
 }
 
-.genome-card__learned strong {
-  color: var(--text-primary);
+.genome-card__learned strong { color: var(--text-primary); }
+
+.genome-card__ambiguity,
+.genome-cost-panel__warn {
+  --workflow-alert-color: var(--accent-warning);
 }
 
-.genome-card__ambiguity {
-  border-color: color-mix(in srgb, var(--accent-warning, #f6c177) 36%, var(--border-subtle));
-}
-
-.genome-card__policy {
+.genome-card__policy,
+.genome-card__empty {
+  --workflow-alert-color: var(--text-muted);
   color: var(--text-muted);
+}
+
+.genome-card__empty {
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+}
+
+.genome-universe {
+  margin-top: 9px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 76%, transparent);
+  border-radius: var(--radius-panel);
+  background:
+    repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-primary) 2.5%, transparent) 0 1px, transparent 1px 12px),
+    color-mix(in srgb, var(--bg-editor) 74%, transparent);
+}
+
+.genome-universe__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.genome-universe__id {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.genome-universe__model,
+.genome-universe__style {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-app) 44%, transparent);
+  color: var(--text-muted);
+  padding: 2px 6px;
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+  font-size: 10px;
+}
+
+.genome-universe__status {
+  --chip-color: var(--accent-secondary);
+  margin-left: auto;
+  padding: 0 7px;
+}
+
+.genome-universe__status--ok,
+.genome-universe__status--done {
+  --chip-color: var(--accent-success);
+}
+
+.genome-universe__status--issues,
+.genome-universe__status--rejected,
+.genome-universe__status--failed,
+.genome-universe__status--fail {
+  --chip-color: var(--accent-danger);
+}
+
+.genome-universe__status--linting,
+.genome-universe__status--testing,
+.genome-universe__status--type-checking,
+.genome-universe__status--running,
+.genome-universe__status--critiquing,
+.genome-universe__status--revising {
+  --chip-color: var(--accent-warning);
 }
 
 .genome-universe__evidence,
 .genome-universe__visual {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 10px;
+  gap: 6px;
   min-width: 0;
+}
+
+.genome-universe__evidence {
+  margin-top: 8px;
+}
+
+.genome-universe__evidence span {
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  color: var(--text-secondary);
+  padding: 2px 6px;
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.genome-universe__attacks {
+  margin: 8px 0 0;
+  padding: 7px 9px;
+  list-style: none;
+  border: 1px solid color-mix(in srgb, var(--accent-danger) 32%, transparent);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--accent-danger) 8%, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.genome-universe__attacks strong {
+  color: var(--accent-danger);
+  text-transform: uppercase;
 }
 
 .genome-universe__visual {
   margin-top: 8px;
   padding: 7px 9px;
-  border-radius: 8px;
-  border: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--bg-elevated) 42%, transparent);
+  border: 1px solid color-mix(in srgb, var(--visual-color, var(--border-subtle)) 30%, transparent);
+  border-radius: var(--radius-control);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--visual-color, var(--text-muted)) 8%, transparent), transparent 72%),
+    color-mix(in srgb, var(--bg-elevated) 34%, transparent);
   color: var(--text-muted);
   font-size: 11px;
   line-height: 1.35;
@@ -371,15 +656,9 @@
   gap: 5px;
 }
 
-.genome-universe__visual--passed {
-  border-color: color-mix(in srgb, var(--accent-success, #8bd48b) 38%, var(--border-subtle));
-  color: var(--text-secondary);
-}
-
-.genome-universe__visual--failed {
-  border-color: color-mix(in srgb, var(--accent-danger, #ff6b6b) 44%, var(--border-subtle));
-  color: var(--text-primary);
-}
+.genome-universe__visual--passed { --visual-color: var(--accent-success); }
+.genome-universe__visual--failed { --visual-color: var(--accent-danger); color: var(--text-primary); }
+.genome-universe__visual--partial { --visual-color: var(--accent-warning); }
 
 .genome-universe__actions {
   display: flex;
@@ -388,8 +667,227 @@
   margin-top: 10px;
 }
 
+.genome-universe__actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  border: 1px solid color-mix(in srgb, var(--border-medium) 82%, transparent);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--bg-elevated) 46%, transparent);
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast), transform var(--motion-fast), opacity var(--motion-fast);
+}
+
+.genome-universe__actions button:hover {
+  border-color: color-mix(in srgb, var(--attention-purple) 35%, var(--border-medium));
+  color: var(--text-primary);
+}
+
+.genome-universe__actions button:last-child {
+  border-color: color-mix(in srgb, var(--accent-success) 38%, transparent);
+  color: var(--accent-success);
+  background: color-mix(in srgb, var(--accent-success) 9%, transparent);
+}
+
+.genome-universe__actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .genome-universe__review--done {
   border-color: color-mix(in srgb, var(--attention-purple) 42%, var(--border-subtle));
+  color: var(--text-primary);
+}
+
+.genome-card__foot {
+  margin-top: 9px;
+  border-top: 1px solid color-mix(in srgb, var(--border-subtle) 78%, transparent);
+  color: var(--accent-success);
+  padding-top: 8px;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.genome-cost-panel {
+  padding: 10px;
+}
+
+.genome-cost-panel--over {
+  border-color: color-mix(in srgb, var(--accent-danger) 42%, var(--border-subtle));
+}
+
+.genome-cost-panel__sigil {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid color-mix(in srgb, var(--accent-secondary) 32%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent-secondary) 12%, transparent);
+  color: var(--accent-secondary);
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+}
+
+.genome-cost-panel__spinner {
+  --chip-color: var(--accent-warning);
+  margin-left: auto;
+  padding: 0 7px;
+  animation: vx-mark-pulse 1.4s ease-in-out infinite;
+}
+
+.genome-cost-panel__numbers {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.genome-cost-panel__numbers > div {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--bg-editor) 62%, transparent);
+  padding: 8px;
+}
+
+.genome-cost-panel__label {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.genome-cost-panel__value {
+  margin-top: 3px;
+  color: var(--text-primary);
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.genome-cost-panel__value--editable {
+  cursor: pointer;
+  width: fit-content;
+  border-radius: 6px;
+  transition: color var(--motion-fast), background var(--motion-fast), transform var(--motion-fast);
+}
+
+.genome-cost-panel__value--editable:hover {
+  color: var(--accent-secondary);
+  background: color-mix(in srgb, var(--accent-secondary) 9%, transparent);
+}
+
+.genome-cost-panel__cap-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.genome-cost-panel__cap-form input {
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  padding: 4px 6px;
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+  font-size: 11px;
+  outline: none;
+}
+
+.genome-cost-panel__cap-form input:focus-visible {
+  border-color: color-mix(in srgb, var(--attention-purple) 62%, transparent);
+}
+
+.genome-cost-panel__cap-form button {
+  border: 1px solid color-mix(in srgb, var(--border-medium) 82%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-elevated) 48%, transparent);
+  color: var(--text-secondary);
+  padding: 3px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  transition: background var(--motion-fast), color var(--motion-fast), transform var(--motion-fast);
+}
+
+.genome-cost-panel__cap-form button:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+
+.genome-cost-panel__bar {
+  margin-top: 10px;
+  height: 7px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 78%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-app) 65%, transparent);
+}
+
+.genome-cost-panel__bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand-gradient-horizontal);
+  transition: width 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.genome-cost-panel--over .genome-cost-panel__bar-fill {
+  background: linear-gradient(90deg, var(--accent-warning), var(--accent-danger));
+}
+
+.genome-cost-panel__jobs {
+  margin-top: 9px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.genome-cost-panel__jobs summary {
+  cursor: pointer;
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.genome-cost-panel__jobs ul {
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.genome-cost-panel__jobs li {
+  border-top: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
+  padding: 6px 0;
+}
+
+.genome-cost-panel__jobs code {
+  color: var(--accent-secondary);
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+}
+
+.genome-cost-panel__spark {
+  display: block;
+  width: 100%;
+  height: 30px;
+  margin-top: 10px;
+  color: var(--accent-secondary);
+  opacity: 0.88;
+}
+
+@media (max-width: 420px) {
+  .genome-cost-panel__numbers {
+    grid-template-columns: 1fr;
+  }
+
+  .genome-universe__status {
+    margin-left: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -4,8 +4,10 @@ import { EyeOff, ShieldAlert } from 'lucide-react';
 import HumanVsAgentActionDiff from './HumanVsAgentActionDiff';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function GhostModePanel({ ghostRun }) {
@@ -45,7 +47,7 @@ export default function GhostModePanel({ ghostRun }) {
       </div>
 
       {ghostRun.explanation ? (
-        <p className="mt-4 rounded-md border p-3 text-sm leading-6" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}>
+        <p className="mt-4 rounded-md border p-3 text-sm leading-6" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)', color: 'var(--text-secondary)' }}>
           {ghostRun.explanation}
         </p>
       ) : null}
@@ -60,7 +62,7 @@ export default function GhostModePanel({ ghostRun }) {
       </div>
 
       {ghostRun.shadowEvidenceId || evidenceRefs.length || ghostRun.entrustmentImpact?.reason ? (
-        <section className="mt-4 rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }} data-testid="ghost-shadow-evidence">
+        <section className="mt-4 rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }} data-testid="ghost-shadow-evidence">
           <h3 className="text-xs font-semibold">Shadow Evidence</h3>
           <div className="mt-2 grid gap-2 text-xs md:grid-cols-2">
             <Field label="Evidence ID" value={ghostRun.shadowEvidenceId || 'Not recorded'} />
@@ -84,7 +86,7 @@ export default function GhostModePanel({ ghostRun }) {
           </h3>
           <ul className="grid gap-2 text-xs">
             {guardrailsTriggered.map((guardrail) => (
-              <li key={guardrail} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>{guardrail}</li>
+              <li key={guardrail} className="rounded-md border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>{guardrail}</li>
             ))}
           </ul>
         </section>

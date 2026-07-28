@@ -43,9 +43,9 @@ function langFromPath(filePath) {
 const COLLAB_URL = resolveCollabHttpUrl();
 
 const PANEL_SHELL_STYLE = {
-  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 94%, #0b0c14), var(--bg-panel))',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 94%, var(--bg-app)), var(--bg-panel))',
   borderColor: 'color-mix(in srgb, var(--border-medium) 84%, var(--accent-primary) 16%)',
-  boxShadow: '0 18px 44px rgba(0,0,0,0.42), 0 0 0 1px rgba(255,255,255,0.025)',
+  boxShadow: 'var(--vt-command-shadow)',
 };
 
 const PANEL_ACTION_STYLE = {
@@ -772,7 +772,7 @@ function PreviewView({
           disabled={restoring || isLatest || !!error || loading}
           className="text-xs px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 font-medium"
           style={{
-            color: isLatest || error || loading ? 'var(--text-muted)' : '#ffffff',
+            color: isLatest || error || loading ? 'var(--text-muted)' : 'var(--primary-foreground)',
             background: isLatest || error || loading
               ? 'var(--bg-surface)'
               : 'var(--accent-gradient)',

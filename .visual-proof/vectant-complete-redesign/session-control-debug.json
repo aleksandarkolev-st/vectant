@@ -1,0 +1,296 @@
+{
+  "rect": {
+    "x": 460,
+    "y": 211,
+    "width": 520,
+    "height": 478
+  },
+  "opacity": "1",
+  "display": "flex",
+  "visibility": "visible",
+  "color": "rgb(243, 245, 247)",
+  "transform": "none",
+  "zIndex": "1",
+  "centerTopElement": {
+    "tag": "p",
+    "className": "text-xs",
+    "text": "No other users online"
+  },
+  "centerIsModal": true,
+  "text": "Session control\nWORKSPACE ACCESS\nOWNER\nInvite\n\nNo other users online\n\nShare your workspace to collaborate\n\nJOIN BY CODE\nJoin\nStart session",
+  "className": "vt-dialog-surface vt-session-modal relative flex max-h-[85vh] w-[520px] max-w-[calc(100vw-28px)] flex-col overflow-hidden",
+  "children": [
+    {
+      "tag": "div",
+      "className": "vt-panel-header justify-between px-5",
+      "text": "Session control",
+      "rect": {
+        "x": 461,
+        "y": 212,
+        "width": 518,
+        "height": 38
+      },
+      "color": "rgb(243, 245, 247)",
+      "opacity": "1",
+      "display": "flex",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "div",
+      "className": "flex items-center gap-2.5",
+      "text": "Session control",
+      "rect": {
+        "x": 471,
+        "y": 221.5,
+        "width": 126.8125,
+        "height": 18
+      },
+      "color": "rgb(243, 245, 247)",
+      "opacity": "1",
+      "display": "flex",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "svg",
+      "className": {},
+      "text": "",
+      "rect": {
+        "x": 471,
+        "y": 222.5,
+        "width": 16,
+        "height": 16
+      },
+      "color": "rgb(111, 126, 143)",
+      "opacity": "1",
+      "display": "block",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "path",
+      "className": {},
+      "text": "",
+      "rect": {
+        "x": 472.3333435058594,
+        "y": 232.5,
+        "width": 9.33331298828125,
+        "height": 4
+      },
+      "color": "rgb(111, 126, 143)",
+      "opacity": "1",
+      "display": "inline",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "path",
+      "className": {},
+      "text": "",
+      "rect": {
+        "x": 481.6666564941406,
+        "y": 224.5853271484375,
+        "width": 1.997467041015625,
+        "height": 5.1626739501953125
+      },
+      "color": "rgb(111, 126, 143)",
+      "opacity": "1",
+      "display": "inline",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "path",
+      "className": {},
+      "text": "",
+      "rect": {
+        "x": 483.6666564941406,
+        "y": 232.586669921875,
+        "width": 2,
+        "height": 3.913330078125
+      },
+      "color": "rgb(111, 126, 143)",
+      "opacity": "1",
+      "display": "inline",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "circle",
+      "className": {},
+      "text": "",
+      "rect": {
+        "x": 474.3333435058594,
+        "y": 224.5,
+        "width": 5.33331298828125,
+        "height": 5.3333282470703125
+      },
+      "color": "rgb(111, 126, 143)",
+      "opacity": "1",
+      "display": "inline",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "h2",
+      "className": "vt-panel-title",
+      "text": "Session control",
+      "rect": {
+        "x": 497,
+        "y": 221.5,
+        "width": 100.8125,
+        "height": 18
+      },
+      "color": "rgb(243, 245, 247)",
+      "opacity": "1",
+      "display": "block",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "button",
+      "className": "vt-icon-button th-focus-ring h-7 min-w-7",
+      "text": "",
+      "rect": {
+        "x": 941,
+        "y": 216.5,
+        "width": 28,
+        "height": 28
+      },
+      "color": "rgb(125, 137, 152)",
+      "opacity": "1",
+      "display": "flex",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "svg",
+      "className": {},
+      "text": "",
+      "rect": {
+        "x": 947,
+        "y": 222.5,
+        "width": 16,
+        "height": 16
+      },
+      "color": "rgb(125, 137, 152)",
+      "opacity": "1",
+      "display": "block",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "path",
+      "className": {},
+      "text": "",
+      "rect": {
+        "x": 951,
+        "y": 226.5,
+        "width": 8,
+        "height": 8
+      },
+      "color": "rgb(125, 137, 152)",
+      "opacity": "1",
+      "display": "inline",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "path",
+      "className": {},
+      "text": "",
+      "rect": {
+        "x": 951,
+        "y": 226.5,
+        "width": 8,
+        "height": 8
+      },
+      "color": "rgb(125, 137, 152)",
+      "opacity": "1",
+      "display": "inline",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "div",
+      "className": "flex-1 overflow-y-auto p-4",
+      "text": "WORKSPACE ACCESS\nOWNER\nInvite\n\nNo other users online\n\nShare your workspace to co",
+      "rect": {
+        "x": 461,
+        "y": 250,
+        "width": 518,
+        "height": 298
+      },
+      "color": "rgb(243, 245, 247)",
+      "opacity": "1",
+      "display": "block",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "div",
+      "className": "space-y-3",
+      "text": "WORKSPACE ACCESS\nOWNER\nInvite\n\nNo other users online\n\nShare your workspace to co",
+      "rect": {
+        "x": 477,
+        "y": 266,
+        "width": 486,
+        "height": 266
+      },
+      "color": "rgb(243, 245, 247)",
+      "opacity": "1",
+      "display": "block",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "div",
+      "className": "vt-workflow-card p-2",
+      "text": "WORKSPACE ACCESS\nOWNER\nInvite",
+      "rect": {
+        "x": 477,
+        "y": 266,
+        "width": 486,
+        "height": 74
+      },
+      "color": "rgb(243, 245, 247)",
+      "opacity": "1",
+      "display": "block",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    {
+      "tag": "div",
+      "className": "flex items-center justify-between gap-2",
+      "text": "WORKSPACE ACCESS\nOWNER",
+      "rect": {
+        "x": 486,
+        "y": 275,
+        "width": 468,
+        "height": 17.5
+      },
+      "color": "rgb(243, 245, 247)",
+      "opacity": "1",
+      "display": "flex",
+      "visibility": "visible",
+      "transform": "none",
+      "zIndex": "auto"
+    }
+  ]
+}

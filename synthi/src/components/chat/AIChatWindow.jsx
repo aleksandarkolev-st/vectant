@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { Send, X, ChevronDown, ChevronRight, FileCode, Paperclip, Link, Unlink, PanelLeft } from 'lucide-react';
+import { Send, X, ChevronDown, ChevronRight, FileCode, Paperclip, Link, Unlink, PanelLeft, Check } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -29,6 +29,7 @@ import DiagnosticsDrawer from './DiagnosticsDrawer';
 import ReasoningCard from './ReasoningCard';
 import ChatRail from './ChatRail';
 import ChatSessionDropdown from './ChatSessionDropdown';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
 import './chat.css';
 
 const formatTimestamp = (timestamp) => {
@@ -40,38 +41,38 @@ const formatTimestamp = (timestamp) => {
 const buildLanguageMeta = (filename = '') => {
     const ext = (filename.split('.').pop() || '').toLowerCase();
     const map = {
-        js: { label: 'JS', color: '#fcd34d' },
-        jsx: { label: 'JSX', color: '#fcd34d' },
-        ts: { label: 'TS', color: '#60a5fa' },
-        tsx: { label: 'TSX', color: '#60a5fa' },
-        json: { label: 'JSON', color: '#c084fc' },
-        md: { label: 'MD', color: '#a78bfa' },
-        txt: { label: 'TXT', color: '#a3a3a3' },
-        py: { label: 'PY', color: '#f59e0b' },
-        rb: { label: 'RB', color: '#ef4444' },
-        go: { label: 'GO', color: '#38bdf8' },
-        rs: { label: 'RS', color: '#f97316' },
-        java: { label: 'JAVA', color: '#ef4444' },
-        cpp: { label: 'C++', color: '#60a5fa' },
-        c: { label: 'C', color: '#60a5fa' },
-        cs: { label: 'C#', color: '#22c55e' },
-        php: { label: 'PHP', color: '#a78bfa' },
-        html: { label: 'HTML', color: '#f97316' },
-        css: { label: 'CSS', color: '#60a5fa' },
-        scss: { label: 'SCSS', color: '#ec4899' },
-        yml: { label: 'YML', color: '#cbd5e1' },
-        yaml: { label: 'YAML', color: '#cbd5e1' },
-        sql: { label: 'SQL', color: '#22c55e' },
-        prisma: { label: 'DB', color: '#22c55e' },
-        sh: { label: 'SH', color: '#4ade80' },
-        bash: { label: 'SH', color: '#4ade80' },
-        toml: { label: 'TOML', color: '#cbd5e1' },
-        xml: { label: 'XML', color: '#f97316' },
-        svg: { label: 'SVG', color: '#f97316' },
-        mjs: { label: 'MJS', color: '#fcd34d' },
-        cjs: { label: 'CJS', color: '#fcd34d' },
+        js: { label: 'JS', color: 'var(--accent-warning)' },
+        jsx: { label: 'JSX', color: 'var(--accent-warning)' },
+        ts: { label: 'TS', color: 'var(--accent-secondary)' },
+        tsx: { label: 'TSX', color: 'var(--accent-secondary)' },
+        json: { label: 'JSON', color: 'var(--attention-purple)' },
+        md: { label: 'MD', color: 'var(--accent-primary)' },
+        txt: { label: 'TXT', color: 'var(--text-muted)' },
+        py: { label: 'PY', color: 'var(--accent-warning)' },
+        rb: { label: 'RB', color: 'var(--accent-danger)' },
+        go: { label: 'GO', color: 'var(--accent-secondary)' },
+        rs: { label: 'RS', color: 'var(--accent-warning)' },
+        java: { label: 'JAVA', color: 'var(--accent-danger)' },
+        cpp: { label: 'C++', color: 'var(--accent-secondary)' },
+        c: { label: 'C', color: 'var(--accent-secondary)' },
+        cs: { label: 'C#', color: 'var(--accent-success)' },
+        php: { label: 'PHP', color: 'var(--accent-primary)' },
+        html: { label: 'HTML', color: 'var(--accent-warning)' },
+        css: { label: 'CSS', color: 'var(--accent-secondary)' },
+        scss: { label: 'SCSS', color: 'var(--attention-purple)' },
+        yml: { label: 'YML', color: 'var(--text-secondary)' },
+        yaml: { label: 'YAML', color: 'var(--text-secondary)' },
+        sql: { label: 'SQL', color: 'var(--accent-success)' },
+        prisma: { label: 'DB', color: 'var(--accent-success)' },
+        sh: { label: 'SH', color: 'var(--accent-success)' },
+        bash: { label: 'SH', color: 'var(--accent-success)' },
+        toml: { label: 'TOML', color: 'var(--text-secondary)' },
+        xml: { label: 'XML', color: 'var(--accent-warning)' },
+        svg: { label: 'SVG', color: 'var(--accent-warning)' },
+        mjs: { label: 'MJS', color: 'var(--accent-warning)' },
+        cjs: { label: 'CJS', color: 'var(--accent-warning)' },
     };
-    return map[ext] || { label: ext ? ext.toUpperCase().slice(0, 4) : 'FILE', color: '#9ba2b8' };
+    return map[ext] || { label: ext ? ext.toUpperCase().slice(0, 4) : 'FILE', color: 'var(--text-muted)' };
 };
 
 const summarizeLog = (logs = []) => {
@@ -110,6 +111,7 @@ const AIChatWindow = ({
     const fileCacheEntriesRef = useRef([]);
     const workspaceSlug = useAppSelector((state) => state.workspace.slug);
     const rawFiles = useAppSelector((state) => state.workspace.rawFiles || []);
+    const { confirm, confirmDialog } = useConfirmDialog();
 
     useEffect(() => {
         const syncFileCacheEntries = () => {
@@ -248,6 +250,7 @@ const AIChatWindow = ({
         aiModel: effectiveModel,
         aiApiKey: effectiveApiKey,
         aiProvider: effectiveProvider,
+        confirmAction: confirm,
     });
 
     const {
@@ -793,16 +796,10 @@ const AIChatWindow = ({
     // distinct card with a brand-gradient rim and depth shadow — reads
     // as "AI is here over your editor" rather than "permanent panel".
     const containerClass = docked
-        ? 'h-full w-full min-w-0 max-w-full bg-transparent flex flex-col min-h-0'
-        : 'fixed top-10 right-3 bottom-11 w-[420px] flex flex-col min-h-0 z-40 rounded-xl overflow-hidden';
+        ? 'vx-chat-shell vx-chat-shell--docked h-full w-full min-w-0 max-w-full flex flex-col min-h-0'
+        : 'vx-chat-shell vx-chat-shell--floating fixed top-12 right-4 bottom-12 w-[420px] flex flex-col min-h-0 z-40 overflow-hidden';
 
     const containerStyle = docked ? undefined : {
-        background: 'var(--bg-app)',
-        border: '1px solid color-mix(in srgb, var(--brand-stop-3) 22%, transparent)',
-        boxShadow:
-            '0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 14%, transparent), ' +
-            '0 24px 60px -12px rgba(0,0,0,0.7), ' +
-            '0 0 32px -8px color-mix(in srgb, var(--brand-stop-3) 24%, transparent)',
         backdropFilter: 'blur(8px) saturate(140%)',
         WebkitBackdropFilter: 'blur(8px) saturate(140%)',
     };
@@ -945,7 +942,7 @@ const AIChatWindow = ({
             </ChatRail>
 
             {/* Header */}
-            <div className="flex flex-col" style={{ borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-app)' }}>
+            <div className="vx-chat-header flex flex-col">
                 <div className="flex items-center justify-between px-3.5 py-2.5 relative">
                     <div className="flex items-center gap-2.5">
                         {chatMode === 'wide' && (
@@ -961,7 +958,7 @@ const AIChatWindow = ({
                         )}
                         <VectantOrb state={orbState} size={24} paused={!isVisible} />
                         {chatMode === 'wide' ? (
-                            <span className="text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>Vectant AI</span>
+                            <span className="text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>Vectant Console</span>
                         ) : (
                             <ChatSessionDropdown
                                 sessions={chatSessions}
@@ -972,7 +969,7 @@ const AIChatWindow = ({
                             />
                         )}
                         {(suggestedCode || fileSuggestions.length > 0) && (
-                            <div className="text-[9px] font-semibold px-2 py-0.5 rounded-full" style={{ color: 'var(--accent-secondary)', background: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent)' }}>
+                            <div className="vx-run-badge text-[9px] font-semibold px-2 py-0.5 rounded-full">
                                 {fileSuggestions.length > 0 ? `${fileSuggestions.length} file${fileSuggestions.length > 1 ? 's' : ''}` : 'Ready'}
                             </div>
                         )}
@@ -982,12 +979,7 @@ const AIChatWindow = ({
                             <button
                                 type="button"
                                 onClick={onDockRight}
-                                className="px-2 py-1 rounded-md text-[10px] font-semibold transition-all duration-200"
-                                style={{
-                                    color: 'var(--accent-secondary)',
-                                    background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)',
-                                    border: '1px solid color-mix(in srgb, var(--accent-primary) 20%, transparent)',
-                                }}
+                                className="vx-mini-action th-focus-ring px-2 py-1 text-[10px] font-semibold"
                                 title="Dock chat to the right"
                             >
                                 Dock right
@@ -997,8 +989,7 @@ const AIChatWindow = ({
                             <button
                                 type="button"
                                 onClick={onClose}
-                                className="p-1.5 rounded-lg transition-all duration-200"
-                                style={{ color: 'var(--text-muted)' }}
+                                className="vx-icon-action th-focus-ring p-1.5"
                                 title="Close chat"
                             >
                                 <X className="w-3.5 h-3.5" strokeWidth={1.5} />
@@ -1033,7 +1024,7 @@ const AIChatWindow = ({
                     />
                 </div>
             ) : (
-            <ScrollArea ref={scrollRef} className="flex-1 px-3 py-3 min-h-0 min-w-0 relative overflow-hidden" style={{ background: 'var(--bg-app)' }}>
+            <ScrollArea ref={scrollRef} className="vx-chat-scroll flex-1 px-3 py-3 min-h-0 min-w-0 relative overflow-hidden">
                 {/* Subtle ambient glow */}
                 <div className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-[200px] h-[120px] rounded-full blur-[60px] z-0" style={{ background: 'color-mix(in srgb, var(--accent-primary) 4%, transparent)' }}></div>
                 <div className="space-y-3 min-w-0 relative z-10">
@@ -1207,8 +1198,8 @@ const AIChatWindow = ({
                                                                         </button>
                                                                         {/* Stats - more prominent */}
                                                                         <div className="flex items-center gap-1 flex-shrink-0">
-                                                                            <span className="font-mono text-[10px] font-semibold text-emerald-400 bg-emerald-500/15 px-1 py-px rounded">{statsAddText}</span>
-                                                                            <span className="font-mono text-[10px] font-semibold text-rose-400 bg-rose-500/15 px-1 py-px rounded">{statsRemText}</span>
+                                                                            <span className="font-mono text-[10px] font-semibold px-1 py-px rounded" style={{ color: 'var(--accent-success)', background: 'color-mix(in srgb, var(--accent-success) 14%, transparent)' }}>{statsAddText}</span>
+                                                                            <span className="font-mono text-[10px] font-semibold px-1 py-px rounded" style={{ color: 'var(--accent-danger)', background: 'color-mix(in srgb, var(--accent-danger) 14%, transparent)' }}>{statsRemText}</span>
                                                                         </div>
                                                                     </div>
                                                                     {/* Status badge */}
@@ -1270,8 +1261,15 @@ const AIChatWindow = ({
                                                                 </div>
                                                                 {/* Diff content area */}
                                                                 {suggestion.error ? (
-                                                                    <div className="text-xs font-mono text-rose-400 bg-rose-500/5 border-t border-rose-500/20 px-3 py-3">
-                                                                        <span className="text-rose-500/70">Error:</span> {suggestion.error}
+                                                                    <div
+                                                                        className="text-xs font-mono px-3 py-3"
+                                                                        style={{
+                                                                            color: 'var(--accent-danger)',
+                                                                            background: 'color-mix(in srgb, var(--accent-danger) 6%, transparent)',
+                                                                            borderTop: '1px solid color-mix(in srgb, var(--accent-danger) 22%, transparent)',
+                                                                        }}
+                                                                    >
+                                                                        <span style={{ color: 'color-mix(in srgb, var(--accent-danger) 72%, var(--text-secondary))' }}>Error:</span> {suggestion.error}
                                                                     </div>
                                                                 ) : !collapsed ? (
                                                                     <div
@@ -1291,10 +1289,10 @@ const AIChatWindow = ({
                                                     <div className="flex items-center justify-between px-2 py-1.5" style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--bg-elevated)' }}>
                                                         <div className="flex items-center gap-1.5">
                                                             <Sparkles className="w-3.5 h-3.5" style={{ color: 'var(--accent-secondary)' }} />
-                                                            <span className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>AI Suggestion</span>
+                                                            <span className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>Agent change</span>
                                                             {isLoading && (
-                                                                <span className="inline-flex items-center gap-1.5 text-xs text-amber-400">
-                                                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                                                                <span className="inline-flex items-center gap-1.5 text-xs" style={{ color: 'var(--accent-warning)' }}>
+                                                                    <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--accent-warning)' }}></span>
                                                                     Processing...
                                                                 </span>
                                                             )}
@@ -1447,7 +1445,7 @@ const AIChatWindow = ({
             )}
 
             {/* Input Area (composer) — docked at bottom; centered hero when empty */}
-            <div ref={composerRef} className="vx-composer-dock px-3.5 py-2.5" style={{ background: 'var(--bg-app)', borderTop: isEmpty ? 'none' : '1px solid var(--border-subtle)' }}>
+            <div ref={composerRef} className={`vx-composer-dock px-3.5 py-2.5 ${isEmpty ? 'is-empty' : ''}`}>
                 <input
                     ref={fileInputRef}
                     type="file"
@@ -1487,11 +1485,14 @@ const AIChatWindow = ({
                                                 : 'var(--bg-elevated)',
                                             opacity: isDetachedContext ? 0.4 : 1,
                                         }}
-                                        title={chip.isContext ? (contextFileAttached ? `${chip.name} (attached as context — click link to detach)` : `${chip.name} (not attached — click link to attach as context)`) : (chip.path || chip.name)}
+                                        title={chip.isContext ? (contextFileAttached ? `${chip.name} (attached as context - click link to detach)` : `${chip.name} (not attached - click link to attach as context)`) : (chip.path || chip.name)}
                                     >
                                         <span
                                             className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
-                                            style={{ color: isWorkspaceFile ? '#4aba9a' : meta.color, backgroundColor: isWorkspaceFile ? '#4aba9a20' : `${meta.color}20` }}
+                                            style={{
+                                                color: isWorkspaceFile ? 'var(--accent-secondary)' : meta.color,
+                                                backgroundColor: `color-mix(in srgb, ${isWorkspaceFile ? 'var(--accent-secondary)' : meta.color} 16%, transparent)`,
+                                            }}
                                         >
                                             <FileCode className="w-3 h-3" strokeWidth={1.5} />
                                             <span className="font-semibold">{meta.label}</span>
@@ -1571,7 +1572,7 @@ const AIChatWindow = ({
                                         title="Agent mode"
                                     >
                                         <span className="flex items-center gap-1.5">
-                                            {agentMode === 'direct' ? 'Agent' : agentMode === 'auto' ? 'Auto Agent' : agentMode === 'plan' ? 'Plan Agent' : 'Research'}
+                                            {agentMode === 'direct' ? 'Agent' : agentMode === 'auto' ? 'Auto agent' : agentMode === 'plan' ? 'Plan agent' : 'Research'}
                                             <ChevronDown className={`w-3 h-3 transition-transform duration-300 ${agentMenuOpen ? 'rotate-180' : 'rotate-0'}`} />
                                         </span>
                                     </Button>
@@ -1585,7 +1586,7 @@ const AIChatWindow = ({
                                     <p className="text-[9px] uppercase tracking-wider mb-1 px-1" style={{ color: 'var(--text-muted)' }}>Agent Mode</p>
                                     {[
                                         { key: 'direct', label: 'Direct', desc: 'Single LLM call, no agents' },
-                                        { key: 'auto', label: 'Auto Agent', desc: 'AI decides when to use sub-agents' },
+                                        { key: 'auto', label: 'Auto agent', desc: 'Router decides when to use sub-agents' },
                                         { key: 'plan', label: 'Plan & Execute', desc: 'Plan changes, then execute step-by-step' },
                                         { key: 'research', label: 'Research', desc: 'Multi-step search and file reading' },
                                     ].map((mode) => (
@@ -1605,7 +1606,8 @@ const AIChatWindow = ({
                                     {activePipeline && activePipeline.status !== 'completed' && activePipeline.status !== 'failed' && (
                                         <button
                                             onClick={() => { cancelPipeline(); setAgentMenuOpen(false); }}
-                                            className="w-full text-left px-2 py-1.5 rounded text-xs text-red-400 transition-colors mt-1"
+                                            className="vt-danger-icon-hover th-focus-ring th-btn-ghost mt-1 w-full rounded-[var(--radius-control)] px-2 py-1.5 text-left text-xs transition-colors"
+                                            style={{ color: 'var(--accent-danger)' }}
                                         >
                                             Cancel running pipeline
                                         </button>
@@ -1626,7 +1628,7 @@ const AIChatWindow = ({
                                         size="sm"
                                         className="text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none transition-colors"
                                         style={{ color: 'var(--text-secondary)' }}
-                                        title="Switch AI provider / model"
+                                        title="Switch model provider"
                                     >
                                         <span className="flex items-center gap-1.5">
                                             <activeProviderMeta.Logo size={13} color={activeProviderMeta.accent} />
@@ -1694,7 +1696,7 @@ const AIChatWindow = ({
                                                             }
                                                         >
                                                             <span className="font-mono text-[11px]">{m.label}</span>
-                                                            {selected && <span className="text-[9px] opacity-70">✓</span>}
+                                                            {selected && <Check className="h-3 w-3 opacity-70" aria-hidden="true" />}
                                                         </button>
                                                     );
                                                 })}
@@ -1762,7 +1764,7 @@ const AIChatWindow = ({
                                         style={contextFileAttached
                                             ? { color: 'var(--accent-secondary)', background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-primary) 22%, transparent)' }
                                             : { color: 'var(--text-muted)', background: 'transparent', border: '1px solid var(--border-medium)' }}
-                                        title={contextFileAttached ? `${fname} included as context — click to exclude` : `Include ${fname} as context`}
+                                        title={contextFileAttached ? `${fname} included as context - click to exclude` : `Include ${fname} as context`}
                                     >
                                         <FileCode className="w-3 h-3 flex-shrink-0" strokeWidth={2} style={{ color: contextFileAttached ? 'var(--accent-secondary)' : fmeta.color }} />
                                         <span className="truncate">{fname}</span>
@@ -1775,7 +1777,8 @@ const AIChatWindow = ({
                                         variant="ghost"
                                         size="sm"
                                         onClick={handleCancel}
-                                        className="text-[10px] h-5 px-1.5 text-rose-400/70 hover:text-rose-400"
+                                        className="text-[10px] h-5 px-1.5 opacity-75 hover:opacity-100"
+                                        style={{ color: 'var(--accent-danger)' }}
                                         title="Cancel generation"
                                     >
                                         Cancel
@@ -1801,7 +1804,7 @@ const AIChatWindow = ({
                                         background: isLoading
                                             ? 'var(--brand-gradient)'
                                             : (inputValue.trim() ? 'var(--brand-gradient)' : 'transparent'),
-                                        color: '#ffffff',
+                                        color: inputValue.trim() ? 'var(--bg-app)' : 'var(--text-muted)',
                                         boxShadow: inputValue.trim()
                                             ? '0 0 14px -4px color-mix(in srgb, var(--brand-stop-3) 38%, transparent)'
                                             : 'none',
@@ -1820,6 +1823,7 @@ const AIChatWindow = ({
                 </div>
             )}
             </div>
+            {confirmDialog}
         </div>
     );
 };

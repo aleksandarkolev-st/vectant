@@ -41,13 +41,13 @@ export default function GuestBanner() {
 
   if (kicked) {
     return (
-      <div className="flex items-center justify-between px-4 py-1.5 bg-[#ff575718] border-b border-[#ff575740]" role="alert">
+      <div className="vt-workflow-alert vt-workflow-alert--danger flex items-center justify-between rounded-none border-x-0 border-t-0 px-4 py-1.5" role="alert">
         <div className="flex items-center gap-2">
-          <AlertTriangle className="w-3.5 h-3.5 text-[#ff5757]" />
-          <span className="text-xs text-[#ff5757] font-semibold">You have been removed from the session.</span>
+          <AlertTriangle className="w-3.5 h-3.5 text-[var(--accent-danger)]" />
+          <span className="text-xs font-semibold text-[var(--accent-danger)]">You have been removed from the session.</span>
         </div>
-        <button onClick={() => setKicked(false)} className="p-0.5 rounded hover:bg-[#ff575730] transition-colors" aria-label="Dismiss">
-          <X className="w-3.5 h-3.5 text-[#ff5757]" />
+        <button onClick={() => setKicked(false)} className="vt-icon-button th-focus-ring h-6 min-w-6 text-[var(--accent-danger)]" aria-label="Dismiss">
+          <X className="w-3.5 h-3.5" />
         </button>
       </div>
     );
@@ -57,13 +57,13 @@ export default function GuestBanner() {
 
   if (terminated) {
     return (
-      <div className="flex items-center justify-between px-4 py-1.5 bg-[#fbbf2418] border-b border-[#fbbf2440]" role="alert">
+      <div className="vt-workflow-alert flex items-center justify-between rounded-none border-x-0 border-t-0 px-4 py-1.5" role="alert">
         <div className="flex items-center gap-2">
-          <AlertTriangle className="w-3.5 h-3.5 text-[#fbbf24]" />
-          <span className="text-xs text-[#fbbf24] font-semibold">The host ended the session.</span>
+          <AlertTriangle className="w-3.5 h-3.5 text-[var(--accent-warning)]" />
+          <span className="text-xs font-semibold text-[var(--accent-warning)]">The host ended the session.</span>
         </div>
-        <button onClick={() => setTerminated(false)} className="p-0.5 rounded hover:bg-[#fbbf2430] transition-colors" aria-label="Dismiss">
-          <X className="w-3.5 h-3.5 text-[#fbbf24]" />
+        <button onClick={() => setTerminated(false)} className="vt-icon-button th-focus-ring h-6 min-w-6 text-[var(--accent-warning)]" aria-label="Dismiss">
+          <X className="w-3.5 h-3.5" />
         </button>
       </div>
     );
@@ -73,13 +73,13 @@ export default function GuestBanner() {
 
   if (denied) {
     return (
-      <div className="flex items-center justify-between px-4 py-1.5 bg-[#ff575712] border-b border-[#ff575730]" role="alert">
+      <div className="vt-workflow-alert vt-workflow-alert--danger flex items-center justify-between rounded-none border-x-0 border-t-0 px-4 py-1.5" role="alert">
         <div className="flex items-center gap-2">
-          <Shield className="w-3.5 h-3.5 text-[#ff5757]" />
-          <span className="text-xs text-[#ff5757] font-medium">Your request to join was denied.</span>
+          <Shield className="w-3.5 h-3.5 text-[var(--accent-danger)]" />
+          <span className="text-xs font-medium text-[var(--accent-danger)]">Your request to join was denied.</span>
         </div>
-        <button onClick={() => setDenied(false)} className="p-0.5 rounded hover:bg-[#ff575720] transition-colors" aria-label="Dismiss">
-          <X className="w-3.5 h-3.5 text-[#ff5757]" />
+        <button onClick={() => setDenied(false)} className="vt-icon-button th-focus-ring h-6 min-w-6 text-[var(--accent-danger)]" aria-label="Dismiss">
+          <X className="w-3.5 h-3.5" />
         </button>
       </div>
     );
@@ -89,13 +89,13 @@ export default function GuestBanner() {
 
   if (isKnocking) {
     return (
-      <div className="flex items-center justify-between px-4 py-1.5 bg-[#fbbf240a] border-b border-[#fbbf2430]">
+      <div className="vt-workflow-alert flex items-center justify-between rounded-none border-x-0 border-t-0 px-4 py-1.5">
         <div className="flex items-center gap-2">
-          <div className="w-3 h-3 border-2 border-[#fbbf24] border-t-transparent rounded-full animate-spin" />
-          <span className="text-xs text-[#fbbf24] font-medium">Waiting for the host to accept…</span>
+          <div className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--accent-warning)] border-t-transparent" />
+          <span className="text-xs font-medium text-[var(--accent-warning)]">Waiting for the host to accept…</span>
         </div>
         <button onClick={leaveSession}
-          className="text-[10px] text-[#fbbf24] hover:text-[#fbbf24cc] font-medium transition-colors">
+          className="th-focus-ring th-btn-ghost rounded-[var(--radius-control)] px-2 py-0.5 text-[10px] font-medium text-[var(--accent-warning)]">
           Cancel
         </button>
       </div>
@@ -108,26 +108,24 @@ export default function GuestBanner() {
 
   const hostName = session?.hostName || 'Host';
   const hasEdit = permissions.canEdit;
-  const color = hasEdit ? '#4aba9a' : '#fbbf24';
+  const color = hasEdit ? 'var(--accent-secondary)' : 'var(--accent-warning)';
 
   return (
     <button
       onClick={() => collabSessionService.requestOpenPopup()}
-      className="w-full flex items-center gap-2.5 px-4 py-1 border-b cursor-pointer hover:brightness-110 transition-all"
+      className="vt-workflow-alert flex w-full cursor-pointer items-center gap-2.5 rounded-none border-x-0 border-t-0 px-4 py-1 transition-all hover:brightness-110"
       style={{
-        backgroundColor: hasEdit ? 'rgba(74,186,154,0.04)' : 'rgba(251,191,36,0.04)',
-        borderColor: `${color}40`,
+        '--workflow-alert-color': color,
       }}
     >
-      <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold"
-        style={{ backgroundColor: `${color}18`, color }}>
+      <div className="vt-workflow-chip text-[9px]" style={{ '--chip-color': color }}>
         {hasEdit ? <Edit3 className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
         {hasEdit ? 'EDIT' : 'VIEW'}
       </div>
       <span className="text-[11px] font-medium" style={{ color }}>
         {hostName}&apos;s Session
       </span>
-      <span className="text-[10px] ml-auto" style={{ color: `${color}80` }}>
+      <span className="ml-auto text-[10px] text-[var(--text-muted)]">
         Click for details
       </span>
     </button>
@@ -143,7 +141,7 @@ export function GuestSessionBorder({ children }) {
 
   if (!isGuest) return <>{children}</>;
 
-  const borderColor = permissions.canEdit ? '#4aba9a' : '#fbbf24';
+  const borderColor = permissions.canEdit ? 'var(--accent-secondary)' : 'var(--accent-warning)';
 
   return (
     <div className="ring-2 ring-inset rounded-lg overflow-hidden h-full"
