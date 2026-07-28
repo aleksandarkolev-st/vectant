@@ -1664,7 +1664,42 @@ Also fixed: `.gcloudignore` now excludes `.claude/`, whose untracked worktrees c
 - Build 2 `4c3229ed` — FAILURE at `codesite-mature-proof-suite` (playwright).
 - Build 3 `41bc0262` — FAILURE at `build-worker` (the Rust error above). 11 of 12 image
   builds succeeded, including the frontend.
-- Build 4 — pending, after the worker fix.
+- Build 4 `d53d7cd2` — FAILURE at `deploy-to-gke`. All 12 images built, Trivy passed, worker
+  fix confirmed good. Died on `timed out waiting for the condition on
+  externalsecrets/synthi-dojo-release-secrets` — breakage #5 below.
+- Build 5 `f7786cdc` — **SUCCESS**, tag `prod-0a28dca27-20260728`.
+
+5. **The dojo-release-gate overlay referenced 16 unprovisioned secrets.** All
+   `synthi-therapeutic-prod-*`, wired in 2026-07-01 (`a6eefa6aa`), never created in
+   `vectant-proj`. External Secrets could not sync `synthi-dojo-release-secrets`
+   (`SecretSyncedError`), and since the deploy waits on that ExternalSecret as a
+   prerequisite, one unprovisioned feature blocked every unrelated service. FIXED: entries
+   removed, `SYNTHI_THERAPEUTIC_PROD_ENDPOINTS_ENABLED` set to "0" (it was already
+   flag-gated and could not have been live).
+
+## Outcome — production is current
+
+`main` and `dev` are both at `0a28dca27`. Deployed and verified 2026-07-28:
+
+- ai-engine 2/2, ai-gateway 2/2, collab-server 1/1, dojo-mcp-host 1/1, frontend 2/2,
+  signaling-server 1/1 — all on `prod-0a28dca27-20260728`, all Running with 0 restarts.
+- `prisma-migrate` and `dojo-postgres-migrate` jobs both Completed.
+- Both ExternalSecrets `SecretSynced/True` — the one that blocked builds 4 and 5 now syncs.
+- beta.vectant.dev returns 302 to IAP, i.e. serving.
+
+Production moved from the 2026-06-21 image to current `main`, gaining local-support (#653),
+Jupyter (#665) and the CodeSite redesign (#666) — the first two had been merged but
+undeployed for weeks.
+
+### Still open
+
+- **GitHub Actions is not firing** (breakage #1) — the root cause that let the other four
+  reach `main` unnoticed. Not fixable from this repo; needs GitHub support to clear the org
+  flag. Until then every deploy must be submitted by hand.
+- **`worker` runs 0 replicas.** Pre-existing — it was 0 before this session too, and the
+  image now updates correctly. Worth confirming whether that is intentional.
+- **The 16 therapeutic secrets** remain unprovisioned; the feature is off.
+- **355 Dependabot vulnerabilities** on the default branch (17 critical).
 
 ## Conflict resolutions (what was decided and why)
 
