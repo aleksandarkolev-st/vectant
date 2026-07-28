@@ -201,6 +201,10 @@ services:
       # Networking
       CORS_ORIGIN: "http://localhost:${FRONTEND_HOST_PORT:-3000}"
       SYNTHI_APP_INTERNAL_URL: "http://frontend:3000"
+      # Explicit CodeSite authority endpoint. Runtime filesystem hydration must
+      # verify transaction state against this route; generic app-origin settings
+      # are intentionally not treated as a CodeSite authority.
+      SYNTHI_CODESITE_API_BASE_URL: "http://frontend:3000/api/workspace/{workspace_slug}/codesite"
       # Sent as `Authorization: Bearer` on the CodeSite control-plane probe to
       # the frontend (see controlPlaneHeaders). MUST match the frontend value.
       SYNTHI_CODESITE_TOKEN: "${SYNTHI_CODESITE_TOKEN:-local-compose-codesite-token}"
