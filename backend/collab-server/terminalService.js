@@ -2018,7 +2018,7 @@ function createTerminalWSS({
       codesite: codeSiteMetadata,
       codesiteContext: codeSiteContext.active ? codeSiteContext : null,
       codesiteQuarantine: codeSiteQuarantine || null,
-      codesiteOriginalCwd,
+      codesiteOriginalCwd: codeSiteOriginalCwd,
       releasePort: runtimeLaunch?.releasePort || (() => {}),
       unwatchFs,
       dataDisposable: null,

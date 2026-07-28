@@ -184,6 +184,11 @@ services:
       - "127.0.0.1:${COLLAB_HOST_PORT:-1234}:1234"
     environment:
       COLLAB_PORT: "1234"
+      # Terminal gateway tokens are signed by the frontend. The collab server
+      # must verify them with the same secret or every terminal WebSocket is
+      # rejected after a runtime repair succeeds.
+      AUTH_SECRET: "${AUTH_SECRET:-local-compose-auth-secret}"
+      NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-local-compose-auth-secret}"
       SPAWNER_MODE: "local"
       SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
       # Local TURN (returned to worker via /turn-credentials)
