@@ -1622,7 +1622,8 @@ let the pipeline deploy.
 - [x] 7. CodeSite release gate → exit 0
 - [x] 8. Test suites → 1213 passed / 19 failed; all 19 proven pre-existing on dev
 - [x] 9. Production build → compiled in 103s; local-support, Jupyter and CodeSite routes all present
-- [ ] 10. Hand off push commands: `dev`, then `dev` → `main` (user-side; push blocked in sandbox)
+- [x] 10a. Pushed `dev` → origin (`c38e7a0f3..462a036c4`)
+- [ ] 10b. Open PR `dev` → `main` (fast-forward) and merge to trigger the deploy — user-side, `gh` not installed
 - [ ] 11. Post-deploy: confirm GKE rollout and beta.vectant.dev serving (needs `gcloud auth login`)
 
 ## Conflict resolutions (what was decided and why)
