@@ -6,7 +6,6 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const { chromium } = require('playwright');
 
 const DEFAULT_PROOF_ROOT = 'tmp/codesite-dojo-proof';
 const PROOF_SPECS = [
@@ -582,6 +581,12 @@ function escapeHtml(value) {
 }
 
 async function screenshotHtml(htmlPath, pngPath) {
+  // Resolved lazily so a --no-screenshot run needs no playwright install at
+  // all. A top-level require made that flag meaningless: the module failed to
+  // load before any flag was read, which is why this suite could never run in
+  // Cloud Build. codesite-release-gate.mjs already defers its require the
+  // same way.
+  const { chromium } = require('playwright');
   const browser = await chromium.launch({
     headless: true,
     chromiumSandbox: false,

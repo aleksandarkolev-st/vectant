@@ -4,6 +4,13 @@
 **/.venv/
 .git/
 .agents/
+# Local agent state. .claude/worktrees/ holds untracked git worktrees whose
+# vendored manifests carry mutable :latest image references; uploading them
+# trips cloudbuild.yaml's reject-mutable-images guard on a local
+# `gcloud builds submit`. A CI checkout has no untracked files, so this only
+# bites local deploys -- but it bites them every time.
+.claude/
+.codex/
 .env
 .env.*
 **/.env
