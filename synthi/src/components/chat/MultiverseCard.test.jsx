@@ -41,6 +41,7 @@ function renderWithVerify(verify) {
     cancel: vi.fn(),
     askWhy: vi.fn(),
     markUniverseReviewed: vi.fn(),
+    markUniverseExplanationReviewed: vi.fn(),
     ...verify,
   });
   container = document.createElement('div');
@@ -110,8 +111,10 @@ describe('MultiverseCard counterfactual notices', () => {
 
   it('marks a universe as reviewed before applying comparison evidence', () => {
     const markUniverseReviewed = vi.fn();
+    const markUniverseExplanationReviewed = vi.fn();
     const view = renderWithVerify({
       markUniverseReviewed,
+      markUniverseExplanationReviewed,
       universes: {
         A: {
           id: 'A',
@@ -134,5 +137,11 @@ describe('MultiverseCard counterfactual notices', () => {
     });
 
     expect(markUniverseReviewed).toHaveBeenCalledWith('A');
+
+    act(() => {
+      view.querySelectorAll('.genome-universe__review')[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(markUniverseExplanationReviewed).toHaveBeenCalledWith('A');
   });
 });

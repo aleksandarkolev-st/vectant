@@ -52,7 +52,7 @@ function shortHash(proof) {
     return value ? value.slice(0, 12) : 'not captured';
 }
 
-function UniverseRow({ universe, onApply, onReview, reviewed }) {
+function UniverseRow({ universe, onApply, onReview, onExplanationReview, reviewed, explanationReviewed }) {
     const { id, stage, modelGen, modelCritic, style, evidence } = universe;
     const visualProof = visualProofFromEvidence(evidence);
     const visualStatus = proofStatus(visualProof);
@@ -121,6 +121,13 @@ function UniverseRow({ universe, onApply, onReview, reviewed }) {
                         <Eye className="w-3.5 h-3.5" aria-hidden="true" />
                         {reviewed ? 'Reviewed' : 'Mark reviewed'}
                     </button>
+                    <button
+                        type="button"
+                        className={explanationReviewed ? 'genome-universe__review genome-universe__review--done th-focus-ring' : 'genome-universe__review th-focus-ring'}
+                        onClick={() => onExplanationReview(id)}
+                    >
+                        {explanationReviewed ? 'Rationale reviewed' : 'Review rationale'}
+                    </button>
                     <button type="button" className="th-focus-ring" onClick={() => onApply(id)} disabled={!verified}>Apply</button>
                 </div>
             ) : null}
@@ -174,6 +181,8 @@ export function MultiverseCard({ jobId }) {
                         onApply={(id) => verify.apply(id)}
                         onReview={(id) => verify.markUniverseReviewed?.(id)}
                         reviewed={(verify.reviewedUniverseIds || []).includes(u.id)}
+                        onExplanationReview={(id) => verify.markUniverseExplanationReviewed?.(id)}
+                        explanationReviewed={(verify.openedExplanationUniverseIds || []).includes(u.id)}
                     />
                 ))
             )}
