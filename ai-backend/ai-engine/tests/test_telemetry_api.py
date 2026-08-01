@@ -1,0 +1,94 @@
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from shadow.telemetry_api import router
+
+
+def test_counterfactual_control_plane_persists_a_choice_and_changes_forecast(tmp_path):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    workspace = str(tmp_path)
+
+    created = client.post("/counterfactual/runs", json={
+        "workspace_path": workspace,
+        "request_id": "req-1",
+        "task_class": "agent_feature",
+        "base_state": {"repo": "fixture", "commit": "base"},
+        "universe_plan": [
+            {"id": "A", "direction": "conservative_local_repair", "runner_kind": "internal"},
+            {"id": "B", "direction": "runtime_primitive", "runner_kind": "codex"},
+        ],
+    })
+    assert created.status_code == 201
+    run_id = created.json()["counterfactual_run"]["run_id"]
+
+    for universe_id, loc, runtime_depth in (("A", 100, 0.1), ("B", 10, 0.9)):
+        branch = client.post(f"/counterfactual/runs/{run_id}/branches", params={"workspace_path": workspace}, json={
+            "universe_id": universe_id,
+            "runner_kind": "internal",
+            "direction_label": "local" if universe_id == "A" else "runtime",
+            "artifact_summary": f"{universe_id} trace",
+            "phenotype_vector": {"runtime_depth": runtime_depth},
+            "diff_summary": {"loc_added": loc, "loc_removed": 0},
+        })
+        assert branch.status_code == 201
+        branch_id = branch.json()["branch_trace"]["id"]
+        detector = client.post(f"/counterfactual/branches/{branch_id}/detectors", params={"workspace_path": workspace}, json={
+            "detector_kind": "unit_tests", "status": "passed", "score": 1,
+            "evidence_summary": "fixture test passed",
+        })
+        assert detector.status_code == 201
+
+    selected = client.post(f"/counterfactual/runs/{run_id}/selection", params={"workspace_path": workspace}, json={
+        "selected_universe_id": "B", "arbiter_winner_universe_id": "A",
+        "visible_universe_ids": ["A", "B"], "opened_diff_universe_ids": ["A", "B"],
+        "selection_action": "applied",
+    })
+    assert selected.status_code == 201
+
+    deltas = client.post(f"/counterfactual/runs/{run_id}/policy-deltas", params={"workspace_path": workspace}, json={})
+    assert deltas.status_code == 201
+    assert {delta["delta_kind"] for delta in deltas.json()["policy_deltas"]} == {
+        "arbiter_weight_change", "universe_direction_change",
+    }
+    assert deltas.json()["execution_niche_map"]["runtime_depth_preference"] == "raise_runtime_primitive"
+
+    forecast = client.post("/counterfactual/forecast/directions", json={
+        "workspace_path": workspace, "task_class": "agent_feature", "request_summary": "add infrastructure",
+        "budget": {"max_universes": 3, "max_cost_usd": 0.1},
+    })
+    assert forecast.status_code == 200
+    runtime = next(item for item in forecast.json()["directions"] if item["label"] == "runtime_primitive")
+    assert runtime["selection_fit_estimate"] == "high"
+
+    delta_id = deltas.json()["policy_deltas"][0]["id"]
+    removed = client.delete(f"/counterfactual/policy-deltas/{delta_id}", params={"workspace_path": workspace})
+    assert removed.status_code == 200
+
+
+def test_counterfactual_controls_disable_persistence_and_mutation_trials_are_quarantined(tmp_path):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    workspace = str(tmp_path)
+    controls = client.put("/counterfactual/controls", json={"workspace_path": workspace, "enabled": False, "fossil_days": 30})
+    assert controls.status_code == 200
+    assert controls.json() == {"enabled": False, "retention": {"fossil_days": 30, "raw_trace_days": 30}}
+
+    enabled = client.put("/counterfactual/controls", json={"workspace_path": workspace, "enabled": True})
+    assert enabled.status_code == 200
+
+    run = client.post("/counterfactual/runs", json={
+        "workspace_path": workspace, "request_id": "req-2", "task_class": "fix",
+        "base_state": {}, "universe_plan": [{"id": "A"}],
+    })
+    assert run.status_code == 201
+    run_id = run.json()["counterfactual_run"]["run_id"]
+    trial = client.post(f"/counterfactual/runs/{run_id}/mutation-trials", json={
+        "workspace_path": workspace, "task_class": "fix", "violated_policy": "small diff",
+        "why_now": "repeated evidence", "stricter_detectors": ["unit_tests"],
+        "quarantine_policy": "manual review", "budget_cap_usd": 0.1, "auto_apply_allowed": False,
+    })
+    assert trial.status_code == 201
+    assert trial.json()["mutation_trial"]["auto_apply_allowed"] is False

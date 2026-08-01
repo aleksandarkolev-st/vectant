@@ -36,6 +36,8 @@ from .selection_arbiter import rank_selection
 from .universe import Universe, UniverseSpec, UniverseResult
 from .universe_planner import apply_policy_deltas, direction_forecast
 from .worktree import WorktreePool, get_pool
+from .telemetry_repository import TelemetryRepository
+from .counterfactual_types import PolicyDelta, PolicyDeltaKind, PolicyDeltaStatus
 
 logger = logging.getLogger("shadow.multiverse")
 
@@ -134,12 +136,33 @@ async def run_job(
     job.snapshot_obj = snap
     job.counterfactual_run_id = job.job_id
     job.counterfactual_base_hash = _base_state_hash(job.snapshot)
+    # Persist compact run metadata before any runner starts. The durable
+    # repository is local-first and can be disabled by workspace policy.
+    job.telemetry_repository = TelemetryRepository(repo)
+    job.telemetry_repository.put_run({
+        "run_id": job.counterfactual_run_id,
+        "workspace_id": str(repo),
+        "request_id": job.job_id,
+        "task_class": intent,
+        "base_state": job.snapshot,
+        "created_at": time.time(),
+        "runners": [],
+        "universes": [],
+        "detector_results": [],
+        "arbiter_results": [],
+        "learned_policy_deltas": [],
+        "retention_policy": job.telemetry_repository.retention(),
+    })
     await job.emit(events.snapshot_taken(rel_paths))
 
     pool = await get_pool(repo, size=max(2, n))
 
     specs = _make_specs(n, intent=intent, models=job.models or {})
     active_deltas = POLICY_STORE.list_active(str(repo), intent)
+    # Reload durable policy at every run boundary. A process restart must not
+    # erase the behavioral effect of a previously validated choice scene.
+    durable_deltas = _durable_policy_deltas(job.telemetry_repository, intent)
+    active_deltas = _dedupe_policy_deltas([*active_deltas, *durable_deltas])
     niche = build_execution_niche_map(str(repo), intent, active_deltas)
     specs = apply_policy_deltas(specs, active_deltas)
     job.policy_hints = niche.policy_hints
@@ -319,6 +342,12 @@ def _capture_counterfactual_evidence(*, job: events.JobState, valid: List[Univer
     job.detector_results = detectors
     job.proof_verdict = proof.to_dict()
     job.selection_verdict = selection.to_dict()
+    repository = getattr(job, "telemetry_repository", None)
+    if repository is not None:
+        for trace in traces:
+            repository.put_branch(trace.to_dict())
+        for detector in detectors:
+            repository.put_detector(detector.to_dict())
     return _proof_eligible_results(job, valid)
 
 
@@ -346,6 +375,29 @@ def _base_state_hash(snapshot_dict: Dict[str, Any]) -> str:
     import json
 
     return hashlib.sha1(json.dumps(snapshot_dict or {}, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _durable_policy_deltas(repository: TelemetryRepository, task_class: str) -> List[PolicyDelta]:
+    values: List[PolicyDelta] = []
+    for record in repository.list_policy_deltas(task_class=task_class, active_only=True):
+        try:
+            values.append(PolicyDelta(
+                id=record["id"], source_counterfactual_run_id=record["source_counterfactual_run_id"],
+                workspace_id=record["workspace_id"], task_class=record["task_class"],
+                delta_kind=PolicyDeltaKind(record["delta_kind"]), before=record["before"], after=record["after"],
+                confidence=record["confidence"], evidence_refs=list(record.get("evidence_refs") or []),
+                expiry=record.get("expiry"), status=PolicyDeltaStatus(record.get("status", "hypothesis")),
+            ))
+        except (KeyError, TypeError, ValueError):
+            logger.warning("ignored invalid durable policy delta in %s", repository.path)
+    return values
+
+
+def _dedupe_policy_deltas(deltas: List[PolicyDelta]) -> List[PolicyDelta]:
+    unique: Dict[str, PolicyDelta] = {}
+    for delta in deltas:
+        unique[delta.id] = delta
+    return list(unique.values())
 
 
 async def _run_single(

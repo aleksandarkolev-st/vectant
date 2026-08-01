@@ -3120,6 +3120,8 @@ except ImportError as e:
 try:
     from shadow import shadow_router
     app.include_router(shadow_router)
+    from shadow.telemetry_api import router as counterfactual_router
+    app.include_router(counterfactual_router)
     logger.info("Shadow verification module loaded")
 except ImportError as e:
     logger.warning(f"Shadow verification module not available: {e}")

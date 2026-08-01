@@ -22,6 +22,8 @@ from .policy_delta import STORE as POLICY_STORE
 from .policy_delta import persist_policy_deltas
 from .regret_memory_markdown import append_session_memory, load_policy_deltas
 from .regret_arbiter import extract_regret_lessons
+from .branch_fossil import fossilize
+from .telemetry_repository import TelemetryRepository
 from .snapshot import ApplyResult  # noqa: F401  (re-exported for clarity)
 
 logger = logging.getLogger("shadow.api")
@@ -347,6 +349,22 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
         persist_policy_deltas(lesson.policy_delta for lesson in lessons)
         learned_lines = [lesson.text for lesson in lessons]
         policy_delta_payloads = [lesson.policy_delta.to_dict() for lesson in lessons]
+        repository = getattr(job, "telemetry_repository", None) or TelemetryRepository(repo)
+        repository.put_choice_scene(scene.to_dict())
+        repository.put_policy_deltas(policy_delta_payloads)
+        detector_by_branch = {}
+        for detector in job.detector_results or []:
+            detector_by_branch.setdefault(detector.branch_trace_id, []).append(detector)
+        retention_days = repository.retention()["fossil_days"]
+        for trace in traces:
+            repository.put_branch(trace.to_dict())
+            matching_lessons = [lesson.text for lesson in lessons if trace.id in lesson.policy_delta.evidence_refs]
+            repository.put_fossil(fossilize(
+                trace=trace,
+                detectors=detector_by_branch.get(trace.id, []),
+                workspace_id=str(repo), task_class=job.intent or "fix",
+                inferred_lessons=matching_lessons, retention_days=retention_days,
+            ).to_dict())
         append_session_memory(
             repo,
             task_class=job.intent or "fix",
