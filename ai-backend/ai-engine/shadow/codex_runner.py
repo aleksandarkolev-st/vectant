@@ -7,8 +7,31 @@ plane.
 
 from __future__ import annotations
 
-from .runner_base import BaseRunnerAdapter
+from pathlib import Path
+from typing import List
+
+from .runner_base import BaseRunnerAdapter, RunnerInvocation
 
 
 class CodexRunner(BaseRunnerAdapter):
     runner_kind = "codex"
+
+    def command_for(
+        self,
+        *,
+        invocation: RunnerInvocation,
+        output_schema: Path,
+        output_path: Path,
+        executable: str = "codex",
+    ) -> List[str]:
+        """Build Codex' documented non-interactive argv, never a shell string."""
+        prompt = (
+            f"Universe {invocation.universe_id}: {invocation.declared_condition}.\n"
+            f"Task: {invocation.task_summary}\n"
+            f"Policy hints: {' | '.join(invocation.policy_hints[:5]) or 'none'}\n"
+            "Work only in the current workspace. Return a bounded branch summary matching the output schema."
+        )
+        return [
+            executable, "exec", "--sandbox", "workspace-write",
+            "--output-schema", str(output_schema), "-o", str(output_path), prompt,
+        ]

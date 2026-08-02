@@ -346,3 +346,22 @@ class MutationTrial:
         data["stricter_detectors"] = [kind.value for kind in self.stricter_detectors]
         data["status"] = self.status.value
         return data
+
+
+@dataclass
+class PostSelectionMutation:
+    selected_branch_id: str
+    observation_window: str
+    files_changed_after_apply: List[str]
+    deleted_generated_blocks: int
+    retained_generated_blocks: int
+    abstraction_removed: bool
+    tests_added_by_user: bool
+    ui_changed_by_user: bool
+    runtime_changed_by_user: bool
+    mutation_summary: str
+    retention_score: float
+    observed_at: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)

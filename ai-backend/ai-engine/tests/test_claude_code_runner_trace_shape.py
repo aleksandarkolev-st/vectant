@@ -34,3 +34,17 @@ def test_claude_code_runner_trace_shape():
     assert trace.prompt_lineage == ["system", "user"]
     assert trace.risk_trace.warnings == ["manual review required"]
     assert trace.tool_trace_summary["raw_log_ref"] == "artifact://claude/run/C/session.jsonl"
+
+
+def test_claude_runner_uses_noninteractive_explicit_permission_contract():
+    invocation = RunnerInvocation(
+        run_id="run", universe_id="C", runner_id="claude-code", direction_id="minimal",
+        direction_label="minimal patch", declared_condition="keep it narrow", start_state_hash="base",
+        task_summary="implement safely", policy_hints=["keep scope small"],
+    )
+
+    argv = ClaudeCodeRunner().command_for(invocation=invocation)
+
+    assert argv[0] == "claude"
+    assert "-p" in argv
+    assert argv[-2:] == ["--permission-mode", "acceptEdits"]

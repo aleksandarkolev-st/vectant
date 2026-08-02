@@ -77,6 +77,17 @@ class TelemetryRepository:
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         return self._read()["runs"].get(run_id)
 
+    def update_run(self, run_id: str, **changes: Any) -> Dict[str, Any]:
+        data = self._read()
+        record = data["runs"].get(run_id)
+        if record is None:
+            raise KeyError(f"unknown counterfactual run: {run_id}")
+        if not data["enabled"]:
+            return record
+        record.update(_compact(changes))
+        self._write(data)
+        return record
+
     def put_branch(self, branch: Dict[str, Any]) -> Dict[str, Any]:
         data = self._read()
         if not data["enabled"]:

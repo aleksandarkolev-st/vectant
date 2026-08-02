@@ -36,3 +36,18 @@ def test_codex_runner_trace_shape():
     assert trace.command_trace_summary["commands"] == ["pytest -q"]
     assert trace.tool_trace_summary["raw_log_ref"] == "artifact://codex/run/B/log.jsonl"
     assert trace.latency_trace.duration_ms == 120
+
+
+def test_codex_runner_uses_noninteractive_workspace_write_contract(tmp_path):
+    invocation = RunnerInvocation(
+        run_id="run", universe_id="B", runner_id="codex-local", direction_id="runtime",
+        direction_label="runtime primitive", declared_condition="runtime primitive", start_state_hash="base",
+        task_summary="implement the primitive", policy_hints=["prefer proof"],
+    )
+    argv = CodexRunner().command_for(
+        invocation=invocation, output_schema=tmp_path / "schema.json", output_path=tmp_path / "out.json",
+    )
+
+    assert argv[:4] == ["codex", "exec", "--sandbox", "workspace-write"]
+    assert "--output-schema" in argv
+    assert "Universe B" in argv[-1]

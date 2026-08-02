@@ -18,6 +18,7 @@ from .counterfactual_types import (
 )
 from .regret_arbiter import extract_regret_lessons
 from .telemetry_repository import TelemetryRepository
+from .post_selection_mutation import summarize_post_selection_mutation
 
 router = APIRouter(prefix="/counterfactual", tags=["counterfactual"])
 
@@ -93,6 +94,22 @@ class MutationTrialRequest(BaseModel):
     quarantine_policy: str
     budget_cap_usd: float = Field(gt=0, le=1000)
     auto_apply_allowed: Literal[False] = False
+
+
+class PostSelectionMutationFile(BaseModel):
+    path: str
+    generated_content: str = Field(max_length=256_000)
+    observed_content: str = Field(max_length=256_000)
+
+
+class PostSelectionMutationRequest(BaseModel):
+    selected_branch_id: str
+    observation_window: str = Field(max_length=160)
+    files: List[PostSelectionMutationFile] = Field(default_factory=list, max_length=100)
+    abstraction_removed: bool = False
+    tests_added_by_user: bool = False
+    ui_changed_by_user: bool = False
+    runtime_changed_by_user: bool = False
 
 
 def _repo(workspace_path: str) -> TelemetryRepository:
@@ -227,6 +244,28 @@ def create_mutation_trial(run_id: str, payload: MutationTrialRequest) -> Dict[st
         "budget_cap_usd": payload.budget_cap_usd, "status": "planned", "result": None,
         "regret_signal_scope": "isolated", "auto_apply_allowed": False, "created_at": time.time()}
     return {"mutation_trial": repo.put_mutation_trial(trial)}
+
+
+@router.post("/runs/{run_id}/post-selection-mutation", status_code=201)
+def record_post_selection_mutation(run_id: str, payload: PostSelectionMutationRequest, workspace_path: str) -> Dict[str, Any]:
+    repo = _repo(workspace_path)
+    run = repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="counterfactual run not found")
+    mutation = summarize_post_selection_mutation(
+        selected_branch_id=payload.selected_branch_id,
+        observation_window=payload.observation_window,
+        files=[item.model_dump() for item in payload.files],
+        abstraction_removed=payload.abstraction_removed,
+        tests_added_by_user=payload.tests_added_by_user,
+        ui_changed_by_user=payload.ui_changed_by_user,
+        runtime_changed_by_user=payload.runtime_changed_by_user,
+    )
+    try:
+        repo.update_run(run_id, post_selection_mutation=mutation.to_dict())
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return {"post_selection_mutation": mutation.to_dict()}
 
 
 def _trace_from_payload(run_id: str, payload: BranchRequest) -> BranchTrace:

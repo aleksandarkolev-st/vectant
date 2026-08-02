@@ -47,3 +47,26 @@ def test_runner_snapshot_hash_changes_with_workspace_files(tmp_path):
     after = adapter.prepare_workspace_snapshot(tmp_path)["state_hash"]
 
     assert before != after
+
+
+def test_runner_executes_explicit_argv_and_stores_raw_artifact_by_reference(tmp_path):
+    adapter = BaseRunnerAdapter()
+    invocation = RunnerInvocation(
+        run_id="run-real", universe_id="A", runner_id="fixture", direction_id="safe",
+        direction_label="safe", declared_condition="fixture execution", start_state_hash="base",
+        task_summary="emit a bounded summary", timeout_seconds=10,
+    )
+
+    artifact = adapter.run(
+        workspace_path=tmp_path,
+        invocation=invocation,
+        command=[sys.executable, "-c", "print('runner summary')"],
+    )
+
+    assert artifact.command_summary["exit_code"] == 0
+    assert artifact.raw_log_ref == ".vectant/runner-artifacts/run-real/custom-A.json"
+    assert "runner summary" in artifact.artifact_summary
+    assert (tmp_path / artifact.raw_log_ref).is_file()
+    trace = adapter.collect_trace(invocation, artifact)
+    assert trace.tool_trace_summary["raw_log_ref"] == artifact.raw_log_ref
+    assert "runner summary" not in trace.tool_trace_summary["raw_log_ref"]

@@ -92,3 +92,26 @@ def test_counterfactual_controls_disable_persistence_and_mutation_trials_are_qua
     })
     assert trial.status_code == 201
     assert trial.json()["mutation_trial"]["auto_apply_allowed"] is False
+
+
+def test_control_plane_records_post_apply_retention_without_storing_source(tmp_path):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    workspace = str(tmp_path)
+    run = client.post("/counterfactual/runs", json={
+        "workspace_path": workspace, "request_id": "req-mutation", "task_class": "fix",
+        "base_state": {}, "universe_plan": [{"id": "A"}],
+    })
+    run_id = run.json()["counterfactual_run"]["run_id"]
+
+    response = client.post(f"/counterfactual/runs/{run_id}/post-selection-mutation", params={"workspace_path": workspace}, json={
+        "selected_branch_id": f"br_{run_id}_A", "observation_window": "24h",
+        "files": [{"path": "app.py", "generated_content": "class Generated: pass", "observed_content": ""}],
+        "abstraction_removed": True,
+    })
+
+    assert response.status_code == 201
+    mutation = response.json()["post_selection_mutation"]
+    assert mutation["retention_score"] == 0
+    assert "class Generated" not in str(mutation)
