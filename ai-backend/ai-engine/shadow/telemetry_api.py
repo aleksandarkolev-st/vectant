@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -19,6 +20,11 @@ from .counterfactual_types import (
 from .regret_arbiter import extract_regret_lessons
 from .telemetry_repository import TelemetryRepository
 from .post_selection_mutation import summarize_post_selection_mutation
+from .policy_delta import make_policy_delta
+from .counterfactual_types import PolicyDeltaKind
+from .runner_base import RunnerInvocation
+from .codex_runner import CodexRunner
+from .claude_code_runner import ClaudeCodeRunner
 
 router = APIRouter(prefix="/counterfactual", tags=["counterfactual"])
 
@@ -110,6 +116,17 @@ class PostSelectionMutationRequest(BaseModel):
     tests_added_by_user: bool = False
     ui_changed_by_user: bool = False
     runtime_changed_by_user: bool = False
+
+
+class RunnerExecutionRequest(BaseModel):
+    runner_kind: Literal["codex", "claude_code"]
+    universe_id: str
+    direction_id: str
+    direction_label: str
+    declared_condition: str
+    task_summary: str = Field(min_length=1, max_length=4_000)
+    policy_hints: List[str] = Field(default_factory=list, max_length=5)
+    timeout_seconds: int = Field(default=300, ge=1, le=3600)
 
 
 def _repo(workspace_path: str) -> TelemetryRepository:
@@ -271,7 +288,62 @@ def record_post_selection_mutation(run_id: str, payload: PostSelectionMutationRe
         repo.update_run(run_id, post_selection_mutation=mutation.to_dict())
     except KeyError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    return {"post_selection_mutation": mutation.to_dict()}
+    retention_deltas = []
+    if mutation.abstraction_removed or mutation.retention_score <= 0.1:
+        delta = make_policy_delta(
+            run_id=run_id, workspace_id=str(repo.repo), task_class=str(run.get("task_class") or "unknown"),
+            delta_kind=PolicyDeltaKind.PROMPT_HINT_CHANGE,
+            before="allow unproven abstraction breadth for similar task class",
+            after="require repeated evidence before introducing broad abstractions for similar task class",
+            confidence="high" if mutation.abstraction_removed else "medium",
+            evidence_refs=[payload.selected_branch_id, f"post_selection_mutation:{run_id}"],
+        )
+        retention_deltas = repo.put_policy_deltas([delta.to_dict()])
+    return {"post_selection_mutation": mutation.to_dict(), "policy_deltas": retention_deltas}
+
+
+@router.post("/runs/{run_id}/execute", status_code=201)
+def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, workspace_path: str) -> Dict[str, Any]:
+    """Execute a configured first-class runner in an existing run chamber.
+
+    The command is constructed server-side for Codex or Claude Code. Callers
+    cannot supply arbitrary executables or shell fragments.
+    """
+    repo = _repo(workspace_path)
+    run = repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="counterfactual run not found")
+    invocation = RunnerInvocation(
+        run_id=run_id, universe_id=payload.universe_id, runner_id=payload.runner_kind,
+        direction_id=payload.direction_id, direction_label=payload.direction_label,
+        declared_condition=payload.declared_condition,
+        start_state_hash=str(run.get("base_state", {}).get("state_hash") or "external"),
+        task_summary=payload.task_summary, policy_hints=payload.policy_hints,
+        timeout_seconds=payload.timeout_seconds,
+    )
+    if payload.runner_kind == "codex":
+        adapter = CodexRunner()
+        artifact_dir = repo.repo / ".vectant" / "runner-artifacts" / run_id
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        schema_path = artifact_dir / "codex-branch-summary.schema.json"
+        schema_path.write_text(json.dumps(_codex_output_schema()), encoding="utf-8")
+        command = adapter.command_for(invocation=invocation, output_schema=schema_path, output_path=artifact_dir / f"codex-{payload.universe_id}.json")
+    else:
+        adapter = ClaudeCodeRunner()
+        command = adapter.command_for(invocation=invocation)
+    try:
+        artifact = adapter.run(workspace_path=repo.repo, invocation=invocation, command=command)
+    except OSError as error:
+        raise HTTPException(status_code=503, detail=f"{payload.runner_kind} runner is unavailable: {error}") from error
+    diff = adapter.collect_diff(repo.repo, invocation.start_state_hash)
+    artifact.end_state_hash = str(diff["end_state_hash"])
+    artifact.diff_summary = diff
+    trace = adapter.collect_trace(invocation, artifact)
+    try:
+        repo.put_branch(trace.to_dict())
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return {"branch_trace": trace.to_dict(), "detector_inputs": adapter.collect_detector_inputs(artifact)}
 
 
 def _trace_from_payload(run_id: str, payload: BranchRequest) -> BranchTrace:
@@ -300,3 +372,11 @@ def _detector_from_record(value: Dict[str, Any]) -> DetectorResult:
 def _scene_from_record(value: Dict[str, Any]):
     from .counterfactual_types import ChoiceScene
     return ChoiceScene(**value)
+
+
+def _codex_output_schema() -> Dict[str, Any]:
+    return {"type": "object", "additionalProperties": False, "properties": {
+        "summary": {"type": "string"}, "rationale": {"type": "string"},
+        "files_changed": {"type": "array", "items": {"type": "string"}},
+        "tests_run": {"type": "array", "items": {"type": "string"}},
+    }, "required": ["summary", "rationale", "files_changed", "tests_run"]}

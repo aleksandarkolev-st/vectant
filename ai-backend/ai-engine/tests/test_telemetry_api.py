@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from shadow.telemetry_api import router
+from shadow.runner_base import RunnerArtifact
 
 
 def test_counterfactual_control_plane_persists_a_choice_and_changes_forecast(tmp_path):
@@ -115,3 +116,31 @@ def test_control_plane_records_post_apply_retention_without_storing_source(tmp_p
     mutation = response.json()["post_selection_mutation"]
     assert mutation["retention_score"] == 0
     assert "class Generated" not in str(mutation)
+    assert response.json()["policy_deltas"][0]["delta_kind"] == "prompt_hint_change"
+
+
+def test_control_plane_executes_only_server_constructed_runner_contract(tmp_path, monkeypatch):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    workspace = str(tmp_path)
+    run = client.post("/counterfactual/runs", json={
+        "workspace_path": workspace, "request_id": "req-runner", "task_class": "fix",
+        "base_state": {"state_hash": "base"}, "universe_plan": [{"id": "A"}],
+    })
+    run_id = run.json()["counterfactual_run"]["run_id"]
+    observed = {}
+
+    def fake_run(self, *, workspace_path, invocation, command):
+        observed["command"] = command
+        return RunnerArtifact(artifact_summary="runner completed", raw_log_ref=".vectant/runner-artifacts/log.json")
+
+    monkeypatch.setattr("shadow.telemetry_api.CodexRunner.run", fake_run)
+    response = client.post(f"/counterfactual/runs/{run_id}/execute", params={"workspace_path": workspace}, json={
+        "runner_kind": "codex", "universe_id": "A", "direction_id": "safe", "direction_label": "safe",
+        "declared_condition": "conservative repair", "task_summary": "fix the issue",
+    })
+
+    assert response.status_code == 201
+    assert observed["command"][:4] == ["codex", "exec", "--sandbox", "workspace-write"]
+    assert response.json()["branch_trace"]["runner_kind"] == "codex"
