@@ -11,7 +11,10 @@ import hashlib
 import json
 import os
 import subprocess
+import shutil
+import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -95,7 +98,7 @@ class BaseRunnerAdapter:
             "budget_usd": invocation.budget_usd,
         }
 
-    def run(self, *, workspace_path: Path, invocation: RunnerInvocation, command: List[str]) -> RunnerArtifact:
+    def run(self, *, workspace_path: Path, invocation: RunnerInvocation, command: List[str], artifact_root: Optional[Path] = None) -> RunnerArtifact:
         """Execute an explicit command without a shell and capture bounded evidence.
 
         Runner command construction lives in CodexRunner/ClaudeCodeRunner.
@@ -128,7 +131,7 @@ class BaseRunnerAdapter:
             exit_code = completed.returncode
         else:
             exit_code = None
-        raw_log_ref = self._write_raw_log(root, invocation, command, stdout, stderr, exit_code, timed_out)
+        raw_log_ref = self._write_raw_log(artifact_root or root, invocation, command, stdout, stderr, exit_code, timed_out)
         return RunnerArtifact(
             artifact_summary=_artifact_summary(stdout, stderr, exit_code, timed_out),
             command_summary={"argv": command, "exit_code": exit_code, "timed_out": timed_out},
@@ -137,6 +140,31 @@ class BaseRunnerAdapter:
             risk_warnings=["runner command failed"] if exit_code not in (0, None) else [],
             self_reported_rationale=_bounded(stdout, 1_000),
         )
+
+    @contextmanager
+    def isolated_chamber(self, workspace_path: Path, invocation: RunnerInvocation):
+        """Create an isolated git worktree for one external runner invocation.
+
+        The source workspace is never used as a runner cwd.  Failure to make a
+        chamber is a safe failure, rather than a fallback to the source tree.
+        """
+        source = Path(workspace_path).resolve()
+        if not (source / ".git").exists():
+            raise ValueError("external runners require a git workspace for isolation")
+        chamber_root = source / ".vectant" / "chambers"
+        chamber_root.mkdir(parents=True, exist_ok=True)
+        chamber = Path(tempfile.mkdtemp(prefix=f"{invocation.run_id}-{invocation.universe_id}-", dir=chamber_root))
+        # git worktree add requires the destination not to exist.
+        chamber.rmdir()
+        try:
+            created = subprocess.run(["git", "worktree", "add", "--detach", str(chamber), "HEAD"], cwd=source, shell=False, capture_output=True, text=True, check=False)
+            if created.returncode != 0:
+                raise RuntimeError(_bounded(created.stderr or "unable to create runner chamber", 1_000))
+            yield chamber
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", str(chamber)], cwd=source, shell=False, capture_output=True, text=True, check=False)
+            if chamber.exists():
+                shutil.rmtree(chamber, ignore_errors=True)
 
     def collect_artifacts(self, artifact: RunnerArtifact) -> Dict[str, Any]:
         return {"raw_log_ref": artifact.raw_log_ref, "self_reported_rationale": _bounded(artifact.self_reported_rationale, 1_000)}

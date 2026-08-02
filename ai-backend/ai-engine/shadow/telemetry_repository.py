@@ -248,6 +248,18 @@ class TelemetryRepository:
         runs = sorted(data["runs"].items(), key=lambda item: item[1].get("created_at", 0), reverse=True)
         keep = {key for key, _ in runs[:_MAX_RUNS]}
         data["runs"] = {key: value for key, value in data["runs"].items() if key in keep}
+        # Raw runner transcripts are operational artifacts, not durable memory.
+        # They remain local, bounded by the runner, and are removed separately
+        # from compact branch summaries when their shorter retention expires.
+        raw_cutoff = now - int(data["retention"]["raw_trace_days"]) * 86400
+        artifact_root = self.repo / _DIR / "runner-artifacts"
+        if artifact_root.exists():
+            for artifact in artifact_root.rglob("*"):
+                if artifact.is_file() and artifact.stat().st_mtime < raw_cutoff:
+                    try:
+                        artifact.unlink()
+                    except OSError:
+                        pass
 
     def _rebuild_niche_maps(self, data: Dict[str, Any]) -> None:
         now = time.time()

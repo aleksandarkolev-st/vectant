@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import subprocess
 
 from shadow.telemetry_api import router
 from shadow.runner_base import RunnerArtifact
@@ -124,6 +125,12 @@ def test_control_plane_executes_only_server_constructed_runner_contract(tmp_path
     app.include_router(router)
     client = TestClient(app)
     workspace = str(tmp_path)
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "Vectant Tests"], cwd=workspace, check=True)
+    (tmp_path / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=workspace, check=True, capture_output=True)
     run = client.post("/counterfactual/runs", json={
         "workspace_path": workspace, "request_id": "req-runner", "task_class": "fix",
         "base_state": {"state_hash": "base"}, "universe_plan": [{"id": "A"}],
@@ -131,8 +138,9 @@ def test_control_plane_executes_only_server_constructed_runner_contract(tmp_path
     run_id = run.json()["counterfactual_run"]["run_id"]
     observed = {}
 
-    def fake_run(self, *, workspace_path, invocation, command):
+    def fake_run(self, *, workspace_path, invocation, command, artifact_root=None):
         observed["command"] = command
+        observed["workspace_path"] = workspace_path
         return RunnerArtifact(artifact_summary="runner completed", raw_log_ref=".vectant/runner-artifacts/log.json")
 
     monkeypatch.setattr("shadow.telemetry_api.CodexRunner.run", fake_run)
@@ -143,4 +151,5 @@ def test_control_plane_executes_only_server_constructed_runner_contract(tmp_path
 
     assert response.status_code == 201
     assert observed["command"][:4] == ["codex", "exec", "--sandbox", "workspace-write"]
+    assert observed["workspace_path"] != tmp_path
     assert response.json()["branch_trace"]["runner_kind"] == "codex"

@@ -332,10 +332,15 @@ def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, worksp
         adapter = ClaudeCodeRunner()
         command = adapter.command_for(invocation=invocation)
     try:
-        artifact = adapter.run(workspace_path=repo.repo, invocation=invocation, command=command)
+        # Never execute a third-party runner in the user's source workspace.
+        # The chamber is discarded after collecting its bounded trace.
+        with adapter.isolated_chamber(repo.repo, invocation) as chamber:
+            artifact = adapter.run(workspace_path=chamber, artifact_root=repo.repo, invocation=invocation, command=command)
+            diff = adapter.collect_diff(chamber, invocation.start_state_hash)
     except OSError as error:
         raise HTTPException(status_code=503, detail=f"{payload.runner_kind} runner is unavailable: {error}") from error
-    diff = adapter.collect_diff(repo.repo, invocation.start_state_hash)
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=f"runner chamber could not be prepared: {error}") from error
     artifact.end_state_hash = str(diff["end_state_hash"])
     artifact.diff_summary = diff
     trace = adapter.collect_trace(invocation, artifact)
