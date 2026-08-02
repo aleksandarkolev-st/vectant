@@ -3,6 +3,7 @@
 import React from 'react';
 import { useShadowVerify } from './hooks/useShadowVerify';
 import { ArbiterCard } from './ArbiterCard';
+import { CounterfactualControls } from './CounterfactualControls';
 import { Eye, Image, ShieldCheck } from 'lucide-react';
 
 /**
@@ -135,7 +136,7 @@ function UniverseRow({ universe, onApply, onReview, onExplanationReview, reviewe
     );
 }
 
-export function MultiverseCard({ jobId }) {
+export function MultiverseCard({ jobId, workspacePath = null, taskClass = '' }) {
     const verify = useShadowVerify(jobId);
     if (!jobId) return null;
     const universes = Object.values(verify.universes || {});
@@ -192,6 +193,7 @@ export function MultiverseCard({ jobId }) {
             {verify.finished && verify.winner ? (
                 <footer className="genome-card__foot">winner: Universe {verify.winner}</footer>
             ) : null}
+            <CounterfactualControls workspacePath={workspacePath} taskClass={taskClass} />
         </div>
     );
 }

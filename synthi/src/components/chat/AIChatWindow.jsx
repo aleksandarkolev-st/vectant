@@ -1103,7 +1103,7 @@ const AIChatWindow = ({
                                 return (
                                     <div key={msg.id} className="flex justify-start min-w-0">
                                         <div className="w-full min-w-0">
-                                            <MultiverseCard jobId={msg.shadowJob} />
+                                            <MultiverseCard jobId={msg.shadowJob} workspacePath={workspaceSlug} taskClass={msg.intent || 'fix'} />
                                         </div>
                                     </div>
                                 );

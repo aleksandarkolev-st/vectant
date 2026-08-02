@@ -233,6 +233,12 @@ def delete_policy_delta(delta_id: str, workspace_path: str) -> Dict[str, Any]:
     return {"deleted": True}
 
 
+@router.get("/policy-deltas")
+def list_policy_deltas(workspace_path: str, task_class: Optional[str] = None) -> Dict[str, Any]:
+    repo = _repo(workspace_path)
+    return {"policy_deltas": repo.list_policy_deltas(task_class=task_class, active_only=True)}
+
+
 @router.post("/runs/{run_id}/mutation-trials", status_code=201)
 def create_mutation_trial(run_id: str, payload: MutationTrialRequest) -> Dict[str, Any]:
     repo = _repo(payload.workspace_path)
