@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/app/auth';
 import { proxyAiEngineRequest } from '@/lib/proxyAiEngine';
 
 /**
@@ -11,6 +13,14 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 async function forward(request, { params }) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.id && !session?.user?.email) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+    }
+  } catch {
+    return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+  }
   const { path = [] } = await params;
   const suffix = path.map(encodeURIComponent).join('/');
   if (!suffix) {
