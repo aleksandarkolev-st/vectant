@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -49,6 +50,17 @@ def test_runner_snapshot_hash_changes_with_workspace_files(tmp_path):
     assert before != after
 
 
+def test_runner_snapshot_hash_changes_when_file_content_changes(tmp_path):
+    adapter = BaseRunnerAdapter()
+    target = tmp_path / "existing.txt"
+    target.write_text("before", encoding="utf-8")
+    before = adapter.prepare_workspace_snapshot(tmp_path)["state_hash"]
+    target.write_text("after", encoding="utf-8")
+    after = adapter.prepare_workspace_snapshot(tmp_path)["state_hash"]
+
+    assert before != after
+
+
 def test_runner_executes_explicit_argv_and_stores_raw_artifact_by_reference(tmp_path):
     adapter = BaseRunnerAdapter()
     invocation = RunnerInvocation(
@@ -70,3 +82,24 @@ def test_runner_executes_explicit_argv_and_stores_raw_artifact_by_reference(tmp_
     trace = adapter.collect_trace(invocation, artifact)
     assert trace.tool_trace_summary["raw_log_ref"] == artifact.raw_log_ref
     assert "runner summary" not in trace.tool_trace_summary["raw_log_ref"]
+
+
+def test_collect_diff_reports_bounded_change_statistics(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Vectant Tests"], cwd=tmp_path, check=True)
+    target = tmp_path / "app.py"
+    target.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=tmp_path, check=True, capture_output=True)
+    adapter = BaseRunnerAdapter()
+    start = adapter.prepare_workspace_snapshot(tmp_path)["state_hash"]
+    target.write_text("after\nnext\n", encoding="utf-8")
+
+    diff = adapter.collect_diff(tmp_path, start)
+
+    assert diff["changed_paths"] == ["app.py"]
+    assert diff["files_touched"] == 1
+    assert diff["loc_added"] == 2
+    assert diff["loc_removed"] == 1
+    assert diff["start_state_hash"] != diff["end_state_hash"]

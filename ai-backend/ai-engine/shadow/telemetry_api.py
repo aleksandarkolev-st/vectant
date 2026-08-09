@@ -133,6 +133,7 @@ class RunnerExecutionRequest(BaseModel):
     task_summary: str = Field(min_length=1, max_length=4_000)
     policy_hints: List[str] = Field(default_factory=list, max_length=5)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
+    budget_usd: float = Field(gt=0, le=1000)
 
 
 def _repo(workspace_path: str) -> TelemetryRepository:
@@ -275,6 +276,13 @@ def delete_policy_delta(delta_id: str, workspace_path: str) -> Dict[str, Any]:
     return {"deleted": True}
 
 
+@router.delete("/telemetry")
+def delete_workspace_telemetry(workspace_path: str) -> Dict[str, Any]:
+    repo = _repo(workspace_path)
+    repo.delete_all()
+    return {"deleted": True, "enabled": repo.is_enabled(), "retention": repo.retention()}
+
+
 @router.get("/policy-deltas")
 def list_policy_deltas(workspace_path: str, task_class: Optional[str] = None) -> Dict[str, Any]:
     repo = _repo(workspace_path)
@@ -371,23 +379,28 @@ def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, worksp
         declared_condition=payload.declared_condition,
         start_state_hash=str(run.get("base_state", {}).get("state_hash") or "external"),
         task_summary=payload.task_summary, policy_hints=payload.policy_hints,
-        timeout_seconds=payload.timeout_seconds,
+        timeout_seconds=payload.timeout_seconds, budget_usd=payload.budget_usd,
     )
-    if payload.runner_kind == "codex":
-        adapter = CodexRunner()
-        artifact_dir = repo.repo / ".vectant" / "runner-artifacts" / run_id
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        schema_path = artifact_dir / "codex-branch-summary.schema.json"
-        schema_path.write_text(json.dumps(_codex_output_schema()), encoding="utf-8")
-        command = adapter.command_for(invocation=invocation, output_schema=schema_path, output_path=artifact_dir / f"codex-{payload.universe_id}.json")
-    else:
-        adapter = ClaudeCodeRunner()
-        command = adapter.command_for(invocation=invocation)
+    adapter = CodexRunner() if payload.runner_kind == "codex" else ClaudeCodeRunner()
     try:
         # Never execute a third-party runner in the user's source workspace.
         # The chamber is discarded after collecting its bounded trace.
         with adapter.isolated_chamber(repo.repo, invocation) as chamber:
+            if payload.runner_kind == "codex":
+                # Codex receives only chamber-local schema/output paths. This
+                # keeps workspace-write sandboxing inside the disposable
+                # chamber while the base adapter separately captures a bounded
+                # raw log by reference in the source workspace.
+                schema_path = chamber / ".vectant-branch-summary.schema.json"
+                output_path = chamber / ".vectant-branch-summary.json"
+                schema_path.write_text(json.dumps(_codex_output_schema()), encoding="utf-8")
+                command = adapter.command_for(invocation=invocation, output_schema=schema_path, output_path=output_path)
+            else:
+                command = adapter.command_for(invocation=invocation)
             artifact = adapter.run(workspace_path=chamber, artifact_root=repo.repo, invocation=invocation, command=command)
+            # The server-created invocation remains the authoritative budget
+            # record even if an adapter has no provider usage report yet.
+            artifact.cost_estimated_usd = payload.budget_usd
             diff = adapter.collect_diff(chamber, invocation.start_state_hash)
     except OSError as error:
         raise HTTPException(status_code=503, detail=f"{payload.runner_kind} runner is unavailable: {error}") from error

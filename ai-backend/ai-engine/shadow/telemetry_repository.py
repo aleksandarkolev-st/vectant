@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -181,6 +182,18 @@ class TelemetryRepository:
         self._rebuild_niche_maps(data)
         self._write(data)
         return True
+
+    def delete_all(self) -> None:
+        """Delete all durable telemetry and bounded raw runner artifacts.
+
+        This deliberately targets only the counterfactual files below the
+        workspace's ``.vectant`` directory, never source or unrelated state.
+        """
+        data = _empty_document(str(self.repo))
+        self._write(data)
+        artifact_root = self.repo / _DIR / "runner-artifacts"
+        if artifact_root.exists():
+            shutil.rmtree(artifact_root, ignore_errors=True)
 
     def put_fossil(self, fossil: Dict[str, Any]) -> Dict[str, Any]:
         data = self._read()

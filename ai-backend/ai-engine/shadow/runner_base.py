@@ -72,13 +72,21 @@ class BaseRunnerAdapter:
 
     def prepare_workspace_snapshot(self, workspace_path: Path) -> Dict[str, Any]:
         path = Path(workspace_path)
-        files = sorted(
-            str(p.relative_to(path)).replace("\\", "/")
-            for p in path.rglob("*")
-            if p.is_file() and ".git" not in p.parts
-        )
-        digest = hashlib.sha1(json.dumps(files, sort_keys=True).encode("utf-8")).hexdigest()
-        return {"workspace_path": str(path), "file_count": len(files), "state_hash": digest}
+        digest = hashlib.sha256()
+        file_count = 0
+        for candidate in sorted(path.rglob("*"), key=lambda item: str(item).lower()):
+            if not candidate.is_file() or ".git" in candidate.parts:
+                continue
+            relative = str(candidate.relative_to(path)).replace("\\", "/")
+            digest.update(relative.encode("utf-8", errors="surrogateescape"))
+            digest.update(b"\0")
+            # Hash content without retaining it. A path-only hash cannot
+            # distinguish a runner edit from an untouched worktree.
+            with candidate.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            file_count += 1
+        return {"workspace_path": str(path), "file_count": file_count, "state_hash": digest.hexdigest()}
 
     def prepare(self, workspace_snapshot: Dict[str, Any], invocation: RunnerInvocation) -> Dict[str, Any]:
         """Return the bounded runner contract passed to an external CLI.
@@ -108,6 +116,8 @@ class BaseRunnerAdapter:
         """
         if not command or not all(isinstance(item, str) and item.strip() for item in command):
             raise ValueError("runner command must be a non-empty argv list")
+        if invocation.budget_usd is not None and not 0 < invocation.budget_usd <= 1000:
+            raise ValueError("runner budget must be greater than zero and no more than $1000")
         root = Path(workspace_path).resolve()
         if not root.is_dir():
             raise ValueError("runner workspace must be an existing directory")
@@ -137,6 +147,7 @@ class BaseRunnerAdapter:
             command_summary={"argv": command, "exit_code": exit_code, "timed_out": timed_out},
             tool_summary={"runner": self.runner_kind}, raw_log_ref=raw_log_ref,
             latency_ms=elapsed_ms, timed_out=timed_out,
+            cost_estimated_usd=float(invocation.budget_usd or 0),
             risk_warnings=["runner command failed"] if exit_code not in (0, None) else [],
             self_reported_rationale=_bounded(stdout, 1_000),
         )
@@ -171,7 +182,31 @@ class BaseRunnerAdapter:
 
     def collect_diff(self, workspace_path: Path, start_state_hash: str) -> Dict[str, Any]:
         end = self.prepare_workspace_snapshot(workspace_path)
-        return {"start_state_hash": start_state_hash, "end_state_hash": end["state_hash"], "workspace_file_count": end["file_count"]}
+        root = Path(workspace_path).resolve()
+        try:
+            changed = subprocess.run(
+                ["git", "diff", "--numstat", "--", "."], cwd=root, shell=False,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            )
+            files = subprocess.run(
+                ["git", "diff", "--name-only", "--", "."], cwd=root, shell=False,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            )
+            loc_added = loc_removed = 0
+            for row in changed.stdout.splitlines()[:200]:
+                parts = row.split("\t", 2)
+                if len(parts) >= 2:
+                    loc_added += int(parts[0]) if parts[0].isdigit() else 0
+                    loc_removed += int(parts[1]) if parts[1].isdigit() else 0
+            changed_files = [line[:512] for line in files.stdout.splitlines()[:200] if line]
+        except OSError:
+            loc_added = loc_removed = 0
+            changed_files = []
+        return {
+            "start_state_hash": start_state_hash, "end_state_hash": end["state_hash"],
+            "workspace_file_count": end["file_count"], "files_touched": len(changed_files),
+            "changed_paths": changed_files, "loc_added": loc_added, "loc_removed": loc_removed,
+        }
 
     def collect_detector_inputs(self, artifact: RunnerArtifact) -> Dict[str, Any]:
         return {"command_exit_code": artifact.command_summary.get("exit_code"), "timed_out": artifact.timed_out, "raw_log_ref": artifact.raw_log_ref}

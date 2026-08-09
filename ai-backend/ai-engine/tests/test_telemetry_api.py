@@ -146,13 +146,14 @@ def test_control_plane_executes_only_server_constructed_runner_contract(tmp_path
     monkeypatch.setattr("shadow.telemetry_api.CodexRunner.run", fake_run)
     response = client.post(f"/counterfactual/runs/{run_id}/execute", params={"workspace_path": workspace}, json={
         "runner_kind": "codex", "universe_id": "A", "direction_id": "safe", "direction_label": "safe",
-        "declared_condition": "conservative repair", "task_summary": "fix the issue",
+        "declared_condition": "conservative repair", "task_summary": "fix the issue", "budget_usd": 0.1,
     })
 
     assert response.status_code == 201
     assert observed["command"][:4] == ["codex", "exec", "--sandbox", "workspace-write"]
     assert observed["workspace_path"] != tmp_path
     assert response.json()["branch_trace"]["runner_kind"] == "codex"
+    assert response.json()["branch_trace"]["cost_trace"]["estimated_usd"] == 0.1
 
 
 def test_choice_scene_and_policy_extraction_require_real_exposure_and_proof(tmp_path):
@@ -215,3 +216,25 @@ def test_inspection_is_compact_and_mutation_trial_needs_all_stricter_proof(tmp_p
     assert inspected.status_code == 200
     assert inspected.json()["inspection"]["runs"][0]["run_id"] == run_id
     assert inspected.json()["inspection"]["mutation_trials"][0]["result"] == "stricter proof did not pass"
+
+
+def test_delete_workspace_telemetry_removes_compact_memory_and_runner_artifacts(tmp_path):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    workspace = str(tmp_path)
+    run = client.post("/counterfactual/runs", json={
+        "workspace_path": workspace, "request_id": "req-delete", "task_class": "fix",
+        "base_state": {}, "universe_plan": [{"id": "A"}],
+    })
+    assert run.status_code == 201
+    artifact = tmp_path / ".vectant" / "runner-artifacts" / "run" / "trace.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("bounded raw log", encoding="utf-8")
+
+    deleted = client.delete("/counterfactual/telemetry", params={"workspace_path": workspace})
+
+    assert deleted.status_code == 200
+    assert not artifact.exists()
+    inspection = client.get("/counterfactual/inspection", params={"workspace_path": workspace})
+    assert inspection.json()["inspection"]["runs"] == []
