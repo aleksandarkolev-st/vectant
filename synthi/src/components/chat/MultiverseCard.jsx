@@ -162,6 +162,11 @@ export function MultiverseCard({ jobId, workspacePath = null, taskClass = '' }) 
                     <strong>Learned from this run:</strong> {learnedLines[0]}
                 </div>
             ) : null}
+            {verify.selectedUniverseId && verify.arbiter?.winner && verify.selectedUniverseId !== verify.arbiter.winner ? (
+                <div className="genome-card__ambiguity" data-testid="counterfactual-selection-override">
+                    Selection override recorded: Universe {verify.selectedUniverseId} was applied instead of the Arbiter recommendation, Universe {verify.arbiter.winner}.
+                </div>
+            ) : null}
             {verify.cancelled && learnedLines.length === 0 ? (
                 <div className="genome-card__ambiguity" data-testid="counterfactual-ambiguity-note">
                     Cancellation recorded as ambiguous; no branch rejection lesson was created.

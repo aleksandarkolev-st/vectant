@@ -78,6 +78,15 @@ describe('MultiverseCard counterfactual notices', () => {
     expect(view.querySelector('[data-testid="counterfactual-learned-line"]')).toBeNull();
   });
 
+  it('surfaces a real selection override separately from a learned lesson', () => {
+    const view = renderWithVerify({
+      selectedUniverseId: 'B',
+      arbiter: { winner: 'A', confidence: 0.8 },
+    });
+    expect(view.querySelector('[data-testid="counterfactual-selection-override"]')?.textContent)
+      .toContain('Universe B was applied instead of the Arbiter recommendation, Universe A');
+  });
+
   it('renders visual proof artifact metadata for generated output', () => {
     const view = renderWithVerify({
       universes: {

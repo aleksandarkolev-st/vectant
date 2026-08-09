@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Eye, EyeOff, RotateCcw, Trash2 } from 'lucide-react';
+import { CounterfactualInspection } from './CounterfactualInspection';
 
 const query = (workspacePath, taskClass) => new URLSearchParams({
   workspace_path: workspacePath,
@@ -96,6 +97,7 @@ export function CounterfactualControls({ workspacePath, taskClass = '' }) {
         </li>)}
       </ul> : <p className="mt-3 text-[11px] text-[var(--text-muted)]">No active learned policies for this task class.</p>}
       {state.error ? <p role="alert" className="mt-2 text-[11px] text-[var(--status-danger)]">{state.error}</p> : null}
+      <CounterfactualInspection workspacePath={workspacePath} taskClass={taskClass} />
     </section>
   );
 }

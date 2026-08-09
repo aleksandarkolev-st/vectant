@@ -23,6 +23,7 @@ const initial = () => ({
     directionForecast: [],
     learnedLines: [],
     policyDeltas: [],
+    selectedUniverseId: null,
     reviewedUniverseIds: [],
     openedExplanationUniverseIds: [],
     winner: null,
@@ -113,7 +114,7 @@ export function useShadowVerify(jobId) {
             }),
         });
         const data = await res.json().catch(() => ({}));
-        setState((s) => applySelectionResult(s, data));
+        setState((s) => ({ ...applySelectionResult(s, data), selectedUniverseId: universeId }));
         return data;
     };
 
