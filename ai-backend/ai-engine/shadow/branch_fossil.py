@@ -29,7 +29,9 @@ def fossilize(
     return BranchFossil(
         id=f"fossil_{digest}", branch_trace_id=trace.id, workspace_id=workspace_id,
         task_class=task_class, runner_kind=trace.runner_kind, direction_label=trace.direction_label[:160],
-        compact_artifact_summary=trace.artifact_summary[:1000], compact_diff_summary=dict(trace.diff_summary),
+        # Fossils are learning material, never an alternate source archive.
+        compact_artifact_summary="Bounded branch artifact retained by reference, not copied into durable memory.",
+        compact_diff_summary=dict(trace.diff_summary),
         phenotype_vector=trace.phenotype_vector, detector_summary=detector_summary,
         selection_outcome=trace.selection_outcome, exposure_level=trace.exposure_level,
         counterfactual_strength=trace.counterfactual_strength,

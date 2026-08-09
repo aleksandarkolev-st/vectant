@@ -144,12 +144,17 @@ class BaseRunnerAdapter:
         raw_log_ref = self._write_raw_log(artifact_root or root, invocation, command, stdout, stderr, exit_code, timed_out)
         return RunnerArtifact(
             artifact_summary=_artifact_summary(stdout, stderr, exit_code, timed_out),
-            command_summary={"argv": command, "exit_code": exit_code, "timed_out": timed_out},
+            command_summary={
+                "executable": Path(command[0]).name, "argument_count": len(command),
+                "exit_code": exit_code, "timed_out": timed_out,
+            },
             tool_summary={"runner": self.runner_kind}, raw_log_ref=raw_log_ref,
             latency_ms=elapsed_ms, timed_out=timed_out,
             cost_estimated_usd=float(invocation.budget_usd or 0),
             risk_warnings=["runner command failed"] if exit_code not in (0, None) else [],
-            self_reported_rationale=_bounded(stdout, 1_000),
+            # Raw runner output stays solely in the short-lived raw artifact.
+            # It is not duplicated into the normalized trace.
+            self_reported_rationale="",
         )
 
     @contextmanager
@@ -246,8 +251,6 @@ class BaseRunnerAdapter:
         tool_summary = dict(artifact.tool_summary)
         if artifact.raw_log_ref:
             tool_summary["raw_log_ref"] = artifact.raw_log_ref
-        if artifact.self_reported_rationale:
-            tool_summary["self_reported_rationale"] = _bounded(artifact.self_reported_rationale, 1_000)
         novelty = artifact.novelty_vector or artifact.phenotype_vector.to_dict()
         return BranchTrace(
             id=f"br_{invocation.run_id}_{invocation.universe_id}",
@@ -307,8 +310,8 @@ def _artifact_summary(stdout: str, stderr: str, exit_code: Optional[int], timed_
     if timed_out:
         return "runner timed out before producing a complete branch artifact"
     if exit_code == 0:
-        return _bounded(stdout.strip() or "runner completed without a textual summary", 1_000)
-    return _bounded(stderr.strip() or stdout.strip() or f"runner exited with code {exit_code}", 1_000)
+        return "runner completed; raw output is retained only as a bounded artifact reference"
+    return f"runner exited with code {exit_code}; raw output is retained only as a bounded artifact reference"
 
 
 def _bounded(value: str, limit: int) -> str:

@@ -310,3 +310,22 @@ def test_contradicted_policy_is_removed_from_the_next_run_niche_map(tmp_path):
     })
     runtime = next(item for item in forecast.json()["directions"] if item["label"] == "runtime_primitive")
     assert runtime["selection_fit_estimate"] == "medium"
+
+
+def test_durable_trace_storage_drops_raw_prompt_output_and_base_payload(tmp_path):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    workspace = str(tmp_path)
+    source_marker = "SECRET_SOURCE_MARKER_DO_NOT_PERSIST"
+    run_id = client.post("/counterfactual/runs", json={
+        "workspace_path": workspace, "request_id": "req-private", "task_class": "fix",
+        "base_state": {"commit": "base", "source": source_marker}, "universe_plan": [{"id": "A"}],
+    }).json()["counterfactual_run"]["run_id"]
+    branch = client.post(f"/counterfactual/runs/{run_id}/branches", params={"workspace_path": workspace}, json={
+        "universe_id": "A", "runner_kind": "internal", "direction_label": "safe",
+        "artifact_summary": source_marker, "diff_summary": {},
+    })
+    assert branch.status_code == 201
+    persisted = (tmp_path / ".vectant" / "counterfactual-telemetry.json").read_text(encoding="utf-8")
+    assert source_marker not in persisted

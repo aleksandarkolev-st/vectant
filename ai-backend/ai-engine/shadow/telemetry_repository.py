@@ -68,7 +68,7 @@ class TelemetryRepository:
         data = self._read()
         if not data["enabled"]:
             return run
-        record = _compact(run)
+        record = _compact_run(run)
         run_id = _required_id(record, "run_id")
         data["runs"][run_id] = record
         self._prune(data)
@@ -93,7 +93,7 @@ class TelemetryRepository:
         data = self._read()
         if not data["enabled"]:
             return branch
-        record = _compact(branch)
+        record = _compact_branch(branch)
         branch_id = _required_id(record, "id")
         run_id = _required_id(record, "counterfactual_run_id")
         if run_id not in data["runs"]:
@@ -368,3 +368,33 @@ def _compact(value: Any, *, depth: int = 0) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return _compact(str(value), depth=depth + 1)
+
+
+def _compact_run(value: Dict[str, Any]) -> Dict[str, Any]:
+    record = _compact(value)
+    base_state = record.get("base_state") if isinstance(record, dict) else None
+    if isinstance(base_state, dict):
+        # Only state identifiers belong in durable telemetry. Arbitrary base
+        # state payloads may contain a source snapshot supplied by a caller.
+        record["base_state"] = {
+            key: base_state[key] for key in ("commit", "state_hash", "repo", "repo_or_environment_fingerprint")
+            if key in base_state
+        }
+    return record
+
+
+def _compact_branch(value: Dict[str, Any]) -> Dict[str, Any]:
+    record = _compact(value)
+    # Prompt lineage and runner rationale can contain source or sensitive
+    # request content. Preserve operational shape, never that raw text.
+    record["prompt_lineage"] = []
+    tool = record.get("tool_trace_summary") if isinstance(record.get("tool_trace_summary"), dict) else {}
+    record["tool_trace_summary"] = {
+        key: tool[key] for key in ("runner", "raw_log_ref") if key in tool
+    }
+    command = record.get("command_trace_summary") if isinstance(record.get("command_trace_summary"), dict) else {}
+    record["command_trace_summary"] = {
+        key: command[key] for key in ("executable", "argument_count", "exit_code", "timed_out") if key in command
+    }
+    record["artifact_summary"] = "Bounded branch artifact retained by reference, not copied into durable telemetry."
+    return record

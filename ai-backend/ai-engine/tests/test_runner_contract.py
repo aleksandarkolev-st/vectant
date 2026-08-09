@@ -77,7 +77,7 @@ def test_runner_executes_explicit_argv_and_stores_raw_artifact_by_reference(tmp_
 
     assert artifact.command_summary["exit_code"] == 0
     assert artifact.raw_log_ref == ".vectant/runner-artifacts/run-real/custom-A.json"
-    assert "runner summary" in artifact.artifact_summary
+    assert "raw output is retained only" in artifact.artifact_summary
     assert (tmp_path / artifact.raw_log_ref).is_file()
     trace = adapter.collect_trace(invocation, artifact)
     assert trace.tool_trace_summary["raw_log_ref"] == artifact.raw_log_ref
