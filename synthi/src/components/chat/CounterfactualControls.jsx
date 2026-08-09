@@ -65,6 +65,22 @@ export function CounterfactualControls({ workspacePath, taskClass = '' }) {
     }
   };
 
+  const deleteAllTelemetry = async () => {
+    if (!workspacePath || saving) return;
+    if (!window.confirm('Delete all counterfactual telemetry for this workspace? This removes learned policies, fossils, choice scenes, and retained runner artifacts.')) return;
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/counterfactual/telemetry?${query(workspacePath).toString()}`, { method: 'DELETE' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not delete workspace telemetry');
+      await refresh();
+    } catch (error) {
+      setState((current) => ({ ...current, error: String(error?.message || error) }));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (!workspacePath) return null;
   const retention = state.retention || { fossil_days: 365, raw_trace_days: 30 };
   return (
@@ -96,6 +112,9 @@ export function CounterfactualControls({ workspacePath, taskClass = '' }) {
           <button type="button" aria-label={`Delete learned policy ${delta.id}`} className="th-focus-ring shrink-0 text-[var(--text-muted)] hover:text-[var(--status-danger)]" disabled={saving} onClick={() => removeDelta(delta.id)}><Trash2 className="h-3.5 w-3.5" aria-hidden="true" /></button>
         </li>)}
       </ul> : <p className="mt-3 text-[11px] text-[var(--text-muted)]">No active learned policies for this task class.</p>}
+      <button type="button" className="th-focus-ring mt-3 text-[11px] text-[var(--status-danger)]" disabled={saving || state.loading} onClick={deleteAllTelemetry}>
+        <Trash2 className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />Delete all workspace telemetry
+      </button>
       {state.error ? <p role="alert" className="mt-2 text-[11px] text-[var(--status-danger)]">{state.error}</p> : null}
       <CounterfactualInspection workspacePath={workspacePath} taskClass={taskClass} />
     </section>

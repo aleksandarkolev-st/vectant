@@ -37,4 +37,17 @@ describe('CounterfactualControls', () => {
     await act(async () => { container.querySelector('[aria-label="Delete learned policy delta-1"]').click(); });
     expect(fetchMock.mock.calls.some(([url, options]) => String(url).includes('/api/counterfactual/policy-deltas/delta-1') && options?.method === 'DELETE')).toBe(true);
   });
+
+  it('requires confirmation before deleting all workspace telemetry', async () => {
+    const fetchMock = vi.fn((url) => Promise.resolve({ ok: true, json: async () => (
+      String(url).includes('/policy-deltas') ? { policy_deltas: [] } : String(url).includes('/inspection') ? { inspection: {} } : { enabled: true, retention: { fossil_days: 365, raw_trace_days: 30 } }
+    ) }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+    await act(async () => { root.render(<CounterfactualControls workspacePath="C:/workspace" taskClass="fix" />); });
+    await act(async () => { container.querySelector('button[type="button"][class*="status-danger"]').click(); });
+    expect(globalThis.confirm).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.some(([url, options]) => String(url).includes('/api/counterfactual/telemetry') && options?.method === 'DELETE')).toBe(true);
+  });
 });
