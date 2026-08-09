@@ -152,6 +152,26 @@ class TelemetryRepository:
             out.append(delta)
         return sorted(out, key=lambda value: value.get("id", ""))
 
+    def inspection(self, *, task_class: Optional[str] = None, limit: int = 50) -> Dict[str, List[Dict[str, Any]]]:
+        """Return compact persisted telemetry safe for product inspection.
+
+        Raw artifacts and prompt/source payloads are intentionally absent: the
+        repository only exposes the compact records written by ``_compact``.
+        """
+        data = self._read()
+        bounded_limit = max(1, min(int(limit), 100))
+
+        def matching(values: Iterable[Dict[str, Any]], *, task_key: str = "task_class") -> List[Dict[str, Any]]:
+            filtered = [value for value in values if not task_class or value.get(task_key) == task_class]
+            return sorted(filtered, key=lambda value: (value.get("created_at") or value.get("observed_at") or 0, value.get("id", "")), reverse=True)[:bounded_limit]
+
+        return {
+            "runs": matching(data["runs"].values()),
+            "choice_scenes": matching(data["choice_scenes"].values()),
+            "fossils": matching(data["fossils"].values()),
+            "mutation_trials": matching(data["mutation_trials"].values()),
+        }
+
     def delete_policy_delta(self, delta_id: str) -> bool:
         data = self._read()
         delta = data["policy_deltas"].get(delta_id)

@@ -22,6 +22,7 @@ from .telemetry_repository import TelemetryRepository
 from .post_selection_mutation import summarize_post_selection_mutation
 from .policy_delta import make_policy_delta
 from .counterfactual_types import PolicyDeltaKind
+from .proof_arbiter import adjudicate_proof
 from .runner_base import RunnerInvocation
 from .codex_runner import CodexRunner
 from .claude_code_runner import ClaudeCodeRunner
@@ -102,6 +103,11 @@ class MutationTrialRequest(BaseModel):
     auto_apply_allowed: Literal[False] = False
 
 
+class MutationTrialResultRequest(BaseModel):
+    workspace_path: str
+    detector_results: List[DetectorRequest] = Field(min_length=1, max_length=50)
+
+
 class PostSelectionMutationFile(BaseModel):
     path: str
     generated_content: str = Field(max_length=256_000)
@@ -178,6 +184,17 @@ def record_selection(run_id: str, payload: SelectionRequest, workspace_path: str
     run = repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="counterfactual run not found")
+    available = set(run.get("universes") or [])
+    selected = payload.selected_universe_id
+    arbiter = payload.arbiter_winner_universe_id
+    if selected is not None and selected not in available:
+        raise HTTPException(status_code=422, detail="selected universe is not part of this run")
+    if arbiter is not None and arbiter not in available:
+        raise HTTPException(status_code=422, detail="Arbiter recommendation is not part of this run")
+    unknown_visible = set(payload.visible_universe_ids) - available
+    unknown_opened = (set(payload.opened_diff_universe_ids) | set(payload.opened_explanation_universe_ids)) - set(payload.visible_universe_ids)
+    if unknown_visible or unknown_opened:
+        raise HTTPException(status_code=422, detail="ChoiceScene exposure must reference visible universes from this run")
     scene = build_choice_scene(run_id=run_id, base_state_hash=str(run.get("base_state", {}).get("commit") or "unknown"),
         request_summary=str(run.get("request_id") or ""), task_class=str(run.get("task_class") or "unknown"),
         available_universe_ids=run.get("universes") or [], visible_universe_ids=payload.visible_universe_ids,
@@ -202,15 +219,23 @@ def generate_policy_deltas(run_id: str, payload: DeltaRequest, workspace_path: s
     traces = [_trace_from_record(item) for item in repo._read()["branches"].values() if item.get("counterfactual_run_id") == run_id]
     choice = _scene_from_record(scene)
     annotated = annotate_traces_with_choice(traces, choice)
-    lessons = extract_regret_lessons(choice_scene=choice, traces=annotated, workspace_id=str(repo.repo))[:payload.max_deltas]
+    detector_records = repo._read()["detectors"]
+    detector_results = [_detector_from_record(item) for item in detector_records.values() if item.get("branch_trace_id") in {trace.id for trace in annotated}]
+    proof = adjudicate_proof(annotated, detector_results)
+    eligible = set(proof.eligible_universe_ids)
+    # Proof is a hard gate, including for an externally captured selection.
+    # Never let novelty or a human override promote a failed or unevidenced
+    # branch into learned policy.
+    lessons = []
+    if choice.selected_universe_id in eligible and choice.arbiter_recommendation in eligible:
+        lessons = extract_regret_lessons(choice_scene=choice, traces=annotated, workspace_id=str(repo.repo))[:payload.max_deltas]
     stored = repo.put_policy_deltas([lesson.policy_delta.to_dict() for lesson in lessons])
-    detectors = repo._read()["detectors"]
     for trace in annotated:
-        matching = [_detector_from_record(item) for item in detectors.values() if item.get("branch_trace_id") == trace.id]
+        matching = [item for item in detector_results if item.branch_trace_id == trace.id]
         repo.put_branch(trace.to_dict())
         repo.put_fossil(fossilize(trace=trace, detectors=matching, workspace_id=str(repo.repo), task_class=choice.task_class,
             inferred_lessons=[lesson.text for lesson in lessons if trace.id in lesson.policy_delta.evidence_refs], retention_days=repo.retention()["fossil_days"]).to_dict())
-    return {"policy_deltas": stored, "learned_lines": [lesson.text for lesson in lessons], "execution_niche_map": repo.niche_map(choice.task_class)}
+    return {"policy_deltas": stored, "learned_lines": [lesson.text for lesson in lessons], "proof_verdict": proof.to_dict(), "execution_niche_map": repo.niche_map(choice.task_class)}
 
 
 @router.get("/niche-map")
@@ -256,6 +281,12 @@ def list_policy_deltas(workspace_path: str, task_class: Optional[str] = None) ->
     return {"policy_deltas": repo.list_policy_deltas(task_class=task_class, active_only=True)}
 
 
+@router.get("/inspection")
+def inspect_telemetry(workspace_path: str, task_class: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+    repo = _repo(workspace_path)
+    return {"telemetry_enabled": repo.is_enabled(), "inspection": repo.inspection(task_class=task_class, limit=limit)}
+
+
 @router.post("/runs/{run_id}/mutation-trials", status_code=201)
 def create_mutation_trial(run_id: str, payload: MutationTrialRequest) -> Dict[str, Any]:
     repo = _repo(payload.workspace_path)
@@ -267,6 +298,27 @@ def create_mutation_trial(run_id: str, payload: MutationTrialRequest) -> Dict[st
         "budget_cap_usd": payload.budget_cap_usd, "status": "planned", "result": None,
         "regret_signal_scope": "isolated", "auto_apply_allowed": False, "created_at": time.time()}
     return {"mutation_trial": repo.put_mutation_trial(trial)}
+
+
+@router.post("/mutation-trials/{trial_id}/results")
+def record_mutation_trial_result(trial_id: str, payload: MutationTrialResultRequest) -> Dict[str, Any]:
+    repo = _repo(payload.workspace_path)
+    data = repo._read()
+    trial = data["mutation_trials"].get(trial_id)
+    if not trial:
+        raise HTTPException(status_code=404, detail="mutation trial not found")
+    required = set(trial.get("stricter_detectors") or [])
+    results = payload.detector_results
+    passed = {item.detector_kind.value for item in results if item.status.value == "passed"}
+    failed = [item.detector_kind.value for item in results if item.status.value == "failed"]
+    if failed or not required.issubset(passed):
+        status, result = "failed", "stricter proof did not pass"
+    else:
+        status, result = "passed", "stricter proof passed; manual selection remains required"
+    trial.update({"status": status, "result": result, "auto_apply_allowed": False})
+    data["mutation_trials"][trial_id] = trial
+    repo._write(data)
+    return {"mutation_trial": trial}
 
 
 @router.post("/runs/{run_id}/post-selection-mutation", status_code=201)

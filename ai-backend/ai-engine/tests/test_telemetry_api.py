@@ -153,3 +153,65 @@ def test_control_plane_executes_only_server_constructed_runner_contract(tmp_path
     assert observed["command"][:4] == ["codex", "exec", "--sandbox", "workspace-write"]
     assert observed["workspace_path"] != tmp_path
     assert response.json()["branch_trace"]["runner_kind"] == "codex"
+
+
+def test_choice_scene_and_policy_extraction_require_real_exposure_and_proof(tmp_path):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    workspace = str(tmp_path)
+    created = client.post("/counterfactual/runs", json={
+        "workspace_path": workspace, "request_id": "req-proof", "task_class": "fix",
+        "base_state": {}, "universe_plan": [{"id": "A"}, {"id": "B"}],
+    })
+    run_id = created.json()["counterfactual_run"]["run_id"]
+    invalid = client.post(f"/counterfactual/runs/{run_id}/selection", params={"workspace_path": workspace}, json={
+        "selected_universe_id": "A", "arbiter_winner_universe_id": "B", "visible_universe_ids": ["A", "unknown"],
+        "opened_diff_universe_ids": ["A"], "selection_action": "applied",
+    })
+    assert invalid.status_code == 422
+
+    for universe_id, runtime_depth in (("A", 0.1), ("B", 0.9)):
+        response = client.post(f"/counterfactual/runs/{run_id}/branches", params={"workspace_path": workspace}, json={
+            "universe_id": universe_id, "runner_kind": "internal", "direction_label": universe_id,
+            "artifact_summary": "compact", "phenotype_vector": {"runtime_depth": runtime_depth},
+            "diff_summary": {"loc_added": 10 if universe_id == "A" else 2},
+        })
+        assert response.status_code == 201
+    selection = client.post(f"/counterfactual/runs/{run_id}/selection", params={"workspace_path": workspace}, json={
+        "selected_universe_id": "B", "arbiter_winner_universe_id": "A", "visible_universe_ids": ["A", "B"],
+        "opened_diff_universe_ids": ["A", "B"], "selection_action": "applied",
+    })
+    assert selection.status_code == 201
+    unproven = client.post(f"/counterfactual/runs/{run_id}/policy-deltas", params={"workspace_path": workspace}, json={})
+    assert unproven.status_code == 201
+    assert unproven.json()["policy_deltas"] == []
+    assert set(unproven.json()["proof_verdict"]["blocked_universe_ids"]) == {"A", "B"}
+
+
+def test_inspection_is_compact_and_mutation_trial_needs_all_stricter_proof(tmp_path):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    workspace = str(tmp_path)
+    created = client.post("/counterfactual/runs", json={
+        "workspace_path": workspace, "request_id": "req-inspection", "task_class": "fix",
+        "base_state": {}, "universe_plan": [{"id": "A"}],
+    })
+    run_id = created.json()["counterfactual_run"]["run_id"]
+    trial = client.post(f"/counterfactual/runs/{run_id}/mutation-trials", json={
+        "workspace_path": workspace, "task_class": "fix", "violated_policy": "small patch",
+        "why_now": "prior compact repairs failed", "stricter_detectors": ["unit_tests", "security_scan"],
+        "quarantine_policy": "manual review", "budget_cap_usd": 0.1,
+    }).json()["mutation_trial"]
+    failed = client.post(f"/counterfactual/mutation-trials/{trial['id']}/results", json={
+        "workspace_path": workspace,
+        "detector_results": [{"detector_kind": "unit_tests", "status": "passed", "score": 1, "evidence_summary": "ok"}],
+    })
+    assert failed.status_code == 200
+    assert failed.json()["mutation_trial"]["status"] == "failed"
+    assert failed.json()["mutation_trial"]["auto_apply_allowed"] is False
+    inspected = client.get("/counterfactual/inspection", params={"workspace_path": workspace, "task_class": "fix"})
+    assert inspected.status_code == 200
+    assert inspected.json()["inspection"]["runs"][0]["run_id"] == run_id
+    assert inspected.json()["inspection"]["mutation_trials"][0]["result"] == "stricter proof did not pass"
