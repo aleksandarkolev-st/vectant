@@ -136,6 +136,10 @@ class RunnerExecutionRequest(BaseModel):
     budget_usd: float = Field(gt=0, le=1000)
 
 
+class MutationTrialExecutionRequest(RunnerExecutionRequest):
+    workspace_path: str
+
+
 def _repo(workspace_path: str) -> TelemetryRepository:
     root = Path(workspace_path).expanduser().resolve()
     if not root.is_dir():
@@ -329,6 +333,33 @@ def record_mutation_trial_result(trial_id: str, payload: MutationTrialResultRequ
     return {"mutation_trial": trial}
 
 
+@router.post("/mutation-trials/{trial_id}/execute", status_code=201)
+def execute_mutation_trial(trial_id: str, payload: MutationTrialExecutionRequest) -> Dict[str, Any]:
+    """Run a quarantined trial through the same isolated adapter path.
+
+    A successful runner process is deliberately not a selected branch. The
+    trial remains ``running`` until every declared stricter detector is
+    recorded through the results endpoint, and it can never auto-apply.
+    """
+    repo = _repo(payload.workspace_path)
+    trial = repo._read()["mutation_trials"].get(trial_id)
+    if not trial:
+        raise HTTPException(status_code=404, detail="mutation trial not found")
+    if trial.get("status") not in {"planned", "failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="mutation trial is already running or complete")
+    if payload.budget_usd > float(trial.get("budget_cap_usd") or 0):
+        raise HTTPException(status_code=422, detail="mutation trial budget exceeds its quarantine cap")
+    execution = RunnerExecutionRequest(**payload.model_dump(exclude={"workspace_path"}))
+    result = execute_external_runner(str(trial["counterfactual_run_id"]), execution, payload.workspace_path)
+    data = repo._read()
+    data["mutation_trials"][trial_id].update({
+        "status": "running", "result": "runner completed in quarantine; stricter proof pending",
+        "branch_trace_id": result["branch_trace"]["id"], "auto_apply_allowed": False,
+    })
+    repo._write(data)
+    return {"mutation_trial": data["mutation_trials"][trial_id], **result}
+
+
 @router.post("/runs/{run_id}/post-selection-mutation", status_code=201)
 def record_post_selection_mutation(run_id: str, payload: PostSelectionMutationRequest, workspace_path: str) -> Dict[str, Any]:
     repo = _repo(workspace_path)
@@ -373,6 +404,8 @@ def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, worksp
     run = repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="counterfactual run not found")
+    if payload.universe_id not in set(run.get("universes") or []):
+        raise HTTPException(status_code=422, detail="runner universe is not part of this run")
     invocation = RunnerInvocation(
         run_id=run_id, universe_id=payload.universe_id, runner_id=payload.runner_kind,
         direction_id=payload.direction_id, direction_label=payload.direction_label,

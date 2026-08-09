@@ -238,3 +238,38 @@ def test_delete_workspace_telemetry_removes_compact_memory_and_runner_artifacts(
     assert not artifact.exists()
     inspection = client.get("/counterfactual/inspection", params={"workspace_path": workspace})
     assert inspection.json()["inspection"]["runs"] == []
+
+
+def test_mutation_trial_runs_only_in_quarantine_and_respects_its_budget(tmp_path, monkeypatch):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    workspace = str(tmp_path)
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "Vectant Tests"], cwd=workspace, check=True)
+    (tmp_path / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=workspace, check=True, capture_output=True)
+    run_id = client.post("/counterfactual/runs", json={
+        "workspace_path": workspace, "request_id": "req-trial", "task_class": "fix",
+        "base_state": {"state_hash": "base"}, "universe_plan": [{"id": "A"}],
+    }).json()["counterfactual_run"]["run_id"]
+    trial = client.post(f"/counterfactual/runs/{run_id}/mutation-trials", json={
+        "workspace_path": workspace, "task_class": "fix", "violated_policy": "small patch",
+        "why_now": "repeat evidence", "stricter_detectors": ["unit_tests"],
+        "quarantine_policy": "manual review", "budget_cap_usd": 0.1,
+    }).json()["mutation_trial"]
+    monkeypatch.setattr("shadow.telemetry_api.CodexRunner.run", lambda self, **kwargs: RunnerArtifact(artifact_summary="quarantined"))
+    over_cap = client.post(f"/counterfactual/mutation-trials/{trial['id']}/execute", json={
+        "workspace_path": workspace, "runner_kind": "codex", "universe_id": "A", "direction_id": "trial",
+        "direction_label": "trial", "declared_condition": "quarantined", "task_summary": "test", "budget_usd": 0.2,
+    })
+    assert over_cap.status_code == 422
+    executed = client.post(f"/counterfactual/mutation-trials/{trial['id']}/execute", json={
+        "workspace_path": workspace, "runner_kind": "codex", "universe_id": "A", "direction_id": "trial",
+        "direction_label": "trial", "declared_condition": "quarantined", "task_summary": "test", "budget_usd": 0.1,
+    })
+    assert executed.status_code == 201
+    assert executed.json()["mutation_trial"]["status"] == "running"
+    assert executed.json()["mutation_trial"]["auto_apply_allowed"] is False
