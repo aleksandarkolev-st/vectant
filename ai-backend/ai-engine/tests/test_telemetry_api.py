@@ -273,3 +273,40 @@ def test_mutation_trial_runs_only_in_quarantine_and_respects_its_budget(tmp_path
     assert executed.status_code == 201
     assert executed.json()["mutation_trial"]["status"] == "running"
     assert executed.json()["mutation_trial"]["auto_apply_allowed"] is False
+
+
+def test_contradicted_policy_is_removed_from_the_next_run_niche_map(tmp_path):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    workspace = str(tmp_path)
+    created = client.post("/counterfactual/runs", json={
+        "workspace_path": workspace, "request_id": "req-contradict", "task_class": "fix",
+        "base_state": {}, "universe_plan": [{"id": "A"}, {"id": "B"}],
+    })
+    run_id = created.json()["counterfactual_run"]["run_id"]
+    for universe_id, depth in (("A", 0.1), ("B", 0.9)):
+        trace = client.post(f"/counterfactual/runs/{run_id}/branches", params={"workspace_path": workspace}, json={
+            "universe_id": universe_id, "runner_kind": "internal", "direction_label": universe_id,
+            "artifact_summary": "compact", "phenotype_vector": {"runtime_depth": depth}, "diff_summary": {"loc_added": 10 if universe_id == "A" else 2},
+        }).json()["branch_trace"]
+        client.post(f"/counterfactual/branches/{trace['id']}/detectors", params={"workspace_path": workspace}, json={
+            "detector_kind": "unit_tests", "status": "passed", "score": 1, "evidence_summary": "passed",
+        })
+    client.post(f"/counterfactual/runs/{run_id}/selection", params={"workspace_path": workspace}, json={
+        "selected_universe_id": "B", "arbiter_winner_universe_id": "A", "visible_universe_ids": ["A", "B"],
+        "opened_diff_universe_ids": ["A", "B"], "selection_action": "applied",
+    })
+    deltas = client.post(f"/counterfactual/runs/{run_id}/policy-deltas", params={"workspace_path": workspace}, json={}).json()["policy_deltas"]
+    runtime_delta = next(item for item in deltas if item["delta_kind"] == "universe_direction_change")
+    contradicted = client.post(f"/counterfactual/policy-deltas/{runtime_delta['id']}/contradict", json={
+        "workspace_path": workspace, "reason": "Later comparable selection chose a local repair.",
+    })
+    assert contradicted.status_code == 200
+    policy = client.get("/counterfactual/policy-deltas", params={"workspace_path": workspace, "task_class": "fix"})
+    assert runtime_delta["id"] not in {item["id"] for item in policy.json()["policy_deltas"]}
+    forecast = client.post("/counterfactual/forecast/directions", json={
+        "workspace_path": workspace, "task_class": "fix", "request_summary": "repair", "budget": {"max_universes": 3, "max_cost_usd": 0.1},
+    })
+    runtime = next(item for item in forecast.json()["directions"] if item["label"] == "runtime_primitive")
+    assert runtime["selection_fit_estimate"] == "medium"

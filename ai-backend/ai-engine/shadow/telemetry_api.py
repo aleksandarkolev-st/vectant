@@ -92,6 +92,11 @@ class ControlsRequest(BaseModel):
     raw_trace_days: Optional[int] = None
 
 
+class PolicyContradictionRequest(BaseModel):
+    workspace_path: str
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class MutationTrialRequest(BaseModel):
     workspace_path: str
     task_class: str
@@ -278,6 +283,14 @@ def delete_policy_delta(delta_id: str, workspace_path: str) -> Dict[str, Any]:
     if not repo.delete_policy_delta(delta_id):
         raise HTTPException(status_code=404, detail="policy delta not found")
     return {"deleted": True}
+
+
+@router.post("/policy-deltas/{delta_id}/contradict")
+def contradict_policy_delta(delta_id: str, payload: PolicyContradictionRequest) -> Dict[str, Any]:
+    repo = _repo(payload.workspace_path)
+    if not repo.contradict_policy_delta(delta_id, reason=payload.reason):
+        raise HTTPException(status_code=404, detail="active policy delta not found")
+    return {"contradicted": True, "execution_niche_map": repo.niche_map("unknown")}
 
 
 @router.delete("/telemetry")

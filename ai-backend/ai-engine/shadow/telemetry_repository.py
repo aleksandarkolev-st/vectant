@@ -183,6 +183,20 @@ class TelemetryRepository:
         self._write(data)
         return True
 
+    def contradict_policy_delta(self, delta_id: str, *, reason: str) -> bool:
+        data = self._read()
+        delta = data["policy_deltas"].get(delta_id)
+        if not delta or delta.get("status") in {"deleted", "contradicted"}:
+            return False
+        delta["status"] = "contradicted"
+        # Keep a bounded, task-level operational reason. Never infer a
+        # personal motive or retain source content here.
+        delta["contradiction_reason"] = _compact(reason)[:_MAX_TEXT]
+        delta["contradicted_at"] = time.time()
+        self._rebuild_niche_maps(data)
+        self._write(data)
+        return True
+
     def delete_all(self) -> None:
         """Delete all durable telemetry and bounded raw runner artifacts.
 
