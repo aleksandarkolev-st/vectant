@@ -65,6 +65,26 @@ export function CounterfactualControls({ workspacePath, taskClass = '' }) {
     }
   };
 
+  const contradictDelta = async (id) => {
+    if (!workspacePath || saving) return;
+    const reason = window.prompt('Why does this policy no longer fit this workspace or task class?');
+    if (!reason?.trim()) return;
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/counterfactual/policy-deltas/${encodeURIComponent(id)}/contradict`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspace_path: workspacePath, reason: reason.trim() }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not contradict this learned policy');
+      await refresh();
+    } catch (error) {
+      setState((current) => ({ ...current, error: String(error?.message || error) }));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const deleteAllTelemetry = async () => {
     if (!workspacePath || saving) return;
     if (!window.confirm('Delete all counterfactual telemetry for this workspace? This removes learned policies, fossils, choice scenes, and retained runner artifacts.')) return;
@@ -109,7 +129,10 @@ export function CounterfactualControls({ workspacePath, taskClass = '' }) {
       {state.deltas.length ? <ul className="mt-3 space-y-2" aria-label="Learned policy deltas">
         {state.deltas.map((delta) => <li key={delta.id} className="flex items-start justify-between gap-3 text-[11px] text-[var(--text-secondary)]">
           <span>{delta.after}</span>
-          <button type="button" aria-label={`Delete learned policy ${delta.id}`} className="th-focus-ring shrink-0 text-[var(--text-muted)] hover:text-[var(--status-danger)]" disabled={saving} onClick={() => removeDelta(delta.id)}><Trash2 className="h-3.5 w-3.5" aria-hidden="true" /></button>
+          <span className="flex shrink-0 gap-2">
+            <button type="button" aria-label={`Mark learned policy ${delta.id} contradicted`} className="th-focus-ring text-[var(--text-muted)]" disabled={saving} onClick={() => contradictDelta(delta.id)}>Contradict</button>
+            <button type="button" aria-label={`Delete learned policy ${delta.id}`} className="th-focus-ring text-[var(--text-muted)] hover:text-[var(--status-danger)]" disabled={saving} onClick={() => removeDelta(delta.id)}><Trash2 className="h-3.5 w-3.5" aria-hidden="true" /></button>
+          </span>
         </li>)}
       </ul> : <p className="mt-3 text-[11px] text-[var(--text-muted)]">No active learned policies for this task class.</p>}
       <button type="button" className="th-focus-ring mt-3 text-[11px] text-[var(--status-danger)]" disabled={saving || state.loading} onClick={deleteAllTelemetry}>

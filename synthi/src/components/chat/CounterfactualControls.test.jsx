@@ -50,4 +50,16 @@ describe('CounterfactualControls', () => {
     expect(globalThis.confirm).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls.some(([url, options]) => String(url).includes('/api/counterfactual/telemetry') && options?.method === 'DELETE')).toBe(true);
   });
+
+  it('lets an operator contradict an active policy with an explicit reason', async () => {
+    const fetchMock = vi.fn((url) => Promise.resolve({ ok: true, json: async () => (
+      String(url).includes('/inspection') ? { inspection: {} } : String(url).includes('/policy-deltas') && !String(url).includes('/contradict') ? { policy_deltas: [{ id: 'delta-2', after: 'prefer a runtime primitive' }] } : { enabled: true, retention: { fossil_days: 365, raw_trace_days: 30 } }
+    ) }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('prompt', vi.fn(() => 'Later evidence contradicted this policy.'));
+    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+    await act(async () => { root.render(<CounterfactualControls workspacePath="C:/workspace" taskClass="fix" />); });
+    await act(async () => { container.querySelector('[aria-label="Mark learned policy delta-2 contradicted"]').click(); });
+    expect(fetchMock.mock.calls.some(([url, options]) => String(url).includes('/policy-deltas/delta-2/contradict') && options?.method === 'POST')).toBe(true);
+  });
 });
