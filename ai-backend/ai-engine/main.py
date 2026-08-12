@@ -4378,6 +4378,13 @@ async def validate_distilled_patch(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/heal/agentic/distill/metrics")
+async def failure_distiller_metrics():
+    """Return reduction, execution-cost, and round-trip validation metrics."""
+    from analyzer.proactive.healing.failure_distiller import get_failure_distiller
+    return {"ok": True, "metrics": get_failure_distiller().metrics()}
+
+
 @app.post("/heal/agentic/diagnose")
 async def agentic_diagnose(request: Request):
     """Root-cause diagnosis from error text."""

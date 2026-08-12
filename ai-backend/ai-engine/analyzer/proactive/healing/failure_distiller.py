@@ -184,7 +184,11 @@ class Run:
 class FailureDistiller:
     """Creates logical capsules and validates patch round trips."""
 
+    def __init__(self) -> None:
+        self._metrics = {"distillation_requests": 0, "accepted_capsules": 0, "candidate_executions": 0, "candidate_units": 0, "removed_units": 0, "validation_requests": 0, "validated_patches": 0, "materialization_requests": 0, "materialized_capsules": 0}
+
     async def distill(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        self._metrics["distillation_requests"] += 1
         root = Path(str(request.get("workspaceRoot", request.get("workspace_root", "")))).resolve()
         if not root.is_dir():
             raise DistillationError("workspaceRoot must be an existing directory")
@@ -234,6 +238,10 @@ class FailureDistiller:
 
         status = "distilled" if not active else "stable_partial"
         artifact = self._write_capsule(root, capsule_id, command, environment, predicate, signature, budget, source_revision, dirty, baseline, active, removed, retained, evidence, status)
+        self._metrics["accepted_capsules"] += 1
+        self._metrics["candidate_executions"] += executions
+        self._metrics["candidate_units"] += len(candidates)
+        self._metrics["removed_units"] += len(removed)
         return {"ok": True, "capsule_id": capsule_id, "capsuleId": capsule_id, "workspace_path": str(artifact), "workspacePath": str(artifact), "run": f"vectant repro run {capsule_id}", "status": status, "baseline": baseline, "reduction": {"candidate_units": len(candidates), "removed_units": len(removed), "retained_units": len(active), "minimality": "1-minimal_under_declared_units" if not active or executions < budget.max_executions else "budget_limited"}, "limits": ["logical capsule: source files remain in the original workspace", "network denied; external interactions are unsupported"], "executions": executions}
 
     async def run(self, capsule_path: str) -> Dict[str, Any]:
@@ -260,6 +268,7 @@ class FailureDistiller:
         copied from a detached worktree, then the recorded reductions are
         applied before a same-signature replay proves the exported workspace.
         """
+        self._metrics["materialization_requests"] += 1
         capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()
         repro = self._read_json(capsule / "repro.json")
         root = Path(repro["workspace_root"]).resolve()
@@ -297,9 +306,11 @@ class FailureDistiller:
             return self._state("boundary_not_isolatable", "materialized workspace did not reproduce the same failure", run=self._run_dict(run))
         materialized_repro = {**repro, "workspace_root": str(destination), "mode": "materialized"}
         self._write_json(destination / ".vectant-materialized-repro.json", materialized_repro)
+        self._metrics["materialized_capsules"] += 1
         return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "limits": ["dependencies are linked from the originating workspace when available", "portable under the declared source/config/fixture reduction model"]}
 
     async def validate_patch(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        self._metrics["validation_requests"] += 1
         capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()
         repro, provenance = self._read_json(capsule / "repro.json"), self._read_json(capsule / "provenance.json")
         root = Path(repro["workspace_root"]).resolve()
@@ -352,7 +363,14 @@ class FailureDistiller:
         original_passes = not predicate.matches(original_run.exit_code, original_run.output)
         failed_checks = [check for check in affected if check["run"]["exit_code"] != 0]
         status = "validated" if capsule_passes and original_passes and not failed_checks else ("capsule_fix_failed" if not capsule_passes else "original_validation_failed" if not original_passes else "affected_checks_failed")
+        if status == "validated":
+            self._metrics["validated_patches"] += 1
         return self._record_validation(capsule, {"ok": status == "validated", "status": status, "gates": {"capsule_fails_before_patch": before, "capsule_passes_after_patch": self._run_dict(capsule_run), "original_failure_passes_after_mapping": self._run_dict(original_run), "affected_checks": affected}, "patch_mapping": {"mapped_files": [provenance[str(edit["path"])]["origin"] for edit in edits]}, "signature_after_patch": "match" if signature.matches(original_run.output) else "changed"})
+
+    def metrics(self) -> Dict[str, Any]:
+        accepted = self._metrics["accepted_capsules"]
+        candidates = self._metrics["candidate_units"]
+        return {**self._metrics, "reduction_ratio": self._metrics["removed_units"] / candidates if candidates else 0.0, "patch_validation_rate": self._metrics["validated_patches"] / self._metrics["validation_requests"] if self._metrics["validation_requests"] else 0.0, "average_candidate_executions": self._metrics["candidate_executions"] / accepted if accepted else 0.0}
 
     def _command(self, raw: Any) -> List[str]:
         if isinstance(raw, str):

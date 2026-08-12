@@ -157,3 +157,17 @@ def test_materializes_a_reduced_workspace_and_reproduces(workspace):
     assert not (destination / "unrelated.txt").exists()
     assert (destination / "runner.py").is_file()
     assert materialized["run"]["exit_code"] == 7
+
+
+def test_metrics_report_reduction_and_validation_outcomes(workspace):
+    distiller = FailureDistiller()
+    result = run(distiller.distill(request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])))
+    run(distiller.validate_patch({
+        "capsulePath": result["workspace_path"],
+        "edits": [{"path": "runner.py", "content": "print('fixed')\n"}],
+    }))
+    metrics = distiller.metrics()
+    assert metrics["accepted_capsules"] == 1
+    assert metrics["removed_units"] == 1
+    assert metrics["validated_patches"] == 1
+    assert metrics["reduction_ratio"] == 1.0
