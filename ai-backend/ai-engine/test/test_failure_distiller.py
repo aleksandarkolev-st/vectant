@@ -113,3 +113,19 @@ def test_auto_discovery_reduces_json_fixture_records_and_replay_uses_overlay(wor
     assert {item["reference"] for item in repro["removed_units"]} >= {"fixture.json#/unrelated"}
     replay = run(FailureDistiller().run(str(capsule)))
     assert replay["status"] == "same_failure"
+
+
+def test_cli_runs_and_explains_a_capsule(workspace):
+    result = run(FailureDistiller().distill(request(workspace, [
+        {"kind": "file", "reference": "unrelated.txt"},
+    ])))
+    cli = Path(__file__).parents[1] / "vectant_repro.py"
+    command = [sys.executable, str(cli), "repro", "run", result["workspace_path"]]
+    replay = subprocess.run(command, check=False, capture_output=True, text=True)
+    assert replay.returncode == 0
+    assert json.loads(replay.stdout)["status"] == "same_failure"
+    explain = subprocess.run([
+        sys.executable, str(cli), "repro", "explain", result["workspace_path"], "unrelated.txt",
+    ], check=False, capture_output=True, text=True)
+    assert explain.returncode == 0
+    assert json.loads(explain.stdout)["evidence"][0]["decision"] == "removed"

@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Operator CLI for Failure Distiller capsules.
+
+Install this module as the ``vectant`` console entry point, or invoke it
+directly during local development:
+
+    python vectant_repro.py repro run .vectant/capsules/capsule_x
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+from pathlib import Path
+from typing import Any, Dict
+
+from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+
+
+def _read_json(path: str) -> Dict[str, Any]:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DistillationError(f"cannot read JSON input: {path}") from exc
+
+
+def _emit(value: Dict[str, Any]) -> None:
+    print(json.dumps(value, indent=2, sort_keys=True))
+
+
+async def _execute(args: argparse.Namespace) -> Dict[str, Any]:
+    distiller = get_failure_distiller()
+    if args.command == "distill":
+        return await distiller.distill(_read_json(args.request))
+    if args.command == "run":
+        return await distiller.run(args.capsule_path)
+    if args.command == "validate-patch":
+        request = _read_json(args.edits)
+        request["capsulePath"] = args.capsule_path
+        return await distiller.validate_patch(request)
+    if args.command == "explain":
+        capsule = Path(args.capsule_path)
+        entries = []
+        try:
+            for line in (capsule / "reduction.ndjson").read_text(encoding="utf-8").splitlines():
+                row = json.loads(line)
+                if row.get("candidate") in {args.unit, f"file:{args.unit}", f"env:{args.unit}"}:
+                    entries.append(row)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DistillationError("invalid capsule reduction evidence") from exc
+        return {"ok": bool(entries), "capsule_path": str(capsule), "unit": args.unit, "evidence": entries, "reason": None if entries else "unit_not_found"}
+    raise DistillationError("unsupported repro command")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="vectant", description="Create and operate evidence-backed failure capsules")
+    repro = parser.add_subparsers(dest="namespace", required=True)
+    repro_parser = repro.add_parser("repro", help="Failure capsule commands")
+    commands = repro_parser.add_subparsers(dest="command", required=True)
+    distill = commands.add_parser("distill", help="Create a capsule from a JSON request")
+    distill.add_argument("--request", required=True, help="Distillation request JSON")
+    run = commands.add_parser("run", help="Run a capsule's recorded reproducer")
+    run.add_argument("capsule_path")
+    explain = commands.add_parser("explain", help="Explain a retained or removed unit")
+    explain.add_argument("capsule_path")
+    explain.add_argument("unit")
+    validate = commands.add_parser("validate-patch", help="Map and validate production edits")
+    validate.add_argument("capsule_path")
+    validate.add_argument("--edits", required=True, help="JSON containing an edits array")
+    args = parser.parse_args()
+    try:
+        result = asyncio.run(_execute(args))
+    except DistillationError as exc:
+        _emit({"ok": False, "error": str(exc)})
+        return 2
+    _emit(result)
+    return 0 if result.get("ok") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
