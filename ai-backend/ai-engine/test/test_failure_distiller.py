@@ -1,0 +1,87 @@
+import asyncio
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from analyzer.proactive.healing.failure_distiller import (
+    DistillationError,
+    FailureDistiller,
+)
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def git(root, *args):
+    completed = subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, text=True)
+    return completed.stdout.strip()
+
+
+@pytest.fixture
+def workspace(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init")
+    git(root, "config", "user.email", "test@example.com")
+    git(root, "config", "user.name", "Test")
+    (root / "runner.py").write_text(
+        "import pathlib, sys\n"
+        "if pathlib.Path('required.txt').exists():\n"
+        "  print('FailureSignature: required boundary')\n"
+        "  sys.exit(7)\n"
+        "print('fixed')\n",
+        encoding="utf-8",
+    )
+    (root / "required.txt").write_text("keep this failure alive\n", encoding="utf-8")
+    (root / "unrelated.txt").write_text("not involved\n", encoding="utf-8")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "fixture")
+    return root
+
+
+def request(root, candidates):
+    return {
+        "workspaceRoot": str(root),
+        "command": [sys.executable, "runner.py"],
+        "predicate": {"type": "exit_nonzero", "required_output": ["FailureSignature"]},
+        "signature": {"required": ["required boundary"]},
+        "budget": {"preset": "fast", "stability_attempts": 2, "minimum_matches": 2, "max_executions": 20},
+        "candidates": candidates,
+    }
+
+
+def test_distills_an_unrelated_file_and_writes_contract(workspace):
+    result = run(FailureDistiller().distill(request(workspace, [
+        {"kind": "file", "reference": "unrelated.txt"},
+        {"kind": "file", "reference": "required.txt"},
+    ])))
+    assert result["ok"]
+    assert result["status"] == "stable_partial"
+    assert result["reduction"]["removed_units"] == 1
+    capsule = Path(result["workspace_path"])
+    assert (capsule / "manifest.json").is_file()
+    assert (capsule / "reduction.ndjson").is_file()
+    assert json.loads((capsule / "repro.json").read_text())["predicate"]["type"] == "exit_nonzero"
+    replay = run(FailureDistiller().run(str(capsule)))
+    assert replay["status"] == "same_failure"
+
+
+def test_rejects_secret_environment_and_path_escape(workspace):
+    with pytest.raises(DistillationError, match="secret-bearing"):
+        run(FailureDistiller().distill({**request(workspace, []), "environment": {"API_TOKEN": "nope"}}))
+    with pytest.raises(DistillationError, match="escapes workspace"):
+        run(FailureDistiller().distill(request(workspace, [{"kind": "file", "reference": "../outside"}])))
+
+
+def test_patch_mapping_rejects_capsule_only_edits(workspace):
+    result = run(FailureDistiller().distill(request(workspace, [{"kind": "file", "reference": "required.txt"}])))
+    assert result["ok"]
+    validation = run(FailureDistiller().validate_patch({
+        "capsulePath": result["workspace_path"],
+        "edits": [{"path": "mocks/provider.py", "content": "not production"}],
+    }))
+    assert validation["status"] == "patch_mapping_conflict"
