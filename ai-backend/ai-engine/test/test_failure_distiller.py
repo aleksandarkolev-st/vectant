@@ -1,5 +1,6 @@
 import asyncio
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -229,4 +230,34 @@ def test_derives_a_failure_signature_when_callers_supply_only_a_predicate(worksp
     assert result["ok"]
     repro = json.loads((Path(result["workspace_path"]) / "repro.json").read_text())
     assert repro["signature"]["required"]
+    assert run(FailureDistiller().run(result["workspace_path"]))["status"] == "same_failure"
+
+
+@pytest.mark.skipif(not (Path(__file__).parents[3] / "synthi" / "node_modules" / "vitest").exists(), reason="Vitest install unavailable")
+def test_vitest_adapter_reduces_a_real_node_fixture(workspace):
+    shared_modules = Path(__file__).parents[3] / "synthi" / "node_modules"
+    try:
+        (workspace / "node_modules").symlink_to(shared_modules, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create local node_modules link")
+    (workspace / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+    (workspace / "failure.test.mjs").write_text(
+        "import { test, expect } from 'vitest';\n"
+        "test('fails with signature', () => { throw new Error('FailureSignature vitest'); });\n",
+        encoding="utf-8",
+    )
+    (workspace / "unrelated.txt").write_text("remove\n", encoding="utf-8")
+    git(workspace, "add", "package.json", "failure.test.mjs", "unrelated.txt")
+    git(workspace, "commit", "-m", "vitest fixture")
+    payload = {
+        "workspaceRoot": str(workspace),
+        "command": [shutil.which("node") or "node", str(shared_modules / "vitest" / "vitest.mjs"), "run", "failure.test.mjs"],
+        "predicate": {"type": "exit_nonzero", "required_output": ["FailureSignature vitest"]},
+        "signature": {"required": ["FailureSignature vitest"]},
+        "budget": {"preset": "fast", "stability_attempts": 1, "minimum_matches": 1, "max_executions": 12, "timeout_sec": 30},
+        "candidates": [{"kind": "file", "reference": "unrelated.txt"}],
+    }
+    result = run(FailureDistiller().distill(payload))
+    assert result["ok"], result["baseline"]["runs"][0]["output"]
+    assert result["reduction"]["removed_units"] == 1
     assert run(FailureDistiller().run(result["workspace_path"]))["status"] == "same_failure"
