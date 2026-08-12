@@ -248,7 +248,7 @@ class FailureDistiller:
         self._metrics["candidate_executions"] += executions
         self._metrics["candidate_units"] += len(candidates)
         self._metrics["removed_units"] += len(removed)
-        return {"ok": True, "capsule_id": capsule_id, "capsuleId": capsule_id, "workspace_path": str(artifact), "workspacePath": str(artifact), "run": f"vectant repro run {capsule_id}", "status": status, "baseline": baseline, "reduction": {"candidate_units": len(candidates), "removed_units": len(removed), "retained_units": len(active), "minimality": "1-minimal_under_declared_units" if not active or executions < budget.max_executions else "budget_limited"}, "limits": ["logical capsule: source files remain in the original workspace", "network denied; external interactions are unsupported"], "executions": executions}
+        return {"ok": True, "capsule_id": capsule_id, "capsuleId": capsule_id, "workspace_path": str(artifact), "workspacePath": str(artifact), "run": f"vectant repro run {capsule_id}", "status": status, "baseline": baseline, "reduction": {"candidate_units": len(candidates), "removed_units": len(removed), "retained_units": len(active), "minimality": "1-minimal_under_declared_units" if not active or executions < budget.max_executions else "budget_limited"}, "limits": ["logical capsule: source files remain in the original workspace", "outbound network is not granted by this API but must be blocked by the configured host/container sandbox", "external interactions are unsupported without a validated replay or contract boundary"], "executions": executions}
 
     async def run(self, capsule_path: str) -> Dict[str, Any]:
         capsule = Path(capsule_path).resolve()
