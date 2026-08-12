@@ -193,6 +193,13 @@ def test_metrics_report_reduction_and_validation_outcomes(workspace):
     assert metrics["reduction_ratio"] == 1.0
 
 
+def test_cli_exposes_distiller_metrics(workspace):
+    cli = Path(__file__).parents[1] / "vectant_repro.py"
+    completed = subprocess.run([sys.executable, str(cli), "repro", "metrics"], check=False, capture_output=True, text=True)
+    assert completed.returncode == 0
+    assert json.loads(completed.stdout)["ok"] is True
+
+
 def test_reduces_noncausal_command_input_and_replays_reduced_command(workspace):
     (workspace / "runner.py").write_text(
         "import argparse, sys\n"
