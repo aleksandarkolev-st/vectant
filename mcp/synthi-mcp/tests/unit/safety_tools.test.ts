@@ -1081,6 +1081,17 @@ describe("safety MCP tool surface", () => {
       }),
     }));
   });
+
+  it("refuses browser failure reduction before a CI isolation profile is ready", async () => {
+    teachSaveWorkflow();
+    const result = await dispatchSafetyTool("synthi_safety_distill_browser_failure", { workspace_id: "workspace-a" });
+    expect(result?.isError).toBeUndefined();
+    expect(result?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      status: "boundary_not_isolatable",
+      baseline: expect.objectContaining({ status: "blocked", mutation_executed: false }),
+    }));
+  });
 });
 
 function teachSaveWorkflow(): void {
