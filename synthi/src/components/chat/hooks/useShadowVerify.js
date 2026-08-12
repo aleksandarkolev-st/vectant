@@ -23,7 +23,9 @@ const initial = () => ({
     directionForecast: [],
     learnedLines: [],
     policyDeltas: [],
+    selectedUniverseId: null,
     reviewedUniverseIds: [],
+    openedExplanationUniverseIds: [],
     winner: null,
     finished: false,
     cancelled: false,
@@ -108,10 +110,11 @@ export function useShadowVerify(jobId) {
             body: JSON.stringify({
                 universeId,
                 openedDiffUniverseIds: state.reviewedUniverseIds || [],
+                openedExplanationUniverseIds: state.openedExplanationUniverseIds || [],
             }),
         });
         const data = await res.json().catch(() => ({}));
-        setState((s) => applySelectionResult(s, data));
+        setState((s) => ({ ...applySelectionResult(s, data), selectedUniverseId: universeId }));
         return data;
     };
 
@@ -119,6 +122,13 @@ export function useShadowVerify(jobId) {
         setState((s) => ({
             ...s,
             reviewedUniverseIds: mergeUnique(s.reviewedUniverseIds, [universeId]),
+        }));
+    };
+
+    const markUniverseExplanationReviewed = (universeId) => {
+        setState((s) => ({
+            ...s,
+            openedExplanationUniverseIds: mergeUnique(s.openedExplanationUniverseIds, [universeId]),
         }));
     };
 
@@ -146,7 +156,7 @@ export function useShadowVerify(jobId) {
         return data;
     };
 
-    return { ...state, apply, cancel, askWhy, markUniverseReviewed };
+    return { ...state, apply, cancel, askWhy, markUniverseReviewed, markUniverseExplanationReviewed };
 }
 
 export function reduce(s, evt) {

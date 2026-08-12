@@ -13,7 +13,11 @@ def apply_policy_deltas(specs: List[UniverseSpec], deltas: Iterable[PolicyDelta]
     for delta in deltas:
         after = delta.after.lower()
         if "runtime" in after:
-            ordered = _promote_styles(ordered, {"idiomatic", "safe"})
+            # A runtime lesson must alter the next chamber order, even when
+            # the default plan already contains both runtime-capable styles.
+            ordered = sorted(ordered, key=lambda spec: {
+                "idiomatic": 0, "safe": 1,
+            }.get(spec.style.lower(), 2))
         if "size" in after or "smaller" in after:
             ordered = _promote_styles(ordered, {"minimalist", "surgical"})
     return ordered

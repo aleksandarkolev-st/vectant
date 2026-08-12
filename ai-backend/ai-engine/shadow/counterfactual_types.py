@@ -75,6 +75,15 @@ class PolicyDeltaStatus(str, Enum):
     DELETED = "deleted"
 
 
+class MutationTrialStatus(str, Enum):
+    PLANNED = "planned"
+    RUNNING = "running"
+    PASSED = "passed"
+    FAILED = "failed"
+    NOT_SELECTED = "not_selected"
+    CANCELLED = "cancelled"
+
+
 class SelectionOutcome(str, Enum):
     SELECTED = "selected"
     NOT_SELECTED = "not_selected"
@@ -269,3 +278,90 @@ class PolicyDelta:
         data["delta_kind"] = self.delta_kind.value
         data["status"] = self.status.value
         return data
+
+
+@dataclass
+class BranchFossil:
+    """Bounded, durable learning material derived from a branch trace.
+
+    Full source, prompts, and raw tool output deliberately stay out of fossils.
+    They remain behind explicit artifact references and their separate retention
+    policy, so a workspace can learn without turning its source tree into a
+    telemetry archive.
+    """
+
+    id: str
+    branch_trace_id: str
+    workspace_id: str
+    task_class: str
+    runner_kind: str
+    direction_label: str
+    compact_artifact_summary: str
+    compact_diff_summary: Dict[str, Any]
+    phenotype_vector: PhenotypeVector
+    detector_summary: List[Dict[str, Any]]
+    selection_outcome: SelectionOutcome
+    exposure_level: ExposureLevel
+    counterfactual_strength: CounterfactualStrength
+    inferred_lessons: List[str]
+    source_counterfactual_run_id: str
+    created_at: float
+    decay_after: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = asdict(self)
+        data["selection_outcome"] = self.selection_outcome.value
+        data["exposure_level"] = self.exposure_level.value
+        data["counterfactual_strength"] = self.counterfactual_strength.value
+        return data
+
+
+@dataclass
+class MutationTrial:
+    """A quarantined policy exception. It can never be auto-applied."""
+
+    id: str
+    counterfactual_run_id: str
+    workspace_id: str
+    task_class: str
+    violated_policy: str
+    why_now: str
+    stricter_detectors: List[DetectorKind]
+    quarantine_policy: str
+    budget_cap_usd: float
+    status: MutationTrialStatus = MutationTrialStatus.PLANNED
+    result: Optional[str] = None
+    regret_signal_scope: str = "isolated"
+    auto_apply_allowed: bool = False
+    created_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.auto_apply_allowed:
+            raise ValueError("Mutation Trials must never allow auto-apply")
+        if self.budget_cap_usd <= 0:
+            raise ValueError("Mutation Trial budget cap must be positive")
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = asdict(self)
+        data["stricter_detectors"] = [kind.value for kind in self.stricter_detectors]
+        data["status"] = self.status.value
+        return data
+
+
+@dataclass
+class PostSelectionMutation:
+    selected_branch_id: str
+    observation_window: str
+    files_changed_after_apply: List[str]
+    deleted_generated_blocks: int
+    retained_generated_blocks: int
+    abstraction_removed: bool
+    tests_added_by_user: bool
+    ui_changed_by_user: bool
+    runtime_changed_by_user: bool
+    mutation_summary: str
+    retention_score: float
+    observed_at: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)

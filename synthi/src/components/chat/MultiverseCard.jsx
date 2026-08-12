@@ -3,6 +3,7 @@
 import React from 'react';
 import { useShadowVerify } from './hooks/useShadowVerify';
 import { ArbiterCard } from './ArbiterCard';
+import { CounterfactualControls } from './CounterfactualControls';
 import { Eye, Image, ShieldCheck } from 'lucide-react';
 
 /**
@@ -52,7 +53,7 @@ function shortHash(proof) {
     return value ? value.slice(0, 12) : 'not captured';
 }
 
-function UniverseRow({ universe, onApply, onReview, reviewed }) {
+function UniverseRow({ universe, onApply, onReview, onExplanationReview, reviewed, explanationReviewed }) {
     const { id, stage, modelGen, modelCritic, style, evidence } = universe;
     const visualProof = visualProofFromEvidence(evidence);
     const visualStatus = proofStatus(visualProof);
@@ -121,6 +122,13 @@ function UniverseRow({ universe, onApply, onReview, reviewed }) {
                         <Eye className="w-3.5 h-3.5" aria-hidden="true" />
                         {reviewed ? 'Reviewed' : 'Mark reviewed'}
                     </button>
+                    <button
+                        type="button"
+                        className={explanationReviewed ? 'genome-universe__review genome-universe__review--done th-focus-ring' : 'genome-universe__review th-focus-ring'}
+                        onClick={() => onExplanationReview(id)}
+                    >
+                        {explanationReviewed ? 'Rationale reviewed' : 'Review rationale'}
+                    </button>
                     <button type="button" className="th-focus-ring" onClick={() => onApply(id)} disabled={!verified}>Apply</button>
                 </div>
             ) : null}
@@ -128,7 +136,7 @@ function UniverseRow({ universe, onApply, onReview, reviewed }) {
     );
 }
 
-export function MultiverseCard({ jobId }) {
+export function MultiverseCard({ jobId, workspacePath = null, taskClass = '' }) {
     const verify = useShadowVerify(jobId);
     if (!jobId) return null;
     const universes = Object.values(verify.universes || {});
@@ -154,6 +162,11 @@ export function MultiverseCard({ jobId }) {
                     <strong>Learned from this run:</strong> {learnedLines[0]}
                 </div>
             ) : null}
+            {verify.selectedUniverseId && verify.arbiter?.winner && verify.selectedUniverseId !== verify.arbiter.winner ? (
+                <div className="genome-card__ambiguity" data-testid="counterfactual-selection-override">
+                    Selection override recorded: Universe {verify.selectedUniverseId} was applied instead of the Arbiter recommendation, Universe {verify.arbiter.winner}.
+                </div>
+            ) : null}
             {verify.cancelled && learnedLines.length === 0 ? (
                 <div className="genome-card__ambiguity" data-testid="counterfactual-ambiguity-note">
                     Cancellation recorded as ambiguous; no branch rejection lesson was created.
@@ -174,6 +187,8 @@ export function MultiverseCard({ jobId }) {
                         onApply={(id) => verify.apply(id)}
                         onReview={(id) => verify.markUniverseReviewed?.(id)}
                         reviewed={(verify.reviewedUniverseIds || []).includes(u.id)}
+                        onExplanationReview={(id) => verify.markUniverseExplanationReviewed?.(id)}
+                        explanationReviewed={(verify.openedExplanationUniverseIds || []).includes(u.id)}
                     />
                 ))
             )}
@@ -183,6 +198,7 @@ export function MultiverseCard({ jobId }) {
             {verify.finished && verify.winner ? (
                 <footer className="genome-card__foot">winner: Universe {verify.winner}</footer>
             ) : null}
+            <CounterfactualControls workspacePath={workspacePath} taskClass={taskClass} />
         </div>
     );
 }

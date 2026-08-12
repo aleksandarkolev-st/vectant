@@ -35,6 +35,14 @@ def adjudicate_proof(traces: Iterable[BranchTrace], detectors: Iterable[Detector
     reasons: Dict[str, List[str]] = {}
     for trace in traces:
         branch_detectors = detectors_by_branch.get(trace.id, [])
+        # A branch with no detector evidence is not proof-valid.  Treating a
+        # missing detector as an implicit pass would let the public telemetry
+        # API manufacture a selection lesson that bypasses Vectant's proof
+        # gate entirely.
+        if not branch_detectors:
+            blocked.append(trace.universe_id)
+            reasons[trace.universe_id] = ["detector evidence is missing"]
+            continue
         failed = [
             f"{d.detector_kind.value}: {d.evidence_summary}"
             for d in branch_detectors

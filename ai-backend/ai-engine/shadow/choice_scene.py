@@ -30,9 +30,15 @@ def build_choice_scene(
     ambiguity_flags: Optional[List[str]] = None,
     cancel_stage: Optional[str] = None,
 ) -> ChoiceScene:
-    visible = list(dict.fromkeys(visible_universe_ids))
-    opened_diff = list(dict.fromkeys(opened_diff_universe_ids or []))
-    opened_explanation = list(dict.fromkeys(opened_explanation_universe_ids or []))
+    available = list(dict.fromkeys(available_universe_ids))
+    available_set = set(available)
+    # Exposure can only be recorded for branches that actually belonged to
+    # this run.  This prevents clients from inflating a choice scene with
+    # arbitrary universe ids and preserves the "visible is not inferred"
+    # contract.
+    visible = [item for item in dict.fromkeys(visible_universe_ids) if item in available_set]
+    opened_diff = [item for item in dict.fromkeys(opened_diff_universe_ids or []) if item in set(visible)]
+    opened_explanation = [item for item in dict.fromkeys(opened_explanation_universe_ids or []) if item in set(visible)]
     flags = list(ambiguity_flags or [])
     if selector_action == "cancelled" and not visible:
         flags.append("branch_not_visible_to_selector")
@@ -42,7 +48,7 @@ def build_choice_scene(
         base_commit_or_state_hash=base_state_hash,
         request_summary=request_summary[:480],
         task_class=task_class,
-        available_universe_ids=list(dict.fromkeys(available_universe_ids)),
+        available_universe_ids=available,
         visible_universe_ids=visible,
         opened_diff_universe_ids=opened_diff,
         opened_explanation_universe_ids=opened_explanation,

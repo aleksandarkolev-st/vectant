@@ -150,6 +150,24 @@ def test_active_policy_delta_changes_next_run_plan():
     assert [spec.universe_id for spec in planned] == ["B", "A"]
 
 
+def test_runtime_policy_reorders_the_real_default_chamber_sequence():
+    delta = make_policy_delta(
+        run_id="run", workspace_id="workspace", task_class="fix",
+        delta_kind=PolicyDeltaKind.UNIVERSE_DIRECTION_CHANGE,
+        before="default", after="raise runtime-primitive universe priority for similar task class",
+        confidence="medium", evidence_refs=["choice"],
+    )
+    specs = [
+        UniverseSpec("A", "safe", "m", "c"),
+        UniverseSpec("B", "idiomatic", "m", "c"),
+        UniverseSpec("C", "minimalist", "m", "c"),
+    ]
+
+    planned = apply_policy_deltas(specs, [delta])
+
+    assert [spec.universe_id for spec in planned] == ["B", "A", "C"]
+
+
 def test_convergence_winner_must_survive_proof_gate():
     job = events.JobState("job", "standard", "ws", None)
     job.selection_verdict = {"winner": "B"}

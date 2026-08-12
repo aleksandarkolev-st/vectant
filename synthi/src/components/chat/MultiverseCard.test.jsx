@@ -41,6 +41,7 @@ function renderWithVerify(verify) {
     cancel: vi.fn(),
     askWhy: vi.fn(),
     markUniverseReviewed: vi.fn(),
+    markUniverseExplanationReviewed: vi.fn(),
     ...verify,
   });
   container = document.createElement('div');
@@ -77,6 +78,15 @@ describe('MultiverseCard counterfactual notices', () => {
     expect(view.querySelector('[data-testid="counterfactual-learned-line"]')).toBeNull();
   });
 
+  it('surfaces a real selection override separately from a learned lesson', () => {
+    const view = renderWithVerify({
+      selectedUniverseId: 'B',
+      arbiter: { winner: 'A', confidence: 0.8 },
+    });
+    expect(view.querySelector('[data-testid="counterfactual-selection-override"]')?.textContent)
+      .toContain('Universe B was applied instead of the Arbiter recommendation, Universe A');
+  });
+
   it('renders visual proof artifact metadata for generated output', () => {
     const view = renderWithVerify({
       universes: {
@@ -110,8 +120,10 @@ describe('MultiverseCard counterfactual notices', () => {
 
   it('marks a universe as reviewed before applying comparison evidence', () => {
     const markUniverseReviewed = vi.fn();
+    const markUniverseExplanationReviewed = vi.fn();
     const view = renderWithVerify({
       markUniverseReviewed,
+      markUniverseExplanationReviewed,
       universes: {
         A: {
           id: 'A',
@@ -134,5 +146,11 @@ describe('MultiverseCard counterfactual notices', () => {
     });
 
     expect(markUniverseReviewed).toHaveBeenCalledWith('A');
+
+    act(() => {
+      view.querySelectorAll('.genome-universe__review')[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(markUniverseExplanationReviewed).toHaveBeenCalledWith('A');
   });
 });
