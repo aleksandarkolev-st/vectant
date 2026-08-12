@@ -221,6 +221,7 @@ const backendAgenticDiagnoseUrl = new URL("/heal/agentic/diagnose", backendUrl).
 const backendAgenticDistillUrl = new URL("/heal/agentic/distill", backendUrl).toString();
 const backendAgenticDistillRunUrl = new URL("/heal/agentic/distill/run", backendUrl).toString();
 const backendAgenticDistillMaterializeUrl = new URL("/heal/agentic/distill/materialize", backendUrl).toString();
+const backendAgenticDistillDeleteUrl = new URL("/heal/agentic/distill/delete", backendUrl).toString();
 const backendAgenticDistillValidatePatchUrl = new URL("/heal/agentic/distill/validate-patch", backendUrl).toString();
 const backendAgenticDistillMetricsUrl = new URL("/heal/agentic/distill/metrics", backendUrl).toString();
 const backendAgenticEpisodeCreateUrl = new URL("/heal/agentic/episode/create", backendUrl).toString();
@@ -498,6 +499,9 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/agentic/distill/materialize":
       await forwardAgenticDistillMaterialize(socket, data, requestId);
+      break;
+    case "heal/agentic/distill/delete":
+      await forwardAgenticDistillDelete(socket, data, requestId);
       break;
     case "heal/agentic/distill/validate-patch":
       await forwardAgenticDistillValidatePatch(socket, data, requestId);
@@ -2813,6 +2817,14 @@ async function forwardAgenticDistillMaterialize(socket, data, requestId) {
     return;
   }
   await agenticPost(socket, "heal/agentic/distill/materialize", backendAgenticDistillMaterializeUrl, data, requestId);
+}
+
+async function forwardAgenticDistillDelete(socket, data, requestId) {
+  if (typeof data?.capsulePath !== "string" || !data.capsulePath) {
+    sendError(socket, "`capsulePath` is required to delete a failure capsule", { requestId });
+    return;
+  }
+  await agenticPost(socket, "heal/agentic/distill/delete", backendAgenticDistillDeleteUrl, data, requestId);
 }
 
 async function forwardAgenticDistillValidatePatch(socket, data, requestId) {

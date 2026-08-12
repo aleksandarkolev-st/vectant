@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { Box, Play, PackageCheck, AlertTriangle, BarChart3 } from 'lucide-react';
+import { Box, Play, PackageCheck, AlertTriangle, BarChart3, Trash2 } from 'lucide-react';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 
 const inputClass = 'w-full rounded-[var(--radius-control)] border px-2 py-1.5 text-xs outline-none focus:ring-2';
@@ -41,6 +41,15 @@ export function FailureDistillerPanel() {
     networkPolicy: 'deny',
   })), [budget, command, execute, gateway, signature, workspaceRoot]);
 
+  const deleteCapsule = useCallback(() => {
+    if (!capsule?.workspacePath || !window.confirm('Permanently delete this capsule and its materialized contents? This cannot be undone.')) return;
+    execute(async () => {
+      const result = await gateway.deleteFailureCapsule(capsule.workspacePath);
+      if (result?.ok) setCapsule(null);
+      return result;
+    });
+  }, [capsule, execute, gateway]);
+
   return (
     <section className="border-t p-3" style={{ borderColor: 'var(--border-subtle)' }} data-testid="failure-distiller-panel">
       <div className="mb-2 flex items-center gap-2">
@@ -69,6 +78,7 @@ export function FailureDistillerPanel() {
           </button>
           {capsule?.workspacePath ? <button type="button" disabled={busy} onClick={() => execute(() => gateway.runFailureCapsule(capsule.workspacePath))} className="th-focus-ring rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--border-subtle)' }}>Replay</button> : null}
           {capsule?.workspacePath ? <button type="button" disabled={busy} onClick={() => execute(() => gateway.materializeFailureCapsule({ capsulePath: capsule.workspacePath }))} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--border-subtle)' }}><PackageCheck size={12} /> Materialize</button> : null}
+          {capsule?.workspacePath ? <button type="button" disabled={busy} onClick={deleteCapsule} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--accent-danger)', color: 'var(--accent-danger)' }}><Trash2 size={12} /> Delete</button> : null}
           <button type="button" disabled={busy} onClick={() => execute(() => gateway.getFailureDistillerMetrics())} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--border-subtle)' }}><BarChart3 size={12} /> Metrics</button>
         </div>
       </div>

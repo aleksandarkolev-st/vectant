@@ -648,6 +648,12 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('heal/agentic/distill/materialize', payload);
   }
 
+  /** Permanently delete an explicitly selected capsule. */
+  deleteFailureCapsule(capsulePath) {
+    if (!capsulePath) return Promise.reject(new Error('capsulePath is required'));
+    return this._sendRequest('heal/agentic/distill/delete', { capsulePath });
+  }
+
   /** Validate an editable production-file patch against its capsule provenance. */
   validateFailureCapsulePatch(payload) {
     if (!payload?.capsulePath || !Array.isArray(payload?.edits)) {
