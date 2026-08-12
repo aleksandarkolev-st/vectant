@@ -32,6 +32,8 @@ STATUSES = {
     "unsupported_runtime", "unsafe_external_boundary", "patch_mapping_conflict",
 }
 SECRET_NAME = re.compile(r"(?:token|secret|password|passwd|api[_-]?key|credential|private[_-]?key)", re.I)
+SECRET_VALUE = re.compile(r"(?P<key>\b(?:token|secret|password|passwd|api[_-]?key|credential|private[_-]?key)\b\s*(?:=|:|is)\s*)(?P<value>[^\s,;]+)", re.I)
+BEARER_VALUE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+\-/=]+", re.I)
 DEFAULT_BUDGETS = {
     "fast": {"max_executions": 100, "stability_attempts": 3, "minimum_matches": 3, "timeout_sec": 30},
     "standard": {"max_executions": 1000, "stability_attempts": 5, "minimum_matches": 5, "timeout_sec": 60},
@@ -53,6 +55,12 @@ def _sha256(value: bytes) -> str:
 
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _redact(value: str) -> str:
+    """Remove common credentials before output is persisted in capsule evidence."""
+    value = SECRET_VALUE.sub(lambda match: match.group("key") + "<redacted>", value)
+    return BEARER_VALUE.sub("Bearer <redacted>", value)
 
 
 def _safe_relative(root: Path, raw_path: str) -> Path:
@@ -434,6 +442,26 @@ class FailureDistiller:
             raise DistillationError("environment contains secret-bearing keys: " + ", ".join(forbidden))
         return values
 
+    def _runtime_identity(self, command: Sequence[str], environment: Dict[str, str]) -> Dict[str, Any]:
+        """Capture reproducibility-relevant runtime facts without inheriting secrets."""
+        executable = shutil.which(command[0]) if command else None
+        version = ""
+        if executable:
+            try:
+                probe = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=5, check=False)
+                version = _redact((probe.stdout or probe.stderr).strip())[:1_000]
+            except (OSError, subprocess.SubprocessError):
+                version = "unavailable"
+        return {
+            "command_executable": executable or (command[0] if command else ""),
+            "command_version": version or "unavailable",
+            "python": sys.version.split()[0],
+            "platform": sys.platform,
+            "timezone": time.tzname[0] if time.tzname else "unknown",
+            "locale": os.environ.get("LANG") or os.environ.get("LC_ALL") or "unspecified",
+            "declared_environment_keys": sorted(environment),
+        }
+
     def _derive_signature(self, baseline: Dict[str, Any]) -> Signature:
         """Derive a conservative output signature shared by baseline failures."""
         outputs = [str(run.get("output", "")) for run in baseline.get("runs", [])]
@@ -605,8 +633,9 @@ class FailureDistiller:
             file_path = root / origin
             if file_path.is_file():
                 provenance[origin] = {"kind": "file", "origin": origin, "revision": revision, "sha256": _sha256(file_path.read_bytes())}
-        manifest = {"schema_version": "vectant.failure_capsule.v1", "capsule_id": capsule_id, "source_revision": revision, "dirty_workspace": dirty, "runtime": {"python": sys.version.split()[0], "platform": sys.platform}, "entrypoint": f"vectant repro run {capsule_id}", "status": status, "created_at": _utcnow()}
-        repro = {"workspace_root": str(root), "command": list(command), "environment": environment, "predicate": predicate.to_dict(), "signature": signature.to_dict(), "budget": budget.__dict__, "baseline": baseline, "active_units": [item.__dict__ for item in active], "removed_units": [item.__dict__ for item in removed]}
+        runtime = self._runtime_identity(command, environment)
+        manifest = {"schema_version": "vectant.failure_capsule.v1", "capsule_id": capsule_id, "source_revision": revision, "dirty_workspace": dirty, "runtime": runtime, "entrypoint": f"vectant repro run {capsule_id}", "status": status, "created_at": _utcnow()}
+        repro = {"workspace_root": str(root), "command": list(command), "environment": environment, "runtime": runtime, "predicate": predicate.to_dict(), "signature": signature.to_dict(), "budget": budget.__dict__, "baseline": baseline, "active_units": [item.__dict__ for item in active], "removed_units": [item.__dict__ for item in removed]}
         validation = {"status": "not_run", "required_gates": ["capsule_fails_before_patch", "capsule_passes_after_patch", "original_world_passes_after_mapping", "affected_checks_pass"]}
         self._write_json(capsule / "manifest.json", manifest)
         self._write_json(capsule / "repro.json", repro)
@@ -631,7 +660,7 @@ class FailureDistiller:
         return "sha256:" + _sha256(_json({"active": [item.identifier for item in active], "environment": env, "command": list(command), "revision": revision}).encode())
 
     def _run_dict(self, run: Run) -> Dict[str, Any]:
-        return {"exit_code": run.exit_code, "duration_ms": run.duration_ms, "timed_out": run.timed_out, "output": run.output[-20_000:], "output_sha256": run.fingerprint()}
+        return {"exit_code": run.exit_code, "duration_ms": run.duration_ms, "timed_out": run.timed_out, "output": _redact(run.output[-20_000:]), "output_sha256": run.fingerprint()}
 
     def _state(self, status: str, reason: str, **extra: Any) -> Dict[str, Any]:
         return {"ok": False, "status": status, "reason": reason, **extra}

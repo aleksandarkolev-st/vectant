@@ -233,6 +233,25 @@ def test_derives_a_failure_signature_when_callers_supply_only_a_predicate(worksp
     assert run(FailureDistiller().run(result["workspace_path"]))["status"] == "same_failure"
 
 
+def test_capsule_records_runtime_identity_and_redacts_persisted_output(workspace):
+    (workspace / "runner.py").write_text(
+        "import sys\nprint('FailureSignature: redaction password=should-not-persist')\nsys.exit(7)\n",
+        encoding="utf-8",
+    )
+    git(workspace, "add", "runner.py")
+    git(workspace, "commit", "-m", "redaction fixture")
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload["signature"] = {"required": ["redaction"]}
+    result = run(FailureDistiller().distill(payload))
+    capsule = Path(result["workspace_path"])
+    manifest = json.loads((capsule / "manifest.json").read_text(encoding="utf-8"))
+    baseline = (capsule / "evidence" / "baseline.json").read_text(encoding="utf-8")
+    assert manifest["runtime"]["command_executable"]
+    assert manifest["runtime"]["python"]
+    assert "should-not-persist" not in baseline
+    assert "password=<redacted>" in baseline
+
+
 @pytest.mark.skipif(not (Path(__file__).parents[3] / "synthi" / "node_modules" / "vitest").exists(), reason="Vitest install unavailable")
 def test_vitest_adapter_reduces_a_real_node_fixture(workspace):
     shared_modules = Path(__file__).parents[3] / "synthi" / "node_modules"
