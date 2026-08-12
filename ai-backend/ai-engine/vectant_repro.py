@@ -41,6 +41,8 @@ async def _execute(args: argparse.Namespace) -> Dict[str, Any]:
         if args.destination:
             request["destination"] = args.destination
         return await distiller.materialize(request)
+    if args.command == "delete":
+        return distiller.discard(args.capsule_path)
     if args.command == "validate-patch":
         request = _read_json(args.edits)
         request["capsulePath"] = args.capsule_path
@@ -71,6 +73,8 @@ def main() -> int:
     materialize = commands.add_parser("materialize", help="Create a physical capsule workspace")
     materialize.add_argument("capsule_path")
     materialize.add_argument("--destination")
+    delete = commands.add_parser("delete", help="Permanently delete a capsule and record an audit event")
+    delete.add_argument("capsule_path")
     explain = commands.add_parser("explain", help="Explain a retained or removed unit")
     explain.add_argument("capsule_path")
     explain.add_argument("unit")

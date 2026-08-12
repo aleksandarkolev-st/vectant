@@ -148,6 +148,18 @@ def test_cli_runs_and_explains_a_capsule(workspace):
     assert json.loads(explain.stdout)["evidence"][0]["decision"] == "removed"
 
 
+def test_explicit_capsule_deletion_leaves_an_audit_record(workspace):
+    result = run(FailureDistiller().distill(request(workspace, [
+        {"kind": "file", "reference": "unrelated.txt"},
+    ])))
+    capsule = Path(result["workspace_path"])
+    deleted = FailureDistiller().discard(str(capsule))
+    assert deleted["status"] == "deleted"
+    assert not capsule.exists()
+    audit = (workspace / ".vectant" / "capsule-deletions.ndjson").read_text(encoding="utf-8")
+    assert result["capsule_id"] in audit
+
+
 def test_materializes_a_reduced_workspace_and_reproduces(workspace):
     result = run(FailureDistiller().distill(request(workspace, [
         {"kind": "file", "reference": "unrelated.txt"},

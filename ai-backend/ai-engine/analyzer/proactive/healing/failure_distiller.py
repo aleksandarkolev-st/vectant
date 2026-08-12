@@ -350,6 +350,25 @@ class FailureDistiller:
         self._metrics["materialized_capsules"] += 1
         return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "limits": ["dependencies are linked from the originating workspace when available", "portable under the declared source/config/fixture reduction model"]}
 
+    def discard(self, capsule_path: str) -> Dict[str, Any]:
+        """Permanently delete a capsule only from its source workspace store."""
+        capsule = Path(capsule_path).resolve()
+        try:
+            repro = self._read_json(capsule / "repro.json")
+            root = Path(repro["workspace_root"]).resolve()
+            store = (root / ".vectant" / "capsules").resolve()
+            capsule.relative_to(store)
+        except (DistillationError, KeyError, ValueError) as exc:
+            raise DistillationError("capsulePath must identify a capsule in its source workspace store") from exc
+        if capsule.parent != store or not capsule.is_dir():
+            raise DistillationError("capsulePath must identify one direct capsule directory")
+        capsule_id = capsule.name
+        audit = root / ".vectant" / "capsule-deletions.ndjson"
+        with audit.open("a", encoding="utf-8") as handle:
+            handle.write(_json({"capsule_id": capsule_id, "deleted_at": _utcnow(), "event": "capsule_deleted"}) + "\n")
+        shutil.rmtree(capsule)
+        return {"ok": True, "status": "deleted", "capsule_id": capsule_id, "capsuleId": capsule_id, "audit_path": str(audit)}
+
     async def validate_patch(self, request: Dict[str, Any]) -> Dict[str, Any]:
         self._metrics["validation_requests"] += 1
         capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()

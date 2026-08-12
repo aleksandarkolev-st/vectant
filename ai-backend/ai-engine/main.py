@@ -4368,6 +4368,17 @@ async def materialize_distilled_failure(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/heal/agentic/distill/delete")
+async def delete_distilled_failure(request: Request):
+    """Permanently delete an explicitly selected capsule and retain an audit event."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        return get_failure_distiller().discard(body.get("capsulePath", body.get("capsule_path", "")))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/heal/agentic/distill/validate-patch")
 async def validate_distilled_patch(request: Request):
     """Map a capsule patch through provenance and validate it in the source world."""
