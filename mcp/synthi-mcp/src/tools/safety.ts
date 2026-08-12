@@ -253,6 +253,7 @@ async function browserFailureDistillTool(args: unknown): Promise<ToolResponse> {
     return jsonResponse({ ok: false, status: baseline.status === "blocked" ? "boundary_not_isolatable" : "not_reproducible", baseline });
   }
   const maxEvaluations = Math.min(100, Math.max(1, Math.floor(numberOpt(a["max_evaluations"]) ?? 30)));
+  const baselineAttestations = [...baseline.report.attested_step_ids].sort();
   const removed = new Set<string>();
   const evidence: Array<Record<string, unknown>> = [];
   let evaluations = 1;
@@ -262,12 +263,14 @@ async function browserFailureDistillTool(args: unknown): Promise<ToolResponse> {
     const reduced = browserReductionWorld(artifact.artifact.workflow, artifact.artifact.events, proposed);
     const replay = await runCiIsolatedReplay({ ...replayInput, workflow: reduced.workflow, events: reduced.events });
     evaluations += 1;
-    const sameFailure = replay.status === "failed" && replay.failure_class === baseline.failure_class && replay.failure_stage === baseline.failure_stage;
-    evidence.push({ candidate: `step:${step.stepId}`, operation: "remove", decision: sameFailure ? "removed" : "retained", baseline_failure_class: baseline.failure_class, replay_failure_class: replay.failure_class, baseline_failure_stage: baseline.failure_stage, replay_failure_stage: replay.failure_stage, artifact_directory: replay.artifacts.directory });
+    const replayAttestations = [...replay.report.attested_step_ids].sort();
+    const sameSignature = JSON.stringify(replayAttestations) === JSON.stringify(baselineAttestations);
+    const sameFailure = replay.status === "failed" && replay.failure_class === baseline.failure_class && replay.failure_stage === baseline.failure_stage && sameSignature;
+    evidence.push({ candidate: `step:${step.stepId}`, operation: "remove", decision: sameFailure ? "removed" : "retained", baseline_failure_class: baseline.failure_class, replay_failure_class: replay.failure_class, baseline_failure_stage: baseline.failure_stage, replay_failure_stage: replay.failure_stage, baseline_attested_step_ids: baselineAttestations, replay_attested_step_ids: replayAttestations, signature: sameSignature ? "match" : "mismatch", artifact_directory: replay.artifacts.directory });
     if (sameFailure) removed.add(step.stepId);
   }
   const retained = artifact.artifact.workflow.contract.steps.filter((step) => !removed.has(step.stepId)).map((step) => step.stepId);
-  return jsonResponse({ ok: true, status: retained.length ? "stable_partial" : "distilled", workflow_id: artifact.artifact.workflow_id, baseline: { failure_class: baseline.failure_class, failure_stage: baseline.failure_stage, artifact_directory: baseline.artifacts.directory }, reduction: { candidate_units: artifact.artifact.workflow.contract.steps.length, removed_units: removed.size, retained_units: retained.length, minimality: evaluations >= maxEvaluations ? "budget_limited" : "1-minimal_under_declared_steps" }, retained_steps: retained, removed_steps: [...removed], evidence, limits: ["browser reduction preserves isolated replay failure class and stage; stronger event signatures require recorded event assertions"], evaluations });
+  return jsonResponse({ ok: true, status: retained.length ? "stable_partial" : "distilled", workflow_id: artifact.artifact.workflow_id, baseline: { failure_class: baseline.failure_class, failure_stage: baseline.failure_stage, attested_step_ids: baselineAttestations, artifact_directory: baseline.artifacts.directory }, reduction: { candidate_units: artifact.artifact.workflow.contract.steps.length, removed_units: removed.size, retained_units: retained.length, minimality: evaluations >= maxEvaluations ? "budget_limited" : "1-minimal_under_declared_steps" }, retained_steps: retained, removed_steps: [...removed], evidence, limits: ["browser reduction preserves isolated replay failure class, stage, and attested workflow-step signature"], evaluations });
 }
 
 function browserReductionWorld(workflow: CompiledWorkflowV7, events: import("../browser/types.js").BrowserTraceEvent[], removed: Set<string>): { workflow: CompiledWorkflowV7; events: import("../browser/types.js").BrowserTraceEvent[] } {
