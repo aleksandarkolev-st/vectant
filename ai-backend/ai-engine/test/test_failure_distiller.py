@@ -85,3 +85,31 @@ def test_patch_mapping_rejects_capsule_only_edits(workspace):
         "edits": [{"path": "mocks/provider.py", "content": "not production"}],
     }))
     assert validation["status"] == "patch_mapping_conflict"
+
+
+def test_auto_discovery_reduces_json_fixture_records_and_replay_uses_overlay(workspace):
+    (workspace / "fixture.json").write_text(
+        json.dumps({"required": True, "unrelated": "remove me"}), encoding="utf-8"
+    )
+    (workspace / "runner.py").write_text(
+        "import json, sys\n"
+        "fixture = json.load(open('fixture.json', encoding='utf-8'))\n"
+        "if fixture.get('required'):\n"
+        "  print('FailureSignature: fixture boundary')\n"
+        "  sys.exit(7)\n"
+        "print('fixed')\n",
+        encoding="utf-8",
+    )
+    git(workspace, "add", ".")
+    git(workspace, "commit", "-m", "fixture json")
+    payload = request(workspace, [])
+    payload["autoDiscover"] = True
+    payload["command"] = [sys.executable, "runner.py"]
+    payload["signature"] = {"required": ["fixture boundary"]}
+    result = run(FailureDistiller().distill(payload))
+    assert result["ok"]
+    capsule = Path(result["workspace_path"])
+    repro = json.loads((capsule / "repro.json").read_text(encoding="utf-8"))
+    assert {item["reference"] for item in repro["removed_units"]} >= {"fixture.json#/unrelated"}
+    replay = run(FailureDistiller().run(str(capsule)))
+    assert replay["status"] == "same_failure"

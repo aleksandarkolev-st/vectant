@@ -150,10 +150,17 @@ class Candidate:
         if not isinstance(raw, dict):
             raise DistillationError("candidate units must be objects")
         kind, reference = raw.get("kind"), raw.get("reference")
-        if kind not in {"file", "env"} or not isinstance(reference, str) or not reference:
-            raise DistillationError("candidate units require kind=file|env and reference")
+        if kind not in {"file", "env", "json_key", "json_record"} or not isinstance(reference, str) or not reference:
+            raise DistillationError("candidate units require kind=file|env|json_key|json_record and reference")
         if kind == "file":
             reference = _safe_relative(root, reference).as_posix()
+        if kind in {"json_key", "json_record"}:
+            if "#" not in reference:
+                raise DistillationError("JSON candidate references must be file.json#path")
+            raw_file, selector = reference.split("#", 1)
+            if not selector:
+                raise DistillationError("JSON candidate selector is required")
+            reference = f"{_safe_relative(root, raw_file).as_posix()}#{selector}"
         if kind == "env" and SECRET_NAME.search(reference):
             raise DistillationError("secret-bearing environment variables cannot be reduced or persisted")
         return cls(kind, reference)
@@ -190,10 +197,12 @@ class FailureDistiller:
 
         budget = Budget.from_request(request.get("budget"))
         predicate, signature = Predicate.from_request(request.get("predicate")), Signature.from_request(request.get("signature"))
+        environment = self._environment(request.get("environment", request.get("env", {})))
         candidates = [Candidate.from_request(item, root) for item in request.get("candidates", [])]
+        if request.get("autoDiscover", request.get("auto_discover", False)):
+            candidates.extend(self._discover_candidates(root, command, environment, candidates))
         if len({candidate.identifier for candidate in candidates}) != len(candidates):
             raise DistillationError("candidate units must be unique")
-        environment = self._environment(request.get("environment", request.get("env", {})))
         baseline = await self._stability(root, command, environment, predicate, signature, budget)
         if baseline["matches"] < budget.minimum_matches:
             return self._state("unstable_baseline" if baseline["matches"] else "not_reproducible", "baseline did not meet its configured same-failure threshold", baseline=baseline)
@@ -234,7 +243,14 @@ class FailureDistiller:
         if not root.is_dir():
             return self._state("boundary_not_isolatable", "source workspace is no longer available")
         predicate, signature = Predicate.from_request(repro["predicate"]), Signature.from_request(repro["signature"])
-        run = await self._run(self._command(repro["command"]), root, repro["environment"], int(repro["budget"]["timeout_sec"]))
+        with tempfile.TemporaryDirectory(prefix="vectant-replay-") as temp:
+            worktree = Path(temp) / "worktree"
+            self._create_worktree(root, worktree)
+            try:
+                environment = self._apply_reductions(worktree, repro["environment"], [Candidate(**item) for item in repro.get("removed_units", [])])
+                run = await self._run(self._command(repro["command"]), worktree, environment, int(repro["budget"]["timeout_sec"]))
+            finally:
+                self._remove_worktree(root, worktree)
         return {"ok": True, "status": "same_failure" if predicate.matches(run.exit_code, run.output) and signature.matches(run.output) else "different_outcome", "run": self._run_dict(run)}
 
     async def validate_patch(self, request: Dict[str, Any]) -> Dict[str, Any]:
@@ -305,14 +321,7 @@ class FailureDistiller:
             worktree = Path(temp) / "worktree"
             self._create_worktree(root, worktree)
             try:
-                reduced_env = dict(env)
-                for candidate in active:
-                    if candidate.kind == "file":
-                        target = worktree / candidate.reference
-                        if target.exists():
-                            target.unlink()
-                    else:
-                        reduced_env.pop(candidate.reference, None)
+                reduced_env = self._apply_reductions(worktree, env, active)
                 runs = [await self._run(command, worktree, reduced_env, budget.timeout_sec) for _ in range(budget.stability_attempts)]
             finally:
                 self._remove_worktree(root, worktree)
@@ -335,6 +344,95 @@ class FailureDistiller:
             _git(root, "worktree", "remove", "--force", str(destination))
         except DistillationError:
             shutil.rmtree(destination, ignore_errors=True)
+
+    def _apply_reductions(self, worktree: Path, environment: Dict[str, str], reductions: Sequence[Candidate]) -> Dict[str, str]:
+        """Apply declared, reversible reduction operations only inside a worktree."""
+        reduced_env = dict(environment)
+        for candidate in reductions:
+            if candidate.kind == "env":
+                reduced_env.pop(candidate.reference, None)
+                continue
+            if candidate.kind == "file":
+                target = worktree / candidate.reference
+                if target.is_file() or target.is_symlink():
+                    target.unlink()
+                continue
+            file_ref, selector = candidate.reference.split("#", 1)
+            target = worktree / file_ref
+            if not target.is_file():
+                continue
+            try:
+                data = json.loads(target.read_text(encoding="utf-8"))
+                parent, key = self._json_parent(data, selector)
+            except (json.JSONDecodeError, KeyError, IndexError, ValueError):
+                continue
+            if isinstance(parent, dict):
+                parent.pop(key, None)
+            elif isinstance(parent, list):
+                try:
+                    parent.pop(int(key))
+                except (ValueError, IndexError):
+                    continue
+            target.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return reduced_env
+
+    def _json_parent(self, data: Any, selector: str) -> Tuple[Any, str]:
+        parts = [part.replace("~1", "/").replace("~0", "~") for part in selector.strip("/").split("/") if part]
+        if not parts:
+            raise ValueError("JSON selector cannot name the document root")
+        current = data
+        for part in parts[:-1]:
+            current = current[int(part)] if isinstance(current, list) else current[part]
+        return current, parts[-1]
+
+    def _discover_candidates(self, root: Path, command: Sequence[str], environment: Dict[str, str], existing: Sequence[Candidate]) -> List[Candidate]:
+        """Discover conservative, file-level units for pytest/Vitest repos.
+
+        Runtime tracing is optional in both runners, so this adapter begins with
+        their explicit test target and tracked JSON/fixture/source files.  The
+        reduction oracle decides necessity; discovery never silently claims a
+        static graph is causal.
+        """
+        runner = self._supported_runner(command)
+        if not runner:
+            raise DistillationError("automatic discovery currently supports pytest and Vitest commands")
+        existing_ids = {item.identifier for item in existing}
+        target_paths = {part.replace("\\", "/") for part in command if self._looks_like_path(part)}
+        discovered: List[Candidate] = []
+        tracked = [Path(value) for value in _git(root, "ls-files").splitlines() if value]
+        for relative in tracked:
+            path = relative.as_posix()
+            if path in target_paths or path.startswith(".vectant/") or relative.name.startswith("."):
+                continue
+            if relative.suffix.lower() == ".json":
+                discovered.extend(self._json_candidates(root, relative))
+            elif relative.suffix.lower() in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".yaml", ".yml", ".toml", ".ini", ".txt", ".csv"}:
+                discovered.append(Candidate("file", path))
+        discovered.extend(Candidate("env", name) for name in environment if not SECRET_NAME.search(name))
+        return [item for item in discovered if item.identifier not in existing_ids]
+
+    def _supported_runner(self, command: Sequence[str]) -> Optional[str]:
+        joined = " ".join(command).lower()
+        if "pytest" in joined or (command and Path(command[0]).name.lower().startswith("python") and any(part.endswith(".py") for part in command[1:])):
+            return "pytest"
+        if "vitest" in joined:
+            return "vitest"
+        return None
+
+    def _looks_like_path(self, value: str) -> bool:
+        return "/" in value or "\\" in value or Path(value).suffix.lower() in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+
+    def _json_candidates(self, root: Path, relative: Path) -> List[Candidate]:
+        try:
+            data = json.loads((root / relative).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return [Candidate("file", relative.as_posix())]
+        candidates: List[Candidate] = []
+        if isinstance(data, dict):
+            candidates.extend(Candidate("json_key", f"{relative.as_posix()}#/{key}") for key in data)
+        elif isinstance(data, list):
+            candidates.extend(Candidate("json_record", f"{relative.as_posix()}#/{index}") for index in range(len(data)))
+        return candidates or [Candidate("file", relative.as_posix())]
 
     async def _run(self, command: Sequence[str], cwd: Path, env: Dict[str, str], timeout_sec: int) -> Run:
         started = time.perf_counter()
@@ -360,7 +458,7 @@ class FailureDistiller:
                 if file_path.is_file():
                     provenance[candidate.reference] = {"kind": "file", "origin": candidate.reference, "revision": revision, "sha256": _sha256(file_path.read_bytes())}
         manifest = {"schema_version": "vectant.failure_capsule.v1", "capsule_id": capsule_id, "source_revision": revision, "dirty_workspace": dirty, "runtime": {"python": sys.version.split()[0], "platform": sys.platform}, "entrypoint": f"vectant repro run {capsule_id}", "status": status, "created_at": _utcnow()}
-        repro = {"workspace_root": str(root), "command": list(command), "environment": environment, "predicate": predicate.to_dict(), "signature": signature.to_dict(), "budget": budget.__dict__, "baseline": baseline, "active_units": [item.__dict__ for item in active]}
+        repro = {"workspace_root": str(root), "command": list(command), "environment": environment, "predicate": predicate.to_dict(), "signature": signature.to_dict(), "budget": budget.__dict__, "baseline": baseline, "active_units": [item.__dict__ for item in active], "removed_units": [item.__dict__ for item in removed]}
         validation = {"status": "not_run", "required_gates": ["capsule_fails_before_patch", "capsule_passes_after_patch", "original_world_passes_after_mapping", "affected_checks_pass"]}
         self._write_json(capsule / "manifest.json", manifest)
         self._write_json(capsule / "repro.json", repro)
