@@ -220,3 +220,13 @@ def test_confirmation_pass_removes_units_that_become_noncausal_later(workspace):
     assert result["reduction"]["minimality"] == "1-minimal_under_declared_units"
     decisions = (Path(result["workspace_path"]) / "reduction.ndjson").read_text()
     assert '"operation":"confirm_remove"' in decisions
+
+
+def test_derives_a_failure_signature_when_callers_supply_only_a_predicate(workspace):
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload.pop("signature")
+    result = run(FailureDistiller().distill(payload))
+    assert result["ok"]
+    repro = json.loads((Path(result["workspace_path"]) / "repro.json").read_text())
+    assert repro["signature"]["required"]
+    assert run(FailureDistiller().run(result["workspace_path"]))["status"] == "same_failure"

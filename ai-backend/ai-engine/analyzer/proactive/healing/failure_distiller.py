@@ -216,6 +216,10 @@ class FailureDistiller:
         baseline = await self._stability(root, command, environment, predicate, signature, budget)
         if baseline["matches"] < budget.minimum_matches:
             return self._state("unstable_baseline" if baseline["matches"] else "not_reproducible", "baseline did not meet its configured same-failure threshold", baseline=baseline)
+        if not signature.required and not signature.forbidden:
+            signature = self._derive_signature(baseline)
+            if not signature.required:
+                return self._state("predicate_ambiguous", "baseline has no stable observable signature; provide signature.required explicitly", baseline=baseline)
 
         capsule_id = f"capsule_{uuid4().hex[:10]}"
         source_revision = _git(root, "rev-parse", "HEAD")
@@ -429,6 +433,22 @@ class FailureDistiller:
         if forbidden:
             raise DistillationError("environment contains secret-bearing keys: " + ", ".join(forbidden))
         return values
+
+    def _derive_signature(self, baseline: Dict[str, Any]) -> Signature:
+        """Derive a conservative output signature shared by baseline failures."""
+        outputs = [str(run.get("output", "")) for run in baseline.get("runs", [])]
+        normalized_sets = []
+        for output in outputs:
+            lines = []
+            for line in output.splitlines():
+                line = re.sub(r"\b(?:[A-Za-z]:)?[/\\][^\s:]+", "<path>", line.strip())
+                line = re.sub(r":\d+(?::\d+)?\b", ":<line>", line)
+                if line and (re.search(r"fail|error|exception|assert|traceback|signature", line, re.I) or len(lines) < 1):
+                    lines.append(line)
+            normalized_sets.append(set(lines[:8]))
+        shared = set.intersection(*normalized_sets) if normalized_sets else set()
+        selected = sorted(shared, key=lambda value: ("FailureSignature" not in value, len(value)))[:3]
+        return Signature(tuple(re.escape(value) for value in selected))
 
     async def _stability(self, root: Path, command: Sequence[str], env: Dict[str, str], predicate: Predicate, signature: Signature, budget: Budget) -> Dict[str, Any]:
         runs = [await self._run(command, root, env, budget.timeout_sec) for _ in range(budget.stability_attempts)]
