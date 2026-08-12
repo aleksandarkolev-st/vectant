@@ -242,13 +242,35 @@ class FailureDistiller:
             else:
                 retained.append((candidate, "causal_required" if evaluation["predicate_matches"] is False or evaluation["signature_matches"] is False else "unstable_when_removed"))
 
+        # The primary pass is order-sensitive. A candidate that was necessary
+        # before another accepted removal can become removable afterwards, so
+        # confirm 1-minimality against the final reduced world.
+        confirmation_complete = True
+        for candidate in list(active):
+            if executions >= budget.max_executions:
+                confirmation_complete = False
+                break
+            proposed = [*removed, candidate]
+            key = self._world_hash(proposed, environment, command, source_revision)
+            evaluation = cache.get(key)
+            if evaluation is None:
+                evaluation = await self._evaluate(root, command, environment, proposed, predicate, signature, budget)
+                cache[key] = evaluation
+            executions += evaluation["attempts"]
+            decision = "removed" if evaluation["matches"] >= budget.minimum_matches else "retained"
+            evidence.append({"candidate": candidate.identifier, "operation": "confirm_remove", "world_hash": key, "predicate": "fail" if evaluation["predicate_matches"] else "pass", "signature": "match" if evaluation["signature_matches"] else "mismatch", "runs": {"matching_failures": evaluation["matches"], "attempts": evaluation["attempts"]}, "decision": decision})
+            if decision == "removed":
+                removed.append(candidate)
+                active.remove(candidate)
+                retained = [entry for entry in retained if entry[0] != candidate]
+
         status = "distilled" if not active else "stable_partial"
         artifact = self._write_capsule(root, capsule_id, command, environment, predicate, signature, budget, source_revision, dirty, baseline, active, removed, retained, evidence, status)
         self._metrics["accepted_capsules"] += 1
         self._metrics["candidate_executions"] += executions
         self._metrics["candidate_units"] += len(candidates)
         self._metrics["removed_units"] += len(removed)
-        return {"ok": True, "capsule_id": capsule_id, "capsuleId": capsule_id, "workspace_path": str(artifact), "workspacePath": str(artifact), "run": f"vectant repro run {capsule_id}", "status": status, "baseline": baseline, "reduction": {"candidate_units": len(candidates), "removed_units": len(removed), "retained_units": len(active), "minimality": "1-minimal_under_declared_units" if not active or executions < budget.max_executions else "budget_limited"}, "limits": ["logical capsule: source files remain in the original workspace", "outbound network is not granted by this API but must be blocked by the configured host/container sandbox", "external interactions are unsupported without a validated replay or contract boundary"], "executions": executions}
+        return {"ok": True, "capsule_id": capsule_id, "capsuleId": capsule_id, "workspace_path": str(artifact), "workspacePath": str(artifact), "run": f"vectant repro run {capsule_id}", "status": status, "baseline": baseline, "reduction": {"candidate_units": len(candidates), "removed_units": len(removed), "retained_units": len(active), "minimality": "1-minimal_under_declared_units" if confirmation_complete else "budget_limited"}, "limits": ["logical capsule: source files remain in the original workspace", "outbound network is not granted by this API but must be blocked by the configured host/container sandbox", "external interactions are unsupported without a validated replay or contract boundary"], "executions": executions}
 
     async def run(self, capsule_path: str) -> Dict[str, Any]:
         capsule = Path(capsule_path).resolve()

@@ -193,3 +193,30 @@ def test_reduces_noncausal_command_input_and_replays_reduced_command(workspace):
     repro = json.loads((Path(result["workspace_path"]) / "repro.json").read_text())
     assert repro["removed_units"][0]["kind"] == "command_arg"
     assert run(FailureDistiller().run(result["workspace_path"]))["status"] == "same_failure"
+
+
+def test_confirmation_pass_removes_units_that_become_noncausal_later(workspace):
+    (workspace / "a.flag").write_text("a\n", encoding="utf-8")
+    (workspace / "b.flag").write_text("b\n", encoding="utf-8")
+    (workspace / "runner.py").write_text(
+        "import pathlib, sys\n"
+        "a = pathlib.Path('a.flag').exists()\n"
+        "b = pathlib.Path('b.flag').exists()\n"
+        "if (b and a) or not b:\n"
+        "  print('FailureSignature: confirmation')\n"
+        "  sys.exit(7)\n"
+        "print('fixed')\n",
+        encoding="utf-8",
+    )
+    git(workspace, "add", ".")
+    git(workspace, "commit", "-m", "confirmation fixture")
+    payload = request(workspace, [
+        {"kind": "file", "reference": "a.flag"},
+        {"kind": "file", "reference": "b.flag"},
+    ])
+    payload["signature"] = {"required": ["confirmation"]}
+    result = run(FailureDistiller().distill(payload))
+    assert result["reduction"]["removed_units"] == 2
+    assert result["reduction"]["minimality"] == "1-minimal_under_declared_units"
+    decisions = (Path(result["workspace_path"]) / "reduction.ndjson").read_text()
+    assert '"operation":"confirm_remove"' in decisions
