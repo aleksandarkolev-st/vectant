@@ -222,6 +222,7 @@ const backendAgenticDistillUrl = new URL("/heal/agentic/distill", backendUrl).to
 const backendAgenticDistillRunUrl = new URL("/heal/agentic/distill/run", backendUrl).toString();
 const backendAgenticDistillMaterializeUrl = new URL("/heal/agentic/distill/materialize", backendUrl).toString();
 const backendAgenticDistillValidatePatchUrl = new URL("/heal/agentic/distill/validate-patch", backendUrl).toString();
+const backendAgenticDistillMetricsUrl = new URL("/heal/agentic/distill/metrics", backendUrl).toString();
 const backendAgenticEpisodeCreateUrl = new URL("/heal/agentic/episode/create", backendUrl).toString();
 const backendAgenticEpisodesUrl = new URL("/heal/agentic/episodes", backendUrl).toString();
 const backendAgenticPolicyEvalUrl = new URL("/heal/agentic/policy/evaluate", backendUrl).toString();
@@ -500,6 +501,9 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/agentic/distill/validate-patch":
       await forwardAgenticDistillValidatePatch(socket, data, requestId);
+      break;
+    case "heal/agentic/distill/metrics":
+      await forwardAgenticDistillMetrics(socket, requestId);
       break;
     case "heal/agentic/diagnose":
       await forwardAgenticDiagnose(socket, data, requestId);
@@ -2788,8 +2792,8 @@ async function agenticGet(socket, action, url, requestId) {
 
 // Diagnosis
 async function forwardAgenticDistill(socket, data, requestId) {
-  if (typeof data?.workspaceRoot !== "string" || !data.workspaceRoot || !Array.isArray(data?.command)) {
-    sendError(socket, "`workspaceRoot` and command array are required for failure distillation", { requestId });
+  if (typeof data?.workspaceRoot !== "string" || !data.workspaceRoot || !(typeof data?.command === "string" || Array.isArray(data?.command))) {
+    sendError(socket, "`workspaceRoot` and command string or array are required for failure distillation", { requestId });
     return;
   }
   await agenticPost(socket, "heal/agentic/distill", backendAgenticDistillUrl, data, requestId);
@@ -2817,6 +2821,10 @@ async function forwardAgenticDistillValidatePatch(socket, data, requestId) {
     return;
   }
   await agenticPost(socket, "heal/agentic/distill/validate-patch", backendAgenticDistillValidatePatchUrl, data, requestId);
+}
+
+async function forwardAgenticDistillMetrics(socket, requestId) {
+  await agenticGet(socket, "heal/agentic/distill/metrics", backendAgenticDistillMetricsUrl, requestId);
 }
 
 async function forwardAgenticDiagnose(socket, data, requestId) {

@@ -630,8 +630,8 @@ export class AnalyzerGatewayClient {
 
   /** Create a logical, evidence-backed failure capsule from a failing command. */
   distillFailure(payload) {
-    if (!payload?.workspaceRoot || !Array.isArray(payload?.command)) {
-      return Promise.reject(new Error('workspaceRoot and command array are required'));
+    if (!payload?.workspaceRoot || !(typeof payload?.command === 'string' || Array.isArray(payload?.command))) {
+      return Promise.reject(new Error('workspaceRoot and command string or array are required'));
     }
     return this._sendRequest('heal/agentic/distill', payload);
   }
@@ -654,6 +654,11 @@ export class AnalyzerGatewayClient {
       return Promise.reject(new Error('capsulePath and edits are required'));
     }
     return this._sendRequest('heal/agentic/distill/validate-patch', payload);
+  }
+
+  /** Return quality, reduction-cost, and validation counters for this engine session. */
+  getFailureDistillerMetrics() {
+    return this._sendRequest('heal/agentic/distill/metrics', {});
   }
 
   /**

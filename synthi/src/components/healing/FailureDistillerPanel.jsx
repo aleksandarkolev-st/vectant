@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { Box, Play, PackageCheck, AlertTriangle } from 'lucide-react';
+import { Box, Play, PackageCheck, AlertTriangle, BarChart3 } from 'lucide-react';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 
 const inputClass = 'w-full rounded-[var(--radius-control)] border px-2 py-1.5 text-xs outline-none focus:ring-2';
@@ -34,7 +34,7 @@ export function FailureDistillerPanel() {
 
   const distill = useCallback(() => execute(() => gateway.distillFailure({
     workspaceRoot: workspaceRoot.trim(),
-    command: command.trim() ? command.trim().split(/\s+/) : [],
+    command: command.trim(),
     signature: signature.trim() ? { required: [signature.trim()] } : {},
     budget: { preset: budget },
     autoDiscover: true,
@@ -69,6 +69,7 @@ export function FailureDistillerPanel() {
           </button>
           {capsule?.workspacePath ? <button type="button" disabled={busy} onClick={() => execute(() => gateway.runFailureCapsule(capsule.workspacePath))} className="th-focus-ring rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--border-subtle)' }}>Replay</button> : null}
           {capsule?.workspacePath ? <button type="button" disabled={busy} onClick={() => execute(() => gateway.materializeFailureCapsule({ capsulePath: capsule.workspacePath }))} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--border-subtle)' }}><PackageCheck size={12} /> Materialize</button> : null}
+          <button type="button" disabled={busy} onClick={() => execute(() => gateway.getFailureDistillerMetrics())} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--border-subtle)' }}><BarChart3 size={12} /> Metrics</button>
         </div>
       </div>
       {error ? <div className="mt-2 flex gap-1 text-[10px]" style={{ color: 'var(--accent-danger)' }}><AlertTriangle size={12} />{error}</div> : null}
@@ -76,6 +77,7 @@ export function FailureDistillerPanel() {
         <div className="font-medium" style={{ color: 'var(--text-secondary)' }}>{outcome.status || 'completed'}</div>
         {outcome.capsuleId ? <div className="font-mono" style={{ color: 'var(--text-muted)' }}>{outcome.capsuleId}</div> : null}
         {outcome.reduction ? <div style={{ color: 'var(--text-muted)' }}>{outcome.reduction.removed_units} removed, {outcome.reduction.retained_units} retained</div> : null}
+        {outcome.metrics ? <div style={{ color: 'var(--text-muted)' }}>{outcome.metrics.accepted_capsules} capsules, {Math.round((outcome.metrics.reduction_ratio || 0) * 100)}% unit reduction, {outcome.metrics.validated_patches} validated patches</div> : null}
       </div> : null}
     </section>
   );
