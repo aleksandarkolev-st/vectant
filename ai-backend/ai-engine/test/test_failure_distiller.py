@@ -78,6 +78,13 @@ def test_rejects_secret_environment_and_path_escape(workspace):
         run(FailureDistiller().distill(request(workspace, [{"kind": "file", "reference": "../outside"}])))
 
 
+def test_refuses_dirty_workspace_instead_of_reducing_a_different_revision(workspace):
+    (workspace / "runner.py").write_text("import sys\nprint('FailureSignature: dirty')\nsys.exit(7)\n", encoding="utf-8")
+    result = run(FailureDistiller().distill(request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])))
+    assert result["status"] == "boundary_not_isolatable"
+    assert result["dirty_workspace"] is True
+
+
 def test_patch_mapping_rejects_capsule_only_edits(workspace):
     result = run(FailureDistiller().distill(request(workspace, [{"kind": "file", "reference": "required.txt"}])))
     assert result["ok"]
@@ -267,6 +274,7 @@ def test_capsule_records_runtime_identity_and_redacts_persisted_output(workspace
 @pytest.mark.skipif(not (Path(__file__).parents[3] / "synthi" / "node_modules" / "vitest").exists(), reason="Vitest install unavailable")
 def test_vitest_adapter_reduces_a_real_node_fixture(workspace):
     shared_modules = Path(__file__).parents[3] / "synthi" / "node_modules"
+    (workspace / ".gitignore").write_text("node_modules\n", encoding="utf-8")
     try:
         (workspace / "node_modules").symlink_to(shared_modules, target_is_directory=True)
     except OSError:
@@ -278,7 +286,7 @@ def test_vitest_adapter_reduces_a_real_node_fixture(workspace):
         encoding="utf-8",
     )
     (workspace / "unrelated.txt").write_text("remove\n", encoding="utf-8")
-    git(workspace, "add", "package.json", "failure.test.mjs", "unrelated.txt")
+    git(workspace, "add", ".gitignore", "package.json", "failure.test.mjs", "unrelated.txt")
     git(workspace, "commit", "-m", "vitest fixture")
     payload = {
         "workspaceRoot": str(workspace),

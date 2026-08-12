@@ -199,7 +199,7 @@ class FailureDistiller:
     """Creates logical capsules and validates patch round trips."""
 
     def __init__(self) -> None:
-        self._metrics = {"distillation_requests": 0, "accepted_capsules": 0, "candidate_executions": 0, "candidate_units": 0, "removed_units": 0, "validation_requests": 0, "validated_patches": 0, "materialization_requests": 0, "materialized_capsules": 0}
+        self._metrics = {"distillation_requests": 0, "accepted_capsules": 0, "candidate_executions": 0, "candidate_units": 0, "removed_units": 0, "cache_hits": 0, "validation_requests": 0, "validated_patches": 0, "materialization_requests": 0, "materialized_capsules": 0}
 
     async def distill(self, request: Dict[str, Any]) -> Dict[str, Any]:
         self._metrics["distillation_requests"] += 1
@@ -212,6 +212,11 @@ class FailureDistiller:
             raise DistillationError("command is required")
         if request.get("networkPolicy", request.get("network_policy", "deny")) != "deny":
             return self._state("unsafe_external_boundary", "live external boundaries are not supported by this reducer")
+
+        source_revision = _git(root, "rev-parse", "HEAD")
+        dirty = bool(_git(root, "status", "--porcelain"))
+        if dirty:
+            return self._state("boundary_not_isolatable", "dirty workspaces are not reduced because worktree candidates would not match the observed baseline; commit or stash changes first", source_revision=source_revision, dirty_workspace=True)
 
         budget = Budget.from_request(request.get("budget"))
         predicate, signature = Predicate.from_request(request.get("predicate")), Signature.from_request(request.get("signature"))
@@ -230,8 +235,7 @@ class FailureDistiller:
                 return self._state("predicate_ambiguous", "baseline has no stable observable signature; provide signature.required explicitly", baseline=baseline)
 
         capsule_id = f"capsule_{uuid4().hex[:10]}"
-        source_revision = _git(root, "rev-parse", "HEAD")
-        dirty = bool(_git(root, "status", "--porcelain"))
+        runtime = self._runtime_identity(command, environment)
         executions, evidence, removed, retained = baseline["attempts"], [], [], []
         active = list(candidates)
         cache: Dict[str, Dict[str, Any]] = {}
@@ -240,11 +244,13 @@ class FailureDistiller:
                 retained.extend((item, "budget_not_tested") for item in active if item not in [r[0] for r in retained])
                 break
             proposed = [*removed, candidate]
-            key = self._world_hash(proposed, environment, command, source_revision)
+            key = self._world_hash(proposed, environment, command, source_revision, runtime)
             evaluation = cache.get(key)
             if evaluation is None:
                 evaluation = await self._evaluate(root, command, environment, proposed, predicate, signature, budget)
                 cache[key] = evaluation
+            else:
+                self._metrics["cache_hits"] += 1
             executions += evaluation["attempts"]
             decision = "removed" if evaluation["matches"] >= budget.minimum_matches else "retained"
             evidence.append({"candidate": candidate.identifier, "operation": "remove", "world_hash": key, "predicate": "fail" if evaluation["predicate_matches"] else "pass", "signature": "match" if evaluation["signature_matches"] else "mismatch", "runs": {"matching_failures": evaluation["matches"], "attempts": evaluation["attempts"]}, "decision": decision})
@@ -263,11 +269,13 @@ class FailureDistiller:
                 confirmation_complete = False
                 break
             proposed = [*removed, candidate]
-            key = self._world_hash(proposed, environment, command, source_revision)
+            key = self._world_hash(proposed, environment, command, source_revision, runtime)
             evaluation = cache.get(key)
             if evaluation is None:
                 evaluation = await self._evaluate(root, command, environment, proposed, predicate, signature, budget)
                 cache[key] = evaluation
+            else:
+                self._metrics["cache_hits"] += 1
             executions += evaluation["attempts"]
             decision = "removed" if evaluation["matches"] >= budget.minimum_matches else "retained"
             evidence.append({"candidate": candidate.identifier, "operation": "confirm_remove", "world_hash": key, "predicate": "fail" if evaluation["predicate_matches"] else "pass", "signature": "match" if evaluation["signature_matches"] else "mismatch", "runs": {"matching_failures": evaluation["matches"], "attempts": evaluation["attempts"]}, "decision": decision})
@@ -430,7 +438,7 @@ class FailureDistiller:
     def metrics(self) -> Dict[str, Any]:
         accepted = self._metrics["accepted_capsules"]
         candidates = self._metrics["candidate_units"]
-        return {**self._metrics, "reduction_ratio": self._metrics["removed_units"] / candidates if candidates else 0.0, "patch_validation_rate": self._metrics["validated_patches"] / self._metrics["validation_requests"] if self._metrics["validation_requests"] else 0.0, "average_candidate_executions": self._metrics["candidate_executions"] / accepted if accepted else 0.0}
+        return {**self._metrics, "reduction_ratio": self._metrics["removed_units"] / candidates if candidates else 0.0, "cache_hit_rate": self._metrics["cache_hits"] / (self._metrics["cache_hits"] + self._metrics["candidate_executions"]) if (self._metrics["cache_hits"] + self._metrics["candidate_executions"]) else 0.0, "patch_validation_rate": self._metrics["validated_patches"] / self._metrics["validation_requests"] if self._metrics["validation_requests"] else 0.0, "average_candidate_executions": self._metrics["candidate_executions"] / accepted if accepted else 0.0}
 
     def _command(self, raw: Any) -> List[str]:
         if isinstance(raw, str):
@@ -675,8 +683,9 @@ class FailureDistiller:
         self._write_json(capsule / "evidence" / "validation.json", record)
         return record
 
-    def _world_hash(self, active: Sequence[Candidate], env: Dict[str, str], command: Sequence[str], revision: str) -> str:
-        return "sha256:" + _sha256(_json({"active": [item.identifier for item in active], "environment": env, "command": list(command), "revision": revision}).encode())
+    def _world_hash(self, active: Sequence[Candidate], env: Dict[str, str], command: Sequence[str], revision: str, runtime: Dict[str, Any]) -> str:
+        """Content-address the exact git world, overlay operations, command, and runtime."""
+        return "sha256:" + _sha256(_json({"source_revision": revision, "reductions": sorted(item.identifier for item in active), "environment": env, "command": list(command), "runtime": runtime}).encode())
 
     def _run_dict(self, run: Run) -> Dict[str, Any]:
         return {"exit_code": run.exit_code, "duration_ms": run.duration_ms, "timed_out": run.timed_out, "output": _redact(run.output[-20_000:]), "output_sha256": run.fingerprint()}
