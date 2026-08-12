@@ -628,6 +628,28 @@ export class AnalyzerGatewayClient {
     });
   }
 
+  /** Create a logical, evidence-backed failure capsule from a failing command. */
+  distillFailure(payload) {
+    if (!payload?.workspaceRoot || !Array.isArray(payload?.command)) {
+      return Promise.reject(new Error('workspaceRoot and command array are required'));
+    }
+    return this._sendRequest('heal/agentic/distill', payload);
+  }
+
+  /** Re-run a capsule using its recorded predicate and signature. */
+  runFailureCapsule(capsulePath) {
+    if (!capsulePath) return Promise.reject(new Error('capsulePath is required'));
+    return this._sendRequest('heal/agentic/distill/run', { capsulePath });
+  }
+
+  /** Validate an editable production-file patch against its capsule provenance. */
+  validateFailureCapsulePatch(payload) {
+    if (!payload?.capsulePath || !Array.isArray(payload?.edits)) {
+      return Promise.reject(new Error('capsulePath and edits are required'));
+    }
+    return this._sendRequest('heal/agentic/distill/validate-patch', payload);
+  }
+
   /**
    * Get AI agent statistics: LLM calls, latency, acceptance rate.
    * @returns {Promise<Object>} Agent statistics

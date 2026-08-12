@@ -225,7 +225,7 @@ class FailureDistiller:
 
         status = "distilled" if not active else "stable_partial"
         artifact = self._write_capsule(root, capsule_id, command, environment, predicate, signature, budget, source_revision, dirty, baseline, active, removed, retained, evidence, status)
-        return {"ok": True, "capsule_id": capsule_id, "capsuleId": capsule_id, "workspace_path": str(artifact), "workspacePath": str(artifact), "run": f"vectant repro run {capsule_id}", "status": status, "baseline": baseline, "reduction": {"candidate_units": len(candidates), "removed_units": len(removed), "retained_units": len(active), "minimality": "1-minimal_under_declared_units" if executions < budget.max_executions else "budget_limited"}, "limits": ["logical capsule: source files remain in the original workspace", "network denied; external interactions are unsupported"], "executions": executions}
+        return {"ok": True, "capsule_id": capsule_id, "capsuleId": capsule_id, "workspace_path": str(artifact), "workspacePath": str(artifact), "run": f"vectant repro run {capsule_id}", "status": status, "baseline": baseline, "reduction": {"candidate_units": len(candidates), "removed_units": len(removed), "retained_units": len(active), "minimality": "1-minimal_under_declared_units" if not active or executions < budget.max_executions else "budget_limited"}, "limits": ["logical capsule: source files remain in the original workspace", "network denied; external interactions are unsupported"], "executions": executions}
 
     async def run(self, capsule_path: str) -> Dict[str, Any]:
         capsule = Path(capsule_path).resolve()

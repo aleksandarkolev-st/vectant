@@ -218,6 +218,9 @@ function isAuthorizedGatewayRequest(request) {
 
 // Agentic self-healing endpoints
 const backendAgenticDiagnoseUrl = new URL("/heal/agentic/diagnose", backendUrl).toString();
+const backendAgenticDistillUrl = new URL("/heal/agentic/distill", backendUrl).toString();
+const backendAgenticDistillRunUrl = new URL("/heal/agentic/distill/run", backendUrl).toString();
+const backendAgenticDistillValidatePatchUrl = new URL("/heal/agentic/distill/validate-patch", backendUrl).toString();
 const backendAgenticEpisodeCreateUrl = new URL("/heal/agentic/episode/create", backendUrl).toString();
 const backendAgenticEpisodesUrl = new URL("/heal/agentic/episodes", backendUrl).toString();
 const backendAgenticPolicyEvalUrl = new URL("/heal/agentic/policy/evaluate", backendUrl).toString();
@@ -485,6 +488,15 @@ async function handleClientMessage(socket, raw) {
       break;
 
     // ── Agentic self-healing ─────────────────────────────────────
+    case "heal/agentic/distill":
+      await forwardAgenticDistill(socket, data, requestId);
+      break;
+    case "heal/agentic/distill/run":
+      await forwardAgenticDistillRun(socket, data, requestId);
+      break;
+    case "heal/agentic/distill/validate-patch":
+      await forwardAgenticDistillValidatePatch(socket, data, requestId);
+      break;
     case "heal/agentic/diagnose":
       await forwardAgenticDiagnose(socket, data, requestId);
       break;
@@ -2771,6 +2783,30 @@ async function agenticGet(socket, action, url, requestId) {
 }
 
 // Diagnosis
+async function forwardAgenticDistill(socket, data, requestId) {
+  if (typeof data?.workspaceRoot !== "string" || !data.workspaceRoot || !Array.isArray(data?.command)) {
+    sendError(socket, "`workspaceRoot` and command array are required for failure distillation", { requestId });
+    return;
+  }
+  await agenticPost(socket, "heal/agentic/distill", backendAgenticDistillUrl, data, requestId);
+}
+
+async function forwardAgenticDistillRun(socket, data, requestId) {
+  if (typeof data?.capsulePath !== "string" || !data.capsulePath) {
+    sendError(socket, "`capsulePath` is required to run a failure capsule", { requestId });
+    return;
+  }
+  await agenticPost(socket, "heal/agentic/distill/run", backendAgenticDistillRunUrl, data, requestId);
+}
+
+async function forwardAgenticDistillValidatePatch(socket, data, requestId) {
+  if (typeof data?.capsulePath !== "string" || !data.capsulePath || !Array.isArray(data?.edits)) {
+    sendError(socket, "`capsulePath` and edits are required to validate a capsule patch", { requestId });
+    return;
+  }
+  await agenticPost(socket, "heal/agentic/distill/validate-patch", backendAgenticDistillValidatePatchUrl, data, requestId);
+}
+
 async function forwardAgenticDiagnose(socket, data, requestId) {
   await agenticPost(socket, "heal/agentic/diagnose", backendAgenticDiagnoseUrl, {
     errorText: data?.errorText || data?.error_text || "",
