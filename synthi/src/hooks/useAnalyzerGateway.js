@@ -697,6 +697,24 @@ export function useAnalyzerGateway({
     }
   }, []);
 
+  const distillFailure = useCallback(async (payload = {}) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.distillFailure(payload);
+    return response?.data ?? response;
+  }, []);
+
+  const runFailureCapsule = useCallback(async (capsulePath) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.runFailureCapsule(capsulePath);
+    return response?.data ?? response;
+  }, []);
+
+  const materializeFailureCapsule = useCallback(async (payload = {}) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.materializeFailureCapsule(payload);
+    return response?.data ?? response;
+  }, []);
+
   const ruleTranslate = useCallback(async (payload) => {
     if (!clientRef.current) {
       throw new SynthiException('Gateway client is not ready yet');
@@ -743,6 +761,9 @@ export function useAnalyzerGateway({
     // Runtime healing (HMR / compile-error driven)
     aiRuntimeHeal,
     agenticRecordHmrFailure,
+    distillFailure,
+    runFailureCapsule,
+    materializeFailureCapsule,
     // Plain-English rule translator (healing rules panel)
     ruleTranslate,
     resetResult,
