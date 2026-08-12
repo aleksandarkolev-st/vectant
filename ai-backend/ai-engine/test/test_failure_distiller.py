@@ -129,3 +129,15 @@ def test_cli_runs_and_explains_a_capsule(workspace):
     ], check=False, capture_output=True, text=True)
     assert explain.returncode == 0
     assert json.loads(explain.stdout)["evidence"][0]["decision"] == "removed"
+
+
+def test_materializes_a_reduced_workspace_and_reproduces(workspace):
+    result = run(FailureDistiller().distill(request(workspace, [
+        {"kind": "file", "reference": "unrelated.txt"},
+    ])))
+    materialized = run(FailureDistiller().materialize({"capsulePath": result["workspace_path"]}))
+    assert materialized["ok"]
+    destination = Path(materialized["workspace_path"])
+    assert not (destination / "unrelated.txt").exists()
+    assert (destination / "runner.py").is_file()
+    assert materialized["run"]["exit_code"] == 7

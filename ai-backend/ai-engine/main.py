@@ -4358,6 +4358,16 @@ async def run_distilled_failure(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/heal/agentic/distill/materialize")
+async def materialize_distilled_failure(request: Request):
+    """Physically materialize a verified logical capsule without touching its source workspace."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        return await get_failure_distiller().materialize(await request.json())
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/heal/agentic/distill/validate-patch")
 async def validate_distilled_patch(request: Request):
     """Map a capsule patch through provenance and validate it in the source world."""

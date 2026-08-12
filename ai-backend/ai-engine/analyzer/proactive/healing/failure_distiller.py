@@ -243,8 +243,8 @@ class FailureDistiller:
         if not root.is_dir():
             return self._state("boundary_not_isolatable", "source workspace is no longer available")
         predicate, signature = Predicate.from_request(repro["predicate"]), Signature.from_request(repro["signature"])
-        with tempfile.TemporaryDirectory(prefix="vectant-replay-") as temp:
-            worktree = Path(temp) / "worktree"
+        with self._temporary_worktree_root(root) as temp:
+            worktree = Path(temp) / "w"
             self._create_worktree(root, worktree)
             try:
                 environment = self._apply_reductions(worktree, repro["environment"], [Candidate(**item) for item in repro.get("removed_units", [])])
@@ -252,6 +252,52 @@ class FailureDistiller:
             finally:
                 self._remove_worktree(root, worktree)
         return {"ok": True, "status": "same_failure" if predicate.matches(run.exit_code, run.output) and signature.matches(run.output) else "different_outcome", "run": self._run_dict(run)}
+
+    async def materialize(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a portable physical capsule from a verified logical capsule.
+
+        The destination is created once and never overwritten.  Source is
+        copied from a detached worktree, then the recorded reductions are
+        applied before a same-signature replay proves the exported workspace.
+        """
+        capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()
+        repro = self._read_json(capsule / "repro.json")
+        root = Path(repro["workspace_root"]).resolve()
+        if not root.is_dir():
+            return self._state("boundary_not_isolatable", "source workspace is no longer available")
+        destination_raw = request.get("destination")
+        destination = Path(str(destination_raw)).resolve() if destination_raw else capsule / "materialized"
+        if destination.exists():
+            raise DistillationError("materialized capsule destination already exists")
+        try:
+            destination.relative_to(capsule.parent if not destination_raw else root.parent)
+        except ValueError as exc:
+            raise DistillationError("materialized destination must remain below the capsule store or workspace parent") from exc
+        with self._temporary_worktree_root(root) as temp:
+            worktree = Path(temp) / "w"
+            self._create_worktree(root, worktree)
+            try:
+                reduced_env = self._apply_reductions(worktree, repro["environment"], [Candidate(**item) for item in repro.get("removed_units", [])])
+                shutil.copytree(worktree, destination, ignore=shutil.ignore_patterns(".git", ".vectant", "node_modules", "__pycache__"))
+                source_modules = root / "node_modules"
+                if source_modules.is_dir():
+                    try:
+                        os.symlink(source_modules, destination / "node_modules", target_is_directory=True)
+                    except OSError:
+                        pass
+                predicate, signature = Predicate.from_request(repro["predicate"]), Signature.from_request(repro["signature"])
+                run = await self._run(self._command(repro["command"]), destination, reduced_env, int(repro["budget"]["timeout_sec"]))
+            except Exception:
+                shutil.rmtree(destination, ignore_errors=True)
+                raise
+            finally:
+                self._remove_worktree(root, worktree)
+        if not predicate.matches(run.exit_code, run.output) or not signature.matches(run.output):
+            shutil.rmtree(destination, ignore_errors=True)
+            return self._state("boundary_not_isolatable", "materialized workspace did not reproduce the same failure", run=self._run_dict(run))
+        materialized_repro = {**repro, "workspace_root": str(destination), "mode": "materialized"}
+        self._write_json(destination / ".vectant-materialized-repro.json", materialized_repro)
+        return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "limits": ["dependencies are linked from the originating workspace when available", "portable under the declared source/config/fixture reduction model"]}
 
     async def validate_patch(self, request: Dict[str, Any]) -> Dict[str, Any]:
         capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()
@@ -272,8 +318,8 @@ class FailureDistiller:
                 conflicts.append({"path": path, "reason": "source_revision_or_hash_mismatch"})
         if conflicts:
             return {"ok": False, "status": "patch_mapping_conflict", "conflicts": conflicts}
-        with tempfile.TemporaryDirectory(prefix="vectant-patch-") as temp:
-            worktree = Path(temp) / "worktree"
+        with self._temporary_worktree_root(root) as temp:
+            worktree = Path(temp) / "w"
             self._create_worktree(root, worktree)
             try:
                 for edit in edits:
@@ -317,8 +363,8 @@ class FailureDistiller:
         return {"matching_failures": len(matches), "matches": len(matches), "attempts": len(runs), "runs": [self._run_dict(run) for run in runs]}
 
     async def _evaluate(self, root: Path, command: Sequence[str], env: Dict[str, str], active: Sequence[Candidate], predicate: Predicate, signature: Signature, budget: Budget) -> Dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="vectant-reduce-") as temp:
-            worktree = Path(temp) / "worktree"
+        with self._temporary_worktree_root(root) as temp:
+            worktree = Path(temp) / "w"
             self._create_worktree(root, worktree)
             try:
                 reduced_env = self._apply_reductions(worktree, env, active)
@@ -338,6 +384,11 @@ class FailureDistiller:
             except OSError:
                 # Node can still resolve workspace-level modules in many package layouts.
                 pass
+
+    def _temporary_worktree_root(self, root: Path):
+        """Prefer a very short temp root on Windows for deep repository paths."""
+        directory = root.anchor if os.name == "nt" and root.anchor else None
+        return tempfile.TemporaryDirectory(prefix="vfd-", dir=directory)
 
     def _remove_worktree(self, root: Path, destination: Path) -> None:
         try:

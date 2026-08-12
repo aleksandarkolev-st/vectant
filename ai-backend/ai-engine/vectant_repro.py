@@ -36,6 +36,11 @@ async def _execute(args: argparse.Namespace) -> Dict[str, Any]:
         return await distiller.distill(_read_json(args.request))
     if args.command == "run":
         return await distiller.run(args.capsule_path)
+    if args.command == "materialize":
+        request = {"capsulePath": args.capsule_path}
+        if args.destination:
+            request["destination"] = args.destination
+        return await distiller.materialize(request)
     if args.command == "validate-patch":
         request = _read_json(args.edits)
         request["capsulePath"] = args.capsule_path
@@ -63,6 +68,9 @@ def main() -> int:
     distill.add_argument("--request", required=True, help="Distillation request JSON")
     run = commands.add_parser("run", help="Run a capsule's recorded reproducer")
     run.add_argument("capsule_path")
+    materialize = commands.add_parser("materialize", help="Create a physical capsule workspace")
+    materialize.add_argument("capsule_path")
+    materialize.add_argument("--destination")
     explain = commands.add_parser("explain", help="Explain a retained or removed unit")
     explain.add_argument("capsule_path")
     explain.add_argument("unit")

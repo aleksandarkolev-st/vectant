@@ -642,6 +642,12 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('heal/agentic/distill/run', { capsulePath });
   }
 
+  /** Create a physical capsule workspace after logical replay has been verified. */
+  materializeFailureCapsule(payload) {
+    if (!payload?.capsulePath) return Promise.reject(new Error('capsulePath is required'));
+    return this._sendRequest('heal/agentic/distill/materialize', payload);
+  }
+
   /** Validate an editable production-file patch against its capsule provenance. */
   validateFailureCapsulePatch(payload) {
     if (!payload?.capsulePath || !Array.isArray(payload?.edits)) {
