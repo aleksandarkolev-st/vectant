@@ -171,3 +171,25 @@ def test_metrics_report_reduction_and_validation_outcomes(workspace):
     assert metrics["removed_units"] == 1
     assert metrics["validated_patches"] == 1
     assert metrics["reduction_ratio"] == 1.0
+
+
+def test_reduces_noncausal_command_input_and_replays_reduced_command(workspace):
+    (workspace / "runner.py").write_text(
+        "import argparse, sys\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--noise')\n"
+        "parser.parse_args()\n"
+        "print('FailureSignature: input boundary')\n"
+        "sys.exit(7)\n",
+        encoding="utf-8",
+    )
+    git(workspace, "add", "runner.py")
+    git(workspace, "commit", "-m", "input fixture")
+    payload = request(workspace, [{"kind": "command_arg", "reference": "2"}])
+    payload["command"] = [sys.executable, "runner.py", "--noise=discard"]
+    payload["signature"] = {"required": ["input boundary"]}
+    result = run(FailureDistiller().distill(payload))
+    assert result["reduction"]["removed_units"] == 1
+    repro = json.loads((Path(result["workspace_path"]) / "repro.json").read_text())
+    assert repro["removed_units"][0]["kind"] == "command_arg"
+    assert run(FailureDistiller().run(result["workspace_path"]))["status"] == "same_failure"

@@ -150,8 +150,8 @@ class Candidate:
         if not isinstance(raw, dict):
             raise DistillationError("candidate units must be objects")
         kind, reference = raw.get("kind"), raw.get("reference")
-        if kind not in {"file", "env", "json_key", "json_record"} or not isinstance(reference, str) or not reference:
-            raise DistillationError("candidate units require kind=file|env|json_key|json_record and reference")
+        if kind not in {"file", "env", "json_key", "json_record", "command_arg"} or not isinstance(reference, str) or not reference:
+            raise DistillationError("candidate units require kind=file|env|json_key|json_record|command_arg and reference")
         if kind == "file":
             reference = _safe_relative(root, reference).as_posix()
         if kind in {"json_key", "json_record"}:
@@ -163,6 +163,12 @@ class Candidate:
             reference = f"{_safe_relative(root, raw_file).as_posix()}#{selector}"
         if kind == "env" and SECRET_NAME.search(reference):
             raise DistillationError("secret-bearing environment variables cannot be reduced or persisted")
+        if kind == "command_arg":
+            try:
+                if int(reference) < 1:
+                    raise ValueError
+            except ValueError as exc:
+                raise DistillationError("command_arg reference must be an argument index greater than zero") from exc
         return cls(kind, reference)
 
     @property
@@ -255,8 +261,9 @@ class FailureDistiller:
             worktree = Path(temp) / "w"
             self._create_worktree(root, worktree)
             try:
-                environment = self._apply_reductions(worktree, repro["environment"], [Candidate(**item) for item in repro.get("removed_units", [])])
-                run = await self._run(self._command(repro["command"]), worktree, environment, int(repro["budget"]["timeout_sec"]))
+                removed = [Candidate(**item) for item in repro.get("removed_units", [])]
+                environment = self._apply_reductions(worktree, repro["environment"], removed)
+                run = await self._run(self._reduced_command(self._command(repro["command"]), removed), worktree, environment, int(repro["budget"]["timeout_sec"]))
             finally:
                 self._remove_worktree(root, worktree)
         return {"ok": True, "status": "same_failure" if predicate.matches(run.exit_code, run.output) and signature.matches(run.output) else "different_outcome", "run": self._run_dict(run)}
@@ -295,7 +302,7 @@ class FailureDistiller:
                     except OSError:
                         pass
                 predicate, signature = Predicate.from_request(repro["predicate"]), Signature.from_request(repro["signature"])
-                run = await self._run(self._command(repro["command"]), destination, reduced_env, int(repro["budget"]["timeout_sec"]))
+                run = await self._run(self._reduced_command(self._command(repro["command"]), [Candidate(**item) for item in repro.get("removed_units", [])]), destination, reduced_env, int(repro["budget"]["timeout_sec"]))
             except Exception:
                 shutil.rmtree(destination, ignore_errors=True)
                 raise
@@ -347,7 +354,7 @@ class FailureDistiller:
                         target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_text(content, encoding="utf-8")
                 capsule_env = self._apply_reductions(capsule_worktree, repro["environment"], [Candidate(**item) for item in repro.get("removed_units", [])])
-                capsule_run = await self._run(self._command(repro["command"]), capsule_worktree, capsule_env, int(repro["budget"]["timeout_sec"]))
+                capsule_run = await self._run(self._reduced_command(self._command(repro["command"]), [Candidate(**item) for item in repro.get("removed_units", [])]), capsule_worktree, capsule_env, int(repro["budget"]["timeout_sec"]))
                 original_run = await self._run(self._command(repro["command"]), original_worktree, repro["environment"], int(repro["budget"]["timeout_sec"]))
                 affected = []
                 for raw_command in request.get("affectedChecks", request.get("affected_checks", [])):
@@ -384,6 +391,14 @@ class FailureDistiller:
             raise DistillationError("command contains a null byte")
         return command
 
+    def _reduced_command(self, command: Sequence[str], reductions: Sequence[Candidate]) -> List[str]:
+        indexes = sorted({int(item.reference) for item in reductions if item.kind == "command_arg"}, reverse=True)
+        reduced = list(command)
+        for index in indexes:
+            if index < len(reduced):
+                reduced.pop(index)
+        return reduced
+
     def _environment(self, raw: Any) -> Dict[str, str]:
         if not isinstance(raw, dict):
             raise DistillationError("environment must be an object")
@@ -404,7 +419,8 @@ class FailureDistiller:
             self._create_worktree(root, worktree)
             try:
                 reduced_env = self._apply_reductions(worktree, env, active)
-                runs = [await self._run(command, worktree, reduced_env, budget.timeout_sec) for _ in range(budget.stability_attempts)]
+                reduced_command = self._reduced_command(command, active)
+                runs = [await self._run(reduced_command, worktree, reduced_env, budget.timeout_sec) for _ in range(budget.stability_attempts)]
             finally:
                 self._remove_worktree(root, worktree)
         matches = [run for run in runs if predicate.matches(run.exit_code, run.output) and signature.matches(run.output)]
@@ -438,6 +454,8 @@ class FailureDistiller:
         for candidate in reductions:
             if candidate.kind == "env":
                 reduced_env.pop(candidate.reference, None)
+                continue
+            if candidate.kind == "command_arg":
                 continue
             if candidate.kind == "file":
                 target = worktree / candidate.reference
