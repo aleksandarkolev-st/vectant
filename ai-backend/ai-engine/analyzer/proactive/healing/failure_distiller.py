@@ -318,23 +318,41 @@ class FailureDistiller:
                 conflicts.append({"path": path, "reason": "source_revision_or_hash_mismatch"})
         if conflicts:
             return {"ok": False, "status": "patch_mapping_conflict", "conflicts": conflicts}
+        predicate, signature = Predicate.from_request(repro["predicate"]), Signature.from_request(repro["signature"])
+        before = await self.run(str(capsule))
+        if before.get("status") != "same_failure":
+            return self._record_validation(capsule, {"ok": False, "status": "capsule_baseline_invalid", "gates": {"capsule_fails_before_patch": before}})
         with self._temporary_worktree_root(root) as temp:
-            worktree = Path(temp) / "w"
-            self._create_worktree(root, worktree)
+            capsule_worktree, original_worktree = Path(temp) / "c", Path(temp) / "o"
+            self._create_worktree(root, capsule_worktree)
+            self._create_worktree(root, original_worktree)
             try:
                 for edit in edits:
                     entry, content = provenance[str(edit["path"])], edit.get("content")
                     if not isinstance(content, str):
                         raise DistillationError("edit content must be a string")
-                    target = worktree / entry["origin"]
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(content, encoding="utf-8")
-                predicate, signature = Predicate.from_request(repro["predicate"]), Signature.from_request(repro["signature"])
-                run = await self._run(self._command(repro["command"]), worktree, repro["environment"], int(repro["budget"]["timeout_sec"]))
+                    for worktree in (capsule_worktree, original_worktree):
+                        target = worktree / entry["origin"]
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_text(content, encoding="utf-8")
+                capsule_env = self._apply_reductions(capsule_worktree, repro["environment"], [Candidate(**item) for item in repro.get("removed_units", [])])
+                capsule_run = await self._run(self._command(repro["command"]), capsule_worktree, capsule_env, int(repro["budget"]["timeout_sec"]))
+                original_run = await self._run(self._command(repro["command"]), original_worktree, repro["environment"], int(repro["budget"]["timeout_sec"]))
+                affected = []
+                for raw_command in request.get("affectedChecks", request.get("affected_checks", [])):
+                    check_command = self._command(raw_command)
+                    if not check_command:
+                        raise DistillationError("affected checks must be non-empty commands")
+                    affected_run = await self._run(check_command, original_worktree, repro["environment"], int(repro["budget"]["timeout_sec"]))
+                    affected.append({"command": check_command, "run": self._run_dict(affected_run)})
             finally:
-                self._remove_worktree(root, worktree)
-        passed = not predicate.matches(run.exit_code, run.output)
-        return {"ok": passed, "status": "validated" if passed else "capsule_still_fails", "signature_after_patch": "match" if signature.matches(run.output) else "changed", "run": self._run_dict(run)}
+                self._remove_worktree(root, capsule_worktree)
+                self._remove_worktree(root, original_worktree)
+        capsule_passes = not predicate.matches(capsule_run.exit_code, capsule_run.output)
+        original_passes = not predicate.matches(original_run.exit_code, original_run.output)
+        failed_checks = [check for check in affected if check["run"]["exit_code"] != 0]
+        status = "validated" if capsule_passes and original_passes and not failed_checks else ("capsule_fix_failed" if not capsule_passes else "original_validation_failed" if not original_passes else "affected_checks_failed")
+        return self._record_validation(capsule, {"ok": status == "validated", "status": status, "gates": {"capsule_fails_before_patch": before, "capsule_passes_after_patch": self._run_dict(capsule_run), "original_failure_passes_after_mapping": self._run_dict(original_run), "affected_checks": affected}, "patch_mapping": {"mapped_files": [provenance[str(edit["path"])]["origin"] for edit in edits]}, "signature_after_patch": "match" if signature.matches(original_run.output) else "changed"})
 
     def _command(self, raw: Any) -> List[str]:
         if isinstance(raw, str):
@@ -503,11 +521,12 @@ class FailureDistiller:
         capsule = root / ".vectant" / "capsules" / capsule_id
         capsule.mkdir(parents=True, exist_ok=False)
         provenance: Dict[str, Any] = {}
-        for candidate in active:
-            if candidate.kind == "file":
-                file_path = root / candidate.reference
-                if file_path.is_file():
-                    provenance[candidate.reference] = {"kind": "file", "origin": candidate.reference, "revision": revision, "sha256": _sha256(file_path.read_bytes())}
+        provenance_paths = {candidate.reference for candidate in active if candidate.kind == "file"}
+        provenance_paths.update(part.replace("\\", "/") for part in command if self._looks_like_path(part) and (root / part).is_file())
+        for origin in provenance_paths:
+            file_path = root / origin
+            if file_path.is_file():
+                provenance[origin] = {"kind": "file", "origin": origin, "revision": revision, "sha256": _sha256(file_path.read_bytes())}
         manifest = {"schema_version": "vectant.failure_capsule.v1", "capsule_id": capsule_id, "source_revision": revision, "dirty_workspace": dirty, "runtime": {"python": sys.version.split()[0], "platform": sys.platform}, "entrypoint": f"vectant repro run {capsule_id}", "status": status, "created_at": _utcnow()}
         repro = {"workspace_root": str(root), "command": list(command), "environment": environment, "predicate": predicate.to_dict(), "signature": signature.to_dict(), "budget": budget.__dict__, "baseline": baseline, "active_units": [item.__dict__ for item in active], "removed_units": [item.__dict__ for item in removed]}
         validation = {"status": "not_run", "required_gates": ["capsule_fails_before_patch", "capsule_passes_after_patch", "original_world_passes_after_mapping", "affected_checks_pass"]}
@@ -524,6 +543,11 @@ class FailureDistiller:
                 handle.write(_json({"candidate": item.identifier, "decision": "retained", "reason": reason}) + "\n")
         (capsule / "CAPSULE.md").write_text(f"# Failure capsule {capsule_id}\n\nRun: `vectant repro run {capsule_id}`\n\nStatus: {status}\n", encoding="utf-8")
         return capsule
+
+    def _record_validation(self, capsule: Path, result: Dict[str, Any]) -> Dict[str, Any]:
+        record = {"validated_at": _utcnow(), **result}
+        self._write_json(capsule / "evidence" / "validation.json", record)
+        return record
 
     def _world_hash(self, active: Sequence[Candidate], env: Dict[str, str], command: Sequence[str], revision: str) -> str:
         return "sha256:" + _sha256(_json({"active": [item.identifier for item in active], "environment": env, "command": list(command), "revision": revision}).encode())

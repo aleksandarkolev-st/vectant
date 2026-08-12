@@ -87,6 +87,22 @@ def test_patch_mapping_rejects_capsule_only_edits(workspace):
     assert validation["status"] == "patch_mapping_conflict"
 
 
+def test_patch_validation_requires_and_records_all_round_trip_gates(workspace):
+    result = run(FailureDistiller().distill(request(workspace, [
+        {"kind": "file", "reference": "unrelated.txt"},
+    ])))
+    validation = run(FailureDistiller().validate_patch({
+        "capsulePath": result["workspace_path"],
+        "edits": [{"path": "runner.py", "content": "print('fixed')\n"}],
+        "affectedChecks": [[sys.executable, "-c", "import sys; sys.exit(0)"]],
+    }))
+    assert validation["status"] == "validated"
+    assert validation["gates"]["capsule_fails_before_patch"]["status"] == "same_failure"
+    assert validation["gates"]["capsule_passes_after_patch"]["exit_code"] == 0
+    stored = json.loads((Path(result["workspace_path"]) / "evidence" / "validation.json").read_text())
+    assert stored["status"] == "validated"
+
+
 def test_auto_discovery_reduces_json_fixture_records_and_replay_uses_overlay(workspace):
     (workspace / "fixture.json").write_text(
         json.dumps({"required": True, "unrelated": "remove me"}), encoding="utf-8"
