@@ -163,17 +163,57 @@ function createWorkspaceInstructionProjectionRuntime({
   async function reconcile({ workspaceId, repositoryRoot, activeWorkspacePath = '', isInternalWorkspace = false } = {}) {
     const flag = resolveFlag({ workspaceId, isInternalWorkspace });
     const normalizedPath = normalizedActiveWorkspacePath(activeWorkspacePath);
-    // Off-by-default rollout must be a true no-op: startup and terminal
-    // callers may be working with a not-yet-created repository path.
+    // A disabled rollout must not create a checkout simply to clean it up.
+    // For an already-opened directory, however, it is a lifecycle transition:
+    // remove only Vectant's block (and synthetic-only files) so the flag does
+    // not leave a stale projection behind.
     if (!flag.enabled) {
+      let cleanup = null;
+      const candidateRoot = repositoryRoot ? path.resolve(String(repositoryRoot)) : null;
+      let candidateExists = false;
+      if (candidateRoot && workspaceId) {
+        try {
+          const stat = await fsApi.lstat(candidateRoot);
+          candidateExists = stat.isDirectory() || stat.isSymbolicLink();
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
+      }
+      if (candidateExists) {
+        const opened = await resolveOpenedWorkspaceRoot({ repositoryRoot: candidateRoot, activeWorkspacePath: normalizedPath, fsApi });
+        const key = `${String(workspaceId)}\u0000${opened.activeWorkspaceRoot}`;
+        cleanup = await serialize(key, async () => {
+          const service = serviceFactory({
+            // Cleanup deliberately remains available after rollout is disabled.
+            // The service needs no canonical payload to remove a projection.
+            featureEnabled: true,
+            canonicalInstructionsProvider: () => canonical(workspaceId),
+            gitAdapter,
+            fsApi,
+            logger,
+            onEvent: (event, details) => observability.record(event, details),
+          });
+          const result = await service.cleanupWorkspace({ workspaceId, activeWorkspaceRoot: opened.activeWorkspaceRoot });
+          const roots = knownWorkspaceRoots.get(workspaceId);
+          roots?.delete(opened.activeWorkspaceRoot);
+          if (roots?.size === 0) knownWorkspaceRoots.delete(workspaceId);
+          observability.record('workspace_instruction_projection_cleaned_up', {
+            workspaceId,
+            root: opened.activeWorkspaceRoot,
+            reason: flag.reason,
+          });
+          return result;
+        });
+      }
       observability.record('workspace_instruction_projection_skipped', { workspaceId, reason: flag.reason, mode: flag.mode });
       return Object.freeze({
         skipped: true,
         reason: flag.reason,
         rollout: flag,
-        repositoryRoot: repositoryRoot ? path.resolve(String(repositoryRoot)) : null,
+        repositoryRoot: candidateRoot,
         activeWorkspacePath: normalizedPath,
-        projections: [],
+        projections: cleanup?.projections || [],
+        cleanup,
       });
     }
 

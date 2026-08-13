@@ -79,6 +79,24 @@ test('disabled rollout never resolves a not-yet-created runtime checkout', async
   assert.equal(result.repositoryRoot, path.resolve(missingRepository));
 });
 
+test('disabling the rollout removes synthetic projections and preserves user content', async (t) => {
+  const repository = await temporaryDirectory(t, 'vectant-instruction-runtime-disable-cleanup-');
+  let enabled = true;
+  const runtime = await createRuntime(t, {
+    resolveFlag: () => fullRollout({ enabled, reason: enabled ? 'test' : 'feature_disabled', mode: enabled ? 'full' : 'off' }),
+  });
+  await runtime.reconcile({ workspaceId: 'runtime-disable-cleanup', repositoryRoot: repository });
+  await fs.promises.appendFile(path.join(repository, 'CLAUDE.md'), '\nUse Python 3.13.\n');
+  enabled = false;
+
+  const result = await runtime.reconcile({ workspaceId: 'runtime-disable-cleanup', repositoryRoot: repository });
+  assert.equal(result.skipped, true);
+  assert.equal(result.cleanup.projections.find((entry) => entry.path === 'AGENTS.md').removed, true);
+  assert.equal(await fs.promises.stat(path.join(repository, 'AGENTS.md')).then(() => true, () => false), false);
+  assert.equal(await fs.promises.readFile(path.join(repository, 'CLAUDE.md'), 'utf8'), '\nUse Python 3.13.\n');
+  assert.equal(await fs.promises.stat(path.join(repository, 'GEMINI.md')).then(() => true, () => false), false);
+});
+
 test('canonical metadata updates reconcile every previously opened root without a restart', async (t) => {
   const repository = await temporaryDirectory(t, 'vectant-instruction-runtime-update-');
   const left = path.join(repository, 'left');
