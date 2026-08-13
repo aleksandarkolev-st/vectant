@@ -211,6 +211,19 @@ def test_exports_a_sanitized_deterministic_vivarium_manifest(workspace):
     assert Path(exported["manifest_path"]).is_file()
 
 
+def test_promotes_only_original_world_validated_capsules_to_vivarium(workspace):
+    distiller = FailureDistiller()
+    result = run(distiller.distill(request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])))
+    blocked = distiller.promote_vivarium_scenario(result["workspace_path"])
+    assert blocked["status"] == "boundary_not_isolatable"
+    validation = run(distiller.validate_patch({"capsulePath": result["workspace_path"], "edits": [{"path": "runner.py", "content": "print('fixed')\n"}]}))
+    assert validation["status"] == "validated"
+    promoted = distiller.promote_vivarium_scenario(result["workspace_path"], "practice")
+    assert promoted["ok"]
+    assert promoted["mode"] == "practice"
+    assert Path(promoted["artifact_path"]).is_file()
+
+
 def test_reduces_noncausal_command_input_and_replays_reduced_command(workspace):
     (workspace / "runner.py").write_text(
         "import argparse, sys\n"

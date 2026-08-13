@@ -408,6 +408,34 @@ class FailureDistiller:
         self._write_json(path, scenario)
         return {"ok": True, "status": "vivarium_manifest_exported", "capsule_id": capsule_id, "capsuleId": capsule_id, "scenario_id": scenario_id, "scenarioId": scenario_id, "manifest_path": str(path), "manifestPath": str(path), "manifest": scenario}
 
+    def promote_vivarium_scenario(self, capsule_path: str, mode: str = "regression") -> Dict[str, Any]:
+        """Version a validated capsule as a Vivarium regression or practice artifact."""
+        if mode not in {"regression", "practice"}:
+            raise DistillationError("Vivarium promotion mode must be regression or practice")
+        capsule = Path(capsule_path).resolve()
+        validation = self._read_json(capsule / "evidence" / "validation.json")
+        if validation.get("status") != "validated":
+            return self._state("boundary_not_isolatable", "Vivarium promotion requires a capsule patch validated in the original world", validation_status=validation.get("status", "not_run"))
+        source = capsule / "vivarium.scenario.json"
+        if not source.is_file():
+            exported = self.export_vivarium_manifest(str(capsule))
+            if not exported.get("ok"):
+                return exported
+        scenario = self._read_json(source)
+        revision = _sha256(_json({"scenario": scenario, "validation": validation, "mode": mode}).encode())[:16]
+        promoted = {
+            "schema_version": "synthi.dojo.failureCapsulePromotion.v1",
+            "promotion_id": f"promotion_{scenario['scenario_id']}_{revision}",
+            "kind": mode,
+            "scenario": scenario,
+            "source_validation": {"status": validation["status"], "validated_at": validation.get("validated_at"), "patch_mapping": validation.get("patch_mapping", {})},
+            "version": {"source_revision": scenario["capsule"]["source_revision"], "artifact_revision": revision},
+            "limits": ["This is a synthetic regression/practice artifact, not the original incident evidence", "original-world validation remains authoritative for production patches"],
+        }
+        destination = capsule / "vivarium" / mode / f"{revision}.json"
+        self._write_json(destination, promoted)
+        return {"ok": True, "status": "vivarium_promoted", "promotion_id": promoted["promotion_id"], "promotionId": promoted["promotion_id"], "mode": mode, "artifact_path": str(destination), "artifactPath": str(destination), "artifact": promoted}
+
     def discard(self, capsule_path: str) -> Dict[str, Any]:
         """Permanently delete a capsule only from its source workspace store."""
         capsule = Path(capsule_path).resolve()

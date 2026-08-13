@@ -4390,6 +4390,17 @@ async def export_distilled_failure_to_vivarium(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/heal/agentic/distill/vivarium-promote")
+async def promote_distilled_failure_to_vivarium(request: Request):
+    """Promote an original-world-validated capsule into a versioned Vivarium artifact."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        return get_failure_distiller().promote_vivarium_scenario(body.get("capsulePath", body.get("capsule_path", "")), str(body.get("mode", "regression")))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/heal/agentic/distill/validate-patch")
 async def validate_distilled_patch(request: Request):
     """Map a capsule patch through provenance and validate it in the source world."""

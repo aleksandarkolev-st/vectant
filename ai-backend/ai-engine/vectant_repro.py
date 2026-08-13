@@ -47,6 +47,8 @@ async def _execute(args: argparse.Namespace) -> Dict[str, Any]:
         return {"ok": True, "metrics": distiller.metrics()}
     if args.command == "vivarium-export":
         return distiller.export_vivarium_manifest(args.capsule_path)
+    if args.command == "vivarium-promote":
+        return distiller.promote_vivarium_scenario(args.capsule_path, args.mode)
     if args.command == "validate-patch":
         request = _read_json(args.edits)
         request["capsulePath"] = args.capsule_path
@@ -82,6 +84,9 @@ def main() -> int:
     commands.add_parser("metrics", help="Show Failure Distiller quality and cost metrics")
     vivarium = commands.add_parser("vivarium-export", help="Export a sanitized deterministic Vivarium scenario manifest")
     vivarium.add_argument("capsule_path")
+    promote = commands.add_parser("vivarium-promote", help="Promote an original-world-validated capsule into a Vivarium artifact")
+    promote.add_argument("capsule_path")
+    promote.add_argument("--mode", choices=["regression", "practice"], default="regression")
     explain = commands.add_parser("explain", help="Explain a retained or removed unit")
     explain.add_argument("capsule_path")
     explain.add_argument("unit")
