@@ -34,7 +34,7 @@ STATUSES = {
 SECRET_NAME = re.compile(r"(?:token|secret|password|passwd|api[_-]?key|credential|private[_-]?key)", re.I)
 SECRET_VALUE = re.compile(r"(?P<key>\b(?:token|secret|password|passwd|api[_-]?key|credential|private[_-]?key)\b\s*(?:=|:|is)\s*)(?P<value>[^\s,;]+)", re.I)
 BEARER_VALUE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+\-/=]+", re.I)
-SECRET_COMMAND_ARGUMENT = re.compile(r"(?:^|[-_/])(token|secret|password|passwd|api[_-]?key|credential|private[_-]?key)(?:=|:)", re.I)
+SECRET_COMMAND_ARGUMENT = re.compile(r"(?:^|[-_/])(token|secret|password|passwd|api[_-]?key|credential|private[_-]?key)(?:$|=|:)", re.I)
 DEFAULT_BUDGETS = {
     "fast": {"max_executions": 100, "stability_attempts": 3, "minimum_matches": 3, "timeout_sec": 30},
     "standard": {"max_executions": 1000, "stability_attempts": 5, "minimum_matches": 5, "timeout_sec": 60},

@@ -76,6 +76,8 @@ def test_rejects_secret_environment_and_path_escape(workspace):
         run(FailureDistiller().distill({**request(workspace, []), "environment": {"API_TOKEN": "nope"}}))
     with pytest.raises(DistillationError, match="escapes workspace"):
         run(FailureDistiller().distill(request(workspace, [{"kind": "file", "reference": "../outside"}])))
+    with pytest.raises(DistillationError, match="secret-bearing argument"):
+        run(FailureDistiller().distill({**request(workspace, []), "command": [sys.executable, "runner.py", "--api-key", "not-safe"]}))
 
 
 def test_refuses_dirty_workspace_instead_of_reducing_a_different_revision(workspace):
