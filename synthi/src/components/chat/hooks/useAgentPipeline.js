@@ -29,6 +29,7 @@
  */
 
 import { useCallback, useRef, useState } from 'react';
+import { limitAgentContext } from '@/lib/agent-routing/agent-context-budget';
 import { routePipelineAgentTask } from '@/lib/agent-routing/agent-pipeline-routing';
 
 // ── Agent Definitions ───────────────────────────────────────────────
@@ -332,7 +333,7 @@ export const useAgentPipeline = ({
                     body: JSON.stringify({
                         agentType: step.agentType,
                         instruction: step.instruction,
-                        context: accumulatedContext,
+                        context: limitAgentContext(accumulatedContext),
                         atomicTask: step.atomicTask,
                         routerRole: step.routerRole,
                         selectedSkills: step.selectedSkills,
@@ -382,6 +383,7 @@ export const useAgentPipeline = ({
     const executeLocalAgentStep = useCallback(
         async (step, accumulatedContext, signal) => {
             const startTime = Date.now();
+            const limitedContext = limitAgentContext(accumulatedContext);
 
             try {
                 const liveCurrentCode = readCurrentCode();
@@ -534,8 +536,8 @@ export const useAgentPipeline = ({
                         }
 
                         // Include prior agent context
-                        if (accumulatedContext) {
-                            output += `\n\nPrior agent context:\n${accumulatedContext.slice(0, 4000)}`;
+                        if (limitedContext) {
+                            output += `\n\nPrior agent context:\n${limitedContext.slice(-4000)}`;
                         }
 
                         // Remind the model it can create new files
@@ -558,8 +560,8 @@ export const useAgentPipeline = ({
                                 `Active file (${execActivePath}):\n\`\`\`\n${liveCurrentCode.slice(0, 6000)}\n\`\`\``
                             );
                         }
-                        if (accumulatedContext) {
-                            execParts.push(`Gathered context from prior agents:\n${accumulatedContext.slice(0, 6000)}`);
+                        if (limitedContext) {
+                            execParts.push(`Gathered context from prior agents:\n${limitedContext.slice(-6000)}`);
                         }
                         execParts.push(`Instruction: ${step.instruction}`);
                         execParts.push(`IMPORTANT: If the instruction requires creating NEW files, output each new file as a separate FILE: block with the appropriate path. Do NOT merge new file content into existing files.`);
@@ -708,7 +710,9 @@ export const useAgentPipeline = ({
                     completedResults.push(result);
 
                     if (result.status === STEP_STATUS.COMPLETED && result.output) {
-                        accumulatedContext += `\n\n--- ${result.agentName} Result ---\n${result.output}`;
+                        accumulatedContext = limitAgentContext(
+                            `${accumulatedContext}\n\n--- ${result.agentName} Result ---\n${result.output}`,
+                        );
                     }
 
                     run.steps = [...plan.steps];

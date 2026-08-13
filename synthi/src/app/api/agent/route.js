@@ -10,6 +10,7 @@ import {
 import { loadSelectedSkillInstructions } from '@/lib/agent-routing/selective-skill-loader';
 import { routePipelineAgentTask } from '@/lib/agent-routing/agent-pipeline-routing';
 import { validateIndependentAgentResult } from '@/lib/agent-routing/independent-agent-validator';
+import { limitAgentContext } from '@/lib/agent-routing/agent-context-budget';
 
 /**
  * Agent API Route — executes a single agent step on the backend.
@@ -565,7 +566,7 @@ export async function POST(request) {
         const result = await executeAgent({
             agentType,
             instruction,
-            context,
+            context: limitAgentContext(context),
             tools: routing.tools,
             workspacePath: workspaceAccess.workspacePath,
             activeFilePath,
