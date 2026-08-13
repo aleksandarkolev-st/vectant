@@ -52,4 +52,12 @@ describe("external tools wired into the MCP server", () => {
     expect(text.text).not.toContain("inputSchema");
     expect(text.text).not.toContain("synthi_codesite_open_transaction");
   });
+
+  it("teaches connected MCP hosts the mandatory atomic routing protocol", async () => {
+    const client = await connectedClient({ defaultSignalingUrl: "ws://x" });
+
+    expect(client.getInstructions()).toContain(".synthi/AGENTS.md");
+    expect(client.getInstructions()).toContain("synthi_route_atomic_task");
+    expect(client.getInstructions()).toContain("Never provide the full tool catalog");
+  });
 });

@@ -76,6 +76,14 @@ import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
 import { isExternalToolName, callExternalTool, type ExternalTools } from "./external/index.js";
 import { toAtomicOrchestratorCompatibleRoute, routeAtomicVectantTask } from "./atomic_task_router.js";
 
+export const SYNTHI_ATOMIC_AGENT_INSTRUCTIONS = [
+  "For every non-trivial workspace task, first read the workspace's hidden .synthi/AGENTS.md protocol.",
+  "Decompose larger requests into independently solvable atomic changes.",
+  "For each atomic change, call synthi_route_atomic_task before execution. The router only selects the cheapest capable role, minimum skills, validation need, and a short reason; it must not solve the task.",
+  "Expose an execution agent only the atomic task, minimal repository context, selected skills, and the routed tools. Never provide the full tool catalog or all skill contents.",
+  "When the route requires independent validation, run the smallest appropriate validation agent after execution.",
+].join("\n");
+
 export interface SynthiServerOptions {
   defaultSessionId?: string;
   defaultSignalingUrl: string;
@@ -1161,6 +1169,7 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
       version: "0.1.0",
     },
     {
+      instructions: SYNTHI_ATOMIC_AGENT_INSTRUCTIONS,
       capabilities: {
         tools: { listChanged: true },
         resources: { subscribe: true, listChanged: false },
