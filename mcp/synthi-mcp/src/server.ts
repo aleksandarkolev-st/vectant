@@ -74,6 +74,7 @@ import { CODESITE_TOOLS, dispatchCodeSiteTool } from "./tools/codesite.js";
 import type { ToolContext } from "./tools/shared.js";
 import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
 import { isExternalToolName, callExternalTool, type ExternalTools } from "./external/index.js";
+import { toAtomicOrchestratorCompatibleRoute, routeAtomicVectantTask } from "./atomic_task_router.js";
 
 export interface SynthiServerOptions {
   defaultSessionId?: string;
@@ -82,6 +83,24 @@ export interface SynthiServerOptions {
 }
 
 const TOOLS = [
+  {
+    name: "synthi_route_atomic_task",
+    description: "Plan an atomic Vectant task using metadata only. Returns bounded role, validation decision, reason, and suggested MCP tools.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        description: { type: "string", description: "Atomic task description." },
+        category: { type: "string" },
+        keywords: { type: "array", items: { type: "string" } },
+        toolNames: { type: "array", items: { type: "string" } },
+        risk: { type: "string", enum: ["low", "medium", "high", "critical"] },
+        validation: { type: "string", enum: ["required", "not-required"] },
+        fastPath: { type: "boolean" },
+      },
+      required: ["description"],
+    },
+  },
   ...BROWSER_TOOLS,
   ...DOJO_TOOLS,
   ...AUTH_TOOLS,
@@ -1271,6 +1290,13 @@ async function dispatchTool(
   // lookup for easier maintenance (adding a tool is one entry). Handlers capture
   // args/ctx/signal from the enclosing scope; only locate/describe use signal.
   const handlers: Record<string, () => Promise<CallToolResult>> = {
+    synthi_route_atomic_task: async () => {
+      if (!args || typeof args !== "object" || typeof (args as Record<string, unknown>).description !== "string") {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "invalid_arguments", message: "description is required" }) }], isError: true };
+      }
+      const route = toAtomicOrchestratorCompatibleRoute(routeAtomicVectantTask(args as never));
+      return { content: [{ type: "text" as const, text: JSON.stringify(route) }] };
+    },
     synthi_attach: async () => (await attachTool(args, ctx)) as CallToolResult,
     synthi_screenshot: async () => (await screenshotTool(args)) as CallToolResult,
     synthi_wait_hmr: async () => (await waitHmrTool(args)) as CallToolResult,
