@@ -226,7 +226,7 @@ class FailureDistiller:
         observation = self._observation(request.get("observation"), root)
         candidates = [Candidate.from_request(item, root) for item in request.get("candidates", [])]
         if request.get("autoDiscover", request.get("auto_discover", False)):
-            candidates.extend(self._discover_candidates(root, command, environment, candidates, observation, environment_input))
+            candidates.extend(self._discover_candidates(root, command, candidates, observation, environment_input))
         if len({candidate.identifier for candidate in candidates}) != len(candidates):
             raise DistillationError("candidate units must be unique")
         baseline = await self._stability(root, command, environment, predicate, signature, budget)
@@ -809,7 +809,7 @@ class FailureDistiller:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
 
-    def _discover_candidates(self, root: Path, command: Sequence[str], environment: Dict[str, str], existing: Sequence[Candidate], observation: Dict[str, Any], environment_input: Any) -> List[Candidate]:
+    def _discover_candidates(self, root: Path, command: Sequence[str], existing: Sequence[Candidate], observation: Dict[str, Any], environment_input: Any) -> List[Candidate]:
         """Discover conservative, file-level units for pytest/Vitest repos.
 
         Runtime tracing is optional in both runners, so this adapter begins with
