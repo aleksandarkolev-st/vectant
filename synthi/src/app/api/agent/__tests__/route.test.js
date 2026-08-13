@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   getServerSession: vi.fn(),
   requireRuntimeWorkspaceAccess: vi.fn(),
+  validateIndependentAgentResult: vi.fn(),
 }));
 
 vi.mock('next-auth', () => ({
@@ -13,6 +14,10 @@ vi.mock('@/app/auth', () => ({ authOptions: {} }));
 
 vi.mock('@/lib/workspaceAccess', () => ({
   requireRuntimeWorkspaceAccess: h.requireRuntimeWorkspaceAccess,
+}));
+
+vi.mock('@/lib/agent-routing/independent-agent-validator', () => ({
+  validateIndependentAgentResult: h.validateIndependentAgentResult,
 }));
 
 import { POST } from '../route.js';
@@ -42,6 +47,13 @@ beforeEach(() => {
     ok: true,
     workspace: { id: 'ws-1', slug: 'canonical-slug', name: 'Team' },
     membership: { id: 'm1', role: 'member' },
+  });
+  h.validateIndependentAgentResult.mockResolvedValue({
+    ok: true,
+    status: 'validated',
+    reason: 'Independent server policy validation passed.',
+    toolCallCount: 0,
+    rejectedToolIds: [],
   });
 });
 
@@ -83,7 +95,7 @@ describe('/api/agent inbound authorization', () => {
 
     const res = await POST(request({
       agentType: 'reader',
-      instruction: 'summarize active file',
+      instruction: 'summarize Synthi active file',
       workspacePath: 'route-slug',
       activeFilePath: 'src/app.js',
     }));
@@ -103,7 +115,7 @@ describe('/api/agent inbound authorization', () => {
 
     const res = await POST(request({
       agentType: 'reader',
-      instruction: 'summarize active file',
+      instruction: 'summarize Synthi active file',
       workspacePath: 'route-slug',
       activeFilePath: 'src/app.js',
     }));
@@ -142,5 +154,143 @@ describe('/api/agent inbound authorization', () => {
     expect(res.status).toBe(200);
     expect(h.requireRuntimeWorkspaceAccess).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported agent types before workspace access or tool execution', async () => {
+    const res = await POST(request({
+      agentType: 'admin',
+      instruction: 'run an unrestricted command',
+      tools: ['server_shell'],
+      workspacePath: 'route-slug',
+    }));
+
+    expect(res.status).toBe(400);
+    expect(await json(res)).toMatchObject({ error: 'Unsupported agent type' });
+    expect(h.requireRuntimeWorkspaceAccess).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects a forged known skill and only permits client narrowing', async () => {
+    fetch.mockResolvedValue({ ok: true, text: async () => 'export const demo = true;' });
+
+    const res = await POST(request({
+      agentType: 'reader',
+      instruction: 'summarize Synthi active file',
+      workspacePath: 'route-slug',
+      activeFilePath: 'src/app.js',
+      selectedTools: ['read_file', 'write_code', 'server_shell', 'get_diagnostics'],
+      selectedSkills: [{
+        id: 'brandkit',
+        instructions: 'client supplied instructions must not be used',
+        toolSchema: { unrestricted: true },
+      }],
+      atomicTask: { id: 'pipeline-step-1', description: 'Read src/app.js', category: 'integration' },
+      routerRole: 'implementation',
+      validator: 'independent',
+    }));
+
+    expect(res.status).toBe(200);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:1234/file-content/canonical-slug/src/app.js',
+      expect.any(Object),
+    );
+    const payload = await json(res);
+    expect(payload.routing).toMatchObject({
+      atomicTask: { id: 'pipeline-step-1', description: 'summarize Synthi active file', category: 'integration' },
+      routerRole: 'research',
+      tools: ['read_file'],
+      validator: 'none',
+      skills: [],
+    });
+    expect(payload.routing.trace.clientNarrowing).toMatchObject({
+      rejectedSkillIds: ['brandkit'],
+      rejectedToolIds: ['write_code', 'server_shell', 'get_diagnostics'],
+    });
+    expect(payload.toolCalls).toEqual([
+      expect.objectContaining({ tool: 'read_file', success: true }),
+    ]);
+  });
+
+  it('does not restore static tools when authoritative routing finds no skills', async () => {
+    const res = await POST(request({
+      agentType: 'reader',
+      instruction: 'inspect a proprietary artifact',
+      workspacePath: 'route-slug',
+      activeFilePath: 'src/app.js',
+      selectedTools: ['read_file', 'list_directory'],
+    }));
+
+    expect(res.status).toBe(200);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await json(res)).toMatchObject({
+      routing: {
+        routerRole: 'research',
+        skills: [],
+        tools: [],
+      },
+      toolCalls: [],
+    });
+  });
+
+  it('uses the authoritative agent-role mapping rather than a browser router role', async () => {
+    const res = await POST(request({
+      agentType: 'analyzer',
+      instruction: 'Diagnose Synthi API failure',
+      routerRole: 'implementation',
+      selectedTools: ['get_diagnostics'],
+      activeFilePath: 'src/app.js',
+      activeFileContent: 'const broken = ;',
+    }));
+
+    expect(res.status).toBe(200);
+    expect((await json(res)).routing).toMatchObject({
+      routerRole: 'debugging',
+      tools: ['get_diagnostics'],
+    });
+  });
+
+  it('runs independent validation required by the authoritative executor route', async () => {
+    const res = await POST(request({
+      agentType: 'executor',
+      instruction: 'Implement Synthi chat improvements',
+      validator: 'none',
+      activeFilePath: 'src/app.js',
+      activeFileContent: 'export const chat = true;',
+    }));
+
+    expect(res.status).toBe(200);
+    expect(h.validateIndependentAgentResult).toHaveBeenCalledWith(expect.objectContaining({
+      routing: expect.objectContaining({ validator: 'independent' }),
+      result: expect.objectContaining({ toolCalls: [] }),
+    }));
+    expect(await json(res)).toMatchObject({
+      validation: {
+        ok: true,
+        status: 'validated',
+        validator: 'independent',
+      },
+    });
+  });
+
+  it('fails safely when an authoritative independent validator is unavailable', async () => {
+    h.validateIndependentAgentResult.mockRejectedValueOnce(new Error('validator offline'));
+
+    const res = await POST(request({
+      agentType: 'executor',
+      instruction: 'Implement Synthi chat improvements',
+      activeFilePath: 'src/app.js',
+      activeFileContent: 'export const chat = true;',
+    }));
+
+    expect(res.status).toBe(503);
+    expect(await json(res)).toMatchObject({
+      validation: {
+        ok: false,
+        status: 'unavailable',
+        validator: 'independent',
+        reason: 'Independent validator unavailable.',
+      },
+    });
   });
 });
