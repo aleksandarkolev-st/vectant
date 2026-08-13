@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
+import { PROGRAM_TOOLS } from "../../src/tools/programs.js";
 import {
   TOOL_METADATA_CATALOG,
   createToolMetadataCatalog,
@@ -63,6 +64,15 @@ describe("Vectant MCP tool metadata catalog", () => {
       "runtime",
       "attachment",
     ]));
+  });
+
+  it("selects every workspace program command-control tool", () => {
+    const programToolNames = PROGRAM_TOOLS.map((tool) => tool.name);
+    const selected = selectToolMetadata({ names: programToolNames });
+
+    expect(ADVERTISED_TOOLS).toEqual(expect.arrayContaining(programToolNames));
+    expect(selected.map((entry) => entry.name)).toEqual(programToolNames);
+    expect(selected.every((entry) => entry.groups.includes("runtime"))).toBe(true);
   });
 
   it("includes dynamic tools and augments advertised tool routing metadata", () => {

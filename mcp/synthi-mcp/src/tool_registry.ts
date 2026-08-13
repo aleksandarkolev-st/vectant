@@ -130,6 +130,11 @@ export const ADVERTISED_TOOLS = [
   "synthi_safety_run_prefix_validation",
   "synthi_safety_run_ci_isolated_replay",
   "synthi_safety_explain_blocked_hardening",
+  // Workspace program command control
+  "synthi_exec_in_runtime",
+  "synthi_list_programs",
+  "synthi_read_session",
+  "synthi_launch_program",
   // CodeSite ATC control plane
   "synthi_codesite_list_projects",
   "synthi_codesite_create_project",
