@@ -148,6 +148,10 @@ export interface VectantExecutionContext {
 
 const DEFAULT_MAX_TOOLS = 3;
 const DEFAULT_FAST_PATH = /^(?:format|rename|typo|mechanical)\b/i;
+// Routing is a planning capability, not an execution capability. It remains
+// advertised and discoverable, but must never recursively enter its own
+// downstream execution subset.
+const ROUTING_TOOL_NAMES = new Set(["synthi_route_atomic_task"]);
 const MUTATING_TERMS = new Set([
   "apply",
   "attach",
@@ -350,7 +354,7 @@ function selectTools(
   task: NormalizedTask,
   maxTools: number,
 ): readonly VectantToolMetadata[] {
-  const entries = catalog.entries;
+  const entries = catalog.entries.filter((entry) => !ROUTING_TOOL_NAMES.has(entry.name));
   if (task.toolNames && task.toolNames.length > 0) {
     const requested = new Set(task.toolNames);
     return entries.filter((entry) => requested.has(entry.name)).slice(0, maxTools);

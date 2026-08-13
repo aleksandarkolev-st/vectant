@@ -104,7 +104,10 @@ export function deriveToolMetadata(name: string): VectantToolMetadata {
   const [namespace, domain] = tokens;
   const actionTokens = namespace === "synthi" ? tokens.slice(1) : tokens;
 
-  if (namespace === "synthi" && domain === "codesite") {
+  if (namespace === "synthi" && domain === "route") {
+    addGroup(groups, "agent-routing");
+    addGroup(groups, "orchestration");
+  } else if (namespace === "synthi" && domain === "codesite") {
     addGroup(groups, "codesite");
     addGroup(groups, "control-plane");
   } else if (namespace === "synthi" && domain === "dojo") {

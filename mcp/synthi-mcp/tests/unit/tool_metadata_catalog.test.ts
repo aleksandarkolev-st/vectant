@@ -20,6 +20,12 @@ describe("Vectant MCP tool metadata catalog", () => {
     }
   });
 
+  it("classifies atomic routing as orchestration metadata", () => {
+    expect(lookupToolMetadata("synthi_route_atomic_task")).toEqual(expect.objectContaining({
+      groups: expect.arrayContaining(["agent-routing", "orchestration"]),
+    }));
+  });
+
   it("selects CodeSite transaction routing metadata", () => {
     const selected = selectToolMetadata({
       groups: ["codesite"],

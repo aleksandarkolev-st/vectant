@@ -31,4 +31,25 @@ describe("external tools wired into the MCP server", () => {
     const { tools } = await client.listTools();
     expect(tools.some((t) => t.name.startsWith("ext_"))).toBe(false);
   });
+
+  it("routes an atomic task before exposing a bounded execution subset", async () => {
+    const client = await connectedClient({ defaultSignalingUrl: "ws://x" });
+    const response = await client.callTool({
+      name: "synthi_route_atomic_task",
+      arguments: { description: "Attach the runtime." },
+    });
+    const text = response.content.find((item) => item.type === "text");
+    expect(text?.type).toBe("text");
+    if (!text || text.type !== "text") throw new Error("atomic route response must contain text");
+
+    const route = JSON.parse(text.text);
+    expect(route).toEqual(expect.objectContaining({
+      role: "infrastructure",
+      skills: [],
+      validation: "independent",
+      suggested_tools: ["synthi_attach"],
+    }));
+    expect(text.text).not.toContain("inputSchema");
+    expect(text.text).not.toContain("synthi_codesite_open_transaction");
+  });
 });

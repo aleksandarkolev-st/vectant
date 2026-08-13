@@ -10,6 +10,8 @@
  */
 
 export const ADVERTISED_TOOLS = [
+  // Agent orchestration
+  "synthi_route_atomic_task",
   // General browser runtime
   "synthi_browser_attach_current_workspace",
   "synthi_browser_revoke_hosted_runtime_session",
