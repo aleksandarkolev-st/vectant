@@ -157,19 +157,24 @@ function createWorkspaceInstructionProjectionRuntime({
   }
 
   async function reconcile({ workspaceId, repositoryRoot, activeWorkspacePath = '', isInternalWorkspace = false } = {}) {
-    const opened = await resolveOpenedWorkspaceRoot({ repositoryRoot, activeWorkspacePath, fsApi });
+    const flag = resolveFlag({ workspaceId, isInternalWorkspace });
+    const normalizedPath = normalizedActiveWorkspacePath(activeWorkspacePath);
+    // Off-by-default rollout must be a true no-op: startup and terminal
+    // callers may be working with a not-yet-created repository path.
+    if (!flag.enabled) {
+      return Object.freeze({
+        skipped: true,
+        reason: flag.reason,
+        rollout: flag,
+        repositoryRoot: repositoryRoot ? path.resolve(String(repositoryRoot)) : null,
+        activeWorkspacePath: normalizedPath,
+        projections: [],
+      });
+    }
+
+    const opened = await resolveOpenedWorkspaceRoot({ repositoryRoot, activeWorkspacePath: normalizedPath, fsApi });
     const key = `${String(workspaceId || '')}\u0000${opened.activeWorkspaceRoot}`;
     return serialize(key, async () => {
-      const flag = resolveFlag({ workspaceId, isInternalWorkspace });
-      if (!flag.enabled) {
-        return Object.freeze({
-          skipped: true,
-          reason: flag.reason,
-          rollout: flag,
-          ...opened,
-          projections: [],
-        });
-      }
 
       const instructions = await canonical(workspaceId);
       const service = serviceFactory({

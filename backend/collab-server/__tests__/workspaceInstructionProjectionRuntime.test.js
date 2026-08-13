@@ -71,6 +71,14 @@ test('defaults safely off and never materializes a projection in a disabled roll
   assert.equal(await fs.promises.stat(path.join(repository, 'AGENTS.md')).then(() => true, () => false), false);
 });
 
+test('disabled rollout never resolves a not-yet-created runtime checkout', async (t) => {
+  const missingRepository = path.join(await temporaryDirectory(t, 'vectant-instruction-runtime-missing-'), 'not-created');
+  const runtime = await createRuntime(t, { resolveFlag: () => fullRollout({ enabled: false, reason: 'feature_disabled', mode: 'off' }) });
+  const result = await runtime.reconcile({ workspaceId: 'runtime-off', repositoryRoot: missingRepository });
+  assert.equal(result.skipped, true);
+  assert.equal(result.repositoryRoot, path.resolve(missingRepository));
+});
+
 test('canonical metadata updates reconcile every previously opened root without a restart', async (t) => {
   const repository = await temporaryDirectory(t, 'vectant-instruction-runtime-update-');
   const left = path.join(repository, 'left');
