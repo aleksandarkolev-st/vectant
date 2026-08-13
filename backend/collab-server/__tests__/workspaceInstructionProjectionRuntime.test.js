@@ -71,6 +71,27 @@ test('defaults safely off and never materializes a projection in a disabled roll
   assert.equal(await fs.promises.stat(path.join(repository, 'AGENTS.md')).then(() => true, () => false), false);
 });
 
+test('canonical metadata updates reconcile every previously opened root without a restart', async (t) => {
+  const repository = await temporaryDirectory(t, 'vectant-instruction-runtime-update-');
+  const left = path.join(repository, 'left');
+  const right = path.join(repository, 'right');
+  await fs.promises.mkdir(left);
+  await fs.promises.mkdir(right);
+  const runtime = await createRuntime(t);
+
+  await runtime.reconcile({ workspaceId: 'runtime-update', repositoryRoot: repository, activeWorkspacePath: 'left' });
+  await runtime.reconcile({ workspaceId: 'runtime-update', repositoryRoot: repository, activeWorkspacePath: 'right' });
+  const update = await runtime.updateCanonicalInstructions('runtime-update', { content: 'The updated canonical instruction.' });
+
+  assert.equal(update.instructions.version, 2);
+  assert.equal(update.reconciliations.length, 2);
+  for (const root of [left, right]) {
+    const physical = await fs.promises.readFile(path.join(root, 'AGENTS.md'), 'utf8');
+    assert.equal(extractVectantBlock(physical).version, '2');
+    assert.equal(extractVectantBlock(physical).content, 'The updated canonical instruction.');
+  }
+});
+
 test('rejects active path traversal and preserves a directory outside the opened workspace', async (t) => {
   const repository = await temporaryDirectory(t, 'vectant-instruction-runtime-safe-');
   const outside = await temporaryDirectory(t, 'vectant-instruction-runtime-outside-');
