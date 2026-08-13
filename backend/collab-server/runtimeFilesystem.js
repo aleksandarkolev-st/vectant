@@ -3,9 +3,11 @@
 const gitService = require('./gitService');
 const repoCache = require('./repoCache');
 const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
+const { createWorkspaceInstructionProjectionRuntime } = require('./workspaceInstructionProjectionRuntime');
 
 const hydrationLocks = new Map();
 const runtimePins = new Map();
+let workspaceInstructionProjectionRuntime = createWorkspaceInstructionProjectionRuntime();
 
 function normalize(value) {
   return String(value || '').trim();
@@ -42,6 +44,27 @@ async function hydrateWorkspace(slug, userId, reason = 'runtime') {
     userId: '',
     path: repoPath,
     created: false,
+  };
+}
+
+async function reconcileRuntimeInstructionProjection(result) {
+  const projection = await workspaceInstructionProjectionRuntime.reconcile({
+    workspaceId: result.slug,
+    repositoryRoot: result.path,
+  });
+  // Runtime callers may surface this result in diagnostics.  Preserve only
+  // operational metadata: terminal instruction content remains in the
+  // physical document and must never be copied into a status payload.
+  return {
+    ...result,
+    instructionProjection: {
+      skipped: Boolean(projection.skipped),
+      reason: projection.reason || null,
+      rollout: projection.rollout || null,
+      projections: Array.isArray(projection.projections)
+        ? projection.projections.map(({ path: projectionPath, ownership }) => ({ path: projectionPath, ownership }))
+        : [],
+    },
   };
 }
 
@@ -145,7 +168,9 @@ async function ensureRuntimeFilesystem({
   const key = pinKey(slug, userId);
   let lock = hydrationLocks.get(key);
   if (!lock) {
-    lock = hydrateWorkspace(slug, userId, reason).finally(() => {
+    lock = hydrateWorkspace(slug, userId, reason)
+      .then(reconcileRuntimeInstructionProjection)
+      .finally(() => {
       hydrationLocks.delete(key);
     });
     hydrationLocks.set(key, lock);
@@ -194,8 +219,15 @@ function getPinnedRuntimeFilesystems() {
   }));
 }
 
+function setWorkspaceInstructionProjectionRuntimeForTests(runtime) {
+  const previous = workspaceInstructionProjectionRuntime;
+  workspaceInstructionProjectionRuntime = runtime || createWorkspaceInstructionProjectionRuntime();
+  return () => { workspaceInstructionProjectionRuntime = previous; };
+}
+
 module.exports = {
   ensureRuntimeFilesystem,
   releaseRuntimeFilesystem,
   getPinnedRuntimeFilesystems,
+  setWorkspaceInstructionProjectionRuntimeForTests,
 };

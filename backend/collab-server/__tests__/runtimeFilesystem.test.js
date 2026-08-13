@@ -5,7 +5,10 @@ const assert = require('node:assert/strict');
 
 const gitService = require('../gitService');
 const activityRegistry = require('../codesiteActivityRegistry');
-const { ensureRuntimeFilesystem } = require('../runtimeFilesystem');
+const {
+  ensureRuntimeFilesystem,
+  setWorkspaceInstructionProjectionRuntimeForTests,
+} = require('../runtimeFilesystem');
 
 function patchGitService(overrides) {
   const originals = {};
@@ -262,6 +265,43 @@ test('inactive runtime filesystem keeps legacy hydration behavior', async () => 
       ['ensureUserRepo', 'runtime-legacy', 'user-1'],
     ]);
   } finally {
+    activityRegistry.resetRegistry();
+    restore();
+  }
+});
+
+test('terminal/runtime hydration reconciles passive instructions only after the effective checkout exists', async () => {
+  activityRegistry.resetRegistry();
+  const calls = [];
+  const restoreProjectionRuntime = setWorkspaceInstructionProjectionRuntimeForTests({
+    reconcile: async (input) => {
+      calls.push(input);
+      return { skipped: false, projections: [{ path: 'AGENTS.md', ownership: 'synthetic-only' }] };
+    },
+  });
+  const restore = patchGitService({
+    initRepo: async () => ({ success: true }),
+    ensureUserRepo: async () => ({ path: '/tmp/runtime-projection/user-1', created: true }),
+  });
+  try {
+    await withControlPlaneActiveList('runtime-projection', [], async () => {
+      const result = await ensureRuntimeFilesystem({
+        workspaceSlug: 'runtime-projection',
+        filesystemUserId: 'user-1',
+        runtimeScope: 'projection-terminal',
+        pin: true,
+        reason: 'interactive_terminal',
+      });
+      assert.equal(calls.length, 1);
+      assert.deepEqual(calls[0], {
+        workspaceId: 'runtime-projection',
+        repositoryRoot: '/tmp/runtime-projection/user-1',
+      });
+      assert.deepEqual(result.instructionProjection.projections, [{ path: 'AGENTS.md', ownership: 'synthetic-only' }]);
+      assert.equal(Object.hasOwn(result.instructionProjection, 'canonicalBlock'), false);
+    });
+  } finally {
+    restoreProjectionRuntime();
     activityRegistry.resetRegistry();
     restore();
   }
