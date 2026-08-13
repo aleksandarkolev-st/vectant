@@ -43,12 +43,20 @@ const persistence = require('./persistence');
 const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
+const { createWorkspaceInstructionProjectionRuntime } = require('./workspaceInstructionProjectionRuntime');
+const {
+  prepareFileContentForIdeWrite,
+  presentFileContentForIde,
+  presentFileTreeForIde,
+  shouldReconcileInstructionProjection,
+} = require('./workspaceInstructionProjectionCollabAdapter');
 const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
 const {
   assertCodeSiteWorkspaceMutationAllowedAsync,
   guardCodeSiteHostSurface,
   withCodeSiteBoundaryContext,
 } = require('./codesiteActiveBoundary');
+const workspaceInstructionProjectionRuntime = createWorkspaceInstructionProjectionRuntime({ logger });
 const {
   configuredControlPlaneBaseUrl,
   trustedControlPlaneBaseUrl,
@@ -1223,6 +1231,11 @@ async function flushDocToDisk(docName, options = {}) {
     content = await ySweetBridge.readDocContent(docName);
   }
   if (content == null) return;
+  // The CRDT and durable editor backup keep user-visible bytes. A passive
+  // instruction projection adds a terminal-only block only at disk-write time.
+  const diskContent = typeof options.physicalContentOverride === 'string'
+    ? options.physicalContentOverride
+    : content;
 
   // 1. GCS sync (durable store)
   if (config.GCS_SYNC_ON_FLUSH && gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
@@ -1264,7 +1277,7 @@ async function flushDocToDisk(docName, options = {}) {
   try {
     const prior = await fsPromises.readFile(fullPath, 'utf8');
     priorContent = prior;
-    if (prior !== content) {
+    if (prior !== diskContent) {
       const priorHash = computeHash(prior);
       const existingCount = await persistence.countFileVersions(slug, filePath);
       if (existingCount === 0) {
@@ -1283,7 +1296,7 @@ async function flushDocToDisk(docName, options = {}) {
       logger.warn('version_baseline_read_failed', { slug, filePath }, err);
     }
   }
-  const derivedLineProvenance = deriveLineProvenanceFromContentChange(filePath, priorContent, content, {
+  const derivedLineProvenance = deriveLineProvenanceFromContentChange(filePath, priorContent, diskContent, {
     evidenceRefs: options.evidenceRefs,
     processAncestry: options.processAncestry,
     promptSummary: 'Yjs save flushed to disk',
@@ -1298,7 +1311,7 @@ async function flushDocToDisk(docName, options = {}) {
       tool: 'file_write',
       ...codeSiteWriteEvidence(options, derivedLineProvenance),
     }],
-  }, async () => gitService.writeFile(slug, filePath, content, effectiveUserId), {
+  }, async () => gitService.writeFile(slug, filePath, diskContent, effectiveUserId), {
     repoRoot: repoPath,
     workspaceSlug: slug,
   });
@@ -5544,6 +5557,26 @@ const server = http.createServer(async (req, res) => {
             }
 
             let result;
+            let instructionProjection = null;
+            if (shouldReconcileInstructionProjection(action)) {
+              try {
+                instructionProjection = await workspaceInstructionProjectionRuntime.reconcile({
+                  workspaceId: slug,
+                  repositoryRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                  activeWorkspacePath: data.activeWorkspacePath || '',
+                });
+              } catch (projectionError) {
+                logger.warn('workspace_instruction_projection_reconcile_failed', {
+                  slug, action, message: projectionError?.message || String(projectionError),
+                });
+                res.writeHead(503, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                  error: 'workspace_instruction_projection_unavailable',
+                  message: 'Workspace instruction projection is temporarily unavailable. Please retry.',
+                }));
+                return;
+              }
+            }
 
             // Validate file paths before processing any action that accepts one.
             // This prevents path-traversal attacks (e.g. "../../etc/passwd").
@@ -6263,6 +6296,11 @@ const server = http.createServer(async (req, res) => {
                       const docKey = buildDocName(slug, data.filePath, notifyScope);
                       await flushDocToDisk(docKey, {
                         contentOverride: data.content,
+                        physicalContentOverride: prepareFileContentForIdeWrite({
+                          path: data.filePath,
+                          userContent: data.content,
+                          projectionResult: instructionProjection,
+                        }),
                         codesiteContext: codeSiteContext,
                         ...codeSiteWriteEvidence(data),
                       });
@@ -6270,11 +6308,19 @@ const server = http.createServer(async (req, res) => {
                     result = { success: true };
                     break;
                 case 'files':
-                    result = await gitService.listFiles(slug, effectiveUserId);
+                    result = presentFileTreeForIde(
+                      await gitService.listFiles(slug, effectiveUserId),
+                      instructionProjection,
+                    );
                     break;
                 case 'files-meta':
                   // Metadata only (no content)
-                  result = { files: await gitService.listFilesMeta(slug, effectiveUserId) };
+                  result = {
+                    files: presentFileTreeForIde(
+                      await gitService.listFilesMeta(slug, effectiveUserId),
+                      instructionProjection,
+                    ),
+                  };
                   // Kick off index build in background (non-blocking)
                   try {
                     fileIndex.ensureIndex(slug, gitService.getEffectiveRepoPath(slug, effectiveUserId)).catch(() => {});
@@ -6331,7 +6377,13 @@ const server = http.createServer(async (req, res) => {
                       evidenceRefs: ['collab:workspace-action:file'],
                       processAncestry: ['collab-server:workspace-action'],
                     }));
-                    result = { content };
+                    result = {
+                      content: presentFileContentForIde({
+                        path: filePath_file,
+                        physicalContent: content,
+                        projectionResult: instructionProjection,
+                      }),
+                    };
                     break;
                 case 'file-hash':
                     // Get content hash for a file (for VFS validation)
@@ -6353,6 +6405,11 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'write-file':
                   {
+                    const physicalContent = prepareFileContentForIdeWrite({
+                      path: data.path,
+                      userContent: data.content,
+                      projectionResult: instructionProjection,
+                    });
                     const derivedLineProvenance = await deriveCodeSiteLineProvenance(slug, data.path, data.content, effectiveUserId, {
                       evidenceRefs: data.evidenceRefs || data.evidence_refs,
                       processAncestry: data.processAncestry || data.process_ancestry,
@@ -6368,7 +6425,7 @@ const server = http.createServer(async (req, res) => {
                         tool: 'file_write',
                         ...codeSiteWriteEvidence(data, derivedLineProvenance),
                       }],
-                    }, async () => withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, data.content, effectiveUserId)), {
+                    }, async () => withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, physicalContent, effectiveUserId)), {
                       ...codeSiteEnforcement,
                       repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
                     });
@@ -6438,6 +6495,17 @@ const server = http.createServer(async (req, res) => {
                   // Payload shape: { files: [{ path, encoding: 'utf8'|'base64', content }] }
                   {
                     const attempts = await Promise.all((data.files || []).map(async (file) => {
+                    const physicalFiles = (data.files || []).map((file) => {
+                      if (!file || String(file.encoding || 'utf8').toLowerCase() === 'base64') return file;
+                      return {
+                        ...file,
+                        content: prepareFileContentForIdeWrite({
+                          path: file.path,
+                          userContent: file.content,
+                          projectionResult: instructionProjection,
+                        }),
+                      };
+                    });
                       const nextContent = file?.encoding === 'base64'
                         ? null
                         : file?.content;
@@ -6458,7 +6526,7 @@ const server = http.createServer(async (req, res) => {
                       operation: 'write-files-batch',
                       tool: 'file_write',
                       attempts,
-                    }, async () => gitService.writeFilesBatch(slug, data.files, {
+                    }, async () => gitService.writeFilesBatch(slug, physicalFiles, {
                       syncToGcs: data.syncToGcs !== false,
                       userId: effectiveUserId,
                     }), {
