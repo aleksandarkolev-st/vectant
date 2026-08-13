@@ -45,6 +45,10 @@ test('hides only synthetic registered documents and strips a managed block from 
     ], projection).map((entry) => entry.path),
     ['CLAUDE.md', 'README.md'],
   );
+  assert.deepEqual(
+    presentFileTreeForIde(['AGENTS.md', 'CLAUDE.md', 'README.md'], projection),
+    ['CLAUDE.md', 'README.md'],
+  );
   const physical = prepareFileContentForIdeWrite({ path: 'CLAUDE.md', userContent: 'Use pnpm.\n', projectionResult: projection });
   assert.equal(presentFileContentForIde({ path: 'CLAUDE.md', physicalContent: physical, projectionResult: projection }), 'Use pnpm.\n');
   assert.equal(presentFileContentForIde({ path: 'README.md', physicalContent: 'Plain text.', projectionResult: projection }), 'Plain text.');

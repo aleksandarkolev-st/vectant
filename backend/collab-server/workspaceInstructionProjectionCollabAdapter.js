@@ -37,9 +37,12 @@ function metadataFromProjectionResult(result) {
 
 function presentFileTreeForIde(files, projectionResult) {
   if (!projectionResult || projectionResult.skipped) return files;
-  return filterInstructionProjectionsFromIdeTree(files, {
+  if (!Array.isArray(files)) return files;
+  const wrapped = files.map((entry) => typeof entry === 'string' ? { path: entry, entry } : entry);
+  const filtered = filterInstructionProjectionsFromIdeTree(wrapped, {
     projectionMetadata: metadataFromProjectionResult(projectionResult),
   });
+  return filtered.map((entry) => Object.prototype.hasOwnProperty.call(entry || {}, 'entry') ? entry.entry : entry);
 }
 
 function presentFileContentForIde({ path, physicalContent, projectionResult }) {
