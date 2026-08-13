@@ -21,6 +21,13 @@ function setInputValue(input, value) {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function setSelectValue(select, value) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+  setter.call(select, value);
+  select.dispatchEvent(new Event('input', { bubbles: true }));
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 vi.mock('@/hooks/useAnalyzerGateway', () => ({ useAnalyzerGateway: () => gateway }));
 
 describe('FailureDistillerPanel', () => {
@@ -53,8 +60,16 @@ describe('FailureDistillerPanel', () => {
       setInputValue(inputs[0], 'C:\\work\\app');
       setInputValue(inputs[1], 'pytest "tests/test invite.py"');
     });
+    await act(async () => {
+      setInputValue(inputs[3], 'src/InviteModal.tsx');
+    });
+    await act(async () => {
+      setSelectValue(container.querySelectorAll('select')[0], 'hmr');
+    });
+    expect(inputs[3].value).toBe('src/InviteModal.tsx');
+    expect(container.querySelectorAll('select')[0].value).toBe('hmr');
     await act(async () => container.querySelector('button').click());
-    expect(gateway.distillFailure).toHaveBeenCalledWith(expect.objectContaining({ command: 'pytest "tests/test invite.py"', workspaceRoot: 'C:\\work\\app' }));
+    expect(gateway.distillFailure).toHaveBeenCalledWith(expect.objectContaining({ command: 'pytest "tests/test invite.py"', workspaceRoot: 'C:\\work\\app', observation: { kind: 'hmr', filePath: 'src/InviteModal.tsx' } }));
     expect(container.textContent).toContain('capsule_test');
     const buttons = [...container.querySelectorAll('button')];
     await act(async () => buttons.find((button) => button.textContent.includes('Metrics')).click());

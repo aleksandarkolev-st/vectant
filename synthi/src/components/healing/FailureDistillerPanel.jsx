@@ -11,6 +11,8 @@ export function FailureDistillerPanel() {
   const [workspaceRoot, setWorkspaceRoot] = useState('');
   const [command, setCommand] = useState('');
   const [signature, setSignature] = useState('');
+  const [observationKind, setObservationKind] = useState('command');
+  const [observationFile, setObservationFile] = useState('');
   const [budget, setBudget] = useState('standard');
   const [capsule, setCapsule] = useState(null);
   const [outcome, setOutcome] = useState(null);
@@ -36,10 +38,14 @@ export function FailureDistillerPanel() {
     workspaceRoot: workspaceRoot.trim(),
     command: command.trim(),
     signature: signature.trim() ? { required: [signature.trim()] } : {},
+    observation: {
+      kind: observationKind,
+      ...(observationFile.trim() ? { filePath: observationFile.trim() } : {}),
+    },
     budget: { preset: budget },
     autoDiscover: true,
     networkPolicy: 'deny',
-  })), [budget, command, execute, gateway, signature, workspaceRoot]);
+  })), [budget, command, execute, gateway, observationFile, observationKind, signature, workspaceRoot]);
 
   const deleteCapsule = useCallback(() => {
     if (!capsule?.workspacePath || !window.confirm('Permanently delete this capsule and its materialized contents? This cannot be undone.')) return;
@@ -69,6 +75,16 @@ export function FailureDistillerPanel() {
         <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Failure signature regex (optional)
           <input value={signature} onChange={(event) => setSignature(event.target.value)} placeholder="InviteModal.onSubmit" className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
         </label>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Observed via
+            <select value={observationKind} onChange={(event) => setObservationKind(event.target.value)} className="mt-1 w-full rounded-[var(--radius-control)] border px-2 py-1 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+              <option value="command">Command/test</option><option value="hmr">HMR</option><option value="browser">Browser</option><option value="native">Native</option><option value="gpu">GPU</option>
+            </select>
+          </label>
+          <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Observed source file (optional)
+            <input value={observationFile} onChange={(event) => setObservationFile(event.target.value)} placeholder="src/InviteModal.tsx" className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
+          </label>
+        </div>
         <div className="flex items-center gap-2">
           <select value={budget} onChange={(event) => setBudget(event.target.value)} className="rounded-[var(--radius-control)] border px-2 py-1 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
             <option value="fast">Fast</option><option value="standard">Standard</option><option value="deep">Deep</option>
