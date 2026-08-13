@@ -221,11 +221,12 @@ class FailureDistiller:
 
         budget = Budget.from_request(request.get("budget"))
         predicate, signature = Predicate.from_request(request.get("predicate")), Signature.from_request(request.get("signature"))
-        environment = self._environment(request.get("environment", request.get("env", {})))
+        environment_input = request.get("environment", request.get("env", {}))
+        environment = self._environment(environment_input, request.get("seed"), source_revision)
         observation = self._observation(request.get("observation"), root)
         candidates = [Candidate.from_request(item, root) for item in request.get("candidates", [])]
         if request.get("autoDiscover", request.get("auto_discover", False)):
-            candidates.extend(self._discover_candidates(root, command, environment, candidates, observation))
+            candidates.extend(self._discover_candidates(root, command, environment, candidates, observation, environment_input))
         if len({candidate.identifier for candidate in candidates}) != len(candidates):
             raise DistillationError("candidate units must be unique")
         baseline = await self._stability(root, command, environment, predicate, signature, budget)
@@ -573,14 +574,26 @@ class FailureDistiller:
                 reduced.pop(index)
         return reduced
 
-    def _environment(self, raw: Any) -> Dict[str, str]:
+    def _environment(self, raw: Any, seed: Any = None, source_revision: str = "") -> Dict[str, str]:
         if not isinstance(raw, dict):
             raise DistillationError("environment must be an object")
         values = {str(key): str(value) for key, value in raw.items()}
         forbidden = [name for name in values if SECRET_NAME.search(name)]
         if forbidden:
             raise DistillationError("environment contains secret-bearing keys: " + ", ".join(forbidden))
-        return values
+        if seed is not None and (not isinstance(seed, (str, int)) or not str(seed).strip()):
+            raise DistillationError("seed must be a non-empty string or integer")
+        # These are process-level controls available to common Python/Node test
+        # runners. The source-derived seed preserves replay identity without
+        # persisting host state; callers may explicitly override any control.
+        normalized = {
+            "TZ": "UTC",
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PYTHONHASHSEED": "0",
+            "VECTANT_FAILURE_SEED": str(seed).strip() if seed is not None else _sha256(source_revision.encode())[:32],
+        }
+        return {**normalized, **values}
 
     def _observation(self, raw: Any, root: Path) -> Dict[str, Any]:
         """Normalize a small, redacted observed-failure envelope for provenance."""
@@ -796,7 +809,7 @@ class FailureDistiller:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
 
-    def _discover_candidates(self, root: Path, command: Sequence[str], environment: Dict[str, str], existing: Sequence[Candidate], observation: Dict[str, Any]) -> List[Candidate]:
+    def _discover_candidates(self, root: Path, command: Sequence[str], environment: Dict[str, str], existing: Sequence[Candidate], observation: Dict[str, Any], environment_input: Any) -> List[Candidate]:
         """Discover conservative, file-level units for pytest/Vitest repos.
 
         Runtime tracing is optional in both runners, so this adapter begins with
@@ -820,7 +833,7 @@ class FailureDistiller:
             for path in sorted(observed_paths):
                 if path not in target_paths and (root / path).is_file():
                     discovered.append(Candidate("file", path))
-            discovered.extend(Candidate("env", name) for name in environment if not SECRET_NAME.search(name))
+            discovered.extend(Candidate("env", str(name)) for name in environment_input if not SECRET_NAME.search(str(name)))
             if not observed_paths:
                 raise DistillationError("automatic discovery for non-test commands requires observed executed, fixture, config, or source paths")
             return [item for item in discovered if item.identifier not in existing_ids]
@@ -833,7 +846,7 @@ class FailureDistiller:
                 discovered.extend(self._json_candidates(root, relative))
             elif relative.suffix.lower() in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".yaml", ".yml", ".toml", ".ini", ".txt", ".csv"}:
                 discovered.append(Candidate("file", path))
-        discovered.extend(Candidate("env", name) for name in environment if not SECRET_NAME.search(name))
+        discovered.extend(Candidate("env", str(name)) for name in environment_input if not SECRET_NAME.search(str(name)))
         return [item for item in discovered if item.identifier not in existing_ids]
 
     def _supported_runner(self, command: Sequence[str]) -> Optional[str]:

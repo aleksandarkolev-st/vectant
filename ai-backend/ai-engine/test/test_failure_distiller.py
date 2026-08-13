@@ -373,6 +373,16 @@ def test_capsule_records_runtime_identity_and_redacts_persisted_output(workspace
     assert "password=<redacted>" in baseline
 
 
+def test_capsule_normalizes_replay_environment_with_a_recorded_seed(workspace):
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload["seed"] = "incident-42"
+    result = run(FailureDistiller().distill(payload))
+    repro = json.loads((Path(result["workspace_path"]) / "repro.json").read_text(encoding="utf-8"))
+    assert repro["environment"] == {
+        "TZ": "UTC", "LANG": "C", "LC_ALL": "C", "PYTHONHASHSEED": "0", "VECTANT_FAILURE_SEED": "incident-42",
+    }
+
+
 @pytest.mark.skipif(not (Path(__file__).parents[3] / "synthi" / "node_modules" / "vitest").exists(), reason="Vitest install unavailable")
 def test_vitest_adapter_reduces_a_real_node_fixture(workspace):
     shared_modules = Path(__file__).parents[3] / "synthi" / "node_modules"
