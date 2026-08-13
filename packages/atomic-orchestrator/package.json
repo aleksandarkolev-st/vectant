@@ -1,0 +1,9 @@
+{
+  "name": "@vectant/atomic-orchestrator",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "exports": { ".": "./src/index.js" },
+  "scripts": { "test": "vitest run" },
+  "devDependencies": { "vitest": "^4.1.7" }
+}
