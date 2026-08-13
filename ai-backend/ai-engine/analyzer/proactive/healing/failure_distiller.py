@@ -338,7 +338,9 @@ class FailureDistiller:
             self._create_worktree(root, worktree)
             try:
                 reduced_env = self._apply_reductions(worktree, repro["environment"], [Candidate(**item) for item in repro.get("removed_units", [])])
-                shutil.copytree(worktree, destination, ignore=shutil.ignore_patterns(".git", ".vectant", "node_modules", "__pycache__"))
+                provenance = self._read_json(capsule / "provenance.json")
+                retained_paths = self._materialized_paths(worktree, repro, provenance)
+                self._copy_materialized_paths(worktree, destination, retained_paths)
                 source_modules = root / "node_modules"
                 if source_modules.is_dir():
                     try:
@@ -358,7 +360,7 @@ class FailureDistiller:
         materialized_repro = {**repro, "workspace_root": str(destination), "mode": "materialized"}
         self._write_json(destination / ".vectant-materialized-repro.json", materialized_repro)
         self._metrics["materialized_capsules"] += 1
-        return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "limits": ["dependencies are linked from the originating workspace when available", "portable under the declared source/config/fixture reduction model"]}
+        return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "retained_paths": sorted(retained_paths), "limits": ["dependencies are linked from the originating workspace when available", "source closure is conservative and verified by same-signature replay"]}
 
     def export_vivarium_manifest(self, capsule_path: str) -> Dict[str, Any]:
         """Export a sanitized, deterministic handoff contract for Agent Dojo Vivarium.
@@ -687,6 +689,67 @@ class FailureDistiller:
         for part in parts[:-1]:
             current = current[int(part)] if isinstance(current, list) else current[part]
         return current, parts[-1]
+
+    def _materialized_paths(self, worktree: Path, repro: Dict[str, Any], provenance: Dict[str, Any]) -> set[str]:
+        """Build a conservative file closure for portable materialization."""
+        paths = {str(item["origin"]).replace("\\", "/") for item in provenance.values() if isinstance(item, dict) and isinstance(item.get("origin"), str)}
+        for unit in repro.get("active_units", []):
+            if unit.get("kind") == "file":
+                paths.add(str(unit.get("reference", "")).replace("\\", "/"))
+            elif unit.get("kind") in {"json_key", "json_record"}:
+                paths.add(str(unit.get("reference", "")).split("#", 1)[0].replace("\\", "/"))
+        for part in repro.get("command", []):
+            if isinstance(part, str) and not Path(part).is_absolute() and self._looks_like_path(part) and (worktree / part).is_file():
+                paths.add(part.replace("\\", "/"))
+        for name in ("package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg", "vitest.config.ts", "vitest.config.js"):
+            if (worktree / name).is_file():
+                paths.add(name)
+        # Runtime-read fixtures are not reliably visible from static imports.
+        # Retain all still-present tracked non-code assets; explicitly reduced
+        # assets have already been removed from this worktree and stay absent.
+        for value in _git(worktree, "ls-files").splitlines():
+            relative = value.replace("\\", "/")
+            if Path(relative).suffix.lower() not in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"} and (worktree / relative).is_file():
+                paths.add(relative)
+        frontier = list(paths)
+        while frontier:
+            relative = frontier.pop()
+            path = worktree / relative
+            if not path.is_file() or path.suffix.lower() not in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for target in self._relative_import_targets(relative, text):
+                if target not in paths and (worktree / target).is_file():
+                    paths.add(target)
+                    frontier.append(target)
+        return {path for path in paths if path and not Path(path).is_absolute() and (worktree / path).is_file()}
+
+    def _relative_import_targets(self, relative: str, text: str) -> set[str]:
+        parent = Path(relative).parent
+        targets: set[str] = set()
+        for match in re.finditer(r"(?:from\s+|import\s+)([A-Za-z_][\w.]*)", text):
+            module = match.group(1)
+            candidate = Path(*module.split("."))
+            targets.add((parent / f"{candidate}.py").as_posix())
+            targets.add((parent / candidate / "__init__.py").as_posix())
+        for match in re.finditer(r"(?:from\s+|import\s*\(?\s*)[\"'](\.{1,2}/[^\"']+)[\"']", text):
+            value = match.group(1)
+            target = (parent / value).as_posix()
+            targets.update({target, f"{target}.js", f"{target}.mjs", f"{target}.ts", f"{target}.tsx", f"{target}/index.js", f"{target}/index.ts"})
+        return {str(Path(target)) for target in targets}
+
+    def _copy_materialized_paths(self, source: Path, destination: Path, paths: Iterable[str]) -> None:
+        destination.mkdir(parents=True, exist_ok=False)
+        for relative in sorted(set(paths)):
+            src = source / relative
+            if not src.is_file():
+                continue
+            dest = destination / relative
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
 
     def _discover_candidates(self, root: Path, command: Sequence[str], environment: Dict[str, str], existing: Sequence[Candidate]) -> List[Candidate]:
         """Discover conservative, file-level units for pytest/Vitest repos.
