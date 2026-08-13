@@ -654,6 +654,12 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('heal/agentic/distill/delete', { capsulePath });
   }
 
+  /** Export a deterministic, sanitized Vivarium handoff for a verified capsule. */
+  exportFailureCapsuleToVivarium(capsulePath) {
+    if (!capsulePath) return Promise.reject(new Error('capsulePath is required'));
+    return this._sendRequest('heal/agentic/distill/vivarium-export', { capsulePath });
+  }
+
   /** Validate an editable production-file patch against its capsule provenance. */
   validateFailureCapsulePatch(payload) {
     if (!payload?.capsulePath || !Array.isArray(payload?.edits)) {

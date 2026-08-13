@@ -10,6 +10,7 @@ const gateway = {
   runFailureCapsule: vi.fn(),
   materializeFailureCapsule: vi.fn(),
   deleteFailureCapsule: vi.fn(),
+  exportFailureCapsuleToVivarium: vi.fn(),
   getFailureDistillerMetrics: vi.fn(),
 };
 
@@ -42,6 +43,7 @@ describe('FailureDistillerPanel', () => {
   it('distills a quoted command intact and exposes capsule operations', async () => {
     gateway.distillFailure.mockResolvedValue({ ok: true, status: 'distilled', capsuleId: 'capsule_test', workspacePath: '/tmp/capsule', reduction: { removed_units: 3, retained_units: 2 } });
     gateway.getFailureDistillerMetrics.mockResolvedValue({ ok: true, metrics: { accepted_capsules: 1, reduction_ratio: 0.6, validated_patches: 1 } });
+    gateway.exportFailureCapsuleToVivarium.mockResolvedValue({ ok: true, status: 'vivarium_manifest_exported', scenarioId: 'distiller_capsule_test' });
     gateway.deleteFailureCapsule.mockResolvedValue({ ok: true, status: 'deleted' });
     await act(async () => root.render(<FailureDistillerPanel />));
     const inputs = container.querySelectorAll('input');
@@ -55,6 +57,9 @@ describe('FailureDistillerPanel', () => {
     const buttons = [...container.querySelectorAll('button')];
     await act(async () => buttons.find((button) => button.textContent.includes('Metrics')).click());
     expect(container.textContent).toContain('60% unit reduction');
+    await act(async () => buttons.find((button) => button.textContent.includes('Vivarium')).click());
+    expect(gateway.exportFailureCapsuleToVivarium).toHaveBeenCalledWith('/tmp/capsule');
+    expect(container.textContent).toContain('distiller_capsule_test');
     await act(async () => buttons.find((button) => button.textContent.includes('Delete')).click());
     expect(gateway.deleteFailureCapsule).toHaveBeenCalledWith('/tmp/capsule');
   });
