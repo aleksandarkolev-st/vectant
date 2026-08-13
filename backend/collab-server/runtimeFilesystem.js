@@ -1,10 +1,8 @@
 'use strict';
 
-const fs = require('fs');
 const gitService = require('./gitService');
 const repoCache = require('./repoCache');
 const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
-const { provisionWorkspaceAgentProtocol } = require('./workspaceAgentProtocol');
 
 const hydrationLocks = new Map();
 const runtimePins = new Map();
@@ -18,16 +16,6 @@ function cacheUserId(userId) {
   return normalized || undefined;
 }
 
-async function provisionAgentInstructionsIfReady(repoPath) {
-  // A hydrated repository always exists. This guard keeps the runtime helper
-  // side-effect free for callers that deliberately return a synthetic path
-  // (including dry-run and unit-test adapters).
-  if (!repoPath || !fs.existsSync(repoPath)) {
-    return { path: '.synthi/AGENTS.md', changed: false, skipped: true };
-  }
-  return provisionWorkspaceAgentProtocol(repoPath);
-}
-
 function pinKey(slug, userId) {
   return `${slug}:${userId || ''}`;
 }
@@ -39,25 +27,21 @@ async function hydrateWorkspace(slug, userId, reason = 'runtime') {
   if (userId) {
     await gitService.initRepo(slug, null, userId);
     const result = await gitService.ensureUserRepo(slug, userId);
-    const agentInstructions = await provisionAgentInstructionsIfReady(result.path);
     return {
       slug,
       userId,
       path: result.path,
       created: Boolean(result.created),
-      agentInstructions,
     };
   }
 
   await gitService.initRepo(slug, null, null);
   const repoPath = gitService.getRepoPath(slug);
-  const agentInstructions = await provisionAgentInstructionsIfReady(repoPath);
   return {
     slug,
     userId: '',
     path: repoPath,
     created: false,
-    agentInstructions,
   };
 }
 
