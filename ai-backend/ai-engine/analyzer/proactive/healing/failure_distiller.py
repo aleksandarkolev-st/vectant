@@ -296,7 +296,10 @@ class FailureDistiller:
 
     async def run(self, capsule_path: str) -> Dict[str, Any]:
         capsule = Path(capsule_path).resolve()
-        repro = self._read_json(capsule / "repro.json")
+        repro_path = capsule / "repro.json"
+        if not repro_path.is_file():
+            repro_path = capsule / ".vectant-materialized-repro.json"
+        repro = self._read_json(repro_path)
         root = Path(repro["workspace_root"]).resolve()
         if not root.is_dir():
             return self._state("boundary_not_isolatable", "source workspace is no longer available")
@@ -359,6 +362,12 @@ class FailureDistiller:
             return self._state("boundary_not_isolatable", "materialized workspace did not reproduce the same failure", run=self._run_dict(run))
         materialized_repro = {**repro, "workspace_root": str(destination), "mode": "materialized"}
         self._write_json(destination / ".vectant-materialized-repro.json", materialized_repro)
+        (destination / "CAPSULE.md").write_text(
+            "# Materialized failure capsule\n\n"
+            "This workspace was verified against its source capsule.\n\n"
+            "Run: `vectant repro run .`\n",
+            encoding="utf-8",
+        )
         self._metrics["materialized_capsules"] += 1
         return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "retained_paths": sorted(retained_paths), "limits": ["dependencies are linked from the originating workspace when available", "source closure is conservative and verified by same-signature replay"]}
 

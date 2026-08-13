@@ -180,6 +180,8 @@ def test_materializes_a_reduced_workspace_and_reproduces(workspace):
     assert (destination / "runner.py").is_file()
     assert materialized["run"]["exit_code"] == 7
     assert "runner.py" in materialized["retained_paths"]
+    assert run(FailureDistiller().run(materialized["workspace_path"]))["status"] == "same_failure"
+    assert "vectant repro run ." in (destination / "CAPSULE.md").read_text(encoding="utf-8")
 
 
 def test_materialization_keeps_static_python_import_closure(workspace):

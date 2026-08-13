@@ -76,6 +76,8 @@ def test_authenticated_capsule_lifecycle_through_real_app_routes(tmp_path, monke
         assert replay.status_code == 200 and replay.json()["status"] == "same_failure", replay.text
         materialized = client.post("/heal/agentic/distill/materialize", json={"capsulePath": capsule_path}, headers=headers)
         assert materialized.status_code == 200 and materialized.json()["status"] == "materialized", materialized.text
+        materialized_replay = client.post("/heal/agentic/distill/run", json={"capsulePath": materialized.json()["workspacePath"]}, headers=headers)
+        assert materialized_replay.status_code == 200 and materialized_replay.json()["status"] == "same_failure", materialized_replay.text
         exported = client.post("/heal/agentic/distill/vivarium-export", json={"capsulePath": capsule_path}, headers=headers)
         assert exported.status_code == 200 and exported.json()["ok"], exported.text
         validation = client.post("/heal/agentic/distill/validate-patch", json={
