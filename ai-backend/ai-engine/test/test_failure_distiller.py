@@ -182,6 +182,22 @@ def test_materializes_a_reduced_workspace_and_reproduces(workspace):
     assert "runner.py" in materialized["retained_paths"]
 
 
+def test_materialization_keeps_static_python_import_closure(workspace):
+    (workspace / "helper.py").write_text("def failure(): return True\n", encoding="utf-8")
+    (workspace / "runner.py").write_text(
+        "import sys\nfrom helper import failure\nif failure():\n print('FailureSignature: import closure')\n sys.exit(7)\n",
+        encoding="utf-8",
+    )
+    git(workspace, "add", "runner.py", "helper.py")
+    git(workspace, "commit", "-m", "import closure fixture")
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload["signature"] = {"required": ["import closure"]}
+    result = run(FailureDistiller().distill(payload))
+    materialized = run(FailureDistiller().materialize({"capsulePath": result["workspace_path"]}))
+    assert materialized["ok"]
+    assert {"runner.py", "helper.py"} <= set(materialized["retained_paths"])
+
+
 def test_metrics_report_reduction_and_validation_outcomes(workspace):
     distiller = FailureDistiller()
     result = run(distiller.distill(request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])))
