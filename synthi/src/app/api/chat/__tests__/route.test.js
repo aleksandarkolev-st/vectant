@@ -9,6 +9,7 @@ const h = vi.hoisted(() => ({
   executeTool: vi.fn(),
   isComplexTask: vi.fn(),
   resolveActor: vi.fn(),
+  toolDeclarations: [],
 }));
 
 vi.mock('next-auth', () => ({
@@ -28,7 +29,7 @@ vi.mock('../externalTools.js', () => ({
 }));
 
 vi.mock('../toolDefinitions.js', () => ({
-  TOOL_DECLARATIONS: [],
+  get TOOL_DECLARATIONS() { return h.toolDeclarations; },
   executeTool: h.executeTool,
   isComplexTask: h.isComplexTask,
 }));
@@ -85,6 +86,11 @@ beforeEach(() => {
   h.isExternalToolName.mockReturnValue(false);
   h.isComplexTask.mockReturnValue(false);
   h.resolveActor.mockResolvedValue({ userId: 'actor-1' });
+  h.toolDeclarations = [
+    { name: 'create_file', description: 'Create a workspace file', parameters: { type: 'OBJECT' } },
+    { name: 'create_directory', description: 'Create a workspace directory', parameters: { type: 'OBJECT' } },
+    { name: 'run_command', description: 'Run a terminal command', parameters: { type: 'OBJECT' } },
+  ];
   vi.stubGlobal('fetch', vi.fn(async (url) => {
     const target = String(url);
     if (target.includes('/code-intel/context')) {
@@ -187,5 +193,54 @@ describe('/api/chat inbound authorization', () => {
     expect(h.requireRuntimeWorkspaceAccess).not.toHaveBeenCalled();
     const providerCalls = fetch.mock.calls.filter(([url]) => String(url).includes('generativelanguage.googleapis.com'));
     expect(providerCalls).toHaveLength(1);
+  });
+
+  it('declares and executes only the tool subset selected by the atomic router', async () => {
+    h.isComplexTask.mockReturnValue(true);
+    let geminiCallCount = 0;
+    let firstGeminiRequest = null;
+    fetch.mockImplementation(async (url, options = {}) => {
+      const target = String(url);
+      if (target.includes('/file-content/')) {
+        return { ok: true, status: 200, text: async () => '<!-- SYNTHI_ATOMIC_AGENT_PROTOCOL_START -->' };
+      }
+      if (target.includes('/files-meta')) return okJson({ files: [] });
+      if (target.includes('/code-intel/context')) return okJson({ context: '', sufficiency: 'ENOUGH', sources: [], tokens_used: 0, trace: [] });
+      if (target.includes('generativelanguage.googleapis.com')) {
+        geminiCallCount += 1;
+        if (geminiCallCount === 1) {
+          firstGeminiRequest = JSON.parse(options.body);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ candidates: [{ content: { parts: [{ functionCall: { name: 'run_command', args: { command: 'npm test' } } }] } }] }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ candidates: [{ content: { parts: [{ text: 'Created the component.' }] } }] }),
+        };
+      }
+      throw new Error(`unexpected fetch: ${target}`);
+    });
+
+    const response = await POST(request({
+      prompt: 'Create a new component.',
+      workspacePath: 'route-slug',
+      apiKey: 'gemini-key',
+      provider: 'gemini',
+      useTools: true,
+    }));
+    const body = await response.text();
+    const events = body.trim().split('\n').map((line) => JSON.parse(line));
+
+    expect(firstGeminiRequest.tools[0].functionDeclarations.map((tool) => tool.name))
+      .toEqual(['create_file', 'create_directory']);
+    expect(firstGeminiRequest.systemInstruction.parts[0].text).not.toContain('run_command(command)');
+    expect(events).toContainEqual(expect.objectContaining({
+      toolCall: expect.objectContaining({ tool: 'run_command', status: 'rejected' }),
+    }));
+    expect(h.executeTool).not.toHaveBeenCalled();
   });
 });
