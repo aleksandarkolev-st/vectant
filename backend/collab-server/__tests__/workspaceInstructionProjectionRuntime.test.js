@@ -100,6 +100,15 @@ test('canonical metadata updates reconcile every previously opened root without 
   }
 });
 
+test('reports projection lifecycle metrics without returning canonical instruction content', async (t) => {
+  const repository = await temporaryDirectory(t, 'vectant-instruction-runtime-metrics-');
+  const runtime = await createRuntime(t);
+  await runtime.reconcile({ workspaceId: 'runtime-metrics', repositoryRoot: repository });
+  const snapshot = runtime.metrics();
+  assert.equal(snapshot.events.workspace_instruction_projection_runtime_reconciled, 1);
+  assert.equal(JSON.stringify(snapshot).includes('Default Vectant instruction.'), false);
+});
+
 test('rejects active path traversal and preserves a directory outside the opened workspace', async (t) => {
   const repository = await temporaryDirectory(t, 'vectant-instruction-runtime-safe-');
   const outside = await temporaryDirectory(t, 'vectant-instruction-runtime-outside-');

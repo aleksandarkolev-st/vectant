@@ -31,6 +31,9 @@ const {
   refreshTrackedProjectionStat,
   removeWorkspaceInstructionGitIsolation,
 } = require('./workspaceInstructionGitIsolation');
+const {
+  createWorkspaceInstructionProjectionObservability,
+} = require('./workspaceInstructionProjectionObservability');
 
 function runtimeError(code) {
   const error = new Error(code);
@@ -124,6 +127,7 @@ function createWorkspaceInstructionProjectionRuntime({
   fsApi = fs.promises,
   logger = null,
   gitAdapter = createWorkspaceInstructionGitAdapter({ logger }),
+  observability = createWorkspaceInstructionProjectionObservability({ logger }),
   resolveFlag = resolveWorkspaceInstructionProjectionFlag,
   serviceFactory = (options) => new WorkspaceInstructionProjectionService(options),
 } = {}) {
@@ -162,6 +166,7 @@ function createWorkspaceInstructionProjectionRuntime({
     // Off-by-default rollout must be a true no-op: startup and terminal
     // callers may be working with a not-yet-created repository path.
     if (!flag.enabled) {
+      observability.record('workspace_instruction_projection_skipped', { workspaceId, reason: flag.reason, mode: flag.mode });
       return Object.freeze({
         skipped: true,
         reason: flag.reason,
@@ -183,6 +188,7 @@ function createWorkspaceInstructionProjectionRuntime({
         gitAdapter,
         fsApi,
         logger,
+        onEvent: (event, details) => observability.record(event, details),
       });
       const result = await service.reconcileWorkspace({
         workspaceId,
@@ -197,6 +203,12 @@ function createWorkspaceInstructionProjectionRuntime({
       const roots = knownWorkspaceRoots.get(workspaceId) || new Map();
       roots.set(opened.activeWorkspaceRoot, remembered);
       knownWorkspaceRoots.set(workspaceId, roots);
+      observability.record('workspace_instruction_projection_runtime_reconciled', {
+        workspaceId,
+        root: opened.activeWorkspaceRoot,
+        activeWorkspacePath: opened.activeWorkspacePath || '.',
+        instructionVersion: instructions.version,
+      });
       return Object.freeze({
         ...result,
         ...opened,
@@ -220,6 +232,11 @@ function createWorkspaceInstructionProjectionRuntime({
     for (const workspace of known) {
       reconciliations.push(await reconcile(workspace));
     }
+    observability.record('workspace_instruction_projection_canonical_updated', {
+      workspaceId,
+      instructionVersion: instructions.version,
+      reconciledRoots: reconciliations.length,
+    });
     return Object.freeze({ instructions, reconciliations });
   }
 
@@ -231,11 +248,13 @@ function createWorkspaceInstructionProjectionRuntime({
       gitAdapter,
       fsApi,
       logger,
+      onEvent: (event, details) => observability.record(event, details),
     });
     const result = await service.cleanupWorkspace({ workspaceId, activeWorkspaceRoot: opened.activeWorkspaceRoot });
     const roots = knownWorkspaceRoots.get(workspaceId);
     roots?.delete(opened.activeWorkspaceRoot);
     if (roots?.size === 0) knownWorkspaceRoots.delete(workspaceId);
+    observability.record('workspace_instruction_projection_cleaned_up', { workspaceId, root: opened.activeWorkspaceRoot });
     return result;
   }
 
@@ -243,6 +262,7 @@ function createWorkspaceInstructionProjectionRuntime({
     cleanup,
     reconcile,
     resolveOpenedWorkspaceRoot: (input) => resolveOpenedWorkspaceRoot({ ...input, fsApi }),
+    metrics: () => observability.snapshot(),
     updateCanonicalInstructions,
   });
 }
