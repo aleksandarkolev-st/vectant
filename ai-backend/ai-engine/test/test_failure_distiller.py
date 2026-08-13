@@ -316,6 +316,42 @@ def test_records_redacted_hmr_observation_and_maps_its_source_provenance(workspa
     assert "runner.py" in provenance
 
 
+def test_runtime_observation_builds_a_reduction_frontier_from_attested_paths(workspace):
+    (workspace / "executed.py").write_text("# observed but noncausal\n", encoding="utf-8")
+    (workspace / "fixture.json").write_text('{"state":"observed"}\n', encoding="utf-8")
+    git(workspace, "add", "executed.py", "fixture.json")
+    git(workspace, "commit", "-m", "runtime frontier fixture")
+    payload = request(workspace, [])
+    payload["autoDiscover"] = True
+    payload["observation"] = {
+        "kind": "gpu",
+        "eventRef": "gpu-proof:17",
+        "filePath": "runner.py",
+        "executedPaths": ["executed.py"],
+        "fixturePaths": ["fixture.json"],
+    }
+    result = run(FailureDistiller().distill(payload))
+    assert result["ok"]
+    # The executable itself remains structural; the observed auxiliary paths
+    # are the reducible frontier.
+    assert result["reduction"]["candidate_units"] == 2
+    capsule = Path(result["workspace_path"])
+    repro = json.loads((capsule / "repro.json").read_text(encoding="utf-8"))
+    assert repro["observation"]["executed_paths"] == ["executed.py"]
+    assert repro["observation"]["fixture_paths"] == ["fixture.json"]
+    provenance = json.loads((capsule / "provenance.json").read_text(encoding="utf-8"))
+    assert {"runner.py", "executed.py", "fixture.json"} <= set(provenance)
+    assert run(FailureDistiller().run(str(capsule)))["status"] == "same_failure"
+
+
+def test_runtime_auto_discovery_refuses_without_attested_frontier(workspace):
+    payload = request(workspace, [])
+    payload["autoDiscover"] = True
+    payload["observation"] = {"kind": "native", "eventRef": "native:3"}
+    with pytest.raises(DistillationError, match="requires observed"):
+        run(FailureDistiller().distill(payload))
+
+
 def test_capsule_records_runtime_identity_and_redacts_persisted_output(workspace):
     (workspace / "runner.py").write_text(
         "import sys\nprint('FailureSignature: redaction password=should-not-persist')\nsys.exit(7)\n",

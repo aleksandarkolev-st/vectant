@@ -225,7 +225,7 @@ class FailureDistiller:
         observation = self._observation(request.get("observation"), root)
         candidates = [Candidate.from_request(item, root) for item in request.get("candidates", [])]
         if request.get("autoDiscover", request.get("auto_discover", False)):
-            candidates.extend(self._discover_candidates(root, command, environment, candidates))
+            candidates.extend(self._discover_candidates(root, command, environment, candidates, observation))
         if len({candidate.identifier for candidate in candidates}) != len(candidates):
             raise DistillationError("candidate units must be unique")
         baseline = await self._stability(root, command, environment, predicate, signature, budget)
@@ -573,7 +573,7 @@ class FailureDistiller:
             raise DistillationError("environment contains secret-bearing keys: " + ", ".join(forbidden))
         return values
 
-    def _observation(self, raw: Any, root: Path) -> Dict[str, str]:
+    def _observation(self, raw: Any, root: Path) -> Dict[str, Any]:
         """Normalize a small, redacted observed-failure envelope for provenance."""
         if raw is None:
             return {}
@@ -591,6 +591,21 @@ class FailureDistiller:
         file_path = raw.get("file_path", raw.get("filePath"))
         if isinstance(file_path, str) and file_path.strip():
             observation["file_path"] = _safe_relative(root, file_path.strip()).as_posix()
+        path_fields = {
+            "executed_paths": raw.get("executed_paths", raw.get("executedPaths", [])),
+            "fixture_paths": raw.get("fixture_paths", raw.get("fixturePaths", [])),
+            "config_paths": raw.get("config_paths", raw.get("configPaths", [])),
+        }
+        for key, values in path_fields.items():
+            if values is None:
+                continue
+            if not isinstance(values, list) or not all(isinstance(value, str) and value.strip() for value in values):
+                raise DistillationError(f"observation {key} must be a list of workspace-relative paths")
+            normalized = sorted({_safe_relative(root, value.strip()).as_posix() for value in values})
+            if len(normalized) > 500:
+                raise DistillationError(f"observation {key} exceeds the 500-path limit")
+            if normalized:
+                observation[key] = normalized
         return observation
 
     def _runtime_identity(self, command: Sequence[str], environment: Dict[str, str]) -> Dict[str, Any]:
@@ -772,7 +787,7 @@ class FailureDistiller:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
 
-    def _discover_candidates(self, root: Path, command: Sequence[str], environment: Dict[str, str], existing: Sequence[Candidate]) -> List[Candidate]:
+    def _discover_candidates(self, root: Path, command: Sequence[str], environment: Dict[str, str], existing: Sequence[Candidate], observation: Dict[str, Any]) -> List[Candidate]:
         """Discover conservative, file-level units for pytest/Vitest repos.
 
         Runtime tracing is optional in both runners, so this adapter begins with
@@ -781,11 +796,25 @@ class FailureDistiller:
         static graph is causal.
         """
         runner = self._supported_runner(command)
-        if not runner:
-            raise DistillationError("automatic discovery currently supports pytest and Vitest commands")
         existing_ids = {item.identifier for item in existing}
         target_paths = {part.replace("\\", "/") for part in command if self._looks_like_path(part)}
         discovered: List[Candidate] = []
+        observed_paths = {
+            str(path) for key in ("executed_paths", "fixture_paths", "config_paths")
+            for path in observation.get(key, []) if isinstance(path, str)
+        }
+        if observation.get("file_path"):
+            observed_paths.add(str(observation["file_path"]))
+        # For runtime adapters (HMR/browser/native/GPU), the trace is the
+        # frontier.  Unlike test runners, do not guess across the entire repo.
+        if not runner or observation.get("kind") in {"hmr", "browser", "native", "gpu"}:
+            for path in sorted(observed_paths):
+                if path not in target_paths and (root / path).is_file():
+                    discovered.append(Candidate("file", path))
+            discovered.extend(Candidate("env", name) for name in environment if not SECRET_NAME.search(name))
+            if not observed_paths:
+                raise DistillationError("automatic discovery for non-test commands requires observed executed, fixture, config, or source paths")
+            return [item for item in discovered if item.identifier not in existing_ids]
         tracked = [Path(value) for value in _git(root, "ls-files").splitlines() if value]
         for relative in tracked:
             path = relative.as_posix()
@@ -835,7 +864,7 @@ class FailureDistiller:
         except FileNotFoundError:
             return Run(-2, "command not found", int((time.perf_counter() - started) * 1000))
 
-    def _write_capsule(self, root: Path, capsule_id: str, command: Sequence[str], environment: Dict[str, str], observation: Dict[str, str], predicate: Predicate, signature: Signature, budget: Budget, revision: str, dirty: bool, baseline: Dict[str, Any], active: Sequence[Candidate], removed: Sequence[Candidate], retained: Sequence[Tuple[Candidate, str]], evidence: Sequence[Dict[str, Any]], status: str) -> Path:
+    def _write_capsule(self, root: Path, capsule_id: str, command: Sequence[str], environment: Dict[str, str], observation: Dict[str, Any], predicate: Predicate, signature: Signature, budget: Budget, revision: str, dirty: bool, baseline: Dict[str, Any], active: Sequence[Candidate], removed: Sequence[Candidate], retained: Sequence[Tuple[Candidate, str]], evidence: Sequence[Dict[str, Any]], status: str) -> Path:
         capsule = root / ".vectant" / "capsules" / capsule_id
         capsule.mkdir(parents=True, exist_ok=False)
         provenance: Dict[str, Any] = {}
@@ -843,6 +872,8 @@ class FailureDistiller:
         provenance_paths.update(part.replace("\\", "/") for part in command if self._looks_like_path(part) and (root / part).is_file())
         if observation.get("file_path"):
             provenance_paths.add(observation["file_path"])
+        for key in ("executed_paths", "fixture_paths", "config_paths"):
+            provenance_paths.update(path for path in observation.get(key, []) if isinstance(path, str))
         for origin in provenance_paths:
             file_path = root / origin
             if file_path.is_file():
