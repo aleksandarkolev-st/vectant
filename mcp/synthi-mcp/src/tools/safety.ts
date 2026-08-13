@@ -11,6 +11,7 @@ import {
 import { browserBroker } from "../browser/broker.js";
 import { runCiIsolatedReplay } from "../browser/ci_replay.js";
 import { authCheckpointManager, type AuthBrowserStorageState } from "../browser/auth.js";
+import { adaptFailureCapsuleToVivarium } from "../dojo/vivarium/failure_capsule.js";
 import { classifyWorkflowReplayBlock, type CompiledWorkflowV7, type WorkflowContractV7 } from "../browser/workflow.js";
 import { errorFromException, jsonResponse, type ToolResponse } from "./shared.js";
 
@@ -20,10 +21,20 @@ export const SAFETY_TOOL_NAMES = [
   "synthi_safety_run_prefix_validation",
   "synthi_safety_run_ci_isolated_replay",
   "synthi_safety_distill_browser_failure",
+  "synthi_safety_validate_failure_capsule_vivarium",
   "synthi_safety_explain_blocked_hardening",
 ] as const;
 
 export const SAFETY_TOOLS = [
+  {
+    name: "synthi_safety_validate_failure_capsule_vivarium",
+    description: "Validate a sanitized Failure Distiller Vivarium handoff and map it to the existing deterministic scenario DSL. Does not replace original-world patch validation.",
+    inputSchema: {
+      type: "object",
+      properties: { manifest: { type: "object", additionalProperties: true } },
+      required: ["manifest"],
+    },
+  },
   {
     name: "synthi_safety_distill_browser_failure",
     description: "Reduce a recorded failing browser workflow by removing user steps while preserving the isolated replay failure class and stage. Never runs outside a configured CI isolation profile.",
@@ -139,6 +150,8 @@ export async function dispatchSafetyTool(toolName: string, args: unknown): Promi
         return ciIsolatedReplayTool(args);
       case "synthi_safety_distill_browser_failure":
         return browserFailureDistillTool(args);
+      case "synthi_safety_validate_failure_capsule_vivarium":
+        return failureCapsuleVivariumTool(args);
       case "synthi_safety_explain_blocked_hardening":
         return explainBlockedHardeningTool(args);
       default:
@@ -147,6 +160,11 @@ export async function dispatchSafetyTool(toolName: string, args: unknown): Promi
   } catch (err) {
     return errorFromException("safety_tool_failed", err);
   }
+}
+
+function failureCapsuleVivariumTool(args: unknown): ToolResponse {
+  const manifest = obj(args)["manifest"];
+  return jsonResponse({ ...adaptFailureCapsuleToVivarium(manifest) });
 }
 
 function mutationPlanTool(args: unknown): ToolResponse {
