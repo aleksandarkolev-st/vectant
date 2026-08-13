@@ -660,6 +660,12 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('heal/agentic/distill/vivarium-export', { capsulePath });
   }
 
+  /** Promote a capsule only after original-world validation to a versioned Vivarium artifact. */
+  promoteFailureCapsuleToVivarium(capsulePath, mode = 'regression') {
+    if (!capsulePath) return Promise.reject(new Error('capsulePath is required'));
+    return this._sendRequest('heal/agentic/distill/vivarium-promote', { capsulePath, mode });
+  }
+
   /** Validate an editable production-file patch against its capsule provenance. */
   validateFailureCapsulePatch(payload) {
     if (!payload?.capsulePath || !Array.isArray(payload?.edits)) {

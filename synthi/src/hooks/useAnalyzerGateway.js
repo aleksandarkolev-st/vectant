@@ -727,6 +727,12 @@ export function useAnalyzerGateway({
     return response?.data ?? response;
   }, []);
 
+  const promoteFailureCapsuleToVivarium = useCallback(async (capsulePath, mode = 'regression') => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.promoteFailureCapsuleToVivarium(capsulePath, mode);
+    return response?.data ?? response;
+  }, []);
+
   const getFailureDistillerMetrics = useCallback(async () => {
     if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
     const response = await clientRef.current.getFailureDistillerMetrics();
@@ -784,6 +790,7 @@ export function useAnalyzerGateway({
     materializeFailureCapsule,
     deleteFailureCapsule,
     exportFailureCapsuleToVivarium,
+    promoteFailureCapsuleToVivarium,
     getFailureDistillerMetrics,
     // Plain-English rule translator (healing rules panel)
     ruleTranslate,

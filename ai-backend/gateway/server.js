@@ -223,6 +223,7 @@ const backendAgenticDistillRunUrl = new URL("/heal/agentic/distill/run", backend
 const backendAgenticDistillMaterializeUrl = new URL("/heal/agentic/distill/materialize", backendUrl).toString();
 const backendAgenticDistillDeleteUrl = new URL("/heal/agentic/distill/delete", backendUrl).toString();
 const backendAgenticDistillVivariumExportUrl = new URL("/heal/agentic/distill/vivarium-export", backendUrl).toString();
+const backendAgenticDistillVivariumPromoteUrl = new URL("/heal/agentic/distill/vivarium-promote", backendUrl).toString();
 const backendAgenticDistillValidatePatchUrl = new URL("/heal/agentic/distill/validate-patch", backendUrl).toString();
 const backendAgenticDistillMetricsUrl = new URL("/heal/agentic/distill/metrics", backendUrl).toString();
 const backendAgenticEpisodeCreateUrl = new URL("/heal/agentic/episode/create", backendUrl).toString();
@@ -506,6 +507,9 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/agentic/distill/vivarium-export":
       await forwardAgenticDistillVivariumExport(socket, data, requestId);
+      break;
+    case "heal/agentic/distill/vivarium-promote":
+      await forwardAgenticDistillVivariumPromote(socket, data, requestId);
       break;
     case "heal/agentic/distill/validate-patch":
       await forwardAgenticDistillValidatePatch(socket, data, requestId);
@@ -2837,6 +2841,14 @@ async function forwardAgenticDistillVivariumExport(socket, data, requestId) {
     return;
   }
   await agenticPost(socket, "heal/agentic/distill/vivarium-export", backendAgenticDistillVivariumExportUrl, data, requestId);
+}
+
+async function forwardAgenticDistillVivariumPromote(socket, data, requestId) {
+  if (typeof data?.capsulePath !== "string" || !data.capsulePath) {
+    sendError(socket, "`capsulePath` is required to promote a Vivarium scenario", { requestId });
+    return;
+  }
+  await agenticPost(socket, "heal/agentic/distill/vivarium-promote", backendAgenticDistillVivariumPromoteUrl, data, requestId);
 }
 
 async function forwardAgenticDistillValidatePatch(socket, data, requestId) {
