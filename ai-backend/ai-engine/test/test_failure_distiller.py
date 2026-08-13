@@ -285,6 +285,17 @@ def test_derives_a_failure_signature_when_callers_supply_only_a_predicate(worksp
     assert run(FailureDistiller().run(result["workspace_path"]))["status"] == "same_failure"
 
 
+def test_records_redacted_hmr_observation_and_maps_its_source_provenance(workspace):
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload["observation"] = {"kind": "hmr", "eventRef": "hmr:42", "filePath": "runner.py", "message": "password=never-persist"}
+    result = run(FailureDistiller().distill(payload))
+    capsule = Path(result["workspace_path"])
+    repro = json.loads((capsule / "repro.json").read_text(encoding="utf-8"))
+    provenance = json.loads((capsule / "provenance.json").read_text(encoding="utf-8"))
+    assert repro["observation"] == {"kind": "hmr", "event_ref": "hmr:42", "file_path": "runner.py", "message": "password=<redacted>"}
+    assert "runner.py" in provenance
+
+
 def test_capsule_records_runtime_identity_and_redacts_persisted_output(workspace):
     (workspace / "runner.py").write_text(
         "import sys\nprint('FailureSignature: redaction password=should-not-persist')\nsys.exit(7)\n",

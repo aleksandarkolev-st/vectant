@@ -222,6 +222,7 @@ class FailureDistiller:
         budget = Budget.from_request(request.get("budget"))
         predicate, signature = Predicate.from_request(request.get("predicate")), Signature.from_request(request.get("signature"))
         environment = self._environment(request.get("environment", request.get("env", {})))
+        observation = self._observation(request.get("observation"), root)
         candidates = [Candidate.from_request(item, root) for item in request.get("candidates", [])]
         if request.get("autoDiscover", request.get("auto_discover", False)):
             candidates.extend(self._discover_candidates(root, command, environment, candidates))
@@ -286,7 +287,7 @@ class FailureDistiller:
                 retained = [entry for entry in retained if entry[0] != candidate]
 
         status = "distilled" if not active else "stable_partial"
-        artifact = self._write_capsule(root, capsule_id, command, environment, predicate, signature, budget, source_revision, dirty, baseline, active, removed, retained, evidence, status)
+        artifact = self._write_capsule(root, capsule_id, command, environment, observation, predicate, signature, budget, source_revision, dirty, baseline, active, removed, retained, evidence, status)
         self._metrics["accepted_capsules"] += 1
         self._metrics["candidate_executions"] += executions
         self._metrics["candidate_units"] += len(candidates)
@@ -549,6 +550,26 @@ class FailureDistiller:
             raise DistillationError("environment contains secret-bearing keys: " + ", ".join(forbidden))
         return values
 
+    def _observation(self, raw: Any, root: Path) -> Dict[str, str]:
+        """Normalize a small, redacted observed-failure envelope for provenance."""
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            raise DistillationError("observation must be an object")
+        kind = str(raw.get("kind", raw.get("type", "command"))).strip().lower()
+        if kind not in {"command", "test", "hmr", "browser", "native", "gpu"}:
+            raise DistillationError("unsupported observation kind")
+        observation = {"kind": kind}
+        for key in ("event_ref", "eventRef", "message"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                target = "event_ref" if key in {"event_ref", "eventRef"} else "message"
+                observation[target] = _redact(value.strip())[:2_000]
+        file_path = raw.get("file_path", raw.get("filePath"))
+        if isinstance(file_path, str) and file_path.strip():
+            observation["file_path"] = _safe_relative(root, file_path.strip()).as_posix()
+        return observation
+
     def _runtime_identity(self, command: Sequence[str], environment: Dict[str, str]) -> Dict[str, Any]:
         """Capture reproducibility-relevant runtime facts without inheriting secrets."""
         executable = shutil.which(command[0]) if command else None
@@ -730,19 +751,21 @@ class FailureDistiller:
         except FileNotFoundError:
             return Run(-2, "command not found", int((time.perf_counter() - started) * 1000))
 
-    def _write_capsule(self, root: Path, capsule_id: str, command: Sequence[str], environment: Dict[str, str], predicate: Predicate, signature: Signature, budget: Budget, revision: str, dirty: bool, baseline: Dict[str, Any], active: Sequence[Candidate], removed: Sequence[Candidate], retained: Sequence[Tuple[Candidate, str]], evidence: Sequence[Dict[str, Any]], status: str) -> Path:
+    def _write_capsule(self, root: Path, capsule_id: str, command: Sequence[str], environment: Dict[str, str], observation: Dict[str, str], predicate: Predicate, signature: Signature, budget: Budget, revision: str, dirty: bool, baseline: Dict[str, Any], active: Sequence[Candidate], removed: Sequence[Candidate], retained: Sequence[Tuple[Candidate, str]], evidence: Sequence[Dict[str, Any]], status: str) -> Path:
         capsule = root / ".vectant" / "capsules" / capsule_id
         capsule.mkdir(parents=True, exist_ok=False)
         provenance: Dict[str, Any] = {}
         provenance_paths = {candidate.reference for candidate in active if candidate.kind == "file"}
         provenance_paths.update(part.replace("\\", "/") for part in command if self._looks_like_path(part) and (root / part).is_file())
+        if observation.get("file_path"):
+            provenance_paths.add(observation["file_path"])
         for origin in provenance_paths:
             file_path = root / origin
             if file_path.is_file():
                 provenance[origin] = {"kind": "file", "origin": origin, "revision": revision, "sha256": _sha256(file_path.read_bytes())}
         runtime = self._runtime_identity(command, environment)
-        manifest = {"schema_version": "vectant.failure_capsule.v1", "capsule_id": capsule_id, "source_revision": revision, "dirty_workspace": dirty, "runtime": runtime, "entrypoint": f"vectant repro run {capsule_id}", "status": status, "created_at": _utcnow()}
-        repro = {"workspace_root": str(root), "command": list(command), "environment": environment, "runtime": runtime, "predicate": predicate.to_dict(), "signature": signature.to_dict(), "budget": budget.__dict__, "baseline": baseline, "active_units": [item.__dict__ for item in active], "removed_units": [item.__dict__ for item in removed]}
+        manifest = {"schema_version": "vectant.failure_capsule.v1", "capsule_id": capsule_id, "source_revision": revision, "dirty_workspace": dirty, "runtime": runtime, "observation": observation, "entrypoint": f"vectant repro run {capsule_id}", "status": status, "created_at": _utcnow()}
+        repro = {"workspace_root": str(root), "command": list(command), "environment": environment, "observation": observation, "runtime": runtime, "predicate": predicate.to_dict(), "signature": signature.to_dict(), "budget": budget.__dict__, "baseline": baseline, "active_units": [item.__dict__ for item in active], "removed_units": [item.__dict__ for item in removed]}
         validation = {"status": "not_run", "required_gates": ["capsule_fails_before_patch", "capsule_passes_after_patch", "original_world_passes_after_mapping", "affected_checks_pass"]}
         self._write_json(capsule / "manifest.json", manifest)
         self._write_json(capsule / "repro.json", repro)
