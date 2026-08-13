@@ -131,6 +131,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_safety_run_ci_isolated_replay",
   "synthi_safety_distill_browser_failure",
   "synthi_safety_validate_failure_capsule_vivarium",
+  "synthi_safety_materialize_failure_capsule_vivarium",
   "synthi_safety_explain_blocked_hardening",
   // CodeSite ATC control plane
   "synthi_codesite_list_projects",

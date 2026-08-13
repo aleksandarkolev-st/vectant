@@ -4,6 +4,7 @@ import {
   type DojoScenarioDefinition,
   type DojoScenarioFixtureKind,
 } from "./scenario_dsl.js";
+import { DojoVivariumRunner, type DojoFixtureResetResult, type DojoMaterializedScenario } from "./runner.js";
 
 const FIXTURE_KINDS = new Set<DojoScenarioFixtureKind>([
   "synthetic_dom_snapshot", "synthetic_page_route", "fake_api_server", "fake_database_state",
@@ -28,6 +29,17 @@ export interface FailureCapsuleVivariumAdapterResult {
   status: "ready_for_materialization" | "boundary_not_isolatable";
   scenario?: DojoScenarioDefinition;
   oracle_contract?: { predicate: Record<string, unknown>; failure_signature: Record<string, unknown>; baseline: Record<string, unknown>; contract_sha256: string };
+  evidence: Record<string, unknown>;
+  blocked_by: string[];
+}
+
+export interface FailureCapsuleVivariumMaterializationResult {
+  ok: boolean;
+  status: "ready_for_run" | "boundary_not_isolatable";
+  scenario?: DojoScenarioDefinition;
+  materialized?: DojoMaterializedScenario;
+  reset?: DojoFixtureResetResult;
+  oracle_contract?: FailureCapsuleVivariumAdapterResult["oracle_contract"];
   evidence: Record<string, unknown>;
   blocked_by: string[];
 }
@@ -69,6 +81,56 @@ export function adaptFailureCapsuleToVivarium(input: unknown): FailureCapsuleViv
   if (!validation.ok) return { ok: false, status: "boundary_not_isolatable", evidence: evidenceFor(manifest), blocked_by: validation.issues.map((issue) => issue.issue_id) };
   const oracleContract = { ...manifest.oracle!, contract_sha256: sha256Hex(canonicalJson(manifest.oracle)) };
   return { ok: true, status: "ready_for_materialization", scenario, oracle_contract: oracleContract, evidence: evidenceFor(manifest), blocked_by: [] };
+}
+
+/**
+ * Materialize a validated handoff with Vivarium's real fixture/reset runtime.
+ * This deliberately stops before claiming the synthetic world has reproduced
+ * the incident: callers must run it with observed predicate/signature evidence.
+ */
+export function materializeFailureCapsuleVivarium(input: unknown): FailureCapsuleVivariumMaterializationResult {
+  const adapted = adaptFailureCapsuleToVivarium(input);
+  if (!adapted.ok || !adapted.scenario) {
+    return { ok: false, status: "boundary_not_isolatable", evidence: adapted.evidence, blocked_by: adapted.blocked_by };
+  }
+  try {
+    const runner = new DojoVivariumRunner();
+    const materialized = runner.materialize({
+      skill_id: `failure_capsule_${String(adapted.evidence.capsule_id)}`,
+      scenario: adapted.scenario,
+      seed: adapted.scenario.reset_profile.seed,
+    });
+    const reset = runner.reset({ materialized });
+    if (!reset.ok) {
+      return {
+        ok: false,
+        status: "boundary_not_isolatable",
+        scenario: adapted.scenario,
+        materialized,
+        reset,
+        oracle_contract: adapted.oracle_contract,
+        evidence: { ...adapted.evidence, fixture_materialization_hash: materialized.fixture.materialization_hash, oracle_result: "reset_not_deterministic" },
+        blocked_by: reset.blocked_by,
+      };
+    }
+    return {
+      ok: true,
+      status: "ready_for_run",
+      scenario: adapted.scenario,
+      materialized,
+      reset,
+      oracle_contract: adapted.oracle_contract,
+      evidence: { ...adapted.evidence, fixture_materialization_hash: materialized.fixture.materialization_hash, oracle_result: "not_run" },
+      blocked_by: [],
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: "boundary_not_isolatable",
+      evidence: adapted.evidence,
+      blocked_by: [error instanceof Error ? error.message : "failure_capsule_materialization_failed"],
+    };
+  }
 }
 
 function evidenceFor(manifest: Partial<FailureCapsuleVivariumManifest>): Record<string, unknown> {

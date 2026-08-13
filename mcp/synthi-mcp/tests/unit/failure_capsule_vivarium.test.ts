@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adaptFailureCapsuleToVivarium } from "../../src/dojo/vivarium/failure_capsule.js";
+import { adaptFailureCapsuleToVivarium, materializeFailureCapsuleVivarium } from "../../src/dojo/vivarium/failure_capsule.js";
 
 function manifest() {
   return {
@@ -31,5 +31,12 @@ describe("Failure Distiller Vivarium adapter", () => {
     expect(result).toEqual(expect.objectContaining({ ok: false, status: "boundary_not_isolatable" }));
     expect(result.blocked_by).toContain("failure_capsule_unvalidated_boundary_mock");
     expect(result.evidence).toEqual(expect.objectContaining({ capsule_id: "capsule_123", world_hash: "world" }));
+  });
+
+  it("uses the existing fixture materializer and deterministic reset primitive", () => {
+    const result = materializeFailureCapsuleVivarium(manifest());
+    expect(result).toEqual(expect.objectContaining({ ok: true, status: "ready_for_run", blocked_by: [] }));
+    expect(result.reset).toEqual(expect.objectContaining({ ok: true, reset_seed: "seed" }));
+    expect(result.evidence).toEqual(expect.objectContaining({ oracle_result: "not_run" }));
   });
 });
