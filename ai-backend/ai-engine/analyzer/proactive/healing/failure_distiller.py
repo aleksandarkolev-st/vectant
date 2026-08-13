@@ -34,6 +34,7 @@ STATUSES = {
 SECRET_NAME = re.compile(r"(?:token|secret|password|passwd|api[_-]?key|credential|private[_-]?key)", re.I)
 SECRET_VALUE = re.compile(r"(?P<key>\b(?:token|secret|password|passwd|api[_-]?key|credential|private[_-]?key)\b\s*(?:=|:|is)\s*)(?P<value>[^\s,;]+)", re.I)
 BEARER_VALUE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+\-/=]+", re.I)
+SECRET_COMMAND_ARGUMENT = re.compile(r"(?:^|[-_/])(token|secret|password|passwd|api[_-]?key|credential|private[_-]?key)(?:=|:)", re.I)
 DEFAULT_BUDGETS = {
     "fast": {"max_executions": 100, "stability_attempts": 3, "minimum_matches": 3, "timeout_sec": 30},
     "standard": {"max_executions": 1000, "stability_attempts": 5, "minimum_matches": 5, "timeout_sec": 60},
@@ -358,6 +359,55 @@ class FailureDistiller:
         self._metrics["materialized_capsules"] += 1
         return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "limits": ["dependencies are linked from the originating workspace when available", "portable under the declared source/config/fixture reduction model"]}
 
+    def export_vivarium_manifest(self, capsule_path: str) -> Dict[str, Any]:
+        """Export a sanitized, deterministic handoff contract for Agent Dojo Vivarium.
+
+        The manifest is deliberately a handoff only: it cannot replace the
+        original capsule oracle or original-world patch validation.  A Vivarium
+        consumer must revalidate its synthetic-world oracle against this
+        baseline before it can be used for regression or practice.
+        """
+        capsule = Path(capsule_path).resolve()
+        repro = self._read_json(capsule / "repro.json")
+        manifest = self._read_json(capsule / "manifest.json")
+        capsule_id = str(manifest.get("capsule_id", ""))
+        if not capsule_id:
+            raise DistillationError("capsule manifest is missing capsule_id")
+        command = self._command(repro.get("command"))
+        if any(SECRET_COMMAND_ARGUMENT.search(part) for part in command):
+            return self._state("unsafe_external_boundary", "capsule command contains a secret-bearing argument and cannot cross into Vivarium")
+        units = [Candidate(**item) for item in repro.get("active_units", [])]
+        fixture_kinds = sorted({
+            "fake_database_state" if unit.kind in {"file", "json_key", "json_record"} else
+            "synthetic_page_route" if unit.kind == "command_arg" else
+            "fake_validation_errors"
+            for unit in units
+        }) or ["fake_database_state"]
+        seed = _sha256(_json({"capsule_id": capsule_id, "source_revision": manifest.get("source_revision"), "removed_units": repro.get("removed_units", [])}).encode())[:32]
+        scenario_id = f"distiller_{capsule_id}"
+        scenario = {
+            "schema_version": "synthi.dojo.failureCapsuleScenario.v1",
+            "scenario_id": scenario_id,
+            "capsule": {
+                "capsule_id": capsule_id,
+                "source_revision": manifest.get("source_revision"),
+                "world_hash": _sha256(_json({"revision": manifest.get("source_revision"), "command": command, "removed": repro.get("removed_units", [])}).encode()),
+                "run_command": command,
+            },
+            "synthetic_fixture_requirements": [
+                {"fixture_id": f"{scenario_id}_{kind}", "kind": kind, "synthetic_data_only": True, "required": True}
+                for kind in fixture_kinds
+            ],
+            "boundary_mocks": [],
+            "reset_profile": {"reset_profile_id": f"reset_{scenario_id}", "strategy": "deterministic_seed", "seed": seed},
+            "oracle": {"predicate": repro["predicate"], "failure_signature": repro["signature"], "baseline": repro["baseline"]},
+            "evidence": {"capsule_id": capsule_id, "scenario_id": scenario_id, "source_revision": manifest.get("source_revision"), "fixture_manifest_sha256": _sha256(_json(fixture_kinds).encode()), "redaction": "capsule_output_and_environment_secret_policy"},
+            "limits": ["synthetic Vivarium materialization must match this capsule predicate and signature before use", "original-world validation remains required for every candidate patch", "production credentials, production write authority, and unredacted production data are prohibited"],
+        }
+        path = capsule / "vivarium.scenario.json"
+        self._write_json(path, scenario)
+        return {"ok": True, "status": "vivarium_manifest_exported", "capsule_id": capsule_id, "capsuleId": capsule_id, "scenario_id": scenario_id, "scenarioId": scenario_id, "manifest_path": str(path), "manifestPath": str(path), "manifest": scenario}
+
     def discard(self, capsule_path: str) -> Dict[str, Any]:
         """Permanently delete a capsule only from its source workspace store."""
         capsule = Path(capsule_path).resolve()
@@ -450,6 +500,8 @@ class FailureDistiller:
             command = []
         if command and any("\x00" in part for part in command):
             raise DistillationError("command contains a null byte")
+        if any(SECRET_COMMAND_ARGUMENT.search(part) for part in command):
+            raise DistillationError("command contains a secret-bearing argument")
         return command
 
     def _reduced_command(self, command: Sequence[str], reductions: Sequence[Candidate]) -> List[str]:

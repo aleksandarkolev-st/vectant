@@ -45,6 +45,8 @@ async def _execute(args: argparse.Namespace) -> Dict[str, Any]:
         return distiller.discard(args.capsule_path)
     if args.command == "metrics":
         return {"ok": True, "metrics": distiller.metrics()}
+    if args.command == "vivarium-export":
+        return distiller.export_vivarium_manifest(args.capsule_path)
     if args.command == "validate-patch":
         request = _read_json(args.edits)
         request["capsulePath"] = args.capsule_path
@@ -78,6 +80,8 @@ def main() -> int:
     delete = commands.add_parser("delete", help="Permanently delete a capsule and record an audit event")
     delete.add_argument("capsule_path")
     commands.add_parser("metrics", help="Show Failure Distiller quality and cost metrics")
+    vivarium = commands.add_parser("vivarium-export", help="Export a sanitized deterministic Vivarium scenario manifest")
+    vivarium.add_argument("capsule_path")
     explain = commands.add_parser("explain", help="Explain a retained or removed unit")
     explain.add_argument("capsule_path")
     explain.add_argument("unit")

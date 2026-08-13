@@ -200,6 +200,17 @@ def test_cli_exposes_distiller_metrics(workspace):
     assert json.loads(completed.stdout)["ok"] is True
 
 
+def test_exports_a_sanitized_deterministic_vivarium_manifest(workspace):
+    result = run(FailureDistiller().distill(request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])))
+    exported = FailureDistiller().export_vivarium_manifest(result["workspace_path"])
+    assert exported["ok"]
+    assert exported["manifest"]["scenario_id"] == f"distiller_{result['capsule_id']}"
+    assert exported["manifest"]["reset_profile"]["seed"]
+    assert exported["manifest"]["synthetic_fixture_requirements"][0]["synthetic_data_only"] is True
+    assert "original-world validation remains required" in " ".join(exported["manifest"]["limits"])
+    assert Path(exported["manifest_path"]).is_file()
+
+
 def test_reduces_noncausal_command_input_and_replays_reduced_command(workspace):
     (workspace / "runner.py").write_text(
         "import argparse, sys\n"
