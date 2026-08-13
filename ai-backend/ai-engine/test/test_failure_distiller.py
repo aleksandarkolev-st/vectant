@@ -228,6 +228,8 @@ def test_exports_a_sanitized_deterministic_vivarium_manifest(workspace):
     assert exported["manifest"]["synthetic_fixture_requirements"][0]["synthetic_data_only"] is True
     assert "original-world validation remains required" in " ".join(exported["manifest"]["limits"])
     assert Path(exported["manifest_path"]).is_file()
+    ledger = (workspace / ".vectant" / "evidence-ledger.ndjson").read_text(encoding="utf-8")
+    assert '"event":"vivarium_manifest_exported"' in ledger
 
 
 def test_promotes_only_original_world_validated_capsules_to_vivarium(workspace):
@@ -241,6 +243,7 @@ def test_promotes_only_original_world_validated_capsules_to_vivarium(workspace):
     assert promoted["ok"]
     assert promoted["mode"] == "practice"
     assert Path(promoted["artifact_path"]).is_file()
+    assert '"oracle_result":"original_world_patch_validated"' in (workspace / ".vectant" / "evidence-ledger.ndjson").read_text(encoding="utf-8")
 
 
 def test_reduces_noncausal_command_input_and_replays_reduced_command(workspace):

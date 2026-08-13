@@ -409,6 +409,16 @@ class FailureDistiller:
         }
         path = capsule / "vivarium.scenario.json"
         self._write_json(path, scenario)
+        self._append_vivarium_evidence(capsule, {
+            "event": "vivarium_manifest_exported",
+            "capsule_id": capsule_id,
+            "scenario_id": scenario_id,
+            "source_revision": manifest.get("source_revision"),
+            "world_hash": scenario["capsule"]["world_hash"],
+            "fixture_manifest_sha256": scenario["evidence"]["fixture_manifest_sha256"],
+            "oracle_result": "not_run",
+            "redaction": scenario["evidence"]["redaction"],
+        })
         return {"ok": True, "status": "vivarium_manifest_exported", "capsule_id": capsule_id, "capsuleId": capsule_id, "scenario_id": scenario_id, "scenarioId": scenario_id, "manifest_path": str(path), "manifestPath": str(path), "manifest": scenario}
 
     def promote_vivarium_scenario(self, capsule_path: str, mode: str = "regression") -> Dict[str, Any]:
@@ -437,6 +447,17 @@ class FailureDistiller:
         }
         destination = capsule / "vivarium" / mode / f"{revision}.json"
         self._write_json(destination, promoted)
+        self._append_vivarium_evidence(capsule, {
+            "event": "vivarium_promoted",
+            "capsule_id": scenario["capsule"]["capsule_id"],
+            "scenario_id": scenario["scenario_id"],
+            "source_revision": scenario["capsule"]["source_revision"],
+            "world_hash": scenario["capsule"]["world_hash"],
+            "fixture_manifest_sha256": scenario["evidence"]["fixture_manifest_sha256"],
+            "oracle_result": "original_world_patch_validated",
+            "redaction": scenario["evidence"]["redaction"],
+            "promotion_id": promoted["promotion_id"],
+        })
         return {"ok": True, "status": "vivarium_promoted", "promotion_id": promoted["promotion_id"], "promotionId": promoted["promotion_id"], "mode": mode, "artifact_path": str(destination), "artifactPath": str(destination), "artifact": promoted}
 
     def discard(self, capsule_path: str) -> Dict[str, Any]:
@@ -848,6 +869,15 @@ class FailureDistiller:
         record = {"validated_at": _utcnow(), **result}
         self._write_json(capsule / "evidence" / "validation.json", record)
         return record
+
+    def _append_vivarium_evidence(self, capsule: Path, record: Dict[str, Any]) -> None:
+        """Append interoperable, redacted Vivarium handoff metadata outside the capsule."""
+        repro = self._read_json(capsule / "repro.json")
+        root = Path(repro["workspace_root"]).resolve()
+        ledger = root / ".vectant" / "evidence-ledger.ndjson"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        with ledger.open("a", encoding="utf-8") as handle:
+            handle.write(_json({"schema_version": "vectant.vivariumEvidence.v1", "recorded_at": _utcnow(), **record}) + "\n")
 
     def _world_hash(self, active: Sequence[Candidate], env: Dict[str, str], command: Sequence[str], revision: str, runtime: Dict[str, Any]) -> str:
         """Content-address the exact git world, overlay operations, command, and runtime."""
