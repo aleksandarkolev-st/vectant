@@ -143,6 +143,28 @@ Failure Distiller should compose existing infrastructure rather than duplicate i
 | Browser workflow teaching | Record/replay user workflows | Reduce the workflow, state, UI route, and boundaries required for the failure |
 | Genome reproducers | Execute reproducers attached to proposed attacks | Derive a reproducer from a naturally observed failure |
 | CodeSite replay/evidence | Coordinate and audit work | Consume capsule provenance and validation results |
+| Agent Dojo Vivarium | Materialize, mutate, reset, and observe synthetic scenario worlds | Execute reduced capsules safely, reuse fixture/oracle contracts, and turn validated capsules into regression or practice scenarios |
+
+### 4.1 Vivarium integration and usage
+
+Failure Distiller and the Vivarium must share execution primitives, but must retain distinct entry points and claims.
+
+- **Distiller-to-Vivarium handoff:** a distilled capsule may be exported as a Vivarium scenario manifest containing its runnable command, deterministic seed, sanitized fixture requirements, boundary mocks, predicate, failure-signature matcher, reset profile, and declared limits.
+- **Reuse the Vivarium runtime:** when a capsule can run in a synthetic world, candidate reductions should be evaluated through the Vivarium fixture materializer, API fault server, UI/document/identity tissue, deterministic reset, and observed-evidence oracle rather than implementing parallel equivalents.
+- **No synthetic substitution by default:** the original observed failure remains the baseline authority. A Vivarium materialization is accepted only after its predicate and failure signature match the pre-substitution baseline; otherwise return `boundary_not_isolatable` or `stable_partial` with the mismatch evidence.
+- **Regression and skill practice:** after original-world patch validation, the approved capsule can become a seeded Vivarium regression scenario or practice world. Its expected failure and repair must remain versioned separately from the original incident evidence.
+- **Evidence interoperability:** reduction decisions and Vivarium run/reset evidence should be written to the shared evidence ledger with capsule ID, scenario ID, source revision, world hash, fixture/manifest digests, oracle result, and redaction metadata.
+- **Security boundary:** only sanitized fixtures and validated contract mocks may cross into the Vivarium. Production credentials, production write authority, and unredacted production data are prohibited.
+
+The resulting flow is:
+
+```text
+Observed failure
+  -> Distiller baseline and reduction
+  -> signature-validated Vivarium materialization (when isolatable)
+  -> capsule debugging and original-world patch validation
+  -> versioned Vivarium regression/practice scenario
+```
 
 A useful distinction is:
 
@@ -855,7 +877,23 @@ Success condition:
 
 > A recorded browser failure can be reduced without changing its event/network/source signature, fixed in the capsule, and validated in the original flow.
 
-### Milestone 5 — Materialized portable capsules
+### Milestone 5 — Vivarium capsule execution and graduation
+
+Integrate with the Agent Dojo Vivarium rather than building a second synthetic-world runtime.
+
+Add:
+
+- capsule-to-scenario manifest adapter;
+- deterministic mapping from capsule fixture and boundary requirements to Vivarium tissue/materializers;
+- shared predicate/signature oracle adapter;
+- reset and run evidence linked to the capsule reduction log;
+- promotion of an original-world-validated capsule into a versioned regression or practice scenario.
+
+Success condition:
+
+> A supported distilled capsule can execute in a deterministic, sanitized Vivarium world; its oracle evidence is linked to the original baseline; and a validated fix can be replayed as a regression scenario without replacing original-world validation.
+
+### Milestone 6 — Materialized portable capsules
 
 Only after logical capsules work reliably:
 
@@ -865,7 +903,7 @@ Only after logical capsules work reliably:
 - verify build/runtime equivalence;
 - optionally export/share inside the same security domain.
 
-### Milestone 6 — Native/HMR/GPU failures
+### Milestone 7 — Native/HMR/GPU failures
 
 Treat these as separate adapters over the same core reduction engine.
 
