@@ -241,6 +241,8 @@ class FailureDistiller:
         _git(root, "rev-parse", "--show-toplevel")
         command = self._command(request.get("command"))
         if not command:
+            command = self._browser_replay_command(request.get("observation"), root)
+        if not command:
             raise DistillationError("command is required")
         if request.get("networkPolicy", request.get("network_policy", "deny")) != "deny":
             return self._state("unsafe_external_boundary", "live external boundaries are not supported by this reducer")
@@ -742,6 +744,25 @@ class FailureDistiller:
             raise DistillationError("command contains a null byte")
         if any(SECRET_COMMAND_ARGUMENT.search(part) for part in command):
             raise DistillationError("command contains a secret-bearing argument")
+        return command
+
+    def _browser_replay_command(self, raw: Any, root: Path) -> List[str]:
+        """Accept only a digest-attested replay command from a browser trace."""
+        if not isinstance(raw, dict) or str(raw.get("kind", raw.get("type", ""))).lower() != "browser":
+            return []
+        command = self._command(raw.get("replay_command", raw.get("replayCommand")))
+        digest = raw.get("replay_command_sha256", raw.get("replayCommandSha256"))
+        if not command:
+            return []
+        if not isinstance(digest, str) or digest != _sha256(_json(command).encode()):
+            raise DistillationError("browser replay command requires a matching replay_command_sha256 attestation")
+        for part in command[1:]:
+            value = Path(part)
+            if value.is_absolute():
+                try:
+                    value.resolve().relative_to(root)
+                except ValueError as exc:
+                    raise DistillationError("browser replay command may not reference files outside the workspace") from exc
         return command
 
     def _reduced_command(self, command: Sequence[str], reductions: Sequence[Candidate]) -> List[str]:

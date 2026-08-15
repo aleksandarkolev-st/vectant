@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -71,6 +72,21 @@ def test_distills_an_unrelated_file_and_writes_contract(workspace):
     assert json.loads((capsule / "repro.json").read_text())["predicate"]["type"] == "exit_nonzero"
     replay = run(FailureDistiller().run(str(capsule)))
     assert replay["status"] == "same_failure"
+
+
+def test_browser_observation_can_supply_an_attested_workspace_replay_command(workspace):
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    command = [sys.executable, "runner.py"]
+    payload.pop("command")
+    payload["observation"] = {
+        "kind": "browser", "executedPaths": ["runner.py"],
+        "replayCommand": command,
+        "replayCommandSha256": hashlib.sha256(json.dumps(command, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        "workflow": {"route": "/failure", "state_fixture": {}, "device": "desktop", "viewport": {"width": 1280, "height": 720}, "steps": ["submit"], "network_sequence": [], "dom_transitions": ["failure"], "source_events": ["runner.py:1"], "console": ["FailureSignature"]},
+    }
+    result = run(FailureDistiller().distill(payload))
+    assert result["ok"]
+    assert run(FailureDistiller().run(result["workspace_path"]))["status"] == "same_failure"
 
 
 def test_durable_evaluation_cache_does_not_make_the_source_workspace_dirty(workspace):
