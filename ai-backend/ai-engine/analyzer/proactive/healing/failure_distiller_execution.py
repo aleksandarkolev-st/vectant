@@ -82,7 +82,7 @@ class ContainerExecutor:
         if await probe.wait() != 0:
             raise IsolationError(f"required isolation engine is not running: {self.engine}")
         container_command = ["/workspace" + str(Path(part).resolve()).replace("\\", "/").replace(str(cwd.resolve()).replace("\\", "/"), "") if index and Path(part).is_absolute() and str(Path(part).resolve()).startswith(str(cwd.resolve())) else part for index, part in enumerate(command)]
-        argv = [self.engine, "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", str(self.process_limit), "--memory", f"{self.memory_mb}m", "--cpus", str(self.cpu_count), "--user", "65534:65534", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m", "--workdir", "/workspace", "--mount", f"type=bind,src={cwd.resolve()},dst=/workspace,rw", "--env", "HOME=/tmp", "--env", "TMPDIR=/tmp"]
+        argv = [self.engine, "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", str(self.process_limit), "--memory", f"{self.memory_mb}m", "--cpus", str(self.cpu_count), "--user", "65534:65534", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m", "--workdir", "/workspace", "--mount", f"type=bind,src={cwd.resolve()},dst=/workspace", "--env", "HOME=/tmp", "--env", "TMPDIR=/tmp"]
         for key, value in sorted(env.items()):
             argv.extend(["--env", f"{key}={value}"])
         argv.extend([self.image, *container_command])
