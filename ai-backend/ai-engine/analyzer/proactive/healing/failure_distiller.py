@@ -244,7 +244,7 @@ class FailureDistiller:
             return self._state("unsafe_external_boundary", "live external boundaries are not supported by this reducer")
 
         source_revision = _git(root, "rev-parse", "HEAD")
-        dirty = bool(_git(root, "status", "--porcelain"))
+        dirty = self._workspace_dirty(root)
         if dirty:
             return self._state("boundary_not_isolatable", "dirty workspaces are not reduced because worktree candidates would not match the observed baseline; commit or stash changes first", source_revision=source_revision, dirty_workspace=True)
 
@@ -270,7 +270,7 @@ class FailureDistiller:
         runtime = self._runtime_identity(command, environment)
         executions, evidence, removed, retained = baseline["attempts"], [], [], []
         active = list(candidates)
-        cache: Dict[str, Dict[str, Any]] = {}
+        cache = self._load_evaluation_cache(root)
         for candidate in list(candidates):
             if executions >= budget.max_executions:
                 retained.extend((item, "budget_not_tested") for item in active if item not in [r[0] for r in retained])
@@ -281,6 +281,7 @@ class FailureDistiller:
             if evaluation is None:
                 evaluation = await self._evaluate(root, command, environment, proposed, predicate, signature, budget)
                 cache[key] = evaluation
+                self._save_evaluation_cache(root, cache)
             else:
                 self._metrics["cache_hits"] += 1
             executions += evaluation["attempts"]
@@ -306,6 +307,7 @@ class FailureDistiller:
             if evaluation is None:
                 evaluation = await self._evaluate(root, command, environment, proposed, predicate, signature, budget)
                 cache[key] = evaluation
+                self._save_evaluation_cache(root, cache)
             else:
                 self._metrics["cache_hits"] += 1
             executions += evaluation["attempts"]
@@ -601,6 +603,36 @@ class FailureDistiller:
             self._isolation_profile = {"mode": "container", "engine": self._executor.engine, "image": self._executor.image, "network": "deny", "memory_mb": self._executor.memory_mb, "cpu_count": self._executor.cpu_count, "process_limit": self._executor.process_limit, "package_install": "deny", "lifecycle_scripts": "deny"}
         except IsolationError as exc:
             raise DistillationError(f"unsafe_external_boundary: {exc}") from exc
+
+    def _workspace_dirty(self, root: Path) -> bool:
+        """Treat Vectant's own durable evidence store as outside source state."""
+        entries = _git(root, "status", "--porcelain", "--untracked-files=all").splitlines()
+        for entry in entries:
+            path = entry[3:].replace("\\", "/") if len(entry) > 3 else entry
+            if not path.startswith(".vectant/") and path != ".vectant":
+                return True
+        return False
+
+    def _evaluation_cache_path(self, root: Path) -> Path:
+        return root / ".vectant" / "cache" / "evaluations.json"
+
+    def _load_evaluation_cache(self, root: Path) -> Dict[str, Dict[str, Any]]:
+        path = self._evaluation_cache_path(root)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save_evaluation_cache(self, root: Path, cache: Dict[str, Dict[str, Any]]) -> None:
+        """Persist only content-addressed boolean/oracle outcomes atomically."""
+        path = self._evaluation_cache_path(root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Bound cache growth and avoid persisting raw command output.
+        retained = dict(list(cache.items())[-10_000:])
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(retained, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+        os.replace(temporary, path)
 
     def _command(self, raw: Any) -> List[str]:
         if isinstance(raw, str):

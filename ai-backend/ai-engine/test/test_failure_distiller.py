@@ -71,6 +71,16 @@ def test_distills_an_unrelated_file_and_writes_contract(workspace):
     assert replay["status"] == "same_failure"
 
 
+def test_durable_evaluation_cache_does_not_make_the_source_workspace_dirty(workspace):
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    first = run(FailureDistiller().distill(payload))
+    assert first["ok"]
+    assert (workspace / ".vectant" / "cache" / "evaluations.json").is_file()
+    second = run(FailureDistiller().distill(payload))
+    assert second["ok"]
+    assert second["baseline"]["matches"] == 2
+
+
 def test_rejects_secret_environment_and_path_escape(workspace):
     with pytest.raises(DistillationError, match="secret-bearing"):
         run(FailureDistiller().distill({**request(workspace, []), "environment": {"API_TOKEN": "nope"}}))
