@@ -124,6 +124,14 @@ def test_patch_validation_requires_and_records_all_round_trip_gates(workspace):
     assert stored["status"] == "validated"
 
 
+def test_patch_validation_runs_original_command_when_no_affected_check_is_supplied(workspace):
+    result = run(FailureDistiller().distill(request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])))
+    validation = run(FailureDistiller().validate_patch({"capsulePath": result["workspace_path"], "edits": [{"path": "runner.py", "content": "print('fixed')\n"}]}))
+    assert validation["status"] == "validated"
+    assert validation["gates"]["affected_checks"][0]["source"] == "original_failure_command"
+    assert validation["gates"]["affected_checks"][0]["run"]["exit_code"] == 0
+
+
 def test_patch_round_trip_invalidates_a_capsule_when_removed_boundary_changes_fix_result(workspace):
     (workspace / "runner.py").write_text(
         "import sys\nprint('FailureSignature: boundary mismatch')\nsys.exit(7)\n",

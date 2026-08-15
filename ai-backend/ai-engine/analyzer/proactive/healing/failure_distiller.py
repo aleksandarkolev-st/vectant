@@ -598,12 +598,19 @@ class FailureDistiller:
                 capsule_run = await self._run(self._reduced_command(self._command(repro["command"]), [Candidate(**item) for item in repro.get("removed_units", [])]), capsule_worktree, capsule_env, int(repro["budget"]["timeout_sec"]))
                 original_run = await self._run(self._command(repro["command"]), original_worktree, repro["environment"], int(repro["budget"]["timeout_sec"]))
                 affected = []
-                for raw_command in request.get("affectedChecks", request.get("affected_checks", [])):
+                requested_checks = request.get("affectedChecks", request.get("affected_checks", []))
+                if not isinstance(requested_checks, list):
+                    raise DistillationError("affected checks must be a command list")
+                # Gate four cannot be silently skipped.  When callers have no
+                # richer impact selection yet, replay the original command as
+                # the conservative affected-check baseline.
+                affected_source = "caller_selected" if requested_checks else "original_failure_command"
+                for raw_command in (requested_checks or [repro["command"]]):
                     check_command = self._command(raw_command)
                     if not check_command:
                         raise DistillationError("affected checks must be non-empty commands")
                     affected_run = await self._run(check_command, original_worktree, repro["environment"], int(repro["budget"]["timeout_sec"]))
-                    affected.append({"command": check_command, "run": self._run_dict(affected_run)})
+                    affected.append({"command": check_command, "source": affected_source, "run": self._run_dict(affected_run)})
             finally:
                 self._remove_worktree(root, capsule_worktree)
                 self._remove_worktree(root, original_worktree)
