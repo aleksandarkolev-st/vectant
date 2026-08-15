@@ -49,6 +49,13 @@ def test_production_executor_distills_inside_a_network_denied_container(workspac
     assert result["reduction"]["removed_units"] == 1
 
 
+@pytest.mark.skipif(not docker_ready(), reason="Docker daemon is required for network isolation proof")
+def test_container_executor_denies_real_outbound_network(workspace):
+    executor = ContainerExecutor("vectant-ade-ai-engine:latest")
+    result = asyncio.run(executor.run(["python", "-c", "import socket; socket.create_connection(('example.com', 80), timeout=2)"], workspace, {}, 10))
+    assert result.exit_code != 0
+
+
 @pytest.mark.skipif(not docker_ready(), reason="Docker daemon is required for authenticated isolated E2E")
 def test_authenticated_api_distills_through_the_production_container(workspace, monkeypatch):
     from analyzer.proactive.healing import failure_distiller
