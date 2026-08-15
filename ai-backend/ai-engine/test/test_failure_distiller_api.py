@@ -81,6 +81,8 @@ def test_authenticated_capsule_lifecycle_through_real_app_routes(tmp_path, monke
         assert distilled.status_code == 200, distilled.text
         capsule = distilled.json()
         capsule_path = capsule["workspacePath"]
+        explained = client.post("/heal/agentic/distill/explain", json={"capsulePath": capsule_path, "unit": "unrelated.txt"}, headers=headers)
+        assert explained.status_code == 200 and explained.json()["ok"], explained.text
         replay = client.post("/heal/agentic/distill/run", json={"capsulePath": capsule_path}, headers=headers)
         assert replay.status_code == 200 and replay.json()["status"] == "same_failure", replay.text
         materialized = client.post("/heal/agentic/distill/materialize", json={"capsulePath": capsule_path}, headers=headers)

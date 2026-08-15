@@ -4360,6 +4360,17 @@ async def run_distilled_failure(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/heal/agentic/distill/explain")
+async def explain_distilled_failure(request: Request):
+    """Return machine-readable evidence for a retained or removed capsule unit."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        return get_failure_distiller().explain(body.get("capsulePath", body.get("capsule_path", "")), str(body.get("unit", "")))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/heal/agentic/distill/materialize")
 async def materialize_distilled_failure(request: Request):
     """Physically materialize a verified logical capsule without touching its source workspace."""

@@ -534,6 +534,20 @@ class FailureDistiller:
         shutil.rmtree(capsule)
         return {"ok": True, "status": "deleted", "capsule_id": capsule_id, "capsuleId": capsule_id, "audit_path": str(audit)}
 
+    def explain(self, capsule_path: str, unit: str) -> Dict[str, Any]:
+        capsule = Path(capsule_path).resolve()
+        if not isinstance(unit, str) or not unit.strip():
+            raise DistillationError("unit is required")
+        entries = []
+        try:
+            for line in (capsule / "reduction.ndjson").read_text(encoding="utf-8").splitlines():
+                row = json.loads(line)
+                if row.get("candidate") in {unit, f"file:{unit}", f"env:{unit}", f"python_function:{unit}", f"python_statement:{unit}"}:
+                    entries.append(row)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DistillationError("invalid capsule reduction evidence") from exc
+        return {"ok": bool(entries), "capsule_path": str(capsule), "unit": unit, "evidence": entries, "reason": None if entries else "unit_not_found"}
+
     def purge_expired(self, workspace_root: str, now: Optional[datetime] = None) -> Dict[str, Any]:
         """Delete only expired direct capsule entries and retain an audit trail."""
         root = Path(workspace_root).resolve()

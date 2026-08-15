@@ -59,16 +59,7 @@ async def _execute(args: argparse.Namespace) -> Dict[str, Any]:
         request["capsulePath"] = args.capsule_path
         return await distiller.validate_patch(request)
     if args.command == "explain":
-        capsule = Path(args.capsule_path)
-        entries = []
-        try:
-            for line in (capsule / "reduction.ndjson").read_text(encoding="utf-8").splitlines():
-                row = json.loads(line)
-                if row.get("candidate") in {args.unit, f"file:{args.unit}", f"env:{args.unit}"}:
-                    entries.append(row)
-        except (OSError, json.JSONDecodeError) as exc:
-            raise DistillationError("invalid capsule reduction evidence") from exc
-        return {"ok": bool(entries), "capsule_path": str(capsule), "unit": args.unit, "evidence": entries, "reason": None if entries else "unit_not_found"}
+        return distiller.explain(args.capsule_path, args.unit)
     raise DistillationError("unsupported repro command")
 
 
