@@ -1181,6 +1181,12 @@ The exact commands and report values are part of the release handoff; a green
 unit suite alone is not evidence that an unsupported external runtime is safe
 to isolate.
 
+Browser replay-command update: a browser observation can now provide a replay
+command only with a matching SHA-256 attestation and workspace-bounded file
+arguments. The reducer rejects mismatched attestations before executing any
+workspace process. This is verified by positive and adversarial tests; it does
+not replace the required browser-failure-to-capsule round trip.
+
 ---
 
 ## 23. Product sentence
