@@ -587,7 +587,19 @@ class FailureDistiller:
         status = "validated" if capsule_passes and original_passes and not failed_checks else ("capsule_fix_failed" if not capsule_passes else "original_validation_failed" if not original_passes else "affected_checks_failed")
         if status == "validated":
             self._metrics["validated_patches"] += 1
-        return self._record_validation(capsule, {"ok": status == "validated", "status": status, "gates": {"capsule_fails_before_patch": before, "capsule_passes_after_patch": self._run_dict(capsule_run), "original_failure_passes_after_mapping": self._run_dict(original_run), "affected_checks": affected}, "patch_mapping": {"mapped_files": [provenance[str(edit["path"])]["origin"] for edit in edits]}, "signature_after_patch": "match" if signature.matches(original_run.output) else "changed"})
+        mismatch = None
+        if capsule_passes and not original_passes:
+            mismatch = {
+                "classification": "missing_causal_dependency_or_invalid_boundary" if repro.get("removed_units") else "environment_or_mapping_drift",
+                "boundary_action": "invalidate_and_expand",
+                "removed_units_to_restore": repro.get("removed_units", []),
+                "message": "The mapped patch passes the capsule but not the original envelope; the capsule is not a sufficient validation boundary.",
+            }
+            manifest = self._read_json(capsule / "manifest.json")
+            manifest["status"] = "boundary_invalidated"
+            manifest["invalidated_at"] = _utcnow()
+            self._write_json(capsule / "manifest.json", manifest)
+        return self._record_validation(capsule, {"ok": status == "validated", "status": status, "gates": {"capsule_fails_before_patch": before, "capsule_passes_after_patch": self._run_dict(capsule_run), "original_failure_passes_after_mapping": self._run_dict(original_run), "affected_checks": affected}, "patch_mapping": {"mapped_files": [provenance[str(edit["path"])]["origin"] for edit in edits]}, "signature_after_patch": "match" if signature.matches(original_run.output) else "changed", "mismatch": mismatch})
 
     def metrics(self) -> Dict[str, Any]:
         accepted = self._metrics["accepted_capsules"]
