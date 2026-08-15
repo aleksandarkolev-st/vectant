@@ -1,0 +1,11 @@
+{
+  "id": "browser-workflow-v1",
+  "adapter": "browser",
+  "faulty_region": "runner.py",
+  "accepted_fix": "dispatch the recorded request",
+  "files": {"runner.py": "import sys\nprint('FailureSignature browser invite-submit')\nsys.exit(7)\n", "unused.fixture": "discard\n"},
+  "command": ["{python}", "runner.py"],
+  "signature": "FailureSignature browser invite-submit",
+  "candidates": ["unused.fixture"],
+  "observation": {"kind": "browser", "workflow": {"route": "/invite", "state_fixture": {"sso": true}, "device": "desktop", "viewport": {"width": 1280, "height": 720}, "steps": ["fill email", "submit"], "network_sequence": ["POST /invites missing"], "dom_transitions": ["modal open", "modal closed"], "source_events": ["InviteModal.onSubmit"], "console": ["missing dispatch"]}}
+}

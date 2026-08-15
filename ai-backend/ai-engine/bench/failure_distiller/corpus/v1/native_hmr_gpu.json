@@ -1,0 +1,11 @@
+{
+  "id": "native-hmr-gpu-v1",
+  "adapter": "gpu",
+  "faulty_region": "runner.py",
+  "accepted_fix": "correct kernel launch parameter",
+  "files": {"runner.py": "import sys\nprint('FailureSignature GPU_DEVICE_LOST')\nsys.exit(7)\n", "unused.asset": "discard\n"},
+  "command": ["{python}", "runner.py"],
+  "signature": "FailureSignature GPU_DEVICE_LOST",
+  "candidates": ["unused.asset"],
+  "observation": {"kind": "gpu", "device_marker": "test-gpu", "error_fingerprint": "GPU_DEVICE_LOST", "frame_states": ["frame-0", "frame-1-error"], "launch_parameters": {"workgroups": 64}}
+}

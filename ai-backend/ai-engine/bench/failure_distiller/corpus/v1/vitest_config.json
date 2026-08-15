@@ -1,0 +1,10 @@
+{
+  "id": "vitest-config-v1",
+  "adapter": "test",
+  "faulty_region": "runner.py",
+  "accepted_fix": "remove required.flag dependency",
+  "files": {"runner.py": "import pathlib,sys\nif pathlib.Path('required.flag').exists(): print('FailureSignature vitest-config'); sys.exit(7)\n", "required.flag": "1\n", "noise.json": "{\"unused\":true}\n"},
+  "command": ["{python}", "runner.py"],
+  "signature": "FailureSignature vitest-config",
+  "candidates": ["noise.json"]
+}
