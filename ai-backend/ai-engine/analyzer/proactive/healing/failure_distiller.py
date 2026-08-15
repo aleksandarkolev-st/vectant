@@ -733,6 +733,15 @@ class FailureDistiller:
             except AdapterContractError as exc:
                 raise DistillationError(f"boundary_not_isolatable: {exc}") from exc
             observation["adapter"] = {"kind": envelope.kind, "recording": envelope.recording, "candidate_groups": envelope.candidate_groups}
+            if kind == "browser":
+                linked_paths = []
+                for event in envelope.recording.get("source_events", []):
+                    if isinstance(event, str):
+                        path = event.rsplit(":", 1)[0]
+                        if path and (root / path).is_file():
+                            linked_paths.append(_safe_relative(root, path).as_posix())
+                if linked_paths:
+                    observation["executed_paths"] = sorted(set(observation.get("executed_paths", []) + linked_paths))
         return observation
 
     def _runtime_identity(self, command: Sequence[str], environment: Dict[str, str]) -> Dict[str, Any]:

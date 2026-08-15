@@ -59,6 +59,9 @@ class BrowserAdapter(FailureAdapter):
     kind = "browser"
 
     def normalize(self, observation: Dict[str, Any]) -> AdapterEnvelope:
+        contract = observation.get("workflow_contract", observation.get("workflowContract"))
+        if contract is not None:
+            return self._normalize_taught_contract(_object(contract, "browser workflow_contract"), observation)
         workflow = _object(observation.get("workflow"), "browser workflow")
         steps = _strings(workflow.get("steps"), "browser workflow.steps")
         network = _strings(workflow.get("network_sequence"), "browser workflow.network_sequence", allow_empty=True)
@@ -75,6 +78,52 @@ class BrowserAdapter(FailureAdapter):
             "device": str(workflow.get("device", "desktop")), "viewport": {"width": viewport["width"], "height": viewport["height"]},
             "steps": steps, "network_sequence": network, "dom_transitions": transitions,
             "source_events": source_events, "console": _strings(workflow.get("console", []), "browser workflow.console", allow_empty=True),
+        }, {"steps": steps, "network": network})
+
+    def _normalize_taught_contract(self, contract: Dict[str, Any], observation: Dict[str, Any]) -> AdapterEnvelope:
+        """Adapt Synthi Browser WorkflowContractV7 without loosening its gates."""
+        workflow_id = contract.get("workflowId")
+        origin = contract.get("appOrigin")
+        route = contract.get("routePattern", "/")
+        coverage = _object(contract.get("sourceIdentityCoverage"), "workflow_contract.sourceIdentityCoverage")
+        replay_modes = _strings(contract.get("replayModes"), "workflow_contract.replayModes")
+        steps_raw = contract.get("steps")
+        if not isinstance(workflow_id, str) or not workflow_id or not isinstance(origin, str) or not origin:
+            raise AdapterContractError("workflow_contract requires workflowId and appOrigin")
+        if not isinstance(route, str) or not route.startswith("/"):
+            raise AdapterContractError("workflow_contract.routePattern must be an absolute route")
+        if coverage.get("status") == "missing" or not isinstance(coverage.get("linkedSteps"), int) or coverage["linkedSteps"] < 1:
+            raise AdapterContractError("workflow_contract lacks source identity attribution")
+        if "ciIsolated" not in replay_modes:
+            raise AdapterContractError("workflow_contract is not eligible for isolated replay")
+        if not isinstance(steps_raw, list) or not steps_raw:
+            raise AdapterContractError("workflow_contract.steps is required")
+        steps, source_events, network, transitions = [], [], [], []
+        for step in steps_raw:
+            item = _object(step, "workflow_contract step")
+            step_id, label = item.get("stepId"), item.get("label")
+            if not isinstance(step_id, str) or not step_id or not isinstance(label, str) or not label:
+                raise AdapterContractError("workflow_contract steps require stepId and label")
+            steps.append(step_id)
+            source = _object(item.get("sourcePlan"), "workflow_contract step.sourcePlan")
+            if source.get("status") == "linked":
+                path = source.get("filePath")
+                if not isinstance(path, str) or not path:
+                    raise AdapterContractError("linked workflow sourcePlan requires filePath")
+                source_events.append(f"{path}:{source.get('line', 0)}")
+            api = item.get("apiPlan")
+            if isinstance(api, dict) and api.get("status") == "observed" and isinstance(api.get("method"), str) and isinstance(api.get("url"), str):
+                network.append(f"{api['method']} {api['url']}")
+            transitions.extend(str(effect) for effect in item.get("expectedEffects", []) if isinstance(effect, str) and effect)
+        if not source_events:
+            raise AdapterContractError("workflow_contract has no linked source events")
+        return AdapterEnvelope(self.kind, {
+            "workflow_contract_version": "synthi.browser.workflow.v7", "workflow_id": workflow_id, "origin": origin, "route": route,
+            "state_fixture": observation.get("state_fixture", observation.get("stateFixture", {})), "device": str(observation.get("device", "desktop")),
+            "viewport": _object(observation.get("viewport", {"width": 1280, "height": 720}), "browser viewport"),
+            "steps": steps, "network_sequence": network, "dom_transitions": transitions or ["workflow effect recorded"],
+            "source_events": source_events, "console": _strings(observation.get("console", []), "browser console", allow_empty=True),
+            "replay_mode": "ciIsolated",
         }, {"steps": steps, "network": network})
 
 

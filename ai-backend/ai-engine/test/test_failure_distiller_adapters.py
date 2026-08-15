@@ -32,3 +32,23 @@ def test_specialized_adapters_preserve_attested_signature_contracts(observation)
 def test_hmr_adapter_rejects_nonterminal_recording():
     with pytest.raises(AdapterContractError, match="terminal"):
         normalize_adapter_observation({"kind": "hmr", "hmr_events": ["check", "building"]})
+
+
+def test_browser_adapter_consumes_taught_workflow_contract_v7():
+    envelope = normalize_adapter_observation({
+        "kind": "browser", "viewport": {"width": 1280, "height": 720},
+        "workflowContract": {
+            "workflowId": "invite-flow", "appOrigin": "http://app.local", "routePattern": "/invite",
+            "sourceIdentityCoverage": {"status": "complete", "linkedSteps": 1, "totalSteps": 1},
+            "replayModes": ["ciIsolated"],
+            "steps": [{"stepId": "submit", "label": "Submit invite", "sourcePlan": {"status": "linked", "filePath": "src/Invite.tsx", "line": 22}, "apiPlan": {"status": "observed", "method": "POST", "url": "/invites"}, "expectedEffects": ["modal closes"]}],
+        },
+    })
+    assert envelope.recording["workflow_id"] == "invite-flow"
+    assert envelope.recording["network_sequence"] == ["POST /invites"]
+    assert envelope.recording["source_events"] == ["src/Invite.tsx:22"]
+
+
+def test_browser_adapter_rejects_taught_contract_without_isolated_replay_or_source_identity():
+    with pytest.raises(AdapterContractError, match="source identity"):
+        normalize_adapter_observation({"kind": "browser", "workflowContract": {"workflowId": "bad", "appOrigin": "http://app", "sourceIdentityCoverage": {"status": "missing", "linkedSteps": 0}, "replayModes": ["ciIsolated"], "steps": []}})
