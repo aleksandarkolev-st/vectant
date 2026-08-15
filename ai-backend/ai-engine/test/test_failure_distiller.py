@@ -309,12 +309,15 @@ def test_derives_a_failure_signature_when_callers_supply_only_a_predicate(worksp
 
 def test_records_redacted_hmr_observation_and_maps_its_source_provenance(workspace):
     payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
-    payload["observation"] = {"kind": "hmr", "eventRef": "hmr:42", "filePath": "runner.py", "message": "password=never-persist"}
+    payload["observation"] = {"kind": "hmr", "eventRef": "hmr:42", "filePath": "runner.py", "message": "password=never-persist", "hmrEvents": ["check", "applied"]}
     result = run(FailureDistiller().distill(payload))
     capsule = Path(result["workspace_path"])
     repro = json.loads((capsule / "repro.json").read_text(encoding="utf-8"))
     provenance = json.loads((capsule / "provenance.json").read_text(encoding="utf-8"))
-    assert repro["observation"] == {"kind": "hmr", "event_ref": "hmr:42", "file_path": "runner.py", "message": "password=<redacted>"}
+    assert repro["observation"] == {
+        "kind": "hmr", "event_ref": "hmr:42", "file_path": "runner.py", "message": "password=<redacted>",
+        "adapter": {"kind": "hmr", "recording": {"hmr_events": ["check", "applied"], "terminal": "applied"}, "candidate_groups": {"events": ["check", "applied"]}},
+    }
     assert "runner.py" in provenance
 
 
@@ -329,6 +332,9 @@ def test_runtime_observation_builds_a_reduction_frontier_from_attested_paths(wor
         "kind": "gpu",
         "eventRef": "gpu-proof:17",
         "filePath": "runner.py",
+        "deviceMarker": "test-device",
+        "errorFingerprint": "gpu-fingerprint-17",
+        "frameStates": ["frame:0", "frame:1:error"],
         "executedPaths": ["executed.py"],
         "fixturePaths": ["fixture.json"],
     }
@@ -350,7 +356,7 @@ def test_runtime_auto_discovery_refuses_without_attested_frontier(workspace):
     payload = request(workspace, [])
     payload["autoDiscover"] = True
     payload["observation"] = {"kind": "native", "eventRef": "native:3"}
-    with pytest.raises(DistillationError, match="requires observed"):
+    with pytest.raises(DistillationError, match="boundary_not_isolatable"):
         run(FailureDistiller().distill(payload))
 
 

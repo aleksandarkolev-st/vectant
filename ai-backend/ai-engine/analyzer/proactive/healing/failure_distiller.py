@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
+from .failure_distiller_adapters import AdapterContractError, normalize_adapter_observation
+
 
 STATUSES = {
     "distilled", "stable_partial", "not_reproducible", "unstable_baseline",
@@ -628,6 +630,16 @@ class FailureDistiller:
                 raise DistillationError(f"observation {key} exceeds the 500-path limit")
             if normalized:
                 observation[key] = normalized
+        # Runtime adapters must receive an attested recording rather than a
+        # free-form message.  The generic reducer persists the normalised
+        # adapter contract and uses its paths as the only auto-discovery
+        # frontier; it never invents browser/native/GPU evidence.
+        if kind in {"browser", "native", "hmr", "gpu"}:
+            try:
+                envelope = normalize_adapter_observation(raw)
+            except AdapterContractError as exc:
+                raise DistillationError(f"boundary_not_isolatable: {exc}") from exc
+            observation["adapter"] = {"kind": envelope.kind, "recording": envelope.recording, "candidate_groups": envelope.candidate_groups}
         return observation
 
     def _runtime_identity(self, command: Sequence[str], environment: Dict[str, str]) -> Dict[str, Any]:
