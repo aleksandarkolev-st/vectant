@@ -123,6 +123,29 @@ def test_patch_validation_requires_and_records_all_round_trip_gates(workspace):
     assert stored["status"] == "validated"
 
 
+def test_patch_round_trip_invalidates_a_capsule_when_removed_boundary_changes_fix_result(workspace):
+    (workspace / "runner.py").write_text(
+        "import sys\nprint('FailureSignature: boundary mismatch')\nsys.exit(7)\n",
+        encoding="utf-8",
+    )
+    (workspace / "hidden-boundary.flag").write_text("present\n", encoding="utf-8")
+    git(workspace, "add", "runner.py", "hidden-boundary.flag")
+    git(workspace, "commit", "-m", "mismatch fixture")
+    payload = request(workspace, [{"kind": "file", "reference": "hidden-boundary.flag"}])
+    payload["signature"] = {"required": ["boundary mismatch"]}
+    result = run(FailureDistiller().distill(payload))
+    assert result["ok"]
+    validation = run(FailureDistiller().validate_patch({
+        "capsulePath": result["workspace_path"],
+        "edits": [{"path": "runner.py", "content": "import pathlib, sys\nif pathlib.Path('hidden-boundary.flag').exists():\n print('FailureSignature: boundary mismatch'); sys.exit(7)\nprint('fixed')\n"}],
+    }))
+    assert validation["status"] == "original_validation_failed"
+    assert validation["mismatch"]["classification"] == "missing_causal_dependency_or_invalid_boundary"
+    assert validation["mismatch"]["boundary_action"] == "invalidate_and_expand"
+    manifest = json.loads((Path(result["workspace_path"]) / "manifest.json").read_text())
+    assert manifest["status"] == "boundary_invalidated"
+
+
 def test_auto_discovery_reduces_json_fixture_records_and_replay_uses_overlay(workspace):
     (workspace / "fixture.json").write_text(
         json.dumps({"required": True, "unrelated": "remove me"}), encoding="utf-8"
