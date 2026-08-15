@@ -40,9 +40,9 @@ SECRET_VALUE = re.compile(r"(?P<key>\b(?:token|secret|password|passwd|api[_-]?ke
 BEARER_VALUE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+\-/=]+", re.I)
 SECRET_COMMAND_ARGUMENT = re.compile(r"(?:^|[-_/])(token|secret|password|passwd|api[_-]?key|credential|private[_-]?key)(?:$|=|:)", re.I)
 DEFAULT_BUDGETS = {
-    "fast": {"max_executions": 100, "stability_attempts": 3, "minimum_matches": 3, "timeout_sec": 30},
-    "standard": {"max_executions": 1000, "stability_attempts": 5, "minimum_matches": 5, "timeout_sec": 60},
-    "deep": {"max_executions": 5000, "stability_attempts": 10, "minimum_matches": 9, "timeout_sec": 90},
+    "fast": {"max_executions": 100, "stability_attempts": 3, "minimum_matches": 3, "timeout_sec": 30, "parallelism": 1},
+    "standard": {"max_executions": 1000, "stability_attempts": 5, "minimum_matches": 5, "timeout_sec": 60, "parallelism": 4},
+    "deep": {"max_executions": 5000, "stability_attempts": 10, "minimum_matches": 9, "timeout_sec": 90, "parallelism": 8},
 }
 
 
@@ -89,6 +89,7 @@ class Budget:
     stability_attempts: int
     minimum_matches: int
     timeout_sec: int
+    parallelism: int
 
     @classmethod
     def from_request(cls, raw: Any) -> "Budget":
@@ -104,7 +105,7 @@ class Budget:
         else:
             values = DEFAULT_BUDGETS["standard"]
         budget = cls(**{key: int(values[key]) for key in cls.__dataclass_fields__})
-        if budget.max_executions < 1 or budget.stability_attempts < 1 or budget.minimum_matches < 1:
+        if budget.max_executions < 1 or budget.stability_attempts < 1 or budget.minimum_matches < 1 or budget.parallelism < 1:
             raise DistillationError("budget values must be positive")
         if budget.minimum_matches > budget.stability_attempts:
             raise DistillationError("minimum_matches cannot exceed stability_attempts")
@@ -300,26 +301,55 @@ class FailureDistiller:
         # before another accepted removal can become removable afterwards, so
         # confirm 1-minimality against the final reduced world.
         confirmation_complete = True
-        for candidate in list(active):
+        confirmation_prefetch: Dict[str, Dict[str, Any]] = {}
+        confirmation_index = 0
+        while confirmation_index < len(active):
+            candidate = active[confirmation_index]
             if executions >= budget.max_executions:
                 confirmation_complete = False
                 break
             proposed = [*removed, candidate]
             key = self._world_hash(proposed, environment, command, source_revision, runtime)
-            evaluation = cache.get(key)
+            prefetched = confirmation_prefetch.pop(key, None)
+            evaluation = prefetched or cache.get(key)
             if evaluation is None:
                 evaluation = await self._evaluate(root, command, environment, proposed, predicate, signature, budget)
                 cache[key] = evaluation
                 self._save_evaluation_cache(root, cache)
             else:
                 self._metrics["cache_hits"] += 1
-            executions += evaluation["attempts"]
+            if prefetched is None:
+                executions += evaluation["attempts"]
             decision = "removed" if evaluation["matches"] >= budget.minimum_matches else "retained"
             evidence.append({"candidate": candidate.identifier, "operation": "confirm_remove", "world_hash": key, "predicate": "fail" if evaluation["predicate_matches"] else "pass", "signature": "match" if evaluation["signature_matches"] else "mismatch", "runs": {"matching_failures": evaluation["matches"], "attempts": evaluation["attempts"]}, "decision": decision})
             if decision == "removed":
                 removed.append(candidate)
                 active.remove(candidate)
                 retained = [entry for entry in retained if entry[0] != candidate]
+                # All remaining prefetches refer to the prior reduction world.
+                # They must never influence a later greedy decision.
+                confirmation_prefetch.clear()
+                continue
+            confirmation_index += 1
+            if confirmation_prefetch or budget.parallelism == 1:
+                continue
+            remaining_runs = max(0, budget.max_executions - executions)
+            parallel_count = min(budget.parallelism, (remaining_runs // budget.stability_attempts), len(active) - confirmation_index)
+            if parallel_count < 1:
+                continue
+            batch = active[confirmation_index:confirmation_index + parallel_count]
+            batch_keys = [self._world_hash([*removed, item], environment, command, source_revision, runtime) for item in batch]
+            missing = [(item, world_key) for item, world_key in zip(batch, batch_keys) if world_key not in cache]
+            if missing:
+                evaluated = await asyncio.gather(*[self._evaluate(root, command, environment, [*removed, item], predicate, signature, budget) for item, _ in missing])
+                for (_, world_key), result in zip(missing, evaluated):
+                    cache[world_key] = result
+                    confirmation_prefetch[world_key] = result
+                    executions += result["attempts"]
+                self._save_evaluation_cache(root, cache)
+            for world_key in batch_keys:
+                if world_key in cache:
+                    confirmation_prefetch.setdefault(world_key, cache[world_key])
 
         status = "distilled" if not active else "stable_partial"
         artifact = self._write_capsule(root, capsule_id, command, environment, observation, predicate, signature, budget, source_revision, dirty, baseline, active, removed, retained, evidence, status, retention_seconds)

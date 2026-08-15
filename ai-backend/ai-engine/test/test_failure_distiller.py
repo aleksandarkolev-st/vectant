@@ -403,6 +403,27 @@ def test_confirmation_pass_removes_units_that_become_noncausal_later(workspace):
     assert '"operation":"confirm_remove"' in decisions
 
 
+def test_confirmation_prefetches_independent_retained_candidates_safely(workspace):
+    for name in ("a.flag", "b.flag", "c.flag"):
+        (workspace / name).write_text("required\n", encoding="utf-8")
+    (workspace / "runner.py").write_text(
+        "import pathlib, sys\n"
+        "if all(pathlib.Path(name).exists() for name in ('a.flag', 'b.flag', 'c.flag')):\n"
+        " print('FailureSignature: parallel confirmation'); sys.exit(7)\n"
+        "print('fixed')\n",
+        encoding="utf-8",
+    )
+    git(workspace, "add", "runner.py", "a.flag", "b.flag", "c.flag")
+    git(workspace, "commit", "-m", "parallel confirmation fixture")
+    distiller = FailureDistiller()
+    payload = request(workspace, [{"kind": "file", "reference": name} for name in ("a.flag", "b.flag", "c.flag")])
+    payload["signature"] = {"required": ["parallel confirmation"]}
+    payload["budget"] = {"preset": "standard", "stability_attempts": 1, "minimum_matches": 1, "max_executions": 30, "parallelism": 2}
+    result = run(distiller.distill(payload))
+    assert result["ok"] and result["reduction"]["retained_units"] == 3
+    assert distiller.metrics()["cache_hits"] >= 2
+
+
 def test_derives_a_failure_signature_when_callers_supply_only_a_predicate(workspace):
     payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
     payload.pop("signature")
