@@ -101,6 +101,31 @@ def test_browser_replay_command_rejects_a_bad_attestation_before_execution(works
         run(FailureDistiller().distill(payload))
 
 
+@pytest.mark.skipif(not shutil.which("node") or not (Path(__file__).parents[3] / "node_modules" / "@playwright" / "test").exists() or not Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe").exists(), reason="local Playwright Chrome runtime unavailable")
+def test_browser_adapter_distills_a_real_playwright_chrome_failure(workspace):
+    modules = Path(__file__).parents[3] / "node_modules"
+    try:
+        (workspace / "node_modules").symlink_to(modules, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create local node_modules link")
+    (workspace / ".gitignore").write_text("node_modules\n", encoding="utf-8")
+    (workspace / "browser_failure.mjs").write_text(
+        "import http from 'node:http'; import { chromium } from '@playwright/test';\n"
+        "const server=http.createServer((req,res)=>{if(req.url==='/api/invite'){res.end('ok');return}res.end(`<button id=go>Submit</button><div id=result>open</div><script>document.querySelector('#go').onclick=async()=>{console.error('InviteModal.onSubmit');await fetch('/api/invite');document.querySelector('#result').textContent='closed'}</script>`)});\n"
+        "await new Promise(r=>server.listen(0,'127.0.0.1',r)); const url=`http://127.0.0.1:${server.address().port}`; const browser=await chromium.launch({headless:true,executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe'}); const page=await browser.newPage(); const logs=[]; page.on('console',m=>logs.push(m.text())); await page.goto(url); await page.click('#go'); await page.waitForTimeout(30); const ok=await page.locator('#result').textContent()==='closed'; await browser.close(); await new Promise(r=>server.close(r)); if(ok&&logs.includes('InviteModal.onSubmit')){console.log('FailureSignature: browser real invite missing dispatch');process.exit(7)} process.exit(0);\n",
+        encoding="utf-8",
+    )
+    git(workspace, "add", ".gitignore", "browser_failure.mjs")
+    git(workspace, "commit", "-m", "real browser failure fixture")
+    command = [shutil.which("node") or "node", "browser_failure.mjs"]
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload.update({"command": command, "signature": {"required": ["browser real invite missing dispatch"]}, "budget": {"preset": "fast", "stability_attempts": 1, "minimum_matches": 1, "max_executions": 8}})
+    payload["observation"] = {"kind": "browser", "executedPaths": ["browser_failure.mjs"], "workflow": {"route": "/invite", "state_fixture": {}, "device": "desktop", "viewport": {"width": 1280, "height": 720}, "steps": ["submit"], "network_sequence": ["GET /api/invite"], "dom_transitions": ["open", "closed"], "source_events": ["browser_failure.mjs:2"], "console": ["InviteModal.onSubmit"]}}
+    result = run(FailureDistiller().distill(payload))
+    assert result["ok"], result
+    assert result["baseline"]["matching_failures"] == 1
+
+
 def test_durable_evaluation_cache_does_not_make_the_source_workspace_dirty(workspace):
     payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
     first = run(FailureDistiller().distill(payload))
