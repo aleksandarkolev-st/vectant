@@ -59,7 +59,7 @@ async def _run_case(case: dict[str, Any]) -> dict[str, Any]:
         removed = int(result.get("reduction", {}).get("removed_units", 0))
         validation = None
         if accepted:
-            fixed_content = "console.log('fixed');\n" if case["faulty_region"].endswith((".js", ".mjs", ".ts", ".tsx")) else "print('fixed')\n"
+            fixed_content = case.get("fixed_content") or ("console.log('fixed');\n" if case["faulty_region"].endswith((".js", ".mjs", ".ts", ".tsx")) else "print('fixed')\n")
             validation = await FailureDistiller().validate_patch({"capsulePath": result["workspace_path"], "edits": [{"path": case["faulty_region"], "content": fixed_content}], "affectedChecks": [[sys.executable, "-c", "import sys; sys.exit(0)"]]})
         return {"id": case["id"], "adapter": case["adapter"], "faulty_region": case["faulty_region"], "accepted_fix": case["accepted_fix"], "distill": result, "validation": validation, "removed_ratio": removed / len(case["candidates"]) if case["candidates"] else 0.0}
 

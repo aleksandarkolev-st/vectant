@@ -33,7 +33,11 @@ class LocalTestExecutor:
 
     async def run(self, command: Sequence[str], cwd: Path, env: Dict[str, str], timeout_sec: int) -> ExecutionResult:
         started = time.perf_counter()
-        runtime_env = {"PATH": os.environ.get("PATH", ""), "HOME": str(cwd), "TMPDIR": os.environ.get("TMPDIR", os.environ.get("TEMP", "")), **env}
+        # This backend is only injected by local unit/benchmark fixtures. On
+        # Windows, Python uses APPDATA to locate an already-installed test
+        # runner; keep that locator without inheriting the rest of the host
+        # environment. Production always uses ContainerExecutor instead.
+        runtime_env = {"PATH": os.environ.get("PATH", ""), "HOME": str(cwd), "TMPDIR": os.environ.get("TMPDIR", os.environ.get("TEMP", "")), "APPDATA": os.environ.get("APPDATA", ""), "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""), "WINDIR": os.environ.get("WINDIR", ""), "COMSPEC": os.environ.get("COMSPEC", ""), **env}
         try:
             process = await asyncio.create_subprocess_exec(*command, cwd=str(cwd), env=runtime_env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_sec)

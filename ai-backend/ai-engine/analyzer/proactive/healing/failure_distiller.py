@@ -607,8 +607,10 @@ class FailureDistiller:
             finally:
                 self._remove_worktree(root, capsule_worktree)
                 self._remove_worktree(root, original_worktree)
-        capsule_passes = not predicate.matches(capsule_run.exit_code, capsule_run.output)
-        original_passes = not predicate.matches(original_run.exit_code, original_run.output)
+        # A disappeared signature is not a fixed world if the runner itself
+        # now fails (for example, an invalid test file or a load error).
+        capsule_passes = capsule_run.exit_code == 0 and not predicate.matches(capsule_run.exit_code, capsule_run.output)
+        original_passes = original_run.exit_code == 0 and not predicate.matches(original_run.exit_code, original_run.output)
         failed_checks = [check for check in affected if check["run"]["exit_code"] != 0]
         status = "validated" if capsule_passes and original_passes and not failed_checks else ("capsule_fix_failed" if not capsule_passes else "original_validation_failed" if not original_passes else "affected_checks_failed")
         if status == "validated":

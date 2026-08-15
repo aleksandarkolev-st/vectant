@@ -5,6 +5,7 @@
   "accepted_fix": "remove required.flag dependency",
   "files": {"package.json": "{\"type\":\"module\"}\n", "failure.test.mjs": "import { test } from 'vitest';\ntest('fixture failure', () => { throw new Error('FailureSignature vitest-config'); });\n", "noise.json": "{\"unused\":true}\n"},
   "command": ["{node}", "{vitest}", "run", "failure.test.mjs"],
+  "fixed_content": "import { test, expect } from 'vitest';\ntest('fixture fixed', () => { expect(true).toBe(true); });\n",
   "signature": "FailureSignature vitest-config",
   "candidates": ["noise.json"]
 }

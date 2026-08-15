@@ -1,10 +1,11 @@
 {
   "id": "pytest-fixture-v1",
   "adapter": "test",
-  "faulty_region": "runner.py",
+  "faulty_region": "test_failure.py",
   "accepted_fix": "remove required.flag dependency",
-  "files": {"runner.py": "import pathlib,sys\nif pathlib.Path('required.flag').exists(): print('FailureSignature pytest-fixture'); sys.exit(7)\n", "required.flag": "1\n", "unrelated.txt": "discard\n"},
-  "command": ["{python}", "runner.py"],
+  "files": {"test_failure.py": "def test_fixture_failure():\n    assert False, 'FailureSignature pytest-fixture'\n", "unrelated.txt": "discard\n"},
+  "command": ["{python}", "-m", "pytest", "-q", "test_failure.py"],
+  "fixed_content": "def test_fixture_failure():\n    assert True\n",
   "signature": "FailureSignature pytest-fixture",
   "candidates": ["unrelated.txt"]
 }
