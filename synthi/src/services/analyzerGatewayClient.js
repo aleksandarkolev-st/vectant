@@ -654,6 +654,12 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('heal/agentic/distill/delete', { capsulePath });
   }
 
+  /** Delete only capsules that have exceeded their declared retention period. */
+  purgeExpiredFailureCapsules(workspaceRoot) {
+    if (!workspaceRoot) return Promise.reject(new Error('workspaceRoot is required'));
+    return this._sendRequest('heal/agentic/distill/purge-expired', { workspaceRoot });
+  }
+
   /** Export a deterministic, sanitized Vivarium handoff for a verified capsule. */
   exportFailureCapsuleToVivarium(capsulePath) {
     if (!capsulePath) return Promise.reject(new Error('capsulePath is required'));

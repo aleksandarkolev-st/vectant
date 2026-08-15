@@ -99,3 +99,5 @@ def test_authenticated_capsule_lifecycle_through_real_app_routes(tmp_path, monke
         assert promotion.status_code == 200 and promotion.json()["status"] == "vivarium_promoted", promotion.text
         deleted = client.post("/heal/agentic/distill/delete", json={"capsulePath": capsule_path}, headers=headers)
         assert deleted.status_code == 200 and deleted.json()["status"] == "deleted", deleted.text
+        purged = client.post("/heal/agentic/distill/purge-expired", json={"workspaceRoot": str(root)}, headers=headers)
+        assert purged.status_code == 200 and purged.json()["status"] == "purged", purged.text

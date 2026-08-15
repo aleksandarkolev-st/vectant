@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { Box, Play, PackageCheck, AlertTriangle, BarChart3, Trash2, Sprout, BadgeCheck } from 'lucide-react';
+import { Box, Play, PackageCheck, AlertTriangle, BarChart3, Trash2, Sprout, BadgeCheck, Clock3 } from 'lucide-react';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 
 const inputClass = 'w-full rounded-[var(--radius-control)] border px-2 py-1.5 text-xs outline-none focus:ring-2';
@@ -115,6 +115,7 @@ export function FailureDistillerPanel() {
           {capsule?.workspacePath ? <button type="button" disabled={busy} onClick={() => execute(() => gateway.exportFailureCapsuleToVivarium(capsule.workspacePath))} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--accent-info)' }}><Sprout size={12} /> Vivarium</button> : null}
           {capsule?.workspacePath ? <button type="button" disabled={busy} onClick={() => execute(() => gateway.promoteFailureCapsuleToVivarium(capsule.workspacePath))} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--accent-info)' }}><BadgeCheck size={12} /> Promote</button> : null}
           {capsule?.workspacePath ? <button type="button" disabled={busy} onClick={deleteCapsule} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--accent-danger)', color: 'var(--accent-danger)' }}><Trash2 size={12} /> Delete</button> : null}
+          <button type="button" disabled={busy || !workspaceRoot.trim()} onClick={() => execute(() => gateway.purgeExpiredFailureCapsules(workspaceRoot.trim()))} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--border-subtle)' }}><Clock3 size={12} /> Purge expired</button>
           <button type="button" disabled={busy} onClick={() => execute(() => gateway.getFailureDistillerMetrics())} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--border-subtle)' }}><BarChart3 size={12} /> Metrics</button>
         </div>
       </div>
