@@ -182,6 +182,18 @@ def test_materializes_a_reduced_workspace_and_reproduces(workspace):
     assert "runner.py" in materialized["retained_paths"]
     assert run(FailureDistiller().run(materialized["workspace_path"]))["status"] == "same_failure"
     assert "vectant repro run ." in (destination / "CAPSULE.md").read_text(encoding="utf-8")
+    assert not any(path.is_symlink() for path in destination.rglob("*"))
+    assert (destination / ".vectant-runtime.json").is_file()
+    assert (destination / ".vectant-integrity.json").is_file()
+
+
+def test_materialized_capsule_rejects_tampering(workspace):
+    result = run(FailureDistiller().distill(request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])))
+    materialized = run(FailureDistiller().materialize({"capsulePath": result["workspace_path"]}))
+    destination = Path(materialized["workspace_path"])
+    (destination / "runner.py").write_text("print('tampered')\n", encoding="utf-8")
+    replay = run(FailureDistiller().run(str(destination)))
+    assert replay["status"] == "boundary_not_isolatable"
 
 
 def test_materialization_keeps_static_python_import_closure(workspace):

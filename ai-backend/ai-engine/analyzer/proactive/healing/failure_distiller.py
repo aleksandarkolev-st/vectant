@@ -307,6 +307,12 @@ class FailureDistiller:
         if not root.is_dir():
             return self._state("boundary_not_isolatable", "source workspace is no longer available")
         predicate, signature = Predicate.from_request(repro["predicate"]), Signature.from_request(repro["signature"])
+        if repro.get("mode") == "materialized":
+            integrity_path = root / ".vectant-integrity.json"
+            if not integrity_path.is_file() or self._read_json(integrity_path) != self._materialized_integrity(root):
+                return self._state("boundary_not_isolatable", "materialized capsule integrity check failed")
+            run = await self._run(self._command(repro["command"]), root, repro["environment"], int(repro["budget"]["timeout_sec"]))
+            return {"ok": True, "status": "same_failure" if predicate.matches(run.exit_code, run.output) and signature.matches(run.output) else "different_outcome", "run": self._run_dict(run)}
         with self._temporary_worktree_root(root) as temp:
             worktree = Path(temp) / "w"
             self._create_worktree(root, worktree)
@@ -347,14 +353,9 @@ class FailureDistiller:
                 provenance = self._read_json(capsule / "provenance.json")
                 retained_paths = self._materialized_paths(worktree, repro, provenance)
                 self._copy_materialized_paths(worktree, destination, retained_paths)
-                source_modules = root / "node_modules"
-                if source_modules.is_dir():
-                    try:
-                        os.symlink(source_modules, destination / "node_modules", target_is_directory=True)
-                    except OSError:
-                        pass
                 predicate, signature = Predicate.from_request(repro["predicate"]), Signature.from_request(repro["signature"])
-                run = await self._run(self._reduced_command(self._command(repro["command"]), [Candidate(**item) for item in repro.get("removed_units", [])]), destination, reduced_env, int(repro["budget"]["timeout_sec"]))
+                portable_command = self._portable_command(self._reduced_command(self._command(repro["command"]), [Candidate(**item) for item in repro.get("removed_units", [])]), worktree, destination)
+                run = await self._run(portable_command, destination, reduced_env, int(repro["budget"]["timeout_sec"]))
             except Exception:
                 shutil.rmtree(destination, ignore_errors=True)
                 raise
@@ -363,16 +364,23 @@ class FailureDistiller:
         if not predicate.matches(run.exit_code, run.output) or not signature.matches(run.output):
             shutil.rmtree(destination, ignore_errors=True)
             return self._state("boundary_not_isolatable", "materialized workspace did not reproduce the same failure", run=self._run_dict(run))
-        materialized_repro = {**repro, "workspace_root": str(destination), "mode": "materialized"}
+        materialized_repro = {**repro, "workspace_root": str(destination), "command": portable_command, "mode": "materialized"}
         self._write_json(destination / ".vectant-materialized-repro.json", materialized_repro)
+        self._write_json(destination / ".vectant-runtime.json", {
+            "schema_version": "vectant.failure_capsule.runtime.v1", "runtime": repro["runtime"],
+            "dependency_policy": {"network_install": "denied", "lifecycle_scripts": "denied", "source_workspace_dependency": "forbidden"},
+            "integrity": {"algorithm": "sha256", "manifest": ".vectant-integrity.json"},
+        })
         (destination / "CAPSULE.md").write_text(
             "# Materialized failure capsule\n\n"
             "This workspace was verified against its source capsule.\n\n"
             "Run: `vectant repro run .`\n",
             encoding="utf-8",
         )
+        integrity = self._materialized_integrity(destination)
+        self._write_json(destination / ".vectant-integrity.json", integrity)
         self._metrics["materialized_capsules"] += 1
-        return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "retained_paths": sorted(retained_paths), "limits": ["dependencies are linked from the originating workspace when available", "source closure is conservative and verified by same-signature replay"]}
+        return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "retained_paths": sorted(retained_paths), "integrity_path": str(destination / ".vectant-integrity.json"), "limits": ["dependency installation and lifecycle scripts are denied", "source closure is conservative and verified by same-signature replay"]}
 
     def export_vivarium_manifest(self, capsule_path: str) -> Dict[str, Any]:
         """Export a sanitized, deterministic handoff contract for Agent Dojo Vivarium.
@@ -698,14 +706,6 @@ class FailureDistiller:
 
     def _create_worktree(self, root: Path, destination: Path) -> None:
         _git(root, "worktree", "add", "--detach", "--force", str(destination), "HEAD")
-        # A worktree does not own dependencies. Link only its local install, never copy credentials.
-        modules = root / "node_modules"
-        if modules.is_dir() and not (destination / "node_modules").exists():
-            try:
-                os.symlink(modules, destination / "node_modules", target_is_directory=True)
-            except OSError:
-                # Node can still resolve workspace-level modules in many package layouts.
-                pass
 
     def _temporary_worktree_root(self, root: Path):
         """Prefer a very short temp root on Windows for deep repository paths."""
@@ -820,6 +820,43 @@ class FailureDistiller:
             dest = destination / relative
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
+
+    def _portable_command(self, command: Sequence[str], source: Path, destination: Path) -> List[str]:
+        """Map workspace paths into a standalone capsule; reject hidden host links.
+
+        An executable resolved from the platform is intentionally retained as a
+        runtime requirement.  Every *file argument* must either be inside the
+        materialized workspace or be copied there.  Arbitrary absolute host
+        files are not safe portable dependencies and fail closed.
+        """
+        portable: List[str] = []
+        for index, part in enumerate(command):
+            value = Path(part)
+            if index == 0:
+                portable.append(part)
+                continue
+            if value.is_absolute():
+                try:
+                    relative = value.resolve().relative_to(source.resolve())
+                except ValueError as exc:
+                    raise DistillationError("materialization cannot retain an absolute dependency outside the capsule workspace") from exc
+                copied = destination / relative
+                if not copied.is_file():
+                    copied.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(value, copied)
+                portable.append(str(copied))
+            else:
+                portable.append(part)
+        return portable
+
+    def _materialized_integrity(self, destination: Path) -> Dict[str, Any]:
+        files = {}
+        for path in sorted(destination.rglob("*")):
+            if path.is_file() and path.name != ".vectant-integrity.json":
+                files[path.relative_to(destination).as_posix()] = _sha256(path.read_bytes())
+            elif path.is_symlink():
+                raise DistillationError("materialized capsule may not contain symlinks")
+        return {"schema_version": "vectant.failure_capsule.integrity.v1", "files": files, "root_sha256": _sha256(_json(files).encode())}
 
     def _discover_candidates(self, root: Path, command: Sequence[str], existing: Sequence[Candidate], observation: Dict[str, Any], environment_input: Any) -> List[Candidate]:
         """Discover conservative, file-level units for pytest/Vitest repos.
