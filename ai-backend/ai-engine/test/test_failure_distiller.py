@@ -282,6 +282,24 @@ def test_reduces_noncausal_command_input_and_replays_reduced_command(workspace):
     assert run(FailureDistiller().run(result["workspace_path"]))["status"] == "same_failure"
 
 
+def test_reduces_supported_python_function_units_without_text_heuristics(workspace):
+    (workspace / "runner.py").write_text(
+        "import sys\n"
+        "def unused_helper():\n    return 'discard'\n"
+        "def failure():\n    print('FailureSignature: source unit'); return 7\n"
+        "sys.exit(failure())\n",
+        encoding="utf-8",
+    )
+    git(workspace, "add", "runner.py")
+    git(workspace, "commit", "-m", "source unit fixture")
+    payload = request(workspace, [{"kind": "python_function", "reference": "runner.py#unused_helper"}])
+    payload["signature"] = {"required": ["source unit"]}
+    result = run(FailureDistiller().distill(payload))
+    assert result["ok"]
+    assert result["reduction"]["removed_units"] == 1
+    assert run(FailureDistiller().run(result["workspace_path"]))["status"] == "same_failure"
+
+
 def test_confirmation_pass_removes_units_that_become_noncausal_later(workspace):
     (workspace / "a.flag").write_text("a\n", encoding="utf-8")
     (workspace / "b.flag").write_text("b\n", encoding="utf-8")

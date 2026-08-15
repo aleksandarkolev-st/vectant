@@ -10,6 +10,7 @@ Vitest without pretending to minimise arbitrary programs.
 from __future__ import annotations
 
 import asyncio
+import ast
 import hashlib
 import json
 import os
@@ -162,8 +163,8 @@ class Candidate:
         if not isinstance(raw, dict):
             raise DistillationError("candidate units must be objects")
         kind, reference = raw.get("kind"), raw.get("reference")
-        if kind not in {"file", "env", "json_key", "json_record", "command_arg"} or not isinstance(reference, str) or not reference:
-            raise DistillationError("candidate units require kind=file|env|json_key|json_record|command_arg and reference")
+        if kind not in {"file", "env", "json_key", "json_record", "command_arg", "python_function", "python_statement"} or not isinstance(reference, str) or not reference:
+            raise DistillationError("candidate units require a supported file, config, input, or Python source-unit kind and reference")
         if kind == "file":
             reference = _safe_relative(root, reference).as_posix()
         if kind in {"json_key", "json_record"}:
@@ -173,6 +174,27 @@ class Candidate:
             if not selector:
                 raise DistillationError("JSON candidate selector is required")
             reference = f"{_safe_relative(root, raw_file).as_posix()}#{selector}"
+        if kind in {"python_function", "python_statement"}:
+            if "#" not in reference:
+                raise DistillationError("Python source-unit references must be file.py#selector")
+            raw_file, selector = reference.split("#", 1)
+            relative = _safe_relative(root, raw_file)
+            if relative.suffix != ".py" or not selector:
+                raise DistillationError("Python source units require a .py file and selector")
+            try:
+                tree = ast.parse((root / relative).read_text(encoding="utf-8"))
+            except (OSError, SyntaxError) as exc:
+                raise DistillationError("Python source unit cannot be parsed") from exc
+            if kind == "python_function" and not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == selector for node in ast.walk(tree)):
+                raise DistillationError("Python function candidate does not exist")
+            if kind == "python_statement":
+                try:
+                    line = int(selector)
+                except ValueError as exc:
+                    raise DistillationError("Python statement selector must be a line number") from exc
+                if not any(isinstance(node, ast.stmt) and getattr(node, "lineno", -1) == line for node in ast.walk(tree)):
+                    raise DistillationError("Python statement candidate does not exist")
+            reference = f"{relative.as_posix()}#{selector}"
         if kind == "env" and SECRET_NAME.search(reference):
             raise DistillationError("secret-bearing environment variables cannot be reduced or persisted")
         if kind == "command_arg":
@@ -233,7 +255,7 @@ class FailureDistiller:
         observation = self._observation(request.get("observation"), root)
         candidates = [Candidate.from_request(item, root) for item in request.get("candidates", [])]
         if request.get("autoDiscover", request.get("auto_discover", False)):
-            candidates.extend(self._discover_candidates(root, command, candidates, observation, environment_input))
+            candidates.extend(self._discover_candidates(root, command, candidates, observation, environment_input, budget))
         if len({candidate.identifier for candidate in candidates}) != len(candidates):
             raise DistillationError("candidate units must be unique")
         baseline = await self._stability(root, command, environment, predicate, signature, budget)
@@ -750,6 +772,10 @@ class FailureDistiller:
                 if target.is_file() or target.is_symlink():
                     target.unlink()
                 continue
+            if candidate.kind in {"python_function", "python_statement"}:
+                raw_file, selector = candidate.reference.split("#", 1)
+                self._remove_python_unit(worktree / raw_file, candidate.kind, selector)
+                continue
             file_ref, selector = candidate.reference.split("#", 1)
             target = worktree / file_ref
             if not target.is_file():
@@ -778,6 +804,30 @@ class FailureDistiller:
             current = current[int(part)] if isinstance(current, list) else current[part]
         return current, parts[-1]
 
+    def _remove_python_unit(self, target: Path, kind: str, selector: str) -> None:
+        """Remove a precise AST span while retaining diagnostic line numbers."""
+        try:
+            source = target.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+        except (OSError, SyntaxError) as exc:
+            raise DistillationError("Python source unit cannot be reduced after materialization") from exc
+        selected = None
+        for node in ast.walk(tree):
+            if kind == "python_function" and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == selector:
+                selected = node
+                break
+            if kind == "python_statement" and isinstance(node, ast.stmt) and getattr(node, "lineno", -1) == int(selector):
+                selected = node
+                break
+        if selected is None or not getattr(selected, "end_lineno", None):
+            raise DistillationError("Python source unit no longer has a safe source span")
+        if kind == "python_statement" and not isinstance(selected, (ast.Expr, ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            raise DistillationError("only simple Python statements are supported for reduction")
+        lines = source.splitlines(keepends=True)
+        start, end = selected.lineno - 1, selected.end_lineno
+        lines[start:end] = ["\n" for _ in lines[start:end]]
+        target.write_text("".join(lines), encoding="utf-8")
+
     def _materialized_paths(self, worktree: Path, repro: Dict[str, Any], provenance: Dict[str, Any]) -> set[str]:
         """Build a conservative file closure for portable materialization."""
         paths = {str(item["origin"]).replace("\\", "/") for item in provenance.values() if isinstance(item, dict) and isinstance(item.get("origin"), str)}
@@ -785,6 +835,8 @@ class FailureDistiller:
             if unit.get("kind") == "file":
                 paths.add(str(unit.get("reference", "")).replace("\\", "/"))
             elif unit.get("kind") in {"json_key", "json_record"}:
+                paths.add(str(unit.get("reference", "")).split("#", 1)[0].replace("\\", "/"))
+            elif unit.get("kind") in {"python_function", "python_statement"}:
                 paths.add(str(unit.get("reference", "")).split("#", 1)[0].replace("\\", "/"))
         for part in repro.get("command", []):
             if isinstance(part, str) and not Path(part).is_absolute() and self._looks_like_path(part) and (worktree / part).is_file():
@@ -876,7 +928,7 @@ class FailureDistiller:
                 raise DistillationError("materialized capsule may not contain symlinks")
         return {"schema_version": "vectant.failure_capsule.integrity.v1", "files": files, "root_sha256": _sha256(_json(files).encode())}
 
-    def _discover_candidates(self, root: Path, command: Sequence[str], existing: Sequence[Candidate], observation: Dict[str, Any], environment_input: Any) -> List[Candidate]:
+    def _discover_candidates(self, root: Path, command: Sequence[str], existing: Sequence[Candidate], observation: Dict[str, Any], environment_input: Any, budget: Budget) -> List[Candidate]:
         """Discover conservative, file-level units for pytest/Vitest repos.
 
         Runtime tracing is optional in both runners, so this adapter begins with
@@ -913,8 +965,24 @@ class FailureDistiller:
                 discovered.extend(self._json_candidates(root, relative))
             elif relative.suffix.lower() in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".yaml", ".yml", ".toml", ".ini", ".txt", ".csv"}:
                 discovered.append(Candidate("file", path))
+                if budget.max_executions >= DEFAULT_BUDGETS["deep"]["max_executions"] and relative.suffix == ".py":
+                    discovered.extend(self._python_source_candidates(root, relative))
         discovered.extend(Candidate("env", str(name)) for name in environment_input if not SECRET_NAME.search(str(name)))
         return [item for item in discovered if item.identifier not in existing_ids]
+
+    def _python_source_candidates(self, root: Path, relative: Path) -> List[Candidate]:
+        """Expose only AST-addressable units during the deep reduction pass."""
+        try:
+            tree = ast.parse((root / relative).read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            return []
+        candidates: List[Candidate] = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                candidates.append(Candidate("python_function", f"{relative.as_posix()}#{node.name}"))
+            elif isinstance(node, (ast.Expr, ast.Assign, ast.AnnAssign, ast.AugAssign)) and getattr(node, "lineno", None):
+                candidates.append(Candidate("python_statement", f"{relative.as_posix()}#{node.lineno}"))
+        return candidates
 
     def _supported_runner(self, command: Sequence[str]) -> Optional[str]:
         joined = " ".join(command).lower()
@@ -951,6 +1019,7 @@ class FailureDistiller:
         capsule.mkdir(parents=True, exist_ok=False)
         provenance: Dict[str, Any] = {}
         provenance_paths = {candidate.reference for candidate in active if candidate.kind == "file"}
+        provenance_paths.update(candidate.reference.split("#", 1)[0] for candidate in active if candidate.kind in {"python_function", "python_statement"})
         provenance_paths.update(part.replace("\\", "/") for part in command if self._looks_like_path(part) and (root / part).is_file())
         if observation.get("file_path"):
             provenance_paths.add(observation["file_path"])
