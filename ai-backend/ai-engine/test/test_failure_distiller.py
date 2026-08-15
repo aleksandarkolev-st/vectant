@@ -89,6 +89,18 @@ def test_browser_observation_can_supply_an_attested_workspace_replay_command(wor
     assert run(FailureDistiller().run(result["workspace_path"]))["status"] == "same_failure"
 
 
+def test_browser_replay_command_rejects_a_bad_attestation_before_execution(workspace):
+    payload = request(workspace, [])
+    payload.pop("command")
+    payload["observation"] = {
+        "kind": "browser", "executedPaths": ["runner.py"],
+        "replayCommand": [sys.executable, "runner.py"], "replayCommandSha256": "0" * 64,
+        "workflow": {"route": "/failure", "state_fixture": {}, "device": "desktop", "viewport": {"width": 1280, "height": 720}, "steps": ["submit"], "network_sequence": [], "dom_transitions": ["failure"], "source_events": ["runner.py:1"], "console": []},
+    }
+    with pytest.raises(DistillationError, match="replay_command_sha256"):
+        run(FailureDistiller().distill(payload))
+
+
 def test_durable_evaluation_cache_does_not_make_the_source_workspace_dirty(workspace):
     payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
     first = run(FailureDistiller().distill(payload))
