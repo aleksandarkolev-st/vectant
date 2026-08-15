@@ -1,10 +1,19 @@
 import sys
 
+import pytest
 from fastapi.testclient import TestClient
 
 import main
+from analyzer.proactive.healing import failure_distiller
+from analyzer.proactive.healing.failure_distiller import FailureDistiller
 
 from test_failure_distiller import git, request
+
+
+@pytest.fixture(autouse=True)
+def isolated_service_fixture(monkeypatch):
+    """Inject the hermetic local executor only for HTTP route fixtures."""
+    monkeypatch.setattr(failure_distiller, "_failure_distiller", FailureDistiller())
 
 
 def test_authenticated_distill_and_vivarium_export_routes(tmp_path, monkeypatch):

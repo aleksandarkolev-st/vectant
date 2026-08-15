@@ -26,6 +26,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
 from .failure_distiller_adapters import AdapterContractError, normalize_adapter_observation
+from .failure_distiller_execution import ContainerExecutor, ExecutionResult, IsolationError, LocalTestExecutor
 
 
 STATUSES = {
@@ -201,11 +202,15 @@ class Run:
 class FailureDistiller:
     """Creates logical capsules and validates patch round trips."""
 
-    def __init__(self) -> None:
+    def __init__(self, production: bool = False) -> None:
         self._metrics = {"distillation_requests": 0, "accepted_capsules": 0, "candidate_executions": 0, "candidate_units": 0, "removed_units": 0, "cache_hits": 0, "validation_requests": 0, "validated_patches": 0, "materialization_requests": 0, "materialized_capsules": 0}
+        self._production = production
+        self._executor: Any = LocalTestExecutor()
+        self._isolation_profile: Dict[str, Any] = {"mode": "local_test_only"}
 
     async def distill(self, request: Dict[str, Any]) -> Dict[str, Any]:
         self._metrics["distillation_requests"] += 1
+        self._configure_execution(request)
         root = Path(str(request.get("workspaceRoot", request.get("workspace_root", "")))).resolve()
         if not root.is_dir():
             raise DistillationError("workspaceRoot must be an existing directory")
@@ -303,6 +308,7 @@ class FailureDistiller:
         if not repro_path.is_file():
             repro_path = capsule / ".vectant-materialized-repro.json"
         repro = self._read_json(repro_path)
+        self._configure_execution(repro)
         root = Path(repro["workspace_root"]).resolve()
         if not root.is_dir():
             return self._state("boundary_not_isolatable", "source workspace is no longer available")
@@ -334,6 +340,7 @@ class FailureDistiller:
         self._metrics["materialization_requests"] += 1
         capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()
         repro = self._read_json(capsule / "repro.json")
+        self._configure_execution(repro)
         root = Path(repro["workspace_root"]).resolve()
         if not root.is_dir():
             return self._state("boundary_not_isolatable", "source workspace is no longer available")
@@ -503,6 +510,7 @@ class FailureDistiller:
         self._metrics["validation_requests"] += 1
         capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()
         repro, provenance = self._read_json(capsule / "repro.json"), self._read_json(capsule / "provenance.json")
+        self._configure_execution(repro)
         root = Path(repro["workspace_root"]).resolve()
         edits = request.get("edits", [])
         if not isinstance(edits, list) or not edits:
@@ -561,6 +569,16 @@ class FailureDistiller:
         accepted = self._metrics["accepted_capsules"]
         candidates = self._metrics["candidate_units"]
         return {**self._metrics, "reduction_ratio": self._metrics["removed_units"] / candidates if candidates else 0.0, "cache_hit_rate": self._metrics["cache_hits"] / (self._metrics["cache_hits"] + self._metrics["candidate_executions"]) if (self._metrics["cache_hits"] + self._metrics["candidate_executions"]) else 0.0, "patch_validation_rate": self._metrics["validated_patches"] / self._metrics["validation_requests"] if self._metrics["validation_requests"] else 0.0, "average_candidate_executions": self._metrics["candidate_executions"] / accepted if accepted else 0.0}
+
+    def _configure_execution(self, request: Dict[str, Any]) -> None:
+        if not self._production:
+            return
+        try:
+            profile = request.get("isolation", request.get("isolation_profile"))
+            self._executor = ContainerExecutor.from_request(profile)
+            self._isolation_profile = {"mode": "container", "engine": self._executor.engine, "image": self._executor.image, "network": "deny", "memory_mb": self._executor.memory_mb, "cpu_count": self._executor.cpu_count, "process_limit": self._executor.process_limit, "package_install": "deny", "lifecycle_scripts": "deny"}
+        except IsolationError as exc:
+            raise DistillationError(f"unsafe_external_boundary: {exc}") from exc
 
     def _command(self, raw: Any) -> List[str]:
         if isinstance(raw, str):
@@ -922,18 +940,11 @@ class FailureDistiller:
         return candidates or [Candidate("file", relative.as_posix())]
 
     async def _run(self, command: Sequence[str], cwd: Path, env: Dict[str, str], timeout_sec: int) -> Run:
-        started = time.perf_counter()
-        runtime_env = {"PATH": os.environ.get("PATH", ""), "HOME": str(cwd), "TMPDIR": tempfile.gettempdir(), **env}
         try:
-            process = await asyncio.create_subprocess_exec(*command, cwd=str(cwd), env=runtime_env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_sec)
-            return Run(process.returncode or 0, (stdout + stderr).decode("utf-8", "replace"), int((time.perf_counter() - started) * 1000))
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.communicate()
-            return Run(-1, "command timed out", int((time.perf_counter() - started) * 1000), True)
-        except FileNotFoundError:
-            return Run(-2, "command not found", int((time.perf_counter() - started) * 1000))
+            result: ExecutionResult = await self._executor.run(command, cwd, env, timeout_sec)
+            return Run(result.exit_code, result.output, result.duration_ms, result.timed_out)
+        except IsolationError as exc:
+            raise DistillationError(f"unsafe_external_boundary: {exc}") from exc
 
     def _write_capsule(self, root: Path, capsule_id: str, command: Sequence[str], environment: Dict[str, str], observation: Dict[str, Any], predicate: Predicate, signature: Signature, budget: Budget, revision: str, dirty: bool, baseline: Dict[str, Any], active: Sequence[Candidate], removed: Sequence[Candidate], retained: Sequence[Tuple[Candidate, str]], evidence: Sequence[Dict[str, Any]], status: str) -> Path:
         capsule = root / ".vectant" / "capsules" / capsule_id
@@ -951,7 +962,7 @@ class FailureDistiller:
                 provenance[origin] = {"kind": "file", "origin": origin, "revision": revision, "sha256": _sha256(file_path.read_bytes())}
         runtime = self._runtime_identity(command, environment)
         manifest = {"schema_version": "vectant.failure_capsule.v1", "capsule_id": capsule_id, "source_revision": revision, "dirty_workspace": dirty, "runtime": runtime, "observation": observation, "entrypoint": f"vectant repro run {capsule_id}", "status": status, "created_at": _utcnow()}
-        repro = {"workspace_root": str(root), "command": list(command), "environment": environment, "observation": observation, "runtime": runtime, "predicate": predicate.to_dict(), "signature": signature.to_dict(), "budget": budget.__dict__, "baseline": baseline, "active_units": [item.__dict__ for item in active], "removed_units": [item.__dict__ for item in removed]}
+        repro = {"workspace_root": str(root), "command": list(command), "environment": environment, "observation": observation, "runtime": runtime, "isolation": self._isolation_profile, "predicate": predicate.to_dict(), "signature": signature.to_dict(), "budget": budget.__dict__, "baseline": baseline, "active_units": [item.__dict__ for item in active], "removed_units": [item.__dict__ for item in removed]}
         validation = {"status": "not_run", "required_gates": ["capsule_fails_before_patch", "capsule_passes_after_patch", "original_world_passes_after_mapping", "affected_checks_pass"]}
         self._write_json(capsule / "manifest.json", manifest)
         self._write_json(capsule / "repro.json", repro)
@@ -1008,5 +1019,5 @@ _failure_distiller: Optional[FailureDistiller] = None
 def get_failure_distiller() -> FailureDistiller:
     global _failure_distiller
     if _failure_distiller is None:
-        _failure_distiller = FailureDistiller()
+        _failure_distiller = FailureDistiller(production=True)
     return _failure_distiller

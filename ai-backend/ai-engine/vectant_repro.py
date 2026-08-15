@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+from analyzer.proactive.healing.failure_distiller import DistillationError, FailureDistiller
 
 
 def _read_json(path: str) -> Dict[str, Any]:
@@ -31,7 +31,10 @@ def _emit(value: Dict[str, Any]) -> None:
 
 
 async def _execute(args: argparse.Namespace) -> Dict[str, Any]:
-    distiller = get_failure_distiller()
+    # The CLI is a local operator tool.  Production API execution always uses
+    # the fail-closed container backend; fixture authors can exercise logical
+    # capsules locally without granting that exception to the service.
+    distiller = FailureDistiller()
     if args.command == "distill":
         return await distiller.distill(_read_json(args.request))
     if args.command == "run":
