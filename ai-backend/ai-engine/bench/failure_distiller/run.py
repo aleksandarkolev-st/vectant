@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -47,7 +48,9 @@ async def _run_case(case: dict[str, Any]) -> dict[str, Any]:
         _git(root, "config", "user.name", "Vectant benchmark")
         _git(root, "add", ".")
         _git(root, "commit", "-m", "benchmark fixture")
-        command = [part.replace("{python}", sys.executable) for part in case["command"]]
+        vitest = ENGINE.parents[1] / "synthi" / "node_modules" / "vitest" / "vitest.mjs"
+        replacements = {"{python}": sys.executable, "{node}": shutil.which("node") or "node", "{vitest}": str(vitest)}
+        command = [replacements.get(part, part) for part in case["command"]]
         request = {"workspaceRoot": str(root), "command": command, "predicate": {"type": "exit_nonzero", "required_output": [case["signature"]]}, "signature": {"required": [case["signature"]]}, "budget": {"preset": "fast", "stability_attempts": 1, "minimum_matches": 1, "max_executions": 20, "timeout_sec": 20}, "candidates": [{"kind": "file", "reference": value} for value in case["candidates"]]}
         if case.get("observation"):
             request["observation"] = case["observation"]
@@ -56,7 +59,8 @@ async def _run_case(case: dict[str, Any]) -> dict[str, Any]:
         removed = int(result.get("reduction", {}).get("removed_units", 0))
         validation = None
         if accepted:
-            validation = await FailureDistiller().validate_patch({"capsulePath": result["workspace_path"], "edits": [{"path": case["faulty_region"], "content": "print('fixed')\n"}], "affectedChecks": [[sys.executable, "-c", "import sys; sys.exit(0)"]]})
+            fixed_content = "console.log('fixed');\n" if case["faulty_region"].endswith((".js", ".mjs", ".ts", ".tsx")) else "print('fixed')\n"
+            validation = await FailureDistiller().validate_patch({"capsulePath": result["workspace_path"], "edits": [{"path": case["faulty_region"], "content": fixed_content}], "affectedChecks": [[sys.executable, "-c", "import sys; sys.exit(0)"]]})
         return {"id": case["id"], "adapter": case["adapter"], "faulty_region": case["faulty_region"], "accepted_fix": case["accepted_fix"], "distill": result, "validation": validation, "removed_ratio": removed / len(case["candidates"]) if case["candidates"] else 0.0}
 
 

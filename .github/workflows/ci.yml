@@ -63,6 +63,14 @@ jobs:
         with:
           python-version: '3.12'
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Synthi Vitest runner
+        working-directory: synthi
+        run: npm ci --ignore-scripts
+
       - name: Run threshold-enforced benchmark
         working-directory: ai-backend/ai-engine
         run: >-
