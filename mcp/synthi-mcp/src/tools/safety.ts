@@ -11,7 +11,8 @@ import {
 import { browserBroker } from "../browser/broker.js";
 import { runCiIsolatedReplay } from "../browser/ci_replay.js";
 import { authCheckpointManager, type AuthBrowserStorageState } from "../browser/auth.js";
-import { classifyWorkflowReplayBlock, type WorkflowContractV7 } from "../browser/workflow.js";
+import { adaptFailureCapsuleToVivarium, materializeFailureCapsuleVivarium } from "../dojo/vivarium/failure_capsule.js";
+import { classifyWorkflowReplayBlock, type CompiledWorkflowV7, type WorkflowContractV7 } from "../browser/workflow.js";
 import { errorFromException, jsonResponse, type ToolResponse } from "./shared.js";
 
 export const SAFETY_TOOL_NAMES = [
@@ -19,10 +20,47 @@ export const SAFETY_TOOL_NAMES = [
   "synthi_safety_set_replay_isolation_profile",
   "synthi_safety_run_prefix_validation",
   "synthi_safety_run_ci_isolated_replay",
+  "synthi_safety_distill_browser_failure",
+  "synthi_safety_validate_failure_capsule_vivarium",
+  "synthi_safety_materialize_failure_capsule_vivarium",
   "synthi_safety_explain_blocked_hardening",
 ] as const;
 
 export const SAFETY_TOOLS = [
+  {
+    name: "synthi_safety_materialize_failure_capsule_vivarium",
+    description: "Materialize a validated sanitized Failure Distiller capsule using Vivarium fixtures and prove deterministic reset. Does not claim predicate/signature equivalence or replace original-world validation.",
+    inputSchema: {
+      type: "object",
+      properties: { manifest: { type: "object", additionalProperties: true } },
+      required: ["manifest"],
+    },
+  },
+  {
+    name: "synthi_safety_validate_failure_capsule_vivarium",
+    description: "Validate a sanitized Failure Distiller Vivarium handoff and map it to the existing deterministic scenario DSL. Does not replace original-world patch validation.",
+    inputSchema: {
+      type: "object",
+      properties: { manifest: { type: "object", additionalProperties: true } },
+      required: ["manifest"],
+    },
+  },
+  {
+    name: "synthi_safety_distill_browser_failure",
+    description: "Reduce a recorded failing browser workflow by removing user steps while preserving the isolated replay failure class and stage. Never runs outside a configured CI isolation profile.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace_id: { type: "string" },
+        workflow_id: { type: "string" },
+        parameters: { type: "object", additionalProperties: { type: "string" } },
+        timeout_ms: { type: "number" },
+        artifact_root: { type: "string" },
+        max_evaluations: { type: "number", minimum: 1, maximum: 100 },
+      },
+      required: [],
+    },
+  },
   {
     name: "synthi_safety_get_mutation_plan",
     description:
@@ -120,6 +158,12 @@ export async function dispatchSafetyTool(toolName: string, args: unknown): Promi
         return prefixValidationTool(args);
       case "synthi_safety_run_ci_isolated_replay":
         return ciIsolatedReplayTool(args);
+      case "synthi_safety_distill_browser_failure":
+        return browserFailureDistillTool(args);
+      case "synthi_safety_validate_failure_capsule_vivarium":
+        return failureCapsuleVivariumTool(args);
+      case "synthi_safety_materialize_failure_capsule_vivarium":
+        return failureCapsuleVivariumMaterializeTool(args);
       case "synthi_safety_explain_blocked_hardening":
         return explainBlockedHardeningTool(args);
       default:
@@ -128,6 +172,16 @@ export async function dispatchSafetyTool(toolName: string, args: unknown): Promi
   } catch (err) {
     return errorFromException("safety_tool_failed", err);
   }
+}
+
+function failureCapsuleVivariumTool(args: unknown): ToolResponse {
+  const manifest = obj(args)["manifest"];
+  return jsonResponse({ ...adaptFailureCapsuleToVivarium(manifest) });
+}
+
+function failureCapsuleVivariumMaterializeTool(args: unknown): ToolResponse {
+  const manifest = obj(args)["manifest"];
+  return jsonResponse({ ...materializeFailureCapsuleVivarium(manifest) });
 }
 
 function mutationPlanTool(args: unknown): ToolResponse {
@@ -209,6 +263,58 @@ async function ciIsolatedReplayTool(args: unknown): Promise<ToolResponse> {
     ok: replay.status === "passed",
     replay,
   });
+}
+
+async function browserFailureDistillTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const workspaceId = stringOpt(a["workspace_id"]);
+  const artifact = browserBroker.workflowArtifact(stringOpt(a["workflow_id"]));
+  if (!artifact.ok) return jsonResponse({ ok: false, status: "boundary_not_isolatable", error: artifact.error });
+  const profile = replayIsolationProfiles.get(workspaceId);
+  const plan = mutationSafetyPlanFor(artifact.artifact.workflow.contract, profile);
+  const authStorage = await authStorageStateForCiReplay(artifact.artifact.workflow.contract, profile.auth_provider_id);
+  const replayInput = {
+    workspace_id: workspaceId,
+    workflow_id: artifact.artifact.workflow_id,
+    profile,
+    blockers: [...plan.ci_full_replay.blockers, ...authStorage.blockers],
+    parameters: stringMap(a["parameters"]),
+    ...(authStorage.storageState ? { auth_storage_state: authStorage.storageState } : {}),
+    timeout_ms: numberOpt(a["timeout_ms"]),
+    artifact_root: stringOpt(a["artifact_root"]),
+  };
+  const baseline = await runCiIsolatedReplay({ ...replayInput, workflow: artifact.artifact.workflow, events: artifact.artifact.events });
+  if (baseline.status !== "failed" || !baseline.failure_class || !baseline.failure_stage) {
+    return jsonResponse({ ok: false, status: baseline.status === "blocked" ? "boundary_not_isolatable" : "not_reproducible", baseline });
+  }
+  const maxEvaluations = Math.min(100, Math.max(1, Math.floor(numberOpt(a["max_evaluations"]) ?? 30)));
+  const baselineAttestations = [...baseline.report.attested_step_ids].sort();
+  const removed = new Set<string>();
+  const evidence: Array<Record<string, unknown>> = [];
+  let evaluations = 1;
+  for (const step of artifact.artifact.workflow.contract.steps) {
+    if (evaluations >= maxEvaluations) break;
+    const proposed = new Set([...removed, step.stepId]);
+    const reduced = browserReductionWorld(artifact.artifact.workflow, artifact.artifact.events, proposed);
+    const replay = await runCiIsolatedReplay({ ...replayInput, workflow: reduced.workflow, events: reduced.events });
+    evaluations += 1;
+    const replayAttestations = [...replay.report.attested_step_ids].sort();
+    const sameSignature = JSON.stringify(replayAttestations) === JSON.stringify(baselineAttestations);
+    const sameFailure = replay.status === "failed" && replay.failure_class === baseline.failure_class && replay.failure_stage === baseline.failure_stage && sameSignature;
+    evidence.push({ candidate: `step:${step.stepId}`, operation: "remove", decision: sameFailure ? "removed" : "retained", baseline_failure_class: baseline.failure_class, replay_failure_class: replay.failure_class, baseline_failure_stage: baseline.failure_stage, replay_failure_stage: replay.failure_stage, baseline_attested_step_ids: baselineAttestations, replay_attested_step_ids: replayAttestations, signature: sameSignature ? "match" : "mismatch", artifact_directory: replay.artifacts.directory });
+    if (sameFailure) removed.add(step.stepId);
+  }
+  const retained = artifact.artifact.workflow.contract.steps.filter((step) => !removed.has(step.stepId)).map((step) => step.stepId);
+  return jsonResponse({ ok: true, status: retained.length ? "stable_partial" : "distilled", workflow_id: artifact.artifact.workflow_id, baseline: { failure_class: baseline.failure_class, failure_stage: baseline.failure_stage, attested_step_ids: baselineAttestations, artifact_directory: baseline.artifacts.directory }, reduction: { candidate_units: artifact.artifact.workflow.contract.steps.length, removed_units: removed.size, retained_units: retained.length, minimality: evaluations >= maxEvaluations ? "budget_limited" : "1-minimal_under_declared_steps" }, retained_steps: retained, removed_steps: [...removed], evidence, limits: ["browser reduction preserves isolated replay failure class, stage, and attested workflow-step signature"], evaluations });
+}
+
+function browserReductionWorld(workflow: CompiledWorkflowV7, events: import("../browser/types.js").BrowserTraceEvent[], removed: Set<string>): { workflow: CompiledWorkflowV7; events: import("../browser/types.js").BrowserTraceEvent[] } {
+  const retainedSteps = workflow.contract.steps.filter((step) => !removed.has(step.stepId));
+  const removedSeq = new Set(workflow.contract.steps.filter((step) => removed.has(step.stepId)).map((step) => step.eventSeq));
+  return {
+    workflow: { ...workflow, contract: { ...workflow.contract, steps: retainedSteps }, card: { ...workflow.card, stepCount: retainedSteps.length } },
+    events: events.filter((event) => !removedSeq.has(event.event_seq)),
+  };
 }
 
 function explainBlockedHardeningTool(args: unknown): ToolResponse {
