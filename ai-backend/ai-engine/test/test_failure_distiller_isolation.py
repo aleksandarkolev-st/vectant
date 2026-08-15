@@ -2,6 +2,7 @@ import asyncio
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -61,3 +62,25 @@ def test_authenticated_api_distills_through_the_production_container(workspace, 
         response = client.post("/heal/agentic/distill", json=payload, headers={"x-synthi-internal-token": "isolated-distiller-test"})
     assert response.status_code == 200, response.text
     assert response.json()["ok"] is True
+
+
+@pytest.mark.skipif(not docker_ready(), reason="Docker daemon is required for browser adapter isolated E2E")
+def test_taught_browser_contract_distills_through_production_container(workspace):
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload.update({
+        "command": ["python", "runner.py"],
+        "isolation": {"mode": "container", "engine": "docker", "image": "vectant-ade-ai-engine:latest"},
+        "autoDiscover": True,
+        "observation": {
+            "kind": "browser", "viewport": {"width": 1280, "height": 720},
+            "workflowContract": {
+                "workflowId": "failure-flow", "appOrigin": "http://app.local", "routePattern": "/failure",
+                "sourceIdentityCoverage": {"status": "complete", "linkedSteps": 1, "totalSteps": 1}, "replayModes": ["ciIsolated"],
+                "steps": [{"stepId": "submit", "label": "Submit", "sourcePlan": {"status": "linked", "filePath": "runner.py", "line": 1}, "apiPlan": {"status": "observed", "method": "POST", "url": "/fail"}, "expectedEffects": ["failure shown"]}],
+            },
+        },
+    })
+    result = asyncio.run(FailureDistiller(production=True).distill(payload))
+    assert result["ok"], result
+    repro = (Path(result["workspace_path"]) / "repro.json").read_text(encoding="utf-8")
+    assert '"workflow_id": "failure-flow"' in repro
