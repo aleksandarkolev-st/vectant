@@ -13,6 +13,8 @@ export function FailureDistillerPanel() {
   const [signature, setSignature] = useState('');
   const [observationKind, setObservationKind] = useState('command');
   const [observationFile, setObservationFile] = useState('');
+  const [adapterRecording, setAdapterRecording] = useState('');
+  const [containerImage, setContainerImage] = useState('');
   const [budget, setBudget] = useState('standard');
   const [capsule, setCapsule] = useState(null);
   const [outcome, setOutcome] = useState(null);
@@ -34,18 +36,27 @@ export function FailureDistillerPanel() {
     }
   }, []);
 
-  const distill = useCallback(() => execute(() => gateway.distillFailure({
-    workspaceRoot: workspaceRoot.trim(),
-    command: command.trim(),
-    signature: signature.trim() ? { required: [signature.trim()] } : {},
-    observation: {
-      kind: observationKind,
-      ...(observationFile.trim() ? { filePath: observationFile.trim() } : {}),
-    },
-    budget: { preset: budget },
-    autoDiscover: true,
-    networkPolicy: 'deny',
-  })), [budget, command, execute, gateway, observationFile, observationKind, signature, workspaceRoot]);
+  const distill = useCallback(() => {
+    let recording = {};
+    try {
+      recording = adapterRecording.trim() ? JSON.parse(adapterRecording) : {};
+    } catch {
+      setError('Adapter recording must be valid JSON.');
+      return;
+    }
+    if (observationKind !== 'command' && Object.keys(recording).length === 0) {
+      setError(`${observationKind.toUpperCase()} distillation requires its recorded adapter evidence.`);
+      return;
+    }
+    return execute(() => gateway.distillFailure({
+      workspaceRoot: workspaceRoot.trim(),
+      command: command.trim(),
+      signature: signature.trim() ? { required: [signature.trim()] } : {},
+      observation: { kind: observationKind, ...(observationFile.trim() ? { filePath: observationFile.trim() } : {}), ...recording },
+      isolation: { mode: 'container', engine: 'docker', image: containerImage.trim() },
+      budget: { preset: budget }, autoDiscover: true, networkPolicy: 'deny',
+    }));
+  }, [adapterRecording, budget, command, containerImage, execute, gateway, observationFile, observationKind, signature, workspaceRoot]);
 
   const deleteCapsule = useCallback(() => {
     if (!capsule?.workspacePath || !window.confirm('Permanently delete this capsule and its materialized contents? This cannot be undone.')) return;
@@ -72,6 +83,10 @@ export function FailureDistillerPanel() {
         <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Failing command
           <input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="pytest tests/test_invite.py" className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
         </label>
+        <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Isolated runtime image
+          <input value={containerImage} onChange={(event) => setContainerImage(event.target.value)} placeholder="python:3.12-slim or node:22-bookworm" className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
+          <span className="mt-1 block" style={{ color: 'var(--text-muted)' }}>Runs with outbound network, package installation, and lifecycle scripts denied.</span>
+        </label>
         <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Failure signature regex (optional)
           <input value={signature} onChange={(event) => setSignature(event.target.value)} placeholder="InviteModal.onSubmit" className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
         </label>
@@ -85,11 +100,14 @@ export function FailureDistillerPanel() {
             <input value={observationFile} onChange={(event) => setObservationFile(event.target.value)} placeholder="src/InviteModal.tsx" className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
           </label>
         </div>
+        {observationKind !== 'command' ? <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Recorded {observationKind} evidence (JSON)
+          <textarea value={adapterRecording} onChange={(event) => setAdapterRecording(event.target.value)} placeholder={observationKind === 'browser' ? '{"workflow":{"route":"/invite","viewport":{"width":1280,"height":720},"steps":["submit"],"network_sequence":[],"dom_transitions":["modal closed"],"source_events":["InviteModal.onSubmit"]}}' : 'Paste the validated adapter recording'} rows={4} className={`${inputClass} font-mono`} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
+        </label> : null}
         <div className="flex items-center gap-2">
           <select value={budget} onChange={(event) => setBudget(event.target.value)} className="rounded-[var(--radius-control)] border px-2 py-1 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
             <option value="fast">Fast</option><option value="standard">Standard</option><option value="deep">Deep</option>
           </select>
-          <button type="button" disabled={busy || !workspaceRoot.trim() || !command.trim()} onClick={distill} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] px-2 py-1 text-xs disabled:opacity-50" style={{ background: 'var(--accent-primary)', color: 'var(--bg-app)' }}>
+          <button type="button" disabled={busy || !workspaceRoot.trim() || !command.trim() || !containerImage.trim()} onClick={distill} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] px-2 py-1 text-xs disabled:opacity-50" style={{ background: 'var(--accent-primary)', color: 'var(--bg-app)' }}>
             <Play size={12} /> Distill
           </button>
           {capsule?.workspacePath ? <button type="button" disabled={busy} onClick={() => execute(() => gateway.runFailureCapsule(capsule.workspacePath))} className="th-focus-ring rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--border-subtle)' }}>Replay</button> : null}

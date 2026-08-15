@@ -59,17 +59,24 @@ describe('FailureDistillerPanel', () => {
     await act(async () => {
       setInputValue(inputs[0], 'C:\\work\\app');
       setInputValue(inputs[1], 'pytest "tests/test invite.py"');
+      setInputValue(inputs[2], 'node:22-bookworm');
     });
     await act(async () => {
-      setInputValue(inputs[3], 'src/InviteModal.tsx');
+      setInputValue(inputs[4], 'src/InviteModal.tsx');
     });
     await act(async () => {
       setSelectValue(container.querySelectorAll('select')[0], 'hmr');
     });
-    expect(inputs[3].value).toBe('src/InviteModal.tsx');
+    const textarea = container.querySelector('textarea');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(textarea, '{"hmrEvents":["check","applied"]}');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(inputs[4].value).toBe('src/InviteModal.tsx');
     expect(container.querySelectorAll('select')[0].value).toBe('hmr');
     await act(async () => container.querySelector('button').click());
-    expect(gateway.distillFailure).toHaveBeenCalledWith(expect.objectContaining({ command: 'pytest "tests/test invite.py"', workspaceRoot: 'C:\\work\\app', observation: { kind: 'hmr', filePath: 'src/InviteModal.tsx' } }));
+    expect(gateway.distillFailure).toHaveBeenCalledWith(expect.objectContaining({ command: 'pytest "tests/test invite.py"', workspaceRoot: 'C:\\work\\app', observation: { kind: 'hmr', filePath: 'src/InviteModal.tsx', hmrEvents: ['check', 'applied'] }, isolation: { mode: 'container', engine: 'docker', image: 'node:22-bookworm' } }));
     expect(container.textContent).toContain('capsule_test');
     const buttons = [...container.querySelectorAll('button')];
     await act(async () => buttons.find((button) => button.textContent.includes('Metrics')).click());
