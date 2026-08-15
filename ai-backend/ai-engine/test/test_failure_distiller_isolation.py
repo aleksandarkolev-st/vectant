@@ -4,7 +4,9 @@ import subprocess
 import sys
 
 import pytest
+from fastapi.testclient import TestClient
 
+import main
 from analyzer.proactive.healing.failure_distiller import DistillationError, FailureDistiller
 from analyzer.proactive.healing.failure_distiller_execution import ContainerExecutor, IsolationError
 from analyzer.proactive.healing import failure_distiller_execution
@@ -44,3 +46,18 @@ def test_production_executor_distills_inside_a_network_denied_container(workspac
     result = asyncio.run(FailureDistiller(production=True).distill(payload))
     assert result["ok"], result
     assert result["reduction"]["removed_units"] == 1
+
+
+@pytest.mark.skipif(not docker_ready(), reason="Docker daemon is required for authenticated isolated E2E")
+def test_authenticated_api_distills_through_the_production_container(workspace, monkeypatch):
+    from analyzer.proactive.healing import failure_distiller
+    monkeypatch.setattr(main, "AI_ENGINE_AUTH_TOKEN", "isolated-distiller-test")
+    monkeypatch.setattr(main, "AI_ENGINE_AUTH_DISABLED", False)
+    monkeypatch.setattr(failure_distiller, "_failure_distiller", FailureDistiller(production=True))
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload["command"] = ["python", "runner.py"]
+    payload["isolation"] = {"mode": "container", "engine": "docker", "image": "vectant-ade-ai-engine:latest"}
+    with TestClient(main.app) as client:
+        response = client.post("/heal/agentic/distill", json=payload, headers={"x-synthi-internal-token": "isolated-distiller-test"})
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
