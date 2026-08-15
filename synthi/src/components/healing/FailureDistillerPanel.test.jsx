@@ -8,6 +8,7 @@ import { FailureDistillerPanel } from './FailureDistillerPanel';
 const gateway = {
   distillFailure: vi.fn(),
   runFailureCapsule: vi.fn(),
+  explainFailureCapsule: vi.fn(),
   materializeFailureCapsule: vi.fn(),
   deleteFailureCapsule: vi.fn(),
   purgeExpiredFailureCapsules: vi.fn(),
@@ -55,6 +56,7 @@ describe('FailureDistillerPanel', () => {
     gateway.exportFailureCapsuleToVivarium.mockResolvedValue({ ok: true, status: 'vivarium_manifest_exported', scenarioId: 'distiller_capsule_test' });
     gateway.promoteFailureCapsuleToVivarium.mockResolvedValue({ ok: true, status: 'vivarium_promoted', promotionId: 'promotion_capsule_test' });
     gateway.deleteFailureCapsule.mockResolvedValue({ ok: true, status: 'deleted' });
+    gateway.explainFailureCapsule.mockResolvedValue({ ok: true, evidence: [{ decision: 'removed' }] });
     gateway.purgeExpiredFailureCapsules.mockResolvedValue({ ok: true, status: 'purged', deleted: ['old_capsule'] });
     await act(async () => root.render(<FailureDistillerPanel />));
     const inputs = container.querySelectorAll('input');
@@ -81,6 +83,8 @@ describe('FailureDistillerPanel', () => {
     expect(gateway.distillFailure).toHaveBeenCalledWith(expect.objectContaining({ command: 'pytest "tests/test invite.py"', workspaceRoot: 'C:\\work\\app', observation: { kind: 'hmr', filePath: 'src/InviteModal.tsx', hmrEvents: ['check', 'applied'] }, isolation: { mode: 'container', engine: 'docker', image: 'node:22-bookworm' } }));
     expect(container.textContent).toContain('capsule_test');
     const buttons = [...container.querySelectorAll('button')];
+    await act(async () => buttons.find((button) => button.textContent.includes('Explain source')).click());
+    expect(gateway.explainFailureCapsule).toHaveBeenCalledWith('/tmp/capsule', 'src/InviteModal.tsx');
     await act(async () => buttons.find((button) => button.textContent.includes('Metrics')).click());
     expect(container.textContent).toContain('60% unit reduction');
     await act(async () => buttons.find((button) => button.textContent.includes('Vivarium')).click());

@@ -642,6 +642,11 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('heal/agentic/distill/run', { capsulePath });
   }
 
+  explainFailureCapsule(capsulePath, unit) {
+    if (!capsulePath || !unit) return Promise.reject(new Error('capsulePath and unit are required'));
+    return this._sendRequest('heal/agentic/distill/explain', { capsulePath, unit });
+  }
+
   /** Create a physical capsule workspace after logical replay has been verified. */
   materializeFailureCapsule(payload) {
     if (!payload?.capsulePath) return Promise.reject(new Error('capsulePath is required'));
