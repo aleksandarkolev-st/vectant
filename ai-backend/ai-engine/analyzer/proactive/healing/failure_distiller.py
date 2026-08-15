@@ -384,6 +384,7 @@ class FailureDistiller:
                 provenance = self._read_json(capsule / "provenance.json")
                 retained_paths = self._materialized_paths(worktree, repro, provenance)
                 self._copy_materialized_paths(worktree, destination, retained_paths)
+                node_dependencies = self._copy_node_dependency_closure(root, worktree, destination, retained_paths)
                 predicate, signature = Predicate.from_request(repro["predicate"]), Signature.from_request(repro["signature"])
                 portable_command = self._portable_command(self._reduced_command(self._command(repro["command"]), [Candidate(**item) for item in repro.get("removed_units", [])]), worktree, destination)
                 run = await self._run(portable_command, destination, reduced_env, int(repro["budget"]["timeout_sec"]))
@@ -411,7 +412,7 @@ class FailureDistiller:
         integrity = self._materialized_integrity(destination)
         self._write_json(destination / ".vectant-integrity.json", integrity)
         self._metrics["materialized_capsules"] += 1
-        return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "retained_paths": sorted(retained_paths), "integrity_path": str(destination / ".vectant-integrity.json"), "limits": ["dependency installation and lifecycle scripts are denied", "source closure is conservative and verified by same-signature replay"]}
+        return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "retained_paths": sorted(retained_paths), "node_dependencies": node_dependencies, "integrity_path": str(destination / ".vectant-integrity.json"), "limits": ["dependency installation and lifecycle scripts are denied", "source closure is conservative and verified by same-signature replay"]}
 
     def export_vivarium_manifest(self, capsule_path: str) -> Dict[str, Any]:
         """Export a sanitized, deterministic handoff contract for Agent Dojo Vivarium.
@@ -934,6 +935,52 @@ class FailureDistiller:
             dest = destination / relative
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
+
+    def _copy_node_dependency_closure(self, source_root: Path, source: Path, destination: Path, paths: Iterable[str]) -> List[str]:
+        """Copy only packages imported by retained JS/TS source and their runtime deps.
+
+        Package managers and lifecycle scripts are never invoked.  The closure
+        is copied from an already-installed local surface, dereferencing any
+        links, so the materialized workspace cannot resolve through its source
+        workspace's ``node_modules``.
+        """
+        modules = source_root / "node_modules"
+        if not modules.is_dir():
+            return []
+        requested: List[str] = []
+        for relative in paths:
+            path = source / relative
+            if path.suffix.lower() not in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"} or not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for specifier in re.findall(r"(?:from\s+|import\s*\(?\s*|require\()\s*[\"']([^\"']+)[\"']", text):
+                if not specifier.startswith((".", "/")) and not specifier.startswith("node:"):
+                    parts = specifier.split("/")
+                    requested.append("/".join(parts[:2]) if specifier.startswith("@") and len(parts) > 1 else parts[0])
+        copied: List[str] = []
+        pending = list(dict.fromkeys(requested))
+        while pending:
+            package = pending.pop(0)
+            if package in copied:
+                continue
+            package_source = modules / package
+            if not package_source.is_dir():
+                raise DistillationError(f"materialization cannot resolve required Node package: {package}")
+            package_destination = destination / "node_modules" / package
+            package_destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(package_source, package_destination, symlinks=False, ignore=shutil.ignore_patterns(".cache", ".bin"))
+            copied.append(package)
+            try:
+                manifest = json.loads((package_source / "package.json").read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                manifest = {}
+            for dependency in {**manifest.get("dependencies", {}), **manifest.get("optionalDependencies", {})}:
+                if isinstance(dependency, str) and dependency not in copied and dependency not in pending:
+                    pending.append(dependency)
+        return copied
 
     def _portable_command(self, command: Sequence[str], source: Path, destination: Path) -> List[str]:
         """Map workspace paths into a standalone capsule; reject hidden host links.

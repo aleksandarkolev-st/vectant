@@ -245,6 +245,27 @@ def test_materialization_keeps_static_python_import_closure(workspace):
     assert {"runner.py", "helper.py"} <= set(materialized["retained_paths"])
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="Node runtime unavailable")
+def test_materialization_copies_required_node_package_closure_without_a_symlink(workspace):
+    (workspace / ".gitignore").write_text("node_modules\n", encoding="utf-8")
+    package = workspace / "node_modules" / "tiny-runtime"
+    package.mkdir(parents=True)
+    (package / "package.json").write_text('{"name":"tiny-runtime","version":"1.0.0","type":"module"}\n', encoding="utf-8")
+    (package / "index.js").write_text("export const signature = 'node closure';\n", encoding="utf-8")
+    (workspace / "runner.mjs").write_text("import { signature } from 'tiny-runtime';\nconsole.log(`FailureSignature: ${signature}`); process.exit(7);\n", encoding="utf-8")
+    git(workspace, "add", ".gitignore", "runner.mjs")
+    git(workspace, "commit", "-m", "node dependency fixture")
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload.update({"command": [shutil.which("node") or "node", "runner.mjs"], "signature": {"required": ["node closure"]}, "budget": {"preset": "fast", "stability_attempts": 1, "minimum_matches": 1, "max_executions": 8}})
+    result = run(FailureDistiller().distill(payload))
+    materialized = run(FailureDistiller().materialize({"capsulePath": result["workspace_path"]}))
+    assert materialized["ok"]
+    assert materialized["node_dependencies"] == ["tiny-runtime"]
+    copied = Path(materialized["workspace_path"]) / "node_modules" / "tiny-runtime"
+    assert copied.is_dir() and not copied.is_symlink()
+    assert run(FailureDistiller().run(materialized["workspace_path"]))["status"] == "same_failure"
+
+
 def test_metrics_report_reduction_and_validation_outcomes(workspace):
     distiller = FailureDistiller()
     result = run(distiller.distill(request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])))
