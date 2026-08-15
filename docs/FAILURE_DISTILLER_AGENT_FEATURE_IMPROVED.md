@@ -1161,7 +1161,29 @@ The critical behavior change is that the agent no longer begins with “find the
 
 ---
 
-## 22. Product sentence
+## 22. Verified implementation status
+
+This section records implementation evidence; it does not relax any preceding
+requirement or turn a partially supported adapter into a universal one.
+
+| Contract area | Verified implementation evidence |
+|---|---|
+| Reproduction envelope and isolation | Source revision/dirty policy, runtime identity, deterministic environment, predicate/signature stability evidence, retention/deletion audit, redaction, and fail-closed container execution are covered by the distiller and isolation suites. A real container test verifies outbound network denial. |
+| Pytest/Vitest reduction | Versioned benchmark fixtures execute the real Pytest and Vitest runners, reduce declared fixture/config/file candidates, and validate accepted repairs by rerunning the original commands. |
+| Source reduction and cache | Logical capsules retain provenance, use content-addressed persistent evaluation caching, support Python declaration/statement candidates, perform 1-minimal confirmation, and safely prefetch independent confirmation candidates in isolated worktrees. |
+| Patch round-trip | Capsule edits require verified provenance; mapping conflicts and capsule-only edits are rejected. Capsule, original-world, and affected-command gates are retained as validation evidence. |
+| Browser workflow | The browser adapter validates both recorded workflow envelopes and Synthi taught-workflow contracts, including route/state/device/viewport, source attribution, DOM, network, and console evidence. Current automated replay coverage is contract/envelope based; a real headed-browser failure target remains required before claiming browser-runtime parity. |
+| Portable capsules | Materialization verifies integrity, copies a Node dependency closure without symlinked `node_modules`, writes reproducible metadata/scripts, and independently reruns the same signature. Python and browser dependency closure support must be verified per runtime before portability is claimed for those ecosystems. |
+| Native/HMR/GPU | Separate typed adapters validate native diagnostics/source spans, HMR terminal event sequences, and GPU device/frame/error evidence. The benchmark and isolated round-trip suite exercise all three envelopes. Hardware/compiler-specific runtime parity remains adapter-dependent. |
+| Quality gates | The versioned corpus contains Pytest, Vitest, browser, native, HMR, and GPU cases. CI enforces reproduction, reduction, original-validation, false-equivalence, and deterministic capsule path-discovery gates and publishes JSON/Markdown reports. |
+
+The exact commands and report values are part of the release handoff; a green
+unit suite alone is not evidence that an unsupported external runtime is safe
+to isolate.
+
+---
+
+## 23. Product sentence
 
 > **Give Vectant a real reproducible failure. It gives an agent the smallest stable debugging world it can prove under the chosen budget—and verifies the fix back in the real one.**
 
