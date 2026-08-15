@@ -24,7 +24,13 @@ sys.path.insert(0, str(ENGINE))
 from analyzer.proactive.healing.failure_distiller import FailureDistiller  # noqa: E402
 
 
-THRESHOLDS = {"reproduction_rate": 0.90, "reduction_rate": 0.70, "original_validation_rate": 0.80, "false_equivalence_rate": 0.00}
+THRESHOLDS = {
+    "reproduction_rate": 0.90,
+    "reduction_rate": 0.70,
+    "original_validation_rate": 0.80,
+    "false_equivalence_rate": 0.00,
+    "capsule_discovery_reduction": 0.50,
+}
 
 
 def _git(root: Path, *args: str) -> None:
@@ -54,14 +60,33 @@ async def _run_case(case: dict[str, Any]) -> dict[str, Any]:
         request = {"workspaceRoot": str(root), "command": command, "predicate": {"type": "exit_nonzero", "required_output": [case["signature"]]}, "signature": {"required": [case["signature"]]}, "budget": {"preset": "fast", "stability_attempts": 1, "minimum_matches": 1, "max_executions": 20, "timeout_sec": 20}, "candidates": [{"kind": "file", "reference": value} for value in case["candidates"]]}
         if case.get("observation"):
             request["observation"] = case["observation"]
-        result = await FailureDistiller().distill(request)
+        distiller = FailureDistiller()
+        result = await distiller.distill(request)
         accepted = bool(result.get("ok"))
         removed = int(result.get("reduction", {}).get("removed_units", 0))
         validation = None
         if accepted:
             fixed_content = case.get("fixed_content") or ("console.log('fixed');\n" if case["faulty_region"].endswith((".js", ".mjs", ".ts", ".tsx")) else "print('fixed')\n")
-            validation = await FailureDistiller().validate_patch({"capsulePath": result["workspace_path"], "edits": [{"path": case["faulty_region"], "content": fixed_content}], "affectedChecks": [[sys.executable, "-c", "import sys; sys.exit(0)"]]})
-        return {"id": case["id"], "adapter": case["adapter"], "faulty_region": case["faulty_region"], "accepted_fix": case["accepted_fix"], "distill": result, "validation": validation, "removed_ratio": removed / len(case["candidates"]) if case["candidates"] else 0.0}
+            # The original reproduction command is an affected check. A benchmark
+            # repair must prove it fixed the real target, not merely pass a no-op.
+            validation = await distiller.validate_patch({"capsulePath": result["workspace_path"], "edits": [{"path": case["faulty_region"], "content": fixed_content}], "affectedChecks": [command]})
+        # The full-world baseline is an exhaustive deterministic source search:
+        # every repository file is read to discover the faulty region. The capsule
+        # equivalent resolves that region through one provenance lookup.
+        full_searches = len(case["files"])
+        # This is a deterministic path-discovery measurement, not a claim about
+        # an LLM's reasoning or token consumption.
+        provenance = {}
+        if accepted:
+            provenance = json.loads((Path(result["workspace_path"]) / "provenance.json").read_text(encoding="utf-8"))
+        capsule_searches = 1 if case["faulty_region"] in provenance else full_searches
+        return {
+            "id": case["id"], "adapter": case["adapter"], "faulty_region": case["faulty_region"],
+            "accepted_fix": case["accepted_fix"], "distill": result, "validation": validation,
+            "removed_ratio": removed / len(case["candidates"]) if case["candidates"] else 0.0,
+            "discovery": {"full_repository_search_operations": full_searches, "capsule_search_operations": capsule_searches},
+            "cost": distiller.metrics(),
+        }
 
 
 async def run(corpus: Path) -> dict[str, Any]:
@@ -72,7 +97,19 @@ async def run(corpus: Path) -> dict[str, Any]:
     validations = [item["validation"] for item in results if item["validation"]]
     original_validation = sum(item.get("status") == "validated" for item in validations) / len(validations) if validations else 0.0
     false_equivalence = sum(item.get("status") in {"original_validation_failed", "capsule_fix_failed"} for item in validations) / len(validations) if validations else 0.0
-    metrics = {"reproduction_rate": reproduction, "reduction_rate": reduction, "original_validation_rate": original_validation, "false_equivalence_rate": false_equivalence, "agent_utility": {"capsule_known_fault_region_available": sum(bool(item["faulty_region"]) for item in results) / total, "full_repository_search_operations": None, "capsule_search_operations": None}, "cache_effectiveness": {"cache_hit_rate": None}, "cost": {"cases": len(results)}}
+    full_searches = sum(item["discovery"]["full_repository_search_operations"] for item in results)
+    capsule_searches = sum(item["discovery"]["capsule_search_operations"] for item in results)
+    discovery_reduction = 1.0 - (capsule_searches / full_searches) if full_searches else 0.0
+    candidate_executions = sum(item["cost"]["candidate_executions"] for item in results)
+    cache_hits = sum(item["cost"]["cache_hits"] for item in results)
+    metrics = {
+        "reproduction_rate": reproduction, "reduction_rate": reduction,
+        "original_validation_rate": original_validation, "false_equivalence_rate": false_equivalence,
+        "capsule_discovery_reduction": discovery_reduction,
+        "agent_utility": {"measurement": "deterministic_path_discovery", "full_repository_search_operations": full_searches, "capsule_search_operations": capsule_searches},
+        "cache_effectiveness": {"cache_hits": cache_hits, "candidate_executions": candidate_executions, "cache_hit_rate": cache_hits / (cache_hits + candidate_executions) if cache_hits + candidate_executions else 0.0},
+        "cost": {"cases": len(results), "candidate_executions": candidate_executions},
+    }
     gates = {name: value >= THRESHOLDS[name] if name != "false_equivalence_rate" else value <= THRESHOLDS[name] for name, value in metrics.items() if name in THRESHOLDS}
     return {"schema_version": "vectant.failure_distiller.benchmark.v1", "generated_at": datetime.now(timezone.utc).isoformat(), "thresholds": THRESHOLDS, "metrics": metrics, "gates": gates, "ok": all(gates.values()), "cases": results}
 
@@ -88,7 +125,16 @@ def main() -> int:
     rows = ["# Failure Distiller benchmark", "", f"Status: {'PASS' if report['ok'] else 'FAIL'}", "", "| Metric | Value | Threshold |", "|---|---:|---:|"]
     for name, threshold in report["thresholds"].items():
         rows.append(f"| {name} | {report['metrics'][name]:.2%} | {'≤' if name == 'false_equivalence_rate' else '≥'} {threshold:.2%} |")
-    rows.extend(["", "| Case | Adapter | Result |", "|---|---|---|"])
+    utility = report["metrics"]["agent_utility"]
+    cache = report["metrics"]["cache_effectiveness"]
+    rows.extend([
+        "", "| Operational metric | Value |", "|---|---:|",
+        f"| Full-repository path discovery operations | {utility['full_repository_search_operations']} |",
+        f"| Capsule path discovery operations | {utility['capsule_search_operations']} |",
+        f"| Candidate executions | {report['metrics']['cost']['candidate_executions']} |",
+        f"| Cache hit rate | {cache['cache_hit_rate']:.2%} |",
+        "", "| Case | Adapter | Result |", "|---|---|---|",
+    ])
     rows.extend(f"| {item['id']} | {item['adapter']} | {'accepted' if item['distill'].get('ok') else item['distill'].get('status')} |" for item in report["cases"])
     args.markdown.write_text("\n".join(rows) + "\n", encoding="utf-8")
     return 0 if report["ok"] else 1
