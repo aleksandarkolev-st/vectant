@@ -46,6 +46,8 @@ async def _execute(args: argparse.Namespace) -> Dict[str, Any]:
         return await distiller.materialize(request)
     if args.command == "delete":
         return distiller.discard(args.capsule_path)
+    if args.command == "purge-expired":
+        return distiller.purge_expired(args.workspace_root)
     if args.command == "metrics":
         return {"ok": True, "metrics": distiller.metrics()}
     if args.command == "vivarium-export":
@@ -84,6 +86,8 @@ def main() -> int:
     materialize.add_argument("--destination")
     delete = commands.add_parser("delete", help="Permanently delete a capsule and record an audit event")
     delete.add_argument("capsule_path")
+    purge = commands.add_parser("purge-expired", help="Delete only capsules whose declared retention has expired")
+    purge.add_argument("workspace_root")
     commands.add_parser("metrics", help="Show Failure Distiller quality and cost metrics")
     vivarium = commands.add_parser("vivarium-export", help="Export a sanitized deterministic Vivarium scenario manifest")
     vivarium.add_argument("capsule_path")

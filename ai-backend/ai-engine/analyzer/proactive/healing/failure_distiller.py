@@ -21,7 +21,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from uuid import uuid4
@@ -249,6 +249,9 @@ class FailureDistiller:
             return self._state("boundary_not_isolatable", "dirty workspaces are not reduced because worktree candidates would not match the observed baseline; commit or stash changes first", source_revision=source_revision, dirty_workspace=True)
 
         budget = Budget.from_request(request.get("budget"))
+        retention_seconds = int(request.get("retentionSeconds", request.get("retention_seconds", 30 * 24 * 60 * 60)))
+        if retention_seconds < 60 or retention_seconds > 365 * 24 * 60 * 60:
+            raise DistillationError("retentionSeconds must be between 60 seconds and 365 days")
         predicate, signature = Predicate.from_request(request.get("predicate")), Signature.from_request(request.get("signature"))
         environment_input = request.get("environment", request.get("env", {}))
         environment = self._environment(environment_input, request.get("seed"), source_revision)
@@ -319,7 +322,7 @@ class FailureDistiller:
                 retained = [entry for entry in retained if entry[0] != candidate]
 
         status = "distilled" if not active else "stable_partial"
-        artifact = self._write_capsule(root, capsule_id, command, environment, observation, predicate, signature, budget, source_revision, dirty, baseline, active, removed, retained, evidence, status)
+        artifact = self._write_capsule(root, capsule_id, command, environment, observation, predicate, signature, budget, source_revision, dirty, baseline, active, removed, retained, evidence, status, retention_seconds)
         self._metrics["accepted_capsules"] += 1
         self._metrics["candidate_executions"] += executions
         self._metrics["candidate_units"] += len(candidates)
@@ -530,6 +533,28 @@ class FailureDistiller:
             handle.write(_json({"capsule_id": capsule_id, "deleted_at": _utcnow(), "event": "capsule_deleted"}) + "\n")
         shutil.rmtree(capsule)
         return {"ok": True, "status": "deleted", "capsule_id": capsule_id, "capsuleId": capsule_id, "audit_path": str(audit)}
+
+    def purge_expired(self, workspace_root: str, now: Optional[datetime] = None) -> Dict[str, Any]:
+        """Delete only expired direct capsule entries and retain an audit trail."""
+        root = Path(workspace_root).resolve()
+        store = root / ".vectant" / "capsules"
+        if not root.is_dir() or not store.is_dir():
+            return {"ok": True, "status": "no_capsules", "deleted": []}
+        current = now or datetime.now(timezone.utc)
+        deleted = []
+        for capsule in sorted(store.iterdir()):
+            if not capsule.is_dir() or capsule.is_symlink():
+                continue
+            try:
+                manifest = self._read_json(capsule / "manifest.json")
+                expires_at = datetime.fromisoformat(str(manifest["retention"]["expires_at"]))
+                if expires_at.tzinfo is None or expires_at > current:
+                    continue
+                result = self.discard(str(capsule))
+                deleted.append(result["capsule_id"])
+            except (KeyError, ValueError, DistillationError):
+                continue
+        return {"ok": True, "status": "purged", "deleted": deleted}
 
     async def validate_patch(self, request: Dict[str, Any]) -> Dict[str, Any]:
         self._metrics["validation_requests"] += 1
@@ -1114,7 +1139,7 @@ class FailureDistiller:
         except IsolationError as exc:
             raise DistillationError(f"unsafe_external_boundary: {exc}") from exc
 
-    def _write_capsule(self, root: Path, capsule_id: str, command: Sequence[str], environment: Dict[str, str], observation: Dict[str, Any], predicate: Predicate, signature: Signature, budget: Budget, revision: str, dirty: bool, baseline: Dict[str, Any], active: Sequence[Candidate], removed: Sequence[Candidate], retained: Sequence[Tuple[Candidate, str]], evidence: Sequence[Dict[str, Any]], status: str) -> Path:
+    def _write_capsule(self, root: Path, capsule_id: str, command: Sequence[str], environment: Dict[str, str], observation: Dict[str, Any], predicate: Predicate, signature: Signature, budget: Budget, revision: str, dirty: bool, baseline: Dict[str, Any], active: Sequence[Candidate], removed: Sequence[Candidate], retained: Sequence[Tuple[Candidate, str]], evidence: Sequence[Dict[str, Any]], status: str, retention_seconds: int) -> Path:
         capsule = root / ".vectant" / "capsules" / capsule_id
         capsule.mkdir(parents=True, exist_ok=False)
         provenance: Dict[str, Any] = {}
@@ -1130,7 +1155,8 @@ class FailureDistiller:
             if file_path.is_file():
                 provenance[origin] = {"kind": "file", "origin": origin, "revision": revision, "sha256": _sha256(file_path.read_bytes())}
         runtime = self._runtime_identity(command, environment)
-        manifest = {"schema_version": "vectant.failure_capsule.v1", "capsule_id": capsule_id, "source_revision": revision, "dirty_workspace": dirty, "runtime": runtime, "observation": observation, "entrypoint": f"vectant repro run {capsule_id}", "status": status, "created_at": _utcnow()}
+        created = datetime.now(timezone.utc)
+        manifest = {"schema_version": "vectant.failure_capsule.v1", "capsule_id": capsule_id, "source_revision": revision, "dirty_workspace": dirty, "runtime": runtime, "observation": observation, "entrypoint": f"vectant repro run {capsule_id}", "status": status, "created_at": created.isoformat(), "retention": {"expires_at": (created + timedelta(seconds=retention_seconds)).isoformat(), "seconds": retention_seconds}}
         repro = {"workspace_root": str(root), "command": list(command), "environment": environment, "observation": observation, "runtime": runtime, "isolation": self._isolation_profile, "predicate": predicate.to_dict(), "signature": signature.to_dict(), "budget": budget.__dict__, "baseline": baseline, "active_units": [item.__dict__ for item in active], "removed_units": [item.__dict__ for item in removed]}
         validation = {"status": "not_run", "required_gates": ["capsule_fails_before_patch", "capsule_passes_after_patch", "original_world_passes_after_mapping", "affected_checks_pass"]}
         self._write_json(capsule / "manifest.json", manifest)

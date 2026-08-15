@@ -3,6 +3,7 @@ import json
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -200,6 +201,19 @@ def test_explicit_capsule_deletion_leaves_an_audit_record(workspace):
     assert not capsule.exists()
     audit = (workspace / ".vectant" / "capsule-deletions.ndjson").read_text(encoding="utf-8")
     assert result["capsule_id"] in audit
+
+
+def test_retention_collector_deletes_only_expired_capsules_with_an_audit_record(workspace):
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload["retentionSeconds"] = 60
+    result = run(FailureDistiller().distill(payload))
+    capsule = Path(result["workspace_path"])
+    retained = json.loads((capsule / "manifest.json").read_text())
+    assert retained["retention"]["seconds"] == 60
+    purged = FailureDistiller().purge_expired(str(workspace), datetime.now(timezone.utc) + timedelta(seconds=61))
+    assert purged["deleted"] == [result["capsule_id"]]
+    assert not capsule.exists()
+    assert result["capsule_id"] in (workspace / ".vectant" / "capsule-deletions.ndjson").read_text()
 
 
 def test_materializes_a_reduced_workspace_and_reproduces(workspace):

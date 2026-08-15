@@ -4381,6 +4381,17 @@ async def delete_distilled_failure(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/heal/agentic/distill/purge-expired")
+async def purge_expired_distilled_failures(request: Request):
+    """Apply the capsule retention policy and retain deletion audit evidence."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        return get_failure_distiller().purge_expired(body.get("workspaceRoot", body.get("workspace_root", "")))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/heal/agentic/distill/vivarium-export")
 async def export_distilled_failure_to_vivarium(request: Request):
     """Create a deterministic sanitized Vivarium scenario manifest for a capsule."""
