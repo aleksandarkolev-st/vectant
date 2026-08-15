@@ -1,4 +1,5 @@
 import asyncio
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -265,6 +266,27 @@ def test_materialization_keeps_static_python_import_closure(workspace):
     materialized = run(FailureDistiller().materialize({"capsulePath": result["workspace_path"]}))
     assert materialized["ok"]
     assert {"runner.py", "helper.py"} <= set(materialized["retained_paths"])
+
+
+@pytest.mark.skipif(importlib.util.find_spec("packaging") is None, reason="packaging runtime unavailable")
+def test_materialization_vendors_imported_python_package_closure(workspace):
+    (workspace / "runner.py").write_text(
+        "from packaging.version import Version\nimport sys\n"
+        "assert Version('1.0') < Version('2.0')\n"
+        "print('FailureSignature: python package closure')\nsys.exit(7)\n",
+        encoding="utf-8",
+    )
+    git(workspace, "add", "runner.py")
+    git(workspace, "commit", "-m", "python dependency fixture")
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload["signature"] = {"required": ["python package closure"]}
+    result = run(FailureDistiller().distill(payload))
+    materialized = run(FailureDistiller().materialize({"capsulePath": result["workspace_path"]}))
+    assert materialized["ok"]
+    assert "packaging" in materialized["python_dependencies"]
+    vendor = Path(materialized["workspace_path"]) / ".vectant" / "python" / "packaging"
+    assert vendor.is_dir() and not vendor.is_symlink()
+    assert run(FailureDistiller().run(materialized["workspace_path"]))["status"] == "same_failure"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="Node runtime unavailable")

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import ast
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -418,6 +419,10 @@ class FailureDistiller:
                 retained_paths = self._materialized_paths(worktree, repro, provenance)
                 self._copy_materialized_paths(worktree, destination, retained_paths)
                 node_dependencies = self._copy_node_dependency_closure(root, worktree, destination, retained_paths)
+                python_dependencies = self._copy_python_dependency_closure(worktree, destination, retained_paths)
+                if python_dependencies:
+                    vendor = str(destination / ".vectant" / "python")
+                    reduced_env["PYTHONPATH"] = vendor + (os.pathsep + reduced_env["PYTHONPATH"] if reduced_env.get("PYTHONPATH") else "")
                 predicate, signature = Predicate.from_request(repro["predicate"]), Signature.from_request(repro["signature"])
                 portable_command = self._portable_command(self._reduced_command(self._command(repro["command"]), [Candidate(**item) for item in repro.get("removed_units", [])]), worktree, destination)
                 run = await self._run(portable_command, destination, reduced_env, int(repro["budget"]["timeout_sec"]))
@@ -429,7 +434,7 @@ class FailureDistiller:
         if not predicate.matches(run.exit_code, run.output) or not signature.matches(run.output):
             shutil.rmtree(destination, ignore_errors=True)
             return self._state("boundary_not_isolatable", "materialized workspace did not reproduce the same failure", run=self._run_dict(run))
-        materialized_repro = {**repro, "workspace_root": str(destination), "command": portable_command, "mode": "materialized"}
+        materialized_repro = {**repro, "workspace_root": str(destination), "command": portable_command, "environment": reduced_env, "mode": "materialized"}
         self._write_json(destination / ".vectant-materialized-repro.json", materialized_repro)
         self._write_json(destination / ".vectant-runtime.json", {
             "schema_version": "vectant.failure_capsule.runtime.v1", "runtime": repro["runtime"],
@@ -445,7 +450,7 @@ class FailureDistiller:
         integrity = self._materialized_integrity(destination)
         self._write_json(destination / ".vectant-integrity.json", integrity)
         self._metrics["materialized_capsules"] += 1
-        return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "retained_paths": sorted(retained_paths), "node_dependencies": node_dependencies, "integrity_path": str(destination / ".vectant-integrity.json"), "limits": ["dependency installation and lifecycle scripts are denied", "source closure is conservative and verified by same-signature replay"]}
+        return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "retained_paths": sorted(retained_paths), "node_dependencies": node_dependencies, "python_dependencies": python_dependencies, "integrity_path": str(destination / ".vectant-integrity.json"), "limits": ["dependency installation and lifecycle scripts are denied", "source closure is conservative and verified by same-signature replay"]}
 
     def export_vivarium_manifest(self, capsule_path: str) -> Dict[str, Any]:
         """Export a sanitized, deterministic handoff contract for Agent Dojo Vivarium.
@@ -1067,6 +1072,51 @@ class FailureDistiller:
             for dependency in {**manifest.get("dependencies", {}), **manifest.get("optionalDependencies", {})}:
                 if isinstance(dependency, str) and dependency not in copied and dependency not in pending:
                     pending.append(dependency)
+        return copied
+
+    def _copy_python_dependency_closure(self, source: Path, destination: Path, paths: Iterable[str]) -> List[str]:
+        """Vendor imported non-stdlib Python modules for a portable replay.
+
+        Resolution is intentionally performed without package installation.  A
+        package that cannot be resolved from the declared runtime fails closed
+        instead of leaving a hidden dependency on the source workspace.
+        """
+        requested: set[str] = set()
+        for relative in paths:
+            path = source / relative
+            if path.suffix != ".py" or not path.is_file():
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    requested.update(alias.name.split(".", 1)[0] for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    requested.add(node.module.split(".", 1)[0])
+        vendor = destination / ".vectant" / "python"
+        copied: list[str] = []
+        stdlib = getattr(sys, "stdlib_module_names", set())
+        for module in sorted(requested):
+            if module in stdlib or (source / f"{module}.py").is_file() or (source / module).is_dir():
+                continue
+            spec = importlib.util.find_spec(module)
+            if spec is None or not spec.origin or spec.origin in {"built-in", "frozen"}:
+                raise DistillationError(f"materialization cannot resolve required Python package: {module}")
+            origin = Path(spec.origin).resolve()
+            try:
+                origin.relative_to(source.resolve())
+                continue
+            except ValueError:
+                pass
+            vendor.mkdir(parents=True, exist_ok=True)
+            if spec.submodule_search_locations:
+                package_root = Path(next(iter(spec.submodule_search_locations))).resolve()
+                shutil.copytree(package_root, vendor / module, symlinks=False, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            else:
+                shutil.copy2(origin, vendor / f"{module}.py")
+            copied.append(module)
         return copied
 
     def _portable_command(self, command: Sequence[str], source: Path, destination: Path) -> List[str]:
