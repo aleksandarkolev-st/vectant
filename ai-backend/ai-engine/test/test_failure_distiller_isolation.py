@@ -84,3 +84,17 @@ def test_taught_browser_contract_distills_through_production_container(workspace
     assert result["ok"], result
     repro = (Path(result["workspace_path"]) / "repro.json").read_text(encoding="utf-8")
     assert '"workflow_id": "failure-flow"' in repro
+
+
+@pytest.mark.skipif(not docker_ready(), reason="Docker daemon is required for adapter isolated E2E")
+@pytest.mark.parametrize(("kind", "evidence", "needle"), [
+    ("native", {"diagnostic": {"code": "E0425", "source_span": "runner.py:1:1"}, "executedPaths": ["runner.py"]}, "E0425"),
+    ("hmr", {"hmrEvents": ["check", "applied"], "executedPaths": ["runner.py"]}, "applied"),
+    ("gpu", {"deviceMarker": "software-adapter", "errorFingerprint": "GPU_TEST_FAILURE", "frameStates": ["frame-0", "frame-1-error"], "launchParameters": {"workgroups": 1}, "executedPaths": ["runner.py"]}, "GPU_TEST_FAILURE"),
+])
+def test_specialized_adapter_evidence_distills_through_production_container(workspace, kind, evidence, needle):
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload.update({"command": ["python", "runner.py"], "isolation": {"mode": "container", "engine": "docker", "image": "vectant-ade-ai-engine:latest"}, "autoDiscover": True, "observation": {"kind": kind, **evidence}})
+    result = asyncio.run(FailureDistiller(production=True).distill(payload))
+    assert result["ok"], result
+    assert needle in (Path(result["workspace_path"]) / "repro.json").read_text(encoding="utf-8")
