@@ -98,3 +98,24 @@ def test_specialized_adapter_evidence_distills_through_production_container(work
     result = asyncio.run(FailureDistiller(production=True).distill(payload))
     assert result["ok"], result
     assert needle in (Path(result["workspace_path"]) / "repro.json").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(not docker_ready(), reason="Docker daemon is required for complete adapter round-trip E2E")
+@pytest.mark.parametrize(("kind", "evidence"), [
+    ("browser", {"workflow": {"route": "/failure", "state_fixture": {}, "device": "desktop", "viewport": {"width": 1280, "height": 720}, "steps": ["submit"], "network_sequence": ["POST /failure"], "dom_transitions": ["failure shown"], "source_events": ["runner.py:1"], "console": []}, "executedPaths": ["runner.py"]}),
+    ("native", {"diagnostic": {"code": "E0425", "source_span": "runner.py:1:1"}, "executedPaths": ["runner.py"]}),
+    ("hmr", {"hmrEvents": ["check", "applied"], "executedPaths": ["runner.py"]}),
+    ("gpu", {"deviceMarker": "software-adapter", "errorFingerprint": "GPU_TEST_FAILURE", "frameStates": ["frame-0", "frame-1-error"], "launchParameters": {"workgroups": 1}, "executedPaths": ["runner.py"]}),
+])
+def test_adapter_complete_capsule_round_trip_in_original_world(workspace, kind, evidence):
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload.update({"command": ["python", "runner.py"], "isolation": {"mode": "container", "engine": "docker", "image": "vectant-ade-ai-engine:latest"}, "budget": {"preset": "fast", "stability_attempts": 1, "minimum_matches": 1, "max_executions": 8}, "observation": {"kind": kind, **evidence}})
+    distiller = FailureDistiller(production=True)
+    capsule = asyncio.run(distiller.distill(payload))
+    assert capsule["ok"], capsule
+    assert asyncio.run(distiller.run(capsule["workspace_path"]))["status"] == "same_failure"
+    materialized = asyncio.run(distiller.materialize({"capsulePath": capsule["workspace_path"]}))
+    assert materialized["ok"], materialized
+    assert asyncio.run(distiller.run(materialized["workspace_path"]))["status"] == "same_failure"
+    validation = asyncio.run(distiller.validate_patch({"capsulePath": capsule["workspace_path"], "edits": [{"path": "runner.py", "content": "print('fixed')\n"}], "affectedChecks": [["python", "-c", "import sys; sys.exit(0)"]]}))
+    assert validation["status"] == "validated", validation
