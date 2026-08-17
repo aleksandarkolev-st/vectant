@@ -22,8 +22,9 @@ def docker_ready():
 
 
 def test_production_distillation_fails_closed_without_a_container_profile(workspace):
-    with pytest.raises(DistillationError, match="container isolation profile is required"):
-        asyncio.run(FailureDistiller(production=True).distill(request(workspace, [])))
+    result = asyncio.run(FailureDistiller(production=True).distill(request(workspace, [])))
+    assert result["status"] == "unsafe_external_boundary"
+    assert "container isolation profile is required" in result["reason"]
 
 
 def test_container_profile_rejects_package_install_and_escape_arguments():
@@ -53,8 +54,10 @@ def test_production_distillation_refuses_an_unavailable_engine_before_repository
     monkeypatch.setenv("VECTANT_FAILURE_DISTILLER_ALLOWED_IMAGES", PINNED_IMAGE)
     payload = request(workspace, [])
     payload["isolation"] = {"mode": "container", "engine": "docker", "image": PINNED_IMAGE}
-    with pytest.raises(DistillationError, match="isolation engine is unavailable"):
-        asyncio.run(FailureDistiller(production=True).distill(payload))
+    result = asyncio.run(FailureDistiller(production=True).distill(payload))
+    assert result["status"] == "unsafe_external_boundary"
+    assert "isolation engine is unavailable" in result["reason"]
+    assert result["isolation_profile"]["image"] == PINNED_IMAGE
 
 
 @pytest.mark.skipif(not docker_ready(), reason="Docker daemon is required for isolated executor E2E")

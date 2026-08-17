@@ -330,7 +330,9 @@ class FailureDistiller:
 
     async def distill(self, request: Dict[str, Any]) -> Dict[str, Any]:
         self._metrics["distillation_requests"] += 1
-        self._configure_execution(request)
+        isolation_failure = await self._configure_execution_or_state(request)
+        if isolation_failure:
+            return isolation_failure
         root = Path(str(request.get("workspaceRoot", request.get("workspace_root", "")))).resolve()
         if not root.is_dir():
             raise DistillationError("workspaceRoot must be an existing directory")
@@ -499,7 +501,9 @@ class FailureDistiller:
         if not repro_path.is_file():
             repro_path = capsule / ".vectant-materialized-repro.json"
         repro = self._read_json(repro_path)
-        self._configure_execution(repro)
+        isolation_failure = await self._configure_execution_or_state(repro)
+        if isolation_failure:
+            return isolation_failure
         root = Path(repro["workspace_root"]).resolve()
         if not root.is_dir():
             return self._state("boundary_not_isolatable", "source workspace is no longer available")
@@ -531,7 +535,9 @@ class FailureDistiller:
         self._metrics["materialization_requests"] += 1
         capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()
         repro = self._read_json(capsule / "repro.json")
-        self._configure_execution(repro)
+        isolation_failure = await self._configure_execution_or_state(repro)
+        if isolation_failure:
+            return isolation_failure
         root = Path(repro["workspace_root"]).resolve()
         if not root.is_dir():
             return self._state("boundary_not_isolatable", "source workspace is no longer available")
@@ -742,7 +748,9 @@ class FailureDistiller:
         self._metrics["validation_requests"] += 1
         capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()
         repro, provenance = self._read_json(capsule / "repro.json"), self._read_json(capsule / "provenance.json")
-        self._configure_execution(repro)
+        isolation_failure = await self._configure_execution_or_state(repro)
+        if isolation_failure:
+            return isolation_failure
         root = Path(repro["workspace_root"]).resolve()
         edits = request.get("edits", [])
         if not edits:
@@ -830,15 +838,30 @@ class FailureDistiller:
         candidates = self._metrics["candidate_units"]
         return {**self._metrics, "reduction_ratio": self._metrics["removed_units"] / candidates if candidates else 0.0, "cache_hit_rate": self._metrics["cache_hits"] / (self._metrics["cache_hits"] + self._metrics["candidate_executions"]) if (self._metrics["cache_hits"] + self._metrics["candidate_executions"]) else 0.0, "patch_validation_rate": self._metrics["validated_patches"] / self._metrics["validation_requests"] if self._metrics["validation_requests"] else 0.0, "average_candidate_executions": self._metrics["candidate_executions"] / accepted if accepted else 0.0}
 
-    def _configure_execution(self, request: Dict[str, Any]) -> None:
+    async def _configure_execution(self, request: Dict[str, Any]) -> None:
         if not self._production:
             return
         try:
             profile = request.get("isolation", request.get("isolation_profile"))
             self._executor = ContainerExecutor.from_request(profile)
+            if not shutil.which(self._executor.engine):
+                raise IsolationError(f"required isolation engine is unavailable: {self._executor.engine}")
+            probe = await asyncio.create_subprocess_exec(self._executor.engine, "info", stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            if await probe.wait() != 0:
+                raise IsolationError(f"required isolation engine is not running: {self._executor.engine}")
             self._isolation_profile = {"mode": "container", "engine": self._executor.engine, "image": self._executor.image, "network": "deny", "memory_mb": self._executor.memory_mb, "cpu_count": self._executor.cpu_count, "process_limit": self._executor.process_limit, "package_install": "deny", "lifecycle_scripts": "deny"}
         except IsolationError as exc:
             raise DistillationError(f"unsafe_external_boundary: {exc}") from exc
+
+    async def _configure_execution_or_state(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            await self._configure_execution(request)
+        except DistillationError as exc:
+            message = str(exc)
+            if message.startswith("unsafe_external_boundary:"):
+                return self._state("unsafe_external_boundary", message.split(":", 1)[1].strip(), isolation_profile=request.get("isolation", request.get("isolation_profile")))
+            raise
+        return None
 
     def _workspace_dirty(self, root: Path) -> bool:
         """Treat Vectant's own durable evidence store as outside source state."""
