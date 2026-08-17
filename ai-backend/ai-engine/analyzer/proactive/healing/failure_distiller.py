@@ -1388,6 +1388,11 @@ class FailureDistiller:
 
     def _record_validation(self, capsule: Path, result: Dict[str, Any]) -> Dict[str, Any]:
         record = {"validated_at": _utcnow(), **result}
+        # Keep each validation immutable for audit and use validation.json only
+        # as a convenience pointer to the latest attempt.
+        history = capsule / "evidence" / "validation-history"
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        self._write_json(history / f"{stamp}-{uuid4().hex[:8]}.json", record)
         self._write_json(capsule / "evidence" / "validation.json", record)
         return record
 

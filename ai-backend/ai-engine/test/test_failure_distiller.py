@@ -195,6 +195,12 @@ def test_patch_validation_requires_and_records_all_round_trip_gates(workspace):
     assert validation["gates"]["capsule_passes_after_patch"]["exit_code"] == 0
     stored = json.loads((Path(result["workspace_path"]) / "evidence" / "validation.json").read_text())
     assert stored["status"] == "validated"
+    second = run(FailureDistiller().validate_patch({
+        "capsulePath": result["workspace_path"],
+        "edits": [{"path": "runner.py", "content": "print('fixed')\n"}],
+    }))
+    assert second["status"] == "validated"
+    assert len(list((Path(result["workspace_path"]) / "evidence" / "validation-history").glob("*.json"))) == 2
 
 
 def test_editable_capsule_overlay_is_a_real_patch_source(workspace):
