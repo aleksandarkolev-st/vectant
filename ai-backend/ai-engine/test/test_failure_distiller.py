@@ -373,6 +373,20 @@ def test_materialization_keeps_static_python_import_closure(workspace):
     assert {"runner.py", "helper.py"} <= set(materialized["retained_paths"])
 
 
+def test_reducer_marks_load_closure_as_structurally_required(workspace):
+    (workspace / "helper.py").write_text("def failing(): return True\n", encoding="utf-8")
+    (workspace / "runner.py").write_text(
+        "import sys\nfrom helper import failing\nif failing(): print('FailureSignature: structural'); sys.exit(7)\n",
+        encoding="utf-8",
+    )
+    git(workspace, "add", "runner.py", "helper.py")
+    git(workspace, "commit", "-m", "structural closure")
+    payload = request(workspace, [{"kind": "file", "reference": "helper.py"}])
+    payload["signature"] = {"required": ["structural"]}
+    result = run(FailureDistiller().distill(payload))
+    assert '"reason":"structurally_required"' in (Path(result["workspace_path"]) / "reduction.ndjson").read_text()
+
+
 def test_materialization_fails_closed_for_unknown_dynamic_python_import(workspace):
     (workspace / "runner.py").write_text(
         "import importlib, sys\nname='json'\nimportlib.import_module(name)\nprint('FailureSignature: dynamic import')\nsys.exit(7)\n",

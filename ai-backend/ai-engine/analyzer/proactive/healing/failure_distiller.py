@@ -429,7 +429,7 @@ class FailureDistiller:
                 removed.append(candidate)
                 active = [item for item in active if item != candidate]
             else:
-                retained.append((candidate, "causal_required" if evaluation["predicate_matches"] is False or evaluation["signature_matches"] is False else "unstable_when_removed"))
+                retained.append((candidate, "structurally_required" if evaluation.get("structural_failure") else "causal_required" if evaluation["predicate_matches"] is False or evaluation["signature_matches"] is False else "unstable_when_removed"))
 
         # The primary pass is order-sensitive. A candidate that was necessary
         # before another accepted removal can become removable afterwards, so
@@ -1078,7 +1078,8 @@ class FailureDistiller:
             finally:
                 self._remove_worktree(root, worktree)
         matches = [run for run in runs if predicate.matches(run.exit_code, run.output, run.timed_out) and signature.matches(run.output)]
-        return {"matches": len(matches), "attempts": len(runs), "predicate_matches": any(predicate.matches(run.exit_code, run.output, run.timed_out) for run in runs), "signature_matches": any(signature.matches(run.output) for run in runs)}
+        structural_failure = any(re.search(r"(?:modulenotfounderror|importerror|cannot find module|no module named|syntaxerror|filenotfounderror)", run.output, re.I) for run in runs)
+        return {"matches": len(matches), "attempts": len(runs), "predicate_matches": any(predicate.matches(run.exit_code, run.output, run.timed_out) for run in runs), "signature_matches": any(signature.matches(run.output) for run in runs), "structural_failure": structural_failure}
 
     def _create_worktree(self, root: Path, destination: Path) -> None:
         _git(root, "worktree", "add", "--detach", "--force", str(destination), "HEAD")
