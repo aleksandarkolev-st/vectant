@@ -591,7 +591,9 @@ class FailureDistiller:
         integrity = self._materialized_integrity(destination)
         self._write_json(destination / ".vectant-integrity.json", integrity)
         self._metrics["materialized_capsules"] += 1
-        return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "retained_paths": sorted(retained_paths), "node_dependencies": node_dependencies, "python_dependencies": python_dependencies, "integrity_path": str(destination / ".vectant-integrity.json"), "limits": ["dependency installation and lifecycle scripts are denied", "source closure is conservative and verified by same-signature replay"]}
+        source_bytes = self._tree_bytes(root, exclude={".git", ".vectant"})
+        capsule_bytes = self._tree_bytes(destination)
+        return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "retained_paths": sorted(retained_paths), "node_dependencies": node_dependencies, "python_dependencies": python_dependencies, "integrity_path": str(destination / ".vectant-integrity.json"), "measurements": {"source_bytes": source_bytes, "capsule_bytes": capsule_bytes, "bytes_removed": source_bytes - capsule_bytes, "byte_reduction_ratio": 1 - (capsule_bytes / source_bytes) if source_bytes else 0.0, "replay_duration_ms": run.duration_ms}, "limits": ["dependency installation and lifecycle scripts are denied", "source closure is conservative and verified by same-signature replay"]}
 
     def export_vivarium_manifest(self, capsule_path: str) -> Dict[str, Any]:
         """Export a sanitized, deterministic handoff contract for Agent Dojo Vivarium.
@@ -1381,6 +1383,14 @@ class FailureDistiller:
             elif path.is_symlink():
                 raise DistillationError("materialized capsule may not contain symlinks")
         return {"schema_version": "vectant.failure_capsule.integrity.v1", "files": files, "root_sha256": _sha256(_json(files).encode())}
+
+    def _tree_bytes(self, root: Path, exclude: Optional[set[str]] = None) -> int:
+        excluded = exclude or set()
+        total = 0
+        for path in root.rglob("*"):
+            if path.is_file() and not any(part in excluded for part in path.relative_to(root).parts):
+                total += path.stat().st_size
+        return total
 
     def _discover_candidates(self, root: Path, command: Sequence[str], existing: Sequence[Candidate], observation: Dict[str, Any], environment_input: Any, budget: Budget) -> List[Candidate]:
         """Discover conservative, file-level units for pytest/Vitest repos.

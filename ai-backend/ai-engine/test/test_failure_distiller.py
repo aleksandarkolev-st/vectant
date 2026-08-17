@@ -343,6 +343,9 @@ def test_materializes_a_reduced_workspace_and_reproduces(workspace):
     assert not any(path.is_symlink() for path in destination.rglob("*"))
     assert (destination / ".vectant-runtime.json").is_file()
     assert (destination / ".vectant-integrity.json").is_file()
+    assert materialized["measurements"]["source_bytes"] > 0
+    assert materialized["measurements"]["capsule_bytes"] > 0
+    assert materialized["measurements"]["replay_duration_ms"] >= 0
 
 
 def test_materialized_capsule_rejects_tampering(workspace):
