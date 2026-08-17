@@ -218,6 +218,8 @@ class Run:
     output: str
     duration_ms: int
     timed_out: bool = False
+    output_sha256: str = ""
+    output_truncated: bool = False
 
     def fingerprint(self) -> str:
         return _sha256(self.output.encode())
@@ -265,6 +267,8 @@ class FailureDistiller:
             candidates.extend(self._discover_candidates(root, command, candidates, observation, environment_input, budget))
         if len({candidate.identifier for candidate in candidates}) != len(candidates):
             raise DistillationError("candidate units must be unique")
+        if budget.stability_attempts > budget.max_executions:
+            return self._state("budget_exhausted", "baseline stability reservation exceeds max_executions", budget={"max_executions": budget.max_executions, "reserved_baseline": budget.stability_attempts}, untested_units=[item.identifier for item in candidates])
         baseline = await self._stability(root, command, environment, predicate, signature, budget)
         if baseline["matches"] < budget.minimum_matches:
             return self._state("unstable_baseline" if baseline["matches"] else "not_reproducible", "baseline did not meet its configured same-failure threshold", baseline=baseline)
@@ -279,19 +283,21 @@ class FailureDistiller:
         active = list(candidates)
         cache = self._load_evaluation_cache(root)
         for candidate in list(candidates):
-            if executions >= budget.max_executions:
+            if executions + budget.stability_attempts > budget.max_executions:
                 retained.extend((item, "budget_not_tested") for item in active if item not in [r[0] for r in retained])
                 break
             proposed = [*removed, candidate]
             key = self._world_hash(proposed, environment, command, source_revision, runtime)
             evaluation = cache.get(key)
+            executed_now = evaluation is None
             if evaluation is None:
                 evaluation = await self._evaluate(root, command, environment, proposed, predicate, signature, budget)
                 cache[key] = evaluation
                 self._save_evaluation_cache(root, cache)
             else:
                 self._metrics["cache_hits"] += 1
-            executions += evaluation["attempts"]
+            if executed_now:
+                executions += evaluation["attempts"]
             decision = "removed" if evaluation["matches"] >= budget.minimum_matches else "retained"
             evidence.append({"candidate": candidate.identifier, "operation": "remove", "world_hash": key, "predicate": "fail" if evaluation["predicate_matches"] else "pass", "signature": "match" if evaluation["signature_matches"] else "mismatch", "runs": {"matching_failures": evaluation["matches"], "attempts": evaluation["attempts"]}, "decision": decision})
             if decision == "removed":
@@ -308,20 +314,21 @@ class FailureDistiller:
         confirmation_index = 0
         while confirmation_index < len(active):
             candidate = active[confirmation_index]
-            if executions >= budget.max_executions:
+            if executions + budget.stability_attempts > budget.max_executions:
                 confirmation_complete = False
                 break
             proposed = [*removed, candidate]
             key = self._world_hash(proposed, environment, command, source_revision, runtime)
             prefetched = confirmation_prefetch.pop(key, None)
             evaluation = prefetched or cache.get(key)
+            executed_now = evaluation is None
             if evaluation is None:
                 evaluation = await self._evaluate(root, command, environment, proposed, predicate, signature, budget)
                 cache[key] = evaluation
                 self._save_evaluation_cache(root, cache)
             else:
                 self._metrics["cache_hits"] += 1
-            if prefetched is None:
+            if executed_now:
                 executions += evaluation["attempts"]
             decision = "removed" if evaluation["matches"] >= budget.minimum_matches else "retained"
             evidence.append({"candidate": candidate.identifier, "operation": "confirm_remove", "world_hash": key, "predicate": "fail" if evaluation["predicate_matches"] else "pass", "signature": "match" if evaluation["signature_matches"] else "mismatch", "runs": {"matching_failures": evaluation["matches"], "attempts": evaluation["attempts"]}, "decision": decision})
@@ -354,7 +361,7 @@ class FailureDistiller:
                 if world_key in cache:
                     confirmation_prefetch.setdefault(world_key, cache[world_key])
 
-        status = "distilled" if not active else "stable_partial"
+        status = "budget_exhausted" if (active and executions + budget.stability_attempts > budget.max_executions) else ("distilled" if not active else "stable_partial")
         artifact = self._write_capsule(root, capsule_id, command, environment, observation, predicate, signature, budget, source_revision, dirty, baseline, active, removed, retained, evidence, status, retention_seconds)
         self._metrics["accepted_capsules"] += 1
         self._metrics["candidate_executions"] += executions
@@ -1259,7 +1266,7 @@ class FailureDistiller:
     async def _run(self, command: Sequence[str], cwd: Path, env: Dict[str, str], timeout_sec: int) -> Run:
         try:
             result: ExecutionResult = await self._executor.run(command, cwd, env, timeout_sec)
-            return Run(result.exit_code, result.output, result.duration_ms, result.timed_out)
+            return Run(result.exit_code, result.output, result.duration_ms, result.timed_out, result.output_sha256, result.output_truncated)
         except IsolationError as exc:
             raise DistillationError(f"unsafe_external_boundary: {exc}") from exc
 
@@ -1316,7 +1323,7 @@ class FailureDistiller:
         return "sha256:" + _sha256(_json({"source_revision": revision, "reductions": sorted(item.identifier for item in active), "environment": env, "command": list(command), "runtime": runtime}).encode())
 
     def _run_dict(self, run: Run) -> Dict[str, Any]:
-        return {"exit_code": run.exit_code, "duration_ms": run.duration_ms, "timed_out": run.timed_out, "output": _redact(run.output[-20_000:]), "output_sha256": run.fingerprint()}
+        return {"exit_code": run.exit_code, "duration_ms": run.duration_ms, "timed_out": run.timed_out, "output": _redact(run.output[-20_000:]), "output_sha256": run.output_sha256 or run.fingerprint(), "output_truncated": run.output_truncated}
 
     def _state(self, status: str, reason: str, **extra: Any) -> Dict[str, Any]:
         return {"ok": False, "status": status, "reason": reason, **extra}

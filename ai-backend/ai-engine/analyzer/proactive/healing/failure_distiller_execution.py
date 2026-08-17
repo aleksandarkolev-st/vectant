@@ -8,6 +8,7 @@ test backend; it is not selected by the authenticated service.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import shutil
 import time
@@ -26,6 +27,8 @@ class ExecutionResult:
     output: str
     duration_ms: int
     timed_out: bool = False
+    output_sha256: str = ""
+    output_truncated: bool = False
 
 
 class LocalTestExecutor:
@@ -40,23 +43,32 @@ class LocalTestExecutor:
         runtime_env = {"PATH": os.environ.get("PATH", ""), "HOME": str(cwd), "TMPDIR": os.environ.get("TMPDIR", os.environ.get("TEMP", "")), "APPDATA": os.environ.get("APPDATA", ""), "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""), "WINDIR": os.environ.get("WINDIR", ""), "COMSPEC": os.environ.get("COMSPEC", ""), **env}
         try:
             process = await asyncio.create_subprocess_exec(*command, cwd=str(cwd), env=runtime_env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_sec)
-            return ExecutionResult(process.returncode or 0, (stdout + stderr).decode("utf-8", "replace"), int((time.perf_counter() - started) * 1000))
+            output, digest, truncated = await asyncio.wait_for(_capture_process(process), timeout=timeout_sec)
+            return ExecutionResult(process.returncode or 0, output, int((time.perf_counter() - started) * 1000), output_sha256=digest, output_truncated=truncated)
         except asyncio.TimeoutError:
             process.kill()
             await process.communicate()
-            return ExecutionResult(-1, "command timed out", int((time.perf_counter() - started) * 1000), True)
+            return ExecutionResult(-1, "command timed out", int((time.perf_counter() - started) * 1000), True, hashlib.sha256(b"command timed out").hexdigest())
         except FileNotFoundError:
-            return ExecutionResult(-2, "command not found", int((time.perf_counter() - started) * 1000))
+            return ExecutionResult(-2, "command not found", int((time.perf_counter() - started) * 1000), output_sha256=hashlib.sha256(b"command not found").hexdigest())
 
 
 class ContainerExecutor:
     """OCI execution with no host credentials, network, or package installs."""
     BLOCKED_PACKAGE_OPERATIONS = {"install", "add", "ci", "update", "upgrade"}
 
-    def __init__(self, image: str, engine: str = "docker", memory_mb: int = 1024, cpu_count: float = 1.0, process_limit: int = 64) -> None:
+    MAX_CAPTURE_BYTES = 1024 * 1024
+    MAX_TMPFS_MB = 256
+    MAX_CONCURRENT_JOBS = 4
+    _job_slots = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+
+    def __init__(self, image: str, engine: str = "docker", memory_mb: int = 1024, cpu_count: float = 1.0, process_limit: int = 64, *, allowed_images: Sequence[str] = ()) -> None:
         if not image or any(char.isspace() for char in image):
             raise IsolationError("isolation.image is required for container execution")
+        if "@sha256:" not in image or len(image.rsplit("@sha256:", 1)[1]) != 64:
+            raise IsolationError("isolation.image must be pinned by a sha256 digest")
+        if image not in set(allowed_images):
+            raise IsolationError("isolation.image is not in the server allowlist")
         if engine not in {"docker", "podman"}:
             raise IsolationError("isolation.engine must be docker or podman")
         if memory_mb < 64 or cpu_count <= 0 or process_limit < 1:
@@ -67,7 +79,8 @@ class ContainerExecutor:
     def from_request(cls, raw: object) -> "ContainerExecutor":
         if not isinstance(raw, dict) or raw.get("mode", "container") != "container":
             raise IsolationError("a container isolation profile is required")
-        return cls(str(raw.get("image", "")), str(raw.get("engine", "docker")), int(raw.get("memoryMb", raw.get("memory_mb", 1024))), float(raw.get("cpuCount", raw.get("cpu_count", 1))), int(raw.get("processLimit", raw.get("process_limit", 64))))
+        allowed = tuple(value.strip() for value in os.environ.get("VECTANT_FAILURE_DISTILLER_ALLOWED_IMAGES", "").split(",") if value.strip())
+        return cls(str(raw.get("image", "")), str(raw.get("engine", "docker")), int(raw.get("memoryMb", raw.get("memory_mb", 1024))), float(raw.get("cpuCount", raw.get("cpu_count", 1))), int(raw.get("processLimit", raw.get("process_limit", 64)),), allowed_images=allowed)
 
     def _validate_command(self, command: Sequence[str]) -> None:
         joined = [part.lower() for part in command]
@@ -85,17 +98,50 @@ class ContainerExecutor:
         probe = await asyncio.create_subprocess_exec(self.engine, "info", stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         if await probe.wait() != 0:
             raise IsolationError(f"required isolation engine is not running: {self.engine}")
+        inspect = await asyncio.create_subprocess_exec(self.engine, "image", "inspect", self.image, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        if await inspect.wait() != 0:
+            raise IsolationError("required allowlisted image is not pre-provisioned locally")
         container_command = ["/workspace" + str(Path(part).resolve()).replace("\\", "/").replace(str(cwd.resolve()).replace("\\", "/"), "") if index and Path(part).is_absolute() and str(Path(part).resolve()).startswith(str(cwd.resolve())) else part for index, part in enumerate(command)]
-        argv = [self.engine, "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", str(self.process_limit), "--memory", f"{self.memory_mb}m", "--cpus", str(self.cpu_count), "--user", "65534:65534", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m", "--workdir", "/workspace", "--mount", f"type=bind,src={cwd.resolve()},dst=/workspace", "--env", "HOME=/tmp", "--env", "TMPDIR=/tmp"]
+        argv = [self.engine, "run", "--rm", "--pull=never", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", str(self.process_limit), "--memory", f"{self.memory_mb}m", "--cpus", str(self.cpu_count), "--ulimit", "nofile=256:256", "--user", "65534:65534", "--tmpfs", f"/tmp:rw,noexec,nosuid,size={self.MAX_TMPFS_MB}m", "--workdir", "/workspace", "--mount", f"type=bind,src={cwd.resolve()},dst=/workspace,readonly", "--env", "HOME=/tmp", "--env", "TMPDIR=/tmp"]
         for key, value in sorted(env.items()):
             argv.extend(["--env", f"{key}={value}"])
         argv.extend([self.image, *container_command])
         started = time.perf_counter()
-        process = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_sec)
-            return ExecutionResult(process.returncode or 0, (stdout + stderr).decode("utf-8", "replace"), int((time.perf_counter() - started) * 1000))
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.communicate()
-            return ExecutionResult(-1, "command timed out", int((time.perf_counter() - started) * 1000), True)
+        async with self._job_slots:
+            process = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            try:
+                output, digest, truncated = await asyncio.wait_for(_capture_process(process), timeout=timeout_sec)
+                return ExecutionResult(process.returncode or 0, output, int((time.perf_counter() - started) * 1000), output_sha256=digest, output_truncated=truncated)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                return ExecutionResult(-1, "command timed out", int((time.perf_counter() - started) * 1000), True, output_sha256=hashlib.sha256(b"command timed out").hexdigest())
+            except asyncio.CancelledError:
+                process.kill()
+                await process.wait()
+                raise
+
+
+
+async def _capture_process(process: asyncio.subprocess.Process, limit: int = ContainerExecutor.MAX_CAPTURE_BYTES) -> tuple[str, str, bool]:
+    """Drain both pipes without retaining unbounded hostile output."""
+    retained = bytearray()
+    digest = hashlib.sha256()
+    truncated = False
+
+    async def drain(reader: asyncio.StreamReader | None) -> None:
+        nonlocal truncated
+        if reader is None:
+            return
+        while chunk := await reader.read(64 * 1024):
+            digest.update(chunk)
+            remaining = limit - len(retained)
+            if remaining > 0:
+                retained.extend(chunk[:remaining])
+            if len(chunk) > remaining:
+                truncated = True
+
+    await asyncio.gather(drain(process.stdout), drain(process.stderr))
+    await process.wait()
+    suffix = b"\n[output truncated; sha256 retained in evidence]\n" if truncated else b""
+    return (bytes(retained + suffix).decode("utf-8", "replace"), digest.hexdigest(), truncated)

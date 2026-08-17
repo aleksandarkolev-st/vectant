@@ -63,7 +63,7 @@ describe('FailureDistillerPanel', () => {
     await act(async () => {
       setInputValue(inputs[0], 'C:\\work\\app');
       setInputValue(inputs[1], 'pytest "tests/test invite.py"');
-      setInputValue(inputs[2], 'node:22-bookworm');
+      setInputValue(inputs[2], `registry.example/vectant@sha256:${'a'.repeat(64)}`);
     });
     await act(async () => {
       setInputValue(inputs[4], 'src/InviteModal.tsx');
@@ -80,7 +80,7 @@ describe('FailureDistillerPanel', () => {
     expect(inputs[4].value).toBe('src/InviteModal.tsx');
     expect(container.querySelectorAll('select')[0].value).toBe('hmr');
     await act(async () => container.querySelector('button').click());
-    expect(gateway.distillFailure).toHaveBeenCalledWith(expect.objectContaining({ command: 'pytest "tests/test invite.py"', workspaceRoot: 'C:\\work\\app', observation: { kind: 'hmr', filePath: 'src/InviteModal.tsx', hmrEvents: ['check', 'applied'] }, isolation: { mode: 'container', engine: 'docker', image: 'node:22-bookworm' } }));
+    expect(gateway.distillFailure).toHaveBeenCalledWith(expect.objectContaining({ command: 'pytest "tests/test invite.py"', workspaceRoot: 'C:\\work\\app', observation: { kind: 'hmr', filePath: 'src/InviteModal.tsx', hmrEvents: ['check', 'applied'] }, isolation: { mode: 'container', engine: 'docker', image: `registry.example/vectant@sha256:${'a'.repeat(64)}` } }));
     expect(container.textContent).toContain('capsule_test');
     const buttons = [...container.querySelectorAll('button')];
     await act(async () => buttons.find((button) => button.textContent.includes('Explain source')).click());

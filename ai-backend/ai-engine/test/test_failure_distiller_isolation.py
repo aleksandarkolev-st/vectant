@@ -9,9 +9,12 @@ from fastapi.testclient import TestClient
 
 import main
 from analyzer.proactive.healing.failure_distiller import DistillationError, FailureDistiller
-from analyzer.proactive.healing.failure_distiller_execution import ContainerExecutor, IsolationError
+from analyzer.proactive.healing.failure_distiller_execution import ContainerExecutor, IsolationError, LocalTestExecutor
 from analyzer.proactive.healing import failure_distiller_execution
 from test_failure_distiller import request, workspace
+
+
+PINNED_IMAGE = "example.invalid/vectant@sha256:" + "a" * 64
 
 
 def docker_ready():
@@ -24,17 +27,32 @@ def test_production_distillation_fails_closed_without_a_container_profile(worksp
 
 
 def test_container_profile_rejects_package_install_and_escape_arguments():
-    executor = ContainerExecutor("python:3.12-slim")
+    executor = ContainerExecutor(PINNED_IMAGE, allowed_images=[PINNED_IMAGE])
     with pytest.raises(IsolationError, match="package installation"):
         executor._validate_command(["pip", "install", "unsafe-package"])
     with pytest.raises(IsolationError, match="escape"):
         executor._validate_command(["docker", "run", "--privileged", "x"])
 
 
+def test_container_profile_rejects_unpinned_and_unallowlisted_images():
+    with pytest.raises(IsolationError, match="pinned"):
+        ContainerExecutor("python:3.12-slim", allowed_images=[PINNED_IMAGE])
+    with pytest.raises(IsolationError, match="allowlist"):
+        ContainerExecutor(PINNED_IMAGE)
+
+
+def test_hostile_output_is_bounded_but_digest_is_retained(workspace):
+    result = asyncio.run(LocalTestExecutor().run([sys.executable, "-c", "import sys; sys.stdout.write('x' * (2 * 1024 * 1024))"], workspace, {}, 10))
+    assert result.output_truncated is True
+    assert len(result.output.encode("utf-8")) < 1_100_000
+    assert len(result.output_sha256) == 64
+
+
 def test_production_distillation_refuses_an_unavailable_engine_before_repository_code_runs(workspace, monkeypatch):
     monkeypatch.setattr(failure_distiller_execution.shutil, "which", lambda _: None)
+    monkeypatch.setenv("VECTANT_FAILURE_DISTILLER_ALLOWED_IMAGES", PINNED_IMAGE)
     payload = request(workspace, [])
-    payload["isolation"] = {"mode": "container", "engine": "docker", "image": "python:3.12-slim"}
+    payload["isolation"] = {"mode": "container", "engine": "docker", "image": PINNED_IMAGE}
     with pytest.raises(DistillationError, match="isolation engine is unavailable"):
         asyncio.run(FailureDistiller(production=True).distill(payload))
 

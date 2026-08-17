@@ -84,8 +84,8 @@ export function FailureDistillerPanel() {
           <input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="pytest tests/test_invite.py" className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
         </label>
         <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Isolated runtime image
-          <input value={containerImage} onChange={(event) => setContainerImage(event.target.value)} placeholder="python:3.12-slim or node:22-bookworm" className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
-          <span className="mt-1 block" style={{ color: 'var(--text-muted)' }}>Runs with outbound network, package installation, and lifecycle scripts denied.</span>
+          <input value={containerImage} onChange={(event) => setContainerImage(event.target.value)} placeholder="registry/vectant@sha256:…" aria-describedby="distiller-image-policy" className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
+          <span id="distiller-image-policy" className="mt-1 block" style={{ color: 'var(--text-muted)' }}>Only a server-allowlisted, locally provisioned digest image can run. Network and package installation are denied.</span>
         </label>
         <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Failure signature regex (optional)
           <input value={signature} onChange={(event) => setSignature(event.target.value)} placeholder="InviteModal.onSubmit" className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
@@ -93,7 +93,7 @@ export function FailureDistillerPanel() {
         <div className="grid grid-cols-2 gap-2">
           <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Observed via
             <select value={observationKind} onChange={(event) => setObservationKind(event.target.value)} className="mt-1 w-full rounded-[var(--radius-control)] border px-2 py-1 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
-              <option value="command">Command/test</option><option value="hmr">HMR</option><option value="browser">Browser</option><option value="native">Native</option><option value="gpu">GPU</option>
+              <option value="command">Command/test</option><option value="hmr">HMR (experimental)</option><option value="browser">Browser (experimental, adapter-only)</option><option value="native">Native (experimental)</option><option value="gpu">GPU (experimental)</option>
             </select>
           </label>
           <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Observed source file (optional)
@@ -120,11 +120,14 @@ export function FailureDistillerPanel() {
           <button type="button" disabled={busy} onClick={() => execute(() => gateway.getFailureDistillerMetrics())} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--border-subtle)' }}><BarChart3 size={12} /> Metrics</button>
         </div>
       </div>
-      {error ? <div className="mt-2 flex gap-1 text-[10px]" style={{ color: 'var(--accent-danger)' }}><AlertTriangle size={12} />{error}</div> : null}
-      {outcome ? <div className="mt-2 rounded border p-2 text-[10px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+      {busy ? <div className="mt-2 text-[10px]" role="status" aria-live="polite" style={{ color: 'var(--text-muted)' }}>Distillation is running in an isolated job.</div> : null}
+      {error ? <div className="mt-2 flex gap-1 text-[10px]" role="alert" style={{ color: 'var(--accent-danger)' }}><AlertTriangle size={12} />{error}</div> : null}
+      {outcome ? <div className="mt-2 rounded border p-2 text-[10px]" aria-live="polite" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
         <div className="font-medium" style={{ color: 'var(--text-secondary)' }}>{outcome.status || 'completed'}</div>
         {outcome.capsuleId ? <div className="font-mono" style={{ color: 'var(--text-muted)' }}>{outcome.capsuleId}</div> : null}
         {outcome.reduction ? <div style={{ color: 'var(--text-muted)' }}>{outcome.reduction.removed_units} removed, {outcome.reduction.retained_units} retained</div> : null}
+        {outcome.executions !== undefined ? <div style={{ color: 'var(--text-muted)' }}>Execution budget used: {outcome.executions}</div> : null}
+        {outcome.reason ? <div style={{ color: 'var(--text-muted)' }}>{outcome.reason}</div> : null}
         {outcome.metrics ? <div style={{ color: 'var(--text-muted)' }}>{outcome.metrics.accepted_capsules} capsules, {Math.round((outcome.metrics.reduction_ratio || 0) * 100)}% unit reduction, {outcome.metrics.validated_patches} validated patches</div> : null}
         {outcome.scenarioId ? <div style={{ color: 'var(--text-muted)' }}>Vivarium handoff: {outcome.scenarioId}</div> : null}
         {outcome.promotionId ? <div style={{ color: 'var(--text-muted)' }}>Vivarium promotion: {outcome.promotionId}</div> : null}
