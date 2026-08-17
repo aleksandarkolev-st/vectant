@@ -357,6 +357,20 @@ def test_materialization_keeps_static_python_import_closure(workspace):
     assert {"runner.py", "helper.py"} <= set(materialized["retained_paths"])
 
 
+def test_materialization_fails_closed_for_unknown_dynamic_python_import(workspace):
+    (workspace / "runner.py").write_text(
+        "import importlib, sys\nname='json'\nimportlib.import_module(name)\nprint('FailureSignature: dynamic import')\nsys.exit(7)\n",
+        encoding="utf-8",
+    )
+    git(workspace, "add", "runner.py")
+    git(workspace, "commit", "-m", "dynamic import fixture")
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload["signature"] = {"required": ["dynamic import"]}
+    result = run(FailureDistiller().distill(payload))
+    with pytest.raises(DistillationError, match="dynamic Python import"):
+        run(FailureDistiller().materialize({"capsulePath": result["workspace_path"]}))
+
+
 @pytest.mark.skipif(importlib.util.find_spec("packaging") is None, reason="packaging runtime unavailable")
 def test_materialization_vendors_imported_python_package_closure(workspace):
     (workspace / "runner.py").write_text(

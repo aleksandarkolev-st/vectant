@@ -1193,6 +1193,11 @@ class FailureDistiller:
                 text = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 continue
+            # A dynamic specifier cannot be proven part of a portable closure
+            # by source inspection. Refuse export instead of leaving an ambient
+            # dependency on the original workspace or host runtime.
+            if re.search(r"\bimport\s*\(\s*(?![\"'])", text):
+                raise DistillationError(f"materialization cannot resolve dynamic Node import in {relative}")
             for target in self._relative_import_targets(relative, text):
                 if target not in paths and (worktree / target).is_file():
                     paths.add(target)
@@ -1310,6 +1315,10 @@ class FailureDistiller:
                     requested.update(alias.name.split(".", 1)[0] for alias in node.names)
                 elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                     requested.add(node.module.split(".", 1)[0])
+                elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "import_module":
+                    if not node.args or not isinstance(node.args[0], ast.Constant) or not isinstance(node.args[0].value, str):
+                        raise DistillationError(f"materialization cannot resolve dynamic Python import in {relative}")
+                    requested.add(node.args[0].value.split(".", 1)[0])
         vendor = destination / ".vectant" / "python"
         copied: list[str] = []
         stdlib = getattr(sys, "stdlib_module_names", set())
