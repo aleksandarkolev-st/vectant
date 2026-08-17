@@ -1,6 +1,6 @@
 import pytest
 
-from analyzer.proactive.healing.failure_distiller import Predicate
+from analyzer.proactive.healing.failure_distiller import Predicate, Signature
 from analyzer.proactive.healing.failure_distiller_adapters import AdapterContractError, normalize_adapter_observation
 
 
@@ -69,3 +69,16 @@ def test_typed_oracle_predicates_require_explicit_runner_evidence():
     assert Predicate.from_request({"type": "dom_state", "domState": "invite:closed"}).matches(0, output)
     assert Predicate.from_request({"type": "diagnostic", "event": "E0425"}).matches(1, output)
     assert Predicate.from_request({"type": "timeout"}).matches(-1, "", timed_out=True)
+
+
+def test_typed_signature_matches_normalized_stack_spans_and_ordered_events():
+    output = '\n'.join([
+        'VECTANT_ORACLE:{"stack_frame":"Invite.submit"}',
+        'VECTANT_ORACLE:{"source_span":"src/Invite.tsx:22"}',
+        'VECTANT_ORACLE:{"event":"submit"}',
+        'VECTANT_ORACLE:{"event":"policy"}',
+        'VECTANT_ORACLE:{"network":"POST /invites"}',
+    ])
+    signature = Signature.from_request({"stackFrames": ["Invite.submit"], "sourceSpans": ["src/Invite.tsx:22"], "eventIds": ["submit", "policy"], "networkSequence": ["POST /invites"]})
+    assert signature.matches(output)
+    assert not Signature.from_request({"eventIds": ["policy", "submit"]}).matches(output)

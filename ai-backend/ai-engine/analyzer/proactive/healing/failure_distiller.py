@@ -70,7 +70,7 @@ def _oracle_events(output: str) -> Dict[str, List[str]]:
     intentionally ignores malformed/untyped values, so a log line cannot turn
     into network, DOM, or signal evidence by accident.
     """
-    result: Dict[str, List[str]] = {"diagnostics": [], "network": [], "events": [], "dom": [], "signals": []}
+    result: Dict[str, List[str]] = {"diagnostics": [], "network": [], "events": [], "dom": [], "signals": [], "stack_frames": [], "source_spans": []}
     for line in output.splitlines():
         if not line.startswith("VECTANT_ORACLE:"):
             continue
@@ -80,7 +80,7 @@ def _oracle_events(output: str) -> Dict[str, List[str]]:
             continue
         if not isinstance(event, dict):
             continue
-        for key, target in (("diagnostic", "diagnostics"), ("network", "network"), ("event", "events"), ("dom", "dom"), ("signal", "signals")):
+        for key, target in (("diagnostic", "diagnostics"), ("network", "network"), ("event", "events"), ("dom", "dom"), ("signal", "signals"), ("stack_frame", "stack_frames"), ("source_span", "source_spans")):
             value = event.get(key)
             if isinstance(value, str) and value and len(result[target]) < 128:
                 result[target].append(value)
@@ -206,19 +206,47 @@ class Predicate:
 class Signature:
     required: Tuple[str, ...] = ()
     forbidden: Tuple[str, ...] = ()
+    stack_frames: Tuple[str, ...] = ()
+    source_spans: Tuple[str, ...] = ()
+    event_ids: Tuple[str, ...] = ()
+    network_sequence: Tuple[str, ...] = ()
 
     @classmethod
     def from_request(cls, raw: Any) -> "Signature":
         raw = raw or {}
         if not isinstance(raw, dict):
             raise DistillationError("signature must be an object")
-        return cls(tuple(str(x) for x in raw.get("required", [])), tuple(str(x) for x in raw.get("forbidden", [])))
+        def strings(value: Any, field: str) -> Tuple[str, ...]:
+            if value is None:
+                return ()
+            if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+                raise DistillationError(f"signature {field} must be a list of non-empty strings")
+            return tuple(value)
+        return cls(
+            strings(raw.get("required", []), "required"), strings(raw.get("forbidden", []), "forbidden"),
+            strings(raw.get("stack_frames", raw.get("stackFrames", [])), "stack_frames"),
+            strings(raw.get("source_spans", raw.get("sourceSpans", [])), "source_spans"),
+            strings(raw.get("event_ids", raw.get("eventIds", [])), "event_ids"),
+            strings(raw.get("network_sequence", raw.get("networkSequence", [])), "network_sequence"),
+        )
 
     def matches(self, output: str) -> bool:
-        return all(re.search(pattern, output, re.M) for pattern in self.required) and not any(re.search(pattern, output, re.M) for pattern in self.forbidden)
+        events = _oracle_events(output)
+        def ordered(expected: Tuple[str, ...], actual: List[str]) -> bool:
+            index = 0
+            for value in actual:
+                if index < len(expected) and value == expected[index]:
+                    index += 1
+            return index == len(expected)
+        return (all(re.search(pattern, output, re.M) for pattern in self.required)
+            and not any(re.search(pattern, output, re.M) for pattern in self.forbidden)
+            and all(frame in events["stack_frames"] for frame in self.stack_frames)
+            and all(span in events["source_spans"] for span in self.source_spans)
+            and ordered(self.event_ids, events["events"])
+            and ordered(self.network_sequence, events["network"]))
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"matcher": "regex_subset", "required": list(self.required), "forbidden": list(self.forbidden)}
+        return {"matcher": "typed_subset", "required": list(self.required), "forbidden": list(self.forbidden), "stack_frames": list(self.stack_frames), "source_spans": list(self.source_spans), "event_ids": list(self.event_ids), "network_sequence": list(self.network_sequence)}
 
 
 @dataclass(frozen=True)
