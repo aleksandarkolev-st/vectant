@@ -773,7 +773,7 @@ class FailureDistiller:
             if not target.is_file() or _sha256(target.read_bytes()) != entry["sha256"]:
                 conflicts.append({"path": path, "reason": "source_revision_or_hash_mismatch"})
         if conflicts:
-            return {"ok": False, "status": "patch_mapping_conflict", "conflicts": conflicts}
+            return {"ok": False, "status": "patch_mapping_conflict", "conflicts": conflicts, "mismatch": {"classification": "patch_map_conflict", "message": "The editable capsule path cannot be mapped safely to the recorded production revision."}}
         predicate, signature = Predicate.from_request(repro["predicate"]), Signature.from_request(repro["signature"])
         before = await self.run(str(capsule))
         if before.get("status") != "same_failure":
@@ -822,7 +822,7 @@ class FailureDistiller:
         mismatch = None
         if capsule_passes and not original_passes:
             mismatch = {
-                "classification": "missing_causal_dependency_or_invalid_boundary" if repro.get("removed_units") else "environment_or_mapping_drift",
+                "classification": self._classify_validation_mismatch(repro, capsule_run, original_run, signature),
                 "boundary_action": "invalidate_and_expand",
                 "removed_units_to_restore": repro.get("removed_units", []),
                 "message": "The mapped patch passes the capsule but not the original envelope; the capsule is not a sufficient validation boundary.",
@@ -832,6 +832,19 @@ class FailureDistiller:
             manifest["invalidated_at"] = _utcnow()
             self._write_json(capsule / "manifest.json", manifest)
         return self._record_validation(capsule, {"ok": status == "validated", "status": status, "gates": {"capsule_fails_before_patch": before, "capsule_passes_after_patch": self._run_dict(capsule_run), "original_failure_passes_after_mapping": self._run_dict(original_run), "affected_checks": affected}, "patch_mapping": {"mapped_files": [provenance[str(edit["path"])]["origin"] for edit in edits]}, "signature_after_patch": "match" if signature.matches(original_run.output) else "changed", "mismatch": mismatch})
+
+    def _classify_validation_mismatch(self, repro: Dict[str, Any], capsule_run: Run, original_run: Run, signature: Signature) -> str:
+        output = original_run.output.lower()
+        if re.search(r"(?:modulenotfounderror|importerror|cannot find module|no module named)", output):
+            return "missing_dependency"
+        removed = repro.get("removed_units", [])
+        if any("mock" in str(item.get("reference", "")).lower() or "fixture" in str(item.get("reference", "")).lower() for item in removed if isinstance(item, dict)):
+            return "invalid_mock"
+        if signature.matches(original_run.output):
+            return "weak_signature"
+        if not removed:
+            return "environment_drift"
+        return "missing_causal_dependency"
 
     def metrics(self) -> Dict[str, Any]:
         accepted = self._metrics["accepted_capsules"]

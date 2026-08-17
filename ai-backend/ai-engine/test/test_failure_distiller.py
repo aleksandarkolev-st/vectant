@@ -179,6 +179,7 @@ def test_patch_mapping_rejects_capsule_only_edits(workspace):
         "edits": [{"path": "mocks/provider.py", "content": "not production"}],
     }))
     assert validation["status"] == "patch_mapping_conflict"
+    assert validation["mismatch"]["classification"] == "patch_map_conflict"
 
 
 def test_patch_validation_requires_and_records_all_round_trip_gates(workspace):
@@ -238,7 +239,7 @@ def test_patch_round_trip_invalidates_a_capsule_when_removed_boundary_changes_fi
         "edits": [{"path": "runner.py", "content": "import pathlib, sys\nif pathlib.Path('hidden-boundary.flag').exists():\n print('FailureSignature: boundary mismatch'); sys.exit(7)\nprint('fixed')\n"}],
     }))
     assert validation["status"] == "original_validation_failed"
-    assert validation["mismatch"]["classification"] == "missing_causal_dependency_or_invalid_boundary"
+    assert validation["mismatch"]["classification"] == "weak_signature"
     assert validation["mismatch"]["boundary_action"] == "invalidate_and_expand"
     manifest = json.loads((Path(result["workspace_path"]) / "manifest.json").read_text())
     assert manifest["status"] == "boundary_invalidated"
