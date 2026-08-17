@@ -1085,9 +1085,15 @@ class FailureDistiller:
         _git(root, "worktree", "add", "--detach", "--force", str(destination), "HEAD")
 
     def _temporary_worktree_root(self, root: Path):
-        """Prefer a very short temp root on Windows for deep repository paths."""
-        directory = root.anchor if os.name == "nt" and root.anchor else None
-        return tempfile.TemporaryDirectory(prefix="vfd-", dir=directory)
+        """Create disposable worktrees in the process-owned temporary directory.
+
+        The drive root is commonly protected on Windows, so using it as a
+        short-path optimization can make every candidate evaluation block or
+        fail before the reproducer runs.  The system temporary directory is
+        writable by the executing service and preserves the required
+        disposable-worktree isolation.
+        """
+        return tempfile.TemporaryDirectory(prefix="vfd-")
 
     def _remove_worktree(self, root: Path, destination: Path) -> None:
         try:

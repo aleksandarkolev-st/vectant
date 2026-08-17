@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import os
 import shutil
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,17 +41,26 @@ class LocalTestExecutor:
         # Windows, Python uses APPDATA to locate an already-installed test
         # runner; keep that locator without inheriting the rest of the host
         # environment. Production always uses ContainerExecutor instead.
-        runtime_env = {"PATH": os.environ.get("PATH", ""), "HOME": str(cwd), "TMPDIR": os.environ.get("TMPDIR", os.environ.get("TEMP", "")), "APPDATA": os.environ.get("APPDATA", ""), "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""), "WINDIR": os.environ.get("WINDIR", ""), "COMSPEC": os.environ.get("COMSPEC", ""), **env}
-        try:
-            process = await asyncio.create_subprocess_exec(*command, cwd=str(cwd), env=runtime_env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            output, digest, truncated = await asyncio.wait_for(_capture_process(process), timeout=timeout_sec)
-            return ExecutionResult(process.returncode or 0, output, int((time.perf_counter() - started) * 1000), output_sha256=digest, output_truncated=truncated)
-        except asyncio.TimeoutError:
-            process.kill()
-            await _capture_process(process)
-            return ExecutionResult(-1, "command timed out", int((time.perf_counter() - started) * 1000), True, hashlib.sha256(b"command timed out").hexdigest())
-        except FileNotFoundError:
-            return ExecutionResult(-2, "command not found", int((time.perf_counter() - started) * 1000), output_sha256=hashlib.sha256(b"command not found").hexdigest())
+        # Test runners such as Vitest use TEMP/TMP rather than TMPDIR on
+        # Windows.  Inheriting an ambient value can point at a protected
+        # system directory, so give every run an owned, disposable directory.
+        with tempfile.TemporaryDirectory(prefix="vfd-run-") as temporary_directory:
+            runtime_env = {
+                "PATH": os.environ.get("PATH", ""), "HOME": str(cwd),
+                "TMPDIR": temporary_directory, "TEMP": temporary_directory, "TMP": temporary_directory,
+                "APPDATA": os.environ.get("APPDATA", ""), "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+                "WINDIR": os.environ.get("WINDIR", ""), "COMSPEC": os.environ.get("COMSPEC", ""), **env,
+            }
+            try:
+                process = await asyncio.create_subprocess_exec(*command, cwd=str(cwd), env=runtime_env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                output, digest, truncated = await asyncio.wait_for(_capture_process(process), timeout=timeout_sec)
+                return ExecutionResult(process.returncode or 0, output, int((time.perf_counter() - started) * 1000), output_sha256=digest, output_truncated=truncated)
+            except asyncio.TimeoutError:
+                process.kill()
+                await _capture_process(process)
+                return ExecutionResult(-1, "command timed out", int((time.perf_counter() - started) * 1000), True, hashlib.sha256(b"command timed out").hexdigest())
+            except FileNotFoundError:
+                return ExecutionResult(-2, "command not found", int((time.perf_counter() - started) * 1000), output_sha256=hashlib.sha256(b"command not found").hexdigest())
 
 
 class ContainerExecutor:
