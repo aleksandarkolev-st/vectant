@@ -49,6 +49,13 @@ def test_hostile_output_is_bounded_but_digest_is_retained(workspace):
     assert len(result.output_sha256) == 64
 
 
+def test_timeout_cleanup_also_bounds_hostile_output(workspace):
+    result = asyncio.run(LocalTestExecutor().run([sys.executable, "-c", "import sys,time; sys.stdout.write('x' * (2 * 1024 * 1024)); sys.stdout.flush(); time.sleep(10)"], workspace, {}, 1))
+    assert result.timed_out is True
+    assert result.output == "command timed out"
+    assert len(result.output_sha256) == 64
+
+
 def test_production_distillation_refuses_an_unavailable_engine_before_repository_code_runs(workspace, monkeypatch):
     monkeypatch.setattr(failure_distiller_execution.shutil, "which", lambda _: None)
     monkeypatch.setenv("VECTANT_FAILURE_DISTILLER_ALLOWED_IMAGES", PINNED_IMAGE)

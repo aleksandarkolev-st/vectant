@@ -47,7 +47,7 @@ class LocalTestExecutor:
             return ExecutionResult(process.returncode or 0, output, int((time.perf_counter() - started) * 1000), output_sha256=digest, output_truncated=truncated)
         except asyncio.TimeoutError:
             process.kill()
-            await process.communicate()
+            await _capture_process(process)
             return ExecutionResult(-1, "command timed out", int((time.perf_counter() - started) * 1000), True, hashlib.sha256(b"command timed out").hexdigest())
         except FileNotFoundError:
             return ExecutionResult(-2, "command not found", int((time.perf_counter() - started) * 1000), output_sha256=hashlib.sha256(b"command not found").hexdigest())
@@ -114,11 +114,11 @@ class ContainerExecutor:
                 return ExecutionResult(process.returncode or 0, output, int((time.perf_counter() - started) * 1000), output_sha256=digest, output_truncated=truncated)
             except asyncio.TimeoutError:
                 process.kill()
-                await process.wait()
+                await _capture_process(process)
                 return ExecutionResult(-1, "command timed out", int((time.perf_counter() - started) * 1000), True, output_sha256=hashlib.sha256(b"command timed out").hexdigest())
             except asyncio.CancelledError:
                 process.kill()
-                await process.wait()
+                await _capture_process(process)
                 raise
 
 
