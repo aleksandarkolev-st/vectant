@@ -1,5 +1,6 @@
 import pytest
 
+from analyzer.proactive.healing.failure_distiller import Predicate
 from analyzer.proactive.healing.failure_distiller_adapters import AdapterContractError, normalize_adapter_observation
 
 
@@ -52,3 +53,19 @@ def test_browser_adapter_consumes_taught_workflow_contract_v7():
 def test_browser_adapter_rejects_taught_contract_without_isolated_replay_or_source_identity():
     with pytest.raises(AdapterContractError, match="source identity"):
         normalize_adapter_observation({"kind": "browser", "workflowContract": {"workflowId": "bad", "appOrigin": "http://app", "sourceIdentityCoverage": {"status": "missing", "linkedSteps": 0}, "replayModes": ["ciIsolated"], "steps": []}})
+
+
+def test_typed_oracle_predicates_require_explicit_runner_evidence():
+    output = '\n'.join([
+        'VECTANT_ORACLE:{"network":"POST /invites"}',
+        'VECTANT_ORACLE:{"event":"submit"}',
+        'VECTANT_ORACLE:{"event":"policy"}',
+        'VECTANT_ORACLE:{"dom":"invite:closed"}',
+        'VECTANT_ORACLE:{"diagnostic":"E0425"}',
+    ])
+    assert Predicate.from_request({"type": "network_presence", "network": "POST /invites"}).matches(0, output)
+    assert Predicate.from_request({"type": "network_absence", "network": "POST /other"}).matches(0, output)
+    assert Predicate.from_request({"type": "ordered_events", "requiredOutput": ["submit", "policy"]}).matches(0, output)
+    assert Predicate.from_request({"type": "dom_state", "domState": "invite:closed"}).matches(0, output)
+    assert Predicate.from_request({"type": "diagnostic", "event": "E0425"}).matches(1, output)
+    assert Predicate.from_request({"type": "timeout"}).matches(-1, "", timed_out=True)

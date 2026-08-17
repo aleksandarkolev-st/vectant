@@ -63,6 +63,30 @@ def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def _oracle_events(output: str) -> Dict[str, List[str]]:
+    """Read bounded, explicit runner evidence without guessing from logs.
+
+    Supported runners may emit ``VECTANT_ORACLE:{...}`` lines.  The adapter
+    intentionally ignores malformed/untyped values, so a log line cannot turn
+    into network, DOM, or signal evidence by accident.
+    """
+    result: Dict[str, List[str]] = {"diagnostics": [], "network": [], "events": [], "dom": [], "signals": []}
+    for line in output.splitlines():
+        if not line.startswith("VECTANT_ORACLE:"):
+            continue
+        try:
+            event = json.loads(line.removeprefix("VECTANT_ORACLE:"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        for key, target in (("diagnostic", "diagnostics"), ("network", "network"), ("event", "events"), ("dom", "dom"), ("signal", "signals")):
+            value = event.get(key)
+            if isinstance(value, str) and value and len(result[target]) < 128:
+                result[target].append(value)
+    return result
+
+
 def _redact(value: str) -> str:
     """Remove common credentials before output is persisted in capsule evidence."""
     value = SECRET_VALUE.sub(lambda match: match.group("key") + "<redacted>", value)
@@ -118,22 +142,64 @@ class Predicate:
     type: str = "exit_nonzero"
     required_output: Tuple[str, ...] = ()
     forbidden_output: Tuple[str, ...] = ()
+    expected_exit_code: Optional[int] = None
+    expected_event: Optional[str] = None
+    expected_state: Optional[str] = None
 
     @classmethod
     def from_request(cls, raw: Any) -> "Predicate":
         raw = raw or {"type": "exit_nonzero"}
-        if not isinstance(raw, dict) or raw.get("type", "exit_nonzero") != "exit_nonzero":
-            raise DistillationError("only exit_nonzero predicates are currently supported")
+        if not isinstance(raw, dict):
+            raise DistillationError("predicate must be an object")
+        kind = str(raw.get("type", "exit_nonzero"))
+        if kind not in {"exit_nonzero", "exit_code", "timeout", "diagnostic", "network_presence", "network_absence", "ordered_events", "dom_state", "process_signal"}:
+            raise DistillationError("unsupported predicate type")
+        expected_exit = raw.get("exit_code", raw.get("exitCode"))
+        if expected_exit is not None and not isinstance(expected_exit, int):
+            raise DistillationError("predicate exit_code must be an integer")
+        expected_event = raw.get("event", raw.get("eventId", raw.get("network")))
+        expected_state = raw.get("state", raw.get("domState", raw.get("signal")))
+        if kind in {"diagnostic", "network_presence", "network_absence", "process_signal"} and (not isinstance(expected_event or expected_state, str) or not (expected_event or expected_state)):
+            raise DistillationError(f"predicate {kind} requires a typed event, diagnostic, network, or signal value")
         return cls(
+            type=kind,
             required_output=tuple(str(x) for x in raw.get("required_output", raw.get("requiredOutput", []))),
             forbidden_output=tuple(str(x) for x in raw.get("forbidden_output", raw.get("forbiddenOutput", []))),
+            expected_exit_code=expected_exit,
+            expected_event=expected_event if isinstance(expected_event, str) else None,
+            expected_state=expected_state if isinstance(expected_state, str) else None,
         )
 
-    def matches(self, exit_code: int, output: str) -> bool:
-        return exit_code != 0 and all(re.search(pattern, output, re.M) for pattern in self.required_output) and not any(re.search(pattern, output, re.M) for pattern in self.forbidden_output)
+    def matches(self, exit_code: int, output: str, timed_out: bool = False) -> bool:
+        events = _oracle_events(output)
+        if self.type == "exit_nonzero":
+            type_match = exit_code != 0
+        elif self.type == "exit_code":
+            type_match = exit_code == self.expected_exit_code
+        elif self.type == "timeout":
+            type_match = timed_out
+        elif self.type == "diagnostic":
+            type_match = self.expected_event in events.get("diagnostics", [])
+        elif self.type == "network_presence":
+            type_match = self.expected_event in events.get("network", [])
+        elif self.type == "network_absence":
+            type_match = self.expected_event not in events.get("network", [])
+        elif self.type == "ordered_events":
+            required = tuple(self.required_output)
+            sequence = events.get("events", [])
+            position = 0
+            for value in sequence:
+                if position < len(required) and value == required[position]:
+                    position += 1
+            type_match = bool(required) and position == len(required)
+        elif self.type == "dom_state":
+            type_match = self.expected_state in events.get("dom", [])
+        else:  # process_signal
+            type_match = self.expected_state in events.get("signals", [])
+        return type_match and all(re.search(pattern, output, re.M) for pattern in self.required_output) and not any(re.search(pattern, output, re.M) for pattern in self.forbidden_output)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"type": self.type, "required_output": list(self.required_output), "forbidden_output": list(self.forbidden_output)}
+        return {"type": self.type, "required_output": list(self.required_output), "forbidden_output": list(self.forbidden_output), "exit_code": self.expected_exit_code, "event": self.expected_event, "state": self.expected_state}
 
 
 @dataclass(frozen=True)
@@ -283,12 +349,12 @@ class FailureDistiller:
         active = list(candidates)
         cache = self._load_evaluation_cache(root)
         for candidate in list(candidates):
-            if executions + budget.stability_attempts > budget.max_executions:
-                retained.extend((item, "budget_not_tested") for item in active if item not in [r[0] for r in retained])
-                break
             proposed = [*removed, candidate]
             key = self._world_hash(proposed, environment, command, source_revision, runtime)
             evaluation = cache.get(key)
+            if evaluation is None and executions + budget.stability_attempts > budget.max_executions:
+                retained.extend((item, "budget_not_tested") for item in active if item not in [r[0] for r in retained])
+                break
             executed_now = evaluation is None
             if evaluation is None:
                 evaluation = await self._evaluate(root, command, environment, proposed, predicate, signature, budget)
@@ -314,13 +380,14 @@ class FailureDistiller:
         confirmation_index = 0
         while confirmation_index < len(active):
             candidate = active[confirmation_index]
-            if executions + budget.stability_attempts > budget.max_executions:
-                confirmation_complete = False
-                break
             proposed = [*removed, candidate]
             key = self._world_hash(proposed, environment, command, source_revision, runtime)
             prefetched = confirmation_prefetch.pop(key, None)
             evaluation = prefetched or cache.get(key)
+            if evaluation is None and executions + budget.stability_attempts > budget.max_executions:
+                confirmation_complete = False
+                retained.extend((item, "budget_not_tested") for item in active[confirmation_index:] if item not in [r[0] for r in retained])
+                break
             executed_now = evaluation is None
             if evaluation is None:
                 evaluation = await self._evaluate(root, command, environment, proposed, predicate, signature, budget)
@@ -385,7 +452,7 @@ class FailureDistiller:
             if not integrity_path.is_file() or self._read_json(integrity_path) != self._materialized_integrity(root):
                 return self._state("boundary_not_isolatable", "materialized capsule integrity check failed")
             run = await self._run(self._command(repro["command"]), root, repro["environment"], int(repro["budget"]["timeout_sec"]))
-            return {"ok": True, "status": "same_failure" if predicate.matches(run.exit_code, run.output) and signature.matches(run.output) else "different_outcome", "run": self._run_dict(run)}
+            return {"ok": True, "status": "same_failure" if predicate.matches(run.exit_code, run.output, run.timed_out) and signature.matches(run.output) else "different_outcome", "run": self._run_dict(run)}
         with self._temporary_worktree_root(root) as temp:
             worktree = Path(temp) / "w"
             self._create_worktree(root, worktree)
@@ -395,7 +462,7 @@ class FailureDistiller:
                 run = await self._run(self._reduced_command(self._command(repro["command"]), removed), worktree, environment, int(repro["budget"]["timeout_sec"]))
             finally:
                 self._remove_worktree(root, worktree)
-        return {"ok": True, "status": "same_failure" if predicate.matches(run.exit_code, run.output) and signature.matches(run.output) else "different_outcome", "run": self._run_dict(run)}
+        return {"ok": True, "status": "same_failure" if predicate.matches(run.exit_code, run.output, run.timed_out) and signature.matches(run.output) else "different_outcome", "run": self._run_dict(run)}
 
     async def materialize(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Create a portable physical capsule from a verified logical capsule.
@@ -900,7 +967,7 @@ class FailureDistiller:
 
     async def _stability(self, root: Path, command: Sequence[str], env: Dict[str, str], predicate: Predicate, signature: Signature, budget: Budget) -> Dict[str, Any]:
         runs = [await self._run(command, root, env, budget.timeout_sec) for _ in range(budget.stability_attempts)]
-        matches = [run for run in runs if predicate.matches(run.exit_code, run.output) and signature.matches(run.output)]
+        matches = [run for run in runs if predicate.matches(run.exit_code, run.output, run.timed_out) and signature.matches(run.output)]
         return {"matching_failures": len(matches), "matches": len(matches), "attempts": len(runs), "runs": [self._run_dict(run) for run in runs]}
 
     async def _evaluate(self, root: Path, command: Sequence[str], env: Dict[str, str], active: Sequence[Candidate], predicate: Predicate, signature: Signature, budget: Budget) -> Dict[str, Any]:
@@ -913,8 +980,8 @@ class FailureDistiller:
                 runs = [await self._run(reduced_command, worktree, reduced_env, budget.timeout_sec) for _ in range(budget.stability_attempts)]
             finally:
                 self._remove_worktree(root, worktree)
-        matches = [run for run in runs if predicate.matches(run.exit_code, run.output) and signature.matches(run.output)]
-        return {"matches": len(matches), "attempts": len(runs), "predicate_matches": any(predicate.matches(run.exit_code, run.output) for run in runs), "signature_matches": any(signature.matches(run.output) for run in runs)}
+        matches = [run for run in runs if predicate.matches(run.exit_code, run.output, run.timed_out) and signature.matches(run.output)]
+        return {"matches": len(matches), "attempts": len(runs), "predicate_matches": any(predicate.matches(run.exit_code, run.output, run.timed_out) for run in runs), "signature_matches": any(signature.matches(run.output) for run in runs)}
 
     def _create_worktree(self, root: Path, destination: Path) -> None:
         _git(root, "worktree", "add", "--detach", "--force", str(destination), "HEAD")

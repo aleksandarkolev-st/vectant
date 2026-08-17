@@ -136,6 +136,25 @@ def test_durable_evaluation_cache_does_not_make_the_source_workspace_dirty(works
     assert second["baseline"]["matches"] == 2
 
 
+def test_budget_reserves_baseline_and_reports_untested_units(workspace):
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    payload["budget"] = {"preset": "fast", "stability_attempts": 3, "minimum_matches": 2, "max_executions": 2}
+    result = run(FailureDistiller().distill(payload))
+    assert result["status"] == "budget_exhausted"
+    assert result["untested_units"] == ["file:unrelated.txt"]
+    assert result["budget"]["reserved_baseline"] == 3
+
+
+def test_cache_reuse_does_not_consume_current_execution_budget(workspace):
+    payload = request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])
+    first = run(FailureDistiller().distill(payload))
+    assert first["ok"]
+    payload["budget"] = {"preset": "fast", "stability_attempts": 2, "minimum_matches": 2, "max_executions": 4}
+    second = run(FailureDistiller().distill(payload))
+    assert second["ok"]
+    assert second["executions"] == 2
+
+
 def test_rejects_secret_environment_and_path_escape(workspace):
     with pytest.raises(DistillationError, match="secret-bearing"):
         run(FailureDistiller().distill({**request(workspace, []), "environment": {"API_TOKEN": "nope"}}))
