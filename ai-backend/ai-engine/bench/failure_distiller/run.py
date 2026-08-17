@@ -91,24 +91,29 @@ async def _run_case(case: dict[str, Any]) -> dict[str, Any]:
 
 async def run(corpus: Path) -> dict[str, Any]:
     results = [await _run_case(case) for case in _cases(corpus)]
-    total = len(results) or 1
-    reproduction = sum(bool(item["distill"].get("ok")) for item in results) / total
-    reduction = sum(item["removed_ratio"] for item in results) / total
-    validations = [item["validation"] for item in results if item["validation"]]
+    # Browser/native/HMR/GPU observations are adapter-only/experimental until
+    # their real replay-to-repair round trips are independently proven. Keep
+    # them in the report, never in release-quality aggregate gates.
+    release = [item for item in results if item["adapter"] in {"pytest", "vitest", "test"}]
+    experimental = [item for item in results if item not in release]
+    total = len(release) or 1
+    reproduction = sum(bool(item["distill"].get("ok")) for item in release) / total
+    reduction = sum(item["removed_ratio"] for item in release) / total
+    validations = [item["validation"] for item in release if item["validation"]]
     original_validation = sum(item.get("status") == "validated" for item in validations) / len(validations) if validations else 0.0
     false_equivalence = sum(item.get("status") in {"original_validation_failed", "capsule_fix_failed"} for item in validations) / len(validations) if validations else 0.0
-    full_searches = sum(item["discovery"]["full_repository_search_operations"] for item in results)
-    capsule_searches = sum(item["discovery"]["capsule_search_operations"] for item in results)
+    full_searches = sum(item["discovery"]["full_repository_search_operations"] for item in release)
+    capsule_searches = sum(item["discovery"]["capsule_search_operations"] for item in release)
     discovery_reduction = 1.0 - (capsule_searches / full_searches) if full_searches else 0.0
-    candidate_executions = sum(item["cost"]["candidate_executions"] for item in results)
-    cache_hits = sum(item["cost"]["cache_hits"] for item in results)
+    candidate_executions = sum(item["cost"]["candidate_executions"] for item in release)
+    cache_hits = sum(item["cost"]["cache_hits"] for item in release)
     metrics = {
         "reproduction_rate": reproduction, "reduction_rate": reduction,
         "original_validation_rate": original_validation, "false_equivalence_rate": false_equivalence,
         "capsule_discovery_reduction": discovery_reduction,
         "agent_utility": {"measurement": "deterministic_path_discovery", "full_repository_search_operations": full_searches, "capsule_search_operations": capsule_searches},
         "cache_effectiveness": {"cache_hits": cache_hits, "candidate_executions": candidate_executions, "cache_hit_rate": cache_hits / (cache_hits + candidate_executions) if cache_hits + candidate_executions else 0.0},
-        "cost": {"cases": len(results), "candidate_executions": candidate_executions},
+        "cost": {"release_cases": len(release), "experimental_cases_excluded": len(experimental), "candidate_executions": candidate_executions},
     }
     gates = {name: value >= THRESHOLDS[name] if name != "false_equivalence_rate" else value <= THRESHOLDS[name] for name, value in metrics.items() if name in THRESHOLDS}
     return {"schema_version": "vectant.failure_distiller.benchmark.v1", "generated_at": datetime.now(timezone.utc).isoformat(), "thresholds": THRESHOLDS, "metrics": metrics, "gates": gates, "ok": all(gates.values()), "cases": results}
@@ -131,6 +136,8 @@ def main() -> int:
         "", "| Operational metric | Value |", "|---|---:|",
         f"| Full-repository path discovery operations | {utility['full_repository_search_operations']} |",
         f"| Capsule path discovery operations | {utility['capsule_search_operations']} |",
+        f"| Release-quality cases | {report['metrics']['cost']['release_cases']} |",
+        f"| Experimental cases excluded from gates | {report['metrics']['cost']['experimental_cases_excluded']} |",
         f"| Candidate executions | {report['metrics']['cost']['candidate_executions']} |",
         f"| Cache hit rate | {cache['cache_hit_rate']:.2%} |",
         "", "| Case | Adapter | Result |", "|---|---|---|",
