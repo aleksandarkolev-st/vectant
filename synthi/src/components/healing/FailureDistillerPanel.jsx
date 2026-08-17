@@ -131,8 +131,13 @@ export function FailureDistillerPanel() {
       {outcome ? <div className="mt-2 rounded border p-2 text-[10px]" aria-live="polite" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
         <div className="font-medium" style={{ color: 'var(--text-secondary)' }}>{outcome.status || 'completed'}</div>
         {outcome.capsuleId ? <div className="font-mono" style={{ color: 'var(--text-muted)' }}>{outcome.capsuleId}</div> : null}
+        {outcome.baseline ? <div style={{ color: 'var(--text-muted)' }}>Baseline stability: {outcome.baseline.matching_failures ?? outcome.baseline.matches}/{outcome.baseline.attempts} matching failures</div> : null}
         {outcome.reduction ? <div style={{ color: 'var(--text-muted)' }}>{outcome.reduction.removed_units} removed, {outcome.reduction.retained_units} retained</div> : null}
+        {outcome.reduction?.untested_count ? <div style={{ color: 'var(--accent-warning)' }}>{outcome.reduction.untested_count} units untested: {outcome.reduction.limiting_reason}</div> : null}
         {outcome.executions !== undefined ? <div style={{ color: 'var(--text-muted)' }}>Execution budget used: {outcome.executions}</div> : null}
+        {outcome.budget?.max_executions ? <div style={{ color: 'var(--text-muted)' }}>Budget: {outcome.budget.executions_performed_current_request}/{outcome.budget.max_executions} executions</div> : null}
+        {outcome.isolation?.image ? <div className="font-mono" style={{ color: 'var(--text-muted)' }}>Isolation image: {outcome.isolation.image}</div> : null}
+        {outcome.workspacePath && outcome.status === 'materialized' ? <div className="font-mono" style={{ color: 'var(--text-muted)' }}>Materialized: {outcome.workspacePath}</div> : null}
         {outcome.reason ? <div style={{ color: 'var(--text-muted)' }}>{outcome.reason}</div> : null}
         {outcome.metrics ? <div style={{ color: 'var(--text-muted)' }}>{outcome.metrics.accepted_capsules} capsules, {Math.round((outcome.metrics.reduction_ratio || 0) * 100)}% unit reduction, {outcome.metrics.validated_patches} validated patches</div> : null}
         {outcome.scenarioId ? <div style={{ color: 'var(--text-muted)' }}>Vivarium handoff: {outcome.scenarioId}</div> : null}
