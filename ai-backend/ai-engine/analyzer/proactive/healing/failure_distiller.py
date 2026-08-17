@@ -1331,10 +1331,23 @@ class FailureDistiller:
         except (OSError, json.JSONDecodeError):
             return [Candidate("file", relative.as_posix())]
         candidates: List[Candidate] = []
-        if isinstance(data, dict):
-            candidates.extend(Candidate("json_key", f"{relative.as_posix()}#/{key}") for key in data)
-        elif isinstance(data, list):
-            candidates.extend(Candidate("json_record", f"{relative.as_posix()}#/{index}") for index in range(len(data)))
+
+        def escape(value: Any) -> str:
+            return str(value).replace("~", "~0").replace("/", "~1")
+
+        def visit(value: Any, pointer: str) -> None:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    child_pointer = f"{pointer}/{escape(key)}"
+                    candidates.append(Candidate("json_key", f"{relative.as_posix()}#{child_pointer}"))
+                    visit(child, child_pointer)
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    child_pointer = f"{pointer}/{index}"
+                    candidates.append(Candidate("json_record", f"{relative.as_posix()}#{child_pointer}"))
+                    visit(child, child_pointer)
+
+        visit(data, "")
         return candidates or [Candidate("file", relative.as_posix())]
 
     async def _run(self, command: Sequence[str], cwd: Path, env: Dict[str, str], timeout_sec: int) -> Run:

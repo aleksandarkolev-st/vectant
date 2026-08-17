@@ -589,6 +589,24 @@ def test_runtime_observation_builds_a_reduction_frontier_from_attested_paths(wor
     assert run(FailureDistiller().run(str(capsule)))["status"] == "same_failure"
 
 
+def test_nested_json_pointer_reduction_escapes_slashes_and_tildes(workspace):
+    (workspace / "fixture.json").write_text(json.dumps({"a/b": {"~flag": "discard", "required": "keep"}}), encoding="utf-8")
+    (workspace / "runner.py").write_text(
+        "import json, sys\n"
+        "data=json.load(open('fixture.json', encoding='utf-8'))\n"
+        "if data['a/b']['required'] == 'keep': print('FailureSignature: nested fixture'); sys.exit(7)\n"
+        "print('fixed')\n",
+        encoding="utf-8",
+    )
+    git(workspace, "add", "runner.py", "fixture.json")
+    git(workspace, "commit", "-m", "nested fixture")
+    payload = request(workspace, [{"kind": "json_key", "reference": "fixture.json#/a~1b/~0flag"}])
+    payload["signature"] = {"required": ["nested fixture"]}
+    result = run(FailureDistiller().distill(payload))
+    assert result["reduction"]["removed_units"] == 1
+    assert run(FailureDistiller().run(result["workspace_path"]))["status"] == "same_failure"
+
+
 def test_runtime_auto_discovery_refuses_without_attested_frontier(workspace):
     payload = request(workspace, [])
     payload["autoDiscover"] = True
