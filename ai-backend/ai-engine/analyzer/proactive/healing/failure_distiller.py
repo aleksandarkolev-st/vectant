@@ -488,12 +488,14 @@ class FailureDistiller:
                     confirmation_prefetch.setdefault(world_key, cache[world_key])
 
         status = "budget_exhausted" if (active and executions + budget.stability_attempts > budget.max_executions) else ("distilled" if not active else "stable_partial")
+        untested = sorted({item.identifier for item, reason in retained if reason == "budget_not_tested"})
+        limiting_reason = "max_executions_reserved_for_baseline_and_completed_evaluations" if untested else None
         artifact = self._write_capsule(root, capsule_id, command, environment, observation, predicate, signature, budget, source_revision, dirty, baseline, active, removed, retained, evidence, status, retention_seconds)
         self._metrics["accepted_capsules"] += 1
         self._metrics["candidate_executions"] += executions
         self._metrics["candidate_units"] += len(candidates)
         self._metrics["removed_units"] += len(removed)
-        return {"ok": True, "capsule_id": capsule_id, "capsuleId": capsule_id, "workspace_path": str(artifact), "workspacePath": str(artifact), "run": f"vectant repro run {capsule_id}", "status": status, "baseline": baseline, "reduction": {"candidate_units": len(candidates), "removed_units": len(removed), "retained_units": len(active), "minimality": "1-minimal_under_declared_units" if confirmation_complete else "budget_limited"}, "limits": ["logical capsule: source files remain in the original workspace", "outbound network is not granted by this API but must be blocked by the configured host/container sandbox", "external interactions are unsupported without a validated replay or contract boundary"], "executions": executions}
+        return {"ok": True, "capsule_id": capsule_id, "capsuleId": capsule_id, "workspace_path": str(artifact), "workspacePath": str(artifact), "run": f"vectant repro run {capsule_id}", "status": status, "baseline": baseline, "reduction": {"candidate_units": len(candidates), "removed_units": len(removed), "retained_units": len(active), "minimality": "1-minimal_under_declared_units" if confirmation_complete else "budget_limited", "untested_units": untested, "untested_count": len(untested), "limiting_reason": limiting_reason}, "limits": ["logical capsule: source files remain in the original workspace", "outbound network is not granted by this API but must be blocked by the configured host/container sandbox", "external interactions are unsupported without a validated replay or contract boundary"], "executions": executions, "budget": {"max_executions": budget.max_executions, "executions_per_stability_evaluation": budget.stability_attempts, "executions_performed_current_request": executions, "limiting_reason": limiting_reason}}
 
     async def run(self, capsule_path: str) -> Dict[str, Any]:
         capsule = Path(capsule_path).resolve()
