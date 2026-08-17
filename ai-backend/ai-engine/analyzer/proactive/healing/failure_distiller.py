@@ -348,7 +348,36 @@ class FailureDistiller:
         executions, evidence, removed, retained = baseline["attempts"], [], [], []
         active = list(candidates)
         cache = self._load_evaluation_cache(root)
+        # Coarse-to-fine reduction starts with independently meaningful
+        # workflow/input/fixture/config/source groups.  A failed group is not
+        # called required: the fine pass below must establish that evidence.
+        coarse_complete = True
+        for group_name, group in self._coarse_groups(active):
+            if len(group) < 2:
+                continue
+            proposed = [*removed, *group]
+            key = self._world_hash(proposed, environment, command, source_revision, runtime)
+            evaluation = cache.get(key)
+            if evaluation is None and executions + budget.stability_attempts > budget.max_executions:
+                coarse_complete = False
+                break
+            executed_now = evaluation is None
+            if evaluation is None:
+                evaluation = await self._evaluate(root, command, environment, proposed, predicate, signature, budget)
+                cache[key] = evaluation
+                self._save_evaluation_cache(root, cache)
+            else:
+                self._metrics["cache_hits"] += 1
+            if executed_now:
+                executions += evaluation["attempts"]
+            decision = "removed" if evaluation["matches"] >= budget.minimum_matches else "retained"
+            evidence.append({"candidate_group": group_name, "candidates": [item.identifier for item in group], "operation": "coarse_group_remove", "world_hash": key, "predicate": "fail" if evaluation["predicate_matches"] else "pass", "signature": "match" if evaluation["signature_matches"] else "mismatch", "runs": {"matching_failures": evaluation["matches"], "attempts": evaluation["attempts"]}, "decision": decision})
+            if decision == "removed":
+                removed.extend(group)
+                active = [item for item in active if item not in group]
         for candidate in list(candidates):
+            if candidate not in active:
+                continue
             proposed = [*removed, candidate]
             key = self._world_hash(proposed, environment, command, source_revision, runtime)
             evaluation = cache.get(key)
@@ -375,7 +404,7 @@ class FailureDistiller:
         # The primary pass is order-sensitive. A candidate that was necessary
         # before another accepted removal can become removable afterwards, so
         # confirm 1-minimality against the final reduced world.
-        confirmation_complete = True
+        confirmation_complete = coarse_complete
         confirmation_prefetch: Dict[str, Dict[str, Any]] = {}
         confirmation_index = 0
         while confirmation_index < len(active):
@@ -1119,6 +1148,26 @@ class FailureDistiller:
             target = (parent / value).as_posix()
             targets.update({target, f"{target}.js", f"{target}.mjs", f"{target}.ts", f"{target}.tsx", f"{target}/index.js", f"{target}/index.ts"})
         return {str(Path(target)) for target in targets}
+
+    def _coarse_groups(self, candidates: Sequence[Candidate]) -> List[Tuple[str, List[Candidate]]]:
+        """Return deterministic coarse reduction groups before unit testing.
+
+        Grouping mirrors the declared reduction boundary rather than filesystem
+        order: input arguments, fixture/config entries, environment, source
+        files, then supported Python units.  The subsequent fine pass proves
+        individual necessity and preserves the 1-minimal contract.
+        """
+        buckets: Dict[Tuple[int, str], List[Candidate]] = {}
+        priority = {"command_arg": 0, "json_record": 1, "json_key": 1, "env": 2, "file": 3, "python_function": 4, "python_statement": 4}
+        for candidate in candidates:
+            if candidate.kind in {"json_record", "json_key", "python_function", "python_statement"}:
+                boundary = candidate.reference.split("#", 1)[0]
+            elif candidate.kind == "file":
+                boundary = Path(candidate.reference).parent.as_posix()
+            else:
+                boundary = candidate.kind
+            buckets.setdefault((priority[candidate.kind], f"{candidate.kind}:{boundary}"), []).append(candidate)
+        return [(name, values) for (_, name), values in sorted(buckets.items(), key=lambda item: item[0])]
 
     def _copy_materialized_paths(self, source: Path, destination: Path, paths: Iterable[str]) -> None:
         destination.mkdir(parents=True, exist_ok=False)
