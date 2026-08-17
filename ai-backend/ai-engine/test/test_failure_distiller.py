@@ -178,6 +178,16 @@ def test_patch_validation_requires_and_records_all_round_trip_gates(workspace):
     assert stored["status"] == "validated"
 
 
+def test_editable_capsule_overlay_is_a_real_patch_source(workspace):
+    result = run(FailureDistiller().distill(request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])))
+    overlay_runner = Path(result["workspace_path"]) / "overlay" / "runner.py"
+    assert overlay_runner.is_file()
+    overlay_runner.write_text("print('fixed')\n", encoding="utf-8")
+    validation = run(FailureDistiller().validate_patch({"capsulePath": result["workspace_path"]}))
+    assert validation["status"] == "validated"
+    assert validation["patch_mapping"]["mapped_files"] == ["runner.py"]
+
+
 def test_patch_validation_runs_original_command_when_no_affected_check_is_supplied(workspace):
     result = run(FailureDistiller().distill(request(workspace, [{"kind": "file", "reference": "unrelated.txt"}])))
     validation = run(FailureDistiller().validate_patch({"capsulePath": result["workspace_path"], "edits": [{"path": "runner.py", "content": "print('fixed')\n"}]}))

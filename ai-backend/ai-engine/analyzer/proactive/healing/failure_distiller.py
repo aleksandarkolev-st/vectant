@@ -621,8 +621,15 @@ class FailureDistiller:
         self._configure_execution(repro)
         root = Path(repro["workspace_root"]).resolve()
         edits = request.get("edits", [])
+        if not edits:
+            overlay = Path(str(repro.get("editable_workspace", capsule / "overlay"))).resolve()
+            edits = []
+            for relative, entry in provenance.items():
+                candidate = overlay / relative
+                if candidate.is_file() and _sha256(candidate.read_bytes()) != entry.get("sha256"):
+                    edits.append({"path": relative, "content": candidate.read_text(encoding="utf-8")})
         if not isinstance(edits, list) or not edits:
-            raise DistillationError("edits are required")
+            raise DistillationError("edits are required, or edit retained files under the capsule overlay")
         conflicts = []
         for edit in edits:
             path = str(edit.get("path", ""))
@@ -1281,14 +1288,22 @@ class FailureDistiller:
             provenance_paths.add(observation["file_path"])
         for key in ("executed_paths", "fixture_paths", "config_paths"):
             provenance_paths.update(path for path in observation.get(key, []) if isinstance(path, str))
+        provenance_paths = {path for path in provenance_paths if not Path(path).is_absolute()}
         for origin in provenance_paths:
             file_path = root / origin
             if file_path.is_file():
                 provenance[origin] = {"kind": "file", "origin": origin, "revision": revision, "sha256": _sha256(file_path.read_bytes())}
+        # The retained source is an editable capsule-local workspace, never a
+        # link into production.  Only this provenance map may map edits back.
+        overlay = capsule / "overlay"
+        for relative in sorted(provenance):
+            source, target = root / relative, overlay / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
         runtime = self._runtime_identity(command, environment)
         created = datetime.now(timezone.utc)
         manifest = {"schema_version": "vectant.failure_capsule.v1", "capsule_id": capsule_id, "source_revision": revision, "dirty_workspace": dirty, "runtime": runtime, "observation": observation, "entrypoint": f"vectant repro run {capsule_id}", "status": status, "created_at": created.isoformat(), "retention": {"expires_at": (created + timedelta(seconds=retention_seconds)).isoformat(), "seconds": retention_seconds}}
-        repro = {"workspace_root": str(root), "command": list(command), "environment": environment, "observation": observation, "runtime": runtime, "isolation": self._isolation_profile, "predicate": predicate.to_dict(), "signature": signature.to_dict(), "budget": budget.__dict__, "baseline": baseline, "active_units": [item.__dict__ for item in active], "removed_units": [item.__dict__ for item in removed]}
+        repro = {"workspace_root": str(root), "editable_workspace": str(overlay), "command": list(command), "environment": environment, "observation": observation, "runtime": runtime, "isolation": self._isolation_profile, "predicate": predicate.to_dict(), "signature": signature.to_dict(), "budget": budget.__dict__, "baseline": baseline, "active_units": [item.__dict__ for item in active], "removed_units": [item.__dict__ for item in removed]}
         validation = {"status": "not_run", "required_gates": ["capsule_fails_before_patch", "capsule_passes_after_patch", "original_world_passes_after_mapping", "affected_checks_pass"]}
         self._write_json(capsule / "manifest.json", manifest)
         self._write_json(capsule / "repro.json", repro)
