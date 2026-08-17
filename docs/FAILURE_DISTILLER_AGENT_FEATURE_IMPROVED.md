@@ -1166,16 +1166,31 @@ The critical behavior change is that the agent no longer begins with “find the
 This section records implementation evidence; it does not relax any preceding
 requirement or turn a partially supported adapter into a universal one.
 
-| Contract area | Verified implementation evidence |
+### Implemented and verified
+
+| Contract area | Evidence |
 |---|---|
-| Reproduction envelope and isolation | Source revision/dirty policy, runtime identity, deterministic environment, predicate/signature stability evidence, retention/deletion audit, redaction, and fail-closed container execution are covered by the distiller and isolation suites. A real container test verifies outbound network denial. |
+| Reproduction envelope and isolation | Source revision/dirty policy, runtime identity, deterministic environment, predicate/signature stability evidence, retention/deletion audit, redaction, digest-pinned allowlisted image enforcement, read-only workspace mounts, bounded output, and fail-closed execution are covered by focused unit tests. Docker runtime mutation/network proof remains environment-dependent. |
 | Pytest/Vitest reduction | Versioned benchmark fixtures execute the real Pytest and Vitest runners, reduce declared fixture/config/file candidates, and validate accepted repairs by rerunning the original commands. |
-| Source reduction and cache | Logical capsules retain provenance, use content-addressed persistent evaluation caching, support Python declaration/statement candidates, perform 1-minimal confirmation, and safely prefetch independent confirmation candidates in isolated worktrees. |
-| Patch round-trip | Capsule edits require verified provenance; mapping conflicts and capsule-only edits are rejected. Capsule, original-world, and affected-command gates are retained as validation evidence. |
-| Browser workflow, implemented but adapter-only | The browser adapter validates recorded workflow envelopes and Synthi taught-workflow contracts, including route/state/device/viewport, source attribution, DOM, network, and console evidence. It is **experimental/adapter-only**: no real browser-failure-to-editable-capsule-to-original-flow validation has been proven. It is excluded from release-quality aggregate metrics and does not claim browser-runtime parity. |
-| Portable capsules | Materialization verifies integrity, copies Node and imported non-stdlib Python dependency closures without source-workspace symlinks, writes reproducible metadata/scripts, and independently reruns the same signature. Browser dependency closure support must be verified per runtime before browser portability is claimed. |
-| Native/HMR/GPU, experimental | Separate adapters validate supplied typed envelopes. They remain **experimental** until each has a real execution/replay hook and end-to-end capsule repair plus original-world validation. Hardware/compiler identity and GPU parity remain unproven. |
-| Quality gates | The versioned corpus contains Pytest, Vitest, browser, native, HMR, and GPU cases. CI enforces reproduction, reduction, original-validation, false-equivalence, and deterministic capsule path-discovery gates and publishes JSON/Markdown reports. |
+| Source reduction and cache | Logical capsules retain provenance, use content-addressed persistent evaluation caching, support Python declaration/statement candidates, and perform 1-minimal confirmation. |
+| Patch round-trip | Editable capsule overlays require verified provenance; capsule-only edits are rejected; latest validation plus immutable validation history retain capsule, original-world, and affected-command gates. |
+| Quality gates | Pytest/Vitest release gates publish deterministic JSON/Markdown reports. Experimental adapters are excluded from aggregate release metrics. |
+
+### Implemented but adapter-only
+
+- Browser workflow envelope and taught-workflow normalization preserve route/state/device/viewport, source attribution, DOM, network, and console evidence. This is **experimental/adapter-only**, not a browser reduction/recovery claim.
+- Native, HMR, and GPU adapters validate supplied typed envelopes only. They do not establish compiler, hardware, or runtime replay parity.
+
+### Experimental
+
+- Portable Node/Python materialization has focused closure tests. Dynamic imports, package exports, generated files, browser assets, and unknown runtime closure edges remain conservative and must fail closed before portability is claimed.
+- Python AST declaration reduction is deep-mode only. Arbitrary-language statement reduction is unsupported.
+
+### Explicitly unsupported
+
+- Browser-failure-to-editable-capsule-to-original-flow repair validation.
+- Native, HMR, and GPU end-to-end replay/reduction/repair parity.
+- Distributed production boundaries, production credentials, and production write authority.
 
 The exact commands and report values are part of the release handoff; a green
 unit suite alone is not evidence that an unsupported external runtime is safe
