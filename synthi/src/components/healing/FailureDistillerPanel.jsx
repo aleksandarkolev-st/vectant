@@ -20,6 +20,7 @@ export function FailureDistillerPanel() {
   const [outcome, setOutcome] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const imagePinned = /@sha256:[a-f0-9]{64}$/i.test(containerImage.trim());
 
   const execute = useCallback(async (action) => {
     setBusy(true);
@@ -37,6 +38,10 @@ export function FailureDistillerPanel() {
   }, []);
 
   const distill = useCallback(() => {
+    if (!imagePinned) {
+      setError('Use a digest-pinned, server-allowlisted image, for example registry/vectant@sha256:…');
+      return;
+    }
     let recording = {};
     try {
       recording = adapterRecording.trim() ? JSON.parse(adapterRecording) : {};
@@ -56,7 +61,7 @@ export function FailureDistillerPanel() {
       isolation: { mode: 'container', engine: 'docker', image: containerImage.trim() },
       budget: { preset: budget }, autoDiscover: true, networkPolicy: 'deny',
     }));
-  }, [adapterRecording, budget, command, containerImage, execute, gateway, observationFile, observationKind, signature, workspaceRoot]);
+  }, [adapterRecording, budget, command, containerImage, execute, gateway, imagePinned, observationFile, observationKind, signature, workspaceRoot]);
 
   const deleteCapsule = useCallback(() => {
     if (!capsule?.workspacePath || !window.confirm('Permanently delete this capsule and its materialized contents? This cannot be undone.')) return;
@@ -86,6 +91,7 @@ export function FailureDistillerPanel() {
         <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Isolated runtime image
           <input value={containerImage} onChange={(event) => setContainerImage(event.target.value)} placeholder="registry/vectant@sha256:…" aria-describedby="distiller-image-policy" className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
           <span id="distiller-image-policy" className="mt-1 block" style={{ color: 'var(--text-muted)' }}>Only a server-allowlisted, locally provisioned digest image can run. Network and package installation are denied.</span>
+          {containerImage.trim() && !imagePinned ? <span className="mt-1 block" role="alert" style={{ color: 'var(--accent-danger)' }}>A mutable tag cannot run in Failure Distiller.</span> : null}
         </label>
         <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Failure signature regex (optional)
           <input value={signature} onChange={(event) => setSignature(event.target.value)} placeholder="InviteModal.onSubmit" className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
@@ -107,7 +113,7 @@ export function FailureDistillerPanel() {
           <select value={budget} onChange={(event) => setBudget(event.target.value)} className="rounded-[var(--radius-control)] border px-2 py-1 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
             <option value="fast">Fast</option><option value="standard">Standard</option><option value="deep">Deep</option>
           </select>
-          <button type="button" disabled={busy || !workspaceRoot.trim() || !command.trim() || !containerImage.trim()} onClick={distill} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] px-2 py-1 text-xs disabled:opacity-50" style={{ background: 'var(--accent-primary)', color: 'var(--bg-app)' }}>
+          <button type="button" disabled={busy || !workspaceRoot.trim() || !command.trim() || !imagePinned} onClick={distill} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] px-2 py-1 text-xs disabled:opacity-50" style={{ background: 'var(--accent-primary)', color: 'var(--bg-app)' }}>
             <Play size={12} /> Distill
           </button>
           {capsule?.workspacePath ? <button type="button" disabled={busy} onClick={() => execute(() => gateway.runFailureCapsule(capsule.workspacePath))} className="th-focus-ring rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--border-subtle)' }}>Replay</button> : null}

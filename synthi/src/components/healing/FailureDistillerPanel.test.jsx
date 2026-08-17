@@ -50,6 +50,19 @@ describe('FailureDistillerPanel', () => {
     vi.unstubAllGlobals();
   });
 
+  it('does not offer mutable container tags to the isolation API', async () => {
+    await act(async () => root.render(<FailureDistillerPanel />));
+    const inputs = container.querySelectorAll('input');
+    await act(async () => {
+      setInputValue(inputs[0], 'C:\\work\\app');
+      setInputValue(inputs[1], 'pytest tests/failure.py');
+      setInputValue(inputs[2], 'python:3.12-slim');
+    });
+    expect(container.textContent).toContain('A mutable tag cannot run');
+    expect([...container.querySelectorAll('button')].find((button) => button.textContent.includes('Distill')).disabled).toBe(true);
+    expect(gateway.distillFailure).not.toHaveBeenCalled();
+  });
+
   it('distills a quoted command intact and exposes capsule operations', async () => {
     gateway.distillFailure.mockResolvedValue({ ok: true, status: 'distilled', capsuleId: 'capsule_test', workspacePath: '/tmp/capsule', reduction: { removed_units: 3, retained_units: 2 } });
     gateway.getFailureDistillerMetrics.mockResolvedValue({ ok: true, metrics: { accepted_capsules: 1, reduction_ratio: 0.6, validated_patches: 1 } });
