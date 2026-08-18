@@ -630,8 +630,8 @@ export class AnalyzerGatewayClient {
 
   /** Create a logical, evidence-backed failure capsule from a failing command. */
   distillFailure(payload) {
-    if (!payload?.workspaceRoot || !(typeof payload?.command === 'string' || Array.isArray(payload?.command))) {
-      return Promise.reject(new Error('workspaceRoot and command string or array are required'));
+    if (!(payload?.workspaceRef || payload?.workspaceRoot) || !(typeof payload?.command === 'string' || Array.isArray(payload?.command))) {
+      return Promise.reject(new Error('workspaceRef and command string or array are required'));
     }
     return this._sendRequest('heal/agentic/distill', payload);
   }

@@ -721,6 +721,12 @@ export function useAnalyzerGateway({
     return response?.data ?? response;
   }, []);
 
+  const validateFailureCapsulePatch = useCallback(async (payload = {}) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.validateFailureCapsulePatch(payload);
+    return response?.data ?? response;
+  }, []);
+
   const deleteFailureCapsule = useCallback(async (capsulePath) => {
     if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
     const response = await clientRef.current.deleteFailureCapsule(capsulePath);
@@ -801,6 +807,7 @@ export function useAnalyzerGateway({
     runFailureCapsule,
     explainFailureCapsule,
     materializeFailureCapsule,
+    validateFailureCapsulePatch,
     deleteFailureCapsule,
     purgeExpiredFailureCapsules,
     exportFailureCapsuleToVivarium,

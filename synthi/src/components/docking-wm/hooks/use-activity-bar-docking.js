@@ -41,6 +41,7 @@ const SIDEBAR_TYPES = new Set([
   IDE_PANEL.SETTINGS,
   IDE_PANEL.PULL_REQUESTS,
   IDE_PANEL.AI_HEALING,
+  IDE_PANEL.FAILURE_DISTILLER,
   IDE_PANEL.INTEGRATIONS,
   IDE_PANEL.PORTS,
 ]);
@@ -232,6 +233,7 @@ export function useActivityBarDocking() {
       settings:      () => togglePanel(IDE_PANEL.SETTINGS, 'Settings'),
       pullrequests:  () => togglePanel(IDE_PANEL.PULL_REQUESTS, 'Pull Requests'),
       'ai-healing':  () => togglePanel(IDE_PANEL.AI_HEALING, 'AI Healing'),
+      'failure-distiller': () => togglePanel(IDE_PANEL.FAILURE_DISTILLER, 'Failure Distiller'),
       integrations:  () => togglePanel(IDE_PANEL.INTEGRATIONS, 'Connected Tools'),
       ports:         () => togglePanel(IDE_PANEL.PORTS, 'Ports'),
     }),

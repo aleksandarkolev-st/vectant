@@ -9,7 +9,6 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import FailureDistillerPanel from './FailureDistillerPanel';
 import { useSelector, useDispatch } from 'react-redux';
 import {
   selectHealingEnabled,
@@ -667,7 +666,6 @@ export function HealingSettingsPanel() {
             </div>
           </div>
         )}
-        <FailureDistillerPanel />
       </div>
     </div>
   );

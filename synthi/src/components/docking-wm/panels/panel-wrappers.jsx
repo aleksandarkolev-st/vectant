@@ -206,6 +206,11 @@ const HealingSettingsPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const FailureDistillerPanel = dynamic(
+  () => import('@/components/healing/FailureDistillerPanel').then(m => ({ default: m.FailureDistillerPanel })),
+  { ssr: false, loading: Placeholder },
+);
+
 const ConnectedToolsPanel = dynamic(
   () => import('@/components/integrations/ConnectedToolsPanel'),
   { ssr: false, loading: Placeholder },
@@ -1139,6 +1144,28 @@ export const AIHealingPanelWrapper = memo(function AIHealingPanelWrapper({ data 
   );
 });
 
+export const FailureDistillerPanelWrapper = memo(function FailureDistillerPanelWrapper() {
+  const ctx = useWorkspacePanelContext();
+  const { data: session } = useSession();
+  const runtimeIdentity = useMemo(
+    () => getWorkspaceRuntimeIdentity(ctx?.workspaceSlug, { userId: session?.user?.id }),
+    [ctx?.workspaceSlug, session?.user?.id],
+  );
+  const workspaceRef = ctx?.workspaceSlug && runtimeIdentity.filesystemUserId
+    ? `${ctx.workspaceSlug}/${runtimeIdentity.filesystemUserId}`
+    : '';
+
+  return (
+    <div data-panel-type="failure-distiller" className="vt-panel-frame h-full w-full overflow-hidden">
+      <FailureDistillerPanel
+        workspaceSlug={ctx?.workspaceSlug}
+        workspaceRef={workspaceRef}
+        activeFile={typeof ctx?.activeFile === 'string' ? ctx.activeFile : (ctx?.activeFile?.path || ctx?.activeFile?.name || '')}
+      />
+    </div>
+  );
+});
+
 // ────────────────────────────────────────────────────────
 //  Integrations Panel Wrapper
 // ────────────────────────────────────────────────────────
@@ -1224,6 +1251,7 @@ export const PANEL_WRAPPERS = {
   pullrequests:    PullRequestsPanelWrapper,
   commithistory:   CommitHistoryPanelWrapper,
   'ai-healing':    AIHealingPanelWrapper,
+  'failure-distiller': FailureDistillerPanelWrapper,
   integrations:    IntegrationsPanelWrapper,
   programs:        ProgramsPanelWrapper,
   'program-session': ProgramSessionPanelWrapper,
