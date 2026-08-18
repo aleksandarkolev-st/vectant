@@ -183,7 +183,6 @@ def test_browser_replay_command_rejects_a_bad_attestation_before_execution(works
         run(FailureDistiller().distill(payload))
 
 
-@pytest.mark.skip(reason="Browser Failure Distiller remains experimental/adapter-only until a deterministic browser-failure-to-capsule round trip is available")
 def test_browser_adapter_distills_a_real_playwright_chrome_failure(workspace):
     modules = Path(__file__).parents[3] / "node_modules"
     try:

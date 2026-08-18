@@ -35,10 +35,11 @@ Automated validation remains required before release promotion.
   `@sha256:` image, `--pull=never`, `--network=none`, a read-only `/workspace`,
   bounded tmpfs, and resource limits. Attempt writes to a source file, `.git`,
   and capsule artifacts; all must fail and their hashes must remain unchanged.
-- Browser: connect the browser tab, replay the taught workflow with the stated
-  route, state, viewport, and device. Capture a trace/screenshot for baseline,
-  reduced capsule, and original-world patch validation. Browser remains
-  `experimental/adapter-only` until this round trip is automated in CI.
+- Browser: capture the consented, source-linked workflow with
+  `synthi_failure_browser_workflow_capture`; it rejects workflows that are not
+  eligible for `ciIsolated` replay. Replay the stated route, state, viewport,
+  and device and retain a trace/screenshot for baseline, reduced capsule, and
+  original-world patch validation.
 - Stop immediately on any mutation outside the disposable worktree, an unknown
   image/closure edge, ambient dependency/path leakage, or signature mismatch.
 

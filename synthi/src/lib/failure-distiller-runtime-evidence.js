@@ -1,4 +1,5 @@
 const MAX_EVENTS = 50;
+const HMR_TERMINAL_STATES = new Set(['applied', 'compile-error', 'full-reload-required', 'rejected', 'discarded']);
 
 function append(previous, event) {
   const next = [...previous, event];
@@ -70,7 +71,7 @@ export function installFailureDistillerRuntimeEvidence(onChange) {
   window.addEventListener('synthi:gpu-hmr-status', gpu);
   return {
     snapshot(kind) {
-      if (kind === 'hmr') return state.hmr.length ? { kind, hmr_events: [...state.hmr] } : null;
+      if (kind === 'hmr') return HMR_TERMINAL_STATES.has(state.hmr.at(-1)) ? { kind, hmr_events: [...state.hmr] } : null;
       if (kind === 'native') {
         const diagnostic = state.native.at(-1);
         return diagnostic ? { kind, diagnostic, compiler_flags: [] } : null;

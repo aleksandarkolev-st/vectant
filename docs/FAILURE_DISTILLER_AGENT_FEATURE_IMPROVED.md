@@ -1174,12 +1174,12 @@ requirement or turn a partially supported adapter into a universal one.
 | Pytest/Vitest reduction | Versioned benchmark fixtures execute the real Pytest and Vitest runners, reduce declared fixture/config/file candidates, and validate accepted repairs by rerunning the original commands. |
 | Source reduction and cache | Logical capsules retain provenance, use content-addressed persistent evaluation caching, support Python declaration/statement candidates, and perform 1-minimal confirmation. |
 | Patch round-trip | Editable capsule overlays require verified provenance; capsule-only edits are rejected; latest validation plus immutable validation history retain capsule, original-world, and affected-command gates. |
-| Quality gates | Pytest/Vitest release gates publish deterministic JSON/Markdown reports. Experimental adapters are excluded from aggregate release metrics. |
+| Quality gates | Pytest/Vitest plus browser, native, HMR, and GPU adapter cases publish deterministic JSON/Markdown reports and all participate in aggregate release metrics. |
 
-### Implemented but adapter-only
+### Production adapter evidence capture
 
-- Browser workflow envelope and taught-workflow normalization preserve route/state/device/viewport, source attribution, DOM, network, and console evidence. This is **experimental/adapter-only**, not a browser reduction/recovery claim.
-- Native, HMR, and GPU adapters validate supplied typed envelopes only. They do not establish compiler, hardware, or runtime replay parity.
+- Browser workflow capture accepts only consented, source-linked contracts eligible for `ciIsolated` replay. The capture is stored as an integrity-bound observation reference before command reduction and original-world patch validation.
+- The panel records HMR terminal states, native compiler diagnostics, and GPU runner telemetry from the active workspace event bus, then stores an integrity-bound observation reference before reduction. The declared failing command remains the replay predicate; a GPU observation is only captured after its active runner supplies a device marker.
 
 ### Experimental
 

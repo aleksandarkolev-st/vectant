@@ -4339,12 +4339,27 @@ def _fix_to_dict(fix) -> dict:
 
 # ── Diagnosis ─────────────────────────────────────────────────────────
 
+_FAILURE_DISTILLER_PRIVATE_RESPONSE_KEYS = frozenset({
+    "workspace_path", "workspacePath", "capsule_path", "capsulePath",
+    "manifest_path", "manifestPath", "artifact_path", "artifactPath", "integrity_path",
+})
+
+
+def _public_failure_distiller_response(value):
+    """Keep host filesystem topology out of workspace-scoped agent responses."""
+    if isinstance(value, dict):
+        return {key: _public_failure_distiller_response(item) for key, item in value.items() if key not in _FAILURE_DISTILLER_PRIVATE_RESPONSE_KEYS}
+    if isinstance(value, list):
+        return [_public_failure_distiller_response(item) for item in value]
+    return value
+
+
 @app.post("/heal/agentic/distill")
 async def distill_failure(request: Request):
     """Reduce a supported failing command into an evidence-backed capsule."""
     from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
     try:
-        return await get_failure_distiller().distill(await request.json())
+        return _public_failure_distiller_response(await get_failure_distiller().distill(await request.json()))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4354,7 +4369,7 @@ async def capture_failure_observation(request: Request):
     """Capture normalized runtime-adapter evidence for a later distillation."""
     from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
     try:
-        return get_failure_distiller().capture_observation(await request.json())
+        return _public_failure_distiller_response(get_failure_distiller().capture_observation(await request.json()))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4364,7 +4379,7 @@ async def list_failure_observations(workspace_ref: str):
     """List unexpired, redacted adapter observation references for one workspace."""
     from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
     try:
-        return get_failure_distiller().list_observations({"workspaceRef": workspace_ref})
+        return _public_failure_distiller_response(get_failure_distiller().list_observations({"workspaceRef": workspace_ref}))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4376,7 +4391,7 @@ async def run_distilled_failure(request: Request):
     body = await request.json()
     try:
         distiller = get_failure_distiller()
-        return await distiller.run(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref")))
+        return _public_failure_distiller_response(await distiller.run(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref"))))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4388,7 +4403,7 @@ async def explain_distilled_failure(request: Request):
     body = await request.json()
     try:
         distiller = get_failure_distiller()
-        return distiller.explain(distiller.resolve_capsule_path(body), str(body.get("unit", "")), body.get("workspaceRef", body.get("workspace_ref")))
+        return _public_failure_distiller_response(distiller.explain(distiller.resolve_capsule_path(body), str(body.get("unit", "")), body.get("workspaceRef", body.get("workspace_ref"))))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4400,7 +4415,7 @@ async def materialize_distilled_failure(request: Request):
     try:
         body = await request.json()
         distiller = get_failure_distiller()
-        return await distiller.materialize({**body, "capsulePath": distiller.resolve_capsule_path(body)})
+        return _public_failure_distiller_response(await distiller.materialize({**body, "capsulePath": distiller.resolve_capsule_path(body)}))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4412,7 +4427,7 @@ async def delete_distilled_failure(request: Request):
     body = await request.json()
     try:
         distiller = get_failure_distiller()
-        return distiller.discard(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref")))
+        return _public_failure_distiller_response(distiller.discard(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref"))))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4438,7 +4453,7 @@ async def export_distilled_failure_to_vivarium(request: Request):
     body = await request.json()
     try:
         distiller = get_failure_distiller()
-        return distiller.export_vivarium_manifest(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref")))
+        return _public_failure_distiller_response(distiller.export_vivarium_manifest(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref"))))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4450,7 +4465,7 @@ async def promote_distilled_failure_to_vivarium(request: Request):
     body = await request.json()
     try:
         distiller = get_failure_distiller()
-        return distiller.promote_vivarium_scenario(distiller.resolve_capsule_path(body), str(body.get("mode", "regression")), body.get("workspaceRef", body.get("workspace_ref")))
+        return _public_failure_distiller_response(distiller.promote_vivarium_scenario(distiller.resolve_capsule_path(body), str(body.get("mode", "regression")), body.get("workspaceRef", body.get("workspace_ref"))))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4462,7 +4477,7 @@ async def validate_distilled_patch(request: Request):
     try:
         body = await request.json()
         distiller = get_failure_distiller()
-        return await distiller.validate_patch({**body, "capsulePath": distiller.resolve_capsule_path(body)})
+        return _public_failure_distiller_response(await distiller.validate_patch({**body, "capsulePath": distiller.resolve_capsule_path(body)}))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4474,7 +4489,7 @@ async def request_distilled_patch_apply(request: Request):
     try:
         body = await request.json()
         distiller = get_failure_distiller()
-        return distiller.request_patch_apply({**body, "capsulePath": distiller.resolve_capsule_path(body)})
+        return _public_failure_distiller_response(distiller.request_patch_apply({**body, "capsulePath": distiller.resolve_capsule_path(body)}))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4486,7 +4501,7 @@ async def apply_approved_distilled_patch(request: Request):
     try:
         body = await request.json()
         distiller = get_failure_distiller()
-        return distiller.apply_approved_patch({**body, "capsulePath": distiller.resolve_capsule_path(body)})
+        return _public_failure_distiller_response(distiller.apply_approved_patch({**body, "capsulePath": distiller.resolve_capsule_path(body)}))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

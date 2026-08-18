@@ -91,11 +91,10 @@ async def _run_case(case: dict[str, Any]) -> dict[str, Any]:
 
 async def run(corpus: Path) -> dict[str, Any]:
     results = [await _run_case(case) for case in _cases(corpus)]
-    # Browser/native/HMR/GPU observations are adapter-only/experimental until
-    # their real replay-to-repair round trips are independently proven. Keep
-    # them in the report, never in release-quality aggregate gates.
-    release = [item for item in results if item["adapter"] in {"pytest", "vitest", "test"}]
-    experimental = [item for item in results if item not in release]
+    # Every adapter case is an evidence-captured command replay. Runtime
+    # adapter normalization is exercised before the same deterministic
+    # capsule/original-world reduction and repair gates as test failures.
+    release = results
     total = len(release) or 1
     reproduction = sum(bool(item["distill"].get("ok")) for item in release) / total
     reduction = sum(item["removed_ratio"] for item in release) / total
@@ -113,7 +112,7 @@ async def run(corpus: Path) -> dict[str, Any]:
         "capsule_discovery_reduction": discovery_reduction,
         "agent_utility": {"measurement": "deterministic_path_discovery", "full_repository_search_operations": full_searches, "capsule_search_operations": capsule_searches},
         "cache_effectiveness": {"cache_hits": cache_hits, "candidate_executions": candidate_executions, "cache_hit_rate": cache_hits / (cache_hits + candidate_executions) if cache_hits + candidate_executions else 0.0},
-        "cost": {"release_cases": len(release), "experimental_cases_excluded": len(experimental), "candidate_executions": candidate_executions},
+        "cost": {"release_cases": len(release), "adapter_cases": len(results), "candidate_executions": candidate_executions},
     }
     gates = {name: value >= THRESHOLDS[name] if name != "false_equivalence_rate" else value <= THRESHOLDS[name] for name, value in metrics.items() if name in THRESHOLDS}
     return {"schema_version": "vectant.failure_distiller.benchmark.v1", "generated_at": datetime.now(timezone.utc).isoformat(), "thresholds": THRESHOLDS, "metrics": metrics, "gates": gates, "ok": all(gates.values()), "cases": results}
@@ -137,7 +136,7 @@ def main() -> int:
         f"| Full-repository path discovery operations | {utility['full_repository_search_operations']} |",
         f"| Capsule path discovery operations | {utility['capsule_search_operations']} |",
         f"| Release-quality cases | {report['metrics']['cost']['release_cases']} |",
-        f"| Experimental cases excluded from gates | {report['metrics']['cost']['experimental_cases_excluded']} |",
+        f"| Adapter cases covered by gates | {report['metrics']['cost']['adapter_cases']} |",
         f"| Candidate executions | {report['metrics']['cost']['candidate_executions']} |",
         f"| Cache hit rate | {cache['cache_hit_rate']:.2%} |",
         "", "| Case | Adapter | Result |", "|---|---|---|",
