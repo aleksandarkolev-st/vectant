@@ -703,15 +703,15 @@ export function useAnalyzerGateway({
     return response?.data ?? response;
   }, []);
 
-  const runFailureCapsule = useCallback(async (capsulePath) => {
+  const runFailureCapsule = useCallback(async (capsulePath, workspaceRef) => {
     if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
-    const response = await clientRef.current.runFailureCapsule(capsulePath);
+    const response = await clientRef.current.runFailureCapsule(capsulePath, workspaceRef);
     return response?.data ?? response;
   }, []);
 
-  const explainFailureCapsule = useCallback(async (capsulePath, unit) => {
+  const explainFailureCapsule = useCallback(async (capsulePath, unit, workspaceRef) => {
     if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
-    const response = await clientRef.current.explainFailureCapsule(capsulePath, unit);
+    const response = await clientRef.current.explainFailureCapsule(capsulePath, unit, workspaceRef);
     return response?.data ?? response;
   }, []);
 
@@ -727,27 +727,27 @@ export function useAnalyzerGateway({
     return response?.data ?? response;
   }, []);
 
-  const deleteFailureCapsule = useCallback(async (capsulePath) => {
+  const deleteFailureCapsule = useCallback(async (capsulePath, workspaceRef) => {
     if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
-    const response = await clientRef.current.deleteFailureCapsule(capsulePath);
+    const response = await clientRef.current.deleteFailureCapsule(capsulePath, workspaceRef);
     return response?.data ?? response;
   }, []);
 
-  const purgeExpiredFailureCapsules = useCallback(async (workspaceRoot) => {
+  const purgeExpiredFailureCapsules = useCallback(async (workspaceRef) => {
     if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
-    const response = await clientRef.current.purgeExpiredFailureCapsules(workspaceRoot);
+    const response = await clientRef.current.purgeExpiredFailureCapsules(workspaceRef);
     return response?.data ?? response;
   }, []);
 
-  const exportFailureCapsuleToVivarium = useCallback(async (capsulePath) => {
+  const exportFailureCapsuleToVivarium = useCallback(async (capsulePath, workspaceRef) => {
     if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
-    const response = await clientRef.current.exportFailureCapsuleToVivarium(capsulePath);
+    const response = await clientRef.current.exportFailureCapsuleToVivarium(capsulePath, workspaceRef);
     return response?.data ?? response;
   }, []);
 
-  const promoteFailureCapsuleToVivarium = useCallback(async (capsulePath, mode = 'regression') => {
+  const promoteFailureCapsuleToVivarium = useCallback(async (capsulePath, mode = 'regression', workspaceRef) => {
     if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
-    const response = await clientRef.current.promoteFailureCapsuleToVivarium(capsulePath, mode);
+    const response = await clientRef.current.promoteFailureCapsuleToVivarium(capsulePath, mode, workspaceRef);
     return response?.data ?? response;
   }, []);
 

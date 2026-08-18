@@ -90,6 +90,7 @@ export function FailureDistillerPanel({ workspaceSlug = '', workspaceRef = '', a
       if (checks !== null && !Array.isArray(checks)) throw new Error('Affected checks must be an array of command arrays.');
       await execute(() => gateway.validateFailureCapsulePatch({
         capsulePath: currentCapsulePath,
+        workspaceRef,
         edits,
         ...(checks ? { affectedChecks: checks } : {}),
       }));
@@ -158,12 +159,12 @@ export function FailureDistillerPanel({ workspaceSlug = '', workspaceRef = '', a
           {!currentCapsulePath ? <p className="mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>Distill a stable failing command to unlock replay, evidence, patch validation, and Vivarium handoff.</p> : <div className="mt-2 space-y-2">
             <div className="font-mono text-[10px] break-all" style={{ color: 'var(--text-muted)' }}>{currentCapsulePath}</div>
             <div className="flex flex-wrap gap-2">
-              <ActionButton busy={busy} onClick={() => execute(() => gateway.runFailureCapsule(currentCapsulePath))} Icon={Play}>Replay</ActionButton>
-              <ActionButton busy={busy} disabled={!observationFile.trim()} onClick={() => execute(() => gateway.explainFailureCapsule(currentCapsulePath, observationFile.trim()))} Icon={FileSearch}>Explain</ActionButton>
-              <ActionButton busy={busy} onClick={() => execute(() => gateway.materializeFailureCapsule({ capsulePath: currentCapsulePath }))} Icon={PackageCheck}>Materialize</ActionButton>
-              <ActionButton busy={busy} onClick={() => execute(() => gateway.exportFailureCapsuleToVivarium(currentCapsulePath))} Icon={Sprout}>Export</ActionButton>
-              <ActionButton busy={busy} onClick={() => execute(() => gateway.promoteFailureCapsuleToVivarium(currentCapsulePath))} Icon={BadgeCheck}>Promote</ActionButton>
-              <ActionButton busy={busy} danger onClick={() => { if (window.confirm('Permanently delete this capsule and its materialized contents?')) execute(async () => { const result = await gateway.deleteFailureCapsule(currentCapsulePath); if (result?.ok) setCapsule(null); return result; }); }} Icon={Trash2}>Delete</ActionButton>
+              <ActionButton busy={busy} onClick={() => execute(() => gateway.runFailureCapsule(currentCapsulePath, workspaceRef))} Icon={Play}>Replay</ActionButton>
+              <ActionButton busy={busy} disabled={!observationFile.trim()} onClick={() => execute(() => gateway.explainFailureCapsule(currentCapsulePath, observationFile.trim(), workspaceRef))} Icon={FileSearch}>Explain</ActionButton>
+              <ActionButton busy={busy} onClick={() => execute(() => gateway.materializeFailureCapsule({ capsulePath: currentCapsulePath, workspaceRef }))} Icon={PackageCheck}>Materialize</ActionButton>
+              <ActionButton busy={busy} onClick={() => execute(() => gateway.exportFailureCapsuleToVivarium(currentCapsulePath, workspaceRef))} Icon={Sprout}>Export</ActionButton>
+              <ActionButton busy={busy} onClick={() => execute(() => gateway.promoteFailureCapsuleToVivarium(currentCapsulePath, 'regression', workspaceRef))} Icon={BadgeCheck}>Promote</ActionButton>
+              <ActionButton busy={busy} danger onClick={() => { if (window.confirm('Permanently delete this capsule and its materialized contents?')) execute(async () => { const result = await gateway.deleteFailureCapsule(currentCapsulePath, workspaceRef); if (result?.ok) setCapsule(null); return result; }); }} Icon={Trash2}>Delete</ActionButton>
             </div>
             <details className="rounded border p-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
               <summary className="cursor-pointer text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>Validate patch in original workspace</summary>
