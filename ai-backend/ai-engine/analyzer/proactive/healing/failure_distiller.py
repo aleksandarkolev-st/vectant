@@ -1221,15 +1221,17 @@ class FailureDistiller:
         _git(root, "worktree", "add", "--detach", "--force", str(destination), "HEAD")
 
     def _temporary_worktree_root(self, root: Path):
-        """Create disposable worktrees in the process-owned temporary directory.
+        """Create disposable worktrees under the workspace-owned capsule store.
 
-        The drive root is commonly protected on Windows, so using it as a
-        short-path optimization can make every candidate evaluation block or
-        fail before the reproducer runs.  The system temporary directory is
-        writable by the executing service and preserves the required
-        disposable-worktree isolation.
+        Production runners receive the shared workspace volume read-only. A
+        host/container temporary directory is therefore invisible to the
+        isolated child container. Keeping each short-lived worktree below
+        ``.vectant/worktrees`` makes the exact Git revision mountable while
+        cleanup still removes every temporary directory after evaluation.
         """
-        return tempfile.TemporaryDirectory(prefix="vfd-")
+        directory = root / ".vectant" / "worktrees"
+        directory.mkdir(parents=True, exist_ok=True)
+        return tempfile.TemporaryDirectory(prefix="vfd-", dir=str(directory))
 
     def _remove_worktree(self, root: Path, destination: Path) -> None:
         try:
