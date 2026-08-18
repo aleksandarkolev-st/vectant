@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, BadgeCheck, BarChart3, ClipboardCheck, FileSearch, FlaskConical, PackageCheck, Play, Sprout, Trash2 } from 'lucide-react';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
+import { installFailureDistillerRuntimeEvidence } from '@/lib/failure-distiller-runtime-evidence';
 
 const inputClass = 'mt-1 w-full rounded-[var(--radius-control)] border px-2 py-1.5 text-xs outline-none focus:ring-2';
 
@@ -25,7 +26,7 @@ export function FailureDistillerPanel({ workspaceSlug = '', workspaceRef = '', a
   const [signature, setSignature] = useState('');
   const [observationKind, setObservationKind] = useState('command');
   const [observationFile, setObservationFile] = useState(activeFile);
-  const [adapterRecording, setAdapterRecording] = useState('');
+  const [runtimeEvidence, setRuntimeEvidence] = useState({ hmr: [], native: [], gpu: [] });
   const [containerImage, setContainerImage] = useState('');
   const [budget, setBudget] = useState('standard');
   const [patchEdits, setPatchEdits] = useState('');
@@ -35,6 +36,7 @@ export function FailureDistillerPanel({ workspaceSlug = '', workspaceRef = '', a
   const [outcome, setOutcome] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [evidenceRecorder, setEvidenceRecorder] = useState(null);
   const imagePinned = /@sha256:[a-f0-9]{64}$/i.test(containerImage.trim());
   const ready = Boolean(workspaceRef && command.trim() && imagePinned);
   const currentCapsulePath = capsulePath(capsule);
@@ -42,6 +44,12 @@ export function FailureDistillerPanel({ workspaceSlug = '', workspaceRef = '', a
   useEffect(() => {
     if (activeFile) setObservationFile(activeFile);
   }, [activeFile]);
+
+  useEffect(() => {
+    const recorder = installFailureDistillerRuntimeEvidence(setRuntimeEvidence);
+    setEvidenceRecorder(recorder);
+    return () => recorder.dispose();
+  }, []);
 
   const execute = useCallback(async (action) => {
     setBusy(true);
@@ -64,11 +72,10 @@ export function FailureDistillerPanel({ workspaceSlug = '', workspaceRef = '', a
   const distill = useCallback(async () => {
     if (!ready) return;
     try {
-      const recording = parseJson(adapterRecording, 'Recorded adapter evidence') || {};
-      if (observationKind !== 'command' && Object.keys(recording).length === 0) {
-        throw new Error(`${observationKind.toUpperCase()} distillation requires its recorded adapter evidence.`);
-      }
-      const observation = { kind: observationKind, ...(observationFile.trim() ? { filePath: observationFile.trim() } : {}), ...recording };
+      if (observationKind === 'browser') throw new Error('Browser capsules are captured by an agent from a verified taught workflow. Use synthi_failure_browser_workflow_capture.');
+      const runtimeObservation = observationKind === 'command' ? null : evidenceRecorder?.snapshot(observationKind);
+      if (observationKind !== 'command' && !runtimeObservation) throw new Error(`No ${observationKind.toUpperCase()} runtime evidence has been observed in this workspace session.`);
+      const observation = runtimeObservation ? { ...runtimeObservation, ...(observationFile.trim() ? { filePath: observationFile.trim() } : {}) } : { kind: 'command', ...(observationFile.trim() ? { filePath: observationFile.trim() } : {}) };
       const captured = observationKind === 'command'
         ? null
         : await gateway.captureFailureObservation({ workspaceRef, observation });
@@ -85,7 +92,7 @@ export function FailureDistillerPanel({ workspaceSlug = '', workspaceRef = '', a
     } catch (cause) {
       setError(cause.message);
     }
-  }, [adapterRecording, budget, command, containerImage, execute, gateway, observationFile, observationKind, ready, signature, workspaceRef]);
+  }, [budget, command, containerImage, evidenceRecorder, execute, gateway, observationFile, observationKind, ready, signature, workspaceRef]);
 
   const validatePatch = useCallback(async () => {
     try {
@@ -140,16 +147,17 @@ export function FailureDistillerPanel({ workspaceSlug = '', workspaceRef = '', a
             <div className="grid grid-cols-2 gap-2">
               <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Observed via
                 <select value={observationKind} onChange={(event) => setObservationKind(event.target.value)} className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
-                  <option value="command">Command/test</option><option value="hmr">HMR, experimental</option><option value="browser">Browser, experimental</option><option value="native">Native, experimental</option><option value="gpu">GPU, experimental</option>
+                  <option value="command">Command/test</option><option value="hmr">HMR runtime</option><option value="browser">Browser workflow (agent)</option><option value="native">Native compiler</option><option value="gpu">GPU runtime</option>
                 </select>
               </label>
               <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Source file
                 <input value={observationFile} onChange={(event) => setObservationFile(event.target.value)} className={inputClass} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
               </label>
             </div>
-            {observationKind !== 'command' ? <label className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>Recorded adapter evidence, JSON
-              <textarea value={adapterRecording} onChange={(event) => setAdapterRecording(event.target.value)} rows={4} className={`${inputClass} font-mono`} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }} />
-            </label> : null}
+            {observationKind === 'hmr' ? <RuntimeEvidenceHint count={runtimeEvidence.hmr.length} text="HMR terminal states are captured from the active runtime." /> : null}
+            {observationKind === 'native' ? <RuntimeEvidenceHint count={runtimeEvidence.native.length} text="Error diagnostics are captured from the active compiler stream." /> : null}
+            {observationKind === 'gpu' ? <RuntimeEvidenceHint count={runtimeEvidence.gpu.length} text="GPU runtime failures are captured when the active runner reports a device marker." /> : null}
+            {observationKind === 'browser' ? <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Browser capsules require a consented, source-linked workflow. Ask the agent to run <code>synthi_failure_browser_workflow_capture</code>, then distill with its observation ID.</p> : null}
             <div className="flex items-center gap-2">
               <label className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Budget
                 <select value={budget} onChange={(event) => setBudget(event.target.value)} className="ml-1 rounded border px-2 py-1 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}><option value="fast">Fast</option><option value="standard">Standard</option><option value="deep">Deep</option></select>
@@ -203,6 +211,10 @@ export function FailureDistillerPanel({ workspaceSlug = '', workspaceRef = '', a
 
 function ActionButton({ busy, disabled = false, danger = false, onClick, Icon, children }) {
   return <button type="button" disabled={busy || disabled} onClick={onClick} className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: danger ? 'var(--accent-danger)' : 'var(--border-subtle)', color: danger ? 'var(--accent-danger)' : 'var(--text-secondary)' }}><Icon size={12} />{children}</button>;
+}
+
+function RuntimeEvidenceHint({ count, text }) {
+  return <p className="text-[10px]" style={{ color: count ? 'var(--accent-success)' : 'var(--text-muted)' }}>{count ? `${count} runtime evidence record${count === 1 ? '' : 's'} available. ` : 'Waiting for a runtime signal. '}{text}</p>;
 }
 
 function OutcomeSummary({ outcome }) {

@@ -72,13 +72,14 @@ describe('FailureDistillerPanel', () => {
       setValue(inputs[3], 'src/InviteModal.tsx');
       setSelectValue(container.querySelectorAll('select')[0], 'hmr');
     });
-    await act(async () => setValue(container.querySelector('textarea'), '{"hmrEvents":["check","applied"]}'));
+    await act(async () => window.dispatchEvent(new CustomEvent('synthi:hmr-status', { detail: { status: 'check' } })));
+    await act(async () => window.dispatchEvent(new CustomEvent('synthi:hmr-status', { detail: { status: 'applied' } })));
     await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent.includes('Distill')).click());
     expect(gateway.distillFailure).toHaveBeenCalledWith(expect.objectContaining({
       workspaceRef: 'workspace-safe/user-safe', command: 'pytest "tests/test invite.py"', observationRef: 'observation_aaaaaaaaaaaaaaaaaaaaaaaa',
     }));
     expect(gateway.captureFailureObservation).toHaveBeenCalledWith({
-      workspaceRef: 'workspace-safe/user-safe', observation: { kind: 'hmr', filePath: 'src/InviteModal.tsx', hmrEvents: ['check', 'applied'] },
+      workspaceRef: 'workspace-safe/user-safe', observation: { kind: 'hmr', filePath: 'src/InviteModal.tsx', hmr_events: ['check', 'applied'] },
     });
     expect(container.textContent).toContain('capsule_test');
     expect(container.textContent).toContain('Baseline stability: 2/2');
