@@ -4349,6 +4349,26 @@ async def distill_failure(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/heal/agentic/distill/observations")
+async def capture_failure_observation(request: Request):
+    """Capture normalized runtime-adapter evidence for a later distillation."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        return get_failure_distiller().capture_observation(await request.json())
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/heal/agentic/distill/observations")
+async def list_failure_observations(workspace_ref: str):
+    """List unexpired, redacted adapter observation references for one workspace."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        return get_failure_distiller().list_observations({"workspaceRef": workspace_ref})
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/heal/agentic/distill/run")
 async def run_distilled_failure(request: Request):
     """Run a logical capsule and report whether it is still the same failure."""

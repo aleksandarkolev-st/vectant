@@ -46,6 +46,7 @@ DEFAULT_BUDGETS = {
     "deep": {"max_executions": 5000, "stability_attempts": 10, "minimum_matches": 9, "timeout_sec": 90, "parallelism": 8},
 }
 WORKSPACE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}/[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+OBSERVATION_REFERENCE = re.compile(r"^observation_[a-f0-9]{24}$")
 
 
 class DistillationError(ValueError):
@@ -367,9 +368,10 @@ class FailureDistiller:
             return isolation_failure
         root = _resolve_workspace_root(request, production=self._production)
         _git(root, "rev-parse", "--show-toplevel")
+        raw_observation = self._resolve_observation(request, root)
         command = self._command(request.get("command"))
         if not command:
-            command = self._browser_replay_command(request.get("observation"), root)
+            command = self._browser_replay_command(raw_observation, root)
         if not command:
             raise DistillationError("command is required")
         if request.get("networkPolicy", request.get("network_policy", "deny")) != "deny":
@@ -387,7 +389,7 @@ class FailureDistiller:
         predicate, signature = Predicate.from_request(request.get("predicate")), Signature.from_request(request.get("signature"))
         environment_input = request.get("environment", request.get("env", {}))
         environment = self._environment(environment_input, request.get("seed"), source_revision)
-        observation = self._observation(request.get("observation"), root)
+        observation = self._observation(raw_observation, root)
         candidates = [Candidate.from_request(item, root) for item in request.get("candidates", [])]
         if request.get("autoDiscover", request.get("auto_discover", False)):
             candidates.extend(self._discover_candidates(root, command, candidates, observation, environment_input, budget))
@@ -526,6 +528,52 @@ class FailureDistiller:
         self._metrics["candidate_units"] += len(candidates)
         self._metrics["removed_units"] += len(removed)
         return {"ok": True, "capsule_id": capsule_id, "capsuleId": capsule_id, "workspace_path": str(artifact), "workspacePath": str(artifact), "run": f"vectant repro run {capsule_id}", "status": status, "baseline": baseline, "reduction": {"candidate_units": len(candidates), "removed_units": len(removed), "retained_units": len(active), "minimality": "1-minimal_under_declared_units" if confirmation_complete else "budget_limited", "untested_units": untested, "untested_count": len(untested), "limiting_reason": limiting_reason}, "limits": ["logical capsule: source files remain in the original workspace", "outbound network is not granted by this API but must be blocked by the configured host/container sandbox", "external interactions are unsupported without a validated replay or contract boundary"], "executions": executions, "budget": {"max_executions": budget.max_executions, "executions_per_stability_evaluation": budget.stability_attempts, "executions_performed_current_request": executions, "limiting_reason": limiting_reason}}
+
+    def capture_observation(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist normalized runtime evidence before a production reduction uses it."""
+        root = _resolve_workspace_root(request, production=self._production)
+        raw = request.get("observation")
+        if not isinstance(raw, dict):
+            raise DistillationError("observation is required")
+        observation = self._observation(raw, root)
+        kind = str(observation.get("kind", "command"))
+        if kind not in {"hmr", "browser", "native", "gpu"}:
+            raise DistillationError("only runtime adapter observations may be captured")
+        source_revision = _git(root, "rev-parse", "HEAD")
+        retention = int(os.environ.get("VECTANT_FAILURE_OBSERVATION_RETENTION_SECONDS", str(7 * 24 * 60 * 60)))
+        if retention < 60 or retention > 365 * 24 * 60 * 60:
+            raise DistillationError("VECTANT_FAILURE_OBSERVATION_RETENTION_SECONDS must be between 60 seconds and 365 days")
+        observation_id = f"observation_{uuid4().hex[:24]}"
+        captured_at = datetime.now(timezone.utc)
+        record = {
+            "schema_version": "vectant.failure_observation.v1",
+            "observation_id": observation_id,
+            "workspace_ref": self._workspace_ref(request),
+            "source_revision": source_revision,
+            "captured_at": captured_at.isoformat(),
+            "expires_at": (captured_at + timedelta(seconds=retention)).isoformat(),
+            "observation": observation,
+        }
+        record["integrity_sha256"] = _sha256(_json(record).encode())
+        self._write_json(self._observation_path(root, observation_id), record)
+        return self._observation_summary(record)
+
+    def list_observations(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        root = _resolve_workspace_root(request, production=self._production)
+        store = root / ".vectant" / "failure-observations"
+        if not store.is_dir():
+            return {"ok": True, "observations": []}
+        now = datetime.now(timezone.utc)
+        observations = []
+        for path in sorted(store.glob("observation_*.json"), reverse=True):
+            try:
+                record = self._read_json(path)
+                if self._observation_expired(record, now):
+                    continue
+                observations.append(self._observation_summary(record))
+            except DistillationError:
+                continue
+        return {"ok": True, "observations": observations}
 
     async def run(self, capsule_path: str, workspace_ref: Optional[str] = None) -> Dict[str, Any]:
         capsule = Path(capsule_path).resolve()
@@ -1610,6 +1658,64 @@ class FailureDistiller:
             return json.loads(path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError) as exc:
             raise DistillationError(f"invalid capsule artifact: {path.name}") from exc
+
+    def _resolve_observation(self, request: Dict[str, Any], root: Path) -> Any:
+        reference = request.get("observationRef", request.get("observation_ref"))
+        raw = request.get("observation")
+        if reference is None:
+            if self._production and isinstance(raw, dict) and str(raw.get("kind", raw.get("type", "command"))).lower() in {"hmr", "browser", "native", "gpu"}:
+                raise DistillationError("runtime adapter distillation requires an observationRef captured by the workspace")
+            return raw
+        if raw is not None:
+            raise DistillationError("provide observationRef or observation, not both")
+        if not isinstance(reference, str) or not OBSERVATION_REFERENCE.fullmatch(reference):
+            raise DistillationError("observationRef is invalid")
+        record = self._read_json(self._observation_path(root, reference))
+        expected = _sha256(_json({key: value for key, value in record.items() if key != "integrity_sha256"}).encode())
+        if record.get("integrity_sha256") != expected:
+            raise DistillationError("observation record integrity check failed")
+        if self._observation_expired(record, datetime.now(timezone.utc)):
+            raise DistillationError("observationRef has expired")
+        if record.get("source_revision") != _git(root, "rev-parse", "HEAD"):
+            raise DistillationError("observationRef was captured for a different source revision")
+        if self._production and record.get("workspace_ref") != self._workspace_ref(request):
+            raise DistillationError("observationRef does not belong to the active workspace")
+        observation = record.get("observation")
+        if not isinstance(observation, dict):
+            raise DistillationError("observation record is invalid")
+        return observation
+
+    @staticmethod
+    def _observation_expired(record: Dict[str, Any], now: datetime) -> bool:
+        try:
+            expires_at = datetime.fromisoformat(str(record["expires_at"]))
+            return expires_at.tzinfo is None or expires_at <= now
+        except (KeyError, TypeError, ValueError):
+            return True
+
+    @staticmethod
+    def _observation_summary(record: Dict[str, Any]) -> Dict[str, Any]:
+        observation = record.get("observation", {})
+        return {
+            "ok": True,
+            "observation_id": record["observation_id"],
+            "observationId": record["observation_id"],
+            "kind": observation.get("kind"),
+            "source_revision": record["source_revision"],
+            "sourceRevision": record["source_revision"],
+            "captured_at": record["captured_at"],
+            "capturedAt": record["captured_at"],
+            "expires_at": record["expires_at"],
+            "expiresAt": record["expires_at"],
+            "integrity_sha256": record["integrity_sha256"],
+            "integritySha256": record["integrity_sha256"],
+        }
+
+    @staticmethod
+    def _observation_path(root: Path, observation_id: str) -> Path:
+        if not OBSERVATION_REFERENCE.fullmatch(observation_id):
+            raise DistillationError("observationRef is invalid")
+        return root / ".vectant" / "failure-observations" / f"{observation_id}.json"
 
     @staticmethod
     def _workspace_ref(request: Dict[str, Any]) -> Optional[str]:

@@ -219,6 +219,7 @@ function isAuthorizedGatewayRequest(request) {
 // Agentic self-healing endpoints
 const backendAgenticDiagnoseUrl = new URL("/heal/agentic/diagnose", backendUrl).toString();
 const backendAgenticDistillUrl = new URL("/heal/agentic/distill", backendUrl).toString();
+const backendAgenticDistillObservationsUrl = new URL("/heal/agentic/distill/observations", backendUrl).toString();
 const backendAgenticDistillRunUrl = new URL("/heal/agentic/distill/run", backendUrl).toString();
 const backendAgenticDistillExplainUrl = new URL("/heal/agentic/distill/explain", backendUrl).toString();
 const backendAgenticDistillMaterializeUrl = new URL("/heal/agentic/distill/materialize", backendUrl).toString();
@@ -497,6 +498,12 @@ async function handleClientMessage(socket, raw) {
     // ── Agentic self-healing ─────────────────────────────────────
     case "heal/agentic/distill":
       await forwardAgenticDistill(socket, data, requestId);
+      break;
+    case "heal/agentic/distill/observations/capture":
+      await forwardAgenticDistillObservationCapture(socket, data, requestId);
+      break;
+    case "heal/agentic/distill/observations/list":
+      await forwardAgenticDistillObservationList(socket, data, requestId);
       break;
     case "heal/agentic/distill/run":
       await forwardAgenticDistillRun(socket, data, requestId);
@@ -2817,6 +2824,24 @@ async function forwardAgenticDistill(socket, data, requestId) {
     return;
   }
   await agenticPost(socket, "heal/agentic/distill", backendAgenticDistillUrl, data, requestId);
+}
+
+async function forwardAgenticDistillObservationCapture(socket, data, requestId) {
+  if (!hasWorkspaceRef(data) || !data?.observation || typeof data.observation !== "object") {
+    sendError(socket, "`workspaceRef` and observation are required to capture failure evidence", { requestId });
+    return;
+  }
+  await agenticPost(socket, "heal/agentic/distill/observations/capture", backendAgenticDistillObservationsUrl, data, requestId);
+}
+
+async function forwardAgenticDistillObservationList(socket, data, requestId) {
+  if (!hasWorkspaceRef(data)) {
+    sendError(socket, "`workspaceRef` is required to list failure observations", { requestId });
+    return;
+  }
+  const url = new URL(backendAgenticDistillObservationsUrl);
+  url.searchParams.set("workspace_ref", data.workspaceRef || data.workspace_ref);
+  await agenticGet(socket, "heal/agentic/distill/observations/list", url.toString(), requestId);
 }
 
 async function forwardAgenticDistillRun(socket, data, requestId) {

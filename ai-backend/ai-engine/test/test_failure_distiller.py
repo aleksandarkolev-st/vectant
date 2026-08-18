@@ -73,6 +73,25 @@ def test_workspace_ref_is_anchored_to_the_configured_repository_volume(workspace
         _resolve_workspace_root({"workspaceRoot": str(workspace)}, production=True)
 
 
+def test_runtime_observations_are_integrity_checked_and_bound_to_the_source_revision(workspace):
+    distiller = FailureDistiller()
+    captured = distiller.capture_observation({
+        "workspaceRoot": str(workspace),
+        "observation": {"kind": "hmr", "filePath": "runner.py", "hmrEvents": ["check", "applied"]},
+    })
+    assert captured["kind"] == "hmr"
+    assert captured["observationId"].startswith("observation_")
+    resolved = distiller._resolve_observation({"observationRef": captured["observationId"]}, workspace)
+    assert resolved["kind"] == "hmr"
+    assert distiller.list_observations({"workspaceRoot": str(workspace)})["observations"][0]["observationId"] == captured["observationId"]
+    record = workspace / ".vectant" / "failure-observations" / f"{captured['observationId']}.json"
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload["observation"]["kind"] = "gpu"
+    record.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(DistillationError, match="integrity"):
+        distiller._resolve_observation({"observationRef": captured["observationId"]}, workspace)
+
+
 def test_production_capsule_operations_reject_a_different_workspace_reference(tmp_path, monkeypatch):
     repos_root = tmp_path / "repos"
     active = repos_root / "workspace-active" / "user-safe"
