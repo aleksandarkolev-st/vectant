@@ -1,9 +1,11 @@
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
+import { browserBroker } from "../browser/broker.js";
 
 type Args = Record<string, unknown>;
 type FetchLike = typeof fetch;
 
 const DEFINITIONS = {
+  synthi_failure_browser_workflow_capture: ["POST", "/heal/agentic/distill/observations", ["workspaceRef"]],
   synthi_failure_observations_list: ["GET", "/heal/agentic/distill/observations", ["workspaceRef"]],
   synthi_failure_observation_capture: ["POST", "/heal/agentic/distill/observations", ["workspaceRef", "observation"]],
   synthi_failure_distill: ["POST", "/heal/agentic/distill", ["workspaceRef", "command", "isolation"]],
@@ -33,6 +35,18 @@ export async function dispatchFailureDistillerTool(toolName: string, args: unkno
   const baseUrl = env["AI_BACKEND_URL"]?.replace(/\/$/, "");
   if (!baseUrl) return errorResponse("failure_distiller_not_configured", { hint: "Set AI_BACKEND_URL for this MCP process." });
   try {
+    if (toolName === "synthi_failure_browser_workflow_capture") {
+      const workflow = browserBroker.compiledWorkflow();
+      if (!workflow.contract.steps.length || workflow.contract.sourceIdentityCoverage.status === "missing" || !workflow.contract.replayModes.includes("ciIsolated")) {
+        return errorResponse("browser_workflow_unavailable", { hint: "Teach a source-linked browser workflow eligible for ciIsolated replay before capturing it for Failure Distiller." });
+      }
+      body["observation"] = {
+        kind: "browser",
+        workflowContract: workflow.contract,
+        ...(Array.isArray(body["console"]) ? { console: body["console"] } : {}),
+        ...(isObject(body["stateFixture"]) ? { stateFixture: body["stateFixture"] } : {}),
+      };
+    }
     const url = new URL(path, baseUrl);
     if (method === "GET") url.searchParams.set("workspace_ref", String(body["workspaceRef"]));
     const response = await fetchImpl(url, method === "GET" ? { method } : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -45,10 +59,11 @@ export async function dispatchFailureDistillerTool(toolName: string, args: unkno
 
 function present(value: unknown): boolean { return value !== undefined && value !== null && value !== ""; }
 function asObject(value: unknown): Args { return value && typeof value === "object" && !Array.isArray(value) ? value as Args : {}; }
+function isObject(value: unknown): value is Args { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function schemaProperties(): Record<string, unknown> {
   return {
     workspaceRef: { type: "string", description: "Opaque active workspace reference." }, capsuleId: { type: "string", description: "Opaque capsule ID returned by synthi_failure_distill." },
-    observationRef: { type: "string" }, observation: { type: "object", additionalProperties: true }, command: { oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] },
+    observationRef: { type: "string" }, observation: { type: "object", additionalProperties: true }, console: { type: "array", items: { type: "string" } }, stateFixture: { type: "object", additionalProperties: true }, command: { oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] },
     isolation: { type: "object", additionalProperties: true }, signature: { type: "object", additionalProperties: true }, budget: { type: "object", additionalProperties: true },
     edits: { type: "array", items: { type: "object", additionalProperties: true } }, unit: { type: "string" }, approvalId: { type: "string" }, mode: { type: "string", enum: ["regression", "practice"] },
   };

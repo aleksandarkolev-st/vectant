@@ -6,6 +6,7 @@ describe("Failure Distiller MCP tools", () => {
     expect(FAILURE_DISTILLER_TOOLS.map((tool) => tool.name)).toEqual(expect.arrayContaining([
       "synthi_failure_observation_capture", "synthi_failure_distill", "synthi_failure_capsule_replay",
       "synthi_failure_capsule_validate_patch", "synthi_failure_capsule_request_apply", "synthi_failure_capsule_apply_approved",
+      "synthi_failure_browser_workflow_capture",
     ]));
   });
 
@@ -20,5 +21,11 @@ describe("Failure Distiller MCP tools", () => {
     const result = await dispatchFailureDistillerTool("synthi_failure_distill", { command: "pytest", isolation: {} }, { AI_BACKEND_URL: "http://engine:8000" });
     expect(result?.isError).toBe(true);
     expect(result?.structuredContent).toEqual(expect.objectContaining({ error: "invalid_arguments" }));
+  });
+
+  it("does not turn an unverified browser trace into a Failure Distiller observation", async () => {
+    const result = await dispatchFailureDistillerTool("synthi_failure_browser_workflow_capture", { workspaceRef: "team/user" }, { AI_BACKEND_URL: "http://engine:8000" });
+    expect(result?.isError).toBe(true);
+    expect(result?.structuredContent).toEqual(expect.objectContaining({ error: "browser_workflow_unavailable" }));
   });
 });
