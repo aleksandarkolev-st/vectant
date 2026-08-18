@@ -109,6 +109,25 @@ def test_production_capsule_operations_reject_a_different_workspace_reference(tm
         distiller._assert_capsule_workspace(capsule, "workspace-other/user-safe")
 
 
+def test_validated_patch_requires_an_unexpired_exact_approval_before_apply(workspace):
+    distiller = FailureDistiller()
+    capsule = workspace / ".vectant" / "capsules" / "capsule_test"
+    capsule.mkdir(parents=True)
+    revision = git(workspace, "rev-parse", "HEAD")
+    distiller._write_json(capsule / "repro.json", {"workspace_root": str(workspace)})
+    distiller._write_json(capsule / "evidence" / "validation.json", {"status": "validated"})
+    patch = {"schema_version": "vectant.failure_capsule.validatedPatch.v1", "source_revision": revision, "edits": [{"path": "unrelated.txt", "content": "approved change\n"}]}
+    patch["digest"] = hashlib.sha256(json.dumps(patch, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    distiller._write_json(capsule / "evidence" / "validated-patch.json", patch)
+    approval = distiller.request_patch_apply({"workspaceRoot": str(workspace), "capsulePath": str(capsule)})
+    assert (workspace / "unrelated.txt").read_text(encoding="utf-8") == "not involved\n"
+    applied = distiller.apply_approved_patch({"workspaceRoot": str(workspace), "capsulePath": str(capsule), "approvalId": approval["approvalId"]})
+    assert applied["status"] == "applied"
+    assert (workspace / "unrelated.txt").read_text(encoding="utf-8") == "approved change\n"
+    with pytest.raises(DistillationError, match="stale, invalid"):
+        distiller.apply_approved_patch({"workspaceRoot": str(workspace), "capsulePath": str(capsule), "approvalId": approval["approvalId"]})
+
+
 def test_distills_an_unrelated_file_and_writes_contract(workspace):
     result = run(FailureDistiller().distill(request(workspace, [
         {"kind": "file", "reference": "unrelated.txt"},

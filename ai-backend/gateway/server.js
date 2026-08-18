@@ -228,6 +228,8 @@ const backendAgenticDistillPurgeExpiredUrl = new URL("/heal/agentic/distill/purg
 const backendAgenticDistillVivariumExportUrl = new URL("/heal/agentic/distill/vivarium-export", backendUrl).toString();
 const backendAgenticDistillVivariumPromoteUrl = new URL("/heal/agentic/distill/vivarium-promote", backendUrl).toString();
 const backendAgenticDistillValidatePatchUrl = new URL("/heal/agentic/distill/validate-patch", backendUrl).toString();
+const backendAgenticDistillRequestApplyUrl = new URL("/heal/agentic/distill/request-apply", backendUrl).toString();
+const backendAgenticDistillApplyApprovedUrl = new URL("/heal/agentic/distill/apply-approved", backendUrl).toString();
 const backendAgenticDistillMetricsUrl = new URL("/heal/agentic/distill/metrics", backendUrl).toString();
 const backendAgenticEpisodeCreateUrl = new URL("/heal/agentic/episode/create", backendUrl).toString();
 const backendAgenticEpisodesUrl = new URL("/heal/agentic/episodes", backendUrl).toString();
@@ -528,6 +530,12 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/agentic/distill/validate-patch":
       await forwardAgenticDistillValidatePatch(socket, data, requestId);
+      break;
+    case "heal/agentic/distill/request-apply":
+      await forwardAgenticDistillRequestApply(socket, data, requestId);
+      break;
+    case "heal/agentic/distill/apply-approved":
+      await forwardAgenticDistillApplyApproved(socket, data, requestId);
       break;
     case "heal/agentic/distill/metrics":
       await forwardAgenticDistillMetrics(socket, requestId);
@@ -2906,6 +2914,22 @@ async function forwardAgenticDistillValidatePatch(socket, data, requestId) {
     return;
   }
   await agenticPost(socket, "heal/agentic/distill/validate-patch", backendAgenticDistillValidatePatchUrl, data, requestId);
+}
+
+async function forwardAgenticDistillRequestApply(socket, data, requestId) {
+  if (!hasScopedCapsule(data)) {
+    sendError(socket, "`capsulePath` and `workspaceRef` are required to request patch application", { requestId });
+    return;
+  }
+  await agenticPost(socket, "heal/agentic/distill/request-apply", backendAgenticDistillRequestApplyUrl, data, requestId);
+}
+
+async function forwardAgenticDistillApplyApproved(socket, data, requestId) {
+  if (!hasScopedCapsule(data) || typeof data?.approvalId !== "string" || !data.approvalId) {
+    sendError(socket, "`capsulePath`, `workspaceRef`, and approvalId are required to apply a patch", { requestId });
+    return;
+  }
+  await agenticPost(socket, "heal/agentic/distill/apply-approved", backendAgenticDistillApplyApprovedUrl, data, requestId);
 }
 
 function hasWorkspaceRef(data) {

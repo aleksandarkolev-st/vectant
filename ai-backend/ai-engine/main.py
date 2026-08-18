@@ -4458,6 +4458,26 @@ async def validate_distilled_patch(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/heal/agentic/distill/request-apply")
+async def request_distilled_patch_apply(request: Request):
+    """Issue an approval-bound request for an exactly validated patch."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        return get_failure_distiller().request_patch_apply(await request.json())
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/apply-approved")
+async def apply_approved_distilled_patch(request: Request):
+    """Apply a reviewed, unexpired, original-world-validated patch."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        return get_failure_distiller().apply_approved_patch(await request.json())
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/heal/agentic/distill/metrics")
 async def failure_distiller_metrics():
     """Return reduction, execution-cost, and round-trip validation metrics."""

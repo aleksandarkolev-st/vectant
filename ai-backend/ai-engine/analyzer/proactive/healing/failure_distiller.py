@@ -903,6 +903,9 @@ class FailureDistiller:
         status = "validated" if capsule_passes and original_passes and not failed_checks else ("capsule_fix_failed" if not capsule_passes else "original_validation_failed" if not original_passes else "affected_checks_failed")
         if status == "validated":
             self._metrics["validated_patches"] += 1
+            validated_patch = {"schema_version": "vectant.failure_capsule.validatedPatch.v1", "source_revision": _git(root, "rev-parse", "HEAD"), "edits": edits}
+            validated_patch["digest"] = _sha256(_json(validated_patch).encode())
+            self._write_json(capsule / "evidence" / "validated-patch.json", validated_patch)
         mismatch = None
         if capsule_passes and not original_passes:
             mismatch = {
@@ -916,6 +919,58 @@ class FailureDistiller:
             manifest["invalidated_at"] = _utcnow()
             self._write_json(capsule / "manifest.json", manifest)
         return self._record_validation(capsule, {"ok": status == "validated", "status": status, "gates": {"capsule_fails_before_patch": before, "capsule_passes_after_patch": self._run_dict(capsule_run), "original_failure_passes_after_mapping": self._run_dict(original_run), "affected_checks": affected}, "patch_mapping": {"mapped_files": [provenance[str(edit["path"])]["origin"] for edit in edits]}, "signature_after_patch": "match" if signature.matches(original_run.output) else "changed", "mismatch": mismatch})
+
+    def request_patch_apply(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a short-lived approval token for one exactly validated patch."""
+        capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()
+        repro = self._assert_capsule_workspace(capsule, self._workspace_ref(request))
+        validation = self._read_json(capsule / "evidence" / "validation.json")
+        patch = self._read_json(capsule / "evidence" / "validated-patch.json")
+        root = Path(repro["workspace_root"]).resolve()
+        if validation.get("status") != "validated" or patch.get("source_revision") != _git(root, "rev-parse", "HEAD"):
+            raise DistillationError("a current original-world validated patch is required before approval")
+        expires_seconds = int(os.environ.get("VECTANT_FAILURE_PATCH_APPROVAL_SECONDS", "900"))
+        if expires_seconds < 60 or expires_seconds > 86400:
+            raise DistillationError("VECTANT_FAILURE_PATCH_APPROVAL_SECONDS must be between 60 and 86400")
+        approval_id = f"approval_{uuid4().hex[:24]}"
+        issued_at = datetime.now(timezone.utc)
+        approval = {"schema_version": "vectant.failure_capsule.applyApproval.v1", "approval_id": approval_id, "capsule_id": capsule.name, "workspace_ref": self._workspace_ref(request), "source_revision": patch["source_revision"], "patch_digest": patch["digest"], "issued_at": issued_at.isoformat(), "expires_at": (issued_at + timedelta(seconds=expires_seconds)).isoformat(), "status": "pending"}
+        approval["integrity_sha256"] = _sha256(_json(approval).encode())
+        self._write_json(capsule / "evidence" / "apply-approvals" / f"{approval_id}.json", approval)
+        return {"ok": True, "approval_id": approval_id, "approvalId": approval_id, "patch_digest": patch["digest"], "patchDigest": patch["digest"], "expires_at": approval["expires_at"], "expiresAt": approval["expires_at"], "status": "pending_approval"}
+
+    def apply_approved_patch(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()
+        repro = self._assert_capsule_workspace(capsule, self._workspace_ref(request))
+        approval_id = str(request.get("approvalId", request.get("approval_id", "")))
+        if not re.fullmatch(r"approval_[a-f0-9]{24}", approval_id):
+            raise DistillationError("approvalId is invalid")
+        approval = self._read_json(capsule / "evidence" / "apply-approvals" / f"{approval_id}.json")
+        expected = _sha256(_json({key: value for key, value in approval.items() if key != "integrity_sha256"}).encode())
+        root = Path(repro["workspace_root"]).resolve()
+        patch = self._read_json(capsule / "evidence" / "validated-patch.json")
+        patch_expected = _sha256(_json({key: value for key, value in patch.items() if key != "digest"}).encode())
+        if approval.get("integrity_sha256") != expected or patch.get("digest") != patch_expected or approval.get("status") != "pending" or approval.get("workspace_ref") != self._workspace_ref(request) or self._observation_expired(approval, datetime.now(timezone.utc)) or approval.get("source_revision") != _git(root, "rev-parse", "HEAD") or approval.get("patch_digest") != patch.get("digest"):
+            raise DistillationError("patch approval is stale, invalid, or does not match the active workspace")
+        prepared = []
+        for edit in patch.get("edits", []):
+            path, content = str(edit.get("path", "")), edit.get("content")
+            if not isinstance(content, str):
+                raise DistillationError("validated patch contains invalid edit content")
+            target = (root / path).resolve()
+            try:
+                target.relative_to(root)
+            except ValueError as exc:
+                raise DistillationError("validated patch path escapes the active workspace") from exc
+            prepared.append((path, target, content))
+        applied = []
+        for path, target, content in prepared:
+            target.write_text(content, encoding="utf-8")
+            applied.append(path)
+        approval["status"], approval["applied_at"] = "applied", _utcnow()
+        approval["integrity_sha256"] = _sha256(_json({key: value for key, value in approval.items() if key != "integrity_sha256"}).encode())
+        self._write_json(capsule / "evidence" / "apply-approvals" / f"{approval_id}.json", approval)
+        return {"ok": True, "status": "applied", "approval_id": approval_id, "approvalId": approval_id, "applied_paths": applied}
 
     def _classify_validation_mismatch(self, repro: Dict[str, Any], capsule_run: Run, original_run: Run, signature: Signature) -> str:
         output = original_run.output.lower()
