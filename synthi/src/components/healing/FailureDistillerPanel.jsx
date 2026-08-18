@@ -29,6 +29,7 @@ export function FailureDistillerPanel({ workspaceSlug = '', workspaceRef = '', a
   const [containerImage, setContainerImage] = useState('');
   const [budget, setBudget] = useState('standard');
   const [patchEdits, setPatchEdits] = useState('');
+  const [approvalId, setApprovalId] = useState('');
   const [affectedChecks, setAffectedChecks] = useState('');
   const [capsule, setCapsule] = useState(null);
   const [outcome, setOutcome] = useState(null);
@@ -179,6 +180,11 @@ export function FailureDistillerPanel({ workspaceSlug = '', workspaceRef = '', a
                 <textarea value={affectedChecks} onChange={(event) => setAffectedChecks(event.target.value)} rows={2} className={`${inputClass} font-mono`} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)' }} />
               </label>
               <button type="button" disabled={busy} onClick={validatePatch} className="th-focus-ring mt-2 flex items-center gap-1 rounded border px-2 py-1 text-xs disabled:opacity-50" style={{ borderColor: 'var(--border-subtle)' }}><ClipboardCheck size={12} /> Validate patch</button>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <ActionButton busy={busy} onClick={() => execute(async () => { const result = await gateway.requestFailureCapsuleApply(currentCapsulePath, workspaceRef); setApprovalId(result?.approvalId || result?.approval_id || ''); return result; })} Icon={BadgeCheck}>Request apply approval</ActionButton>
+                <input aria-label="Patch approval ID" value={approvalId} onChange={(event) => setApprovalId(event.target.value)} placeholder="Approval ID" className={`${inputClass} flex-1 font-mono`} style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)' }} />
+                <ActionButton busy={busy} disabled={!approvalId.trim()} danger onClick={() => { if (window.confirm('Apply this exact approved patch to the active workspace?')) execute(() => gateway.applyApprovedFailureCapsulePatch(currentCapsulePath, workspaceRef, approvalId.trim())); }} Icon={BadgeCheck}>Apply approved patch</ActionButton>
+              </div>
             </details>
           </div>}
           <div className="mt-3 flex flex-wrap gap-2">

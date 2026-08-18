@@ -697,6 +697,16 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('heal/agentic/distill/validate-patch', payload);
   }
 
+  requestFailureCapsuleApply(capsulePath, workspaceRef) {
+    if (!capsulePath || !workspaceRef) return Promise.reject(new Error('capsulePath and workspaceRef are required'));
+    return this._sendRequest('heal/agentic/distill/request-apply', { capsulePath, workspaceRef });
+  }
+
+  applyApprovedFailureCapsulePatch(capsulePath, workspaceRef, approvalId) {
+    if (!capsulePath || !workspaceRef || !approvalId) return Promise.reject(new Error('capsulePath, workspaceRef, and approvalId are required'));
+    return this._sendRequest('heal/agentic/distill/apply-approved', { capsulePath, workspaceRef, approvalId });
+  }
+
   /** Return quality, reduction-cost, and validation counters for this engine session. */
   getFailureDistillerMetrics() {
     return this._sendRequest('heal/agentic/distill/metrics', {});
