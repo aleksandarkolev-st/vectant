@@ -377,6 +377,8 @@ services:
     depends_on:
       - signaling-server
       - worker
+    environment:
+      AI_BACKEND_URL: "http://ai-engine:8000"
     restart: unless-stopped
 
   worker:

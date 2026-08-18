@@ -135,6 +135,18 @@ export const ADVERTISED_TOOLS = [
   "synthi_safety_validate_failure_capsule_vivarium",
   "synthi_safety_materialize_failure_capsule_vivarium",
   "synthi_safety_explain_blocked_hardening",
+  // Failure Distiller production workflow
+  "synthi_failure_observations_list",
+  "synthi_failure_observation_capture",
+  "synthi_failure_distill",
+  "synthi_failure_capsule_replay",
+  "synthi_failure_capsule_explain",
+  "synthi_failure_capsule_materialize",
+  "synthi_failure_capsule_validate_patch",
+  "synthi_failure_capsule_request_apply",
+  "synthi_failure_capsule_apply_approved",
+  "synthi_failure_capsule_export_vivarium",
+  "synthi_failure_capsule_promote_vivarium",
   // Workspace program command control
   "synthi_exec_in_runtime",
   "synthi_list_programs",

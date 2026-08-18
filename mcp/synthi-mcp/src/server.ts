@@ -70,6 +70,7 @@ import { DOJO_TOOLS, dispatchDojoTool } from "./tools/dojo.js";
 import { SOURCE_TOOLS, dispatchSourceTool } from "./tools/source.js";
 import { SAFETY_TOOLS, dispatchSafetyTool } from "./tools/safety.js";
 import { PROGRAM_TOOLS, dispatchProgramTool } from "./tools/programs.js";
+import { FAILURE_DISTILLER_TOOLS, dispatchFailureDistillerTool } from "./tools/failure_distiller.js";
 import { CODESITE_TOOLS, dispatchCodeSiteTool } from "./tools/codesite.js";
 import type { ToolContext } from "./tools/shared.js";
 import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
@@ -115,6 +116,7 @@ const TOOLS = [
   ...SOURCE_TOOLS,
   ...SAFETY_TOOLS,
   ...PROGRAM_TOOLS,
+  ...FAILURE_DISTILLER_TOOLS,
   ...CODESITE_TOOLS,
   {
     name: "synthi_attach",
@@ -1291,6 +1293,9 @@ async function dispatchTool(
 
   const programResponse = await dispatchProgramTool(toolName, args);
   if (programResponse) return programResponse as CallToolResult;
+
+  const failureDistillerResponse = await dispatchFailureDistillerTool(toolName, args);
+  if (failureDistillerResponse) return failureDistillerResponse as CallToolResult;
 
   const codeSiteResponse = await dispatchCodeSiteTool(toolName, args);
   if (codeSiteResponse) return codeSiteResponse as CallToolResult;
