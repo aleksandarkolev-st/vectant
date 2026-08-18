@@ -45,6 +45,7 @@ DEFAULT_BUDGETS = {
     "standard": {"max_executions": 1000, "stability_attempts": 5, "minimum_matches": 5, "timeout_sec": 60, "parallelism": 4},
     "deep": {"max_executions": 5000, "stability_attempts": 10, "minimum_matches": 9, "timeout_sec": 90, "parallelism": 8},
 }
+WORKSPACE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}/[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 class DistillationError(ValueError):
@@ -99,6 +100,37 @@ def _safe_relative(root: Path, raw_path: str) -> Path:
         return candidate.relative_to(root.resolve())
     except ValueError as exc:
         raise DistillationError("candidate path escapes workspace") from exc
+
+
+def _resolve_workspace_root(request: Dict[str, Any], *, production: bool) -> Path:
+    """Resolve an opaque workspace/user reference without exposing host paths.
+
+    Browser clients submit ``workspaceRef`` as ``<workspace-slug>/<filesystem-user-id>``.
+    The resolver is anchored to the shared repository volume and rejects every
+    malformed or escaping reference before the reducer touches the filesystem.
+    Direct paths remain available only to local operator/test instances.
+    """
+    workspace_ref = request.get("workspaceRef", request.get("workspace_ref"))
+    if workspace_ref:
+        reference = str(workspace_ref)
+        if not WORKSPACE_REFERENCE.fullmatch(reference):
+            raise DistillationError("workspaceRef must be a workspace slug and filesystem user id")
+        repos_root = Path(os.environ.get("SYNTHI_REPOS_PATH", "/data/repos")).resolve()
+        root = (repos_root / Path(*reference.split("/"))).resolve()
+        try:
+            root.relative_to(repos_root)
+        except ValueError as exc:
+            raise DistillationError("workspaceRef escapes configured repositories") from exc
+        if not root.is_dir():
+            raise DistillationError("workspaceRef does not resolve to an existing workspace")
+        return root
+
+    if production:
+        raise DistillationError("workspaceRef is required for production distillation")
+    root = Path(str(request.get("workspaceRoot", request.get("workspace_root", "")))).resolve()
+    if not root.is_dir():
+        raise DistillationError("workspaceRoot must be an existing directory")
+    return root
 
 
 def _git(root: Path, *args: str) -> str:
@@ -333,9 +365,7 @@ class FailureDistiller:
         isolation_failure = await self._configure_execution_or_state(request)
         if isolation_failure:
             return isolation_failure
-        root = Path(str(request.get("workspaceRoot", request.get("workspace_root", "")))).resolve()
-        if not root.is_dir():
-            raise DistillationError("workspaceRoot must be an existing directory")
+        root = _resolve_workspace_root(request, production=self._production)
         _git(root, "rev-parse", "--show-toplevel")
         command = self._command(request.get("command"))
         if not command:

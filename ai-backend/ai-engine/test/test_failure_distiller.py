@@ -13,6 +13,7 @@ import pytest
 from analyzer.proactive.healing.failure_distiller import (
     DistillationError,
     FailureDistiller,
+    _resolve_workspace_root,
 )
 
 
@@ -56,6 +57,20 @@ def request(root, candidates):
         "budget": {"preset": "fast", "stability_attempts": 2, "minimum_matches": 2, "max_executions": 20},
         "candidates": candidates,
     }
+
+
+def test_workspace_ref_is_anchored_to_the_configured_repository_volume(workspace, tmp_path, monkeypatch):
+    repos_root = tmp_path / "repos"
+    target = repos_root / "workspace-safe" / "user-safe"
+    target.parent.mkdir(parents=True)
+    shutil.copytree(workspace, target)
+    monkeypatch.setenv("SYNTHI_REPOS_PATH", str(repos_root))
+
+    assert _resolve_workspace_root({"workspaceRef": "workspace-safe/user-safe"}, production=True) == target.resolve()
+    with pytest.raises(DistillationError, match="workspace slug"):
+        _resolve_workspace_root({"workspaceRef": "../outside"}, production=True)
+    with pytest.raises(DistillationError, match="workspaceRef is required"):
+        _resolve_workspace_root({"workspaceRoot": str(workspace)}, production=True)
 
 
 def test_distills_an_unrelated_file_and_writes_contract(workspace):
