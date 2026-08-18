@@ -238,6 +238,11 @@ services:
       # (a host-path bind would resolve on the host and be empty). Value is the
       # explicitly named volume used by this Compose stack.
       WORKSPACE_DATA_VOLUME: "vectant-ade_collab-data"
+      # The rootless per-workspace runtime uses gid 1000. The collab process
+      # joins that group so both trusted local actors can edit only the same
+      # setgid workspace tree without opening it to every container user.
+      SYNTHI_RUNTIME_SHARED_GID: "${SYNTHI_RUNTIME_SHARED_GID:-1000}"
+      SYNTHI_RUNTIME_WORKSPACE_UMASK: "${SYNTHI_RUNTIME_WORKSPACE_UMASK:-0002}"
       # Runtime and worker containers must join this stack's explicit network.
       WORKER_NETWORK: "vectant-ade_default"
     volumes:
@@ -251,6 +256,7 @@ services:
     # on a native Linux host set DOCKER_SOCKET_GID to the host `docker` group.
     group_add:
       - "${DOCKER_SOCKET_GID:-0}"
+      - "${SYNTHI_RUNTIME_SHARED_GID:-1000}"
     depends_on:
       redis:
         condition: service_healthy

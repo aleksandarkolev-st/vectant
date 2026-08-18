@@ -417,7 +417,12 @@ async function removeWorkspaceInstructionGitIsolation(options) {
   }
 
   await runGit(git.repoRoot, ['config', '--local', '--remove-section', `filter.${filterName}`]).catch((error) => {
-    if (error.code !== 5) throw error;
+    // Git versions return either a lookup status or 128 with this diagnostic
+    // when the requested optional section does not exist. That is the normal
+    // no-op cleanup case for a newly created workspace; retain other errors.
+    const missingSection = typeof error?.stderr === 'string'
+      && error.stderr.includes(`no such section: filter.${filterName}`);
+    if (!missingSection) throw error;
   });
   await fs.promises.unlink(path.join(git.stateDirectory, `${filterName}.json`)).catch((error) => {
     if (error.code !== 'ENOENT') throw error;
