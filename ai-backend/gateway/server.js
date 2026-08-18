@@ -220,8 +220,10 @@ function isAuthorizedGatewayRequest(request) {
 const backendAgenticDiagnoseUrl = new URL("/heal/agentic/diagnose", backendUrl).toString();
 const backendAgenticDistillUrl = new URL("/heal/agentic/distill", backendUrl).toString();
 const backendAgenticDistillRunUrl = new URL("/heal/agentic/distill/run", backendUrl).toString();
+const backendAgenticDistillExplainUrl = new URL("/heal/agentic/distill/explain", backendUrl).toString();
 const backendAgenticDistillMaterializeUrl = new URL("/heal/agentic/distill/materialize", backendUrl).toString();
 const backendAgenticDistillDeleteUrl = new URL("/heal/agentic/distill/delete", backendUrl).toString();
+const backendAgenticDistillPurgeExpiredUrl = new URL("/heal/agentic/distill/purge-expired", backendUrl).toString();
 const backendAgenticDistillVivariumExportUrl = new URL("/heal/agentic/distill/vivarium-export", backendUrl).toString();
 const backendAgenticDistillVivariumPromoteUrl = new URL("/heal/agentic/distill/vivarium-promote", backendUrl).toString();
 const backendAgenticDistillValidatePatchUrl = new URL("/heal/agentic/distill/validate-patch", backendUrl).toString();
@@ -499,11 +501,17 @@ async function handleClientMessage(socket, raw) {
     case "heal/agentic/distill/run":
       await forwardAgenticDistillRun(socket, data, requestId);
       break;
+    case "heal/agentic/distill/explain":
+      await forwardAgenticDistillExplain(socket, data, requestId);
+      break;
     case "heal/agentic/distill/materialize":
       await forwardAgenticDistillMaterialize(socket, data, requestId);
       break;
     case "heal/agentic/distill/delete":
       await forwardAgenticDistillDelete(socket, data, requestId);
+      break;
+    case "heal/agentic/distill/purge-expired":
+      await forwardAgenticDistillPurgeExpired(socket, data, requestId);
       break;
     case "heal/agentic/distill/vivarium-export":
       await forwardAgenticDistillVivariumExport(socket, data, requestId);
@@ -2804,59 +2812,83 @@ async function agenticGet(socket, action, url, requestId) {
 
 // Diagnosis
 async function forwardAgenticDistill(socket, data, requestId) {
-  if (typeof data?.workspaceRoot !== "string" || !data.workspaceRoot || !(typeof data?.command === "string" || Array.isArray(data?.command))) {
-    sendError(socket, "`workspaceRoot` and command string or array are required for failure distillation", { requestId });
+  if (!hasWorkspaceRef(data) || !(typeof data?.command === "string" || Array.isArray(data?.command))) {
+    sendError(socket, "`workspaceRef` and command string or array are required for failure distillation", { requestId });
     return;
   }
   await agenticPost(socket, "heal/agentic/distill", backendAgenticDistillUrl, data, requestId);
 }
 
 async function forwardAgenticDistillRun(socket, data, requestId) {
-  if (typeof data?.capsulePath !== "string" || !data.capsulePath) {
-    sendError(socket, "`capsulePath` is required to run a failure capsule", { requestId });
+  if (!hasScopedCapsule(data)) {
+    sendError(socket, "`capsulePath` and `workspaceRef` are required to run a failure capsule", { requestId });
     return;
   }
   await agenticPost(socket, "heal/agentic/distill/run", backendAgenticDistillRunUrl, data, requestId);
 }
 
+async function forwardAgenticDistillExplain(socket, data, requestId) {
+  if (!hasScopedCapsule(data) || typeof data?.unit !== "string" || !data.unit) {
+    sendError(socket, "`capsulePath`, `workspaceRef`, and unit are required to explain a failure capsule", { requestId });
+    return;
+  }
+  await agenticPost(socket, "heal/agentic/distill/explain", backendAgenticDistillExplainUrl, data, requestId);
+}
+
 async function forwardAgenticDistillMaterialize(socket, data, requestId) {
-  if (typeof data?.capsulePath !== "string" || !data.capsulePath) {
-    sendError(socket, "`capsulePath` is required to materialize a failure capsule", { requestId });
+  if (!hasScopedCapsule(data)) {
+    sendError(socket, "`capsulePath` and `workspaceRef` are required to materialize a failure capsule", { requestId });
     return;
   }
   await agenticPost(socket, "heal/agentic/distill/materialize", backendAgenticDistillMaterializeUrl, data, requestId);
 }
 
 async function forwardAgenticDistillDelete(socket, data, requestId) {
-  if (typeof data?.capsulePath !== "string" || !data.capsulePath) {
-    sendError(socket, "`capsulePath` is required to delete a failure capsule", { requestId });
+  if (!hasScopedCapsule(data)) {
+    sendError(socket, "`capsulePath` and `workspaceRef` are required to delete a failure capsule", { requestId });
     return;
   }
   await agenticPost(socket, "heal/agentic/distill/delete", backendAgenticDistillDeleteUrl, data, requestId);
 }
 
+async function forwardAgenticDistillPurgeExpired(socket, data, requestId) {
+  if (!hasWorkspaceRef(data)) {
+    sendError(socket, "`workspaceRef` is required to purge expired failure capsules", { requestId });
+    return;
+  }
+  await agenticPost(socket, "heal/agentic/distill/purge-expired", backendAgenticDistillPurgeExpiredUrl, data, requestId);
+}
+
 async function forwardAgenticDistillVivariumExport(socket, data, requestId) {
-  if (typeof data?.capsulePath !== "string" || !data.capsulePath) {
-    sendError(socket, "`capsulePath` is required to export a Vivarium scenario", { requestId });
+  if (!hasScopedCapsule(data)) {
+    sendError(socket, "`capsulePath` and `workspaceRef` are required to export a Vivarium scenario", { requestId });
     return;
   }
   await agenticPost(socket, "heal/agentic/distill/vivarium-export", backendAgenticDistillVivariumExportUrl, data, requestId);
 }
 
 async function forwardAgenticDistillVivariumPromote(socket, data, requestId) {
-  if (typeof data?.capsulePath !== "string" || !data.capsulePath) {
-    sendError(socket, "`capsulePath` is required to promote a Vivarium scenario", { requestId });
+  if (!hasScopedCapsule(data)) {
+    sendError(socket, "`capsulePath` and `workspaceRef` are required to promote a Vivarium scenario", { requestId });
     return;
   }
   await agenticPost(socket, "heal/agentic/distill/vivarium-promote", backendAgenticDistillVivariumPromoteUrl, data, requestId);
 }
 
 async function forwardAgenticDistillValidatePatch(socket, data, requestId) {
-  if (typeof data?.capsulePath !== "string" || !data.capsulePath || !Array.isArray(data?.edits)) {
-    sendError(socket, "`capsulePath` and edits are required to validate a capsule patch", { requestId });
+  if (!hasScopedCapsule(data) || !Array.isArray(data?.edits)) {
+    sendError(socket, "`capsulePath`, `workspaceRef`, and edits are required to validate a capsule patch", { requestId });
     return;
   }
   await agenticPost(socket, "heal/agentic/distill/validate-patch", backendAgenticDistillValidatePatchUrl, data, requestId);
+}
+
+function hasWorkspaceRef(data) {
+  return typeof (data?.workspaceRef || data?.workspace_ref) === "string" && Boolean(data.workspaceRef || data.workspace_ref);
+}
+
+function hasScopedCapsule(data) {
+  return typeof data?.capsulePath === "string" && Boolean(data.capsulePath) && hasWorkspaceRef(data);
 }
 
 async function forwardAgenticDistillMetrics(socket, requestId) {

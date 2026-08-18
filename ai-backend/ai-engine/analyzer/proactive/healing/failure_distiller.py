@@ -527,12 +527,12 @@ class FailureDistiller:
         self._metrics["removed_units"] += len(removed)
         return {"ok": True, "capsule_id": capsule_id, "capsuleId": capsule_id, "workspace_path": str(artifact), "workspacePath": str(artifact), "run": f"vectant repro run {capsule_id}", "status": status, "baseline": baseline, "reduction": {"candidate_units": len(candidates), "removed_units": len(removed), "retained_units": len(active), "minimality": "1-minimal_under_declared_units" if confirmation_complete else "budget_limited", "untested_units": untested, "untested_count": len(untested), "limiting_reason": limiting_reason}, "limits": ["logical capsule: source files remain in the original workspace", "outbound network is not granted by this API but must be blocked by the configured host/container sandbox", "external interactions are unsupported without a validated replay or contract boundary"], "executions": executions, "budget": {"max_executions": budget.max_executions, "executions_per_stability_evaluation": budget.stability_attempts, "executions_performed_current_request": executions, "limiting_reason": limiting_reason}}
 
-    async def run(self, capsule_path: str) -> Dict[str, Any]:
+    async def run(self, capsule_path: str, workspace_ref: Optional[str] = None) -> Dict[str, Any]:
         capsule = Path(capsule_path).resolve()
         repro_path = capsule / "repro.json"
         if not repro_path.is_file():
             repro_path = capsule / ".vectant-materialized-repro.json"
-        repro = self._read_json(repro_path)
+        repro = self._assert_capsule_workspace(capsule, workspace_ref, repro_path=repro_path)
         isolation_failure = await self._configure_execution_or_state(repro)
         if isolation_failure:
             return isolation_failure
@@ -566,7 +566,7 @@ class FailureDistiller:
         """
         self._metrics["materialization_requests"] += 1
         capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()
-        repro = self._read_json(capsule / "repro.json")
+        repro = self._assert_capsule_workspace(capsule, self._workspace_ref(request))
         isolation_failure = await self._configure_execution_or_state(repro)
         if isolation_failure:
             return isolation_failure
@@ -625,7 +625,7 @@ class FailureDistiller:
         capsule_bytes = self._tree_bytes(destination)
         return {"ok": True, "status": "materialized", "workspace_path": str(destination), "workspacePath": str(destination), "run": self._run_dict(run), "retained_paths": sorted(retained_paths), "node_dependencies": node_dependencies, "python_dependencies": python_dependencies, "integrity_path": str(destination / ".vectant-integrity.json"), "measurements": {"source_bytes": source_bytes, "capsule_bytes": capsule_bytes, "bytes_removed": source_bytes - capsule_bytes, "byte_reduction_ratio": 1 - (capsule_bytes / source_bytes) if source_bytes else 0.0, "replay_duration_ms": run.duration_ms}, "limits": ["dependency installation and lifecycle scripts are denied", "source closure is conservative and verified by same-signature replay"]}
 
-    def export_vivarium_manifest(self, capsule_path: str) -> Dict[str, Any]:
+    def export_vivarium_manifest(self, capsule_path: str, workspace_ref: Optional[str] = None) -> Dict[str, Any]:
         """Export a sanitized, deterministic handoff contract for Agent Dojo Vivarium.
 
         The manifest is deliberately a handoff only: it cannot replace the
@@ -634,7 +634,7 @@ class FailureDistiller:
         baseline before it can be used for regression or practice.
         """
         capsule = Path(capsule_path).resolve()
-        repro = self._read_json(capsule / "repro.json")
+        repro = self._assert_capsule_workspace(capsule, workspace_ref)
         manifest = self._read_json(capsule / "manifest.json")
         capsule_id = str(manifest.get("capsule_id", ""))
         if not capsule_id:
@@ -684,17 +684,18 @@ class FailureDistiller:
         })
         return {"ok": True, "status": "vivarium_manifest_exported", "capsule_id": capsule_id, "capsuleId": capsule_id, "scenario_id": scenario_id, "scenarioId": scenario_id, "manifest_path": str(path), "manifestPath": str(path), "manifest": scenario}
 
-    def promote_vivarium_scenario(self, capsule_path: str, mode: str = "regression") -> Dict[str, Any]:
+    def promote_vivarium_scenario(self, capsule_path: str, mode: str = "regression", workspace_ref: Optional[str] = None) -> Dict[str, Any]:
         """Version a validated capsule as a Vivarium regression or practice artifact."""
         if mode not in {"regression", "practice"}:
             raise DistillationError("Vivarium promotion mode must be regression or practice")
         capsule = Path(capsule_path).resolve()
+        self._assert_capsule_workspace(capsule, workspace_ref)
         validation = self._read_json(capsule / "evidence" / "validation.json")
         if validation.get("status") != "validated":
             return self._state("boundary_not_isolatable", "Vivarium promotion requires a capsule patch validated in the original world", validation_status=validation.get("status", "not_run"))
         source = capsule / "vivarium.scenario.json"
         if not source.is_file():
-            exported = self.export_vivarium_manifest(str(capsule))
+            exported = self.export_vivarium_manifest(str(capsule), workspace_ref)
             if not exported.get("ok"):
                 return exported
         scenario = self._read_json(source)
@@ -723,11 +724,11 @@ class FailureDistiller:
         })
         return {"ok": True, "status": "vivarium_promoted", "promotion_id": promoted["promotion_id"], "promotionId": promoted["promotion_id"], "mode": mode, "artifact_path": str(destination), "artifactPath": str(destination), "artifact": promoted}
 
-    def discard(self, capsule_path: str) -> Dict[str, Any]:
+    def discard(self, capsule_path: str, workspace_ref: Optional[str] = None) -> Dict[str, Any]:
         """Permanently delete a capsule only from its source workspace store."""
         capsule = Path(capsule_path).resolve()
         try:
-            repro = self._read_json(capsule / "repro.json")
+            repro = self._assert_capsule_workspace(capsule, workspace_ref)
             root = Path(repro["workspace_root"]).resolve()
             store = (root / ".vectant" / "capsules").resolve()
             capsule.relative_to(store)
@@ -742,8 +743,9 @@ class FailureDistiller:
         shutil.rmtree(capsule)
         return {"ok": True, "status": "deleted", "capsule_id": capsule_id, "capsuleId": capsule_id, "audit_path": str(audit)}
 
-    def explain(self, capsule_path: str, unit: str) -> Dict[str, Any]:
+    def explain(self, capsule_path: str, unit: str, workspace_ref: Optional[str] = None) -> Dict[str, Any]:
         capsule = Path(capsule_path).resolve()
+        self._assert_capsule_workspace(capsule, workspace_ref)
         if not isinstance(unit, str) or not unit.strip():
             raise DistillationError("unit is required")
         entries = []
@@ -756,9 +758,9 @@ class FailureDistiller:
             raise DistillationError("invalid capsule reduction evidence") from exc
         return {"ok": bool(entries), "capsule_path": str(capsule), "unit": unit, "evidence": entries, "reason": None if entries else "unit_not_found"}
 
-    def purge_expired(self, workspace_root: str, now: Optional[datetime] = None) -> Dict[str, Any]:
+    def purge_expired(self, workspace_root: str = "", now: Optional[datetime] = None, workspace_ref: Optional[str] = None) -> Dict[str, Any]:
         """Delete only expired direct capsule entries and retain an audit trail."""
-        root = Path(workspace_root).resolve()
+        root = _resolve_workspace_root({"workspaceRoot": workspace_root, "workspaceRef": workspace_ref}, production=self._production)
         store = root / ".vectant" / "capsules"
         if not root.is_dir() or not store.is_dir():
             return {"ok": True, "status": "no_capsules", "deleted": []}
@@ -772,7 +774,7 @@ class FailureDistiller:
                 expires_at = datetime.fromisoformat(str(manifest["retention"]["expires_at"]))
                 if expires_at.tzinfo is None or expires_at > current:
                     continue
-                result = self.discard(str(capsule))
+                result = self.discard(str(capsule), workspace_ref)
                 deleted.append(result["capsule_id"])
             except (KeyError, ValueError, DistillationError):
                 continue
@@ -781,7 +783,7 @@ class FailureDistiller:
     async def validate_patch(self, request: Dict[str, Any]) -> Dict[str, Any]:
         self._metrics["validation_requests"] += 1
         capsule = Path(str(request.get("capsulePath", request.get("capsule_path", "")))).resolve()
-        repro, provenance = self._read_json(capsule / "repro.json"), self._read_json(capsule / "provenance.json")
+        repro, provenance = self._assert_capsule_workspace(capsule, self._workspace_ref(request)), self._read_json(capsule / "provenance.json")
         isolation_failure = await self._configure_execution_or_state(repro)
         if isolation_failure:
             return isolation_failure
@@ -809,7 +811,7 @@ class FailureDistiller:
         if conflicts:
             return {"ok": False, "status": "patch_mapping_conflict", "conflicts": conflicts, "mismatch": {"classification": "patch_map_conflict", "message": "The editable capsule path cannot be mapped safely to the recorded production revision."}}
         predicate, signature = Predicate.from_request(repro["predicate"]), Signature.from_request(repro["signature"])
-        before = await self.run(str(capsule))
+        before = await self.run(str(capsule), self._workspace_ref(request))
         if before.get("status") != "same_failure":
             return self._record_validation(capsule, {"ok": False, "status": "capsule_baseline_invalid", "gates": {"capsule_fails_before_patch": before}})
         with self._temporary_worktree_root(root) as temp:
@@ -1608,6 +1610,25 @@ class FailureDistiller:
             return json.loads(path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError) as exc:
             raise DistillationError(f"invalid capsule artifact: {path.name}") from exc
+
+    @staticmethod
+    def _workspace_ref(request: Dict[str, Any]) -> Optional[str]:
+        value = request.get("workspaceRef", request.get("workspace_ref"))
+        return value if isinstance(value, str) and value else None
+
+    def _assert_capsule_workspace(self, capsule: Path, workspace_ref: Optional[str], *, repro_path: Optional[Path] = None) -> Dict[str, Any]:
+        """Load a capsule only when it belongs to the caller's workspace in production."""
+        repro = self._read_json(repro_path or capsule / "repro.json")
+        if not self._production:
+            return repro
+        root = _resolve_workspace_root({"workspaceRef": workspace_ref}, production=True)
+        try:
+            capsule_root = Path(str(repro["workspace_root"])).resolve()
+        except (KeyError, TypeError) as exc:
+            raise DistillationError("capsule repro is missing its workspace root") from exc
+        if capsule_root != root:
+            raise DistillationError("capsule does not belong to the active workspace")
+        return repro
 
 
 _failure_distiller: Optional[FailureDistiller] = None

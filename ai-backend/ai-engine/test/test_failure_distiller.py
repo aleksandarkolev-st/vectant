@@ -73,6 +73,23 @@ def test_workspace_ref_is_anchored_to_the_configured_repository_volume(workspace
         _resolve_workspace_root({"workspaceRoot": str(workspace)}, production=True)
 
 
+def test_production_capsule_operations_reject_a_different_workspace_reference(tmp_path, monkeypatch):
+    repos_root = tmp_path / "repos"
+    active = repos_root / "workspace-active" / "user-safe"
+    other = repos_root / "workspace-other" / "user-safe"
+    active.mkdir(parents=True)
+    other.mkdir(parents=True)
+    capsule = active / ".vectant" / "capsules" / "capsule_test"
+    capsule.mkdir(parents=True)
+    (capsule / "repro.json").write_text(json.dumps({"workspace_root": str(active)}), encoding="utf-8")
+    monkeypatch.setenv("SYNTHI_REPOS_PATH", str(repos_root))
+
+    distiller = FailureDistiller(production=True)
+    assert distiller._assert_capsule_workspace(capsule, "workspace-active/user-safe")["workspace_root"] == str(active)
+    with pytest.raises(DistillationError, match="does not belong"):
+        distiller._assert_capsule_workspace(capsule, "workspace-other/user-safe")
+
+
 def test_distills_an_unrelated_file_and_writes_contract(workspace):
     result = run(FailureDistiller().distill(request(workspace, [
         {"kind": "file", "reference": "unrelated.txt"},
