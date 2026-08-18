@@ -128,6 +128,18 @@ def test_validated_patch_requires_an_unexpired_exact_approval_before_apply(works
         distiller.apply_approved_patch({"workspaceRoot": str(workspace), "capsulePath": str(capsule), "approvalId": approval["approvalId"]})
 
 
+def test_production_capsule_id_resolution_is_confined_to_active_workspace(tmp_path, monkeypatch):
+    repos_root = tmp_path / "repos"
+    root = repos_root / "workspace-safe" / "user-safe"
+    capsule = root / ".vectant" / "capsules" / "capsule_aaaaaaaaaa"
+    capsule.mkdir(parents=True)
+    monkeypatch.setenv("SYNTHI_REPOS_PATH", str(repos_root))
+    distiller = FailureDistiller(production=True)
+    assert distiller.resolve_capsule_path({"workspaceRef": "workspace-safe/user-safe", "capsuleId": "capsule_aaaaaaaaaa"}) == str(capsule.resolve())
+    with pytest.raises(DistillationError, match="capsuleId is required"):
+        distiller.resolve_capsule_path({"workspaceRef": "workspace-safe/user-safe", "capsulePath": str(capsule)})
+
+
 def test_distills_an_unrelated_file_and_writes_contract(workspace):
     result = run(FailureDistiller().distill(request(workspace, [
         {"kind": "file", "reference": "unrelated.txt"},

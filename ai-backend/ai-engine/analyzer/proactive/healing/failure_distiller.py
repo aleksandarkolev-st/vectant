@@ -47,6 +47,7 @@ DEFAULT_BUDGETS = {
 }
 WORKSPACE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}/[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 OBSERVATION_REFERENCE = re.compile(r"^observation_[a-f0-9]{24}$")
+CAPSULE_REFERENCE = re.compile(r"^capsule_[a-f0-9]{10}$")
 
 
 class DistillationError(ValueError):
@@ -1739,6 +1740,24 @@ class FailureDistiller:
         if not isinstance(observation, dict):
             raise DistillationError("observation record is invalid")
         return observation
+
+    def resolve_capsule_path(self, request: Dict[str, Any]) -> str:
+        """Resolve an opaque capsule ID under the active workspace's capsule store."""
+        reference = request.get("capsuleId", request.get("capsule_id"))
+        if isinstance(reference, str) and CAPSULE_REFERENCE.fullmatch(reference):
+            root = _resolve_workspace_root(request, production=self._production)
+            capsule = (root / ".vectant" / "capsules" / reference).resolve()
+            store = (root / ".vectant" / "capsules").resolve()
+            try:
+                capsule.relative_to(store)
+            except ValueError as exc:
+                raise DistillationError("capsuleId escapes the active workspace") from exc
+            if capsule.parent != store or not capsule.is_dir() or capsule.is_symlink():
+                raise DistillationError("capsuleId does not identify an active workspace capsule")
+            return str(capsule)
+        if self._production:
+            raise DistillationError("capsuleId is required for production capsule operations")
+        return str(request.get("capsulePath", request.get("capsule_path", "")))
 
     @staticmethod
     def _observation_expired(record: Dict[str, Any], now: datetime) -> bool:

@@ -649,26 +649,26 @@ export class AnalyzerGatewayClient {
   }
 
   /** Re-run a capsule using its recorded predicate and signature. */
-  runFailureCapsule(capsulePath, workspaceRef) {
-    if (!capsulePath || !workspaceRef) return Promise.reject(new Error('capsulePath and workspaceRef are required'));
-    return this._sendRequest('heal/agentic/distill/run', { capsulePath, workspaceRef });
+  runFailureCapsule(capsuleId, workspaceRef) {
+    if (!capsuleId || !workspaceRef) return Promise.reject(new Error('capsuleId and workspaceRef are required'));
+    return this._sendRequest('heal/agentic/distill/run', { capsuleId, workspaceRef });
   }
 
-  explainFailureCapsule(capsulePath, unit, workspaceRef) {
-    if (!capsulePath || !unit || !workspaceRef) return Promise.reject(new Error('capsulePath, unit, and workspaceRef are required'));
-    return this._sendRequest('heal/agentic/distill/explain', { capsulePath, unit, workspaceRef });
+  explainFailureCapsule(capsuleId, unit, workspaceRef) {
+    if (!capsuleId || !unit || !workspaceRef) return Promise.reject(new Error('capsuleId, unit, and workspaceRef are required'));
+    return this._sendRequest('heal/agentic/distill/explain', { capsuleId, unit, workspaceRef });
   }
 
   /** Create a physical capsule workspace after logical replay has been verified. */
   materializeFailureCapsule(payload) {
-    if (!payload?.capsulePath) return Promise.reject(new Error('capsulePath is required'));
+    if (!payload?.capsuleId) return Promise.reject(new Error('capsuleId is required'));
     return this._sendRequest('heal/agentic/distill/materialize', payload);
   }
 
   /** Permanently delete an explicitly selected capsule. */
-  deleteFailureCapsule(capsulePath, workspaceRef) {
-    if (!capsulePath || !workspaceRef) return Promise.reject(new Error('capsulePath and workspaceRef are required'));
-    return this._sendRequest('heal/agentic/distill/delete', { capsulePath, workspaceRef });
+  deleteFailureCapsule(capsuleId, workspaceRef) {
+    if (!capsuleId || !workspaceRef) return Promise.reject(new Error('capsuleId and workspaceRef are required'));
+    return this._sendRequest('heal/agentic/distill/delete', { capsuleId, workspaceRef });
   }
 
   /** Delete only capsules that have exceeded their declared retention period. */
@@ -678,33 +678,33 @@ export class AnalyzerGatewayClient {
   }
 
   /** Export a deterministic, sanitized Vivarium handoff for a verified capsule. */
-  exportFailureCapsuleToVivarium(capsulePath, workspaceRef) {
-    if (!capsulePath || !workspaceRef) return Promise.reject(new Error('capsulePath and workspaceRef are required'));
-    return this._sendRequest('heal/agentic/distill/vivarium-export', { capsulePath, workspaceRef });
+  exportFailureCapsuleToVivarium(capsuleId, workspaceRef) {
+    if (!capsuleId || !workspaceRef) return Promise.reject(new Error('capsuleId and workspaceRef are required'));
+    return this._sendRequest('heal/agentic/distill/vivarium-export', { capsuleId, workspaceRef });
   }
 
   /** Promote a capsule only after original-world validation to a versioned Vivarium artifact. */
-  promoteFailureCapsuleToVivarium(capsulePath, mode = 'regression', workspaceRef) {
-    if (!capsulePath || !workspaceRef) return Promise.reject(new Error('capsulePath and workspaceRef are required'));
-    return this._sendRequest('heal/agentic/distill/vivarium-promote', { capsulePath, mode, workspaceRef });
+  promoteFailureCapsuleToVivarium(capsuleId, mode = 'regression', workspaceRef) {
+    if (!capsuleId || !workspaceRef) return Promise.reject(new Error('capsuleId and workspaceRef are required'));
+    return this._sendRequest('heal/agentic/distill/vivarium-promote', { capsuleId, mode, workspaceRef });
   }
 
   /** Validate an editable production-file patch against its capsule provenance. */
   validateFailureCapsulePatch(payload) {
-    if (!payload?.capsulePath || !payload?.workspaceRef || !Array.isArray(payload?.edits)) {
-      return Promise.reject(new Error('capsulePath, workspaceRef, and edits are required'));
+    if (!payload?.capsuleId || !payload?.workspaceRef || !Array.isArray(payload?.edits)) {
+      return Promise.reject(new Error('capsuleId, workspaceRef, and edits are required'));
     }
     return this._sendRequest('heal/agentic/distill/validate-patch', payload);
   }
 
-  requestFailureCapsuleApply(capsulePath, workspaceRef) {
-    if (!capsulePath || !workspaceRef) return Promise.reject(new Error('capsulePath and workspaceRef are required'));
-    return this._sendRequest('heal/agentic/distill/request-apply', { capsulePath, workspaceRef });
+  requestFailureCapsuleApply(capsuleId, workspaceRef) {
+    if (!capsuleId || !workspaceRef) return Promise.reject(new Error('capsuleId and workspaceRef are required'));
+    return this._sendRequest('heal/agentic/distill/request-apply', { capsuleId, workspaceRef });
   }
 
-  applyApprovedFailureCapsulePatch(capsulePath, workspaceRef, approvalId) {
-    if (!capsulePath || !workspaceRef || !approvalId) return Promise.reject(new Error('capsulePath, workspaceRef, and approvalId are required'));
-    return this._sendRequest('heal/agentic/distill/apply-approved', { capsulePath, workspaceRef, approvalId });
+  applyApprovedFailureCapsulePatch(capsuleId, workspaceRef, approvalId) {
+    if (!capsuleId || !workspaceRef || !approvalId) return Promise.reject(new Error('capsuleId, workspaceRef, and approvalId are required'));
+    return this._sendRequest('heal/agentic/distill/apply-approved', { capsuleId, workspaceRef, approvalId });
   }
 
   /** Return quality, reduction-cost, and validation counters for this engine session. */

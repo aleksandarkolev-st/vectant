@@ -2937,7 +2937,7 @@ function hasWorkspaceRef(data) {
 }
 
 function hasScopedCapsule(data) {
-  return typeof data?.capsulePath === "string" && Boolean(data.capsulePath) && hasWorkspaceRef(data);
+  return (typeof data?.capsuleId === "string" && Boolean(data.capsuleId) || typeof data?.capsulePath === "string" && Boolean(data.capsulePath)) && hasWorkspaceRef(data);
 }
 
 async function forwardAgenticDistillMetrics(socket, requestId) {

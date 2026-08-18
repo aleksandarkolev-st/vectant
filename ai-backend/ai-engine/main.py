@@ -4375,7 +4375,8 @@ async def run_distilled_failure(request: Request):
     from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
     body = await request.json()
     try:
-        return await get_failure_distiller().run(body.get("capsulePath", body.get("capsule_path", "")), body.get("workspaceRef", body.get("workspace_ref")))
+        distiller = get_failure_distiller()
+        return await distiller.run(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref")))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4386,7 +4387,8 @@ async def explain_distilled_failure(request: Request):
     from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
     body = await request.json()
     try:
-        return get_failure_distiller().explain(body.get("capsulePath", body.get("capsule_path", "")), str(body.get("unit", "")), body.get("workspaceRef", body.get("workspace_ref")))
+        distiller = get_failure_distiller()
+        return distiller.explain(distiller.resolve_capsule_path(body), str(body.get("unit", "")), body.get("workspaceRef", body.get("workspace_ref")))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4396,7 +4398,9 @@ async def materialize_distilled_failure(request: Request):
     """Physically materialize a verified logical capsule without touching its source workspace."""
     from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
     try:
-        return await get_failure_distiller().materialize(await request.json())
+        body = await request.json()
+        distiller = get_failure_distiller()
+        return await distiller.materialize({**body, "capsulePath": distiller.resolve_capsule_path(body)})
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4407,7 +4411,8 @@ async def delete_distilled_failure(request: Request):
     from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
     body = await request.json()
     try:
-        return get_failure_distiller().discard(body.get("capsulePath", body.get("capsule_path", "")), body.get("workspaceRef", body.get("workspace_ref")))
+        distiller = get_failure_distiller()
+        return distiller.discard(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref")))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4432,7 +4437,8 @@ async def export_distilled_failure_to_vivarium(request: Request):
     from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
     body = await request.json()
     try:
-        return get_failure_distiller().export_vivarium_manifest(body.get("capsulePath", body.get("capsule_path", "")), body.get("workspaceRef", body.get("workspace_ref")))
+        distiller = get_failure_distiller()
+        return distiller.export_vivarium_manifest(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref")))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4443,7 +4449,8 @@ async def promote_distilled_failure_to_vivarium(request: Request):
     from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
     body = await request.json()
     try:
-        return get_failure_distiller().promote_vivarium_scenario(body.get("capsulePath", body.get("capsule_path", "")), str(body.get("mode", "regression")), body.get("workspaceRef", body.get("workspace_ref")))
+        distiller = get_failure_distiller()
+        return distiller.promote_vivarium_scenario(distiller.resolve_capsule_path(body), str(body.get("mode", "regression")), body.get("workspaceRef", body.get("workspace_ref")))
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4453,7 +4460,9 @@ async def validate_distilled_patch(request: Request):
     """Map a capsule patch through provenance and validate it in the source world."""
     from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
     try:
-        return await get_failure_distiller().validate_patch(await request.json())
+        body = await request.json()
+        distiller = get_failure_distiller()
+        return await distiller.validate_patch({**body, "capsulePath": distiller.resolve_capsule_path(body)})
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4463,7 +4472,9 @@ async def request_distilled_patch_apply(request: Request):
     """Issue an approval-bound request for an exactly validated patch."""
     from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
     try:
-        return get_failure_distiller().request_patch_apply(await request.json())
+        body = await request.json()
+        distiller = get_failure_distiller()
+        return distiller.request_patch_apply({**body, "capsulePath": distiller.resolve_capsule_path(body)})
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4473,7 +4484,9 @@ async def apply_approved_distilled_patch(request: Request):
     """Apply a reviewed, unexpired, original-world-validated patch."""
     from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
     try:
-        return get_failure_distiller().apply_approved_patch(await request.json())
+        body = await request.json()
+        distiller = get_failure_distiller()
+        return distiller.apply_approved_patch({**body, "capsulePath": distiller.resolve_capsule_path(body)})
     except DistillationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -85,13 +85,13 @@ describe('FailureDistillerPanel', () => {
     expect(container.textContent).toContain('1 units untested: max_executions');
     const buttons = [...container.querySelectorAll('button')];
     await act(async () => buttons.find((button) => button.textContent.includes('Explain')).click());
-    expect(gateway.explainFailureCapsule).toHaveBeenCalledWith('/tmp/capsule', 'src/InviteModal.tsx', 'workspace-safe/user-safe');
+    expect(gateway.explainFailureCapsule).toHaveBeenCalledWith('capsule_test', 'src/InviteModal.tsx', 'workspace-safe/user-safe');
     await act(async () => buttons.find((button) => button.textContent.includes('Metrics')).click());
     expect(container.textContent).toContain('60% unit reduction');
     await act(async () => buttons.find((button) => button.textContent.includes('Export')).click());
-    expect(gateway.exportFailureCapsuleToVivarium).toHaveBeenCalledWith('/tmp/capsule', 'workspace-safe/user-safe');
+    expect(gateway.exportFailureCapsuleToVivarium).toHaveBeenCalledWith('capsule_test', 'workspace-safe/user-safe');
     await act(async () => buttons.find((button) => button.textContent.includes('Promote')).click());
-    expect(gateway.promoteFailureCapsuleToVivarium).toHaveBeenCalledWith('/tmp/capsule', 'regression', 'workspace-safe/user-safe');
+    expect(gateway.promoteFailureCapsuleToVivarium).toHaveBeenCalledWith('capsule_test', 'regression', 'workspace-safe/user-safe');
     await act(async () => buttons.find((button) => button.textContent.includes('Purge expired')).click());
     expect(gateway.purgeExpiredFailureCapsules).toHaveBeenCalledWith('workspace-safe/user-safe');
   });
