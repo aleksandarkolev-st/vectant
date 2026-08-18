@@ -703,6 +703,18 @@ export function useAnalyzerGateway({
     return response?.data ?? response;
   }, []);
 
+  const captureFailureObservation = useCallback(async (payload = {}) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.captureFailureObservation(payload);
+    return response?.data ?? response;
+  }, []);
+
+  const listFailureObservations = useCallback(async (workspaceRef) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.listFailureObservations(workspaceRef);
+    return response?.data ?? response;
+  }, []);
+
   const runFailureCapsule = useCallback(async (capsulePath, workspaceRef) => {
     if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
     const response = await clientRef.current.runFailureCapsule(capsulePath, workspaceRef);
@@ -804,6 +816,8 @@ export function useAnalyzerGateway({
     aiRuntimeHeal,
     agenticRecordHmrFailure,
     distillFailure,
+    captureFailureObservation,
+    listFailureObservations,
     runFailureCapsule,
     explainFailureCapsule,
     materializeFailureCapsule,

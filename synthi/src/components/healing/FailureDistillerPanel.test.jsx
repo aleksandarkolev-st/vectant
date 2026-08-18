@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FailureDistillerPanel } from './FailureDistillerPanel';
 
 const gateway = {
-  distillFailure: vi.fn(), runFailureCapsule: vi.fn(), explainFailureCapsule: vi.fn(), materializeFailureCapsule: vi.fn(),
+  distillFailure: vi.fn(), captureFailureObservation: vi.fn(), listFailureObservations: vi.fn(), runFailureCapsule: vi.fn(), explainFailureCapsule: vi.fn(), materializeFailureCapsule: vi.fn(),
   validateFailureCapsulePatch: vi.fn(), deleteFailureCapsule: vi.fn(), purgeExpiredFailureCapsules: vi.fn(),
   exportFailureCapsuleToVivarium: vi.fn(), promoteFailureCapsuleToVivarium: vi.fn(), getFailureDistillerMetrics: vi.fn(),
 };
@@ -57,6 +57,7 @@ describe('FailureDistillerPanel', () => {
 
   it('distills with the opaque workspace ref and exposes lifecycle controls', async () => {
     gateway.distillFailure.mockResolvedValue({ ok: true, status: 'distilled', capsuleId: 'capsule_test', workspacePath: '/tmp/capsule', baseline: { matching_failures: 2, attempts: 2 }, budget: { max_executions: 20, executions_performed_current_request: 6 }, reduction: { removed_units: 3, retained_units: 2, untested_count: 1, limiting_reason: 'max_executions' } });
+    gateway.captureFailureObservation.mockResolvedValue({ ok: true, observationId: 'observation_aaaaaaaaaaaaaaaaaaaaaaaa' });
     gateway.getFailureDistillerMetrics.mockResolvedValue({ ok: true, metrics: { accepted_capsules: 1, reduction_ratio: 0.6, validated_patches: 1 } });
     gateway.explainFailureCapsule.mockResolvedValue({ ok: true, evidence: [{ decision: 'removed' }] });
     gateway.exportFailureCapsuleToVivarium.mockResolvedValue({ ok: true, status: 'vivarium_manifest_exported' });
@@ -74,9 +75,11 @@ describe('FailureDistillerPanel', () => {
     await act(async () => setValue(container.querySelector('textarea'), '{"hmrEvents":["check","applied"]}'));
     await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent.includes('Distill')).click());
     expect(gateway.distillFailure).toHaveBeenCalledWith(expect.objectContaining({
-      workspaceRef: 'workspace-safe/user-safe', command: 'pytest "tests/test invite.py"',
-      observation: { kind: 'hmr', filePath: 'src/InviteModal.tsx', hmrEvents: ['check', 'applied'] },
+      workspaceRef: 'workspace-safe/user-safe', command: 'pytest "tests/test invite.py"', observationRef: 'observation_aaaaaaaaaaaaaaaaaaaaaaaa',
     }));
+    expect(gateway.captureFailureObservation).toHaveBeenCalledWith({
+      workspaceRef: 'workspace-safe/user-safe', observation: { kind: 'hmr', filePath: 'src/InviteModal.tsx', hmrEvents: ['check', 'applied'] },
+    });
     expect(container.textContent).toContain('capsule_test');
     expect(container.textContent).toContain('Baseline stability: 2/2');
     expect(container.textContent).toContain('1 units untested: max_executions');

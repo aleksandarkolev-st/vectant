@@ -67,11 +67,15 @@ export function FailureDistillerPanel({ workspaceSlug = '', workspaceRef = '', a
       if (observationKind !== 'command' && Object.keys(recording).length === 0) {
         throw new Error(`${observationKind.toUpperCase()} distillation requires its recorded adapter evidence.`);
       }
+      const observation = { kind: observationKind, ...(observationFile.trim() ? { filePath: observationFile.trim() } : {}), ...recording };
+      const captured = observationKind === 'command'
+        ? null
+        : await gateway.captureFailureObservation({ workspaceRef, observation });
       await execute(() => gateway.distillFailure({
         workspaceRef,
         command: command.trim(),
         signature: signature.trim() ? { required: [signature.trim()] } : {},
-        observation: { kind: observationKind, ...(observationFile.trim() ? { filePath: observationFile.trim() } : {}), ...recording },
+        ...(captured ? { observationRef: captured.observationId || captured.observation_id } : { observation }),
         isolation: { mode: 'container', engine: 'docker', image: containerImage.trim() },
         budget: { preset: budget },
         autoDiscover: true,

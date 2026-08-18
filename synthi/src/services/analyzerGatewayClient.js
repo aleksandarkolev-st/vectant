@@ -636,6 +636,18 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('heal/agentic/distill', payload);
   }
 
+  captureFailureObservation(payload) {
+    if (!payload?.workspaceRef || !payload?.observation || typeof payload.observation !== 'object') {
+      return Promise.reject(new Error('workspaceRef and observation are required'));
+    }
+    return this._sendRequest('heal/agentic/distill/observations/capture', payload);
+  }
+
+  listFailureObservations(workspaceRef) {
+    if (!workspaceRef) return Promise.reject(new Error('workspaceRef is required'));
+    return this._sendRequest('heal/agentic/distill/observations/list', { workspaceRef });
+  }
+
   /** Re-run a capsule using its recorded predicate and signature. */
   runFailureCapsule(capsulePath, workspaceRef) {
     if (!capsulePath || !workspaceRef) return Promise.reject(new Error('capsulePath and workspaceRef are required'));
