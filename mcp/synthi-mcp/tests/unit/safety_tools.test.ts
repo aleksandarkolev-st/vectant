@@ -1081,6 +1081,51 @@ describe("safety MCP tool surface", () => {
       }),
     }));
   });
+
+  it("refuses browser failure reduction before a CI isolation profile is ready", async () => {
+    teachSaveWorkflow();
+    const result = await dispatchSafetyTool("synthi_safety_distill_browser_failure", { workspace_id: "workspace-a" });
+    expect(result?.isError).toBeUndefined();
+    expect(result?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      status: "boundary_not_isolatable",
+      baseline: expect.objectContaining({ status: "blocked", mutation_executed: false }),
+    }));
+  });
+
+  it("validates a synthetic Failure Distiller Vivarium handoff through the safety surface", async () => {
+    const result = await dispatchSafetyTool("synthi_safety_validate_failure_capsule_vivarium", {
+      manifest: {
+        schema_version: "synthi.dojo.failureCapsuleScenario.v1",
+        scenario_id: "distiller_capsule_1",
+        capsule: { capsule_id: "capsule_1", source_revision: "abc", world_hash: "world", run_command: ["python", "runner.py"] },
+        synthetic_fixture_requirements: [{ fixture_id: "fixture", kind: "fake_database_state", synthetic_data_only: true, required: true }],
+        boundary_mocks: [],
+        reset_profile: { reset_profile_id: "reset_capsule_1", strategy: "deterministic_seed", seed: "seed" },
+        oracle: { predicate: { type: "exit_nonzero" }, failure_signature: { required: ["signature"] }, baseline: { matches: 3 } },
+        evidence: { capsule_id: "capsule_1", scenario_id: "distiller_capsule_1", source_revision: "abc", fixture_manifest_sha256: "fixture", redaction: "policy" },
+        limits: ["original-world validation remains required for every candidate patch"],
+      },
+    });
+    expect(result?.structuredContent).toEqual(expect.objectContaining({ ok: true, status: "ready_for_materialization" }));
+  });
+
+  it("materializes a Failure Distiller handoff through the deterministic Vivarium runtime", async () => {
+    const result = await dispatchSafetyTool("synthi_safety_materialize_failure_capsule_vivarium", {
+      manifest: {
+        schema_version: "synthi.dojo.failureCapsuleScenario.v1",
+        scenario_id: "distiller_capsule_2",
+        capsule: { capsule_id: "capsule_2", source_revision: "abc", world_hash: "world", run_command: ["python", "runner.py"] },
+        synthetic_fixture_requirements: [{ fixture_id: "fixture", kind: "fake_database_state", synthetic_data_only: true, required: true }],
+        boundary_mocks: [],
+        reset_profile: { reset_profile_id: "reset_capsule_2", strategy: "deterministic_seed", seed: "seed" },
+        oracle: { predicate: { type: "exit_nonzero" }, failure_signature: { required: ["signature"] }, baseline: { matches: 3 } },
+        evidence: { capsule_id: "capsule_2", scenario_id: "distiller_capsule_2", source_revision: "abc", fixture_manifest_sha256: "fixture", redaction: "policy" },
+        limits: ["original-world validation remains required for every candidate patch"],
+      },
+    });
+    expect(result?.structuredContent).toEqual(expect.objectContaining({ ok: true, status: "ready_for_run", reset: expect.objectContaining({ ok: true }) }));
+  });
 });
 
 function teachSaveWorkflow(): void {

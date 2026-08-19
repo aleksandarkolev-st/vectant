@@ -112,6 +112,7 @@ test('ensureRuntimeContainer creates + starts a privileged container on the shar
   assert.equal(opts.HostConfig.Privileged, true);
   assert.equal(opts.HostConfig.NetworkMode, 'synthi-ide_default');
   assert.ok(opts.HostConfig.Binds.some((b) => b.endsWith(':/workspace')));
+  assert.ok(opts.Env.includes('RUNTIME_WORKSPACE_UMASK=0002'));
   // labels use the vectant namespace
   assert.equal(opts.Labels['vectant/runtime'], 'workspace-runtime-local');
   assert.equal(opts.Labels['vectant/slug'], 'repo');
@@ -122,6 +123,19 @@ test('createRuntimeManager honours privileged=false (prod Sysbox path)', async (
   const mgr = createRuntimeManager({ docker, privileged: false });
   await mgr.ensureRuntimeContainer('repo', 'u1');
   assert.equal(docker.created[0].HostConfig.Privileged, false);
+});
+
+test('read-write runtimes use a scoped shared group instead of world-write access', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker, sharedWorkspaceGid: '1000', workspaceUmask: '0002' });
+  await mgr.ensureRuntimeContainer('repo', 'u1');
+
+  const setup = docker.execs[0];
+  assert.equal(setup.User, 'root');
+  assert.match(setup.Cmd.join('\n'), /shared_gid=\"1000\"/);
+  assert.match(setup.Cmd.join('\n'), /chmod g\+rwx,g\+s/);
+  assert.match(setup.Cmd.join('\n'), /chmod g\+rw/);
+  assert.ok(docker.created[0].Env.includes('RUNTIME_WORKSPACE_UMASK=0002'));
 });
 
 test('with a dataVolume, the per-user repo is mounted into /workspace via a volume Subpath (not a host bind)', async () => {
@@ -372,7 +386,7 @@ test('execInteractiveShell opens a bash -l TTY exec in /workspace as rootless an
   });
 
   // Interactive login shell, in the workspace, as the rootless user, with a TTY.
-  assert.deepEqual(execOpts.Cmd, ['/bin/bash', '-l']);
+  assert.deepEqual(execOpts.Cmd, ['/bin/bash', '-lc', 'exec /bin/bash -l -c \'umask "$RUNTIME_WORKSPACE_UMASK"; exec /bin/bash\'']);
   assert.equal(execOpts.WorkingDir, '/workspace');
   assert.equal(execOpts.User, 'rootless');
   assert.equal(execOpts.Tty, true);

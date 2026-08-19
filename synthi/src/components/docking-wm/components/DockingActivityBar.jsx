@@ -28,6 +28,7 @@ import {
   ChevronRight,
   ChevronDown,
   ShieldCheck,
+  FlaskConical,
   SlidersHorizontal,
 } from 'lucide-react';
 import { useActivityBarDocking } from '../hooks/use-activity-bar-docking';
@@ -89,6 +90,7 @@ const ACTIVITY_GROUPS = [
       { id: 'workflows', panelType: IDE_PANEL.AGENT_WORKFLOWS, label: 'Workflows', Icon: Bot },
       { id: 'codesite', panelType: IDE_PANEL.CODESITE, label: 'CodeSite', Icon: Radar },
       { id: 'ai-healing', panelType: IDE_PANEL.AI_HEALING, label: 'AI Healing', Icon: ShieldCheck },
+      { id: 'failure-distiller', panelType: IDE_PANEL.FAILURE_DISTILLER, label: 'Failure Distiller', Icon: FlaskConical },
     ],
   },
   {

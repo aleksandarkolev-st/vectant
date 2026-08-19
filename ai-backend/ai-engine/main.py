@@ -4339,6 +4339,180 @@ def _fix_to_dict(fix) -> dict:
 
 # ── Diagnosis ─────────────────────────────────────────────────────────
 
+_FAILURE_DISTILLER_PRIVATE_RESPONSE_KEYS = frozenset({
+    "workspace_path", "workspacePath", "capsule_path", "capsulePath",
+    "manifest_path", "manifestPath", "artifact_path", "artifactPath", "integrity_path",
+})
+
+
+def _public_failure_distiller_response(value):
+    """Keep host filesystem topology out of workspace-scoped agent responses."""
+    if isinstance(value, dict):
+        return {key: _public_failure_distiller_response(item) for key, item in value.items() if key not in _FAILURE_DISTILLER_PRIVATE_RESPONSE_KEYS}
+    if isinstance(value, list):
+        return [_public_failure_distiller_response(item) for item in value]
+    return value
+
+
+@app.post("/heal/agentic/distill")
+async def distill_failure(request: Request):
+    """Reduce a supported failing command into an evidence-backed capsule."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        return _public_failure_distiller_response(await get_failure_distiller().distill(await request.json()))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/observations")
+async def capture_failure_observation(request: Request):
+    """Capture normalized runtime-adapter evidence for a later distillation."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        return _public_failure_distiller_response(get_failure_distiller().capture_observation(await request.json()))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/heal/agentic/distill/observations")
+async def list_failure_observations(workspace_ref: str):
+    """List unexpired, redacted adapter observation references for one workspace."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        return _public_failure_distiller_response(get_failure_distiller().list_observations({"workspaceRef": workspace_ref}))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/run")
+async def run_distilled_failure(request: Request):
+    """Run a logical capsule and report whether it is still the same failure."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(await distiller.run(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref"))))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/explain")
+async def explain_distilled_failure(request: Request):
+    """Return machine-readable evidence for a retained or removed capsule unit."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(distiller.explain(distiller.resolve_capsule_path(body), str(body.get("unit", "")), body.get("workspaceRef", body.get("workspace_ref"))))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/materialize")
+async def materialize_distilled_failure(request: Request):
+    """Physically materialize a verified logical capsule without touching its source workspace."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        body = await request.json()
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(await distiller.materialize({**body, "capsulePath": distiller.resolve_capsule_path(body)}))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/delete")
+async def delete_distilled_failure(request: Request):
+    """Permanently delete an explicitly selected capsule and retain an audit event."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(distiller.discard(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref"))))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/purge-expired")
+async def purge_expired_distilled_failures(request: Request):
+    """Apply the capsule retention policy and retain deletion audit evidence."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        return get_failure_distiller().purge_expired(
+            body.get("workspaceRoot", body.get("workspace_root", "")),
+            workspace_ref=body.get("workspaceRef", body.get("workspace_ref")),
+        )
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/vivarium-export")
+async def export_distilled_failure_to_vivarium(request: Request):
+    """Create a deterministic sanitized Vivarium scenario manifest for a capsule."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(distiller.export_vivarium_manifest(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref"))))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/vivarium-promote")
+async def promote_distilled_failure_to_vivarium(request: Request):
+    """Promote an original-world-validated capsule into a versioned Vivarium artifact."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(distiller.promote_vivarium_scenario(distiller.resolve_capsule_path(body), str(body.get("mode", "regression")), body.get("workspaceRef", body.get("workspace_ref"))))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/validate-patch")
+async def validate_distilled_patch(request: Request):
+    """Map a capsule patch through provenance and validate it in the source world."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        body = await request.json()
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(await distiller.validate_patch({**body, "capsulePath": distiller.resolve_capsule_path(body)}))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/request-apply")
+async def request_distilled_patch_apply(request: Request):
+    """Issue an approval-bound request for an exactly validated patch."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        body = await request.json()
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(distiller.request_patch_apply({**body, "capsulePath": distiller.resolve_capsule_path(body)}))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/apply-approved")
+async def apply_approved_distilled_patch(request: Request):
+    """Apply a reviewed, unexpired, original-world-validated patch."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        body = await request.json()
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(distiller.apply_approved_patch({**body, "capsulePath": distiller.resolve_capsule_path(body)}))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/heal/agentic/distill/metrics")
+async def failure_distiller_metrics():
+    """Return reduction, execution-cost, and round-trip validation metrics."""
+    from analyzer.proactive.healing.failure_distiller import get_failure_distiller
+    return {"ok": True, "metrics": get_failure_distiller().metrics()}
+
+
 @app.post("/heal/agentic/diagnose")
 async def agentic_diagnose(request: Request):
     """Root-cause diagnosis from error text."""

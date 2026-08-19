@@ -960,12 +960,14 @@ async function main() {
       await sleep(250);
       if (mcp.proc.exitCode === null) mcp.proc.kill("SIGKILL");
     }
-    if (target?.server) await closeServer(target.server).catch(() => undefined);
     if (browser?.proc && !CFG.keepBrowser && browser.proc.exitCode === null) {
       browser.proc.kill("SIGTERM");
       await sleep(500);
       if (browser.proc.exitCode === null) browser.proc.kill("SIGKILL");
     }
+    // Chrome can retain an HTTP keep-alive connection to the fixture. Stop it
+    // before awaiting server close so a successful smoke never hangs in cleanup.
+    if (target?.server) await closeServer(target.server).catch(() => undefined);
     if (browser?.profileDir && !CFG.keepBrowser) {
       await rm(browser.profileDir, { recursive: true, force: true }).catch(() => undefined);
     }

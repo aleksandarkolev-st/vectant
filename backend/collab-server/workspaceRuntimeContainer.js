@@ -28,6 +28,12 @@ const REPOS_DIR = process.env.REPOS_DIR || '/data/repos';
 const WORKSPACE_DATA_VOLUME = process.env.WORKSPACE_DATA_VOLUME || '';
 const REPOS_VOLUME_SUBPATH = process.env.REPOS_VOLUME_SUBPATH || 'repos';
 const WORKSPACE_DATA_VOLUME_ROOT = process.env.WORKSPACE_DATA_VOLUME_ROOT || '/data';
+const RUNTIME_SHARED_GID = /^\d+$/.test(String(process.env.SYNTHI_RUNTIME_SHARED_GID || ''))
+  ? String(process.env.SYNTHI_RUNTIME_SHARED_GID)
+  : '';
+const RUNTIME_WORKSPACE_UMASK = /^(?:0?[0-7]{3,4})$/.test(String(process.env.SYNTHI_RUNTIME_WORKSPACE_UMASK || ''))
+  ? String(process.env.SYNTHI_RUNTIME_WORKSPACE_UMASK)
+  : '0002';
 // Outer-container privilege. Dev (Docker Desktop/WSL2) needs it so rootless
 // dockerd can set up user namespaces; prod (k8s + Sysbox) sets RUNTIME_PRIVILEGED=0
 // and supplies a runtimeClass instead. Defaults ON; any value other than '0'/'false' is on.
@@ -183,6 +189,8 @@ function createRuntimeManager({
   dataVolume = WORKSPACE_DATA_VOLUME,
   reposSubpath = REPOS_VOLUME_SUBPATH,
   dataVolumeRoot = WORKSPACE_DATA_VOLUME_ROOT,
+  sharedWorkspaceGid = RUNTIME_SHARED_GID,
+  workspaceUmask = RUNTIME_WORKSPACE_UMASK,
   logger = console,
 } = {}) {
   if (!docker) throw new TypeError('docker client is required');
@@ -313,6 +321,9 @@ function createRuntimeManager({
           ],
         };
     const runtimeEnv = [];
+    runtimeEnv.push(`RUNTIME_WORKSPACE_UMASK=${workspaceUmask}`);
+    // The collab server and rootless runtime have distinct UIDs.  They share
+    // only this workspace group, never broad world-write permissions.
     if (readonlyWorkspace) {
       runtimeEnv.push('CODESITE_WORKSPACE_READONLY=1', 'SYNTHI_CODESITE_WORKSPACE_READONLY=1');
     }
@@ -361,6 +372,8 @@ function createRuntimeManager({
       await container.start();
       if (mode === 'codesite-overlay') {
         await setupCodeSiteOverlayMount(container);
+      } else if (mode === 'readwrite' && sharedWorkspaceGid) {
+        await setupSharedWorkspaceAccess(container, sharedWorkspaceGid);
       }
     } catch (error) {
       try { await container.remove({ force: true }); } catch (_) {}
@@ -471,7 +484,9 @@ function createRuntimeManager({
       .map(([k, v]) => `${k}=${v}`);
 
     const exec = await docker.getContainer(s.containerId).exec({
-      Cmd: ['/bin/sh', '-lc', String(command)],
+      // Login profiles may reset umask, so apply it after their initialization
+      // and before executing the requested command.
+      Cmd: ['/bin/sh', '-lc', 'exec /bin/sh -lc \'umask "$RUNTIME_WORKSPACE_UMASK"; exec /bin/sh -c "$1"\' sh "$1"', 'sh', String(command)],
       Env,
       AttachStdin: true,
       AttachStdout: true,
@@ -533,7 +548,9 @@ function createRuntimeManager({
         .map(([k, v]) => `${k}=${v}`),
     ];
     const exec = await docker.getContainer(s.containerId).exec({
-      Cmd: ['/bin/bash', '-l'],
+      // Preserve normal login setup, then retain its environment in an
+      // interactive shell whose umask is the workspace collaboration policy.
+      Cmd: ['/bin/bash', '-lc', 'exec /bin/bash -l -c \'umask "$RUNTIME_WORKSPACE_UMASK"; exec /bin/bash\''],
       User: 'rootless',
       Env,
       AttachStdin: true,
@@ -679,6 +696,34 @@ async function setupCodeSiteOverlayMount(container) {
   if (info?.ExitCode !== 0) {
     const error = new Error('codesite_runtime_overlay_unavailable');
     error.code = 'CODESITE_RUNTIME_OVERLAY_UNAVAILABLE';
+    error.exitCode = info?.ExitCode;
+    throw error;
+  }
+}
+
+async function setupSharedWorkspaceAccess(container, groupId) {
+  const script = [
+    'set -eu',
+    'test -d /workspace',
+    `shared_gid=${JSON.stringify(groupId)}`,
+    // Directory setgid inherits the collaboration group for every new child.
+    'find /workspace -xdev -type d -exec chgrp "$shared_gid" {} + -exec chmod g+rwx,g+s {} +',
+    // Preserve executable bits while allowing either trusted workspace actor
+    // to update ordinary files.  find does not follow symlinks.
+    'find /workspace -xdev -type f -exec chgrp "$shared_gid" {} + -exec chmod g+rw {} +',
+  ].join('\n');
+  const exec = await container.exec({
+    Cmd: ['/bin/sh', '-lc', script],
+    User: 'root',
+    AttachStdout: true,
+    AttachStderr: true,
+  });
+  const stream = await exec.start({});
+  await waitForExecStream(stream, 30_000);
+  const info = typeof exec.inspect === 'function' ? await exec.inspect() : { ExitCode: 0 };
+  if (info?.ExitCode !== 0) {
+    const error = new Error('workspace_runtime_shared_access_unavailable');
+    error.code = 'WORKSPACE_RUNTIME_SHARED_ACCESS_UNAVAILABLE';
     error.exitCode = info?.ExitCode;
     throw error;
   }

@@ -697,6 +697,90 @@ export function useAnalyzerGateway({
     }
   }, []);
 
+  const distillFailure = useCallback(async (payload = {}) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.distillFailure(payload);
+    return response?.data ?? response;
+  }, []);
+
+  const captureFailureObservation = useCallback(async (payload = {}) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.captureFailureObservation(payload);
+    return response?.data ?? response;
+  }, []);
+
+  const listFailureObservations = useCallback(async (workspaceRef) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.listFailureObservations(workspaceRef);
+    return response?.data ?? response;
+  }, []);
+
+  const runFailureCapsule = useCallback(async (capsulePath, workspaceRef) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.runFailureCapsule(capsulePath, workspaceRef);
+    return response?.data ?? response;
+  }, []);
+
+  const explainFailureCapsule = useCallback(async (capsulePath, unit, workspaceRef) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.explainFailureCapsule(capsulePath, unit, workspaceRef);
+    return response?.data ?? response;
+  }, []);
+
+  const materializeFailureCapsule = useCallback(async (payload = {}) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.materializeFailureCapsule(payload);
+    return response?.data ?? response;
+  }, []);
+
+  const validateFailureCapsulePatch = useCallback(async (payload = {}) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.validateFailureCapsulePatch(payload);
+    return response?.data ?? response;
+  }, []);
+
+  const requestFailureCapsuleApply = useCallback(async (capsulePath, workspaceRef) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.requestFailureCapsuleApply(capsulePath, workspaceRef);
+    return response?.data ?? response;
+  }, []);
+
+  const applyApprovedFailureCapsulePatch = useCallback(async (capsulePath, workspaceRef, approvalId) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.applyApprovedFailureCapsulePatch(capsulePath, workspaceRef, approvalId);
+    return response?.data ?? response;
+  }, []);
+
+  const deleteFailureCapsule = useCallback(async (capsulePath, workspaceRef) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.deleteFailureCapsule(capsulePath, workspaceRef);
+    return response?.data ?? response;
+  }, []);
+
+  const purgeExpiredFailureCapsules = useCallback(async (workspaceRef) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.purgeExpiredFailureCapsules(workspaceRef);
+    return response?.data ?? response;
+  }, []);
+
+  const exportFailureCapsuleToVivarium = useCallback(async (capsulePath, workspaceRef) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.exportFailureCapsuleToVivarium(capsulePath, workspaceRef);
+    return response?.data ?? response;
+  }, []);
+
+  const promoteFailureCapsuleToVivarium = useCallback(async (capsulePath, mode = 'regression', workspaceRef) => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.promoteFailureCapsuleToVivarium(capsulePath, mode, workspaceRef);
+    return response?.data ?? response;
+  }, []);
+
+  const getFailureDistillerMetrics = useCallback(async () => {
+    if (!clientRef.current) throw new SynthiException('Gateway client is not ready yet');
+    const response = await clientRef.current.getFailureDistillerMetrics();
+    return response?.data ?? response;
+  }, []);
+
   const ruleTranslate = useCallback(async (payload) => {
     if (!clientRef.current) {
       throw new SynthiException('Gateway client is not ready yet');
@@ -743,6 +827,20 @@ export function useAnalyzerGateway({
     // Runtime healing (HMR / compile-error driven)
     aiRuntimeHeal,
     agenticRecordHmrFailure,
+    distillFailure,
+    captureFailureObservation,
+    listFailureObservations,
+    runFailureCapsule,
+    explainFailureCapsule,
+    materializeFailureCapsule,
+    validateFailureCapsulePatch,
+    requestFailureCapsuleApply,
+    applyApprovedFailureCapsulePatch,
+    deleteFailureCapsule,
+    purgeExpiredFailureCapsules,
+    exportFailureCapsuleToVivarium,
+    promoteFailureCapsuleToVivarium,
+    getFailureDistillerMetrics,
     // Plain-English rule translator (healing rules panel)
     ruleTranslate,
     resetResult,

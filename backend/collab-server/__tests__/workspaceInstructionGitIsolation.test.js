@@ -206,6 +206,14 @@ test('nested active roots only receive repo-relative attributes and cleanup pres
   assert.equal(await gitText(repo, ['config', '--local', '--get', 'color.ui']), 'always\n');
 });
 
+test('cleanup is a no-op when a workspace has no configured instruction filter', async (t) => {
+  const repo = await createRepository(t);
+  await assert.doesNotReject(() => removeWorkspaceInstructionGitIsolation({
+    activeWorkspaceRoot: repo,
+    workspaceId: 'unconfigured-workspace',
+  }));
+});
+
 test('filter block stripping preserves CRLF user bytes and malformed markers stay untouched', () => {
   const block = instructionBlock('crlf').replace(/\n/g, '\r\n');
   const source = Buffer.from('Use pnpm.\r\n', 'utf8');

@@ -1,6 +1,12 @@
 const http = require('http');
 const WebSocket = require('ws');
 require('dotenv').config();
+const runtimeWorkspaceUmask = String(process.env.SYNTHI_RUNTIME_WORKSPACE_UMASK || '');
+if (/^(?:0?[0-7]{3,4})$/.test(runtimeWorkspaceUmask)) {
+  // Per-workspace repositories are setgid to the rootless runtime group. Keep
+  // new collaboration writes group-writable for that isolated peer only.
+  process.umask(Number.parseInt(runtimeWorkspaceUmask, 8));
+}
 const Y = require('yjs');
 const fileIndex = require('./fileIndex');
 const fs = require('fs');

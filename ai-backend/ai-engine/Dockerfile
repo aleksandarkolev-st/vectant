@@ -30,7 +30,10 @@ ENV PYTHONUNBUFFERED=1
 # Install pre-built wheels — no compiler needed at runtime
 COPY --from=builder /build/wheels /tmp/wheels
 COPY --from=builder /build/requirements.txt .
-RUN pip install --no-cache-dir /tmp/wheels/* && rm -rf /tmp/wheels
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends docker.io docker-cli git \
+ && pip install --no-cache-dir /tmp/wheels/* \
+ && rm -rf /tmp/wheels /var/lib/apt/lists/*
 
 COPY . .
 

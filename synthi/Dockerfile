@@ -38,6 +38,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 # Root manifests (workspace resolution) + only the sources synthi's build needs.
 COPY package.json package-lock.json ./
+COPY packages/atomic-orchestrator ./packages/atomic-orchestrator
 COPY packages/mcp-hub ./packages/mcp-hub
 COPY synthi ./synthi
 
