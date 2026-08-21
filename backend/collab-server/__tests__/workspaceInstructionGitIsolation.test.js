@@ -156,6 +156,16 @@ test('pre-existing untracked instructions remain untracked and clean filtering a
   assert.equal(configured.projections[0].tracked, false);
 });
 
+test('cleanup is idempotent when a fresh workspace has no Vectant Git filter yet', async (t) => {
+  const repo = await createRepository(t);
+  const result = await removeWorkspaceInstructionGitIsolation({
+    activeWorkspaceRoot: repo,
+    workspaceId: 'fresh-workspace',
+  });
+  assert.equal(result.removed, true);
+  assert.equal(await gitText(repo, ['status', '--porcelain']), '');
+});
+
 test('synthetic projections are locally excluded, then become ordinary user files without committing Vectant content', async (t) => {
   const repo = await createRepository(t);
   const workspaceRoot = path.join(repo, 'workspace');
