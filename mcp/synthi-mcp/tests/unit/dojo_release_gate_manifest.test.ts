@@ -192,6 +192,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:chaos-performance:self-check": "node scripts/dojo-chaos-performance-self-check.mjs",
     "proof:dojo:soak-performance:self-check": "node scripts/dojo-soak-performance-self-check.mjs",
     "proof:dojo:public-proof-verification:self-check": "node scripts/dojo-public-proof-verification-self-check.mjs",
+    "proof:dojo:therapeutic-tomography:release-evidence": "node scripts/dojo-therapeutic-tomography-release-evidence.mjs",
     "chaos:dojo:live": "node tests/chaos/runner.mjs --kind live --require-scenarios --json ../../tmp/dojo-chaos-runner/live-chaos-runner.report.json",
     "live:browser:workflow-pipeline": "node scripts/workflow-pipeline-e2e.mjs",
     "live:browser:private-tool-stdio": "node scripts/private-tool-stdio-acceptance.mjs",
@@ -2431,7 +2432,7 @@ describe("Dojo release gate manifest", () => {
       enterprise_release_gate_count: manifest.enterprise_release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 34,
+      proof_artifact_gate_count: 35,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_implementation_status_self_check",
         "dojo_release_gate_runner_self_check",
