@@ -11,7 +11,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -71,6 +71,45 @@ function proofInstruction(nonce) {
   ].join('\n');
 }
 
+function runWithClosedStdin(executable, argumentsList, { cwd, timeout, maxBuffer }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, argumentsList, {
+      cwd,
+      // Codex treats a readable non-TTY stdin stream as additional prompt
+      // input. `ignore` supplies EOF immediately, so only the ordinary prompt
+      // argument is considered by this black-box test.
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    let stdout = '';
+    let stderr = '';
+    let exceededOutputLimit = false;
+    const append = (target, chunk) => {
+      const next = `${target}${chunk.toString('utf8')}`;
+      if (next.length > maxBuffer) exceededOutputLimit = true;
+      return next.slice(0, maxBuffer);
+    };
+    child.stdout.on('data', (chunk) => { stdout = append(stdout, chunk); });
+    child.stderr.on('data', (chunk) => { stderr = append(stderr, chunk); });
+    const timer = setTimeout(() => child.kill(), timeout);
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('close', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0 && !exceededOutputLimit) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      const error = new Error(`Agent command failed (exit=${code ?? 'null'}, signal=${signal || 'none'}): ${stderr || stdout}`);
+      error.code = code;
+      error.signal = signal;
+      reject(error);
+    });
+  });
+}
+
 async function materializeWorkspace(host) {
   const fixtureDirectory = await fs.mkdtemp(path.join(os.tmpdir(), `vectant-passive-${host}-`));
   const root = path.join(fixtureDirectory, 'workspace');
@@ -117,7 +156,7 @@ async function materializeWorkspace(host) {
 async function runCodex({ root, task }) {
   const finalMessage = path.join(root, '.codex-final.txt');
   const invocation = cliInvocation('codex');
-  return execFileAsync(invocation.executable, [...invocation.prefixArguments,
+  return runWithClosedStdin(invocation.executable, [...invocation.prefixArguments,
     'exec',
     '--ephemeral',
     '--json',
