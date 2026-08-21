@@ -56,6 +56,22 @@ describe("external tools wired into the MCP server", () => {
     expect(text.text).not.toContain("synthi_codesite_open_transaction");
   });
 
+  it("routes dynamically connected tools from metadata without returning their schemas", async () => {
+    const client = await connectedClient({ defaultSignalingUrl: "ws://x", externalTools });
+    const response = await client.callTool({
+      name: "synthi_route_atomic_task",
+      arguments: { description: "Use gh to open a PR." },
+    });
+    const text = response.content.find((item) => item.type === "text");
+    expect(text?.type).toBe("text");
+    if (!text || text.type !== "text") throw new Error("atomic route response must contain text");
+
+    const route = JSON.parse(text.text);
+    expect(route.suggested_tools).toContain("ext_0");
+    expect(text.text).not.toContain("inputSchema");
+    expect(text.text).not.toContain('"properties"');
+  });
+
   it("teaches connected MCP hosts the mandatory atomic routing protocol", async () => {
     const client = await connectedClient({ defaultSignalingUrl: "ws://x" });
 

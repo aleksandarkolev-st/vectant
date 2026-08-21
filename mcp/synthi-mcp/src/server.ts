@@ -75,7 +75,8 @@ import { CODESITE_TOOLS, dispatchCodeSiteTool } from "./tools/codesite.js";
 import type { ToolContext } from "./tools/shared.js";
 import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
 import { isExternalToolName, callExternalTool, type ExternalTools } from "./external/index.js";
-import { toAtomicOrchestratorCompatibleRoute, routeAtomicVectantTask } from "./atomic_task_router.js";
+import { createAtomicTaskRouter, toAtomicOrchestratorCompatibleRoute } from "./atomic_task_router.js";
+import { createToolMetadataCatalog } from "./tool_metadata_catalog.js";
 
 export const SYNTHI_ATOMIC_AGENT_INSTRUCTIONS = [
   "For every non-trivial workspace task, follow the passive instruction documents that your coding-agent host discovers in the opened workspace.",
@@ -1165,6 +1166,27 @@ const TOOLS = [
 ] as const;
 
 export function createSynthiServer(options: SynthiServerOptions): Server {
+  // Private and user-connected tools are dynamic, so derive a fresh
+  // schema-free catalog for every route. Their schemas remain exclusively in
+  // the MCP registration/dispatch path and never reach the routing worker.
+  const routeAtomicTask = (input: Parameters<ReturnType<typeof createAtomicTaskRouter>["route"]>[0]) => {
+    const dynamicEntries = [
+      ...browserPrivateWorkflowTools().map((tool) => ({
+        name: tool.name,
+        groups: ["private-workflow"],
+        keywords: [tool.name, tool.description],
+      })),
+      ...(options.externalTools?.descriptors ?? []).map((tool) => ({
+        name: tool.name,
+        groups: ["external-tool"],
+        keywords: [tool.name, tool.description],
+      })),
+    ];
+    return createAtomicTaskRouter({
+      catalog: createToolMetadataCatalog({ dynamicEntries }),
+    }).route(input);
+  };
+
   const server = new Server(
     {
       name: "synthi-mcp",
@@ -1308,7 +1330,7 @@ async function dispatchTool(
       if (!args || typeof args !== "object" || typeof (args as Record<string, unknown>).description !== "string") {
         return { content: [{ type: "text" as const, text: JSON.stringify({ error: "invalid_arguments", message: "description is required" }) }], isError: true };
       }
-      const route = toAtomicOrchestratorCompatibleRoute(routeAtomicVectantTask(args as never));
+      const route = toAtomicOrchestratorCompatibleRoute(routeAtomicTask(args as never));
       return { content: [{ type: "text" as const, text: JSON.stringify(route) }] };
     },
     synthi_attach: async () => (await attachTool(args, ctx)) as CallToolResult,
