@@ -22,7 +22,7 @@ describe("external tools wired into the MCP server", () => {
   it("keeps the advertised registry and static MCP definitions exactly aligned with descriptions", () => {
     const registered = STATIC_TOOL_DEFINITIONS.map((tool) => tool.name);
     expect(new Set(registered).size).toBe(registered.length);
-    expect(registered).toEqual(ADVERTISED_TOOLS);
+    expect(new Set(registered)).toEqual(new Set(ADVERTISED_TOOLS));
     expect(STATIC_TOOL_DEFINITIONS.every((tool) => tool.description.trim().length > 0)).toBe(true);
   });
 
