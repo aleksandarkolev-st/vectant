@@ -24,6 +24,7 @@ const WORKSPACE_INSTRUCTION_STATE_VERSION = 1;
 const ROLLOUT_ENV = 'WORKSPACE_INSTRUCTION_PROJECTION_ROLLOUT';
 const PERCENTAGE_ENV = 'WORKSPACE_INSTRUCTION_PROJECTION_PERCENTAGE';
 const INTERNAL_WORKSPACES_ENV = 'WORKSPACE_INSTRUCTION_PROJECTION_INTERNAL_WORKSPACE_IDS';
+const DEFAULT_ROLLOUT_MODE = 'full';
 
 const PROJECTION_OWNERSHIP = Object.freeze({
   EXISTING_USER_FILE: 'existing-user-file',
@@ -167,7 +168,7 @@ function resolveInstructionProjectionPath(activeWorkspaceRoot, projection) {
 }
 
 function normalizeRolloutMode(mode) {
-  const normalized = String(mode == null ? 'off' : mode).trim().toLowerCase();
+  const normalized = String(mode == null ? DEFAULT_ROLLOUT_MODE : mode).trim().toLowerCase();
   if (normalized === 'off' || normalized === 'disabled') return 'off';
   if (normalized === 'internal' || normalized === 'internal-testing') return 'internal';
   if (normalized === 'percentage' || normalized === 'percent') return 'percentage';
@@ -356,6 +357,7 @@ async function createWorkspaceInstructionProjectionMetadataStore({
 module.exports = {
   INSTRUCTION_PROJECTIONS,
   INTERNAL_WORKSPACES_ENV,
+  DEFAULT_ROLLOUT_MODE,
   PERCENTAGE_ENV,
   PROJECTION_OWNERSHIP,
   ROLLOUT_ENV,

@@ -80,8 +80,11 @@ test('resolves the exact nested opened directory and never substitutes its Git a
   assert.throws(() => resolveInstructionProjectionPath(activeRoot, '../AGENTS.md'), /instruction_projection_path_invalid/);
 });
 
-test('feature rollout is off by default, trusts internal markers only for internal rollout, and buckets deterministically', () => {
-  assert.equal(resolveWorkspaceInstructionProjectionFlag({ workspaceId: 'one', env: {} }).enabled, false);
+test('feature rollout is full by default, trusts internal markers only for internal rollout, and buckets deterministically', () => {
+  const defaultFlag = resolveWorkspaceInstructionProjectionFlag({ workspaceId: 'one', env: {} });
+  assert.equal(defaultFlag.enabled, true);
+  assert.equal(defaultFlag.mode, 'full');
+  assert.equal(defaultFlag.reason, 'full_rollout');
   const internal = resolveWorkspaceInstructionProjectionFlag({ workspaceId: 'one', rollout: 'internal', isInternalWorkspace: true, env: {} });
   assert.equal(internal.feature, 'workspace_instruction_projection');
   assert.equal(internal.enabled, true);
