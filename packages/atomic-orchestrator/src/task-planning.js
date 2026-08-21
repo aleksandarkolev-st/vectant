@@ -163,6 +163,7 @@ export function createTaskPlanner({
   skills = [],
   agents = [],
   tools = [],
+  decomposer = null,
   routingAgents = [],
   routers = {},
   trace = () => {},
@@ -174,6 +175,12 @@ export function createTaskPlanner({
   const skillCatalog = skills.map(skillMetadata);
   const toolCatalog = tools.map(toolMetadata);
   const emit = (event, data = {}) => trace({ event, ...data });
+
+  const decomposeRequest = async (request) => {
+    if (typeof decomposer !== 'function') return normalizeTasks(request);
+    const result = await decomposer({ request });
+    return normalizeTasks(result);
+  };
 
   const makeRoute = (task, decision = {}) => {
     const requestedSkills = normalizeList(decision.skills || decision.skillIds);
@@ -249,6 +256,7 @@ export function createTaskPlanner({
 
   return {
     decompose: normalizeTasks,
+    decomposeRequest,
     order: orderTasks,
     route,
     routeWithRouter,

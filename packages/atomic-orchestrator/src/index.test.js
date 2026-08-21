@@ -62,6 +62,35 @@ describe('atomic orchestrator', () => {
     });
   });
 
+  it('lets the main host decompose a larger request before routing atomic tasks', async () => {
+    const decomposerCalls = [];
+    const routerCalls = [];
+    const orchestrator = createFixture({
+      decomposer: async ({ request }) => {
+        decomposerCalls.push(request);
+        return {
+          atomicTasks: [
+            { id: 'database', description: 'Fix postgres.' },
+            { id: 'logs', description: 'Inspect logs.', dependsOn: ['database'] },
+          ],
+        };
+      },
+      routingAgents: [{ id: 'router', role: 'routing', capabilities: ['routing'], cost: 1 }],
+      routers: {
+        router: async ({ task }) => {
+          routerCalls.push(task.id);
+          return {};
+        },
+      },
+    });
+
+    const results = await orchestrator.run({ description: 'Fix the production outage.' });
+
+    expect(decomposerCalls).toEqual([{ description: 'Fix the production outage.' }]);
+    expect(routerCalls).toEqual(['database', 'logs']);
+    expect(results.map((result) => result.task.id)).toEqual(['database', 'logs']);
+  });
+
   it('routes multiple skills and exposes only their tool subset', () => {
     const routed = createFixture().route({ description: 'Inspect postgres logs.' });
 

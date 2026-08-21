@@ -105,7 +105,7 @@ export async function runAtomicTasks({
   recoveries = {},
   loadSkills = async () => [],
 } = {}) {
-  const tasks = planner.order(planner.decompose(request));
+  const tasks = planner.order(await planner.decomposeRequest(request));
   const results = new Map();
 
   for (const task of tasks) {
