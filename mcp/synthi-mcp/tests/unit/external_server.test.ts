@@ -45,10 +45,13 @@ describe("external tools wired into the MCP server", () => {
     const route = JSON.parse(text.text);
     expect(route).toEqual(expect.objectContaining({
       role: "infrastructure",
-      skills: [],
+      skills: ["vectant-runtime"],
       validation: "independent",
       suggested_tools: ["synthi_attach"],
     }));
+    expect(route.skill_metadata).toEqual([
+      expect.objectContaining({ id: "vectant-runtime", groups: expect.arrayContaining(["runtime", "attachment"]) }),
+    ]);
     expect(text.text).not.toContain("inputSchema");
     expect(text.text).not.toContain("synthi_codesite_open_transaction");
   });

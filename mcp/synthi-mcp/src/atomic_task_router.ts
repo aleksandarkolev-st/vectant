@@ -3,6 +3,10 @@ import {
   type ToolMetadataCatalog,
   type VectantToolMetadata,
 } from "./tool_metadata_catalog.js";
+import {
+  VECTANT_SKILL_METADATA,
+  type VectantSkillMetadata,
+} from "./atomic_skill_catalog.js";
 
 /**
  * A schema-free planning boundary for atomic Vectant work.
@@ -62,6 +66,10 @@ export interface AtomicTaskRouterOptions {
   readonly agentPolicies?: readonly VectantAgentPolicy[];
   /** Limits the narrow tool subset exposed to an execution agent. Defaults to 3. */
   readonly maxTools?: number;
+  /** Metadata-only skills the router may select for the execution agent. */
+  readonly skills?: readonly VectantSkillMetadata[];
+  /** Limits the narrow skill subset exposed to an execution agent. Defaults to 3. */
+  readonly maxSkills?: number;
   /** Allows a host to add mechanical fast-path rules without changing routing. */
   readonly isFastPath?: (task: Readonly<AtomicTaskMetadata>) => boolean;
 }
@@ -71,6 +79,13 @@ export interface RoutedVectantTool {
   readonly groups: readonly string[];
   readonly keywords: readonly string[];
   readonly origin: VectantToolMetadata["origin"];
+}
+
+export interface RoutedVectantSkill {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly groups: readonly string[];
 }
 
 export interface AtomicTaskValidationDecision {
@@ -97,6 +112,12 @@ export type AtomicTaskRouteTrace =
     readonly omittedToolCount: number;
   }
   | {
+    readonly stage: "skill-selection";
+    readonly catalogEntriesInspected: number;
+    readonly selectedSkillIds: readonly string[];
+    readonly omittedSkillCount: number;
+  }
+  | {
     readonly stage: "role-selection";
     readonly capableRoles: readonly VectantRoutingRole[];
     readonly selectedRole: VectantRoutingRole;
@@ -118,6 +139,8 @@ export interface AtomicTaskRoute {
   readonly execution: {
     readonly role: VectantRoutingRole;
   };
+  /** The complete selected skill context; skill bodies are never included. */
+  readonly skills: readonly RoutedVectantSkill[];
   /** This is the complete MCP surface exposed by the route; no schemas leak. */
   readonly tools: readonly RoutedVectantTool[];
   readonly validation: AtomicTaskValidationDecision;
@@ -132,7 +155,8 @@ export interface AtomicTaskRoute {
  */
 export interface AtomicOrchestratorCompatibleRoute {
   readonly role: VectantRoutingRole;
-  readonly skills: readonly [];
+  readonly skills: readonly string[];
+  readonly skill_metadata: readonly RoutedVectantSkill[];
   readonly validation: "independent" | "none";
   readonly reason: string;
   readonly suggested_tools: readonly string[];
@@ -142,11 +166,14 @@ export interface AtomicOrchestratorCompatibleRoute {
 export interface VectantExecutionContext {
   readonly task: Readonly<AtomicTaskMetadata>;
   readonly role: VectantRoutingRole;
+  readonly skills: readonly RoutedVectantSkill[];
   readonly tools: readonly RoutedVectantTool[];
   readonly validation: AtomicTaskValidationDecision;
 }
 
 const DEFAULT_MAX_TOOLS = 3;
+const DEFAULT_MAX_SKILLS = 3;
+const GENERIC_ROUTING_GROUPS = new Set(["runtime"]);
 const DEFAULT_FAST_PATH = /^(?:format|rename|typo|mechanical)\b/i;
 // Routing is a planning capability, not an execution capability. It remains
 // advertised and discoverable, but must never recursively enter its own
@@ -329,6 +356,40 @@ function routedTool(tool: VectantToolMetadata): RoutedVectantTool {
   };
 }
 
+function routedSkill(skill: VectantSkillMetadata): RoutedVectantSkill {
+  return {
+    id: skill.id,
+    name: skill.name,
+    description: skill.description,
+    groups: [...skill.groups],
+  };
+}
+
+function selectSkills(
+  skills: readonly VectantSkillMetadata[],
+  task: NormalizedTask,
+  selectedTools: readonly VectantToolMetadata[],
+  maxSkills: number,
+): readonly VectantSkillMetadata[] {
+  const taskTerms = new Set(task.terms);
+  const selectedGroups = new Set(selectedTools.flatMap((tool) => tool.groups));
+  return skills
+    .map((skill) => {
+      // Every otherwise-unclassified Synthi tool has the broad `runtime`
+      // group. It is not enough by itself to select a runtime skill for an
+      // unrelated task such as a private billing lookup.
+      const groupMatches = skill.groups.filter((group) => (
+        !GENERIC_ROUTING_GROUPS.has(group) && selectedGroups.has(group)
+      )).length;
+      const keywordMatches = skill.keywords.flatMap(terms).filter((term) => taskTerms.has(term)).length;
+      return { skill, score: groupMatches * 10 + keywordMatches };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score || left.skill.id.localeCompare(right.skill.id))
+    .slice(0, maxSkills)
+    .map((entry) => entry.skill);
+}
+
 function matchedDomains(entries: readonly VectantToolMetadata[], taskTerms: ReadonlySet<string>): string[] {
   const domains = unique(entries.flatMap((entry) => entry.groups).filter((group) => (
     terms(group).some((term) => taskTerms.has(term))
@@ -492,9 +553,14 @@ function isDefaultFastPath(task: NormalizedTask): boolean {
 export function createAtomicTaskRouter(options: AtomicTaskRouterOptions = {}) {
   const catalog = options.catalog ?? TOOL_METADATA_CATALOG;
   const policies = options.agentPolicies ?? DEFAULT_VECTANT_AGENT_POLICIES;
+  const skills = options.skills ?? VECTANT_SKILL_METADATA;
   const maxTools = options.maxTools ?? DEFAULT_MAX_TOOLS;
+  const maxSkills = options.maxSkills ?? DEFAULT_MAX_SKILLS;
   if (!Number.isInteger(maxTools) || maxTools < 1) {
     throw new RangeError("Atomic task routing requires maxTools to be a positive integer.");
+  }
+  if (!Number.isInteger(maxSkills) || maxSkills < 1) {
+    throw new RangeError("Atomic task routing requires maxSkills to be a positive integer.");
   }
 
   const route = (input: AtomicTaskMetadata): AtomicTaskRoute => {
@@ -518,12 +584,14 @@ export function createAtomicTaskRouter(options: AtomicTaskRouterOptions = {}) {
         task,
         fastPath: true,
         execution: { role: "implementation" },
+        skills: [],
         tools: [],
         validation,
         reason: "Fast path selected for a local mechanical operation.",
         trace: [
           ...baseTrace,
           { stage: "fast-path", reason: "Explicit or mechanical fast-path rule matched." },
+          { stage: "skill-selection", catalogEntriesInspected: skills.length, selectedSkillIds: [], omittedSkillCount: 0 },
           { stage: "validation-decision", required: false, mode: "not-required" },
           { stage: "execution-context", exposedToolNames: [] },
         ],
@@ -531,9 +599,11 @@ export function createAtomicTaskRouter(options: AtomicTaskRouterOptions = {}) {
     }
 
     const selectedTools = selectTools(catalog, task, maxTools);
+    const selectedSkills = selectSkills(skills, task, selectedTools, maxSkills);
     const role = selectRole(policies, task, selectedTools);
     const validation = validationDecision(task, selectedTools);
     const tools = selectedTools.map(routedTool);
+    const routedSkills = selectedSkills.map(routedSkill);
     const selectedToolNames = tools.map((tool) => tool.name);
     const reason = tools.length > 0
       ? `Selected ${tools.length} metadata-matched Vectant tool${tools.length === 1 ? "" : "s"} and the cheapest capable ${role.role} role.`
@@ -544,6 +614,7 @@ export function createAtomicTaskRouter(options: AtomicTaskRouterOptions = {}) {
       task,
       fastPath: false,
       execution: { role: role.role },
+      skills: routedSkills,
       tools,
       validation,
       reason,
@@ -554,6 +625,12 @@ export function createAtomicTaskRouter(options: AtomicTaskRouterOptions = {}) {
           catalogEntriesInspected: catalog.entries.length,
           selectedToolNames,
           omittedToolCount: Math.max(0, catalog.entries.length - selectedToolNames.length),
+        },
+        {
+          stage: "skill-selection",
+          catalogEntriesInspected: skills.length,
+          selectedSkillIds: routedSkills.map((skill) => skill.id),
+          omittedSkillCount: Math.max(0, skills.length - routedSkills.length),
         },
         { stage: "role-selection", capableRoles: role.capableRoles, selectedRole: role.role },
         { stage: "validation-decision", required: validation.required, mode: validation.mode },
@@ -578,6 +655,10 @@ export function createVectantExecutionContext(route: AtomicTaskRoute): VectantEx
   return {
     task: route.task,
     role: route.execution.role,
+    skills: route.skills.map((skill) => ({
+      ...skill,
+      groups: [...skill.groups],
+    })),
     tools: route.tools.map((tool) => ({
       name: tool.name,
       groups: [...tool.groups],
@@ -594,7 +675,11 @@ export function toAtomicOrchestratorCompatibleRoute(
 ): AtomicOrchestratorCompatibleRoute {
   return {
     role: route.execution.role,
-    skills: [],
+    skills: route.skills.map((skill) => skill.id),
+    skill_metadata: route.skills.map((skill) => ({
+      ...skill,
+      groups: [...skill.groups],
+    })),
     validation: route.validation.required ? "independent" : "none",
     reason: route.reason,
     suggested_tools: route.tools.map((tool) => tool.name),

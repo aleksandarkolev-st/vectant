@@ -17,11 +17,13 @@ describe("atomic Vectant task router", () => {
     });
 
     expect(route.execution.role).toBe("implementation");
+    expect(route.skills.map((skill) => skill.id)).toEqual(["vectant-codesite"]);
     expect(route.tools.map((tool) => tool.name)).toEqual(["synthi_codesite_open_transaction"]);
     expect(route.validation).toMatchObject({ required: true, role: "validation", mode: "independent" });
     expect(route.trace).toEqual(expect.arrayContaining([
       expect.objectContaining({ stage: "atomic-task", taskId: "codesite-open" }),
       expect.objectContaining({ stage: "tool-selection", selectedToolNames: ["synthi_codesite_open_transaction"] }),
+      expect.objectContaining({ stage: "skill-selection", selectedSkillIds: ["vectant-codesite"] }),
       expect.objectContaining({ stage: "role-selection", selectedRole: "implementation" }),
     ]));
   });
@@ -32,6 +34,7 @@ describe("atomic Vectant task router", () => {
     });
 
     expect(route.execution.role).toBe("validation");
+    expect(route.skills.map((skill) => skill.id)).toEqual(["vectant-agent-dojo", "vectant-validation"]);
     expect(route.tools.map((tool) => tool.name)).toEqual([
       "synthi_dojo_issue_proof_capsule",
       "synthi_dojo_validate_proof_capsule",
@@ -43,6 +46,7 @@ describe("atomic Vectant task router", () => {
     const route = routeAtomicVectantTask({ description: "Attach the runtime." });
 
     expect(route.execution.role).toBe("infrastructure");
+    expect(route.skills.map((skill) => skill.id)).toEqual(["vectant-runtime"]);
     expect(route.tools.map((tool) => tool.name)).toEqual(["synthi_attach"]);
   });
 
@@ -66,6 +70,7 @@ describe("atomic Vectant task router", () => {
     const second = router.route({ id: "unknown", description: "Frobnicate the quasar." });
 
     expect(first.execution.role).toBe("implementation");
+    expect(first.skills).toEqual([]);
     expect(first.tools).toEqual([]);
     expect(first.validation.required).toBe(false);
     expect(serializeAtomicTaskRoute(first)).toBe(serializeAtomicTaskRoute(second));
@@ -75,6 +80,7 @@ describe("atomic Vectant task router", () => {
     const route = routeAtomicVectantTask({ description: "Format the local documentation." });
 
     expect(route).toMatchObject({ fastPath: true, execution: { role: "implementation" } });
+    expect(route.skills).toEqual([]);
     expect(route.tools).toEqual([]);
     expect(route.validation.required).toBe(false);
     expect(route.trace).toEqual(expect.arrayContaining([
@@ -114,6 +120,7 @@ describe("atomic Vectant task router", () => {
     const serializedContext = JSON.stringify(context);
 
     expect(route.tools.map((tool) => tool.name)).toEqual(["synthi_private_invoice_lookup"]);
+    expect(route.skills).toEqual([]);
     expect(serializedContext).toContain("synthi_private_invoice_lookup");
     expect(serializedContext).not.toContain("synthi_attach");
     expect(serializedContext).not.toContain("synthi_browser_get_console");
@@ -126,10 +133,13 @@ describe("atomic Vectant task router", () => {
 
     expect(compatible).toEqual(expect.objectContaining({
       role: "infrastructure",
-      skills: [],
+      skills: ["vectant-runtime"],
       validation: "independent",
       suggested_tools: ["synthi_attach"],
     }));
+    expect(compatible.skill_metadata).toEqual([
+      expect.objectContaining({ id: "vectant-runtime", groups: expect.arrayContaining(["runtime", "attachment"]) }),
+    ]);
     expect(JSON.stringify(compatible)).not.toContain("inputSchema");
   });
 });

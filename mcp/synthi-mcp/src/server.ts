@@ -94,7 +94,7 @@ export interface SynthiServerOptions {
 const TOOLS = [
   {
     name: "synthi_route_atomic_task",
-    description: "Plan an atomic Vectant task using metadata only. Returns bounded role, validation decision, reason, and suggested MCP tools.",
+    description: "Plan an atomic Vectant task using metadata only. Returns a bounded role, selected skill metadata, validation decision, reason, and suggested MCP tools.",
     inputSchema: {
       type: "object",
       properties: {
