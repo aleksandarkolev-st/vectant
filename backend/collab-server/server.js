@@ -6500,7 +6500,6 @@ const server = http.createServer(async (req, res) => {
                   // Batch write many files (supports base64 for binary).
                   // Payload shape: { files: [{ path, encoding: 'utf8'|'base64', content }] }
                   {
-                    const attempts = await Promise.all((data.files || []).map(async (file) => {
                     const physicalFiles = (data.files || []).map((file) => {
                       if (!file || String(file.encoding || 'utf8').toLowerCase() === 'base64') return file;
                       return {
@@ -6512,6 +6511,7 @@ const server = http.createServer(async (req, res) => {
                         }),
                       };
                     });
+                    const attempts = await Promise.all((data.files || []).map(async (file) => {
                       const nextContent = file?.encoding === 'base64'
                         ? null
                         : file?.content;
