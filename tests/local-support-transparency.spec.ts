@@ -258,4 +258,33 @@ test.describe("local support transparency page", () => {
       },
     ]);
   });
+
+  test("requests a locally confirmed file-set project without uploading source", async ({ page }) => {
+    const linkedRequests: unknown[] = [];
+    await page.route("**/api/local-support/policy", async (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ enabled: true, policy_version: "2026.08.21" }) }));
+    await page.route("**/api/local-support/transparency-state", async (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      session: { connected: true, paused: false, account_id: "acct_live", session_id: "sess_live_12345678" },
+      workspace: { workspace_id: "wk_live_12345678", display: "Vectant local project" }, inventory: [], sent_payloads: [], blocked_items: [], activity: [], ports: [], local_control_available: false, local_control_via_relay: true,
+    }) }));
+    await page.route("**/api/local-support/linked-projects", async (route) => {
+      if (route.request().method() === "POST") {
+        linkedRequests.push(route.request().postDataJSON());
+        await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ decision: "linked_project_confirmation_queued", project_id: "lproj_123456789012" }) });
+      } else {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ decision: "linked_projects_ready", projects: [], raw_source_uploaded: false }) });
+      }
+    });
+    await page.goto(`${baseURL}/local-support`);
+    await page.getByRole("tab", { name: "Full Access" }).click();
+    await expect(page.getByText("Linked local projects")).toBeVisible();
+    await page.getByLabel("Project name").fill("Bug-fix files");
+    await page.getByLabel("Local scope").selectOption("file_set");
+    await page.getByRole("button", { name: "Request local project access" }).click();
+    await expect(page.getByText("Confirm the selected folder or choose files locally; no source is uploaded.")).toBeVisible();
+    await page.screenshot({ path: "screenshots/local-support-linked-project-request-live-docker.png", fullPage: true });
+    expect(linkedRequests).toHaveLength(1);
+    expect(linkedRequests[0]).toMatchObject({ selection_mode: "file_set", display_name: "Bug-fix files", session_id: "sess_live_12345678", workspace_id: "wk_live_12345678" });
+    expect(JSON.stringify(linkedRequests[0])).not.toContain("workspace_hash");
+    expect(JSON.stringify(linkedRequests[0])).not.toContain("selected_node_ids");
+  });
 });
