@@ -40,7 +40,7 @@ const WebSocket = require('ws');
 const { watchWorkspace } = require('./fsWatcherService');
 const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimePodTerminal');
 const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode, codeSiteTerminalReattachDecision } = require('./terminalRouting');
-const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
+const { ensureRuntimeFilesystem, releaseRuntimeFilesystem } = require('./runtimeFilesystem');
 const { buildPersistentRuntimeEnv, ensurePersistentRuntimeDirs } = require('./runtimePersistence');
 const { guardCodeSiteHostSurface } = require('./codesiteActiveBoundary');
 const {
@@ -145,6 +145,9 @@ function disposeTerminalSession(sessionId, reason = 'disposed') {
   try { session.unwatchFs?.(); } catch (_) {}
   try { session.pty?.kill?.(); } catch (_) {}
   try { session.releasePort?.(); } catch (_) {}
+  if (session.instructionProjectionRuntimeScope) {
+    releaseRuntimeFilesystem(session.instructionProjectionRuntimeScope);
+  }
   if (session.runtimeTeardownOnDispose && session.workspaceRuntime && session.runtimeOptions) {
     Promise.resolve(session.workspaceRuntime.teardown(session.workspaceSlug, session.runtimeUserId || session.userId, session.runtimeOptions))
       .catch((err) => {
@@ -1442,6 +1445,7 @@ function sanitizeResize(cols, rows) {
 async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30, name = null, options = {}) {
   const runtimeScope = options.runtimeScope || '';
   const filesystemUserId = options.filesystemUserId || userId;
+  const instructionProjectionRuntimeScope = `terminal:${sessionId}`;
   // Programs (managedProgramRuntime) launch headless sessions with an explicit
   // env + shellType; merge those on top of the runtime-scope env so neither the
   // pod/runtime-scope plumbing nor the program's declared env is lost.
@@ -1450,20 +1454,32 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   const codeSiteContext = options.codesiteContext && typeof options.codesiteContext === 'object'
     ? options.codesiteContext
     : null;
-  await ensureRuntimeFilesystem({
-    workspaceSlug: slug,
-    filesystemUserId,
-    runtimeScope,
-    reason: 'headless_terminal',
-    codesiteContext: codeSiteContext,
-  });
-  let cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+  let cwd;
+  try {
+    await ensureRuntimeFilesystem({
+      workspaceSlug: slug,
+      filesystemUserId,
+      runtimeScope: instructionProjectionRuntimeScope,
+      pin: true,
+      reason: 'headless_terminal',
+      codesiteContext: codeSiteContext,
+    });
+    cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+  } catch (err) {
+    await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
+    throw err;
+  }
   const originalCwd = cwd;
   let codeSiteQuarantine = null;
   if (codeSiteContext?.active && !shouldUseRuntimePodTerminal(runtimeScope)) {
-    codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, {
-      operation: 'exec-terminal',
-    });
+    try {
+      codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, {
+        operation: 'exec-terminal',
+      });
+    } catch (err) {
+      await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
+      throw err;
+    }
     if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
   }
   const runtimeLaunch = await buildRuntimeLaunch({
@@ -1491,6 +1507,7 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     if (codeSiteQuarantine) {
       await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine).catch(() => {});
     }
+    await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
     throw err;
   }
 
@@ -1539,6 +1556,7 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     }
     runtimeLaunch.releasePort();
     activeSessions.delete(sessionId);
+    await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
   }, HEADLESS_TTL_MS);
   // Don't hold the event loop open on this timer alone.
   if (orphanTimer.unref) orphanTimer.unref();
@@ -1549,6 +1567,7 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     cwd,
     shell,
     runtimeScope,
+    instructionProjectionRuntimeScope,
     workspaceSlug: slug,
     userId,
     filesystemUserId,
@@ -1579,6 +1598,7 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
       });
     }
     runtimeLaunch.releasePort();
+    releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
   });
 
   console.log(`[Terminal] Headless session ${sessionId} created | runtimeScope=${runtimeScope || 'legacy'} | fsUser=${filesystemUserId || 'none'} | cwd=${cwd} | shell=${shell}`);
@@ -1835,6 +1855,7 @@ function createTerminalWSS({
 
     // ── Generate session ID ─────────────────────────────────────────────
     const sessionId = requestedSessionId || crypto.randomUUID();
+    const instructionProjectionRuntimeScope = `terminal:${sessionId}`;
     let cwd;
     let codeSiteQuarantine = null;
     let codeSiteOriginalCwd = null;
@@ -1842,12 +1863,14 @@ function createTerminalWSS({
       await ensureRuntimeFilesystem({
         workspaceSlug,
         filesystemUserId: requestedFilesystemUserId,
-        runtimeScope,
+        runtimeScope: instructionProjectionRuntimeScope,
+        pin: true,
         reason: 'interactive_terminal',
         codesiteContext: codeSiteContext.active ? codeSiteContext : null,
       });
       cwd = await resolveWorkspaceCwd(workspaceSlug, requestedFilesystemUserId);
     } catch (err) {
+      await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
       console.error(`[Terminal] Failed to prepare filesystem for session ${sessionId}:`, err.message);
       ws.send(JSON.stringify({ type: 'error', message: 'Failed to prepare workspace filesystem: ' + err.message }));
       ws.close(1011, 'Workspace filesystem preparation failed');
@@ -1870,6 +1893,7 @@ function createTerminalWSS({
             codesite: codeSiteMetadata,
           }));
           ws.close(1008, 'CodeSite terminal flush denied');
+          await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
           return;
         }
       }
@@ -1891,6 +1915,7 @@ function createTerminalWSS({
         codesite: codeSiteMetadata,
       }));
       ws.close(1008, 'CodeSite terminal quarantine unavailable');
+      await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
       return;
     }
     if (launchMode === 'overlay-runtime') {
@@ -1903,6 +1928,7 @@ function createTerminalWSS({
         console.error(`[Terminal] Failed to prepare CodeSite overlay for session ${sessionId}:`, err.message);
         ws.send(JSON.stringify({ type: 'error', message: 'Failed to prepare CodeSite overlay: ' + err.message }));
         ws.close(1011, 'CodeSite overlay preparation failed');
+        await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
         return;
       }
     }
@@ -1962,6 +1988,7 @@ function createTerminalWSS({
         console.error(`[Terminal] container shell failed for session ${sessionId}:`, err.message);
         ws.send(JSON.stringify({ type: 'error', message: 'Failed to start container terminal: ' + err.message }));
         ws.close(1011, 'container shell failed');
+        await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
         return;
       }
     } else {
@@ -1994,6 +2021,7 @@ function createTerminalWSS({
         console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);
         ws.send(JSON.stringify({ type: 'error', message: 'Failed to spawn shell: ' + err.message }));
         ws.close(1011, 'PTY spawn failed');
+        await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
         return;
       }
     }
@@ -2014,6 +2042,7 @@ function createTerminalWSS({
       cwd,
       shell,
       runtimeScope,
+      instructionProjectionRuntimeScope,
       workspaceSlug,
       userId: requestedUserId,
       filesystemUserId: requestedFilesystemUserId,

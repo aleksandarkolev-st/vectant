@@ -7,6 +7,7 @@ const gitService = require('../gitService');
 const activityRegistry = require('../codesiteActivityRegistry');
 const {
   ensureRuntimeFilesystem,
+  releaseRuntimeFilesystem,
   setWorkspaceInstructionProjectionRuntimeForTests,
 } = require('../runtimeFilesystem');
 
@@ -278,6 +279,7 @@ test('terminal/runtime hydration reconciles passive instructions only after the 
       calls.push(input);
       return { skipped: false, projections: [{ path: 'AGENTS.md', ownership: 'synthetic-only' }] };
     },
+    cleanup: async () => ({ skipped: true }),
   });
   const restore = patchGitService({
     initRepo: async () => ({ success: true }),
@@ -301,6 +303,62 @@ test('terminal/runtime hydration reconciles passive instructions only after the 
       assert.equal(Object.hasOwn(result.instructionProjection, 'canonicalBlock'), false);
     });
   } finally {
+    await releaseRuntimeFilesystem('projection-terminal');
+    restoreProjectionRuntime();
+    activityRegistry.resetRegistry();
+    restore();
+  }
+});
+
+test('last terminal release cleans passive instruction projections after all sessions close', async () => {
+  activityRegistry.resetRegistry();
+  const cleanupCalls = [];
+  const restoreProjectionRuntime = setWorkspaceInstructionProjectionRuntimeForTests({
+    reconcile: async () => ({ skipped: false, projections: [] }),
+    cleanup: async (input) => {
+      cleanupCalls.push(input);
+      return { skipped: false, removed: ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'] };
+    },
+  });
+  const restore = patchGitService({
+    initRepo: async () => ({ success: true }),
+    ensureUserRepo: async () => ({ path: '/tmp/runtime-cleanup/user-1', created: true }),
+    getEffectiveRepoPath: (slug, userId) => `/tmp/${slug}/${userId || ''}`,
+  });
+  try {
+    await withControlPlaneActiveList('runtime-cleanup', [], async () => {
+      await ensureRuntimeFilesystem({
+        workspaceSlug: 'runtime-cleanup',
+        filesystemUserId: 'user-1',
+        runtimeScope: 'terminal:cleanup-one',
+        pin: true,
+        reason: 'interactive_terminal',
+      });
+      await ensureRuntimeFilesystem({
+        workspaceSlug: 'runtime-cleanup',
+        filesystemUserId: 'user-1',
+        runtimeScope: 'terminal:cleanup-two',
+        pin: true,
+        reason: 'interactive_terminal',
+      });
+
+      const firstRelease = await releaseRuntimeFilesystem('terminal:cleanup-one');
+      assert.deepEqual(firstRelease, { skipped: true, reason: 'workspace_runtime_still_pinned' });
+      assert.deepEqual(cleanupCalls, []);
+
+      const lastRelease = await releaseRuntimeFilesystem('terminal:cleanup-two');
+      assert.deepEqual(lastRelease, {
+        skipped: false,
+        removed: ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'],
+      });
+      assert.deepEqual(cleanupCalls, [{
+        workspaceId: 'runtime-cleanup',
+        repositoryRoot: '/tmp/runtime-cleanup/user-1',
+      }]);
+    });
+  } finally {
+    await releaseRuntimeFilesystem('terminal:cleanup-one');
+    await releaseRuntimeFilesystem('terminal:cleanup-two');
     restoreProjectionRuntime();
     activityRegistry.resetRegistry();
     restore();

@@ -7,6 +7,7 @@ const { createWorkspaceInstructionProjectionRuntime } = require('./workspaceInst
 
 const hydrationLocks = new Map();
 const runtimePins = new Map();
+const projectionCleanupLocks = new Map();
 let workspaceInstructionProjectionRuntime = createWorkspaceInstructionProjectionRuntime();
 
 function normalize(value) {
@@ -20,6 +21,43 @@ function cacheUserId(userId) {
 
 function pinKey(slug, userId) {
   return `${slug}:${userId || ''}`;
+}
+
+function hasRuntimePin(slug, userId) {
+  return [...runtimePins.values()].some((entry) => entry.slug === slug && entry.userId === userId);
+}
+
+async function waitForProjectionCleanup(key) {
+  const cleanup = projectionCleanupLocks.get(key);
+  if (cleanup) await cleanup;
+}
+
+function scheduleProjectionCleanup({ slug, userId }) {
+  const key = pinKey(slug, userId);
+  const previous = projectionCleanupLocks.get(key) || Promise.resolve();
+  const cleanup = previous.catch(() => {}).then(async () => {
+    // A replacement terminal may have claimed this workspace while a previous
+    // session was closing. Its reconciliation owns the projection again.
+    if (hasRuntimePin(slug, userId)) {
+      return { skipped: true, reason: 'workspace_runtime_still_pinned' };
+    }
+    try {
+      return await workspaceInstructionProjectionRuntime.cleanup({
+        workspaceId: slug,
+        repositoryRoot: gitService.getEffectiveRepoPath(slug, userId || null),
+      });
+    } catch (error) {
+      // Runtime teardown must not become a failed terminal shutdown. A later
+      // workspace open reconciles stale blocks safely after a crash or retry.
+      console.warn(`[RuntimeFS] Instruction projection cleanup failed for ${slug}${userId ? `/${userId}` : ''}: ${error?.message || error}`);
+      return { skipped: false, error: 'workspace_instruction_projection_cleanup_failed' };
+    }
+  });
+  projectionCleanupLocks.set(key, cleanup);
+  cleanup.finally(() => {
+    if (projectionCleanupLocks.get(key) === cleanup) projectionCleanupLocks.delete(key);
+  });
+  return cleanup;
 }
 
 async function hydrateWorkspace(slug, userId, reason = 'runtime') {
@@ -150,6 +188,8 @@ async function ensureRuntimeFilesystem({
   }
 
   const userId = normalize(filesystemUserId);
+  const key = pinKey(slug, userId);
+  await waitForProjectionCleanup(key);
   const activeCodeSiteContext = codeSiteContextFromOptions({ codesiteContext, codeSiteContext });
   if (activeCodeSiteContext?.active) {
     await refreshActiveWorkspaceAuthority(slug, activeCodeSiteContext);
@@ -165,7 +205,6 @@ async function ensureRuntimeFilesystem({
     throw activeWorkspaceRuntimeBlocked(slug, userId, reason);
   }
 
-  const key = pinKey(slug, userId);
   let lock = hydrationLocks.get(key);
   if (!lock) {
     lock = hydrateWorkspace(slug, userId, reason)
@@ -195,7 +234,7 @@ function pinRuntimeFilesystem(runtimeScope, workspaceSlug, filesystemUserId = ''
   const existing = runtimePins.get(scope);
   if (existing) {
     if (existing.slug === next.slug && existing.userId === next.userId) return;
-    repoCache.unpin(existing.slug, cacheUserId(existing.userId));
+    releaseRuntimeFilesystem(scope);
   }
 
   repoCache.pin(next.slug, cacheUserId(next.userId));
@@ -204,11 +243,15 @@ function pinRuntimeFilesystem(runtimeScope, workspaceSlug, filesystemUserId = ''
 
 function releaseRuntimeFilesystem(runtimeScope) {
   const scope = normalize(runtimeScope);
-  if (!scope) return;
+  if (!scope) return Promise.resolve({ skipped: true, reason: 'missing_runtime_scope' });
   const existing = runtimePins.get(scope);
-  if (!existing) return;
+  if (!existing) return Promise.resolve({ skipped: true, reason: 'runtime_scope_not_pinned' });
   repoCache.unpin(existing.slug, cacheUserId(existing.userId));
   runtimePins.delete(scope);
+  if (hasRuntimePin(existing.slug, existing.userId)) {
+    return Promise.resolve({ skipped: true, reason: 'workspace_runtime_still_pinned' });
+  }
+  return scheduleProjectionCleanup(existing);
 }
 
 function getPinnedRuntimeFilesystems() {
