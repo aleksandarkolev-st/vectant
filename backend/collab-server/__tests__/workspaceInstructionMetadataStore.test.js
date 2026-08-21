@@ -8,6 +8,7 @@ const test = require('node:test');
 const {
   MAX_INSTRUCTION_BYTES,
   createWorkspaceInstructionMetadataStore,
+  defaultMetadataDirectory,
   filenameForWorkspace,
 } = require('../workspaceInstructionMetadataStore');
 
@@ -16,6 +17,34 @@ async function temporaryStore(t) {
   t.after(() => fs.promises.rm(directory, { recursive: true, force: true }));
   return { directory, store: createWorkspaceInstructionMetadataStore({ directory, defaultContent: 'Default instructions.' }) };
 }
+
+test('defaults canonical metadata to private data storage instead of the application directory', () => {
+  const repositoryDirectory = path.join(os.tmpdir(), 'vectant-service-data', 'repos');
+  assert.equal(
+    defaultMetadataDirectory({
+      environment: {
+        WORKSPACE_INSTRUCTION_METADATA_DIR: path.join(os.tmpdir(), 'vectant-explicit-instructions'),
+        REPOS_DIR: repositoryDirectory,
+      },
+      homeDirectory: path.join(os.tmpdir(), 'unused-home'),
+    }),
+    path.join(os.tmpdir(), 'vectant-explicit-instructions'),
+  );
+  assert.equal(
+    defaultMetadataDirectory({
+      environment: { REPOS_DIR: repositoryDirectory },
+      homeDirectory: path.join(os.tmpdir(), 'unused-home'),
+    }),
+    path.join(os.tmpdir(), 'vectant-service-data', '.vectant-workspace-instruction-metadata'),
+  );
+  assert.equal(
+    defaultMetadataDirectory({
+      environment: {},
+      homeDirectory: path.join(os.tmpdir(), 'vectant-service-home'),
+    }),
+    path.join(os.tmpdir(), 'vectant-service-home', '.vectant-workspace-instruction-metadata'),
+  );
+});
 
 test('stores one canonical instruction payload outside the checkout and versions content changes', async (t) => {
   const { directory, store } = await temporaryStore(t);

@@ -9,6 +9,7 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { ATOMIC_AGENT_PROTOCOL } = require('./workspaceAgentProtocol');
 const {
@@ -55,6 +56,27 @@ function normalizeVersion(version) {
     throw storeError('workspace_instruction_metadata_invalid_version');
   }
   return parsed;
+}
+
+/**
+ * Resolve private storage without relying on a writable application image.
+ * Deployments can name an exact durable directory.  Otherwise, colocate the
+ * records beside the configured workspace repository storage; a service that
+ * has no configured repository root falls back to its own private home.
+ */
+function defaultMetadataDirectory({
+  environment = process.env,
+  homeDirectory = os.homedir(),
+} = {}) {
+  const explicitDirectory = String(environment.WORKSPACE_INSTRUCTION_METADATA_DIR || '').trim();
+  if (explicitDirectory) return explicitDirectory;
+
+  const repositoryDirectory = String(environment.REPOS_DIR || environment.REPO_CACHE_DIR || '').trim();
+  if (repositoryDirectory) {
+    return path.join(path.dirname(path.resolve(repositoryDirectory)), '.vectant-workspace-instruction-metadata');
+  }
+
+  return path.join(path.resolve(homeDirectory), '.vectant-workspace-instruction-metadata');
 }
 
 async function lstatOrNull(fsApi, target) {
@@ -129,7 +151,7 @@ function decodeRecord(raw, workspaceId) {
  * persistent service storage in production.
  */
 function createWorkspaceInstructionMetadataStore({
-  directory = process.env.WORKSPACE_INSTRUCTION_METADATA_DIR || path.join(__dirname, '.workspace-instruction-metadata'),
+  directory = defaultMetadataDirectory(),
   fsApi = fs.promises,
   defaultContent = ATOMIC_AGENT_PROTOCOL,
   clock = () => new Date().toISOString(),
@@ -194,5 +216,6 @@ module.exports = {
   MAX_INSTRUCTION_BYTES,
   STORE_VERSION,
   createWorkspaceInstructionMetadataStore,
+  defaultMetadataDirectory,
   filenameForWorkspace,
 };
