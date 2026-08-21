@@ -62,4 +62,11 @@ export const VECTANT_SKILL_METADATA: readonly VectantSkillMetadata[] = Object.fr
     groups: Object.freeze(["proof", "verification"]),
     keywords: Object.freeze(["check", "test", "validate", "verification", "verify"]),
   }),
+  Object.freeze({
+    id: "vectant-jupyter",
+    name: "Vectant Jupyter",
+    description: "Operates registered Jupyter servers and notebook kernels without exposing connection tokens.",
+    groups: Object.freeze(["data", "jupyter", "notebook"]),
+    keywords: Object.freeze(["cell", "jupyter", "kernel", "notebook", "python"]),
+  }),
 ]);

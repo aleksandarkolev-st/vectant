@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 import { PROGRAM_TOOLS } from "../../src/tools/programs.js";
+import { JUPYTER_TOOLS } from "../../src/tools/jupyter.js";
 import {
   TOOL_METADATA_CATALOG,
   createToolMetadataCatalog,
@@ -81,6 +82,18 @@ describe("Vectant MCP tool metadata catalog", () => {
     expect(ADVERTISED_TOOLS).toEqual(expect.arrayContaining(programToolNames));
     expect(selected.map((entry) => entry.name)).toEqual(programToolNames);
     expect(selected.every((entry) => entry.groups.includes("runtime"))).toBe(true);
+  });
+
+  it("routes Jupyter notebook actions through the dedicated data skill metadata", () => {
+    const jupyterToolNames = JUPYTER_TOOLS.map((tool) => tool.name);
+    const selected = selectToolMetadata({ groups: ["jupyter"], keywords: ["notebook"] });
+
+    expect(ADVERTISED_TOOLS).toEqual(expect.arrayContaining(jupyterToolNames));
+    expect(selected.map((entry) => entry.name)).toEqual(expect.arrayContaining([
+      "synthi_jupyter_snapshot_notebook",
+      "synthi_jupyter_save_notebook",
+    ]));
+    expect(selected.every((entry) => entry.groups.includes("jupyter"))).toBe(true);
   });
 
   it("includes dynamic tools and augments advertised tool routing metadata", () => {

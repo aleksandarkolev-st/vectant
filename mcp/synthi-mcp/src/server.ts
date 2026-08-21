@@ -70,6 +70,7 @@ import { DOJO_TOOLS, dispatchDojoTool } from "./tools/dojo.js";
 import { SOURCE_TOOLS, dispatchSourceTool } from "./tools/source.js";
 import { SAFETY_TOOLS, dispatchSafetyTool } from "./tools/safety.js";
 import { PROGRAM_TOOLS, dispatchProgramTool } from "./tools/programs.js";
+import { JUPYTER_TOOLS, dispatchJupyterTool } from "./tools/jupyter.js";
 import { FAILURE_DISTILLER_TOOLS, dispatchFailureDistillerTool } from "./tools/failure_distiller.js";
 import { CODESITE_TOOLS, dispatchCodeSiteTool } from "./tools/codesite.js";
 import type { ToolContext } from "./tools/shared.js";
@@ -122,6 +123,7 @@ export const STATIC_TOOL_DEFINITIONS = [
   ...SOURCE_TOOLS,
   ...SAFETY_TOOLS,
   ...PROGRAM_TOOLS,
+  ...JUPYTER_TOOLS,
   ...FAILURE_DISTILLER_TOOLS,
   ...CODESITE_TOOLS,
   {
@@ -1326,6 +1328,9 @@ async function dispatchTool(
 
   const programResponse = await dispatchProgramTool(toolName, args);
   if (programResponse) return programResponse as CallToolResult;
+
+  const jupyterResponse = await dispatchJupyterTool(toolName, args);
+  if (jupyterResponse) return jupyterResponse as CallToolResult;
 
   const failureDistillerResponse = await dispatchFailureDistillerTool(toolName, args);
   if (failureDistillerResponse) return failureDistillerResponse as CallToolResult;

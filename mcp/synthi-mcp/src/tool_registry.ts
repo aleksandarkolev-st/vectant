@@ -168,6 +168,14 @@ export const ADVERTISED_TOOLS = [
   "synthi_list_programs",
   "synthi_read_session",
   "synthi_launch_program",
+  // Registered Jupyter server control (tokens stay workspace/UI-only)
+  "synthi_jupyter_list_servers",
+  "synthi_jupyter_test_server",
+  "synthi_jupyter_snapshot_notebook",
+  "synthi_jupyter_execute_cells",
+  "synthi_jupyter_save_notebook",
+  "synthi_jupyter_interrupt_kernel",
+  "synthi_jupyter_restart_kernel",
   // CodeSite ATC control plane
   "synthi_codesite_list_projects",
   "synthi_codesite_create_project",

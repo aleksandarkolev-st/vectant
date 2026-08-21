@@ -172,6 +172,10 @@ export function deriveToolMetadata(name: string): VectantToolMetadata {
     addGroup(groups, "source-identity");
   } else if (namespace === "synthi" && domain === "safety") {
     addGroup(groups, "safety");
+  } else if (namespace === "synthi" && domain === "jupyter") {
+    addGroup(groups, "jupyter");
+    addGroup(groups, "notebook");
+    addGroup(groups, "data");
   } else {
     addGroup(groups, "runtime");
   }
