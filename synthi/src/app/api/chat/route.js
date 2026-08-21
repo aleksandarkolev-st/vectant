@@ -8,6 +8,8 @@ import { buildExternalTools, isExternalToolName, callExternalTool } from './exte
 import { resolveActor } from '@/lib/integrations/session';
 import { routeChatAgentTask, selectExplicitExternalToolNames } from '@/lib/agent-routing/chat-tool-routing';
 import { ATOMIC_AGENT_PROTOCOL } from '@/lib/agent-routing/workspace-agent-protocol';
+import { loadSelectedSkillInstructions } from '@/lib/agent-routing/selective-skill-loader';
+import { formatSelectedSkillExecutionContext } from '@/lib/agent-routing/skill-execution-context';
 
 const encoder = new TextEncoder();
 
@@ -889,11 +891,6 @@ const streamGeminiWithTools = async ({
     const endpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:generateContent?key=${key}`;
     const streamEndpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:streamGenerateContent?alt=sse&key=${key}`;
 
-    const systemInstruction = {
-        parts: [{
-            text: `${ATOMIC_AGENTIC_SYSTEM_PROMPT}\n\nThe immutable server policy above is authoritative. Terminal-launched agents receive matching context through passive workspace instruction documents.`,
-        }],
-    };
     const generationConfig = { maxOutputTokens: getMaxOutputTokens(targetModel), temperature: 0.2 };
     // Built-in tools + user-connected external MCP tools (degrade gracefully).
     // The frontend sends the workspace slug as `workspacePath` (AIChatWindow.jsx:128);
@@ -921,6 +918,19 @@ const streamGeminiWithTools = async ({
         ...TOOL_DECLARATIONS.filter((tool) => selectedBuiltInToolIds.has(tool.name)),
         ...extDecls.filter((tool) => selectedExternalToolIds.has(tool.name)),
     ];
+    // The router receives metadata only. Full bodies are read only for the
+    // selected repository skills and stay on this server-to-model boundary.
+    const selectedSkillLoad = await loadSelectedSkillInstructions(routing.selectedSkillIds);
+    const selectedSkillContext = formatSelectedSkillExecutionContext(selectedSkillLoad);
+    const systemInstruction = {
+        parts: [{
+            text: [
+                ATOMIC_AGENTIC_SYSTEM_PROMPT,
+                'The immutable server policy above is authoritative. Terminal-launched agents receive matching context through passive workspace instruction documents.',
+                selectedSkillContext,
+            ].filter(Boolean).join('\n\n'),
+        }],
+    };
     const allowedToolNames = new Set(selectedDeclarations.map((tool) => tool.name));
     const tools = selectedDeclarations.length
         ? [{ functionDeclarations: selectedDeclarations }]
@@ -928,6 +938,7 @@ const streamGeminiWithTools = async ({
     console.info('[Chat API] routed tool execution', {
         role: routing.role,
         skillIds: routing.selectedSkillIds,
+        loadedSkillIds: selectedSkillLoad.instructions.map((skill) => skill.id),
         toolIds: [...allowedToolNames],
         validation: routing.validation,
     });

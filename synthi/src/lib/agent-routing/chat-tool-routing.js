@@ -1,4 +1,5 @@
 import { createOrchestrator } from '../../../../packages/atomic-orchestrator/src/index.js';
+import { repositorySkillRegistry } from './skill-metadata-registry.js';
 
 // This catalog deliberately contains only identifiers and routing metadata.
 // Gemini declaration schemas stay in app/api/chat/toolDefinitions.js and are
@@ -54,12 +55,25 @@ const CHAT_AGENT_POLICIES = Object.freeze([
 ]);
 
 const MAX_ROUTED_CHAT_TOOLS = 6;
+const MAX_SELECTED_EXECUTION_SKILLS = 3;
+
+function compactSkill(skill) {
+    return {
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        categories: [...skill.categories],
+        keywords: [...skill.keywords],
+        path: skill.path,
+        toolGroups: [...skill.toolGroups],
+    };
+}
 
 /**
  * Produce an execution-only tool selection for a chat request. The input is
  * task text, never repository contents, tool schemas, or skill bodies.
  */
-export function routeChatAgentTask({ taskDescription = '' } = {}) {
+export function routeChatAgentTask({ taskDescription = '', registry = repositorySkillRegistry } = {}) {
     const traceEvents = [];
     const orchestrator = createOrchestrator({
         skills: CHAT_SKILL_METADATA,
@@ -77,16 +91,25 @@ export function routeChatAgentTask({ taskDescription = '' } = {}) {
     const mutatesWorkspace = selectedToolIds.some((toolId) => (
         toolId === 'create_file' || toolId === 'create_directory'
     ));
+    // Tool planning has a small operational metadata vocabulary. Actual
+    // SKILL.md guidance comes from the repository registry and is still
+    // metadata-only at this stage; bodies are loaded by the server only after
+    // this route has been accepted.
+    const selectedSkills = registry.search(String(taskDescription || ''), {
+        limit: MAX_SELECTED_EXECUTION_SKILLS,
+    }).map(compactSkill);
 
     return {
         role: routed.role,
-        selectedSkillIds: routed.selected.map((skill) => skill.id),
+        selectedSkillIds: selectedSkills.map((skill) => skill.id),
+        selectedSkills,
         selectedToolIds,
         validation: mutatesWorkspace ? 'independent' : routed.validation,
         reason: routed.reason,
         trace: {
             role: routed.role,
-            skillIds: routed.selected.map((skill) => skill.id),
+            toolRoutingSkillIds: routed.selected.map((skill) => skill.id),
+            skillIds: selectedSkills.map((skill) => skill.id),
             toolIds: selectedToolIds,
             events: traceEvents,
         },

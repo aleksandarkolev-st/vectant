@@ -3,6 +3,8 @@ import {
     routeChatAgentTask,
     selectExplicitExternalToolNames,
 } from '../chat-tool-routing.js';
+import { createSkillMetadataRegistry } from '../skill-metadata-registry.js';
+import { formatSelectedSkillExecutionContext } from '../skill-execution-context.js';
 
 describe('routeChatAgentTask', () => {
     it('selects the minimum workspace-write surface for an atomic implementation task', () => {
@@ -43,5 +45,46 @@ describe('routeChatAgentTask', () => {
         );
 
         expect(selected).toEqual(['ext_0']);
+    });
+
+    it('returns repository skill metadata without loading skill bodies during routing', () => {
+        const registry = createSkillMetadataRegistry({
+            includeRepositorySkills: false,
+            entries: {
+                id: 'postgres-debugging',
+                name: 'Postgres Debugging',
+                description: 'Diagnose PostgreSQL failures.',
+                categories: ['debugging'],
+                keywords: ['postgres', 'database'],
+                path: '.claude/skills/postgres-debugging/SKILL.md',
+                toolGroups: ['database'],
+                content: 'This must not be retained in metadata.',
+            },
+        });
+
+        const routed = routeChatAgentTask({
+            taskDescription: 'Fix the postgres connection failure.',
+            registry,
+        });
+
+        expect(routed.selectedSkillIds).toEqual(['postgres-debugging']);
+        expect(routed.selectedSkills).toEqual([expect.objectContaining({
+            id: 'postgres-debugging',
+            path: '.claude/skills/postgres-debugging/SKILL.md',
+        })]);
+        expect(JSON.stringify(routed)).not.toContain('This must not be retained');
+    });
+
+    it('formats only selected post-route skill bodies for execution', () => {
+        const context = formatSelectedSkillExecutionContext({
+            instructions: [
+                { id: 'postgres-debugging', name: 'Postgres Debugging', content: 'Inspect database logs first.' },
+                { id: 'unused', name: 'Unused', content: '' },
+            ],
+        });
+
+        expect(context).toContain('[Skill: Postgres Debugging]');
+        expect(context).toContain('Inspect database logs first.');
+        expect(context).not.toContain('Unused');
     });
 });
