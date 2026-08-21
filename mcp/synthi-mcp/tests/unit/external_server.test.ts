@@ -56,8 +56,10 @@ describe("external tools wired into the MCP server", () => {
   it("teaches connected MCP hosts the mandatory atomic routing protocol", async () => {
     const client = await connectedClient({ defaultSignalingUrl: "ws://x" });
 
-    expect(client.getInstructions()).toContain(".synthi/AGENTS.md");
-    expect(client.getInstructions()).toContain("synthi_route_atomic_task");
-    expect(client.getInstructions()).toContain("Never provide the full tool catalog");
+    const instructions = client.getInstructions();
+    expect(instructions).toContain("passive instruction documents");
+    expect(instructions).not.toContain(".synthi/AGENTS.md");
+    expect(instructions).toContain("synthi_route_atomic_task");
+    expect(instructions).toContain("Never provide the full tool catalog");
   });
 });

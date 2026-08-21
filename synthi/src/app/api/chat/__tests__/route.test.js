@@ -201,9 +201,6 @@ describe('/api/chat inbound authorization', () => {
     let firstGeminiRequest = null;
     fetch.mockImplementation(async (url, options = {}) => {
       const target = String(url);
-      if (target.includes('/file-content/')) {
-        return { ok: true, status: 200, text: async () => '<!-- SYNTHI_ATOMIC_AGENT_PROTOCOL_START -->' };
-      }
       if (target.includes('/files-meta')) return okJson({ files: [] });
       if (target.includes('/code-intel/context')) return okJson({ context: '', sufficiency: 'ENOUGH', sources: [], tokens_used: 0, trace: [] });
       if (target.includes('generativelanguage.googleapis.com')) {
@@ -238,6 +235,8 @@ describe('/api/chat inbound authorization', () => {
     expect(firstGeminiRequest.tools[0].functionDeclarations.map((tool) => tool.name))
       .toEqual(['create_file', 'create_directory']);
     expect(firstGeminiRequest.systemInstruction.parts[0].text).not.toContain('run_command(command)');
+    expect(firstGeminiRequest.systemInstruction.parts[0].text).toContain('passive workspace instruction documents');
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('.synthi/AGENTS.md'))).toBe(false);
     expect(events).toContainEqual(expect.objectContaining({
       toolCall: expect.objectContaining({ tool: 'run_command', status: 'rejected' }),
     }));

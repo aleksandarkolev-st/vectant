@@ -1,7 +1,7 @@
-// This is an immutable server-owned baseline. A workspace can document the
-// same protocol in `.synthi/AGENTS.md`, but workspace text is never trusted to
-// weaken routing, authorization, or independent validation requirements.
-export const WORKSPACE_AGENT_PROTOCOL_PATH = '.synthi/AGENTS.md';
+// This is an immutable server-owned baseline. Passive workspace instruction
+// projections provide matching context to terminal-launched coding agents, but
+// workspace text is never trusted to weaken routing, authorization, or
+// independent validation requirements.
 
 export const ATOMIC_AGENT_PROTOCOL = [
     'For every non-trivial workspace task or change:',

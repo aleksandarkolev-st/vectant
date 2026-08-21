@@ -78,7 +78,7 @@ import { isExternalToolName, callExternalTool, type ExternalTools } from "./exte
 import { toAtomicOrchestratorCompatibleRoute, routeAtomicVectantTask } from "./atomic_task_router.js";
 
 export const SYNTHI_ATOMIC_AGENT_INSTRUCTIONS = [
-  "For every non-trivial workspace task, first read the workspace's hidden .synthi/AGENTS.md protocol.",
+  "For every non-trivial workspace task, follow the passive instruction documents that your coding-agent host discovers in the opened workspace.",
   "Decompose larger requests into independently solvable atomic changes.",
   "For each atomic change, call synthi_route_atomic_task before execution. The router only selects the cheapest capable role, minimum skills, validation need, and a short reason; it must not solve the task.",
   "Expose an execution agent only the atomic task, minimal repository context, selected skills, and the routed tools. Never provide the full tool catalog or all skill contents.",

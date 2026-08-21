@@ -7,7 +7,7 @@ import { TOOL_DECLARATIONS, executeTool, isComplexTask } from './toolDefinitions
 import { buildExternalTools, isExternalToolName, callExternalTool } from './externalTools.js';
 import { resolveActor } from '@/lib/integrations/session';
 import { routeChatAgentTask, selectExplicitExternalToolNames } from '@/lib/agent-routing/chat-tool-routing';
-import { ATOMIC_AGENT_PROTOCOL, WORKSPACE_AGENT_PROTOCOL_PATH } from '@/lib/agent-routing/workspace-agent-protocol';
+import { ATOMIC_AGENT_PROTOCOL } from '@/lib/agent-routing/workspace-agent-protocol';
 
 const encoder = new TextEncoder();
 
@@ -737,21 +737,6 @@ const fetchCollabFileContent = async (slug, filePath, signal, userId) => {
     }
 };
 
-async function loadManagedWorkspaceAgentProtocol({ workspacePath, signal, userId }) {
-    const content = await fetchCollabFileContent(
-        workspacePath,
-        WORKSPACE_AGENT_PROTOCOL_PATH,
-        signal,
-        userId,
-    );
-    // The managed file is workspace-controlled storage. Only use it to verify
-    // provisioning; immutable server-owned protocol text above remains the
-    // actual instruction source so repository content cannot prompt-inject or
-    // weaken routing policy.
-    return typeof content === 'string'
-        && content.includes('SYNTHI_ATOMIC_AGENT_PROTOCOL_START');
-}
-
 const shouldIgnorePath = (path = '') => {
     const normalized = String(path || '').replace(/\\/g, '/');
     if (DEFAULT_IGNORE.some((prefix) => normalized.startsWith(prefix))) return true;
@@ -894,7 +879,6 @@ const streamGeminiWithTools = async ({
     userId = null,
     codeSiteContext = null,
     taskDescription = '',
-    workspaceAgentProtocolLoaded = false,
     signal,
     maxRetries = 3,
 }) => {
@@ -907,9 +891,7 @@ const streamGeminiWithTools = async ({
 
     const systemInstruction = {
         parts: [{
-            text: `${ATOMIC_AGENTIC_SYSTEM_PROMPT}\n\nManaged workspace protocol: ${workspaceAgentProtocolLoaded
-                ? `${WORKSPACE_AGENT_PROTOCOL_PATH} is provisioned.`
-                : `${WORKSPACE_AGENT_PROTOCOL_PATH} was unavailable; enforce the immutable protocol above anyway.`}`,
+            text: `${ATOMIC_AGENTIC_SYSTEM_PROMPT}\n\nThe immutable server policy above is authoritative. Terminal-launched agents receive matching context through passive workspace instruction documents.`,
         }],
     };
     const generationConfig = { maxOutputTokens: getMaxOutputTokens(targetModel), temperature: 0.2 };
@@ -948,7 +930,6 @@ const streamGeminiWithTools = async ({
         skillIds: routing.selectedSkillIds,
         toolIds: [...allowedToolNames],
         validation: routing.validation,
-        protocolLoaded: workspaceAgentProtocolLoaded,
     });
 
     const runRoutedValidation = async (files) => {
@@ -1934,14 +1915,6 @@ export async function POST(request) {
         userId = access.session?.user?.id || access.email || userId;
     }
 
-    const workspaceProtocolPromise = authorizedWorkspacePath
-        ? loadManagedWorkspaceAgentProtocol({
-            workspacePath: authorizedWorkspacePath,
-            signal: request.signal,
-            userId,
-        }).catch(() => false)
-        : Promise.resolve(false);
-
     // TTFT optimization: Fetch code intel and hydrate from collab IN PARALLEL
     // This reduces latency by running both operations concurrently
     const codeIntelPromise = (useCodeIntel && authorizedWorkspacePath && prompt)
@@ -1968,10 +1941,9 @@ export async function POST(request) {
     });
 
     // Wait for both in parallel
-    const [codeIntelContext, { code: hydratedCode, files: hydratedFiles }, workspaceAgentProtocolLoaded] = await Promise.all([
+    const [codeIntelContext, { code: hydratedCode, files: hydratedFiles }] = await Promise.all([
         codeIntelPromise,
         hydratePromise,
-        workspaceProtocolPromise,
     ]);
 
     // ── RAG-driven file hydration ───────────────────────────────────
@@ -2081,7 +2053,6 @@ export async function POST(request) {
                 userId,
                 codeSiteContext: codeSiteContext && typeof codeSiteContext === 'object' && !Array.isArray(codeSiteContext) ? codeSiteContext : null,
                 taskDescription: prompt,
-                workspaceAgentProtocolLoaded,
                 signal,
             });
         } else if (provider === 'anthropic') {
