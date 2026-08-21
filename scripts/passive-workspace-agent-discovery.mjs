@@ -47,24 +47,18 @@ function fullRollout() {
   };
 }
 
-function cliExecutable(name) {
+function cliInvocation(name) {
   // Node's Windows process launcher does not resolve a shell-only npm shim
-  // (`codex.ps1`) the way an interactive PowerShell session does. Use the
-  // actual npm command shim for Codex while leaving native CLI executables
-  // untouched on every platform.
+  // (`codex.ps1`) the way an interactive PowerShell session does. Invoke the
+  // installed Codex JavaScript entry point directly so the ordinary task stays
+  // one argument instead of being reparsed by cmd.exe.
   if (process.platform === 'win32' && name === 'codex' && process.env.APPDATA) {
-    return path.join(process.env.APPDATA, 'npm', 'codex.cmd');
+    return {
+      executable: process.execPath,
+      prefixArguments: [path.join(process.env.APPDATA, 'npm', 'node_modules', '@openai', 'codex', 'bin', 'codex.js')],
+    };
   }
-  return name;
-}
-
-function cliOptions(name, options) {
-  return {
-    ...options,
-    // Windows requires cmd.exe to execute a .cmd shim. All values passed to
-    // this harness are generated test paths or fixed literals.
-    shell: process.platform === 'win32' && name === 'codex',
-  };
+  return { executable: name, prefixArguments: [] };
 }
 
 function proofInstruction(nonce) {
@@ -122,7 +116,8 @@ async function materializeWorkspace(host) {
 
 async function runCodex({ root, task }) {
   const finalMessage = path.join(root, '.codex-final.txt');
-  return execFileAsync(cliExecutable('codex'), [
+  const invocation = cliInvocation('codex');
+  return execFileAsync(invocation.executable, [...invocation.prefixArguments,
     'exec',
     '--ephemeral',
     '--json',
@@ -131,15 +126,16 @@ async function runCodex({ root, task }) {
     '-C', root,
     '--output-last-message', finalMessage,
     task,
-  ], cliOptions('codex', {
+  ], {
     cwd: repositoryRoot,
     timeout: 10 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024,
-  }));
+  });
 }
 
 async function runClaude({ root, task }) {
-  return execFileAsync(cliExecutable('claude'), [
+  const invocation = cliInvocation('claude');
+  return execFileAsync(invocation.executable, [...invocation.prefixArguments,
     '--print',
     '--output-format', 'stream-json',
     '--no-session-persistence',
@@ -147,11 +143,11 @@ async function runClaude({ root, task }) {
     '--permission-mode', 'bypassPermissions',
     '--max-budget-usd', '2',
     task,
-  ], cliOptions('claude', {
+  ], {
     cwd: root,
     timeout: 10 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024,
-  }));
+  });
 }
 
 async function assertHostResult(host, { root, nonce }) {
