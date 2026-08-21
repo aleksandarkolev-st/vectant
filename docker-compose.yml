@@ -48,6 +48,18 @@ services:
       timeout: 3s
       retries: 12
 
+  # Build the image that collab-server launches dynamically for each workspace.
+  # This service exits immediately: it makes the image part of a normal
+  # `docker compose up --build`, without a separately run Docker build.
+  runtime-image:
+    build:
+      context: ./backend/runtime-image
+      dockerfile: Dockerfile
+    image: vectant-runtime:local
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["exit 0"]
+    restart: "no"
+
   # ── Core Services ──────────────────────────────────────────────────────────
 
   frontend-migrate:
@@ -268,6 +280,8 @@ services:
         condition: service_healthy
       ai-engine:
         condition: service_started
+      runtime-image:
+        condition: service_completed_successfully
 
   signaling-server:
     build:
