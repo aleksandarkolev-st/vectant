@@ -47,6 +47,26 @@ function fullRollout() {
   };
 }
 
+function cliExecutable(name) {
+  // Node's Windows process launcher does not resolve a shell-only npm shim
+  // (`codex.ps1`) the way an interactive PowerShell session does. Use the
+  // actual npm command shim for Codex while leaving native CLI executables
+  // untouched on every platform.
+  if (process.platform === 'win32' && name === 'codex' && process.env.APPDATA) {
+    return path.join(process.env.APPDATA, 'npm', 'codex.cmd');
+  }
+  return name;
+}
+
+function cliOptions(name, options) {
+  return {
+    ...options,
+    // Windows requires cmd.exe to execute a .cmd shim. All values passed to
+    // this harness are generated test paths or fixed literals.
+    shell: process.platform === 'win32' && name === 'codex',
+  };
+}
+
 function proofInstruction(nonce) {
   return [
     '## Vectant workspace instructions',
@@ -102,7 +122,7 @@ async function materializeWorkspace(host) {
 
 async function runCodex({ root, task }) {
   const finalMessage = path.join(root, '.codex-final.txt');
-  return execFileAsync('codex', [
+  return execFileAsync(cliExecutable('codex'), [
     'exec',
     '--ephemeral',
     '--json',
@@ -111,15 +131,15 @@ async function runCodex({ root, task }) {
     '-C', root,
     '--output-last-message', finalMessage,
     task,
-  ], {
+  ], cliOptions('codex', {
     cwd: repositoryRoot,
     timeout: 10 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024,
-  });
+  }));
 }
 
 async function runClaude({ root, task }) {
-  return execFileAsync('claude', [
+  return execFileAsync(cliExecutable('claude'), [
     '--print',
     '--output-format', 'stream-json',
     '--no-session-persistence',
@@ -127,11 +147,11 @@ async function runClaude({ root, task }) {
     '--permission-mode', 'bypassPermissions',
     '--max-budget-usd', '2',
     task,
-  ], {
+  ], cliOptions('claude', {
     cwd: root,
     timeout: 10 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024,
-  });
+  }));
 }
 
 async function assertHostResult(host, { root, nonce }) {
