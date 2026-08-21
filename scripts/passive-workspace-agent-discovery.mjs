@@ -11,20 +11,18 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { createWorkspaceInstructionMetadataStore } = require('../backend/collab-server/workspaceInstructionMetadataStore');
 const { createWorkspaceInstructionProjectionRuntime } = require('../backend/collab-server/workspaceInstructionProjectionRuntime');
 
-const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const requestedHosts = process.argv
   .filter((argument) => argument.startsWith('--host='))
@@ -174,8 +172,9 @@ async function runCodex({ root, task }) {
 
 async function runClaude({ root, task }) {
   const invocation = cliInvocation('claude');
-  return execFileAsync(invocation.executable, [...invocation.prefixArguments,
+  return runWithClosedStdin(invocation.executable, [...invocation.prefixArguments,
     '--print',
+    '--verbose',
     '--output-format', 'stream-json',
     '--no-session-persistence',
     '--setting-sources', 'project',
