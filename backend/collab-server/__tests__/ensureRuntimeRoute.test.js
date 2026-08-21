@@ -12,11 +12,26 @@ function fakeRuntime() {
   };
 }
 
+function fakeFilesystem() {
+  const calls = [];
+  return {
+    calls,
+    ensureFilesystem: async (options) => { calls.push(options); },
+  };
+}
+
 test('handleEnsureRuntime triggers ensure + background readiness and returns warming', async () => {
   const rt = fakeRuntime();
-  const res = await handleEnsureRuntime({ workspaceRuntime: rt, slug: 'repo', userId: 'u1' });
+  const filesystem = fakeFilesystem();
+  const res = await handleEnsureRuntime({
+    workspaceRuntime: rt,
+    slug: 'repo',
+    userId: 'u1',
+    ensureFilesystem: filesystem.ensureFilesystem,
+  });
   assert.equal(res.status, 202);
   assert.equal(res.body.warming, true);
+  assert.deepEqual(filesystem.calls, [{ workspaceSlug: 'repo', filesystemUserId: 'u1', reason: 'runtime_prewarm' }]);
   assert.deepEqual(rt.calls.ensure[0], ['repo', 'u1']);
   // readiness is awaited in the background; give the microtask queue a tick
   await new Promise((r) => setTimeout(r, 5));
@@ -31,16 +46,19 @@ test('handleEnsureRuntime is a no-op (200) when container runtime is disabled', 
 
 test('handleEnsureRuntime blocks active CodeSite prewarm without starting a container', async () => {
   const rt = fakeRuntime();
+  const filesystem = fakeFilesystem();
   const res = await handleEnsureRuntime({
     workspaceRuntime: rt,
     slug: 'repo',
     userId: 'u1',
     codesiteContext: { active: true, transactionId: 'txn-1' },
     codesiteMetadata: { active: true, transactionId: 'txn-1' },
+    ensureFilesystem: filesystem.ensureFilesystem,
   });
   assert.equal(res.status, 409);
   assert.equal(res.body.error, 'codesite_runtime_quarantine_unavailable');
   assert.deepEqual(rt.calls.ensure, []);
+  assert.deepEqual(filesystem.calls, []);
   await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(rt.calls.wait, []);
 });
