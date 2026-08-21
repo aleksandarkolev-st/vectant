@@ -168,6 +168,10 @@ export const ADVERTISED_TOOLS = [
   "synthi_list_programs",
   "synthi_read_session",
   "synthi_launch_program",
+  "synthi_detect_workspace_program",
+  "synthi_launch_detected_program",
+  "synthi_stop_program",
+  "synthi_restart_program",
   // Registered Jupyter server control (tokens stay workspace/UI-only)
   "synthi_jupyter_list_servers",
   "synthi_jupyter_test_server",

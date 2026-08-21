@@ -168,9 +168,46 @@ describe("synthi_launch_program", () => {
   });
 });
 
+describe("program lifecycle additions", () => {
+  it("detects a workspace recipe through the read-only bridge", async () => {
+    const { calls, fetchImpl } = captureFetch(jsonRes(200, { detected: { source: "docker-compose" } }));
+    const res = await dispatchProgramTool("synthi_detect_workspace_program", {}, cfg, { fetch: fetchImpl });
+    expect(res!.isError).toBeFalsy();
+    expect(res!.structuredContent).toMatchObject({ detected: { source: "docker-compose" } });
+    expect(calls[0].url).toBe("https://app.example/api/integrations/mcp/programs/detect?workspaceSlug=team");
+    expect(calls[0].init.method).toBe("GET");
+  });
+
+  it("launches a detected recipe only through the consent-gated bridge", async () => {
+    const { calls, fetchImpl } = captureFetch(jsonRes(200, { session: { id: "ps-2", state: "starting" } }));
+    const res = await dispatchProgramTool("synthi_launch_detected_program", {}, cfg, { fetch: fetchImpl });
+    expect(res!.isError).toBeFalsy();
+    expect(calls[0].url).toBe("https://app.example/api/integrations/mcp/programs/detect");
+    expect(JSON.parse(calls[0].init.body)).toEqual({ workspaceSlug: "team" });
+  });
+
+  it("stops and restarts only an explicitly named session", async () => {
+    const { calls, fetchImpl } = captureFetch(jsonRes(200, { session: { id: "ps-1", state: "stopped" } }));
+    await dispatchProgramTool("synthi_stop_program", { sessionId: "ps-1" }, cfg, { fetch: fetchImpl });
+    await dispatchProgramTool("synthi_restart_program", { sessionId: "ps-1" }, cfg, { fetch: fetchImpl });
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://app.example/api/integrations/mcp/programs/ps-1/stop",
+      "https://app.example/api/integrations/mcp/programs/ps-1/restart",
+    ]);
+    expect(calls.every((call) => call.init.method === "POST")).toBe(true);
+  });
+
+  it("requires a session id before a lifecycle mutation", async () => {
+    const { fetchImpl } = captureFetch(jsonRes(200, {}));
+    const res = await dispatchProgramTool("synthi_stop_program", {}, cfg, { fetch: fetchImpl });
+    expect(res!.isError).toBe(true);
+    expect(res!.structuredContent).toMatchObject({ error: "session_required" });
+  });
+});
+
 describe("PROGRAM_TOOLS", () => {
-  it("advertises the four command-control tools with object input schemas", () => {
-    for (const name of ["synthi_exec_in_runtime", "synthi_list_programs", "synthi_read_session", "synthi_launch_program"]) {
+  it("advertises the complete program lifecycle with object input schemas", () => {
+    for (const name of ["synthi_exec_in_runtime", "synthi_list_programs", "synthi_read_session", "synthi_launch_program", "synthi_detect_workspace_program", "synthi_launch_detected_program", "synthi_stop_program", "synthi_restart_program"]) {
       const t = PROGRAM_TOOLS.find((x) => x.name === name);
       expect(t, name).toBeTruthy();
       expect(t!.inputSchema).toMatchObject({ type: "object" });

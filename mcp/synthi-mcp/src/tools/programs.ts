@@ -24,6 +24,10 @@ const EXEC_TOOL = "synthi_exec_in_runtime";
 const LIST_TOOL = "synthi_list_programs";
 const READ_TOOL = "synthi_read_session";
 const LAUNCH_TOOL = "synthi_launch_program";
+const DETECT_TOOL = "synthi_detect_workspace_program";
+const LAUNCH_DETECTED_TOOL = "synthi_launch_detected_program";
+const STOP_TOOL = "synthi_stop_program";
+const RESTART_TOOL = "synthi_restart_program";
 
 const SLUG_PROP = {
   type: "string",
@@ -88,6 +92,26 @@ export const PROGRAM_TOOLS: ProgramToolDescriptor[] = [
       },
       required: ["installId"],
     },
+  },
+  {
+    name: DETECT_TOOL,
+    description: "Detect the workspace's server-recognized runnable program recipe (docker-compose, devcontainer, or Dockerfile) without reading workspace source files. Use before synthi_launch_detected_program.",
+    inputSchema: { type: "object", properties: { workspaceSlug: SLUG_PROP } },
+  },
+  {
+    name: LAUNCH_DETECTED_TOOL,
+    description: "Launch the workspace's server-detected runnable program recipe. Requires owner/admin access and an already-granted program.launch consent; a PAT cannot grant consent for itself.",
+    inputSchema: { type: "object", properties: { workspaceSlug: SLUG_PROP } },
+  },
+  {
+    name: STOP_TOOL,
+    description: "Stop one running workspace program session by id. Use synthi_read_session or synthi_list_programs first to obtain the session id. Requires owner/admin access.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string", description: "Running program session id." }, workspaceSlug: SLUG_PROP }, required: ["sessionId"] },
+  },
+  {
+    name: RESTART_TOOL,
+    description: "Restart one workspace program session by id. Use synthi_read_session or synthi_list_programs first to obtain the session id. Requires owner/admin access.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string", description: "Running program session id." }, workspaceSlug: SLUG_PROP }, required: ["sessionId"] },
   },
 ];
 
@@ -201,6 +225,28 @@ async function launchProgram(
   return jsonResponse({ session: data["session"] ?? null });
 }
 
+async function postProgramEndpoint(
+  path: string,
+  body: Args,
+  cfg: ExternalConfig,
+  fetchImpl: FetchLike,
+  fallback: string,
+): Promise<ToolResponse> {
+  const res = await fetchImpl(`${cfg.apiUrl}${path}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${cfg.pat}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await readJson(res);
+  if (!res.ok) return errorFromResponse(res, data, fallback);
+  return jsonResponse(data);
+}
+
+function sessionId(args: Args): string | null {
+  const value = typeof args["sessionId"] === "string" ? (args["sessionId"] as string).trim() : "";
+  return value || null;
+}
+
 /**
  * Dispatch a program command-control tool. Returns null when `toolName` is not a
  * program tool (so the server's switch can fall through), else a ToolResponse.
@@ -235,6 +281,17 @@ export async function dispatchProgramTool(
         return await readSession(a, slug, cfg, deps.fetch);
       case LAUNCH_TOOL:
         return await launchProgram(a, slug, cfg, deps.fetch);
+      case DETECT_TOOL:
+        return await getJson(`${cfg.apiUrl}/api/integrations/mcp/programs/detect?workspaceSlug=${encodeURIComponent(slug)}`, cfg, deps.fetch, "detect_failed");
+      case LAUNCH_DETECTED_TOOL:
+        return await postProgramEndpoint("/api/integrations/mcp/programs/detect", { workspaceSlug: slug }, cfg, deps.fetch, "launch_detected_failed");
+      case STOP_TOOL:
+      case RESTART_TOOL: {
+        const id = sessionId(a);
+        if (!id) return errorResponse("session_required", { hint: "Pass a sessionId." });
+        const action = toolName === STOP_TOOL ? "stop" : "restart";
+        return await postProgramEndpoint(`/api/integrations/mcp/programs/${encodeURIComponent(id)}/${action}`, { workspaceSlug: slug }, cfg, deps.fetch, `${action}_failed`);
+      }
       default:
         return null;
     }
