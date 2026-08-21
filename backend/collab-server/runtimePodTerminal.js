@@ -1,6 +1,7 @@
 'use strict';
 
 const { PassThrough } = require('stream');
+const path = require('path');
 const spawner = require('./spawner');
 const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
 const { persistentRuntimeShellSetup } = require('./runtimePersistence');
@@ -34,6 +35,19 @@ class ResizablePassThrough extends PassThrough {
 
 function shellQuote(value) {
   return `'${String(value ?? '').replace(/'/g, `'\\''`)}'`;
+}
+
+function runtimeWorkspaceDirectory(workspaceRelativePath = '') {
+  const normalized = String(workspaceRelativePath || '').trim().replace(/\\/g, '/');
+  if (!normalized || normalized === '.') return RUNTIME_POD_WORKSPACE_MOUNT;
+  if (normalized.startsWith('/') || path.win32.isAbsolute(normalized)) {
+    throw new Error('runtime_pod_invalid_relative_workspace_path');
+  }
+  const parts = normalized.split('/');
+  if (parts.some((part) => !part || part === '.' || part === '..')) {
+    throw new Error('runtime_pod_invalid_relative_workspace_path');
+  }
+  return path.posix.join(RUNTIME_POD_WORKSPACE_MOUNT, ...parts);
 }
 
 function shouldUseRuntimePodTerminal(runtimeScope) {
@@ -204,6 +218,7 @@ async function createRuntimePodPty({
   actorUserId,
   filesystemUserId,
   cwd,
+  workspaceRelativePath = '',
   env = {},
   cols = 80,
   rows = 24,
@@ -224,7 +239,9 @@ async function createRuntimePodPty({
   if (!pod?.podName) {
     throw new Error(`Runtime pod for ${runtimeScope} is not ready`);
   }
-  const effectiveCwd = target.useSysboxRuntime ? RUNTIME_POD_WORKSPACE_MOUNT : cwd;
+  const effectiveCwd = target.useSysboxRuntime
+    ? runtimeWorkspaceDirectory(workspaceRelativePath)
+    : cwd;
 
   const terminalEnv = {
     ...env,
@@ -418,6 +435,7 @@ async function runtimeExecOnce(runtimeScope, command, { timeoutMs = 30000, env =
 module.exports = {
   shouldUseRuntimePodTerminal,
   runtimeTerminalTarget,
+  runtimeWorkspaceDirectory,
   programRuntimeTarget,
   codeSiteProgramRuntimeTarget,
   codeSiteProgramRuntimeLaunchMode,

@@ -41,6 +41,7 @@ const { watchWorkspace } = require('./fsWatcherService');
 const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimePodTerminal');
 const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode, codeSiteTerminalReattachDecision } = require('./terminalRouting');
 const { ensureRuntimeFilesystem, releaseRuntimeFilesystem } = require('./runtimeFilesystem');
+const { normalizedActiveWorkspacePath } = require('./workspaceInstructionProjectionRuntime');
 const { buildPersistentRuntimeEnv, ensurePersistentRuntimeDirs } = require('./runtimePersistence');
 const { guardCodeSiteHostSurface } = require('./codesiteActiveBoundary');
 const {
@@ -408,6 +409,7 @@ async function createTerminalProcess({
   runtimeScope = '',
   actorUserId = '',
   filesystemUserId = '',
+  activeWorkspacePath = '',
 }) {
   if (shouldUseRuntimePodTerminal(runtimeScope)) {
     return createRuntimePodPty({
@@ -416,6 +418,7 @@ async function createTerminalProcess({
       actorUserId,
       filesystemUserId,
       cwd,
+      workspaceRelativePath: activeWorkspacePath,
       env,
       cols,
       rows,
@@ -1445,6 +1448,7 @@ function sanitizeResize(cols, rows) {
 async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30, name = null, options = {}) {
   const runtimeScope = options.runtimeScope || '';
   const filesystemUserId = options.filesystemUserId || userId;
+  const activeWorkspacePath = normalizedActiveWorkspacePath(options.activeWorkspacePath || '');
   const instructionProjectionRuntimeScope = `terminal:${sessionId}`;
   // Programs (managedProgramRuntime) launch headless sessions with an explicit
   // env + shellType; merge those on top of the runtime-scope env so neither the
@@ -1456,15 +1460,16 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     : null;
   let cwd;
   try {
-    await ensureRuntimeFilesystem({
+    const preparedFilesystem = await ensureRuntimeFilesystem({
       workspaceSlug: slug,
       filesystemUserId,
+      activeWorkspacePath,
       runtimeScope: instructionProjectionRuntimeScope,
       pin: true,
       reason: 'headless_terminal',
       codesiteContext: codeSiteContext,
     });
-    cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+    cwd = preparedFilesystem.activeWorkspaceRoot || await resolveWorkspaceCwd(slug, filesystemUserId);
   } catch (err) {
     await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
     throw err;
@@ -1498,6 +1503,7 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
       shellType,
       workspaceName: name,
       workspaceSlug: slug,
+      activeWorkspacePath,
       runtimeScope,
       actorUserId: userId,
       filesystemUserId,
@@ -1571,6 +1577,7 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     workspaceSlug: slug,
     userId,
     filesystemUserId,
+    activeWorkspacePath,
     codesite: options.codesite || null,
     codesiteContext: codeSiteContext,
     codesiteQuarantine: codeSiteQuarantine || null,
@@ -1647,6 +1654,16 @@ function createTerminalWSS({
     const initialCols = parseInt(parsedUrl.searchParams.get('cols'), 10) || 80;
     const initialRows = parseInt(parsedUrl.searchParams.get('rows'), 10) || 24;
     const requestedShellType = parsedUrl.searchParams.get('shell') || null;
+    let activeWorkspacePath;
+    try {
+      activeWorkspacePath = normalizedActiveWorkspacePath(
+        parsedUrl.searchParams.get('activeWorkspacePath') || parsedUrl.searchParams.get('workspacePath') || '',
+      );
+    } catch (_) {
+      ws.send(JSON.stringify({ type: 'error', code: 'invalid_active_workspace_path', message: 'Invalid opened workspace directory.' }));
+      ws.close(1008, 'Invalid opened workspace directory');
+      return;
+    }
     const codeSiteContext = terminalCodeSiteContext(req, parsedUrl.searchParams, {
       workspaceSlug,
       actorUserId: requestedUserId,
@@ -1860,15 +1877,16 @@ function createTerminalWSS({
     let codeSiteQuarantine = null;
     let codeSiteOriginalCwd = null;
     try {
-      await ensureRuntimeFilesystem({
+      const preparedFilesystem = await ensureRuntimeFilesystem({
         workspaceSlug,
         filesystemUserId: requestedFilesystemUserId,
+        activeWorkspacePath,
         runtimeScope: instructionProjectionRuntimeScope,
         pin: true,
         reason: 'interactive_terminal',
         codesiteContext: codeSiteContext.active ? codeSiteContext : null,
       });
-      cwd = await resolveWorkspaceCwd(workspaceSlug, requestedFilesystemUserId);
+      cwd = preparedFilesystem.activeWorkspaceRoot || await resolveWorkspaceCwd(workspaceSlug, requestedFilesystemUserId);
     } catch (err) {
       await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
       console.error(`[Terminal] Failed to prepare filesystem for session ${sessionId}:`, err.message);
@@ -1975,6 +1993,7 @@ function createTerminalWSS({
         const handle = await workspaceRuntime.execInteractiveShell(workspaceSlug, requestedUserId, {
           cols: initialCols,
           rows: initialRows,
+          workspaceRelativePath: activeWorkspacePath,
           env: codeSiteEnv,
           ...runtimeOptions,
         });
@@ -2008,6 +2027,7 @@ function createTerminalWSS({
           shellType: requestedShellType,
           workspaceName,
           workspaceSlug,
+          activeWorkspacePath,
           runtimeScope,
           actorUserId: requestedUserId,
           filesystemUserId: requestedFilesystemUserId,
@@ -2046,6 +2066,7 @@ function createTerminalWSS({
       workspaceSlug,
       userId: requestedUserId,
       filesystemUserId: requestedFilesystemUserId,
+      activeWorkspacePath,
       workspaceRuntime: containerRuntimeOptions ? workspaceRuntime : null,
       runtimeOptions: containerRuntimeOptions,
       runtimeUserId: requestedUserId,

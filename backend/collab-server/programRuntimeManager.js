@@ -528,6 +528,7 @@ function createProgramRuntimeManager(options = {}) {
     title = null,
     metadata = null,
     codesiteContext = null,
+    activeWorkspacePath = '',
     ports = [],
     health = null,
   } = {}) {
@@ -579,6 +580,7 @@ function createProgramRuntimeManager(options = {}) {
       title,
       metadata,
       codesiteContext,
+      activeWorkspacePath,
     });
 
     const record = {
@@ -605,6 +607,7 @@ function createProgramRuntimeManager(options = {}) {
       stopReason: null,
       metadata,
       codesiteContext,
+      activeWorkspacePath,
       commandPreview: trimmedCommand,
       events: [],
       launchRequest: {
@@ -618,6 +621,7 @@ function createProgramRuntimeManager(options = {}) {
         title,
         metadata,
         codesiteContext,
+        activeWorkspacePath,
         ports: declaredPorts,
         health: health && typeof health === 'object' ? health : null,
       },

@@ -310,6 +310,66 @@ test('terminal/runtime hydration reconciles passive instructions only after the 
   }
 });
 
+test('terminal/runtime hydration carries the exact nested opened directory through projection and cleanup', async () => {
+  activityRegistry.resetRegistry();
+  const reconciliations = [];
+  const cleanupCalls = [];
+  const workspaceRoot = '/tmp/runtime-nested/user-1';
+  const activeWorkspacePath = 'packages/backend';
+  const restoreProjectionRuntime = setWorkspaceInstructionProjectionRuntimeForTests({
+    reconcile: async (input) => {
+      reconciliations.push(input);
+      return {
+        skipped: false,
+        activeWorkspaceRoot: `${workspaceRoot}/packages/backend`,
+        activeWorkspacePath,
+        projections: [{ path: 'AGENTS.md', ownership: 'synthetic-only' }],
+      };
+    },
+    cleanup: async (input) => {
+      cleanupCalls.push(input);
+      return { skipped: false, projections: [] };
+    },
+  });
+  const restore = patchGitService({
+    initRepo: async () => ({ success: true }),
+    ensureUserRepo: async () => ({ path: workspaceRoot, created: true }),
+    getEffectiveRepoPath: () => workspaceRoot,
+  });
+  try {
+    await withControlPlaneActiveList('runtime-nested', [], async () => {
+      const result = await ensureRuntimeFilesystem({
+        workspaceSlug: 'runtime-nested',
+        filesystemUserId: 'user-1',
+        activeWorkspacePath,
+        runtimeScope: 'terminal:nested-root',
+        pin: true,
+        reason: 'interactive_terminal',
+      });
+      assert.equal(result.activeWorkspaceRoot, `${workspaceRoot}/packages/backend`);
+      assert.equal(result.activeWorkspacePath, activeWorkspacePath);
+      assert.deepEqual(reconciliations, [{
+        workspaceId: 'runtime-nested',
+        repositoryRoot: workspaceRoot,
+        activeWorkspacePath,
+      }]);
+
+      const release = await releaseRuntimeFilesystem('terminal:nested-root');
+      assert.equal(release.skipped, false);
+      assert.deepEqual(cleanupCalls, [{
+        workspaceId: 'runtime-nested',
+        repositoryRoot: workspaceRoot,
+        activeWorkspacePath,
+      }]);
+    });
+  } finally {
+    await releaseRuntimeFilesystem('terminal:nested-root');
+    restoreProjectionRuntime();
+    activityRegistry.resetRegistry();
+    restore();
+  }
+});
+
 test('last terminal release cleans passive instruction projections after all sessions close', async () => {
   activityRegistry.resetRegistry();
   const cleanupCalls = [];

@@ -249,7 +249,7 @@ const managedProgramRuntime = createProgramRuntimeManager({
   activeSessions: terminalSessions,
   logger,
   getActivePorts: () => proxyService.getActivePorts(),
-  launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType, metadata, codesiteContext }) => {
+  launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType, metadata, codesiteContext, activeWorkspacePath }) => {
     // Slice 1 (real programs): `container` programs route into the per-workspace
     // Sysbox runtime POD when the backend is on (its own validated, isolated
     // dockerd — precedence), else the dev-hybrid runtime container, else fail loud.
@@ -336,6 +336,7 @@ const managedProgramRuntime = createProgramRuntimeManager({
       env,
       codesite: metadata?.codesite || null,
       codesiteContext,
+      activeWorkspacePath,
     });
     const { commandStartedPromise } = queueHeadlessCommandStart(runtime.ptyProcess, command);
     return {
@@ -3677,6 +3678,7 @@ const server = http.createServer(async (req, res) => {
         title: parsed.name || null,
         runtimeScope,
         filesystemUserId,
+        activeWorkspacePath: parsed.activeWorkspacePath || '',
         metadata: codeSiteMetadata ? { codesite: codeSiteMetadata } : null,
         codesiteContext: codeSiteContext.active ? codeSiteContext : null,
       });

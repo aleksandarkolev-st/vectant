@@ -7,6 +7,7 @@ const { createWorkspaceInstructionProjectionRuntime } = require('./workspaceInst
 
 const hydrationLocks = new Map();
 const runtimePins = new Map();
+const runtimeProjectionRoots = new Map();
 const projectionCleanupLocks = new Map();
 let workspaceInstructionProjectionRuntime = createWorkspaceInstructionProjectionRuntime();
 
@@ -32,7 +33,7 @@ async function waitForProjectionCleanup(key) {
   if (cleanup) await cleanup;
 }
 
-function scheduleProjectionCleanup({ slug, userId }) {
+function scheduleProjectionCleanup({ slug, userId, activeWorkspacePaths = [''] }) {
   const key = pinKey(slug, userId);
   const previous = projectionCleanupLocks.get(key) || Promise.resolve();
   const cleanup = previous.catch(() => {}).then(async () => {
@@ -42,10 +43,17 @@ function scheduleProjectionCleanup({ slug, userId }) {
       return { skipped: true, reason: 'workspace_runtime_still_pinned' };
     }
     try {
-      return await workspaceInstructionProjectionRuntime.cleanup({
-        workspaceId: slug,
-        repositoryRoot: gitService.getEffectiveRepoPath(slug, userId || null),
-      });
+      const repositoryRoot = gitService.getEffectiveRepoPath(slug, userId || null);
+      const projections = [];
+      for (const activeWorkspacePath of activeWorkspacePaths) {
+        const cleanupInput = {
+          workspaceId: slug,
+          repositoryRoot,
+        };
+        if (activeWorkspacePath) cleanupInput.activeWorkspacePath = activeWorkspacePath;
+        projections.push(await workspaceInstructionProjectionRuntime.cleanup(cleanupInput));
+      }
+      return projections.length === 1 ? projections[0] : { skipped: false, projections };
     } catch (error) {
       // Runtime teardown must not become a failed terminal shutdown. A later
       // workspace open reconciles stale blocks safely after a crash or retry.
@@ -85,16 +93,20 @@ async function hydrateWorkspace(slug, userId, reason = 'runtime') {
   };
 }
 
-async function reconcileRuntimeInstructionProjection(result) {
-  const projection = await workspaceInstructionProjectionRuntime.reconcile({
+async function reconcileRuntimeInstructionProjection(result, activeWorkspacePath = '') {
+  const projectionInput = {
     workspaceId: result.slug,
     repositoryRoot: result.path,
-  });
+  };
+  if (activeWorkspacePath) projectionInput.activeWorkspacePath = activeWorkspacePath;
+  const projection = await workspaceInstructionProjectionRuntime.reconcile(projectionInput);
   // Runtime callers may surface this result in diagnostics.  Preserve only
   // operational metadata: terminal instruction content remains in the
   // physical document and must never be copied into a status payload.
   return {
     ...result,
+    activeWorkspaceRoot: projection.activeWorkspaceRoot || result.path,
+    activeWorkspacePath: projection.activeWorkspacePath || activeWorkspacePath || '',
     instructionProjection: {
       skipped: Boolean(projection.skipped),
       reason: projection.reason || null,
@@ -177,6 +189,7 @@ async function ensureRuntimeFilesystem({
   workspaceSlug,
   filesystemUserId = '',
   runtimeScope = '',
+  activeWorkspacePath = '',
   pin = false,
   reason = 'runtime',
   codesiteContext = null,
@@ -195,7 +208,7 @@ async function ensureRuntimeFilesystem({
     await refreshActiveWorkspaceAuthority(slug, activeCodeSiteContext);
     const existing = await existingCodeSiteRuntimeFilesystem(slug, userId, reason);
     if (pin && runtimeScope) {
-      pinRuntimeFilesystem(runtimeScope, slug, userId);
+      pinRuntimeFilesystem(runtimeScope, slug, userId, activeWorkspacePath);
     }
     return existing;
   }
@@ -208,37 +221,47 @@ async function ensureRuntimeFilesystem({
   let lock = hydrationLocks.get(key);
   if (!lock) {
     lock = hydrateWorkspace(slug, userId, reason)
-      .then(reconcileRuntimeInstructionProjection)
       .finally(() => {
-      hydrationLocks.delete(key);
-    });
+        hydrationLocks.delete(key);
+      });
     hydrationLocks.set(key, lock);
   }
 
-  const result = await lock;
+  const hydrated = await lock;
+  // Hydration is shared by all terminal launches for a workspace, but the
+  // projection must be evaluated per launch because different users can open
+  // different nested directories inside the same repository concurrently.
+  const result = await reconcileRuntimeInstructionProjection(hydrated, activeWorkspacePath);
 
   if (pin && runtimeScope) {
-    pinRuntimeFilesystem(runtimeScope, slug, userId);
+    pinRuntimeFilesystem(runtimeScope, slug, userId, result.activeWorkspacePath || activeWorkspacePath);
   }
 
   return result;
 }
 
-function pinRuntimeFilesystem(runtimeScope, workspaceSlug, filesystemUserId = '') {
+function pinRuntimeFilesystem(runtimeScope, workspaceSlug, filesystemUserId = '', activeWorkspacePath = '') {
   const scope = normalize(runtimeScope);
   const slug = normalize(workspaceSlug);
   if (!scope || !slug) return;
 
   const userId = normalize(filesystemUserId);
-  const next = { slug, userId };
+  const next = { slug, userId, activeWorkspacePath: normalize(activeWorkspacePath) };
   const existing = runtimePins.get(scope);
   if (existing) {
-    if (existing.slug === next.slug && existing.userId === next.userId) return;
+    if (
+      existing.slug === next.slug
+      && existing.userId === next.userId
+      && existing.activeWorkspacePath === next.activeWorkspacePath
+    ) return;
     releaseRuntimeFilesystem(scope);
   }
 
   repoCache.pin(next.slug, cacheUserId(next.userId));
   runtimePins.set(scope, next);
+  const roots = runtimeProjectionRoots.get(pinKey(next.slug, next.userId)) || new Map();
+  roots.set(next.activeWorkspacePath, (roots.get(next.activeWorkspacePath) || 0) + 1);
+  runtimeProjectionRoots.set(pinKey(next.slug, next.userId), roots);
 }
 
 function releaseRuntimeFilesystem(runtimeScope) {
@@ -248,10 +271,22 @@ function releaseRuntimeFilesystem(runtimeScope) {
   if (!existing) return Promise.resolve({ skipped: true, reason: 'runtime_scope_not_pinned' });
   repoCache.unpin(existing.slug, cacheUserId(existing.userId));
   runtimePins.delete(scope);
+  const workspaceKey = pinKey(existing.slug, existing.userId);
+  const roots = runtimeProjectionRoots.get(workspaceKey);
+  const knownActiveWorkspacePaths = Array.from(roots?.keys() || [existing.activeWorkspacePath]);
+  if (roots) {
+    const remaining = (roots.get(existing.activeWorkspacePath) || 1) - 1;
+    if (remaining > 0) roots.set(existing.activeWorkspacePath, remaining);
+    else roots.delete(existing.activeWorkspacePath);
+  }
   if (hasRuntimePin(existing.slug, existing.userId)) {
     return Promise.resolve({ skipped: true, reason: 'workspace_runtime_still_pinned' });
   }
-  return scheduleProjectionCleanup(existing);
+  runtimeProjectionRoots.delete(workspaceKey);
+  return scheduleProjectionCleanup({
+    ...existing,
+    activeWorkspacePaths: knownActiveWorkspacePaths.length ? knownActiveWorkspacePaths : [existing.activeWorkspacePath],
+  });
 }
 
 function getPinnedRuntimeFilesystems() {
@@ -259,6 +294,7 @@ function getPinnedRuntimeFilesystems() {
     runtimeScope,
     workspaceSlug: value.slug,
     filesystemUserId: value.userId || null,
+    activeWorkspacePath: value.activeWorkspacePath || '',
   }));
 }
 

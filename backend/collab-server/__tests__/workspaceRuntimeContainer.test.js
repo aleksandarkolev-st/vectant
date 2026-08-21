@@ -7,6 +7,7 @@ const {
   runtimeContainerHost,
   shouldCull,
   RUNTIME_IMAGE,
+  runtimeWorkspaceDirectory,
   volumeSubpathForPath,
 } = require('../workspaceRuntimeContainer');
 
@@ -36,6 +37,13 @@ test('RUNTIME_IMAGE defaults to vectant-runtime:local', () => {
 test('volumeSubpathForPath derives safe named-volume subpaths', () => {
   assert.equal(volumeSubpathForPath('/data/codesitefs-quarantine/repo/txn', '/data'), 'codesitefs-quarantine/repo/txn');
   assert.equal(volumeSubpathForPath('/tmp/codesitefs-quarantine/repo/txn', '/data'), '');
+});
+
+test('runtimeWorkspaceDirectory preserves the exact nested root and rejects escapes', () => {
+  assert.equal(runtimeWorkspaceDirectory('packages/backend'), '/workspace/packages/backend');
+  assert.equal(runtimeWorkspaceDirectory('packages\\backend'), '/workspace/packages/backend');
+  assert.throws(() => runtimeWorkspaceDirectory('../outside'), /invalid_relative_workspace_path/);
+  assert.throws(() => runtimeWorkspaceDirectory('/outside'), /invalid_relative_workspace_path/);
 });
 
 const { createRuntimeManager } = require('../workspaceRuntimeContainer');
@@ -355,7 +363,7 @@ test('execInRuntime returns a ptyProcess-shaped handle (onData/onExit/kill)', as
   assert.equal(typeof d.dispose, 'function');
 });
 
-test('execInteractiveShell opens a bash -l TTY exec in /workspace as rootless and wires resize', async () => {
+test('execInteractiveShell opens a bash -l TTY exec in the exact opened workspace directory as rootless and wires resize', async () => {
   let execOpts = null;
   let resizeArg = null;
   const docker = fakeDocker();
@@ -378,6 +386,7 @@ test('execInteractiveShell opens a bash -l TTY exec in /workspace as rootless an
   const handle = await mgr.execInteractiveShell('repo', 'u1', {
     cols: 120,
     rows: 40,
+    workspaceRelativePath: 'packages/backend',
     env: {
       CODESITE_TRANSACTION_ID: 'txn-1',
       CODESITE_MUTATION_LEASE_ID: 'lease-1',
@@ -387,7 +396,7 @@ test('execInteractiveShell opens a bash -l TTY exec in /workspace as rootless an
 
   // Interactive login shell, in the workspace, as the rootless user, with a TTY.
   assert.deepEqual(execOpts.Cmd, ['/bin/bash', '-lc', 'exec /bin/bash -l -c \'umask "$RUNTIME_WORKSPACE_UMASK"; exec /bin/bash\'']);
-  assert.equal(execOpts.WorkingDir, '/workspace');
+  assert.equal(execOpts.WorkingDir, '/workspace/packages/backend');
   assert.equal(execOpts.User, 'rootless');
   assert.equal(execOpts.Tty, true);
   assert.equal(execOpts.AttachStdin, true);

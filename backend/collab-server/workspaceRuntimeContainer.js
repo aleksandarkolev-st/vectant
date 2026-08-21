@@ -46,6 +46,19 @@ const HOST_ENV_DENYLIST = new Set([
   'HOSTNAME', 'TMPDIR', 'TERM', 'NODE_ENV', '_',
 ]);
 
+function runtimeWorkspaceDirectory(workspaceRelativePath = '') {
+  const normalized = String(workspaceRelativePath || '').trim().replace(/\\/g, '/');
+  if (!normalized || normalized === '.') return '/workspace';
+  if (normalized.startsWith('/') || path.win32.isAbsolute(normalized)) {
+    throw new Error('workspace_runtime_invalid_relative_workspace_path');
+  }
+  const parts = normalized.split('/');
+  if (parts.some((part) => !part || part === '.' || part === '..')) {
+    throw new Error('workspace_runtime_invalid_relative_workspace_path');
+  }
+  return path.posix.join('/workspace', ...parts);
+}
+
 function createDockerExecTextDecoder({ tty = true } = {}) {
   let pending = Buffer.alloc(0);
   const decode = (chunk, emit) => {
@@ -531,14 +544,24 @@ function createRuntimeManager({
    * nothing host-leaked to scrub here; we only set TERM + a friendly PS1.
    * @returns {{ ptyProcess: {onData,onExit,write,kill,resize}, stop } }
    */
-  async function execInteractiveShell(slug, userId, { cols = 80, rows = 24, env = {}, ...runtimeOptions } = {}) {
+  async function execInteractiveShell(slug, userId, {
+    cols = 80,
+    rows = 24,
+    env = {},
+    workspaceRelativePath = '',
+    ...runtimeOptions
+  } = {}) {
     const s = sessions.get(keyOf(slug, userId, runtimeOptions));
     if (!s) throw new Error('runtime container not started');
     s.lastActive = Date.now();
 
     // ~/<workspace> style prompt parity with the host-shell terminal. /workspace
     // is the mount target; show it as "~/workspace" so the path reads cleanly.
-    const PS1 = String.raw`\[\e[36m\]~/workspace\[\e[0m\]$ `;
+    const workingDirectory = runtimeWorkspaceDirectory(workspaceRelativePath);
+    const workspaceLabel = workingDirectory === '/workspace'
+      ? '~/workspace'
+      : `~/workspace/${workingDirectory.slice('/workspace/'.length)}`;
+    const PS1 = String.raw`\[\e[36m\]${workspaceLabel}\[\e[0m\]$ `;
     const Env = [
       'TERM=xterm-256color',
       'COLORTERM=truecolor',
@@ -557,7 +580,7 @@ function createRuntimeManager({
       AttachStdout: true,
       AttachStderr: true,
       Tty: true,
-      WorkingDir: '/workspace',
+      WorkingDir: workingDirectory,
     });
     const stream = await exec.start({ hijack: true, stdin: true, Tty: true });
     // Apply the initial terminal size once the exec is live. Docker's resize
@@ -762,6 +785,7 @@ module.exports = {
   volumeSubpathForPath,
   runtimeContainerName,
   runtimeContainerHost,
+  runtimeWorkspaceDirectory,
   shouldCull,
   createRuntimeManager,
 };
