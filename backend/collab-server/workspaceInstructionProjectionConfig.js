@@ -11,7 +11,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { ATOMIC_AGENT_PROTOCOL } = require('./workspaceAgentProtocol');
+const { PASSIVE_WORKSPACE_INSTRUCTIONS } = require('./workspaceAgentProtocol');
 const {
   INSTRUCTION_PROJECTIONS,
   getEnabledInstructionProjections,
@@ -64,11 +64,11 @@ function contentHash(content) {
 
 /**
  * Produce the sole instruction payload consumed by the projection engine.
- * `content` deliberately defaults to the existing Synthi atomic protocol so
- * callers that have not yet stored workspace-specific instructions retain the
- * currently shipped behavior.  The returned value stores no secrets.
+ * `content` deliberately defaults to short, host-neutral workspace guidance.
+ * Workspace metadata remains the sole authoritative source when it is set.
+ * The returned value stores no secrets.
  */
-function createCanonicalWorkspaceInstructions({ workspaceId, content = ATOMIC_AGENT_PROTOCOL, version = 1 } = {}) {
+function createCanonicalWorkspaceInstructions({ workspaceId, content = PASSIVE_WORKSPACE_INSTRUCTIONS, version = 1 } = {}) {
   const normalizedWorkspaceId = normalizeWorkspaceId(workspaceId);
   const normalizedContent = String(content == null ? '' : content);
   if (!normalizedContent.trim()) {
@@ -102,7 +102,7 @@ function canonicalWorkspaceInstructionsFromMetadata(workspace = {}, overrides = 
     workspaceId: overrides.workspaceId || source.workspaceId || metadata.id || metadata.slug,
     content: Object.prototype.hasOwnProperty.call(overrides, 'content')
       ? overrides.content
-      : (Object.prototype.hasOwnProperty.call(source, 'content') ? source.content : ATOMIC_AGENT_PROTOCOL),
+      : (Object.prototype.hasOwnProperty.call(source, 'content') ? source.content : PASSIVE_WORKSPACE_INSTRUCTIONS),
     version: Object.prototype.hasOwnProperty.call(overrides, 'version')
       ? overrides.version
       : (source.version == null ? 1 : source.version),

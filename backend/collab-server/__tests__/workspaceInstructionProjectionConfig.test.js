@@ -52,7 +52,7 @@ test('canonical workspace instructions have a stable set ID and content hash', (
   }).hash);
 });
 
-test('takes canonical instructions from durable workspace metadata with the existing protocol as a default', () => {
+test('takes canonical instructions from durable workspace metadata with neutral workspace guidance as a default', () => {
   const explicit = canonicalWorkspaceInstructionsFromMetadata({
     id: 'database-id',
     workspaceInstructions: { content: 'Do not delete workspace resources.', version: 7 },
@@ -63,7 +63,8 @@ test('takes canonical instructions from durable workspace metadata with the exis
 
   const defaulted = canonicalWorkspaceInstructionsFromMetadata({ slug: 'workspace-slug' });
   assert.equal(defaulted.workspaceId, 'workspace-slug');
-  assert.match(defaulted.content, /Synthi Atomic Agent Protocol/);
+  assert.match(defaulted.content, /Vectant environment configuration/);
+  assert.doesNotMatch(defaulted.content, /synthi_route_atomic_task|sub-agent|MCP/i);
 });
 
 test('resolves the exact nested opened directory and never substitutes its Git ancestor', async (t) => {

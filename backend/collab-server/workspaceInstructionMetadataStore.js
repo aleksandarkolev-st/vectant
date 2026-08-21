@@ -11,7 +11,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { ATOMIC_AGENT_PROTOCOL } = require('./workspaceAgentProtocol');
+const {
+  LEGACY_ATOMIC_AGENT_PROTOCOL,
+  PASSIVE_WORKSPACE_INSTRUCTIONS,
+} = require('./workspaceAgentProtocol');
 const {
   canonicalWorkspaceInstructionsFromMetadata,
 } = require('./workspaceInstructionProjectionConfig');
@@ -153,7 +156,7 @@ function decodeRecord(raw, workspaceId) {
 function createWorkspaceInstructionMetadataStore({
   directory = defaultMetadataDirectory(),
   fsApi = fs.promises,
-  defaultContent = ATOMIC_AGENT_PROTOCOL,
+  defaultContent = PASSIVE_WORKSPACE_INSTRUCTIONS,
   clock = () => new Date().toISOString(),
 } = {}) {
   const root = path.resolve(String(directory || ''));
@@ -181,34 +184,42 @@ function createWorkspaceInstructionMetadataStore({
     }
   }
 
+  async function set(workspaceId, { content, version = null } = {}) {
+    const id = normalizeWorkspaceId(workspaceId);
+    const nextContent = normalizeContent(content);
+    const current = await readRecord(id);
+    const nextVersion = version == null
+      ? (current && current.content === nextContent ? current.version : (current?.version || 0) + 1)
+      : normalizeVersion(version);
+    const record = {
+      schemaVersion: STORE_VERSION,
+      workspaceId: id,
+      content: nextContent,
+      version: nextVersion,
+      updatedAt: clock(),
+    };
+    await ensureSafeDirectory(fsApi, root);
+    await writeAtomically(fsApi, recordPath(id), `${JSON.stringify(record)}\n`);
+    return canonicalWorkspaceInstructionsFromMetadata({ id, workspaceInstructions: record });
+  }
+
   return Object.freeze({
     directory: root,
     async get(workspaceId) {
       const id = normalizeWorkspaceId(workspaceId);
       const record = await readRecord(id);
+      // Earlier projections persisted a Vectant-host-only orchestration prompt
+      // as though it were generic workspace context. Replace that exact former
+      // default on read; explicitly stored workspace guidance remains intact.
+      if (record && record.content === LEGACY_ATOMIC_AGENT_PROTOCOL && defaultContent !== LEGACY_ATOMIC_AGENT_PROTOCOL) {
+        return set(id, { content: defaultContent });
+      }
       return canonicalWorkspaceInstructionsFromMetadata({
         id,
         workspaceInstructions: record || { content: defaultContent, version: 1 },
       });
     },
-    async set(workspaceId, { content, version = null } = {}) {
-      const id = normalizeWorkspaceId(workspaceId);
-      const nextContent = normalizeContent(content);
-      const current = await readRecord(id);
-      const nextVersion = version == null
-        ? (current && current.content === nextContent ? current.version : (current?.version || 0) + 1)
-        : normalizeVersion(version);
-      const record = {
-        schemaVersion: STORE_VERSION,
-        workspaceId: id,
-        content: nextContent,
-        version: nextVersion,
-        updatedAt: clock(),
-      };
-      await ensureSafeDirectory(fsApi, root);
-      await writeAtomically(fsApi, recordPath(id), `${JSON.stringify(record)}\n`);
-      return canonicalWorkspaceInstructionsFromMetadata({ id, workspaceInstructions: record });
-    },
+    set,
   });
 }
 

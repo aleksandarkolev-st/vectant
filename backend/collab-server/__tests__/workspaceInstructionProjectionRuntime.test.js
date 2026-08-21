@@ -9,7 +9,7 @@ const { promisify } = require('node:util');
 const test = require('node:test');
 
 const { extractVectantBlock, stripVectantBlock } = require('../workspaceInstructionProjection');
-const { ATOMIC_AGENT_PROTOCOL } = require('../workspaceAgentProtocol');
+const { PASSIVE_WORKSPACE_INSTRUCTIONS } = require('../workspaceAgentProtocol');
 const {
   enabledInstructionProjections,
   resolveWorkspaceInstructionProjectionFlag,
@@ -100,7 +100,7 @@ test('a blank non-Git workspace receives every enabled passive instruction proje
 
   for (const projection of enabledInstructionProjections()) {
     const physical = await fs.promises.readFile(path.join(workspace, projection.path), 'utf8');
-    assert.equal(extractVectantBlock(physical).content, ATOMIC_AGENT_PROTOCOL);
+    assert.equal(extractVectantBlock(physical).content, PASSIVE_WORKSPACE_INSTRUCTIONS);
   }
 });
 

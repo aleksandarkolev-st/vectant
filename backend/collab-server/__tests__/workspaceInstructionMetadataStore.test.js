@@ -11,6 +11,10 @@ const {
   defaultMetadataDirectory,
   filenameForWorkspace,
 } = require('../workspaceInstructionMetadataStore');
+const {
+  LEGACY_ATOMIC_AGENT_PROTOCOL,
+  PASSIVE_WORKSPACE_INSTRUCTIONS,
+} = require('../workspaceAgentProtocol');
 
 async function temporaryStore(t) {
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'vectant-instruction-metadata-'));
@@ -61,6 +65,20 @@ test('stores one canonical instruction payload outside the checkout and versions
   assert.equal(second.version, 2);
   assert.equal((await store.get('workspace_123')).content, 'Use the Vectant runtime.');
   assert.equal(path.dirname(path.join(directory, filenameForWorkspace('workspace_123'))), directory);
+});
+
+test('migrates the exact legacy host-specific default to neutral passive guidance', async (t) => {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'vectant-instruction-metadata-'));
+  t.after(() => fs.promises.rm(directory, { recursive: true, force: true }));
+  const store = createWorkspaceInstructionMetadataStore({ directory });
+
+  const legacy = await store.set('workspace_legacy', { content: LEGACY_ATOMIC_AGENT_PROTOCOL, version: 4 });
+  assert.equal(legacy.version, 4);
+
+  const migrated = await store.get('workspace_legacy');
+  assert.equal(migrated.content, PASSIVE_WORKSPACE_INSTRUCTIONS);
+  assert.equal(migrated.version, 5);
+  assert.equal((await store.get('workspace_legacy')).version, 5);
 });
 
 test('rejects unsafe IDs, oversized content, and a hostile metadata symlink', async (t) => {

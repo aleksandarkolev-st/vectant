@@ -4,11 +4,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  ATOMIC_AGENT_PROTOCOL,
+  PASSIVE_WORKSPACE_INSTRUCTIONS,
 } = require('../workspaceAgentProtocol');
 
-test('the atomic protocol remains a canonical payload and no longer provisions a hidden agent file', () => {
-  assert.match(ATOMIC_AGENT_PROTOCOL, /synthi_route_atomic_task/);
-  assert.match(ATOMIC_AGENT_PROTOCOL, /Do not expose the full tool catalog/);
+test('the passive default contains workspace context rather than an agent-specific protocol', () => {
+  assert.match(PASSIVE_WORKSPACE_INSTRUCTIONS, /Vectant environment configuration/);
+  assert.match(PASSIVE_WORKSPACE_INSTRUCTIONS, /Vectant-managed workspace resources/);
+  assert.doesNotMatch(PASSIVE_WORKSPACE_INSTRUCTIONS, /synthi_route_atomic_task|sub-agent|MCP/i);
   assert.equal(Object.prototype.hasOwnProperty.call(require('../workspaceAgentProtocol'), 'provisionWorkspaceAgentProtocol'), false);
 });
