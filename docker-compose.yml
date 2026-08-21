@@ -218,6 +218,10 @@ services:
       # Storage (Local dev uses filesystem instead of GCS)
       REPOS_DIR: /data/repos
       REPO_CACHE_DIR: /data/repos
+      # Canonical passive-instruction payloads are Vectant-private runtime
+      # metadata.  The collab image runs unprivileged, so this must live on
+      # the writable persistent data volume rather than under /app.
+      WORKSPACE_INSTRUCTION_METADATA_DIR: /data/workspace-instruction-metadata
       # Database
       CLOUD_SQL_INSTANCE: "" # Not used in local dev
       # Dev specific
