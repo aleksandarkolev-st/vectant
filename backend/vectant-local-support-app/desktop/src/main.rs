@@ -1466,7 +1466,12 @@ async fn relay_poll_loop(app_handle: tauri::AppHandle) {
                     {
                         if let Ok(expires_at) = DateTime::parse_from_rfc3339(&expires_at) {
                             if let Ok(ttl) = (expires_at.with_timezone(&Utc) - Utc::now()).to_std() {
-                                let _ = app_state.session.lock().await.renew(ttl);
+                                let mut session_guard = app_state.session.lock().await;
+                                if session_guard.renew(ttl).is_ok() {
+                                    // The bearer is loopback-only and never crosses the relay.
+                                    // Retain a short overlap for already-started local requests.
+                                    let _ = session_guard.rotate_connection_token(Duration::from_secs(60));
+                                }
                             }
                         }
                     }
