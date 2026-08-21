@@ -785,6 +785,7 @@ async fn full_access_graph_node(
         .receipt
         .clone()
         .ok_or_else(|| denied(StatusCode::FORBIDDEN, "full_access_not_enrolled"))?;
+    let current_graph = full_access.scope_graph(current_graph);
     let binding = ReceiptBinding {
         session_id: &session_id,
         account_id: &account_id,
@@ -876,6 +877,7 @@ async fn full_access_mutation(
         .receipt
         .clone()
         .ok_or_else(|| denied(StatusCode::FORBIDDEN, "full_access_not_enrolled"))?;
+    let graph = full_access.scope_graph(graph);
     let binding = ReceiptBinding {
         session_id: &session_id,
         account_id: &account_id,

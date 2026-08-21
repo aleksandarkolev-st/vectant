@@ -11,6 +11,7 @@ import {
 } from "@/lib/local-support/relayStore";
 import { renewPairedSession, updatePairedSessionPorts } from "@/lib/local-support/sessionStore";
 import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
+import { activateLinkedProject } from "@/lib/local-support/linkedProjectStore";
 
 export const runtime = "nodejs";
 
@@ -19,6 +20,10 @@ const MAX_BODY_BYTES = 16 * 1024;
 const POLL_FIELDS = new Set(["action"]);
 const RENEW_FIELDS = new Set(["action"]);
 const STATUS_FIELDS = new Set(["action", "ports"]);
+const LINKED_PROJECT_STATUS_FIELDS = new Set([
+  "action", "project_id", "workspace_hash", "selection_mode", "selected_node_ids",
+  "graph_node_count", "full_access_expires_at",
+]);
 const OUTCOME_FIELDS = new Set([
   "action", "request_id", "lease_id", "decision", "bytes_sent",
   "redaction_count", "scanner_version", "reason",
@@ -147,6 +152,29 @@ export async function POST(req) {
       : denied("invalid_port_status"), updated ? 200 : 400);
   }
 
+  if (body.action === "linked_project_status"
+    && hasOnlyFields(body, LINKED_PROJECT_STATUS_FIELDS)
+    && validLinkedProjectStatus(body)) {
+    let activated;
+    try {
+      activated = await activateLinkedProject({
+        projectId: body.project_id,
+        sessionId: authentication.session.sessionId,
+        deviceFingerprint: authentication.session.deviceFingerprint,
+        workspaceHash: body.workspace_hash,
+        selectionMode: body.selection_mode,
+        selectedNodeIds: body.selected_node_ids,
+        graphNodeCount: body.graph_node_count,
+        fullAccessExpiresAt: body.full_access_expires_at ? new Date(body.full_access_expires_at) : null,
+      });
+    } catch {
+      return jsonNoStore(denied("relay_unavailable"), 503);
+    }
+    return jsonNoStore(activated
+      ? { decision: "linked_project_activated", raw_body_included: false, bytes_sent: 0 }
+      : denied("linked_project_activation_not_pending"), activated ? 200 : 409);
+  }
+
   if (body.action === "outcome" && validOutcome(body) && hasOnlyFields(body, OUTCOME_FIELDS)) {
     let outcome;
     try {
@@ -186,6 +214,17 @@ function validControlOutcome(body) {
     && typeof body.lease_id === "string" && /^[0-9a-f-]{16,64}$/i.test(body.lease_id)
     && ["applied", "denied"].includes(body.decision)
     && typeof body.reason === "string" && body.reason.length <= 256;
+}
+
+function validLinkedProjectStatus(body) {
+  if (!/^lproj_[A-Za-z0-9_-]{12,128}$/.test(body.project_id || "")) return false;
+  if (!/^sha256:[a-f0-9]{16,128}$/i.test(body.workspace_hash || "")) return false;
+  if (!["folder", "file_set"].includes(body.selection_mode)) return false;
+  if (!Array.isArray(body.selected_node_ids) || body.selected_node_ids.length > 20_000
+    || body.selected_node_ids.some((id) => typeof id !== "string" || !/^node_[A-Za-z0-9_-]{8,128}$/.test(id))) return false;
+  if (!Number.isSafeInteger(body.graph_node_count) || body.graph_node_count < 0 || body.graph_node_count > 20_000) return false;
+  return body.full_access_expires_at === null || body.full_access_expires_at === undefined
+    || (typeof body.full_access_expires_at === "string" && !Number.isNaN(Date.parse(body.full_access_expires_at)));
 }
 
 function safeId(value) {

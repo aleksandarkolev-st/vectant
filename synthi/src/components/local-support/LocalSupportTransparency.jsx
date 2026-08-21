@@ -239,6 +239,8 @@ export default function LocalSupportTransparency() {
   const [revokedPorts, setRevokedPorts] = useState([]);
   const [controlActionStatus, setControlActionStatus] = useState(null);
   const [selectedEnrollmentActor, setSelectedEnrollmentActor] = useState("");
+  const [linkedProjectsState, setLinkedProjectsState] = useState({ status: "loading", projects: [], error: null });
+  const [linkedProjectForm, setLinkedProjectForm] = useState({ displayName: "", selectionMode: "folder" });
   const [testRequestStatus, setTestRequestStatus] = useState(null);
   const [pairingState, setPairingState] = useState({
     status: "idle",
@@ -283,6 +285,22 @@ export default function LocalSupportTransparency() {
       }
     }
     loadPolicy();
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    async function loadLinkedProjects() {
+      try {
+        const response = await fetch("/api/local-support/linked-projects", { cache: "no-store", signal: controller.signal });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.reason || `linked_projects_${response.status}`);
+        if (!controller.signal.aborted) setLinkedProjectsState({ status: "loaded", projects: Array.isArray(body.projects) ? body.projects : [], error: null });
+      } catch (error) {
+        if (!controller.signal.aborted) setLinkedProjectsState({ status: "error", projects: [], error: error instanceof Error ? error.message : "linked_projects_unavailable" });
+      }
+    }
+    loadLinkedProjects();
     return () => controller.abort();
   }, []);
 
@@ -445,6 +463,49 @@ export default function LocalSupportTransparency() {
         text: error instanceof Error ? error.message : "Local control request failed.",
       });
       return null;
+    }
+  }
+
+  async function requestLinkedProject(event) {
+    event.preventDefault();
+    if (!connected || !workspaceSelected) {
+      setControlActionStatus({ tone: "bad", text: "Pair the desktop app and select a workspace before linking a local project." });
+      return;
+    }
+    const displayName = linkedProjectForm.displayName.trim() || workspaceDisplay;
+    setControlActionStatus({ tone: "neutral", text: "Requesting local project confirmation..." });
+    try {
+      const response = await fetch("/api/local-support/linked-projects", {
+        method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: `lproj_${crypto.randomUUID().replaceAll("-", "")}`,
+          selection_mode: linkedProjectForm.selectionMode,
+          display_name: displayName,
+          session_id: liveSession.session_id,
+          workspace_id: liveWorkspace.workspace_id,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok || result.decision === "denied") throw new Error(result.reason || "linked_project_denied");
+      setLinkedProjectForm((current) => ({ ...current, displayName: "" }));
+      setControlActionStatus({ tone: "good", text: "The desktop app received the request. Confirm the selected folder or choose files locally; no source is uploaded." });
+      const projectsResponse = await fetch("/api/local-support/linked-projects", { cache: "no-store" });
+      const projectsBody = await projectsResponse.json();
+      if (projectsResponse.ok) setLinkedProjectsState({ status: "loaded", projects: Array.isArray(projectsBody.projects) ? projectsBody.projects : [], error: null });
+    } catch (error) {
+      setControlActionStatus({ tone: "bad", text: error instanceof Error ? error.message : "Could not request local project." });
+    }
+  }
+
+  async function disconnectLinkedProject(projectId) {
+    setControlActionStatus({ tone: "neutral", text: "Requesting local project disconnect..." });
+    try {
+      const response = await fetch("/api/local-support/linked-projects", { method: "DELETE", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project_id: projectId }) });
+      const result = await response.json();
+      if (!response.ok || result.decision === "denied") throw new Error(result.reason || "linked_project_disconnect_denied");
+      setControlActionStatus({ tone: "good", text: "The desktop app will revoke the linked project's Full Access scope." });
+    } catch (error) {
+      setControlActionStatus({ tone: "bad", text: error instanceof Error ? error.message : "Could not disconnect local project." });
     }
   }
 
@@ -1016,7 +1077,7 @@ export default function LocalSupportTransparency() {
           <TabsContent value="full-access" className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
             <Panel
               title="Full Access scope"
-              description="This is a local enforcement record, not a remote-administration grant. Every automatic action still requires a current receipt, policy, budget, scanner result, and durable audit event."
+              description="This is an eight-hour local work-session receipt, not a remote-administration grant. Every automatic action still requires a current receipt, policy, budget, scanner result, and durable audit event."
             >
               {liveFullAccess.enrolled ? (
                 <div className="space-y-4">
@@ -1063,6 +1124,33 @@ export default function LocalSupportTransparency() {
                   ) : null}
                 </div>
               )}
+            </Panel>
+
+            <Panel title="Linked local projects" description="Link the current desktop workspace as a folder, or choose a bounded file set in the native desktop dialog. Vectant records only a scrubbed graph identity and scope metadata; source and local paths are never uploaded.">
+              <form className="grid gap-3" onSubmit={requestLinkedProject}>
+                <label className="grid gap-1 text-xs text-[var(--text-muted)]">
+                  Project name
+                  <input className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)]" maxLength={96} value={linkedProjectForm.displayName} onChange={(event) => setLinkedProjectForm((current) => ({ ...current, displayName: event.target.value }))} placeholder={workspaceDisplay} />
+                </label>
+                <label className="grid gap-1 text-xs text-[var(--text-muted)]">
+                  Local scope
+                  <select className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)]" value={linkedProjectForm.selectionMode} onChange={(event) => setLinkedProjectForm((current) => ({ ...current, selectionMode: event.target.value }))}>
+                    <option value="folder">Current selected folder</option>
+                    <option value="file_set">Choose selected files locally</option>
+                  </select>
+                </label>
+                <Button type="submit" variant="outline" disabled={!relayControlsAvailable || !workspaceSelected}>Request local project access</Button>
+              </form>
+              <div className="mt-4 space-y-2">
+                {linkedProjectsState.projects.map((project) => (
+                  <div key={project.project_id} className="flex items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-sm">
+                    <div className="min-w-0"><div className="truncate text-[var(--text-primary)]">{project.display_name}</div><div className="text-xs text-[var(--text-muted)]">{project.selection_mode === "file_set" ? `${project.graph_node_count} selected file nodes` : `${project.graph_node_count} folder graph nodes`} · local-backed</div></div>
+                    <div className="flex items-center gap-2"><Pill tone={project.status === "active" ? "good" : "warn"}>{project.status === "active" ? "Active" : "Awaiting desktop"}</Pill>{project.status === "active" ? <Button type="button" variant="ghost" size="sm" onClick={() => disconnectLinkedProject(project.project_id)}>Disconnect</Button> : null}</div>
+                  </div>
+                ))}
+                {linkedProjectsState.status === "error" ? <p className="text-sm text-[var(--accent-danger)]">Linked project state is unavailable: {linkedProjectsState.error}</p> : null}
+                {linkedProjectsState.status === "loaded" && linkedProjectsState.projects.length === 0 ? <p className="text-sm text-[var(--text-muted)]">No local project is linked yet.</p> : null}
+              </div>
             </Panel>
 
             <Panel title="Immediate local controls" description="Pause stops automatic delivery. Revoke invalidates the Full Access receipt and process visibility. Both are sent as signed desktop control requests, not browser-to-daemon commands.">
