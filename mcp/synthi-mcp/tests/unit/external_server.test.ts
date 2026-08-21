@@ -89,6 +89,44 @@ describe("external tools wired into the MCP server", () => {
     expect(text.text).not.toContain('"properties"');
   });
 
+  it("returns bounded authoritative descriptors for CodeSite, Regret Memory, and therapeutic tomography", async () => {
+    const client = await connectedClient({ defaultSignalingUrl: "ws://x" });
+    const cases = [
+      {
+        description: "Open a CodeSite transaction for the planned patch.",
+        toolName: "synthi_codesite_open_transaction",
+        descriptionFragment: "serializable MutationTransaction",
+      },
+      {
+        description: "Review Regret Memory antibodies before retrying the workflow.",
+        toolName: "synthi_dojo_get_antibodies",
+        descriptionFragment: "negative-memory antibodies",
+      },
+      {
+        description: "Initialize a therapeutic tomography trace for this task.",
+        toolName: "synthi_dojo_therapeutic_init_trace",
+        descriptionFragment: "therapeutic tomography runtime trace",
+      },
+    ];
+
+    for (const expected of cases) {
+      const response = await client.callTool({
+        name: "synthi_route_atomic_task",
+        arguments: { description: expected.description, toolNames: [expected.toolName] },
+      });
+      const text = response.content.find((item) => item.type === "text");
+      expect(text?.type).toBe("text");
+      if (!text || text.type !== "text") throw new Error("atomic route response must contain text");
+
+      const route = JSON.parse(text.text);
+      expect(route.tool_metadata).toEqual([
+        expect.objectContaining({ name: expected.toolName, description: expect.stringContaining(expected.descriptionFragment) }),
+      ]);
+      expect(text.text).not.toContain("inputSchema");
+      expect(text.text).not.toContain('"properties"');
+    }
+  });
+
   it("teaches connected MCP hosts the mandatory atomic routing protocol", async () => {
     const client = await connectedClient({ defaultSignalingUrl: "ws://x" });
 
