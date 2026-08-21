@@ -57,8 +57,7 @@ function buildOrgRestrictions(policy) {
   const fastSupportTtl = formatMinutes(policy?.mvp?.fast_support_ttl_minutes);
   return [
     ["Browser preview", policy ? (previewDisabled ? "Blocked by policy" : "Allowed by policy") : "Not reported", previewDisabled ? "bad" : policy ? "good" : "neutral", "Local app still requires a loopback approval"],
-    ["Vectant AI page reading", "Blocked in MVP", "bad", "Browser preview never grants AI page access"],
-    ["Support agent page reading", "Blocked in MVP", "bad", "Browser preview never grants support page access"],
+    ["Full Access local-port reads", policy?.full_access?.local_port_use_enabled ? "Receipt-scoped" : "Disabled by policy", policy?.full_access?.local_port_use_enabled ? "warn" : policy ? "neutral" : "neutral", "Browser preview never grants page access. Full Access reads are separately bounded, scanned, identity-bound, and audited."],
     ["Fast Support", policy ? (fastSupportEnabled ? "Enabled by policy" : "Disabled by policy") : "Not reported", policy && fastSupportEnabled ? "warn" : "neutral", `Safe metadata only, with a ${fastSupportTtl === "Not reported" ? "policy-controlled" : fastSupportTtl} session TTL`],
     ["Minimum app version", policy?.min_app_version || "Not reported", policy ? "warn" : "neutral", policy ? "Older versions are denied" : "Cloud policy has not loaded"],
     ["Activity retention", formatRetention(policy), policy ? "warn" : "neutral", "Raw bodies are never stored in cloud audit"],
@@ -96,7 +95,7 @@ function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport, 
       status: connected ? "Active" : "Available after pairing",
       automatic: "Low-risk metadata only",
       approval: "Source, logs, and loopback preview",
-      blocked: "Secrets, workspace writes, commands, AI/support page reads, persistent approvals",
+      blocked: "Secrets, workspace writes, commands, and persistent approvals",
       tone: connected ? "good" : "neutral",
     },
     {
@@ -104,7 +103,7 @@ function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport, 
       status: "Available after pairing",
       automatic: "Nothing",
       approval: "Every file, log, and port request",
-      blocked: "Same local security denylist, writes, commands, and page reads",
+      blocked: "Same local security denylist, writes, commands, and persistent approvals",
       tone: "info",
     },
     {
@@ -112,7 +111,7 @@ function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport, 
       status: !fastSupportEnabled ? "Disabled by policy" : liveFastSupport ? "Active" : "Available after pairing",
       automatic: `Safe metadata only, one workspace, ${fastSupportTtl === "Not reported" ? "policy-controlled TTL" : `max ${fastSupportTtl}`}`,
       approval: "Source, logs, and loopback preview",
-      blocked: "Secrets, writes, commands, response bodies, AI/support page reads, persistent approvals",
+      blocked: "Secrets, writes, commands, response bodies, and persistent approvals",
       tone: !fastSupportEnabled ? "bad" : liveFastSupport ? "warn" : "neutral",
     },
     {
@@ -645,8 +644,8 @@ export default function LocalSupportTransparency() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
-                  <span className="text-[var(--text-muted)]">AI and support page access</span>
-                  <Pill tone="bad">Blocked in MVP</Pill>
+                  <span className="text-[var(--text-muted)]">Full Access local-port reads</span>
+                  <Pill tone={liveFullAccess.capabilities?.includes("support.full_access.local_port.use") ? "warn" : "neutral"}>{liveFullAccess.capabilities?.includes("support.full_access.local_port.use") ? "Receipt-scoped" : "Not granted"}</Pill>
                 </div>
                 <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
                   <span className="text-[var(--text-muted)]">Shell commands</span>
@@ -788,7 +787,7 @@ export default function LocalSupportTransparency() {
 
             <Panel
               title="Organization restrictions"
-              description="Browser preview is available only through an explicit session-scoped loopback grant. AI and support-agent page reads remain blocked in the MVP."
+              description="Browser preview is available only through an explicit session-scoped loopback grant. Full Access local-port reads are a separate receipt-scoped operation and never turn the browser preview into a general proxy."
             >
               <div className="space-y-3">
                 {orgRestrictions.map(([label, value, tone, detail]) => (
@@ -923,7 +922,7 @@ export default function LocalSupportTransparency() {
           </TabsContent>
 
           <TabsContent value="ports" className="mt-4">
-            <Panel title="Local ports" description="Manual approval only. Each port can grant browser, AI, support, interaction, response-body, and state-changing method capabilities for this session.">
+            <Panel title="Local ports" description="Browser preview requires a manual, session-scoped approval. Full Access may separately use policy-scoped loopback responses after receipt, listener-identity, response-size, scanner, and audit checks.">
               <div className="grid gap-4">
                 {ports.length === 0 ? (
                   <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">

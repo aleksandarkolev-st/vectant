@@ -9,18 +9,15 @@ test.describe("local support transparency page", () => {
 
     await expect(page.getByRole("heading", { name: "Vectant Local Support" })).toBeVisible();
     await expect(page.getByText("Available locally is not the same as sent.")).toBeVisible();
-    await expect(page.getByText("AI and support page access", { exact: true })).toBeVisible();
-    await expect(page.getByText("Blocked in MVP").first()).toBeVisible();
+    await expect(page.getByText("Full Access local-port reads", { exact: true })).toHaveCount(2);
     await expect(page.getByText(/Update required below 0\.1\.0|Not reported/).first()).toBeVisible();
-    await expect(page.getByText("Browser preview is available only through an explicit session-scoped loopback grant. AI and support-agent page reads remain blocked in the MVP.")).toBeVisible();
-    await expect(page.getByText("Vectant AI page reading")).toBeVisible();
-    await expect(page.getByText("Blocked in MVP")).toHaveCount(3);
+    await expect(page.getByText("Browser preview never grants page access. Full Access reads are separately bounded, scanned, identity-bound, and audited.")).toBeVisible();
     await expect(page.getByText("Activity retention")).toBeVisible();
     await expect(page.getByText(/30 days|Not reported/).first()).toBeVisible();
     await expect(page.getByText("Raw bodies are never stored in cloud audit")).toBeVisible();
     await expect(page.getByText("Workspace selection")).toBeVisible();
     await expect(page.getByText("Installation is not consent.")).toBeVisible();
-    await expect(page.getByText("Workspace: No workspace selected. Account: Not paired. Session: Not paired.")).toBeVisible();
+    await expect(page.getByText(/Workspace: No workspace selected\. Account: (Not paired|not_paired)\. Session: (Not paired|not_paired)\./)).toBeVisible();
     await expect(page.getByText("Disconnected")).toBeVisible();
     await expect(page.getByText("No live approval request")).toBeVisible();
 

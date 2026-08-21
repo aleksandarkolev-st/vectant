@@ -70,7 +70,7 @@ const PLAN_PRODUCT_BLOCKERS = [
   "balanced_default",
   "manual_mode_available",
   "fast_support_bounded",
-  "agent_read_disabled",
+  "full_access_port_read_scoped",
   "agent_interaction_disabled",
   "error_states_understandable",
   "uninstall_stops_bridge",
