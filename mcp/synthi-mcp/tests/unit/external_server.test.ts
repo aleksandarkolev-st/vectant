@@ -70,6 +70,30 @@ describe("external tools wired into the MCP server", () => {
     expect(text.text).not.toContain("synthi_codesite_open_transaction");
   });
 
+  it("routes the complete HMR loop from live schema-free runtime metadata", async () => {
+    const client = await connectedClient({ defaultSignalingUrl: "ws://x" });
+    const response = await client.callTool({
+      name: "synthi_route_atomic_task",
+      arguments: { description: "Compile the workspace and wait for its HMR update before inspecting the preview." },
+    });
+    const text = response.content.find((item) => item.type === "text");
+    expect(text?.type).toBe("text");
+    if (!text || text.type !== "text") throw new Error("atomic route response must contain text");
+
+    const route = JSON.parse(text.text);
+    expect(route.role).toBe("infrastructure");
+    expect(route.skills).toContain("vectant-runtime");
+    expect(route.suggested_tools).toEqual(expect.arrayContaining([
+      "synthi_compile",
+      "synthi_wait_hmr",
+    ]));
+    expect(route.tool_metadata).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "synthi_compile", groups: expect.arrayContaining(["hmr", "project"]) }),
+      expect.objectContaining({ name: "synthi_wait_hmr", groups: expect.arrayContaining(["hmr"]) }),
+    ]));
+    expect(text.text).not.toContain("inputSchema");
+  });
+
   it("routes dynamically connected tools from metadata without returning their schemas", async () => {
     const client = await connectedClient({ defaultSignalingUrl: "ws://x", externalTools });
     const response = await client.callTool({

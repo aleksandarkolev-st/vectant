@@ -189,6 +189,16 @@ export function deriveToolMetadata(name: string): VectantToolMetadata {
   if (hasAnyToken(actionTokens, ["project", "deployment", "compile", "run"])) {
     addGroup(groups, "project");
   }
+  if (
+    hasAnyToken(actionTokens, ["hmr", "compile"])
+    || name === "synthi_get_source_state"
+    || name === "synthi_report_source_state"
+  ) {
+    // HMR is an execution loop in its own right: compile/dispatch, wait for a
+    // terminal reload result, then inspect the new frame. Keep it distinct
+    // from generic runtime metadata so routing can choose the whole loop.
+    addGroup(groups, "hmr");
+  }
   if (hasAnyToken(actionTokens, ["proof", "capsule"])) {
     addGroup(groups, "proof");
   }

@@ -17,8 +17,8 @@ export const VECTANT_SKILL_METADATA: readonly VectantSkillMetadata[] = Object.fr
     id: "vectant-runtime",
     name: "Vectant runtime",
     description: "Manages workspace runtimes, attachments, and project execution.",
-    groups: Object.freeze(["runtime", "attachment", "project"]),
-    keywords: Object.freeze(["attach", "container", "deploy", "runtime", "workspace"]),
+    groups: Object.freeze(["runtime", "attachment", "hmr", "project"]),
+    keywords: Object.freeze(["attach", "compile", "container", "deploy", "hmr", "runtime", "workspace"]),
   }),
   Object.freeze({
     id: "vectant-browser",

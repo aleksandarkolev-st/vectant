@@ -75,6 +75,17 @@ describe("Vectant MCP tool metadata catalog", () => {
     ]));
   });
 
+  it("classifies the compile-to-frame HMR loop independently from generic runtime tools", () => {
+    const selected = selectToolMetadata({ groups: ["hmr"] });
+    expect(selected.map((entry) => entry.name)).toEqual(expect.arrayContaining([
+      "synthi_compile",
+      "synthi_wait_hmr",
+      "synthi_get_source_state",
+      "synthi_report_source_state",
+    ]));
+    expect(selected.every((entry) => entry.groups.includes("hmr"))).toBe(true);
+  });
+
   it("selects every workspace program command-control tool", () => {
     const programToolNames = PROGRAM_TOOLS.map((tool) => tool.name);
     const selected = selectToolMetadata({ names: programToolNames });

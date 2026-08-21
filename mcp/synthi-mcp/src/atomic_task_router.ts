@@ -201,6 +201,7 @@ const MUTATING_TERMS = new Set([
 const ACTION_TERMS = new Set([
   "apply",
   "attach",
+  "compile",
   "create",
   "delete",
   "detach",
