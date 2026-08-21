@@ -13,6 +13,7 @@ const os = require('os');
 const path = require('path');
 const {
   LEGACY_ATOMIC_AGENT_PROTOCOL,
+  LEGACY_NEUTRAL_WORKSPACE_INSTRUCTIONS,
   PASSIVE_WORKSPACE_INSTRUCTIONS,
 } = require('./workspaceAgentProtocol');
 const {
@@ -208,10 +209,11 @@ function createWorkspaceInstructionMetadataStore({
     async get(workspaceId) {
       const id = normalizeWorkspaceId(workspaceId);
       const record = await readRecord(id);
-      // Earlier projections persisted a Vectant-host-only orchestration prompt
-      // as though it were generic workspace context. Replace that exact former
-      // default on read; explicitly stored workspace guidance remains intact.
-      if (record && record.content === LEGACY_ATOMIC_AGENT_PROTOCOL && defaultContent !== LEGACY_ATOMIC_AGENT_PROTOCOL) {
+      // Replace only exact former defaults. Explicit workspace guidance remains
+      // intact, while existing workspaces pick up the current atomic contract.
+      if (record
+        && (record.content === LEGACY_ATOMIC_AGENT_PROTOCOL || record.content === LEGACY_NEUTRAL_WORKSPACE_INSTRUCTIONS)
+        && record.content !== defaultContent) {
         return set(id, { content: defaultContent });
       }
       return canonicalWorkspaceInstructionsFromMetadata({

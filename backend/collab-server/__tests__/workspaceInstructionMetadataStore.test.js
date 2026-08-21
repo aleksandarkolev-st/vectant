@@ -13,6 +13,7 @@ const {
 } = require('../workspaceInstructionMetadataStore');
 const {
   LEGACY_ATOMIC_AGENT_PROTOCOL,
+  LEGACY_NEUTRAL_WORKSPACE_INSTRUCTIONS,
   PASSIVE_WORKSPACE_INSTRUCTIONS,
 } = require('../workspaceAgentProtocol');
 
@@ -67,7 +68,7 @@ test('stores one canonical instruction payload outside the checkout and versions
   assert.equal(path.dirname(path.join(directory, filenameForWorkspace('workspace_123'))), directory);
 });
 
-test('migrates the exact legacy host-specific default to neutral passive guidance', async (t) => {
+test('migrates exact legacy defaults to the current atomic guidance', async (t) => {
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'vectant-instruction-metadata-'));
   t.after(() => fs.promises.rm(directory, { recursive: true, force: true }));
   const store = createWorkspaceInstructionMetadataStore({ directory });
@@ -79,6 +80,12 @@ test('migrates the exact legacy host-specific default to neutral passive guidanc
   assert.equal(migrated.content, PASSIVE_WORKSPACE_INSTRUCTIONS);
   assert.equal(migrated.version, 5);
   assert.equal((await store.get('workspace_legacy')).version, 5);
+
+  const neutral = await store.set('workspace_neutral', { content: LEGACY_NEUTRAL_WORKSPACE_INSTRUCTIONS, version: 2 });
+  assert.equal(neutral.version, 2);
+  const neutralMigrated = await store.get('workspace_neutral');
+  assert.equal(neutralMigrated.content, PASSIVE_WORKSPACE_INSTRUCTIONS);
+  assert.equal(neutralMigrated.version, 3);
 });
 
 test('rejects unsafe IDs, oversized content, and a hostile metadata symlink', async (t) => {
