@@ -11,6 +11,17 @@ export type ToolMetadataOrigin = "advertised" | "dynamic" | "both";
 export interface VectantToolMetadata {
   /** Exact MCP tool name. */
   readonly name: string;
+  /**
+   * A short, human-readable capability description. This is routing metadata,
+   * not a tool schema: it lets a classifier distinguish similarly named
+   * capabilities without receiving their arguments or implementation details.
+   */
+  readonly description: string;
+  /**
+   * Precomputed, schema-free search terms. This stays inside the router's
+   * catalogue and is deliberately omitted from selected execution context.
+   */
+  readonly routingTerms: readonly string[];
   /** Reusable, normalized routing facets such as `codesite` or `runtime`. */
   readonly groups: readonly string[];
   /** Normalized name tokens plus caller-supplied routing terms. */
@@ -25,6 +36,8 @@ export interface VectantToolMetadata {
  */
 export interface DynamicToolMetadataEntry {
   readonly name: string;
+  /** Overrides the generated fallback with the tool's authoritative summary. */
+  readonly description?: string;
   readonly groups?: readonly string[];
   readonly keywords?: readonly string[];
 }
@@ -62,6 +75,9 @@ export interface ToolMetadataCatalog {
 
 const ATTACHMENT_ACTIONS = new Set(["attach", "detach", "reconnect"]);
 const SNAPSHOT_ACTIONS = new Set(["snapshot", "restore", "snapshots"]);
+const DESCRIPTION_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "with",
+]);
 
 function normalizedTerms(value: string): string[] {
   return value
@@ -71,12 +87,46 @@ function normalizedTerms(value: string): string[] {
     .filter(Boolean);
 }
 
+function titleCaseTerms(value: string): string {
+  return normalizedTerms(value)
+    .map((term) => term.length <= 3 ? term.toUpperCase() : `${term[0]?.toUpperCase()}${term.slice(1)}`)
+    .join(" ");
+}
+
+/**
+ * Guaranteed fallback for every registered tool. The live server supplies its
+ * authoritative descriptor where one exists; this makes generated, future,
+ * and temporarily disconnected catalog entries still useful to routing.
+ */
+export function describeToolMetadata(name: string): string {
+  assertToolName(name);
+  const action = name.replace(/^synthi_/, "").replace(/^ext_/, "external ");
+  const readable = titleCaseTerms(action);
+  if (name.startsWith("synthi_dojo_")) {
+    return `Agent Dojo capability: ${readable.replace(/^Dojo /, "")}.`;
+  }
+  if (name.startsWith("synthi_codesite_")) {
+    return `CodeSite control-plane capability: ${readable.replace(/^Codesite /, "")}.`;
+  }
+  if (name.startsWith("synthi_failure_")) {
+    return `Failure Distiller capability: ${readable.replace(/^Failure /, "")}.`;
+  }
+  if (name.startsWith("synthi_browser_")) {
+    return `Browser runtime capability: ${readable.replace(/^Browser /, "")}.`;
+  }
+  return `Vectant capability: ${readable}.`;
+}
+
 function normalizedGroup(value: string): string {
   return normalizedTerms(value).join("-");
 }
 
 function uniqueTerms(terms: readonly string[]): string[] {
   return [...new Set(terms)];
+}
+
+function descriptionRoutingTerms(value: string): string[] {
+  return normalizedTerms(value).filter((term) => term.length > 2 && !DESCRIPTION_STOP_WORDS.has(term));
 }
 
 function assertToolName(name: string): void {
@@ -156,11 +206,26 @@ export function deriveToolMetadata(name: string): VectantToolMetadata {
   if (hasAnyToken(actionTokens, ["human", "permission"])) {
     addGroup(groups, "human-escalation");
   }
+  if (hasAnyToken(actionTokens, ["therapeutic"])) {
+    addGroup(groups, "therapeutic-tomography");
+  }
+  if (hasAnyToken(actionTokens, ["antibodies", "counterfactual", "evil", "ghost", "time"])) {
+    addGroup(groups, "regret-memory");
+  }
+
+  const keywords = uniqueTerms([
+    "vectant",
+    ...actionTokens,
+    ...(groups.includes("therapeutic-tomography") ? ["therapeutic", "tomography"] : []),
+    ...(groups.includes("regret-memory") ? ["regret", "memory", "counterfactual"] : []),
+  ]);
 
   return {
     name,
+    description: describeToolMetadata(name),
+    routingTerms: uniqueTerms([...keywords, ...groups.flatMap(normalizedTerms)]),
     groups: uniqueTerms(groups),
-    keywords: uniqueTerms(["vectant", ...actionTokens]),
+    keywords,
     origin: "advertised",
   };
 }
@@ -169,16 +234,26 @@ function toDynamicMetadata(entry: DynamicToolMetadataEntry): VectantToolMetadata
   assertToolName(entry.name);
   const derived = deriveToolMetadata(entry.name);
 
+  const description = entry.description?.trim() || derived.description;
+  const keywords = uniqueTerms([
+    ...derived.keywords,
+    ...(entry.keywords ?? []).flatMap(normalizedTerms),
+  ]);
+  const groups = uniqueTerms([
+    ...derived.groups,
+    ...(entry.groups ?? []).map(normalizedGroup).filter(Boolean),
+  ]);
   return {
     ...derived,
-    groups: uniqueTerms([
-      ...derived.groups,
-      ...(entry.groups ?? []).map(normalizedGroup).filter(Boolean),
+    description,
+    routingTerms: uniqueTerms([
+      ...derived.routingTerms,
+      ...descriptionRoutingTerms(description),
+      ...groups.flatMap(normalizedTerms),
+      ...keywords,
     ]),
-    keywords: uniqueTerms([
-      ...derived.keywords,
-      ...(entry.keywords ?? []).flatMap(normalizedTerms),
-    ]),
+    groups,
+    keywords,
     origin: "dynamic",
   };
 }
@@ -189,6 +264,12 @@ function mergeMetadata(
 ): VectantToolMetadata {
   return {
     name: current.name,
+    // A live tool definition's description is authoritative. Fallback text is
+    // intentionally replaced when a dynamic descriptor supplies it.
+    description: incoming.description !== describeToolMetadata(incoming.name)
+      ? incoming.description
+      : current.description,
+    routingTerms: uniqueTerms([...current.routingTerms, ...incoming.routingTerms]),
     groups: uniqueTerms([...current.groups, ...incoming.groups]),
     keywords: uniqueTerms([...current.keywords, ...incoming.keywords]),
     origin: current.origin === incoming.origin ? current.origin : "both",

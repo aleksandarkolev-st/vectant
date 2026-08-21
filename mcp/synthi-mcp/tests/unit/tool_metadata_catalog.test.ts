@@ -15,9 +15,11 @@ describe("Vectant MCP tool metadata catalog", () => {
     for (const name of ADVERTISED_TOOLS) {
       expect(TOOL_METADATA_CATALOG.lookup(name)).toEqual(expect.objectContaining({
         name,
+        description: expect.any(String),
         origin: "advertised",
       }));
     }
+    expect(TOOL_METADATA_CATALOG.entries.every((entry) => entry.description.trim().length > 0)).toBe(true);
   });
 
   it("classifies atomic routing as orchestration metadata", () => {
@@ -87,6 +89,7 @@ describe("Vectant MCP tool metadata catalog", () => {
       dynamicEntries: [
         {
           name: "synthi_private_invoice_lookup",
+          description: "Look up a private customer invoice without exposing its input schema.",
           groups: ["billing", "private-tool"],
           keywords: ["invoice", "accounting"],
         },
@@ -102,6 +105,7 @@ describe("Vectant MCP tool metadata catalog", () => {
       origin: "dynamic",
       groups: expect.arrayContaining(["billing", "private-tool"]),
       keywords: expect.arrayContaining(["invoice", "accounting"]),
+      description: "Look up a private customer invoice without exposing its input schema.",
     }));
     expect(catalog.lookup("synthi_attach")).toEqual(expect.objectContaining({
       origin: "both",

@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createSynthiServer } from "../../src/server.js";
+import { createSynthiServer, STATIC_TOOL_DEFINITIONS } from "../../src/server.js";
+import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 import type { ExternalTools } from "../../src/external/index.js";
 
 const externalTools: ExternalTools = {
@@ -18,6 +19,13 @@ async function connectedClient(opts: Parameters<typeof createSynthiServer>[0]) {
 }
 
 describe("external tools wired into the MCP server", () => {
+  it("keeps the advertised registry and static MCP definitions exactly aligned with descriptions", () => {
+    const registered = STATIC_TOOL_DEFINITIONS.map((tool) => tool.name);
+    expect(new Set(registered).size).toBe(registered.length);
+    expect(registered).toEqual(ADVERTISED_TOOLS);
+    expect(STATIC_TOOL_DEFINITIONS.every((tool) => tool.description.trim().length > 0)).toBe(true);
+  });
+
   it("advertises ext_<i> alongside the built-in synthi_* tools", async () => {
     const client = await connectedClient({ defaultSignalingUrl: "ws://x", externalTools });
     const { tools } = await client.listTools();
@@ -52,6 +60,12 @@ describe("external tools wired into the MCP server", () => {
     expect(route.skill_metadata).toEqual([
       expect.objectContaining({ id: "vectant-runtime", groups: expect.arrayContaining(["runtime", "attachment"]) }),
     ]);
+    expect(route.tool_metadata).toEqual([
+      expect.objectContaining({
+        name: "synthi_attach",
+        description: expect.stringContaining("WebRTC peer"),
+      }),
+    ]);
     expect(text.text).not.toContain("inputSchema");
     expect(text.text).not.toContain("synthi_codesite_open_transaction");
   });
@@ -68,6 +82,9 @@ describe("external tools wired into the MCP server", () => {
 
     const route = JSON.parse(text.text);
     expect(route.suggested_tools).toContain("ext_0");
+    expect(route.tool_metadata).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "ext_0", description: "[gh] Open a PR" }),
+    ]));
     expect(text.text).not.toContain("inputSchema");
     expect(text.text).not.toContain('"properties"');
   });

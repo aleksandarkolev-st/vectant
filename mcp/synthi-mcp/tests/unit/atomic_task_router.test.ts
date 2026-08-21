@@ -19,6 +19,9 @@ describe("atomic Vectant task router", () => {
     expect(route.execution.role).toBe("implementation");
     expect(route.skills.map((skill) => skill.id)).toEqual(["vectant-codesite"]);
     expect(route.tools.map((tool) => tool.name)).toEqual(["synthi_codesite_open_transaction"]);
+    expect(route.tools[0]).toEqual(expect.objectContaining({
+      description: expect.stringContaining("CodeSite"),
+    }));
     expect(route.validation).toMatchObject({ required: true, role: "validation", mode: "independent" });
     expect(route.trace).toEqual(expect.arrayContaining([
       expect.objectContaining({ stage: "atomic-task", taskId: "codesite-open" }),
@@ -141,5 +144,8 @@ describe("atomic Vectant task router", () => {
       expect.objectContaining({ id: "vectant-runtime", groups: expect.arrayContaining(["runtime", "attachment"]) }),
     ]);
     expect(JSON.stringify(compatible)).not.toContain("inputSchema");
+    expect(compatible.tool_metadata).toEqual([
+      expect.objectContaining({ name: "synthi_attach", description: expect.any(String) }),
+    ]);
   });
 });

@@ -92,7 +92,12 @@ export interface SynthiServerOptions {
   externalTools?: ExternalTools;
 }
 
-const TOOLS = [
+/**
+ * The static MCP registrations are also the authoritative human descriptions
+ * for routing metadata. Consumers must take only name + description from this
+ * list; inputSchema stays inside MCP registration and dispatch.
+ */
+export const STATIC_TOOL_DEFINITIONS = [
   {
     name: "synthi_route_atomic_task",
     description: "Plan an atomic Vectant task using metadata only. Returns a bounded role, selected skill metadata, validation decision, reason, and suggested MCP tools.",
@@ -1166,18 +1171,24 @@ const TOOLS = [
 ] as const;
 
 export function createSynthiServer(options: SynthiServerOptions): Server {
-  // Private and user-connected tools are dynamic, so derive a fresh
-  // schema-free catalog for every route. Their schemas remain exclusively in
-  // the MCP registration/dispatch path and never reach the routing worker.
+  // Every static MCP tool contributes its authoritative summary. Private and
+  // connected tools join it dynamically, so the routing catalog is complete
+  // for this exact server instance while schemas remain in registration only.
   const routeAtomicTask = (input: Parameters<ReturnType<typeof createAtomicTaskRouter>["route"]>[0]) => {
     const dynamicEntries = [
+      ...STATIC_TOOL_DEFINITIONS.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+      })),
       ...browserPrivateWorkflowTools().map((tool) => ({
         name: tool.name,
+        description: tool.description,
         groups: ["private-workflow"],
         keywords: [tool.name, tool.description],
       })),
       ...(options.externalTools?.descriptors ?? []).map((tool) => ({
         name: tool.name,
+        description: tool.description,
         groups: ["external-tool"],
         keywords: [tool.name, tool.description],
       })),
@@ -1219,7 +1230,7 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      ...[...TOOLS, ...browserPrivateWorkflowTools()].map((t) => ({
+      ...[...STATIC_TOOL_DEFINITIONS, ...browserPrivateWorkflowTools()].map((t) => ({
         name: t.name,
         description: t.description,
         inputSchema: t.inputSchema,

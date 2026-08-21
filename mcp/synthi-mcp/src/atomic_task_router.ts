@@ -76,6 +76,8 @@ export interface AtomicTaskRouterOptions {
 
 export interface RoutedVectantTool {
   readonly name: string;
+  /** Selected schema-free capability summary, never an input schema. */
+  readonly description: string;
   readonly groups: readonly string[];
   readonly keywords: readonly string[];
   readonly origin: VectantToolMetadata["origin"];
@@ -157,6 +159,8 @@ export interface AtomicOrchestratorCompatibleRoute {
   readonly role: VectantRoutingRole;
   readonly skills: readonly string[];
   readonly skill_metadata: readonly RoutedVectantSkill[];
+  /** The bounded, schema-free tool descriptors selected for execution. */
+  readonly tool_metadata: readonly RoutedVectantTool[];
   readonly validation: "independent" | "none";
   readonly reason: string;
   readonly suggested_tools: readonly string[];
@@ -331,12 +335,21 @@ function metadataTerms(tool: VectantToolMetadata): string[] {
   ]);
 }
 
+function supplementalRoutingTerms(tool: VectantToolMetadata): string[] {
+  const primary = new Set(metadataTerms(tool));
+  return tool.routingTerms.filter((term) => !primary.has(term));
+}
+
 function scoreTool(tool: VectantToolMetadata, taskTerms: ReadonlySet<string>): ScoredTool {
   const toolTerms = metadataTerms(tool).filter((term) => term !== "vectant");
+  const supplementaryTerms = supplementalRoutingTerms(tool);
   const matchedTerms = unique(toolTerms.filter((term) => taskTerms.has(term)));
+  const matchedSupplementaryTerms = unique(supplementaryTerms.filter((term) => taskTerms.has(term)));
   return {
     tool,
-    score: matchedTerms.length,
+    // Descriptive text is useful for disambiguation (for example, therapeutic
+    // tomography) but cannot overpower an exact action/name/group match.
+    score: matchedTerms.length + (matchedSupplementaryTerms.length * 0.25),
     unmatchedTerms: toolTerms.filter((term) => !taskTerms.has(term)).length,
   };
 }
@@ -350,6 +363,7 @@ function compareScoredTools(left: ScoredTool, right: ScoredTool): number {
 function routedTool(tool: VectantToolMetadata): RoutedVectantTool {
   return {
     name: tool.name,
+    description: tool.description,
     groups: [...tool.groups],
     keywords: [...tool.keywords],
     origin: tool.origin,
@@ -661,6 +675,7 @@ export function createVectantExecutionContext(route: AtomicTaskRoute): VectantEx
     })),
     tools: route.tools.map((tool) => ({
       name: tool.name,
+      description: tool.description,
       groups: [...tool.groups],
       keywords: [...tool.keywords],
       origin: tool.origin,
@@ -679,6 +694,13 @@ export function toAtomicOrchestratorCompatibleRoute(
     skill_metadata: route.skills.map((skill) => ({
       ...skill,
       groups: [...skill.groups],
+    })),
+    tool_metadata: route.tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      groups: [...tool.groups],
+      keywords: [...tool.keywords],
+      origin: tool.origin,
     })),
     validation: route.validation.required ? "independent" : "none",
     reason: route.reason,
