@@ -9,6 +9,11 @@ const { promisify } = require('node:util');
 const test = require('node:test');
 
 const { extractVectantBlock, stripVectantBlock } = require('../workspaceInstructionProjection');
+const { ATOMIC_AGENT_PROTOCOL } = require('../workspaceAgentProtocol');
+const {
+  enabledInstructionProjections,
+  resolveWorkspaceInstructionProjectionFlag,
+} = require('../workspaceInstructionProjectionConfig');
 const { createWorkspaceInstructionMetadataStore } = require('../workspaceInstructionMetadataStore');
 const {
   createWorkspaceInstructionProjectionRuntime,
@@ -69,6 +74,34 @@ test('defaults safely off and never materializes a projection in a disabled roll
   assert.equal(result.skipped, true);
   assert.equal(result.reason, 'feature_disabled');
   assert.equal(await fs.promises.stat(path.join(repository, 'AGENTS.md')).then(() => true, () => false), false);
+});
+
+test('a blank non-Git workspace receives every enabled passive instruction projection in the shipped rollout', async (t) => {
+  const workspace = await temporaryDirectory(t, 'vectant-instruction-runtime-blank-');
+  const metadataDirectory = await temporaryDirectory(t, 'vectant-instruction-runtime-blank-metadata-');
+  const runtime = createWorkspaceInstructionProjectionRuntime({
+    metadataStore: createWorkspaceInstructionMetadataStore({ directory: metadataDirectory }),
+    gitAdapter: null,
+    // Keep the test hermetic while exercising the real default rollout policy.
+    resolveFlag: (input) => resolveWorkspaceInstructionProjectionFlag({ ...input, env: {} }),
+  });
+
+  const result = await runtime.reconcile({
+    workspaceId: 'runtime-blank-workspace',
+    repositoryRoot: workspace,
+  });
+
+  assert.equal(result.skipped, false);
+  assert.equal(result.rollout.mode, 'full');
+  assert.deepEqual(
+    result.projections.map((projection) => projection.path).sort(),
+    enabledInstructionProjections().map((projection) => projection.path).sort(),
+  );
+
+  for (const projection of enabledInstructionProjections()) {
+    const physical = await fs.promises.readFile(path.join(workspace, projection.path), 'utf8');
+    assert.equal(extractVectantBlock(physical).content, ATOMIC_AGENT_PROTOCOL);
+  }
 });
 
 test('disabled rollout never resolves a not-yet-created runtime checkout', async (t) => {
