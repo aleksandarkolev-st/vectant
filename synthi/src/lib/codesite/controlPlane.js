@@ -10612,6 +10612,9 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
   const result = {
     selected: selected.strategy,
     appliedPolicyDeltas: selected.learnedPolicyDeltaRefs || [],
+    // Unified discriminator required by Workstream E: every consumer (UI,
+    // release gate, agents) reads this instead of the three legacy vocabularies.
+    resultKind: shadowExecutionCompleted ? 'executed' : 'forecast',
     reason: {
       reasonCodes: selected.reasonCodes,
       staleAssumptions: selected.staleAssumptions,
@@ -12904,13 +12907,18 @@ function inboxSummaryProjection(item) {
 }
 
 function counterfactualProjection(run) {
+  const arbiterVerdict = parseJson(run.arbiterVerdictJson, null);
   return {
     id: run.id,
     projectId: run.projectId,
     shadowJobRef: run.shadowJobRef,
     baseSnapshot: run.baseSnapshot,
     universes: parseJson(run.universesJson, []),
-    arbiterVerdict: parseJson(run.arbiterVerdictJson, null),
+    arbiterVerdict,
+    // Unified forecast|executed discriminator (Workstream E): derived from the
+    // persisted verdict when present, otherwise from validityStrength.
+    resultKind: arbiterVerdict?.resultKind
+      || ((run.validityStrength === 'executed') ? 'executed' : 'forecast'),
     userChoice: parseJson(run.userChoiceJson, null),
     laterManualEdits: parseJson(run.laterManualEditsJson, []),
     validityStrength: run.validityStrength,
