@@ -11,6 +11,65 @@ function mockJsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+const AGENT_BOUND_KNOWLEDGE_TOOLS = [
+  "synthi_codesite_record_discovery",
+  "synthi_codesite_record_lead",
+  "synthi_codesite_publish_shared_skill",
+  "synthi_codesite_file_handoff",
+  "synthi_codesite_get_shared_knowledge",
+  "synthi_codesite_respond_impact_notice",
+] as const;
+
+const REFERENCES = {
+  paths: ["src/contracts/turn.ts"],
+  symbols: ["TurnResult"],
+  contracts: ["turn.completed@v2"],
+  workstream_ids: ["workstream-consumer"],
+  transaction_ids: ["txn-1"],
+};
+
+function validAgentBoundArgs(toolName: (typeof AGENT_BOUND_KNOWLEDGE_TOOLS)[number]): Record<string, unknown> {
+  const common = {
+    title: "Turn contract changed",
+    summary: "The producer now emits the v2 completion contract.",
+    references: REFERENCES,
+  };
+  if (toolName === "synthi_codesite_record_discovery") {
+    return { ...common, confidence: 0.94, evidence_refs: ["source:sha256:abc"] };
+  }
+  if (toolName === "synthi_codesite_record_lead") {
+    return { ...common, confidence: 0.58, priority: "high" };
+  }
+  if (toolName === "synthi_codesite_publish_shared_skill") {
+    return {
+      ...common,
+      skill_key: "verify-turn-contract",
+      evidence_refs: ["test:turn-contract"],
+      recipe: {
+        commands: ["npm test -- turn-contract"],
+        required_permissions: [],
+        required_tools: ["npm"],
+        required_environment_keys: ["CI"],
+        usage_conditions: ["Run from a clean checkout."],
+        action_class: "read_only",
+      },
+    };
+  }
+  if (toolName === "synthi_codesite_file_handoff") {
+    return {
+      ...common,
+      to_agent_session_id: "agent-ben",
+      evidence_refs: ["commit:abc123"],
+      unresolved_risks: ["Consumer still targets v1."],
+      required_actions: ["Refresh the consumer contract."],
+    };
+  }
+  if (toolName === "synthi_codesite_respond_impact_notice") {
+    return { notice_id: "notice-1", action: "acknowledge" };
+  }
+  return {};
+}
+
 describe("CodeSite MCP tool surface", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn(async () => mockJsonResponse({ ok: true })));
@@ -31,6 +90,32 @@ describe("CodeSite MCP tool surface", () => {
       expect(ADVERTISED_TOOLS).toContain(name);
       expect(CODESITE_TOOLS.some((tool) => tool.name === name)).toBe(true);
     }
+  });
+
+  it("advertises agent-bound knowledge schemas without caller authority controls", () => {
+    const forbiddenProperties = [
+      "agent_session_id",
+      "auth_token",
+      "base_url",
+      "codesite_api_base_url",
+      "cookie",
+      "project_id",
+      "workspace_slug",
+    ];
+    for (const name of AGENT_BOUND_KNOWLEDGE_TOOLS) {
+      const definition = CODESITE_TOOLS.find((tool) => tool.name === name);
+      expect(definition?.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
+      const properties = definition?.inputSchema.properties as Record<string, unknown>;
+      for (const forbidden of forbiddenProperties) expect(properties).not.toHaveProperty(forbidden);
+    }
+    const respond = CODESITE_TOOLS.find((tool) => tool.name === "synthi_codesite_respond_impact_notice");
+    expect((respond?.inputSchema.properties as Record<string, any>).action.enum).toEqual([
+      "acknowledge",
+      "refresh",
+      "rebase_requested",
+      "abort",
+      "dismiss",
+    ]);
   });
 
   it("returns null for non-CodeSite tool dispatch", async () => {
@@ -87,6 +172,208 @@ describe("CodeSite MCP tool surface", () => {
     expect(response?.structuredContent).toEqual(expect.objectContaining({
       error: "codesite_agent_context_environment_required",
     }));
+  });
+
+  it.each([
+    ["synthi_codesite_record_discovery", "discovery"],
+    ["synthi_codesite_record_lead", "lead"],
+    ["synthi_codesite_publish_shared_skill", "shared_skill"],
+    ["synthi_codesite_file_handoff", "handoff"],
+  ] as const)("binds %s to the environment and injects kind %s", async (toolName, expectedKind) => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent/alice";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      knowledge: {
+        id: `${expectedKind}-1`,
+        kind: expectedKind,
+        providerSessionRef: "provider-private-ref",
+        provider_session_ref: "provider-private-ref-snake",
+      },
+      auth_token: "server-should-not-return-this",
+    }));
+
+    const args = validAgentBoundArgs(toolName);
+    const response = await dispatchCodeSiteTool(toolName, args);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toEqual(new URL(
+      "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent%2Falice/knowledge",
+    ));
+    expect(init).toMatchObject({
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: "Bearer csa_agent-secret-token",
+        "content-type": "application/json",
+      },
+    });
+    const requestBody = JSON.parse(String(init?.body));
+    expect(requestBody).toEqual({ ...args, kind: expectedKind });
+    expect(requestBody).not.toHaveProperty("agent_session_id");
+    expect(JSON.stringify(response)).not.toContain("csa_agent-secret-token");
+    expect(JSON.stringify(response)).not.toContain("provider-private-ref");
+    expect(JSON.stringify(response)).not.toContain("server-should-not-return-this");
+  });
+
+  it("queries shared knowledge with only allowlisted semantic filters", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-alice";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ knowledge: [] }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_shared_knowledge", {
+      kind: "discovery",
+      status: "verified",
+      since: "2026-08-22T10:00:00.000Z",
+      limit: 25,
+      path: "src/contracts/turn.ts",
+      symbol: "TurnResult",
+      contract: "turn.completed@v2",
+      workstream_id: "workstream-consumer",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-alice/knowledge?kind=discovery&status=verified&since=2026-08-22T10%3A00%3A00.000Z&limit=25&path=src%2Fcontracts%2Fturn.ts&symbol=TurnResult&contract=turn.completed%40v2&workstream_id=workstream-consumer"),
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          authorization: "Bearer csa_agent-secret-token",
+        },
+        body: undefined,
+      },
+    );
+    expect(JSON.stringify(response)).not.toContain("csa_agent-secret-token");
+  });
+
+  it.each([
+    ["acknowledge", false],
+    ["refresh", false],
+    ["rebase_requested", true],
+    ["abort", true],
+    ["dismiss", true],
+  ] as const)("sends the allowlisted impact response action %s", async (action, needsEvidence) => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-alice";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ inboxItem: { id: "notice/1", action } }));
+    const args = {
+      notice_id: "notice/1",
+      action,
+      ...(needsEvidence ? { reason: "The current transaction is stale.", evidence_refs: ["txn:stale-1"] } : {}),
+    };
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_respond_impact_notice", args);
+
+    expect(response?.isError).toBeUndefined();
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toEqual(new URL(
+      "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-alice/inbox/notice%2F1/respond",
+    ));
+    expect(JSON.parse(String(init?.body))).toEqual({
+      action,
+      ...(needsEvidence ? { reason: "The current transaction is stale.", evidence_refs: ["txn:stale-1"] } : {}),
+    });
+  });
+
+  it.each(AGENT_BOUND_KNOWLEDGE_TOOLS)("requires environment authority for %s", async (toolName) => {
+    const response = await dispatchCodeSiteTool(toolName, validAgentBoundArgs(toolName));
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_agent_knowledge_environment_required",
+    }));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(AGENT_BOUND_KNOWLEDGE_TOOLS)("rejects a forged session before %s can access the network", async (toolName) => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-alice";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    const response = await dispatchCodeSiteTool(toolName, {
+      ...validAgentBoundArgs(toolName),
+      agent_session_id: "agent-forged",
+    });
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_tool_failed",
+      message: "codesite_agent_knowledge_identity_arguments_forbidden",
+    }));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["auth_token", "forged-token"],
+    ["cookie", "session=forged"],
+    ["base_url", "https://attacker.invalid"],
+    ["codesite_api_base_url", "https://attacker.invalid/codesite"],
+    ["workspace_slug", "other-workspace"],
+    ["project_id", "other-project"],
+    ["providerSessionRef", "provider-private-ref"],
+    ["runtime_scope", "other-runtime"],
+    ["runtimeSessionId", "runtime-forged"],
+    ["terminal_session_id", "terminal-forged"],
+    ["from_agent_session_id", "agent-forged"],
+    ["source", { actor_id: "agent-forged" }],
+    ["body", { kind: "lead" }],
+  ] as const)("rejects the caller-selected authority field %s before fetch", async (key, value) => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-alice";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_shared_knowledge", { [key]: value });
+    expect(response?.isError).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(JSON.stringify(response)).not.toContain(typeof value === "string" ? value : "agent-forged");
+  });
+
+  it("rejects unknown filters, caller-selected kinds, and invalid impact actions before fetch", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-alice";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+
+    const unknownFilter = await dispatchCodeSiteTool("synthi_codesite_get_shared_knowledge", { project_id: "project-forged" });
+    const callerKind = await dispatchCodeSiteTool("synthi_codesite_record_discovery", {
+      ...validAgentBoundArgs("synthi_codesite_record_discovery"),
+      kind: "lead",
+    });
+    const invalidAction = await dispatchCodeSiteTool("synthi_codesite_respond_impact_notice", {
+      notice_id: "notice-1",
+      action: "rebase",
+    });
+    const missingEvidence = await dispatchCodeSiteTool("synthi_codesite_respond_impact_notice", {
+      notice_id: "notice-1",
+      action: "abort",
+      reason: "Cannot safely continue.",
+    });
+
+    for (const response of [unknownFilter, callerKind, invalidAction, missingEvidence]) {
+      expect(response?.isError).toBe(true);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns bounded agent knowledge errors without reflecting server bodies or credentials", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-alice";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      error: "forbidden",
+      prompt: "private prompt",
+      providerSessionRef: "provider-private-ref",
+      token: "server-private-token",
+    }, 403));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_shared_knowledge", {});
+
+    expect(response?.structuredContent).toEqual({
+      error: "codesite_agent_knowledge_request_failed",
+      status: 403,
+      request: {
+        method: "GET",
+        path: "/agent-sessions/agent-alice/knowledge",
+        url: "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-alice/knowledge",
+      },
+    });
+    const serialized = JSON.stringify(response);
+    expect(serialized).not.toContain("private prompt");
+    expect(serialized).not.toContain("provider-private-ref");
+    expect(serialized).not.toContain("server-private-token");
+    expect(serialized).not.toContain("csa_agent-secret-token");
   });
 
   it("reads radar state from the configured control-plane API", async () => {
