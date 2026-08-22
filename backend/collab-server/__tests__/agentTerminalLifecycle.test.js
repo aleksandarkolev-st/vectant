@@ -74,6 +74,7 @@ test('attaches a trusted terminal and returns only its scoped process environmen
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].terminalSessionId, 'terminal-1');
+  assert.equal(calls[0].rotateAgentAccessToken, true);
   assert.equal(attached.binding.displayCallsign, 'CODEX-01');
   assert.deepEqual(attached.scopedEnv, {
     SYNTHI_CODESITE_AGENT_SESSION_ID: 'agent-1',

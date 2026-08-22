@@ -82,6 +82,7 @@ function buildAgentAttachPayload({
   bindingClaim = null,
   capabilities = DEFAULT_CAPABILITIES,
   subscriptions = DEFAULT_SUBSCRIPTIONS,
+  rotateAgentAccessToken = false,
 } = {}) {
   const identity = trustedGatewayIdentity(gatewayAuth, workspaceSlug, bindingClaim);
   const terminalId = optional(terminalSessionId, 'AGENT_ATTACH_TERMINAL_SESSION_INVALID');
@@ -111,6 +112,7 @@ function buildAgentAttachPayload({
         hostId: identity.runtimeScope,
         platform: process.platform,
       },
+      ...(rotateAgentAccessToken === true ? { rotateAgentAccessToken: true } : {}),
     },
   };
 }

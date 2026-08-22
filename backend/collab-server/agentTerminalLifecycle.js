@@ -124,7 +124,12 @@ async function attachTerminalAgent({
   if (!service || typeof service.attach !== 'function') {
     throw lifecycleError('AGENT_TERMINAL_ATTACH_SERVICE_REQUIRED');
   }
-  const result = await service.attach({ gatewayAuth, workspaceSlug, terminalSessionId });
+  const result = await service.attach({
+    gatewayAuth,
+    workspaceSlug,
+    terminalSessionId,
+    rotateAgentAccessToken: requireAccessToken,
+  });
   const binding = normalizeTerminalAgentBinding({ result, gatewayAuth, workspaceSlug, terminalSessionId });
   const accessToken = result?.agentAccessToken == null ? null : String(result.agentAccessToken).trim();
   if ((requireAccessToken && !accessToken) || (accessToken && !AGENT_TOKEN_PATTERN.test(accessToken))) {

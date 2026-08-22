@@ -99,6 +99,13 @@ test('builds attach identity only from the trusted gateway projection', () => {
   });
 });
 
+test('requests scoped credential rotation only for a newly spawned agent process', () => {
+  const rotated = buildAgentAttachPayload({ ...attachInput(), rotateAgentAccessToken: true });
+  const resumed = buildAgentAttachPayload({ ...attachInput(), rotateAgentAccessToken: false });
+  assert.equal(rotated.body.rotateAgentAccessToken, true);
+  assert.equal(Object.hasOwn(resumed.body, 'rotateAgentAccessToken'), false);
+});
+
 test('attaches through the trusted control plane without leaking credentials into its result', async () => {
   const calls = [];
   const service = createAgentSessionAttachService({
