@@ -16,6 +16,7 @@ const {
     acknowledgeInboxItem: vi.fn(),
     attachAgentSession: vi.fn(),
     commitTransaction: vi.fn(),
+    createAgentKnowledgeItem: vi.fn(),
     listProjects: vi.fn(),
     createDocument: vi.fn(),
     createProject: vi.fn(),
@@ -26,6 +27,7 @@ const {
     getControlState: vi.fn(),
     getCodeSiteMetrics: vi.fn(),
     getAgentInbox: vi.fn(),
+    getAgentSharedKnowledge: vi.fn(),
     recordPolicyDecision: vi.fn(),
     recordTransactionWrite: vi.fn(),
     getLineProvenance: vi.fn(),
@@ -34,6 +36,7 @@ const {
     getRelevantAgentContext: vi.fn(),
     getSourceStateSince: vi.fn(),
     listActiveTransactions: vi.fn(),
+    listProjectKnowledge: vi.fn(),
     listProjectMembers: vi.fn(),
     openTransaction: vi.fn(),
     preflightCodeSiteFsWrite: vi.fn(),
@@ -41,6 +44,7 @@ const {
     validateTransaction: vi.fn(),
     recordTransactionQuarantineEvent: vi.fn(),
     resumeMaydayIncident: vi.fn(),
+    respondToAgentKnowledgeInbox: vi.fn(),
     revokeProjectMember: vi.fn(),
     shadowMergeSimulate: vi.fn(),
     upsertProjectMember: vi.fn(),
@@ -72,6 +76,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'collisionPredict',
     'commitTransaction',
     'completeInspectionRun',
+    'createAgentKnowledgeItem',
     'createAgentSession',
     'createCounterfactualRun',
     'createDocument',
@@ -86,6 +91,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'exportArtifacts',
     'getAgentInbox',
     'getAgentManifest',
+    'getAgentSharedKnowledge',
     'getCodeSiteMetrics',
     'getControlState',
     'getEvents',
@@ -99,6 +105,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'getSourceStateSince',
     'getTransaction',
     'listActiveTransactions',
+    'listProjectKnowledge',
     'listProjectMembers',
     'listProjects',
     'openTransaction',
@@ -112,6 +119,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'previewArtifacts',
     'revokeMutationLease',
     'resumeMaydayIncident',
+    'respondToAgentKnowledgeInbox',
     'revokeProjectMember',
     'shadowMergeSimulate',
     'updateControlPlan',
@@ -423,6 +431,153 @@ describe('CodeSite catch-all route', () => {
     expect(response.status).toBe(200);
     expect(controlPlane.getRelevantAgentContext).toHaveBeenCalledWith('acme', 'agent-1', 'csa_agent_scoped_token');
     expect(resolveActor).not.toHaveBeenCalled();
+  });
+
+  it('reads shared knowledge with only the environment-bound agent credential', async () => {
+    controlPlane.getAgentSharedKnowledge.mockResolvedValue([
+      { id: 'knowledge-1', kind: 'discovery', status: 'verified' },
+    ]);
+    const response = await GET(new Request(
+      'http://test/api/workspace/acme/codesite/agent-sessions/agent-1/knowledge?kind=discovery&status=verified&limit=25',
+      { headers: { authorization: 'Bearer csa_agent_scoped_token' } },
+    ), params(['agent-sessions', 'agent-1', 'knowledge']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      knowledge: [{ id: 'knowledge-1', kind: 'discovery', status: 'verified' }],
+    });
+    expect(controlPlane.getAgentSharedKnowledge).toHaveBeenCalledWith(
+      'acme',
+      'agent-1',
+      'csa_agent_scoped_token',
+      { kind: 'discovery', status: 'verified', limit: '25' },
+    );
+    expect(resolveActor).not.toHaveBeenCalled();
+    expect(canReadScope).not.toHaveBeenCalled();
+  });
+
+  it('creates shared knowledge with only the environment-bound agent credential', async () => {
+    const body = {
+      kind: 'discovery',
+      title: 'Turn contract changed',
+      summary: 'The producer now emits v2.',
+      confidence: 0.94,
+    };
+    controlPlane.createAgentKnowledgeItem.mockResolvedValue({
+      knowledge: { id: 'knowledge-1', kind: 'discovery' },
+      impacts: [],
+      duplicate: false,
+    });
+    const response = await POST(new Request(
+      'http://test/api/workspace/acme/codesite/agent-sessions/agent-1/knowledge',
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer csa_agent_scoped_token' },
+        body: JSON.stringify(body),
+      },
+    ), params(['agent-sessions', 'agent-1', 'knowledge']));
+
+    expect(response.status).toBe(201);
+    expect(controlPlane.createAgentKnowledgeItem).toHaveBeenCalledWith(
+      'acme',
+      'agent-1',
+      'csa_agent_scoped_token',
+      body,
+    );
+    expect(resolveActor).not.toHaveBeenCalled();
+    expect(canWriteScope).not.toHaveBeenCalled();
+    expect(checkLimit).not.toHaveBeenCalled();
+  });
+
+  it('routes an agent impact response before the legacy inbox acknowledgement', async () => {
+    const body = {
+      action: 'rebase_requested',
+      reason: 'The consumer transaction is stale.',
+      evidence_refs: ['txn:consumer-1'],
+    };
+    controlPlane.respondToAgentKnowledgeInbox.mockResolvedValue({
+      inboxItem: { id: 'inbox/1', status: 'responded' },
+      response: body,
+      duplicate: false,
+    });
+    const response = await POST(new Request(
+      'http://test/api/workspace/acme/codesite/agent-sessions/agent-1/inbox/inbox%2F1/respond',
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer csa_agent_scoped_token' },
+        body: JSON.stringify(body),
+      },
+    ), params(['agent-sessions', 'agent-1', 'inbox', 'inbox/1', 'respond']));
+
+    expect(response.status).toBe(200);
+    expect(controlPlane.respondToAgentKnowledgeInbox).toHaveBeenCalledWith(
+      'acme',
+      'agent-1',
+      'inbox/1',
+      'csa_agent_scoped_token',
+      body,
+    );
+    expect(controlPlane.acknowledgeInboxItem).not.toHaveBeenCalled();
+    expect(resolveActor).not.toHaveBeenCalled();
+    expect(canReadScope).not.toHaveBeenCalled();
+    expect(checkLimit).not.toHaveBeenCalled();
+  });
+
+  it('keeps human project knowledge reads behind ordinary actor authorization', async () => {
+    controlPlane.listProjectKnowledge.mockResolvedValue([
+      { id: 'knowledge-1', kind: 'shared_skill', status: 'published' },
+    ]);
+    const response = await GET(new Request(
+      'http://test/api/workspace/acme/codesite/projects/project-1/knowledge?kind=shared_skill&limit=10',
+    ), params(['projects', 'project-1', 'knowledge']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      knowledge: [{ id: 'knowledge-1', kind: 'shared_skill', status: 'published' }],
+    });
+    expect(resolveActor).toHaveBeenCalledTimes(1);
+    expect(canReadScope).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1' }),
+      { scope: 'workspace', workspaceSlug: 'acme' },
+    );
+    expect(controlPlane.listProjectKnowledge).toHaveBeenCalledWith(
+      'acme',
+      'project-1',
+      { kind: 'shared_skill', limit: '10' },
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+  });
+
+  it('uses agent credential bypasses only for exact knowledge route lengths', async () => {
+    const extraGet = await GET(new Request(
+      'http://test/api/workspace/acme/codesite/agent-sessions/agent-1/knowledge/extra',
+      { headers: { authorization: 'Bearer csa_agent_scoped_token' } },
+    ), params(['agent-sessions', 'agent-1', 'knowledge', 'extra']));
+    const extraCreate = await POST(new Request(
+      'http://test/api/workspace/acme/codesite/agent-sessions/agent-1/knowledge/extra',
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer csa_agent_scoped_token' },
+        body: JSON.stringify({}),
+      },
+    ), params(['agent-sessions', 'agent-1', 'knowledge', 'extra']));
+    const extraRespond = await POST(new Request(
+      'http://test/api/workspace/acme/codesite/agent-sessions/agent-1/inbox/inbox-1/respond/extra',
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer csa_agent_scoped_token' },
+        body: JSON.stringify({}),
+      },
+    ), params(['agent-sessions', 'agent-1', 'inbox', 'inbox-1', 'respond', 'extra']));
+
+    expect(extraGet.status).toBe(404);
+    expect(extraCreate.status).toBe(404);
+    expect(extraRespond.status).toBe(404);
+    expect(resolveActor).toHaveBeenCalledTimes(3);
+    expect(controlPlane.getAgentSharedKnowledge).not.toHaveBeenCalled();
+    expect(controlPlane.createAgentKnowledgeItem).not.toHaveBeenCalled();
+    expect(controlPlane.respondToAgentKnowledgeInbox).not.toHaveBeenCalled();
+    expect(controlPlane.acknowledgeInboxItem).not.toHaveBeenCalled();
   });
 
   it('notifies collab when a CodeSite transaction opens', async () => {
