@@ -2046,7 +2046,7 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
     { requiredCapability: 'codesite.context.read' },
   );
 
-  const [workstreams, leases, transactions, inbox, inspections, knowledgeRows] = await Promise.all([
+  const [workstreams, leases, transactions, inbox, inspections, knowledgeRows, peerSessions] = await Promise.all([
     prisma.codeSiteExecutionPlan.findMany({
       where: { projectId: session.projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
       orderBy: { filedAt: 'desc' },
@@ -2087,6 +2087,27 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
       include: { references: true },
       orderBy: { updatedAt: 'desc' },
       take: 100,
+    }),
+    prisma.codeSiteAgentSession.findMany({
+      where: {
+        projectId: session.projectId,
+        id: { not: session.id },
+        endedAt: null,
+        status: { in: ['attached', 'detached'] },
+      },
+      select: {
+        id: true,
+        displayCallsign: true,
+        ownerUserId: true,
+        agentProvider: true,
+        terminalSessionId: true,
+        runtimeSessionId: true,
+        status: true,
+        attachedAt: true,
+        lastHeartbeatAt: true,
+      },
+      orderBy: { attachedAt: 'desc' },
+      take: 24,
     }),
   ]);
 
@@ -2185,6 +2206,17 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
       impactNotices: relevantKnowledge.filter((item) => item.kind === 'impact_notice').slice(0, 24),
       phaseAvailable: true,
     },
+    peerAgents: peerSessions.map((peer) => boundedAgentContextValue({
+      id: peer.id,
+      callsign: peer.displayCallsign,
+      ownerUserId: peer.ownerUserId,
+      provider: peer.agentProvider,
+      terminalSessionId: peer.terminalSessionId,
+      runtimeSessionId: peer.runtimeSessionId,
+      status: peer.status,
+      attachedAt: peer.attachedAt,
+      lastHeartbeatAt: peer.lastHeartbeatAt,
+    })),
   };
   return trimAgentContextToLimit(context);
 }
