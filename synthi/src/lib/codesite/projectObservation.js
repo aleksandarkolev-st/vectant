@@ -82,6 +82,7 @@ const TOP_LEVEL_KEYS = new Set([
   'providerSessionBound',
   'evidenceRefs',
   'fact',
+  'adapterSessionId',
 ]);
 const PRODUCER_KEYS = new Set(['kind', 'eventId']);
 const REFERENCE_KEYS = new Set([
