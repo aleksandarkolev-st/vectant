@@ -42,6 +42,11 @@ const SAFE_ENV_KEYS = [
   'TZ',
 ];
 
+const MAX_UNIFIED_PATCH_ARTIFACTS = 64;
+const MAX_UNIFIED_PATCH_BYTES = 5 * 1024 * 1024;
+const MAX_UNIFIED_PATCH_TOTAL_BYTES = 20 * 1024 * 1024;
+const MAX_GIT_CAPTURE_CHARS = 256 * 1024;
+
 const SECRET_PATTERNS = [
   { name: 'github_token', pattern: /gh[pousr]_[A-Za-z0-9_]{20,}/g },
   { name: 'openai_key', pattern: /sk-[A-Za-z0-9_-]{20,}/g },
@@ -61,6 +66,11 @@ function sortJson(value) {
 
 function digest(value) {
   return `sha256:${crypto.createHash('sha256').update(stableJson(value)).digest('hex')}`;
+}
+
+function digestBytes(value) {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(String(value || ''), 'utf8');
+  return `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`;
 }
 
 function asArray(value) {
@@ -152,16 +162,80 @@ function normalizeExecutionPlan(input) {
     || input.execution_plan
     || null;
   if (!plan || typeof plan !== 'object') return null;
-  const commands = asArray(plan.commands || plan.checks || plan.inspections).map(normalizeCommand).filter(Boolean);
   const repoRoot = plan.repoRoot || plan.repo_root || input.repoRoot || input.repo_root || null;
+  const baseCommit = plan.baseCommit || plan.base_commit || plan.recordedBaseCommit || plan.recorded_base_commit || null;
+  const patchArtifactInputs = asArray(plan.patchArtifacts || plan.patch_artifacts || plan.unifiedPatchArtifacts || plan.unified_patch_artifacts);
+  const gitPatchModeRequested = Boolean(baseCommit || patchArtifactInputs.length);
+  if (gitPatchModeRequested) {
+    if (!repoRoot) throw new Error('shadow_git_repo_root_required');
+    if (!baseCommit) throw new Error('shadow_git_base_commit_required');
+    if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(String(baseCommit))) {
+      throw new Error('shadow_git_base_commit_invalid');
+    }
+    if (!patchArtifactInputs.length) throw new Error('shadow_git_patch_artifacts_required');
+    const commands = asArray(plan.commands || plan.checks || plan.inspections).map(normalizeCommand).filter(Boolean);
+    if (commands.length) throw new Error('shadow_git_patch_commands_not_supported');
+    if (patchArtifactInputs.length > MAX_UNIFIED_PATCH_ARTIFACTS) {
+      throw new Error('shadow_patch_artifact_limit_exceeded');
+    }
+    const patchArtifacts = patchArtifactInputs.map(normalizeUnifiedPatchArtifact);
+    if (patchArtifacts.reduce((sum, artifact) => sum + artifact.byteLength, 0) > MAX_UNIFIED_PATCH_TOTAL_BYTES) {
+      throw new Error('shadow_patch_artifact_total_bytes_exceeded');
+    }
+    return {
+      ...plan,
+      mode: 'git_worktree_patch_execution',
+      repoRoot,
+      baseCommit: String(baseCommit).toLowerCase(),
+      patchArtifacts,
+      commands: [],
+      timeoutMs: normalizeTimeout(plan.timeoutMs || plan.timeout_ms),
+      keepWorktrees: false,
+    };
+  }
+
+  const commands = asArray(plan.commands || plan.checks || plan.inspections).map(normalizeCommand).filter(Boolean);
   if (!repoRoot || commands.length === 0) return null;
   if (!inlineRepoCommandsAllowed()) return null;
   return {
     ...plan,
+    mode: 'copy_command_execution',
     repoRoot,
     commands,
     timeoutMs: normalizeTimeout(plan.timeoutMs || plan.timeout_ms),
     keepWorktrees: Boolean(plan.keepWorktrees || plan.keep_worktrees || process.env.SYNTHI_CODESITE_SHADOW_RUNNER_KEEP_WORKTREES === '1'),
+  };
+}
+
+function normalizeUnifiedPatchArtifact(value, index) {
+  if (!value || typeof value !== 'object') throw new Error('shadow_patch_artifact_invalid');
+  const content = value.content ?? value.patch ?? value.unifiedDiff ?? value.unified_diff;
+  const contentBase64 = value.contentBase64 ?? value.content_base64;
+  if (content == null && contentBase64 == null) throw new Error('shadow_patch_artifact_content_required');
+  let bytes;
+  if (contentBase64 != null) {
+    const encoded = String(contentBase64);
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+      throw new Error('shadow_patch_artifact_base64_invalid');
+    }
+    bytes = Buffer.from(encoded, 'base64');
+  } else {
+    bytes = Buffer.from(String(content), 'utf8');
+  }
+  if (!bytes.length) throw new Error('shadow_patch_artifact_content_required');
+  if (bytes.length > MAX_UNIFIED_PATCH_BYTES) throw new Error('shadow_patch_artifact_too_large');
+  const claimedDigest = String(value.digest || value.contentDigest || value.content_digest || '').toLowerCase();
+  if (!/^sha256:[a-f0-9]{64}$/.test(claimedDigest)) throw new Error('shadow_patch_artifact_digest_required');
+  const computedDigest = digestBytes(bytes);
+  return {
+    id: String(value.id || value.artifactId || value.artifact_id || claimedDigest || `patch-${index + 1}`),
+    digest: claimedDigest,
+    computedDigest,
+    bytes,
+    byteLength: bytes.length,
+    strategies: asArray(value.strategies || value.universes || value.strategy || value.universe)
+      .map(normalizeStrategy)
+      .filter(Boolean),
   };
 }
 
@@ -313,6 +387,223 @@ async function assertNoSymlinkEscape(worktreeRoot, targetPath, { includeTarget =
   }
 }
 
+function patchArtifactsForStrategy(plan, strategy) {
+  const normalized = normalizeStrategy(strategy);
+  const universes = plan.universes || plan.universePatches || plan.universe_patches || {};
+  const direct = universes[strategy] || universes[normalized] || null;
+  const refs = asArray(
+    direct?.patchArtifactRefs
+      || direct?.patch_artifact_refs
+      || direct?.artifactRefs
+      || direct?.artifact_refs,
+  ).map(String).filter(Boolean);
+  if (refs.length) {
+    const byRef = new Map(plan.patchArtifacts.flatMap((artifact) => [
+      [artifact.id, artifact],
+      [artifact.digest, artifact],
+    ]));
+    return refs.map((ref) => {
+      const artifact = byRef.get(ref);
+      if (!artifact) throw new Error(`shadow_patch_artifact_ref_not_found:${ref}`);
+      return artifact;
+    });
+  }
+  return plan.patchArtifacts.filter((artifact) => (
+    artifact.strategies.length === 0 || artifact.strategies.includes(normalized)
+  ));
+}
+
+function gitEnvironment(worktreeRoot) {
+  return {
+    ...commandEnvironment(worktreeRoot),
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_OPTIONAL_LOCKS: '0',
+    GIT_TERMINAL_PROMPT: '0',
+    LC_ALL: 'C',
+  };
+}
+
+async function runGit(args, cwd, timeoutMs = normalizeTimeout()) {
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    const child = spawn('git', args, {
+      cwd,
+      env: gitEnvironment(cwd),
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let stdoutTail = '';
+    let stderrTail = '';
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+    let timedOut = false;
+    let settled = false;
+    const stdoutHash = crypto.createHash('sha256');
+    const stderrHash = crypto.createHash('sha256');
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdoutHash.update(chunk);
+      const text = chunk.toString('utf8');
+      stdoutTail = tail(`${stdoutTail}${text}`);
+      if (stdout.length < MAX_GIT_CAPTURE_CHARS) {
+        const next = `${stdout}${text}`;
+        stdoutTruncated = stdoutTruncated || next.length > MAX_GIT_CAPTURE_CHARS;
+        stdout = next.slice(0, MAX_GIT_CAPTURE_CHARS);
+      } else {
+        stdoutTruncated = true;
+      }
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrHash.update(chunk);
+      const text = chunk.toString('utf8');
+      stderrTail = tail(`${stderrTail}${text}`);
+      if (stderr.length < MAX_GIT_CAPTURE_CHARS) {
+        const next = `${stderr}${text}`;
+        stderrTruncated = stderrTruncated || next.length > MAX_GIT_CAPTURE_CHARS;
+        stderr = next.slice(0, MAX_GIT_CAPTURE_CHARS);
+      } else {
+        stderrTruncated = true;
+      }
+    });
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const text = error?.message || String(error);
+      stderrHash.update(text);
+      resolve({
+        status: 'failed',
+        exitCode: 127,
+        signal: null,
+        timedOut,
+        durationMs: Date.now() - startedAt,
+        stdout,
+        stderr: `${stderr}${text}`,
+        stdoutTail,
+        stderrTail: tail(`${stderrTail}${text}`),
+        stdoutTruncated,
+        stderrTruncated,
+        stdoutDigest: `sha256:${stdoutHash.digest('hex')}`,
+        stderrDigest: `sha256:${stderrHash.digest('hex')}`,
+      });
+    });
+    child.on('close', (exitCode, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        status: exitCode === 0 && !timedOut ? 'passed' : 'failed',
+        exitCode: Number.isInteger(exitCode) ? exitCode : null,
+        signal,
+        timedOut,
+        durationMs: Date.now() - startedAt,
+        stdout,
+        stderr,
+        stdoutTail,
+        stderrTail,
+        stdoutTruncated,
+        stderrTruncated,
+        stdoutDigest: `sha256:${stdoutHash.digest('hex')}`,
+        stderrDigest: `sha256:${stderrHash.digest('hex')}`,
+      });
+    });
+  });
+}
+
+function gitCommandEvidence(result) {
+  const redactedStdout = redact(result?.stdoutTail || '');
+  const redactedStderr = redact(result?.stderrTail || '');
+  return {
+    status: result?.status || 'failed',
+    exitCode: result?.exitCode ?? null,
+    signal: result?.signal || null,
+    timedOut: Boolean(result?.timedOut),
+    durationMs: Number(result?.durationMs || 0),
+    stdoutDigest: result?.stdoutDigest || digestBytes(''),
+    stderrDigest: result?.stderrDigest || digestBytes(''),
+    stdoutTail: redactedStdout.text,
+    stderrTail: redactedStderr.text,
+    stdoutTruncated: Boolean(result?.stdoutTruncated),
+    stderrTruncated: Boolean(result?.stderrTruncated),
+    redactionCounts: mergeCounts(redactedStdout.counts, redactedStderr.counts),
+  };
+}
+
+async function requireGitValue(args, cwd, failureCode, timeoutMs) {
+  const result = await runGit(args, cwd, timeoutMs);
+  const value = result.stdout.trim();
+  if (result.status !== 'passed' || !value) {
+    const error = new Error(failureCode);
+    error.gitEvidence = gitCommandEvidence(result);
+    throw error;
+  }
+  return { value, evidence: gitCommandEvidence(result) };
+}
+
+async function sourceCheckoutFingerprint(sourceRoot, timeoutMs) {
+  const head = await requireGitValue(['rev-parse', '--verify', 'HEAD'], sourceRoot, 'shadow_source_head_unavailable', timeoutMs);
+  const status = await runGit(['status', '--porcelain=v1', '-z', '--untracked-files=all'], sourceRoot, timeoutMs);
+  const worktreeDiff = await runGit(['diff', '--binary', '--full-index', '--no-ext-diff'], sourceRoot, timeoutMs);
+  const stagedDiff = await runGit(['diff', '--cached', '--binary', '--full-index', '--no-ext-diff'], sourceRoot, timeoutMs);
+  if ([status, worktreeDiff, stagedDiff].some((result) => result.status !== 'passed')) {
+    throw new Error('shadow_source_fingerprint_failed');
+  }
+  return {
+    head: head.value,
+    statusDigest: status.stdoutDigest,
+    worktreeDiffDigest: worktreeDiff.stdoutDigest,
+    stagedDiffDigest: stagedDiff.stdoutDigest,
+    digest: digest({
+      head: head.value,
+      statusDigest: status.stdoutDigest,
+      worktreeDiffDigest: worktreeDiff.stdoutDigest,
+      stagedDiffDigest: stagedDiff.stdoutDigest,
+    }),
+  };
+}
+
+async function removeDisposableGitWorktree(sourceRoot, tmpParent, worktreeRoot, registered, timeoutMs) {
+  const relative = path.relative(tmpParent, worktreeRoot);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('shadow_worktree_cleanup_target_invalid');
+  }
+  let removeEvidence = null;
+  let pruneEvidence = null;
+  if (registered) {
+    const removed = await runGit(['worktree', 'remove', '--force', worktreeRoot], sourceRoot, timeoutMs);
+    removeEvidence = gitCommandEvidence(removed);
+    if (removed.status !== 'passed') {
+      await fs.rm(worktreeRoot, { recursive: true, force: true });
+      const pruned = await runGit(['worktree', 'prune', '--expire', 'now'], sourceRoot, timeoutMs);
+      pruneEvidence = gitCommandEvidence(pruned);
+    }
+  } else {
+    await fs.rm(worktreeRoot, { recursive: true, force: true });
+    const pruned = await runGit(['worktree', 'prune', '--expire', 'now'], sourceRoot, timeoutMs);
+    pruneEvidence = gitCommandEvidence(pruned);
+  }
+  await fs.rm(tmpParent, { recursive: true, force: true });
+  const listing = await runGit(['worktree', 'list', '--porcelain'], sourceRoot, timeoutMs);
+  const retained = listing.stdout
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => path.resolve(line.slice('worktree '.length)))
+    .some((entry) => entry === path.resolve(worktreeRoot));
+  return {
+    removed: listing.status === 'passed' && !retained,
+    registered,
+    remove: removeEvidence,
+    prune: pruneEvidence,
+    list: gitCommandEvidence(listing),
+  };
+}
+
 function riskBudgetEvaluation(universe, input) {
   const strategy = normalizeStrategy(universe.strategy || universe.universe);
   const unresolvedRisks = asArray(universe.unresolvedRisks || universe.unresolved_risks);
@@ -427,6 +718,354 @@ async function runCommand(spec, worktreeRoot, allowed) {
   });
 }
 
+async function executeGitPatchUniverse(universe, input, plan) {
+  const strategy = normalizeStrategy(universe.strategy || universe.universe);
+  const timeoutMs = plan.timeoutMs || normalizeTimeout();
+  let artifacts;
+  try {
+    artifacts = patchArtifactsForStrategy(plan, strategy);
+  } catch (error) {
+    return failedGitPatchUniverse(strategy, input, error, {
+      failurePhase: 'artifact_resolution',
+      materialized: false,
+      applied: false,
+    });
+  }
+  if (!artifacts.length) {
+    return failedGitPatchUniverse(strategy, input, new Error('shadow_universe_patch_artifact_required'), {
+      failurePhase: 'artifact_resolution',
+      materialized: false,
+      applied: false,
+    });
+  }
+  const invalidArtifact = artifacts.find((artifact) => artifact.digest !== artifact.computedDigest);
+  if (invalidArtifact) {
+    return failedGitPatchUniverse(strategy, input, new Error('shadow_patch_artifact_digest_mismatch'), {
+      failurePhase: 'artifact_digest',
+      materialized: false,
+      applied: false,
+      patchEvidence: [{
+        artifactId: invalidArtifact.id,
+        digest: invalidArtifact.digest,
+        computedDigest: invalidArtifact.computedDigest,
+        byteLength: invalidArtifact.byteLength,
+        digestVerified: false,
+        check: null,
+        apply: null,
+      }],
+    });
+  }
+
+  const allowed = allowedRoot();
+  let sourceRoot;
+  try {
+    const allowedReal = await fs.realpath(allowed);
+    const candidate = resolveInside(allowedReal, plan.repoRoot, 'repo_root');
+    sourceRoot = await fs.realpath(candidate);
+    const sourceRelative = path.relative(allowedReal, sourceRoot);
+    if (sourceRelative && (sourceRelative.startsWith('..') || path.isAbsolute(sourceRelative))) {
+      throw new Error('repo_root_outside_allowed_root');
+    }
+  } catch (error) {
+    return failedGitPatchUniverse(strategy, input, error, {
+      failurePhase: 'source_resolution',
+      materialized: false,
+      applied: false,
+    });
+  }
+
+  let base;
+  let sourceBefore;
+  try {
+    base = await requireGitValue(
+      ['rev-parse', '--verify', `${plan.baseCommit}^{commit}`],
+      sourceRoot,
+      'shadow_git_base_commit_not_found',
+      timeoutMs,
+    );
+    if (base.value.toLowerCase() !== plan.baseCommit) {
+      throw new Error('shadow_git_base_commit_mismatch');
+    }
+    sourceBefore = await sourceCheckoutFingerprint(sourceRoot, timeoutMs);
+  } catch (error) {
+    return failedGitPatchUniverse(strategy, input, error, {
+      failurePhase: 'base_commit_verification',
+      materialized: false,
+      applied: false,
+      baseCommit: plan.baseCommit,
+      baseCommitEvidence: error?.gitEvidence || base?.evidence || null,
+    });
+  }
+
+  const tmpParent = await fs.mkdtemp(path.join(os.tmpdir(), `codesite-shadow-git-${strategy || 'universe'}-`));
+  const worktreeRoot = path.join(tmpParent, 'worktree');
+  const artifactRoot = path.join(tmpParent, 'artifacts');
+  let registered = false;
+  let materialized = false;
+  let applied = false;
+  let beforeTree = null;
+  let afterTree = null;
+  let provisional = null;
+  const patchEvidence = [];
+  let materializationEvidence = null;
+  let cleanupEvidence = null;
+
+  try {
+    await fs.mkdir(artifactRoot, { recursive: true });
+    const add = await runGit(
+      ['worktree', 'add', '--detach', worktreeRoot, plan.baseCommit],
+      sourceRoot,
+      timeoutMs,
+    );
+    materializationEvidence = gitCommandEvidence(add);
+    if (add.status !== 'passed') throw shadowGitError('shadow_git_worktree_materialization_failed', add);
+    registered = true;
+
+    const worktreeCommit = await requireGitValue(
+      ['rev-parse', '--verify', 'HEAD'],
+      worktreeRoot,
+      'shadow_git_worktree_head_unavailable',
+      timeoutMs,
+    );
+    if (worktreeCommit.value.toLowerCase() !== plan.baseCommit) {
+      throw new Error('shadow_git_worktree_base_mismatch');
+    }
+    const before = await requireGitValue(
+      ['rev-parse', '--verify', 'HEAD^{tree}'],
+      worktreeRoot,
+      'shadow_git_before_tree_unavailable',
+      timeoutMs,
+    );
+    beforeTree = before.value;
+    materialized = true;
+
+    for (const artifact of artifacts) {
+      const patchPath = path.join(artifactRoot, `${artifact.digest.slice('sha256:'.length)}.patch`);
+      await fs.writeFile(patchPath, artifact.bytes, { flag: 'wx' }).catch(async (error) => {
+        if (error?.code !== 'EEXIST') throw error;
+        const existing = await fs.readFile(patchPath);
+        if (digestBytes(existing) !== artifact.digest) throw new Error('shadow_patch_artifact_temp_collision');
+      });
+      const evidence = {
+        artifactId: artifact.id,
+        digest: artifact.digest,
+        computedDigest: artifact.computedDigest,
+        byteLength: artifact.byteLength,
+        digestVerified: true,
+        check: null,
+        apply: null,
+      };
+      const checked = await runGit(
+        ['apply', '--check', '--index', '--whitespace=nowarn', patchPath],
+        worktreeRoot,
+        timeoutMs,
+      );
+      evidence.check = gitCommandEvidence(checked);
+      patchEvidence.push(evidence);
+      if (checked.status !== 'passed') {
+        provisional = failedGitPatchUniverse(strategy, input, new Error('shadow_patch_preimage_check_failed'), {
+          failurePhase: 'preimage_check',
+          materialized,
+          applied: false,
+          baseCommit: plan.baseCommit,
+          beforeTree,
+          afterTree: beforeTree,
+          patchEvidence,
+        });
+        break;
+      }
+
+      const appliedResult = await runGit(
+        ['apply', '--index', '--whitespace=nowarn', patchPath],
+        worktreeRoot,
+        timeoutMs,
+      );
+      evidence.apply = gitCommandEvidence(appliedResult);
+      if (appliedResult.status !== 'passed') {
+        provisional = failedGitPatchUniverse(strategy, input, new Error('shadow_patch_apply_failed'), {
+          failurePhase: 'patch_apply',
+          materialized,
+          applied: false,
+          baseCommit: plan.baseCommit,
+          beforeTree,
+          afterTree: beforeTree,
+          patchEvidence,
+        });
+        break;
+      }
+    }
+
+    if (!provisional) {
+      const after = await requireGitValue(
+        ['write-tree'],
+        worktreeRoot,
+        'shadow_git_after_tree_unavailable',
+        timeoutMs,
+      );
+      afterTree = after.value;
+      const names = await runGit(['diff', '--cached', '--name-only', '-z', '--no-ext-diff'], worktreeRoot, timeoutMs);
+      const stagedDiff = await runGit(['diff', '--cached', '--binary', '--full-index', '--no-ext-diff'], worktreeRoot, timeoutMs);
+      if (names.status !== 'passed' || stagedDiff.status !== 'passed') {
+        throw new Error('shadow_git_apply_evidence_unavailable');
+      }
+      const changedPaths = names.stdout.split('\0').filter(Boolean);
+      if (!changedPaths.length || beforeTree === afterTree) {
+        throw new Error('shadow_patch_produced_no_tree_change');
+      }
+      applied = patchEvidence.length === artifacts.length
+        && patchEvidence.every((evidence) => evidence.check?.status === 'passed' && evidence.apply?.status === 'passed');
+      if (!applied) throw new Error('shadow_patch_apply_incomplete');
+      const outputDigest = digest({
+        strategy,
+        baseCommit: plan.baseCommit,
+        beforeTree,
+        afterTree,
+        patchDigests: artifacts.map((artifact) => artifact.digest),
+        stagedDiffDigest: stagedDiff.stdoutDigest,
+        changedPaths,
+      });
+      provisional = {
+        strategy,
+        status: 'passed',
+        exitCode: 0,
+        command: 'codesite-shadow-runner:git-worktree-patch-execution',
+        outputDigest,
+        executionMode: 'git_worktree_patch_execution',
+        executed: true,
+        materialized: true,
+        applied: true,
+        baseCommit: plan.baseCommit,
+        baseCommitEvidence: base.evidence,
+        beforeTree,
+        afterTree,
+        changedPaths,
+        stagedDiffDigest: stagedDiff.stdoutDigest,
+        materializationEvidence,
+        patchEvidence,
+        reasonCodes: [
+          'shadow_universe_executed',
+          'shadow_git_worktree_materialized',
+          'shadow_patch_digest_verified',
+          'shadow_patch_preimage_verified',
+          'shadow_patch_applied',
+          'shadow_after_tree_captured',
+        ],
+        evidenceRefs: [
+          `codesite:shadow-job:${input.shadowJobRef}`,
+          `codesite:shadow-base-commit:${plan.baseCommit}`,
+          `codesite:shadow-before-tree:${beforeTree}`,
+          `codesite:shadow-after-tree:${afterTree}`,
+          `codesite:shadow-staged-diff:${stagedDiff.stdoutDigest}`,
+          ...patchEvidence.flatMap((evidence) => [
+            `codesite:shadow-patch:${evidence.digest}`,
+            `codesite:shadow-patch-check:${digest(evidence.check)}`,
+            `codesite:shadow-patch-apply:${digest(evidence.apply)}`,
+          ]),
+        ],
+      };
+    }
+  } catch (error) {
+    provisional = failedGitPatchUniverse(strategy, input, error, {
+      failurePhase: materialized ? 'patch_apply' : 'materialization',
+      materialized,
+      applied,
+      baseCommit: plan.baseCommit,
+      beforeTree,
+      afterTree,
+      materializationEvidence,
+      patchEvidence,
+      gitEvidence: error?.gitEvidence || null,
+    });
+  } finally {
+    cleanupEvidence = await removeDisposableGitWorktree(
+      sourceRoot,
+      tmpParent,
+      worktreeRoot,
+      registered,
+      timeoutMs,
+    ).catch((error) => ({ removed: false, error: error?.message || String(error) }));
+  }
+
+  const sourceAfter = await sourceCheckoutFingerprint(sourceRoot, timeoutMs).catch(() => null);
+  const sourceUnchanged = Boolean(sourceAfter && sourceBefore.digest === sourceAfter.digest);
+  const cleanupPassed = cleanupEvidence?.removed === true;
+  if (!sourceUnchanged || !cleanupPassed) {
+    provisional = failedGitPatchUniverse(
+      strategy,
+      input,
+      new Error(!sourceUnchanged ? 'shadow_source_checkout_changed' : 'shadow_git_worktree_cleanup_failed'),
+      {
+        ...provisional,
+        failurePhase: !sourceUnchanged ? 'source_integrity' : 'cleanup',
+        executed: false,
+      },
+    );
+  }
+  return {
+    ...provisional,
+    executed: provisional.status === 'passed' && provisional.materialized === true && provisional.applied === true,
+    sourceCheckout: {
+      unchanged: sourceUnchanged,
+      beforeDigest: sourceBefore.digest,
+      afterDigest: sourceAfter?.digest || null,
+    },
+    cleanup: cleanupEvidence,
+    worktreeRetained: false,
+    worktreePath: null,
+  };
+}
+
+function shadowGitError(code, result) {
+  const error = new Error(code);
+  error.gitEvidence = gitCommandEvidence(result);
+  return error;
+}
+
+function failedGitPatchUniverse(strategy, input, error, details = {}) {
+  const message = error?.message || String(error);
+  const outputDigest = digest({ strategy, message, details });
+  const conflictEvidence = details.patchEvidence?.at(-1)?.check?.status === 'failed'
+    ? {
+      artifactDigest: details.patchEvidence.at(-1).digest,
+      phase: details.failurePhase,
+      check: details.patchEvidence.at(-1).check,
+      digest: digest(details.patchEvidence.at(-1).check),
+    }
+    : null;
+  return {
+    strategy,
+    status: 'failed',
+    exitCode: details.gitEvidence?.exitCode ?? details.patchEvidence?.at(-1)?.check?.exitCode ?? 1,
+    command: 'codesite-shadow-runner:git-worktree-patch-execution',
+    outputDigest,
+    executionMode: 'git_worktree_patch_execution',
+    executed: false,
+    materialized: details.materialized === true,
+    applied: false,
+    baseCommit: details.baseCommit || null,
+    baseCommitEvidence: details.baseCommitEvidence || null,
+    beforeTree: details.beforeTree || null,
+    afterTree: details.afterTree || null,
+    failurePhase: details.failurePhase || 'unknown',
+    failureCode: message,
+    materializationEvidence: details.materializationEvidence || null,
+    patchEvidence: details.patchEvidence || [],
+    conflictEvidence,
+    gitEvidence: details.gitEvidence || error?.gitEvidence || null,
+    reasonCodes: [
+      'shadow_universe_execution_failed',
+      ...(details.materialized ? ['shadow_git_worktree_materialized'] : []),
+      ...(conflictEvidence ? ['shadow_patch_preimage_conflict'] : []),
+      message,
+    ],
+    evidenceRefs: [
+      `codesite:shadow-job:${input.shadowJobRef}`,
+      `codesite:shadow-execution-failed:${outputDigest}`,
+      ...(conflictEvidence ? [`codesite:shadow-conflict:${conflictEvidence.digest}`] : []),
+    ],
+  };
+}
+
 async function executeRepoUniverse(universe, input, plan) {
   const strategy = normalizeStrategy(universe.strategy || universe.universe);
   const root = allowedRoot();
@@ -494,6 +1133,7 @@ async function executeRepoUniverse(universe, input, plan) {
 }
 
 async function executeUniverse(universe, input, plan) {
+  if (plan?.mode === 'git_worktree_patch_execution') return executeGitPatchUniverse(universe, input, plan);
   if (plan) return executeRepoUniverse(universe, input, plan);
   return riskBudgetEvaluation(universe, input);
 }
@@ -521,16 +1161,27 @@ async function main() {
     universes.push(await executeUniverse(universe, input, plan));
   }
   const selected = normalizeStrategy(input.selected?.strategy || input.selected || universes.find((universe) => universe.exitCode === 0)?.strategy);
+  const executionMode = plan?.mode === 'git_worktree_patch_execution'
+    ? 'git_worktree_patch_execution'
+    : plan
+      ? 'repo_command_execution'
+      : 'risk_budget_evaluation';
+  const gitPatchExecutionComplete = executionMode === 'git_worktree_patch_execution'
+    && universes.length > 0
+    && universes.every((universe) => universe.executed === true && universe.materialized === true && universe.applied === true);
   const evidenceRefs = [
-    `codesite:shadow-runner:${digest({ selected, universes, executionMode: plan ? 'repo_command_execution' : 'risk_budget_evaluation' })}`,
+    `codesite:shadow-runner:${digest({ selected, universes, executionMode })}`,
     ...universes.flatMap((universe) => universe.evidenceRefs),
   ];
 
   await emitResult(input, {
     schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
     runner: 'codesite-shadow-runner',
-    status: 'completed',
-    executionMode: plan ? 'repo_command_execution' : 'risk_budget_evaluation',
+    status: executionMode === 'git_worktree_patch_execution'
+      ? (gitPatchExecutionComplete ? 'completed' : 'failed')
+      : 'completed',
+    executionMode,
+    executed: executionMode === 'git_worktree_patch_execution' ? gitPatchExecutionComplete : undefined,
     selected,
     universes,
     evidenceRefs,
