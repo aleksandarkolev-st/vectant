@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   appendTerminalAgentBindingParams,
+  assertGatewayAgentBinding,
   createTerminalAgentLaunch,
   normalizeAgentLaunchCommand,
   normalizeTerminalAgentBinding,
+  requestTerminalGatewayToken,
   terminalAgentBindingMatches,
 } from '../terminalAgentBinding';
 
@@ -89,5 +91,63 @@ describe('terminal agent binding', () => {
       { projectId: 'project-1', provider: 'aider', providerSessionRef: 'session-1' },
       { projectId: 'project-1', provider: 'aider', providerSessionRef: 'session-2' },
     )).toBe(false);
+  });
+
+  it('fails closed when the token projection omits or changes any requested binding field', () => {
+    const requested = { projectId: 'project-1', provider: 'aider', providerSessionRef: 'session-1' };
+    expect(assertGatewayAgentBinding(requested, { ...requested })).toEqual(requested);
+    expect(() => assertGatewayAgentBinding(requested, null)).toThrow(
+      'terminal_gateway_agent_binding_mismatch',
+    );
+    for (const returned of [
+      { ...requested, projectId: 'project-2' },
+      { ...requested, provider: 'gemini-cli' },
+      { ...requested, providerSessionRef: 'session-2' },
+    ]) {
+      expect(() => assertGatewayAgentBinding(requested, returned)).toThrow(
+        'terminal_gateway_agent_binding_mismatch',
+      );
+    }
+    expect(() => assertGatewayAgentBinding(null, requested)).toThrow(
+      'terminal_gateway_agent_binding_mismatch',
+    );
+  });
+
+  it('requests a signed token with the exact binding and rejects a mismatched projection', async () => {
+    const requested = { projectId: 'project-1', provider: 'acme_agent.v2', providerSessionRef: 'session-1' };
+    const calls = [];
+    const fetchImpl = async (url, options) => {
+      calls.push({ url, options });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ token: 'signed-token', agentBinding: requested }),
+      };
+    };
+    const gateway = await requestTerminalGatewayToken('shared-workspace', {
+      collabSessionId: 'collab-1',
+      agentBinding: requested,
+      fetchImpl,
+    });
+    const url = new URL(calls[0].url, 'http://local.test');
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({
+      workspaceSlug: 'shared-workspace',
+      collabSessionId: 'collab-1',
+      codeSiteProjectId: 'project-1',
+      agentProvider: 'acme_agent.v2',
+      providerSessionRef: 'session-1',
+    });
+    expect(calls[0].options).toMatchObject({ method: 'GET', credentials: 'same-origin' });
+    expect(gateway.token).toBe('signed-token');
+
+    await expect(requestTerminalGatewayToken('shared-workspace', {
+      collabSessionId: 'collab-1',
+      agentBinding: requested,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ token: 'signed-token', agentBinding: { ...requested, provider: 'other' } }),
+      }),
+    })).rejects.toThrow('terminal_gateway_agent_binding_mismatch');
   });
 });

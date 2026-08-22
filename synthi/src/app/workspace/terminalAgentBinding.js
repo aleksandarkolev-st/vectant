@@ -88,3 +88,37 @@ export function terminalAgentBindingMatches(left, right) {
   }
 }
 
+export function assertGatewayAgentBinding(requested, returned) {
+  if (!terminalAgentBindingMatches(requested, returned)) {
+    const error = new Error('terminal_gateway_agent_binding_mismatch');
+    error.code = error.message;
+    throw error;
+  }
+  return normalizeTerminalAgentBinding(requested);
+}
+
+export async function requestTerminalGatewayToken(workspaceSlug, {
+  collabSessionId = '',
+  agentBinding = null,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  const params = new URLSearchParams({
+    workspaceSlug,
+    scopes: 'collab:terminal',
+  });
+  if (collabSessionId) params.set('collabSessionId', collabSessionId);
+  appendTerminalAgentBindingParams(params, agentBinding);
+
+  const response = await fetchImpl(`/api/auth/token?${params.toString()}`, {
+    method: 'GET',
+    credentials: 'same-origin',
+  });
+  const text = await response.text().catch(() => '');
+  let payload = {};
+  try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = { error: text }; }
+  if (!response.ok || !payload.token) {
+    throw new Error(payload.error || `terminal_auth_failed_${response.status}`);
+  }
+  assertGatewayAgentBinding(agentBinding, payload.agentBinding || null);
+  return payload;
+}
