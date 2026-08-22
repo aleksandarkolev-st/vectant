@@ -26,6 +26,7 @@ from .proof_arbiter import adjudicate_proof
 from .runner_base import RunnerInvocation
 from .codex_runner import CodexRunner
 from .claude_code_runner import ClaudeCodeRunner
+from .hermes_runner import HermesRunner
 
 router = APIRouter(prefix="/counterfactual", tags=["counterfactual"])
 
@@ -130,7 +131,7 @@ class PostSelectionMutationRequest(BaseModel):
 
 
 class RunnerExecutionRequest(BaseModel):
-    runner_kind: Literal["codex", "claude_code"]
+    runner_kind: Literal["codex", "claude_code", "hermes"]
     universe_id: str
     direction_id: str
     direction_label: str
@@ -427,7 +428,12 @@ def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, worksp
         task_summary=payload.task_summary, policy_hints=payload.policy_hints,
         timeout_seconds=payload.timeout_seconds, budget_usd=payload.budget_usd,
     )
-    adapter = CodexRunner() if payload.runner_kind == "codex" else ClaudeCodeRunner()
+    adapters = {
+        "codex": CodexRunner,
+        "claude_code": ClaudeCodeRunner,
+        "hermes": HermesRunner,
+    }
+    adapter = adapters[payload.runner_kind]()
     try:
         # Never execute a third-party runner in the user's source workspace.
         # The chamber is discarded after collecting its bounded trace.
