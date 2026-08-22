@@ -34,6 +34,18 @@ def test_protected_snapshot_detects_new_key_material(tmp_path):
         assert_protected_unchanged(before, tmp_path)
 
 
+def test_protected_snapshot_allows_only_the_expected_controller_artifact(tmp_path):
+    before = protected_snapshot(tmp_path)
+    artifact = tmp_path / ".vectant" / "runner-artifacts" / "run" / "codex-A.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("redacted", encoding="utf-8")
+
+    assert_protected_unchanged(before, tmp_path, allowed_paths=[".vectant/runner-artifacts/run/codex-A.json"])
+    (tmp_path / ".vectant" / "config.json").write_text("unexpected", encoding="utf-8")
+    with pytest.raises(PermissionError, match="config.json"):
+        assert_protected_unchanged(before, tmp_path, allowed_paths=[".vectant/runner-artifacts/run/codex-A.json"])
+
+
 def test_provisioning_grants_only_group_write_to_ordinary_workspace_paths(tmp_path):
     if not hasattr(os, "chown"):
         pytest.skip("permission provisioning executes in the Linux service container")

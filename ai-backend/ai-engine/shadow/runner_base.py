@@ -14,6 +14,7 @@ import subprocess
 import shutil
 import tempfile
 import time
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -238,11 +239,11 @@ class BaseRunnerAdapter:
             "runner_kind": self.runner_kind,
             "run_id": invocation.run_id,
             "universe_id": invocation.universe_id,
-            "argv": command,
+            "argv": [_redact(item) for item in command],
             "exit_code": exit_code,
             "timed_out": timed_out,
-            "stdout": _bounded(stdout, 256_000),
-            "stderr": _bounded(stderr, 256_000),
+            "stdout": _redact(_bounded(stdout, 256_000)),
+            "stderr": _redact(_bounded(stderr, 256_000)),
         }
         path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
         return str(path.relative_to(root)).replace("\\", "/")
@@ -316,3 +317,13 @@ def _artifact_summary(stdout: str, stderr: str, exit_code: Optional[int], timed_
 
 def _bounded(value: str, limit: int) -> str:
     return str(value or "").replace("\x00", "")[:limit]
+
+
+_SECRET_ASSIGNMENT = re.compile(r"(?i)\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|CREDENTIAL)[A-Z0-9_]*)\s*=\s*([^\s'\"]+)")
+_BEARER_TOKEN = re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~-]+")
+
+
+def _redact(value: str) -> str:
+    """Remove common credential material before durable runner-log storage."""
+    value = _SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}=[REDACTED]", value)
+    return _BEARER_TOKEN.sub(r"\1[REDACTED]", value)

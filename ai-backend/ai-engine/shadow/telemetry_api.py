@@ -440,17 +440,22 @@ def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, worksp
     try:
         if payload.workspace_mode == "live":
             before_protected = protected_snapshot(repo.repo)
-            provision_agent_write_access(repo.repo)
+            container_policy = AgentContainerPolicy.from_environment()
+            provision_agent_write_access(repo.repo, shared_gid=container_policy.shared_workspace_gid)
             if payload.runner_kind == "codex":
                 runner_command = adapter.live_command_for(invocation=invocation)
             else:
                 runner_command = adapter.command_for(invocation=invocation)
             command = docker_command(
                 workspace=repo.repo, run_id=invocation.run_id,
-                runner_command=runner_command, policy=AgentContainerPolicy.from_environment(),
+                runner_command=runner_command, policy=container_policy,
             )
             artifact = adapter.run(workspace_path=repo.repo, artifact_root=repo.repo, invocation=invocation, command=command)
-            assert_protected_unchanged(before_protected, repo.repo)
+            assert_protected_unchanged(
+                before_protected,
+                repo.repo,
+                allowed_paths=[f".vectant/runner-artifacts/{invocation.run_id}/{adapter.runner_kind}-{invocation.universe_id}.json"],
+            )
             diff = adapter.collect_diff(repo.repo, invocation.start_state_hash)
         else:
             # Isolated execution remains available for counterfactual trials.

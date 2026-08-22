@@ -4,6 +4,7 @@ import subprocess
 
 from shadow.telemetry_api import router
 from shadow.runner_base import RunnerArtifact
+from shadow.agent_execution import AgentContainerPolicy
 
 
 def test_counterfactual_control_plane_persists_a_choice_and_changes_forecast(tmp_path):
@@ -155,6 +156,40 @@ def test_control_plane_executes_only_server_constructed_runner_contract(tmp_path
     assert observed["workspace_path"] != tmp_path
     assert response.json()["branch_trace"]["runner_kind"] == "codex"
     assert response.json()["branch_trace"]["cost_trace"]["estimated_usd"] == 0.1
+
+
+def test_live_runner_allows_only_its_controller_artifact(tmp_path, monkeypatch):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    workspace = str(tmp_path)
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "Vectant Tests"], cwd=workspace, check=True)
+    (tmp_path / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=workspace, check=True, capture_output=True)
+    run_id = client.post("/counterfactual/runs", json={
+        "workspace_path": workspace, "request_id": "live-runner", "task_class": "fix",
+        "base_state": {"state_hash": "base"}, "universe_plan": [{"id": "A"}],
+    }).json()["counterfactual_run"]["run_id"]
+
+    monkeypatch.setattr("shadow.telemetry_api.provision_agent_write_access", lambda *args, **kwargs: None)
+    monkeypatch.setattr("shadow.telemetry_api.AgentContainerPolicy.from_environment", lambda: AgentContainerPolicy(image="runner", network="isolated", credentials_volume="credentials"))
+
+    def fake_run(self, *, workspace_path, invocation, command, artifact_root=None):
+        path = tmp_path / ".vectant" / "runner-artifacts" / invocation.run_id / "codex-A.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("redacted controller artifact", encoding="utf-8")
+        return RunnerArtifact(artifact_summary="runner completed", raw_log_ref=str(path.relative_to(tmp_path)))
+
+    monkeypatch.setattr("shadow.telemetry_api.CodexRunner.run", fake_run)
+    response = client.post(f"/counterfactual/runs/{run_id}/execute", params={"workspace_path": workspace}, json={
+        "runner_kind": "codex", "universe_id": "A", "direction_id": "safe", "direction_label": "safe",
+        "declared_condition": "repair", "task_summary": "fix", "budget_usd": 0.1, "workspace_mode": "live",
+    })
+
+    assert response.status_code == 201
 
 
 def test_choice_scene_and_policy_extraction_require_real_exposure_and_proof(tmp_path):

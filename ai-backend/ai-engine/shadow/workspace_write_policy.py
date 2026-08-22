@@ -6,7 +6,7 @@ import hashlib
 import os
 import stat
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterable
 
 
 PROTECTED_ROOTS = frozenset({".git", ".vectant", ".synthi", ".claude", ".codex", ".agents"})
@@ -26,8 +26,11 @@ def protected_snapshot(workspace: Path) -> Dict[str, str]:
     return result
 
 
-def assert_protected_unchanged(before: Dict[str, str], workspace: Path) -> None:
+def assert_protected_unchanged(before: Dict[str, str], workspace: Path, *, allowed_paths: Iterable[str] = ()) -> None:
     after = protected_snapshot(workspace)
+    allowed = {str(path).replace("\\", "/") for path in allowed_paths}
+    before = {path: digest for path, digest in before.items() if path not in allowed}
+    after = {path: digest for path, digest in after.items() if path not in allowed}
     if before != after:
         changed = sorted(set(before).symmetric_difference(after) | {key for key in before.keys() & after.keys() if before[key] != after[key]})
         raise PermissionError("agent modified protected workspace paths: " + ", ".join(changed[:10]))
@@ -59,10 +62,16 @@ def provision_agent_write_access(workspace: Path, shared_gid: int = 1000) -> Non
 def protected_paths(workspace: Path) -> list[Path]:
     root = Path(workspace).resolve()
     paths: list[Path] = []
-    for item in root.iterdir():
-        if item.is_symlink():
+    for item in [root, *root.rglob("*")]:
+        if item == root or item.is_symlink():
             continue
-        if item.name in PROTECTED_ROOTS or item.name in PROTECTED_NAMES or item.suffix.lower() in {".pem", ".key", ".p12", ".pfx"}:
+        relative = item.relative_to(root)
+        # Mount the protected root once; do not add every descendant as an
+        # overlapping mount. Nested secrets outside a protected root receive
+        # their own read-only over-mount.
+        if relative.parts[0] in PROTECTED_ROOTS and len(relative.parts) > 1:
+            continue
+        if relative.parts[0] in PROTECTED_ROOTS or item.name in PROTECTED_NAMES or item.suffix.lower() in {".pem", ".key", ".p12", ".pfx"}:
             paths.append(item)
     return paths
 

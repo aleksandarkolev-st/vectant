@@ -31,9 +31,11 @@ def test_agent_container_uses_only_configured_volume_subpath(tmp_path):
     workspace.mkdir(parents=True)
     policy = AgentContainerPolicy(image="runner", network="isolated", workspace_volume="collab-data", workspace_volume_root=str(tmp_path))
 
-    command = docker_command(workspace=workspace, run_id="r", runner_command=["claude", "-p", "fix"], policy=policy)
+    daemon_volume = tmp_path / "daemon-volume"
+    (daemon_volume / "repos" / "demo" / "user").mkdir(parents=True)
+    command = docker_command(workspace=workspace, run_id="r", runner_command=["claude", "-p", "fix"], policy=policy, volume_mountpoint=daemon_volume)
 
-    assert "type=volume,src=collab-data,dst=/workspace,volume-subpath=repos/demo/user" in command
+    assert f"type=bind,src={daemon_volume / 'repos' / 'demo' / 'user'},dst=/workspace" in command
 
 
 def test_agent_container_overmounts_secrets_and_git_readonly(tmp_path):
@@ -49,6 +51,21 @@ def test_agent_container_overmounts_secrets_and_git_readonly(tmp_path):
     assert f"type=bind,src={tmp_path / '.git'},dst=/workspace/.git,readonly" in joined
 
 
+def test_agent_container_overmounts_nested_secret_files_and_uses_configured_group(tmp_path):
+    nested = tmp_path / "services" / "api"
+    nested.mkdir(parents=True)
+    secret = nested / ".env.production"
+    secret.write_text("TOKEN=x", encoding="utf-8")
+    command = docker_command(
+        workspace=tmp_path, run_id="r", runner_command=["codex", "exec", "task"],
+        policy=AgentContainerPolicy(image="runner", network="isolated", shared_workspace_gid=4242),
+    )
+
+    joined = " ".join(command)
+    assert f"type=bind,src={secret},dst=/workspace/services/api/.env.production,readonly" in joined
+    assert command[command.index("--user") + 1] == "10001:4242"
+
+
 def test_agent_container_rejects_workspace_outside_configured_volume(tmp_path):
     with pytest.raises(ValueError, match="outside"):
         docker_command(
@@ -62,4 +79,13 @@ def test_environment_policy_fails_closed_without_a_credentials_volume(monkeypatc
     monkeypatch.delenv("SYNTHI_AGENT_CREDENTIALS_VOLUME", raising=False)
 
     with pytest.raises(ValueError, match="credentials volume"):
+        AgentContainerPolicy.from_environment()
+
+
+def test_environment_policy_rejects_an_invalid_shared_group(monkeypatch):
+    monkeypatch.setenv("SYNTHI_AGENT_RUNNER_NETWORK", "isolated")
+    monkeypatch.setenv("SYNTHI_AGENT_CREDENTIALS_VOLUME", "credentials")
+    monkeypatch.setenv("SYNTHI_RUNTIME_SHARED_GID", "not-a-gid")
+
+    with pytest.raises(ValueError, match="numeric"):
         AgentContainerPolicy.from_environment()
