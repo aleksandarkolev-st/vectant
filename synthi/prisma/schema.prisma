@@ -444,6 +444,9 @@ model CodeSiteAgentSession {
   deliveryChannelJson      String    @default("{}")
   attachSource             String?
   bindingVersion           Int?
+  agentAccessTokenHash     String?   @unique
+  agentAccessTokenIssuedAt DateTime?
+  agentAccessTokenExpiresAt DateTime?
   activeMutationLeaseId    String?
   activeTransactionId      String?
   dojoPilotLicenseRef      String?
@@ -474,6 +477,7 @@ model CodeSiteAgentSession {
   @@index([runtimeSessionId])
   @@index([runtimeScope])
   @@index([lastHeartbeatAt])
+  @@index([agentAccessTokenExpiresAt])
   @@index([displayCallsign])
   @@index([status])
 }
