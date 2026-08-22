@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { probeCodeSiteActivityBridge } from '../activityBridgeReadiness';
+import { probeCodeSiteActivityBridge, probeCodeSiteDeploymentStatus } from '../activityBridgeReadiness';
 
 const ENV_KEYS = [
   'COLLAB_SERVER_URL',
@@ -111,5 +111,49 @@ describe('probeCodeSiteActivityBridge', () => {
       code: 'activity_cleanup_failed',
       checks: { published: true, refreshed: true, cleaned: false },
     });
+  });
+});
+
+describe('probeCodeSiteDeploymentStatus', () => {
+  it('combines the authenticated activity round trip with collab runtime capabilities', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    process.env.COLLAB_INTERNAL_TOKEN = 'activity-secret';
+    process.env.SYNTHI_CODESITE_API_BASE_URL = 'http://frontend.test/api/workspace/{workspace_slug}/codesite';
+    let transactionId;
+    const fetch = vi.fn(async (url, options) => {
+      const target = new URL(url);
+      if (target.pathname === '/codesite/deployment-status') {
+        return new Response(JSON.stringify({
+          ok: true,
+          checks: {
+            overlayCapable: { ok: true, code: 'docker_overlay_runtime_ready' },
+            runtimeEventAdapterHealthy: { ok: false, code: 'runtime_event_adapter_unconfigured' },
+          },
+        }), { status: 200 });
+      }
+      if (options.method === 'GET') {
+        return new Response(JSON.stringify({ activeTransactions: [{ transactionId }] }), { status: 200 });
+      }
+      const body = JSON.parse(options.body);
+      if (body.event === 'transaction_opened') transactionId = body.transactionId;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const result = await probeCodeSiteDeploymentStatus(
+      new Request('http://frontend.test/api/workspace/acme/codesite/projects/proj-1/deployment-status'),
+      { fetch, transactionId: 'status-transaction' },
+    );
+
+    expect(result).toEqual({
+      activityBridge: { ok: true, checks: { published: true, refreshed: true, cleaned: true } },
+      capabilities: {
+        ok: true,
+        checks: {
+          overlayCapable: { ok: true, code: 'docker_overlay_runtime_ready' },
+          runtimeEventAdapterHealthy: { ok: false, code: 'runtime_event_adapter_unconfigured' },
+        },
+      },
+    });
+    expect(fetch).toHaveBeenCalledTimes(4);
   });
 });

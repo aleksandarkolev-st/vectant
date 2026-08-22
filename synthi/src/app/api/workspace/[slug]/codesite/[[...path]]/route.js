@@ -59,7 +59,10 @@ import {
   updateZonePolicy,
   validateTransaction,
 } from '@/lib/codesite/controlPlane';
-import { probeCodeSiteActivityBridge } from '@/lib/codesite/activityBridgeReadiness';
+import {
+  probeCodeSiteActivityBridge,
+  probeCodeSiteDeploymentStatus,
+} from '@/lib/codesite/activityBridgeReadiness';
 import {
   enforceRateLimit,
   errorJson,
@@ -103,6 +106,31 @@ export async function GET(request, { params }) {
       const project = await getProject(slug, route[1], access.actor);
       if (!project) return errorJson(404, 'project_not_found');
       return okJson({ project });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'deployment-status' && route.length === 3) {
+      // PROJECT_INCLUDE reads the durable inbox relation, so a successful
+      // project read proves both authorization and inbox-store reachability.
+      const project = await getProject(slug, route[1], access.actor);
+      if (!project) return errorJson(404, 'project_not_found');
+      const serviceStatus = await probeCodeSiteDeploymentStatus(request);
+      const checks = {
+        controlPlaneReachable: { ok: true, code: 'project_query_succeeded' },
+        activityBridgeReachable: {
+          ok: serviceStatus.activityBridge.ok,
+          code: serviceStatus.activityBridge.ok
+            ? 'authenticated_activity_round_trip_succeeded'
+            : (serviceStatus.activityBridge.code || 'activity_bridge_unavailable'),
+        },
+        overlayCapable: serviceStatus.capabilities.checks.overlayCapable,
+        inboxDeliveryCapable: { ok: true, code: 'durable_inbox_query_succeeded' },
+        runtimeEventAdapterHealthy: serviceStatus.capabilities.checks.runtimeEventAdapterHealthy,
+      };
+      return okJson({
+        status: Object.values(checks).every((check) => check.ok) ? 'healthy' : 'degraded',
+        checkedAt: new Date().toISOString(),
+        checks,
+      });
     }
 
     if (route[0] === 'projects' && route[2] === 'control-state') {

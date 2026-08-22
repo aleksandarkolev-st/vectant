@@ -74,6 +74,9 @@ const {
   handleCodeSiteReadinessRequest,
 } = require('./codesiteReadiness');
 const {
+  handleCodeSiteDeploymentStatusRequest,
+} = require('./codesiteDeploymentStatus');
+const {
   codeSiteContextFromRequest,
   createCodeSiteOverlayWorkspace,
   codeSiteQuarantineReplayPlan,
@@ -2488,6 +2491,13 @@ const server = http.createServer(async (req, res) => {
 
   if (req.url === '/codesite/readiness' && req.method === 'GET') {
     await handleCodeSiteReadinessRequest(req, res);
+    return;
+  }
+
+  if (req.url === '/codesite/deployment-status') {
+    await handleCodeSiteDeploymentStatusRequest(req, res, {
+      probeOverlayCapability: workspaceRuntime?.probeOverlayCapability,
+    });
     return;
   }
 

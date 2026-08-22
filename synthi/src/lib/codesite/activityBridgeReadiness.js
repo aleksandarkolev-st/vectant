@@ -132,3 +132,69 @@ export async function probeCodeSiteActivityBridge(request, options = {}) {
   }
   return result;
 }
+
+async function probeCollabDeploymentCapabilities(options = {}) {
+  const fetchImpl = options.fetch || globalThis.fetch;
+  const collabUrl = configuredCollabHttpUrl();
+  const token = collabInternalToken();
+  const timeoutMs = Number(options.timeoutMs || process.env.SYNTHI_CODESITE_READINESS_TIMEOUT_MS || 3_000);
+  if (!collabUrl || !token || typeof fetchImpl !== 'function') {
+    return {
+      ok: false,
+      code: !collabUrl ? 'collab_url_unconfigured' : (!token ? 'collab_activity_token_unconfigured' : 'fetch_unavailable'),
+      checks: {
+        overlayCapable: { ok: false, code: 'overlay_capability_unavailable' },
+        runtimeEventAdapterHealthy: { ok: false, code: 'runtime_event_adapter_health_unavailable' },
+      },
+    };
+  }
+
+  try {
+    const response = await fetchImpl(new URL('/codesite/deployment-status', `${collabUrl}/`), {
+      method: 'GET',
+      headers: { accept: 'application/json', 'x-collab-internal-token': token },
+      signal: timeoutSignal(timeoutMs),
+    });
+    const body = await responseJson(response);
+    if (!response?.ok || !body?.ok) {
+      return {
+        ok: false,
+        code: 'collab_deployment_status_failed',
+        checks: {
+          overlayCapable: { ok: false, code: 'overlay_capability_unavailable' },
+          runtimeEventAdapterHealthy: { ok: false, code: 'runtime_event_adapter_health_unavailable' },
+        },
+      };
+    }
+    return {
+      ok: true,
+      checks: {
+        overlayCapable: {
+          ok: body.checks?.overlayCapable?.ok === true,
+          code: body.checks?.overlayCapable?.code || 'overlay_capability_unavailable',
+        },
+        runtimeEventAdapterHealthy: {
+          ok: body.checks?.runtimeEventAdapterHealthy?.ok === true,
+          code: body.checks?.runtimeEventAdapterHealthy?.code || 'runtime_event_adapter_health_unavailable',
+        },
+      },
+    };
+  } catch (_) {
+    return {
+      ok: false,
+      code: 'collab_deployment_status_unreachable',
+      checks: {
+        overlayCapable: { ok: false, code: 'overlay_capability_unavailable' },
+        runtimeEventAdapterHealthy: { ok: false, code: 'runtime_event_adapter_health_unavailable' },
+      },
+    };
+  }
+}
+
+export async function probeCodeSiteDeploymentStatus(request, options = {}) {
+  const [activityBridge, capabilities] = await Promise.all([
+    probeCodeSiteActivityBridge(request, options),
+    probeCollabDeploymentCapabilities(options),
+  ]);
+  return { activityBridge, capabilities };
+}

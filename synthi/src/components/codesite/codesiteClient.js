@@ -132,6 +132,11 @@ export async function fetchCodeSiteProject(workspaceSlug, projectId) {
   return body.project || null;
 }
 
+export async function fetchCodeSiteDeploymentStatus(workspaceSlug, projectId) {
+  if (!workspaceSlug || !projectId) return null;
+  return request(`${projectBase(workspaceSlug, projectId)}/deployment-status`);
+}
+
 export async function fetchCodeSiteControlState(workspaceSlug, projectId) {
   if (!workspaceSlug || !projectId) return null;
   return request(`${projectBase(workspaceSlug, projectId)}/control-state`);

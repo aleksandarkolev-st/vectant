@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   createCodeSiteProject: vi.fn(),
   exportCodeSiteArtifacts: vi.fn(),
   fetchCodeSiteCoreState: vi.fn(),
+  fetchCodeSiteDeploymentStatus: vi.fn(),
   fetchCodeSiteEvidenceSlice: vi.fn(),
   fetchCodeSiteLineProvenance: vi.fn(),
   fetchCodeSiteQuarantineSlice: vi.fn(),
@@ -56,6 +57,7 @@ vi.mock('../codesiteClient', () => ({
   createEmptyCodeSiteRadarState: emptyState,
   exportCodeSiteArtifacts: h.exportCodeSiteArtifacts,
   fetchCodeSiteCoreState: h.fetchCodeSiteCoreState,
+  fetchCodeSiteDeploymentStatus: h.fetchCodeSiteDeploymentStatus,
   fetchCodeSiteEvidenceSlice: h.fetchCodeSiteEvidenceSlice,
   fetchCodeSiteLineProvenance: h.fetchCodeSiteLineProvenance,
   fetchCodeSiteQuarantineSlice: h.fetchCodeSiteQuarantineSlice,
@@ -725,6 +727,17 @@ describe('CodeSitePanel', () => {
     }));
     h.exportCodeSiteArtifacts.mockResolvedValue({ written: false, files: [] });
     h.fetchCodeSiteLineProvenance.mockResolvedValue([]);
+    h.fetchCodeSiteDeploymentStatus.mockResolvedValue({
+      status: 'degraded',
+      checkedAt: '2026-08-22T12:00:00.000Z',
+      checks: {
+        controlPlaneReachable: { ok: true, code: 'project_query_succeeded' },
+        activityBridgeReachable: { ok: true, code: 'authenticated_activity_round_trip_succeeded' },
+        overlayCapable: { ok: true, code: 'docker_overlay_runtime_ready' },
+        inboxDeliveryCapable: { ok: true, code: 'durable_inbox_query_succeeded' },
+        runtimeEventAdapterHealthy: { ok: false, code: 'runtime_event_adapter_unconfigured' },
+      },
+    });
     h.subscribeCodeSiteProjectEvents.mockImplementation((_workspaceSlug, _projectId, { onStatus } = {}) => {
       onStatus?.('live');
       return vi.fn();
@@ -831,6 +844,11 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-tower-now-clearance"]').textContent).toContain('1');
     expect(container.querySelector('[data-testid="codesite-tower-now-mayday"]').textContent).toContain('1');
     expect(container.querySelector('[data-testid="codesite-mobile-section-tabs"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-deployment-status"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-deployment-check-controlPlaneReachable"]').dataset.status).toBe('available');
+    expect(container.querySelector('[data-testid="codesite-deployment-check-runtimeEventAdapterHealthy"]').dataset.status).toBe('unavailable');
+    expect(container.textContent).toContain('4/5 available');
+    expect(h.fetchCodeSiteDeploymentStatus).toHaveBeenCalledWith('acme', 'proj-1');
     expect(h.subscribeCodeSiteProjectEvents).toHaveBeenCalledWith(
       'acme',
       'proj-1',

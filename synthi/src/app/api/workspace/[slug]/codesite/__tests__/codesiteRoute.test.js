@@ -27,6 +27,7 @@ const {
     recordPolicyDecision: vi.fn(),
     recordTransactionWrite: vi.fn(),
     getLineProvenance: vi.fn(),
+    getProject: vi.fn(),
     getSourceStateSince: vi.fn(),
     listActiveTransactions: vi.fn(),
     listProjectMembers: vi.fn(),
@@ -188,6 +189,53 @@ describe('CodeSite catch-all route', () => {
       expect.objectContaining({ userId: 'user-1' }),
       { scope: 'workspace', workspaceSlug: 'acme' },
     );
+  });
+
+  it('publishes project deployment status from live control-plane, bridge, inbox, and runtime checks', async () => {
+    controlPlane.getProject.mockResolvedValue({ id: 'proj-1', inboxItems: [] });
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    process.env.COLLAB_INTERNAL_TOKEN = 'collab-status-secret';
+    process.env.SYNTHI_CODESITE_API_BASE_URL = 'http://frontend.test/api/workspace/{workspace_slug}/codesite';
+    let publishedTransactionId;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, options) => {
+      const target = new URL(url);
+      if (target.pathname === '/codesite/deployment-status') {
+        return new Response(JSON.stringify({
+          ok: true,
+          checks: {
+            overlayCapable: { ok: true, code: 'docker_overlay_runtime_ready' },
+            runtimeEventAdapterHealthy: { ok: false, code: 'runtime_event_adapter_unconfigured' },
+          },
+        }), { status: 200 });
+      }
+      if (options.method === 'GET') {
+        return new Response(JSON.stringify({
+          activeTransactions: [{ transactionId: publishedTransactionId }],
+        }), { status: 200 });
+      }
+      const payload = JSON.parse(options.body);
+      if (payload.event === 'transaction_opened') publishedTransactionId = payload.transactionId;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const response = await GET(
+      new Request('http://frontend.test/api/workspace/acme/codesite/projects/proj-1/deployment-status'),
+      params(['projects', 'proj-1', 'deployment-status']),
+    );
+    const body = await json(response);
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe('degraded');
+    expect(body.checks).toEqual({
+      controlPlaneReachable: { ok: true, code: 'project_query_succeeded' },
+      activityBridgeReachable: { ok: true, code: 'authenticated_activity_round_trip_succeeded' },
+      overlayCapable: { ok: true, code: 'docker_overlay_runtime_ready' },
+      inboxDeliveryCapable: { ok: true, code: 'durable_inbox_query_succeeded' },
+      runtimeEventAdapterHealthy: { ok: false, code: 'runtime_event_adapter_unconfigured' },
+    });
+    expect(controlPlane.getProject).toHaveBeenCalledWith('acme', 'proj-1', expect.objectContaining({ userId: 'user-1' }));
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    fetchSpy.mockRestore();
   });
 
   it('lists active transactions through the shared control-plane endpoint', async () => {
