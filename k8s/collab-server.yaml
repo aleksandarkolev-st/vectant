@@ -419,7 +419,7 @@ spec:
               memory: 3Gi
           readinessProbe:
             httpGet:
-              path: /debug/status
+              path: /codesite/readiness
               port: 1235
             initialDelaySeconds: 5
             periodSeconds: 10

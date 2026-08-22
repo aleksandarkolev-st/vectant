@@ -194,6 +194,14 @@ services:
         condition: service_healthy
       ai-engine:
         condition: service_started
+      collab-server:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/workspace/__codesite_readiness__/codesite/readiness',{headers:{authorization:'Bearer '+process.env.SYNTHI_CODESITE_TOKEN}}).then((response)=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
 
   collab-server:
     build:
@@ -289,6 +297,12 @@ services:
         condition: service_started
       runtime-image:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:1234/codesite/readiness').then((response)=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
 
   signaling-server:
     build:

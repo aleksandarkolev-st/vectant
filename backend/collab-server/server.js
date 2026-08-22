@@ -71,6 +71,9 @@ const {
   handleCodeSiteActivityRequest,
 } = require('./codesiteActivityEndpoint');
 const {
+  handleCodeSiteReadinessRequest,
+} = require('./codesiteReadiness');
+const {
   codeSiteContextFromRequest,
   createCodeSiteOverlayWorkspace,
   codeSiteQuarantineReplayPlan,
@@ -2480,6 +2483,11 @@ const server = http.createServer(async (req, res) => {
       readJsonRequestBody,
       writeJsonResponse,
     });
+    return;
+  }
+
+  if (req.url === '/codesite/readiness' && req.method === 'GET') {
+    await handleCodeSiteReadinessRequest(req, res);
     return;
   }
 

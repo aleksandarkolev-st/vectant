@@ -59,6 +59,7 @@ import {
   updateZonePolicy,
   validateTransaction,
 } from '@/lib/codesite/controlPlane';
+import { probeCodeSiteActivityBridge } from '@/lib/codesite/activityBridgeReadiness';
 import {
   enforceRateLimit,
   errorJson,
@@ -81,6 +82,19 @@ export async function GET(request, { params }) {
   if (!access.ok) return errorJson(access.status, access.error);
 
   try {
+    if (route[0] === 'readiness' && route.length === 1) {
+      if (!access.actor?.internalService) return errorJson(403, 'codesite_readiness_internal_auth_required');
+      const bridge = await probeCodeSiteActivityBridge(request);
+      return okJson({
+        ok: bridge.ok,
+        checks: {
+          controlPlaneReachable: true,
+          activityBridgeReachable: bridge.ok,
+        },
+        ...(bridge.ok ? {} : { code: bridge.code || 'activity_bridge_unavailable' }),
+      }, { status: bridge.ok ? 200 : 503 });
+    }
+
     if (route.length === 0 || route.join('/') === 'projects') {
       return okJson({ projects: await listProjects(slug, access.actor) });
     }

@@ -138,6 +138,43 @@ describe('CodeSite catch-all route', () => {
     delete process.env.COLLAB_SERVER_URL;
     delete process.env.SYNTHI_CODESITE_API_BASE_URL;
     delete process.env.COLLAB_INTERNAL_TOKEN;
+    delete process.env.SYNTHI_CODESITE_TOKEN;
+    delete process.env.SYNTHI_APP_INTERNAL_URL;
+  });
+
+  it('proves both authenticated readiness directions without exposing secret material', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    process.env.COLLAB_INTERNAL_TOKEN = 'collab-readiness-secret';
+    process.env.SYNTHI_CODESITE_TOKEN = 'control-plane-readiness-secret';
+    process.env.SYNTHI_CODESITE_API_BASE_URL = 'http://frontend.test/api/workspace/{workspace_slug}/codesite';
+    let publishedTransactionId = null;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, options) => {
+      if (options.method === 'GET') {
+        return new Response(JSON.stringify({
+          activeTransactions: [{ transactionId: publishedTransactionId }],
+        }), { status: 200 });
+      }
+      const payload = JSON.parse(options.body);
+      if (payload.event === 'transaction_opened') publishedTransactionId = payload.transactionId;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const response = await GET(new Request(
+      'http://frontend.test/api/workspace/__codesite_readiness__/codesite/readiness',
+      { headers: { authorization: 'Bearer control-plane-readiness-secret' } },
+    ), { params: Promise.resolve({ slug: '__codesite_readiness__', path: ['readiness'] }) });
+    const body = await json(response);
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      ok: true,
+      checks: { controlPlaneReachable: true, activityBridgeReachable: true },
+    });
+    expect(JSON.stringify(body)).not.toContain('secret');
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(fetchSpy.mock.calls[0][0]).toEqual(new URL('http://collab.test/codesite/activity/__codesite_readiness__'));
+    expect(fetchSpy.mock.calls[0][1].headers['x-collab-internal-token']).toBe('collab-readiness-secret');
+    fetchSpy.mockRestore();
   });
 
   it('lists projects through the read-gated projects endpoint', async () => {
