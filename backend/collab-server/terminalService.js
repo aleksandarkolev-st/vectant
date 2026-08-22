@@ -1868,6 +1868,7 @@ function createTerminalWSS({
       // Send ready acknowledgement
       ws.send(JSON.stringify({
         type: 'ready',
+        reattached: true,
         sessionId,
         shell: path.basename(shell),
         cwd,
@@ -2226,6 +2227,7 @@ function createTerminalWSS({
     // ── Send ready acknowledgement ──────────────────────────────────────
     ws.send(JSON.stringify({
       type: 'ready',
+      reattached: false,
       sessionId,
       shell: path.basename(shell),
       cwd,

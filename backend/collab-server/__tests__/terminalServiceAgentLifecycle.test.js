@@ -214,12 +214,18 @@ test('retained terminal reattach reuses the PTY without rotating or re-registeri
   const firstWs = new FakeWebSocket();
   await handleTerminalConnection(firstWs, request());
   const ready = firstWs.frames.map((frame) => frame.value).find((value) => typeof value === 'string' && value.includes('"type":"ready"'));
-  const sessionId = JSON.parse(ready).sessionId;
+  const firstReadyFrame = JSON.parse(ready);
+  const sessionId = firstReadyFrame.sessionId;
+  assert.equal(firstReadyFrame.reattached, false);
   firstWs.emit('close', 1006);
   assert.equal(events.filter((event) => event.type === 'detach').length, 0);
 
   const secondWs = new FakeWebSocket();
   await handleTerminalConnection(secondWs, request(gatewayAuth(), sessionId));
+
+  const secondReady = secondWs.frames.map((frame) => frame.value)
+    .find((value) => typeof value === 'string' && value.includes('"type":"ready"'));
+  assert.equal(JSON.parse(secondReady).reattached, true);
 
   assert.equal(events.filter((event) => event.type === 'attach').length, 1);
   assert.equal(events.filter((event) => event.type === 'spawn').length, 1);
