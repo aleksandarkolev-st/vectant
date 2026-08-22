@@ -130,7 +130,8 @@ export interface SubstrateAdapterBundle<
   TAction = unknown,
   THandle extends SessionHandle = SessionHandle,
 > {
-  /** Registry key, e.g. "browser", "terminal", "grid.world". Namespaced
+  /** Registry key, e.g. "browser", "terminal", or any adapter-declared
+   *  namespaced id ("family.kind"). Namespaced
    *  with a dot when experimental. */
   substrate_kind: string;
   adapter_version: string;
