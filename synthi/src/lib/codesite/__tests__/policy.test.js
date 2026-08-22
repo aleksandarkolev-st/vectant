@@ -19,6 +19,17 @@ describe('CodeSite airspace policy', () => {
       'agent_resumed',
       'agent_heartbeat',
       'agent_detached',
+      'discovery_recorded',
+      'lead_opened',
+      'lead_claimed',
+      'lead_resolved',
+      'lead_dismissed',
+      'shared_skill_published',
+      'shared_skill_updated',
+      'impact_notice_created',
+      'impact_notice_responded',
+      'handoff_ready',
+      'handoff_acknowledged',
     ]));
     expect(() => validateCodeSiteEventType('agent_chat_message')).toThrow(/codesite_event_type_invalid:agent_chat_message/);
   });
