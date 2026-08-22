@@ -26,6 +26,7 @@ const SENSITIVE_KEYS = new Set([
   'providerbilling',
   'billingcontext',
   'providersessionmemory',
+  'providersessionref',
   'secret',
   'secrets',
   'credential',
@@ -82,7 +83,7 @@ function keyContainsPrivateMaterial(key) {
     || /(?:secret|credential|password|privatekey)$/.test(normalized)
     || /(?:access|auth|bearer|refresh|session|api)token$/.test(normalized)
     || /^provideraccount/.test(normalized)
-    || /^providersessionmemory/.test(normalized);
+    || /^providersession(?:memory|ref)/.test(normalized);
 }
 
 function stringContainsSecretMaterial(value) {

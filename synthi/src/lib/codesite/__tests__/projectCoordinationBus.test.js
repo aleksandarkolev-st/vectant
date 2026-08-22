@@ -128,19 +128,32 @@ describe('project coordination bus', () => {
     expect(adapters.route).not.toHaveBeenCalled();
   });
 
-  it('does not mistake provider session references, prompt summaries, or token counts for private material', async () => {
+  it('allows bounded redacted summaries and metrics without provider-private session identity', async () => {
     const { adapters } = makeAdapters();
     const bus = createProjectCoordinationBus(adapters);
 
     await expect(bus.publish(rawObservation({
       observation: {
         summary: 'bounded project fact',
-        providerSessionRef: 'provider-session-opaque-1',
         promptSummary: 'redacted coordination summary',
         tokenCount: 42,
         secretRef: 'vault-reference-only',
       },
     }))).resolves.toMatchObject({ event: { id: 'event-1' } });
+  });
+
+  it('rejects provider session references before persistence or routing', async () => {
+    const { adapters } = makeAdapters();
+    const bus = createProjectCoordinationBus(adapters);
+
+    await expect(bus.publish(rawObservation({
+      observation: { providerSessionRef: 'provider-session-private-1' },
+    }))).rejects.toMatchObject({
+      code: 'coordination_private_material_rejected',
+      stage: 'redact',
+    });
+    expect(adapters.persist).not.toHaveBeenCalled();
+    expect(adapters.route).not.toHaveBeenCalled();
   });
 
   it('fails closed when a later adapter reintroduces private material', async () => {
