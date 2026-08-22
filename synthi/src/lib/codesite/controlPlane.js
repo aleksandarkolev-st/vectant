@@ -52,6 +52,7 @@ import {
 import { buildKnowledgeDeliveryPlan } from './knowledgeRouting';
 import { validateKnowledgeResponse } from './knowledgeResponses';
 import { createProjectCoordinationBus } from './projectCoordinationBus';
+import { canonicalKnowledgeEventType } from './knowledgeEvents';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
@@ -7809,6 +7810,8 @@ function normalizeIncidentReplayEvent(event) {
 }
 
 function replayEventType(eventType) {
+  const knowledgeEventType = canonicalKnowledgeEventType(eventType);
+  if (knowledgeEventType) return knowledgeEventType;
   return {
     transaction_opened: 'transaction.opened',
     assumption_recorded: 'assumption.recorded',
