@@ -74,9 +74,9 @@ def docker_command(*, workspace: Path, run_id: str, runner_command: List[str], p
         "--tmpfs", "/run/agent-output:rw,noexec,nosuid,size=16m",
         "--env", "HOME=/tmp", "--env", "TMPDIR=/tmp",
         "--env", "HERMES_WRITE_SAFE_ROOT=/workspace",
-        "--env", "CODEX_HOME=/run/agent-credentials/codex",
-        "--env", "CLAUDE_CONFIG_DIR=/run/agent-credentials/claude",
-        "--env", "HERMES_HOME=/run/agent-credentials/hermes",
+        "--env", "CODEX_HOME=/tmp/codex",
+        "--env", "CLAUDE_CONFIG_DIR=/tmp/claude",
+        "--env", "HERMES_HOME=/tmp/hermes",
     ]
     command.extend(_workspace_mount_args(root, policy))
     command.extend(_protected_mount_args(root, policy))

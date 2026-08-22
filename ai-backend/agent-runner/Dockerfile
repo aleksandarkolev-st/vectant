@@ -11,6 +11,8 @@ RUN apk add --no-cache python3 py3-pip git ca-certificates \
  && addgroup -S -g 10001 agent \
  && adduser -S -D -H -u 10001 -G agent agent
 
+COPY --chmod=0555 entrypoint.sh /usr/local/bin/agent-entrypoint
 USER 10001:10001
 ENV PATH="/opt/hermes/bin:${PATH}"
 WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/agent-entrypoint"]
