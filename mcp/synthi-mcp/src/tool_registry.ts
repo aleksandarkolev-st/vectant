@@ -207,6 +207,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_codesite_validate_transaction",
   "synthi_codesite_request_commit",
   "synthi_codesite_get_source_state_since",
+  "synthi_codesite_get_relevant_context",
   "synthi_codesite_get_radar",
   "synthi_codesite_get_metrics",
   "synthi_codesite_get_agent_manifest",

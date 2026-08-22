@@ -17,6 +17,8 @@ describe("CodeSite MCP tool surface", () => {
     process.env.SYNTHI_CODESITE_WORKSPACE = "workspace-env";
     process.env.SYNTHI_CODESITE_PROJECT_ID = "project-env";
     process.env.SYNTHI_CODESITE_BASE_URL = "http://codesite.test";
+    delete process.env.SYNTHI_CODESITE_AGENT_SESSION_ID;
+    delete process.env.SYNTHI_CODESITE_AGENT_TOKEN;
   });
 
   afterEach(() => {
@@ -33,6 +35,58 @@ describe("CodeSite MCP tool surface", () => {
 
   it("returns null for non-CodeSite tool dispatch", async () => {
     expect(await dispatchCodeSiteTool("synthi_health", {})).toBeNull();
+  });
+
+  it("reads relevant context only from the environment-bound agent identity", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_scoped-agent-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      contextVersion: "synthi.codesite.agentContext.v1",
+      agent: { id: "agent-1" },
+    }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_relevant_context", {});
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-1/relevant-context"),
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          authorization: "Bearer csa_scoped-agent-token",
+        },
+      },
+    );
+    expect(JSON.stringify(response)).not.toContain("csa_scoped-agent-token");
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      response: expect.objectContaining({ agent: { id: "agent-1" } }),
+    }));
+  });
+
+  it("rejects caller-selected context identity before network access", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_scoped-agent-token";
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_relevant_context", {
+      agent_session_id: "agent-forged",
+      auth_token: "forged-token",
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_agent_context_arguments_forbidden",
+    }));
+  });
+
+  it("requires the attached agent environment before requesting context", async () => {
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_relevant_context", {});
+    expect(response?.isError).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_agent_context_environment_required",
+    }));
   });
 
   it("reads radar state from the configured control-plane API", async () => {

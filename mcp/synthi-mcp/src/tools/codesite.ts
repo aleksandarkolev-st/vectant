@@ -27,6 +27,7 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_validate_transaction",
   "synthi_codesite_request_commit",
   "synthi_codesite_get_source_state_since",
+  "synthi_codesite_get_relevant_context",
   "synthi_codesite_get_radar",
   "synthi_codesite_get_metrics",
   "synthi_codesite_get_agent_manifest",
@@ -67,6 +68,7 @@ export const CODESITE_TOOL_NAMES = [
 ] as const;
 
 type CodeSiteToolName = (typeof CODESITE_TOOL_NAMES)[number];
+type RoutedCodeSiteToolName = Exclude<CodeSiteToolName, "synthi_codesite_get_relevant_context">;
 
 type JsonObject = Record<string, unknown>;
 
@@ -150,6 +152,15 @@ const COMMON_PROPERTIES = {
 } as const;
 
 export const CODESITE_TOOLS = [
+  {
+    name: "synthi_codesite_get_relevant_context",
+    description: "Read the compact CodeSite working context bound to this attached agent process.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
   codeSiteTool("synthi_codesite_list_projects", "List visible CodeSite projects for a workspace.", {}, []),
   codeSiteTool("synthi_codesite_create_project", "Create a CodeSite project and owner membership for a workspace.", {
     title: { type: "string" },
@@ -527,6 +538,9 @@ export async function dispatchCodeSiteTool(toolName: string, args: unknown): Pro
   if (!isCodeSiteToolName(toolName)) return null;
   try {
     const input = objectArg(args);
+    if (toolName === "synthi_codesite_get_relevant_context") {
+      return await dispatchRelevantAgentContext(input);
+    }
     if (toolName === "synthi_codesite_apply_patch") {
       return await dispatchCodeSiteApplyPatch(input);
     }
@@ -570,6 +584,40 @@ export async function dispatchCodeSiteTool(toolName: string, args: unknown): Pro
   }
 }
 
+async function dispatchRelevantAgentContext(args: JsonObject): Promise<ToolResponse> {
+  if (Object.keys(args).length > 0) {
+    return errorResponse("codesite_agent_context_arguments_forbidden");
+  }
+  const agentSessionId = envString("SYNTHI_CODESITE_AGENT_SESSION_ID");
+  const agentToken = envString("SYNTHI_CODESITE_AGENT_TOKEN");
+  if (!agentSessionId || !agentToken) {
+    return errorResponse("codesite_agent_context_environment_required");
+  }
+  const apiBase = resolveApiBase({});
+  const path = `/agent-sessions/${encodeURIComponent(agentSessionId)}/relevant-context`;
+  const url = new URL(`${apiBase}${path}`);
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${agentToken}`,
+    },
+  });
+  if (!response.ok) {
+    return errorResponse("codesite_agent_context_request_failed", {
+      status: response.status,
+      request: { method: "GET", path, url: url.toString() },
+    });
+  }
+  const data = parseJsonObject(await response.text());
+  return jsonResponse({
+    ok: true,
+    tool: "synthi_codesite_get_relevant_context",
+    request: { method: "GET", path, url: url.toString() },
+    response: data,
+  });
+}
+
 function codeSiteTool(
   name: CodeSiteToolName,
   description: string,
@@ -590,7 +638,7 @@ function codeSiteTool(
   };
 }
 
-function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): CodeSiteRequest | null {
+function buildCodeSiteRequest(toolName: RoutedCodeSiteToolName, args: JsonObject): CodeSiteRequest | null {
   switch (toolName) {
     case "synthi_codesite_list_projects":
       return {
