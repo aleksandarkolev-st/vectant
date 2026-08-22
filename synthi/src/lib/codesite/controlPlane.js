@@ -3066,6 +3066,23 @@ export async function createExecutionPlan(workspaceSlug, projectId, body = {}, a
   return executionPlanProjection(plan);
 }
 
+export async function createAgentExecutionPlan(workspaceSlug, sessionId, agentAccessToken, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.plans.write',
+    now: options.now,
+  });
+  const session = authority.session;
+  const requestedSessionId = String(body.agentSessionId || body.agent_session_id || '').trim();
+  if (requestedSessionId && requestedSessionId !== session.id) {
+    throw forbidden('execution_plan_agent_forbidden');
+  }
+  return createExecutionPlan(workspaceSlug, session.projectId, {
+    ...body,
+    agentSessionId: session.id,
+    displayCallsign: session.displayCallsign,
+  }, { internalService: true, bypass: true, agentOwnerUserId: session.ownerUserId });
+}
+
 function normalizeDurationMs(value) {
   if (Number.isFinite(value)) return Math.max(0, Math.floor(value));
   if (typeof value !== 'string') return null;

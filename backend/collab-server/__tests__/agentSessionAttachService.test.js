@@ -96,6 +96,7 @@ test('builds attach identity only from the trusted gateway projection', () => {
       'codesite.knowledge.write',
       'codesite.inbox.respond',
       'codesite.observations.write',
+      'codesite.plans.write',
     ],
     subscriptions: ['project.events', 'agent.inbox'],
     deliveryChannel: { type: 'mcp_poll' },
