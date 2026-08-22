@@ -68,11 +68,16 @@ export interface ForkProviderCap<THandle extends SessionHandle = SessionHandle, 
   disposeFork(forkHandle: TFork): Promise<void>;
 }
 
-/** Re-execute a recorded fragment in the current world state. */
+/** Re-execute a recorded fragment against an explicit environment handle. */
 export interface ReplayProviderCap<TEvent = unknown> {
   replay(
     fragment: TraceFragmentLike,
-    options: { mode: "same_state" | "fresh_state" },
+    options: {
+      handle: SessionHandle;
+      mode: "same_state" | "fresh_state";
+      /** Fresh-state replays may reset through this profile first. */
+      reset_profile?: string;
+    },
   ): Promise<ReplayOutcome>;
 }
 
