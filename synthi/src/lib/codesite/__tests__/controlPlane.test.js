@@ -407,7 +407,10 @@ function approvedPermitFixture(overrides = {}) {
   };
 }
 
-function signedDojoProofFixture() {
+function signedDojoProofFixture(validAt = new Date()) {
+  const referenceTime = validAt instanceof Date ? validAt : new Date(validAt);
+  const issuedAt = new Date(referenceTime.getTime() - 60_000).toISOString();
+  const expiresAt = new Date(referenceTime.getTime() + 60 * 60_000).toISOString();
   const keyPair = generateEd25519DojoProofKeyPair('dojo-test-key');
   const signer = createEd25519DojoProofSigner({
     key_id: keyPair.key_id,
@@ -430,8 +433,8 @@ function signedDojoProofFixture() {
       evidence_refs: ['evidence:ev-checkride-1'],
     }],
     evidence_record_ids: ['ev-checkride-1'],
-    issued_at: '2026-06-29T00:00:00.000Z',
-    expires_at: '2026-08-01T00:00:00.000Z',
+    issued_at: issuedAt,
+    expires_at: expiresAt,
     signature_algorithm: 'ed25519',
   };
   const signature = signer.sign(canonicalDojoProofPayload(unsignedCapsule));

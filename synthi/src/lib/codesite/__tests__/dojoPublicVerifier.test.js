@@ -86,6 +86,23 @@ describe('CodeSite local Dojo public verifier', () => {
     expect(result.ok).toBe(false);
     expect(result.blocked_by).toContain('proof_capsule_action_mismatch');
   });
+
+  it('keeps the signature valid but blocks a capsule checked after expiry', () => {
+    const fixture = signedProofFixture();
+    const result = verifyDojoProofCapsulePublicWithKeyRecord({
+      ...fixture,
+      expected: {
+        requested_action: 'codesite.mutation.clearance',
+        required_evidence_claims: ['codesite.restricted_mutation'],
+      },
+      require_ledger_checkpoint: true,
+      now: '2026-07-02T00:00:00.001Z',
+    });
+
+    expect(result.signature_verified).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.blocked_by).toContain('proof_capsule_expired');
+  });
 });
 
 function canonicalDojoProofPayload(value) {
