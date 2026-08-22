@@ -31,8 +31,11 @@ export interface FuzzHooks {
   /** Mechanical stage-1 diff between two full observations (adapter-owned).
    *  A null "before" means "empty world" semantics for cold starts. */
   diffObservations(before: unknown, after: unknown): ChangedValue[];
-  /** Observation samples per changed path across settle ticks. */
+  /** Observation samples per changed path across settle ticks. Receives the
+   *  session handle because sampling post-action journals is adapter-side
+   *  work — observations alone cannot see the world's internal history. */
   persistenceTraces(
+    handle: SessionHandle,
     before: unknown,
     after: unknown,
     settleTicks: readonly number[],
@@ -144,8 +147,24 @@ export async function runConformancePass(
   const afterObservation = await observer.observe(handle);
   const changedValues = hooks.diffObservations(null, afterObservation);
   const settleTicks = [0, 1, 2];
-  const traces = hooks.persistenceTraces(null, afterObservation, settleTicks);
+  const traces = hooks.persistenceTraces(handle, null, afterObservation, settleTicks);
   const baseline = hooks.baselineOf(afterObservation);
+
+  // No-action control: a second environment in the same realm, observed the
+  // same number of times, never acted on. Whatever moved there is ambient.
+  // This upgrades attribution evidence to fork_control for every substrate
+  // that supports multiple environments (all conformance fixtures do).
+  const controlHandle = await bundle.attach({
+    realm,
+    consent_proof: {
+      subject: "harness-agent",
+      realm,
+      approved_capabilities: ["observe", "record"],
+    },
+  });
+  const controlBefore = await observer.observe(controlHandle);
+  const controlAfter = await observer.observe(controlHandle);
+  const controlDiff = hooks.diffObservations(controlBefore, controlAfter);
 
   // Stages 2–5 are pure core: identical code for every substrate.
   const differResult = runStateDiffer(
@@ -153,6 +172,7 @@ export async function runConformancePass(
       changed_values: changedValues,
       window: { start_tick: 0, end_tick: spec.steps, settle_tick: spec.steps + 2 },
       schema: adapter.schema(),
+      control_diffs: [{ source_id: "harness-control", changed: controlDiff }],
     },
     traces,
     baseline,
