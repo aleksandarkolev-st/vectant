@@ -29,6 +29,13 @@ export default function TowerSimulatorDeck({
     latestSimulation?.run?.shadowJobRef,
   ]);
   const selectedHealth = universeHealthScore(selectedUniverse);
+  // Workstream E: surface whether this simulation is backed by real execution
+  // (external shadow runner applied patches / ran commands) or is a forecast.
+  const resultKind =
+    towerSimulation?.resultKind ||
+    latestSimulation?.result?.resultKind ||
+    latestSimulation?.run?.resultKind ||
+    null;
 
   return (
     <div data-testid="codesite-tower-simulator" className="grid min-w-0 gap-3">
@@ -52,6 +59,14 @@ export default function TowerSimulatorDeck({
             <Pill tone={selectedHealth >= 0.65 ? "active" : "holding"}>
               health {formatPercent(selectedHealth)}
             </Pill>
+            {resultKind ? (
+              <Pill
+                tone={resultKind === "executed" ? "active" : "holding"}
+                data-testid="codesite-shadow-result-kind"
+              >
+                {resultKind === "executed" ? "executed" : "forecast"}
+              </Pill>
+            ) : null}
             {towerUniverses.length ? (
               <Pill>{towerUniverses.length} options</Pill>
             ) : null}
