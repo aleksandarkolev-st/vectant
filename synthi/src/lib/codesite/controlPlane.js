@@ -2340,12 +2340,14 @@ async function createKnowledgeWithClient(db, record, knowledgeId, eventInput) {
 
 async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
   const sourceKnowledgeId = nextKnowledgeId('knw');
+  const source = record.normalized.source;
+  const projectId = authority.session?.projectId || record.normalized.projectId;
   return prisma.$transaction(async (db) => {
-    const source = await createKnowledgeWithClient(db, record, sourceKnowledgeId, {
+    const persistedSource = await createKnowledgeWithClient(db, record, sourceKnowledgeId, {
       eventType: knowledgeEventType(record.normalized),
-      displayCallsign: authority.session.displayCallsign,
-      actorType: 'agent_session',
-      actorId: authority.session.id,
+      displayCallsign: authority.session?.displayCallsign || null,
+      actorType: source.actorType === 'agent' ? 'agent_session' : source.actorType,
+      actorId: source.actorId,
       evidenceRefs: record.normalized.evidenceRefs,
       details: {
         knowledgeItemId: sourceKnowledgeId,
@@ -2361,7 +2363,7 @@ async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
       const impactId = nextKnowledgeId('imp');
       const impactInput = {
         kind: 'impact_notice',
-        projectId: authority.session.projectId,
+        projectId,
         title: `Impact: ${record.normalized.title}`.slice(0, 160),
         summary: record.normalized.summary,
         status: 'pending',
@@ -2377,7 +2379,7 @@ async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
         recipientAgentSessionIds: [target.agentSessionId],
         requiresResponse: true,
       };
-      const impactRecord = buildKnowledgeRecord(impactInput, { projectId: authority.session.projectId });
+      const impactRecord = buildKnowledgeRecord(impactInput, { projectId });
       impactRecord.data.dedupeKey = target.dedupeKey;
       impactRecord.data.targetTransactionId = target.transactionIds[0] || null;
       const impact = await createKnowledgeWithClient(db, impactRecord, impactId, {
@@ -2396,7 +2398,7 @@ async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
       });
       const inboxItem = await db.codeSiteAgentInboxItem.create({
         data: {
-          projectId: authority.session.projectId,
+          projectId,
           agentSessionId: target.agentSessionId,
           recipientUserId: target.recipientUserId,
           eventId: impact.event.id,
@@ -2418,8 +2420,8 @@ async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
       impacts.push({ knowledge: projectKnowledgeRecord(impact.row), inboxItem: inboxProjection(inboxItem) });
     }
     return {
-      knowledge: projectKnowledgeRecord(source.row),
-      event: eventProjection(source.event),
+      knowledge: projectKnowledgeRecord(persistedSource.row),
+      event: eventProjection(persistedSource.event),
       impacts,
     };
   });
@@ -4132,7 +4134,7 @@ async function invalidateAssumptionsForWrite(projectId, { path, semanticDependen
       },
     });
     invalidated.push(assumptionProjection(updated));
-    await recordEvent(projectId, {
+    const invalidationEvent = await recordEvent(projectId, {
       eventType: 'assumption_invalidated',
       displayCallsign: assumption.displayCallsign,
       details: {
@@ -4143,8 +4145,86 @@ async function invalidateAssumptionsForWrite(projectId, { path, semanticDependen
         semanticDependencyRefs,
       },
     });
+    await publishAssumptionInvalidationKnowledge(projectId, {
+      assumption,
+      path,
+      semanticDependencyRefs,
+      invalidatedBy,
+      invalidationEvent,
+    });
   }
   return invalidated;
+}
+
+async function publishAssumptionInvalidationKnowledge(projectId, {
+  assumption,
+  path,
+  semanticDependencyRefs,
+  invalidatedBy,
+  invalidationEvent,
+}) {
+  const [sessions, executionPlans, transactions] = await Promise.all([
+    prisma.codeSiteAgentSession.findMany({
+      where: { projectId, endedAt: null, status: { in: ['attached', 'detached'] } },
+    }),
+    prisma.codeSiteExecutionPlan.findMany({
+      where: { projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+    }),
+    prisma.codeSiteMutationTransaction.findMany({
+      where: { projectId, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+    }),
+  ]);
+  const usedBy = asArray(parseJson(assumption.usedByJson, []));
+  const dependentTransactions = transactions.filter((transaction) => (
+    transaction.agentSessionId === assumption.ownerSessionId
+    || asArray(parseJson(transaction.assumptionRefsJson, [])).includes(assumption.id)
+    || usedBy.includes(transaction.id)
+  ));
+  const contractRefs = unique(asArray(semanticDependencyRefs)
+    .map((reference) => typeof reference === 'string' ? reference : reference?.ref || reference?.raw)
+    .filter(Boolean));
+  const agentSessionIds = unique([
+    assumption.ownerSessionId,
+    ...dependentTransactions.map((transaction) => transaction.agentSessionId),
+  ].filter(Boolean));
+  const references = {
+    paths: path ? [path] : [],
+    contracts: contractRefs,
+    agentSessionIds,
+    transactionIds: dependentTransactions.map((transaction) => transaction.id),
+  };
+  if (!Object.values(references).some((values) => values.length)) return null;
+  const knowledgeInput = {
+    kind: 'discovery',
+    projectId,
+    title: `Assumption invalidated: ${assumption.assumptionKey}`.slice(0, 160),
+    summary: `Assumption ${assumption.assumptionKey} was invalidated by ${invalidatedBy}; affected work must refresh, rebase, or abort.`,
+    status: 'verified',
+    source: { actorType: 'system', actorId: assumption.id },
+    references,
+    evidenceRefs: [`event:${invalidationEvent.id}`],
+    confidence: 1,
+    verification: 'verified',
+    tags: ['assumption', 'invalidation'],
+  };
+  const record = buildKnowledgeRecord(knowledgeInput, { projectId });
+  const existing = await prisma.codeSiteKnowledgeItem.findFirst({
+    where: { projectId, dedupeKey: record.data.dedupeKey },
+    include: { references: true },
+  });
+  if (existing) return { knowledge: projectKnowledgeRecord(existing), duplicate: true, impacts: [] };
+  const deliveryPlan = buildKnowledgeDeliveryPlan({
+    item: { ...record.normalized, id: 'pending-assumption-invalidation' },
+    sessions,
+    executionPlans,
+    transactions: dependentTransactions,
+  });
+  const result = await persistKnowledgeAndImpacts({ session: { projectId } }, record, deliveryPlan);
+  await syncArtifactsForProject(projectId, {
+    reason: 'assumption_invalidation_routed',
+    eventId: result.event?.id,
+  });
+  return { ...result, duplicate: false };
 }
 
 function assumptionMatchesWrite({ dependsOn, usedBy, path, semanticDependencyRefs }) {

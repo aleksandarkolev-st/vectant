@@ -653,6 +653,16 @@ describe('CodeSite control plane transaction validation', () => {
     prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
     prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(null);
     prisma.codeSiteKnowledgeItem.findMany.mockResolvedValue([]);
+    prisma.codeSiteKnowledgeItem.create.mockImplementation(async ({ data }) => ({
+      ...data,
+      createdAt: new Date('2026-08-22T04:00:00.000Z'),
+      updatedAt: new Date('2026-08-22T04:00:00.000Z'),
+    }));
+    prisma.codeSiteKnowledgeItem.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      ...data,
+      updatedAt: new Date('2026-08-22T04:01:00.000Z'),
+    }));
     prisma.codeSiteKnowledgeReference.createMany.mockResolvedValue({ count: 0 });
     prisma.$transaction.mockImplementation(async (callback) => callback(prisma));
     prisma.codeSiteExecutionPlan.create.mockImplementation(async ({ data }) => ({
@@ -3927,6 +3937,28 @@ describe('CodeSite control plane transaction validation', () => {
       ...activeAssumption,
       ...data,
     }));
+    prisma.codeSiteAgentSession.findMany.mockResolvedValue([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'CLAUDE-17',
+      agentProvider: 'any-agent-provider',
+      status: 'attached',
+      endedAt: null,
+      subscriptionsJson: '[]',
+    }]);
+    prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([{
+      id: 'txn-consumer',
+      projectId: 'project-1',
+      agentSessionId: 'agent-2',
+      status: 'open',
+      assumptionRefsJson: JSON.stringify(['asm-signup-v1']),
+      readSetJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      observedReadSetJson: '[]',
+      writeSetJson: '[]',
+      observedWriteSetJson: '[]',
+      semanticDependencyRefsJson: JSON.stringify(['contract:auth.signup.schema']),
+    }]);
 
     const result = await recordTransactionWrite('acme', 'txn-1', {
       path: 'synthi/prisma/schema.prisma',
@@ -3954,6 +3986,21 @@ describe('CodeSite control plane transaction validation', () => {
         detailsJson: expect.stringContaining('auth.signup.schema'),
       }),
     }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'impact_notice_created',
+        detailsJson: expect.stringContaining('txn-consumer'),
+      }),
+    }));
+    expect(prisma.codeSiteAgentInboxItem.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        agentSessionId: 'agent-2',
+        recipientUserId: 'user-2',
+        kind: 'impact_notice',
+        requiresResponse: true,
+      }),
+    }));
+    expect(prisma.codeSiteKnowledgeItem.create).toHaveBeenCalledTimes(2);
   });
 
   it('does not invalidate an assumption when writing a declared consumer path', async () => {
