@@ -342,16 +342,17 @@ model ProgramRuntimeEvent {
 }
 
 model CodeSiteProject {
-  id              String   @id @default(cuid())
-  workspaceSlug   String
-  title           String
-  request         String
-  status          String
-  zonePolicyJson  String
-  controlPlanJson String
-  createdByUserId String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                     String   @id @default(cuid())
+  workspaceSlug          String
+  collaborationSessionId String?
+  title                  String
+  request                String
+  status                 String
+  zonePolicyJson         String
+  controlPlanJson        String
+  createdByUserId        String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 
   members            CodeSiteProjectMember[]
   agentSessions      CodeSiteAgentSession[]
@@ -374,6 +375,7 @@ model CodeSiteProject {
   inboxItems         CodeSiteAgentInboxItem[]
 
   @@index([workspaceSlug])
+  @@index([collaborationSessionId])
   @@index([status])
 }
 
@@ -423,10 +425,12 @@ model CodeSiteAgentSession {
   projectId                String
   ownerUserId              String
   workspaceSlug            String?
+  collaborationUserId      String?
   effectiveWorkspaceUserId String?
   collaborationSessionId   String?
   terminalSessionId        String?
   runtimeSessionId         String?
+  runtimeScope             String?
   agentProvider            String
   agentRuntime             String?
   providerSessionRef       String?
@@ -435,8 +439,11 @@ model CodeSiteAgentSession {
   permissionsJson          String
   redactionPolicyJson      String?
   capabilitiesJson         String    @default("[]")
+  executionHostJson        String    @default("{}")
   subscriptionsJson        String    @default("[]")
   deliveryChannelJson      String    @default("{}")
+  attachSource             String?
+  bindingVersion           Int?
   activeMutationLeaseId    String?
   activeTransactionId      String?
   dojoPilotLicenseRef      String?
@@ -460,14 +467,15 @@ model CodeSiteAgentSession {
   @@index([projectId])
   @@index([ownerUserId])
   @@index([workspaceSlug])
+  @@index([collaborationUserId])
   @@index([effectiveWorkspaceUserId])
   @@index([collaborationSessionId, status])
   @@index([terminalSessionId])
   @@index([runtimeSessionId])
+  @@index([runtimeScope])
+  @@index([lastHeartbeatAt])
   @@index([displayCallsign])
   @@index([status])
-  @@unique([workspaceSlug, terminalSessionId])
-  @@unique([ownerUserId, agentProvider, providerSessionRef])
 }
 
 model CodeSiteExecutionPlan {
