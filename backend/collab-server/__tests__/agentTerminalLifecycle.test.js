@@ -101,7 +101,11 @@ test('ordinary terminals skip the lifecycle service and receive no agent environ
 });
 
 test('resume accepts a null one-time credential while new attachment fails closed', async () => {
-  const service = { attach: async () => attachResult({ resumed: true, agentAccessToken: null }) };
+  const detaches = [];
+  const service = {
+    attach: async () => attachResult({ resumed: true, agentAccessToken: null }),
+    detach: async (input) => { detaches.push(input); },
+  };
   const resumed = await attachTerminalAgent({
     service,
     gatewayAuth: gatewayAuth(),
@@ -118,6 +122,10 @@ test('resume accepts a null one-time credential while new attachment fails close
     terminalSessionId: 'terminal-1',
     resolveBaseUrl: () => 'http://frontend.test/api/workspace/team/codesite',
   }), { code: 'AGENT_TERMINAL_ACCESS_TOKEN_REQUIRED' });
+  assert.equal(detaches.length, 1);
+  assert.equal(detaches[0].agentSessionId, 'agent-1');
+  assert.equal(detaches[0].reason, 'terminal_attach_invalid');
+  assert.equal(detaches[0].ended, true);
 });
 
 test('reattach binding comes from the new gateway identity and retained server session only', () => {

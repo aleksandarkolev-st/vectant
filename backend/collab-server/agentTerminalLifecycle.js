@@ -130,13 +130,33 @@ async function attachTerminalAgent({
     terminalSessionId,
     rotateAgentAccessToken: requireAccessToken,
   });
-  const binding = normalizeTerminalAgentBinding({ result, gatewayAuth, workspaceSlug, terminalSessionId });
-  const accessToken = result?.agentAccessToken == null ? null : String(result.agentAccessToken).trim();
-  if ((requireAccessToken && !accessToken) || (accessToken && !AGENT_TOKEN_PATTERN.test(accessToken))) {
-    throw lifecycleError('AGENT_TERMINAL_ACCESS_TOKEN_REQUIRED');
+  let binding;
+  let accessToken;
+  let apiBaseUrl;
+  try {
+    binding = normalizeTerminalAgentBinding({ result, gatewayAuth, workspaceSlug, terminalSessionId });
+    accessToken = result?.agentAccessToken == null ? null : String(result.agentAccessToken).trim();
+    if ((requireAccessToken && !accessToken) || (accessToken && !AGENT_TOKEN_PATTERN.test(accessToken))) {
+      throw lifecycleError('AGENT_TERMINAL_ACCESS_TOKEN_REQUIRED');
+    }
+    apiBaseUrl = resolveBaseUrl(workspaceSlug);
+    if (!apiBaseUrl) throw lifecycleError('AGENT_TERMINAL_CONTROL_PLANE_REQUIRED');
+  } catch (error) {
+    const agentSessionId = String(result?.session?.id || '').trim();
+    if (agentSessionId && typeof service.detach === 'function') {
+      try {
+        await service.detach({
+          gatewayAuth,
+          workspaceSlug,
+          terminalSessionId,
+          agentSessionId,
+          reason: 'terminal_attach_invalid',
+          ended: true,
+        });
+      } catch (_) {}
+    }
+    throw error;
   }
-  const apiBaseUrl = resolveBaseUrl(workspaceSlug);
-  if (!apiBaseUrl) throw lifecycleError('AGENT_TERMINAL_CONTROL_PLANE_REQUIRED');
 
   const state = {
     service,
