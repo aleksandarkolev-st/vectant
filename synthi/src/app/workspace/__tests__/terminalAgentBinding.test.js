@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  agentStartupInputForReady,
   appendTerminalAgentBindingParams,
   assertGatewayAgentBinding,
   createTerminalAgentLaunch,
   normalizeAgentLaunchCommand,
+  normalizeTerminalAgentLaunch,
   normalizeTerminalAgentBinding,
   requestTerminalGatewayToken,
   terminalAgentBindingMatches,
@@ -149,5 +151,43 @@ describe('terminal agent binding', () => {
         text: async () => JSON.stringify({ token: 'signed-token', agentBinding: { ...requested, provider: 'other' } }),
       }),
     })).rejects.toThrow('terminal_gateway_agent_binding_mismatch');
+  });
+
+  it('starts an arbitrary configured agent exactly once on a fresh PTY and never on reattach', () => {
+    const launch = normalizeTerminalAgentLaunch({
+      binding: { projectId: 'project-1', provider: 'acme_agent.v2', providerSessionRef: 'session-1' },
+      command: 'agent-host --profile local',
+    });
+    const startedSessionIds = new Set();
+    expect(agentStartupInputForReady(
+      launch,
+      { type: 'ready', sessionId: 'terminal-1', reattached: false },
+      startedSessionIds,
+    )).toBe('agent-host --profile local\r');
+    expect(agentStartupInputForReady(
+      launch,
+      { type: 'ready', sessionId: 'terminal-1', reattached: false },
+      startedSessionIds,
+    )).toBeNull();
+    expect(agentStartupInputForReady(
+      launch,
+      { type: 'ready', sessionId: 'terminal-2', reattached: true },
+      startedSessionIds,
+    )).toBeNull();
+    expect(agentStartupInputForReady(
+      launch,
+      { type: 'ready', sessionId: 'terminal-2' },
+      startedSessionIds,
+    )).toBeNull();
+  });
+
+  it('fails closed when launch command and binding are not supplied together', () => {
+    expect(() => normalizeTerminalAgentLaunch({ command: 'custom-agent' })).toThrow(
+      'incomplete_terminal_agent_launch',
+    );
+    expect(() => normalizeTerminalAgentLaunch({
+      binding: { projectId: 'project-1', provider: 'custom-agent', providerSessionRef: 'session-1' },
+    })).toThrow('incomplete_terminal_agent_launch');
+    expect(normalizeTerminalAgentLaunch()).toBeNull();
   });
 });

@@ -66,6 +66,29 @@ export function createTerminalAgentLaunch({
   });
 }
 
+export function normalizeTerminalAgentLaunch({ binding = null, command = null } = {}) {
+  const hasBinding = binding != null;
+  const hasCommand = typeof command === 'string' && Boolean(command.trim());
+  if (!hasBinding && !hasCommand) return null;
+  if (!hasBinding || !hasCommand) {
+    const error = new Error('incomplete_terminal_agent_launch');
+    error.code = error.message;
+    throw error;
+  }
+  return Object.freeze({
+    binding: normalizeTerminalAgentBinding(binding),
+    command: normalizeAgentLaunchCommand(command),
+  });
+}
+
+export function agentStartupInputForReady(launch, readyFrame, startedSessionIds) {
+  if (!launch || readyFrame?.type !== 'ready' || readyFrame.reattached !== false) return null;
+  const sessionId = typeof readyFrame.sessionId === 'string' ? readyFrame.sessionId.trim() : '';
+  if (!sessionId || startedSessionIds.has(sessionId)) return null;
+  startedSessionIds.add(sessionId);
+  return `${launch.command}\r`;
+}
+
 export function appendTerminalAgentBindingParams(params, value) {
   const binding = normalizeTerminalAgentBinding(value);
   if (!binding) return params;

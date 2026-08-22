@@ -27,8 +27,9 @@ import {
   applyOverridesToTheme,
 } from '@/lib/terminal-color-overrides';
 import {
+  agentStartupInputForReady,
   appendTerminalAgentBindingParams,
-  normalizeTerminalAgentBinding,
+  normalizeTerminalAgentLaunch,
   requestTerminalGatewayToken,
 } from './terminalAgentBinding';
 
@@ -202,7 +203,7 @@ const SYNTHI_THEME_FALLBACK = {
  * parent prop changes.  All communication happens through refs and WebSocket.
  * The freeze comparator always returns true (props are equal → skip re-render).
  */
-const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', workspaceName = '', onFsChange, fixedSessionId = null, shellType = null, agentBinding = null }) {
+const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', workspaceName = '', onFsChange, fixedSessionId = null, shellType = null, agentBinding = null, agentLaunchCommand = null }) {
   const containerRef = useRef(null);
   const terminalRef = useRef(null);   // { term, fitAddon, dispose() }
   const wsRef = useRef(null);
@@ -210,6 +211,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const inputDataDisposableRef = useRef(null);
   const inputBinaryDisposableRef = useRef(null);
   const inputBufferRef = useRef('');
+  const agentStartupSessionsRef = useRef(new Set());
   const oauthOutputBufferRef = useRef('');
   const oauthRelaySeenLinksRef = useRef(new Set());
   const openTerminalLinkRef = useRef(null);
@@ -885,10 +887,13 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         cols: String(cols),
         rows: String(rows),
       });
-      let normalizedAgentBinding;
+      let normalizedAgentLaunch;
       try {
-        normalizedAgentBinding = normalizeTerminalAgentBinding(agentBinding);
-        appendTerminalAgentBindingParams(params, normalizedAgentBinding);
+        normalizedAgentLaunch = normalizeTerminalAgentLaunch({
+          binding: agentBinding,
+          command: agentLaunchCommand,
+        });
+        appendTerminalAgentBindingParams(params, normalizedAgentLaunch?.binding || null);
       } catch (_) {
         if (mountedRef.current) setState('error');
         return;
@@ -920,7 +925,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       try {
         gateway = await requestTerminalGatewayToken(workspaceSlug, {
           collabSessionId: runtimeIdentity.collabSessionId || '',
-          agentBinding: normalizedAgentBinding,
+          agentBinding: normalizedAgentLaunch?.binding || null,
         });
       } catch (_) {
         if (mountedRef.current) {
@@ -1018,6 +1023,16 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             switch (msg.type) {
               case 'ready':
                 setShellInfo(`${msg.shell} (pid ${msg.pid})`);
+                {
+                  const startupInput = agentStartupInputForReady(
+                    normalizedAgentLaunch,
+                    msg,
+                    agentStartupSessionsRef.current,
+                  );
+                  if (startupInput && ws.readyState === WebSocket.OPEN) {
+                    ws.send(new TextEncoder().encode(startupInput));
+                  }
+                }
                 // Sync actual terminal size now that the PTY is alive
                 try {
                   fitAddon.fit();
@@ -1118,7 +1133,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         try { terminalInstance.dispose(); } catch (_) {}
       }
     };
-  }, [sessionKey, terminalId, workspaceSlug, fixedSessionId, shellType, agentBinding, isGuest, canTerminal, cleanup, disposeInputHandlers]); // Re-connect if terminal tab, workspace, shell type, agent binding, or terminal permission changes
+  }, [sessionKey, terminalId, workspaceSlug, fixedSessionId, shellType, agentBinding, agentLaunchCommand, isGuest, canTerminal, cleanup, disposeInputHandlers]); // Re-connect if terminal tab, workspace, shell type, agent launch, or terminal permission changes
 
   // ─── Reconnect button handler ─────────────────────────────────────────
   const handleReconnect = useCallback(() => {
