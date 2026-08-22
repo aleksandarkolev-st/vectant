@@ -1,5 +1,48 @@
 const BASE = '/api/workspace';
 
+export const CODE_SITE_LIVE_EVENT_TYPES = Object.freeze([
+  'tower_instruction',
+  'holding_pattern',
+  'ground_stop',
+  'mayday',
+  'mayday_resumed',
+  'near_miss',
+  'clearance_requested',
+  'clearance_issued',
+  'transponder_update',
+  'agent_attached',
+  'agent_resumed',
+  'agent_heartbeat',
+  'agent_detached',
+  'snapshot_taken',
+  'read_observed',
+  'write_attempted',
+  'write_allowed',
+  'write_denied',
+  'write_quarantined',
+  'quarantine_reviewed',
+  'quarantine_replayed',
+  'quarantine_applied',
+  'transaction_opened',
+  'transaction_validated',
+  'transaction_committed',
+  'transaction_aborted',
+  'policy_delta_proposed',
+  'policy_delta_promoted',
+  'policy_delta_rejected',
+  'rfi',
+  'change_order',
+  'route_deviation',
+  'landing_requested',
+  'inspection_result',
+  'radar_result',
+  'shadow_run',
+  'arbiter_verdict',
+  'black_box_closed',
+  'incident_reported',
+  'codesite_stream_error',
+]);
+
 async function parseJson(response) {
   return response.json().catch(() => ({}));
 }
@@ -161,45 +204,6 @@ export function subscribeCodeSiteProjectEvents(workspaceSlug, projectId, { onEve
   }
 
   const source = new window.EventSource(`${projectBase(workspaceSlug, projectId)}/events/stream`);
-  const eventTypes = [
-    'tower_instruction',
-    'holding_pattern',
-    'ground_stop',
-    'mayday',
-    'mayday_resumed',
-    'near_miss',
-    'clearance_requested',
-    'clearance_issued',
-    'transponder_update',
-    'snapshot_taken',
-    'read_observed',
-    'write_attempted',
-    'write_allowed',
-    'write_denied',
-    'write_quarantined',
-    'quarantine_reviewed',
-    'quarantine_replayed',
-    'quarantine_applied',
-    'transaction_opened',
-    'transaction_validated',
-    'transaction_committed',
-    'transaction_aborted',
-    'policy_delta_proposed',
-    'policy_delta_promoted',
-    'policy_delta_rejected',
-    'rfi',
-    'change_order',
-    'route_deviation',
-    'landing_requested',
-    'inspection_result',
-    'radar_result',
-    'shadow_run',
-    'arbiter_verdict',
-    'black_box_closed',
-    'incident_reported',
-    'codesite_stream_error',
-  ];
-
   const handleEvent = (event) => {
     try {
       onEvent?.(JSON.parse(event.data));
@@ -211,12 +215,12 @@ export function subscribeCodeSiteProjectEvents(workspaceSlug, projectId, { onEve
   source.onopen = () => onStatus?.('live');
   source.onerror = () => onStatus?.('reconnecting');
   source.onmessage = handleEvent;
-  for (const eventType of eventTypes) {
+  for (const eventType of CODE_SITE_LIVE_EVENT_TYPES) {
     source.addEventListener(eventType, handleEvent);
   }
 
   return () => {
-    for (const eventType of eventTypes) {
+    for (const eventType of CODE_SITE_LIVE_EVENT_TYPES) {
       source.removeEventListener(eventType, handleEvent);
     }
     source.onmessage = null;
