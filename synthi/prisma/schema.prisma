@@ -373,6 +373,8 @@ model CodeSiteProject {
   counterfactualRuns CodeSiteCounterfactualRun[]
   policyDeltas       CodeSitePolicyDelta[]
   inboxItems         CodeSiteAgentInboxItem[]
+  knowledgeItems     CodeSiteKnowledgeItem[]
+  knowledgeReferences CodeSiteKnowledgeReference[]
 
   @@index([workspaceSlug])
   @@index([collaborationSessionId])
@@ -466,6 +468,8 @@ model CodeSiteAgentSession {
   mutationLeases CodeSiteMutationLease[]
   mutationTxns   CodeSiteMutationTransaction[]
   inboxItems     CodeSiteAgentInboxItem[]
+  createdKnowledgeItems CodeSiteKnowledgeItem[] @relation("CodeSiteKnowledgeCreatedByAgent")
+  ownedKnowledgeItems   CodeSiteKnowledgeItem[] @relation("CodeSiteKnowledgeOwnedByAgent")
 
   @@index([projectId])
   @@index([ownerUserId])
@@ -568,6 +572,7 @@ model CodeSiteMutationTransaction {
   agentSession   CodeSiteAgentSession     @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
   proofBundles   CodeSiteProofBundle[]
   lineProvenance CodeSiteLineProvenance[]
+  targetedKnowledgeItems CodeSiteKnowledgeItem[]
 
   @@index([projectId])
   @@index([mutationLeaseId])
@@ -831,6 +836,7 @@ model CodeSiteEvent {
   project       CodeSiteProject          @relation(fields: [projectId], references: [id], onDelete: Cascade)
   mutationLease CodeSiteMutationLease?   @relation(fields: [mutationLeaseId], references: [id], onDelete: SetNull)
   inboxItems    CodeSiteAgentInboxItem[]
+  knowledgeItems CodeSiteKnowledgeItem[]
 
   @@unique([projectId, logicalTime])
   @@index([projectId])
@@ -848,23 +854,92 @@ model CodeSiteAgentInboxItem {
   recipientUserId     String
   eventId             String?
   documentId          String?
+  knowledgeItemId     String?
   kind                String
   requiresResponse    Boolean   @default(false)
   status              String    @default("pending")
   redactedPayloadJson String
+  responseAction      String?
+  responseJson        String?
   createdAt           DateTime  @default(now())
   acknowledgedAt      DateTime?
+  respondedAt         DateTime?
 
   project      CodeSiteProject      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   agentSession CodeSiteAgentSession @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
   event        CodeSiteEvent?       @relation(fields: [eventId], references: [id], onDelete: SetNull)
   document     CodeSiteDocument?    @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  knowledgeItem CodeSiteKnowledgeItem? @relation(fields: [knowledgeItemId], references: [id], onDelete: SetNull)
 
+  @@unique([knowledgeItemId, agentSessionId])
   @@index([projectId])
   @@index([agentSessionId])
   @@index([recipientUserId])
   @@index([eventId])
   @@index([status])
+}
+
+model CodeSiteKnowledgeItem {
+  id                      String    @id @default(cuid())
+  projectId               String
+  kind                    String
+  status                  String
+  title                   String
+  summary                 String
+  payloadJson             String
+  scopeJson               String
+  redactionClass          String    @default("project")
+  confidence              Float?
+  verificationStatus      String    @default("unverified")
+  createdByUserId         String?
+  createdByAgentSessionId String?
+  ownerUserId             String?
+  ownerAgentSessionId     String?
+  sourceEventId           String?
+  sourceKnowledgeItemId   String?
+  targetTransactionId     String?
+  dedupeKey               String?
+  evidenceRefsJson        String    @default("[]")
+  expiresAt               DateTime?
+  resolvedAt              DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  project               CodeSiteProject              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdByAgentSession CodeSiteAgentSession?        @relation("CodeSiteKnowledgeCreatedByAgent", fields: [createdByAgentSessionId], references: [id], onDelete: SetNull)
+  ownerAgentSession     CodeSiteAgentSession?        @relation("CodeSiteKnowledgeOwnedByAgent", fields: [ownerAgentSessionId], references: [id], onDelete: SetNull)
+  sourceEvent           CodeSiteEvent?               @relation(fields: [sourceEventId], references: [id], onDelete: SetNull)
+  sourceKnowledgeItem   CodeSiteKnowledgeItem?       @relation("CodeSiteKnowledgeCausality", fields: [sourceKnowledgeItemId], references: [id], onDelete: SetNull)
+  derivedKnowledgeItems CodeSiteKnowledgeItem[]      @relation("CodeSiteKnowledgeCausality")
+  targetTransaction     CodeSiteMutationTransaction? @relation(fields: [targetTransactionId], references: [id], onDelete: SetNull)
+  references            CodeSiteKnowledgeReference[]
+  inboxItems            CodeSiteAgentInboxItem[]
+
+  @@unique([projectId, dedupeKey])
+  @@index([projectId, kind, status])
+  @@index([projectId, expiresAt])
+  @@index([createdByAgentSessionId])
+  @@index([ownerAgentSessionId])
+  @@index([sourceEventId])
+  @@index([sourceKnowledgeItemId])
+  @@index([targetTransactionId])
+}
+
+model CodeSiteKnowledgeReference {
+  id           String @id @default(cuid())
+  projectId    String
+  knowledgeId  String
+  refType      String
+  refKey       String
+  relation     String
+  metadataJson String @default("{}")
+
+  project   CodeSiteProject       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  knowledge CodeSiteKnowledgeItem @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
+
+  @@unique([knowledgeId, refType, refKey, relation])
+  @@index([projectId, refType, refKey])
+  @@index([knowledgeId, relation])
 }
 
 model CodeSiteCounterfactualRun {
