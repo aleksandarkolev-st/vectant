@@ -2819,6 +2819,11 @@ describe('CodeSite control plane transaction validation', () => {
       expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ eventType: 'impact_notice_created' }),
       }));
+      const coordinationEvents = prisma.codeSiteEvent.create.mock.calls
+        .map(([call]) => call.data)
+        .filter((event) => ['discovery_recorded', 'impact_notice_created'].includes(event.eventType));
+      expect(coordinationEvents).toHaveLength(2);
+      expect(coordinationEvents.every((event) => /^evt_[A-Za-z0-9_-]+$/.test(event.id))).toBe(true);
     });
 
     it('derives project and source identity and rejects private prompt material', async () => {

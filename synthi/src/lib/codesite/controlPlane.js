@@ -51,6 +51,7 @@ import {
 } from './knowledgeRecords';
 import { buildKnowledgeDeliveryPlan } from './knowledgeRouting';
 import { validateKnowledgeResponse } from './knowledgeResponses';
+import { createProjectCoordinationBus } from './projectCoordinationBus';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
@@ -2327,7 +2328,11 @@ async function createKnowledgeWithClient(db, record, knowledgeId, eventInput) {
   });
   const referenceRows = buildKnowledgeReferenceRecords(record.normalized, knowledgeId);
   if (referenceRows.length) await db.codeSiteKnowledgeReference.createMany({ data: referenceRows });
-  const event = await recordEventWithClient(db, record.normalized.projectId, eventInput, { syncArtifacts: false });
+  const event = await publishKnowledgeCoordinationEventWithClient(
+    db,
+    record.normalized.projectId,
+    eventInput,
+  );
   const updated = await db.codeSiteKnowledgeItem.update({
     where: { id: knowledgeId },
     data: { sourceEventId: event.id },
@@ -2336,6 +2341,91 @@ async function createKnowledgeWithClient(db, record, knowledgeId, eventInput) {
     row: { ...created, ...updated, references: referenceRows },
     event,
   };
+}
+
+async function publishKnowledgeCoordinationEventWithClient(db, projectId, input) {
+  const eventId = nextKnowledgeId('evt');
+  let storedEvent = null;
+  const bus = createProjectCoordinationBus({
+    normalize: async () => ({
+      id: eventId,
+      projectId,
+      eventType: validateCodeSiteEventType(input.eventType),
+      payload: {
+        displayCallsign: input.displayCallsign || null,
+        actorType: input.actorType || null,
+        actorId: input.actorId || null,
+        details: input.details || {},
+        evidenceRefs: input.evidenceRefs || [],
+      },
+    }),
+    redact: async (event) => event,
+    classify: async (event) => ({
+      ...event,
+      classification: {
+        class: event.eventType,
+        redactionClass: event.eventType.startsWith('impact_notice') ? 'project_notice' : 'project_fact',
+      },
+    }),
+    correlate: async (event) => ({
+      ...event,
+      correlation: {
+        knowledgeItemId: event.payload.details.knowledgeItemId || null,
+        sourceKnowledgeItemId: event.payload.details.sourceKnowledgeItemId || null,
+        recipientAgentSessionId: event.payload.details.recipientAgentSessionId || null,
+        targetTransactionIds: asArray(event.payload.details.targetTransactionIds),
+        references: event.payload.details.references || null,
+      },
+    }),
+    authorize: async (event) => ({
+      allowed: event.projectId === projectId,
+      recipients: unique([
+        event.payload.details.recipientAgentSessionId,
+        ...asArray(event.payload.details.recipientAgentSessionIds),
+      ].filter(Boolean)),
+    }),
+    persist: async (event) => {
+      storedEvent = await recordEventWithClient(db, projectId, {
+        id: event.id,
+        mutationLeaseId: input.mutationLeaseId,
+        eventType: event.eventType,
+        displayCallsign: event.payload.displayCallsign,
+        actorType: event.payload.actorType,
+        actorId: event.payload.actorId,
+        details: event.payload.details,
+        evidenceRefs: event.payload.evidenceRefs,
+      }, { syncArtifacts: false });
+      return {
+        ...event,
+        persisted: {
+          id: storedEvent.id,
+          logicalTime: storedEvent.logicalTime ?? null,
+          createdAt: storedEvent.createdAt instanceof Date
+            ? storedEvent.createdAt.toISOString()
+            : String(storedEvent.createdAt || ''),
+        },
+      };
+    },
+    route: async (event, { authorization }) => ({
+      eventId: event.id,
+      mode: 'durable_relevance_router',
+      recipientAgentSessionIds: authorization.recipients,
+    }),
+  });
+  await bus.publish({
+    id: eventId,
+    projectId,
+    eventType: input.eventType,
+    payload: {
+      displayCallsign: input.displayCallsign || null,
+      actorType: input.actorType || null,
+      actorId: input.actorId || null,
+      details: input.details || {},
+      evidenceRefs: input.evidenceRefs || [],
+    },
+  });
+  if (!storedEvent) throw new Error('knowledge_coordination_event_not_persisted');
+  return storedEvent;
 }
 
 async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
@@ -11362,6 +11452,7 @@ async function recordEventWithClient(db, projectId, input, options = {}) {
     try {
       const event = await db.codeSiteEvent.create({
         data: {
+          ...(input.id ? { id: input.id } : {}),
           projectId,
           mutationLeaseId: input.mutationLeaseId || null,
           eventType,
