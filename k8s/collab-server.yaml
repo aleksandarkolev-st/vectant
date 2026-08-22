@@ -273,6 +273,13 @@ spec:
                   name: synthi-secrets
                   key: SYNTHI_CODESITE_TOKEN
                   optional: true
+            # Validates frontend transaction open/close activity publishes.
+            # Keep this distinct from SYNTHI_CODESITE_TOKEN.
+            - name: COLLAB_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: COLLAB_INTERNAL_TOKEN
             # ── Collab gateway JWT verification ──────────────────────────
             # The frontend SIGNS terminal/exec gateway tokens with AUTH_SECRET;
             # this server VERIFIES them. Without it every terminal WebSocket

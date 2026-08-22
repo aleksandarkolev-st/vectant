@@ -124,6 +124,10 @@ services:
       # internal-service token). MUST match the collab-server value below.
       # Production must inject a real secret via SYNTHI_CODESITE_TOKEN.
       SYNTHI_CODESITE_TOKEN: "${SYNTHI_CODESITE_TOKEN:-local-compose-codesite-token}"
+      # Authenticates frontend transaction activity publishes to collab-server.
+      # This is deliberately a distinct, required secret: do not reuse the
+      # control-plane token above or fall back to a checked-in development value.
+      COLLAB_INTERNAL_TOKEN: "${COLLAB_INTERNAL_TOKEN:?Set COLLAB_INTERNAL_TOKEN in .env.local before starting the shared-session stack}"
       # Permit the local Docker frontend to reach a Jupyter server exposed on
       # the host or private LAN. Public servers still require HTTPS.
       JUPYTER_ALLOW_DOCKER_HOST: "${JUPYTER_ALLOW_DOCKER_HOST:-1}"
@@ -220,6 +224,9 @@ services:
       # Sent as `Authorization: Bearer` on the CodeSite control-plane probe to
       # the frontend (see controlPlaneHeaders). MUST match the frontend value.
       SYNTHI_CODESITE_TOKEN: "${SYNTHI_CODESITE_TOKEN:-local-compose-codesite-token}"
+      # Must match the frontend's COLLAB_INTERNAL_TOKEN. The activity endpoint
+      # fails closed when this secret is absent or does not match.
+      COLLAB_INTERNAL_TOKEN: "${COLLAB_INTERNAL_TOKEN:?Set COLLAB_INTERNAL_TOKEN in .env.local before starting the shared-session stack}"
       CODE_INTEL_URL: "http://ai-engine:8000"
       YSWEET_URL: "http://y-sweet:8080"
       YSWEET_AUTH_KEY: dev-secret
