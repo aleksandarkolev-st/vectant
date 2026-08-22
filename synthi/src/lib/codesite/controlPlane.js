@@ -2606,12 +2606,12 @@ export async function recordRuntimeProjectObservation(workspaceSlug, projectId, 
   if (!project) throw notFound('codesite_project_not_found');
   if (project.status !== 'active') throw forbidden('codesite_project_inactive');
   const normalized = normalizeRuntimeObservedObservation({
-    ...body,
     eventType: 'runtime_observed',
+    ...body,
     projectId: project.id,
   });
   const coordinationInput = buildObservationCoordinationInput(normalized, {
-    actorId: body.adapterSessionId || null,
+    actorId: typeof body.adapterSessionId === 'string' ? body.adapterSessionId : null,
   });
   if (!coordinationInput) throw badRequest('observation_coordination_unmappable');
 
